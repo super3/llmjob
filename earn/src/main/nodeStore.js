@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const nodeProto = require('../shared/node');
+const { writeFileAtomic } = require('../shared/settingsStore');
 
 function storeDir() { return path.join(os.homedir(), '.local', 'share', 'llmjob-earn'); }
 function nodePath() { return path.join(storeDir(), 'node.json'); }
@@ -20,9 +21,12 @@ function loadNode() {
   try { return JSON.parse(fs.readFileSync(nodePath(), 'utf8')); } catch (e) { return null; }
 }
 
+// Replaced whole, never written in place (see writeFileAtomic): a node.json
+// torn by a power cut reads as no identity at all, and getOrCreateNode would
+// then make a new key, which unlinks this machine from its account.
 function saveNode(node) {
   fs.mkdirSync(storeDir(), { recursive: true });
-  fs.writeFileSync(nodePath(), JSON.stringify(node, null, 2), { mode: 0o600 });
+  writeFileAtomic(nodePath(), JSON.stringify(node, null, 2), { fs, mode: 0o600 });
 }
 
 // One-time migration from a shell's old private location (the GUI's Electron

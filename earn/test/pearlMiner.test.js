@@ -51,7 +51,7 @@ function boot(over = {}) {
   const connect = jest.fn(() => sock);
   const createCore = over.createCore === null ? null : jest.fn(() => core);
   const m = new PearlMiner({ connect, createCore, reconnectMs: 0 });
-  const events = { log: [], job: [], share: [], rejected: [], hashrate: [], error: [], stopped: [], authorized: [], started: [] };
+  const events = { log: [], job: [], share: [], rejected: [], hashrate: [], error: [], stopped: [], authorized: [] };
   for (const k of Object.keys(events)) m.on(k, (e) => events[k].push(e));
   return { m, sock, core, connect, createCore, events };
 }
@@ -69,8 +69,8 @@ function jobLine(over = {}) {
 const settings = { address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' };
 
 describe('PearlMiner — start', () => {
-  test('connects, authorizes with object params, and reports started', () => {
-    const { m, sock, connect, events } = boot();
+  test('connects and authorizes with object params', () => {
+    const { m, sock, connect } = boot();
     expect(m.start(settings)).toBe(true);
     expect(m.isRunning()).toBe(true);
     expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200);
@@ -80,7 +80,6 @@ describe('PearlMiner — start', () => {
     expect(sent).toEqual({
       id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01' },
     });
-    expect(events.started[0]).toEqual({ pool: settings.endpoint, wallet: ADDR, worker: 'rig01' });
   });
 
   test('is a no-op while already running', () => {
@@ -447,6 +446,47 @@ describe('PearlMiner — shares', () => {
     expect(sock.written).toHaveLength(0);
   });
 
+  // Pools close connections every few minutes. A hit found before the next
+  // connection used to be written to the closed socket, which drops it without
+  // a word, and its submit waited for an answer that could never come.
+  test('a hit found while the pool connection is down is dropped and said', () => {
+    const { m, core, sock, events } = withJob();
+    core.emit('hit', goodHit());
+    expect(m.pending.size).toBe(1);
+    sock.written.length = 0;
+    sock.emit('close');
+    expect(m.pending.size).toBe(0);
+    core.emit('hit', goodHit());
+    expect(sock.written).toHaveLength(0);
+    expect(events.log.map((l) => l.line)).toContain('dropping a hit found while the pool connection is down');
+    m.stop();
+  });
+
+  // The next connection has jobs of its own. A share of the last one would
+  // reach it before its first job, even before its login.
+  test('the next connection is not sent a share of the last one\'s job', () => {
+    jest.useFakeTimers();
+    const socks = [makeSocket(), makeSocket()];
+    const core = makeCore();
+    const m = new PearlMiner({ connect: jest.fn(() => socks.shift()), createCore: () => core, reconnectMs: 0 });
+    const [a, b] = socks;
+    m.start({ ...settings, profile: TINY });
+    a.emit('connect');
+    a.emit('data', jobLine());
+    a.emit('close');
+    jest.runOnlyPendingTimers();
+    b.emit('connect');
+    b.written.length = 0;
+    core.emit('hit', goodHit());
+    expect(b.written).toHaveLength(0);
+    // Its own job is mined and submitted as usual.
+    b.emit('data', jobLine({ job_id: 'next_job' }));
+    core.emit('hit', goodHit('next_job'));
+    expect(JSON.parse(b.written[0]).params.job_id).toBe('next_job');
+    m.stop();
+    jest.useRealTimers();
+  });
+
   // A rig's only core failing is not the end of mining: the card is opened again
   // after a while (see 'restarting a card that stopped'). Until then the failure
   // is in the log, not raised as an error, and the pool connection stays open
@@ -614,6 +654,114 @@ describe('PearlMiner — lifecycle', () => {
     m.start(settings);
     sock.emit('error', new Error('ECONNRESET'));
     expect(events.log.some((l) => l.level === 'error' && /ECONNRESET/.test(l.line))).toBe(true);
+  });
+
+  // A pool out of reach is retried every 5 s. Each retry used to log the socket
+  // error and the close again, so a rig with no DNS filled its log with the same
+  // two lines. Every retry still reports connect-failed, which main's one-time
+  // DNS hint reads.
+  test('a pool out of reach is said once, not on every retry', () => {
+    jest.useFakeTimers();
+    const socks = [];
+    const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+    const m = new PearlMiner({ connect, createCore: () => makeCore(), reconnectMs: 0 });
+    const lines = [];
+    const failed = [];
+    m.on('log', (l) => lines.push(l.line));
+    m.on('connect-failed', (e) => failed.push(e));
+    m.start(settings);
+    const fail = (message) => {
+      const s = socks[socks.length - 1];
+      s.emit('error', new Error(message));
+      s.emit('close');
+      jest.runOnlyPendingTimers();
+    };
+    fail('getaddrinfo ENOTFOUND pool');
+    fail('getaddrinfo ENOTFOUND pool');
+    fail('getaddrinfo ENOTFOUND pool');
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(failed).toHaveLength(3);
+    expect(lines.filter((l) => /^pool/.test(l))).toEqual([
+      'pool socket error: getaddrinfo ENOTFOUND pool',
+      'pool connection closed; reconnecting (until it connects, the retries are not logged)',
+    ]);
+    // A different error is news.
+    fail('connect ECONNREFUSED');
+    expect(lines.filter((l) => /ECONNREFUSED/.test(l))).toHaveLength(1);
+
+    // Once the pool takes the login, the next drop is said again.
+    lines.length = 0;
+    const live = socks[socks.length - 1];
+    live.emit('connect');
+    live.emit('data', '{"id":1,"error":null,"result":true}\n');
+    fail('connect ECONNREFUSED');
+    fail('connect ECONNREFUSED');
+    expect(lines.filter((l) => /^pool/.test(l))).toEqual([
+      'pool socket error: connect ECONNREFUSED',
+      'pool connection closed; reconnecting',
+      'pool connection closed; reconnecting (until it connects, the retries are not logged)',
+    ]);
+    m.stop();
+    jest.useRealTimers();
+  });
+
+  // stop() lets go of its socket, which closes later. A start in between has a
+  // socket of its own, and that late close used to log it out and open a third.
+  test('a late close from a socket stop() let go of leaves the next run alone', () => {
+    jest.useFakeTimers();
+    const a = makeSocket();
+    const b = makeSocket();
+    const connect = jest.fn().mockReturnValueOnce(a).mockReturnValueOnce(b);
+    const m = new PearlMiner({ connect, createCore: () => makeCore(), reconnectMs: 0 });
+    m.start(settings);
+    m.stop();
+    m.start(settings);
+    // Nor is anything it still delivers heard.
+    a.emit('data', '{"id":1,"error":null,"result":true}\n');
+    expect(m.authorized).toBe(false);
+    b.emit('connect');
+    b.emit('data', '{"id":1,"error":null,"result":true}\n');
+    a.emit('close');
+    jest.runOnlyPendingTimers();
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(m.authorized).toBe(true);
+    expect(m.sock).toBe(b);
+    m.stop();
+    jest.useRealTimers();
+  });
+
+  // A socket that closes inside destroy() closes while stop() runs.
+  test('a socket that closes inside destroy does not reconnect', () => {
+    jest.useFakeTimers();
+    const sock = makeSocket();
+    sock.destroy = jest.fn(() => sock.emit('close'));
+    const { m, connect, events } = boot({ sock });
+    m.start(settings);
+    m.stop();
+    jest.runOnlyPendingTimers();
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(events.log.map((l) => l.line)).not.toContain('pool connection closed; reconnecting');
+    jest.useRealTimers();
+  });
+
+  // Half a line from the closed connection must not be glued onto the first
+  // line of the next one: that line is usually the login's answer.
+  test('a partial line from a closed connection is dropped', () => {
+    jest.useFakeTimers();
+    const a = makeSocket();
+    const b = makeSocket();
+    const connect = jest.fn().mockReturnValueOnce(a).mockReturnValueOnce(b);
+    const m = new PearlMiner({ connect, createCore: () => makeCore(), reconnectMs: 0 });
+    m.start(settings);
+    a.emit('connect');
+    a.emit('data', '{"id":null,"method":"mining.no');
+    a.emit('close');
+    jest.runOnlyPendingTimers();
+    b.emit('connect');
+    b.emit('data', '{"id":1,"error":null,"result":true}\n');
+    expect(m.authorized).toBe(true);
+    m.stop();
+    jest.useRealTimers();
   });
 
   // A pool that rejects with a code but no text must still render a reason

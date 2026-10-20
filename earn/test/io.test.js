@@ -104,6 +104,17 @@ describe('postJson', () => {
     await expect(io.postJson('::nope::', {})).rejects.toBeDefined();
   });
 
+  // The job worker aborts a held poll when it stops.
+  it('passes an abort signal to the request', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const ctl = new AbortController();
+    const p = io.postJson('https://host/api', {}, 1000, { signal: ctl.signal });
+    expect(https.request.mock.calls[0][1]).toMatchObject({ signal: ctl.signal });
+    res.emit('end');
+    await expect(p).resolves.toEqual({ status: 200, data: null, raw: '' });
+  });
+
   it('rejects on a transport error', async () => {
     const res = fakeRes();
     const reqs = wire(https, [res]);
@@ -112,12 +123,82 @@ describe('postJson', () => {
     await expect(p).rejects.toThrow('boom');
   });
 
-  it('rejects when the request times out', async () => {
-    const res = fakeRes();
-    const reqs = wire(https, [res]);
+  // A complete response ends, then closes, as Node's does. The close changes
+  // nothing.
+  it('settles once: the close after a complete response is ignored', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
     const p = io.postJson('https://host/api', {});
-    reqs[0].emit('timeout');
-    await expect(p).rejects.toThrow('request timed out');
+    res.emit('data', '{"n":1}');
+    res.emit('end');
+    res.emit('close');
+    await expect(p).resolves.toEqual({ status: 200, data: { n: 1 }, raw: '{"n":1}' });
+  });
+
+  // The hang: a connection cut after the headers ends the response with
+  // 'aborted' and 'close', never 'end', and the request emits no 'error'. The
+  // promise used to stay pending forever, and the job worker's poll loop with it.
+  it('rejects when the response is cut before it ends', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.postJson('https://host/api', {});
+    res.emit('data', '{"jobs":');
+    res.emit('aborted');
+    res.emit('close');
+    await expect(p).rejects.toThrow('the connection closed before the response ended');
+  });
+
+  it('rejects when the response errors', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.postJson('https://host/api', {});
+    res.emit('error', new Error('aborted'));
+    res.emit('close');
+    await expect(p).rejects.toThrow('aborted');
+  });
+
+  // The timeout is a deadline for the whole request. A socket idle timeout
+  // never fires on a server that trickles a byte at a time.
+  it('rejects at the deadline even while the body still trickles in', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.postJson('https://host/api', {}, 1000);
+      const settled = jest.fn();
+      p.then(settled, settled);
+      for (let i = 0; i < 9; i++) { res.emit('data', ' '); jest.advanceTimersByTime(100); }
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(100);
+      await expect(p).rejects.toThrow('request timed out');
+      expect(reqs[0].destroy).toHaveBeenCalledWith(expect.any(Error));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('defaults the deadline to 30 s and clears it once settled', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.postJson('https://host/api', {});
+      jest.advanceTimersByTime(29999);
+      res.emit('end');
+      await expect(p).resolves.toEqual({ status: 200, data: null, raw: '' });
+      jest.advanceTimersByTime(60000);
+      expect(reqs[0].destroy).not.toHaveBeenCalled();
+
+      const res2 = fakeRes({ statusCode: 200 });
+      const reqs2 = wire(https, [res2]);
+      const p2 = io.postJson('https://host/api', {});
+      jest.advanceTimersByTime(30000);
+      await expect(p2).rejects.toThrow('request timed out');
+      expect(reqs2[0].destroy).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -131,20 +212,20 @@ describe('getJson', () => {
     await expect(p).resolves.toEqual({ ok: true });
     expect(https.get).toHaveBeenCalledWith(
       expect.any(URL),
-      expect.objectContaining({ timeout: 1000, headers: { 'User-Agent': 'x' } }),
+      expect.objectContaining({ headers: { 'User-Agent': 'x' } }),
       expect.any(Function),
     );
   });
 
-  it('works over http with the default timeout', async () => {
+  it('works over http', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire(http, [res]);
     const p = io.getJson('http://host/api');
     res.emit('data', '{"n":1}');
     res.emit('end');
+    res.emit('close');
     await expect(p).resolves.toEqual({ n: 1 });
-    expect(http.get).toHaveBeenCalledWith(
-      expect.any(URL), expect.objectContaining({ timeout: 8000 }), expect.any(Function));
+    expect(http.get).toHaveBeenCalled();
   });
 
   it('resolves null on a non-200', async () => {
@@ -162,14 +243,33 @@ describe('getJson', () => {
     await expect(p).resolves.toBeNull();
   });
 
-  it('aborts an oversized body and resolves null', async () => {
+  // A destroyed response never emits 'end'. The old fake emitted one anyway,
+  // which is the only reason this passed while the real thing hung forever.
+  it('aborts an oversized body and resolves null at once', async () => {
     const res = fakeRes({ statusCode: 200 });
     const reqs = wire(https, [res]);
     const p = io.getJson('https://host/api');
     res.emit('data', 'x'.repeat(4_000_001));
-    res.emit('end');
     await expect(p).resolves.toBeNull();
     expect(reqs[0].destroy).toHaveBeenCalled();
+  });
+
+  it('resolves null when the response is cut before it ends', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('data', '{"tag_name":');
+    res.emit('aborted');
+    res.emit('close');
+    await expect(p).resolves.toBeNull();
+  });
+
+  it('resolves null when the response errors', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('error', new Error('aborted'));
+    await expect(p).resolves.toBeNull();
   });
 
   it('resolves null on an invalid URL', async () => {
@@ -184,13 +284,27 @@ describe('getJson', () => {
     await expect(p).resolves.toBeNull();
   });
 
-  it('resolves null on a request timeout', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire(https, [res]);
-    const p = io.getJson('https://host/api');
-    reqs[0].emit('timeout');
-    await expect(p).resolves.toBeNull();
-    expect(reqs[0].destroy).toHaveBeenCalled();
+  it('resolves null at the deadline (default 8 s), even while the body trickles in', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.getJson('https://host/api');
+      for (let i = 0; i < 7; i++) { res.emit('data', ' '); jest.advanceTimersByTime(1000); }
+      expect(reqs[0].destroy).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1000);
+      await expect(p).resolves.toBeNull();
+      expect(reqs[0].destroy).toHaveBeenCalled();
+
+      const res2 = fakeRes({ statusCode: 200 });
+      const reqs2 = wire(https, [res2]);
+      const p2 = io.getJson('https://host/api', { timeout: 2000 });
+      jest.advanceTimersByTime(2000);
+      await expect(p2).resolves.toBeNull();
+      expect(reqs2[0].destroy).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -526,8 +640,6 @@ describe('downloadFile', () => {
   // multi-GB GGUF at the final path that every later start accepts.
   it('retries from a clean scratch file rather than resuming a partial', async () => {
     jest.useFakeTimers();
-    const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn, ms) => { realSetTimeout(fn, ms); return {}; }; // handle without unref()
     const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     wire(https, [r1, r2]);
@@ -552,7 +664,6 @@ describe('downloadFile', () => {
     o2.emit('finish');
     await expect(p).resolves.toBe('/tmp/f');
     expect(progress[progress.length - 1]).toBe(100);
-    global.setTimeout = realSetTimeout;
     jest.useRealTimers();
   });
 
@@ -1026,122 +1137,5 @@ describe('downloadFile trust recovery', () => {
     expect((await settled).message).toMatch('HTTP 404');
     expect(tls.connect).not.toHaveBeenCalled();
     jest.useRealTimers();
-  });
-});
-
-describe('extractEnginePackage', () => {
-  function magic(bytes) {
-    fs.openSync.mockReturnValue(7);
-    fs.readSync.mockImplementation((fd, buf) => { buf[0] = bytes[0]; buf[1] = bytes[1]; return 2; });
-    fs.closeSync.mockImplementation(() => {});
-  }
-
-  const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
-  const setPlatform = (p) => Object.defineProperty(process, 'platform', { value: p, configurable: true });
-  afterEach(() => Object.defineProperty(process, 'platform', REAL_PLATFORM));
-
-  // Deliberately NOT flattened like the llama.cpp archives: the packaged engine
-  // is a launcher plus a core that it resolves as a sibling, so the archive
-  // keeps its own top folder and both land together.
-  //
-  // The archive goes in RELATIVE, with the dest as cwd, rather than as an
-  // absolute path with -C: GNU tar reads a leading drive letter as an
-  // rsync-style <host>:<path> and tries to open a network connection.
-  test('untars a gzip package into the engine dir, keeping the top folder', async () => {
-    setPlatform('linux');
-    magic([0x1f, 0x8b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache')).resolves.toBe('/cache');
-    const [cmd, args, opts] = execFile.mock.calls.pop();
-    expect(cmd).toBe('tar');
-    expect(args).toEqual(['-xzf', 'pkg.tar.gz']);
-    expect(opts.cwd).toBe('/cache');
-    expect(args).not.toContain('--strip-components=1');
-  });
-
-  // The same engine version ships as a .tar.gz on Linux and a .zip on Windows,
-  // so the format is sniffed rather than assumed — and NOT handed to `unzip`,
-  // which is standard on the one platform that never sees a zip here.
-  test('reads a zip package with the same tool, without -z', async () => {
-    setPlatform('linux');
-    magic([0x50, 0x4b]); // "PK"
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await expect(io.extractEnginePackage('/cache/pkg.zip', '/cache')).resolves.toBe('/cache');
-    const [cmd, args] = execFile.mock.calls.pop();
-    expect(cmd).toBe('tar');
-    expect(args).toEqual(['-xf', 'pkg.zip']);
-  });
-
-  // Reading a zip with `tar` is a bsdtar capability, and plain `tar` on Windows
-  // is not reliably bsdtar — Git for Windows puts GNU tar ahead of it on PATH,
-  // and GNU tar cannot read zips at all ("this does not look like a tar
-  // archive"). Both failures were seen on a real rig, so Windows resolves the
-  // system bsdtar by absolute path instead of trusting PATH order.
-  test('uses the system bsdtar by absolute path on Windows', async () => {
-    setPlatform('win32');
-    process.env.SystemRoot = 'C:\\Windows';
-    magic([0x50, 0x4b]);
-    fs.existsSync.mockReturnValue(true);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    const [cmd] = execFile.mock.calls.pop();
-    expect(cmd).toMatch(/^C:.Windows.System32.tar\.exe$/);
-  });
-
-  // SystemRoot is always set on a real Windows session, but a stripped service
-  // environment must still resolve somewhere sane rather than joining undefined.
-  test('defaults to the Windows dir when SystemRoot is unset', async () => {
-    setPlatform('win32');
-    const saved = process.env.SystemRoot;
-    delete process.env.SystemRoot;
-    magic([0x50, 0x4b]);
-    fs.existsSync.mockReturnValue(true);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toMatch(/^C:.Windows.System32.tar\.exe$/);
-    if (saved !== undefined) process.env.SystemRoot = saved;
-  });
-
-  test('falls back to PATH tar when the system bsdtar is absent or unreadable', async () => {
-    setPlatform('win32');
-    magic([0x50, 0x4b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-
-    fs.existsSync.mockReturnValue(false);
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toBe('tar');
-
-    fs.existsSync.mockImplementation(() => { throw new Error('EPERM'); });
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toBe('tar');
-  });
-
-  // No relative path exists across drives, so the colon is unavoidable there —
-  // nothing our own callers do, but it must not produce a broken argv.
-  test('keeps the absolute path when the archive is on another drive', async () => {
-    setPlatform('linux');
-    magic([0x50, 0x4b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    // "Another drive" has to be computed, not hardcoded: on Windows a bare
-    // /cache resolves against the cwd's OWN drive, and the GitHub runner builds
-    // on D: while a dev box is usually C:. Naming one literally makes this a
-    // same-drive relative path on exactly one of them.
-    const other = process.cwd().toUpperCase().startsWith('D:') ? 'E:' : 'D:';
-    const far = other + '\\dl\\pkg.zip';
-    await io.extractEnginePackage(far, '/cache');
-    expect(execFile.mock.calls.pop()[1]).toEqual(['-xf', far]);
-  });
-
-  test('rejects when the package cannot be read', async () => {
-    fs.openSync.mockImplementation(() => { throw new Error('EACCES'); });
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
-      .rejects.toThrow('could not read the engine package');
-  });
-
-  test('surfaces a tar failure with the tool named', async () => {
-    magic([0x1f, 0x8b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('tar: not found')));
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
-      .rejects.toThrow(/could not extract the engine package with .tar./);
   });
 });

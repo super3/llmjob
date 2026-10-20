@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  ALPHABET, BLOCK_CHARS, decodeBase58, encodeBase58, checkXmrAddress, isValidXmrAddress, shortenXmrAddress,
+  ALPHABET, BLOCK_CHARS, decodeBase58, encodeBase58, checkXmrAddress, shortenXmrAddress,
 } = require('../src/shared/xmr/address');
 const { keccak256 } = require('../src/shared/xmr/keccak');
 
@@ -50,13 +50,11 @@ describe('checkXmrAddress', () => {
     expect(checkXmrAddress(STANDARD)).toEqual({ ok: true, kind: 'standard' });
     expect(checkXmrAddress(SUBADDRESS)).toEqual({ ok: true, kind: 'subaddress' });
     expect(checkXmrAddress('  ' + SUBADDRESS + '\n')).toEqual({ ok: true, kind: 'subaddress' });
-    expect(isValidXmrAddress(SUBADDRESS)).toBe(true);
   });
 
   test('catches a typo with the checksum', () => {
     const typo = SUBADDRESS.slice(0, -1) + '8';
     expect(checkXmrAddress(typo)).toEqual({ ok: false, error: 'the checksum does not match: check for a typo' });
-    expect(isValidXmrAddress(typo)).toBe(false);
   });
 
   test('says why other input is not an address', () => {

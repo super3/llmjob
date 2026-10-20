@@ -95,7 +95,7 @@ input.field-box { user-select: text; }
    right — rather than all hugging the left of their grid cell. Aligning the cell
    (not just the value) keeps each label sitting over its own number. */
 .mk-stat:nth-child(2) { text-align: center; }
-.mk-stat:nth-child(3), .mk-stat:nth-child(4) { text-align: right; }
+.mk-stat:nth-child(3) { text-align: right; }
 /* With Monero on, the card reads Pearl, Monero, LLM across the top, each
    tagged with the chip it runs on. */
 .chart-card.with-cpu .hero2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -223,7 +223,6 @@ input.field-box { user-select: text; }
 .connect-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; }
 .connect-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 700; color: #fff; background: var(--accent); border: none; border-radius: 9px; padding: 11px 20px; cursor: pointer; box-shadow: 0 8px 18px -8px rgba(37,99,235,.6); transition: background .15s; }
 .connect-btn:hover:not(:disabled) { background: #1d4ed8; }
-.connect-btn:disabled { background: #b9c9ef; cursor: not-allowed; box-shadow: none; }
 /* secondary "Use a pairing token" toggle */
 .connect-alt-btn { flex: none; font-family: inherit; font-size: 13px; font-weight: 600; color: #6b7077; background: #fff; border: 1px solid #e3e1d9; border-radius: 9px; padding: 10px 16px; cursor: pointer; transition: color .14s, border-color .14s; }
 .connect-alt-btn:hover { color: var(--accent); border-color: #dbe6fb; }
@@ -265,17 +264,12 @@ input.field-box { user-select: text; }
 /* Only the status gives way when space runs out; the link never wraps. */
 .head-actions .update-check-btn { flex: none; white-space: nowrap; }
 .settings-section { font-size: 10.5px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: #a7abb2; margin: 10px 0 6px; }
-.settings-section:first-of-type { margin: 0 0 7px; }
 /* A section under a note gets more air than the section-to-section default. */
 .settings-note + .settings-section { margin-top: 11px; }
 /* The Settings view-head supplies its own spacing; keep the first section tight
    under it (the view-head div steals :first-of-type from .settings-section). */
 #view-settings .view-head + .settings-section { margin-top: 0; }
 #view-settings .view-head { margin-bottom: 13px; }
-.device-card { display: flex; align-items: center; gap: 11px; background: #eff4ff; border: 1px solid #dbe6fb; border-radius: 10px; padding: 12px 14px; }
-.device-left { display: flex; align-items: center; gap: 11px; flex: 1; }
-.device-ic { width: 30px; height: 30px; flex: none; border-radius: 7px; background: #dbe6fb; display: inline-flex; align-items: center; justify-content: center; }
-.device-input { flex: 1; border: none; background: transparent; font-size: 14px; font-weight: 600; color: var(--ink); outline: none; user-select: text; cursor: default; }
 .settings-rows { border: 1px solid #ebe9e1; border-radius: 10px; overflow: hidden; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; border-bottom: 1px solid #f0ede5; }
 .settings-row:last-child { border-bottom: none; }
@@ -308,9 +302,6 @@ select.rv-input { cursor: pointer; }
 .update-status.err { color: #dc2626; }
 .settings-note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
 #mode-hint { margin-top: 5px; }
-.settings-note a { color: var(--accent); cursor: pointer; }
-.settings-note .ok { color: var(--green); font-weight: 600; }
-.settings-note .warn { color: #dc2626; font-weight: 600; }
 /* A switch row with a one-line explanation under its label. One line only, so
    the page height never depends on the text. */
 .row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -333,6 +324,8 @@ select.rv-input { cursor: pointer; }
 .log-term .ln .t { color: #5c6f63; }
 .log-term .ln .m { color: #9fe6bb; }
 .log-term .ln.info .m { color: #cfe9d8; }
+/* Amber, between info and error: worth reading, nothing failed. */
+.log-term .ln.warn .m { color: #f0d58c; }
 .log-term .ln.error .m { color: #f3a5a5; }
 /* Slim, on-theme scrollbar to match the dark terminal instead of the chunky OS one. */
 .log-term { scrollbar-width: thin; scrollbar-color: #2a3b32 transparent; }

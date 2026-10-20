@@ -2,8 +2,7 @@
 
 // Renderer UI for the LLMJob Earn window. Pure display + IPC glue — all
 // computation (mining, the LLM engine, chat streaming) happens in the main
-// process (../shared + ../main). Kept thin and out of the coverage gate; the
-// logic it leans on is unit-tested separately.
+// process (../shared + ../main). test/renderer.test.js drives it in jsdom.
 (function () {
   const $ = (id) => document.getElementById(id);
   const api = window.llmjob || {};
@@ -61,6 +60,10 @@
     // Overwritten from config.defaults at boot. Only a bare literal because the
     // renderer has no access to shared/config across the preload bridge.
     defaultRegion: 'us',
+    // This machine's worker name, from config.defaults too: main's
+    // defaultWorker(), the hostname. Not a shared literal like "rig01", which
+    // makes two rigs on one address collide on the board (shared/worker).
+    defaultWorker: '',
     mining: false,       // master process running (miner and/or LLM per mode)
     // START stands but the work is paused, because "only mine when idle" is on
     // and someone is using the computer. STOP still shows.
@@ -74,8 +77,7 @@
     // only the startup auto-detect, and on a multi-GPU rig the two can be
     // different cards (issue #226) — this one is the one doing the work.
     engineGpu: '',
-    temp: 0,             // last core temperature reported, so a frame without one keeps it
-    canMine: true,       // false on macOS — no alpha-miner build exists for it
+    canMine: true,       // false on macOS — the miner needs an NVIDIA GPU
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, vramMb: null, ctxSize: null, error: null, note: null, lan: null, held: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -87,6 +89,9 @@
   };
 
   const BAL_REFRESH_MS = 60000; // re-poll the pool balance once a minute
+  // The Logs view keeps this many lines. The window lives on in the tray for
+  // weeks, with a line for every accepted share, and it used to keep them all.
+  const LOG_MAX_LINES = 2000;
   let balDebounce = null;
   let updateDismiss = null; // timer to auto-hide a transient update message
   let updateReady = false;  // an update is downloaded — the button installs + restarts
@@ -100,8 +105,8 @@
     llm: 'Local model only — no mining, no payout address needed.',
   };
 
-  // The modes that need a mining engine. On a platform without one (macOS —
-  // AlphaPool builds alpha-miner for Windows and Linux only) they are removed
+  // The modes that need a mining engine. On a platform without one (macOS,
+  // where there is no NVIDIA GPU for the CUDA miner) they are removed
   // from the segmented control rather than left to disappoint: picking "Mining"
   // there would arm a START that runs nothing at all. 'auto' stays, because it
   // degrades correctly on its own — main.js refuses the miner and the local LLM
@@ -831,16 +836,18 @@
     // branch was dead. alpha-miner scraped a name out of its own stdout, which
     // is what made the old gate work.
     //
-    // The last reading is remembered rather than read straight off the frame, so
-    // a status that carries no temperature leaves the label as it was instead of
-    // dropping the degrees back off it.
-    if (Number(s.temp) > 0) state.temp = Number(s.temp);
-    // Remembered for the same reason as the temperature: a status frame that
-    // carries no name must leave the label alone, not flip it back to the
-    // startup guess for one frame and then back again.
+    // The temperature is read straight off the frame. main's accumulator already
+    // keeps the last reading between frames, and sends 0 exactly when there is
+    // no current one: an idle pause, a switch to LLM-only, a new START. Keeping
+    // the last reading here as well showed a paused card at its mining
+    // temperature for the whole pause.
+    //
+    // The name is remembered: a status frame that carries no name must leave the
+    // label alone, not flip it back to the startup guess for one frame and then
+    // back again.
     if (s.gpu) state.engineGpu = s.gpu;
     const deviceName = state.engineGpu || state.gpu;
-    if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, state.temp);
+    if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, s.temp);
     chartPoints = s.points;
     drawChart();
   }
@@ -862,6 +869,8 @@
     div.appendChild(t);
     div.appendChild(m);
     el.logTerm.appendChild(div);
+    // The oldest line goes once the view is full (see LOG_MAX_LINES).
+    if (el.logTerm.children.length > LOG_MAX_LINES) el.logTerm.firstElementChild.remove();
     el.logTerm.scrollTop = el.logTerm.scrollHeight;
   }
 
@@ -895,7 +904,7 @@
   function currentSettings() {
     return {
       address: state.address.trim(),
-      worker: el.setWorker.value.trim() || 'rig01',
+      worker: el.setWorker.value.trim() || state.defaultWorker,
       region: el.setRegion.value || state.defaultRegion,
       mode: state.mode || 'mining',
       mdlAddress: state.mdlAddress || '',
@@ -1141,6 +1150,9 @@
       const regions = (config && config.regions) || {};
       const cfgDefaults = (config && config.defaults) || {};
       state.defaultRegion = cfgDefaults.region || state.defaultRegion;
+      state.defaultWorker = cfgDefaults.worker || state.defaultWorker;
+      // A cleared box shows the name a START will use.
+      el.setWorker.placeholder = state.defaultWorker;
       el.setRegion.innerHTML = '';
       Object.keys(regions).forEach((key) => {
         const opt = document.createElement('option');
@@ -1150,6 +1162,7 @@
       });
     }
     let resumeMining = false;
+    let regionSaved = false;
     if (api.getSettings) {
       const s = await api.getSettings();
       state.address = s.address || '';
@@ -1161,10 +1174,11 @@
       state.xmrChecking = state.cpuMining;
       el.setXmr.value = state.xmrAddress;
       state.cpuThreads = Number(s.cpuThreads) || 0;
-      el.setWorker.value = s.worker || 'rig01';
+      el.setWorker.value = s.worker || state.defaultWorker;
       // main migrates a stale AlphaPool id before we see it, so this always
       // names an option that exists.
       el.setRegion.value = s.region || state.defaultRegion;
+      regionSaved = !!s.regionSaved;
       // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
       // for a fresh install. This fallback only fires on a FALSY stored mode —
       // a hand-edited or half-written settings.json holding null or "" — and it
@@ -1191,7 +1205,10 @@
         if (!state.mining) el.deviceLabel.textContent = gpu;
       }
     }
-    if (api.detectRegion && !state.mining) {
+    // Only a fresh install picks the nearest region. A saved one is the user's
+    // choice: detection used to replace it on every launch, and the next START
+    // saved the replacement. Offline at login, that was the US fallback.
+    if (api.detectRegion && !state.mining && !regionSaved) {
       const region = await api.detectRegion();
       if (region) el.setRegion.value = region;
     }
@@ -1200,19 +1217,11 @@
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; state.paused = false; renderMiningState(); });
     if (api.onEngine) api.onEngine((e) => {
-      if (!e) return;
-      if (e.phase === 'downloading') {
-        el.engineStatus.hidden = false;
-        el.engineStatus.classList.remove('err');
-        el.engineStatus.textContent = 'Downloading & setting up the mining engine…';
-      } else if (e.phase === 'ready') {
-        el.engineStatus.hidden = true;
-        el.engineStatus.textContent = '';
-      } else if (e.phase === 'error') {
-        el.engineStatus.hidden = false;
-        el.engineStatus.classList.add('err');
-        el.engineStatus.textContent = e.message || 'Engine setup failed — see Logs.';
-      }
+      // Main sends only 'error': the miner could not start.
+      if (!e || e.phase !== 'error') return;
+      el.engineStatus.hidden = false;
+      el.engineStatus.classList.add('err');
+      el.engineStatus.textContent = e.message || 'Engine setup failed — see Logs.';
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;
@@ -1248,7 +1257,9 @@
     // Awaited so a rig that mines only Monero can resume too.
     await checkXmr();
     setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
-    if (resumeMining && (isValid(state.address) || cpuReady())) start();
+    // start() resumes whatever START could start, an LLM-only or Auto run with
+    // no payout address too. Main saves resumeMining for any running START.
+    if (resumeMining) start();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

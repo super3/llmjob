@@ -4,31 +4,24 @@ const { EventEmitter } = require('events');
 const { PearlMiner } = require('./pearlMiner');
 const { PROFILE } = require('../shared/miner/pearlhash');
 
-// Our own Pearl miner, wearing MinerManager's clothes.
+// The app's view of our own Pearl miner.
 //
-// The app's mining UI is driven by two parsed events — a periodic `status`
-// carrying hashrate and cumulative share counters, and a `connected` naming the
-// endpoint and card. alpha-miner produces those by having its stdout scraped;
-// PearlMiner produces richer, differently-shaped events because it IS the
-// miner rather than a process being watched.
+// The app's mining UI is driven by two events — a periodic `status` carrying
+// hashrate and cumulative share counters per card, and a `connected` naming the
+// endpoint and card. PearlMiner emits richer, differently shaped events (jobs,
+// shares, per-core hashrate ticks), and this adapter turns them into those two.
 //
-// This adapter is the whole difference. It exposes exactly the surface
-// main.js already drives (start/stop/isRunning, and log/event/error/stopped),
-// so choosing an engine is a choice of constructor and nothing else. Keeping
-// the translation here rather than in main.js is what makes it testable without
-// Electron, a socket, or a GPU.
+// It exposes the surface both shells drive (start/stop/isRunning, and
+// log/event/error/stopped). Keeping the translation here rather than in main.js
+// is what makes it testable without Electron, a socket, or a GPU.
 //
 // Temperature comes from an injected `readTemps` (nvidia-smi, via probe.js),
-// sampled on a slow timer. alpha-miner read it from NVML and printed it on
-// every status line; our miner IS the core and has no such reading to forward,
-// so the engine polls for it instead. Injected rather than required so this
-// stays testable without a GPU, and absent when nothing answers -- the UI
-// renders the bare card name for a rig that reports no temperature, which is
-// still better than inventing a number.
+// sampled on a slow timer, because the core has no reading of its own.
+// Injected rather than required so this stays testable without a GPU, and
+// absent when nothing answers -- the UI renders the bare card name for a rig
+// that reports no temperature, which is better than inventing a number.
 //
-// Deliberately still NOT reported: power. Nothing in the UI shows it, and the
-// per-card figure would go to the network board, which is a behaviour change
-// rather than a display one.
+// Power is not reported. Nothing in the UI shows it.
 const TEMP_POLL_MS = 5000;
 
 // How long a dropped pool connection may take to come back before the network
@@ -88,13 +81,6 @@ class PearlEngine extends EventEmitter {
     return m.lostAt != null && now - m.lostAt < POOL_GRACE_MS;
   }
 
-  // One card's current numbers, or null when that card isn't mining. Read-only:
-  // unlike _card it never creates a bucket, so asking about a card the rig does
-  // not mine on cannot invent one.
-  card(index) {
-    return this.cards.get(Number.isInteger(index) ? index : 0) || null;
-  }
-
   start(settings = {}) {
     this.cards.clear();
     this.gpu = settings.gpu || null;
@@ -114,8 +100,7 @@ class PearlEngine extends EventEmitter {
     m.on('stopped', (info) => this.emit('stopped', info && info.failed ? 1 : 0));
 
     // The pool accepted the wallet and we have work: the cards are mining. This
-    // is the moment alpha-miner printed its connection banner, and the UI wants
-    // the endpoint and card name from it. One per card, because that is how the
+    // is when the UI shows the endpoint and card name. One per card, because that is how the
     // board learns which GPU is which.
     m.on('job', () => {
       if (this._announced) return;
@@ -154,6 +139,10 @@ class PearlEngine extends EventEmitter {
     // this return dropped the only signal that the engine is dead rather than
     // merely quiet.
     const ok = m.start(Object.assign({}, settings, { profile: this.profile }));
+    // A start that failed mines on no card, so there is nothing to name and no
+    // temperature to read. Nothing stops the engine after it in the app, so a
+    // poller started here ran nvidia-smi every few seconds until STOP.
+    if (!ok) return ok;
 
     // The cores have now chosen their cards, so stop guessing at them. The GPU
     // name used to be detected separately (nvidia-smi's first card) and the index
@@ -224,7 +213,7 @@ class PearlEngine extends EventEmitter {
     };
     sample();
     this.tempTimer = setInterval(sample, this.tempPollMs);
-    if (this.tempTimer.unref) this.tempTimer.unref();
+    this.tempTimer.unref();
   }
 
   _stopTemps() {
@@ -248,7 +237,6 @@ class PearlEngine extends EventEmitter {
       hashrate: card.hashrate,
       accepted: card.accepted,
       rejected: card.rejected,
-      power: null,
       temp: card.temp,
       gpu: card.name || this.gpu,
     });

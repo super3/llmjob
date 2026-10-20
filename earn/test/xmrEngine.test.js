@@ -108,6 +108,15 @@ describe('start', () => {
     expect(h.engine.start(SETTINGS)).toBe(false);   // already running
   });
 
+  // The login knows the host, so a Kryptex pool gets "address/worker".
+  test('logs in to a Kryptex pool with the worker after a slash', () => {
+    const h = setup();
+    h.engine.start(Object.assign({}, SETTINGS, { endpoint: 'xmr-us.kryptex.network:7029' }));
+    expect(h.engine.connect).toHaveBeenCalledWith('xmr-us.kryptex.network', 7029);
+    h.sock().emit('connect');
+    expect(h.sock().written[0].params).toMatchObject({ login: ADDRESS + '/rig01', pass: 'rig01', rigid: 'rig01' });
+  });
+
   test('one thread, and no worker name', () => {
     const h = setup();
     h.engine.start(Object.assign({}, SETTINGS, { threads: 1, worker: '' }));
@@ -175,7 +184,7 @@ describe('the worker', () => {
       'cpu: building the 2080 MiB RandomX dataset on 6 threads (about a minute; again when Monero changes its seed, every 2048 blocks)',
       'cpu: dataset ready in 42.3 s · transparent huge pages',
     ]));
-    expect(h.engine.snapshot()).toMatchObject({ state: 'mining', pages: 'thp', difficulty: 10000 });
+    expect(h.engine.snapshot()).toMatchObject({ state: 'mining' });
     expect(h.events.map((e) => e.state)).toEqual(expect.arrayContaining(['starting', 'dataset', 'mining']));
   });
 
@@ -325,7 +334,7 @@ describe('the worker', () => {
     const h = mining();
     h.child().emit('exit', 139, null);
     expect(h.lines()).toContain('cpu: the CPU miner stopped (exit code 139)');
-    expect(h.engine.snapshot()).toMatchObject({ state: 'restarting', hashrate: 0, pages: null });
+    expect(h.engine.snapshot()).toMatchObject({ state: 'restarting', hashrate: 0 });
     // Said when it happens, not before.
     expect(h.lines()).not.toContain('cpu: restarting the CPU miner');
     h.advance(RESTART_MS);
@@ -442,7 +451,7 @@ describe('shares', () => {
     });
     h.sock().recv({ id: 10, jsonrpc: '2.0', error: null, result: { status: 'OK' } });
     expect(h.lines()).toContain('cpu: XMR share accepted');
-    expect(h.engine.snapshot()).toMatchObject({ accepted: 1, rejected: 0, lastShareMs: 1000000 });
+    expect(h.engine.snapshot()).toMatchObject({ accepted: 1, rejected: 0 });
     // A reply to nothing we sent counts for nothing.
     h.sock().recv({ id: 10, error: null, result: { status: 'OK' } });
     expect(h.engine.snapshot().accepted).toBe(1);

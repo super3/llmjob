@@ -1,13 +1,14 @@
 'use strict';
 
 jest.mock('net');
-jest.mock('http');
-jest.mock('https');
 jest.mock('child_process');
+// postJson has its own tests (io.test.js); here only what is posted, where.
+jest.mock('../src/main/io', () => ({ postJson: jest.fn() }));
 
 const net = require('net');
-const https = require('https');
 const { execFile, spawn } = require('child_process');
+const { postJson } = require('../src/main/io');
+const { NETWORK } = require('../src/shared/config');
 const { EventEmitter } = require('events');
 const probe = require('../src/main/probe');
 
@@ -30,19 +31,6 @@ function fakeServer(fail) {
     close(cb) { if (cb) cb(); },
     listen() { process.nextTick(() => (fail ? h.error && h.error() : h.listening && h.listening())); },
   };
-}
-
-function fakeRes() {
-  const res = new EventEmitter();
-  res.resume = () => {};
-  return res;
-}
-function fakeReq() {
-  const req = new EventEmitter();
-  req.write = jest.fn();
-  req.end = jest.fn();
-  req.destroy = jest.fn();
-  return req;
 }
 
 // execFile stub.
@@ -197,18 +185,6 @@ describe('detectGpuTemps', () => {
   it('returns {} when nothing parses', async () => {
     execCb(null, 'garbage\n');
     expect(await probe.detectGpuTemps()).toEqual({});
-  });
-});
-
-describe('detectDriverMajor', () => {
-  it('returns the parsed major version', async () => {
-    execCb(null, '580.42\n');
-    expect(await probe.detectDriverMajor()).toBe(580);
-  });
-
-  it('returns null on error', async () => {
-    execCb(new Error('x'));
-    expect(await probe.detectDriverMajor()).toBeNull();
   });
 });
 
@@ -373,56 +349,17 @@ describe('detectLlmBusIds', () => {
 });
 
 describe('postMinerReport', () => {
-  it('POSTs over https (the configured report url) and resolves on end', async () => {
-    const req = fakeReq();
-    const res = fakeRes();
-    https.request.mockImplementation((_u, _opts, cb) => { cb(res); return req; });
-    const done = probe.postMinerReport({ hello: 'world' });
-    res.emit('end');
-    await expect(done).resolves.toBeUndefined();
-    expect(req.write).toHaveBeenCalledWith(JSON.stringify({ hello: 'world' }));
+  it('POSTs the payload to the configured report url and resolves', async () => {
+    postJson.mockResolvedValue({ status: 200, data: null, raw: '' });
+    await expect(probe.postMinerReport({ hello: 'world' })).resolves.toBeUndefined();
+    expect(postJson).toHaveBeenCalledWith(NETWORK.reportUrl, { hello: 'world' }, 8000);
   });
 
-  it('resolves (never rejects) on a request error', async () => {
-    const req = fakeReq();
-    https.request.mockImplementation((_u, _opts) => req);
-    const done = probe.postMinerReport({ a: 1 });
-    req.emit('error', new Error('offline'));
-    await expect(done).resolves.toBeUndefined();
-  });
-
-  it('resolves on a request timeout', async () => {
-    const req = fakeReq();
-    https.request.mockImplementation((_u, _opts) => req);
-    const done = probe.postMinerReport({ a: 1 });
-    req.emit('timeout');
-    await expect(done).resolves.toBeUndefined();
-    expect(req.destroy).toHaveBeenCalled();
-  });
-
-  it('swallows a synchronous failure (e.g. an unserializable payload)', async () => {
-    const circular = {};
-    circular.self = circular; // JSON.stringify throws
-    await expect(probe.postMinerReport(circular)).resolves.toBeUndefined();
-  });
-
-  it('uses http when the report url is http', async () => {
-    await jest.isolateModulesAsync(async () => {
-      jest.doMock('../src/shared/config', () => ({
-        NETWORK: { reportUrl: 'http://board.local/report' },
-        REGIONS: {},
-        DEFAULTS: { region: 'us' },
-      }));
-      const p = require('../src/main/probe');
-      const httpMock = require('http');
-      const req = fakeReq();
-      const res = fakeRes();
-      httpMock.request.mockImplementation((_u, _opts, cb) => { cb(res); return req; });
-      const done = p.postMinerReport({ ok: 1 });
-      res.emit('end');
-      await expect(done).resolves.toBeUndefined();
-      expect(httpMock.request).toHaveBeenCalled();
-    });
+  // An error, a timeout or a cut response all reject postJson. None of them
+  // may reach mining.
+  it('never rejects', async () => {
+    postJson.mockRejectedValue(new Error('request timed out'));
+    await expect(probe.postMinerReport({ a: 1 })).resolves.toBeUndefined();
   });
 });
 

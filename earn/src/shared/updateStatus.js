@@ -14,10 +14,11 @@ function clampPercent(p) {
 
 // `phase` is one of: checking | available | progress | ready | none | latest |
 // manual | error. `payload` carries { version } for available/ready and
-// { percent } for progress. Returns { phase, text, show, ready?, error?,
-// transient? } — `show` drives the bar's visibility, `ready` reveals the restart
-// button, `error` styles it as a fault, `transient` marks a message the renderer
-// auto-dismisses (the "you're up to date" result of a manual check).
+// { percent } for progress. Returns { phase, text, show, ready?, version?,
+// error?, transient? } — `show` drives the bar's visibility, `ready` reveals the
+// restart button and `version` names the update on the Mine view's banner (null
+// when unknown), `error` styles it as a fault, `transient` marks a message the
+// renderer auto-dismisses (the "you're up to date" result of a manual check).
 function formatUpdate(phase, payload) {
   switch (phase) {
     case 'checking':
@@ -29,8 +30,8 @@ function formatUpdate(phase, payload) {
     case 'progress':
       return { phase, text: 'Downloading update… ' + clampPercent(payload && payload.percent) + '%', show: true };
     case 'ready': {
-      const v = payload && payload.version ? ' v' + payload.version : '';
-      return { phase, text: 'Update' + v + ' ready', show: true, ready: true };
+      const version = (payload && payload.version) || null;
+      return { phase, text: 'Update' + (version ? ' v' + version : '') + ' ready', show: true, ready: true, version };
     }
     case 'none':
       return { phase, text: '', show: false };

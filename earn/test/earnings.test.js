@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  estDailyPrl, estDailyUsd, estDailyUsdLabel, prlToUsd, prlToUsdLabel, HASHES_PER_DIFFICULTY,
+  estDailyPrl, estDailyUsd, estDailyUsdLabel, HASHES_PER_DIFFICULTY,
 } = require('../src/shared/earnings');
 
 // prlscan on 2026-10-06, block 124012: the latest block's difficulty and reward,
@@ -23,13 +23,6 @@ describe('earnings', () => {
     expect(estDailyUsdLabel(0)).toBe('$0.00');
   });
 
-  test('prlToUsd and label', () => {
-    expect(prlToUsd(128.407)).toBeCloseTo(146.384, 3);
-    expect(prlToUsd('x')).toBe(0);
-    expect(prlToUsdLabel(128.407)).toBe('$146.38');
-    expect(prlToUsdLabel(null)).toBe('$0.00');
-  });
-
   // The figure the pool's own calculator gives, from the same difficulty and
   // reward, to well under a cent a day.
   test('matches HeroMiners on the same block', () => {
@@ -45,14 +38,13 @@ describe('earnings', () => {
     expect(estDailyPrl(1, { ...oneADay, DIFFICULTY: 2 * oneADay.DIFFICULTY })).toBeCloseTo(1000, 6);
     expect(estDailyPrl(1, { ...oneADay, FEE: 0.98 })).toBeCloseTo(1960, 6);
     expect(estDailyUsd(1, oneADay)).toBeCloseTo(1000, 6);
-    expect(prlToUsd(10, oneADay)).toBeCloseTo(5, 5);
-    expect(prlToUsdLabel(10, oneADay)).toBe('$5.00');
   });
 
   test('dollar labels have a thousands separator', () => {
     const oneADay = { DIFFICULTY: (1e12 * 86400) / HASHES_PER_DIFFICULTY, BLOCK_REWARD: 2000, FEE: 1, PRL_USD: 0.5 };
-    expect(prlToUsdLabel(2221.38, oneADay)).toBe('$1,110.69');
-    expect(prlToUsdLabel(999.98, oneADay)).toBe('$499.99');
+    // $1,000 a day per TH/s at this difficulty and price.
+    expect(estDailyUsdLabel(1.11069, oneADay)).toBe('$1,110.69');
+    expect(estDailyUsdLabel(0.49999, oneADay)).toBe('$499.99');
     expect(estDailyUsdLabel(2.5, oneADay)).toBe('$2,500.00');
   });
 });

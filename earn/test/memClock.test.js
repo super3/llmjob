@@ -2,7 +2,7 @@
 
 const {
   BLACKWELL_MINE_MEM_CLOCK_MHZ, BLACKWELL_COMPUTE_MAJOR, CLI_MEM_CLOCK_FLAG, GUI_MEM_CLOCK_ENV,
-  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, CORUN_IGNORED, parseMemClockMhz, readMemClockEnv, planMemClocks,
+  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, parseMemClockMhz, readMemClockEnv, planMemClocks,
 } = require('../src/shared/memClock');
 
 // Cards as parseCudaCards returns them.
@@ -218,7 +218,6 @@ describe('an LLM co-running with the miner', () => {
   test('drops an explicit request with the CLI\'s line, word for word', () => {
     const plan = planMemClocks({ requestedMhz: 7001, cards: [RTX5090(0)], gpus: [gpu(0)], llmCoRuns: true });
     expect(plan).toEqual({ byIndex: {}, isDefault: false, dropped: true, reason: IGNORED });
-    expect(CORUN_IGNORED).toBe(IGNORED);
   });
 
   // Nobody asked for the default, so losing it is information, not a drop.

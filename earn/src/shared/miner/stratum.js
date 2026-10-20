@@ -32,7 +32,6 @@
 // other order: {"id":100,"result":true,"error":null}. Both captured 2026-10-17.
 
 const HEADER_BYTES = 76;
-const TARGET_BYTES = 32;
 
 // The id we send authorize under. Fixed, because there is exactly one request in
 // this protocol whose result we wait for; jobs and difficulty arrive unsolicited
@@ -53,12 +52,6 @@ function buildAuthorize(wallet, worker, host) {
   return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet: login, worker } };
 }
 
-// A share submission. The proof encoding is pool-specific and is the one part of
-// this protocol NOT yet confirmed against a HeroMiners-accepted share — see
-// pearlhash.js for what the core produces. The fields below are the documented
-// v2 shape (job_id, the two seeds, the nonce, and the base64 proof the core
-// emits); `serializeProof` is isolated as its own function so the exact wire
-// encoding can be corrected in one place once a real submit is observed.
 // A share submission. The proof is the whole message: it carries m, n, k, the
 // noise rank, and both Merkle proofs with their row indices, and the verifier
 // reconstructs the mining configuration from those indices rather than being
@@ -79,14 +72,6 @@ function buildSubmit(id, share) {
       hs: Math.max(0, Math.round(share.hashrate || 0)),
     },
   };
-}
-
-// The proof bytes the core returns, encoded for the wire. Base64 of the raw
-// bytes is the documented v2 encoding; kept separate so a pool that wants a
-// different container (Kryptex uses protobuf) is a one-function change.
-function serializeProof(proof) {
-  const buf = Buffer.isBuffer(proof) ? proof : Buffer.from(proof || []);
-  return buf.toString('base64');
 }
 
 // Serialize a request object to a newline-terminated JSON line, as the pool
@@ -181,7 +166,6 @@ function parseJob(params) {
     header: Buffer.from(headerHex, 'hex'),
     headerHex,
     target,
-    targetHex: String(p.target).trim().toLowerCase(),
     height: Number.isFinite(p.height) ? p.height : null,
     certVersion: Number.isFinite(p.cert_version) ? p.cert_version : null,
     // The rank the pool is paying for, when it states one. HeroMiners does not
@@ -207,12 +191,10 @@ function parseDifficulty(params) {
 
 module.exports = {
   HEADER_BYTES,
-  TARGET_BYTES,
   AUTHORIZE_ID,
   buildAuthorize,
   isKryptexHost,
   buildSubmit,
-  serializeProof,
   encode,
   decodeTarget,
   parseMessage,

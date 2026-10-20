@@ -6,7 +6,6 @@ const { LLM } = require('../src/shared/config');
 
 const {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTokensPerSec,
 } = require('../src/shared/llama');
 
 describe('resolveServerBinary', () => {
@@ -72,10 +71,10 @@ describe('buildServerArgs', () => {
     expect(buildServerArgs({ nGpuLayers: 0 })).toEqual(expect.arrayContaining(['--split-mode', 'none']));
   });
 
-  test('honors overrides and appends --flash-attn', () => {
-    const a = buildServerArgs({ modelPath: '/m.gguf', nGpuLayers: 8, host: '0.0.0.0', port: 9090, ctxSize: 2048, parallel: 2, flashAttn: true });
+  test('honors overrides', () => {
+    const a = buildServerArgs({ modelPath: '/m.gguf', nGpuLayers: 8, host: '0.0.0.0', port: 9090, ctxSize: 2048 });
     expect(a).toEqual(expect.arrayContaining([
-      '--n-gpu-layers', '8', '--host', '0.0.0.0', '--port', '9090', '--ctx-size', '2048', '--parallel', '2', '--flash-attn',
+      '--n-gpu-layers', '8', '--host', '0.0.0.0', '--port', '9090', '--ctx-size', '2048',
     ]));
   });
 
@@ -124,14 +123,6 @@ describe('isServerReady', () => {
     expect(isServerReady('main: HTTP server is listening, hostname: 127.0.0.1, port: 8080, http threads: 15')).toBe(false);
     expect(isServerReady('loading model from /m.gguf')).toBe(false);
     expect(isServerReady(null)).toBe(false);
-  });
-});
-
-describe('parseTokensPerSec', () => {
-  test('extracts tokens/sec from a timing line, else null', () => {
-    expect(parseTokensPerSec('eval time = 1234 ms / 200 tokens ( ... 162.02 tokens per second)')).toBeCloseTo(162.02);
-    expect(parseTokensPerSec('nothing here')).toBeNull();
-    expect(parseTokensPerSec(null)).toBeNull();
   });
 });
 
@@ -219,12 +210,6 @@ describe('parseTiming', () => {
     expect(parseTiming('model loaded')).toBeNull();
     expect(parseTiming(null)).toBeNull();
     expect(parseTiming()).toBeNull();
-  });
-
-  test('parseTokensPerSec still returns the bare number', () => {
-    const { parseTokensPerSec } = require('../src/shared/llama');
-    expect(parseTokensPerSec('eval time = 1 ms / 2 tokens ... 9.5 tokens per second')).toBe(9.5);
-    expect(parseTokensPerSec('nothing here')).toBeNull();
   });
 });
 
@@ -582,5 +567,32 @@ describe('parseUsingDevice', () => {
     expect(parseUsingDevice('x: using device Vulkan0 (Some GPU) (unknown id) - 8000 MiB free')).toBeNull();
     expect(parseUsingDevice('srv  update_slots: all slots are idle')).toBeNull();
     expect(parseUsingDevice(null)).toBeNull();
+  });
+});
+
+// What an adopted llama-server says it serves (main.js reads it on adopt), in
+// the shape b9902's /v1/models answers with.
+describe('parseServedModel', () => {
+  const { parseServedModel } = require('../src/shared/llama');
+
+  test('reads the alias and the real context window', () => {
+    const body = {
+      object: 'list',
+      data: [{ id: 'Qwen3.8-27B-UD-Q4_K_XL', object: 'model', owned_by: 'llamacpp',
+        meta: { n_ctx: 131072, n_ctx_train: 262144, n_vocab: 151936 } }],
+    };
+    expect(parseServedModel(body)).toEqual({ name: 'Qwen3.8-27B-UD-Q4_K_XL', ctxSize: 131072 });
+  });
+
+  test('a name with no window gives a null window', () => {
+    expect(parseServedModel({ data: [{ id: 'm' }] })).toEqual({ name: 'm', ctxSize: null });
+    expect(parseServedModel({ data: [{ id: 'm', meta: { n_ctx: 0 } }] })).toEqual({ name: 'm', ctxSize: null });
+  });
+
+  test('anything else is null', () => {
+    for (const junk of [null, undefined, {}, { data: 'x' }, { data: [] }, { data: [null] }, { data: [{ id: 7 }] },
+      { status: 'ok' }]) {
+      expect(parseServedModel(junk)).toBeNull();
+    }
   });
 });

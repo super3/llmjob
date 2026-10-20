@@ -35,9 +35,7 @@ describe('parseCliArgs — flags', () => {
   });
 
   test('--no-report flips report to false', () => {
-    const r = parseCliArgs(['--address', ADDR, '--no-report']);
-    expect(r.report).toBe(false);
-    expect(r.settings.report).toBe(false);
+    expect(parseCliArgs(['--address', ADDR, '--no-report']).settings.report).toBe(false);
   });
 
   test('report defaults to true', () => {
@@ -46,13 +44,7 @@ describe('parseCliArgs — flags', () => {
 
   test('--no-update flips update to false; defaults to true', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.update).toBe(true);
-    const r = parseCliArgs(['--address', ADDR, '--no-update']);
-    expect(r.update).toBe(false);
-    expect(r.settings.update).toBe(false);
-  });
-
-  test('--help preserves the update flag in the short-circuit result', () => {
-    expect(parseCliArgs(['--help', '--no-update']).update).toBe(false);
+    expect(parseCliArgs(['--address', ADDR, '--no-update']).settings.update).toBe(false);
   });
 
   test('--flag=value form', () => {
@@ -154,6 +146,38 @@ describe('buildSettings — validation', () => {
       expect(r.errors).toContain('invalid --pool: ' + bad + ' (expected host:port, such as prl-us.kryptex.network:7048)');
       expect(r.settings.endpoint).toBeNull();
     }
+  });
+
+  const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
+
+  test('--xmr-pool takes a host:port for Monero, and nothing without it', () => {
+    const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ xmrEndpoint: 'xmr-us.kryptex.network:7029', endpoint: null, regionProvided: false });
+    expect(parseCliArgs(['-a', ADDR, '--xmr-address', XMR]).settings.xmrEndpoint).toBeNull();
+  });
+
+  test('--xmr-pool without a valid port is an error', () => {
+    for (const bad of ['xmr-us.kryptex.network', 'pool.example:0', ':7029', '']) {
+      const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool=' + bad]);
+      expect(r.errors).toContain('invalid --xmr-pool: ' + bad + ' (expected host:port, such as xmr-us.kryptex.network:7029)');
+      expect(r.settings.xmrEndpoint).toBeNull();
+    }
+  });
+
+  // Like the other CPU flags: a HiveOS config that lost its address must not
+  // stop Pearl.
+  test('--xmr-pool without --xmr-address is a warning, not an error', () => {
+    const r = parseCliArgs(['-a', ADDR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings.warnings).toContain('--xmr-pool does nothing without --xmr-address: no CPU mining');
+    expect(r.settings.xmrEndpoint).toBeNull();
+  });
+
+  test('the usage text documents --xmr-pool', () => {
+    expect(USAGE).toContain('--xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of');
+    expect(USAGE).toContain('unless --xmr-pool says otherwise.');
+    expect(USAGE).toContain('--xmr-pool moves Monero.');
   });
 
   test('unknown region is rejected with choices', () => {
@@ -301,6 +325,22 @@ describe('--gate-port', () => {
   });
   test('is null when not given, so config decides', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
+  });
+  // llm mode serves through a gate on this port and --gate-host too. The help
+  // used to call it the auto-mode gate, used only when auto is demand-driven.
+  test('the help says llm mode has a gate too', () => {
+    expect(USAGE).toContain('runs in llm mode, and in auto mode unless the LLM');
+    expect(USAGE).not.toContain('auto-mode gate');
+    expect(USAGE).not.toContain('Only used when auto mode is demand-driven');
+  });
+});
+
+describe('--mode help', () => {
+  // 'both' is read as auto (llmMode.normalizeMode), but is no longer a mode.
+  test('lists "both" only as the old name for "auto"', () => {
+    expect(USAGE).toContain('Compute mode: mining/llm/auto (default: auto).');
+    expect(USAGE).toContain('"both" is the old name for "auto" and still works.');
+    expect(USAGE).not.toContain('"both"/"auto"');
   });
 });
 

@@ -12,15 +12,17 @@
 // address+worker, stores them as separate rows); single-GPU rigs keep the bare
 // worker name, matching what older clients sent.
 //
-// Rows are normally driven by the engine's per-card stats (alpha-miner tags each
-// card with `gpu=<index>` and reports that card's hashrate — see shared/parser).
-// But nvidia-smi is the authority on how many cards physically exist, so if the
-// engine ever reports FEWER cards than nvidia-smi sees (an engine build that logs
-// one aggregate line instead of per-card lines), we fall back to enumerating the
-// physical cards and splitting the engine's reported total evenly across them —
-// that keeps every card's real VRAM visible instead of collapsing the rig into
-// one row, at the cost of an even (rather than measured) hashrate split, which is
-// the best that's possible when the engine doesn't break the hashrate out.
+// The rows are the cards nvidia-smi lists (the caller leaves out cards the user
+// took off mining), plus any card the engine reports that nvidia-smi does not.
+// Each carries its own numbers from the engine's per-card stats (PearlEngine
+// tags each status event with the card's `gpuIndex` — see shared/miningStats).
+// A card the engine does not report reads 0: its core refused (usually the
+// local LLM holds its VRAM), or the first status has not come yet.
+//
+// This used to split the engine's total evenly over every card nvidia-smi
+// listed whenever the engine reported fewer, for an alpha-miner build that
+// logged one aggregate line. Our engine reports every card it mines, so the
+// split only ever put an idle card on the board at half the real card's rate.
 // `serving` (optional) tags the cards currently running the local LLM so the
 // network board can show which GPU serves which model: { model, indices, nodeId }
 // where `indices` are the GPU indices from the fleet's servingIndices(). A card
@@ -56,7 +58,7 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   // own label only as a fallback.
   //
   // The two sources used to be indistinguishable — alpha-miner 1.8.x logged
-  // `gpu=0:NVIDIA GeForce RTX 4090`, the exact nvidia-smi string — so the three
+  // `gpu=0:NVIDIA GeForce RTX 4090`, the exact nvidia-smi string — so the
   // row-building paths here disagreed about precedence for a long time without
   // anyone noticing. 1.9.4 renders a stats table whose name column is an
   // abbreviated label ("RTX 5090"), which made that latent disagreement visible:
@@ -69,31 +71,12 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   const vram = Array.isArray(gpuVram) ? gpuVram : [];
   const vramFor = (index) => vram.find((v) => v && Number(v.index) === index) || null;
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
-  const workerFor = (index, count) => (count > 1 ? base.worker + '/gpu' + index : base.worker);
+  const cardFor = (index) => cards.find((c) => c.index === index) || null;
 
-  // One row per physical card (from nvidia-smi), splitting a rig-level total
-  // evenly — used whenever we know the card count but not each card's hashrate.
-  // The distinct "/gpuN" worker is what keeps the cards as separate board rows.
-  const splitRows = (total, accepted, fallbackName) => vram.map((v) => ({
-    ...base,
-    worker: workerFor(v.index, vram.length),
-    gpu: v.name || fallbackName || null,
-    hashrate: total / vram.length,
-    accepted: Math.round(accepted / vram.length),
-    vramUsedMb: Number(v.usedMb) || 0,
-    vramTotalMb: Number(v.totalMb) || 0,
-    llmModel: llmFor(v.index),
-  }));
-
-  // No per-card engine data yet (startup before the first per-card event, or an
-  // engine build that only logs one aggregate line). For a MULTI-GPU rig, still
-  // post one row per physical card (splitting the rig total evenly) rather than a
-  // single bare-worker aggregate row: the board keys on address+worker, so a
-  // lingering bare-worker row groups as a phantom extra card and double-counts
-  // the host's VRAM. A genuine single-GPU rig (or one with no nvidia-smi) keeps
-  // the single bare row, matching what older clients sent.
-  if (!cards.length) {
-    if (vram.length > 1) return splitRows(Number(n.total) || 0, Number(n.accepted) || 0, n.gpu);
+  // No per-card engine data yet and at most one card: a genuine single-GPU rig
+  // (or one with no nvidia-smi) posts the single bare row, matching what older
+  // clients sent.
+  if (!cards.length && vram.length <= 1) {
     return [{
       ...base,
       gpu: (vram[0] && vram[0].name) || n.gpu || null,
@@ -105,29 +88,26 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
     }];
   }
 
-  // Safety net: the engine under-enumerated GPUs (e.g. one aggregate line) while
-  // nvidia-smi sees more cards. Enumerate the physical cards so none are hidden
-  // and each shows its own VRAM; split the engine's reported total hashrate/
-  // shares evenly, since per-card values aren't available in this shape.
-  if (vram.length > cards.length) {
-    const total = cards.reduce((a, c) => a + (Number(c.hashrate) || 0), 0);
-    const accepted = cards.reduce((a, c) => a + (Number(c.accepted) || 0), 0);
-    return splitRows(total, accepted, cards[0] && cards[0].gpu);
-  }
-
-  // Normal path: the engine reports each card, so use its per-card hashrate and
-  // match each card's VRAM by index.
-  return cards.map((c) => {
-    const v = vramFor(c.index);
+  // One row per card, each matched to its VRAM and its engine numbers by index.
+  // On a multi-GPU rig every card gets a distinct "/gpuN" worker, which keeps
+  // them as separate board rows, from the first report on: a bare-worker row
+  // left over would group as a phantom extra card and double-count the host's
+  // VRAM.
+  const indices = vram.map((v) => Number(v.index));
+  for (const c of cards) if (!indices.includes(c.index)) indices.push(c.index);
+  indices.sort((a, b) => a - b);
+  return indices.map((index) => {
+    const v = vramFor(index);
+    const c = cardFor(index);
     return {
       ...base,
-      worker: workerFor(c.index, cards.length),
-      gpu: (v && v.name) || c.gpu || null,
-      hashrate: Number(c.hashrate) || 0,
-      accepted: Number(c.accepted) || 0,
+      worker: indices.length > 1 ? base.worker + '/gpu' + index : base.worker,
+      gpu: (v && v.name) || (c && c.gpu) || null,
+      hashrate: c ? Number(c.hashrate) || 0 : 0,
+      accepted: c ? Number(c.accepted) || 0 : 0,
       vramUsedMb: v ? Number(v.usedMb) || 0 : 0,
       vramTotalMb: v ? Number(v.totalMb) || 0 : 0,
-      llmModel: llmFor(c.index),
+      llmModel: llmFor(index),
     };
   });
 }

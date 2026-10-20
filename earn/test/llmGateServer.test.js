@@ -246,6 +246,17 @@ describe('LlmGateServer internals', () => {
     expect(b.gate).toBeDefined();
   });
 
+  // A card that would not load at the top of its ladder serves a smaller
+  // window, and the gate is told once it knows. Junk keeps the last good size.
+  test('a new context size is reported from then on, and junk is ignored', () => {
+    const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M', ctxSize: 262144 });
+    gs.setCtxSize(131072);
+    for (const junk of [null, undefined, 0, -1, 'x']) gs.setCtxSize(junk);
+    const res = fakeRes();
+    gs._passive({ url: '/v1/models' }, res);
+    expect(JSON.parse(res.chunks[0]).data[0].meta).toEqual({ n_ctx: 131072, n_ctx_train: 131072 });
+  });
+
   test('with no context size configured the field is omitted, not guessed', () => {
     const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M' });
     for (const [path, probe] of [['/v1/models', (b) => b.data[0].meta],
@@ -272,16 +283,6 @@ describe('LlmGateServer internals', () => {
     await new Promise((r) => setTimeout(r, 60));
     expect(res.status).toBeNull();                       // no second writeHead
     expect(res.chunks.join('')).toMatch(/upstream/);
-  });
-
-  test('an unref-less timer handle is tolerated', () => {
-    const real = global.setInterval;
-    global.setInterval = () => ({});   // no unref, as under some fake-timer setups
-    try {
-      const gs = new LlmGateServer({ port: 0, host: '127.0.0.1', gate: new LlmGate({}) });
-      expect(() => gs.start()).not.toThrow();
-      gs.stop();
-    } finally { global.setInterval = real; }
   });
 
   test('a release that rejects on the idle tick is swallowed, not thrown at the loop', async () => {

@@ -14,17 +14,51 @@
 
 const { normalizePciBusId } = require('./gpu');
 
-// One card, the same way on every start: its PCI bus id, which stays with the
-// card when others are added or moved, else its number and name. `busId` is a
-// bus id the caller already has for it (the one llama-server loaded on), else
-// nvidia-smi's from `busIds`. A null `index` is the card llama.cpp picked
-// itself, on a rig nvidia-smi can't read.
-function cardKey(index, cards, busIds, busId) {
-  const bus = normalizePciBusId(busId || (busIds || {})[index]);
-  if (bus) return bus;
+// A card's PCI bus id, which stays with it when others are added or moved:
+// `busId` when the caller has one (the bus id llama-server loaded on), else
+// nvidia-smi's from `busIds`. Null without either.
+function busKey(index, busIds, busId) {
+  return normalizePciBusId(busId || (busIds || {})[index]);
+}
+
+// A card's number and name. A null `index` is the card llama.cpp picked itself,
+// on a rig nvidia-smi can't read.
+function namedKey(index, cards) {
   if (index == null) return 'auto';
   const card = (cards || []).find((c) => c && c.index === index);
   return index + ':' + ((card && card.name) || '');
+}
+
+// Which keys a loss is saved under and looked up by. A start does not always
+// know the bus ids: nvidia-smi can fail to give them on one start and not the
+// next, and on a rig it can't read at all only llama-server's own bus id may be
+// known. Saving under one key and looking up under another lost the record, and
+// the model went back on the failing card. So a loss is saved under the bus id
+// when known and always under the number and name, marked when a bus id was
+// saved too. A start that knows the bus id trusts it, plus a number-and-name
+// record saved without one; the marked one is left out, since numbers change
+// when cards are moved. A start without bus ids reads both number-and-name keys.
+const WITH_BUS = ' +bus';
+
+function saveKeys(index, cards, busIds, busId) {
+  const bus = busKey(index, busIds, busId);
+  const named = namedKey(index, cards);
+  return bus ? [bus, named + WITH_BUS] : [named];
+}
+
+function lookupKeys(index, cards, busIds) {
+  const bus = busKey(index, busIds);
+  const named = namedKey(index, cards);
+  return bus ? [bus, named] : [named, named + WITH_BUS];
+}
+
+// The models that kept losing the GPU on a card, from its lookup keys.
+function lostModels(record, keys) {
+  const names = [];
+  for (const key of keys) {
+    for (const name of record.cards[key] || []) if (!names.includes(name)) names.push(name);
+  }
+  return names;
 }
 
 // The saved record if it is this version's, else an empty one. Anything that
@@ -39,11 +73,14 @@ function forVersion(saved, version) {
   return { version, cards };
 }
 
-// The record with `name` added for the card `key`.
-function remember(record, key, name) {
-  const had = record.cards[key] || [];
-  if (had.includes(name)) return record;
-  return { version: record.version, cards: Object.assign({}, record.cards, { [key]: had.concat(name) }) };
+// The record with `name` added for the card under each of its `keys`.
+function remember(record, keys, name) {
+  let cards = record.cards;
+  for (const key of keys) {
+    const had = cards[key] || [];
+    if (!had.includes(name)) cards = Object.assign({}, cards, { [key]: had.concat(name) });
+  }
+  return cards === record.cards ? record : { version: record.version, cards };
 }
 
-module.exports = { cardKey, forVersion, remember };
+module.exports = { saveKeys, lookupKeys, lostModels, forVersion, remember };

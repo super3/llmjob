@@ -27,6 +27,16 @@ describe('requests', () => {
     expect(s.buildLogin({ address: 'a' }).params.pass).toBe('x');
   });
 
+  // Kryptex names the worker from "address/worker" in login, as its Pearl pool
+  // does. HeroMiners and any other pool keep the standard login.
+  test('login on Kryptex puts the worker after a slash; other pools are unchanged', () => {
+    const kx = s.buildLogin({ address: '87wTMj', worker: 'kx-xmr-test', host: 'xmr-us.kryptex.network' });
+    expect(kx.params).toMatchObject({ login: '87wTMj/kx-xmr-test', pass: 'kx-xmr-test', rigid: 'kx-xmr-test' });
+    expect(s.buildLogin({ address: '87wTMj', host: 'xmr.kryptex.network' }).params.login).toBe('87wTMj/x');
+    expect(s.buildLogin({ address: '87wTMj', worker: 'rig01', host: 'de.monero.herominers.com' }).params.login).toBe('87wTMj');
+    expect(s.buildLogin({ address: '87wTMj', worker: 'rig01', host: 'pool.notkryptex.network.example' }).params.login).toBe('87wTMj');
+  });
+
   test('submit and keepalive name the session', () => {
     expect(s.buildSubmit(7, 'sess', { jobId: 'j', nonce: '3a000000', result: 'ff' })).toEqual({
       id: 7, jsonrpc: '2.0', method: 'submit', params: { id: 'sess', job_id: 'j', nonce: '3a000000', result: 'ff' },

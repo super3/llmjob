@@ -14,6 +14,7 @@ function mkMiner() {
   const m = new EventEmitter();
   m.start = jest.fn();
   m.stop = jest.fn(() => { setImmediate(() => m.emit('stopped', 0)); });
+  m.isRunning = jest.fn(() => true);
   return m;
 }
 function mk(over = {}) {
@@ -72,6 +73,7 @@ describe('createAutoGate', () => {
     jest.useFakeTimers();
     const miner = new EventEmitter();
     miner.start = jest.fn(); miner.stop = jest.fn();   // never emits 'stopped'
+    miner.isRunning = () => true;
     let ready = false;
     const auto = createAutoGate({
       miner, startMinerArgs: () => ({}), isLlmReady: () => ready,
@@ -85,10 +87,35 @@ describe('createAutoGate', () => {
     jest.useRealTimers();
   });
 
+  // The crash-restart case: SERVING with the miner long stopped, the model
+  // restarting, and a request asking to serve. PearlMiner.stop emits nothing
+  // when it is not running, so this waited the full 15 s guard.
+  test('a miner that is not running is not waited for', async () => {
+    jest.useFakeTimers();
+    try {
+      const { auto, miner } = mk();
+      miner.isRunning.mockReturnValue(false);
+      miner.stop.mockImplementation(() => false);   // emits no 'stopped'
+      let settled = false;
+      const p = auto.gate.ensureServing().then(() => { settled = true; });
+      // Promises only: not one timer is allowed to run.
+      for (let i = 0; i < 50; i++) await Promise.resolve();
+      expect(settled).toBe(true);
+      await p;
+      expect(miner.stop).toHaveBeenCalledTimes(1);
+      expect(miner.listenerCount('stopped')).toBe(0);
+      expect(jest.getTimerCount()).toBe(0);           // no guard left behind
+      expect(auto.gate.state).toBe('SERVING');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test('a miner whose stop() throws still completes the transition', async () => {
     const miner = new EventEmitter();
     miner.start = jest.fn();
     miner.stop = jest.fn(() => { throw new Error('already gone'); });
+    miner.isRunning = () => true;
     let ready = false;
     const { auto } = mk({ miner, isLlmReady: () => ready,
       startLlm: async () => { ready = true; return mkFleet(true); } });
@@ -104,6 +131,12 @@ describe('createAutoGate', () => {
     expect(auto.server.server).toBeNull();
   });
 
+  test('takes a new context size for its passive answers', () => {
+    const { auto } = mk({ ctxSize: 262144 });
+    auto.setCtxSize(131072);
+    expect(auto.server.ctxSize).toBe(131072);
+  });
+
   test('state changes are logged', async () => {
     const lines = [];
     const { auto } = mk({ log: (l) => lines.push(l) });
@@ -117,6 +150,7 @@ test('the stop timeout firing after a real stop does not resolve twice', async (
   const miner = new EventEmitter();
   miner.start = jest.fn();
   miner.stop = jest.fn(() => { miner.emit('stopped', 0); });   // synchronous exit
+  miner.isRunning = () => true;
   let ready = false;
   const auto = createAutoGate({
     miner, startMinerArgs: () => ({}), isLlmReady: () => ready,
@@ -201,11 +235,6 @@ describe('createAutoGate: a restart that fails must not be swallowed', () => {
       expect(guard).toBeTruthy();
       expect(guard.unrefed).toBe(true);
       expect(guard.cleared).toBe(true);
-
-      // A runtime whose handle has no unref() must not throw.
-      global.setTimeout = (fn, ms) => { const h = realSetTimeout(fn, ms); return { _rec: { h, ms } }; };
-      const second = mk();
-      await second.auto.gate.ensureServing();
     } finally {
       global.setTimeout = realSetTimeout;
       global.clearTimeout = realClear;
@@ -252,6 +281,12 @@ describe('createServeGate: a gate with nothing to switch', () => {
   test('no engine death is ever ours', () => {
     // The CLI reads this to decide whether a 'stopped' event was deliberate.
     expect(mkServe().isSwitching()).toBe(false);
+  });
+
+  test('takes a new context size for its passive answers', () => {
+    const a = mkServe({ ctxSize: 262144 });
+    a.setCtxSize(131072);
+    expect(a.server.ctxSize).toBe(131072);
   });
 
   test('starts and stops its server', async () => {

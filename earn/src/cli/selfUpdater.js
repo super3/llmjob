@@ -8,7 +8,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { LATEST_RELEASE_API, parseRelease, planUpdate } = require('../shared/selfUpdate');
+const { LATEST_RELEASE_API, parseRelease } = require('../shared/selfUpdate');
 const { getJson, downloadFile } = require('../main/io');
 
 // Set on the re-exec'd child so it doesn't check/update again and loop.
@@ -29,14 +29,24 @@ function isPackaged() {
     // Node Single Executable Application (how CI packages the binary).
     return require('node:sea').isSea();
   } catch (e) {
-    // pkg-built binaries expose process.pkg.
-    return !!process.pkg;
+    // A Node too old to have node:sea is not running a SEA either.
+    return false;
   }
 }
 
-// Replace the running executable with a freshly downloaded binary. On Linux a
-// running binary can be renamed over (the live process keeps its open inode),
-// so download beside it then atomically rename into place.
+// Replace the running executable, and the 12.8 core beside it, with this
+// release's. On Linux a running binary can be renamed over (the live process
+// keeps its open inode), so each file is downloaded beside its target and then
+// renamed into place.
+//
+// The binary and the core change together or not at all. A new CLI driving an
+// old pearl_core.node is a version skew nothing reports, and once the new
+// binary is in place planUpdate says up-to-date, so nothing would ever fix it.
+// So both are downloaded first, and nothing is replaced until both have
+// arrived. Then the core goes in before the binary: if the binary's rename
+// fails after that, the old binary sits beside the new core, but it still
+// reports the old version, so the next start updates again and repairs the
+// pair. The other order would strand a new binary beside an old core for good.
 //
 // Reuses io.downloadFile rather than a second, weaker copy: the CLI's old inline
 // download had no response-error handler (a dropped connection mid-body became an
@@ -50,40 +60,47 @@ function isPackaged() {
 // no coin miner it didn't ask for.
 async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
+  const dir = path.dirname(exe);
+  const core = path.join(dir, 'pearl_core.node');
+  const cu13 = path.join(dir, 'pearl_core_cu13.node');
   const tmp = exe + '.new-' + process.pid;
-  await downloadFile(plan.downloadUrl, tmp);
-  fs.chmodSync(tmp, 0o755);
-  fs.renameSync(tmp, exe);
-  // The native core updates WITH the binary, or not at all: a new CLI driving
-  // an old pearl_core.node is a version skew nothing would report. Same
-  // download-beside-then-rename dance, into the directory the loader probes.
-  // Releases older than the split have no core asset; nothing to do then.
-  const dir = require('path').dirname(exe);
-  if (plan.coreUrl) {
-    const core = require('path').join(dir, 'pearl_core.node');
-    const coreTmp = core + '.new-' + process.pid;
-    await downloadFile(plan.coreUrl, coreTmp);
-    fs.renameSync(coreTmp, core);
+  const coreTmp = core + '.new-' + process.pid;
+  try {
+    await downloadFile(plan.downloadUrl, tmp);
+    // Releases older than the split have no core asset; nothing to pair then.
+    if (plan.coreUrl) await downloadFile(plan.coreUrl, coreTmp);
+    fs.chmodSync(tmp, 0o755);
+    // The CUDA 13 core (shared/coreVariant) is paired too, but it is optional.
+    // Last release's copy goes before anything is replaced: on a Blackwell rig
+    // with driver 580+ the loader prefers that file, so one left beside this
+    // release's binary is the same skew, whether this release has no CUDA 13
+    // core or its download fails. Not before the downloads, though: a failed
+    // download leaves the old install as it was, and its CUDA 13 core matches
+    // it.
+    fs.rmSync(cu13, { force: true });
+    if (plan.coreUrl) fs.renameSync(coreTmp, core);
+    fs.renameSync(tmp, exe);
+  } catch (e) {
+    // downloadFile removes its own partial file. These are finished downloads
+    // that never went in.
+    fs.rmSync(tmp, { force: true });
+    fs.rmSync(coreTmp, { force: true });
+    throw e;
   }
-  // The CUDA 13 core (shared/coreVariant) is paired the same way but is
-  // OPTIONAL, which changes the order. Last release's copy goes first, always:
-  // on a Blackwell rig with driver 580+ the loader prefers that file, so one
-  // left beside this release's binary is exactly the skew the rule above
-  // prevents -- whether this release has no CUDA 13 core or its download fails.
-  // And a failed download does not fail the update. The binary and the 12.8
-  // core are already in place by now; throwing here would have the caller
-  // "continue on" the old version with the NEW 12.8 core beside it, a skew of
-  // its own, to save a 5090 3%. Without the file the loader says "not
-  // installed" at start and mines on the 12.8 core.
-  const cu13 = require('path').join(dir, 'pearl_core_cu13.node');
-  fs.rmSync(cu13, { force: true });
+  // The new CUDA 13 core. A failed download does not fail the update. The
+  // binary and the 12.8 core are already in place by now; throwing here would
+  // have the caller "continue on" the old version with the NEW 12.8 core beside
+  // it, a skew of its own, to save a 5090 3%. Without the file the loader says
+  // "not installed" at start and mines on the 12.8 core.
   if (plan.coreCu13Url) {
     const cu13Tmp = cu13 + '.new-' + process.pid;
     try {
       await downloadFile(plan.coreCu13Url, cu13Tmp);
       fs.renameSync(cu13Tmp, cu13);
     } catch (e) {
-      // Nothing to undo: downloadFile removes its own partial file.
+      // downloadFile removes its own partial file; this is one that arrived
+      // but would not go in.
+      fs.rmSync(cu13Tmp, { force: true });
     }
   }
   // The CPU worker. A failed download keeps the one already there, which the
@@ -154,5 +171,4 @@ module.exports = {
   hasXmrWorker,
   syncXmrWorker,
   reexec,
-  planUpdate,
 };

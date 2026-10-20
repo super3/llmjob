@@ -26,6 +26,7 @@ describe('nodeStore', () => {
       throw e;
     });
     fs.writeFileSync.mockImplementation((p, data) => { files.set(p, data); });
+    fs.renameSync.mockImplementation((from, to) => { files.set(to, files.get(from)); files.delete(from); });
     fs.mkdirSync.mockImplementation(() => {});
   });
 
@@ -50,13 +51,26 @@ describe('nodeStore', () => {
   });
 
   describe('saveNode', () => {
-    it('creates the dir and writes with mode 0600', () => {
+    // Replaced whole, through a temp file renamed over it. Written in place, a
+    // power cut could leave a torn node.json, which reads as no identity, and
+    // getOrCreateNode would then make a new key and unlink the machine.
+    it('creates the dir and replaces node.json whole, readable by its owner only', () => {
+      files.set(NODE_PATH, JSON.stringify({ nodeId: 'old' }));
       store.saveNode({ nodeId: 'n1' });
       expect(fs.mkdirSync).toHaveBeenCalledWith(STORE_DIR, { recursive: true });
+      const tmp = NODE_PATH + '.' + process.pid + '.tmp';
       const call = fs.writeFileSync.mock.calls[0];
-      expect(call[0]).toBe(NODE_PATH);
+      expect(call[0]).toBe(tmp);
       expect(JSON.parse(call[1])).toEqual({ nodeId: 'n1' });
       expect(call[2]).toEqual({ mode: 0o600 });
+      expect(fs.renameSync).toHaveBeenCalledWith(tmp, NODE_PATH);
+      expect([...files.keys()]).toEqual([NODE_PATH]);
+      expect(store.loadNode()).toEqual({ nodeId: 'n1' });
+    });
+
+    it('throws when it cannot be saved, as before', () => {
+      fs.writeFileSync.mockImplementation(() => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); });
+      expect(() => store.saveNode({ nodeId: 'n1' })).toThrow('disk full');
     });
   });
 

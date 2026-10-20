@@ -175,11 +175,11 @@ describe('promptPause', () => {
     expect(calls.pop()).toEqual(['resume', [1]]);
   });
 
-  test('defaults: no log needed, and works with timers that cannot be unref\'d', () => {
+  test('defaults: no log needed', () => {
     const timers = [];
     const p = createPromptPause({
       pause: () => true, resume: () => {}, resumeAfterMs: 1, maxPauseMs: 2,
-      setTimer: (fn) => { timers.push(fn); return 1; }, clearTimer: () => {},
+      setTimer: (fn) => { timers.push(fn); return { unref() {} }; }, clearTimer: () => {},
     });
     p.setBusy(0, true);
     p.setBusy(0, false);

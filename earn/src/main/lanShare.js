@@ -54,9 +54,13 @@ function createLanShare(opts = {}) {
   }
 
   // want: whether the gate should be up now. model: { name, ctxSize } of the
-  // model being served, for the gate's answers to /v1/models and /props.
+  // model being served, for the gate's answers to /v1/models and /props. A
+  // gate that is already up takes the context size, which can shrink while the
+  // model runs (a card dropping down its context ladder).
   function sync(want, model = {}) {
-    if (want && !gate) {
+    if (want && gate) {
+      gate.setCtxSize(model.ctxSize);
+    } else if (want) {
       error = null;
       const g = makeGate({
         port,
@@ -87,7 +91,7 @@ function createLanShare(opts = {}) {
       log('sharing the local LLM on your network at '
         + (list.length ? list.join(', ') : 'port ' + port + ' (no network address yet)'));
       onChange();
-    } else if (!want && (gate || error)) {
+    } else if (gate || error) {
       if (gate) {
         stop();
         log('stopped sharing the local LLM on the network');

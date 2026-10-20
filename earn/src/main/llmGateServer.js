@@ -52,6 +52,14 @@ class LlmGateServer {
     this.timer = null;
   }
 
+  // The window can shrink after the gate is up: a card that would not load at
+  // one context size retries at the next (LlmManager's ladder), and the gate
+  // reports the old size until told. Anything but a positive number is
+  // ignored, so a caller with nothing to say cannot erase the last good value.
+  setCtxSize(n) {
+    if (Number(n) > 0) this.ctxSize = Number(n);
+  }
+
   // Answer a probe from the gate's own state, without waking the model. Shape
   // matches llama-server's so existing dashboards and health checks keep working.
   //
@@ -202,7 +210,7 @@ class LlmGateServer {
         this.gate.ensureMining().catch(() => {});
       }
     }, 2000);
-    if (this.timer.unref) this.timer.unref();
+    this.timer.unref();
     return this;
   }
 

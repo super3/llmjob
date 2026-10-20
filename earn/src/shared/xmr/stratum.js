@@ -23,8 +23,14 @@
 // ".": HeroMiners' config has "paymentIdSeparator": ".", so that would be read
 // as a payment ID.
 //
+// Kryptex (`--xmr-pool xmr-us.kryptex.network:7029`) names the worker from
+// "address/worker" in `login`, as its Pearl pool does (see isKryptexHost).
+// Only a Kryptex host gets the slash; HeroMiners' login stays exactly as it was.
+//
 // Pure: it builds request lines and classifies response lines. The socket is
 // main/xmrEngine.js's.
+
+const { isKryptexHost } = require('../miner/stratum');
 
 const LOGIN_ID = 1;
 const MAX_U64 = (1n << 64n) - 1n;
@@ -46,14 +52,15 @@ const NONCE_OFFSET = 39;
 const MIN_BLOB_BYTES = NONCE_OFFSET + 4;
 const MAX_BLOB_BYTES = 512;
 
-function buildLogin({ address, worker, agent }) {
+function buildLogin({ address, worker, agent, host }) {
   const name = String(worker == null ? '' : worker).trim() || 'x';
+  const wallet = String(address == null ? '' : address).trim();
   return {
     id: LOGIN_ID,
     jsonrpc: '2.0',
     method: 'login',
     params: {
-      login: String(address == null ? '' : address).trim(),
+      login: isKryptexHost(host) ? wallet + '/' + name : wallet,
       pass: name,
       agent: agent || 'llmjob-earn',
       rigid: name,

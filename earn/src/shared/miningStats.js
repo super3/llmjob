@@ -1,11 +1,11 @@
 'use strict';
 
-// Accumulates *real* telemetry parsed from the alpha-miner engine (see
-// shared/parser) into the snapshot shape the renderer's stat panel expects.
+// Accumulates the miner's own status events (see main/pearlEngine) into the
+// snapshot shape the renderer's stat panel expects.
 // Pure and clock-injected (uptime is derived from an injected nowMs) so it is
 // fully unit-tested; main.js feeds it live miner events and Date.now().
 //
-// The engine tags every status line with the card it came from (`gpu=<index>`),
+// The engine tags every status event with the card it came from (`gpuIndex`),
 // so state is kept *per card* — a multi-GPU rig folds each card's hashrate and
 // share counts into its own bucket. The rig-level figures the renderer shows
 // (total hashrate, total shares) are the sum across cards; the per-card buckets
@@ -20,9 +20,8 @@ const MAX_POINTS = 60;
 // card index → per-card bucket, populated lazily as the engine reports.
 function initStats(startMs) {
   // lastShareMs is rig-level, not per-card: "when did this rig last get paid"
-  // is the question it answers, and the CLI only ever fills bucket 0 anyway
-  // (PearlEngine.gpuIndex() is hardcoded to it).
-  return { startMs: startMs || 0, gpus: {}, load: 0, points: [], lastShareMs: null };
+  // is the question it answers.
+  return { startMs: startMs || 0, gpus: {}, points: [], lastShareMs: null };
 }
 
 // Get-or-create the bucket for a card index (a line with no index — e.g. a
@@ -31,7 +30,7 @@ function bucketFor(stats, index) {
   const idx = Number.isFinite(index) ? index : 0;
   if (!stats.gpus[idx]) {
     stats.gpus[idx] = {
-      index: idx, hashrate: 0, accepted: 0, rejected: 0, power: 0, temp: 0, gpu: null,
+      index: idx, hashrate: 0, accepted: 0, rejected: 0, temp: 0, gpu: null,
       // `raw*` is the last value the ENGINE reported; `carry*` is everything it
       // reported in earlier engine sessions. `accepted`/`rejected` above stay the
       // effective totals, so snapshot() and every consumer are unchanged.
@@ -82,7 +81,6 @@ function applyEvent(stats, evt, nowMs) {
       g.accepted = total;
     }
     if (evt.rejected != null) g.rejected = foldCounter(g, 'rawRejected', 'carryRejected', evt.rejected);
-    if (evt.power != null) g.power = evt.power;
     if (evt.temp != null) g.temp = evt.temp;
     if (evt.gpu) g.gpu = evt.gpu;
     // The sparkline charts the rig's *total* hashrate, so push the sum across
@@ -108,8 +106,6 @@ function snapshot(stats, nowMs) {
     points: stats.points.slice(),
     accepted: cards.reduce((a, g) => a + (Number(g.accepted) || 0), 0),
     rejected: cards.reduce((a, g) => a + (Number(g.rejected) || 0), 0),
-    load: stats.load,
-    power: cards.reduce((a, g) => a + (Number(g.power) || 0), 0),
     // The hottest card, not a sum or an average: this exists to answer "is
     // anything running too hot", and a mean would hide one cooking card behind
     // several cool ones. 0 when the engine has not reported a temperature yet.
@@ -121,7 +117,6 @@ function snapshot(stats, nowMs) {
       hashrate: Number(g.hashrate) || 0,
       accepted: Number(g.accepted) || 0,
       rejected: Number(g.rejected) || 0,
-      power: Number(g.power) || 0,
       temp: Number(g.temp) || 0,
     })),
     uptimeSec: Math.max(0, Math.floor(((nowMs || 0) - stats.startMs) / 1000)),

@@ -44,14 +44,6 @@ function estDailyUsdLabel(ths, econ = ECON) {
   return usdLabel(estDailyUsd(ths, econ));
 }
 
-function prlToUsd(prl, econ = ECON) {
-  return (Number(prl) || 0) * econ.PRL_USD;
-}
-
-function prlToUsdLabel(prl, econ = ECON) {
-  return usdLabel(prlToUsd(prl, econ));
-}
-
 module.exports = {
-  estDailyPrl, estDailyUsd, estDailyUsdLabel, prlToUsd, prlToUsdLabel, HASHES_PER_DIFFICULTY,
+  estDailyPrl, estDailyUsd, estDailyUsdLabel, HASHES_PER_DIFFICULTY,
 };

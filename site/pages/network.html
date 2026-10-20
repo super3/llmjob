@@ -336,13 +336,19 @@
       // llama-server reports a nodeId before it reports a model, and dropping the
       // dot would show it as a plain miner. Hollow says "serving, unconfirmed",
       // which is exactly right for both that case and a node whose LLM just died.
+      //
+      // Amber needs the server's own rule too: it holds a node to shorter jobs
+      // only from its second sample on (jobService's MIN_SAMPLES_TO_GATE). The
+      // first is the warm-up run, expected to be slow, and a node with only that
+      // one is offered every job. A missing count keeps the old reading.
       const speed = model ? speeds[nodeId] : null;
-      const cls = !speed || speed.tps == null ? ' is-unknown' : (speed.tps < FULL_JOB_TPS ? ' is-limited' : '');
+      const limited = !!speed && speed.tps != null && speed.tps < FULL_JOB_TPS && !(speed.samples < 2);
+      const cls = !speed || speed.tps == null ? ' is-unknown' : (limited ? ' is-limited' : '');
       const detail = !model
         ? ' · no model loaded'
         : (!speed || speed.tps == null
           ? ' · speed not measured yet'
-          : ' · ' + speed.tps + ' tok/s' + (speed.tps < FULL_JOB_TPS ? ' (short jobs only)' : ''));
+          : ' · ' + speed.tps + ' tok/s' + (limited ? ' (short jobs only)' : ''));
       const dot = nodeId
         ? '<span class="mr-serving' + cls + '" title="Serving cluster jobs as node ' + esc(nodeId) + esc(detail) + '"></span>'
         : '';
@@ -458,7 +464,7 @@
         const data = await res.json();
         const next = {};
         for (const n of (data.nodes || [])) {
-          next[n.nodeId] = { tps: n.stale ? null : n.tps };
+          next[n.nodeId] = { tps: n.stale ? null : n.tps, samples: n.samples };
         }
         speeds = next;
         render();

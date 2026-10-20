@@ -34,48 +34,29 @@ const REGIONS = {
 const DEFAULTS = {
   region: 'us',
   worker: 'rig01',
-  algo: 'pearlhash',
-  powerLimit: 318,
 };
 
-// Engine / pool metadata.
+// The fees that come off every earnings estimate (ECON.FEE below).
 //
-// There is nothing to download any more: the engine is our own CUDA core,
-// linked into this process as an N-API addon (earn/native), so no URL, no zip
-// and no Docker image. The dev fee is zero and there is no dev-address code
-// path — this is our own implementation written against the ISC-licensed
-// reference, not a derivative of any fee-bearing miner.
-//
-// The pool terms are HeroMiners' own, read from
-// https://pearl.herominers.com/api/stats rather than transcribed from a setup
-// page: fee 0, paymentsInterval 3600s, minPaymentThreshold 1e8 against
-// coinUnits 1e8 (so 1 PRL), rewardScheme "prop".
+// The dev fee is zero and there is no dev-address code path: the engine is our
+// own CUDA core (earn/native), written against the ISC-licensed reference, not a
+// derivative of any fee-bearing miner. The pool fee is HeroMiners' own, read
+// from https://pearl.herominers.com/api/stats: fee 0.
 const MINER = {
-  engine: 'llmjob-pearl',
-  pool: 'HeroMiners',
-  pow: 'pearlhash',
   devFeePct: 0,
   poolFeePct: 0,
-  payoutScheme: 'PROP',
-  payoutIntervalHours: 1,
-  minPayoutPrl: 1,
 };
 
 // Monero on the CPU, opt-in and off by default (main/xmrEngine.js drives the
-// worker built from earn/xmr-worker). HeroMiners' terms, read from
-// https://monero.herominers.com/api/stats on 2026-10-11: fee 0.9%, coinUnits
-// 1e12, minPaymentThreshold 1e10 (0.01 XMR), paymentsInterval 600 s. Port 1111
-// starts at difficulty 480,000; 1112 is its NiceHash port. The host follows
-// the Pearl region (xmrEndpointFor below).
+// worker built from earn/xmr-worker), on HeroMiners. From its
+// https://monero.herominers.com/api/stats on 2026-10-11: coinUnits 1e12, which
+// turns the balance API's atomic units into XMR. Port 1111 starts at difficulty
+// 480,000; 1112 is its NiceHash port. The host follows the Pearl region
+// (xmrEndpointFor below).
 const XMR = {
-  pool: 'HeroMiners',
   port: 1111,
   apiBase: 'https://monero.herominers.com',
   coinUnits: 1e12,
-  poolFeePct: 0.9,
-  minPayoutXmr: 0.01,
-  payoutIntervalSec: 600,
-  algo: 'rx/0',
 };
 
 // Network economics used to estimate earnings. Mirrors the design mock.
@@ -308,10 +289,6 @@ const LLM = {
       // Deliberately absent from Gemma, which does not reason: flooring it there
       // would buy nothing and would make `max_tokens: 20` generate 512.
       minCompletionTokens: 512,
-      // 65, from the GGUF's own metadata (arch `qwen35`, 65 blocks). Only ever
-      // an upper bound for --n-gpu-layers, which we pass as ALL_LAYERS anyway,
-      // but a wrong number here would mislead the next reader.
-      layers: 65,
       ctxSize: 262144,
       // Tried in order when the one above fails to start. Each step roughly
       // halves the KV cache, so a card that is short by a little gets a working
@@ -374,10 +351,8 @@ const LLM = {
   // GGUF (~5 GB). "E4B" = ~4.5B *effective* params via Per-Layer Embeddings, so
   // it keeps a low VRAM footprint (runs in ~5 GB at 4-bit) while adding 128K
   // context, tool-calling, and 140+ languages — a good default that co-runs with
-  // mining without hogging the GPU. `layers` is the text model's transformer-layer
-  // count (for --n-gpu-layers; llama.cpp clamps a larger value to what's present)
-  // and `vramFullMb` the VRAM for a full GPU offload at ctxSize (weights + KV
-  // cache). `minVramMb` is the hard floor of free VRAM we require before
+  // mining without hogging the GPU. `vramFullMb` is the VRAM for a full GPU
+  // offload at ctxSize (weights + KV cache). `minVramMb` is the hard floor of free VRAM we require before
   // starting the model on the GPU — above the full-offload figure so we never
   // spawn llama-server right at the edge and OOM.
   //
@@ -387,7 +362,6 @@ const LLM = {
     name: 'Gemma-4-E4B-it-Q4_K_M',
     file: 'gemma-4-E4B-it-Q4_K_M.gguf',
     url: 'https://huggingface.co/unsloth/gemma-4-E4B-it-GGUF/resolve/main/gemma-4-E4B-it-Q4_K_M.gguf',
-    layers: 42,
     // MEASURED, not estimated. On a 4090 running the shipped command line
     // (--n-gpu-layers 999 --ctx-size 6400 --split-mode none) llama-server holds
     // 3308 MB of dedicated VRAM, flat — sampled through a 700-token generation,

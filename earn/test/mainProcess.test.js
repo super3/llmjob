@@ -121,15 +121,25 @@ jest.mock('electron-updater', () => {
 
 jest.mock('child_process', () => ({ spawn: jest.fn(), execFile: jest.fn() }));
 
-jest.mock('fs', () => ({
-  existsSync: jest.fn(() => false),
-  readFileSync: jest.fn(() => '{}'),
-  writeFileSync: jest.fn(),
-  copyFileSync: jest.fn(),
-  chmodSync: jest.fn(),
-  mkdirSync: jest.fn(),
-  unlinkSync: jest.fn(),
-}));
+jest.mock('fs', () => {
+  const fs = {
+    existsSync: jest.fn(() => false),
+    readFileSync: jest.fn(() => '{}'),
+    writeFileSync: jest.fn(),
+    copyFileSync: jest.fn(),
+    chmodSync: jest.fn(),
+    mkdirSync: jest.fn(),
+    unlinkSync: jest.fn(),
+  };
+  // A JSON state file is replaced whole: written to a temp file beside it, then
+  // renamed over (shared/settingsStore). The rename replays the temp file's
+  // body as a write to the real path, so a test reads what landed there.
+  fs.renameSync = jest.fn((from, to) => {
+    const last = fs.writeFileSync.mock.calls.filter((c) => c[0] === from).pop();
+    if (last) fs.writeFileSync(to, last[1]);
+  });
+  return fs;
+});
 
 // Default: any health probe fails fast (connection error on next tick).
 jest.mock('http', () => ({
@@ -163,13 +173,11 @@ jest.mock('../src/main/probe', () => ({
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
-  detectDriverMajor: jest.fn(() => Promise.resolve(600)),
   // Nothing known about the cards: the core factory then picks the 12.8 build.
   detectCudaCards: jest.fn(() => Promise.resolve([])),
   // Empty by default: an unknown compute capability is what keeps Windows on the
   // 1.8.6 fallback, which is the shape most of these tests were written against.
   // The tests that care about the 1.9.1b Windows package set it explicitly.
-  detectComputeCaps: jest.fn(() => Promise.resolve([])),
   postMinerReport: jest.fn(() => Promise.resolve()),
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
@@ -262,7 +270,6 @@ jest.mock('../src/main/xmrWorker', () => ({
 }));
 
 jest.mock('../src/main/pearlCore', () => ({
-  loadCore: jest.fn(() => null),
   coreFactory: jest.fn(() => null),
 }));
 
@@ -366,17 +373,17 @@ const REAL_TIMERS = {
   clearTimeout: global.clearTimeout,
 };
 let timers = null;
-function installTimers(withUnref) {
+function installTimers() {
   timers = { intervals: [], timeouts: [] };
   global.setInterval = jest.fn((fn, ms) => {
     const h = { fn, ms };
-    if (withUnref) h.unref = jest.fn();
+    h.unref = jest.fn();
     timers.intervals.push(h);
     return h;
   });
   global.setTimeout = jest.fn((fn, ms) => {
     const h = { fn, ms };
-    if (withUnref) h.unref = jest.fn();
+    h.unref = jest.fn();
     timers.timeouts.push(h);
     return h;
   });
@@ -403,7 +410,7 @@ async function flush(rounds = 15) {
 // Reset the registry, install fresh mocks/timers, and require main.js.
 function loadMain(opts = {}) {
   jest.resetModules();
-  installTimers(opts.unref !== false);
+  installTimers();
   setPlatform(opts.platform || 'linux');
   if (opts.arch) setArch(opts.arch);
   if (opts.resourcesPath) process.resourcesPath = opts.resourcesPath;
@@ -433,6 +440,9 @@ function loadMain(opts = {}) {
   require('../src/main/main');
   ctx.invoke = (ch, ...a) => ctx.electron._handlers[ch]({}, ...a);
   ctx.emit = (ch, ...a) => ctx.electron._listeners[ch]({}, ...a);
+  // A window that is already listening for log lines, as the renderer's onLog
+  // makes it (see send in main.js). A test of the hold-back passes logReady: false.
+  if (opts.logReady !== false) ctx.emit('log:ready');
   ctx.win = () => ctx.electron._windows[0];
   ctx.sent = (ch) => ctx.electron._windows
     .flatMap((w) => w.webContents.send.mock.calls)
@@ -477,6 +487,18 @@ function wireHealthOk(ctx) {
   });
 }
 
+// The first load of main.js transforms and instruments it and most of the app
+// with it. That one-time cost fell on the first test, and on a busy CPU it ran
+// past the 5-second test timeout. Paying it here keeps every test's own time
+// honest; the globals loadMain sets are put back as afterEach does.
+beforeAll(() => {
+  loadMain();
+  Object.assign(global, REAL_TIMERS);
+  delete process.resourcesPath;
+  Object.defineProperty(process, 'platform', REAL_PLATFORM);
+  Object.defineProperty(process, 'arch', REAL_ARCH);
+}, 60000);
+
 let errorSpy;
 beforeEach(() => {
   errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -490,6 +512,35 @@ afterEach(() => {
 });
 
 // ── boot / window lifecycle ──────────────────────────────────────────────────
+
+// Log lines sent before the renderer subscribes wait for it (see send).
+describe('log lines before the window is listening', () => {
+  const blip = (ctx, i) => ctx.updater._events.error(new Error('blip ' + i));
+  const blips = (ctx) => ctx.sent('miner:log').map((l) => l.line).filter((l) => /blip/.test(l));
+
+  it('wait for onLog, then go out in order, the last 200 of them', async () => {
+    const ctx = await boot({ isPackaged: true, logReady: false });
+    for (let i = 0; i < 205; i++) blip(ctx, i);
+    expect(ctx.sent('miner:log')).toEqual([]);
+    ctx.emit('log:ready');
+    const got = blips(ctx);
+    expect(got).toHaveLength(200);
+    expect(got[0]).toMatch(/blip 5$/);
+    expect(got[199]).toMatch(/blip 204$/);
+    // Listening now: a line goes straight out.
+    blip(ctx, 'now');
+    expect(blips(ctx).pop()).toMatch(/blip now/);
+  });
+
+  it('a page that loads again holds them until its onLog subscribes', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.win()._wcEvents['did-start-loading']();
+    blip(ctx, 'reload');
+    expect(blips(ctx).some((l) => /blip reload/.test(l))).toBe(false);
+    ctx.emit('log:ready');
+    expect(blips(ctx).pop()).toMatch(/blip reload/);
+  });
+});
 
 const { ALL_LAYERS } = require('../src/shared/vram');
 
@@ -584,9 +635,8 @@ describe('app boot and window lifecycle', () => {
     expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(2);
   });
 
-  it('starts the node pinger on boot when the machine is already linked (timers without unref)', async () => {
+  it('starts the node pinger on boot when the machine is already linked', async () => {
     const ctx = await boot({
-      unref: false,
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
       },
@@ -634,7 +684,6 @@ describe('app boot and window lifecycle', () => {
   // the headroom costs nothing on a healthy runner.
   it('before-quit stops the miner even when window-all-closed never fires', async () => {
     const ctx = await boot();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
     const miner = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
@@ -661,12 +710,32 @@ describe('simple ipc handlers', () => {
     // so two rigs on one payout address don't collide into one board identity.
     expect(s).toMatchObject({ region: 'us', worker: defaultWorker(), mode: 'auto', address: '' });
     expect(s.worker).toMatch(/^[a-z0-9-]{1,32}$/);
+    // The region is filled in, but it was not saved: the renderer may pick the
+    // nearest one.
+    expect(s.regionSaved).toBe(false);
 
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
     ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","mode":"llm"}');
     const s2 = await ctx.invoke('settings:get');
     expect(s2.address).toBe('prl1x');
     expect(s2.mode).toBe('llm');
+    expect(s2.regionSaved).toBe(false);
+
+    // A saved region is the user's choice, and the renderer leaves it alone.
+    ctx.fs.readFileSync.mockReturnValue('{"address":"prl1x","region":"fr"}');
+    expect(await ctx.invoke('settings:get')).toMatchObject({ region: 'fr', regionSaved: true });
+  });
+
+  // Every state file is replaced whole, through a temp file renamed over it,
+  // so a power cut mid-write cannot leave half of one.
+  it('saves settings through a temp file renamed over settings.json', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const tmp = SETTINGS_PATH + '.' + process.pid + '.tmp';
+    expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(tmp, expect.stringContaining(VALID_ADDR), undefined);
+    expect(ctx.fs.renameSync).toHaveBeenCalledWith(tmp, SETTINGS_PATH);
+    ctx.emit('miner:stop');
   });
 
   it('settings:get logs and falls back to defaults on a corrupt settings file', async () => {
@@ -680,8 +749,11 @@ describe('simple ipc handlers', () => {
 
   it('config:get, llm:status, app:version and region:detect answer directly', async () => {
     const ctx = loadMain();
+    // The worker default is this machine's, the same one settings:get fills in,
+    // so the renderer never falls back to the shared "rig01".
     expect(await ctx.invoke('config:get')).toEqual({
-      regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
+      regions: ctx.config.REGIONS,
+      defaults: Object.assign({}, ctx.config.DEFAULTS, { worker: defaultWorker() }),
       platform: { minerSupported: true },
       cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
@@ -890,11 +962,6 @@ describe('updater', () => {
     expect(ctx.updater.checkForUpdates).toHaveBeenCalledTimes(2);
   });
 
-  it('and arms that timer on a runtime whose handles have no unref', async () => {
-    const ctx = await boot({ isPackaged: true, unref: false });
-    expect(ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs)).toBeTruthy();
-  });
-
   it('a packaged manual check reports "latest" when nothing is found', async () => {
     const ctx = await boot({ isPackaged: true });
     ctx.emit('app:update:check');
@@ -957,6 +1024,15 @@ describe('updater', () => {
       });
       expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(COPY, UPDATE_CONFIG);
       expect(readFrom).toBe(COPY);
+      expect(logs(ctx)).toEqual([{ level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' }]);
+    });
+
+    // It runs at startup, before the renderer subscribes to log lines (after
+    // its first round trips), and the warning was dropped. It waits now.
+    it('and the warning reaches a window that starts listening late', async () => {
+      const ctx = await boot({ isPackaged: true, resourcesPath: '/res', logReady: false, before: onDisk(null) });
+      expect(logs(ctx)).toEqual([]);
+      ctx.emit('log:ready');
       expect(logs(ctx)).toEqual([{ level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' }]);
     });
 
@@ -1155,6 +1231,25 @@ describe('mining', () => {
       expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
       expect(warnings(ctx).filter((l) => l.includes(ENV))).toEqual([]);
     });
+
+    // A card it leaves out does not mine, so it is not on the board, as in the
+    // CLI. It used to get a row at half the mining card's hashrate.
+    it('posts no board row for a card it leaves out', async () => {
+      process.env[ENV] = '0';
+      const ctx = await boot();
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'RTX 4090' }]);
+      ctx.probe.detectGpusVram.mockResolvedValue([
+        { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
+        { index: 1, name: 'RTX 3090', usedMb: 500, totalMb: 24576 },
+      ]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', worker: 'rig' });
+      await flush();
+      ctx.PearlEngine.instances[0].emit('event', { type: 'status', gpuIndex: 0, hashrate: 300, accepted: 10 });
+      ctx.probe.postMinerReport.mockClear();
+      ctx.interval(ctx.config.NETWORK.reportIntervalMs).fn();
+      await flush();
+      expect(ctx.probe.postMinerReport.mock.calls.map((c) => [c[0].worker, c[0].hashrate])).toEqual([['rig', 300]]);
+    });
   });
 
   // The memory clock plan is shared/memClock's (memClock.test.js) and the lock
@@ -1342,7 +1437,7 @@ describe('mining', () => {
       expect(ctx.PearlEngine.instances).toHaveLength(1);
       expect(ctx.sent('miner:stopped')).toHaveLength(0);
       // The mining figures read zero, not the last ones the miner reported.
-      expect(ctx.sent('miner:stats').slice(-1)[0]).toMatchObject({ accepted: 0, uptime: '00m 00s' });
+      expect(ctx.sent('miner:stats').slice(-1)[0]).toMatchObject({ acceptedLabel: '0', uptime: '00m 00s' });
 
       // Stopping the session later stops what is left, and nothing twice.
       ctx.emit('miner:stop');
@@ -1439,8 +1534,6 @@ describe('mining', () => {
 
   it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {
     const ctx = await boot();
-    const BIN = '/tmp/engine/alpha-miner';
-    ctx.fs.existsSync.mockImplementation((p) => p === BIN);
 
     // mode 'both' → start the miner, then wait for a non-zero hashrate before the LLM.
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
@@ -1719,6 +1812,80 @@ describe('local LLM', () => {
     ctx.emit('miner:start', { mode: 'llm' });
     await flush();
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
+  });
+
+  // After an update the lingering server is often the 27B a 5090 ran before.
+  // This run planned nothing, so it was labelled with the default model: on the
+  // hero, the board, telemetry and every cluster job sent to it.
+  it('names the model an adopted server really serves, and its window', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true }));
+      },
+    });
+    const tier = ctx.config.LLM.tiers[0];
+    wireHealthOk(ctx);
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url === 'http://127.0.0.1:8080/v1/models'
+      ? { object: 'list', data: [{ id: tier.name, meta: { n_ctx: 131072 } }] } : null));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.io.getJson).toHaveBeenCalledWith('http://127.0.0.1:8080/v1/models', { timeout: 2000 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({
+      ready: true, model: tier.name, vramMb: tier.vramFullMb, ctxSize: 131072,
+    });
+    expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(false, { name: tier.name, ctxSize: 131072 });
+  });
+
+  it('keeps the label for an adopted server it does not know, but takes its window', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url.endsWith('/v1/models')
+      ? { data: [{ id: 'someone-elses-model', meta: { n_ctx: 8192 } }] } : null));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, model: ctx.config.LLM.model.name, ctxSize: 8192 });
+  });
+
+  it('a STOP while it asks an adopted server what it serves adopts nothing', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    let answer;
+    ctx.io.getJson.mockImplementation((url) => (url.endsWith('/v1/models')
+      ? new Promise((r) => { answer = r; }) : Promise.resolve(null)));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.emit('miner:stop');
+    answer({ data: [{ id: 'x' }] });
+    await flush();
+    expect(ctx.sent('llm:status').filter((st) => st.ready)).toHaveLength(0);
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('reusing it');
+  });
+
+  // Often the outgoing app's server, which goes away moments after the update.
+  // With no manager to say so it stayed ready for good, and chat, the network
+  // gate and the cluster worker kept using a model that was not there.
+  it('lets go of an adopted server once it stops answering', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+    const poll = ctx.interval(10000);
+    expect(poll.unref).toHaveBeenCalled();
+
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('connect ECONNREFUSED')));
+    poll.fn();
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });   // one miss is not an exit
+    poll.fn();
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM at http://127.0.0.1:8080 stopped answering');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false });
+    // An llm-only START ends, as it does when a model it started dies.
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
   });
 
   it('refuses to start the LLM without enough free VRAM (llm-only ends the session)', async () => {
@@ -2062,13 +2229,17 @@ describe('local LLM', () => {
     worker.emit('done', { id: 'j1' });
     worker.emit('failed', { id: 'j2', error: 'oom' });
     const logs = ctx.sent('miner:log').map((l) => l.line);
+    // Logged, not dropped: a node whose polls kept failing looked idle.
+    expect(logs).toContain('job poll failed: poll blip (retrying)');
     expect(logs).toContain('cluster job j1 — running locally');
     expect(logs).toContain('cluster job j1 — done');
     expect(logs).toContain('cluster job j2 failed: oom');
     expect(logs).toContain('serving cluster jobs for the LLMJob network');
 
-    worker.opts.post('https://x/api', { a: 1 });
-    expect(ctx.io.postJson).toHaveBeenCalledWith('https://x/api', { a: 1 }, 30000);
+    // The worker's abort signal reaches the request (see JobWorker.stop).
+    const signal = new AbortController().signal;
+    worker.opts.post('https://x/api', { a: 1 }, { signal });
+    expect(ctx.io.postJson).toHaveBeenCalledWith('https://x/api', { a: 1 }, 30000, { signal });
     const onDelta = jest.fn();
     const onReasoning = jest.fn();
     await worker.opts.runJob({ messages: [] }, { onDelta, onReasoning });
@@ -2134,8 +2305,10 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances).toHaveLength(2);
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, webUrl: 'http://127.0.0.1:8080' });
 
-    // a transient error on one card is swallowed — the fleet keeps the others up
+    // An error on one card is logged, not swallowed: a binary that cannot run
+    // says why only here. The fleet keeps the others up.
     g0.emit('error', new Error('transient blip'));
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'error', line: 'local LLM error: transient blip' });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
 
     // a telemetry ping sums active jobs across every worker (each mock reports 1)
@@ -2151,6 +2324,62 @@ describe('local LLM', () => {
     await ctx.invoke('node:disconnect');
     expect(ctx.JobWorker.instances[0].stop).toHaveBeenCalled();
     expect(ctx.JobWorker.instances[1].stop).toHaveBeenCalled();
+  });
+
+  // A restart after a crash is a model that is down. The row said ready all
+  // through it while chat and cluster jobs failed against it.
+  it('a crash restart is not shown as ready, unless another card still serves', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+        ]);
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const g0 = ctx.LlmManager.instances[0];
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    const g1 = ctx.LlmManager.instances[1];
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+
+    const sent = ctx.sent('llm:status').length;
+    g0.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+    expect(ctx.sent('llm:status')).toHaveLength(sent);   // card 1 still serves
+    g1.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, note: 'Restarting…' });
+    g0.emit('ready', { baseUrl: g0.baseUrl });   // a restart landed
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, note: null });
+    expect(ctx.sent('miner:stopped')).toHaveLength(0);
+  });
+
+  // One step down the 27B's ladder halves the window. The API tab and the
+  // network gate kept the top rung: twice what the server had.
+  it('shows and shares the window the card really loaded at', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+        c.fs.readFileSync.mockReturnValue('{"shareLlm":true}');
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32607 }]);
+        c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const tier = ctx.config.LLM.tiers[0];
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, ctxSize: 262144 });
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, ctxSize: 131072 });
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, ctxSize: 131072 });
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, { name: tier.name, ctxSize: 131072 });
   });
 
   // Chat went to card 0 whatever it was doing: 25 tok/s on a mining RTX PRO
@@ -2291,7 +2520,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
@@ -2328,7 +2556,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
     ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '5' });
@@ -2356,7 +2583,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
@@ -2378,7 +2604,6 @@ describe('local LLM', () => {
 
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
     const ctx = await boot();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush();
@@ -2389,23 +2614,14 @@ describe('local LLM', () => {
     expect(ctx.LlmManager.instances).toHaveLength(1);
   });
 
-  it('falls back to the linux server binary name on unknown platforms', async () => {
-    const ctx = await boot({ platform: 'freebsd' });
-    ctx.emit('miner:start', { mode: 'llm' });
-    await flush();
-    expect(ctx.LlmManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ platform: 'freebsd', binaryPath: '/tmp/llm/llama-server' }));
-  });
-
-  it('uses a bundled llama-server on Windows and installs the VC++ runtime DLLs beside it', async () => {
+  it('installs the VC++ runtime DLLs beside llama-server on Windows', async () => {
     const path = require('path');
-    const bundledLlama = path.join('/res', 'llm', 'llama-server.exe');
     const dll = (name) => path.join('/res', 'llm-runtime', name);
     const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
-    // bundled exe + two of the three DLLs available in the bundle, none installed yet
+    // two of the three DLLs available in the bundle, none installed yet
     ctx.fs.existsSync.mockImplementation((p) =>
-      p === bundledLlama || p === dll('msvcp140.dll') || p === dll('vcruntime140.dll'));
+      p === dll('msvcp140.dll') || p === dll('vcruntime140.dll'));
     // the first DLL copies fine; the second explodes → logged, start continues
     ctx.fs.copyFileSync
       .mockImplementationOnce(() => {})
@@ -2418,7 +2634,7 @@ describe('local LLM', () => {
     expect(logs).toContain('installed LLM runtime DLL: msvcp140.dll');
     expect(logs.join('\n')).toContain('could not install the LLM runtime DLLs: EPERM');
     expect(ctx.LlmManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundledLlama }));
+      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: '/tmp/llm/llama-server' }));
     // reserve 0 (llm-only), free 22000 → full offload despite the reserve arg branch
     expect(ctx.LlmManager.instances[0].start)
       .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS }));
@@ -2478,8 +2694,11 @@ describe('a card that keeps losing its GPU', () => {
 
     giveUp(first);
     await flush();
-    // Keyed by the card's bus id, which stays with it when cards move.
-    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } });
+    // Keyed by the card's bus id, which stays with it when cards move, and by
+    // its number and name, marked, for a start that gets no bus ids.
+    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: {
+      '0:1:0.0': [tier.name], '0:NVIDIA RTX PRO 4500 Blackwell +bus': [tier.name],
+    } });
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain(tier.name + ' kept losing GPU 0. It won\'t be started'
       + ' there again until the app updates or you press START LLM on the Chat tab.');
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR });
@@ -2520,6 +2739,54 @@ describe('a card that keeps losing its GPU', () => {
     const writes = ctx.fs.writeFileSync.mock.calls.length;
     ctx.emit('llm:retry');
     expect(ctx.fs.writeFileSync.mock.calls.length).toBe(writes);
+  });
+
+  // A start does not always know the bus ids: nvidia-smi can fail to give them
+  // on one start and not the next. A loss saved with them is found without.
+  it('finds a loss saved with bus ids on a start that gets none', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: {
+      '0:1:0.0': [tier.name], '0:NVIDIA RTX PRO 4500 Blackwell +bus': [tier.name],
+    } }, {});
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(ctx.config.LLM.model.name);
+  });
+
+  // On a rig nvidia-smi can't read, only llama-server may name the card's bus
+  // id. The loss was saved under that alone, the next start looked up 'auto',
+  // and the model went back on the failing card.
+  it('finds a loss under the bus id llama-server printed, on a rig without nvidia-smi', async () => {
+    const ctx = await bootWith([], null, {});
+    const gemma = ctx.config.LLM.model;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const first = ctx.LlmManager.instances[0];
+    first.emit('ready', { baseUrl: first.baseUrl });
+    await flush();
+    first.deviceBusId = '0000:01:00.0';
+    giveUp(first);
+    await flush();
+    expect(ctx.read().cards).toEqual({ '0:1:0.0': [gemma.name], 'auto +bus': [gemma.name] });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR });
+  });
+
+  // A server already on the port (one left from a restart) is reused, not
+  // planned, so nothing is held back on it: the old sentence has to go.
+  it('clears the held sentence when it reuses a running server', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const gemma = require('../src/shared/config').LLM.model;
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name, gemma.name] } }, BUS);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop().held).toMatch(/kept losing the GPU/);
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, held: null });
   });
 
   // An update may have fixed what went wrong.
@@ -2920,6 +3187,68 @@ describe('node linking', () => {
       .toContain('could not register with the network');
     expect(node.nodeId).toBe('5840fc');
     expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
+  });
+
+  // A register that failed was the only one this run tried, so a server that
+  // was down at that moment left the node polling for jobs it could never get.
+  it('retries a failed registration with the next ping, and logs the failure once', async () => {
+    const node = fakeNode({ connected: false });
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.getOrCreateNode.mockReturnValue(node);
+        c.nodeStore.loadNode.mockReturnValue(node);
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.io.postJson.mockRejectedValue(new Error('offline'));
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await flush();
+    const registers = () => ctx.io.postJson.mock.calls.filter((c) => c[0].endsWith('/api/nodes/register'));
+    const tried = registers().length;
+    expect(tried).toBeGreaterThan(0);
+    const lines = () => ctx.sent('miner:log').map((l) => l.line).join('\n');
+    expect(lines().match(/could not register with the network/g)).toHaveLength(1);
+
+    ctx.io.postJson.mockResolvedValue({ status: 200, data: {} });
+    await ctx.interval(ctx.config.NODE.pingIntervalMs).fn();
+    expect(registers()).toHaveLength(tried + 1);
+    expect(lines()).toContain('serving public jobs as an unlinked node (abc123)');
+    expect(lines().match(/could not register with the network/g)).toHaveLength(1);
+  });
+
+  // `connect --server` in the CLI stores a server in the node.json both shells
+  // share. The GUI registered and polled there, but pinged and joined the
+  // default, so the node showed offline on the server it served.
+  it('pings and joins at the server node.json names', async () => {
+    const node = fakeNode({ serverUrl: 'https://custom.example' });
+    const ctx = await boot({
+      before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(node); },
+    });
+    ctx.io.postJson.mockResolvedValueOnce({ status: 201, data: { user: 'alice' } });
+    await ctx.invoke('node:connect', { token: 'tok' });
+    expect(ctx.io.postJson.mock.calls[0][0]).toBe('https://custom.example/api/nodes/join');
+
+    ctx.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, serverUrl: 'https://custom.example' }));
+    ctx.io.postJson.mockClear();
+    await ctx.interval(ctx.config.NODE.pingIntervalMs).fn();
+    expect(ctx.io.postJson.mock.calls[0][0]).toBe('https://custom.example/api/nodes/ping');
+  });
+
+  // The ping runs from a timer. Signing outside its try made a corrupt key in
+  // node.json an unhandled rejection there.
+  it('a corrupt key in node.json cannot break a ping', async () => {
+    const ctx = await boot({
+      before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode()); },
+    });
+    ctx.io.postJson.mockResolvedValueOnce({ status: 201, data: {} });
+    await ctx.invoke('node:connect', { token: 'tok' });
+    ctx.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, secretKey: 'not-a-key' }));
+    ctx.io.postJson.mockClear();
+    await expect(ctx.interval(ctx.config.NODE.pingIntervalMs).fn()).resolves.toBeUndefined();
+    expect(ctx.io.postJson).not.toHaveBeenCalled();
   });
 
   it('node:connect adopts the id the server reports', async () => {
@@ -4243,6 +4572,69 @@ describe('a START that ends on its own', () => {
     await flush();
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
   });
+
+  // Every card failed and the engine stopped itself. The START used to stay on
+  // STOP with nothing mining.
+  it('mining mode whose engine gives up ends the START', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m._running = false;
+    m.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('engine exited (code 1)');
+  });
+
+  it('an engine that gives up beside a running model leaves the START to the model', async () => {
+    const ctx = await boot();
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m.emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    m._running = false;
+    m.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    // And then the model goes too: nothing runs.
+    llm.emit('stopped');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  // A fleet that stopped on its own was used again: its "was ready" flag hid
+  // the error when the next model died before it was ready.
+  it('a model that stopped on its own is not reused by the next run', async () => {
+    const ctx = await boot();
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    const AUTO = { address: VALID_ADDR, mode: 'auto' };
+    ctx.emit('miner:start', AUTO);
+    await flush();
+    ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const first = ctx.LlmManager.instances[0];
+    first.emit('ready', { baseUrl: first.baseUrl });
+    await flush();
+    first.emit('stopped');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+
+    // START again: the miner still runs, and the model comes back on a new fleet.
+    ctx.emit('miner:start', Object.assign({ worker: 'again' }, AUTO));
+    await flush();
+    ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(2);
+    ctx.LlmManager.instances[1].emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ error: 'The local LLM stopped before it was ready. See Logs.' });
+  });
 });
 
 // The model download can't be cancelled, so it goes on after STOP. It must not
@@ -4496,6 +4888,39 @@ describe('CPU mining (Monero)', () => {
     expect(ctx.XmrEngine.instances[0].isRunning()).toBe(true);
   });
 
+  // The CPU engine stopped itself (code 1). With nothing else running, the
+  // START used to stay on STOP with nothing mining.
+  it('a CPU miner that gives up ends a START it was all of, and still says why', async () => {
+    const ctx = await boot();
+    await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+    const cpu = ctx.XmrEngine.instances[0];
+    cpu.running = false;
+    cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
+      state: 'stopped', error: 'the CPU miner stopped (exit code 1)',
+    });
+    // The next START starts it again, with no old error.
+    await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx.XmrEngine.instances).toHaveLength(2);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({ state: 'mining', error: null });
+  });
+
+  it('a CPU miner that gives up beside the GPU miner leaves the START running', async () => {
+    const ctx = await boot();
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+    const cpu = ctx.XmrEngine.instances[0];
+    cpu.running = false;
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    // A stop we asked for, and a late one from an engine let go of, end nothing.
+    cpu.emit('stopped', 0);
+    ctx.emit('miner:stop');
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
   it('a START that turns it off stops the one running', async () => {
     const ctx = await boot();
     await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
@@ -4507,6 +4932,25 @@ describe('CPU mining (Monero)', () => {
   describe('with idle-only on', () => {
     const watcher = (ctx) => ctx.timers.intervals.find((h) => h.fn.name === 'checkIdle');
     const idle = (ctx, state) => ctx.electron.powerMonitor.getSystemIdleState.mockReturnValue(state);
+
+    // A Monero-only START: no Pearl address, no LLM. The first pause used to
+    // end it, because nothing ran while paused.
+    it('keeps a Monero-only START through a pause', async () => {
+      const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+      await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+      expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+      expect(watcher(ctx)).toBeDefined();
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.XmrEngine.instances).toHaveLength(1);
+      expect(ctx.XmrEngine.instances[0].isRunning()).toBe(true);
+      idle(ctx, 'active');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+    });
 
     it('waits for the computer to be idle, and stops when someone is back', async () => {
       const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });

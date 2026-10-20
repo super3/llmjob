@@ -25,19 +25,18 @@ const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
-const { LlmManager } = require('../main/llmManager');
-const { LlmEngineManager } = require('../main/llmEngineManager');
-const { postJson, downloadFile, streamChatCompletion, extractLlamaZip } = require('../main/io');
+const { extractLlamaZip } = require('../main/io');
 const {
-  detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport, findFreePort,
+  detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
 } = require('../main/probe');
 const probe = require('../main/probe');
 const nodeStore = require('../main/nodeStore');
+const { createNodeClient, serverOf } = require('../main/nodeClient');
+const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const nodeProto = require('../shared/node');
 const { buildMinerReports } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
@@ -45,9 +44,7 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
-const { LlmFleet } = require('../main/llmFleet');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
-const { JobWorker } = require('../main/jobWorker');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
@@ -92,6 +89,11 @@ function gateQuietMs(settings) {
   return settings.gateQuietMs == null ? LLM.gate.quietMs : settings.gateQuietMs;
 }
 
+// The port the gate listens on: --gate-port, or the documented default.
+function gatePort(settings) {
+  return settings.gatePort == null ? LLM.gate.port : settings.gatePort;
+}
+
 // The cards this run may mine on, and what chose them: --gpu-index first, then
 // PEARL_GPU_INDEX, which takes the same list, none included. Null means every
 // card; an empty list means none. A PEARL_GPU_INDEX that doesn't parse is an
@@ -115,18 +117,6 @@ function cardList(indices) {
 function quietLabel(settings) {
   const ms = gateQuietMs(settings);
   return ms === Infinity ? 'no amount of quiet' : Math.round(ms / 1000) + 's';
-}
-
-// Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
-// name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
-// engine still auto-detects the real device to mine; this is only for the
-// status label.
-// Resolve { name, count } — the representative card plus how many discrete
-// GPUs the rig actually mines with.
-// Delegates to the shared probe so the GUI and the CLI detect the same way —
-// they had drifted into two different methods, and the GUI's was Windows-only.
-function detectGpu() {
-  return probe.detectGpuInfo();
 }
 
 // Explicit `llmjob-earn-cli update` — check the latest release and, if this is
@@ -211,8 +201,8 @@ async function maybeAutoUpdate(argv, settings) {
 }
 
 // Where the CLI caches the local-LLM binary + model (mirrors the engine dir).
-function llmDir(settings) {
-  return settings.llmDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
+function llmDir() {
+  return path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
 }
 
 // Download progress. In the foreground it redraws one line. Beside a running
@@ -248,16 +238,15 @@ async function resolveLlmBinary(settings, dir, background) {
     }
     return settings.llmBinary;
   }
-  const serverUrl = resolveServerUrl(process.platform, process.arch);
-  const engine = new LlmEngineManager({
-    dir, platform: process.platform, serverUrl,
-    fs, download: downloadFile, extract: (zip, dest) => extractLlamaZip(zip, dest), chmod: fs.chmodSync,
-  });
+  const engine = llmEngine(dir, (zip, dest) => extractLlamaZip(zip, dest));
   if (engine.isServerInstalled()) {
     log('LLM server found: ' + engine.serverBinaryPath());
-    return engine.serverBinaryPath();
+    // Through ensureServer, not straight to the path: it puts the execute bit
+    // back on a cached binary that lost it. Returning the path skipped that,
+    // and such a binary failed with EACCES on every start.
+    return engine.ensureServer();
   }
-  log('downloading llama-server from ' + serverUrl + ' …');
+  log('downloading llama-server from ' + resolveServerUrl(process.platform, process.arch) + ' …');
   const progress = downloadProgress('downloading…', background);
   try {
     return await engine.ensureServer(progress.onPct);
@@ -284,7 +273,7 @@ async function resolveLlmModel(settings, dir, model, background) {
     }
     return { modelPath: settings.llmModel, mmprojPath: null };
   }
-  const engine = new LlmEngineManager({ dir, platform: process.platform, fs, download: downloadFile });
+  const engine = llmEngine(dir);
   let modelPath;
   if (engine.isModelInstalled(m)) {
     modelPath = engine.modelPath(m);
@@ -324,66 +313,29 @@ let servePinger = null;
 // metrics.model put the same wrong name in the `model` field of every gateway
 // completion it served. Seeded with the default, replaced once startLlm picks.
 let serveLlmState = { ready: false, tps: 0, model: LLM.model };
+// No model is up: nothing ready, no rate. `model` stays, because it names what
+// this node serves, and the last telemetry ping should still say so.
+function resetServeLlmState() {
+  serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+}
 // This machine's node id while it is armed to serve cluster jobs — reported on the
 // miner ping so the network board can tell "running the model" from "serving the
 // cluster". Null when not serving (mining only, or --no-serve).
 let serveNodeId = null;
 
-// The GPU name is static — probe it once and reuse, instead of spawning
-// nvidia-smi twice per ping forever.
-let cliGpuProbed = false;
-let cliGpuName = null;
-async function cachedDeviceName() {
-  if (!cliGpuProbed) {
-    cliGpuProbed = true;
-    try { const det = await detectGpu(); cliGpuName = det && det.name ? det.name : null; } catch (e) { cliGpuName = null; }
-  }
-  return cliGpuName;
-}
+// Register, ping, join, telemetry and the job workers: nodeClient, shared with
+// the GUI.
+const nodeClient = createNodeClient({
+  log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+  linkHint: 'run "connect" to attach it to your account',
+});
 
-// Register this box as an unclaimed node so the server will answer its job
-// polls. Signed like a ping (the server derives the nodeId from the public key
-// and never trusts the body's). Resolves true on success; never throws — an
-// unreachable server must not stop the local model from running.
-async function registerNode(node, base) {
-  const body = nodeProto.buildPingBody({
-    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
-    timestamp: Date.now(), telemetry: { name: node.name || undefined },
-  });
-  try {
-    const res = await postJson(base + '/api/nodes/register', body, 15000);
-    if (res.status !== 200) return false;
-    // The server decides which id this machine is enrolled under and may hand
-    // back one we did not compute — see nodeProto.adoptedNodeId. Persisting it
-    // is what stops every later signed call naming a row that does not exist.
-    const adopted = nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId);
-    if (adopted !== node.nodeId) {
-      node.nodeId = adopted;
-      saveNodeConfig(node);
-      log('node id updated by the network to ' + adopted);
-    }
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-// One signed ping. `telemetry` may be sparse — fields left undefined keep the
-// server's stored values (its pick() only overwrites defined fields).
-async function pingServer(node, base, telemetry, verbose) {
-  const body = nodeProto.buildPingBody({
-    nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey,
-    timestamp: Date.now(), telemetry,
-  });
-  try {
-    const res = await postJson(base + '/api/nodes/ping', body, 15000);
-    if (verbose) {
-      log(res.status === 200 ? '✓ ping' : ('✗ ping failed (HTTP ' + res.status + ')'),
-        res.status === 200 ? process.stdout : process.stderr);
-    }
-  } catch (e) {
-    if (verbose) log('✗ ping error: ' + e.message, process.stderr);
-  }
+// One verbose ping, for the standalone `connect` loop.
+async function pingServer(node, telemetry) {
+  const res = await nodeClient.ping(node, telemetry);
+  if (res.error) log('✗ ping error: ' + res.error, process.stderr);
+  else if (res.status === 200) log('✓ ping');
+  else log('✗ ping failed (HTTP ' + res.status + ')', process.stderr);
 }
 
 // Sparse telemetry for the standalone `connect` loop: just device + VRAM (+ the
@@ -395,21 +347,20 @@ async function sparseTelemetry(node) {
     const vram = await detectVram();
     if (vram) { t.vramTotal = vram.totalMb; t.vramUsed = vram.usedMb; }
   } catch (e) { /* ignore */ }
-  const device = await cachedDeviceName();
+  const device = await nodeClient.deviceName();
   if (device) t.device = device;
   if (node.name) t.name = node.name;
   return t;
 }
 
 // Full telemetry for the serving run: live model/readiness/tok-s/active jobs.
-async function fullTelemetry(node) {
-  let vram = null;
-  try { vram = await detectVram(); } catch (e) { /* ignore */ }
-  return nodeProto.buildTelemetry({
-    model: serveLlmState.model.name, quant: serveLlmState.model.quant,
-    device: await cachedDeviceName(), vram,
-    tokensPerSec: serveLlmState.tps, ready: serveLlmState.ready,
-    activeJobs: serveFleet ? serveFleet.activeJobs() : 0,
+// `demandJobs` are the jobs running on demand mode's own worker, which no fleet
+// owns: a demand wake starts its fleet without workers, so counting the fleet
+// alone reported 0 active jobs all through a demand node's work.
+async function fullTelemetry(node, demandJobs = 0) {
+  return nodeClient.telemetry({
+    model: serveLlmState.model, ready: serveLlmState.ready, tokensPerSec: serveLlmState.tps,
+    activeJobs: (serveFleet ? serveFleet.activeJobs() : 0) + demandJobs,
     name: node.name,
   });
 }
@@ -420,71 +371,48 @@ function stopServe() {
   serveNodeId = null;
 }
 
-// Build a cluster job-worker for the ready LLM instance at `baseUrl` — one per
-// serving GPU, each running jobs against its own llama-server. The fleet only
-// calls this once serving is armed (syncWorkers(canServe)), so `nodeCfg` is
-// always a linked node here; the fleet starts the returned worker.
 // Node identity and its server registration, resolved ONCE per process.
 //
 // This used to live inside startLlm, which was fine while a fleet was the only
 // thing that ever served. Demand mode needs an identity before any model is
 // loaded -- it polls for cluster work while mining -- and resolving it twice
 // would register the node twice and log it twice.
+//
+// Never throws. Minting an identity writes node.json, and a disk that refuses
+// it used to end demand and llm runs with 'fatal'. The LLM runs locally then,
+// for the rest of the run.
 let serveIdentity = null;
 async function resolveServeIdentity(settings) {
   if (serveIdentity) return serveIdentity;
   // Reuse the stored identity when there is one (it carries the node's name and
   // server URL); only mint a keypair when serving and none exists yet.
-  const nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
+  let nodeCfg;
+  try {
+    nodeCfg = loadNodeConfig() || (settings.serve ? getOrCreateNodeConfig() : null);
+  } catch (e) {
+    log('could not set up this node\'s identity (' + e.message + ') — running the LLM locally only', process.stderr);
+    serveIdentity = { nodeCfg: null, canServe: false };
+    return serveIdentity;
+  }
   const canServe = !!(settings.serve && nodeCfg);
   // Publish the node id on the miner ping only while actually armed to serve.
   serveNodeId = canServe ? nodeCfg.nodeId : null;
-  const base = (nodeCfg && nodeCfg.serverUrl) || NODE.serverUrl;
 
   // An unclaimed node needs a row server-side before /jobs/poll will answer it.
-  // Best-effort: a failure here just means no jobs arrive, and the local model
-  // still runs.
-  if (canServe && !nodeCfg.connected) {
-    const registered = await registerNode(nodeCfg, base);
-    log(registered
-      ? 'serving public jobs as an unlinked node (' + nodeCfg.nodeId + ') — run "connect" to attach it to your account'
-      : 'could not register with the network — running the LLM locally only', registered ? process.stdout : process.stderr);
-  }
-  serveIdentity = { nodeCfg, canServe, base };
+  // Best-effort: a failure here just means no jobs arrive until a keep-alive
+  // ping's retry lands, and the local model still runs.
+  if (canServe) await nodeClient.enrol(nodeCfg);
+  serveIdentity = { nodeCfg, canServe };
   return serveIdentity;
 }
 
-// `baseUrl` may be a thunk: in demand mode no server exists when the worker is
-// built, and the port is not known until one is spawned. `gate`, when given,
-// makes this worker WAKE the model rather than assume one is loaded.
-function makeCliJobWorker(nodeCfg, base, baseUrl, gate) {
-  const urlOf = typeof baseUrl === 'function' ? baseUrl : () => baseUrl;
-  const stream = (chatBody, h) => streamChatCompletion(urlOf(), chatBody, h.onDelta, h.onReasoning).done;
-  const w = new JobWorker({
-    identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
-    serverUrl: base,
-    post: (url, body) => postJson(url, body, 30000),
-    runJob: gate
-      ? async (chatBody, h) => {
-        // begin()/end() bracket the WHOLE job, not just the wake. shouldRelease()
-        // requires inFlight === 0, so without this the quiet timer would hand the
-        // card back to mining part-way through a long generation -- the cluster
-        // path bypasses the HTTP handler that normally does this accounting.
-        gate.begin();
-        try {
-          await gate.ensureServing();
-          return await stream(chatBody, h);
-        } finally { gate.end(); }
-      }
-      : stream,
-    servingModel: () => serveLlmState.model,
-  });
-  // The 'error' listener is mandatory: a listener-less EventEmitter 'error'
-  // throws, and one transient poll failure would crash the whole CLI.
-  w.on('error', (e) => log('job poll failed: ' + e.message + ' (retrying)', process.stderr));
-  w.on('job', ({ id }) => log('cluster job ' + id + ' — running locally'));
-  w.on('failed', ({ id, error }) => log('cluster job ' + id + ' failed: ' + error, process.stderr));
-  return w;
+// A cluster job-worker for the llama-server at `baseUrl`: one per serving GPU,
+// built by the fleet, or demand mode's own. `baseUrl` may be a thunk: in demand
+// mode no server exists when the worker is built, and the port is not known
+// until one is spawned. `gate`, when given, makes this worker WAKE the model
+// rather than assume one is loaded.
+function makeCliJobWorker(nodeCfg, baseUrl, gate) {
+  return nodeClient.makeJobWorker(nodeCfg, { baseUrl, gate, servingModel: () => serveLlmState.model });
 }
 
 // Start the local LLM (llama.cpp llama-server) alongside — or instead of — the
@@ -583,7 +511,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
 // progress is printed. `onBusy` hears each card start and finish a prompt
 // ({ index, busy }); it is attached before any card can take one.
 async function launchLlm(settings, planned, armServe, background, onBusy) {
-  const dir = llmDir(settings);
+  const dir = llmDir();
   const { model, cards } = planned;
   log('preparing local LLM (' + model.name + ') …');
 
@@ -614,34 +542,30 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   // out entirely and keeps the model purely local.
   // Reuse the stored identity when there is one (it carries the node's name and
   // server URL); only mint a keypair when serving and none exists yet.
-  const { nodeCfg, canServe, base } = await resolveServeIdentity(settings);
+  const { nodeCfg, canServe } = await resolveServeIdentity(settings);
 
-  // One fleet spawns a llama-server per plan entry, walking to a free port per
-  // instance (the same busy-port self-heal the GUI has) and building a cluster
-  // worker per ready card. Retries an early exit a few times per instance
-  // (startAttempts/startRetryMs) for a port-bind clash that clears on retry.
-  const fleet = new LlmFleet({
-    host: LLM.host,
-    basePort: LLM.port,
-    makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs }),
-    findFreePort,
-    makeWorker: (baseUrl) => makeCliJobWorker(nodeCfg, base, baseUrl),
-  });
+  // One fleet spawns a llama-server per plan entry (llmLaunch.makeLlmFleet, as
+  // the GUI does) and builds a cluster worker per ready card.
+  const fleet = makeLlmFleet({ makeWorker: (baseUrl) => makeCliJobWorker(nodeCfg, baseUrl) });
   serveFleet = fleet;
   fleet.on('log', (l) => log(l.line, l.level === 'error' ? process.stderr : process.stdout));
   fleet.on('ready', ({ baseUrl }) => {
     serveLlmState.ready = true;
     log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
   });
+  // A card's server died and is restarting. Telemetry and the stats file said
+  // ready all through it; now they say so only while another card serves, and
+  // 'ready' above puts it back when the restart lands.
+  fleet.on('crashed', () => { serveLlmState.ready = fleet.isReady(); });
   // One keep-alive ping loop for the whole fleet, started on the first ready
   // card: pings ride along with serving so the node stays online on the
   // dashboard (and never gets pruned) while it works.
   fleet.on('first-ready', () => {
     if (!canServe || !armServe) return;
-    const pingFull = async () => pingServer(nodeCfg, base, await fullTelemetry(nodeCfg), false);
+    const pingFull = async () => nodeClient.ping(nodeCfg, await fullTelemetry(nodeCfg));
     pingFull();
     servePinger = setInterval(pingFull, NODE.pingIntervalMs);
-    if (servePinger.unref) servePinger.unref();
+    servePinger.unref();
     log('serving cluster jobs for the LLMJob network');
   });
   fleet.on('stats', ({ tokensPerSec, promptTokensPerSec }) => {
@@ -655,15 +579,8 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   if (onBusy) fleet.on('busy', onBusy);
 
   fleet.syncWorkers(canServe && armServe); // arm serving before instances come up
-  // Same run bits the GUI passes: llmFleet merges these into every
-  // llmManager.start(), so the model's context ladder, projector and tuned flags
-  // reach llama-server here too.
-  const ladder = ctxLadder(model);
-  await fleet.start(plan, {
-    platform: process.platform, binaryPath, modelPath, mmprojPath,
-    ctxSize: ladder[0], ctxLadder: ladder, extraArgs: model.extraArgs,
-    alias: model.name,
-  });
+  // The same run options the GUI passes (llmLaunch.llmRunOptions).
+  await fleet.start(plan, llmRunOptions(model, { binaryPath, modelPath, mmprojPath }));
   log(describeLlmStart(plan));
   return fleet;
 }
@@ -673,7 +590,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
 // 5090 tier) with the card idle. Never throws: a failed download is logged and
 // the wake tries again, as it always has.
 async function prefetchLlm(settings, model) {
-  const dir = llmDir(settings);
+  const dir = llmDir();
   try {
     await resolveLlmBinary(settings, dir, true);
     await resolveLlmModel(settings, dir, model, true);
@@ -746,31 +663,25 @@ async function runConnect(argv) {
   }
   const node = getOrCreateNodeConfig();
   if (opts.server && node.serverUrl !== opts.server) { node.serverUrl = opts.server; saveNodeConfig(node); }
-  const base = node.serverUrl || NODE.serverUrl;
+  const base = serverOf(node);
   const name = (opts.name && opts.name.trim()) || node.name || defaultWorker();
 
   log('LLMJob node ' + node.nodeId + ' → ' + base);
 
   if (opts.token) {
-    const joinBody = nodeProto.buildJoinBody({
-      token: String(opts.token).trim(), nodeId: node.nodeId, publicKey: node.publicKey, name,
-    });
-    let res;
-    try {
-      res = await postJson(base + '/api/nodes/join', joinBody, 20000);
-    } catch (e) {
-      log('could not reach ' + base + ': ' + e.message, process.stderr);
+    const res = await nodeClient.join(node, String(opts.token).trim(), name);
+    if (res.unreachable) {
+      log('could not reach ' + base + ': ' + res.error, process.stderr);
       return 1;
     }
-    if (res.status !== 200 && res.status !== 201) {
-      log('join failed (HTTP ' + res.status + '): ' + ((res.data && res.data.error) || res.raw || ''), process.stderr);
+    if (!res.ok) {
+      log('join failed (HTTP ' + res.status + '): ' + (res.message || res.raw || ''), process.stderr);
       return 1;
     }
-    const user = (res.data && res.data.user) || null;
     // The server decides the enrolled id — see nodeProto.adoptedNodeId.
-    node.nodeId = nodeProto.adoptedNodeId(node.nodeId, res.data && res.data.nodeId);
-    node.name = name; node.connected = true; node.user = user; saveNodeConfig(node);
-    log('✓ linked' + (user ? ' to ' + user + '’s account' : ' to your account') + ' as ' + name);
+    node.nodeId = res.nodeId;
+    node.name = name; node.connected = true; node.user = res.user; saveNodeConfig(node);
+    log('✓ linked' + (res.user ? ' to ' + res.user + '’s account' : ' to your account') + ' as ' + name);
   } else if (!node.connected) {
     log('no pairing token yet — run:  llmjob-earn-cli connect --token <token>', process.stderr);
     log('copy your token from the dashboard: ' + NODE.dashboardUrl, process.stderr);
@@ -782,7 +693,7 @@ async function runConnect(argv) {
   // Foreground keep-alive loop. Telemetry is SPARSE (device + VRAM + name only):
   // this process isn't the one serving inference, so sending model/capabilities/
   // tps here would overwrite what a serving run last reported with nulls.
-  const pingOnce = async () => pingServer(node, base, await sparseTelemetry(node), true);
+  const pingOnce = async () => pingServer(node, await sparseTelemetry(node));
 
   await pingOnce();
   const timer = setInterval(pingOnce, NODE.pingIntervalMs);
@@ -797,9 +708,10 @@ async function runConnect(argv) {
 // the log) and the engine, or null when it won't run here. It mines beside the
 // GPU miner whatever the mode, and stops with it.
 function setUpCpuMining(settings, poolLookup) {
-  // The Monero host follows the Pearl region.
-  const endpoint = xmrEndpointFor(settings.region);
-  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint);
+  // --xmr-pool, else the HeroMiners host for the Pearl region.
+  const endpoint = settings.xmrEndpoint || xmrEndpointFor(settings.region);
+  log('cpu:        Monero to ' + shortenXmrAddress(settings.xmrAddress) + ' · ' + endpoint
+    + (settings.xmrEndpoint ? '  (--xmr-pool)' : ''));
   if (settings.cpuThreads === 0) {
     log('cpu:        off (--cpu-threads 0)');
     return null;
@@ -904,13 +816,14 @@ async function run(argv) {
     // back to the defaults already in `settings` and never blocks mining. Explicit
     // --region / --gpu always win.
     if (!settings.workerProvided) settings.worker = defaultWorker();
-    // --pool needs no region for Pearl; Monero still mines in one.
-    if (!settings.regionProvided && (!settings.endpoint || settings.xmrAddress)) settings.region = await detectRegion();
-    // Probe regardless of --gpu. Naming the card and counting the cards are two
-    // different questions, and folding them into one `if` meant that passing
-    // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
-    // gpuCount 1 and reported one card on a board row for N.
-    const det = await detectGpu();
+    // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
+    const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
+    if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
+    // The card's name and how many there are, from the probe the GUI uses too.
+    // Probe regardless of --gpu: naming the card and counting the cards are two
+    // different questions, and the count is still wanted for the 'gpu:' line
+    // below when --gpu names the card.
+    const det = await probe.detectGpuInfo();
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
     // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
     // chose some. Read here, with the rest of the startup probing, because the
@@ -955,12 +868,21 @@ async function run(argv) {
   }
 
   // ── CPU miner (Monero) ─────────────────────────────────────────────────────
-  // Without the GPU miner the region is still detected, for the Monero host.
-  if (settings.xmrAddress && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
+  // Without the GPU miner the region is still detected, for the Monero host,
+  // unless --xmr-pool names it.
+  if (settings.xmrAddress && !settings.xmrEndpoint && !plan.miner && !settings.regionProvided) settings.region = await detectRegion();
   const xmr = settings.xmrAddress ? setUpCpuMining(settings, poolLookup) : null;
 
   const stats = initStats(Date.now());
   let miner = null;
+  // The numbers the board and the stats file publish: no hashrate while the
+  // pool connection is down or the miner is stopped (demand mode serving the
+  // LLM), since the pool is getting none. The stats file used to read the raw
+  // snapshot, so HiveOS showed the last hashrate while the GPU served.
+  const poolSnapshot = () => {
+    const live = snapshot(stats, Date.now());
+    return miner && !miner.poolConnected() ? offPool(live) : live;
+  };
   let reporter = null;
   let statsWriter = null;
   // Set once the auto plan is known, for demand mode only: the node id this
@@ -1063,16 +985,11 @@ async function run(argv) {
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       //
       // nvidia-smi lists every card, mining or not. When --gpu-index or
-      // PEARL_GPU_INDEX chose the cards, only those get a row. Given more cards
-      // than the engine reports, buildMinerReports assumes an engine that lumps
-      // its cards together: it posts a row for every card and splits the
-      // hashrate evenly, so a card turned off in HiveOS would show as mining.
+      // PEARL_GPU_INDEX chose the cards, only those get a row, so a card turned
+      // off in HiveOS is not on the board at all.
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
-        // No hashrate on the board while the pool connection is down: the pool is
-        // getting none, and the board should agree with it.
-        const live = snapshot(stats, Date.now());
-        const snap = miner && !miner.poolConnected() ? offPool(live) : live;
+        const snap = poolSnapshot();
         const allVram = await detectGpusVram();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
@@ -1104,7 +1021,7 @@ async function run(argv) {
       reportNow = report;
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);
-      if (reporter.unref) reporter.unref();
+      reporter.unref();
     }
 
   }
@@ -1248,19 +1165,29 @@ async function run(argv) {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
 
+    // The context window the gate reports while the model is down, from the
+    // fleet once a card has loaded or dropped down its ladder. Before, the gate
+    // kept the ladder's top rung, so after one step down the 27B's ladder
+    // clients were told twice the real window. Kept after the fleet stops:
+    // demand mode answers from it all the time it mines.
+    const advertiseCtx = (fleet) => {
+      const sync = () => { if (auto) auto.setCtxSize(fleet.ctxSize()); };
+      fleet.on('ready', sync);
+      fleet.on('ctx-downgrade', sync);
+    };
+
     // llama-server dying must never be a silent clean exit: without this
     // listener an LLM-only run drains the event loop and exits 0, so a systemd
     // Restart=on-failure supervisor never restarts the node. A deliberate stop
     // goes through fleet.stop(), which suppresses the fleet's 'stopped' event —
     // so reaching here always means the whole fleet died on its own.
     const watchLlm = (fleet) => {
+      advertiseCtx(fleet);
       fleet.on('stopped', (code) => {
-        // Keep `model`: the run is over but the last telemetry ping should still
-        // name what this node was serving, and fullTelemetry dereferences it.
-        // No demand-mode guard needed here either: this handler is only
-        // registered for an LLM started up front or beside the miner, which
-        // demand mode never does.
-        serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+        // No demand-mode guard needed here: this handler is only registered for
+        // an LLM started up front or beside the miner, which demand mode never
+        // does.
+        resetServeLlmState();
         // Nothing is left to answer a prompt: every card mines now.
         promptPause.reset();
         stopServe();
@@ -1306,6 +1233,12 @@ async function run(argv) {
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         // Returns the fleet; the gate owns waiting for it to answer.
         startLlm: async () => {
+          // A fleet that is still up is restarting after a crash: the gate is
+          // SERVING with no card ready. Hand it back and the gate waits for its
+          // 'ready'. Planning another put a second server on the card and lost
+          // the handle to the first, which kept restarting with nothing able
+          // to stop it.
+          if (llm && llm.hasSpawned()) return llm;
           // The miner has exited but the driver may not have reclaimed its VRAM
           // yet; plan against the card as it will be, not as it momentarily reads.
           // Ask for exactly what the planner will demand a moment later, using the
@@ -1320,11 +1253,10 @@ async function run(argv) {
           // nothing is co-resident in demand mode.
           llm = await startLlm(settings, 0, autoPlan.model, false);
           if (llm) {
+            advertiseCtx(llm);
             llm.on('stopped', () => {
               if (auto && auto.isSwitching()) return;
-              // Keep `model` for the same reason the up-front handler does: the
-              // last telemetry ping should still name what this node served.
-              serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+              resetServeLlmState();
               stopServe();
             });
           }
@@ -1358,7 +1290,7 @@ async function run(argv) {
           stopServe();
           // Handing the card back does not change WHICH model this node serves,
           // so the reported model survives the flip back to mining.
-          serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+          resetServeLlmState();
         },
         // A failed restart is fatal for the same reason it is at first start:
         // the node would otherwise mine nothing while looking healthy.
@@ -1367,7 +1299,7 @@ async function run(argv) {
           if (llm) llm.stop();
           finish(1);
         },
-        port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
+        port: gatePort(settings),
         host: settings.gateHost || undefined,
         // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
         // server can land on 8081+ while the gate still proxies to 8080 and
@@ -1380,7 +1312,7 @@ async function run(argv) {
         modelName: autoPlan.model.name, ctxSize: ctxLadder(autoPlan.model)[0],
         quietMs: gateQuietMs(settings), log,
       }).start();
-      log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
+      log('auto:       serving on :' + gatePort(settings) + ' — '
         + quietLabel(settings) + ' with no requests hands the GPU back to mining');
 
       // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
@@ -1393,9 +1325,10 @@ async function run(argv) {
       // Give demand mode a worker of its own that polls while mining and wakes
       // the model the way an inbound request does.
       if (demandServe && demandServe.canServe) {
-        demandWorker = makeCliJobWorker(demandServe.nodeCfg, demandServe.base,
+        const worker = makeCliJobWorker(demandServe.nodeCfg,
           () => (llm && llm.webUrl && llm.webUrl()) || null, auto.gate);
-        demandWorker.start();
+        demandWorker = worker;
+        worker.start();
 
         // Keep-alive. The fleet's own ping loop is armed on its first ready card,
         // which in demand mode means the node only appeared online during the
@@ -1407,12 +1340,11 @@ async function run(argv) {
         // stopped serving, wrong for one that is merely between jobs.
         const demandPing = async () => {
           serveNodeId = demandServe.nodeCfg.nodeId;
-          return pingServer(demandServe.nodeCfg, demandServe.base,
-            await fullTelemetry(demandServe.nodeCfg), false);
+          return nodeClient.ping(demandServe.nodeCfg, await fullTelemetry(demandServe.nodeCfg, worker.activeJobs()));
         };
         demandPing();
         demandPinger = setInterval(demandPing, NODE.pingIntervalMs);
-        if (demandPinger.unref) demandPinger.unref();
+        demandPinger.unref();
         log('auto:       polling for cluster jobs while mining');
       }
     } else if (plan.llm && !miner) {
@@ -1420,9 +1352,8 @@ async function run(argv) {
       // endpoint must not move: the gate port is THE documented endpoint, and it
       // used to exist only in auto -- so choosing llm mode relocated callers to
       // llama-server's own port without telling them.
-      const gp = settings.gatePort == null ? LLM.gate.port : settings.gatePort;
       auto = createServeGate({
-        port: gp,
+        port: gatePort(settings),
         host: settings.gateHost || undefined,
         upstreamPort: () => {
           const url = llm && llm.webUrl && llm.webUrl();
@@ -1434,7 +1365,7 @@ async function run(argv) {
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         log,
       }).start();
-      log('llm:        serving on :' + gp);
+      log('llm:        serving on :' + gatePort(settings));
     }
 
     // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
@@ -1452,7 +1383,7 @@ async function run(argv) {
       probe.detectPciBusIds().then((ids) => { pciBusIds = ids; });
       const writeStats = () => {
         try {
-          const payload = statsFilePayload(snapshot(stats, Date.now()), {
+          const payload = statsFilePayload(poolSnapshot(), {
             version: pkg.version,
             nowMs: Date.now(),
             mode: normalizeMode(settings.mode),
@@ -1470,7 +1401,7 @@ async function run(argv) {
       };
       writeStats();
       statsWriter = setInterval(writeStats, 10000);
-      if (statsWriter.unref) statsWriter.unref();
+      statsWriter.unref();
     }
 
     // The CPU miner runs beside whatever else runs. It ends the run only when it
@@ -1532,8 +1463,7 @@ async function run(argv) {
           finish(1);
         } else if (coRun) {
           // Not awaited, so nothing may escape it: an unhandled rejection would
-          // end the process, miner and all. Setting up the node's identity can
-          // throw (it writes a key file), which launchLlm doesn't catch.
+          // end the process, miner and all.
           startCoRun().catch((e) => log('LLM start failed: ' + e.message + ' — mining carries on', process.stderr));
         } else if (demand) {
           prefetch = prefetchLlm(settings, autoPlan.model);
@@ -1556,19 +1486,24 @@ async function run(argv) {
 // `active`, Restart=on-failure never fired, and the node was neither mining nor
 // serving until someone noticed. A non-zero exit that does not exit is not an
 // exit; give the teardown a few seconds and then insist.
-/* istanbul ignore next */
 function exitWith(code) {
   process.exitCode = code;
   const t = setTimeout(() => process.exit(code), 5000);
-  if (t.unref) t.unref();
+  t.unref();
 }
 
-/* istanbul ignore next */
-if (require.main === module) {
-  run(process.argv.slice(2)).then(exitWith).catch((e) => {
+// Run the CLI and exit with its code. Both entry points call this: the guard
+// below for `node earn-cli.js`, and sea-entry.js for the packaged binary that
+// HiveOS and systemd run. That binary used to call run() itself and only set
+// exitCode, so it never got the forced exit above.
+function main(argv) {
+  return run(argv).then(exitWith, (e) => {
     log('fatal: ' + (e && e.message ? e.message : e), process.stderr);
     exitWith(1);
   });
 }
 
-module.exports = { run };
+/* istanbul ignore next */
+if (require.main === module) main(process.argv.slice(2));
+
+module.exports = { run, main };

@@ -4,12 +4,10 @@
 // (main.js) and the headless CLI (earn-cli.js). Both shells previously kept
 // byte-for-byte copies of these nvidia-smi / socket wrappers, so a fix to VRAM
 // summing or region timing had to be made twice. Keeping them here means it
-// lands in both. Thin wrappers over net/http/https/child_process — unit-tested
-// by mocking those core modules.
+// lands in both. Thin wrappers over net/child_process and io.postJson —
+// unit-tested by mocking those.
 
 const net = require('net');
-const http = require('http');
-const https = require('https');
 const { execFile, spawn } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
@@ -20,14 +18,7 @@ const {
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
-// Major version out of an nvidia-smi driver string. Lived in shared/engine
-// until alpha-miner was removed; the driver version is a property of the
-// machine, not of any engine.
-function parseDriverMajor(output) {
-  const m = String(output == null ? '' : output).match(/(\d+)\.\d+/);
-  return m ? parseInt(m[1], 10) : null;
-}
-
+const { postJson } = require('./io');
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
 // if it can't be reached within the timeout. Never rejects.
 function pingEndpoint(endpoint, timeoutMs) {
@@ -140,16 +131,6 @@ function detectGpuTemps() {
   });
 }
 
-// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
-// Decides which engine build the rig can run (CUDA 13 builds need >= 580).
-function detectDriverMajor() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
-  });
-}
-
 // Each card's compute capability and the driver version, in one nvidia-smi
 // call: what decides which build of the Pearl core this rig loads (see
 // shared/coreVariant). Resolves [{ index, major, minor, driverMajor }], or []
@@ -257,27 +238,11 @@ function detectLlmBusIds(binaryPath, modelPath) {
   });
 }
 
-// Publish this miner's live status to the network board (best-effort — never
-// throws; timeouts and errors are swallowed so mining is never affected).
+// Publish this miner's live status to the network board. Best effort: it never
+// rejects, so a failed report cannot affect mining. It used to be its own HTTP
+// client, which could hang on a cut response the same way postJson did.
 function postMinerReport(payload) {
-  return new Promise((resolve) => {
-    try {
-      const body = JSON.stringify(payload);
-      const u = new URL(NETWORK.reportUrl);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.request(u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        timeout: 8000,
-      }, (res) => { res.resume(); res.on('end', resolve); });
-      req.on('error', () => resolve());
-      req.on('timeout', () => { req.destroy(); resolve(); });
-      req.write(body);
-      req.end();
-    } catch (e) {
-      resolve();
-    }
-  });
+  return postJson(NETWORK.reportUrl, payload, 8000).then(() => {}, () => {});
 }
 
 // Find a port llama-server can actually bind, preferring `start` (8080), walking
@@ -361,14 +326,12 @@ function detectGpuInfo() {
 }
 
 module.exports = {
-  parseDriverMajor,
   pingEndpoint,
   detectRegion,
   detectVram,
   detectGpusVram,
   detectMinerGpus,
   detectGpuTemps,
-  detectDriverMajor,
   detectCudaCards,
   detectPciBusIds,
   detectLlmDevices,

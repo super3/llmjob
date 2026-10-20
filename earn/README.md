@@ -28,7 +28,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `config.js` — pool regions (and the old AlphaPool ids they replace), the llama-server and model downloads, economics.
   - `address.js` — `prl1p…` / `mdl1p…` validation, shortening, and the merge-mining combined address.
   - `cliArgs.js` — parses/validates the headless CLI flags into the same settings shape the GUI uses.
-  - `llmMode.js` — the compute-mode policy (mining / both / llm / auto → which engines run), shared by the GUI and the CLI.
+  - `llmMode.js` — the compute-mode policy (mining / llm / auto → which engines run; the old `both` is read as `auto`), shared by the GUI and the CLI.
   - `platform.js` — what each OS can do: whether it can mine (not on macOS) and whether electron-updater can install there.
   - `llama.js` / `vram.js` — build the local `llama-server` command line + parse its output, and size the GPU offload (`--n-gpu-layers`) from free VRAM.
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
@@ -564,8 +564,9 @@ second, and stops cleanly on Ctrl-C.
 
 The CLI runs the same local LLM as the GUI. `--mode` picks how the GPU is used:
 
-- `both` / `auto` (default) — mine **and** serve a local LLM (the VRAM budgeter
+- `auto` (default) — mine **and** serve a local LLM (the VRAM budgeter
   keeps a mining reserve free and offloads only the model layers that fit).
+  `both`, its old name, still works.
 - `mining` — mine only; never touches the LLM.
 - `llm` — serve the LLM only, no mining (so no `--address` is required).
 
@@ -626,7 +627,7 @@ shared libraries. To skip the download, or pin your own build, pass
 
 ```bash
 # mine and co-run the local LLM
-llmjob-earn-cli --address prl1p… --mode both --llm-binary /opt/llama/llama-server
+llmjob-earn-cli --address prl1p… --mode auto --llm-binary /opt/llama/llama-server
 
 # LLM only — no mining, no payout address
 llmjob-earn-cli --mode llm --llm-binary /opt/llama/llama-server
@@ -653,7 +654,7 @@ self-hosted backend if needed.
 
 ### Serve cluster jobs (proxy LLM through LLMJob)
 
-Once a box is **linked** and running the local LLM (`--mode llm`/`both`, or the
+Once a box is **linked** and running the local LLM (`--mode llm` or `auto`, or the
 desktop app with the LLM started), it automatically **serves inference relayed
 through LLMJob** — no inbound networking required. A caller submits a request to
 the server with an API key; the server hands it to an online node; the node polls
@@ -690,13 +691,15 @@ chmod +x llmjob-earn-cli llmjob-xmr-worker
 ```
 
 That binary **auto-updates itself**. On start it checks the GitHub "latest
-release", and if a newer version is out it downloads the new binary, atomically
-replaces itself in place, and re-launches with the same arguments before mining
-— so a long-running rig stays current hands-off. Both mining cores beside it
-(`pearl_core.node` and `pearl_core_cu13.node`) update with it; the old CUDA 13
-core is always deleted first, so a release without one (or a failed download of
-it) leaves the 12.8 core in charge rather than last release's CUDA 13 core
-paired with a newer binary. The CPU worker, `llmjob-xmr-worker`, updates with
+release", and if a newer version is out it downloads the new binary, replaces
+itself in place, and re-launches with the same arguments before mining — so a
+long-running rig stays current hands-off. Both mining cores beside it
+(`pearl_core.node` and `pearl_core_cu13.node`) update with it. The binary and
+the 12.8 core are both downloaded before either is replaced, so a failed
+download leaves the old pair as it was. The old CUDA 13 core is deleted before
+anything is replaced, so a release without one (or a failed download of it)
+leaves the 12.8 core in charge rather than last release's CUDA 13 core paired
+with a newer binary. The CPU worker, `llmjob-xmr-worker`, updates with
 it on a rig that mines Monero (`--xmr-address`) or already has one; a
 Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
 missing, not executable or from another release also fetches this release's
@@ -724,8 +727,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            eu1 maps to the nearest.
       --pool <host:port>   Mine Pearl on this stratum endpoint instead of a
                            HeroMiners region, such as prl-us.kryptex.network:7048.
-                           It must use the same protocol as HeroMiners. Monero
-                           still follows the region.
+                           It must use the same protocol as HeroMiners.
+                           --xmr-pool moves Monero.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
@@ -733,6 +736,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
+      --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
+                           HeroMiners, such as xmr-us.kryptex.network:7029
       --cpu-threads <n>    CPU threads for Monero (default: all CPUs but 1, or but 2
                            on 6 CPUs or fewer, at most 1 per 2 MB of L3 cache;
                            off on 4 or fewer or under 8 GB)
@@ -742,7 +747,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --llm-binary <path>  Use this llama-server instead of downloading one
       --llm-model <path>   Use this GGUF model instead of downloading the default
       --llm-max-instances <n>  Cap how many llama-servers run (default: one per GPU that fits)
-      --gate-port <port>   Port the auto-mode gate serves on (default: 8000)
+      --gate-port <port>   Port the LLM gate serves on (default: 8000), in llm mode
+                           and in auto mode unless the LLM co-runs with the miner
       --gate-host <addr>   Address the gate binds (default: 0.0.0.0)
       --gate-quiet <secs>  Seconds with no requests before the GPU goes back to mining (default: 60)
       --no-report          Do not publish live status to the public network board

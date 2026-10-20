@@ -31,7 +31,6 @@ const GIB = 1024 * MIB;
 // reports (os.totalmem), which is less than the RAM fitted: the firmware, the
 // kernel and an integrated GPU keep some. 8 GB of RAM reads as 7.6-7.8 GiB,
 // so 8 GiB here would leave every 8 GB desktop off by default.
-const DATASET_BYTES = 2080 * MIB;
 const MIN_MEMORY = 3.5 * GIB;
 const RECOMMENDED_MEMORY = 7 * GIB;
 const L3_PER_THREAD = 2 * MIB;
@@ -100,5 +99,5 @@ function planCpuThreads(facts, requested) {
 }
 
 module.exports = {
-  DATASET_BYTES, MIN_MEMORY, RECOMMENDED_MEMORY, L3_PER_THREAD, planCpuThreads,
+  MIN_MEMORY, RECOMMENDED_MEMORY, L3_PER_THREAD, planCpuThreads,
 };

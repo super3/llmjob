@@ -39,10 +39,9 @@ function encode(msg) {
 }
 
 // The worker's command line.
-function workerArgs({ threads, priority, hugePages } = {}) {
+function workerArgs({ threads, priority } = {}) {
   const args = ['--threads', String(Math.max(1, Math.floor(Number(threads) || 1)))];
   if (priority && PRIORITIES.includes(priority)) args.push('--priority', priority);
-  if (hugePages === false) args.push('--no-huge-pages');
   return args;
 }
 
