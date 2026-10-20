@@ -1620,3 +1620,42 @@ So the way to the gap is to drop A's staging and the per-chunk barrier together:
 straight from global into registers, fragment-ordered, the way B already is. An earlier
 attempt at that faulted with an illegal address and was dropped (pearl_config.h), never
 measured.
+
+### A-direct: A loaded like B, no staging and no barrier a chunk (2026-10-20)
+
+`PEARL_BD_A_DIRECT` (now on by default, with `PEARL_BD_A_REALIGN` 0): the host writes A'
+fragment-ordered, as it writes B', and each warp loads its A fragments straight from
+global a k-step ahead, beside its B. A's shared staging and the per-chunk barrier go
+together, which is the pair the ablations above priced. Raced against the staged fold
+with `compilers.sh` (commit `4763de5`), hashrate.js in 3 interleaved rounds of 60 s,
+every round won, verify-hits 400/400 with and without the per-tile meeting on all three:
+
+| card | staged | A-direct | per clock |
+|---|---|---|---|
+| RTX 2080 Ti (Vietnam, 152869, 250 W) | 82.75 TH/s | 84.75 (+2.6%) | +2.5% |
+| RTX 2070 (South Korea, 139007, 150 W) | 46.30 | 48.01 (+3.7%) | +1.3% |
+| RTX 2060 12 GB (South Korea, 142755, 150 W) | 47.00 | 47.88 (+1.9%) | +2.1% |
+
+On the 2070 the full-loop race ran the build with the per-tile meeting; on bench the two
+were level there, and without the meeting was ahead per clock on all three cards (+2.0%,
++1.3%, +3.6%), so that is the default. The 2080 Ti is now at about 89.6% of the IMMA peak
+per clock, against about 91% for the best competitor.
+
+A-direct's own ablations, bench, 3 interleaved rounds, raw / per GHz:
+
+| switched off | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| readout and hash together | +6.5% / +6.5% | +6.1% / +6.1% | +6.7% / +6.3% |
+| B loaded once a tile | +9.9% / +2.2% | +8.4% / +2.4% | +10.1% / +2.4% |
+| transcript stores | +1.7% / +1.3% | +1.3% / +1.3% | +1.0% / +0.3% |
+| hash only | -0.8% / -2.0% | -3.2% / -3.2% | -2.0% / -4.7% |
+| readout only (spills 36 bytes) | -8.6% / -10.6% | -7.0% / -8.8% | -5.7% / -8.9% |
+| B not shared in L1 | -13.7% / -16.4% | -6.1% / -5.1% | -5.6% / -6.7% |
+
+- The readout and the hash together are what is left, about 6% per clock on all three.
+  With both off the 2080 Ti would run at 95% of the IMMA peak per clock.
+- One at a time they read negative. The two warps of a scheduler that share B are one
+  hasher and one not, so while one hashes, the other issues IMMA alone, and a lone warp
+  waits on its own recent IMMA results (24 such waits a pass in ptxas's order, per the
+  hand-SASS probe above).
+- Sharing B in L1 between those two warps is worth 6-16%.
