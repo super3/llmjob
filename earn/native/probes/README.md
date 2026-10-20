@@ -1582,7 +1582,7 @@ build.
 ### Where the fold loses time: its ablations, per clock (2026-10-20)
 
 `compilers.sh` with `VARIANTS_SPEC` set to the fold's ablation builds, bench in 3
-interleaved rounds of 20 s against the shipped build (commit `cc877e9`), on three cards
+interleaved rounds of 20 s against the shipped build (commit `1e981cd`), on three cards
 held at their power limit: an RTX 2080 Ti (Vietnam, 152869, 250 W, about 1365 MHz), an
 RTX 2070 (South Korea, 139007, the benchmark row's own machine, 150 W) and an RTX 2060
 12 GB (South Korea, 142755, 150 W). Each build computes wrong answers; they only price a
@@ -1627,7 +1627,7 @@ measured.
 fragment-ordered, as it writes B', and each warp loads its A fragments straight from
 global a k-step ahead, beside its B. A's shared staging and the per-chunk barrier go
 together, which is the pair the ablations above priced. Raced against the staged fold
-with `compilers.sh` (commit `4763de5`), hashrate.js in 3 interleaved rounds of 60 s,
+with `compilers.sh` (commit `4aa459d`), hashrate.js in 3 interleaved rounds of 60 s,
 every round won, verify-hits 400/400 with and without the per-tile meeting on all three:
 
 | card | staged | A-direct | per clock |
@@ -1663,7 +1663,7 @@ A-direct's own ablations, bench, 3 interleaved rounds, raw / per GHz:
 ### Round 2: k-lo first wins, the spread hash loses (2026-10-20)
 
 Two changes aimed at the readout-and-hash seam, raced with `compilers.sh` (commit
-`a7f273c`) against the A-direct default on the same three cards, bench in 3 interleaved
+`e487ba1`) against the A-direct default on the same three cards, bench in 3 interleaved
 rounds of 20 s, then hashrate.js for the winner in 3 rounds of 60 s, and verify-hits on
 every build:
 
@@ -1671,7 +1671,7 @@ every build:
   IMMA, so the two IMMA on a pair are 64 apart and a warp issuing alone waits less on
   its own results. The host draws A' and B' in pairs of 16-row blocks to match.
   `earn/test/turingKorder.test.js` checks the words each IMMA reads. 239 registers.
-- `PEARL_BD_HASH_SPREAD` (commit `09bf0eb`): each warp hashes its own 16 regions of the
+- `PEARL_BD_HASH_SPREAD` (commit `e487ba1`): each warp hashes its own 16 regions of the
   last tile while it folds the next, half a BLAKE3 round a chunk, on lane pairs, instead
   of one warp of each scheduler hashing all of them at the hand-off. 252 registers.
 - Both together: 248 registers.
@@ -1702,18 +1702,18 @@ about 91.3% of the IMMA peak per clock (63.57 TH/s per GHz against 69.63), again
 The spread hash loses on every card, and costs more with k-lo first than alone. Spread
 through the chunk loop, the hash's instructions and shuffles take issue slots and
 registers from every warp in every chunk, which costs more than one warp of a scheduler
-leaving its partner to issue alone once a tile. It is taken out again; `09bf0eb` keeps
+leaving its partner to issue alone once a tile. It is taken out again; `e487ba1` keeps
 the code.
 
 ### Candidates built before A-direct, never raced
 
-Four switches were built on the staged fold in the first round and are left on their
-commits, not merged. The ablations above ruled out what three of them were for, and
-A-direct removed what the fourth worked around:
+Four switches were built on the staged fold in the first round and never merged, pushed
+or raced. The ablations above ruled out what three of them were for, and A-direct removed
+what the fourth worked around:
 
-| switch | commit | idea | why not raced |
-|---|---|---|---|
-| `PEARL_BD_A_HINT` | `0d2311d` | load A evict-first so B stays in L2 | B's L2 latency is not the limit (B always an L1 hit is no faster per clock) |
-| `PEARL_BD_B_AHEAD` | `dec4922` | load B two k-steps ahead | same; it also needed 16 more registers |
-| `PEARL_BD_WALK2D` | `209d9f1` | walk each band in blocks of row groups so one B fetch serves a block | same |
-| `PEARL_BD_SPLIT_BAR` | `f5fab5a` | split the per-chunk barrier so a late B load stalls fewer warps | A-direct has no per-chunk barrier |
+| switch | idea | why not raced |
+|---|---|---|
+| `PEARL_BD_A_HINT` | load A evict-first so B stays in L2 | B's L2 latency is not the limit (B always an L1 hit is no faster per clock) |
+| `PEARL_BD_B_AHEAD` | load B two k-steps ahead | same; it also needed 16 more registers |
+| `PEARL_BD_WALK2D` | walk each band in blocks of row groups so one B fetch serves a block | same |
+| `PEARL_BD_SPLIT_BAR` | split the per-chunk barrier so a late B load stalls fewer warps | A-direct has no per-chunk barrier |

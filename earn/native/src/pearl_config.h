@@ -747,7 +747,7 @@ typedef struct {
 // checks the layout byte for byte against the staged path, and the bounds.
 //
 // Measured 2026-10-20 against the staged fold (probes/turing/compilers.sh at
-// 4763de5), hashrate.js in 3 interleaved rounds of 60 s, every round won, and
+// 4aa459d), hashrate.js in 3 interleaved rounds of 60 s, every round won, and
 // verify-hits 400/400 with and without the meeting on all three cards:
 //   RTX 2080 Ti (Vietnam, 250 W):  82.75 -> 84.75 TH/s (+2.6%), +2.5% per clock
 //   RTX 2070 (South Korea, 150 W): 46.30 -> 48.01 (+3.7%), +1.3% per clock (with
@@ -794,7 +794,7 @@ typedef struct {
 // scoreboards ptxas shares with IMMA results. 239 registers against 253, no
 // spill.
 //
-// Measured 2026-10-20 against 0 (probes/turing/compilers.sh at a7f273c),
+// Measured 2026-10-20 against 0 (probes/turing/compilers.sh at e487ba1),
 // hashrate.js in 3 interleaved rounds of 60 s, every round won, and verify-hits
 // 400/400 on all three cards:
 //   RTX 2080 Ti (Vietnam, 250 W):        85.22 -> 86.81 TH/s (+1.9%), +1.8% per clock
