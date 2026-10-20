@@ -74,6 +74,10 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "llm": False, "llm_ver": "v0.6.5"}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 KX_API = "https://pool.kryptex.com/prl/api"
+# Each pool's own page for an address, linked from the report's pool table. HeroMiners' home page looks up
+# ?wallet= (its home.html); Kryptex's miner page is a path.
+HM_PAGE = "https://{coin}.herominers.com/?wallet={addr}"
+KX_PAGE = "https://pool.kryptex.com/prl/miner/stats/{addr}"
 
 
 def now(): return time.time()
@@ -1634,17 +1638,20 @@ class W:
         # there (its switch failed) doesn't count.
         kt = st.get("kx_tot") if any((g.get("kx") and not g["ended"]) or g.get("prl_kx") for g in groups) else None
         pool = []
+        # Each pool's name links to that pool's page for our address.
+        wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
         if pt:
-            pool.append(f"| ⛏️ PRL{NB + 'HeroMiners' if kt else ''} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
+            name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
+            pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
                         f"| {pt['unconfirmed']:.3f} | {pt['paid']:.3f} |")
         if kt:
             # Kryptex gives each worker's hashrate now, not an account average: the sum over our Kryptex boxes.
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
-            pool.append(f"| ⛏️ PRL{NB}Kryptex | {kths:.0f} TH/s | {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} "
-                        f"| {kt['paid']:.3f} |")
+            pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(addr=wallet)}) | {kths:.0f} TH/s | {kt['confirmed']:.3f} "
+                        f"| {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
         if xt:
-            pool.append(f"| 🪙 XMR HeroMiners | {xt.get('khs_1h', 0):.1f} kH/s | {xt['balance']:.6f} | {xt.get('pending', 0):.6f} "
-                        f"| {xt['paid']:.6f} |")
+            pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
+                        f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 

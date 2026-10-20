@@ -41,8 +41,9 @@ class Fake:
 
 
 def shown(row):
-    """A Markdown table row as a chat window shows it: without bold marks or the backslashes before stars."""
-    return row.replace("**", "").replace("\\*", "*")
+    """A Markdown table row as a chat window shows it: without bold marks or the backslashes before stars, and a
+    link as its text."""
+    return re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", row.replace("**", "").replace("\\*", "*"))
 
 
 class Base(unittest.TestCase):
@@ -905,7 +906,7 @@ class TestPoolTotals(Base):
             report = f.read()
         # Work worth 8 PRL at the network's rate; in under 10 blocks the pool's credit ratio isn't used yet.
         self.assertIn("| **8.000\\*** |\n", report)  # the All row
-        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", shown(report))  # straight from the pool: no stars
         self.assertNotIn("has credited", report)   # the ratio is in the notes, not the report, since 20 October
         self.assertNotIn("Locked", report)
 
@@ -1507,7 +1508,7 @@ class TestMonero(Base):
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000* |", report)
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
-        self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", report)  # straight from the pool: no stars
+        self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", shown(report))  # straight from the pool: no stars
         rows =[l for l in report.split("| Pool |")[0].splitlines() if l.startswith("|")]
         self.assertTrue(all(l.count("|") == 8 for l in rows))  # one table, with kH/s and XMR columns
         # each row on one line in a chat window, as shown (bold marks and escapes aren't)
@@ -2113,7 +2114,7 @@ class TestKryptex(Base):
         self.assertIsNone(k["pool_ths"])
         self.assertAlmostEqual(h["pool_ths"], 33000 * w.UNIT_TH)
         self.x.st["kx_tot"] = {"t": T0, "total": 0.5, "confirmed": 0.3, "unconfirmed": 0.2, "paid": 0.0}
-        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 0 TH/s |", self.report())
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 0 TH/s |", shown(self.report()))
 
     def test_the_kryptex_row_sums_the_boxes_that_mine_there(self):
         k, h = self.group(kx=True), self.group()
@@ -2122,7 +2123,7 @@ class TestKryptex(Base):
         self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
                                  "hashes": 0, "ths_1h": 199}
         self.x.st["kx_tot"] = {"t": T0, "total": 0.5, "confirmed": 0.3, "unconfirmed": 0.2, "paid": 0.0}
-        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 150 TH/s |", self.report())
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 150 TH/s |", shown(self.report()))
 
     def test_kryptex_s_workers_read_is_dated_only_when_it_works(self):
         self.config_file()
@@ -2547,8 +2548,8 @@ class TestKryptex(Base):
         report = self.report()
         self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", report.replace("⛏️", "⏳"))
         self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
-        self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", report)
-        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", report)
+        self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", shown(report))
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", shown(report))
         self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)
         # Kryptex pays 94% of a share's value, so its shares (4 PRL at the network's rate) are 3.76 PRL, not starred.
@@ -2556,6 +2557,19 @@ class TestKryptex(Base):
         self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
         self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
         self.assertIn("| **11.760\\*** |\n", report)
+
+    def test_each_pools_name_links_to_its_page_for_our_address(self):
+        self.x.cfg.update(wallet="prl1abc", xmr_wallet="4xyz", xmr_groups=["*"])
+        self.group(kx=True)
+        self.x.st["pool_tot"] = {"t": T0, "paid": 1.0, "balance": 0.0, "unconfirmed": 0.0, "blocks": 20,
+                                 "hashes": 0, "ths_1h": 0}
+        self.x.st["kx_tot"] = {"t": T0, "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 0.0}
+        self.x.st["xmr_tot"] = {"t": T0, "balance": 0.0, "paid": 0.0, "pending": 0.0, "khs_1h": 0.0}
+        report = self.report()
+        self.assertIn(f"| ⛏️ [PRL{w.NB}HeroMiners](https://pearl.herominers.com/?wallet=prl1abc) |", report)
+        self.assertIn(f"| ⛏️ [PRL{w.NB}Kryptex](https://pool.kryptex.com/prl/miner/stats/prl1abc) |", report)
+        self.assertIn("| 🪙 [XMR HeroMiners](https://monero.herominers.com/?wallet=4xyz) |", report)
+        self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 0 TH/s |", shown(report))   # in a chat window: just the name
 
     def test_with_every_box_on_kryptex_the_report_drops_the_k_mark(self):
         a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
@@ -2603,7 +2617,7 @@ class TestKryptex(Base):
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 0.0}
         report = self.report()
-        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", shown(report))
         self.assertNotIn("Kryptex", report)
 
     def test_without_kryptex_groups_the_report_is_unchanged(self):
@@ -2613,7 +2627,7 @@ class TestKryptex(Base):
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
                                  "hashes": 0, "ths_1h": 0}
         report = self.report()
-        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)
+        self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", shown(report))
         self.assertNotIn("Kryptex", report)
         self.assertNotIn("(K)", report)
 
