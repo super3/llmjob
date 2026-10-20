@@ -1790,3 +1790,43 @@ What it says:
 - The split hash costs 1-2% per clock on every card. Either the lone phases it shortens
   are smaller than the model put them, or its release fence and 254 registers cost
   more; this round cannot tell which.
+
+### Round 4: nothing stacks on the lean loads; what is left (2026-10-20)
+
+`compilers.sh` (commit `90da50c`) on the LEAN + HIT_COORDS default, on five cards: the
+Thailand 2080 Ti (95392, held by its host at 167 W), the South Korea 2070 (139007) and
+2060 12 GB (27564), and two benchmark rows' own machines, the Germany 2060 Super (149900,
+which ran at 124-141 W of its 175 W, held by heat) and the Colorado 2080 (149439, 275 W).
+
+The two builds that put a round-3 switch on top of LEAN lose on every card. Both passed
+verify-hits 400/400 and the complete stage:
+
+| build | 2080 Ti | 2070 | 2060 | 2060 Super | 2080 |
+|---|---|---|---|---|---|
+| RED + GATE 1, bench raw | -0.5% | -0.5% | -0.4% | -0.5% | -0.4% |
+| RED + GATE 1, hashrate.js raw | -1.9% | -0.4% | -0.4% | -0.7% | -0.3% |
+| SNAKE on LEAN, bench raw | -0.8% | -0.7% | -2.6% | -1.3% | -2.7% |
+
+The fold's ablations again, on the new default (bench only, output meaningless), raw /
+per GHz:
+
+| switched off | 2080 Ti | 2070 | 2060 | 2060 Super | 2080 |
+|---|---|---|---|---|---|
+| readout and hash | +4.3% / +1.6% | +1.9% / +1.9% | +0.7% / -0.8% | +2.3% / +2.0% | +1.1% / +1.1% |
+| hash only | -2.3% / -2.2% | -3.9% / -2.4% | -3.9% / -3.9% | -1.9% / -1.8% | -3.7% / -3.6% |
+| readout shuffles only | -1.7% / -4.2% | -2.9% / -2.9% | -3.7% / -4.4% | -2.9% / -2.9% | -2.7% / -2.5% |
+| B loaded once a tile | +3.0% / +0.4% | +6.6% / +0.8% | +6.4% / 0.0% | +4.7% / +0.5% | +4.4% / +0.7% |
+
+What it says:
+- The readout and hash seam, +6.1 to +6.5% per clock on A-direct, is down to about +1 to
+  +2% on four cards and nothing on the 2060: k-lo first and the lean loads took most of
+  it.
+- Per clock the default now runs at about 91-94% of the IMMA peak on these cards: 65.6,
+  34.0, 31.6, 32.4 and 43.7 TH/s per GHz against 69.6, 36.9, 34.8, 34.8 and 47.1.
+- What is left is mostly energy. Loading B once a tile, which halves the operand bytes
+  moved from L1 to registers, is worth +3 to +6.6% raw on these power-held cards, and
+  almost all of it is clock.
+- hashrate.js on the three benchmark rows' own machines read 51.1 TH/s on the 2070 (the
+  row's best, SRBMiner, read 51.7 in its pool run), 81.9 on the 2080 (82.8) and 46.0 on
+  the 2060 Super (46.4). Those are different methods on different days, so they place
+  the rows near 99% at best guess, not a measurement of "% of best".
