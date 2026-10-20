@@ -1388,8 +1388,8 @@ class W:
 
     # ---------- report ----------
     def write_report(self):
-        """One table: a row per box, a total, then where the profit stands (locked in, not yet locked, Monero),
-        with the details in two lines under it. Every row fits on one line in a chat window."""
+        """One table: a row per box and a total, the pools' own figures under it, then one short line: what each
+        PRL has cost and the Salad credit left. Every row fits on one line in a chat window."""
         st, t = self.st, now()
         mk = st["mkt"]
         # The table counts on what the pool credits: the network's rate times its credit ratio. The rules may
@@ -1402,16 +1402,13 @@ class W:
         xusd, xprice = xm.get("usd_khs_hr", 0.0), xm.get("price", 0.0)
         groups = list(st["groups"].values())
         spend = sum(g["spend"] for g in groups)
-        est = sum(g["prl"] for g in groups)
         prl = sum(self.credited(g, hy, ky) for g in groups)
-        y = prl / est if est > 0 else hy
         cost_prl = spend / prl if prl > 0 else 0.0
         coins = sum(g.get("xmr_coins", 0.0) for g in groups)
         # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
         ts = st.get("trader_status") or self.cfg.get("safetrade")
         sold = (ts or {}).get("sold", 0)
         net = (ts or {}).get("received", 0) - (ts or {}).get("fees", 0)
-        h = "" if (ts or {}).get("t") else EST  # entered by hand: we can't check it
         unsold = prl - sold
         # A PRL is worth what it sold for if it sold, today's price if not, so the boxes' Profit $ adds up to
         # locked in + not yet locked + Monero instead of valuing sold PRL at today's price.
@@ -1489,40 +1486,14 @@ class W:
         head = f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining"
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        # What doesn't fit on a row: the money trail. The key to the symbols is in the README; it was a line
-        # here until 20 October, repeated in every report.
-        trail = [f"Spent ${spend:.2f}{EST} on Salad"]
-        if prl > 0:
-            trail[0] += (f" for {prl:.3f}{EST} PRL" + (f" ({est:.3f}{EST} at the network's rate × {y:.0%}{EST} credited)"
-                                                        if y < 1 else "") + f", ${cost_prl:.3f}{EST} each")
-        if pt:
-            cred = pt["paid"] + pt["balance"] + pt["unconfirmed"]
-            hest = sum(g["prl"] - g.get("prl_kx", 0.0) for g in groups)
-            trail.append(f"the PRL pool{' HeroMiners' if kt else ''} has credited {cred / hest * 100 if hest > 0 else 0:.0f}%{EST} of our "
-                         f"estimate over {pt['blocks']} blocks, and pays out from 1 PRL"
-                         + (f" (from {self.cfg['yield_min_blocks']} blocks on the table counts on that share)"
-                            if hy == 1 and pt["blocks"] < self.cfg["yield_min_blocks"] else ""))
-        if kt:
-            kest = sum(g.get("prl_kx", 0.0) for g in groups)
-            trail.append(f"Kryptex has credited {kt['total'] + kt['paid']:.3f} PRL for {kest:.3f}{EST} at the network's "
-                         f"rate ({ky:.0%}{EST}; {self.cfg['kryptex_pay']:.0%} expected), "
-                         "and pays out from 1 PRL")
-        if ts:
-            when = f"at the {clock(ts['t'])} run" if ts.get("t") else "entered by hand"
-            trail.append(f"SafeTrade {when}: {sold:.3f}{h} PRL sold for {net:.2f}{h} USDT net"
-                         + (f" (avg {ts['received'] / sold:.4f}{h})" if sold else "")
-                         + f", holds {ts.get('usdt', 0):.2f}{h} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL"
-                         + (f"; last run sold {ts['last'].get('sold', 0):g} PRL at {ts['last'].get('average')}" if ts.get("last") else ""))
-        if xon:
-            trail.append(f"our boxes have mined {coins:.6f}{EST} XMR (${coins * xprice:.2f}{EST} at ${xprice:.0f}); the XMR "
-                         "pool pays out from 0.01 and counts any other rig mining to the address")
-        trail.append(f"Salad credit left ${credit:.2f}{EST} of ${self.cfg['credit_start'] + self.cfg['credit_offset']:.2f}{EST}"
-                     + (f", {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else ", nothing billing now")
-                     + " (our count: set config credit_offset from the portal now and then)")
+        # Under the tables, one line: what each PRL has cost us (against the price in the heading) and the Salad
+        # credit left. Until 20 October a paragraph here also gave each pool's credit ratio and payout threshold,
+        # SafeTrade's sales and the XMR mined; the key to the symbols is in the README.
+        money = f"Spent ${spend:.2f}{EST} on Salad" + (f" for {prl:.2f}{EST} PRL, ${cost_prl:.2f}{EST} each" if prl > 0 else "")
+        money += (f" · Salad credit left ${credit:.2f}{EST}"
+                  + (f", about {hours:.0f}{EST} h at ${all_cost:.2f}/hr" if hours is not None else ", nothing billing now"))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
-        # A rule on top sets the report apart from whatever text comes before it where it's posted.
-        lines = ["---", "", head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, "",
-                 ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, "", money]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         with open(REPORT + ".tmp", "w") as f:

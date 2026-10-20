@@ -359,8 +359,6 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
----
-
 **6:49 pm EDT, Wed, Oct 14** · PRL $1.90 · 8/10 mining
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
@@ -376,7 +374,6 @@ The report is **one table** with six columns (five without a Monero address), so
 | 🪙 XMR HeroMiners | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
 ```
 
-- **A rule (`---`)** comes first, so the report stands apart from whatever text is above it where it's posted.
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
   24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents and how many boxes are mining
   out of the slots (`max_active`, or Salad's quota if lower). Profit an hour, the margin and the profit so far are in the **All** row.
@@ -398,9 +395,11 @@ The report is **one table** with six columns (five without a Monero address), so
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
   mining to the address. Locked-in and not-yet-locked rows were here before; they were dropped on 14 October.
-- **Under the table**, one line gives the money trail: what Salad cost and what each PRL cost to mine, what
-  share of our estimate each pool has credited, what SafeTrade sold and holds, the XMR our boxes have mined,
-  and the Salad credit left.
+- **Under the tables**, one short line: what Salad has cost and what each credited PRL cost to mine (to set
+  against the PRL price in the first line), and the Salad credit left, with how many hours it lasts at the
+  bill now. Until 20 October this was a paragraph that also gave each pool's credit ratio and payout
+  threshold, what SafeTrade sold and holds, and the XMR our boxes had mined. The pool table shows the coins;
+  the credit ratios still set Profit $ and are in the 15-minute notes when they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · ⬜ empty slot · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
@@ -417,8 +416,8 @@ The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes, and uses it for Profit $ and the SafeTrade part of the line under the table.
-Until it can, sales entered by hand in config `safetrade` stand in.
+Railway logs, at most every 5 minutes, and uses it for Profit $ (sold PRL at what it sold for). Until it can,
+sales entered by hand in config `safetrade` stand in. The report listed the sales under the table until 20 October.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
 cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
