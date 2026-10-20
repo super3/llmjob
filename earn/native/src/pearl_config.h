@@ -769,6 +769,38 @@ typedef struct {
 #if PEARL_BD_A_DIRECT && !PEARL_TURING_BDIRECT
 #error "PEARL_BD_A_DIRECT is a form of the B-direct fold: it needs PEARL_TURING_BDIRECT=1"
 #endif
+// The order of the A-direct fold's IMMA within a k-step (PEARL_BD_KORDER). 0,
+// the default: ptxas's. 1: a k-lo pass of every accumulator pair's k 0-15 IMMA,
+// then a k-hi pass, so a pair's two IMMA are 64 apart. Each accumulator gets the
+// same adds in the same order, so the results are the same.
+//
+// Why: a warp that issues IMMA alone (its partner hashing) waits on its own
+// recent IMMA results. probes/turing/sass found 24 such waits a chunk-loop pass
+// in ptxas's order and none with k-lo first.
+//
+// The order in the source alone does not survive: ptxas schedules a k-step one
+// loaded 16-byte quad at a time, and each quad mixes k-lo and k-hi words. So with
+// 1, pearl_materialize16_frag and _afrag draw B' and A' in pairs of 16-row blocks,
+// the first block's slot holding both blocks' k-lo words and the second's their
+// k-hi words, and the fold loads its k-hi quads between the passes. Both sides of
+// that are sm_75 device code, so they always agree. The host reads it only for
+// the fold's name.
+//
+// ptxas 12.8 then keeps most of the order: 90 of a chunk loop pass's 512 IMMA
+// come within 32 IMMA of the other IMMA on their pair, against 214. A pass's
+// waits on an IMMA result under 8 IMMA old go from 24 to 17, and under 32 from
+// 65 to 32. Most of the rest are the readout's and the loads' waits on
+// scoreboards ptxas shares with IMMA results. 239 registers against 253, no
+// spill. Not measured on a card.
+#ifndef PEARL_BD_KORDER
+#define PEARL_BD_KORDER 0
+#endif
+#if PEARL_BD_KORDER != 0 && PEARL_BD_KORDER != 1
+#error "PEARL_BD_KORDER is 0 or 1"
+#endif
+#if PEARL_BD_KORDER && !PEARL_BD_A_DIRECT
+#error "PEARL_BD_KORDER orders the A-direct fold's IMMA: it needs PEARL_BD_A_DIRECT=1"
+#endif
 // The B-direct fold's shared: this many A stages, then this many transcript buffers.
 #define PEARL_BD_SMEM_A_STAGES (PEARL_BD_A_DIRECT ? 0 : PEARL_BD_A_STAGES)
 #define PEARL_BD_T_BUFS (PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? 2 : 1)

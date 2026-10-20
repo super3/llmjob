@@ -1043,8 +1043,22 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
   const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
                           (uint32_t)b4.w};
   const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#if PEARL_BD_KORDER
+  // Paired for the k-lo-first fold (PEARL_BD_KORDER): 16-row blocks 2p and 2p + 1
+  // trade halves, so block 2p's slot holds both blocks' k 0-15 words and block
+  // 2p + 1's their k 16-31 words, a lane's as {2p rows 0-7, 2p rows 8-15, 2p + 1
+  // rows 0-7, 2p + 1 rows 8-15}. A last block without a partner keeps the order
+  // above; the fold never reads it.
+  const uint32_t bl = r >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((r >> 3) & 1u)
+                              : ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
+#else
   const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
+#endif
   uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
 #pragma unroll
   for (int w = 0; w < 4; w++) {
@@ -1099,8 +1113,19 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
   const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
                           (uint32_t)b4.w};
   const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#if PEARL_BD_KORDER
+  // Paired as B' is (pearl_materialize16_frag): block 2p's slot holds both
+  // blocks' a0, a1 and block 2p + 1's their a2, a3.
+  const uint32_t bl = r >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((r >> 3) & 1u)
+                              : ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
+#else
   const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
+#endif
   uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
 #pragma unroll
   for (int w = 0; w < 4; w++) {

@@ -132,6 +132,17 @@ __device__ __forceinline__ uint32_t pearl_bd_after(uint32_t b, uint32_t x) {
   return r;
 }
 
+#if PEARL_BD_KORDER
+// One of pearl_mma_m16n8k32's four m8n8k16 on Turing: c0, c1 += a x b, a one A
+// word (a0-a3), b one B word (b0-b3). One instruction reads its operands before
+// it writes, so it needs no early clobber.
+__device__ __forceinline__ void pearl_bd_imma(int32_t &c0, int32_t &c1, uint32_t a, uint32_t b) {
+  asm volatile("mma.sync.aligned.m8n8k16.row.col.s32.s8.s8.s32 {%0,%1}, {%2}, {%3}, {%0,%1};"
+               : "+r"(c0), "+r"(c1)
+               : "r"(a), "r"(b));
+}
+#endif
+
 // An A staging load. Each A byte is read by one thread, so it goes L2-only
 // (ld.global.cg) and leaves L1 to the B fragments.
 __device__ __forceinline__ int4 pearl_bd_lda(const int8_t *p) {
@@ -174,6 +185,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   const uint32_t band_word = __ldg(hits.count + PEARL_BD_BAND_WORD);
   if (!(band_word & PEARL_BD_A_DIRECT_TAG)) __trap();
   const uint32_t band_depth = band_word & ~PEARL_BD_A_DIRECT_TAG;
+#if PEARL_BD_KORDER
+  // B' comes in pairs of 16-row blocks (see kstep), so a warp's four blocks
+  // must start on a pair: col_off steps by whole column spans (pearl_host.cu).
+  if (col_off & 1u) __trap();
+#endif
 #else
   const uint32_t band_depth = __ldg(hits.count + PEARL_BD_BAND_WORD);
 #endif
@@ -416,6 +432,108 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   uint32_t rxs[RPL];
   auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last) {
     const uint32_t s = ch * KSTEPS + t;
+#if PEARL_BD_KORDER
+    // K-lo first (PEARL_BD_KORDER): a k-lo pass of every accumulator pair's
+    // k 0-15 IMMA, then a k-hi pass of its k 16-31 IMMA, in the same order, so
+    // the two IMMA on a pair are 64 apart. Each pair still gets k-lo, k-hi, then
+    // the next k-step's k-lo, as in pearl_mma_m16n8k32.
+    //
+    // The host draws A' and B' in pairs of 16-row blocks (pearl_materialize16_frag
+    // and _afrag): block 2p's slot holds both blocks' k-lo words and block 2p + 1's
+    // their k-hi words, a lane's in the order {2p rows 0-7, 2p rows 8-15, 2p + 1
+    // rows 0-7, 2p + 1 rows 8-15}. So quads 0 and 2 of a k-step (af[][0], af[][2]
+    // and B's) hold its k-lo words and quads 1 and 3 its k-hi ones: m-block mb's
+    // a0, a1 (or a2, a3) are words (mb & 1) * 2 + 0, 1 of quad (mb / 2) * 2 (or
+    // + 1), and n-block pair j's b0, b2 (or b1, b3) the same of B's quads. ptxas
+    // schedules a k-step one loaded quad at a time; with quads that mix k-lo and
+    // k-hi words it undid the order (193 of a chunk loop's 512 IMMA within 32 of
+    // the other IMMA on their pair, against 214 without the switch; 90 now).
+    //
+    // The next k-step's k-lo quads load at the top and its k-hi quads between
+    // the passes, each a k-step before the pass that reads it, into registers
+    // last read a pass earlier.
+    const uint32_t cur = t & 1u, nxt = (t + 1u) & 1u;
+    const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;
+#ifdef PEARL_ABLATE_BHIT
+    // Diagnostic only: as in the staged form. Output is meaningless.
+    const uint32_t bo = (last ? boffn : boff) + ((s + 1u) & 1u) * 512u;
+#else
+    const uint32_t bo = last ? boffn : boff + (s + 1u) * 512u;
+#endif
+    // The next k-step's k-lo quads (hi 0) or k-hi quads (hi 1).
+    auto load_half = [&](uint32_t hi) {
+#pragma unroll
+      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = pearl_bd_ldg(Aprime + ao + q * FRAG_BLOCK);
+#ifndef PEARL_ABLATE_BLOAD
+#pragma unroll
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = pearl_bd_ldg(Bprime + bo + q * FRAG_BLOCK);
+#else
+      // Diagnostic only: as in the staged form. Output is meaningless.
+      (void)bo;
+      asm volatile("" ::: "memory");
+#endif
+    };
+    // A word u (0 rows 0-7, 1 rows 8-15) of m-block mb, and B word odd (0 the
+    // even n-block, 1 the odd) of n-block pair j, from half hi of this k-step.
+    auto a_word = [&](uint32_t mb, uint32_t hi, uint32_t u) -> uint32_t {
+      const int4 v = af[cur][(mb / 2u) * 2u + hi];
+      return (uint32_t)(mb & 1u ? (u ? v.w : v.z) : (u ? v.y : v.x));
+    };
+    auto b_word = [&](uint32_t j, uint32_t hi, uint32_t odd) -> uint32_t {
+      const int4 v = bf[cur][(j / 2u) * 2u + hi];
+      return (uint32_t)(j & 1u ? (odd ? v.w : v.z) : (odd ? v.y : v.x));
+    };
+    load_half(0u);
+    // The k-lo pass. With ro, n-block pair j's IMMA on m-blocks 2rl and 2rl + 1
+    // wait for the fold of their region (rxs[rl]); the k-hi IMMA follow the k-lo
+    // ones on the same accumulators.
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) {
+      uint32_t b0[RPL], b2[RPL];
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) {
+        b0[rl] = b_word(j, 0u, 0u);
+        b2[rl] = b_word(j, 0u, 1u);
+      }
+      if (ro) {
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          b0[rl] = pearl_bd_after(b0[rl], rxs[rl]);
+          b2[rl] = pearl_bd_after(b2[rl], rxs[rl]);
+        }
+      }
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        pearl_bd_imma(acc[mb][2u * j][0], acc[mb][2u * j][1], a_word(mb, 0u, 0u), b0[mb / 2u]);
+        pearl_bd_imma(acc[mb][2u * j][2], acc[mb][2u * j][3], a_word(mb, 0u, 1u), b0[mb / 2u]);
+      }
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        pearl_bd_imma(acc[mb][2u * j + 1u][0], acc[mb][2u * j + 1u][1], a_word(mb, 0u, 0u),
+                      b2[mb / 2u]);
+        pearl_bd_imma(acc[mb][2u * j + 1u][2], acc[mb][2u * j + 1u][3], a_word(mb, 0u, 1u),
+                      b2[mb / 2u]);
+      }
+    }
+    load_half(1u);
+    // The k-hi pass.
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) {
+      const uint32_t b1 = b_word(j, 1u, 0u), b3 = b_word(j, 1u, 1u);
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        pearl_bd_imma(acc[mb][2u * j][0], acc[mb][2u * j][1], a_word(mb, 1u, 0u), b1);
+        pearl_bd_imma(acc[mb][2u * j][2], acc[mb][2u * j][3], a_word(mb, 1u, 1u), b1);
+      }
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        pearl_bd_imma(acc[mb][2u * j + 1u][0], acc[mb][2u * j + 1u][1], a_word(mb, 1u, 0u), b3);
+        pearl_bd_imma(acc[mb][2u * j + 1u][2], acc[mb][2u * j + 1u][3], a_word(mb, 1u, 1u), b3);
+      }
+    }
+#else
     {
       const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;
 #pragma unroll
@@ -466,6 +584,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                            (uint32_t)a.y, (uint32_t)a.z, (uint32_t)a.w, b2, b3);
       }
     }
+#endif  // PEARL_BD_KORDER
   };
 #ifdef PEARL_ABLATE_READOUT
   constexpr bool RO = false;
