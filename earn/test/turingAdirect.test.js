@@ -143,10 +143,13 @@ function specWords(a, rbg, wr, lane, mb, s) {
 }
 
 describe('Turing A-direct: A fragment-ordered', () => {
-  test('is off by default, so the shipped fold and draw are unchanged', () => {
+  test('is on by default, without the meeting, as measured', () => {
     const at = HEADER.indexOf('#ifndef PEARL_BD_A_DIRECT');
     expect(at).toBeGreaterThanOrEqual(0);
-    expect(HEADER.slice(at).split(NL)[1].trim()).toBe('#define PEARL_BD_A_DIRECT 0');
+    expect(HEADER.slice(at).split(NL)[1].trim()).toBe('#define PEARL_BD_A_DIRECT 1');
+    const re = HEADER.indexOf('#ifndef PEARL_BD_A_REALIGN');
+    expect(re).toBeGreaterThanOrEqual(0);
+    expect(HEADER.slice(re).split(NL)[1].trim()).toBe('#define PEARL_BD_A_REALIGN 0');
     // The draw takes the fragment order for A only under the switch, the same
     // macro the fold is built with.
     expect(HOST).toContain('#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT' + NL

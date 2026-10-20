@@ -709,8 +709,8 @@ typedef struct {
 // rows, then the block's 128 transcripts of 64 bytes: 40 KB. That takes
 // Turing's 64 KB shared carveout and leaves 32 KB of L1 for B.
 #define PEARL_BD_A_STAGES 2
-// A-direct (PEARL_BD_A_DIRECT 1; default 0): the B-direct fold with A read the way B
-// is. The host writes A' fragment-ordered as well (pearl_materialize16_afrag), and
+// A-direct (PEARL_BD_A_DIRECT 1, the default; 0 is the staged fold): the B-direct
+// fold with A read the way B is. The host writes A' fragment-ordered as well (pearl_materialize16_afrag), and
 // each warp loads its four A fragments of the next k-step straight from global into
 // registers, beside its B, with no A in shared and no barrier a chunk.
 //
@@ -722,12 +722,13 @@ typedef struct {
 // B pair runs the whole tile a hash apart and stops sharing B in L1 (sharing B is
 // worth 11%, PEARL_ABLATE_BSHARE).
 //
-// So the warps of a row group meet once a tile instead (PEARL_BD_A_REALIGN 1, the
-// default), just before the readout's stores of chunk 0, after five k-steps: about
+// So the warps of a row group can meet once a tile instead (PEARL_BD_A_REALIGN 1),
+// just before the readout's stores of chunk 0, after five k-steps: about
 // 2.5K cycles of mma for the warp that does not hash, against about 2.3K for the hash.
 // That meeting is also what keeps a word of the next tile's chunk 0 from landing
-// before the hashers have read the last tile's. With 0 they never meet inside a
-// tile, and the transcripts take two buffers, a tile each.
+// before the hashers have read the last tile's. With 0, the default, they never
+// meet inside a tile, and the transcripts take two buffers, a tile each. 0 measured
+// faster per clock on all three cards below.
 //
 // Shared is then only the transcripts, 8 KB (16 KB with two buffers), and the host
 // asks for Turing's smaller split of its 96 KB unified cache: 32 KB of shared and 64
@@ -745,12 +746,21 @@ typedef struct {
 // 4 GB or more, as the fold's offsets are 32 bits). earn/test/turingAdirect.test.js
 // checks the layout byte for byte against the staged path, and the bounds.
 //
-// Not measured. Both passes read it (the host draws A' in the layout the fold reads).
+// Measured 2026-10-20 against the staged fold (probes/turing/compilers.sh at
+// 4763de5), hashrate.js in 3 interleaved rounds of 60 s, every round won, and
+// verify-hits 400/400 with and without the meeting on all three cards:
+//   RTX 2080 Ti (Vietnam, 250 W):  82.75 -> 84.75 TH/s (+2.6%), +2.5% per clock
+//   RTX 2070 (South Korea, 150 W): 46.30 -> 48.01 (+3.7%), +1.3% per clock (with
+//                                  the meeting; bench put the two level)
+//   RTX 2060 12 GB (South Korea, 150 W): 47.00 -> 47.88 (+1.9%), +2.1% per clock
+// On bench, without the meeting against with it: +1.0%, -0.4% and +1.7% raw, and
+// +2.0%, +1.3% and +3.6% per clock. Both passes read it (the host draws A' in the
+// layout the fold reads).
 #ifndef PEARL_BD_A_DIRECT
-#define PEARL_BD_A_DIRECT 0
+#define PEARL_BD_A_DIRECT 1
 #endif
 #ifndef PEARL_BD_A_REALIGN
-#define PEARL_BD_A_REALIGN 1
+#define PEARL_BD_A_REALIGN 0
 #endif
 #if (PEARL_BD_A_DIRECT != 0 && PEARL_BD_A_DIRECT != 1) \
     || (PEARL_BD_A_REALIGN != 0 && PEARL_BD_A_REALIGN != 1)
