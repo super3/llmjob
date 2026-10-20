@@ -58,6 +58,10 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # xmr_cpu vCPUs and xmr_memory MB; the CLI picks the threads (xmr_threads 0) and keeps one CPU free.
                "xmr_wallet": "", "xmr_groups": [], "xmr_ver": "v0.6.0", "xmr_cpu": 8, "xmr_memory": 8192,
                "xmr_threads": 0,
+               # With xmr_kx on, Monero goes to Kryptex's PPS+ pool (xmr_kx_host) instead of HeroMiners', with release
+               # xmr_kx_ver or later (the first with --xmr-pool). A running group is switched by its command alone (see
+               # xmr_kx_sync).
+               "xmr_kx": False, "xmr_kx_host": "xmr-us.kryptex.network:7029", "xmr_kx_ver": "v0.6.6",
                # Kryptex's PPS+ pool for Pearl: kryptex_groups groups mine there instead of HeroMiners, with release
                # kryptex_ver or later (the first with --pool). New groups start there while fewer are, and groups
                # waiting for a PC are switched (see kx_sync). Two Kryptex boxes that mine no shares, while no other
@@ -73,6 +77,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # while the LLM answers a prompt (the server's speed test is one); box.sh says so, and the rules wait.
                "llm": False, "llm_ver": "v0.6.5"}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
+KXX_FEE = 0.01    # Kryptex's Monero PPS+ fee (its /v1/pool/info, 20 October)
 KX_API = "https://pool.kryptex.com/prl/api"
 # Each pool's own page for an address, linked from the report's pool table. HeroMiners' home page looks up
 # ?wallet= (its home.html); Kryptex's miner page is a path.
@@ -177,7 +182,7 @@ def vnum(ver):
     return tuple(int(x) for x in re.findall(r"\d+", ver))
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False):
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -192,8 +197,10 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False):
                 f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'"
                 f" -e 's|outbound port 1200 blocked|outbound port {port} blocked|'")
     if xmr:
-        # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI.
-        flags.append(f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else ""))
+        # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI. --xmr-pool (release
+        # v0.6.6 on) sends it to that pool instead of HeroMiners'; box.sh checks no Monero port.
+        flags.append(f"--xmr-address {xmr}" + (f" --xmr-pool {xmr_pool}" if xmr_pool else "")
+                     + (f" --cpu-threads {threads}" if threads else ""))
         sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
                 " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
     if llm:
@@ -628,8 +635,8 @@ class W:
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
     def box(self, name, xmr, kx=False):
-        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later, Kryptex
-        kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
+        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later (xmr_kx_ver
+        on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
         llm = bool(self.cfg["llm"])
@@ -642,8 +649,15 @@ class W:
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
-        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm)
+        xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
+        if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
+            ver = self.cfg["xmr_kx_ver"]
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def xmr_kx(self, xmr):
+        """Whether a box's command sends its Monero to Kryptex: it mines Monero and config xmr_kx is on."""
+        return bool(xmr) and bool(self.cfg["xmr_kx"])
 
     def xmr_sync(self, active, t):
         """Turn Monero on or off in a running group when config asks for it. The PATCH makes a new version of the
@@ -659,7 +673,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["xmr"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
+                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, bool(self.cfg["llm"]), self.xmr_kx(want)
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
@@ -688,12 +702,35 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["llm"], g["ver"] = want, ver
+                g["llm"], g["ver"], g["xmr_kx"] = want, ver, self.xmr_kx(g.get("xmr"))
                 event(f"GEMMA {'ON' if want else 'OFF'} {g['name']}: miner {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
             else:
                 event(f"WARN Gemma {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
+    def xmr_kx_sync(self, active, t):
+        """Send each Monero group's CPU mining to Kryptex's pool, or back to HeroMiners', when config xmr_kx changes,
+        by updating its command only, as llm_sync does: a box that is mining keeps its PC, where Salad usually
+        restarts it with the new command within minutes; one waiting for a PC starts that way at its next. A group
+        still preparing its image is left for a later round, and a refused update is tried again after 10 minutes."""
+        for g in active:
+            want = self.xmr_kx(g.get("xmr"))
+            if (g["ended"] or bool(g.get("xmr_kx")) == want or g.get("status") == "pending"
+                    or t - g.get("xmr_kx_try", 0) < 600):
+                continue
+            g["xmr_kx_try"] = t
+            ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+                        ctype="application/merge-patch+json")
+            pool = "Kryptex" if want else "HeroMiners"
+            if 200 <= s < 300:
+                g["xmr_kx"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
+                event(f"MONERO ON {pool.upper()} {g['name']}: miner {ver}; "
+                      + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
+                         else "it starts that way on its next PC"))
+            else:
+                event(f"WARN Monero to {pool} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
 
     def paused(self, g, t):
         """Whether mining is paused on the box now while its LLM answers a prompt: box.sh said so in the last 5
@@ -864,7 +901,8 @@ class W:
             g["kx_try"] = t   # tried again in 15 minutes
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
-        g["llm"] = bool(self.cfg["llm"])   # the command carries config's Gemma setting too
+        # The command carries config's Gemma and Monero pool settings too.
+        g["llm"], g["xmr_kx"] = bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
         moving = (not in_place and bool(g["has_pc"] and g.get("instance"))
                   and self.on_kx(g, g.get("machine"), t) != on)
@@ -974,9 +1012,12 @@ class W:
             g["xmr_coins"] = g.get("xmr_coins", 0.0) + (hashes - last if hashes >= last else hashes) * mk["per_hash"]
             g["xmr_hashes"], g["xmr_khs"], g["xmr_seen"] = hashes, khs, t
 
-    def kx_xmr(self, t):
+    def kx_xmr(self, groups, t):
         """Kryptex's Monero pool for our Monero address, for the report's XMR Kryptex row: its workers' 30-minute
-        hashrate and what it holds and has paid, at most every 5 minutes, failed tries included."""
+        hashrate and what it holds and has paid, at most every 5 minutes, failed tries included. Each Monero box's
+        worker there ("<group>-g0") gives its CPU rate, and the XMR it earned is that rate over the time since the
+        last read (30 minutes at most, the span of the average) at what a hash earns less Kryptex's fee. Kryptex's
+        API gives no count of hashes, so this lags the box by the average's span, and is starred like HeroMiners'."""
         st, addr = self.st, self.cfg["xmr_wallet"]
         if t - max((st.get("kxx_tot") or {}).get("t", 0), st.get("kxx_try", 0)) < 5 * MIN:
             return
@@ -994,6 +1035,20 @@ class W:
                              "khs": sum(float(x.get("avg_hashrate_30m") or 0) for x in rows if isinstance(x, dict)) / 1000}
         except (TypeError, ValueError):
             pass
+        mk = st.get("xmr_mkt")
+        ws = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
+        for g in groups:
+            x = ws.get(f"{g['name']}-g0")
+            if not x:
+                continue
+            try:
+                khs = float(x.get("avg_hashrate_30m") or 0) / 1000
+            except (TypeError, ValueError):
+                continue
+            if mk and g.get("kxx_seen"):
+                per_hash = mk["per_hash"] / (1 - XMR_FEE) * (1 - KXX_FEE)
+                g["xmr_coins"] = g.get("xmr_coins", 0.0) + khs * 1000 * min(t - g["kxx_seen"], 30 * MIN) * per_hash
+            g["kxx_khs"], g["kxx_seen"] = khs, t
 
     def create(self, cls, pri, taken=(), tries=0):
         """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
@@ -1026,10 +1081,11 @@ class W:
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": bool(self.cfg["llm"])}
+                "llm": bool(self.cfg["llm"]), "xmr_kx": self.xmr_kx(xmr)}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
-                  + (f", Monero on {res['cpu']} vCPUs" if xmr else "") + (", Pearl on Kryptex" if kx else "")
+                  + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
+                  + (", Pearl on Kryptex" if kx else "")
                   + (", Gemma" if self.cfg["llm"] else ""))
             return True
         text = json.dumps(j)
@@ -1216,11 +1272,12 @@ class W:
         self.xmr_sync(list(by_name.values()), t)
         self.kx_sync(list(by_name.values()), t)
         self.llm_sync(list(by_name.values()), t)
+        self.xmr_kx_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         if xg:
             self.xmr_market()
             self.xmr_pool(xg, t)
-            self.kx_xmr(t)
+            self.kx_xmr(xg, t)
         for g in by_name.values():
             if g["last_share"] and not g["first_share_said"]:
                 g["first_share_said"] = True
@@ -1601,7 +1658,7 @@ class W:
 
         def xmr_cell(gs, fmt=str):
             # XMR from each box's Monero work as HeroMiners counted it, at the network's pay less its fee: HeroMiners
-            # pays by its luck, so starred.
+            # pays by its luck, so starred. Plus its work on Kryptex, from its rate there (see kx_xmr): starred too.
             return [fmt(f"{sum(g.get('xmr_coins', 0.0) for g in gs):.6f}{EST}")] if xon else []
 
         rows = []
@@ -1614,7 +1671,9 @@ class W:
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
-            khs = g.get("xmr_khs", 0.0) if g.get("xmr") and g["has_pc"] and t - g.get("xmr_seen", 0) < 15 * MIN else 0.0
+            # Its rate at each Monero pool that saw it in the last 15 minutes: one, or both just after a switch.
+            khs = sum(g.get(k, 0.0) for k, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
+                      if g.get("xmr") and g["has_pc"] and t - (g.get(seen) or 0) < 15 * MIN)
             earn = ths * mk["usd_th_hr"] * yg(g) + khs * xusd
             state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
                      else "⏳")

@@ -1525,25 +1525,25 @@ class TestMonero(Base):
     def test_kryptexs_monero_pool_is_read_at_most_every_5_minutes(self):
         self.kx_api()
         t = self.clock[0]
-        self.x.kx_xmr(t)
+        self.x.kx_xmr([], t)
         kxx = self.x.st["kxx_tot"]
         self.assertAlmostEqual(kxx["confirmed"], 2.061e-06)
         self.assertAlmostEqual(kxx["unconfirmed"], 5e-07)
         self.assertAlmostEqual(kxx["paid"], 0.22)  # the sum of its payouts
         self.assertAlmostEqual(kxx["khs"], 2.0)    # the workers' 30-minute hashrates, in kH/s
-        self.x.kx_xmr(t + 240)
+        self.x.kx_xmr([], t + 240)
         self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 1)
-        self.x.kx_xmr(t + 300)
+        self.x.kx_xmr([], t + 300)
         self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 2)
 
     def test_a_failed_read_of_kryptexs_monero_pool_keeps_the_last_and_waits_5_minutes(self):
         self.kx_api()
         t = self.clock[0]
-        self.x.kx_xmr(t)
+        self.x.kx_xmr([], t)
         self.kx_api(balance=(500, {}))
-        self.x.kx_xmr(t + 300)
+        self.x.kx_xmr([], t + 300)
         self.assertEqual(self.x.st["kxx_tot"]["t"], t)
-        self.x.kx_xmr(t + 540)  # 4 minutes after the failed try
+        self.x.kx_xmr([], t + 540)  # 4 minutes after the failed try
         self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 2)
 
     def test_the_pool_table_shows_kryptexs_monero_pool(self):
@@ -1559,6 +1559,144 @@ class TestMonero(Base):
         rows = report.split("| Pool |")[1].splitlines()
         self.assertTrue(rows.index(next(l for l in rows if "XMR Kryptex" in l))
                         > rows.index(next(l for l in rows if "XMR HeroMiners" in l)))  # under HeroMiners' row
+
+    def test_with_xmr_kx_the_command_sends_monero_to_kryptex_on_v0_6_6(self):
+        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6", XMR, xmr_pool="xmr-us.kryptex.network:7029")
+        self.assertIn(f"--xmr-address {XMR} --xmr-pool xmr-us.kryptex.network:7029", cmd)
+        self.assertNotIn("--xmr-pool", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6", XMR))
+        self.x.cfg["xmr_kx"] = True
+        for kx in (False, True):
+            ver, c, res = self.x.box("biz-rtx4080", True, kx)
+            self.assertEqual(ver, "v0.6.6")
+            self.assertIn("VER=v0.6.6;", c[2])
+            self.assertIn("--xmr-pool xmr-us.kryptex.network:7029", c[2])
+            self.assertEqual(res, {"cpu": 8, "memory": 8192})
+        self.assertNotIn("--xmr", self.x.box("biz-rtx4080", False)[1][2])   # no Monero, no Monero pool
+        self.x.cfg["ver_override"] = {"biz-rtx4080": "v0.7.0"}
+        self.assertEqual(self.x.box("biz-rtx4080", True)[0], "v0.7.0")       # never lowered
+        self.x.cfg.update(xmr_kx=False, ver_override={})
+        self.assertNotIn("--xmr-pool", self.x.box("biz-rtx4080", True)[1][2])
+
+    def test_the_ledgers_pearl_pool_isnt_fooled_by_the_monero_pool_flag(self):
+        self.x.cfg["xmr_kx"] = True
+        g = self.group()
+        self.assertFalse(g["kx"])
+        self.x.kx_follow(g, {"container": {"command": self.x.box(g["name"], True)[1]}}, self.clock[0] + 600)
+        self.assertFalse(g["kx"])   # --xmr-pool isn't --pool: Pearl stays on HeroMiners
+
+    def test_a_new_monero_group_sends_it_to_kryptex(self):
+        self.x.cfg["xmr_kx"] = True
+        g = self.group()
+        self.assertTrue(g["xmr_kx"])
+        self.assertIn("--xmr-pool xmr-us.kryptex.network:7029",
+                      self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2])
+        self.assertIn(", Monero on 8 vCPUs to Kryptex", self.events())
+        plain = self.group(cls="RTX 2060 (6 GB)")   # not in xmr_groups
+        self.assertFalse(plain["xmr_kx"])
+
+    def test_turning_xmr_kx_on_updates_each_monero_group_without_moving_a_box_that_mines(self):
+        self.x.cfg["xmr_groups"] = ["biz-rtx4080", "biz-rtx4080-2", "biz-rtx4080-3"]
+        mining, waiting, preparing = self.group(), self.group(status="deploying"), self.group(status="pending")
+        plain = self.group(cls="RTX 2060 (6 GB)")
+        mining.update(has_pc=True, machine="m1", instance="inst-m1")
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.cfg["xmr_kx"] = True
+        t = self.clock[0]
+        self.x.xmr_kx_sync([mining, waiting, preparing, plain], t)
+        made = self.http.made("PATCH", "/containers/")
+        self.assertEqual(len(made), 2)   # not the group still preparing its image, nor the one without Monero
+        self.assertTrue(all("--xmr-pool xmr-us.kryptex.network:7029" in c[2]["container"]["command"][2] for c in made))
+        self.assertTrue(all(list(c[2]["container"]) == ["command"] for c in made))   # same vCPUs and RAM
+        self.assertFalse(self.http.made("POST", "/restart") or self.http.made("POST", "/reallocate"))   # keeps its PC
+        self.assertTrue(mining["xmr_kx"] and waiting["xmr_kx"] and not preparing.get("xmr_kx"))
+        self.assertEqual(mining["ver"], "v0.6.6")
+        self.assertIn(f"MONERO ON KRYPTEX {mining['name']}: miner v0.6.6; it keeps this PC, where Salad usually "
+                      "restarts it that way within minutes", self.events())
+        self.assertIn(f"MONERO ON KRYPTEX {waiting['name']}: miner v0.6.6; it starts that way on its next PC",
+                      self.events())
+        self.x.xmr_kx_sync([mining, waiting, plain], t + 60)   # done: nothing more to send
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)
+        # A refused update is tried again after 10 minutes.
+        preparing["status"] = "deploying"
+        self.http.on("PATCH", "/containers/", (409, {"error": "busy"}))
+        self.x.xmr_kx_sync([preparing], t + 60)
+        self.assertIn(f"WARN Monero to Kryptex for {preparing['name']} refused: HTTP 409", self.events())
+        self.x.xmr_kx_sync([preparing], t + 5 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 3)
+        self.x.xmr_kx_sync([preparing], t + 11 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 4)
+        # Off again: back to HeroMiners.
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.cfg["xmr_kx"] = False
+        self.x.xmr_kx_sync([mining], t + 20 * 60)
+        self.assertNotIn("--xmr-pool", self.http.made("PATCH", "/containers/")[-1][2]["container"]["command"][2])
+        self.assertFalse(mining["xmr_kx"])
+        self.assertIn(f"MONERO ON HEROMINERS {mining['name']}: miner v0.6.0", self.events())   # config's release again
+
+    def test_any_command_update_records_where_its_monero_goes(self):
+        self.x.cfg["xmr_groups"] = ["*"]
+        a, b, c = self.group(), self.group(), self.group()
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.cfg.update(xmr_kx=True, llm=True)
+        t = self.clock[0]
+        self.x.llm_sync([a], t)                         # Gemma's update carries --xmr-pool too
+        self.assertTrue(a["xmr_kx"])
+        self.assertTrue(self.x.kx_switch(b, True, t, "test", in_place=True))
+        self.assertTrue(b["xmr_kx"])
+        c["xmr"] = False
+        self.x.xmr_sync([c], t)                         # Monero back on, to Kryptex
+        self.assertTrue(c["xmr_kx"])
+        n = len(self.http.made("PATCH", "/containers/"))
+        self.x.xmr_kx_sync([a, b, c], t + 11 * 60)      # so none is sent again
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), n)
+
+    def test_a_round_switches_monero_to_kryptex_and_reads_kryptex(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
+        self.http.on("GET", "kryptex.com/xmr/api/v1/miner/(balance|payouts)/", (200, {}))
+        self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/",
+                     (200, {"results": [{"worker": "biz-rtx4080-g0", "avg_hashrate_30m": "1500"}]}))
+        w.save(w.CFG, {"search": False, "xmr_wallet": XMR, "xmr_groups": ["biz-rtx4080"], "xmr_kx": True})
+        self.x.round()   # it re-reads config.json
+        self.assertIn("--xmr-pool", self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]["command"][2])
+        self.assertEqual(g["kxx_khs"], 1.5)   # its rate on Kryptex
+
+    def test_each_boxs_work_on_kryptex_is_valued_from_its_rate_there(self):
+        g = self.group()
+        self.kx_api()
+        self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/4xyz$",
+                     (200, {"results": [{"worker": f"{g['name']}-g0", "avg_hashrate_30m": "2000"},
+                                        {"worker": "kx-xmr-test", "avg_hashrate_30m": "0"}]}))
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": 1e-12 * (1 - w.XMR_FEE),
+                                "usd_khs_hr": 0.002}
+        t = self.clock[0]
+        self.x.kx_xmr([g], t)
+        self.assertEqual(g.get("xmr_coins", 0.0), 0.0)   # the first read only starts its clock
+        self.assertEqual(g["kxx_khs"], 2.0)
+        self.x.kx_xmr([g], t + 300)
+        # 5 minutes at 2 kH/s, less Kryptex's 1% (not HeroMiners' 0.9%)
+        self.assertAlmostEqual(g["xmr_coins"] / (2000 * 300 * 1e-12 * 0.99), 1, places=9)
+        self.x.kx_xmr([g], t + 300 + 3600)   # an hour without a read: the average's 30 minutes count
+        self.assertAlmostEqual(g["xmr_coins"] / (2000 * (300 + 1800) * 1e-12 * 0.99), 1, places=9)
+
+    def test_a_boxs_khs_counts_each_monero_pool_that_saw_it_lately(self):
+        g = self.group()
+        t = self.clock[0]
+        self.x.st["xmr_mkt"] = {"t": t, "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 0.002}
+        g.update(has_pc=True, machine="m1", readings=[[t - 60, "m1", 200.0, 0]], kxx_khs=2.0, kxx_seen=t)
+
+        def row():
+            self.x.write_report()
+            with open(os.path.join(TMP, "report.md")) as f:
+                return next(l for l in f.read().splitlines() if "4080" in l)
+        self.assertIn("| 200 | 2.0 |", row())
+        g.update(xmr_khs=1.0, xmr_seen=t - 60)   # HeroMiners still sees it just after a switch
+        self.assertIn("| 200 | 3.0 |", row())
+        g["kxx_seen"] = t - 15 * w.MIN           # Kryptex hasn't seen it for 15 minutes
+        self.assertIn("| 200 | 1.0 |", row())
 
     def test_without_an_address_the_table_is_unchanged(self):
         self.x.cfg["xmr_wallet"] = ""

@@ -56,6 +56,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
+| `xmr_kx`, `xmr_kx_host`, `xmr_kx_ver` | Monero to Kryptex's PPS+ pool (`xmr-us.kryptex.network:7029`) instead of HeroMiners', with release `v0.6.6` or later (the first with `--xmr-pool`). A running group is switched by its command alone (see [Monero](#monero-on-the-cpu)). `false`: HeroMiners, and every command is as before. |
 | `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
 | `kx_in_place` | While fewer than `kryptex_groups` are on Kryptex, also switch boxes that are mining on HeroMiners, by updating their command: Salad usually restarts each one on the same PC (see [Kryptex](#kryptex-pps)). `false`: a mining box keeps its pool until its next PC. |
 | `llm`, `llm_ver` | Gemma beside mining on every box (see [Gemma](#gemma-beside-mining)), with release `llm_ver` (v0.6.5) or later. `false`: mining only, and every command is as before. |
@@ -175,6 +176,15 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column, what each box has
   earned is its XMR column, and its rate counts in Profit/hr and Margin, with a 🪙 row in the pool table, but they
   don't keep a slow PC or a weak class.
+- **On Kryptex** (`xmr_kx`, since 20 October). The command adds `--xmr-pool xmr-us.kryptex.network:7029`, which
+  needs release v0.6.6. A running group is switched by its command alone, as Gemma is: a box that is mining keeps
+  its PC, where Salad usually restarts it with the new command within minutes. The vCPUs and RAM don't change.
+  Kryptex's Monero pool is PPS+: it pays for each share, not by its luck, less 1% (HeroMiners takes 0.9%). It pays
+  out from 0.1 XMR unless the address's threshold is lowered on Kryptex's site (0.01 at least); HeroMiners pays from
+  0.01. Kryptex's API gives each worker's average rate but no count of hashes, so a box's XMR there is its worker's
+  30-minute average over the time since the last read (every 5 minutes, 30 minutes at most), at the network's pay
+  less 1%. It is starred and runs about 15 minutes behind the box. A box's kH/s is its rate at each pool that saw it
+  in the last 15 minutes: both for a few minutes after a switch.
 
 ## Gemma beside mining
 
@@ -455,7 +465,9 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   - A group that ended before 20 October has only the ledger's estimate (its speed at the network's rate, at each
     pool's ratio), starred. Work a worker of the same name did before the group began isn't counted.
 - **XMR** is the box's Monero work as HeroMiners counted it, at the network's pay less HeroMiners' 0.9% fee:
-  starred, since HeroMiners pays by its luck. If Monero moves to Kryptex's PPS+ pool it can be exact too.
+  starred, since HeroMiners pays by its luck. On Kryptex (since 20 October) it is the box's rate there over time, at
+  the network's pay less Kryptex's 1% (see [Monero](#monero-on-the-cpu)): starred too, since Kryptex's API gives no
+  count of hashes.
 - **The pool table** is what each pool reports for the account, with no stars: its own hashrate (1-hour average,
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
