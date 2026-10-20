@@ -756,10 +756,15 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
     const D = (o) => Object.fromEntries(Object.entries(o)
       .map(([k, v]) => [k.startsWith('PEARL_') ? k : 'PEARL_BD_' + k, v]));
     const LOADS = { RUNBASE: 1, TAIL_LDG: 1 };
-    // Every N from 1 to 13 with RUNBASE and TAIL_LDG, and with HIT_COORDS too.
+    // The split turns LEAN off, its alternative, and keeps HIT_COORDS on, as the default
+    // fold has it. With no flags LEAN is on.
+    expect([value('PEARL_BD_LEAN', {}), value('PEARL_BD_HIT_COORDS', {})]).toEqual([1, 1]);
+    expect(['LEAN', 'HIT_COORDS', 'GATE'].map((s) => value('PEARL_BD_' + s, D({ HASH_SPLIT: 4, ...LOADS }))))
+      .toEqual([0, 1, 2]);
+    // Every N from 1 to 13 with RUNBASE and TAIL_LDG, and without HIT_COORDS too.
     const allowed = [{}];
     for (let n = 1; n <= 13; n++) allowed.push({ HASH_SPLIT: n, ...LOADS });
-    allowed.push({ HASH_SPLIT: 4, ...LOADS, HIT_COORDS: 1 });
+    allowed.push({ HASH_SPLIT: 4, ...LOADS, HIT_COORDS: 0 });
     for (const f of allowed) {
       expect([f, errorsFor(D(f))]).toEqual([f, []]);
       if (f.HASH_SPLIT) expect(value('PEARL_BD_SPLIT_SMEM', D(f))).toBe(8192);

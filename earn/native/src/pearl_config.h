@@ -819,10 +819,27 @@ typedef struct {
 // and find nothing, silently. (The other way round, a host with the switch and a
 // fold without, does not link: the host launches pearl_materialize16_afrag.)
 #define PEARL_BD_A_DIRECT_TAG 0x80000000u
-// Six parts of the A-direct fold's chunk loop, readout and hash, each off by default,
-// and PEARL_BD_LEAN, which turns on three of them, from a design round on the fold's
-// SASS (2026-10-20). None changes an IMMA's operands or a transcript word, so
-// transcripts, hashes and hits are the same bit for bit. Not measured on a card.
+// Six parts of the A-direct fold's chunk loop, readout and hash, and PEARL_BD_LEAN,
+// which turns on three of them, from a design round on the fold's SASS (2026-10-20).
+// None changes an IMMA's operands or a transcript word, so transcripts, hashes and
+// hits are the same bit for bit. LEAN and HIT_COORDS are on by default; the rest are
+// off.
+//
+// Raced 2026-10-20 against the build without them (probes/turing/compilers.sh at
+// 8603e43), every build with verify-hits 400/400 and the same hits as the default
+// batch for batch (stage complete). bench, raw / per clock, 3 interleaved rounds:
+//                     2080 Ti (Thailand, 170 W)  2070 (150 W)    2060 12 GB (170 W)
+//   LEAN + HIT_COORDS     +1.27% / +1.35%        +1.00% / +1.05%  +1.38% / +0.53%
+//   LEAN                  +1.16% / +0.92%        +0.90% / +0.97%  +1.27% / +0.42%
+//   RED + HIT_COORDS      +0.66% / +0.75%        +0.76% / +0.77%  +0.39% / +0.39%
+//   RED                   +0.44% / +1.02%        +0.76% / +0.83%  +0.30% / +0.30%
+//   RUNBASE + TAIL_LDG    +0.84% / -0.06%        +0.27% / -0.65%  +0.07% / -0.78%
+// hashrate.js, LEAN + HIT_COORDS, 3 rounds of 60 s: the 2070 50.75 -> 51.32 TH/s
+// (+1.1%, +1.0% per clock) and the 2060 49.68 -> 50.41 (+1.5%, +0.9% per clock),
+// every round ahead; the 2080 Ti, held by its host at 167 W and 1065-1080 MHz, +0.2%
+// raw (rounds +0.2, -0.3, +1.0) and +1.2% per clock: it does more work a clock at
+// the same power, so its clock drops a little. SNAKE and the split hash lost
+// (probes/README.md).
 //
 // PEARL_BD_RUNBASE: each chunk-loop pass holds aoff and boff at the pass's chunk in
 // two registers, behind an opaque asm, so every load of the pass is a held base plus
@@ -881,19 +898,29 @@ typedef struct {
 // alone (38 and 35 IMMA ahead), RED without RUNBASE and TAIL_LDG (52 and 49, the
 // next tile's loads after the barrier) and RED with GATE 1 (69 for the first IMMA).
 // The fold's machine code under CUDA 12.8: RUNBASE + TAIL_LDG a3b1a9cefc31, LEAN
-// c25f404242fa (with HIT_COORDS 5c97fbadf64a), RED 0d9d4deedea9 (448266d81713).
-// With every one of them off it stays faf18b40f3a8.
+// c25f404242fa (with HIT_COORDS 5c97fbadf64a, the default), RED 0d9d4deedea9
+// (448266d81713). With every one of them off it is faf18b40f3a8, the fold before.
 //
 // All of them are written for the default fold (A-direct, k-lo first, persistent, two
 // row groups, two transcript buffers), and any other is an error. Device only.
-#ifndef PEARL_BD_LEAN
-#define PEARL_BD_LEAN 0
-#endif
 #ifndef PEARL_BD_RED
 #define PEARL_BD_RED 0
 #endif
+#ifndef PEARL_BD_HASH_SPLIT
+#define PEARL_BD_HASH_SPLIT 0
+#endif
+// LEAN and HIT_COORDS are on by default where they can be: on the default fold, and
+// for LEAN not beside RED or the split hash, its alternatives. So -DPEARL_BD_RED=1 or
+// -DPEARL_BD_HASH_SPLIT=N alone builds those, and -DPEARL_BD_A_DIRECT=0 or
+// -DPEARL_BD_KORDER=0 alone still builds the older folds.
+#define PEARL_BD_DEFAULT_FOLD \
+  (PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_PERSIST && PEARL_BD_GROUPS == 2 \
+   && PEARL_BD_T_BUFS == 2)
+#ifndef PEARL_BD_LEAN
+#define PEARL_BD_LEAN (PEARL_BD_DEFAULT_FOLD && !PEARL_BD_RED && !PEARL_BD_HASH_SPLIT)
+#endif
 #ifndef PEARL_BD_HIT_COORDS
-#define PEARL_BD_HIT_COORDS 0
+#define PEARL_BD_HIT_COORDS PEARL_BD_DEFAULT_FOLD
 #endif
 #if (PEARL_BD_LEAN != 0 && PEARL_BD_LEAN != 1) || (PEARL_BD_RED != 0 && PEARL_BD_RED != 1) \
     || (PEARL_BD_HIT_COORDS != 0 && PEARL_BD_HIT_COORDS != 1)
@@ -926,8 +953,7 @@ typedef struct {
 #endif
 #if (PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_HIT_COORDS \
      || PEARL_BD_GATE != 2) \
-    && !(PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_PERSIST && PEARL_BD_GROUPS == 2 \
-         && PEARL_BD_T_BUFS == 2)
+    && !PEARL_BD_DEFAULT_FOLD
 #error "PEARL_BD_LEAN, _RED and their parts are written for the default fold: A-direct, k-lo first, persistent, two row groups, two transcript buffers"
 #endif
 // PEARL_BD_SNAKE (0 by default), from the same round: k-lo first's IMMA in another
@@ -1031,9 +1057,6 @@ typedef struct {
 // registers), SNAKE (255) or GATE 1 (255) it fails the gates: 7 and 16 IMMA with
 // their read and result on one scoreboard, and loads 50 IMMA ahead. Device and host:
 // the host sizes the shared from it.
-#ifndef PEARL_BD_HASH_SPLIT
-#define PEARL_BD_HASH_SPLIT 0
-#endif
 #if PEARL_BD_HASH_SPLIT < 0 || PEARL_BD_HASH_SPLIT > 13
 #error "PEARL_BD_HASH_SPLIT is 0 or the partner's half-rounds, 1 to 13"
 #endif

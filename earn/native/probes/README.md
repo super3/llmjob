@@ -1722,3 +1722,71 @@ what the fourth worked around:
 | `PEARL_BD_B_AHEAD` | load B two k-steps ahead | same; it also needed 16 more registers |
 | `PEARL_BD_WALK2D` | walk each band in blocks of row groups so one B fetch serves a block | same |
 | `PEARL_BD_SPLIT_BAR` | split the per-chunk barrier so a late B load stalls fewer warps | A-direct has no per-chunk barrier |
+
+### Round 3: the lean loads win, the red readout, snake and split hash don't (2026-10-20)
+
+A design round decoded the k-lo-first fold's SASS, modelled its schedule, and picked
+five switches (`pearl_config.h`, after `PEARL_BD_A_DIRECT_TAG`, where each is
+described). Each gives the same transcripts, hashes and hits:
+
+- `PEARL_BD_LEAN`: the loop's load base held once a pass (`RUNBASE`), the next tile's
+  first k-step loaded coherent so ptxas keeps it ahead of the hand-off (`TAIL_LDG`),
+  and only the even n-block's readout gate (`GATE` 1). ptxas then issues the loop's
+  loads 128 IMMA or more before their use, against 94. 243 registers.
+- `PEARL_BD_RED`: the readout by `red.shared.xor` instead of shuffles, as on the other
+  cards, with the transcript words zeroed before each use. 252 registers.
+- `PEARL_BD_SNAKE`: k-lo first's IMMA reordered so each shares an operand with the one
+  before. 240 registers.
+- `PEARL_BD_HASH_SPLIT=N`: the warp that waits at the hand-off runs the first N of the
+  last tile's 14 hash half-rounds, so its partner has less to do alone. 254 registers.
+- `PEARL_BD_HIT_COORDS`: a hasher works out its tile's coordinates only for a hit.
+
+Raced with `compilers.sh` (commit `8603e43`) against the k-lo-first default on an RTX
+2080 Ti (Thailand, 95392, a benchmark row's machine, held by its host at 170 W and
+about 1060 MHz; the Vietnam card was rented), the South Korea 2070 (139007, 150 W)
+and an RTX 2060 12 GB (South Korea, 27564, 170 W; 142755 was rented). bench, 3
+interleaved rounds of 20 s, raw / per GHz:
+
+| build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| LEAN + HIT_COORDS | +1.27% / +1.35% | +1.00% / +1.05% | +1.38% / +0.53% |
+| LEAN | +1.16% / +0.92% | +0.90% / +0.97% | +1.27% / +0.42% |
+| RED + HIT_COORDS | +0.66% / +0.75% | +0.76% / +0.77% | +0.39% / +0.39% |
+| RED | +0.44% / +1.02% | +0.76% / +0.83% | +0.30% / +0.30% |
+| RUNBASE + TAIL_LDG | +0.84% / -0.06% | +0.27% / -0.65% | +0.07% / -0.78% |
+| SNAKE + RUNBASE + TAIL_LDG | +1.33% / +0.14% | +0.17% / -0.72% | +0.10% / -0.71% |
+| SNAKE | +0.03% / +0.64% | -0.37% / -0.27% | +0.18% / +0.18% |
+| HASH_SPLIT 3 / 4 / 6 | +0.3 to +0.6% / -1.3 to -1.5% | -0.2 to -0.3% / -1.1 to -1.2% | -1.1 to -1.3% / -2.0 to -2.1% |
+
+Every build passed verify-hits 400/400 on all three cards, and the new `complete` stage:
+each found exactly base's hits, batch for batch, in the default shape and in three
+narrow ones where a block has one, two or a few tiles.
+
+hashrate.js, LEAN + HIT_COORDS against the default, 3 rounds of 60 s:
+
+| card | default | LEAN + HIT_COORDS | per clock |
+|---|---|---|---|
+| RTX 2070 (South Korea, 139007, 150 W) | 50.75 TH/s | 51.32 (+1.1%), every round ahead | +1.0% |
+| RTX 2060 12 GB (South Korea, 27564, 170 W) | 49.68 | 50.41 (+1.5%), every round ahead | +0.9% |
+| RTX 2080 Ti (Thailand, 95392, 167 W) | 69.63 | +0.2% (rounds +0.2, -0.3, +1.0) | +1.2% |
+
+The 2080 Ti's rounds came from a second rental (bench there: +1.00% / +1.04%, every
+round ahead), since the race's hashrate stage took the build fastest on its bench,
+SNAKE + RUNBASE + TAIL_LDG (+1.1% raw, -0.2% per clock). That card is held by its host
+far under its 250 W: LEAN does more work a clock at the same power, so it runs about
+10 MHz slower, and most of its per-clock gain does not show raw.
+
+LEAN + HIT_COORDS is now the default (`5c97fbadf64a` under CUDA 12.8);
+`-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0` builds the fold before it.
+
+What it says:
+- The load placement is what LEAN buys: its loads go out early, and its GATE 1 halves
+  the readout's gating PRMTs. RUNBASE and TAIL_LDG alone gain raw only through
+  clock, and are level or a little behind per clock.
+- RED's shuffle-free readout gains, but less than the +1.3% per clock its shuffles cost
+  before k-lo first, which had already spread them out, and it cannot take GATE 1
+  without failing the load gates.
+- SNAKE moved the readout's waits instead of removing them.
+- The split hash costs 1-2% per clock on every card. Either the lone phases it shortens
+  are smaller than the model put them, or its release fence and 254 registers cost
+  more; this round cannot tell which.

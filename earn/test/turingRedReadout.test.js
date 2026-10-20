@@ -3,8 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 
-// Turing's red readout and lean loads, all off by default: PEARL_BD_RED, PEARL_BD_LEAN,
-// their parts PEARL_BD_TADDR, _RUNBASE, _TAIL_LDG and _GATE, and PEARL_BD_HIT_COORDS.
+// Turing's red readout and lean loads: PEARL_BD_RED, PEARL_BD_LEAN, their parts
+// PEARL_BD_TADDR, _RUNBASE, _TAIL_LDG and _GATE, and PEARL_BD_HIT_COORDS. LEAN and
+// HIT_COORDS are on by default on the default fold; RED and the split hash turn LEAN
+// off, and the other folds build with both off. The rest are off by default.
+//
 // RED xors each lane's share of a region into the transcript word (red.shared.xor)
 // instead of gathering the four shares with shuffles, so the words have to start at
 // zero. TADDR holds the store's index in a register. RUNBASE reads the chunk loop's
@@ -263,7 +266,8 @@ function preprocess(text, given) {
   return { lines, errors, defs };
 }
 
-// -D flags, PEARL_BD_ ones by their short names: D('RED=1 GATE=1').
+// -D flags, PEARL_BD_ ones by their short names: D('RED=1 GATE=1'). A later flag
+// wins over an earlier one for the same switch.
 function D(spec) {
   const defs = new Map();
   for (const f of spec.split(' ').filter(Boolean)) {
@@ -272,6 +276,10 @@ function D(spec) {
   }
   return defs;
 }
+
+// Every switch off on the default fold: the default before LEAN and HIT_COORDS went
+// on.
+const OFF = 'LEAN=0 HIT_COORDS=0';
 
 // pearl_config.h's Turing switches, PEARL_TURING_WIDE to PEARL_BD_SPLIT_SMEM, which
 // read nothing defined above them.
@@ -665,7 +673,7 @@ function tileCalls(spec, extra, offs) {
 }
 
 describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and their parts)', () => {
-  test('are off by default; LEAN and RED turn on their parts, and the header refuses the rest', () => {
+  test('LEAN and HIT_COORDS are on by default on the default fold; LEAN and RED turn on their parts, and the header refuses the rest', () => {
     // The evaluator, on C's precedence.
     const none = ifScope(new Map());
     expect(Number(compile('1 | 4 == 5')(none))).toBe(1);
@@ -682,9 +690,15 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       expect(at).toBeGreaterThanOrEqual(0);
       return HEADER.slice(at).split(NL)[1].trim();
     };
-    expect(def('PEARL_BD_LEAN')).toBe('#define PEARL_BD_LEAN 0');
+    // LEAN and HIT_COORDS are on by default on the fold they are written for, and LEAN
+    // only without RED or the split hash, its alternatives.
+    expect(def('PEARL_BD_LEAN')).toBe(
+      '#define PEARL_BD_LEAN (PEARL_BD_DEFAULT_FOLD && !PEARL_BD_RED && !PEARL_BD_HASH_SPLIT)');
     expect(def('PEARL_BD_RED')).toBe('#define PEARL_BD_RED 0');
-    expect(def('PEARL_BD_HIT_COORDS')).toBe('#define PEARL_BD_HIT_COORDS 0');
+    expect(def('PEARL_BD_HASH_SPLIT')).toBe('#define PEARL_BD_HASH_SPLIT 0');
+    expect(def('PEARL_BD_HIT_COORDS')).toBe('#define PEARL_BD_HIT_COORDS PEARL_BD_DEFAULT_FOLD');
+    expect(flat(config('').defs.get('PEARL_BD_DEFAULT_FOLD').body)).toBe('(PEARL_BD_A_DIRECT && PEARL_BD_KORDER '
+      + '&& PEARL_BD_PERSIST && PEARL_BD_GROUPS == 2 && PEARL_BD_T_BUFS == 2)');
     expect(def('PEARL_BD_RUNBASE')).toBe('#define PEARL_BD_RUNBASE (PEARL_BD_LEAN || PEARL_BD_RED)');
     expect(def('PEARL_BD_TAIL_LDG')).toBe('#define PEARL_BD_TAIL_LDG (PEARL_BD_LEAN || PEARL_BD_RED)');
     expect(def('PEARL_BD_TADDR')).toBe('#define PEARL_BD_TADDR PEARL_BD_RED');
@@ -696,19 +710,37 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       expect(c.errors).toEqual([]);
       return Object.fromEntries(SW.map((s) => [s, c.value('PEARL_BD_' + s)]));
     };
-    expect(of('')).toEqual({ LEAN: 0, RED: 0, RUNBASE: 0, TAIL_LDG: 0, TADDR: 0, GATE: 2, HIT_COORDS: 0 });
+    // With no flags: LEAN, so its parts, and HIT_COORDS.
+    expect(of('')).toEqual({ LEAN: 1, RED: 0, RUNBASE: 1, TAIL_LDG: 1, TADDR: 0, GATE: 1, HIT_COORDS: 1 });
+    expect(of('LEAN=1 HIT_COORDS=1')).toEqual(of(''));
     // The fold they are written for is the default one.
     const c0 = config('');
     expect(['A_DIRECT', 'KORDER', 'PERSIST', 'T_BUFS', 'GROUPS', 'A_REALIGN'].map((s) => c0.value('PEARL_BD_' + s)))
       .toEqual([1, 1, 1, 2, 2, 0]);
-    expect(of('LEAN=1')).toEqual({ LEAN: 1, RED: 0, RUNBASE: 1, TAIL_LDG: 1, TADDR: 0, GATE: 1, HIT_COORDS: 0 });
-    expect(of('RED=1')).toEqual({ LEAN: 0, RED: 1, RUNBASE: 1, TAIL_LDG: 1, TADDR: 1, GATE: 2, HIT_COORDS: 0 });
+    expect(c0.value('PEARL_BD_DEFAULT_FOLD')).toBe(1);
+    // OFF turns both off, and with them every part.
+    expect(of(OFF)).toEqual({ LEAN: 0, RED: 0, RUNBASE: 0, TAIL_LDG: 0, TADDR: 0, GATE: 2, HIT_COORDS: 0 });
+    expect(of('LEAN=1 HIT_COORDS=0')).toEqual({ LEAN: 1, RED: 0, RUNBASE: 1, TAIL_LDG: 1, TADDR: 0, GATE: 1, HIT_COORDS: 0 });
+    // RED alone turns LEAN off and keeps HIT_COORDS. So does the split hash, which takes
+    // the load parts as flags.
+    expect(of('RED=1')).toEqual({ LEAN: 0, RED: 1, RUNBASE: 1, TAIL_LDG: 1, TADDR: 1, GATE: 2, HIT_COORDS: 1 });
+    expect(of('RED=1 HIT_COORDS=0')).toEqual({ LEAN: 0, RED: 1, RUNBASE: 1, TAIL_LDG: 1, TADDR: 1, GATE: 2, HIT_COORDS: 0 });
+    expect(of('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1'))
+      .toEqual({ LEAN: 0, RED: 0, RUNBASE: 1, TAIL_LDG: 1, TADDR: 0, GATE: 2, HIT_COORDS: 1 });
+    // On any other fold, no flags is every switch off.
+    for (const other of ['PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+      expect([other, config(other).value('PEARL_BD_DEFAULT_FOLD'), of(other)]).toEqual([other, 0, of(OFF)]);
+    }
     // A part given on the command line wins over the one LEAN or RED would set.
     expect(of('RED=1 GATE=1').GATE).toBe(1);
     expect(of('LEAN=1 GATE=2').GATE).toBe(2);
     expect(of('RED=1 RUNBASE=0 TAIL_LDG=0')).toMatchObject({ RUNBASE: 0, TAIL_LDG: 0, TADDR: 1 });
-    for (const spec of ['LEAN=1 HIT_COORDS=1', 'RED=1 HIT_COORDS=1', 'RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1',
-      'HIT_COORDS=1', 'RUNBASE=1 TAIL_LDG=1', 'TADDR=1 RUNBASE=1 TAIL_LDG=1']) {
+    // LEAN and RED with HIT_COORDS or without, and each part alone or on top of the
+    // default, build.
+    const PARTS = ['RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1', 'HIT_COORDS=1', 'RUNBASE=1 TAIL_LDG=1',
+      'TADDR=1 RUNBASE=1 TAIL_LDG=1'];
+    for (const spec of ['LEAN=1 HIT_COORDS=1', 'RED=1 HIT_COORDS=1', 'LEAN=1 HIT_COORDS=0', 'RED=1 HIT_COORDS=0',
+      ...PARTS.map((p) => `${OFF} ${p}`), ...PARTS]) {
       expect([spec, config(spec).errors]).toEqual([spec, []]);
     }
 
@@ -726,7 +758,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     for (const g of [0, 3]) refused(`GATE=${g}`, 'PEARL_BD_GATE is 1 or 2');
     refused('LEAN=1 RED=1', 'PEARL_BD_LEAN and PEARL_BD_RED are alternatives');
     refused('RED=1 TADDR=0', 'it needs PEARL_BD_TADDR=1');
-    // Each, on any other fold. Those still build without them.
+    // Each, given on any other fold. With no flags those build (above).
     for (const other of ['PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
       expect(config(other).errors).toEqual([]);
       for (const part of ['LEAN=1', 'RED=1', 'RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1', 'HIT_COORDS=1']) {
@@ -742,8 +774,9 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
   });
 
   test('with every switch off, no fold builds any of the new code', () => {
-    // dch, the ldg wrapper and region_of are shared; the rest stays under #if.
-    for (const spec of ['', 'PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+    // OFF on the default fold, and no flags on the others. dch, the ldg wrapper and
+    // region_of are shared; the rest stays under #if.
+    for (const spec of [OFF, 'PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
       const f = built(spec);
       for (const re of [/\btK\b/, /\barun\b/, /\bbrun\b/, /pearl_bd_ldg_c/, /red\.shared/, /\bsT0\b/, /\bvtile\b/,
         /sT\[[^\]]*\] = 0u;/]) {
@@ -751,7 +784,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       }
       expect([spec, count(f.text, '__shfl_xor_sync(')]).toEqual([spec, spec === 'A_DIRECT=0' ? 3 : 6]);
     }
-    const f = built('');
+    const f = built(OFF);
     for (const line of [
       'const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;',
       'const uint32_t bo = last ? boffn : boff + (s + 1u) * 512u;',
@@ -762,6 +795,17 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       'const uint32_t region = region_of(rbg, cbg);',
     ]) {
       expect(f.text).toContain(line);
+    }
+  });
+
+  test('with no flags the default fold is the LEAN + HIT_COORDS build, line for line', () => {
+    const lines = (spec) => built(spec).text.split(NL);
+    expect(lines('')).toEqual(lines('LEAN=1 HIT_COORDS=1'));
+    expect(lines('')).not.toEqual(lines(OFF));
+    // RED alone builds RED with HIT_COORDS. The other folds build as with OFF.
+    expect(lines('RED=1')).toEqual(lines('RED=1 HIT_COORDS=1'));
+    for (const other of ['PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+      expect([other, lines(other)]).toEqual([other, lines(`${other} ${OFF}`)]);
     }
   });
 
@@ -778,7 +822,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(base.expr.L).toBe('warp * warp_regions + (lane & 3u) * regions_per_warp + 2u * rl + ((lane >> 4) & 1u)');
     expect(base.expr.store).toBe('tbuf + L * 16u + (c ^ ((L >> 1) & 15u))');
     expect(base.expr.tbuf).toBe('(it & 1u) * TWORDS');
-    for (const spec of ['TADDR=1', 'RED=1']) {
+    for (const spec of [`${OFF} TADDR=1`, 'RED=1']) {
       const m = readoutCode(spec);
       expect(m.store).toBe(spec === 'RED=1' ? 'red' : 'taddr');
       expect(m.expr.store).toBe('tK ^ (33u * rl) ^ c');
@@ -833,11 +877,11 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       + 'const uint32_t s8 = __shfl_xor_sync(0xffffffffu, x, 8); '
       + 'const uint32_t s12 = __shfl_xor_sync(0xffffffffu, x, 12); x = pearl_xor3(x, s4, s8) ^ s12;';
     const FOLDS = 'uint32_t x = 0u; #pragma unroll for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);';
-    for (const spec of ['', 'LEAN=1', 'TADDR=1', 'RUNBASE=1 TAIL_LDG=1', 'HIT_COORDS=1']) {
+    for (const spec of [OFF, 'LEAN=1', `${OFF} TADDR=1`, `${OFF} RUNBASE=1 TAIL_LDG=1`, 'LEAN=0 HIT_COORDS=1']) {
       expect(gather(spec)).toBe(`auto readout_gather = [&](uint32_t x) -> uint32_t { ${SHUFFLES} return x; }`);
       expect(rx(spec)).toBe(`auto readout_x = [&](uint32_t rl) -> uint32_t { ${FOLDS} ${SHUFFLES} return x; }`);
     }
-    for (const spec of ['RED=1', 'RED=1 GATE=1', 'RED=1 HIT_COORDS=1', 'RED=1 RUNBASE=0 TAIL_LDG=0']) {
+    for (const spec of ['RED=1 HIT_COORDS=0', 'RED=1 GATE=1', 'RED=1 HIT_COORDS=1', 'RED=1 RUNBASE=0 TAIL_LDG=0']) {
       const f = built(spec);
       expect([spec, count(f.text, '__shfl')]).toEqual([spec, 0]);
       expect(gather(spec)).toBe('auto readout_gather = [&](uint32_t x) -> uint32_t { return x; }');
@@ -888,7 +932,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     const { stores } = tileCalls('RED=1', '', { aoff: 0, boff: 0, aoffn: 0, boffn: 0 });
     expect([...stores].sort()).toEqual(Array.from({ length: 32 }, (_, i) => `${i >> 4}.${i & 15}`).sort());
 
-    for (const [spec, seed] of [['RED=1', 3], ['RED=1 GATE=1 HIT_COORDS=1', 6]]) {
+    for (const [spec, seed] of [['RED=1 HIT_COORDS=0', 3], ['RED=1 GATE=1 HIT_COORDS=1', 6]]) {
       const res = simulate(spec, { tiles: 7, seed });
       expect([spec, res]).toEqual([spec,
         { wrong: 0, read: 7 * 128 * 16, badXors: 0, badZeroes: 0, dirty: 0, outside: 0 }]);
@@ -913,7 +957,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
   });
 
   test('the prologue zeroes both buffers, every word once, before the first tile', () => {
-    expect(readoutCode('').proAt).toBeUndefined();
+    for (const spec of [OFF, '']) expect([spec, readoutCode(spec).proAt]).toEqual([spec, undefined]);
     for (const spec of ['RED=1', 'RED=1 GATE=1']) {
       const m = readoutCode(spec);
       expect(m.expr.proBound).toBe('PEARL_BD_T_BUFS * TWORDS / PEARL_FOLD_THREADS');
@@ -953,7 +997,8 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     ];
     const strip = (c) => ({ ch: c.ch, t: c.t, ro: c.ro, last: c.last, s: c.s, ao: c.ao, bo: c.bo, nxt: c.nxt });
     for (const o of offs) {
-      const want = tileCalls('', '', o);
+      // The loads with every switch off.
+      const want = tileCalls(OFF, '', o);
       expect(want.expr.ao).toBe('last ? aoffn : aoff + (s + 1u) * 512u');
       expect(want.expr.bo).toBe('last ? boffn : boff + (s + 1u) * 512u');
       expect(want.expr.s).toBe('ch * KSTEPS + t');
@@ -967,7 +1012,8 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
         expect(c.ao).toBe(c.last ? o.aoffn : (o.aoff + (c.s + 1) * 512) % M);
         expect(c.bo).toBe(c.last ? o.boffn : (o.boff + (c.s + 1) * 512) % M);
       }
-      for (const spec of ['RUNBASE=1', 'LEAN=1', 'RED=1', 'RUNBASE=1 TAIL_LDG=1 HIT_COORDS=1', 'RED=1 GATE=1']) {
+      for (const spec of [`${OFF} RUNBASE=1`, 'LEAN=1', 'RED=1', 'LEAN=0 RUNBASE=1 TAIL_LDG=1 HIT_COORDS=1',
+        'RED=1 GATE=1']) {
         const got = tileCalls(spec, '', o);
         expect(got.expr.ao).toBe('last ? aoffn : arun + (dch * KSTEPS + t + 1u) * 512u');
         expect(got.expr.bo).toBe('last ? boffn : brun + (dch * KSTEPS + t + 1u) * 512u');
@@ -994,8 +1040,8 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
 
   test('TAIL_LDG loads only the next tile\'s k-step 0 coherent, the same bytes', () => {
     const ldg = (spec) => flat(block(built(spec).text, 'auto ldg = [&](const int8_t *p) -> int4 {'));
-    expect(ldg('')).toBe('auto ldg = [&](const int8_t *p) -> int4 { return pearl_bd_ldg(p); }');
-    for (const spec of ['TAIL_LDG=1', 'LEAN=1', 'RED=1']) {
+    expect(ldg(OFF)).toBe('auto ldg = [&](const int8_t *p) -> int4 { return pearl_bd_ldg(p); }');
+    for (const spec of [`${OFF} TAIL_LDG=1`, 'LEAN=1', 'RED=1']) {
       expect(ldg(spec)).toBe('auto ldg = [&](const int8_t *p) -> int4 { '
         + 'if (last) return pearl_bd_ldg_c(p); return pearl_bd_ldg(p); }');
       const f = built(spec);
@@ -1045,7 +1091,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     const f0 = built('');
     const readSet = (rl, np) => new Set(reads.map(([, mb, nb]) => `${cfun(f0, mb)({ rl })}.${cfun(f0, nb)({ np })}`));
     expect(FOLD).toContain('constexpr uint32_t RPL = MB / 2u;');
-    for (const [spec, gate] of [['', 2], ['GATE=1', 1], ['LEAN=1', 1], ['RED=1', 2], ['RED=1 GATE=1', 1],
+    for (const [spec, gate] of [[OFF, 2], [`${OFF} GATE=1`, 1], ['LEAN=1', 1], ['RED=1', 2], ['RED=1 GATE=1', 1],
       ['LEAN=1 SNAKE=1', 1]]) {
       const ks = flat(block(built(spec).text, KSTEP));
       const klo = ks.slice(ks.indexOf('load_half(0u);'), ks.indexOf('load_half(1u);'));
@@ -1113,10 +1159,13 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(checked).toBe(4 * 128 * 5 * 5);
 
     const HIT = 'if (slot >= PEARL_MAX_HITS) return;';
-    for (const spec of ['', 'LEAN=1', 'RED=1', 'PERSIST=0', 'A_DIRECT=0', 'HIT_COORDS=1', 'LEAN=1 HIT_COORDS=1',
-      'RED=1 HIT_COORDS=1', 'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1 HIT_COORDS=1']) {
+    // With HIT_COORDS (on by default on the default fold, and in the split hash) and
+    // without.
+    for (const spec of [OFF, 'LEAN=1 HIT_COORDS=0', 'RED=1 HIT_COORDS=0', 'PERSIST=0', 'A_DIRECT=0',
+      'LEAN=0 HIT_COORDS=1', '', 'LEAN=1 HIT_COORDS=1', 'RED=1', 'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1',
+      'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1 HIT_COORDS=0']) {
       const g = built(spec);
-      const hc = spec.includes('HIT_COORDS=1');
+      const hc = config(spec).value('PEARL_BD_HIT_COORDS') === 1;
       const ht = flat(block(g.text, hc ? HASH_TILE_V : HASH_TILE_RC));
       if (hc) {
         // Worked out after the hit's slot, from the tile hash_tile was handed.
@@ -1169,15 +1218,27 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       const split = c.value('PEARL_BD_HASH_SPLIT');
       return ', with' + names.map(([e, n]) => (c.value(e) ? n : '')).join('') + (split ? ' HASH_SPLIT=' + split : '');
     };
-    expect(suffix('')).toBe('');
-    expect(suffix('LEAN=1')).toBe(', with RUNBASE TAIL_LDG GATE=1');
+    // With no flags, LEAN's parts and HIT_COORDS. With every switch off, on the default
+    // fold or another, nothing.
+    expect(suffix('')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS');
     expect(suffix('LEAN=1 HIT_COORDS=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS');
-    expect(suffix('RED=1')).toBe(', with RUNBASE TAIL_LDG TADDR RED');
-    expect(suffix('SNAKE=1')).toBe(', with SNAKE');
-    expect(suffix('SNAKE=1 RED=1 GATE=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 TADDR RED SNAKE');
-    expect(suffix('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1')).toBe(', with RUNBASE TAIL_LDG HASH_SPLIT=4');
+    expect(suffix(OFF)).toBe('');
+    for (const other of ['PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+      expect([other, suffix(other)]).toEqual([other, '']);
+    }
+    expect(suffix('LEAN=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG GATE=1');
+    expect(suffix('RED=1')).toBe(', with RUNBASE TAIL_LDG TADDR RED HIT_COORDS');
+    expect(suffix('RED=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG TADDR RED');
+    expect(suffix('SNAKE=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS SNAKE');
+    expect(suffix(`${OFF} SNAKE=1`)).toBe(', with SNAKE');
+    expect(suffix('SNAKE=1 RED=1 GATE=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 TADDR RED HIT_COORDS SNAKE');
+    expect(suffix('SNAKE=1 RED=1 GATE=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG GATE=1 TADDR RED SNAKE');
+    expect(suffix('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1')).toBe(', with RUNBASE TAIL_LDG HIT_COORDS HASH_SPLIT=4');
+    expect(suffix('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG HASH_SPLIT=4');
+    // Each part alone names just itself.
     for (const s of ['RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1', 'HIT_COORDS=1']) {
-      expect([s, suffix(s)]).toEqual([s, ', with ' + names.find(([e]) => e.includes(s.split('=')[0]))[1].trim()]);
+      expect([s, suffix(`${OFF} ${s}`)])
+        .toEqual([s, ', with ' + names.find(([e]) => e.includes(s.split('=')[0]))[1].trim()]);
     }
     // The longest name fits the buffer.
     expect(HOST).toContain('  char foldName[224] = {0};');

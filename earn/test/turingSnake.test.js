@@ -595,7 +595,7 @@ function guards() {
 }
 
 describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
-  test('is off by default, needs k-lo first, and stacks only where the gates pass', () => {
+  test('is off by default and alone builds on LEAN, needs k-lo first, and stacks only where the gates pass', () => {
     const at = HEADER.indexOf('#ifndef PEARL_BD_SNAKE' + NL);
     expect(at).toBeGreaterThanOrEqual(0);
     expect(HEADER.slice(at).split(NL)[1].trim()).toBe('#define PEARL_BD_SNAKE 0');
@@ -613,27 +613,39 @@ describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
     const errorsFor = (flags) => preprocess(GUARDS, flags);
     const value = (cond, flags) => (preprocess(GUARDS + NL + '#if ' + cond + NL + '#error yes' + NL
       + '#endif', flags).includes('yes') ? 1 : 0);
+    // With no flags: k-lo first with LEAN (its parts) and HIT_COORDS, as the default
+    // fold builds. OFF turns both off, and with them every part.
+    const OFF = { PEARL_BD_LEAN: 0, PEARL_BD_HIT_COORDS: 0 };
     expect(value('PEARL_BD_SNAKE == 0', {})).toBe(1);
-    expect(value('PEARL_BD_KORDER == 1 && PEARL_BD_GATE == 2 && !PEARL_BD_RUNBASE', {})).toBe(1);
-    expect(value('PEARL_BD_GATE == 1 && PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG', { PEARL_BD_LEAN: 1 }))
+    expect(value('PEARL_BD_KORDER == 1 && PEARL_BD_LEAN && PEARL_BD_HIT_COORDS && PEARL_BD_GATE == 1 '
+      + '&& PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG', {})).toBe(1);
+    expect(value('PEARL_BD_KORDER == 1 && PEARL_BD_GATE == 2 && !PEARL_BD_RUNBASE && !PEARL_BD_TAIL_LDG', OFF))
       .toBe(1);
-    expect(value('PEARL_BD_KORDER == 0', { PEARL_BD_A_DIRECT: 0 })).toBe(1);
+    expect(value('PEARL_BD_GATE == 1 && PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG',
+      { PEARL_BD_LEAN: 1, PEARL_BD_HIT_COORDS: 0 })).toBe(1);
+    // SNAKE alone stacks on LEAN and HIT_COORDS.
+    expect(value('PEARL_BD_SNAKE && PEARL_BD_LEAN && PEARL_BD_HIT_COORDS', { PEARL_BD_SNAKE: 1 })).toBe(1);
+    // A_DIRECT=0 alone builds the older fold, with LEAN and HIT_COORDS off.
+    expect(value('PEARL_BD_KORDER == 0 && !PEARL_BD_LEAN && !PEARL_BD_HIT_COORDS', { PEARL_BD_A_DIRECT: 0 }))
+      .toBe(1);
     // The builds pearl_config.h names as passing the gates, and the plain ones.
     const S = { PEARL_BD_SNAKE: 1 };
     const allowed = [
       {},
+      OFF,
       S,
-      { ...S, PEARL_BD_RUNBASE: 1 },
-      { ...S, PEARL_BD_RUNBASE: 1, PEARL_BD_TAIL_LDG: 1 },
+      { ...S, ...OFF },
+      { ...S, ...OFF, PEARL_BD_RUNBASE: 1 },
+      { ...S, ...OFF, PEARL_BD_RUNBASE: 1, PEARL_BD_TAIL_LDG: 1 },
       // TAIL_LDG alone keeps SNAKE's own loop.
-      { ...S, PEARL_BD_TAIL_LDG: 1 },
-      { ...S, PEARL_BD_LEAN: 1 },
+      { ...S, ...OFF, PEARL_BD_TAIL_LDG: 1 },
+      { ...S, PEARL_BD_LEAN: 1, PEARL_BD_HIT_COORDS: 0 },
       { ...S, PEARL_BD_LEAN: 1, PEARL_BD_HIT_COORDS: 1 },
-      { ...S, PEARL_BD_RED: 1, PEARL_BD_GATE: 1 },
+      { ...S, PEARL_BD_RED: 1, PEARL_BD_GATE: 1, PEARL_BD_HIT_COORDS: 0 },
       { ...S, PEARL_BD_RED: 1, PEARL_BD_GATE: 1, PEARL_BD_HIT_COORDS: 1 },
-      { ...S, PEARL_BD_HIT_COORDS: 1 },
-      { ...S, PEARL_BD_GATE: 1 },
-      { ...S, PEARL_BD_TADDR: 1 },
+      { ...S, PEARL_BD_LEAN: 0, PEARL_BD_HIT_COORDS: 1 },
+      { ...S, ...OFF, PEARL_BD_GATE: 1 },
+      { ...S, ...OFF, PEARL_BD_TADDR: 1 },
       { ...S, PEARL_BD_PERSIST: 0 },
       { ...S, PEARL_BD_A_REALIGN: 1 },
       { ...S, PEARL_ABLATE_BHIT: 1 },
@@ -644,7 +656,7 @@ describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
       [{ PEARL_BD_SNAKE: 2 }, null],
       [{ ...S, PEARL_BD_KORDER: 0 }, { PEARL_BD_KORDER: 0 }],
       [{ ...S, PEARL_BD_A_DIRECT: 0 }, { PEARL_BD_A_DIRECT: 0 }],
-      [{ ...S, PEARL_BD_RED: 1 }, { PEARL_BD_RED: 1 }],
+      [{ ...S, PEARL_BD_RED: 1, PEARL_BD_HIT_COORDS: 0 }, { PEARL_BD_RED: 1, PEARL_BD_HIT_COORDS: 0 }],
       [{ ...S, PEARL_BD_RED: 1, PEARL_BD_HIT_COORDS: 1 }, { PEARL_BD_RED: 1, PEARL_BD_HIT_COORDS: 1 }],
       // RED at gate 1 without one load part or both: the next tile's loads after the barrier.
       [{ ...S, PEARL_BD_RED: 1, PEARL_BD_GATE: 1, PEARL_BD_RUNBASE: 0 },
