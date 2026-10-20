@@ -1388,8 +1388,8 @@ class W:
 
     # ---------- report ----------
     def write_report(self):
-        """One table: a row per box, a total, and what Salad has cost and the credit left; the pools' own figures
-        under it. Every row fits on one line in a chat window."""
+        """A heading, then one table: a row per box and a total, the pools' own figures under it. Every row fits
+        on one line in a chat window."""
         st, t = self.st, now()
         mk = st["mkt"]
         # The table counts on what the pool credits: the network's rate times its credit ratio. The rules may
@@ -1462,18 +1462,8 @@ class W:
         hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
-        # Under the All row: what Salad has cost, what each credited PRL cost (against the price in the heading)
-        # and the credit left, with the hours it lasts at the bill in the All row. Until 20 October these were a
-        # line under the tables, and before that a paragraph with each pool's credit ratio and payout threshold,
-        # SafeTrade's sales and the XMR mined; the key to the symbols is in the README.
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        dash = " — |" * (4 if xon else 3)
-        lines.append(f"| Salad{NB}spent |{dash} ${spend:.2f}{EST} |")
-        if prl > 0:
-            lines.append(f"| Cost{NB}per{NB}PRL |{dash} ${cost_prl:.2f}{EST} |")
-        left = f"{NB}({hours:.0f}{EST}{NB}h)" if hours is not None else ""
-        lines.append(f"| Credit{NB}left{left} |{dash} ${credit:.2f}{EST} |")
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
         # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined
@@ -1494,8 +1484,14 @@ class W:
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
-        # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row.
-        head = f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining"
+        # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. What each
+        # credited PRL cost sits beside the price, and the Salad credit left (with the hours it lasts at the All
+        # row's $/hr) at the end. Until 20 October those two were under the tables, with what Salad had cost (in
+        # Profit $ already), and before that in a paragraph that also gave each pool's credit ratio and payout
+        # threshold, SafeTrade's sales and the XMR mined; the key to the symbols is in the README.
+        head = (f"**{stamp(t)}** · PRL ${price:.2f}" + (f" (costs us ${cost_prl:.2f}{EST})" if prl > 0 else "")
+                + f" · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
+                + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:

@@ -879,7 +879,7 @@ class TestPoolTotals(Base):
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
         self.assertIn("| **+5.12\\*** |\n", report)  # the All row
-        self.assertIn(f"| Salad{w.NB}spent | — | — | — | $6.00* |\n| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.75* |\n", report)
+        self.assertIn(" · PRL $1.39 (costs us $0.75*) · ", report)
         self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
         self.assertNotIn("has credited", report)   # the ratio is in the notes, not the report, since 20 October
         self.assertNotIn("Locked", report)
@@ -898,7 +898,7 @@ class TestCreditRatio(Base):
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**3:00 am EST, Fri, Jan 15** · PRL $1.39 · "))  # no rule above it
+        self.assertTrue(self.report().startswith("**3:00 am EST, Fri, Jan 15** · PRL $1.39 "))  # no rule above it
 
     def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
         t = w.parse_iso("2026-10-17T15:53:00Z")
@@ -917,36 +917,34 @@ class TestCreditRatio(Base):
 
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
-        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 · 0/1 mining")
+        # What each PRL cost (8 PRL at the 75% credited is 6, for $6.00) and the credit left; no box is billing,
+        # so no hours.
+        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 (costs us $1.00*) · 0/1 mining · Salad $94.00* left")
 
     def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
         report = self.report(cfg={"max_active": 10})
         empty = f"| ⬜{w.NB}empty | — | — | — | — |"
         self.assertEqual(report.count(empty + "\n"), 9)              # 1 group, 10 slots
-        self.assertIn(" · 0/10 mining\n", report)                    # counted against the slots, not the groups
+        self.assertIn(" · 0/10 mining · Salad $", report)                    # counted against the slots, not the groups
         rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
         self.assertTrue(all(len(l) <= 90 for l in rows))
 
-    def test_salads_figures_are_rows_under_the_all_row(self):
+    def test_nothing_but_the_tables_under_the_heading(self):
         self.x.st["kx_tot"] = {"t": T0, "total": 1.0, "confirmed": 1.0, "unconfirmed": 0.0, "paid": 0.0}
         self.x.cfg["safetrade"] = {"sold": 1.0, "received": 1.5, "fees": 0.0, "usdt": 1.5}
         report = self.report(cfg={"max_active": 10, "xmr_wallet": "4" + "a" * 94, "xmr_groups": ["*"]})
-        rows = [l for l in report.split("\n") if l.startswith("| ")]
-        at = next(i for i, l in enumerate(rows) if l.startswith("| **All**"))
-        # What Salad cost, what each PRL cost (8 PRL at the 75% credited is 6, for $6.00) and the credit left;
-        # no box is billing, so no hours.
-        self.assertEqual(rows[at + 1:at + 4], [f"| Salad{w.NB}spent | — | — | — | — | $6.00* |",
-                                              f"| Cost{w.NB}per{w.NB}PRL | — | — | — | — | $1.00* |",
-                                              f"| Credit{w.NB}left | — | — | — | — | $94.00* |"])
+        lines = report.split("\n")
+        self.assertEqual(lines[next(i for i, l in enumerate(lines) if l.startswith("| **All**")) + 1], "")  # All ends it
         self.assertTrue(report.endswith(" |\n"))                     # nothing under the tables
         for gone in ("⛏️ mining ·", "our own count or estimate", "(K) mines Pearl on Kryptex", "is Salad's bill",
-                     "has credited", "pays out from", "SafeTrade", "have mined", "credit_offset", "on Salad for"):
+                     "has credited", "pays out from", "SafeTrade", "have mined", "credit_offset", "on Salad for",
+                     "spent", "Cost per", "Credit left"):
             self.assertNotIn(gone, report)
 
-    def test_the_credit_row_says_how_many_hours_it_lasts(self):
+    def test_the_heading_says_how_many_hours_the_credit_lasts(self):
         self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit
-        self.assertIn(f"| Credit{w.NB}left{w.NB}(627*{w.NB}h) | — | — | — | $94.00* |\n", self.report(cfg={"max_active": 2}))
+        self.assertIn(" · Salad $94.00* left (627* h)\n", self.report(cfg={"max_active": 2}))
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -956,7 +954,7 @@ class TestCreditRatio(Base):
         self.x.st["quota"] = 3
         report = self.report(cfg={"max_active": 10})
         self.assertEqual(report.count(f"| ⬜{w.NB}empty |"), 2)
-        self.assertIn(" · 0/3 mining\n", report)
+        self.assertIn(" · 0/3 mining · Salad $", report)
 
     def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
         self.x.cfg["xmr_wallet"] = "4abc"
@@ -966,11 +964,11 @@ class TestCreditRatio(Base):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
         self.assertIn("| **+2.34\\*** |\n", report)  # the All row
-        self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $1.00* |", report)
+        self.assertIn(" · PRL $1.39 (costs us $1.00*) · ", report)
 
     def test_the_ratio_has_a_floor(self):
         # $6.00 for 8 × 90% = 7.20 PRL, not 8 × 75%
-        self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.83* |", self.report(cfg={"yield_floor": 0.9}))
+        self.assertIn(" · PRL $1.39 (costs us $0.83*) · ", self.report(cfg={"yield_floor": 0.9}))
         self.assertAlmostEqual(self.x.credit_ratio(), 0.9)
 
     def test_the_rules_use_config_yield(self):
@@ -981,7 +979,7 @@ class TestCreditRatio(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             # the table still counts on the ratio: $6.00 for 6 PRL, not 8
-            self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $1.00* |", f.read())
+            self.assertIn(" · PRL $1.39 (costs us $1.00*) · ", f.read())
 
     def test_a_pc_judged_at_the_credited_rate(self):
         # 199 TH/s at medium clears 10% at the network's rate (+18%), not at 75% of it (−9%).
@@ -1049,7 +1047,7 @@ class TestStartingBoxes(Base):
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
         self.assertIn("| **All** | **200** | **0.22** | **+0.04\\* (+19%\\*)** |", report)
-        self.assertIn(" · 1/2 mining\n", report)  # the starting box counts as not mining yet
+        self.assertIn(" · 1/2 mining · Salad $", report)  # the starting box counts as not mining yet
 
     def test_stars_inside_bold_are_escaped(self):
         # "**+0.27* (+24%*)**" doesn't render as bold: Markdown takes the stars for more emphasis.
@@ -1074,7 +1072,7 @@ class TestStartingBoxes(Base):
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
-        self.assertRegex(report, rf"\| Credit{w.NB}left{w.NB}\(\d+\*{w.NB}h\) \| — \| — \| — \| \$[\d.]+\* \|\n")
+        self.assertRegex(report, r" · Salad \$[\d.]+\* left \(\d+\* h\)\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
         a = self.group(pri="medium")
@@ -1290,7 +1288,7 @@ class TestRound(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
-        self.assertIn(" · 1/1 mining\n", report)
+        self.assertIn(" · 1/1 mining · Salad $", report)
         self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
     def test_boxes_are_sorted_by_profit_an_hour(self):
@@ -2451,7 +2449,7 @@ class TestKryptex(Base):
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)
         # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
         self.assertIn("| **+5.51\\*** |\n", report)
-        self.assertIn(f"| Salad{w.NB}spent | — | — | — | $11.00* |\n| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.93* |\n", report)
+        self.assertIn(" · PRL $1.39 (costs us $0.93*) · ", report)
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False

@@ -359,31 +359,30 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**8:42 pm EDT, Mon, Oct 19** · PRL $1.92 · 8/10 mining
+**8:51 pm EDT, Mon, Oct 19** · PRL $1.92 (costs us $1.39*) · 9/10 mining · Salad $282.91* left (333* h)
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
-| ⛏️ 5070-30 med (K) | 127 | 7.2 | 0.14 | +0.04* (+23%*) | +0.01* |
-| ⛏️ 3070-55 med | 84 | 3.2 | 0.08 | +0.03* (+30%*) | +0.02* |
-| ⏳ 2060-11 med (K) | — | — | — | — | -0.00* |
-| Others ×777 | — | — | — | — | +66.08* |
-| **All** | **688** | **22.4** | **0.73** | **+0.20\* (+21%\*)** | **+66.61\*** |
-| Salad spent | — | — | — | — | $217.97* |
-| Cost per PRL | — | — | — | — | $1.39* |
-| Credit left (388* h) | — | — | — | — | $283.04* |
+| ⛏️ 5070-27 med | 129 | 6.4 | 0.14 | +0.04* (+22%*) | +0.21* |
+| ⛏️ 3070-53 med | 78 | 8.0 | 0.08 | +0.03* (+30%*) | +0.16* |
+| ⛏️ 2060-11 med (K) | 0 | 0.0 | 0.04 | — | -0.00* |
+| Others ×777 | — | — | — | — | +66.03* |
+| **All** | **754** | **28.0** | **0.85** | **+0.21\* (+21%\*)** | **+66.58\*** |
 
 | Pool | Hashrate (1h) | Confirmed | Pending | Paid |
 |---|---|---|---|---|
-| ⛏️ PRL HeroMiners | 357 TH/s | 0.491 | 1.711 | 149.210 |
-| ⛏️ PRL Kryptex | 350 TH/s | 0.726 | 1.634 | 3.269 |
-| 🪙 XMR HeroMiners | 31.0 kH/s | 0.009784 | 0.000138 | 0.000000 |
+| ⛏️ PRL HeroMiners | 381 TH/s | 0.708 | 1.494 | 149.210 |
+| ⛏️ PRL Kryptex | 340 TH/s | 0.726 | 1.682 | 3.269 |
+| 🪙 XMR HeroMiners | 30.0 kH/s | 0.009784 | 0.000138 | 0.000000 |
 ```
 
-That's the live report at 8:42 pm on 19 October with 7 of its 10 box rows left out, so the All row counts boxes not shown.
+That's the live report at 8:51 pm on 19 October with 7 of its 10 box rows left out, so the All row counts boxes not shown.
 
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
-  24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents and how many boxes are mining
-  out of the slots (`max_active`, or Salad's quota if lower). Profit an hour, the margin and the profit so far are in the **All** row.
+  24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents with what each credited
+  PRL has cost us to mine beside it, how many boxes are mining out of the slots (`max_active`, or Salad's quota if
+  lower), and the Salad credit left with how many hours it lasts at the All row's $/hr (no hours while nothing bills).
+  Profit an hour, the margin and the profit so far are in the **All** row.
 - **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
   always has `max_active` box rows.
 - **Profit/hr** has the margin (profit ÷ earnings) in brackets beside it.
@@ -402,13 +401,11 @@ That's the live report at 8:42 pm on 19 October with 7 of its 10 box rows left o
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
   mining to the address. Locked-in and not-yet-locked rows were here before; they were dropped on 14 October.
-- **Under the All row**, three rows with their figure in the last column: what Salad has cost (**Salad spent**),
-  what each credited PRL cost to mine (**Cost per PRL**, to set against the PRL price in the first line), and the
-  Salad credit left (**Credit left**, with how many hours it lasts at the All row's $/hr; no hours while nothing
-  bills). On 20 October these moved into the table from a line under it, which had replaced a paragraph that
-  also gave each pool's credit ratio and payout threshold, what SafeTrade sold and holds, and the XMR our boxes
-  had mined. The pool table shows the coins; the credit ratios still set Profit $ and are in the 15-minute
-  notes when they move.
+- **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counts it),
+  what each PRL cost and the credit left, which are now in the first line; for a few minutes they were three
+  rows under the All row. Before that line, a paragraph also gave each pool's credit ratio and payout threshold,
+  what SafeTrade sold and holds, and the XMR our boxes had mined. The pool table shows the coins; the credit
+  ratios still set Profit $ and are in the 15-minute notes when they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · ⬜ empty slot · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
@@ -462,8 +459,8 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
 ## Money
 
 - **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
-  straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: the Salad
-  rows (spent, cost per PRL and credit left: Salad's API has no balance or billing, so the watcher adds each
+  straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: what
+  each PRL cost and the Salad credit left (Salad's API has no balance or billing, so the watcher adds each
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL expected, and
   profit and margin (which carry SafeTrade's sales, entered by hand). Not starred: TH/s, kH/s, $/hr, the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
