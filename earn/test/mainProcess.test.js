@@ -3420,6 +3420,8 @@ describe('the mining engine', () => {
     reporter.fn();
     await flush();
     expect(ctx.probe.postMinerReport.mock.calls.map((c) => c[0].hashrate)).toEqual([120]);
+    // No CPU miner on this START: its hashrate is unknown (null), not 0.
+    expect(ctx.probe.postMinerReport.mock.calls[0][0].xmrHashrate).toBeNull();
 
     miner.poolConnected.mockReturnValue(false);
     ctx.probe.postMinerReport.mockClear();
@@ -4927,6 +4929,47 @@ describe('CPU mining (Monero)', () => {
     ctx.emit('miner:stop');
     cpu.emit('stopped', 1);
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  // RAM and the Monero hashrate are the machine's, so every card's board row
+  // carries the same values. Once the CPU miner has given up its hashrate is
+  // null, which the board must not read as mining at 0 H/s.
+  it('puts the machine\'s RAM, and its hashrate while it runs, on every board row', async () => {
+    // main.js reads the real os module, the same object as this one.
+    const os = require('os');
+    const total = jest.spyOn(os, 'totalmem').mockReturnValue(32 * 2 ** 30);
+    const free = jest.spyOn(os, 'freemem').mockReturnValue(20 * 2 ** 30);
+    // No container memory limit, whatever the machine running the tests has.
+    const limit = jest.spyOn(process, 'constrainedMemory').mockReturnValue(0);
+    try {
+      const ctx = await boot();
+      ctx.probe.detectGpusVram.mockResolvedValue([
+        { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
+        { index: 1, name: 'RTX 4090', usedMb: 2000, totalMb: 24564 },
+      ]);
+      await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+      const reporter = ctx.interval(ctx.config.NETWORK.reportIntervalMs);
+      const rows = () => ctx.probe.postMinerReport.mock.calls
+        .map((c) => [c[0].worker, c[0].ramUsedMb, c[0].ramTotalMb, c[0].xmrHashrate]);
+
+      ctx.probe.postMinerReport.mockClear();
+      reporter.fn();
+      await flush();
+      expect(rows()).toEqual([
+        ['w1/gpu0', 12288, 32768, 1845.2],
+        ['w1/gpu1', 12288, 32768, 1845.2],
+      ]);
+
+      ctx.XmrEngine.instances[0].running = false;   // it gave up on its own
+      ctx.probe.postMinerReport.mockClear();
+      reporter.fn();
+      await flush();
+      expect(rows().map((r) => r[3])).toEqual([null, null]);
+    } finally {
+      total.mockRestore();
+      free.mockRestore();
+      limit.mockRestore();
+    }
   });
 
   it('a START that turns it off stops the one running', async () => {

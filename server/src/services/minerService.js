@@ -17,6 +17,8 @@ const NODE_ID_RE = new RegExp(
 );
 const MAX_HASHRATE = 1e6;                  // TH/s sanity clamp
 const MAX_VRAM_MB = 1e6;                   // VRAM MB sanity clamp (~1 TB)
+const MAX_RAM_MB = 1e7;                    // system RAM MB sanity clamp (~10 TB)
+const MAX_XMR_HASHRATE = 1e7;              // Monero H/s sanity clamp (10 MH/s, far past any one machine)
 
 // Stable per-(address, worker) id.
 function minerFingerprint(address, worker) {
@@ -49,9 +51,21 @@ function dropHostAggregates(cards) {
   return cards.filter((c) => GPU_SUFFIX.test(c.worker) || !perCardHosts.has(c.addr + '|' + c.base));
 }
 
+// The host's most recently reported card that passes `has`, or null when none
+// does. Ties go to the earlier card in the group, whose order groupHosts has
+// already made deterministic.
+function newestCard(group, has) {
+  let best = null;
+  for (const c of group) {
+    if (has(c) && (!best || c.lastMs > best.lastMs)) best = c;
+  }
+  return best;
+}
+
 // Fold per-card rows into one entry per host (address + base worker): summed
 // hashrate/VRAM/shares, the host's GPU label ("<name> × N" when it runs more
-// than one card), and the individual cards nested so the board can expand a
+// than one card), the machine's RAM and Monero hashrate (taken once, never
+// summed), and the individual cards nested so the board can expand a
 // multi-GPU rig. Cards are ordered by hashrate (ties by worker); hosts by total
 // hashrate (ties by address+worker) so order never depends on DB row order.
 function groupHosts(cards, now) {
@@ -68,6 +82,16 @@ function groupHosts(cards, now) {
     const top = group[0];
     const multi = group.length > 1;
     const sum = (pick) => group.reduce((a, c) => a + pick(c), 0);
+    // RAM and the Monero hashrate belong to the machine, and every card row of a
+    // host reports the same values, so summing them would count the machine once
+    // per card. RAM comes from the newest card that has it; null when none does
+    // (a client too old to send it). The Monero hashrate comes from the newest
+    // card whatever it says, because there null means "not CPU mining": a card
+    // that dropped out of the reports stays online for up to OFFLINE_THRESHOLD
+    // with the hashrate from before, and falling back to it would show a CPU
+    // miner that has stopped.
+    const ramCard = newestCard(group, (c) => c.ramTotalMb != null);
+    const xmrCard = newestCard(group, () => true);
     hosts.push({
       addr: top.addr,
       worker: top.base,
@@ -86,6 +110,9 @@ function groupHosts(cards, now) {
       // — take whichever card has it. Null means this host runs the model (or just
       // mines) without serving the cluster.
       nodeId: (group.find((c) => c.nodeId) || {}).nodeId || null,
+      ramUsedMb: ramCard ? ramCard.ramUsedMb : null,
+      ramTotalMb: ramCard ? ramCard.ramTotalMb : null,
+      xmrHashrate: xmrCard.xmrHashrate,
       last: formatAgo(now - group.reduce((a, c) => Math.max(a, c.lastMs), 0)),
       cards: group.map((c) => ({
         worker: c.worker,
@@ -123,6 +150,23 @@ function clampNum(v, max) {
   const n = Number(v);
   if (!Number.isFinite(n) || n < 0) return 0;
   return (max != null && n > max) ? max : n;
+}
+
+// clampNum for a field where "not reported" must stay null rather than read as
+// 0. Only a number, or a string holding one, counts as a reading: Number()
+// would turn null, '', true or [] into 0 or 1. Anything else that isn't a
+// finite, non-negative number is null too.
+function clampOrNull(v, max) {
+  const given = typeof v === 'number' || (typeof v === 'string' && v.trim() !== '');
+  const n = given ? Number(v) : NaN;
+  if (!Number.isFinite(n) || n < 0) return null;
+  return n > max ? max : n;
+}
+
+// A nullable numeric column, read back: null stays null, anything else goes
+// through `fn`.
+function readNullable(v, fn) {
+  return v == null ? null : fn(Number(v));
 }
 
 // Compact "time since" label for the last-share column.
@@ -174,19 +218,31 @@ class MinerService {
     // Rejecting the old width would blank the serving chip for every existing rig.
     const rawNodeId = input.nodeId == null ? '' : String(input.nodeId).trim();
     const nodeId = NODE_ID_RE.test(rawNodeId) ? rawNodeId : null;
+    // The machine's system RAM (MB) and its Monero CPU miner's hashrate (H/s).
+    // Every card row of a host carries the same values; getPublicMiners takes
+    // them once per host. Clamped like the numbers above, but NULL rather than
+    // 0 when the client didn't send them (too old, or not CPU mining) or sent
+    // junk, so the board can say "unknown" instead of claiming a zero.
+    const ramUsed = clampOrNull(input.ramUsedMb, MAX_RAM_MB);
+    const ramTotal = clampOrNull(input.ramTotalMb, MAX_RAM_MB);
+    const xmrHashrate = clampOrNull(input.xmrHashrate, MAX_XMR_HASHRATE);
     const id = minerFingerprint(address, worker);
     const now = Date.now();
 
     await this.db.query(
-      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id, first_seen, last_seen)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+      `INSERT INTO miners (id, address, worker, gpu, region, hashrate, accepted, vram_used, vram_total, version, llm_model, node_id,
+                           ram_used, ram_total, xmr_hashrate, first_seen, last_seen)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
        ON CONFLICT (id) DO UPDATE SET
          gpu = EXCLUDED.gpu, region = EXCLUDED.region, hashrate = EXCLUDED.hashrate,
          accepted = EXCLUDED.accepted, vram_used = EXCLUDED.vram_used,
          vram_total = EXCLUDED.vram_total, version = EXCLUDED.version,
          llm_model = EXCLUDED.llm_model, node_id = EXCLUDED.node_id,
+         ram_used = EXCLUDED.ram_used, ram_total = EXCLUDED.ram_total,
+         xmr_hashrate = EXCLUDED.xmr_hashrate,
          last_seen = EXCLUDED.last_seen`,
-      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId, now]
+      [id, address, worker, gpu, region, hashrate, accepted, vramUsed, vramTotal, version, llmModel, nodeId,
+        ramUsed, ramTotal, xmrHashrate, now]
     );
     return { success: true, id };
   }
@@ -202,11 +258,11 @@ class MinerService {
     const now = Date.now();
     await this.db.query('DELETE FROM miners WHERE last_seen < $1', [now - PRUNE_TTL]);
     // Named columns, not `SELECT *`: this is an unauthenticated endpoint that the
-    // network page hits every 15 seconds per open tab, and the eight fields below
-    // are all it renders.
+    // network page hits every 15 seconds per open tab, and the columns below are
+    // all it serves.
     const r = await this.db.query(
       `SELECT address, worker, gpu, hashrate, accepted, vram_used, vram_total,
-              version, llm_model, node_id, last_seen
+              version, llm_model, node_id, ram_used, ram_total, xmr_hashrate, last_seen
          FROM miners WHERE last_seen >= $1`,
       [now - OFFLINE_THRESHOLD]
     );
@@ -226,6 +282,11 @@ class MinerService {
       version: row.version || null,
       llmModel: row.llm_model || null,
       nodeId: row.node_id || null, // set only while the host serves cluster jobs
+      // The machine's, so the same on every card of a host (see groupHosts).
+      // NULL is "not reported" and stays null rather than reading as 0.
+      ramUsedMb: readNullable(row.ram_used, Math.round),
+      ramTotalMb: readNullable(row.ram_total, Math.round),
+      xmrHashrate: readNullable(row.xmr_hashrate, (n) => +n.toFixed(1)),
       lastMs: Number(row.last_seen), // always positive: the WHERE clause filters on last_seen
     })));
 
@@ -243,9 +304,11 @@ MinerService.minerFingerprint = minerFingerprint;
 MinerService.isValidAddress = isValidAddress;
 MinerService.normalizeAddress = normalizeAddress;
 MinerService.clampNum = clampNum;
+MinerService.clampOrNull = clampOrNull;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
 MinerService.dropHostAggregates = dropHostAggregates;
 MinerService.groupHosts = groupHosts;
+MinerService.newestCard = newestCard;
 
 module.exports = MinerService;

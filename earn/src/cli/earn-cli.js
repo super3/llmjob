@@ -37,7 +37,7 @@ const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, 
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
-const { buildMinerReports } = require('../shared/minerReport');
+const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
@@ -1018,7 +1018,11 @@ async function run(argv) {
             nodeId: demandServing.nodeId,
           };
         }
-        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
+        // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+        // running), for every row. The CPU miner starts after this reporter and
+        // can give up on its own, so it is read at each report.
+        const host = hostStats(os, xmr && xmr.engine);
+        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving, host).map(postMinerReport));
       };
       reportNow = report;
       report();

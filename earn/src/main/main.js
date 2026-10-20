@@ -54,7 +54,7 @@ const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { repairUpdateConfig } = require('../shared/updateConfig');
-const { buildMinerReports } = require('../shared/minerReport');
+const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
@@ -649,7 +649,11 @@ async function startMining(settings, llmCoRuns) {
         nodeId: identity ? identity.nodeId : null,
       }
       : null;
-    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
+    // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+    // running), for every row. The CPU miner starts and stops on its own, so
+    // it is read at each report.
+    const host = hostStats(os, cpuMiner);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving, host).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);

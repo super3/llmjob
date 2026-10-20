@@ -15,6 +15,9 @@ jest.mock('os', () => ({
   homedir: jest.fn(() => '/home/test'),
   tmpdir: jest.fn(() => '/tmp'),
   platform: jest.fn(() => 'linux'),
+  // 32 GB with 20 free: the RAM every board row reports (12288 / 32768 MB).
+  totalmem: jest.fn(() => 32 * 2 ** 30),
+  freemem: jest.fn(() => 20 * 2 ** 30),
   EOL: '\n',
 }));
 jest.mock('../src/main/probe', () => ({
@@ -90,8 +93,10 @@ jest.mock('../src/main/xmrEngine', () => {
     constructor(opts) {
       super();
       this.opts = opts;
-      this.start = jest.fn((settings) => { this.settings = settings; return true; });
-      this.stop = jest.fn();
+      this.running = false;
+      this.start = jest.fn((settings) => { this.settings = settings; this.running = true; return true; });
+      this.stop = jest.fn(() => { this.running = false; });
+      this.isRunning = jest.fn(() => this.running);
       this.snapshot = jest.fn(() => ({ state: 'mining', hashrate: 1845.2, accepted: 3, rejected: 0, threads: 15 }));
       XmrEngine.instances.push(this);
     }
@@ -811,6 +816,32 @@ describe('mining', () => {
     await p;
   });
 
+  // RAM and the Monero hashrate belong to the machine, not a card, so every
+  // card's row carries the same values. Without --xmr-address there is no CPU
+  // miner, and its hashrate is null (unknown), not 0.
+  test('every board row carries the machine\'s RAM, and no Monero hashrate without --xmr-address', async () => {
+    // No container memory limit, whatever the machine running the tests has, so
+    // the mocked os figures are the RAM.
+    jest.spyOn(process, 'constrainedMemory').mockReturnValue(0);
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([
+      { index: 0, name: 'RTX 4090', usedMb: 1000, totalMb: 24564 },
+      { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24564 },
+    ]);
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    m.probe.postMinerReport.mockClear();
+    await intervalFor(NETWORK.reportIntervalMs).fn();
+    expect(m.probe.postMinerReport.mock.calls.map((c) => [c[0].worker, c[0].ramUsedMb, c[0].ramTotalMb, c[0].xmrHashrate]))
+      .toEqual([
+        ['rig-host/gpu0', 12288, 32768, null],
+        ['rig-host/gpu1', 12288, 32768, null],
+      ]);
+
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   // HiveOS reads the stats file, and it must agree with the board. The real
   // engine also answers poolConnected() false once it has stopped, which is how
   // demand mode leaves it while the LLM serves. The file used to keep the last
@@ -1014,6 +1045,31 @@ describe('CPU mining', () => {
     await expect(p).resolves.toBe(0);
     expect(cpu.stop).toHaveBeenCalled();
     cpu.emit('stopped', 0);   // the stop it was asked for
+  });
+
+  // The board's Monero figure, on every row: the engine's H/s while it runs,
+  // null once it has given up, so a CPU miner that stopped does not read as one
+  // mining at 0.
+  test('the board rows carry its hashrate while it runs, and null once it stops', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
+    await settle();
+    const cpu = m.XmrEngine.instances[0];
+    const reporter = intervalFor(NETWORK.reportIntervalMs);
+    const xmrOf = () => m.probe.postMinerReport.mock.calls.map((c) => c[0].xmrHashrate);
+
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(xmrOf()).toEqual([1845.2]);
+
+    cpu.running = false;   // it gave up on its own
+    m.probe.postMinerReport.mockClear();
+    await reporter.fn();
+    expect(xmrOf()).toEqual([null]);
+
+    fire('SIGINT');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
   });
 
   test('a thread count by hand, and one cut down to leave a CPU free', async () => {

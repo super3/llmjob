@@ -30,6 +30,29 @@ describe('MinerService helpers', () => {
     expect(MinerService.clampNum(5, 10)).toBe(5);
   });
 
+  // For the fields older clients never send, "unknown" and "zero" are different
+  // answers: 0 H/s would claim a CPU miner that isn't there.
+  test('clampOrNull keeps a missing or junk value null, and clamps the rest', () => {
+    expect(MinerService.clampOrNull(4096, 1e7)).toBe(4096);
+    expect(MinerService.clampOrNull(' 4096 ', 1e7)).toBe(4096); // a string holding a number counts
+    expect(MinerService.clampOrNull(0, 1e7)).toBe(0);           // a real zero stays zero
+    expect(MinerService.clampOrNull(5e7, 1e7)).toBe(1e7);       // clamped to the cap
+    for (const junk of [undefined, null, '', '  ', true, [], [5], {}, 'lots', -1, NaN, Infinity]) {
+      expect(MinerService.clampOrNull(junk, 1e7)).toBeNull();
+    }
+  });
+
+  test('newestCard picks the most recently reported card that has the value, first on a tie', () => {
+    const a = { worker: 'a', lastMs: 100, v: 1 };
+    const b = { worker: 'b', lastMs: 300, v: null };
+    const c = { worker: 'c', lastMs: 200, v: 2 };
+    const d = { worker: 'd', lastMs: 200, v: 3 };
+    const has = (x) => x.v != null;
+    expect(MinerService.newestCard([a, b, c, d], has)).toBe(c);
+    expect(MinerService.newestCard([b], has)).toBeNull();
+    expect(MinerService.newestCard([], has)).toBeNull();
+  });
+
   test('baseWorker strips a /gpuN suffix, leaving the host name', () => {
     expect(MinerService.baseWorker('rig9/gpu0')).toBe('rig9');
     expect(MinerService.baseWorker('rig9/gpu12')).toBe('rig9');
@@ -232,6 +255,75 @@ describe('MinerService (db)', () => {
     // The single-GPU host stays a plain, non-expandable row.
     expect(out.miners[1]).toMatchObject({ addr: ADDR.b, worker: 'rig01', gpu: 'NVIDIA GeForce RTX 3090', gpus: 1, multi: false });
     expect(out.miners[1].cards).toHaveLength(1);
+  });
+
+  test('stores the machine\'s RAM and Monero hashrate, clamped, and NULL when not sent or junk', async () => {
+    const host = { ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.25 };
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100, ...host });
+    // A client too old to send them.
+    await service.reportMiner({ address: ADDR.b, worker: 'rig01', hashrate: 100 });
+    // Junk, and numbers past the caps.
+    await service.reportMiner({ address: ADDR.c, worker: 'junk', hashrate: 1, ramUsedMb: 'lots', ramTotalMb: -5, xmrHashrate: true });
+    await service.reportMiner({ address: ADDR.c, worker: 'huge', hashrate: 1, ramUsedMb: 1e9, ramTotalMb: 1e9, xmrHashrate: 1e9 });
+
+    const cols = async (address, worker) => (await db.query(
+      'SELECT ram_used, ram_total, xmr_hashrate FROM miners WHERE address = $1 AND worker = $2', [address, worker]
+    )).rows[0];
+    expect(await cols(ADDR.a, 'rig01')).toEqual({ ram_used: 12288, ram_total: 32768, xmr_hashrate: 1845.25 });
+    expect(await cols(ADDR.b, 'rig01')).toEqual({ ram_used: null, ram_total: null, xmr_hashrate: null });
+    expect(await cols(ADDR.c, 'junk')).toEqual({ ram_used: null, ram_total: null, xmr_hashrate: null });
+    expect(await cols(ADDR.c, 'huge')).toEqual({ ram_used: 1e7, ram_total: 1e7, xmr_hashrate: 1e7 });
+
+    // The upsert overwrites with NULL too: a rig that stopped CPU mining must not
+    // keep its last Monero hashrate.
+    await service.reportMiner({ address: ADDR.a, worker: 'rig01', hashrate: 100, ramUsedMb: 13000, ramTotalMb: 32768 });
+    expect(await cols(ADDR.a, 'rig01')).toEqual({ ram_used: 13000, ram_total: 32768, xmr_hashrate: null });
+
+    // Served per host, rounded like the other numbers; unknown stays null.
+    const out = await service.getPublicMiners();
+    expect(out.miners.find((m) => m.addr === ADDR.a)).toMatchObject({ ramUsedMb: 13000, ramTotalMb: 32768, xmrHashrate: null });
+    expect(out.miners.find((m) => m.addr === ADDR.b)).toMatchObject({ ramUsedMb: null, ramTotalMb: null, xmrHashrate: null });
+    expect(out.miners.find((m) => m.worker === 'huge')).toMatchObject({ ramUsedMb: 1e7, ramTotalMb: 1e7, xmrHashrate: 1e7 });
+  });
+
+  // RAM and the Monero hashrate are the machine's, so every card row of a host
+  // reports them. Summing them like VRAM would count a 3-card rig's 32 GB as 96.
+  test('a multi-GPU host reports its RAM and Monero hashrate once, from its newest card, never summed', async () => {
+    const card = (worker, hashrate, extra) => service.reportMiner({
+      address: ADDR.a, worker, gpu: 'NVIDIA RTX A4000', hashrate, vramUsedMb: 5000, vramTotalMb: 16000, ...extra,
+    });
+    const rows = [
+      await card('rig9/gpu0', 96, { ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 }),
+      await card('rig9/gpu1', 96, { ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 }),
+      await card('rig9/gpu2', 95, { ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 }),
+    ];
+    let host = (await service.getPublicMiners()).miners[0];
+    expect(host).toMatchObject({ gpus: 3, vramTotalMb: 48000, ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 });
+    // Host-level only: the per-card breakdown doesn't repeat them.
+    for (const c of host.cards) {
+      expect(c).not.toHaveProperty('ramUsedMb');
+      expect(c).not.toHaveProperty('ramTotalMb');
+      expect(c).not.toHaveProperty('xmrHashrate');
+    }
+
+    // Rows that disagree, as when a card drops out of the reports and its row
+    // stays online until OFFLINE_THRESHOLD. gpu1 is newest and its client has
+    // stopped CPU mining (no Monero hashrate), so the host has none, even though
+    // gpu2's older row still says 1900.
+    await card('rig9/gpu1', 96, { ramUsedMb: 14000, ramTotalMb: 32768 });
+    await card('rig9/gpu2', 95, { ramUsedMb: 13000, ramTotalMb: 32768, xmrHashrate: 1900 });
+    const now = Date.now();
+    await setLastSeen(rows[0].id, now - 3000);
+    await setLastSeen(rows[1].id, now - 1000);
+    await setLastSeen(rows[2].id, now - 2000);
+    host = (await service.getPublicMiners()).miners[0];
+    expect(host).toMatchObject({ ramUsedMb: 14000, ramTotalMb: 32768, xmrHashrate: null });
+
+    // RAM is missing only from a client too old to send it, so it comes from
+    // the newest card that has it: gpu1 is still newest, but sent none.
+    await card('rig9/gpu1', 96, {});
+    host = (await service.getPublicMiners()).miners[0];
+    expect(host).toMatchObject({ ramUsedMb: 13000, ramTotalMb: 32768, xmrHashrate: null });
   });
 
   test('drops a multi-GPU host\'s stale bare aggregate row (no phantom card, no doubled VRAM)', async () => {
