@@ -35,9 +35,7 @@ describe('parseCliArgs — flags', () => {
   });
 
   test('--no-report flips report to false', () => {
-    const r = parseCliArgs(['--address', ADDR, '--no-report']);
-    expect(r.report).toBe(false);
-    expect(r.settings.report).toBe(false);
+    expect(parseCliArgs(['--address', ADDR, '--no-report']).settings.report).toBe(false);
   });
 
   test('report defaults to true', () => {
@@ -46,13 +44,7 @@ describe('parseCliArgs — flags', () => {
 
   test('--no-update flips update to false; defaults to true', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.update).toBe(true);
-    const r = parseCliArgs(['--address', ADDR, '--no-update']);
-    expect(r.update).toBe(false);
-    expect(r.settings.update).toBe(false);
-  });
-
-  test('--help preserves the update flag in the short-circuit result', () => {
-    expect(parseCliArgs(['--help', '--no-update']).update).toBe(false);
+    expect(parseCliArgs(['--address', ADDR, '--no-update']).settings.update).toBe(false);
   });
 
   test('--flag=value form', () => {
@@ -333,6 +325,22 @@ describe('--gate-port', () => {
   });
   test('is null when not given, so config decides', () => {
     expect(parseCliArgs(['--address', ADDR]).settings.gatePort).toBeNull();
+  });
+  // llm mode serves through a gate on this port and --gate-host too. The help
+  // used to call it the auto-mode gate, used only when auto is demand-driven.
+  test('the help says llm mode has a gate too', () => {
+    expect(USAGE).toContain('runs in llm mode, and in auto mode unless the LLM');
+    expect(USAGE).not.toContain('auto-mode gate');
+    expect(USAGE).not.toContain('Only used when auto mode is demand-driven');
+  });
+});
+
+describe('--mode help', () => {
+  // 'both' is read as auto (llmMode.normalizeMode), but is no longer a mode.
+  test('lists "both" only as the old name for "auto"', () => {
+    expect(USAGE).toContain('Compute mode: mining/llm/auto (default: auto).');
+    expect(USAGE).toContain('"both" is the old name for "auto" and still works.');
+    expect(USAGE).not.toContain('"both"/"auto"');
   });
 });
 

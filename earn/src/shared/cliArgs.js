@@ -1,11 +1,10 @@
 'use strict';
 
 // Pure argument parsing for the headless Linux CLI miner (src/cli/earn-cli.js).
-// Turns a bare argv array into a validated settings object — the same shape the
-// GUI's main process hands to MinerManager (address / worker / region /
-// region, worker, GPU), so the two share the same settings shape. Kept
-// pure and dependency-free so it's fully unit-tested; the CLI shell wires the
-// real IO (download, spawn, network reporting) around it.
+// Turns a bare argv array into a validated settings object, the same shape the
+// GUI's main process builds (address, worker, region, GPU). Kept pure and
+// dependency-free so it's fully unit-tested; the CLI shell wires the real IO
+// (download, spawn, network reporting) around it.
 
 const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config');
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
@@ -61,22 +60,23 @@ const USAGE = [
   '',
   'Options:',
   '      --mode <mode>        Compute mode: ' + MODES.join('/') + ' (default: ' + DEFAULT_MODE + ').',
-  '                           "both"/"auto" co-run a local LLM alongside mining;',
-  '                           "llm" runs the LLM only (no payout address needed).',
+  '                           "auto" mines and serves a local LLM, "mining" only',
+  '                           mines, "llm" only serves (no payout address needed).',
+  '                           "both" is the old name for "auto" and still works.',
   '      --llm-binary <path>  Path to a prebuilt llama-server binary. Optional:',
   '                           the CLI downloads one and unpacks it with `tar`',
   '                           — use this to skip that or point at your own build.',
   '      --llm-model <path>   Path to a GGUF model file (default: download the',
   '                           bundled small model on first run)',
-  '      --gate-port <port>   Port the auto-mode gate serves on (default: 8000).',
+  '      --gate-port <port>   Port the LLM gate serves on (default: 8000). The gate',
+  '                           runs in llm mode, and in auto mode unless the LLM',
+  '                           co-runs with the miner.',
   '      --gate-quiet <secs>  Seconds of no requests before the GPU goes back to',
   '                           mining (default: 60). Raise it for agent workloads:',
   '                           a release drops the prompt cache, so the next turn',
   '                           re-prefills the whole context.',
   '      --gate-host <addr>   Address the gate binds (default: 0.0.0.0, every',
   '                           interface). Set 127.0.0.1 to keep it to this box.',
-  '                           Only used when auto mode is demand-driven, i.e. the',
-  '                           card can serve a bigger model than it can co-run.',
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
@@ -205,8 +205,6 @@ function buildSettings(opts, errors, report, update, serve) {
     }
   }
 
-
-
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
   // count is null for the default, which shared/xmr/cpuPlan works out from
   // the CPUs this process may use.
@@ -234,7 +232,6 @@ function buildSettings(opts, errors, report, update, serve) {
     }
   }
 
-  // null: the platform's default (shared/xmr/worker.defaultPriority).
   // Another pool for Monero, built like --pool. Without an address there is no
   // Monero to move, which is a warning like the other CPU flags.
   let xmrEndpoint = null;
@@ -249,6 +246,7 @@ function buildSettings(opts, errors, report, update, serve) {
     }
   }
 
+  // null: the platform's default (shared/xmr/worker.defaultPriority).
   let cpuPriority = null;
   if (opts['--cpu-priority'] != null) {
     const p = String(opts['--cpu-priority']).trim();
@@ -261,8 +259,6 @@ function buildSettings(opts, errors, report, update, serve) {
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
 
-  // An explicit ceiling on concurrent llama-servers. Null means "no operator
-  // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
   let gatePort = null;
   if (opts['--gate-port'] != null) {
     gatePort = Number(opts['--gate-port']);
@@ -270,9 +266,6 @@ function buildSettings(opts, errors, report, update, serve) {
       errors.push('invalid --gate-port: ' + opts['--gate-port'] + ' (must be 0-65535)');
     }
   }
-  // Empty string is rejected rather than silently meaning "all interfaces":
-  // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
-  // clearing the setting expects.
   // Seconds in, milliseconds out: the flag is in the unit an operator thinks in,
   // the gate is in the unit it compares against. 0 is allowed and means "never
   // release", which is what a rig dedicated to inference wants.
@@ -289,6 +282,9 @@ function buildSettings(opts, errors, report, update, serve) {
       gateQuietMs = secs === 0 ? Infinity : Math.round(secs * 1000);
     }
   }
+  // Empty string is rejected rather than silently meaning "all interfaces":
+  // `--gate-host ""` reading as 0.0.0.0 would be the opposite of what someone
+  // clearing the setting expects.
   let gateHost = null;
   if (opts['--gate-host'] != null) {
     gateHost = String(opts['--gate-host']).trim();
@@ -307,6 +303,8 @@ function buildSettings(opts, errors, report, update, serve) {
       mineMemClockMhz = parsed.mhz;
     }
   }
+  // An explicit ceiling on concurrent llama-servers. Null means "no operator
+  // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
   let llmMaxInstances = null;
   if (opts['--llm-max-instances'] != null) {
     llmMaxInstances = Number(opts['--llm-max-instances']);
@@ -333,9 +331,10 @@ function buildSettings(opts, errors, report, update, serve) {
 }
 
 // Parse a bare argv (typically process.argv.slice(2)) into:
-//   { help, version, report, errors, settings }
+//   { help, version, errors, settings }
 // `settings` is null when --help/--version short-circuits. Never throws — bad
 // input is reported via the `errors` array so the caller controls exit codes.
+// --no-report, --no-update and --no-serve land in settings.
 function parseCliArgs(argv) {
   const args = Array.isArray(argv) ? argv : [];
   const opts = {};
@@ -382,12 +381,10 @@ function parseCliArgs(argv) {
     errors.push('unknown option: ' + token);
   }
 
-  if (help || version) {
-    return { help, version, report, update, serve, errors, settings: null };
-  }
+  if (help || version) return { help, version, errors, settings: null };
 
   const settings = buildSettings(opts, errors, report, update, serve);
-  return { help, version, report, update, serve, errors, settings };
+  return { help, version, errors, settings };
 }
 
 module.exports = { ALIASES, VALUE_FLAGS, USAGE, regionChoices, buildSettings, parseCliArgs };

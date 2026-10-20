@@ -7,7 +7,6 @@ jest.mock('node:sea', () => ({ isSea: jest.fn() }));
 jest.mock('../src/shared/selfUpdate', () => ({
   LATEST_RELEASE_API: 'https://api.github.com/repos/x/y/releases/latest',
   parseRelease: jest.fn(),
-  planUpdate: jest.fn(),
 }));
 
 const https = require('https');
@@ -79,8 +78,6 @@ describe('fetchLatestRelease', () => {
 });
 
 describe('isPackaged', () => {
-  afterEach(() => { delete process.pkg; });
-
   it('is true inside a Node SEA', () => {
     sea.isSea.mockReturnValue(true);
     expect(updater.isPackaged()).toBe(true);
@@ -91,11 +88,8 @@ describe('isPackaged', () => {
     expect(updater.isPackaged()).toBe(false);
   });
 
-  it('falls back to process.pkg when node:sea throws', () => {
+  it('is false on a Node without node:sea', () => {
     sea.isSea.mockImplementation(() => { throw new Error('no sea api'); });
-    process.pkg = {};
-    expect(updater.isPackaged()).toBe(true);
-    delete process.pkg;
     expect(updater.isPackaged()).toBe(false);
   });
 });
@@ -155,7 +149,55 @@ describe('applyUpdate', () => {
     // path.join, not a literal: the core path is built with the platform's
     // separators, so the expectation must be too or it only passes on Linux.
     const core = require('path').join('/opt/rig', 'pearl_core.node');
-    expect(fs.renameSync).toHaveBeenCalledWith(core + '.new-' + process.pid, core);
+    const coreTmp = core + '.new-' + process.pid;
+    expect(fs.renameSync).toHaveBeenCalledWith(coreTmp, core);
+    // Both downloads arrived before either file went in, and the core went in
+    // first: a binary that fails to go in after it still reports the old
+    // version, so the next start updates the pair again.
+    const order = (from, to) => fs.renameSync.mock.invocationCallOrder[
+      fs.renameSync.mock.calls.findIndex((c) => c[0] === from && c[1] === to)];
+    const coreArrived = order(fs.createWriteStream.mock.calls[1][0], coreTmp);
+    const binaryIn = order('/opt/rig/earn.new-' + process.pid, '/opt/rig/earn');
+    expect(coreArrived).toBeLessThan(order(coreTmp, core));
+    expect(order(coreTmp, core)).toBeLessThan(binaryIn);
+  });
+
+  // The bug: the binary went in before the core was fetched, and the core
+  // download had no try. A failure left the new binary beside the old core,
+  // and from then on planUpdate said up-to-date, so it was never repaired.
+  it('replaces nothing when the core download fails', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const core = require('path').join('/opt/rig', 'pearl_core.node');
+    const coreTmp = core + '.new-' + process.pid;
+    const tmp = '/opt/rig/earn.new-' + process.pid;
+    // The core's download fails as it lands (a full disk, say).
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === coreTmp) throw new Error('ENOSPC: no space left on device');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', coreUrl: 'https://host/pearl_core.node' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).rejects.toThrow('ENOSPC');
+
+    expect(fs.renameSync).not.toHaveBeenCalledWith(tmp, '/opt/rig/earn');
+    expect(fs.renameSync).not.toHaveBeenCalledWith(coreTmp, core);
+    // The binary that did arrive is removed, not left beside the exe.
+    expect(fs.rmSync).toHaveBeenCalledWith(tmp, { force: true });
+    // The old CUDA 13 core stays: it matches the old binary, which still runs.
+    const cu13 = require('path').join('/opt/rig', 'pearl_core_cu13.node');
+    expect(fs.rmSync).not.toHaveBeenCalledWith(cu13, expect.anything());
   });
 
   it('downloads the CUDA 13 core beside the exe when the plan has one', async () => {
@@ -216,6 +258,8 @@ describe('applyUpdate', () => {
     // ...and last release's copy is gone all the same: the rig mines on the
     // 12.8 core rather than an old CUDA 13 one.
     expect(fs.rmSync).toHaveBeenCalledWith(cu13, { force: true });
+    // The download that would not go in is not left beside the binary.
+    expect(fs.rmSync).toHaveBeenCalledWith(cu13 + '.new-' + process.pid, { force: true });
   });
 
   // On a Blackwell rig the loader prefers the CUDA 13 file, so last release's

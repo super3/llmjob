@@ -89,6 +89,11 @@ function gateQuietMs(settings) {
   return settings.gateQuietMs == null ? LLM.gate.quietMs : settings.gateQuietMs;
 }
 
+// The port the gate listens on: --gate-port, or the documented default.
+function gatePort(settings) {
+  return settings.gatePort == null ? LLM.gate.port : settings.gatePort;
+}
+
 // The cards this run may mine on, and what chose them: --gpu-index first, then
 // PEARL_GPU_INDEX, which takes the same list, none included. Null means every
 // card; an empty list means none. A PEARL_GPU_INDEX that doesn't parse is an
@@ -112,18 +117,6 @@ function cardList(indices) {
 function quietLabel(settings) {
   const ms = gateQuietMs(settings);
   return ms === Infinity ? 'no amount of quiet' : Math.round(ms / 1000) + 's';
-}
-
-// Detect the discrete GPU name via nvidia-smi (Linux/NVIDIA). Resolves the card
-// name or null (no nvidia-smi / non-NVIDIA / parse failure). Never rejects — the
-// engine still auto-detects the real device to mine; this is only for the
-// status label.
-// Resolve { name, count } — the representative card plus how many discrete
-// GPUs the rig actually mines with.
-// Delegates to the shared probe so the GUI and the CLI detect the same way —
-// they had drifted into two different methods, and the GUI's was Windows-only.
-function detectGpu() {
-  return probe.detectGpuInfo();
 }
 
 // Explicit `llmjob-earn-cli update` — check the latest release and, if this is
@@ -208,8 +201,8 @@ async function maybeAutoUpdate(argv, settings) {
 }
 
 // Where the CLI caches the local-LLM binary + model (mirrors the engine dir).
-function llmDir(settings) {
-  return settings.llmDir || path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
+function llmDir() {
+  return path.join(os.homedir(), '.local', 'share', 'llmjob-earn', 'llm');
 }
 
 // Download progress. In the foreground it redraws one line. Beside a running
@@ -320,6 +313,11 @@ let servePinger = null;
 // metrics.model put the same wrong name in the `model` field of every gateway
 // completion it served. Seeded with the default, replaced once startLlm picks.
 let serveLlmState = { ready: false, tps: 0, model: LLM.model };
+// No model is up: nothing ready, no rate. `model` stays, because it names what
+// this node serves, and the last telemetry ping should still say so.
+function resetServeLlmState() {
+  serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+}
 // This machine's node id while it is armed to serve cluster jobs — reported on the
 // miner ping so the network board can tell "running the model" from "serving the
 // cluster". Null when not serving (mining only, or --no-serve).
@@ -513,7 +511,7 @@ async function planLlm(settings, reserveMb, modelOverride) {
 // progress is printed. `onBusy` hears each card start and finish a prompt
 // ({ index, busy }); it is attached before any card can take one.
 async function launchLlm(settings, planned, armServe, background, onBusy) {
-  const dir = llmDir(settings);
+  const dir = llmDir();
   const { model, cards } = planned;
   log('preparing local LLM (' + model.name + ') …');
 
@@ -592,7 +590,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
 // 5090 tier) with the card idle. Never throws: a failed download is logged and
 // the wake tries again, as it always has.
 async function prefetchLlm(settings, model) {
-  const dir = llmDir(settings);
+  const dir = llmDir();
   try {
     await resolveLlmBinary(settings, dir, true);
     await resolveLlmModel(settings, dir, model, true);
@@ -821,11 +819,11 @@ async function run(argv) {
     // A region is needed for Pearl without --pool, and for Monero without --xmr-pool.
     const moneroNeedsRegion = settings.xmrAddress && !settings.xmrEndpoint;
     if (!settings.regionProvided && (!settings.endpoint || moneroNeedsRegion)) settings.region = await detectRegion();
-    // Probe regardless of --gpu. Naming the card and counting the cards are two
-    // different questions, and folding them into one `if` meant that passing
-    // --gpu (to name it) also skipped the COUNT — so an N-card rig fell back to
-    // gpuCount 1 and reported one card on a board row for N.
-    const det = await detectGpu();
+    // The card's name and how many there are, from the probe the GUI uses too.
+    // Probe regardless of --gpu: naming the card and counting the cards are two
+    // different questions, and the count is still wanted for the 'gpu:' line
+    // below when --gpu names the card.
+    const det = await probe.detectGpuInfo();
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
     // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
     // chose some. Read here, with the rest of the startup probing, because the
@@ -1183,12 +1181,10 @@ async function run(argv) {
     const watchLlm = (fleet) => {
       advertiseCtx(fleet);
       fleet.on('stopped', (code) => {
-        // Keep `model`: the run is over but the last telemetry ping should still
-        // name what this node was serving, and fullTelemetry dereferences it.
-        // No demand-mode guard needed here either: this handler is only
-        // registered for an LLM started up front or beside the miner, which
-        // demand mode never does.
-        serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+        // No demand-mode guard needed here: this handler is only registered for
+        // an LLM started up front or beside the miner, which demand mode never
+        // does.
+        resetServeLlmState();
         // Nothing is left to answer a prompt: every card mines now.
         promptPause.reset();
         stopServe();
@@ -1257,9 +1253,7 @@ async function run(argv) {
             advertiseCtx(llm);
             llm.on('stopped', () => {
               if (auto && auto.isSwitching()) return;
-              // Keep `model` for the same reason the up-front handler does: the
-              // last telemetry ping should still name what this node served.
-              serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+              resetServeLlmState();
               stopServe();
             });
           }
@@ -1293,7 +1287,7 @@ async function run(argv) {
           stopServe();
           // Handing the card back does not change WHICH model this node serves,
           // so the reported model survives the flip back to mining.
-          serveLlmState = { ready: false, tps: 0, model: serveLlmState.model };
+          resetServeLlmState();
         },
         // A failed restart is fatal for the same reason it is at first start:
         // the node would otherwise mine nothing while looking healthy.
@@ -1302,7 +1296,7 @@ async function run(argv) {
           if (llm) llm.stop();
           finish(1);
         },
-        port: settings.gatePort == null ? LLM.gate.port : settings.gatePort,
+        port: gatePort(settings),
         host: settings.gateHost || undefined,
         // NOT LLM.port: llmFleet probes upward from it when it is busy, so the
         // server can land on 8081+ while the gate still proxies to 8080 and
@@ -1315,7 +1309,7 @@ async function run(argv) {
         modelName: autoPlan.model.name, ctxSize: ctxLadder(autoPlan.model)[0],
         quietMs: gateQuietMs(settings), log,
       }).start();
-      log('auto:       serving on :' + (settings.gatePort == null ? LLM.gate.port : settings.gatePort) + ' — '
+      log('auto:       serving on :' + gatePort(settings) + ' — '
         + quietLabel(settings) + ' with no requests hands the GPU back to mining');
 
       // Cluster work is PULLED, outbound, so a node behind NAT can serve with no
@@ -1355,9 +1349,8 @@ async function run(argv) {
       // endpoint must not move: the gate port is THE documented endpoint, and it
       // used to exist only in auto -- so choosing llm mode relocated callers to
       // llama-server's own port without telling them.
-      const gp = settings.gatePort == null ? LLM.gate.port : settings.gatePort;
       auto = createServeGate({
-        port: gp,
+        port: gatePort(settings),
         host: settings.gateHost || undefined,
         upstreamPort: () => {
           const url = llm && llm.webUrl && llm.webUrl();
@@ -1369,7 +1362,7 @@ async function run(argv) {
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         log,
       }).start();
-      log('llm:        serving on :' + gp);
+      log('llm:        serving on :' + gatePort(settings));
     }
 
     // Write live stats JSON for external consumers (HiveOS h-stats.sh reads this
@@ -1490,19 +1483,24 @@ async function run(argv) {
 // `active`, Restart=on-failure never fired, and the node was neither mining nor
 // serving until someone noticed. A non-zero exit that does not exit is not an
 // exit; give the teardown a few seconds and then insist.
-/* istanbul ignore next */
 function exitWith(code) {
   process.exitCode = code;
   const t = setTimeout(() => process.exit(code), 5000);
   t.unref();
 }
 
-/* istanbul ignore next */
-if (require.main === module) {
-  run(process.argv.slice(2)).then(exitWith).catch((e) => {
+// Run the CLI and exit with its code. Both entry points call this: the guard
+// below for `node earn-cli.js`, and sea-entry.js for the packaged binary that
+// HiveOS and systemd run. That binary used to call run() itself and only set
+// exitCode, so it never got the forced exit above.
+function main(argv) {
+  return run(argv).then(exitWith, (e) => {
     log('fatal: ' + (e && e.message ? e.message : e), process.stderr);
     exitWith(1);
   });
 }
 
-module.exports = { run };
+/* istanbul ignore next */
+if (require.main === module) main(process.argv.slice(2));
+
+module.exports = { run, main };
