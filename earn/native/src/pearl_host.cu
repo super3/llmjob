@@ -2574,6 +2574,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                     * PEARL_SB_STRIDE
                 + (size_t)PEARL_BD_T_BUFS * warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
                       * PEARL_JACKPOT_BUCKETS * 4u
+                + (size_t)PEARL_BD_SPLIT_SMEM
           : (size_t)stageBufs
                 * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
                    + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
@@ -2621,6 +2622,24 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     // L1, so it asks for Turing's smaller shared split: 32 KB of shared and 64
     // KB of L1 (PEARL_BD_A_DIRECT_CARVEOUT). It is a hint the fold runs without,
     // so a refusal is dropped rather than failing the search.
+#if PEARL_BD_HASH_SPLIT
+    // The split hash's state takes the footprint to 24 KB and 1152 bytes of static
+    // shared. Past the split the driver would take the other one, and the fold
+    // would run with half the L1, slower without saying so, so that is refused.
+    if (ctx->foldBDirect) {
+      int smPerSm = 0;
+      cudaDeviceGetAttribute(&smPerSm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, ctx->device);
+      const size_t split = (size_t)smPerSm * PEARL_BD_A_DIRECT_CARVEOUT / 100u;
+      if (smPerSm > 0 && smem + fs.sharedSizeBytes > split) {
+        if (err && err_len)
+          snprintf(err, err_len,
+                   "A-direct fold needs %zu B of shared a block (+%zu static), past the %zu B "
+                   "split it asks for",
+                   smem, (size_t)fs.sharedSizeBytes, split);
+        return false;
+      }
+    }
+#endif
     if (ctx->foldBDirect
         && cudaFuncSetAttribute(foldFn, cudaFuncAttributePreferredSharedMemoryCarveout,
                                 PEARL_BD_A_DIRECT_CARVEOUT) != cudaSuccess)
@@ -2888,6 +2907,24 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              PEARL_BD_KORDER ? ", k-lo first" : "",
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
+#if PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 \
+    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT
+    // The fold's default-off switches (pearl_config.h, after PEARL_BD_A_DIRECT_TAG), so
+    // a reading from one of them is not credited to the default fold. LEAN shows as
+    // its parts.
+    {
+      Ctx *c = const_cast<Ctx *>(ctx);
+      size_t n = strlen(c->foldName);
+      snprintf(c->foldName + n, sizeof c->foldName - n, ", with%s%s%s%s%s%s%s",
+               PEARL_BD_RUNBASE ? " RUNBASE" : "", PEARL_BD_TAIL_LDG ? " TAIL_LDG" : "",
+               PEARL_BD_GATE != 2 ? " GATE=1" : "", PEARL_BD_TADDR ? " TADDR" : "",
+               PEARL_BD_RED ? " RED" : "", PEARL_BD_HIT_COORDS ? " HIT_COORDS" : "",
+               PEARL_BD_SNAKE ? " SNAKE" : "");
+      n = strlen(c->foldName);
+      if (PEARL_BD_HASH_SPLIT)
+        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_SPLIT=%d", PEARL_BD_HASH_SPLIT);
+    }
+#endif
     return ctx->foldName;
   }
   if (ctx->foldTuring)

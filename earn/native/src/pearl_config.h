@@ -819,6 +819,232 @@ typedef struct {
 // and find nothing, silently. (The other way round, a host with the switch and a
 // fold without, does not link: the host launches pearl_materialize16_afrag.)
 #define PEARL_BD_A_DIRECT_TAG 0x80000000u
+// Six parts of the A-direct fold's chunk loop, readout and hash, each off by default,
+// and PEARL_BD_LEAN, which turns on three of them, from a design round on the fold's
+// SASS (2026-10-20). None changes an IMMA's operands or a transcript word, so
+// transcripts, hashes and hits are the same bit for bit. Not measured on a card.
+//
+// PEARL_BD_RUNBASE: each chunk-loop pass holds aoff and boff at the pass's chunk in
+// two registers, behind an opaque asm, so every load of the pass is a held base plus
+// a constant. ptxas issues a loop load just after its address IMAD and schedules
+// that IMAD late: the default's loads go out 94 to 109 IMMA before their use. Two
+// builds that lost more than expected per clock issued theirs 14 and 18 IMMA ahead
+// (decoded afterwards): k-lo first with the spread hash, -4.4 to -7.3%, and the
+// hash-only ablation, -2.0 to -4.7% (probes/README.md). With it the loads can go out
+// as soon as their registers free up.
+//
+// PEARL_BD_TAIL_LDG: the tile's last k-step loads the next tile's k-step 0 with a
+// coherent ld.global instead of ld.global.nc. ptxas can sink .nc loads past the
+// hand-off __syncthreads, where the warp that does not hash then waits on them; it
+// keeps these ahead of it. A' and B' are not written while the fold runs, so the
+// loads return the same bytes.
+//
+// PEARL_BD_GATE: how many of a B pair's two k-lo words go through pearl_bd_after in
+// the k-step after a chunk (see kstep). 2, the default: both. 1: the even n-block's
+// only. The odd n-block's IMMA overwrite accumulators the readout's fold reads, so
+// they follow those reads either way. 8 PRMT a loop pass instead of 16.
+//
+// PEARL_BD_TADDR: the readout's store index in one register, moved to the tile's
+// transcript buffer once a tile, instead of rebuilt from the thread index every
+// chunk. Alone it lets ptxas sink the next tile's loads past the hand-off.
+//
+// PEARL_BD_RED: the readout by red.shared.xor, as PEARL_TALL_RED_READOUT does on Ada,
+// Ampere and Blackwell, where it won on every card. Each of the four lanes that hold
+// a region xors its share into the word, with no shuffle and no lane select. The
+// words then have to start at zero: the fold zeroes both transcript buffers before
+// its first tile, and each hasher zeroes its region after reading it: 16 STS to the
+// words its 16 loads read, one wavefront each. Four st.shared.v4 over the region
+// take 16 wavefronts each, as lanes L and L + 2 are 128 bytes apart, for the same
+// registers and the same loop. Each ATOMS.XOR puts four lanes on each of its eight
+// words; what that costs on Turing is not measured. Skipping just the shuffles
+// (PEARL_ABLATE_TRANSCRIPT, output meaningless) measured +1.3 / +1.3 / +0.3% per
+// clock on a 2080 Ti, a 2070 and a 2060, before k-lo first. It turns on TADDR,
+// RUNBASE and TAIL_LDG.
+//
+// PEARL_BD_LEAN: RUNBASE, TAIL_LDG and GATE 1, the load parts without the readout.
+// LEAN and RED are alternatives; RED with GATE 1 is -DPEARL_BD_RED=1 -DPEARL_BD_GATE=1.
+//
+// PEARL_BD_HIT_COORDS: a hasher works out its tile's coordinates and its region's
+// number only for a hit, not for every region of every tile.
+//
+// ptxas 12.8, against the default's 239 registers and 670 instructions a chunk-loop
+// pass (512 of them IMMA), its loop loads issued 94 IMMA or more before their use,
+// and the first loop IMMA's 109:
+//   RUNBASE + TAIL_LDG   239 registers, 669 a pass, loads 85 and 132 IMMA ahead
+//   LEAN                 243, 661 (8 PRMT, not 16), 128 and 213
+//   RED                  252, 646 (no SHFL and no STS; 2 ATOMS.XOR), 66 and 108
+// with no spill, and HIT_COORDS leaves each loop as it is. All three pass the
+// round's five gates: no spill; the next tile's loads ahead of the hand-off barrier;
+// the first loop IMMA's loads 90 IMMA ahead or more; every loop load 60 or more; at
+// most 5 IMMA with their read and result on one scoreboard. These fail them: TADDR
+// alone (the next tile's loads after the barrier, 21 IMMA on one scoreboard), GATE 1
+// alone (38 and 35 IMMA ahead), RED without RUNBASE and TAIL_LDG (52 and 49, the
+// next tile's loads after the barrier) and RED with GATE 1 (69 for the first IMMA).
+// The fold's machine code under CUDA 12.8: RUNBASE + TAIL_LDG a3b1a9cefc31, LEAN
+// c25f404242fa (with HIT_COORDS 5c97fbadf64a), RED 0d9d4deedea9 (448266d81713).
+// With every one of them off it stays faf18b40f3a8.
+//
+// All of them are written for the default fold (A-direct, k-lo first, persistent, two
+// row groups, two transcript buffers), and any other is an error. Device only.
+#ifndef PEARL_BD_LEAN
+#define PEARL_BD_LEAN 0
+#endif
+#ifndef PEARL_BD_RED
+#define PEARL_BD_RED 0
+#endif
+#ifndef PEARL_BD_HIT_COORDS
+#define PEARL_BD_HIT_COORDS 0
+#endif
+#if (PEARL_BD_LEAN != 0 && PEARL_BD_LEAN != 1) || (PEARL_BD_RED != 0 && PEARL_BD_RED != 1) \
+    || (PEARL_BD_HIT_COORDS != 0 && PEARL_BD_HIT_COORDS != 1)
+#error "PEARL_BD_LEAN, PEARL_BD_RED and PEARL_BD_HIT_COORDS are 0 or 1"
+#endif
+#if PEARL_BD_LEAN && PEARL_BD_RED
+#error "PEARL_BD_LEAN and PEARL_BD_RED are alternatives: for RED with gate 1, -DPEARL_BD_RED=1 -DPEARL_BD_GATE=1"
+#endif
+#ifndef PEARL_BD_RUNBASE
+#define PEARL_BD_RUNBASE (PEARL_BD_LEAN || PEARL_BD_RED)
+#endif
+#ifndef PEARL_BD_TAIL_LDG
+#define PEARL_BD_TAIL_LDG (PEARL_BD_LEAN || PEARL_BD_RED)
+#endif
+#ifndef PEARL_BD_TADDR
+#define PEARL_BD_TADDR PEARL_BD_RED
+#endif
+#ifndef PEARL_BD_GATE
+#define PEARL_BD_GATE (PEARL_BD_LEAN ? 1 : 2)
+#endif
+#if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
+    || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
+#error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"
+#endif
+#if PEARL_BD_GATE != 1 && PEARL_BD_GATE != 2
+#error "PEARL_BD_GATE is 1 or 2"
+#endif
+#if PEARL_BD_RED && !PEARL_BD_TADDR
+#error "PEARL_BD_RED xors into the word PEARL_BD_TADDR's index names: it needs PEARL_BD_TADDR=1"
+#endif
+#if (PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_HIT_COORDS \
+     || PEARL_BD_GATE != 2) \
+    && !(PEARL_BD_A_DIRECT && PEARL_BD_KORDER && PEARL_BD_PERSIST && PEARL_BD_GROUPS == 2 \
+         && PEARL_BD_T_BUFS == 2)
+#error "PEARL_BD_LEAN, _RED and their parts are written for the default fold: A-direct, k-lo first, persistent, two row groups, two transcript buffers"
+#endif
+// PEARL_BD_SNAKE (0 by default), from the same round: k-lo first's IMMA in another
+// order. Each pass, for n-block pair j, the default issues the even n-block's IMMA
+// over the four m-blocks and then the odd one's. With the switch each m-block takes
+// four in a row: the even n-block rows 0-7 and 8-15, then the odd n-block rows 8-15
+// and 0-7, so each IMMA shares its B word or its A word with the one before. The
+// k-hi pass keeps the k-lo pass's order, so each accumulator's k-hi IMMA is still 64
+// after its k-lo one, with the same words, and the results are the same.
+// load_half loads B's two quads before A's.
+//
+// Why: in the default's SASS, four of the readout's fold LOP3 wait on the IMMA just
+// issued, which has its operand read and its result on one scoreboard, so they wait
+// out a full IMMA latency. With the switch those LOP3 wait on IMMA 2 or more back,
+// but a SHFL, a SHF and an IMAD of the readout now wait on the IMMA just issued
+// (decoded, not measured). 402 of a pass's 512 IMMA reuse an operand, against 381.
+//
+// ptxas 12.8: 240 registers, no spill, 670 instructions a pass as before. Every
+// loop load goes out 89 IMMA or more before its use, but the first loop IMMA's 86,
+// and 7 IMMA have their read and result on one scoreboard, so it misses two of the
+// five gates above narrowly (90 and 5). Fold machine code 5ad373e526c0. With the
+// load parts it passes all five:
+//   SNAKE + RUNBASE + TAIL_LDG   240 registers, 669 a pass, loads 111 and 156 IMMA
+//                                ahead, 3 IMMA on one scoreboard (25a8d013ca66;
+//                                RUNBASE alone gives the same loop, 5bb91c83b5b4)
+//   SNAKE + LEAN                 244, 661, 76 and 90, 3 (0e3ddffe40a4)
+//   SNAKE + RED + GATE 1         251, 638, 77 and 205, 2 (7d5a32813b6c)
+// HIT_COORDS leaves each loop as it is. With RED, that is the one build that passes:
+// at gate 2 (250 registers) the first loop IMMA's loads go out 83 IMMA ahead, and at
+// gate 1 without TAIL_LDG (251) or without both load parts (252, and 71 for the first
+// IMMA) the next tile's loads come after the barrier, so SNAKE + RED is an error unless
+// it has RUNBASE, TAIL_LDG and GATE 1. SNAKE + TAIL_LDG without RUNBASE keeps SNAKE's
+// own loop (caf731c897cd) and its two misses. SNAKE + GATE 1 alone (243, 87) and SNAKE
+// + TADDR alone (243, the next tile's loads after the barrier) miss them, as GATE 1
+// and TADDR do alone. The round's model gave a lone warp a lower rate with LEAN +
+// SNAKE and RED + SNAKE than with LEAN and RED without it, so race it alone first.
+// Not measured on a card. It needs k-lo first, and builds persistent or not (245
+// registers) and with A_REALIGN (243). Device only.
+#ifndef PEARL_BD_SNAKE
+#define PEARL_BD_SNAKE 0
+#endif
+#if PEARL_BD_SNAKE != 0 && PEARL_BD_SNAKE != 1
+#error "PEARL_BD_SNAKE is 0 or 1"
+#endif
+#if PEARL_BD_SNAKE && !PEARL_BD_KORDER
+#error "PEARL_BD_SNAKE orders k-lo first's IMMA: it needs PEARL_BD_KORDER=1"
+#endif
+#if PEARL_BD_SNAKE && PEARL_BD_RED \
+    && !(PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG && PEARL_BD_GATE == 1)
+#error "PEARL_BD_SNAKE stacks with PEARL_BD_RED only with RUNBASE, TAIL_LDG and -DPEARL_BD_GATE=1: the other SNAKE + RED builds fail the gates"
+#endif
+// PEARL_BD_HASH_SPLIT=N (0 by default, 1 to 13), from the same round: each scheduler's
+// two warps share its hash. As shipped, the hasher on a scheduler (warp 0, 1, 6 or 7)
+// hashes its 32 regions of a tile after the hand-off while its partner (4, 5, 2 or 3)
+// starts the next tile alone, and at the next hand-off the partner waits at the
+// barrier while the hasher catches up alone. With the switch the partner spends that
+// wait on the first N of the transcript compression's 14 half-rounds (a round's column
+// step, then its diagonal step) for the previous tile's regions, and leaves each
+// region's state in shared; the hasher runs the other 14 - N after the hand-off. Each
+// lone phase drops from about a hash to about (14 - N) / 14 of one. The block's last
+// tile its hasher hashes whole after the loop. It is the same compression split at a
+// half-round, with the same top word (pearl_transcript_msw's), so the hits are the
+// same, bit for bit; only their slots within a batch can come in another order, and
+// the host sorts them by region (pearl_host_collect). The hand-off's protocol is in
+// pearl_fold_bd.cuh (split_first); earn/test/turingHashSplit.test.js checks the split
+// compression against BLAKE3 for every N, and runs the protocol at random warp speeds.
+// The state feeds only the top-word filter: a hit's hash is worked out again from its
+// transcript. So a fault in the split on a card loses hits and reports no wrong one,
+// which verify-hits.js cannot see; probes/turing/compilers.sh's complete stage checks
+// that a build finds exactly base's hits.
+//
+// Shared: the state, 16 words a lane for each scheduler's pair, is 8 KB after the two
+// transcript buffers (PEARL_BD_SPLIT_SMEM): 24 KB, and 1152 bytes of static shared,
+// inside the 32 KB split the host asks for (PEARL_BD_A_DIRECT_CARVEOUT; a host built
+// with the split refuses a footprint past it). Build the host and the fold with the
+// same N, as compilers.sh and launch.sh do: nothing checks it at run time. A fold with
+// the split under a host without it gets 16 KB, and its first state store, at the
+// first hand-off of a block with two tiles or more, is out of range and fails the
+// launch; the other way round leaves 8 KB unused. The readout's store is one
+// predicated st.shared: as a C++ if, ptxas made it a branch and a convergence region
+// in the chunk loop of every split build in the round.
+//
+// ptxas 12.8, with RUNBASE and TAIL_LDG, for N = 3, 4 and 6 alike: 254 registers, no
+// spill, and one chunk loop, 674 instructions a pass (the default's 670), with one
+// branch, no convergence region and no vote. The first loop IMMA's loads go out 146
+// IMMA ahead (default 109) and every loop load 79 or more (94), with 1 IMMA's read and
+// result on one scoreboard (4): it passes the round's five gates (see LEAN above).
+// The fold has one MEMBAR.ALL.CTA, the hasher's release after its rounds. Fold machine
+// code: N = 3 c1a64fb4f9da, 4 173cbbf575ad, 6 864281cbce2c (with HIT_COORDS
+// eca2fbf57710, the same loop). N = 1 (9fc653a99327) and 13 (9952ac52c35e) build the
+// same chunk loop too, but at 13 the release comes 33 instructions after the barrier,
+// where it can wait on the next tile's first loads. The round's whole-tile two-warp
+// model of the built code, against the default's: +0.2 to +2.6% at IMMA latencies of
+// 24 to 36 cycles and loads of 300 to 500 cycles (N = 4: +1.0 to +1.7%), and -0.2 to
+// +1.2% at 700; the model reads about 4.5 points above the cards. Not measured on a
+// card.
+//
+// It needs RUNBASE and TAIL_LDG: without them the round's build issued the first loop
+// IMMA's loads 57 IMMA ahead. With RED it spills (255 registers, 32 bytes), and RED's
+// zeroing would need a third transcript buffer or a second flag. With TADDR (254
+// registers), SNAKE (255) or GATE 1 (255) it fails the gates: 7 and 16 IMMA with
+// their read and result on one scoreboard, and loads 50 IMMA ahead. Device and host:
+// the host sizes the shared from it.
+#ifndef PEARL_BD_HASH_SPLIT
+#define PEARL_BD_HASH_SPLIT 0
+#endif
+#if PEARL_BD_HASH_SPLIT < 0 || PEARL_BD_HASH_SPLIT > 13
+#error "PEARL_BD_HASH_SPLIT is 0 or the partner's half-rounds, 1 to 13"
+#endif
+#if PEARL_BD_HASH_SPLIT && !(PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG)
+#error "PEARL_BD_HASH_SPLIT is built with PEARL_BD_RUNBASE=1 and PEARL_BD_TAIL_LDG=1: without them its loop loads go out late"
+#endif
+#if PEARL_BD_HASH_SPLIT && (PEARL_BD_RED || PEARL_BD_TADDR || PEARL_BD_SNAKE || PEARL_BD_GATE != 2 \
+                            || PEARL_BD_GROUPS != 2)
+#error "PEARL_BD_HASH_SPLIT does not fit with PEARL_BD_RED, _TADDR, _SNAKE or PEARL_BD_GATE=1, and needs PEARL_BD_GROUPS=2"
+#endif
+#define PEARL_BD_SPLIT_SMEM (PEARL_BD_HASH_SPLIT ? 4u * 32u * 16u * 4u : 0u)
 // A block size forced from the command line skips Turing's block below, so
 // sm_75 builds the generic fold at that size: with 256 threads, the 128x128
 // tile in two 32 KB stages. The host still takes the card for Turing's. With

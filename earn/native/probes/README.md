@@ -949,6 +949,11 @@ out of the fold.
 - `bench.exe <secs>` (built from `bench.cu`) -- fold plus finalize, no redraws. It benches
   the mainnet fill, now the constant one; `PEARL_OPERAND_FILL_CODE=0` benches the hashed
   fill from the same binary.
+- `PEARL_HITLIST=<batches> bench.exe 0 [m] [col_batch]` -- every hit the build finds, 16
+  to 32 a batch on average, as a line a batch, from nonce 0 under salt 0. Two builds that
+  compute the same hashes print the same lines. It catches what `verify-hits.js` cannot:
+  a build that drops hits. `turing/compilers.sh` runs it on every build against base
+  (stage `complete`).
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no

@@ -6,7 +6,7 @@
 #
 # Every result is one line starting with [compilers], under 500 characters (Vast's log
 # API cuts longer lines). STAGES picks the steps: "setup build bench hashrate verify
-# probe" by default; "setup build" runs without a GPU. ONLY="base rul8" keeps just
+# complete probe" by default; "setup build" runs without a GPU. ONLY="base rul8" keeps just
 # those builds (to confirm a winner on a second card). Assumes an idle GPU 0 and the
 # nvidia/cuda:12.8.1-devel-ubuntu22.04 image (CUDA_HOME, default /usr/local/cuda, must
 # be CUDA 12.8.1, the toolkit CI builds with). About 35 minutes on a 2080 Ti.
@@ -29,14 +29,17 @@
 #
 # Steps: bench.cu for every build in ROUNDS interleaved rounds (the order reverses each
 # round), hashrate.js on the fastest and on base in HR_ROUNDS interleaved rounds,
-# verify-hits.js (400 hits) on every build but base, then the driver probe: the
+# verify-hits.js (400 hits) on every build but base, every build's hit list against
+# base's (complete, below), then the driver probe: the
 # base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and from
 # ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
 set -u
 : "${SRC:?set SRC to the repo checkout}" "${OUT:?set OUT to a scratch directory}"
-STAGES=" ${STAGES:-setup build bench hashrate verify probe} "
+STAGES=" ${STAGES:-setup build bench hashrate verify complete probe} "
 ROUNDS=${ROUNDS:-5}; BENCH_SECS=${BENCH_SECS:-20}
 HR_ROUNDS=${HR_ROUNDS:-3}; HR_SECS=${HR_SECS:-60}; VERIFY_SECS=${VERIFY_SECS:-90}
+COMPLETE_SHAPES=${COMPLETE_SHAPES:-131072 2048 40;8192 32 300;8192 16 300;4096 16 300}
+COMPLETE_SECS=${COMPLETE_SECS:-600}
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
 NODE_VER=v22.22.0
 NATIVE=$SRC/earn/native
@@ -285,6 +288,41 @@ if has verify; then
     j=$(echo "$out" | grep '^{' | tail -1)
     if [ -z "$j" ]; then say "verify $name FAIL: no result: $(echo "$out" | tail -3 | tr '\n' ' ')"; continue; fi
     say "verify $name $(echo "$j" | grep -oE '"(hits|verified|failed|salts|PASS)":[a-z0-9]+' | tr '\n' ' ')$(echo "$j" | grep -q '"PASS":true' || echo " FAILS: $(echo "$j" | grep -oE '"fails":.*' | cut -c1-300)")"
+  done
+fi
+
+# Completeness: every build must find exactly base's hits. The fold reports a hit only
+# after it recomputes the whole hash from the transcript, so a build whose filter misses
+# (PEARL_BD_HASH_SPLIT reading a stale state, say) drops hits and reports no wrong one:
+# verify-hits.js passes it, and the bench reads the lost work as speed. bench's
+# PEARL_HITLIST lists each batch's hits (16 to 32 on average) on the same job and nonces,
+# in each of COMPLETE_SHAPES ("m col_batch batches", ';' between): the default shape,
+# where a block walks hundreds of tiles, and batches of 128, 64 and 32 tiles, where a
+# block has one, two or a few on any RTX 20 card (30 to 72 blocks): a persistent
+# block's first and last hand-offs. Each build's lines must match base's, batch for
+# batch; an ablation build (output meaningless) fails. A run stops after COMPLETE_SECS.
+# This stage has not run on a card yet.
+if has complete && [ -f "$OUT/v/base/ok" ]; then
+  IFS=';' read -r -a shapes <<< "$COMPLETE_SHAPES"
+  order=(base)
+  for name in "${BUILT[@]}"; do [ "$name" = base ] || order+=("$name"); done
+  for sh in "${shapes[@]}"; do
+    read -r m cb nb <<< "$sh"
+    tag=m$m-cb$cb; B=$OUT/v/base/hitlist.$tag
+    for name in "${order[@]}"; do
+      f=$OUT/v/$name/hitlist.$tag
+      PEARL_HITLIST=$nb timeout -k 10 "$COMPLETE_SECS" "$OUT/v/$name/bench" 0 "$m" "$cb" > "$f" 2>&1
+      sum=$(grep '^hitlist ' "$f" | tail -1)
+      if [ -z "$sum" ] || [[ "$sum" == *FAIL* ]]; then
+        say "complete $tag $name FAIL: $(tail -2 "$f" | tr '\n' ' ')"; continue
+      fi
+      if [ "$name" = base ]; then say "complete $tag base ${sum#hitlist }"; continue; fi
+      if cmp -s <(grep '^HL ' "$B") <(grep '^HL ' "$f"); then
+        say "complete $tag $name PASS ${sum#hitlist }"
+      else
+        say "complete $tag $name FAIL ${sum#hitlist }, first difference: $(diff <(grep '^HL ' "$B") <(grep '^HL ' "$f") | grep -m2 '^[<>]' | tr '\n' ' ')"
+      fi
+    done
   done
 fi
 
