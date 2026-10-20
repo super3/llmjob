@@ -68,10 +68,36 @@
 // two warps do share B in L1, and B's L2 latency is the largest cost left. The
 // other folds' feature switches below are not built here, so asking for one is
 // an error rather than a build that ignores it.
+//
+// A-direct (PEARL_BD_A_DIRECT, see pearl_config.h): A' is fragment-ordered too
+// (pearl_materialize16_afrag), [m / 16][k / 32][lane 32][a0 a1 a2 a3], and a
+// warp loads its four A fragments of a k-step with four more LDG.128, one
+// k-step ahead, beside its B. Lane L's sixteen bytes of 16-row block R and
+// k-step s are
+//   a0 = A'[16R + L / 4][32s + 4 (L % 4) ..+3]      rows 0-7,  k 0-15
+//   a1 = A'[16R + 8 + L / 4][32s + 4 (L % 4) ..+3]  rows 8-15, k 0-15
+//   a2 = A'[16R + L / 4][32s + 16 + 4 (L % 4) ..+3] rows 0-7,  k 16-31
+//   a3 = A'[16R + 8 + L / 4][32s + 16 + 4 (L % 4) ..+3]
+// which is what the ldmatrix.x4 below hands lane L from the staged rows: its
+// lanes 0-7, 8-15, 16-23 and 24-31 address rows 0-7 at k 0-15, rows 8-15 at
+// k 0-15, rows 0-7 at k 16-31 and rows 8-15 at k 16-31 of the block, and
+// matrix i gives lane L bytes 4 (L % 4)..+3 of its row L / 4 in register i.
+// The swizzle moves only where a row's 16-byte units sit in shared, and the
+// load undoes it. So the mma get the same a0-a3 either way
+// (earn/test/turingAdirect.test.js checks it byte for byte).
+//
+// The four warps of a row group read the same A lines, so all but the first
+// should hit L1. Nothing of A is in shared, so there is no barrier a chunk:
+// the group meets once a tile (PEARL_BD_A_REALIGN), and shared holds only the
+// transcripts.
 
 #if PEARL_FOLD_GROUP_STAGE || PEARL_FOLD_LANE_BASES || PEARL_FOLD_FAST_COORDS \
     || PEARL_FOLD_SERPENTINE || PEARL_STAGE_AT_BARRIER || !PEARL_STAGE_REGS
 #error "PEARL_FOLD_GROUP_STAGE, _LANE_BASES, _FAST_COORDS, _SERPENTINE, PEARL_STAGE_AT_BARRIER and PEARL_STAGE_REGS=0 are not in the B-direct fold: build with PEARL_TURING_BDIRECT=0"
+#endif
+#if PEARL_BD_A_DIRECT && (defined(PEARL_ABLATE_BARRIER) || defined(PEARL_ABLATE_STAGING) \
+                          || defined(PEARL_ABLATE_LDMATRIX) || defined(PEARL_ABLATE_AHIT))
+#error "PEARL_ABLATE_BARRIER, _STAGING, _LDMATRIX and _AHIT price A's staging, which A-direct does not have (PEARL_BD_A_REALIGN=0 drops its one meeting a tile)"
 #endif
 
 #if PEARL_BD_GROUPS == 2
@@ -86,8 +112,8 @@ __device__ __forceinline__ void pearl_st_shared_v4(uint32_t a, int4 v) {
                : "memory");
 }
 
-// A B fragment, ld.global.nc. Volatile and ordered against memory, as it was
-// measured.
+// A B fragment (and with A-direct an A one), ld.global.nc. Volatile and ordered
+// against memory, as it was measured.
 __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
   int4 v;
   asm volatile("ld.global.nc.v4.s32 {%0,%1,%2,%3}, [%4];"
@@ -95,6 +121,15 @@ __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
                : "l"(p)
                : "memory");
   return v;
+}
+
+// b, unchanged, but only once x is computed: a byte permute that takes all four
+// bytes from b (selector 0x3210), so an mma that reads the result waits for x.
+// A-direct uses it to order the next k-step's mma after the readout's xors.
+__device__ __forceinline__ uint32_t pearl_bd_after(uint32_t b, uint32_t x) {
+  uint32_t r;
+  asm("prmt.b32 %0, %1, %2, 0x3210;" : "=r"(r) : "r"(b), "r"(x));
+  return r;
 }
 
 // An A staging load. Each A byte is read by one thread, so it goes L2-only
@@ -133,7 +168,15 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // The other folds' general walk (see PEARL_BLOCK_GROUP): bands of row groups,
   // a band's rows first, the band as deep as this card's L2 suits: the host
   // leaves it PEARL_BD_BAND_WORD words past the hit counter (PEARL_BD_L2_SHARE).
+#if PEARL_BD_A_DIRECT
+  // A' is fragment-ordered only if the host was built with A-direct too; it
+  // says so in the band word (PEARL_BD_A_DIRECT_TAG).
+  const uint32_t band_word = __ldg(hits.count + PEARL_BD_BAND_WORD);
+  if (!(band_word & PEARL_BD_A_DIRECT_TAG)) __trap();
+  const uint32_t band_depth = band_word & ~PEARL_BD_A_DIRECT_TAG;
+#else
   const uint32_t band_depth = __ldg(hits.count + PEARL_BD_BAND_WORD);
+#endif
 #if PEARL_BD_WALK == 1
   // Column bands instead (PEARL_BD_WALK 1): band_depth column groups of B stay
   // in L2 while every row group's A streams past them, a band's columns first.
@@ -163,11 +206,24 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
 
   extern __shared__ __align__(128) uint32_t smem_u32[];
+#if PEARL_BD_A_DIRECT
+  // Only the transcripts: PEARL_BD_T_BUFS buffers of 8 KB, a tile in each.
+  constexpr uint32_t TWORDS = (PEARL_FOLD_THREADS / 32u) * warp_regions * PEARL_JACKPOT_BUCKETS;
+  uint32_t *sT = smem_u32;
+  static_assert(PEARL_BD_SMEM_A_STAGES == 0
+                    && PEARL_BD_T_BUFS * TWORDS * 4u == (PEARL_BD_A_REALIGN ? 8192u : 16384u),
+                "8 KB of shared, or 16 with two transcript buffers: the host's smem for this fold");
+#if PEARL_BD_GROUPS == 2
+  const uint32_t sid = threadIdx.x & 127u;  // a thread's place in its row group, for the hash
+#endif
+#else
   const uint32_t sA = (uint32_t)__cvta_generic_to_shared(smem_u32);
   uint32_t *sT = smem_u32 + PEARL_BD_A_STAGES * ABUF / 4u;  // the transcripts, after the A stages
   static_assert(PEARL_BD_A_STAGES * ABUF + (PEARL_FOLD_THREADS / 32u) * warp_regions
                         * PEARL_JACKPOT_BUCKETS * 4u == 40960u,
                 "40 KB of shared: the host's smem for this fold");
+  static_assert(PEARL_BD_SMEM_A_STAGES == PEARL_BD_A_STAGES && PEARL_BD_T_BUFS == 1,
+                "the host sizes this fold's shared from these");
 
   // A staging: eight threads a row, sixteen bytes each, rows SSTEP apart. Unit q
   // of row r is stored at q ^ (r & 7), as in the other folds; SSTEP is a
@@ -196,6 +252,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   const uint32_t swz = (lane & 7u) << 4;
   uint32_t aLane0 = sA + (wr * 64u + alrow) * 128u + ((albyte ^ swz) & 0x10u) + (swz & 0x60u);
   asm volatile("" : "+r"(aLane0), "+r"(adst0));
+#endif  // PEARL_BD_A_DIRECT
 
   int32_t acc[MB][NB][4];
   constexpr uint32_t RPL = MB / 2u;
@@ -231,15 +288,329 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     return x;
   };
+#if PEARL_BD_T_BUFS == 2
+  // Two transcript buffers (A-direct with PEARL_BD_A_REALIGN 0): this tile's
+  // words go to buffer tile & 1, so the next tile's never land on words a hasher
+  // has yet to read, and the tile after it writes here only past the next
+  // hand-off, which every hasher reaches after its reads.
+  uint32_t tbuf = 0u;
+#else
+  constexpr uint32_t tbuf = 0u;
+#endif
   auto readout_st = [&](uint32_t rl, uint32_t c, uint32_t x) {
     if (((lane >> 2) & 3u) == 0u) {
       const uint32_t L = warp * warp_regions + (lane & 3u) * regions_per_warp + 2u * rl
                          + ((lane >> 4) & 1u);
-      sT[L * 16u + (c ^ ((L >> 1) & 15u))] = x;
+      sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))] = x;
     }
   };
   auto readout = [&](uint32_t rl, uint32_t c) { readout_st(rl, c, readout_x(rl)); };
 
+  // After the hand-off, every word of the group's regions is written. Hashing
+  // thread L takes region L of the group's 64 (the block's 128), the same
+  // arithmetic its warp used to write it, for the tile at row group rbg and
+  // column group cbg.
+  auto hash_tile = [&](uint32_t rbg, uint32_t cbg) {
+#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
+    // The first group hashes on schedulers 0-1 and the second on 2-3, so each
+    // scheduler keeps one warp on the next tile's chunk 0.
+    const bool hasher = wr ? sid >= 64u : sid < 64u;
+    const uint32_t L = wr * 64u + (sid & 63u);
+#elif PEARL_BD_GROUPS == 2
+    const bool hasher = sid < 64u;
+    const uint32_t L = wr * 64u + sid;
+#else
+    const bool hasher = threadIdx.x < 128u;
+    const uint32_t L = threadIdx.x;
+#endif
+    if (hasher) {
+      uint32_t tm[16];
+#pragma unroll
+      for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))];
+      const uint32_t ow = L / warp_regions;
+      const uint32_t ocb = (L % warp_regions) / regions_per_warp;
+      const uint32_t oreg = L % regions_per_warp;
+      const uint32_t orb = rbg * 2u + ow / 4u;
+      const uint32_t ocgb = cbg * 4u + ow % 4u;
+      const uint32_t region = (ocgb * 4u + ocb) * rows_valid + orb * regions_per_warp + oreg;
+      [&]() {
+#ifdef PEARL_ABLATE_TRANSCRIPT_HASH
+        // Diagnostic only: stop after the hand-off, which prices the hashing.
+        // No hit is ever reported -- never ship this.
+        return;
+#endif
+        if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+        uint32_t h[8];
+        pearl_transcript_hash_again(test.key, tm, h);
+        if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+        const uint32_t slot = atomicAdd(hits.count, 1u);
+        if (slot >= PEARL_MAX_HITS) return;
+        hits.index[slot] = region;
+#pragma unroll
+        for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
+#pragma unroll
+        for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
+      }();
+    }
+  };
+
+#if PEARL_BD_A_DIRECT
+  // This lane's sixteen bytes of k-step 0 of the warp's first 16-row block of A'
+  // (row group rbg_) and of its first 16-column block of B' (column group cbg_),
+  // as byte offsets. A 16-row block is FRAG_BLOCK bytes in either operand, so a
+  // row group's 128 rows are the same 128 * k bytes as row-major, and mb (or j)
+  // blocks and s k-steps on are + mb * FRAG_BLOCK + s * 512. 32 bits: the host
+  // refuses this fold for operands of 4 GB or more.
+  static_assert(FRAG_BLOCK == 16u * k && ROWS * k == 8u * FRAG_BLOCK,
+                "a 16-row block of A' is 16 rows of k bytes, a row group eight of them");
+  (void)ABUF;  // no A stages
+  auto a_off = [&](uint32_t rbg_) -> uint32_t {
+    return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + lane * 16u;
+  };
+  auto b_off = [&](uint32_t cbg_) -> uint32_t {
+#ifdef PEARL_ABLATE_BSHARE
+    // Diagnostic only: as in the staged form. Output is meaningless.
+    cbg_ = wr ? cbg_ ^ 1u : cbg_;
+#endif
+    return (col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
+  };
+  // The readout's shuffles (readout_x's second half).
+  auto readout_gather = [&](uint32_t x) -> uint32_t {
+#ifndef PEARL_ABLATE_TRANSCRIPT
+    const uint32_t s4 = __shfl_xor_sync(0xffffffffu, x, 4);
+    const uint32_t s8 = __shfl_xor_sync(0xffffffffu, x, 8);
+    const uint32_t s12 = __shfl_xor_sync(0xffffffffu, x, 12);
+    x = pearl_xor3(x, s4, s8) ^ s12;
+#endif
+    return x;
+  };
+
+  // af[b][mb]: A's fragments, as bf[b][j] are B's, for this k-step (b = t & 1)
+  // and the next. aoff and boff: this tile's offsets; aoffn and boffn: those
+  // the tile's last k-step loads from, the next tile's (or, not persistent,
+  // its own k-step 0 again: the wrap the staged form does).
+  int4 af[2][MB], bf[2][4];
+  uint32_t aoff, boff, aoffn = 0u, boffn = 0u;
+  auto tile_prologue = [&]() {
+#pragma unroll
+    for (uint32_t mb = 0; mb < MB; mb++) af[0][mb] = pearl_bd_ldg(Aprime + aoff + mb * FRAG_BLOCK);
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);
+#ifdef PEARL_ABLATE_BLOAD
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++)
+      bf[1][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK + 512u);
+#endif
+  };
+
+  // K-step t of chunk ch: the next k-step's four A and four B fragments into
+  // the other buffers, then this k-step's 32 mma (128 IMMA). last: the tile's
+  // last k-step, which loads from aoffn and boffn.
+  //
+  // ro: the k-step after a chunk's last, which overwrites the accumulators the
+  // chunk's readout reads. The readout folds each B pair's accumulators just
+  // before that pair's mma, and the pair's B goes through pearl_bd_after, so
+  // the mma wait for the fold. Left to itself ptxas ran this k-step's mma ahead
+  // of the readout's xors, held about 66 old accumulator words beside the new
+  // ones, and spilled (255 registers, 60 bytes, reloaded every chunk).
+  uint32_t rxs[RPL];
+  auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last) {
+    const uint32_t s = ch * KSTEPS + t;
+    {
+      const uint32_t ao = last ? aoffn : aoff + (s + 1u) * 512u;
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++)
+        af[(t + 1u) & 1u][mb] = pearl_bd_ldg(Aprime + ao + mb * FRAG_BLOCK);
+    }
+#ifndef PEARL_ABLATE_BLOAD
+    {
+#ifdef PEARL_ABLATE_BHIT
+      // Diagnostic only: as in the staged form. Output is meaningless.
+      const uint32_t bo = (last ? boffn : boff) + ((s + 1u) & 1u) * 512u;
+#else
+      const uint32_t bo = last ? boffn : boff + (s + 1u) * 512u;
+#endif
+#pragma unroll
+      for (uint32_t j = 0; j < 4u; j++)
+        bf[(t + 1u) & 1u][j] = pearl_bd_ldg(Bprime + bo + j * FRAG_BLOCK);
+    }
+#else
+    // Diagnostic only: as in the staged form. Output is meaningless.
+    asm volatile("" ::: "memory");
+#endif
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) {
+      uint32_t b0 = (uint32_t)bf[t & 1u][j].x, b1 = (uint32_t)bf[t & 1u][j].y;
+      uint32_t b2 = (uint32_t)bf[t & 1u][j].z, b3 = (uint32_t)bf[t & 1u][j].w;
+      if (ro) {
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);
+        b0 = pearl_bd_after(b0, rxs[0]);
+        b1 = pearl_bd_after(b1, rxs[1]);
+        b2 = pearl_bd_after(b2, rxs[0]);
+        b3 = pearl_bd_after(b3, rxs[1]);
+      }
+      // a0-a3 are the four words of af as they come (see the top of this file).
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        const int4 a = af[t & 1u][mb];
+        pearl_mma_m16n8k32(acc[mb][2u * j][0], acc[mb][2u * j][1], acc[mb][2u * j][2],
+                           acc[mb][2u * j][3], (uint32_t)a.x, (uint32_t)a.y, (uint32_t)a.z,
+                           (uint32_t)a.w, b0, b1);
+      }
+#pragma unroll
+      for (uint32_t mb = 0; mb < MB; mb++) {
+        const int4 a = af[t & 1u][mb];
+        pearl_mma_m16n8k32(acc[mb][2u * j + 1u][0], acc[mb][2u * j + 1u][1],
+                           acc[mb][2u * j + 1u][2], acc[mb][2u * j + 1u][3], (uint32_t)a.x,
+                           (uint32_t)a.y, (uint32_t)a.z, (uint32_t)a.w, b2, b3);
+      }
+    }
+  };
+#ifdef PEARL_ABLATE_READOUT
+  constexpr bool RO = false;
+#else
+  constexpr bool RO = true;
+#endif
+
+  // One tile: its 64 k-steps and its readouts, up to the last chunk's. The chunk
+  // loop is rotated as in the staged form: an iteration is k-steps 2-3 of chunk
+  // c, k-step 0 of chunk c + 1 with c's readout folded in, c's stores, then
+  // k-step 1. next_srcs sets aoffn and boffn before the last k-step.
+  auto tile = [&](auto next_srcs) {
+#pragma unroll
+    for (uint32_t mb = 0; mb < MB; mb++)
+#pragma unroll
+      for (uint32_t nb = 0; nb < NB; nb++)
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+    kstep(0u, 0u, false, false);
+    kstep(0u, 1u, false, false);
+#if PEARL_BD_A_REALIGN
+    // Chunk 0, peeled: the row group meets once a tile, before the readout's
+    // stores of chunk 0. A warp that does not hash has done five k-steps by then
+    // while its scheduler's other warp hashed the last tile, so the groups set
+    // off level and the two warps of a scheduler read the same B for the rest
+    // of the tile. The meeting also keeps these stores off words the group's
+    // hashers have yet to read: each hasher reads its words before it hashes,
+    // and reaches this barrier only after.
+    {
+      kstep(0u, 2u, false, false);
+      kstep(0u, 3u, false, false);
+      kstep(1u, 0u, RO, false);
+#ifndef PEARL_ABLATE_READOUT
+      uint32_t rx[RPL];
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rxs[rl]);
+#endif
+      PEARL_BD_BAR();
+#ifndef PEARL_ABLATE_READOUT
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, 0u, rx[rl]);
+#endif
+      kstep(1u, 1u, false, false);
+    }
+    constexpr uint32_t first_chunk = 1u;
+#else
+    constexpr uint32_t first_chunk = 0u;
+#endif
+    for (uint32_t chunk = first_chunk; chunk + 1u < chunks; chunk++) {
+      kstep(chunk, 2u, false, false);
+      kstep(chunk, 3u, false, false);
+      kstep(chunk + 1u, 0u, RO, false);
+#ifndef PEARL_ABLATE_READOUT
+      uint32_t rx[RPL];
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rxs[rl]);
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunk, rx[rl]);
+#endif
+      kstep(chunk + 1u, 1u, false, false);
+    }
+    next_srcs();
+    kstep(chunks - 1u, 2u, false, false);
+    kstep(chunks - 1u, 3u, false, true);
+    // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
+    // so the accumulators stay live.
+#pragma unroll
+    for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunks - 1u);
+  };
+
+#if PEARL_BD_PERSIST
+  // Persistent, as the staged form: block b starts on tile b and takes every
+  // later one from the slot's counter; thread 0 asks for the tile after next
+  // at the start of each tile and publishes it at the hand-off.
+  if (blockIdx.x >= tiles) return;
+  uint32_t *const tile_ctr = hits.count + PEARL_BD_CTR_SLOTS;
+  __shared__ uint32_t sNext[2];
+  if (threadIdx.x == 0u) sNext[0] = gridDim.x + atomicAdd(tile_ctr, 1u);
+  {
+    uint32_t rbg0, cbg0;
+    tile_coords(blockIdx.x, rbg0, cbg0);
+    aoff = a_off(rbg0);
+    boff = b_off(cbg0);
+    tile_prologue();
+  }
+  __syncthreads();
+  uint32_t it = 0u;
+  for (uint32_t v = blockIdx.x; v < tiles; it++) {
+#if PEARL_BD_T_BUFS == 2
+    tbuf = (it & 1u) * TWORDS;
+#endif
+    uint32_t vgrab = 0u;
+    if (threadIdx.x == 0u) vgrab = gridDim.x + atomicAdd(tile_ctr, 1u);
+    // The next tile is read in this tile's tail (next_srcs), before its
+    // hand-off: that slot is written again only at the end of the next tile,
+    // which thread 0 reaches only past this hand-off. Neither it nor this tile's
+    // coordinates (the hash works them out again) are held through the tile: a
+    // build that held them, with 64-bit offsets, spilled 24 bytes.
+    uint32_t vnext = 0u;
+    tile([&]() {
+      vnext = sNext[it & 1u];
+      uint32_t rbgn, cbgn;
+      tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn);
+      aoffn = a_off(rbgn);
+      boffn = b_off(cbgn);
+    });
+    if (threadIdx.x == 0u) sNext[(it + 1u) & 1u] = vgrab;
+    __syncthreads();
+    {
+      uint32_t rbg, cbg;
+      tile_coords(v, rbg, cbg);
+      hash_tile(rbg, cbg);
+    }
+    // The next tile's k-step 0 is already in af[0] and bf[0].
+    aoff = aoffn;
+    boff = boffn;
+    v = vnext;
+  }
+#else
+  // A block a tile, or a smaller grid walking tiles a grid apart. Nothing of A
+  // is in shared, so a tile starts without a barrier.
+  for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
+#if PEARL_BD_T_BUFS == 2
+    tbuf = ((v - blockIdx.x) / gridDim.x & 1u) * TWORDS;
+#endif
+    {
+      uint32_t rbg, cbg;
+      tile_coords(v, rbg, cbg);
+      aoff = a_off(rbg);
+      boff = b_off(cbg);
+    }
+    tile_prologue();
+    tile([&]() {
+      aoffn = aoff;
+      boffn = boff;
+    });
+    PEARL_BD_BAR();
+    {
+      uint32_t rbg, cbg;
+      tile_coords(v, rbg, cbg);
+      hash_tile(rbg, cbg);
+    }
+  }
+#endif
+#else
   auto a_src = [&](uint32_t rbg_) {
     return Aprime + (size_t)(rbg_ * ROWS + srow0) * k + sq * 16u;
   };
@@ -482,63 +853,23 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
     for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunks - 1u);
 
-    // Hand-off: every word of the group's regions is written. Hashing thread L
-    // takes region L of the group's 64 (the block's 128), the same arithmetic
-    // its warp used to write it. The next tile writes these words again only
-    // after its first barrier, which the hashers reach after reading them.
-    // Persistent: the whole block meets here, which also publishes the next
-    // tile's chunk 0 and the tile after it (sNext).
+    // Hand-off: every word of the group's regions is written (hash_tile). The
+    // next tile writes these words again only after its first barrier, which
+    // the hashers reach after reading them. Persistent: the whole block meets
+    // here, which also publishes the next tile's chunk 0 and the tile after it
+    // (sNext).
 #if PEARL_BD_PERSIST
     if (threadIdx.x == 0u) sNext[(it + 1u) & 1u] = vgrab;
     __syncthreads();
 #else
     PEARL_BD_BAR();
 #endif
-#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
-    // The first group hashes on schedulers 0-1 and the second on 2-3, so each
-    // scheduler keeps one warp on the next tile's chunk 0.
-    const bool hasher = wr ? sid >= 64u : sid < 64u;
-    const uint32_t L = wr * 64u + (sid & 63u);
-#elif PEARL_BD_GROUPS == 2
-    const bool hasher = sid < 64u;
-    const uint32_t L = wr * 64u + sid;
-#else
-    const bool hasher = threadIdx.x < 128u;
-    const uint32_t L = threadIdx.x;
-#endif
-    if (hasher) {
-      uint32_t tm[16];
-#pragma unroll
-      for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[L * 16u + (c ^ ((L >> 1) & 15u))];
-      const uint32_t ow = L / warp_regions;
-      const uint32_t ocb = (L % warp_regions) / regions_per_warp;
-      const uint32_t oreg = L % regions_per_warp;
-      const uint32_t orb = rbg * 2u + ow / 4u;
-      const uint32_t ocgb = cbg * 4u + ow % 4u;
-      const uint32_t region = (ocgb * 4u + ocb) * rows_valid + orb * regions_per_warp + oreg;
-      [&]() {
-#ifdef PEARL_ABLATE_TRANSCRIPT_HASH
-        // Diagnostic only: stop after the hand-off, which prices the hashing.
-        // No hit is ever reported -- never ship this.
-        return;
-#endif
-        if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
-        uint32_t h[8];
-        pearl_transcript_hash_again(test.key, tm, h);
-        if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
-        const uint32_t slot = atomicAdd(hits.count, 1u);
-        if (slot >= PEARL_MAX_HITS) return;
-        hits.index[slot] = region;
-#pragma unroll
-        for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
-#pragma unroll
-        for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
-      }();
-    }
+    hash_tile(rbg, cbg);
 #if PEARL_BD_PERSIST
     v = vnext;
 #endif
   }
+#endif  // PEARL_BD_A_DIRECT
 }
 
 #undef PEARL_BD_BAR

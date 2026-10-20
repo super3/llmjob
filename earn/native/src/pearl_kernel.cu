@@ -1066,6 +1066,62 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
 }
 #endif  // PEARL_TURING_BDIRECT
 
+// pearl_materialize16_frag for A' (PEARL_BD_A_DIRECT): the same values and the same
+// blocks, but a lane's four words in the order an ldmatrix.x4 of the B-direct fold's
+// A hands them, which is the m16n8k32 A operand's order:
+//   word 0 rows 0-7 at k 0-15, word 1 rows 8-15 at k 0-15,
+//   word 2 rows 0-7 at k 16-31, word 3 rows 8-15 at k 16-31,
+// where B' puts k before rows. Element (row, kk) goes to
+//   ((row >> 4) * (k / 32) + (kk >> 5)) * 512 + ((row & 7) * 4 + ((kk >> 2) & 3)) * 16
+//     + (((kk >> 4) & 1) * 2 + ((row >> 3) & 1)) * 4 + (kk & 3),
+// so a warp loads one 16-row block of a k-step with one LDG.128, and the four words
+// are a0-a3 as they come. A copy, so that B's kernel stays exactly as it was; only
+// the word order differs. Needs rows a multiple of 16 and k a power of two of at
+// least 32; the host checks both. A body only in the pass that builds the fold.
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ base,
+                                                     const int8_t *__restrict__ dense,
+                                                     const uint32_t *__restrict__ perm,
+                                                     int8_t *__restrict__ out,
+                                                     uint32_t rows, uint32_t k_log2,
+                                                     uint32_t rank, uint64_t read_vecs,
+                                                     uint32_t fill_word) {
+#if PEARL_TURING_BD_BODY
+  const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
+  const uint64_t idx = v << 4;
+  const uint32_t r = (uint32_t)(idx >> k_log2);
+  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
+                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
+                                            (int)fill_word);
+  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
+                          (uint32_t)b4.w};
+  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+  const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
+  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+#pragma unroll
+  for (int w = 0; w < 4; w++) {
+    const uint4 q0 = pp[w * 2];
+    const uint4 q1 = pp[w * 2 + 1];
+    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
+    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
+    uint32_t packed = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
+      int32_t sv = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
+      sv = sv < -128 ? -128 : (sv > 127 ? 127 : sv);
+      packed |= ((uint32_t)sv & 0xffu) << (j * 8);
+    }
+    o[w * 4] = packed;  // lane 4 * (r & 7) + w, 16 bytes a lane
+  }
+#endif  // PEARL_TURING_BD_BODY
+}
+#endif  // PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+
 // Re-draw an operand by rewriting a few of its bytes, and repair the stored
 // commitment tree to match.
 //

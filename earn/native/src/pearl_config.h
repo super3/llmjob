@@ -709,6 +709,66 @@ typedef struct {
 // rows, then the block's 128 transcripts of 64 bytes: 40 KB. That takes
 // Turing's 64 KB shared carveout and leaves 32 KB of L1 for B.
 #define PEARL_BD_A_STAGES 2
+// A-direct (PEARL_BD_A_DIRECT 1; default 0): the B-direct fold with A read the way B
+// is. The host writes A' fragment-ordered as well (pearl_materialize16_afrag), and
+// each warp loads its four A fragments of the next k-step straight from global into
+// registers, beside its B, with no A in shared and no barrier a chunk.
+//
+// Why: the fold's ablations per clock (probes/README.md, 2026-10-20). With the
+// barrier, A's staging, the readout and the hash all off it runs about 10% more work
+// a clock on a 2080 Ti, a 2070 and a 2060, past the best competitor. The barrier
+// alone off loses 8-12%. That loss fits the hash: the two warps of a scheduler that
+// share B are one hasher and one not, so without the barrier at chunk 0's seam every
+// B pair runs the whole tile a hash apart and stops sharing B in L1 (sharing B is
+// worth 11%, PEARL_ABLATE_BSHARE).
+//
+// So the warps of a row group meet once a tile instead (PEARL_BD_A_REALIGN 1, the
+// default), just before the readout's stores of chunk 0, after five k-steps: about
+// 2.5K cycles of mma for the warp that does not hash, against about 2.3K for the hash.
+// That meeting is also what keeps a word of the next tile's chunk 0 from landing
+// before the hashers have read the last tile's. With 0 they never meet inside a
+// tile, and the transcripts take two buffers, a tile each.
+//
+// Shared is then only the transcripts, 8 KB (16 KB with two buffers), and the host
+// asks for Turing's smaller split of its 96 KB unified cache: 32 KB of shared and 64
+// KB of L1 (PEARL_BD_A_DIRECT_CARVEOUT, a percentage of the 64 KB maximum; sm_75
+// has only these two splits, 32 + 64 and 64 + 32). The B-direct fold's 40 KB took
+// the other, with 32 KB of L1.
+//
+// The earlier attempt at A fragment-ordered (see "Tried on the B-direct fold" above)
+// is not in git: the note arrived with the fold itself (968115f), already dropped.
+// This one cannot leave A': a tile reads only the 128 rows of its row group rbg, and
+// rbg < (m / 16) / 8, so they end at or before row m; the load after a tile's last
+// k-step reads its own k-step 0 again or, persistent, the next tile's, never the k
+// past the end of a row; and the host writes A' fragment-ordered only when m is a
+// whole number of 16-row blocks, and refuses the fold otherwise (and for operands of
+// 4 GB or more, as the fold's offsets are 32 bits). earn/test/turingAdirect.test.js
+// checks the layout byte for byte against the staged path, and the bounds.
+//
+// Not measured. Both passes read it (the host draws A' in the layout the fold reads).
+#ifndef PEARL_BD_A_DIRECT
+#define PEARL_BD_A_DIRECT 0
+#endif
+#ifndef PEARL_BD_A_REALIGN
+#define PEARL_BD_A_REALIGN 1
+#endif
+#if (PEARL_BD_A_DIRECT != 0 && PEARL_BD_A_DIRECT != 1) \
+    || (PEARL_BD_A_REALIGN != 0 && PEARL_BD_A_REALIGN != 1)
+#error "PEARL_BD_A_DIRECT and PEARL_BD_A_REALIGN are 0 or 1"
+#endif
+#if PEARL_BD_A_DIRECT && !PEARL_TURING_BDIRECT
+#error "PEARL_BD_A_DIRECT is a form of the B-direct fold: it needs PEARL_TURING_BDIRECT=1"
+#endif
+// The B-direct fold's shared: this many A stages, then this many transcript buffers.
+#define PEARL_BD_SMEM_A_STAGES (PEARL_BD_A_DIRECT ? 0 : PEARL_BD_A_STAGES)
+#define PEARL_BD_T_BUFS (PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? 2 : 1)
+#define PEARL_BD_A_DIRECT_CARVEOUT 50
+// A host built with A-direct sets this bit in the band word it leaves the fold
+// (PEARL_BD_BAND_WORD), and the A-direct fold traps without it. A host built
+// without the switch draws A' row-major, and the fold would read it as fragments
+// and find nothing, silently. (The other way round, a host with the switch and a
+// fold without, does not link: the host launches pearl_materialize16_afrag.)
+#define PEARL_BD_A_DIRECT_TAG 0x80000000u
 // A block size forced from the command line skips Turing's block below, so
 // sm_75 builds the generic fold at that size: with 256 threads, the 128x128
 // tile in two 32 KB stages. The host still takes the card for Turing's. With

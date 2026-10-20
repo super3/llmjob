@@ -124,6 +124,15 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *base,
                                                     uint32_t rank, uint64_t read_vecs,
                                                     uint32_t fill_word);
 #endif
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+// Built only with A-direct (PEARL_BD_A_DIRECT), the only reader of its layout.
+extern "C" __global__ void pearl_materialize16_afrag(const int8_t *base,
+                                                     const int8_t *dense,
+                                                     const uint32_t *perm, int8_t *out,
+                                                     uint32_t rows, uint32_t k_log2,
+                                                     uint32_t rank, uint64_t read_vecs,
+                                                     uint32_t fill_word);
+#endif
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -1721,8 +1730,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
         ctx->foldStream[i] = nullptr;
       }
     }
-    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
-    const uint32_t bands[Ctx::kSlots] = {ctx->bdBand, ctx->bdBand};
+    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter,
+    // with PEARL_BD_A_DIRECT_TAG set when this host draws A' for A-direct.
+    const uint32_t tag = PEARL_BD_A_DIRECT ? PEARL_BD_A_DIRECT_TAG : 0u;
+    const uint32_t bands[Ctx::kSlots] = {ctx->bdBand | tag, ctx->bdBand | tag};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
                        cudaMemcpyHostToDevice),
             "setting the B-direct fold's band depth");
@@ -1956,16 +1967,28 @@ void draw_noise(Ctx *ctx, bool isA) {
   const uint32_t blockRows =
       ctx->foldTiled ? (isA ? (ctx->foldHopper ? PEARL_HOPPER_BM : PEARL_TALL_BM) : PEARL_TALL_BN)
                      : 0u;
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+  if (ctx->foldBDirect && isA && kPow2 && rows % 16u == 0u && k >= 32u) {
+    // A-direct (PEARL_BD_A_DIRECT): A' fragment-ordered too, in the order the
+    // fold's A operand takes (pearl_materialize16_afrag). Every A' this context
+    // ever has comes through here: the job's full draw and every restamp for a
+    // new salt (restamp and the host-hashed path in pearl_host_reseed both end
+    // in draw_noise(ctx, true)). The search refuses A-direct for any m this
+    // branch does not take.
+    pearl_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
+        src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+  } else
+#endif
 #if PEARL_TURING_BDIRECT
   if (ctx->foldBDirect && !isA && kPow2 && rows % 16u == 0u && k >= 32u) {
     // The same values, in the fragment order Turing's B-direct fold loads B'
-    // in (pearl_materialize16_frag). A' stays row-major, so a restamp, which
-    // redraws only A', is unchanged. Decided per card when its context was
-    // created (resolve_fold). The search refuses the B-direct fold for any
-    // geometry this branch does not take. Turing has no tall fold, so `fused`
-    // is never set here and pearl_gen_dense above has written the dense factor
-    // this reads; under the constant fill it reads B through read_vecs, like
-    // every other materialise.
+    // in (pearl_materialize16_frag). B' is drawn once a job; a restamp redraws
+    // only A' (row-major, or fragment-ordered with A-direct, above). Decided
+    // per card when its context was created (resolve_fold). The search refuses
+    // the B-direct fold for any geometry this branch does not take. Turing has
+    // no tall fold, so `fused` is never set here and pearl_gen_dense above has
+    // written the dense factor this reads; under the constant fill it reads B
+    // through read_vecs, like every other materialise.
     pearl_materialize16_frag<<<draw_blocks(len / 16), kDrawThreads>>>(
         src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
   } else
@@ -2521,18 +2544,35 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       snprintf(err, err_len, "B-direct fold: n %u is not a multiple of 16", ctx->profile.n);
     return false;
   }
+#if PEARL_BD_A_DIRECT
+  // A-direct reads A' in blocks of 16 rows as well, and the draw writes it that
+  // way only when m is a whole number of them. It addresses both operands with
+  // 32-bit byte offsets.
+  if (ctx->foldBDirect
+      && (ctx->profile.m % 16u != 0u || (uint64_t)ctx->profile.m * k > 0xFFFFFFFFull
+          || (uint64_t)ctx->profile.n * k > 0xFFFFFFFFull)) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "A-direct fold: m must be a multiple of 16 and each operand under 4 GB "
+               "(m %u, n %u, k %u)",
+               ctx->profile.m, ctx->profile.n, k);
+    return false;
+  }
+#endif
   // Two full-chunk stages (one on Turing's one-stage fold); the transcripts live
   // in registers and global now. The tall fold: three 64-deep stages, its ring's
   // barriers, and the transcripts, laid out differently by the cp.async and TMA
   // builds (see PEARL_TALL_SMEM). Turing's B-direct fold: PEARL_BD_A_STAGES
   // stages of the tile's A rows, then the block's transcripts, 64 bytes a
-  // region (pearl_fold_bd.cuh): 40 KB.
+  // region (pearl_fold_bd.cuh): 40 KB. A-direct (PEARL_BD_A_DIRECT) has no A
+  // stages (PEARL_BD_SMEM_A_STAGES 0) and one or two transcript buffers
+  // (PEARL_BD_T_BUFS): 8 or 16 KB.
   const size_t smem =
       ctx->foldTall ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
       : ctx->foldBDirect
-          ? (size_t)PEARL_BD_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
+          ? (size_t)PEARL_BD_SMEM_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
                     * PEARL_SB_STRIDE
-                + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
+                + (size_t)PEARL_BD_T_BUFS * warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
                       * PEARL_JACKPOT_BUCKETS * 4u
           : (size_t)stageBufs
                 * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
@@ -2576,6 +2616,16 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                  cudaGetErrorString(se));
       return false;
     }
+#if PEARL_BD_A_DIRECT
+    // A-direct keeps only the transcripts in shared and reads A and B through
+    // L1, so it asks for Turing's smaller shared split: 32 KB of shared and 64
+    // KB of L1 (PEARL_BD_A_DIRECT_CARVEOUT). It is a hint the fold runs without,
+    // so a refusal is dropped rather than failing the search.
+    if (ctx->foldBDirect
+        && cudaFuncSetAttribute(foldFn, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                PEARL_BD_A_DIRECT_CARVEOUT) != cudaSuccess)
+      (void)cudaGetLastError();
+#endif
     ctx->smemOptedIn = true;
   }
   // The fold is persistent: exactly as many blocks as can be resident, each
@@ -2832,7 +2882,9 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
   if (ctx->foldBDirect) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "B-direct 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             "%s 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             PEARL_BD_A_DIRECT ? (PEARL_BD_A_REALIGN ? "A-direct" : "A-direct, no realign")
+                               : "B-direct",
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
     return ctx->foldName;
