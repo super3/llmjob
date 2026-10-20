@@ -63,7 +63,11 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # waiting for a PC are switched (see kx_sync). Two Kryptex boxes that mine no shares, while no other
                # box's work reaches Kryptex, stop the test until kryptex_token changes.
                "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_ver": "v0.6.1",
-               "kryptex_pay": 0.94, "kryptex_token": 0}
+               "kryptex_pay": 0.94, "kryptex_token": 0,
+               # Gemma beside mining (release llm_ver on): the box runs the CLI in auto mode, which fetches and starts
+               # the LLM only once the miner has started, and serves the network's jobs. Mining pauses on the card
+               # while the LLM answers a prompt (the server's speed test is one); box.sh says so, and the rules wait.
+               "llm": False, "llm_ver": "v0.6.5"}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
 KX_API = "https://pool.kryptex.com/prl/api"
 
@@ -163,7 +167,7 @@ def vnum(ver):
     return tuple(int(x) for x in re.findall(r"\d+", ver))
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None):
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -182,6 +186,13 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None):
         flags.append(f"--xmr-address {xmr}" + (f" --cpu-threads {threads}" if threads else ""))
         sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
                 " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
+    if llm:
+        # Gemma beside mining: auto mode instead of mining only, and serving the network's jobs. While the LLM answers
+        # a prompt the CLI stops mining on the card and prints no hashrate, so box.sh would repeat the miner's last
+        # line, which reads as a dead miner: it says "paused for a prompt" instead, from the CLI's own pause lines.
+        sed += (" -e 's/ --mode mining -w \\$WORKER-g\\$g --no-serve / --mode auto -w $WORKER-g$g /'"
+                " -e '/^    line=\\$(tr -d/a\\    p=$(grep -aoE \"mining (paused|resumed)\" $D/g$g.log | tail -1); "
+                "[ \"$p\" = \"mining paused\" ] && line=\"paused for a prompt\"'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
@@ -607,17 +618,21 @@ class W:
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
     def box(self, name, xmr, kx=False):
-        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later, and
-        Kryptex kryptex_ver or later."""
+        """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later, Kryptex
+        kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
+        llm = bool(self.cfg["llm"])
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
             ver = self.cfg["kryptex_ver"]
+        if llm and vnum(ver) < vnum(self.cfg["llm_ver"]):
+            ver = self.cfg["llm_ver"]
         if not xmr:
-            return ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host)], {"cpu": 2, "memory": 4096}
+            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm)],
+                    {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
-        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host)
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
 
     def xmr_sync(self, active, t):
@@ -634,7 +649,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["xmr"], g["ver"] = want, ver
+                g["xmr"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
@@ -646,6 +661,40 @@ class W:
                                                          "it starts that way on its next PC"))
             else:
                 event(f"WARN Monero {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
+    def llm_sync(self, active, t):
+        """Turn Gemma on or off in a group when config "llm" changes, by updating its command only. A box that is
+        mining keeps its PC and the command it started with, so no hash is lost: it runs Gemma from its next PC, as a
+        group waiting for a PC does from its first. A group still preparing its image is left for a later round (Salad
+        refuses updates then), and a refused update is tried again after 10 minutes."""
+        want = bool(self.cfg["llm"])
+        for g in active:
+            if (g["ended"] or bool(g.get("llm")) == want or g.get("status") == "pending"
+                    or t - g.get("llm_try", 0) < 600):
+                continue
+            g["llm_try"] = t
+            ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+                        ctype="application/merge-patch+json")
+            if 200 <= s < 300:
+                g["llm"], g["ver"] = want, ver
+                event(f"GEMMA {'ON' if want else 'OFF'} {g['name']}: miner {ver}; "
+                      + ("it keeps mining on this PC as it was and runs that way from its next one" if g["has_pc"]
+                         else "it starts that way on its next PC"))
+            else:
+                event(f"WARN Gemma {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
+    def paused(self, g, t):
+        """Whether mining is paused on the box now while its LLM answers a prompt: box.sh said so in the last 5
+        minutes (the logs come a minute or two late), and the pause began under 15 minutes ago."""
+        ps = g.get("pause_since")
+        return bool(ps) and t - (g.get("paused_t") or 0) < 5 * MIN and t - ps < 15 * MIN
+
+    def pause_end(self, g):
+        """When mining last stood paused for a prompt on this PC, or 0. One pause counts for 15 minutes at most: the
+        CLI resumes after 10 whatever the LLM is doing, so a longer one is a miner that isn't coming back."""
+        pt, ps = g.get("paused_t") or 0, g.get("pause_since")
+        return min(pt, ps + 15 * MIN) if ps else pt
 
     def kx_want(self):
         """How many groups config asks to have on Kryptex: kryptex_groups, or 0 once the test has stopped, until
@@ -790,6 +839,7 @@ class W:
             g["kx_try"] = t   # tried again in 15 minutes
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
+        g["llm"] = bool(self.cfg["llm"])   # the command carries config's Gemma setting too
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
         moving = bool(g["has_pc"] and g.get("instance")) and self.on_kx(g, g.get("machine"), t) != on
         if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False, gone_ok=True):
@@ -923,10 +973,12 @@ class W:
                 "reallocs": 0, "spend": 0.0, "prl": 0.0, "pc_min": 0.0, "mined_min": 0, "readings": [],
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
-                "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None}
+                "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
+                "llm": bool(self.cfg["llm"])}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
-                  + (f", Monero on {res['cpu']} vCPUs" if xmr else "") + (", Pearl on Kryptex" if kx else ""))
+                  + (f", Monero on {res['cpu']} vCPUs" if xmr else "") + (", Pearl on Kryptex" if kx else "")
+                  + (", Gemma" if self.cfg["llm"] else ""))
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
@@ -1014,6 +1066,13 @@ class W:
                 g = by_name.get(name)
                 if not g or tm < g["created"]:
                     continue
+                if re.search(r"\[mining g\d+\] \d\d:\d\d:\d\d\s+paused for a prompt", text):
+                    # Mining stopped on the card while its LLM answers a prompt (box.sh says so rather than repeat
+                    # the miner's last line). It earns nothing meanwhile, and the rules wait (paused, pause_end).
+                    if mach == g.get("machine"):
+                        g["paused_t"] = max(g.get("paused_t") or 0, tm)
+                        g["pause_since"] = g.get("pause_since") or tm
+                    continue
                 m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted(?:.*?up (\S+ \S+))?", text)
                 if m:
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
@@ -1024,6 +1083,8 @@ class W:
                     if up and same and len(same[-1]) > 4 and same[-1][4] == up:
                         continue
                     g["readings"].append([tm, mach, ths, acc, up])
+                    if g.get("pause_since") and mach == g.get("machine") and tm > (g.get("paused_t") or 0):
+                        g["pause_since"] = None   # mining again
                     g["readings"] = [r for r in g["readings"] if t - r[0] < 7200]
                     # The pool this reading was mined on. One from the PC a box left at its last switch, or from
                     # before the switch, was mined on the pool it was on before.
@@ -1098,6 +1159,7 @@ class W:
         # Monero: switch groups on or off as config asks, then read the CPU workers at the pool.
         self.xmr_sync(list(by_name.values()), t)
         self.kx_sync(list(by_name.values()), t)
+        self.llm_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         if xg:
             self.xmr_market()
@@ -1163,7 +1225,8 @@ class W:
         if g["has_pc"]:
             if mach != g["machine"]:
                 first = not g["had_pc"]
-                g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True)
+                g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True, pause_since=None,
+                         paused_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
                 (g.get("pc_pool") or {}).pop(mach, None)
                 if g.get("sw_from") == mach:
@@ -1227,25 +1290,29 @@ class W:
         ls = g["last_share"] or 0
         sharing = ls >= g["pc_since"] and t - ls < 6 * MIN
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
-        if not cur and seen_to - g["pc_since"] >= 10 * MIN and not sharing:
+        # Time mining stood paused for a prompt doesn't count against a box: these three rules count from its end.
+        pend = self.pause_end(g)
+        if not cur and seen_to - max(g["pc_since"], pend) >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
         # once the newest is 6 min old.
-        if cur and seen_to - cur[-1][0] >= 6 * MIN and not sharing:
+        if cur and seen_to - max(cur[-1][0], pend) >= 6 * MIN and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0)
+            ref = max(g["pc_since"], g["last_share"] or 0, pend)
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the last 3
         # readings must clear min_margin at the PC's price, every round; the first time they don't, the PC is left.
-        post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
+        # A pause for a prompt starts the warm-up again, from the first reading after it: those can be low.
+        back = next((r[0] for r in cur if r[0] > pend), cur[0][0]) if cur else 0
+        post = [r for r in cur if r[0] >= back + 2 * MIN] if cur else []
         if len(post) >= 3:
             usd, bar = self.usd(), self.cfg["min_margin"]
             avg = sum(r[2] for r in post[-3:]) / 3
@@ -1490,7 +1557,8 @@ class W:
             cost = g["price"] if g["has_pc"] else 0.0
             khs = g.get("xmr_khs", 0.0) if g.get("xmr") and g["has_pc"] and t - g.get("xmr_seen", 0) < 15 * MIN else 0.0
             earn = ths * mk["usd_th_hr"] * yg(g) + khs * xusd
-            state = "⏹️" if g["status"] == "stopped" else "⛏️" if g["has_pc"] else "⏳"
+            state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
+                     else "⏳")
             # A box on a new PC with no reading yet is starting: billed, but left out of the profit total.
             start = bool(g["has_pc"] and not cur and g.get("pc_since") and t - g["pc_since"] < 15 * MIN)
             if g["has_pc"] and cur:

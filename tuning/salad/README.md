@@ -57,6 +57,7 @@ Config keys:
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 | `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
+| `llm`, `llm_ver` | Gemma beside mining on every box (see [Gemma](#gemma-beside-mining)), with release `llm_ver` (v0.6.5) or later. `false`: mining only, and every command is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
 
@@ -173,6 +174,35 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column, what each box has
   earned is its XMR column, and its rate counts in Profit/hr and Margin, with a 🪙 row in the pool table, but they
   don't keep a slow PC or a weak class.
+
+## Gemma beside mining
+
+With config `llm` on, each box runs the miner in auto mode (`--mode auto`) and serves the LLMJob network's jobs
+(no `--no-serve`), with release `llm_ver` (v0.6.5) or later. The model is the CLI's default, Gemma-4-E4B (Q4_K_M,
+4.6 GB).
+
+- **The miner comes first.** From release v0.6.1 the CLI makes only the VRAM plan before the miner starts; it
+  downloads Gemma and starts llama-server once the miner is running, so a first run's download costs no mining
+  time. If Gemma can't start (no room: it needs about 4.6 GB of VRAM beside the miner's 2.6 GB, or the disk or
+  memory is short), the miner carries on alone. On a card that could serve a bigger model with the GPU to itself
+  (a 32 GB 5090), auto mode mines until a job comes and then hands the whole card to that model; every other card
+  we rent co-runs Gemma.
+- **No hash lost to the switch.** Turning `llm` on or off only updates each group's command. A box that is mining
+  keeps its PC and the command it started with, and runs the new one from its next PC; a group waiting for a PC
+  starts that way. Monero's switch restarted boxes, which can move them to another PC; this doesn't.
+- **Mining pauses for a prompt.** While the LLM answers a prompt the CLI stops mining on that card, and starts
+  again 10 seconds after the last one ends (10 minutes at most). The server's speed test is such a prompt: once
+  when a node first shows up, then at most once a day, and each Salad box is a new node on each PC. The CLI prints
+  no hashrate meanwhile, and box.sh used to repeat the miner's last line, which the watcher reads as a dead miner
+  (left after 6 minutes). Now box.sh says `paused for a prompt` from the CLI's own pause lines, and the watcher:
+  - shows the box as 🧠 in the report;
+  - counts the "no mining reading" and "no share" rules from the end of the pause, so a pause doesn't cost a PC,
+    counting at most 15 minutes of one pause (the CLI resumes after 10, so a longer one is a miner gone quiet);
+  - starts the margin rule's 2-minute warm-up again from the first reading after a pause, so the card coming back
+    up to speed isn't judged.
+- **Our numbers stay right.** A paused minute sends no reading, so it earns nothing in the ledger and nothing is
+  averaged into the box's TH/s or its class's measured rate; PRL and XMR come from the pools' own counts anyway.
+  The pool's 1-hour hashrate does dip by what a pause cost.
 
 ## Kryptex (PPS+)
 
@@ -423,7 +453,8 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   coins; the credit ratios still set Profit/hr and the HeroMiners part of PRL, and are in the 15-minute notes when
   they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
-  20 October): ⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · ⬜ empty slot · `*` our own count or estimate,
+  20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
+  ⬜ empty slot · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
   · (K) mines Pearl on Kryptex, the rest on HeroMiners.
 

@@ -2576,5 +2576,199 @@ class TestKryptex(Base):
         self.assertNotIn("(K)", report)
 
 
+class TestGemma(Base):
+    """Config "llm": the box runs Gemma beside the miner, and mining that pauses for a prompt isn't read as dead."""
+    # The box.sh lines it changes, as they are at the pinned commit.
+    BOX = ("  cd $R; env $envs ./cli -a $W --mode mining -w $WORKER-g$g --no-serve --no-update $flags >> $D/g$g.log 2>&1 &\n"
+           "    line=$(tr -d '\\r' < $D/g$g.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected · up "
+           "[0-9]+[hm] [0-9]+[ms]' | tail -1)\n"
+           "    echo \"[mining g$g] $(now) $line\"\n")
+
+    def sed(self, cmd, text):
+        import subprocess
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, text=True).stdout
+
+    def test_the_command_runs_auto_mode_serving_and_says_when_mining_pauses(self):
+        out = self.sed(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.5", XMR, 0, "prl-us.kryptex.network:7048", True), self.BOX)
+        self.assertIn("./cli -a $W --mode auto -w $WORKER-g$g --no-update $flags", out)
+        self.assertNotIn("--no-serve", out)
+        # box.sh's status line, run on a miner's log: its hashrate while mining, "paused" while the LLM has the card.
+        import subprocess, tempfile
+        loop = out.split("\n", 1)[1].replace("$(now)", "02:30:00")
+        with tempfile.TemporaryDirectory() as d:
+            log = os.path.join(d, "g0.log")
+            def line(text):
+                with open(log, "a") as f:
+                    f.write(text)
+                return subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
+                                      capture_output=True, text=True).stdout.strip()
+            mine = "121.0 TH/s · 22 accepted · 0 rejected · up 0h 31m"
+            self.assertEqual(line("⛏  " + mine + "\n"), "[mining g0] 02:30:00 " + mine)
+            self.assertEqual(line("mining paused on GPU 0 while the local LLM answers a prompt\n"),
+                             "[mining g0] 02:30:00 paused for a prompt")
+            again = "119.0 TH/s · 23 accepted · 0 rejected · up 0h 33m"
+            self.assertEqual(line("mining resumed on GPU 0\n⛏  " + again + "\n"), "[mining g0] 02:30:00 " + again)
+
+    def test_without_it_the_command_is_unchanged(self):
+        for args in (("v0.6.0",), ("v0.6.0", XMR), ("v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")):
+            self.assertEqual(w.cmd_for("biz-rtx4080", "prl1abc", *args), w.cmd_for("biz-rtx4080", "prl1abc", *args, llm=False)
+                             if len(args) == 4 else w.cmd_for("biz-rtx4080", "prl1abc", *args))
+            self.assertEqual(self.sed(w.cmd_for("biz-rtx4080", "prl1abc", *args), self.BOX), self.BOX)
+        self.x.cfg["xmr_wallet"], self.x.cfg["xmr_groups"] = XMR, ["*"]
+        self.assertNotIn("--mode auto", self.x.box("biz-rtx4080", True, True)[1][2])
+
+    def test_a_box_gets_release_llm_ver_or_later(self):
+        self.x.cfg.update(llm=True, xmr_wallet=XMR)
+        for xmr, kx in ((False, False), (True, False), (True, True)):
+            ver, cmd, _ = self.x.box("biz-rtx4080", xmr, kx)
+            self.assertEqual(ver, "v0.6.5")
+            self.assertIn("VER=v0.6.5;", cmd[2])
+            self.assertIn("--mode auto", cmd[2])
+        self.x.cfg["ver_override"] = {"biz-rtx4080": "v0.7.0"}
+        self.assertEqual(self.x.box("biz-rtx4080", True, True)[0], "v0.7.0")   # never lowered
+
+    def test_a_new_group_runs_gemma(self):
+        self.x.cfg["llm"] = True
+        g = self.group()
+        self.assertTrue(g["llm"])
+        self.assertIn("--mode auto", self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2])
+        self.assertIn(", Gemma", self.events())
+
+    def test_turning_it_on_updates_each_group_without_moving_a_box_that_mines(self):
+        mining, waiting, preparing = self.group(), self.group(status="deploying"), self.group(status="pending")
+        mining.update(has_pc=True, machine="m1", instance="inst-m1")
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.cfg["llm"] = True
+        t = self.clock[0]
+        self.x.llm_sync([mining, waiting, preparing], t)
+        patched = [c[1] for c in self.http.made("PATCH", "/containers/")]
+        self.assertEqual(len(patched), 2)                       # not the group still preparing its image
+        self.assertTrue(all("--mode auto" in c[2]["container"]["command"][2] for c in self.http.made("PATCH", "/containers/")))
+        self.assertFalse(self.http.made("POST", "/restart") or self.http.made("POST", "/reallocate"))   # no hash lost
+        self.assertTrue(mining["llm"] and waiting["llm"] and not preparing.get("llm"))
+        self.assertIn(f"GEMMA ON {mining['name']}: miner v0.6.5; it keeps mining on this PC as it was", self.events())
+        self.assertIn(f"GEMMA ON {waiting['name']}: miner v0.6.5; it starts that way on its next PC", self.events())
+        self.x.llm_sync([mining, waiting], t + 60)              # done: nothing more to send
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)
+        # A refused update is tried again after 10 minutes.
+        preparing["status"] = "deploying"
+        self.http.on("PATCH", "/containers/", (409, {"error": "busy"}))
+        self.x.llm_sync([preparing], t + 60)
+        self.assertIn(f"WARN Gemma on for {preparing['name']} refused: HTTP 409", self.events())
+        self.x.llm_sync([preparing], t + 5 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 3)
+        self.x.llm_sync([preparing], t + 11 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 4)
+
+    def test_a_pause_shows_only_while_box_sh_says_so_and_for_15_minutes_at_most(self):
+        g, t = self.group(), self.clock[0]
+        g.update(pause_since=t, paused_t=t)
+        self.assertTrue(self.x.paused(g, t + 4 * w.MIN))
+        self.assertFalse(self.x.paused(g, t + 5 * w.MIN))          # box.sh stopped saying so: not paused any more
+        g["paused_t"] = t + 15 * w.MIN
+        self.assertTrue(self.x.paused(g, t + 15 * w.MIN - 1))
+        self.assertFalse(self.x.paused(g, t + 15 * w.MIN))         # longer than the CLI ever pauses
+
+    def test_a_new_pc_starts_with_no_pause(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 5)
+        self.paused(g, 3)
+        self.step(g, 1, "m2")                                   # Salad hands it another PC
+        self.assertIsNone(g["pause_since"])
+        self.assertIsNone(g["paused_t"])
+        self.step(g, 10, "m2")                                  # never mines there: left at 10 min, as on any PC
+        self.assertIn("no mining reading 10 min after getting PC m2", self.events())
+
+    def test_switching_a_groups_pool_or_monero_keeps_gemma(self):
+        self.x.cfg.update(llm=True, xmr_wallet=XMR, xmr_groups=["*"], kryptex_groups=1)
+        g = self.group(status="deploying")
+        g["llm"] = False                                        # as if made before Gemma was on
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.kx_switch(g, not g["kx"], self.clock[0], "test")
+        self.assertIn("--mode auto", self.http.made("PATCH", "/containers/")[-1][2]["container"]["command"][2])
+        self.assertTrue(g["llm"])
+        g["llm"] = False
+        self.x.cfg["xmr_groups"] = []
+        self.x.xmr_sync([g], self.clock[0])
+        self.assertIn("--mode auto", self.http.made("PATCH", "/containers/")[-1][2]["container"]["command"][2])
+        self.assertTrue(g["llm"])
+
+    def paused(self, g, minutes, machine="m1"):
+        """box.sh says "paused" a minute at a time for `minutes`, with no readings, the rules running each minute."""
+        for _ in range(minutes):
+            self.clock[0] += 60
+            g["paused_t"], g["pause_since"] = self.clock[0], g.get("pause_since") or self.clock[0]
+            g["has_pc"], g["_machine"], g["instance"] = True, machine, "inst-" + machine
+            self.x.rules(g, self.clock[0])
+
+    def test_a_box_paused_for_a_prompt_keeps_its_pc(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.paused(g, 9)                                       # a long prompt: no readings, no shares
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        g["pause_since"] = None                                 # mining again
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_a_pause_counts_for_15_minutes_at_most(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.paused(g, 20)                                      # the CLI resumes after 10: this miner isn't coming back
+        self.assertFalse(self.http.made("POST", "/reallocate"))  # 15 min of the pause, then 6 with nothing
+        self.paused(g, 2)
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("no mining reading for", self.events())
+
+    def test_the_readings_just_after_a_pause_get_a_warm_up(self):
+        g = self.group(pri="medium")                            # $0.19/hr: 100 TH/s is under 10%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.paused(g, 2)
+        g["pause_since"] = None
+        self.mine(g, "m1", 100, 2)                              # the card coming back up to speed
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_the_share_clock_starts_again_after_a_pause(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 21)
+        self.paused(g, 9)
+        g["pause_since"] = None
+        self.mine(g, "m1", 199, 9, shares=False)                # 18 min since its last share, 9 since the pause
+        self.assertNotIn("no share", self.events())
+
+    def test_the_round_reads_paused_lines_and_a_reading_ends_the_pause(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 3600, machine="m1", has_pc=True, had_pc=True, pc_since=T0 - 1800)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lab = {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}
+        items = [{"text_log": "[mining g0] 08:05:00 199.0 TH/s · 9 accepted · 0 rejected · up 0h 30m",
+                  "time": "2027-01-15T08:05:00Z", "resource": lab},
+                 {"text_log": "[mining g0] 08:06:00 paused for a prompt", "time": "2027-01-15T08:06:00Z", "resource": lab},
+                 {"text_log": "[mining g0] 08:07:00 paused for a prompt", "time": "2027-01-15T08:07:00Z", "resource": lab}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] = T0 + 500
+        self.x.round()
+        self.assertEqual((g["pause_since"], g["paused_t"]), (T0 + 360, T0 + 420))
+        self.assertTrue(self.x.paused(g, self.clock[0]))
+        with open(os.path.join(TMP, "report.md")) as f:
+            self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch |", f.read())
+        items.append({"text_log": "[mining g0] 08:09:00 199.0 TH/s · 10 accepted · 0 rejected · up 0h 34m",
+                      "time": "2027-01-15T08:09:00Z", "resource": lab})
+        self.clock[0] = T0 + 600
+        self.x.round()
+        self.assertIsNone(g["pause_since"])
+        self.assertEqual(g["paused_t"], T0 + 420)               # its end still gives the next readings their warm-up
+        self.assertFalse(self.x.paused(g, self.clock[0]))
+
+
 if __name__ == "__main__":
     unittest.main()
