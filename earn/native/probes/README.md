@@ -1458,3 +1458,22 @@ The same arithmetic says why a memory-clock lock would have hurt these cards bef
 change: at 7001 MHz a 5060 has 224 GB/s, against the ~360 GB/s the 2048-wide walk needed.
 Now a launch reads A' once and B' once, ~8 GB/s on a 5060. Vast containers may not set
 clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.
+
+## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
+
+On the RTX 20 cards we mine at 92-99% of the faster competitor (benchmark.md, "RTX
+20-series"). The clocks match, so the gap is work per clock: we do 5-7.5% less. On a
+2080 Ti the B-direct fold reaches about 79% of the tensor pipe's peak per clock, and
+the seam costs left over (the chunk barrier, the readout, the hash) are ones that
+reordering the source could not hide, because ptxas moves them back.
+
+Three experiments run side by side, on Vast RTX 20 cards. Each has a box script in
+`probes/turing/` that prints its results as tagged lines.
+
+| Experiment | What it does | Expected | When it ships |
+|---|---|---|---|
+| Compilers (`compilers.sh`) | builds the sm_75 fold with other CUDA versions and register limits; each ptxas orders the fold's instructions differently | 0-3% | a variant that wins three interleaved rounds and passes verify-hits 400/400 |
+| Launch shape (`launch.sh`) | sweeps how much each launch covers and how many run at once, per card | 0-2% | the same rule, per card |
+| Hand-scheduled inner loop (`sass.sh`) | one k-step of the fold in hand-written Turing SASS, in a test program, against a pure-IMMA ceiling on the same card | the whole gap, if it works | not this round: it gets finished only if it holds more than about 93% of the IMMA peak per clock |
+
+Results go below as each one comes in.
