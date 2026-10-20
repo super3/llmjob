@@ -64,6 +64,10 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # box's work reaches Kryptex, stop the test until kryptex_token changes.
                "kryptex_groups": 0, "kryptex_host": "prl-us.kryptex.network:7048", "kryptex_ver": "v0.6.1",
                "kryptex_pay": 0.94, "kryptex_token": 0,
+               # With kx_in_place on, boxes mining on HeroMiners are switched too, by their command alone: Salad
+               # restarts a running box on its PC when its group's command changes (seen 20 October), so it keeps
+               # the PC and mines on Kryptex a few minutes later.
+               "kx_in_place": False,
                # Gemma beside mining (release llm_ver on): the box runs the CLI in auto mode, which fetches and starts
                # the LLM only once the miner has started, and serves the network's jobs. Mining pauses on the card
                # while the LLM answers a prompt (the server's speed test is one); box.sh says so, and the rules wait.
@@ -664,9 +668,10 @@ class W:
 
     def llm_sync(self, active, t):
         """Turn Gemma on or off in a group when config "llm" changes, by updating its command only. A box that is
-        mining keeps its PC and the command it started with, so no hash is lost: it runs Gemma from its next PC, as a
-        group waiting for a PC does from its first. A group still preparing its image is left for a later round (Salad
-        refuses updates then), and a refused update is tried again after 10 minutes."""
+        mining keeps its PC: Salad usually restarts it there with the new command within minutes (19 October: 5 of 8,
+        after 6 minutes); one it doesn't restart runs Gemma from its next PC, as a group waiting for a PC does from
+        its first. A group still preparing its image is left for a later round (Salad refuses updates then),
+        and a refused update is tried again after 10 minutes."""
         want = bool(self.cfg["llm"])
         for g in active:
             if (g["ended"] or bool(g.get("llm")) == want or g.get("status") == "pending"
@@ -679,7 +684,7 @@ class W:
             if 200 <= s < 300:
                 g["llm"], g["ver"] = want, ver
                 event(f"GEMMA {'ON' if want else 'OFF'} {g['name']}: miner {ver}; "
-                      + ("it keeps mining on this PC as it was and runs that way from its next one" if g["has_pc"]
+                      + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
             else:
                 event(f"WARN Gemma {'on' if want else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
@@ -729,6 +734,16 @@ class W:
                 if need <= 0:
                     break
                 if self.kx_switch(g, True, t, "waiting for a PC"):   # one Salad refuses is tried again in 15 min
+                    need -= 1
+            # Then, if config asks, boxes mining on HeroMiners, cheapest first, on the PCs they have.
+            mining = sorted((g for g in live if not g.get("kx") and g["has_pc"] and self.cfg["kx_in_place"]
+                             and g["status"] not in ("pending", "failed") and self.kx_ready(g, t)
+                             and g.get("kx_failed_tok") != self.st["kx_token"]),
+                            key=lambda g: g["price"])
+            for g in mining:
+                if need <= 0:
+                    break
+                if self.kx_switch(g, True, t, "mining on HeroMiners", in_place=True):
                     need -= 1
         extra = len(kx) - want
         for g in sorted(kx, key=lambda g: (g["has_pc"], -(g.get("kx_since") or g["created"]))):
@@ -795,7 +810,10 @@ class W:
                 or m in (g.get("pc_pool") or {})):
             return
         on = not g.get("kx")
-        if share_t(kx_row if on else hm_row) < max(since, g.get("sw_t") or 0) + 5 * MIN:
+        # After a switch in place the box mines on the old pool until Salad restarts it, which took about 6 minutes
+        # on 20 October: its old pool's shares count as staying there only after 15.
+        wait = 15 * MIN if g.get("sw_in_place") and g["sw_in_place"] == g.get("sw_t") else 5 * MIN
+        if share_t(kx_row if on else hm_row) < max(since, g.get("sw_t") or 0) + wait:
             return
         seen = {k: v for k, v in (g.get("pc_pool") or {}).items() if any(r[1] == k for r in g["readings"])}
         g["pc_pool"] = dict(seen, **{m: on})
@@ -827,11 +845,12 @@ class W:
             return False
         return t - g.get("kx_try", 0) >= 15 * MIN
 
-    def kx_switch(self, g, on, t, why):
+    def kx_switch(self, g, on, t, why, in_place=False):
         """Point a group's box at Kryptex (on) or back at HeroMiners: update its command, then, if it has a PC, move
         it to a new PC, where it starts with the new command. Salad's instance restart doesn't do it: on 17 October
         it answered 202 twice and the box kept running its old command. The move isn't counted toward the group's
-        3, and the PC it leaves doesn't go on the bad list."""
+        3, and the PC it leaves doesn't go on the bad list. In place (kx_in_place), the command alone: Salad restarts
+        the box on its PC with it a few minutes later."""
         ver, command, _ = self.box(g["name"], bool(g.get("xmr")), on)
         s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
                     ctype="application/merge-patch+json")
@@ -841,7 +860,8 @@ class W:
             return False
         g["llm"] = bool(self.cfg["llm"])   # the command carries config's Gemma setting too
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
-        moving = bool(g["has_pc"] and g.get("instance")) and self.on_kx(g, g.get("machine"), t) != on
+        moving = (not in_place and bool(g["has_pc"] and g.get("instance"))
+                  and self.on_kx(g, g.get("machine"), t) != on)
         if moving and not self.reallocate(g, f"to start on {'Kryptex' if on else 'HeroMiners'}", count=False, gone_ok=True):
             # Still on its PC with the command it started with: put the group's command back to match, and try again
             # in 15 minutes.
@@ -865,12 +885,17 @@ class W:
         m = (g.get("machine") if not moving else None) or (g.get("left") or [None])[-1]
         prev = self.on_kx(g, m, t)
         already = bool(g["has_pc"]) and not moving and prev == on
-        g.update(kx=on, ver=ver, kx_since=t if on else None, sw_t=t, sw_from=m, sw_prev=prev,
-                 kx_share=None if on else g.get("kx_share"))
+        # In place, the box mines on its PC with the old command until Salad restarts it there: readings from now on
+        # count to the new pool, so the PC isn't kept with the old one.
+        g.update(kx=on, ver=ver, kx_since=t if on else None, sw_t=t, sw_from=None if in_place else m, sw_prev=prev,
+                 kx_share=None if on else g.get("kx_share"), sw_in_place=t if in_place else None)
         self.st["kx_any_t"] = t
         event(f"KRYPTEX {'ON' if on else 'OFF'} {g['name']} ({why}): Pearl on {'Kryptex' if on else 'HeroMiners'}; "
               + ("moved to a new PC, where it starts that way" if moving else
-                 "it mines that way on this PC already" if already else "it starts that way on its next PC"))
+                 "it mines that way on this PC already" if already else
+                 "switched by its command; it keeps this PC, where Salad usually restarts it that way within minutes"
+                 if in_place else
+                 "it starts that way on its next PC"))
         return True
 
     def pool_port(self, kx):

@@ -1733,6 +1733,38 @@ class TestKryptex(Base):
         self.assertFalse(self.http.made("PATCH", "/containers/"))
         self.assertFalse(self.http.made("POST", "/reallocate$"))
 
+    def test_with_kx_in_place_a_mining_box_is_switched_by_its_command_on_its_pc(self):
+        self.x.cfg.update(kx_in_place=True, kryptex_groups=2)
+        dear, cheap, waiting = self.mining("m1", 300, ths=150.0), self.mining("m2", 30), self.group()
+        dear["price"], cheap["price"] = 0.20, 0.05
+        t = self.clock[0]
+        self.x.kx_sync([dear, cheap, waiting], t)
+        self.assertTrue(waiting["kx"] and cheap["kx"])          # the group waiting first, then the cheaper box
+        self.assertFalse(dear["kx"])                            # only as many as are missing
+        self.assertFalse(self.http.made("POST", "/reallocate$"))   # it keeps its PC
+        patch = self.http.made("PATCH", f"/containers/{cheap['name']}$")
+        self.assertIn("--pool", patch[0][2]["container"]["command"][2])
+        self.assertIn(f"KRYPTEX ON {cheap['name']} (mining on HeroMiners): Pearl on Kryptex; switched by its command; "
+                      "it keeps this PC, where Salad usually restarts it that way within minutes", self.events())
+        # Its readings count to Kryptex from the switch: until Salad restarts it the PC still mines on HeroMiners.
+        self.assertFalse(self.x.on_kx(cheap, "m2", t - 60))
+        self.assertTrue(self.x.on_kx(cheap, "m2", t + 60))
+        self.assertEqual(cheap["sw_in_place"], t)
+
+    def test_after_a_switch_in_place_the_old_pools_shares_wait_for_the_restart(self):
+        self.x.cfg.update(kx_in_place=True, kryptex_groups=1)
+        g = self.mining("m2", 30)
+        t = self.clock[0]
+        self.x.kx_sync([g], t)
+        g["_machine"] = None
+        hm = lambda m: {"name": f"{g['name']}-g0", "lastShare": int(t + m * 60), "hashrate": 1000}
+        self.x.pc_pool(g, None, hm(10))                         # Salad hasn't restarted it yet: no conclusion
+        self.assertFalse(g.get("pc_pool"))
+        self.assertNotIn("mines Pearl on HeroMiners", self.events())
+        self.x.pc_pool(g, None, hm(16))                         # still on HeroMiners 16 min on: it stayed there
+        self.assertEqual(g["pc_pool"], {"m2": False})
+        self.assertIn(f"WARN {g['name']} mines Pearl on HeroMiners on PC m2", self.events())
+
     def test_a_group_waiting_for_a_pc_is_switched_by_its_command_the_cheapest_first(self):
         box, dear, cheap = self.mining("m1", 300), self.group(), self.group()
         dear["price"], cheap["price"] = 0.20, 0.10
@@ -2645,9 +2677,10 @@ class TestGemma(Base):
         patched = [c[1] for c in self.http.made("PATCH", "/containers/")]
         self.assertEqual(len(patched), 2)                       # not the group still preparing its image
         self.assertTrue(all("--mode auto" in c[2]["container"]["command"][2] for c in self.http.made("PATCH", "/containers/")))
-        self.assertFalse(self.http.made("POST", "/restart") or self.http.made("POST", "/reallocate"))   # no hash lost
+        self.assertFalse(self.http.made("POST", "/restart") or self.http.made("POST", "/reallocate"))   # keeps its PC
         self.assertTrue(mining["llm"] and waiting["llm"] and not preparing.get("llm"))
-        self.assertIn(f"GEMMA ON {mining['name']}: miner v0.6.5; it keeps mining on this PC as it was", self.events())
+        self.assertIn(f"GEMMA ON {mining['name']}: miner v0.6.5; it keeps this PC, where Salad usually restarts it "
+                      "that way within minutes", self.events())
         self.assertIn(f"GEMMA ON {waiting['name']}: miner v0.6.5; it starts that way on its next PC", self.events())
         self.x.llm_sync([mining, waiting], t + 60)              # done: nothing more to send
         self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)

@@ -57,6 +57,7 @@ Config keys:
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 | `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
+| `kx_in_place` | While fewer than `kryptex_groups` are on Kryptex, also switch boxes that are mining on HeroMiners, by updating their command: Salad usually restarts each one on the same PC (see [Kryptex](#kryptex-pps)). `false`: a mining box keeps its pool until its next PC. |
 | `llm`, `llm_ver` | Gemma beside mining on every box (see [Gemma](#gemma-beside-mining)), with release `llm_ver` (v0.6.5) or later. `false`: mining only, and every command is as before. |
 
 Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
@@ -188,9 +189,12 @@ command (`GEMMA ON` events), and no box was moved.
   memory is short), the miner carries on alone. On a card that could serve a bigger model with the GPU to itself
   (a 32 GB 5090), auto mode mines until a job comes and then hands the whole card to that model; every other card
   we rent co-runs Gemma.
-- **No hash lost to the switch.** Turning `llm` on or off only updates each group's command. A box that is mining
-  keeps its PC and the command it started with, and runs the new one from its next PC; a group waiting for a PC
-  starts that way. Monero's switch restarted boxes, which can move them to another PC; this doesn't.
+- **The switch costs a restart, not a PC.** Turning `llm` on or off only updates each group's command. I expected
+  a box that is mining to keep the command it started with until its next PC. Most don't: about 6 minutes after
+  the update, Salad restarted 5 of the 8 boxes mining then on the same PC with the new command. Each lost a few
+  minutes of mining (the image start and the miner's warm-up), but none was moved. Salad didn't restart the other
+  three (3060-45, 3060-47, 2060-13): they keep mining without Gemma and run it from their next PC. A group waiting
+  for a PC starts that way.
 - **Mining pauses for a prompt.** While the LLM answers a prompt the CLI stops mining on that card, and starts
   again 10 seconds after the last one ends (10 minutes at most). The server's speed test is such a prompt: once
   when a node first shows up, then at most once a day, and each Salad box is a new node on each PC. The CLI prints
@@ -223,7 +227,11 @@ it isn't used.
 
 **Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October, and every
 slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October.** A box mining on HeroMiners
-then keeps its PC and moves to Kryptex when it next gets one, as the rule below says. The first try
+then kept its PC and would move to Kryptex when it next got one. At 10:35 pm, as asked, the last four were
+switched with `kx_in_place`, by updating their commands. Salad restarted three (3070-53, -55, -56) on the same
+PC within 2 minutes, and they mine on Kryptex. It didn't restart 3060-45, even after two calls to its restart
+endpoint (both HTTP 202, and nothing happened): Salad lists that instance as already on the new version. So
+3060-45 keeps mining on HeroMiners on its PC and starts on Kryptex on its next one. The first try
 redirected HeroMiners' names to Kryptex through `/etc/hosts`, which is read-only inside Salad containers:
 on 17 October that box stopped at `cannot create /etc/hosts: Read-only file system`, before box.sh ran.
 Release v0.6.1 (PR #265) added `--pool host:port` to the CLI, tested on an RTX 4090 for 26 minutes
@@ -241,12 +249,17 @@ What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
   (`pending_update_in_progress`). An update Salad refuses is tried again in 15 minutes, and the next group
   takes the slot. A Kryptex group
   stays on Kryptex when it loses its PC and starts there on its next one. A box that is mining is never
-  moved to switch it. Kryptex groups beyond the count go back to HeroMiners once they have no PC.
+  moved to switch it. With `kx_in_place` on, if there are still too few on Kryptex after that, boxes mining
+  on HeroMiners are switched by their command too, the cheapest first: Salad usually restarts the box on the
+  same PC within a few minutes, and it comes back on Kryptex. When Salad doesn't, the check below finds the box
+  still on HeroMiners and books its PC there; it starts on Kryptex on its next PC. Kryptex groups beyond the count go back to HeroMiners
+  once they have no PC.
 - **Which pool a box really mines on:** a switch by command alone can miss. If Salad gives a waiting
   group a PC just as its command changes, the box can start with the old command, and it keeps it. So
   each round the watcher looks at both pools' worker rows: a share at the pool the ledger doesn't
   expect, from 5 minutes after the box got its PC and after its last switch (the PC it left can still
-  send some), means the box mines there. That PC's readings then count to that pool (in the ledger and
+  send some; 15 minutes after a switch in place, since the old miner runs until Salad restarts it), means
+  the box mines there. That PC's readings then count to that pool (in the ledger and
   the hourly hashrate check), its last share and hashrate come from that pool's row, a `WARN` says so
   once, and the group's next PC starts on the pool its command names. The report's Kryptex hashrate sums
   the boxes that mine there. Kryptex's rows are read while any group is on Kryptex, was switched in the
