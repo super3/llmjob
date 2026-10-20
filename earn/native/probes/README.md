@@ -1875,3 +1875,31 @@ error: verify-hits checks 400 hits and complete about 15,000 to 30,000, so they 
 only a frequent fault, and bench counts the lost work as speed. Before it can ship,
 measure the IMMA latency on a card (a hand kernel with the consumer at set distances),
 and run complete for 30 minutes.
+
+### Round 5: the cubin patches do nothing on cards (2026-10-20)
+
+The round-4 design's best candidates were edits ptxas will not make from source, raced with
+`compilers.sh`'s patch field (commit `8a0651f`) on the South Korea 2070 (139007) and 2060
+12 GB (27564), the Colorado 2080 row machine (149439) and a Vietnam 2080 Ti (152869, 250
+W). The scheduler model, recalibrated on 16 measured builds, put SBFIX=1 at +0.4 to +0.8%
+per clock:
+
+| build | 2060 | 2070 | 2080 | 2080 Ti |
+|---|---|---|---|---|
+| `sbfix1`: five IMMA and five readout LOP3 off a shared scoreboard, hashrate.js raw | -0.02% | +0.08% | -0.02% | -0.17% |
+| `sbfix2`: also three IMMA-to-IMMA waits dropped, bench raw | +0.01% | +0.04% | -0.03% | -0.01% |
+| `hashrg`: row group 1 hashes instead of one warp of each pair, hashrate.js raw | -0.16% (bench) | +0.18% | +0.15% | +0.13% |
+| `rg_aef`: that plus A loaded evict-first, bench raw | -2.3% | -2.3% | -1.0% | -3.6% |
+
+Every build passed verify-hits 400/400 and the complete stage in all four shapes. The
+model's "false waits" cost the cards nothing it can measure: a warp waiting on an IMMA 4
+cycles back finds its partner issuing, so the scheduler model's lone-warp losses there
+were not real. Making A evict-first costs 1-3.6%: A is read again within the band, and
+losing it from L2 costs more than keeping B. `hashrg` is ahead in every hashrate.js round
+on three cards, by less than 0.2%, which is too little to ship a patched cubin for.
+Nothing from this round ships, so the default build stays unpatched.
+
+What it says: the schedule-level losses the model can see are gone or not real. What is
+left between this fold and its readout-and-hash-free ceiling (+1 to +2% per clock,
+round 4) is the readout's and hash's own work, and the rest of the gap to the IMMA peak
+is energy at the power limit.
