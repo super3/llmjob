@@ -1462,8 +1462,9 @@ clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.
 ## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
 
 On the RTX 20 cards we mine at 92-99% of the faster competitor (benchmark.md, "RTX
-20-series"). The clocks match, so the gap is work per clock: we do 5-7.5% less. On a
-2080 Ti the B-direct fold reaches about 79% of the tensor pipe's peak per clock, and
+20-series"). The clocks match, so the gap is work per clock: we do 5-7.5% less.
+pearl_config.h puts the B-direct fold at about 79% of the tensor pipe's peak per clock
+on a 2080 Ti, measured before the last round's gains (85-88% now, see the results), and
 the seam costs left over (the chunk barrier, the readout, the hash) are ones that
 reordering the source could not hide, because ptxas moves them back.
 
@@ -1481,11 +1482,12 @@ Three experiments run side by side, on Vast RTX 20 cards. Each has a box script 
 All runs were on Vast, each script pinned to a commit of this PR's branch. The round cost
 $0.34.
 
-**Compilers: nothing ships.** Every CUDA toolkit from 12.4 to 13.4 builds the sm_75
-fold into the same machine code, byte for byte: the md5 of the kernel's `.text`, control
-bits included. ptxas 12.0 and 12.2 differ in one yield bit on the kernel's first
-instruction. CUDA 12.0's front end can't compile this source at all, so its figure is
-its ptxas on newer PTX. Two separate builds found the same.
+**Compilers: nothing ships.** CUDA 12.4, 12.6, 12.8, 12.9, 13.0, 13.3 and 13.4 all build
+the sm_75 fold into the same machine code, byte for byte: the md5 of the kernel's
+`.text`, control bits included. 12.5, 13.1 and 13.2 were not built. ptxas 12.0 and
+12.2 differ in one yield bit on the kernel's first instruction. CUDA 12.0's front end
+can't compile this source at all, so its figure is its ptxas on newer PTX. Two separate
+builds found the same.
 
 Two options do change the code:
 - `-Xptxas --register-usage-level=8` (6 to 10 give the same code): 252 registers, 668
@@ -1495,7 +1497,8 @@ Two options do change the code:
   nothing.
 
 Raced on a 2080 Ti (Vietnam, 152869, 250 W) with `compilers.sh`: bench in 5 interleaved
-rounds of 20 s, hashrate.js in 3 rounds of 60 s, verify-hits on every build.
+rounds of 20 s, hashrate.js in 3 rounds of 60 s, verify-hits on every build but the
+shipped one.
 
 | build | bench vs shipped | hashrate.js vs shipped | verify-hits |
 |---|---|---|---|
@@ -1505,13 +1508,15 @@ rounds of 20 s, hashrate.js in 3 rounds of 60 s, verify-hits on every build.
 
 The shipped build read 83.76 TH/s on bench and 83.52 on hashrate.js, at about 1370 MHz
 and 242 W. Fewer instructions in the loop did not make it faster. A cubin from ptxas
-13.4, in CUDA 13's new ELF format, packed into the 12.8 core, loaded and mined at 89.4
-TH/s on that card's driver 595.
+13.4, in CUDA 13's new ELF format, packed into the 12.8 core, loaded and mined on that
+card's driver 595. Its fold is the shipped build's code, byte for byte, so its 89.4 TH/s
+in a 20 s load check is the card running cooler, not a speed difference.
 
 **Launch shape: band 5 on 4 MB cards, +0.2 to 0.3%.** `launch.sh`, hashrate.js in 3
 interleaved rounds of 60 s against the shipped shape (band 4 on 3-4 MB cards, 8 on the
 2080 Ti; batch width 2048; two streams). "Won" counts the rounds a shape beat the
-shipped one in. Every shape that reached hashrate.js passed verify-hits 400/400.
+shipped one in. The shipped shape and every band that reached hashrate.js passed
+verify-hits 400/400. The batch-width and one-stream shapes were not checked.
 
 | card (machine, power) | shipped | band 5 | batch 4096 | batch 1024 | one stream |
 |---|---|---|---|---|---|
@@ -1522,18 +1527,22 @@ shipped one in. Every shape that reached hashrate.js passed verify-hits 400/400.
 - On the 2070, band 5 won 3 more A/B pairs as well, by +0.28 to +0.32%.
 - On bench, band 6 was +0.21% on the 2070 and +0.13% on the 2080, and band 8 (all of a
   4 MB L2) -2.3% and -2.1%. On the 2060, bands 5 and 6 were -0.6% and -1.1%.
-- So the host now gives 4 MB cards 5 column groups a band (`PEARL_BD_FIVE_SHARE`). That
-  covers the 2060 Super to 2080 Super and the T4; the Supers and the T4 did not run.
-- Batch width and one vs two streams are inside ±0.15% wherever they could be read. A
-  launch lasts 100-185 ms with the next one queued, so there was little to win there.
+- So the host now gives every sm_75 card with a 4 MB L2 5 column groups a band
+  (`PEARL_BD_FIVE_SHARE`): the 2060 Super to 2080 Super, the T4, and parts such as the
+  Quadro RTX 4000 and 5000. Of those, only the 2070 and 2080 ran.
+- Batch width and one vs two streams are inside ±0.15% wherever they could be read. By
+  the launch agent's estimate a launch lasts 100-185 ms with the next one queued, so
+  there was little to win there.
 - The 2080 Ti (Norway, 153219, 250 W) is not used. Heat held it at 83-84 C and 1305 MHz,
-  at about 199 W, and its rate drifted from 59.1 to 62.2 TH/s during the run, so its
-  pairs disagree (one stream: +0.15%, -1.25%, +1.77%). On bench, bands 6, 9 and 10 read
-  +1.3% over 8, but band 6 on hashrate.js read -0.4%.
+  at about 199 W. Its control read 59.0-59.3 TH/s through the three main rounds, then
+  drifted up to 61.2 (and one stream to 62.2) during the confirm pairs at the same
+  clock, so those pairs disagree (one stream: +0.15%, -1.25%, +1.77%). On bench, bands
+  6, 9 and 10 read +1.3% over 8, but band 6 on hashrate.js read -0.4%.
 
 **Hand-scheduled inner loop: stop, as planned.** `sass.sh` on a 2080 Ti (California,
-152453, capped at 180 W, 1220-1480 MHz). Medians of 7 interleaved rounds, IMMA per clock
-per SM, as a percentage of the pure-IMMA ceiling (0.9999 of 1024 MAC a clock):
+152453, capped at 180 W; kernel medians 1219-1445 MHz). Medians of 7 interleaved
+rounds, IMMA per clock per SM, as a percentage of the pure-IMMA ceiling (0.9999 of 1024
+MAC a clock):
 
 | kernel | B from L2 | L1 diagnostic |
 |---|---|---|

@@ -662,8 +662,9 @@ typedef struct {
 #endif
 // With column bands, 5 groups instead of the 4 the rule above gives, where five
 // groups' B is at most this percent of the L2: 2.5 MB fits 65% of a 4 MB L2
-// (2.6 MB) but not of a 3 MB one (1.95 MB). So the 4 MB cards (RTX 2060 Super to
-// 2080 Super, and the T4) take 5, and nothing else moves.
+// (2.6 MB) but not of a 3 MB one (1.95 MB). So every sm_75 card with a 4 MB L2
+// takes 5 (the RTX 2060 Super to 2080 Super, the T4, and parts such as the Quadro
+// RTX 4000 and 5000), and nothing else moves.
 //
 // Measured 2026-10-20, hashrate.js, 3 interleaved rounds of 60 s, band 5
 // against 4, verify-hits 400/400 at band 5 on all three cards

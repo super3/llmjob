@@ -245,11 +245,12 @@ against SRBMiner 3.7.4.
   (about 1.6 were expected). Its hit check passed 400 of 400.
 - **Speed tests, 2026-10-20 (not re-measures):** a launch sweep (hashrate.js,
   no pool) on an RTX 2060 12 GB, an RTX 2070 and the Colorado 2080's own
-  machine found one gain. On cards with a 4 MB L2, a band of 5 column groups
-  instead of 4 was +0.30% on the 2070 and +0.21% on the 2080 (77.76 → 77.92
-  TH/s), and -0.70% on the 3 MB 2060. The core after v0.6.5 uses 5 on 4 MB
-  cards, so this table's 2060 Super, 2070 Super, 2070 and 2080 rows are from
-  band 4. Details are in earn/native/probes/README.md.
+  machine found one gain. A band of 5 column groups instead of 4 was +0.30%
+  on the 2070 and +0.21% on the 2080 (both 4 MB L2; 77.76 → 77.92 TH/s), and
+  -0.70% on the 2060 (3 MB). This table's rows ran v0.5.14, which mines 4 MB
+  cards at band 4; the core after v0.6.5 uses 5 on them. That is the 2060
+  Super, 2070 Super, 2070 and 2080 rows here, and the T4. Details are in
+  earn/native/probes/README.md.
 
 ### Monero on the CPU
 
@@ -663,6 +664,10 @@ the CUDA 12.8 core on this compute 7.5 card.
   is its default and maximum: ours at 825 MHz, the competitors at 840 MHz.
 - **Hit check:** the longer check ran on another T4 in the same machine (see
   "How a host is tested").
+- **Band depth:** this row ran v0.5.14, which mines the T4's 4 MB L2 at a band
+  of 4 column groups. The core after v0.6.5 uses 5 on 4 MB cards, on the
+  strength of an RTX 2070 and 2080 (see the RTX 20-series notes). No T4 has
+  run it.
 
 ## Hosts replaced in this run
 
