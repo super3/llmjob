@@ -6,10 +6,10 @@ const {
   parseSlotEvent, parseUsingDevice, isDeviceLost,
 } = require('../shared/llama');
 
-// Spawns and supervises the llama.cpp `llama-server` child process. Like
-// MinerManager, `spawn` is injected so this is testable without a real binary or
-// GPU. Readiness is detected from the server's own "listening" log line (main.js
-// can additionally poll /health), and tokens/sec is scraped from timing lines.
+// Spawns and supervises the llama.cpp `llama-server` child process. `spawn` is
+// injected so this is testable without a real binary or GPU. Readiness is
+// detected from the server's own "listening" log line (main.js can additionally
+// poll /health), and tokens/sec is scraped from timing lines.
 //
 // Self-heal: llama-server exits immediately when it can't bind its fixed port
 // ("couldn't bind HTTP server socket"), which happens when a previous server is
@@ -44,7 +44,6 @@ const {
 // the tally, and it would reload the model forever.
 //
 // Events:
-//   started  { bin, args, baseUrl }
 //   ready    { baseUrl }
 //   log      { level: 'info'|'error', line }
 //   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
@@ -103,9 +102,7 @@ class LlmManager extends EventEmitter {
     this.deviceBusId = null;
   }
 
-  isRunning() { return this.running; }
   isBusy() { return this._busySlots.size > 0; }
-  isReady() { return this.ready; }
 
   start(opts = {}) {
     if (this.running) return false;
@@ -150,7 +147,6 @@ class LlmManager extends EventEmitter {
     proc.on('exit', (code) => this._onExit(code));
     proc.on('error', (err) => this.emit('error', err));
 
-    this.emit('started', { bin, args, baseUrl: this.baseUrl });
   }
 
   _onExit(code) {

@@ -14,8 +14,8 @@ function makeChild() {
 describe('LlmManager', () => {
   test('constructs not running/ready; stop is a no-op', () => {
     const m = new LlmManager();
-    expect(m.isRunning()).toBe(false);
-    expect(m.isReady()).toBe(false);
+    expect(m.running).toBe(false);
+    expect(m.ready).toBe(false);
     expect(m.stop()).toBe(false);
   });
 
@@ -31,21 +31,19 @@ describe('LlmManager', () => {
     expect(spawn2.mock.calls[0]).toHaveLength(2);
   });
 
-  test('start spawns llama-server with built args and emits started with the base URL', () => {
+  test('start spawns llama-server with built args and sets the base URL', () => {
     const child = makeChild();
     const spawn = jest.fn(() => child);
     const m = new LlmManager({ spawn });
-    const started = jest.fn();
-    m.on('started', started);
 
     const ok = m.start({ modelPath: '/m.gguf', nGpuLayers: 16, platform: 'win32' });
 
     expect(ok).toBe(true);
-    expect(m.isRunning()).toBe(true);
+    expect(m.running).toBe(true);
     const [bin, args] = spawn.mock.calls[0];
     expect(bin).toBe('llama-server.exe');
     expect(args).toEqual(expect.arrayContaining(['--model', '/m.gguf', '--n-gpu-layers', '16']));
-    expect(started).toHaveBeenCalledWith({ bin, args, baseUrl: 'http://127.0.0.1:8080' });
+    expect(m.baseUrl).toBe('http://127.0.0.1:8080');
   });
 
   test('uses the bare binary off-Windows and is a no-op while already running', () => {
@@ -70,11 +68,11 @@ describe('LlmManager', () => {
 
     // the pre-load listening line must NOT flip ready — the model is still loading
     child.stderr.emit('data', 'main: HTTP server is listening, hostname: 127.0.0.1, port: 8080\nloading model\n');
-    expect(m.isReady()).toBe(false);
+    expect(m.ready).toBe(false);
     expect(ready).not.toHaveBeenCalled();
 
     child.stderr.emit('data', 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n');
-    expect(m.isReady()).toBe(true);
+    expect(m.ready).toBe(true);
     expect(ready).toHaveBeenCalledTimes(1);
     expect(ready).toHaveBeenCalledWith({ baseUrl: 'http://127.0.0.1:8080' });
 
@@ -108,8 +106,8 @@ describe('LlmManager', () => {
 
     child.emit('exit', 0);
     expect(stopped).toHaveBeenCalledWith(0);
-    expect(m.isRunning()).toBe(false);
-    expect(m.isReady()).toBe(false);
+    expect(m.running).toBe(false);
+    expect(m.ready).toBe(false);
   });
 
   test('tolerates a child with no stdout/stderr streams and start() with no opts', () => {
@@ -118,7 +116,7 @@ describe('LlmManager', () => {
     const m = new LlmManager({ spawn: () => proc });
     expect(m.start()).toBe(true); // default opts
     proc.emit('exit', 1); // still wired without stream handlers
-    expect(m.isRunning()).toBe(false);
+    expect(m.running).toBe(false);
   });
 
   // Self-heal on a port-bind clash (e.g. an update relaunch overlapping the
@@ -144,13 +142,13 @@ describe('LlmManager', () => {
     await flush();
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(stopped).not.toHaveBeenCalled();
-    expect(m.isRunning()).toBe(true);
+    expect(m.running).toBe(true);
     expect(logs.some((l) => /retrying \(attempt 1\/3\)/.test(l))).toBe(true);
 
     // second attempt loads and goes ready
     children[1].stderr.emit('data', 'srv  llama_server: model loaded\n');
     expect(ready).toHaveBeenCalledTimes(1);
-    expect(m.isReady()).toBe(true);
+    expect(m.ready).toBe(true);
 
     // An exit AFTER it was ready is a crash, not a stop: llama-server dying
     // mid-serve used to be permanent, which took nodes out of the cluster for
@@ -159,7 +157,7 @@ describe('LlmManager', () => {
     await flush();
     expect(spawn).toHaveBeenCalledTimes(3);
     expect(stopped).not.toHaveBeenCalled();
-    expect(m.isRunning()).toBe(true);
+    expect(m.running).toBe(true);
   });
 
   test('restarts a crash after it was serving, and says so', async () => {
@@ -175,7 +173,7 @@ describe('LlmManager', () => {
 
     m.start({ modelPath: '/m.gguf' });
     children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
-    expect(m.isReady()).toBe(true);
+    expect(m.ready).toBe(true);
 
     children[0].emit('exit', 139); // segfault mid-generation
     await flush();
@@ -185,7 +183,7 @@ describe('LlmManager', () => {
     // The fleet needs this to pull the instance out of service while it is down,
     // or it keeps advertising a model that isn't listening and fails every job.
     expect(crashed).toHaveBeenCalledWith(expect.objectContaining({ code: 139, attempt: 1 }));
-    expect(m.isReady()).toBe(false);
+    expect(m.ready).toBe(false);
     expect(logs.some((l) => /crashed \(code 139\) after serving/.test(l))).toBe(true);
   });
 
@@ -206,7 +204,7 @@ describe('LlmManager', () => {
     }
     expect(spawn).toHaveBeenCalledTimes(3); // initial + 2 restarts, then no more
     expect(stopped).toHaveBeenCalledWith(1);
-    expect(m.isRunning()).toBe(false);
+    expect(m.running).toBe(false);
   });
 
   test('forgives earlier crashes once an instance has stayed up', async () => {
@@ -264,7 +262,7 @@ describe('LlmManager', () => {
     m.start({ modelPath: '/m.gguf' });
     children[0].stderr.emit('data', 'srv  llama_server: model loaded\n');
     children[0].emit('exit', 1);           // crashed; the restart is waiting
-    expect(m.isRunning()).toBe(true);
+    expect(m.running).toBe(true);
 
     // Nothing is left to exit, so 'stopped' can't come from an exit. Without it,
     // a caller waiting for the LLM to stop (LlmFleet.stopAndWait) waited out
@@ -294,7 +292,7 @@ describe('LlmManager', () => {
 
     expect(spawn).toHaveBeenCalledTimes(3);
     expect(stopped).toHaveBeenCalledWith(1);
-    expect(m.isRunning()).toBe(false);
+    expect(m.running).toBe(false);
   });
 
   test('waits with a real timer between retries when no sleep is injected', async () => {
@@ -321,7 +319,7 @@ describe('LlmManager', () => {
     await flush();
 
     expect(spawn).toHaveBeenCalledTimes(1); // retry was cancelled
-    expect(m.isRunning()).toBe(false);
+    expect(m.running).toBe(false);
   });
 });
 
@@ -382,7 +380,7 @@ describe('LlmManager context ladder', () => {
     for (let i = 0; i < 4; i++) { children[i].emit('exit', 1); await flush(); }
     expect(spawn).toHaveBeenCalledTimes(4);   // 2 attempts x 2 rungs
     expect(stopped).toHaveBeenCalledWith(1);
-    expect(m.isRunning()).toBe(false);
+    expect(m.running).toBe(false);
   });
 
   test('a server that becomes ready never downgrades', async () => {
@@ -394,7 +392,7 @@ describe('LlmManager context ladder', () => {
     m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 65536] });
 
     children[0].stderr.emit('data', 'main: server is listening on http://127.0.0.1:8080 - starting the main loop\n');
-    expect(m.isReady()).toBe(true);
+    expect(m.ready).toBe(true);
     children[0].emit('exit', 1);
     await flush();
 
@@ -627,7 +625,7 @@ describe('LlmManager lost GPU', () => {
     // the crash tally waits before it forgives.
     expect(t.spawn).toHaveBeenCalledTimes(3);
     expect(t.stopped).toHaveBeenCalledTimes(1);
-    expect(t.m.isRunning()).toBe(false);
+    expect(t.m.running).toBe(false);
     expect(t.logs).toContain('local LLM lost its GPU 3 times in 60 minutes — giving up. See Logs.');
     // Said apart from 'stopped', and before it, so the shell can remember the
     // card before it reacts to the stop: the next start forgets these losses.
@@ -667,6 +665,6 @@ describe('LlmManager lost GPU', () => {
     await lose(t);
     expect(t.stopped).toHaveBeenCalledTimes(1); // the user's stop, not a give-up
     expect(t.gpuLost).not.toHaveBeenCalled();
-    expect(t.m.isRunning()).toBe(true);
+    expect(t.m.running).toBe(true);
   });
 });

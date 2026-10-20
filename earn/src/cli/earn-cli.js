@@ -641,7 +641,7 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     const pingFull = async () => pingServer(nodeCfg, base, await fullTelemetry(nodeCfg), false);
     pingFull();
     servePinger = setInterval(pingFull, NODE.pingIntervalMs);
-    if (servePinger.unref) servePinger.unref();
+    servePinger.unref();
     log('serving cluster jobs for the LLMJob network');
   });
   fleet.on('stats', ({ tokensPerSec, promptTokensPerSec }) => {
@@ -1107,7 +1107,7 @@ async function run(argv) {
       reportNow = report;
       report();
       reporter = setInterval(report, NETWORK.reportIntervalMs);
-      if (reporter.unref) reporter.unref();
+      reporter.unref();
     }
 
   }
@@ -1415,7 +1415,7 @@ async function run(argv) {
         };
         demandPing();
         demandPinger = setInterval(demandPing, NODE.pingIntervalMs);
-        if (demandPinger.unref) demandPinger.unref();
+        demandPinger.unref();
         log('auto:       polling for cluster jobs while mining');
       }
     } else if (plan.llm && !miner) {
@@ -1473,7 +1473,7 @@ async function run(argv) {
       };
       writeStats();
       statsWriter = setInterval(writeStats, 10000);
-      if (statsWriter.unref) statsWriter.unref();
+      statsWriter.unref();
     }
 
     // The CPU miner runs beside whatever else runs. It ends the run only when it
@@ -1563,7 +1563,7 @@ async function run(argv) {
 function exitWith(code) {
   process.exitCode = code;
   const t = setTimeout(() => process.exit(code), 5000);
-  if (t.unref) t.unref();
+  t.unref();
 }
 
 /* istanbul ignore next */

@@ -113,10 +113,6 @@ function checkXmrAddress(addr) {
   return { ok: true, kind };
 }
 
-function isValidXmrAddress(addr) {
-  return checkXmrAddress(addr).ok;
-}
-
 // Compact form for log lines, e.g. `87wTMj88…1JxND9`. Not lowercased: base58
 // is case-sensitive.
 function shortenXmrAddress(addr, head = 8, tail = 6) {
@@ -126,5 +122,5 @@ function shortenXmrAddress(addr, head = 8, tail = 6) {
 }
 
 module.exports = {
-  ALPHABET, BLOCK_CHARS, decodeBase58, encodeBase58, checkXmrAddress, isValidXmrAddress, shortenXmrAddress,
+  ALPHABET, BLOCK_CHARS, decodeBase58, encodeBase58, checkXmrAddress, shortenXmrAddress,
 };

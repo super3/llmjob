@@ -1,7 +1,7 @@
 'use strict';
 
 const path = require('path');
-const { loadCore, coreFactory } = require('../src/main/pearlCore');
+const { coreFactory } = require('../src/main/pearlCore');
 
 const REL = path.join('native', 'build', 'Release', 'pearl_core.node');
 const DBG = path.join('native', 'build', 'Debug', 'pearl_core.node');
@@ -20,9 +20,23 @@ function fakeRequire(map) {
   });
 }
 
-const ADDON = { createCore: () => ({}) };
+// An addon whose cores are the addon itself, so a test can see which addon the
+// factory loaded by building one core.
+function fakeAddon(tag) {
+  const a = { tag };
+  a.createCore = () => a;
+  return a;
+}
+const ADDON = fakeAddon('release');
 
-describe('loadCore candidate paths', () => {
+// The addon coreFactory found, or null when it found none. No PEARL_CORE_PATH
+// and no cards, so this is the 12.8 search.
+function loaded(opts) {
+  const f = coreFactory(Object.assign({ env: {} }, opts));
+  return f ? f() : null;
+}
+
+describe('where the core is looked for', () => {
   const probes = () => {
     const seen = [];
     const req = (p) => { seen.push(p); throw new Error('not here'); };
@@ -31,7 +45,7 @@ describe('loadCore candidate paths', () => {
 
   test('PEARL_CORE_PATH is probed first, before every packaged location', () => {
     const { seen, req } = probes();
-    loadCore({
+    coreFactory({
       require: req,
       env: { PEARL_CORE_PATH: '/rig/custom/pearl_core.node' },
       resourcesPath: '/res',
@@ -42,8 +56,7 @@ describe('loadCore candidate paths', () => {
 
   test('a packaged CLI probes beside its executable — resourcesPath is Electron-only', () => {
     const { seen, req } = probes();
-    loadCore({ require: req, env: {}, execPath: '/opt/rig/llmjob-earn-cli-linux' });
-    const path = require('path');
+    coreFactory({ require: req, env: {}, execPath: '/opt/rig/llmjob-earn-cli-linux' });
     expect(seen).toContain(path.join('/opt/rig', 'pearl_core.node'));
     expect(seen).toContain(path.join('/opt/rig', 'native', 'pearl_core.node'));
     // and the exe-adjacent probe comes before the dev tree's build directories
@@ -55,44 +68,40 @@ describe('loadCore candidate paths', () => {
     // The default require is created against the real executable so a packaged
     // (SEA) binary can dlopen from the real filesystem. Steer every candidate
     // somewhere nonexistent; on a box with a dev-tree build the addon may
-    // genuinely load, so the only portable assertion is "returns the addon or
-    // null, without throwing".
-    const out = loadCore({
+    // genuinely load, so the only portable assertion is "a factory or null,
+    // without throwing".
+    const f = coreFactory({
       env: { PEARL_CORE_PATH: '/nonexistent/pearl_core.node' },
       execPath: process.execPath,
     });
-    expect(out === null || typeof out.createCore === 'function').toBe(true);
+    expect(f === null || typeof f === 'function').toBe(true);
   });
-});
 
-describe('loadCore', () => {
   test('finds the addon in the dev Release build tree', () => {
-    const req = fakeRequire([[REL, ADDON]]);
-    expect(loadCore({ require: req })).toBe(ADDON);
+    expect(loaded({ require: fakeRequire([[REL, ADDON]]) })).toBe(ADDON);
   });
 
   test('falls through to the Debug build when Release is absent', () => {
-    const req = fakeRequire([[DBG, ADDON]]);
-    expect(loadCore({ require: req })).toBe(ADDON);
+    expect(loaded({ require: fakeRequire([[DBG, ADDON]]) })).toBe(ADDON);
   });
 
   // In the packaged app the addon ships under resources/native, which must be
   // preferred over any stale dev build tree that happens to be alongside.
   test('prefers the packaged resources path when one is given', () => {
-    const packaged = { createCore: () => ({ packaged: true }) };
+    const packaged = fakeAddon('packaged');
     const req = fakeRequire([
       [path.join('native', 'pearl_core.node'), packaged],
       [REL, ADDON],
     ]);
-    expect(loadCore({ require: req, resourcesPath: '/res' })).toBe(packaged);
+    expect(loaded({ require: req, resourcesPath: '/res' })).toBe(packaged);
     expect(req.mock.calls[0][0]).toBe(path.join('/res', 'native', 'pearl_core.node'));
   });
 
   // The expected state on any machine without a CUDA build — including this dev
   // box and CI. It must be a clean null, not a throw, because the host turns it
   // into an "engine not built" message rather than a crash.
-  test('returns null when the addon is nowhere to be found', () => {
-    expect(loadCore({ require: fakeRequire([]) })).toBeNull();
+  test('is null when the addon is nowhere to be found', () => {
+    expect(loaded({ require: fakeRequire([]) })).toBeNull();
   });
 
   // A present-but-broken addon (wrong ABI, missing CUDA runtime) throws on load.
@@ -100,29 +109,12 @@ describe('loadCore', () => {
   // not load, and the host already explains that state.
   test('a throwing addon is treated as absent', () => {
     const req = fakeRequire([[REL, new Error('The specified module could not be found.')]]);
-    expect(loadCore({ require: req })).toBeNull();
+    expect(loaded({ require: req })).toBeNull();
   });
 
   test('an addon without createCore is rejected', () => {
-    expect(loadCore({ require: fakeRequire([[REL, {}]]) })).toBeNull();
-    expect(loadCore({ require: fakeRequire([[REL, null]]) })).toBeNull();
-  });
-});
-
-describe('loadCore — real defaults', () => {
-  // Called with no options at all it uses the real require and the real build
-  // paths, so the answer depends on whether this machine happens to have a
-  // compiled core. It used to assert a flat null, which was true of CI and of
-  // the dev box until the dev box got a local toolchain -- at which point the
-  // test failed for a reason that had nothing to do with the code.
-  //
-  // What actually matters is the contract: probing never throws, and either
-  // finds nothing or finds something usable.
-  test('probes the real paths without throwing', () => {
-    const core = loadCore();
-    if (core === null) return;                    // unbuilt: the common case
-    expect(typeof core).toBe('object');
-    expect(core.createCore || core.PearlCore).toBeTruthy();
+    expect(loaded({ require: fakeRequire([[REL, {}]]) })).toBeNull();
+    expect(loaded({ require: fakeRequire([[REL, null]]) })).toBeNull();
   });
 });
 

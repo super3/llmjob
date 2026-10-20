@@ -38,7 +38,7 @@ describe('config', () => {
   });
 
   test('engine and economics metadata are present', () => {
-    expect(MINER).toMatchObject({ engine: 'llmjob-pearl', pool: 'HeroMiners', pow: 'pearlhash', devFeePct: 0, poolFeePct: 0 });
+    expect(MINER).toEqual({ devFeePct: 0, poolFeePct: 0 });
     expect(ECON).toMatchObject({ DIFFICULTY: 34.45e6, BLOCK_REWARD: 2278, PRL_USD: 1.14 });
     // Every fee the miner and the pool take comes off the estimate, and no other.
     expect(ECON.FEE).toBe(1 - (MINER.devFeePct + MINER.poolFeePct) / 100);
@@ -52,11 +52,8 @@ describe('config', () => {
 // the hostname and loop on "DNS lookup failed: No such host is known".
 // HeroMiners' Monero pool, from its /api/stats on 2026-10-11.
 describe('XMR', () => {
-  test('mines on HeroMiners\' Monero pool on its low-difficulty port, rx/0', () => {
-    expect(XMR).toMatchObject({
-      pool: 'HeroMiners', port: 1111, apiBase: 'https://monero.herominers.com',
-      coinUnits: 1e12, poolFeePct: 0.9, minPayoutXmr: 0.01, payoutIntervalSec: 600, algo: 'rx/0',
-    });
+  test('mines on HeroMiners\' Monero pool on its low-difficulty port', () => {
+    expect(XMR).toEqual({ port: 1111, apiBase: 'https://monero.herominers.com', coinUnits: 1e12 });
   });
 
   test('the Monero host follows the Pearl region, and an unknown one gets the default', () => {

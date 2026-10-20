@@ -107,7 +107,7 @@ function createPromptPause({
       if (capTimers.has(key)) { clearTimer(capTimers.get(key)); capTimers.delete(key); }
       if (!paused.has(key) || resumeTimers.has(key)) return;
       const t = setTimer(() => { resumeTimers.delete(key); doResume(key); }, resumeAfterMs);
-      if (t && t.unref) t.unref();
+      t.unref();
       resumeTimers.set(key, t);
       return;
     }
@@ -119,7 +119,7 @@ function createPromptPause({
       doResume(key, 'the local LLM has been busy for '
         + Math.round(maxPauseMs / 60000) + ' minutes without a break');
     }, maxPauseMs);
-    if (cap && cap.unref) cap.unref();
+    cap.unref();
     capTimers.set(key, cap);
     if (paused.has(key)) return;
     paused.add(key);

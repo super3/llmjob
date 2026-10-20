@@ -1,10 +1,9 @@
 'use strict';
 
-// Every source file is measured — and as of the llmFleet entry below, that is
-// now actually true. The global gate is 100%; main.js alone has a per-file
-// ratchet just below it — its uncovered branches are defensive fallbacks that
-// are unreachable by construction (each documented in test/mainProcess.test.js),
-// so 100% there would require deleting guards to satisfy a metric.
+// Every source file is measured. The global gate is 100%; main.js alone has a
+// per-file ratchet just below it. Its uncovered lines are defensive fallbacks
+// the mainProcess.test.js harness cannot reach, plus two callbacks reached only
+// by a real socket.
 //
 // Don't lower these numbers to make a red build green. The one legitimate reason
 // to move `statements` DOWN is that main.js lost COVERED lines: the fixed set of
@@ -27,7 +26,6 @@ module.exports = {
   collectCoverage: true,
   collectCoverageFrom: [
     'src/shared/**/*.js',
-    'src/main/minerManager.js', 'src/main/engineManager.js',
     'src/main/llmManager.js', 'src/main/llmEngineManager.js', 'src/main/jobWorker.js',
     // llmFleet was the one src/main file missing from this list while the header
     // above claimed every source file is measured. It is fully live — both shells
@@ -45,7 +43,7 @@ module.exports = {
     // Our own Pearl miner: the protocol/lifecycle half. The CUDA core it
     // drives lives in earn/native and is not measurable here — which is
     // exactly why the JS side is held to the full gate.
-    'src/main/pearlMiner.js', 'src/main/pearlCore.js',
+    'src/main/pearlMiner.js', 'src/main/pearlCore.js', 'src/main/pearlEngine.js',
     // The memory clock lock (the Blackwell default, or --mine-mem-clock).
     // Releasing the lock is what keeps a served LLM off a card with its memory
     // clock cut, so it is held to the gate like the miner is.

@@ -163,13 +163,11 @@ jest.mock('../src/main/probe', () => ({
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets. The multi-card tests set it explicitly.
   detectMinerGpus: jest.fn(() => Promise.resolve([])),
-  detectDriverMajor: jest.fn(() => Promise.resolve(600)),
   // Nothing known about the cards: the core factory then picks the 12.8 build.
   detectCudaCards: jest.fn(() => Promise.resolve([])),
   // Empty by default: an unknown compute capability is what keeps Windows on the
   // 1.8.6 fallback, which is the shape most of these tests were written against.
   // The tests that care about the 1.9.1b Windows package set it explicitly.
-  detectComputeCaps: jest.fn(() => Promise.resolve([])),
   postMinerReport: jest.fn(() => Promise.resolve()),
   findFreePort: jest.fn(() => Promise.resolve(8080)),
   // GPU detection moved into probe so the GUI and the CLI share one
@@ -262,7 +260,6 @@ jest.mock('../src/main/xmrWorker', () => ({
 }));
 
 jest.mock('../src/main/pearlCore', () => ({
-  loadCore: jest.fn(() => null),
   coreFactory: jest.fn(() => null),
 }));
 
@@ -366,17 +363,17 @@ const REAL_TIMERS = {
   clearTimeout: global.clearTimeout,
 };
 let timers = null;
-function installTimers(withUnref) {
+function installTimers() {
   timers = { intervals: [], timeouts: [] };
   global.setInterval = jest.fn((fn, ms) => {
     const h = { fn, ms };
-    if (withUnref) h.unref = jest.fn();
+    h.unref = jest.fn();
     timers.intervals.push(h);
     return h;
   });
   global.setTimeout = jest.fn((fn, ms) => {
     const h = { fn, ms };
-    if (withUnref) h.unref = jest.fn();
+    h.unref = jest.fn();
     timers.timeouts.push(h);
     return h;
   });
@@ -403,7 +400,7 @@ async function flush(rounds = 15) {
 // Reset the registry, install fresh mocks/timers, and require main.js.
 function loadMain(opts = {}) {
   jest.resetModules();
-  installTimers(opts.unref !== false);
+  installTimers();
   setPlatform(opts.platform || 'linux');
   if (opts.arch) setArch(opts.arch);
   if (opts.resourcesPath) process.resourcesPath = opts.resourcesPath;
@@ -628,9 +625,8 @@ describe('app boot and window lifecycle', () => {
     expect(ctx.electron.BrowserWindow).toHaveBeenCalledTimes(2);
   });
 
-  it('starts the node pinger on boot when the machine is already linked (timers without unref)', async () => {
+  it('starts the node pinger on boot when the machine is already linked', async () => {
     const ctx = await boot({
-      unref: false,
       before: (c) => {
         c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, name: 'rig' }));
       },
@@ -678,7 +674,6 @@ describe('app boot and window lifecycle', () => {
   // the headroom costs nothing on a healthy runner.
   it('before-quit stops the miner even when window-all-closed never fires', async () => {
     const ctx = await boot();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
     await flush();
     const miner = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
@@ -725,7 +720,7 @@ describe('simple ipc handlers', () => {
   it('config:get, llm:status, app:version and region:detect answer directly', async () => {
     const ctx = loadMain();
     expect(await ctx.invoke('config:get')).toEqual({
-      regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS, miner: ctx.config.MINER,
+      regions: ctx.config.REGIONS, defaults: ctx.config.DEFAULTS,
       platform: { minerSupported: true },
       cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
     });
@@ -932,11 +927,6 @@ describe('updater', () => {
 
     ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs).fn();
     expect(ctx.updater.checkForUpdates).toHaveBeenCalledTimes(2);
-  });
-
-  it('and arms that timer on a runtime whose handles have no unref', async () => {
-    const ctx = await boot({ isPackaged: true, unref: false });
-    expect(ctx.interval(ctx.config.NETWORK.updateCheckIntervalMs)).toBeTruthy();
   });
 
   it('a packaged manual check reports "latest" when nothing is found', async () => {
@@ -1395,7 +1385,7 @@ describe('mining', () => {
       expect(ctx.PearlEngine.instances).toHaveLength(1);
       expect(ctx.sent('miner:stopped')).toHaveLength(0);
       // The mining figures read zero, not the last ones the miner reported.
-      expect(ctx.sent('miner:stats').slice(-1)[0]).toMatchObject({ accepted: 0, uptime: '00m 00s' });
+      expect(ctx.sent('miner:stats').slice(-1)[0]).toMatchObject({ acceptedLabel: '0', uptime: '00m 00s' });
 
       // Stopping the session later stops what is left, and nothing twice.
       ctx.emit('miner:stop');
@@ -1492,8 +1482,6 @@ describe('mining', () => {
 
   it('does not start the LLM when STOP arrives during the miner hashrate wait', async () => {
     const ctx = await boot();
-    const BIN = '/tmp/engine/alpha-miner';
-    ctx.fs.existsSync.mockImplementation((p) => p === BIN);
 
     // mode 'both' → start the miner, then wait for a non-zero hashrate before the LLM.
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
@@ -2346,7 +2334,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
@@ -2383,7 +2370,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
     ctx.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: '5' });
@@ -2411,7 +2397,6 @@ describe('local LLM', () => {
         c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
       },
     });
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
 
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'both' });
     await flush();
@@ -2433,7 +2418,6 @@ describe('local LLM', () => {
 
   it('a miner that stops during the co-run wait releases the LLM start', async () => {
     const ctx = await boot();
-    ctx.fs.existsSync.mockImplementation((p) => p === '/tmp/engine/alpha-miner');
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush();
@@ -2444,23 +2428,14 @@ describe('local LLM', () => {
     expect(ctx.LlmManager.instances).toHaveLength(1);
   });
 
-  it('falls back to the linux server binary name on unknown platforms', async () => {
-    const ctx = await boot({ platform: 'freebsd' });
-    ctx.emit('miner:start', { mode: 'llm' });
-    await flush();
-    expect(ctx.LlmManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ platform: 'freebsd', binaryPath: '/tmp/llm/llama-server' }));
-  });
-
-  it('uses a bundled llama-server on Windows and installs the VC++ runtime DLLs beside it', async () => {
+  it('installs the VC++ runtime DLLs beside llama-server on Windows', async () => {
     const path = require('path');
-    const bundledLlama = path.join('/res', 'llm', 'llama-server.exe');
     const dll = (name) => path.join('/res', 'llm-runtime', name);
     const ctx = await boot({ platform: 'win32', resourcesPath: '/res' });
     ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
-    // bundled exe + two of the three DLLs available in the bundle, none installed yet
+    // two of the three DLLs available in the bundle, none installed yet
     ctx.fs.existsSync.mockImplementation((p) =>
-      p === bundledLlama || p === dll('msvcp140.dll') || p === dll('vcruntime140.dll'));
+      p === dll('msvcp140.dll') || p === dll('vcruntime140.dll'));
     // the first DLL copies fine; the second explodes → logged, start continues
     ctx.fs.copyFileSync
       .mockImplementationOnce(() => {})
@@ -2473,7 +2448,7 @@ describe('local LLM', () => {
     expect(logs).toContain('installed LLM runtime DLL: msvcp140.dll');
     expect(logs.join('\n')).toContain('could not install the LLM runtime DLLs: EPERM');
     expect(ctx.LlmManager.instances[0].start)
-      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: bundledLlama }));
+      .toHaveBeenCalledWith(expect.objectContaining({ binaryPath: '/tmp/llm/llama-server' }));
     // reserve 0 (llm-only), free 22000 → full offload despite the reserve arg branch
     expect(ctx.LlmManager.instances[0].start)
       .toHaveBeenCalledWith(expect.objectContaining({ nGpuLayers: ALL_LAYERS }));

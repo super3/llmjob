@@ -335,7 +335,7 @@ function downloadAttempt(url, dest, part, onProgress, redirects, attempt, ca) {
       const timer = setTimeout(() => {
         downloadAttempt(url, dest, part, onProgress, redirects, attempt + 1, ca).then(resolve, reject);
       }, DOWNLOAD_RETRY_MS * attempt);
-      if (timer.unref) timer.unref();
+      timer.unref();
     };
 
     const lib = url.startsWith('https') ? https : http;
@@ -483,70 +483,12 @@ function extractLlamaZip(zipPath, dest, hint) {
   });
 }
 
-// Extract a packaged engine archive into `destDir`, keeping the archive's own
-// top-level folder. That folder is exactly the `dir` in the package descriptor
-// (alpha-miner-1.9.1b/, AlphaMiner-Windows-1.9.1.02/), so the launcher and its
-// core land together at the path enginePath() resolves to — deliberately NOT
-// flattened like the llama.cpp archives, because the launcher finds its core as
-// a sibling and splitting them breaks every start.
-//
-// The same version ships as a .tar.gz on Linux and a .zip on Windows, so sniff
-// the magic bytes rather than trust the name: gzip (1f 8b) → `tar -xzf`,
-// otherwise `tar -xf`. Deliberately not `unzip` — it is standard on Linux,
-// which is the one platform that never sees a zip here.
-//
-// Reading a zip with `tar` is a *bsdtar* capability, and on Windows plain `tar`
-// is not reliably bsdtar: Git for Windows puts GNU tar ahead of it on PATH on
-// plenty of dev and mining boxes. GNU tar fails such a zip twice over — it
-// reads `C:\...` as an rsync-style <host>:<path> and tries to open a network
-// connection ("tar: Cannot connect to C: resolve failed"), and even given a
-// clean relative path it answers "this does not look like a tar archive",
-// because it cannot read zips at all. Both were observed on a real rig, not
-// hypothesised. So resolve bsdtar by absolute path instead of trusting PATH
-// order.
-function windowsBsdTar() {
-  const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
-  try {
-    if (fs.existsSync(sys)) return sys;
-  } catch (e) { /* fall through to PATH */ }
-  return 'tar';
-}
-
-function extractEnginePackage(archivePath, destDir) {
-  return new Promise((resolve, reject) => {
-    let gzip = false;
-    try {
-      const fd = fs.openSync(archivePath, 'r');
-      const head = Buffer.alloc(2);
-      fs.readSync(fd, head, 0, 2, 0);
-      fs.closeSync(fd);
-      gzip = head[0] === 0x1f && head[1] === 0x8b;
-    } catch (e) {
-      return reject(new Error('could not read the engine package (' + e.message + ')'));
-    }
-    // Belt and braces for the fallback case, where PATH may still hand us GNU
-    // tar: run from destDir with a RELATIVE archive path so no drive letter
-    // reaches argv. Falls back to the absolute path only if the archive sits on
-    // another drive, where no relative path exists — nothing our callers do.
-    const rel = path.relative(destDir, archivePath);
-    const local = rel && !rel.includes(':') ? rel : archivePath;
-    const tar = process.platform === 'win32' ? windowsBsdTar() : 'tar';
-    execFile(tar, [gzip ? '-xzf' : '-xf', local], { cwd: destDir, timeout: 180000 }, (err) => {
-      if (err) {
-        return reject(new Error('could not extract the engine package with `tar` (' + err.message + ')'));
-      }
-      resolve(destDir);
-    });
-  });
-}
-
 module.exports = {
   progressPercent,
   isTlsTrustError,
   postJson,
   getJson,
   downloadFile,
-  extractEnginePackage,
   trustRecoveryCa,
   streamChatCompletion,
   extractLlamaZip,

@@ -46,7 +46,7 @@ function buildServerArgs(opts = {}) {
     '--port', String(opts.port || LLM.port),
     '--ctx-size', String(opts.ctxSize || LLM.ctxSize),
     '--n-gpu-layers', String(ngl),
-    '--parallel', String(opts.parallel || LLM.parallel),
+    '--parallel', String(LLM.parallel),
     // Keep the model on ONE GPU. On multi-GPU rigs the Vulkan backend tries to
     // split the graph across every device and can trip
     // GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS) in ggml-backend.cpp,
@@ -85,7 +85,6 @@ function buildServerArgs(opts = {}) {
   // "/home/.../llm/Qwen3.8-27B-UD-Q4_K_XL.gguf".
   if (opts.alias) args.push('--alias', String(opts.alias));
   if (opts.mmprojPath) args.push('--mmproj', String(opts.mmprojPath));
-  if (opts.flashAttn) args.push('--flash-attn');
   // Per-model flags, appended last so a model can override an earlier default.
   // A large model is not simply a bigger version of a small one: Qwen3.8 needs a
   // quantised KV cache to fit its context at all, its own chat template to
@@ -147,13 +146,6 @@ function parseTiming(line) {
     tokensPerSec: Number(m[1]),
     tokens: n ? Number(n[1]) : null,
   };
-}
-
-// Kept for callers that only want a number and do not care which phase it came
-// from. Its old behaviour is preserved exactly: the last timing line wins.
-function parseTokensPerSec(line) {
-  const t = parseTiming(line);
-  return t ? t.tokensPerSec : null;
 }
 
 // A slot starting or finishing a request, from llama-server's own log. Every
@@ -385,6 +377,6 @@ function describeLlmStart(plan) {
 
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
-  parseTokensPerSec, parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
+  parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
   parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart,
 };

@@ -334,23 +334,21 @@ describe('LlmFleet', () => {
     await fleet.start([{ index: 0, nGpuLayers: 42 }], {});
     const stats = [];
     fleet.on('stats', (e) => stats.push(e));
+    const last = () => stats[stats.length - 1];
     mgrs[0].emit('stats', { tokensPerSec: 42.5 });
-    expect(fleet.tokensPerSec()).toBe(42.5);
     expect(stats).toEqual([{ tokensPerSec: 42.5, promptTokensPerSec: 0 }]);
     mgrs[0].emit('stats', { tokensPerSec: 'oops' });
-    expect(fleet.tokensPerSec()).toBe(0);
+    expect(last().tokensPerSec).toBe(0);
     // Prefill is held separately and is sticky: a generation line must not wipe
     // the last prefill figure, and vice versa.
     mgrs[0].emit('stats', { tokensPerSec: null, promptTokensPerSec: 1840 });
-    expect(fleet.promptTokensPerSec()).toBe(1840);
-    expect(fleet.tokensPerSec()).toBe(0);
+    expect(last()).toEqual({ tokensPerSec: 0, promptTokensPerSec: 1840 });
     mgrs[0].emit('stats', { tokensPerSec: 55, promptTokensPerSec: null });
-    expect(fleet.tokensPerSec()).toBe(55);
-    expect(fleet.promptTokensPerSec()).toBe(1840);
+    expect(last()).toEqual({ tokensPerSec: 55, promptTokensPerSec: 1840 });
     mgrs[0].emit('stats', { promptTokensPerSec: 'junk' });
-    expect(fleet.promptTokensPerSec()).toBe(0);
+    expect(last().promptTokensPerSec).toBe(0);
     mgrs[0].emit('stats', undefined);
-    expect(fleet.tokensPerSec()).toBe(55);
+    expect(last().tokensPerSec).toBe(55);
   });
 
   test('re-emits log and error from instances', async () => {
@@ -651,21 +649,6 @@ describe('LlmFleet', () => {
 
     mgrs[0].emit('stopped');
   });
-  test("the settle timer is unref'd when the runtime provides it, and tolerated when not", async () => {
-    // Node's timers carry unref(); a stubbed/edge runtime may not. Neither shape
-    // may keep the CLI process alive, so both must be accepted.
-    const real = global.setTimeout;
-    // A handle with no unref() at all — `delete t.unref` wouldn't do it, since
-    // unref lives on Timeout.prototype.
-    global.setTimeout = (fn, ms) => { real(fn, ms); return {}; };
-    try {
-      const { fleet } = makeFleet({ startSettleMs: 1 });
-      await expect(fleet._waitSettled({ ready: false, stopped: false })).resolves.toBeUndefined();
-    } finally {
-      global.setTimeout = real;
-    }
-  });
-
   test('a background drain that blows up is swallowed, not left unhandled', async () => {
     // start() fires _drain() without awaiting it; an unhandled rejection there
     // would be fatal in Node, so the .catch is load-bearing.
@@ -766,14 +749,18 @@ describe('stopAndWait', () => {
     expect(lines.join(' ')).toContain('did not exit');
   });
 
-  test('defaults its budget, and tolerates a timer with no unref', async () => {
+  // The spy hands back the real timer, so the clearTimeout that follows the
+  // exit cancels it. A wrapper object here once left a live 60 s timer behind.
+  test('defaults its budget to a minute', async () => {
     const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn, ms) => { const h = realSetTimeout(fn, ms); return { _h: h }; };
+    const asked = [];
+    global.setTimeout = (fn, ms) => { asked.push(ms); return realSetTimeout(fn, ms); };
     try {
       const { fleet, mgrs } = await oneUp();
       const p = fleet.stopAndWait();          // no argument → default budget
       mgrs[0].emit('stopped', 0);
       await expect(p).resolves.toBe(false);
+      expect(asked).toContain(60000);
     } finally {
       global.setTimeout = realSetTimeout;
     }

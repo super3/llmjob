@@ -43,7 +43,6 @@ const MEM_CLOCK_MAX_MHZ = 30000;
 // The CLI's line for a request dropped because the LLM co-runs. Kept word for
 // word: it is what the docs and an operator's grep know.
 const CORUN_IGNORED_TAIL = ' ignored: the LLM co-runs with the miner and needs full memory bandwidth';
-const CORUN_IGNORED = CLI_MEM_CLOCK_FLAG + CORUN_IGNORED_TAIL;
 
 // Read one request, from either switch. Returns { mhz } -- 0 for "leave the
 // driver's clock", else the MHz to lock -- or { error } with the reason in the
@@ -152,6 +151,6 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
 
 module.exports = {
   BLACKWELL_MINE_MEM_CLOCK_MHZ, BLACKWELL_COMPUTE_MAJOR, CLI_MEM_CLOCK_FLAG, GUI_MEM_CLOCK_ENV,
-  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, CORUN_IGNORED,
+  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ,
   parseMemClockMhz, readMemClockEnv, planMemClocks,
 };

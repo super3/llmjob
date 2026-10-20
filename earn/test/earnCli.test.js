@@ -22,7 +22,6 @@ jest.mock('../src/main/probe', () => ({
   detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
   detectMinerGpus: jest.fn(),
-  detectDriverMajor: jest.fn(),
   detectCudaCards: jest.fn(),
   detectPciBusIds: jest.fn(),
   detectLlmDevices: jest.fn(),
@@ -38,7 +37,6 @@ jest.mock('../src/main/io', () => ({
   downloadFile: jest.fn(),
   streamChatCompletion: jest.fn(),
   extractLlamaZip: jest.fn(),
-  extractEnginePackage: jest.fn(),
 }));
 jest.mock('../src/main/nodeStore', () => ({
   nodePath: jest.fn(() => '/tmp/store/node.json'),
@@ -104,7 +102,6 @@ jest.mock('../src/main/xmrEngine', () => {
 jest.mock('../src/main/cpuFacts', () => ({ readCpuFacts: jest.fn() }));
 jest.mock('../src/main/xmrWorker', () => ({ findWorker: jest.fn(), makeSpawnWorker: jest.fn(() => 'spawnWorker') }));
 jest.mock('../src/main/pearlCore', () => ({
-  loadCore: jest.fn(() => null),
   // A loadable core by default: the CLI decides UP FRONT whether it can mine,
   // so a null factory now means "refuse or degrade", not "construct an engine
   // that will announce the problem later". The no-core paths have their own
@@ -209,8 +206,7 @@ function makeNode(extra) {
 // ── Shared per-test capture state ────────────────────────────────────────────
 let out; // strings written to stdout
 let err; // strings written to stderr
-let intervals; // { fn, ms, unref? } handles captured from setInterval
-let intervalUnref; // whether captured handles carry an unref()
+let intervals; // { fn, ms, unref } handles captured from setInterval
 let sigHandlers; // signal name -> [handler]
 let origOutTty;
 let origErrTty;
@@ -231,7 +227,6 @@ function applyDefaults(m) {
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
-  m.probe.detectDriverMajor.mockResolvedValue(600);
   // Nothing known about the cards: the core factory then picks the 12.8 build.
   m.probe.detectCudaCards.mockResolvedValue([]);
   m.probe.detectPciBusIds.mockResolvedValue({});
@@ -312,7 +307,6 @@ beforeEach(() => {
   out = [];
   err = [];
   intervals = [];
-  intervalUnref = true;
   sigHandlers = {};
   origOutTty = process.stdout.isTTY;
   origErrTty = process.stderr.isTTY;
@@ -321,7 +315,7 @@ beforeEach(() => {
   jest.spyOn(process.stdout, 'write').mockImplementation((s) => { out.push(String(s)); return true; });
   jest.spyOn(process.stderr, 'write').mockImplementation((s) => { err.push(String(s)); return true; });
   jest.spyOn(global, 'setInterval').mockImplementation((fn, ms) => {
-    const h = intervalUnref ? { fn, ms, unref: jest.fn() } : { fn, ms };
+    const h = { fn, ms, unref: jest.fn() };
     intervals.push(h);
     return h;
   });
@@ -596,7 +590,6 @@ async function withEnv(vars, fn) {
 
 describe('mining', () => {
   test('full auto-detected run: report, stats file, SIGINT shutdown', async () => {
-    intervalUnref = false; // cover the interval handles without unref()
     const m = load();
     m.probe.detectGpuInfo.mockResolvedValue({ name: 'NVIDIA GeForce RTX 3070', count: 2 });
     m.probe.detectMinerGpus.mockResolvedValue([
@@ -844,9 +837,7 @@ describe('mining', () => {
     await p;
   });
 
-  // The default interval handle DOES carry unref(), so the writer is unrefed
-  // and never holds the process open on its own. The full run above covers the
-  // other side, where the handle has no unref to call.
+  // The writer is unrefed, so it never holds the process open on its own.
   //
   // A stats file that cannot be written must also stay silent: it is a
   // convenience for rig dashboards, not something worth killing a miner over.
@@ -856,6 +847,7 @@ describe('mining', () => {
     await settle();
     m.PearlEngine.instances[0].emit('event', { type: 'status', hashrate: 1, accepted: 1 });
     m.fs.writeFileSync.mockImplementation(() => { throw new Error('read-only /tmp'); });
+    expect(intervalFor(10000).unref).toHaveBeenCalled();
     intervalFor(10000).fn(); // must not throw
 
     // Shut down by SIGNAL with mining ONLY: the shutdown path has to cope with
@@ -1689,7 +1681,6 @@ describe('local LLM', () => {
   });
 
   test('serves cluster jobs when connected: worker, pings, telemetry, SIGINT shutdown', async () => {
-    intervalUnref = false; // cover the servePinger without unref()
     const m = load();
     m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, name: 'rig' }));
     // One roomy card (22 GB free) — the whole model fits, so full offload, on
@@ -3138,13 +3129,12 @@ describe('demand mode still serves the cluster', () => {
     await expect(p).resolves.toBe(0);
   });
 
-  test('the keep-alive handle is unrefed, and survives a runtime without unref', async () => {
-    intervalUnref = false;
+  test('the keep-alive handle is unrefed', async () => {
     const m = load();
     serving(m);
     const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
     await settle();
-    expect(intervalFor(NODE.pingIntervalMs)).toBeTruthy();
+    expect(intervalFor(NODE.pingIntervalMs).unref).toHaveBeenCalled();
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

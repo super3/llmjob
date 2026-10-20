@@ -20,14 +20,6 @@ const {
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
-// Major version out of an nvidia-smi driver string. Lived in shared/engine
-// until alpha-miner was removed; the driver version is a property of the
-// machine, not of any engine.
-function parseDriverMajor(output) {
-  const m = String(output == null ? '' : output).match(/(\d+)\.\d+/);
-  return m ? parseInt(m[1], 10) : null;
-}
-
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
 // if it can't be reached within the timeout. Never rejects.
 function pingEndpoint(endpoint, timeoutMs) {
@@ -137,16 +129,6 @@ function detectGpuTemps() {
         }
         resolve(out);
       });
-  });
-}
-
-// NVIDIA driver major version via nvidia-smi, or null when it can't be read.
-// Decides which engine build the rig can run (CUDA 13 builds need >= 580).
-function detectDriverMajor() {
-  return new Promise((resolve) => {
-    execFile('nvidia-smi', ['--query-gpu=driver_version', '--format=csv,noheader'],
-      { timeout: 5000 },
-      (err, stdout) => resolve(err ? null : parseDriverMajor(stdout)));
   });
 }
 
@@ -361,14 +343,12 @@ function detectGpuInfo() {
 }
 
 module.exports = {
-  parseDriverMajor,
   pingEndpoint,
   detectRegion,
   detectVram,
   detectGpusVram,
   detectMinerGpus,
   detectGpuTemps,
-  detectDriverMajor,
   detectCudaCards,
   detectPciBusIds,
   detectLlmDevices,

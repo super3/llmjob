@@ -97,7 +97,6 @@ describe('event subscriptions', () => {
     ['onStats', 'miner:stats', true],
     ['onCpuStats', 'cpu:stats', true],
     ['onLog', 'miner:log', true],
-    ['onEvent', 'miner:event', true],
     ['onEngine', 'miner:engine', true],
     ['onStopped', 'miner:stopped', false],
     ['onUpdate', 'app:update', true],

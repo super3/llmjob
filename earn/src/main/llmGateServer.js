@@ -202,7 +202,7 @@ class LlmGateServer {
         this.gate.ensureMining().catch(() => {});
       }
     }, 2000);
-    if (this.timer.unref) this.timer.unref();
+    this.timer.unref();
     return this;
   }
 

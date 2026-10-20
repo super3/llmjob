@@ -27,7 +27,7 @@ const {
 // packaged app's resources) can be probed in one place.
 //
 // There are two builds of the addon -- see shared/coreVariant for which one a
-// rig gets and why. loadCore finds `pearl_core.node` (CUDA 12.8); coreFactory
+// rig gets and why. findCore finds `pearl_core.node` (CUDA 12.8); coreFactory
 // decides whether to try `pearl_core_cu13.node` first.
 
 // What every probe shares: the require to load with, and the directories a
@@ -95,19 +95,14 @@ function findCu13Core(opts) {
   return firstLoadable(req, dirs.map((d) => path.join(d, FILES[CU13])));
 }
 
-function loadCore(opts = {}) {
-  const found = findCore(opts);
-  return found ? found.addon : null;
-}
-
 function errText(e) {
   return (e && e.message) || String(e);
 }
 
 // A factory the host calls to get a running core, or null when the addon is
-// unavailable. Kept separate from loadCore so the host depends on a tiny surface
-// (`createCore(profile, opts) -> core | null`) that a test can fake with a bare
-// EventEmitter.
+// unavailable. The host depends only on this small surface
+// (`createCore(profile, opts) -> core | null`), which a test can fake with a
+// bare EventEmitter.
 //
 // `opts` is per-core: which card it opens, and which slice of the search space
 // it owns. The host builds one core per card and fills those in — see
@@ -176,4 +171,4 @@ function coreFactory(opts = {}) {
   };
 }
 
-module.exports = { loadCore, coreFactory };
+module.exports = { coreFactory };

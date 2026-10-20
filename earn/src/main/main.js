@@ -2,8 +2,8 @@
 
 // Electron main process. Thin shell: owns the window, persists settings, and
 // bridges the renderer to our own Pearl miner. Stats shown to
-// the user come only from the engine's own output — no simulated data. All
-// testable logic lives in ../shared and ./minerManager.
+// the user come only from the engine's own output — no simulated data. Most
+// testable logic lives in ../shared and the other modules in this folder.
 
 const {
   app, BrowserWindow, Menu, Tray, Notification, nativeImage, powerMonitor, ipcMain, shell, clipboard,
@@ -37,7 +37,7 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion, xmrEndpointFor,
+  REGIONS, DEFAULTS, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion, xmrEndpointFor,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -511,11 +511,7 @@ function statsView(snap) {
   return {
     total: format.formatHashrate(snap.total),
     points: snap.points,
-    accepted: snap.accepted,
     acceptedLabel: format.formatInt(snap.accepted),
-    rejected: snap.rejected,
-    load: Math.round(snap.load),
-    power: snap.power,
     // Every card that is mining, not just the first. On a multi-card rig showing
     // one name is the same lie issue #226 was about, one level up.
     gpu: format.formatDeviceLabel(snap.gpus.map((g) => g.gpu)) || snap.gpu,
@@ -744,7 +740,6 @@ function wireMinerEvents(miner, endpoint) {
           + ' Check DNS/VPN/firewall, or pick another region in Settings.',
       });
     }
-    send('miner:event', e);
   });
   miner.on('error', (err) => reportLaunchFailure(err));
   miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
@@ -948,7 +943,7 @@ function setupUpdater() {
   // was down never looked again — it would sit on a broken build until someone
   // restarted it, which is the opposite of what auto-update is for.
   updateTimer = setInterval(check, NETWORK.updateCheckIntervalMs);
-  if (updateTimer.unref) updateTimer.unref();
+  updateTimer.unref();
 }
 
 // User-initiated "Check for updates". In a dev/unpackaged run the real updater
@@ -1182,14 +1177,8 @@ function rememberGpuLoss(e) {
     + '. It won\'t be started there again until the app updates or you press START LLM on the Chat tab.' });
 }
 
-// Prefer a bundled llama-server (it ships with its DLLs, like the miner engine);
-// otherwise download it on demand. NOTE: the llama.cpp release is a folder of
-// exe + shared libs — bundling the whole folder is the reliable path; the
-// download fallback needs full-folder extraction to be production-ready.
+// llama-server is not bundled: it is downloaded on first use into `dir`.
 async function resolveLlmBinary(dir, onProgress) {
-  const name = LLM.serverBin[process.platform] || LLM.serverBin.linux;
-  const bundled = process.resourcesPath && path.join(process.resourcesPath, 'llm', name);
-  if (bundled && fs.existsSync(bundled)) return bundled;
   // The server ships as a folder of shared libraries + the binary, so extraction
   // must keep them together: Windows flattens the zip with PowerShell; elsewhere
   // extractLlamaZip sniffs the archive (tar.gz on Linux/macOS, so `tar
@@ -1733,7 +1722,7 @@ function startNodePinger() {
   stopNodePinger();
   pingNode();
   nodePinger = setInterval(pingNode, NODE.pingIntervalMs);
-  if (nodePinger.unref) nodePinger.unref();
+  nodePinger.unref();
 }
 
 function stopNodePinger() {
@@ -2192,7 +2181,6 @@ ipcMain.handle('config:get', () => {
   return {
     regions: REGIONS,
     defaults: DEFAULTS,
-    miner: MINER,
     platform: { minerSupported: minerSupported(process.platform) },
     cpu: {
       available: plan.available, auto: plan.auto, reason: plan.reason, canMine: cpuPlan(1).threads > 0,
@@ -2281,7 +2269,7 @@ app.whenReady().then(async () => {
   // figure reflect the real price + network, not the stale fallback constants.
   refreshEconomics();
   const econTimer = setInterval(refreshEconomics, 10 * 60 * 1000);
-  if (econTimer.unref) econTimer.unref();
+  econTimer.unref();
   // The identity used to live in Electron's userData dir; move it into the
   // store shared with the CLI so one machine keeps one nodeId across shells.
   nodeStore.migrateFrom(path.join(app.getPath('userData'), 'node.json'));

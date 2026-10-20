@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  planCpuThreads, MIN_MEMORY, RECOMMENDED_MEMORY, L3_PER_THREAD, DATASET_BYTES,
+  planCpuThreads, MIN_MEMORY, RECOMMENDED_MEMORY, L3_PER_THREAD,
 } = require('../src/shared/xmr/cpuPlan');
 
 const GB = 1024 ** 3;
@@ -87,7 +87,6 @@ describe('planCpuThreads', () => {
   });
 
   test('constants', () => {
-    expect(DATASET_BYTES).toBe(2080 * MB);
     expect(MIN_MEMORY).toBe(3.5 * GB);
     expect(RECOMMENDED_MEMORY).toBe(7 * GB);
     expect(L3_PER_THREAD).toBe(2 * MB);

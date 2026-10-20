@@ -201,11 +201,6 @@ describe('createAutoGate: a restart that fails must not be swallowed', () => {
       expect(guard).toBeTruthy();
       expect(guard.unrefed).toBe(true);
       expect(guard.cleared).toBe(true);
-
-      // A runtime whose handle has no unref() must not throw.
-      global.setTimeout = (fn, ms) => { const h = realSetTimeout(fn, ms); return { _rec: { h, ms } }; };
-      const second = mk();
-      await second.auto.gate.ensureServing();
     } finally {
       global.setTimeout = realSetTimeout;
       global.clearTimeout = realClear;

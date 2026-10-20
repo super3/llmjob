@@ -2,8 +2,7 @@
 
 // Renderer UI for the LLMJob Earn window. Pure display + IPC glue — all
 // computation (mining, the LLM engine, chat streaming) happens in the main
-// process (../shared + ../main). Kept thin and out of the coverage gate; the
-// logic it leans on is unit-tested separately.
+// process (../shared + ../main). test/renderer.test.js drives it in jsdom.
 (function () {
   const $ = (id) => document.getElementById(id);
   const api = window.llmjob || {};
@@ -75,7 +74,7 @@
     // different cards (issue #226) — this one is the one doing the work.
     engineGpu: '',
     temp: 0,             // last core temperature reported, so a frame without one keeps it
-    canMine: true,       // false on macOS — no alpha-miner build exists for it
+    canMine: true,       // false on macOS — the miner needs an NVIDIA GPU
     llm: { ready: false, endpoint: null, webUrl: null, tps: 0, model: null, vramMb: null, ctxSize: null, error: null, note: null, lan: null, held: null },
     chat: { messages: [], streaming: false, streamText: '', bubble: null },
     node: { connected: false, nodeId: null, name: null },
@@ -100,8 +99,8 @@
     llm: 'Local model only — no mining, no payout address needed.',
   };
 
-  // The modes that need a mining engine. On a platform without one (macOS —
-  // AlphaPool builds alpha-miner for Windows and Linux only) they are removed
+  // The modes that need a mining engine. On a platform without one (macOS,
+  // where there is no NVIDIA GPU for the CUDA miner) they are removed
   // from the segmented control rather than left to disappoint: picking "Mining"
   // there would arm a START that runs nothing at all. 'auto' stays, because it
   // degrades correctly on its own — main.js refuses the miner and the local LLM
@@ -1200,19 +1199,11 @@
     if (api.onLog) api.onLog(appendLog);
     if (api.onStopped) api.onStopped(() => { state.mining = false; state.paused = false; renderMiningState(); });
     if (api.onEngine) api.onEngine((e) => {
-      if (!e) return;
-      if (e.phase === 'downloading') {
-        el.engineStatus.hidden = false;
-        el.engineStatus.classList.remove('err');
-        el.engineStatus.textContent = 'Downloading & setting up the mining engine…';
-      } else if (e.phase === 'ready') {
-        el.engineStatus.hidden = true;
-        el.engineStatus.textContent = '';
-      } else if (e.phase === 'error') {
-        el.engineStatus.hidden = false;
-        el.engineStatus.classList.add('err');
-        el.engineStatus.textContent = e.message || 'Engine setup failed — see Logs.';
-      }
+      // Main sends only 'error': the miner could not start.
+      if (!e || e.phase !== 'error') return;
+      el.engineStatus.hidden = false;
+      el.engineStatus.classList.add('err');
+      el.engineStatus.textContent = e.message || 'Engine setup failed — see Logs.';
     });
     if (api.onUpdate) api.onUpdate((s) => {
       if (!s) return;

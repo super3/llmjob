@@ -26,11 +26,6 @@
 // same rank the pool asks for in its job params). Rank ≠ 128 work is uncredited
 // post-fork, which is the whole reason the old alpha-miner fallbacks were pulled.
 
-// The mandated mainnet profile. m/n/k and rank are the matmul geometry; rows/cols
-// are the sub-tile the transcript folds over (2×64 for the default). These are
-// the numbers baked into config52 and handed to the core; a job whose params
-// disagree is mined at the wrong geometry and earns nothing, so the host asserts
-// the pool's rank against PROFILE.rank before it starts a search.
 // A periodic index pattern, the shape the protocol uses to describe which rows
 // of A and columns of B form the jackpot tile. Three (stride, length) dimensions,
 // serialised to SIX bytes as (factor-1, length-1) per dimension, where factor is

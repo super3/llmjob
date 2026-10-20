@@ -4,15 +4,12 @@ const { EventEmitter } = require('events');
 const { PearlEngine, POOL_GRACE_MS } = require('../src/main/pearlEngine');
 const { RESTART_MS, RESTART_LIMIT } = require('../src/main/pearlMiner');
 
-// PearlEngine's whole job is to make our own miner indistinguishable from
-// alpha-miner as far as main.js and the renderer are concerned. The UI is
-// driven by two parsed events and nothing else:
+// PearlEngine turns our own miner's events into the two the UI is driven by:
 //
-//   { type: 'status',    gpuIndex, hashrate, accepted, rejected, power, temp, gpu }
+//   { type: 'status',    gpuIndex, hashrate, accepted, rejected, temp, gpu }
 //   { type: 'connected', gpuIndex, endpoint, gpu }
 //
-// alpha-miner produces those by having its stdout scraped. PearlMiner produces
-// share/rejected/hashrate/job events instead, because it IS the miner. If this
+// PearlMiner produces share/rejected/hashrate/job events instead. If this
 // translation is wrong the miner still mines perfectly and the UI shows a dead
 // card, which is the kind of failure nobody reports as a bug.
 
@@ -60,7 +57,7 @@ function jobLine() {
   }) + '\n';
 }
 
-describe('PearlEngine — the MinerManager surface', () => {
+describe('PearlEngine — the surface main.js drives', () => {
   test('exposes exactly what main.js drives', () => {
     const { e } = boot();
     expect(typeof e.start).toBe('function');
@@ -68,6 +65,40 @@ describe('PearlEngine — the MinerManager surface', () => {
     expect(typeof e.isRunning).toBe('function');
     expect(typeof e.releaseMemClocks).toBe('function');
     expect(e.isRunning()).toBe(false);
+  });
+
+  test('builds with no options, and a stop before any start is nothing', () => {
+    const e = new PearlEngine();
+    expect(() => e.stop()).not.toThrow();
+    expect(e.isRunning()).toBe(false);
+  });
+
+  test('a start with no settings does not throw', () => {
+    const b = boot();
+    b.e.on('error', () => {});
+    expect(() => b.e.start()).not.toThrow();
+    b.e.stop();
+  });
+
+  // No endpoint given and no card name known: the announcement says so with
+  // nulls rather than inventing either.
+  test('announces a card it cannot name, on an endpoint it was not told', () => {
+    const b = boot();
+    b.e.start({ address: ADDR, worker: 'rig01' });
+    b.sock.emit('connect');
+    b.sock.emit('data', jobLine());
+    expect(b.events.event.find((x) => x.type === 'connected'))
+      .toEqual({ type: 'connected', gpuIndex: 0, endpoint: null, gpu: null });
+    b.e.stop();
+  });
+
+  // main.js reads this to say a pool name did not resolve.
+  test('passes a failed connect on as an event', () => {
+    const b = started();
+    b.e.miner.emit('connect-failed', { reason: 'getaddrinfo ENOTFOUND', dns: true });
+    expect(b.events.event.pop())
+      .toEqual({ type: 'connect-failed', reason: 'getaddrinfo ENOTFOUND', dns: true });
+    b.e.stop();
   });
 
   // START LLM while mining-only runs: main.js keeps the miner and asks for its
@@ -226,17 +257,18 @@ describe('PearlEngine — the events the UI actually reads', () => {
     b.e.miner.emit('share', {});
     b.e.stop();
     b.e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1' });
-    expect(b.e.card(0).accepted).toBe(0);
+    b.e.miner.emit('rejected', {});
+    expect(b.events.event.pop()).toMatchObject({ accepted: 0, rejected: 1 });
   });
 
-  // Power is still not read at all, and a rig with nothing to answer for
+  // Power is not read at all, and a rig with nothing to answer for
   // temperature reports none. A made-up number would be worse than the blank
   // the UI already renders for a card that does not report one.
   test('power is absent, and so is temperature with no reader', () => {
     const { core, events } = started();
     core.emit('hashrate', 50);
     const s = events.event.find((e) => e.type === 'status');
-    expect(s.power).toBeNull();
+    expect(s).not.toHaveProperty('power');
     expect(s.temp).toBeNull();
   });
 
@@ -253,7 +285,10 @@ describe('PearlEngine — the events the UI actually reads', () => {
       e.on('event', (x) => events.push(x));
       e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1', gpu: 'RTX 4090' });
       sock.emit('connect');
-      return { e, core, events, status: () => events.filter((x) => x.type === 'status').pop() };
+      const status = () => events.filter((x) => x.type === 'status').pop();
+      // The temperature the next status event carries.
+      const temp = () => { e.miner.emit('hashrate', 1); return status().temp; };
+      return { e, core, events, status, temp };
     }
 
     test('rides along on the status the UI already reads', async () => {
@@ -271,7 +306,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
       const b = withTemps(read);
       expect(read).toHaveBeenCalledTimes(1);
       await settle();
-      expect(b.e.card(0).temp).toBe(64);
+      expect(b.temp()).toBe(64);
       b.e.stop();
     });
 
@@ -279,7 +314,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
     test('takes this engine\'s own card, not whichever came first', async () => {
       const b = withTemps(() => Promise.resolve({ 1: 90, 0: 55 }));
       await settle();
-      expect(b.e.card(0).temp).toBe(55);
+      expect(b.temp()).toBe(55);
       b.e.stop();
     });
 
@@ -289,7 +324,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
       for (const temps of [{}, { 0: 0 }, null]) {
         const b = withTemps(() => Promise.resolve(temps));
         await settle();
-        expect(b.e.card(0).temp).toBeNull();
+        expect(b.temp()).toBeNull();
         b.e.stop();
       }
     });
@@ -299,13 +334,13 @@ describe('PearlEngine — the events the UI actually reads', () => {
     test('a reader that rejects or throws is survivable', async () => {
       const rejects = withTemps(() => Promise.reject(new Error('no nvidia-smi')));
       await settle();
-      expect(rejects.e.card(0).temp).toBeNull();
+      expect(rejects.temp()).toBeNull();
       expect(rejects.e.isRunning()).toBe(true);
       rejects.e.stop();
 
       const throws = withTemps(() => { throw new Error('spawn EACCES'); });
       await settle();
-      expect(throws.e.card(0).temp).toBeNull();
+      expect(throws.temp()).toBeNull();
       expect(throws.e.isRunning()).toBe(true);
       throws.e.stop();
     });
@@ -321,7 +356,7 @@ describe('PearlEngine — the events the UI actually reads', () => {
         b.e.stop();
         jest.advanceTimersByTime(5000);
         expect(read).toHaveBeenCalledTimes(4);
-        expect(b.e.card(0).temp).toBeNull();
+        expect(b.temp()).toBeNull();
       } finally {
         jest.useRealTimers();
       }
@@ -514,8 +549,12 @@ describe('PearlEngine — a rig mining on several cards', () => {
 
   // A card that never started has no bucket — the rig must not report a GPU it
   // is not mining on.
-  test('has nothing to say about a card that is not mining', () => {
-    const b = fleet();
-    expect(b.e.card(2)).toBeNull();
+  test('has nothing to say about a card that is not mining', async () => {
+    const b = fleet(() => Promise.resolve({ 0: 38, 1: 73, 2: 80 }));
+    await settle();
+    b.cores[0].emit('hashrate', 1);
+    b.cores[1].emit('hashrate', 1);
+    expect(b.events.some((x) => x.gpuIndex === 2)).toBe(false);
+    b.e.stop();
   });
 });

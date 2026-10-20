@@ -28,10 +28,10 @@ function looksLikeArchive(head) {
 const ARCHIVE_TMP = 'llama-download.archive';
 
 // Ensures the llama.cpp `llama-server` binary and the GGUF model are present,
-// downloading them on demand. Like EngineManager, all IO (fs, download, extract,
-// chmod) is injected so the orchestration is fully unit-testable. `serverUrl` is
-// the platform-specific llama-server download (a zip of releases, or a bare
-// binary); the model URL comes from config.
+// downloading them on demand. All IO (fs, download, extract, chmod) is injected
+// so the orchestration is fully unit-testable. `serverUrl` is the
+// platform-specific llama-server download (a zip of releases, or a bare binary);
+// the model URL comes from config.
 class LlmEngineManager {
   constructor({ dir, platform, serverUrl, fs, download, extract, chmod } = {}) {
     this.dir = dir;

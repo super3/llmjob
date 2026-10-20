@@ -2,18 +2,12 @@
 
 // What the OS this copy is running on can actually do. macOS is why this module
 // exists: the Mac build runs the local LLM — llama.cpp publishes a Metal build
-// and shared/config.js points at it — but it cannot mine. AlphaPool ships
-// `alpha-miner` for Windows and Linux only; there is no Darwin binary at any
-// version, and no Rosetta path either (the engine is CUDA, and Macs have no
-// NVIDIA GPU).
+// and shared/config.js points at it — but it cannot mine. The Pearl core is
+// CUDA, Macs have no NVIDIA GPU, and no macOS core is built.
 //
-// The gate has to be explicit rather than implicit, because everything
-// downstream treats "not Windows" as "Linux": engine.enginePackage falls back to
-// the Linux table, engineBinaryName returns the bare `alpha-miner-<version>`
-// name, and engineDownloadUrl builds a pool URL that resolves. So a Mac left
-// ungated would happily download a Linux ELF, chmod +x it, and spawn something
-// the kernel refuses to exec — a download, a wait, and an opaque failure, for a
-// binary that was never going to run.
+// The gate has to be explicit rather than implicit, because code that picks a
+// file per platform tends to treat "not Windows" as "Linux". A Mac left ungated
+// would go looking for a Linux core and fail with an opaque error.
 //
 // Pure predicates over a platform string so both shells (Electron main and the
 // headless CLI) ask the same question, and so it is testable without faking

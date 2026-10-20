@@ -1,9 +1,9 @@
 'use strict';
 
-// Three small pure functions that used to live in shared/engine.js and
+// Small pure functions that used to live in shared/engine.js and
 // shared/engineError.js. Those modules were entirely about downloading and
-// launching alpha-miner and went with it; these three were never
-// engine-specific, so they moved to the modules that actually use them.
+// launching alpha-miner and went with it; these were never engine-specific,
+// so they moved to the modules that actually use them.
 //
 // Their tests moved here with them. Each one is small enough to look obviously
 // correct and has been wrong in production at least once, which is exactly the
@@ -12,7 +12,6 @@
 jest.mock('child_process', () => ({ execFile: jest.fn(), spawn: jest.fn() }));
 
 const { progressPercent, isTlsTrustError } = require('../src/main/io');
-const { parseDriverMajor } = require('../src/main/probe');
 const { isArchiveUrl, looksLikeArchive } = require('../src/main/llmEngineManager');
 
 describe('progressPercent', () => {
@@ -70,24 +69,6 @@ describe('isTlsTrustError', () => {
     expect(isTlsTrustError(null)).toBe(false);
     expect(isTlsTrustError(undefined)).toBe(false);
     expect(isTlsTrustError({})).toBe(false);
-  });
-});
-
-describe('parseDriverMajor', () => {
-  test('takes the major version out of an nvidia-smi string', () => {
-    expect(parseDriverMajor('576.88')).toBe(576);
-    expect(parseDriverMajor('  580.65  ')).toBe(580);
-    expect(parseDriverMajor('Driver Version: 550.120')).toBe(550);
-  });
-
-  // No driver is not driver zero: the caller must be able to tell "old" from
-  // "could not read it", because only one of those is worth warning about.
-  test('anything unreadable is null, not zero', () => {
-    expect(parseDriverMajor('')).toBeNull();
-    expect(parseDriverMajor(null)).toBeNull();
-    expect(parseDriverMajor(undefined)).toBeNull();
-    expect(parseDriverMajor('no nvidia-smi here')).toBeNull();
-    expect(parseDriverMajor('576')).toBeNull(); // no minor → not a version string
   });
 });
 

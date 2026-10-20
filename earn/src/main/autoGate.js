@@ -42,7 +42,7 @@ function createAutoGate(opts) {
     try { miner.stop(); } catch { finish(); }
     // Never wedge the gate on an engine that will not exit.
     guard = setTimeout(finish, minerStopTimeoutMs);
-    if (guard.unref) guard.unref();
+    guard.unref();
   });
 
   const startMiner = async () => {
@@ -101,7 +101,6 @@ function createAutoGate(opts) {
     gate,
     server,
     isSwitching: () => switching,
-    llmReadyTimeoutMs,
     start() { server.start(); return this; },
     stop() { server.stop(); },
   };

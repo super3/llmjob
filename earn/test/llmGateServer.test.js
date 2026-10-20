@@ -274,16 +274,6 @@ describe('LlmGateServer internals', () => {
     expect(res.chunks.join('')).toMatch(/upstream/);
   });
 
-  test('an unref-less timer handle is tolerated', () => {
-    const real = global.setInterval;
-    global.setInterval = () => ({});   // no unref, as under some fake-timer setups
-    try {
-      const gs = new LlmGateServer({ port: 0, host: '127.0.0.1', gate: new LlmGate({}) });
-      expect(() => gs.start()).not.toThrow();
-      gs.stop();
-    } finally { global.setInterval = real; }
-  });
-
   test('a release that rejects on the idle tick is swallowed, not thrown at the loop', async () => {
     const gate = new LlmGate({
       quietMs: 0, isLlmReady: () => true,

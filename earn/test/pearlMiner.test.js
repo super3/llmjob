@@ -51,7 +51,7 @@ function boot(over = {}) {
   const connect = jest.fn(() => sock);
   const createCore = over.createCore === null ? null : jest.fn(() => core);
   const m = new PearlMiner({ connect, createCore, reconnectMs: 0 });
-  const events = { log: [], job: [], share: [], rejected: [], hashrate: [], error: [], stopped: [], authorized: [], started: [] };
+  const events = { log: [], job: [], share: [], rejected: [], hashrate: [], error: [], stopped: [], authorized: [] };
   for (const k of Object.keys(events)) m.on(k, (e) => events[k].push(e));
   return { m, sock, core, connect, createCore, events };
 }
@@ -69,8 +69,8 @@ function jobLine(over = {}) {
 const settings = { address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' };
 
 describe('PearlMiner — start', () => {
-  test('connects, authorizes with object params, and reports started', () => {
-    const { m, sock, connect, events } = boot();
+  test('connects and authorizes with object params', () => {
+    const { m, sock, connect } = boot();
     expect(m.start(settings)).toBe(true);
     expect(m.isRunning()).toBe(true);
     expect(connect).toHaveBeenCalledWith('us.pearl.herominers.com', 1200);
@@ -80,7 +80,6 @@ describe('PearlMiner — start', () => {
     expect(sent).toEqual({
       id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01' },
     });
-    expect(events.started[0]).toEqual({ pool: settings.endpoint, wallet: ADDR, worker: 'rig01' });
   });
 
   test('is a no-op while already running', () => {

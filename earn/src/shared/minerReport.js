@@ -12,11 +12,11 @@
 // address+worker, stores them as separate rows); single-GPU rigs keep the bare
 // worker name, matching what older clients sent.
 //
-// Rows are normally driven by the engine's per-card stats (alpha-miner tags each
-// card with `gpu=<index>` and reports that card's hashrate — see shared/parser).
+// Rows are normally driven by the engine's per-card stats (PearlEngine tags each
+// status event with the card's `gpuIndex` — see shared/miningStats).
 // But nvidia-smi is the authority on how many cards physically exist, so if the
-// engine ever reports FEWER cards than nvidia-smi sees (an engine build that logs
-// one aggregate line instead of per-card lines), we fall back to enumerating the
+// engine ever reports FEWER cards than nvidia-smi sees (an older core that does
+// not name its cards folds them all into card 0), we fall back to enumerating the
 // physical cards and splitting the engine's reported total evenly across them —
 // that keeps every card's real VRAM visible instead of collapsing the rig into
 // one row, at the cost of an even (rather than measured) hashrate split, which is

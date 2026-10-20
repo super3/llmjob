@@ -200,18 +200,6 @@ describe('detectGpuTemps', () => {
   });
 });
 
-describe('detectDriverMajor', () => {
-  it('returns the parsed major version', async () => {
-    execCb(null, '580.42\n');
-    expect(await probe.detectDriverMajor()).toBe(580);
-  });
-
-  it('returns null on error', async () => {
-    execCb(new Error('x'));
-    expect(await probe.detectDriverMajor()).toBeNull();
-  });
-});
-
 // What decides which build of the core loads (shared/coreVariant).
 describe('detectCudaCards', () => {
   it('asks for index, compute capability and driver in one call', async () => {

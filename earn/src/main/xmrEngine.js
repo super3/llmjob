@@ -23,7 +23,7 @@ const { shortenXmrAddress } = require('../shared/xmr/address');
 // the GPU miner in this process carries on. Everything IO is injected (connect
 // -> socket, spawnWorker -> child process), so the tests run with neither.
 //
-// settings: { address, worker, endpoint, threads, priority, hugePages }
+// settings: { address, worker, endpoint, threads, priority }
 // priority is the worker's (idle, low or normal); without one it is
 // worker.defaultPriority for this platform.
 
@@ -119,9 +119,6 @@ class XmrEngine extends EventEmitter {
     this.hashrate = 0;
     this.accepted = 0;
     this.rejected = 0;
-    this.lastShareMs = null;
-    this.pages = null;
-    this.startedAt = 0;
     this.timers = new Set();
     this.restart = { fails: 0, startedAt: 0 };
   }
@@ -146,11 +143,7 @@ class XmrEngine extends EventEmitter {
       accepted: this.accepted,
       rejected: this.rejected,
       threads: this.settings ? this.settings.threads : 0,
-      pages: this.pages,
-      difficulty: this.difficulty,
-      lastShareMs: this.lastShareMs,
       poolError: this.poolConnected(now) ? null : this.poolError,
-      uptimeSec: this.running ? Math.max(0, Math.floor((now - this.startedAt) / 1000)) : 0,
     };
   }
 
@@ -196,7 +189,6 @@ class XmrEngine extends EventEmitter {
       return false;
     }
     this.running = true;
-    this.startedAt = this.now();
     const [host, port] = String(settings.endpoint || '').split(':');
     this.host = host;
     this.port = Number(port);
@@ -311,7 +303,6 @@ class XmrEngine extends EventEmitter {
           this._log('info', 'building the 2080 MiB RandomX dataset on ' + m.threads + ' thread'
             + (m.threads === 1 ? '' : 's') + ' (about a minute; again when Monero changes its seed, every 2048 blocks)');
         } else {
-          this.pages = m.pages;
           this._log('info', 'dataset ready in ' + (Math.round(m.ms / 100) / 10) + ' s · ' + (PAGES[m.pages] || m.pages));
           this._setState('mining');
         }
@@ -355,7 +346,6 @@ class XmrEngine extends EventEmitter {
   // retrying can't help, in which case the CPU miner stops.
   _workerFailed(message, retry) {
     this.hashrate = 0;
-    this.pages = null;
     this._log('error', message);
     if (retry) {
       if (this.now() - this.restart.startedAt >= STABLE_MS) this.restart.fails = 0;
@@ -516,7 +506,6 @@ class XmrEngine extends EventEmitter {
       case 'submit-accepted':
         if (this.pending.delete(m.id)) {
           this.accepted++;
-          this.lastShareMs = this.now();
           this._log('info', 'XMR share accepted');
           this._status();
         }

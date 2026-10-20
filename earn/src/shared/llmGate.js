@@ -150,6 +150,5 @@ class LlmGate extends EventEmitter {
 }
 
 module.exports = {
-  LlmGate, classifyPath, WAKE_PREFIXES, PASSIVE_PREFIXES,
-  MINING, SERVING, TO_SERVING, TO_MINING,
+  LlmGate, classifyPath, MINING, SERVING,
 };

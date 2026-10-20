@@ -1,8 +1,8 @@
 'use strict';
 
 const {
-  HEADER_BYTES, TARGET_BYTES, AUTHORIZE_ID,
-  buildAuthorize, isKryptexHost, buildSubmit, serializeProof, encode,
+  HEADER_BYTES, AUTHORIZE_ID,
+  buildAuthorize, isKryptexHost, buildSubmit, encode,
   decodeTarget, parseMessage, parseJob, parseDifficulty, normalizeError,
 } = require('../src/shared/miner/stratum');
 
@@ -211,7 +211,7 @@ describe('normalizeError', () => {
   });
 });
 
-describe('buildSubmit / serializeProof', () => {
+describe('buildSubmit', () => {
   // The proof IS the submission. It carries m, n, k, the noise rank and both
   // Merkle proofs with their row indices, and the verifier rebuilds the mining
   // configuration from those indices rather than being told it -- so there is
@@ -234,17 +234,10 @@ describe('buildSubmit / serializeProof', () => {
     expect(buildSubmit(1, { jobId: 'j' }).params.hs).toBe(0);
     expect(buildSubmit(1, { jobId: 'j', hashrate: -5 }).params.hs).toBe(0);
   });
-
-  test('serializeProof base64-encodes bytes and tolerates non-buffers', () => {
-    expect(serializeProof(Buffer.from([0, 1, 2]))).toBe('AAEC');
-    expect(serializeProof([0, 1, 2])).toBe('AAEC');
-    expect(serializeProof(null)).toBe('');
-  });
 });
 
 describe('constants', () => {
-  test('header and target widths match the protocol', () => {
+  test('header width matches the protocol', () => {
     expect(HEADER_BYTES).toBe(76);
-    expect(TARGET_BYTES).toBe(32);
   });
 });

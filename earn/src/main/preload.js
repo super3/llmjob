@@ -37,7 +37,6 @@ contextBridge.exposeInMainWorld('llmjob', {
     ipcRenderer.on('miner:log', (_e, d) => cb(d));
     ipcRenderer.send('log:ready');
   },
-  onEvent: (cb) => ipcRenderer.on('miner:event', (_e, d) => cb(d)),
   onEngine: (cb) => ipcRenderer.on('miner:engine', (_e, d) => cb(d)),
   onStopped: (cb) => ipcRenderer.on('miner:stopped', () => cb()),
   onUpdate: (cb) => ipcRenderer.on('app:update', (_e, d) => cb(d)),

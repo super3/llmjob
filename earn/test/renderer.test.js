@@ -89,7 +89,6 @@ function makeFullApi() {
     onStats: jest.fn((cb) => { cbs.stats = cb; }),
     onCpuStats: jest.fn((cb) => { cbs.cpu = cb; }),
     onLog: jest.fn((cb) => { cbs.log = cb; }),
-    onEvent: jest.fn(),
     onEngine: jest.fn((cb) => { cbs.engine = cb; }),
     onStopped: jest.fn((cb) => { cbs.stopped = cb; }),
     onUpdate: jest.fn((cb) => { cbs.update = cb; }),
@@ -540,17 +539,14 @@ describe('boot with the full bridge', () => {
     expect(lines[lines.length - 1].textContent).toMatch(/plain/);
     // engine phases
     cbs.engine(null);
-    cbs.engine({ phase: 'downloading' });
-    expect($('engine-status').hidden).toBe(false);
-    expect($('engine-status').textContent).toMatch(/Downloading/);
-    cbs.engine({ phase: 'ready' });
-    expect($('engine-status').hidden).toBe(true);
+    cbs.engine({ phase: 'other' });
+    expect($('engine-status').textContent).toBe('');
     cbs.engine({ phase: 'error', message: 'boom' });
+    expect($('engine-status').hidden).toBe(false);
     expect($('engine-status').textContent).toBe('boom');
     expect($('engine-status').classList.contains('err')).toBe(true);
     cbs.engine({ phase: 'error' });
     expect($('engine-status').textContent).toMatch(/Engine setup failed/);
-    cbs.engine({ phase: 'other' });
     // main-process stop resets the dashboard
     cbs.stopped();
     expect($('btn-start').hidden).toBe(false);

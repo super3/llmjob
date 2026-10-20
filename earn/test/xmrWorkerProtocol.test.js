@@ -7,10 +7,10 @@ const SEED = 'ab'.repeat(32);
 const BLOB = 'cd'.repeat(76);
 
 describe('commands to the worker', () => {
-  test('the command line: threads, and priority and huge pages when asked', () => {
+  test('the command line: threads, and priority when asked', () => {
     expect(w.workerArgs({ threads: 6 })).toEqual(['--threads', '6']);
-    expect(w.workerArgs({ threads: 3.7, priority: 'low', hugePages: false }))
-      .toEqual(['--threads', '3', '--priority', 'low', '--no-huge-pages']);
+    expect(w.workerArgs({ threads: 3.7, priority: 'low' }))
+      .toEqual(['--threads', '3', '--priority', 'low']);
     expect(w.workerArgs({ threads: 0, priority: 'realtime' })).toEqual(['--threads', '1']);
     expect(w.workerArgs()).toEqual(['--threads', '1']);
   });

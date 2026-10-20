@@ -22,8 +22,7 @@ const gpuClocks = require('./gpuClocks');
 // machine is unit-testable against a fake socket and a fake core, with no
 // network and no GPU.
 //
-// Emits, for the app to relay to the renderer exactly like MinerManager does:
-//   started        { pool, wallet, worker }
+// Emits, for PearlEngine to translate into the events the app shows:
 //   log            { level, line }
 //   authorized     { host, address, family }  (the pool's address that took the login)
 //   job            { jobId, height }
@@ -163,7 +162,6 @@ class PearlMiner extends EventEmitter {
     this.wallet = wallet;
     this.worker = worker;
     const [host, port] = String(settings.endpoint || '').split(':');
-    this.emit('started', { pool: settings.endpoint, wallet, worker });
 
     if (!this._startCores(settings, wallet, worker)) {
       this.running = false;

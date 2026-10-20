@@ -125,7 +125,6 @@ describe('the shipped config', () => {
       expect(m.file).toMatch(/\.gguf$/);
       expect(m.url).toMatch(/^https:\/\//);
       expect(Number(m.vramFullMb)).toBeGreaterThan(0);
-      expect(Number(m.layers)).toBeGreaterThan(0);
     }
   });
 

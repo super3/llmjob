@@ -537,8 +537,6 @@ describe('downloadFile', () => {
   // multi-GB GGUF at the final path that every later start accepts.
   it('retries from a clean scratch file rather than resuming a partial', async () => {
     jest.useFakeTimers();
-    const realSetTimeout = global.setTimeout;
-    global.setTimeout = (fn, ms) => { realSetTimeout(fn, ms); return {}; }; // handle without unref()
     const r1 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     const r2 = fakeRes({ statusCode: 200, headers: { 'content-length': '1000' } });
     wire(https, [r1, r2]);
@@ -563,7 +561,6 @@ describe('downloadFile', () => {
     o2.emit('finish');
     await expect(p).resolves.toBe('/tmp/f');
     expect(progress[progress.length - 1]).toBe(100);
-    global.setTimeout = realSetTimeout;
     jest.useRealTimers();
   });
 
@@ -1037,122 +1034,5 @@ describe('downloadFile trust recovery', () => {
     expect((await settled).message).toMatch('HTTP 404');
     expect(tls.connect).not.toHaveBeenCalled();
     jest.useRealTimers();
-  });
-});
-
-describe('extractEnginePackage', () => {
-  function magic(bytes) {
-    fs.openSync.mockReturnValue(7);
-    fs.readSync.mockImplementation((fd, buf) => { buf[0] = bytes[0]; buf[1] = bytes[1]; return 2; });
-    fs.closeSync.mockImplementation(() => {});
-  }
-
-  const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
-  const setPlatform = (p) => Object.defineProperty(process, 'platform', { value: p, configurable: true });
-  afterEach(() => Object.defineProperty(process, 'platform', REAL_PLATFORM));
-
-  // Deliberately NOT flattened like the llama.cpp archives: the packaged engine
-  // is a launcher plus a core that it resolves as a sibling, so the archive
-  // keeps its own top folder and both land together.
-  //
-  // The archive goes in RELATIVE, with the dest as cwd, rather than as an
-  // absolute path with -C: GNU tar reads a leading drive letter as an
-  // rsync-style <host>:<path> and tries to open a network connection.
-  test('untars a gzip package into the engine dir, keeping the top folder', async () => {
-    setPlatform('linux');
-    magic([0x1f, 0x8b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache')).resolves.toBe('/cache');
-    const [cmd, args, opts] = execFile.mock.calls.pop();
-    expect(cmd).toBe('tar');
-    expect(args).toEqual(['-xzf', 'pkg.tar.gz']);
-    expect(opts.cwd).toBe('/cache');
-    expect(args).not.toContain('--strip-components=1');
-  });
-
-  // The same engine version ships as a .tar.gz on Linux and a .zip on Windows,
-  // so the format is sniffed rather than assumed — and NOT handed to `unzip`,
-  // which is standard on the one platform that never sees a zip here.
-  test('reads a zip package with the same tool, without -z', async () => {
-    setPlatform('linux');
-    magic([0x50, 0x4b]); // "PK"
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await expect(io.extractEnginePackage('/cache/pkg.zip', '/cache')).resolves.toBe('/cache');
-    const [cmd, args] = execFile.mock.calls.pop();
-    expect(cmd).toBe('tar');
-    expect(args).toEqual(['-xf', 'pkg.zip']);
-  });
-
-  // Reading a zip with `tar` is a bsdtar capability, and plain `tar` on Windows
-  // is not reliably bsdtar — Git for Windows puts GNU tar ahead of it on PATH,
-  // and GNU tar cannot read zips at all ("this does not look like a tar
-  // archive"). Both failures were seen on a real rig, so Windows resolves the
-  // system bsdtar by absolute path instead of trusting PATH order.
-  test('uses the system bsdtar by absolute path on Windows', async () => {
-    setPlatform('win32');
-    process.env.SystemRoot = 'C:\\Windows';
-    magic([0x50, 0x4b]);
-    fs.existsSync.mockReturnValue(true);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    const [cmd] = execFile.mock.calls.pop();
-    expect(cmd).toMatch(/^C:.Windows.System32.tar\.exe$/);
-  });
-
-  // SystemRoot is always set on a real Windows session, but a stripped service
-  // environment must still resolve somewhere sane rather than joining undefined.
-  test('defaults to the Windows dir when SystemRoot is unset', async () => {
-    setPlatform('win32');
-    const saved = process.env.SystemRoot;
-    delete process.env.SystemRoot;
-    magic([0x50, 0x4b]);
-    fs.existsSync.mockReturnValue(true);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toMatch(/^C:.Windows.System32.tar\.exe$/);
-    if (saved !== undefined) process.env.SystemRoot = saved;
-  });
-
-  test('falls back to PATH tar when the system bsdtar is absent or unreadable', async () => {
-    setPlatform('win32');
-    magic([0x50, 0x4b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-
-    fs.existsSync.mockReturnValue(false);
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toBe('tar');
-
-    fs.existsSync.mockImplementation(() => { throw new Error('EPERM'); });
-    await io.extractEnginePackage('/cache/pkg.zip', '/cache');
-    expect(execFile.mock.calls.pop()[0]).toBe('tar');
-  });
-
-  // No relative path exists across drives, so the colon is unavoidable there —
-  // nothing our own callers do, but it must not produce a broken argv.
-  test('keeps the absolute path when the archive is on another drive', async () => {
-    setPlatform('linux');
-    magic([0x50, 0x4b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(null));
-    // "Another drive" has to be computed, not hardcoded: on Windows a bare
-    // /cache resolves against the cwd's OWN drive, and the GitHub runner builds
-    // on D: while a dev box is usually C:. Naming one literally makes this a
-    // same-drive relative path on exactly one of them.
-    const other = process.cwd().toUpperCase().startsWith('D:') ? 'E:' : 'D:';
-    const far = other + '\\dl\\pkg.zip';
-    await io.extractEnginePackage(far, '/cache');
-    expect(execFile.mock.calls.pop()[1]).toEqual(['-xf', far]);
-  });
-
-  test('rejects when the package cannot be read', async () => {
-    fs.openSync.mockImplementation(() => { throw new Error('EACCES'); });
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
-      .rejects.toThrow('could not read the engine package');
-  });
-
-  test('surfaces a tar failure with the tool named', async () => {
-    magic([0x1f, 0x8b]);
-    execFile.mockImplementation((cmd, args, opts, cb) => cb(new Error('tar: not found')));
-    await expect(io.extractEnginePackage('/cache/pkg.tar.gz', '/cache'))
-      .rejects.toThrow(/could not extract the engine package with .tar./);
   });
 });

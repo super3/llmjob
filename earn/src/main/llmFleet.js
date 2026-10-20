@@ -214,7 +214,7 @@ class LlmFleet extends EventEmitter {
         resolve();
       };
       const timer = setTimeout(finish, this.startSettleMs);
-      if (timer.unref) timer.unref();
+      timer.unref();
       inst._settle = finish;
     });
   }
@@ -251,9 +251,8 @@ class LlmFleet extends EventEmitter {
     this.emit('gpu-lost', Object.assign({ index: inst.index, busId }, info));
   }
 
-  // Each line carries ONE phase, so hold both and re-emit both every time. That
-  // keeps the fleet's `tokensPerSec` a plain number for existing consumers while
-  // making the prefill figure available to anyone who wants it.
+  // Each line carries ONE phase, so hold both and re-emit both every time. A
+  // generation line must not wipe the last prefill figure, or the reverse.
   //
   // Each instance also keeps its own generation rate, for chatUrl(). Only from a
   // reply long enough to mean something (MIN_RATE_TOKENS).
@@ -350,11 +349,6 @@ class LlmFleet extends EventEmitter {
 
   isReady() { return this.instances.some((i) => i.ready); }
   readyCount() { return this.instances.filter((i) => i.ready).length; }
-  tokensPerSec() { return this._lastTps; }
-
-  // Prefill rate, i.e. how fast the prompt was read. Separate from tokensPerSec
-  // because they are different measurements, not two samples of one.
-  promptTokensPerSec() { return this._lastPromptTps; }
 
   // Total jobs in flight across every instance's worker (for node telemetry).
   activeJobs() {
@@ -395,7 +389,7 @@ class LlmFleet extends EventEmitter {
     let timer = null;
     const expiry = new Promise((resolve) => {
       timer = setTimeout(() => resolve(true), timeoutMs);
-      if (timer.unref) timer.unref();
+      timer.unref();
     });
     return Promise.race([Promise.all(waits).then(() => false), expiry])
       .then((timedOut) => {
