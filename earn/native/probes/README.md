@@ -1578,3 +1578,45 @@ So hand-writing the inner loop is not the way to the gap. The fold's own ablatio
 show where it is: `PEARL_ABLATE_BHIT`, `_AHIT`, `_BARRIER`, `_READOUT`, `_STAGING` and
 `_TRANSCRIPT_HASH`, timed per clock on a 2080 Ti and a 2060. None has run on the current
 build.
+
+### Where the fold loses time: its ablations, per clock (2026-10-20)
+
+`compilers.sh` with `VARIANTS_SPEC` set to the fold's ablation builds, bench in 3
+interleaved rounds of 20 s against the shipped build (commit `cc877e9`), on three cards
+held at their power limit: an RTX 2080 Ti (Vietnam, 152869, 250 W, about 1365 MHz), an
+RTX 2070 (South Korea, 139007, the benchmark row's own machine, 150 W) and an RTX 2060
+12 GB (South Korea, 142755, 150 W). Each build computes wrong answers; they only price a
+cost. Medians of the three rounds, raw TH/s and TH/s per GHz:
+
+| switched off | 2080 Ti raw / per GHz | 2070 | 2060 |
+|---|---|---|---|
+| all seams: barrier, A staging, readout, hash | +18.0% / +10.0% | +17.6% / +10.1% | +18.0% / +10.0% |
+| B loaded once a tile, not every k-step | +9.6% / +3.0% | +8.3% / +2.5% | +8.3% / +3.1% |
+| A staging | +6.9% / -0.7% | +6.5% / -0.4% | +6.8% / -0.3% |
+| the per-chunk barrier | -11.6% / -10.6% | -8.9% / -6.0% | -7.9% / -7.0% |
+| B always an L1 hit | +0.9% / -6.3% | -0.3% / -6.5% | -0.3% / -6.4% |
+| A always an L2 hit | -4.0% / -6.1% | -2.2% / -3.2% | -1.9% / -4.2% |
+| readout | -3.0% / -1.9% | -1.0% / +0.5% | -0.4% / 0.0% |
+| transcript hash | -1.2% / -3.0% | -2.4% / -4.5% | -1.9% / -3.6% |
+
+The shipped build read 83.1, 48.5 and 47.9 TH/s. Four of the builds spill a little
+(A always an L2 hit 8 bytes, B once a tile 56, no barrier 36, no staging 12), so they
+slightly understate what they price.
+
+What it says:
+- The seams, together, cost about 10% per clock on all three cards. With them gone the
+  2080 Ti fold runs at about 97% of the IMMA peak per clock, against about 91% for the
+  best competitor (PeakMiner, 88.5 TH/s at about 1390 MHz) and 87% for ours.
+- They don't add up one at a time. Taking the barrier away alone costs 8-12%: the warps
+  drift apart while A is still staged through shared. It pays only together with A's
+  staging, which it exists to protect.
+- A's staging costs power, not work per clock: without it the clock rises about 7% at the
+  same work per clock.
+- B's L2 latency is not the limit, as the earlier reviews guessed: with every B load an
+  L1 hit the fold is no faster, it only runs at a higher clock for the same rate.
+- B's traffic costs about 3% per clock, and more in clock.
+
+So the way to the gap is to drop A's staging and the per-chunk barrier together: load A
+straight from global into registers, fragment-ordered, the way B already is. An earlier
+attempt at that faulted with an illegal address and was dropped (pearl_config.h), never
+measured.
