@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 
-// Turing's k-lo-first fold (PEARL_BD_KORDER, off by default). The draw writes A'
+// Turing's k-lo-first fold (PEARL_BD_KORDER, on by default). The draw writes A'
 // and B' in pairs of 16-row blocks: block 2p's slot holds both blocks' k 0-15
 // words and block 2p + 1's their k 16-31 words. The fold reads each IMMA's A and
 // B word from there instead of from one block's four words. Nothing here can run
@@ -111,10 +111,10 @@ function immas(A, B, kLog2, aBase, bBase, s, lane, paired) {
 }
 
 describe('Turing k-lo first (PEARL_BD_KORDER)', () => {
-  test('is off by default and needs A-direct', () => {
+  test('is on by default with A-direct, as measured, and needs it', () => {
     const at = HEADER.indexOf('#ifndef PEARL_BD_KORDER');
     expect(at).toBeGreaterThanOrEqual(0);
-    expect(HEADER.slice(at).split(NL)[1].trim()).toBe('#define PEARL_BD_KORDER 0');
+    expect(HEADER.slice(at).split(NL)[1].trim()).toBe('#define PEARL_BD_KORDER PEARL_BD_A_DIRECT');
     expect(HEADER).toContain('#if PEARL_BD_KORDER && !PEARL_BD_A_DIRECT');
   });
 

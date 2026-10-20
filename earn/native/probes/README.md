@@ -1659,3 +1659,61 @@ A-direct's own ablations, bench, 3 interleaved rounds, raw / per GHz:
   waits on its own recent IMMA results (24 such waits a pass in ptxas's order, per the
   hand-SASS probe above).
 - Sharing B in L1 between those two warps is worth 6-16%.
+
+### Round 2: k-lo first wins, the spread hash loses (2026-10-20)
+
+Two changes aimed at the readout-and-hash seam, raced with `compilers.sh` (commit
+`a7f273c`) against the A-direct default on the same three cards, bench in 3 interleaved
+rounds of 20 s, then hashrate.js for the winner in 3 rounds of 60 s, and verify-hits on
+every build:
+
+- `PEARL_BD_KORDER`: issue every accumulator pair's k-lo IMMA, then every pair's k-hi
+  IMMA, so the two IMMA on a pair are 64 apart and a warp issuing alone waits less on
+  its own results. The host draws A' and B' in pairs of 16-row blocks to match.
+  `earn/test/turingKorder.test.js` checks the words each IMMA reads. 239 registers.
+- `PEARL_BD_HASH_SPREAD` (commit `09bf0eb`): each warp hashes its own 16 regions of the
+  last tile while it folds the next, half a BLAKE3 round a chunk, on lane pairs, instead
+  of one warp of each scheduler hashing all of them at the hand-off. 252 registers.
+- Both together: 248 registers.
+
+bench, raw / per GHz against the default (every round in the same direction except the
+2080 Ti's first korder round, -0.5%):
+
+| build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| k-lo first | +2.0% / +2.0% | +1.9% / +1.4% | +2.4% / +2.0% |
+| spread hash | -3.5% / -4.6% | -2.4% / -2.4% | -2.1% / -2.5% |
+| both | -5.2% / -6.2% | -6.0% / -4.4% | -5.9% / -7.3% |
+
+hashrate.js, k-lo first against the default, every round won:
+
+| card | default | k-lo first | per clock |
+|---|---|---|---|
+| RTX 2080 Ti (Vietnam, 152869, 250 W) | 85.22 TH/s | 86.81 (+1.9%) | +1.8% |
+| RTX 2070 (South Korea, 139007, 150 W) | 48.04 | 48.82 (+1.6%) | +1.6% |
+| RTX 2060 12 GB (South Korea, 142755, 150 W) | 47.91 | 48.97 (+2.2%) | +1.5% |
+
+verify-hits 400/400 for all three builds on all three cards. k-lo first is now the
+default with A-direct (`PEARL_BD_KORDER`, `pearl_config.h`); the default fold's machine
+code is the build raced here (`faf18b40f3a8` under CUDA 12.8). The 2080 Ti is now at
+about 91.3% of the IMMA peak per clock (63.57 TH/s per GHz against 69.63), against about
+91.4% for the best competitor (PeakMiner, from the benchmark row's pool run).
+
+The spread hash loses on every card, and costs more with k-lo first than alone. Spread
+through the chunk loop, the hash's instructions and shuffles take issue slots and
+registers from every warp in every chunk, which costs more than one warp of a scheduler
+leaving its partner to issue alone once a tile. It is taken out again; `09bf0eb` keeps
+the code.
+
+### Candidates built before A-direct, never raced
+
+Four switches were built on the staged fold in the first round and are left on their
+commits, not merged. The ablations above ruled out what three of them were for, and
+A-direct removed what the fourth worked around:
+
+| switch | commit | idea | why not raced |
+|---|---|---|---|
+| `PEARL_BD_A_HINT` | `0d2311d` | load A evict-first so B stays in L2 | B's L2 latency is not the limit (B always an L1 hit is no faster per clock) |
+| `PEARL_BD_B_AHEAD` | `dec4922` | load B two k-steps ahead | same; it also needed 16 more registers |
+| `PEARL_BD_WALK2D` | `209d9f1` | walk each band in blocks of row groups so one B fetch serves a block | same |
+| `PEARL_BD_SPLIT_BAR` | `f5fab5a` | split the per-chunk barrier so a late B load stalls fewer warps | A-direct has no per-chunk barrier |

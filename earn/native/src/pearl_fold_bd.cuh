@@ -149,53 +149,6 @@ __device__ __forceinline__ int4 pearl_bd_lda(const int8_t *p) {
   return __ldcg(reinterpret_cast<const int4 *>(p));
 }
 
-#if PEARL_BD_HASH_SPREAD
-// The spread hash (PEARL_BD_HASH_SPREAD): a warp hashes its own 16 regions of the
-// last tile while it folds the next, half a round at each chunk. Lanes 2r and 2r + 1
-// take region r, and lane h holds two of the state's four columns, slots 2h (f) and
-// 2h + 1 (s) of each row, in hs[] as {a_f, a_s, b_f, b_s, c_f, c_s, d_f, d_s}. A step
-// is two G, one on each slot, then a fixed exchange T: a_f and a_s swap, b_f and d_s
-// come from the other lane, and c_f and c_s come from the other lane's c_s and c_f.
-// Then slot k holds row a's word 1 - k, b's 2 - k, c's 3 - k and d's -k (mod 4),
-// which is diagonal 1 - k; and since T undoes itself, the step after holds columns
-// again. So the steps alternate columns and diagonals, as a round's two halves do,
-// with the same code.
-//
-// The message words a step's G read, for step q and lane h (word 2q + h): bytes 0-3
-// are the byte offsets (word << 2) of slot f's x and y and slot s's x and y in the
-// 64-byte transcript, BLAKE3's permutation applied q / 2 times. Step 14 runs (the
-// chunk loop has fifteen) but its result is never read; it reads step 0's words.
-// earn/test/turingHashSpread.test.js rebuilds this table and runs the schedule
-// against BLAKE3. Thread 0 copies it to shared once (not __constant__, which the host
-// pass would have to declare as well).
-#define PEARL_BD_HS_MSG                                                                   \
-  {0x0c080400u, 0x1c181410u, 0x24202c28u, 0x34303c38u, 0x280c1808u, 0x3410001cu,          \
-   0x2c041430u, 0x3824203cu, 0x3028100cu, 0x381c0834u, 0x14180024u, 0x3c2c0420u,          \
-   0x24301c28u, 0x3c340c38u, 0x0010082cu, 0x20141804u, 0x2c243430u, 0x2038283cu,          \
-   0x081c0c14u, 0x04001018u, 0x142c3824u, 0x043c3020u, 0x0c342800u, 0x18081c10u,          \
-   0x00143c2cu, 0x18202404u, 0x28383008u, 0x100c341cu, 0x0c080400u, 0x1c181410u}
-
-// One BLAKE3 G, as g() in pearl_kernel.cu.
-__device__ __forceinline__ void pearl_bd_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d,
-                                           uint32_t mx, uint32_t my) {
-  a = a + b + mx;
-  d = rotr32(d ^ a, 16);
-  c = c + d;
-  b = rotr32(b ^ c, 12);
-  a = a + b + my;
-  d = rotr32(d ^ a, 8);
-  c = c + d;
-  b = rotr32(b ^ c, 7);
-}
-
-// The hand-off with the hash spread: every thread arrives once a tile, but not at the
-// same place in the code (see the tile loop), so it is the barrier that allows that,
-// not __syncthreads.
-__device__ __forceinline__ void pearl_bd_hand_off() {
-  asm volatile("barrier.sync 1, %0;" ::"n"(PEARL_FOLD_THREADS) : "memory");
-}
-#endif
-
 __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                                               const int8_t *__restrict__ Bprime, uint32_t col_off,
                                               uint32_t rows_valid, uint32_t tiles,
@@ -276,7 +229,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   static_assert(PEARL_BD_SMEM_A_STAGES == 0
                     && PEARL_BD_T_BUFS * TWORDS * 4u == (PEARL_BD_A_REALIGN ? 8192u : 16384u),
                 "8 KB of shared, or 16 with two transcript buffers: the host's smem for this fold");
-#if PEARL_BD_GROUPS == 2 && !PEARL_BD_HASH_SPREAD
+#if PEARL_BD_GROUPS == 2
   const uint32_t sid = threadIdx.x & 127u;  // a thread's place in its row group, for the hash
 #endif
 #else
@@ -369,7 +322,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   };
   auto readout = [&](uint32_t rl, uint32_t c) { readout_st(rl, c, readout_x(rl)); };
 
-#if !PEARL_BD_HASH_SPREAD
   // After the hand-off, every word of the group's regions is written. Hashing
   // thread L takes region L of the group's 64 (the block's 128), the same
   // arithmetic its warp used to write it, for the tile at row group rbg and
@@ -417,7 +369,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       }();
     }
   };
-#endif
 
 #if PEARL_BD_A_DIRECT
   // This lane's sixteen bytes of k-step 0 of the warp's first 16-row block of A'
@@ -641,89 +592,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   constexpr bool RO = true;
 #endif
 
-#if PEARL_BD_HASH_SPREAD
-  // PEARL_BD_HS_MSG, which thread 0 writes before the fold's first __syncthreads.
-  __shared__ uint2 sHsMsg[15];
-  // The spread hash's state (see PEARL_BD_HS_MSG): this lane's two columns of the
-  // state of region hs_L, the word the target test reads, and the region's 64
-  // bytes in the buffer being hashed (hs_base, with bits 6-7, region L & 3, in
-  // hs_k instead, so a byte permute can build each word's address).
-  uint32_t hs[8], hs_w = 0u, hs_base = 0u;
-  const uint32_t hs_L = warp * warp_regions + (lane >> 1);
-  const uint32_t hs_k = (((hs_L >> 1) & 15u) << 2 | (hs_L & 3u) << 6) * 0x01010101u;
-  // The warps that hashed at the hand-off before (one of each scheduler's two, and
-  // two of each row group's four) pass it two k-steps early, and so run two k-steps
-  // behind the others. Taken through a vote so that ptxas knows it is the same for
-  // the whole warp: as a plain test of the warp number, ptxas took the branches on
-  // it as divergent and guarded every shuffle and store in the chunk loop.
-  const bool hs_late = __any_sync(0xffffffffu, ((warp & 3u) < 2u) != (wr != 0u));
-  // A new hash, of the regions in buffer buf (words), in the column order.
-  auto hs_init = [&](uint32_t buf) {
-    const bool h1 = (lane & 1u) != 0u;
-    hs[0] = h1 ? test.key[2] : test.key[0];
-    hs[1] = h1 ? test.key[3] : test.key[1];
-    hs[2] = h1 ? test.key[6] : test.key[4];
-    hs[3] = h1 ? test.key[7] : test.key[5];
-    hs[4] = h1 ? 0x3C6EF372u : 0x6A09E667u;  // BLAKE3_IV[0..3]
-    hs[5] = h1 ? 0xA54FF53Au : 0xBB67AE85u;
-    hs[6] = h1 ? 64u : 0u;  // counter 0, 0; block length 64; flags
-    hs[7] = h1 ? (uint32_t)PEARL_TRANSCRIPT_FLAGS : 0u;
-    hs_base = buf * 4u + (hs_L >> 2) * 256u;
-  };
-  // Step q: keep the test's word (out16[0] or out16[7] once fourteen steps are
-  // done, which is what step 14 sees), then two G and T.
-  auto hs_step = [&](uint32_t q) {
-    hs_w = test.hash_big_endian ? hs[0] ^ hs[4] : hs[3] ^ hs[7];
-    const uint2 e = sHsMsg[q];
-    const uint32_t t = ((lane & 1u) ? e.y : e.x) ^ hs_k;
-    const char *tb = reinterpret_cast<const char *>(sT);
-    const uint32_t m0 = *reinterpret_cast<const uint32_t *>(tb + __byte_perm(t, hs_base, 0x7650u));
-    const uint32_t m1 = *reinterpret_cast<const uint32_t *>(tb + __byte_perm(t, hs_base, 0x7651u));
-    const uint32_t m2 = *reinterpret_cast<const uint32_t *>(tb + __byte_perm(t, hs_base, 0x7652u));
-    const uint32_t m3 = *reinterpret_cast<const uint32_t *>(tb + __byte_perm(t, hs_base, 0x7653u));
-    pearl_bd_g(hs[0], hs[2], hs[4], hs[6], m0, m1);
-    pearl_bd_g(hs[1], hs[3], hs[5], hs[7], m2, m3);
-    const uint32_t a = hs[0];
-    hs[0] = hs[1];
-    hs[1] = a;
-    hs[2] = __shfl_xor_sync(0xffffffffu, hs[2], 1);
-    const uint32_t c = __shfl_xor_sync(0xffffffffu, hs[5], 1);
-    hs[5] = __shfl_xor_sync(0xffffffffu, hs[4], 1);
-    hs[4] = c;
-    hs[7] = __shfl_xor_sync(0xffffffffu, hs[7], 1);
-  };
-  // The test, once fifteen steps are done: the lane that holds the word (lane 0 of
-  // the pair for out16[0], 1 for out16[7]) goes on as hash_tile does, with the
-  // region's sixteen words, for the tile sVw[warp].
-  __shared__ uint32_t sVw[PEARL_FOLD_THREADS / 32u];
-  auto hs_test = [&]() {
-    const bool mine = test.hash_big_endian ? (lane & 1u) == 0u : (lane & 1u) != 0u;
-    const uint32_t msw = test.hash_big_endian ? pearl_bswap32(hs_w) : hs_w;
-    if (!mine || msw > test.target_w[0]) return;
-    uint32_t tm[16];
-    const uint32_t *src = sT + hs_base / 4u + (hs_L & 3u) * 16u;
-#pragma unroll
-    for (uint32_t c = 0; c < 16u; c++) tm[c] = src[c ^ ((hs_L >> 1) & 15u)];
-    uint32_t h[8];
-    pearl_transcript_hash_again(test.key, tm, h);
-    if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
-    uint32_t rbg, cbg;
-    tile_coords(sVw[warp], rbg, cbg);
-    const uint32_t ocb = (hs_L % warp_regions) / regions_per_warp;
-    const uint32_t oreg = hs_L % regions_per_warp;
-    const uint32_t orb = rbg * 2u + warp / 4u;
-    const uint32_t ocgb = cbg * 4u + warp % 4u;
-    const uint32_t region = (ocgb * 4u + ocb) * rows_valid + orb * regions_per_warp + oreg;
-    const uint32_t slot = atomicAdd(hits.count, 1u);
-    if (slot >= PEARL_MAX_HITS) return;
-    hits.index[slot] = region;
-#pragma unroll
-    for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
-#pragma unroll
-    for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
-  };
-#endif
-
   // One tile: its 64 k-steps and its readouts, up to the last chunk's. The chunk
   // loop is rotated as in the staged form: an iteration is k-steps 2-3 of chunk
   // c, k-step 0 of chunk c + 1 with c's readout folded in, c's stores, then
@@ -768,13 +636,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     for (uint32_t chunk = first_chunk; chunk + 1u < chunks; chunk++) {
       kstep(chunk, 2u, false, false);
       kstep(chunk, 3u, false, false);
-#if PEARL_BD_HASH_SPREAD && !defined(PEARL_ABLATE_TRANSCRIPT_HASH)
-      // ptxas puts the step in the last k-step of the pass wherever it goes here.
-      // From here, the pass's mma wait 11 times on an mma 1-7 back (10 without the
-      // step, 14 with the hash at the hand-off); from after the readout's stores,
-      // 25 times.
-      hs_step(chunk);
-#endif
       kstep(chunk + 1u, 0u, RO, false);
 #ifndef PEARL_ABLATE_READOUT
       uint32_t rx[RPL];
@@ -786,26 +647,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       kstep(chunk + 1u, 1u, false, false);
     }
     next_srcs();
-#if PEARL_BD_HASH_SPREAD
-    // The late warps' hand-off, two k-steps before their tile ends. ptxas moves
-    // register-only work across a barrier, and ran these two k-steps' mma (and the
-    // loads of the second's operands) ahead of it, which put the late warps' hand-off
-    // back at the end of the tile. So their B and the next loads' offsets go through
-    // a shared load that cannot cross it. The other warps' hand-off is after these
-    // k-steps anyway; for them the load only comes first.
-    if (hs_late) pearl_bd_hand_off();
-    {
-      const uint32_t g = sVw[warp];
-#pragma unroll
-      for (uint32_t j = 0; j < 4u; j++)
-        bf[0][j] = make_int4((int)pearl_bd_after((uint32_t)bf[0][j].x, g),
-                             (int)pearl_bd_after((uint32_t)bf[0][j].y, g),
-                             (int)pearl_bd_after((uint32_t)bf[0][j].z, g),
-                             (int)pearl_bd_after((uint32_t)bf[0][j].w, g));
-      aoff = pearl_bd_after(aoff, g);
-      boff = pearl_bd_after(boff, g);
-    }
-#endif
     kstep(chunks - 1u, 2u, false, false);
     kstep(chunks - 1u, 3u, false, true);
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
@@ -822,13 +663,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   uint32_t *const tile_ctr = hits.count + PEARL_BD_CTR_SLOTS;
   __shared__ uint32_t sNext[2];
   if (threadIdx.x == 0u) sNext[0] = gridDim.x + atomicAdd(tile_ctr, 1u);
-#if PEARL_BD_HASH_SPREAD
-  if (threadIdx.x == 0u) {
-    const uint32_t msg[30] = PEARL_BD_HS_MSG;
-#pragma unroll
-    for (uint32_t i = 0; i < 15u; i++) sHsMsg[i] = make_uint2(msg[2u * i], msg[2u * i + 1u]);
-  }
-#endif
   {
     uint32_t rbg0, cbg0;
     tile_coords(blockIdx.x, rbg0, cbg0);
@@ -837,10 +671,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     tile_prologue();
   }
   __syncthreads();
-#if PEARL_BD_HASH_SPREAD
-  // The first tile's chunks hash nothing that is tested; this keeps that defined.
-  hs_init(TWORDS);
-#endif
   uint32_t it = 0u;
   for (uint32_t v = blockIdx.x; v < tiles; it++) {
 #if PEARL_BD_T_BUFS == 2
@@ -854,34 +684,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     // coordinates (the hash works them out again) are held through the tile: a
     // build that held them, with 64-bit offsets, spilled 24 bytes.
     uint32_t vnext = 0u;
-#if PEARL_BD_HASH_SPREAD
-    // With the hash spread, a warp may pass the hand-off before its tail (hs_late),
-    // so the slot is read, and thread 0 writes the other, before that: each warp
-    // reads slot it & 1 between hand-offs it - 1 and it, and thread 0 writes slot
-    // (it + 1) & 1 there too, which every warp read before hand-off it - 1.
-    tile([&]() {
-      vnext = sNext[it & 1u];
-      uint32_t rbgn, cbgn;
-      tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn);
-      aoffn = a_off(rbgn);
-      boffn = b_off(cbgn);
-      if (threadIdx.x == 0u) sNext[(it + 1u) & 1u] = vgrab;
-    });
-    if (!hs_late) pearl_bd_hand_off();
-    // This warp's words of this tile are all written (the tail's readout), and
-    // the hash of the last tile's, run through this tile's chunks, is done. Test
-    // it, then start this tile's. Only this warp reads or writes either buffer's
-    // words of its regions, so __syncwarp orders it all: this tile's stores before
-    // the next tile's loads, and the test's loads before the next tile's stores
-    // land on the same words.
-    __syncwarp();
-#ifndef PEARL_ABLATE_TRANSCRIPT_HASH
-    if (it != 0u) hs_test();
-#endif
-    __syncwarp();
-    if (lane == 0u) sVw[warp] = v;
-    hs_init(tbuf);
-#else
     tile([&]() {
       vnext = sNext[it & 1u];
       uint32_t rbgn, cbgn;
@@ -896,19 +698,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       tile_coords(v, rbg, cbg);
       hash_tile(rbg, cbg);
     }
-#endif
     // The next tile's k-step 0 is already in af[0] and bf[0].
     aoff = aoffn;
     boff = boffn;
     v = vnext;
   }
-#if PEARL_BD_HASH_SPREAD && !defined(PEARL_ABLATE_TRANSCRIPT_HASH)
-  // The last tile's regions, with nothing left to hide their hash under.
-  __syncwarp();
-#pragma unroll 1
-  for (uint32_t q = 0; q < chunks - 1u; q++) hs_step(q);
-  hs_test();
-#endif
 #else
   // A block a tile, or a smaller grid walking tiles a grid apart. Nothing of A
   // is in shared, so a tile starts without a barrier.

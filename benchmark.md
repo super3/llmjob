@@ -251,6 +251,14 @@ against SRBMiner 3.7.4.
   cards at band 4; the core after v0.6.5 uses 5 on them. That is the 2060
   Super, 2070 Super, 2070 and 2080 rows here, and the T4. Details are in
   earn/native/probes/README.md.
+- **Fold speed tests, 2026-10-20 (not re-measures):** two fold changes, each
+  raced with hashrate.js (no pool) against the build before it, 3 rounds of
+  60 s, on a Vietnam 2080 Ti (152869), the South Korea 2070 row's own machine
+  (139007) and a South Korea 2060 12 GB (142755). A-direct, which loads A
+  the way B is loaded: 82.75 → 84.75, 46.30 → 48.01 and 47.00 → 47.88 TH/s.
+  Then k-lo first, which reorders the IMMA: 85.22 → 86.81, 48.04 → 48.82 and
+  47.91 → 48.97 TH/s. Together that is about +4.3%, +5.4% and +4.1%. Both
+  are in the core after v0.6.5. Details are in earn/native/probes/README.md.
 
 ### Monero on the CPU
 

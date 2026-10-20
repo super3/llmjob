@@ -769,9 +769,10 @@ typedef struct {
 #if PEARL_BD_A_DIRECT && !PEARL_TURING_BDIRECT
 #error "PEARL_BD_A_DIRECT is a form of the B-direct fold: it needs PEARL_TURING_BDIRECT=1"
 #endif
-// The order of the A-direct fold's IMMA within a k-step (PEARL_BD_KORDER). 0,
-// the default: ptxas's. 1: a k-lo pass of every accumulator pair's k 0-15 IMMA,
-// then a k-hi pass, so a pair's two IMMA are 64 apart. Each accumulator gets the
+// The order of the A-direct fold's IMMA within a k-step (PEARL_BD_KORDER). 1, the
+// default with A-direct: a k-lo pass of every accumulator pair's k 0-15 IMMA, then
+// a k-hi pass, so a pair's two IMMA are 64 apart. 0: ptxas's order, and the default
+// without A-direct, so -DPEARL_BD_A_DIRECT=0 alone still builds the staged fold. Each accumulator gets the
 // same adds in the same order, so the results are the same.
 //
 // Why: a warp that issues IMMA alone (its partner hashing) waits on its own
@@ -791,38 +792,22 @@ typedef struct {
 // waits on an IMMA result under 8 IMMA old go from 24 to 17, and under 32 from
 // 65 to 32. Most of the rest are the readout's and the loads' waits on
 // scoreboards ptxas shares with IMMA results. 239 registers against 253, no
-// spill. Not measured on a card.
+// spill.
+//
+// Measured 2026-10-20 against 0 (probes/turing/compilers.sh at a7f273c),
+// hashrate.js in 3 interleaved rounds of 60 s, every round won, and verify-hits
+// 400/400 on all three cards:
+//   RTX 2080 Ti (Vietnam, 250 W):        85.22 -> 86.81 TH/s (+1.9%), +1.8% per clock
+//   RTX 2070 (South Korea, 150 W):       48.04 -> 48.82 (+1.6%), +1.6% per clock
+//   RTX 2060 12 GB (South Korea, 150 W): 47.91 -> 48.97 (+2.2%), +1.5% per clock
 #ifndef PEARL_BD_KORDER
-#define PEARL_BD_KORDER 0
+#define PEARL_BD_KORDER PEARL_BD_A_DIRECT
 #endif
 #if PEARL_BD_KORDER != 0 && PEARL_BD_KORDER != 1
 #error "PEARL_BD_KORDER is 0 or 1"
 #endif
 #if PEARL_BD_KORDER && !PEARL_BD_A_DIRECT
 #error "PEARL_BD_KORDER orders the A-direct fold's IMMA: it needs PEARL_BD_A_DIRECT=1"
-#endif
-// The transcript hash spread through the next tile (PEARL_BD_HASH_SPREAD 1; 0, the
-// default, hashes at the hand-off). With 0, four warps hash the tile's 128 regions
-// after the hand-off while the other warp on each of their schedulers starts the next
-// tile alone, and at the end of that tile the other warps wait at the hand-off while
-// the hashers catch up alone. In the sm_75 SASS a hasher's path from the hand-off to
-// its next mma is 773 instructions and 1341 stall cycles, against 28 and 112 for the
-// others: at least 1.2K cycles of one warp feeding the tensor pipe at each end of a
-// tile (the hash timed at about 2.3K with clock()). With 1, every warp hashes its own
-// 16 regions of the last tile, two lanes a region, half a round in each chunk of the
-// next tile, between its mma (pearl_fold_bd.cuh). Then nothing makes the warps meet at
-// the end of a tile, so the four that hashed pass the hand-off two k-steps before the
-// end of theirs: each scheduler's two warps stay that far apart, about as far as the
-// hash put them, and neither issues alone. Persistent A-direct without the realign
-// only. Not measured yet. The host reads it only for the fold's name.
-#ifndef PEARL_BD_HASH_SPREAD
-#define PEARL_BD_HASH_SPREAD 0
-#endif
-#if PEARL_BD_HASH_SPREAD != 0 && PEARL_BD_HASH_SPREAD != 1
-#error "PEARL_BD_HASH_SPREAD is 0 or 1"
-#endif
-#if PEARL_BD_HASH_SPREAD && !(PEARL_BD_A_DIRECT && PEARL_BD_PERSIST && !PEARL_BD_A_REALIGN)
-#error "PEARL_BD_HASH_SPREAD is a form of the persistent A-direct fold without the realign"
 #endif
 // The B-direct fold's shared: this many A stages, then this many transcript buffers.
 #define PEARL_BD_SMEM_A_STAGES (PEARL_BD_A_DIRECT ? 0 : PEARL_BD_A_STAGES)
