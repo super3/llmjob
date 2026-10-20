@@ -1830,3 +1830,48 @@ What it says:
   row's best, SRBMiner, read 51.7 in its pool run), 81.9 on the 2080 (82.8) and 46.0 on
   the 2060 Super (46.4). Those are different methods on different days, so they place
   the rows near 99% at best guess, not a measurement of "% of best".
+
+### Racing a patched fold: compilers.sh's patch field
+
+Some changes can't be made from the source: ptxas sets the control bits (stalls,
+scoreboards, waits) itself. So a `VARIANTS_SPEC` entry in `compilers.sh` may take a
+fourth field, a patch list relative to `probes/turing/`
+(`sbfix1||8c23128cae97|sm75/sbfix1.json`). That build compiles `pearl_kernel.cu` with
+`--keep`, patches the cubin ptxas wrote with `sm75patch.py`, then runs nvcc's own
+fatbinary and host-compile steps again (from `--dryrun`) to put it in `pearl_kernel.o`.
+It fails unless the addon and bench then carry the list's `after` hash. Entries with
+two or three fields build as before. `sm75patch.py <cubin> <list>` (standard library,
+run with `python3 -I`) finds `.text.pearl_tile_fold_wmma` through the ELF section
+headers, and refuses, leaving the file alone, unless the section's md5 (first 12 hex,
+as `compilers.sh` prints it) is the list's `before` and every word to change still holds
+its `old` bytes. So a list fits only the code it was made from, and has to be made again
+after any change to the sm_75 fold. It also refuses a word the driver may rewrite when
+it loads the cubin: one at an offset the fold's `.nv.info` lists (its EXIT,
+cooperative-groups and warp-wide instructions today), or under a relocation. Each word
+gives its offset in the section, its old and new 16 bytes in file order, and a note.
+The bench and hashrate summaries also print the mean SM clock beside the median, since
+the clock moves in 15 MHz steps. hashrate.js rounds go only to base and the bench's
+fastest build, so to get them for each list, race it alone against base
+(`ONLY='base sbfix1'`), or name `sbfix1` base to set `sbfix2` against it.
+
+The lists in `probes/turing/sm75/`, all for the default fold (`5c97fbadf64a`), each
+checked by applying it to a fresh CUDA 12.8 build:
+
+| list | words | after | what it changes |
+|---|---|---|---|
+| `sbfix1.json` | 15 | `8c23128cae97` | two chunk-loop IMMA waits moved off the IMMA just before them, five IMMA operand reads moved to SB5, three repair waits; control bits only |
+| `sbfix2.json` | 18 | `19e018bf281a` | `sbfix1`, and no wait on the IMMA at 2030, 3560 and 4240, whose input is 84 or more cycles old; relies on an IMMA latency nobody has measured (below) |
+| `hashrg.json` | 3 | `6d9fcd3f8d0e` | row group 1 hashes instead of row group 0; each region still hashed once |
+| `rg_aef.json` | 39 | `d09b308bae13` | `hashrg`, and all 36 A loads made evict-first (`LDG.E.EF`) |
+
+`sbfix2` is not safe just because it passes a race. With its three waits gone, 91 IMMAs
+read an earlier IMMA's result with nothing but distance (84 cycles or more) to make
+them wait for it. ptxas never does that in this loop: a static check of every register
+hazard finds no such pair in the default fold, and none added by `sbfix1`. So `sbfix2`
+is right only if an IMMA result always lands within 84 cycles, on every compute 7.5
+card (the GTX 16 cards and the T4 get the same cubin). Nobody has measured that. A
+result that lands late now and then gives a wrong hash and drops a real hit without an
+error: verify-hits checks 400 hits and complete about 15,000 to 30,000, so they catch
+only a frequent fault, and bench counts the lost work as speed. Before it can ship,
+measure the IMMA latency on a card (a hand kernel with the consumer at set distances),
+and run complete for 30 minutes.

@@ -1,0 +1,25 @@
+{
+ "description": "HASH_RG: row group 1 (threads 128-255) hashes instead of row group 0, by 3 words at the hand-off; each region is still hashed once",
+ "before": "5c97fbadf64a",
+ "after": "6d9fcd3f8d0e",
+ "words": [
+  {
+   "addr": "0x5e90",
+   "old": "077802ffffffffff0000800500e24f00",
+   "new": "077802ffffffffff0000000400e24f00",
+   "note": "SEL R2, RZ, 0xffffffff, !P3 -> SEL R2, RZ, 0xffffffff, !P0"
+  },
+  {
+   "addr": "0x5ed0",
+   "old": "078802ffffffffff0000000200c80f00",
+   "new": "078202ffff0000000000000200c80f00",
+   "note": "@!P0 SEL R2, RZ, 0xffffffff, P4 -> @!P0 SEL R2, RZ, RZ, P4"
+  },
+  {
+   "addr": "0x5f40",
+   "old": "12780303c0ffffffdee28e0700c80f00",
+   "new": "127803de7f000000ffc08e0700c80f00",
+   "note": "LOP3.LUT R3, R3, 0xffffffc0, R222, 0xe2, !PT -> LOP3.LUT R3, R222, 0x7f, RZ, 0xc0, !PT"
+  }
+ ]
+}

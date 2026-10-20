@@ -62,7 +62,10 @@ VARIANTS=(
 # VARIANTS_SPEC="name|flags;name|flags" races these builds instead, with no expected
 # hash: the fold's ablation builds (-DPEARL_ABLATE_*), or a candidate behind a -D
 # switch against base. Name the shipped build "base" so the others are measured
-# against it.
+# against it. An entry may add the expected hash and a 4th field, a patch list
+# ("name|flags|expect|sm75/sbfix1.json", relative to this directory): that build's
+# sm_75 cubin is edited after ptxas by sm75patch.py (see patch_fold below), for a change
+# no source switch can make ptxas emit, such as one control bit.
 if [ -n "${VARIANTS_SPEC:-}" ]; then IFS=';' read -r -a VARIANTS <<< "$VARIANTS_SPEC"; fi
 if [ -n "${ONLY:-}" ]; then
   keep=()
@@ -136,15 +139,48 @@ else
   say "no GPU visible"; DRIVER=none
 fi
 
+# A build with a patch list. pearl_kernel.cu was compiled with --keep, so nvcc left the
+# sm_75 cubin ptxas wrote on disk. sm75patch.py edits it in place, and refuses unless the
+# fold is exactly the code the list was made from. Then nvcc's own fatbinary and host
+# compile steps, read from --dryrun of the same command, run again to pack it into
+# pearl_kernel.o: the driver probe's replay (below), so nothing else in the object
+# changes. The cubin as ptxas wrote it is kept as ptxas.cubin, to compare.
+patch_fold() {   # K flags list name
+  local K=$1 flags=$2 list=$3 name=$4 o=$1/cuda-build/pearl_kernel.o fb host cubin
+  # shellcheck disable=SC2086
+  nvcc $COMMON $flags --keep --keep-dir "$K/keep" -Xptxas -v --dryrun -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/dryrun.txt" 2>&1 ||
+    { say "build $name FAIL: patch: nvcc --dryrun: $(tail -1 "$K/dryrun.txt")"; return 1; }
+  fb=$(grep '^#\$ fatbinary ' "$K/dryrun.txt" | sed 's/^#\$ //')
+  host=$(tail -n 1 "$K/dryrun.txt" | sed 's/^#\$ //; s/[[:space:]]*$//')
+  cubin=$(printf '%s\n' "$fb" | grep -oE 'sm=75,file=[^"]+' | sed 's/^sm=75,file=//')
+  # One fatbinary step holding one sm_75 image, and a last step that writes this object.
+  if [ "$(printf '%s\n' "$fb" | grep -c .)" != 1 ] || [ "$(printf '%s\n' "$cubin" | grep -c .)" != 1 ] ||
+    [ ! -f "$cubin" ] || [[ "$host" != *" -c "*" -o \"$o\"" ]]; then
+    say "build $name FAIL: patch: $K/dryrun.txt does not show one sm_75 cubin and the host step"; return 1
+  fi
+  cp "$cubin" "$K/ptxas.cubin"
+  python3 -I "$NATIVE/probes/turing/sm75patch.py" "$cubin" "$list" > "$K/patch.txt" 2>&1 ||
+    { say "build $name FAIL: patch: $(tail -1 "$K/patch.txt")"; return 1; }
+  (eval "$fb" && eval "$host") > "$K/replay.txt" 2>&1 ||
+    { say "build $name FAIL: patch: replay: $(tail -1 "$K/replay.txt")"; return 1; }
+}
+
 # One build: pearl_kernel.o for sm_75 with the flags, the addon around it, and bench.
-build_variant() {   # name flags expect
-  local name=$1 flags=$2 expect=$3 K=$OUT/v/$1
+build_variant() {   # name flags expect [patch list]
+  local name=$1 flags=$2 expect=$3 patch=${4:-} K=$OUT/v/$1 list="" after="" keep=()
   rm -rf "$K"; mkdir -p "$K/cuda-build"
   cp -r "$NATIVE/src" "$NATIVE/binding.gyp" "$K/"
+  if [ -n "$patch" ]; then
+    list=$NATIVE/probes/turing/$patch
+    after=$(python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["after"])' "$list" 2> /dev/null) ||
+      { say "build $name FAIL: patch: cannot read the patch list probes/turing/$patch"; return 1; }
+    keep=(--keep --keep-dir "$K/keep"); mkdir -p "$K/keep"
+  fi
   # shellcheck disable=SC2086
-  if ! nvcc $COMMON $flags -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/ptxas.txt" 2>&1; then
+  if ! nvcc $COMMON $flags "${keep[@]}" -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/ptxas.txt" 2>&1; then
     say "build $name FAIL: $(grep -m2 -iE 'error' "$K/ptxas.txt" | tr '\n' ' ')"; return 1
   fi
+  if [ -n "$patch" ]; then patch_fold "$K" "$flags" "$list" "$name" || return 1; fi
   # The host with the same flags: a switch such as PEARL_BD_A_DIRECT changes what the
   # host writes as well as what the fold reads, and the two must agree.
   # shellcheck disable=SC2086
@@ -162,7 +198,11 @@ build_variant() {   # name flags expect
   st=$(awk '/Compiling entry function .pearl_tile_fold_wmma. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
   h=$(fold_hash "$K/build/Release/pearl_core.node")
   echo "$h" > "$K/fold.hash"
-  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') fold=$h $([ -z "$expect" ] && echo "expect=-" || { [ "$h" = "$expect" ] && echo "expect=$expect match" || echo "expect=$expect MISMATCH"; }) flags=[$flags]"
+  # The addon and bench must carry the patched fold: a build that lost the patch is base.
+  if [ -n "$patch" ] && { [ "$h" != "$after" ] || [ "$(fold_hash "$K/bench")" != "$after" ]; }; then
+    say "build $name FAIL: patch: the addon's fold is ${h:-unreadable}, bench's $(fold_hash "$K/bench"), not the patch list's $after"; return 1
+  fi
+  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') fold=$h $([ -z "$expect" ] && echo "expect=-" || { [ "$h" = "$expect" ] && echo "expect=$expect match" || echo "expect=$expect MISMATCH"; })$([ -n "$patch" ] && echo " patch=[$patch, $(grep -oE '[0-9]+ words' "$K/patch.txt")]") flags=[$flags]"
   touch "$K/ok"
 }
 
@@ -171,8 +211,8 @@ if has build; then
   nvcc $COMMON -c "$NATIVE/src/pearl_host.cu" -o "$OUT/host/pearl_host.o" > "$OUT/host/log" 2>&1 ||
     { say "FAIL: pearl_host.cu: $(grep -m1 -i error "$OUT/host/log")"; exit 1; }
   for v in "${VARIANTS[@]}"; do
-    IFS='|' read -r name flags expect <<< "$v"
-    build_variant "$name" "$flags" "$expect"
+    IFS='|' read -r name flags expect patch <<< "$v"
+    build_variant "$name" "$flags" "$expect" "$patch"
   done
 fi
 
@@ -182,7 +222,9 @@ for v in "${VARIANTS[@]}"; do
   [ -f "$OUT/v/$name/ok" ] && BUILT+=("$name")
 done
 
-# Median SM clock, power and temperature of the samples taken while the timed part ran.
+# Median SM clock, power and temperature of the samples taken while the timed part ran,
+# and the mean SM clock: these cards clock in 15 MHz steps, so the median of a round's
+# 18 samples moves a whole step at a time, and the mean resolves finer.
 cat > "$OUT/med.py" <<'EOF'
 import statistics, sys
 f, t0, t1 = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
@@ -196,8 +238,9 @@ for line in open(f):
     if t0 <= t <= t1:
         rows.append(v)
 if not rows:
-    print("0 0 0 0"); sys.exit()
-print(len(rows), *[round(statistics.median(r[i] for r in rows), 1) for i in range(3)])
+    print("0 0 0 0 0"); sys.exit()
+print(len(rows), *[round(statistics.median(r[i] for r in rows), 1) for i in range(3)],
+      round(statistics.mean(r[0] for r in rows), 1))
 EOF
 sampler() {   # $1 = file; one sample a second until killed
   while :; do
@@ -223,27 +266,31 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
         say "bench r$r $name FAIL: $(tail -2 "$K/bench.r$r" | tr '\n' ' ')"; continue
       fi
       th=$(python3 -c "print(round($att * 256 * 2048 / $secs / 1e12, 3))")
-      read -r n mhz w c < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
+      read -r n mhz w c mean < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" >> "$OUT/bench.tsv"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" >> "$OUT/bench.tsv"
       [ "$r" = 1 ] && say "bench $name runs $(grep -oE 'fold: [^|]*' "$K/bench.r$r" | head -1)"
-      say "bench r$r $name $th TH/s ${mhz} MHz ${w} W ${c} C $pg TH/s/GHz (n=$n)"
+      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz (n=$n)"
     done
   done
-  # Per build: medians over rounds, and against base in the same round.
+  # Per build: medians over rounds, and against base in the same round. The mean clock
+  # beside the median is the mean of the rounds' mean clocks: bench.tsv's 8th column, or
+  # hashrate.tsv's clock, which hashrate.js already averages. A round with no clock
+  # reading writes 0, which the mean leaves out: one such round would pull it far down.
   cat > "$OUT/sum.py" <<'EOF'
 import statistics as st, sys
 rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[1]) if l.strip()]
 tag = sys.argv[2]
 by = {}
 for r in rows:
-    by.setdefault(r[1], {})[int(r[0])] = (float(r[2]), float(r[3]), float(r[4]), float(r[6]))
+    by.setdefault(r[1], {})[int(r[0])] = (float(r[2]), float(r[3]), float(r[4]), float(r[6]),
+                                         float(r[7]) if len(r) > 7 else float(r[3]))
 base = by.get("base", {})
 best, bestv = None, None
 for name, d in by.items():
     th = [v[0] for v in d.values()]; mhz = [v[1] for v in d.values()]; w = [v[2] for v in d.values()]
-    pg = [v[3] for v in d.values()]
-    raw = [d[k][0] / base[k][0] - 1 for k in d if k in base and name != "base"]
+    pg = [v[3] for v in d.values()]; clk = [v[4] for v in d.values() if v[4]] or [0]
+    raw =[d[k][0] / base[k][0] - 1 for k in d if k in base and name != "base"]
     per = [d[k][3] / base[k][3] - 1 for k in d if k in base and name != "base" and base[k][3]]
     vs = ""
     if raw:
@@ -252,7 +299,8 @@ for name, d in by.items():
         if bestv is None or st.median(raw) > bestv:
             best, bestv = name, st.median(raw)
     print(f"[compilers] {tag} {name} n={len(th)} {st.median(th):.3f} TH/s ({min(th):.2f}-{max(th):.2f}) "
-          f"{st.median(mhz):.0f} MHz {st.median(w):.0f} W {st.median(pg):.3f} TH/s/GHz{vs}"[:490])
+          f"{st.median(mhz):.0f} MHz (mean {st.mean(clk):.0f}) {st.median(w):.0f} W "
+          f"{st.median(pg):.3f} TH/s/GHz{vs}"[:490])
 if best:
     open(sys.argv[3], "w").write(best)
 EOF
