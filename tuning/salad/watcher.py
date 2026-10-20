@@ -1580,6 +1580,8 @@ class W:
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
         mining = 0
         live = sorted((g for g in groups if not g["ended"]), key=lambda g: g["created"])
+        # (K) tells Kryptex boxes from HeroMiners ones, so it shows only while some box is on HeroMiners.
+        kmark = any(not g.get("kx") for g in live)
         for g in live:
             cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= t - 10 * MIN] if g["has_pc"] else []
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
@@ -1596,7 +1598,7 @@ class W:
             run_cost += 0.0 if start else cost
             # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
             pri = "med" if g["pri"] == "medium" else g["pri"]
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if g.get("kx") else []))
+            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []

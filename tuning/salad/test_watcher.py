@@ -2531,8 +2531,8 @@ class TestKryptex(Base):
         old.update(ended=self.clock[0], prl=2.0)                     # ended before the counts: the ledger's estimate
         new.update(ended=self.clock[0], hm_units=1.0, hm_gross=0.5)  # ended since
         report = self.report()
-        self.assertRegex(report, rf"4080{w.NB}batch{w.NB}\(K\) \|[^\n]*\| 0\.940 \|\n")
-        self.assertRegex(report, rf"4080-2{w.NB}batch{w.NB}\(K\) \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
+        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 0\.940 \|\n")
+        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
         self.assertIn(f"| Others{w.NB}×2 | — | — | — | 2.500* |\n", report)
         self.assertIn("| **5.380\\*** |\n", report)
 
@@ -2556,6 +2556,16 @@ class TestKryptex(Base):
         self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
         self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
         self.assertIn("| **11.760\\*** |\n", report)
+
+    def test_with_every_box_on_kryptex_the_report_drops_the_k_mark(self):
+        a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
+        gone["ended"] = self.clock[0]                     # an ended HeroMiners group doesn't bring the mark back
+        report = self.report()
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch |", report)
+        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertNotIn("(K)", report)
+        b["kx"] = False                                   # one box back on HeroMiners: Kryptex boxes are marked again
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", self.report())
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False

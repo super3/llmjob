@@ -241,7 +241,8 @@ accepts it.
 
 Instructions for finishing it on a machine with a GPU are in [KRYPTEX.md](KRYPTEX.md).
 
-What's built for it, with `kryptex_groups` boxes marked **(K)** in the table:
+What's built for it, with `kryptex_groups` boxes marked **(K)** in the table while some box is still on
+HeroMiners (since every box went to Kryptex on 20 October, the mark told nothing, so it's left off then):
 
 - **Which groups:** new groups start on Kryptex while fewer than `kryptex_groups` are on it, and while
   fewer are, HeroMiners groups waiting for a PC are switched by updating their command, the cheapest
@@ -470,7 +471,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
   ⬜ empty slot · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
-  · (K) mines Pearl on Kryptex, the rest on HeroMiners.
+  · (K) mines Pearl on Kryptex, the rest on HeroMiners (shown only while some box is on HeroMiners).
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
