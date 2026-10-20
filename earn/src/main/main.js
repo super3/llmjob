@@ -717,6 +717,8 @@ async function startMining(settings, llmCoRuns) {
     // NVML reading of its own to forward the way alpha-miner did, so the engine
     // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.
     readTemps: () => probe.detectGpuTemps(),
+    // Sent with the pool login, as the Monero miner's is.
+    agent: 'llmjob-earn/' + app.getVersion(),
   });
   wireMinerEvents(miner, endpoint);
   try {

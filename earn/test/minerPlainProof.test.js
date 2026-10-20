@@ -1,5 +1,6 @@
 'use strict';
 
+const zlib = require('zlib');
 const PP = require('../src/shared/miner/plainProof');
 const M = require('../src/shared/miner/merkle');
 
@@ -87,6 +88,29 @@ describe('a serialised PlainProof', () => {
   test('the base64 form decodes back to the same bytes', () => {
     const b64 = PP.encodePlainProof(pp);
     expect(Buffer.from(b64, 'base64')).toEqual(PP.serializePlainProof(pp));
+    expect(PP.encodePlainProof(pp, { gzip: false })).toBe(b64);
+  });
+
+  // Kryptex's "type":"v2": the same field carries base64(gzip(bincode)). gzip
+  // the file format (it starts 1f 8b), which is what the pool's gunzip reads;
+  // raw deflate or a zlib stream would fail there.
+  test('the gzip form gunzips back to exactly the plain bytes', () => {
+    const gz = Buffer.from(PP.encodePlainProof(pp, { gzip: true }), 'base64');
+    expect(gz.subarray(0, 2).toString('hex')).toBe('1f8b');
+    expect(zlib.gunzipSync(gz)).toEqual(Buffer.from(PP.encodePlainProof(pp), 'base64'));
+  });
+
+  // The proofs this miner sends carry the core's constant operand fill, which
+  // is what makes compression worth having.
+  test('a proof over constant operands compresses to a small fraction, and its sizes are measured', () => {
+    const flat = Buffer.alloc(8 * 1024, 48);
+    const flatProof = M.multiLeafProof(KEY, flat, M.buildLayers(KEY, flat), [0, 1]);
+    const flatPp = { ...pp, a: { ...pp.a, proof: flatProof }, bt: { ...pp.bt, proof: flatProof } };
+    const field = PP.encodePlainProof(flatPp, { gzip: true });
+    const { plain, sent } = PP.gzipSizes(field);
+    expect(plain).toBe(PP.serializePlainProof(flatPp).length);
+    expect(sent).toBe(Buffer.from(field, 'base64').length);
+    expect(sent).toBeLessThan(plain / 10);
   });
 
   test('a leaf that is not a whole chunk is refused', () => {

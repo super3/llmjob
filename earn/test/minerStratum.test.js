@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  HEADER_BYTES, AUTHORIZE_ID,
+  HEADER_BYTES, AUTHORIZE_ID, GZIP_TYPE,
   buildAuthorize, isKryptexHost, buildSubmit, encode,
   decodeTarget, parseMessage, parseJob, parseDifficulty, normalizeError,
 } = require('../src/shared/miner/stratum');
@@ -23,14 +23,41 @@ describe('buildAuthorize', () => {
     expect(buildAuthorize('prl1pabc', 'rig01')).toEqual({
       id: AUTHORIZE_ID,
       method: 'mining.authorize',
-      params: { wallet: 'prl1pabc', worker: 'rig01' },
+      params: { wallet: 'prl1pabc', worker: 'rig01', type: 'v2' },
     });
-    // The same with HeroMiners' host: the captured message, unchanged.
+    // The same with HeroMiners' host.
     expect(buildAuthorize('prl1pabc', 'rig01', 'us2.pearl.herominers.com')).toEqual(buildAuthorize('prl1pabc', 'rig01'));
+  });
+
+  // Kryptex's gzip extension: "type":"v2" asks for compressed proofs. Every
+  // pool is asked, since one that does not offer them just answers without the
+  // type. The agent names this miner, as Kryptex's documented message does.
+  test('asks for compressed proofs, and names the miner when given an agent', () => {
+    expect(GZIP_TYPE).toBe('v2');
+    expect(buildAuthorize('prl1pabc', 'rig01', 'us.pearl.herominers.com', { agent: 'llmjob-earn/0.6.6' }).params)
+      .toEqual({ wallet: 'prl1pabc', worker: 'rig01', agent: 'llmjob-earn/0.6.6', type: 'v2' });
+    // No agent: no agent key, rather than an empty one.
+    expect(buildAuthorize('prl1pabc', 'rig01', 'us.pearl.herominers.com', { agent: '' }).params)
+      .toEqual({ wallet: 'prl1pabc', worker: 'rig01', type: 'v2' });
+  });
+
+  // For a pool that said v2 and then rejected what we sent: the login without
+  // the type, which is the captured message exactly.
+  test('gzip false leaves the type out', () => {
+    expect(buildAuthorize('prl1pabc', 'rig01', 'us.pearl.herominers.com', { gzip: false }).params)
+      .toEqual({ wallet: 'prl1pabc', worker: 'rig01' });
+    expect(buildAuthorize('prl1pabc', 'rig01', 'us.pearl.herominers.com', { agent: 'llmjob-earn/0.6.6', gzip: false }).params)
+      .toEqual({ wallet: 'prl1pabc', worker: 'rig01', agent: 'llmjob-earn/0.6.6' });
   });
 
   test('Kryptex gets wallet/worker, since it ignores the worker field', () => {
     expect(buildAuthorize('prl1pabc', 'kx-test', 'prl-us.kryptex.network').params)
+      .toEqual({ wallet: 'prl1pabc/kx-test', worker: 'kx-test', type: 'v2' });
+    // The slash is kept with the agent and with or without the type.
+    expect(encode(buildAuthorize('prl1pabc', 'kx-test', 'prl-us.kryptex.network', { agent: 'llmjob-earn/0.6.6' })))
+      .toBe('{"id":1,"method":"mining.authorize","params":{"wallet":"prl1pabc/kx-test","worker":"kx-test",'
+        + '"agent":"llmjob-earn/0.6.6","type":"v2"}}\n');
+    expect(buildAuthorize('prl1pabc', 'kx-test', 'prl-us.kryptex.network', { gzip: false }).params)
       .toEqual({ wallet: 'prl1pabc/kx-test', worker: 'kx-test' });
     expect(buildAuthorize('prl1pabc', 'rig', 'PRL.KRYPTEX.NETWORK').params.wallet).toBe('prl1pabc/rig');
     // No worker name: the wallet alone, which Kryptex also takes.
@@ -91,9 +118,31 @@ describe('parseMessage — the live job', () => {
 describe('parseMessage — results', () => {
   test('authorize success and failure are told apart by id', () => {
     expect(parseMessage('{"id":1,"error":null,"result":true}')).toEqual({
-      kind: 'auth-ok', id: 1, error: null,
+      kind: 'auth-ok', id: 1, error: null, gzip: false,
     });
     expect(parseMessage('{"id":1,"error":{"code":24,"msg":"bad address"},"result":null}')).toEqual({
+      kind: 'auth-fail', id: 1, error: { code: 24, message: 'bad address' },
+    });
+  });
+
+  // The reply decides whether proofs go compressed: only "type":"v2". Once a
+  // pool has said it, it unpacks every submit, and a plain proof is an invalid
+  // share; without it, a compressed proof is.
+  test('a login reply with "type":"v2" means compressed proofs, and nothing else does', () => {
+    // Verbatim, 2026-10-20: Kryptex and HeroMiners asked with the type, then
+    // Kryptex asked without it.
+    expect(parseMessage('{"id":1,"result":true,"error":null,"type":"v2"}')).toEqual({
+      kind: 'auth-ok', id: 1, error: null, gzip: true,
+    });
+    expect(parseMessage('{"id":1,"error":null,"result":true,"type":"v2"}').gzip).toBe(true);
+    expect(parseMessage('{"id":1,"result":true,"error":null}').gzip).toBe(false);
+    // Any other type is not the one we asked for.
+    expect(parseMessage('{"id":1,"result":true,"error":null,"type":"v1"}').gzip).toBe(false);
+    expect(parseMessage('{"id":1,"result":true,"error":null,"type":"V2"}').gzip).toBe(false);
+    expect(parseMessage('{"id":1,"result":true,"error":null,"type":2}').gzip).toBe(false);
+    expect(parseMessage('{"id":1,"result":true,"error":null,"type":null}').gzip).toBe(false);
+    // A refused login is a refused login, whatever type it carries.
+    expect(parseMessage('{"id":1,"result":null,"error":{"code":24,"msg":"bad address"},"type":"v2"}')).toEqual({
       kind: 'auth-fail', id: 1, error: { code: 24, message: 'bad address' },
     });
   });
@@ -104,7 +153,7 @@ describe('parseMessage — results', () => {
     expect(parseMessage('{"id":9,"error":[21,"Job not found"]}')).toEqual({
       kind: 'submit-rejected', id: 9, error: { code: 21, message: 'Job not found' },
     });
-    expect(parseMessage('{"id":1,"error":null}')).toEqual({ kind: 'auth-ok', id: 1, error: null });
+    expect(parseMessage('{"id":1,"error":null}')).toEqual({ kind: 'auth-ok', id: 1, error: null, gzip: false });
   });
 
   // No error is not the same as accepted. A share counts only on result true.

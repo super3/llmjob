@@ -949,6 +949,8 @@ async function run(argv) {
         // and to the network board. The GUI has always passed it (main.js);
         // omitting it here was an oversight, not a decision.
         readTemps: () => probe.detectGpuTemps(),
+        // Sent with the pool login, as the Monero miner's is.
+        agent: 'llmjob-earn/' + pkg.version,
       });
       // The pool took the login, so this address is one that worked.
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));

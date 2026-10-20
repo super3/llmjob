@@ -9,11 +9,13 @@ jest.mock('../src/main/gpuClocks', () => ({
 }));
 
 const { EventEmitter } = require('events');
+const zlib = require('zlib');
 const {
-  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN, GZIP_REJECT_LIMIT,
 } = require('../src/main/pearlMiner');
 const gpuClocks = require('../src/main/gpuClocks');
 const { encode } = require('../src/shared/miner/stratum');
+const { buildShareProof } = require('../src/shared/miner/shareProof');
 const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const M = require('../src/shared/miner/merkle');
@@ -34,7 +36,8 @@ function makeSocket() {
   const s = new EventEmitter();
   s.written = [];
   s.write = jest.fn((d) => { s.written.push(d); return true; });
-  s.destroy = jest.fn();
+  // As a real socket does: destroyed at once, closed later.
+  s.destroy = jest.fn(() => { s.destroyed = true; });
   return s;
 }
 
@@ -77,8 +80,10 @@ describe('PearlMiner — start', () => {
 
     sock.emit('connect');
     const sent = JSON.parse(sock.written[0]);
+    // Asking for compressed proofs (see 'compressed share proofs'), and with no
+    // agent given, naming none.
     expect(sent).toEqual({
-      id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01' },
+      id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01', type: 'v2' },
     });
   });
 
@@ -309,7 +314,7 @@ describe('PearlMiner — shares', () => {
     b.sock.written.length = 0;
     core.emit('hit', goodHit());
     const sent = JSON.parse(b.sock.written[0]);
-    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1, gzip: false });
   });
 
   test('a valid hit is submitted as a plain proof', () => {
@@ -506,6 +511,292 @@ describe('PearlMiner — shares', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// Kryptex's gzip extension as the miner runs it: asked for on every login,
+// decided by each connection's own reply, and dropped for the rest of the run
+// when a pool that agreed rejects compressed shares and accepts none.
+describe('PearlMiner — compressed share proofs', () => {
+  const JOB_KEY = hash(Buffer.concat([Buffer.from(HEADER, 'hex'), buildConfig52(TINY)]));
+  // Verbatim, 2026-10-20: Kryptex asked with the type, and asked without it.
+  const AUTH_V2 = '{"id":1,"result":true,"error":null,"type":"v2"}\n';
+  const AUTH_PLAIN = '{"id":1,"result":true,"error":null}\n';
+  const FALLBACK_LINE = 'the pool rejected 3 compressed shares and accepted none; '
+    + 'reconnecting to send shares uncompressed for the rest of this run';
+
+  // A hit with real proofs over the core's constant operand fill (every byte
+  // 48), so it compresses the way a real share does. Built once: the miner
+  // does not change a hit, so the same one can be found again and again.
+  let theHit = null;
+  function hit() {
+    if (theHit) return theHit;
+    const side = (rows) => {
+      const mat = Buffer.alloc(TINY.m * TINY.k, 48);
+      const p = M.multiLeafProof(JOB_KEY, mat, M.buildLayers(JOB_KEY, mat), M.leafIndicesFromRows(rows, TINY.k));
+      return {
+        leafIndices: p.leafIndices, leafData: Buffer.concat(p.leafData),
+        siblings: Buffer.concat(p.siblings), root: p.root, totalLeaves: p.totalLeaves,
+      };
+    };
+    const jackpotHash = Buffer.alloc(32);
+    jackpotHash[24] = 0x01; // 2^192, comfortably under the scaled bound
+    const { rows, cols } = regionToTile(0, TINY);
+    theHit = { jobId: '00000000_2097152', jackpotHash, nonce: 0, proofA: side(rows), proofBt: side(cols) };
+    return theHit;
+  }
+
+  // A miner with a fresh socket for every connection, so a reconnect can be
+  // followed from one to the next, and a fresh core for every run, so a hit
+  // after a restart is found once, as on a real rig.
+  function rig({ agent, endpoint } = {}) {
+    const socks = [];
+    let core = null;
+    const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+    const m = new PearlMiner({ connect, createCore: () => (core = makeCore()), reconnectMs: 0, agent });
+    const lines = [];
+    m.on('log', (l) => lines.push(l));
+    m.start({ ...settings, profile: TINY, ...(endpoint ? { endpoint } : {}) });
+    const sock = () => socks[socks.length - 1];
+    const sent = (method) => sock().written.map((w) => JSON.parse(w)).filter((x) => x.method === method);
+    return {
+      m, socks, lines, sock,
+      get core() { return core; },
+      restart() { m.stop(); m.start({ ...settings, profile: TINY }); },
+      said: () => lines.map((l) => l.line),
+      authorize: () => sent('mining.authorize')[0],
+      submits: () => sent('mining.submit'),
+      // The newest socket connects, logs in with this reply, and gets a job.
+      login(reply) {
+        sock().emit('connect');
+        sock().emit('data', reply);
+        sock().emit('data', jobLine());
+      },
+      answer(id, ok) {
+        sock().emit('data', JSON.stringify(ok ? { id, result: true, error: null }
+          : { id, result: null, error: [23, 'invalid share'] }) + '\n');
+      },
+      // The socket closes, as one the miner destroyed does, and the reconnect runs.
+      reconnect() {
+        sock().emit('close');
+        jest.runOnlyPendingTimers();
+      },
+    };
+  }
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  test('every login asks for them and names the miner, Kryptex\'s wallet/worker included', () => {
+    const r = rig({ agent: 'llmjob-earn/0.6.6' });
+    r.sock().emit('connect');
+    expect(r.authorize().params).toEqual({ wallet: ADDR, worker: 'rig01', agent: 'llmjob-earn/0.6.6', type: 'v2' });
+    r.m.stop();
+
+    const kx = rig({ agent: 'llmjob-earn/0.6.6', endpoint: 'prl-us.kryptex.network:7048' });
+    kx.sock().emit('connect');
+    expect(kx.authorize().params)
+      .toEqual({ wallet: ADDR + '/rig01', worker: 'rig01', agent: 'llmjob-earn/0.6.6', type: 'v2' });
+    kx.m.stop();
+  });
+
+  test('a pool that says v2 is sent the proof gzipped, which unpacks to the plain one', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    expect(r.m.gzip).toBe(true);
+    expect(r.said()).toContain('authorized; the pool takes compressed share proofs');
+    r.core.emit('hit', hit());
+    const [submit] = r.submits();
+    expect(Object.keys(submit.params).sort()).toEqual(['hs', 'job_id', 'plain_proof']);
+    expect(zlib.gunzipSync(Buffer.from(submit.params.plain_proof, 'base64')))
+      .toEqual(Buffer.from(buildShareProof(hit(), JOB_KEY, TINY), 'base64'));
+    expect(r.m.pending.get(submit.id).gzip).toBe(true);
+    r.m.stop();
+  });
+
+  test('a pool that does not say v2 is sent the plain proof', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    expect(r.m.gzip).toBe(false);
+    expect(r.said()).toContain('authorized');
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+    expect(r.said().some((l) => /compressed/.test(l))).toBe(false);
+    r.m.stop();
+  });
+
+  // What one connection agreed says nothing about the next: a pool behind a
+  // different address may not offer it, and would reject a compressed proof.
+  test('the choice belongs to one connection: cleared on close, asked again, and decided by the new reply', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    expect(r.m.gzip).toBe(true);
+    r.reconnect();
+    expect(r.socks).toHaveLength(2);
+    expect(r.m.gzip).toBe(false);
+    r.sock().emit('connect');
+    expect(r.authorize().params.type).toBe('v2');
+    r.sock().emit('data', AUTH_PLAIN);
+    r.sock().emit('data', jobLine());
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+
+    // And back the other way.
+    r.reconnect();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    expect(zlib.gunzipSync(Buffer.from(r.submits()[0].params.plain_proof, 'base64')))
+      .toEqual(Buffer.from(buildShareProof(hit(), JOB_KEY, TINY), 'base64'));
+
+    // A stop lets go of the connection, and its choice with it.
+    r.m.stop();
+    expect(r.m.gzip).toBe(false);
+  });
+
+  test('the sizes are logged on the first compressed share of each connection', () => {
+    const r = rig();
+    const sizeLines = () => r.said().filter((l) => /^sending compressed share proofs/.test(l));
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    r.core.emit('hit', hit());
+    expect(r.submits()).toHaveLength(2);
+    // Whole KB for the plain proof, tenths for the compressed one.
+    expect(sizeLines()).toEqual([expect.stringMatching(/^sending compressed share proofs: \d+ KB -> \d\.\d KB$/)]);
+    r.reconnect();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    expect(sizeLines()).toHaveLength(2);
+    r.m.stop();
+  });
+
+  test('compressed shares rejected with none accepted: the miner logs in again without asking, for the rest of the run', () => {
+    expect(GZIP_REJECT_LIMIT).toBe(3);
+    const r = rig();
+    r.login(AUTH_V2);
+    const first = r.sock();
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    const ids = r.submits().map((s) => s.id);
+    r.answer(ids[0], false);
+    r.answer(ids[1], false);
+    expect(first.destroy).not.toHaveBeenCalled();
+    r.answer(ids[2], false);
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(r.lines).toContainEqual({ level: 'warn', line: FALLBACK_LINE });
+
+    // The usual reconnect, and a login with no type: plain proofs from here.
+    r.reconnect();
+    r.sock().emit('connect');
+    expect(r.authorize().params).toEqual({ wallet: ADDR, worker: 'rig01' });
+    r.sock().emit('data', AUTH_PLAIN);
+    r.sock().emit('data', jobLine());
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+
+    // Every later connection of this run asks without it too.
+    r.reconnect();
+    r.sock().emit('connect');
+    expect(r.authorize().params).not.toHaveProperty('type');
+
+    // A new run asks again, and counts again: its first rejection is one, not
+    // the fourth.
+    r.restart();
+    r.login(AUTH_V2);
+    expect(r.authorize().params.type).toBe('v2');
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    r.m.stop();
+  });
+
+  // The fallback lets go of the socket at once, but it stays this.sock until
+  // its close event comes. A write to it in between is lost without a word.
+  test('a hit found after the fallback lets go of the socket, before it closes, is dropped and said', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    const written = r.sock().written.length;
+    r.core.emit('hit', hit());
+    expect(r.sock().written).toHaveLength(written);
+    expect(r.m.pending.size).toBe(0);
+    expect(r.said()).toContain('dropping a hit found while the pool connection is down');
+    r.m.stop();
+  });
+
+  // An accepted plain share says nothing about whether a pool reads
+  // compressed ones: a later connection may say v2 and then reject them all.
+  test('only an accepted compressed share turns the fallback off', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, true);
+    r.reconnect();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said()).toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  // The pool behind the next run's connection may not be the one that read
+  // them, so an accepted compressed share is per run too.
+  test('a new run can fall back again, whatever the last one accepted', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, true);
+    r.restart();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said()).toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  // The socket closes some time after the miner lets go of it, and verdicts
+  // already on their way still arrive. They must not close it again.
+  test('rejections arriving before the close do not close it twice', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 4; i++) r.core.emit('hit', hit());
+    const reject = (s) => JSON.stringify({ id: s.id, result: null, error: [23, 'invalid share'] });
+    r.sock().emit('data', r.submits().map(reject).join('\n') + '\n');
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said().filter((l) => l === FALLBACK_LINE)).toHaveLength(1);
+    r.m.stop();
+  });
+
+  test('one accepted compressed share shows the pool reads them, for the rest of the run', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 5; i++) r.core.emit('hit', hit());
+    const ids = r.submits().map((s) => s.id);
+    r.answer(ids[0], false);
+    r.answer(ids[1], true);
+    for (const id of ids.slice(2)) r.answer(id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+
+    // Still so on the next connection.
+    r.reconnect();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    expect(r.said()).not.toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  test('rejected plain shares say nothing about compression', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    expect(r.m.askGzip).toBe(true);
+    r.m.stop();
   });
 });
 

@@ -129,6 +129,22 @@ describe('PearlEngine — the surface main.js drives', () => {
     e.stop();
   });
 
+  // Both shells pass 'llmjob-earn/<version>', and the miner's login carries it.
+  test('hands the agent it was given to the miner, which logs in with it', () => {
+    const sock = fakeSocket();
+    const e = new PearlEngine({ connect: () => sock, createCore: () => fakeCore(), agent: 'llmjob-earn/9.9.9' });
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    sock.emit('connect');
+    expect(e.miner.agent).toBe('llmjob-earn/9.9.9');
+    expect(JSON.parse(sock.written[0]).params).toMatchObject({ agent: 'llmjob-earn/9.9.9', type: 'v2' });
+    e.stop();
+
+    // None given: none sent.
+    const b = started();
+    expect(JSON.parse(b.sock.written[0]).params).not.toHaveProperty('agent');
+    b.e.stop();
+  });
+
   test('runs once started and stops on stop', () => {
     const { e, core } = started();
     expect(e.isRunning()).toBe(true);

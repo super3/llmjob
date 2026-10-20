@@ -778,6 +778,16 @@ describe('mining', () => {
     await p;
   });
 
+  // The pool login names the miner, the same string the Monero miner sends.
+  test('gives the engine the CLI\'s agent string for the pool login', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    expect(m.PearlEngine.instances[0].opts.agent).toBe('llmjob-earn/' + pkg.version);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await p;
+  });
+
   // The GPU keeps working on its last job while the pool connection is being
   // reopened, but the pool gets nothing, so neither should the board.
   test('reports no hashrate to the board while the pool is not connected', async () => {

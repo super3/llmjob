@@ -1170,6 +1170,14 @@ describe('mining', () => {
     expect(ctx.probe.detectGpuTemps).toHaveBeenCalled();
   });
 
+  // The pool login names the miner, the same string the Monero miner sends.
+  it('gives the engine the app\'s agent string for the pool login', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    expect(ctx.PearlEngine.instances[0].opts.agent).toBe('llmjob-earn/0.0.0-test');
+  });
+
   // Every card mines, one core each, and the engine is told which cards.
   it('hands the engine every card nvidia-smi lists', async () => {
     const ctx = await boot();

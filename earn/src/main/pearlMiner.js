@@ -9,6 +9,7 @@ const {
 } = require('../shared/miner/pearlhash');
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
+const { gzipSizes } = require('../shared/miner/plainProof');
 const { combinePayoutAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
 
@@ -37,6 +38,15 @@ const gpuClocks = require('./gpuClocks');
 // derivative of any fee-bearing miner, so there is nothing to disclose or route.
 
 const RECONNECT_MS = 5000;
+
+// Every login asks for compressed proofs (see shared/miner/stratum.js), and a
+// pool that agrees is sent nothing else on that connection. A pool that agreed
+// and then cannot read them would reject every share for as long as we kept
+// asking. So when this many compressed shares are rejected before any is
+// accepted, the miner stops asking for the rest of the run and logs in again
+// without. One accepted compressed share shows the pool reads them, and any
+// rejection after that is about the share, not the compression.
+const GZIP_REJECT_LIMIT = 3;
 
 // A card whose search fails is opened again after this long. The faults seen so
 // far ("misaligned address", "illegal instruction") came after minutes or hours
@@ -74,13 +84,14 @@ function readDevice(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, restartMs, clocks } = {}) {
+  constructor({ connect, createCore, reconnectMs, restartMs, clocks, agent } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
     this.restartMs = restartMs == null ? RESTART_MS : restartMs;
     this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
+    this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
     this.restartTimers = new Set();
 
@@ -105,9 +116,20 @@ class PearlMiner extends EventEmitter {
     this.job = null;          // the current parsed job the core is searching
     this.buf = '';            // partial-line accumulator for the socket
     this.submitId = 100;      // submit request ids start clear of the authorize id (1)
-    // submit id -> { jobId, index }. The card index rides along so an accept or
-    // a reject lands on the card that found the share, not on card 0.
+    // submit id -> { jobId, index, gzip }. The card index rides along so an
+    // accept or a reject lands on the card that found the share, not on card 0,
+    // and gzip so the verdict can count toward GZIP_REJECT_LIMIT.
     this.pending = new Map();
+    // Compressed proofs. `gzip` is whether THIS connection's pool agreed to
+    // them, set by its login's reply and false on every other connection, and
+    // `gzipSaid` whether its first compressed share has been logged. The rest
+    // is per run (see GZIP_REJECT_LIMIT): whether logins still ask, compressed
+    // shares rejected so far, and whether one has been accepted.
+    this.gzip = false;
+    this.gzipSaid = false;
+    this.askGzip = true;
+    this.gzipRejects = 0;
+    this.gzipAccepted = false;
     this.settings = null;
     // Card indices whose memory clock this run locked, so stop() releases
     // exactly those: never a card whose lock failed, and never one it did not
@@ -148,6 +170,10 @@ class PearlMiner extends EventEmitter {
     this.hashrates = new Map();   // card index -> its latest TH/s
     // Set by releaseMemClocks(): this run's cards stay at the driver's clock.
     this.memClocksReleased = false;
+    // A new run asks for compressed proofs again, whatever the last one found.
+    this.askGzip = true;
+    this.gzipRejects = 0;
+    this.gzipAccepted = false;
 
     // No core means the native addon is not built for this machine. That is a
     // clean, explicable stop — not a crash — so the host says exactly that and
@@ -403,10 +429,14 @@ class PearlMiner extends EventEmitter {
     }
     this.sock = sock;
     this.poolHost = host;
+    // A new connection sends plain proofs until its own login's reply says
+    // otherwise. What the last connection agreed does not carry over.
+    this.gzip = false;
+    this.gzipSaid = false;
 
     sock.on('connect', () => {
       this.emit('log', { level: 'info', line: 'connecting to ' + host + ':' + port + ' · worker ' + worker });
-      sock.write(encode(buildAuthorize(wallet, worker, host)));
+      sock.write(encode(buildAuthorize(wallet, worker, host, { agent: this.agent, gzip: this.askGzip })));
     });
     // Only the current socket is heard (see 'close' below).
     sock.on('data', (chunk) => { if (this.sock === sock) this._onData(chunk, wallet, worker); });
@@ -448,6 +478,9 @@ class PearlMiner extends EventEmitter {
     switch (m.kind) {
       case 'auth-ok':
         this.authorized = true;
+        // The reply decides how this connection's proofs go: compressed only
+        // when the pool said "type":"v2" (see shared/miner/stratum.js).
+        this.gzip = m.gzip;
         this.lostAt = null;
         this.poolFails = 0;
         this.lastSockError = null;
@@ -456,7 +489,10 @@ class PearlMiner extends EventEmitter {
         this.emit('authorized', {
           host: this.poolHost, address: this.sock.remoteAddress, family: this.sock.remoteFamily,
         });
-        this.emit('log', { level: 'info', line: 'authorized' });
+        this.emit('log', {
+          level: 'info',
+          line: m.gzip ? 'authorized; the pool takes compressed share proofs' : 'authorized',
+        });
         break;
       case 'auth-fail':
         this.emit('log', { level: 'error', line: 'pool rejected the wallet: ' + errText(m.error) });
@@ -475,6 +511,7 @@ class PearlMiner extends EventEmitter {
       case 'submit-accepted': {
         const p = this._answered(m);
         if (!p) break;
+        if (p.gzip) this.gzipAccepted = true;
         // `index` is the card that found it, so a multi-card rig credits the
         // right one.
         this.emit('share', { jobId: p.jobId, accepted: true, index: p.index });
@@ -486,6 +523,7 @@ class PearlMiner extends EventEmitter {
         if (!p) break;
         this.emit('rejected', { jobId: p.jobId, reason: errText(m.error), index: p.index });
         this.emit('log', { level: 'error', line: 'share rejected: ' + errText(m.error) });
+        if (p.gzip) this._gzipRejected();
         break;
       }
       case 'unparseable':
@@ -515,6 +553,23 @@ class PearlMiner extends EventEmitter {
     }
     this.pending.delete(m.id);
     return p;
+  }
+
+  // A compressed share was rejected. At GZIP_REJECT_LIMIT of them with none
+  // accepted this run, stop asking for compression and log in again: closing
+  // the socket runs the usual reconnect (see _onClose), and the next login
+  // leaves the type out. Once a run: more rejections arriving before the close
+  // do not close it again.
+  _gzipRejected() {
+    if (this.gzipAccepted || !this.askGzip) return;
+    if (++this.gzipRejects < GZIP_REJECT_LIMIT) return;
+    this.askGzip = false;
+    this.emit('log', {
+      level: 'warn',
+      line: 'the pool rejected ' + GZIP_REJECT_LIMIT + ' compressed shares and accepted none; '
+        + 'reconnecting to send shares uncompressed for the rest of this run',
+    });
+    this.sock.destroy();
   }
 
   _onJob(job) {
@@ -816,8 +871,10 @@ class PearlMiner extends EventEmitter {
     // The pool connection is down (see _onClose), so there is nowhere to send
     // it, and the next connection brings jobs of its own. Said, because this is
     // a share lost to the reconnect, not a race. It used to be written to the
-    // closed socket, which drops it without a word.
-    if (this.running && !this.sock) {
+    // closed socket, which drops it without a word. A socket the miner has
+    // destroyed itself (see _gzipRejected) counts as down: it is still
+    // this.sock until its close event comes, and a write to it is lost.
+    if (this.running && (!this.sock || this.sock.destroyed)) {
       this.emit('log', { level: 'info', line: 'dropping a hit found while the pool connection is down' });
       return;
     }
@@ -831,13 +888,24 @@ class PearlMiner extends EventEmitter {
     // device at the moment of the hit, because the search re-draws its operands
     // every few tens of milliseconds and a proof read back afterwards belongs to
     // a different matrix than the hash it certifies.
-    const plainProof = buildShareProof(hit, this.jobKey, this.profile());
+    //
+    // Compressed exactly when the connection it goes out on agreed to it: a
+    // pool that agreed rejects a plain proof, and one that did not cannot read
+    // a compressed one.
+    const gzip = this.gzip;
+    const plainProof = buildShareProof(hit, this.jobKey, this.profile(), { gzip });
     if (!plainProof) {
       this.emit('log', { level: 'error', line: 'dropping a hit whose proof does not verify locally' });
       return;
     }
+    // Once a connection, so the log shows what the compression is worth.
+    if (gzip && !this.gzipSaid) {
+      this.gzipSaid = true;
+      const { plain, sent } = gzipSizes(plainProof);
+      this.emit('log', { level: 'info', line: 'sending compressed share proofs: ' + kb(plain) + ' -> ' + kb(sent) });
+    }
     const id = this.submitId++;
-    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0 });
+    this.pending.set(id, { jobId: job.jobId, index: device ? device.index : 0, gzip });
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
     })));
@@ -853,6 +921,7 @@ class PearlMiner extends EventEmitter {
     // they have, so a brief pool blip does not idle the GPU; a hit found before
     // the next job is dropped (see _onHit).
     this.sock = null;
+    this.gzip = false;
     this.job = null;
     this.pending.clear();
     this.buf = '';
@@ -895,6 +964,7 @@ class PearlMiner extends EventEmitter {
     this.paused.clear();
     this.hashrates.clear();
     if (this.sock) { try { this.sock.destroy(); } catch (e) { /* already closed */ } this.sock = null; }
+    this.gzip = false;
     this.job = null;
     this.pending.clear();
     this.emit('stopped', failed ? { failed: true } : {});
@@ -908,6 +978,13 @@ function cardName(device) {
   return device ? 'GPU ' + device.index + ' (' + device.name + ')' : 'the GPU';
 }
 
+// A byte count for the log, in KB: to a tenth under 10 KB, so a compressed
+// proof of a few KB does not round to a misleading whole number.
+function kb(bytes) {
+  const k = bytes / 1024;
+  return (k < 10 ? k.toFixed(1) : String(Math.round(k))) + ' KB';
+}
+
 // Only ever called for an auth-fail or submit-rejected, both of which carry a
 // non-null error by construction — hence no null guard.
 function errText(err) {
@@ -915,5 +992,5 @@ function errText(err) {
 }
 
 module.exports = {
-  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN, GZIP_REJECT_LIMIT,
 };
