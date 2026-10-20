@@ -53,7 +53,7 @@ const { buildChatBody } = require('../shared/llmChat');
 const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
-const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
+const { resolveServerUrl, placeLlmPlan, describeLlmStart, parseServedModel } = require('../shared/llama');
 const { buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
@@ -1318,11 +1318,24 @@ async function startLlm(reserveMb, epoch) {
   const healthy = await probeLlmHealth(targetBase);
   if (stale()) return false;
   if (healthy) {
-    fleet.adopt(targetBase);
+    // Ask it what it serves. It is often the 27B a 5090 was running before an
+    // update, and this run has planned nothing, so servingModel still held
+    // the default: the hero, the board, telemetry and every cluster job named
+    // the wrong model. Its name is our alias for a catalogue model; a name we
+    // don't know keeps the old label. Its window is its own, not a ladder's.
+    const served = parseServedModel(await getJson(targetBase + '/v1/models', { timeout: 2000 }));
+    if (stale()) return false;
+    const known = served && allModels().find((m) => m.name === served.name);
+    if (known) servingModel = known;
+    const ctxSize = (served && served.ctxSize) || ctxLadder(servingModel)[0];
+    fleet.adopt(targetBase, { ctxSize });
     llmEverReady = true;
     // `held` too: a server this run did not plan was not held to any model, and
     // an old "kept losing GPU" sentence stayed in the LLM tooltip.
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, held: null, endpoint: targetBase + '/v1', webUrl: targetBase });
+    llmStatus = Object.assign({}, llmStatus, {
+      ready: true, error: null, note: null, held: null, endpoint: targetBase + '/v1', webUrl: targetBase,
+      model: servingModel.name, vramMb: servingModel.vramFullMb, ctxSize,
+    });
     send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
     sendLlmStatus();
     syncLanShare();
@@ -1499,6 +1512,8 @@ function buildFleet() {
     makeManager: () => new LlmManager({ spawn, startAttempts: LLM.startAttempts, retryDelayMs: LLM.startRetryMs }),
     findFreePort,
     makeWorker: (baseUrl) => makeJobWorker(baseUrl),
+    // An adopted server has no process of ours to watch, so it is asked.
+    probeHealth: probeLlmHealth,
   });
   f.on('log', (l) => send('miner:log', l));
   f.on('first-ready', ({ baseUrl }) => warmUpLlm(baseUrl)); // one warm-up per run
@@ -1512,13 +1527,29 @@ function buildFleet() {
     // above ready in both the hero dot and its label, so a stale one outranks the
     // truth — and nothing else clears it once the fleet is running, since
     // startLlm's pre-spawn reset only runs on a fresh start.
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, endpoint: web + '/v1', webUrl: web, note: null });
+    llmStatus = Object.assign({}, llmStatus, {
+      ready: true, error: null, endpoint: web + '/v1', webUrl: web, note: null, ctxSize: f.ctxSize(),
+    });
     send('miner:log', { level: 'info', line: 'local LLM ready — OpenAI endpoint ' + baseUrl + '/v1' });
     sendLlmStatus();
     syncLanShare();
     syncWorker(); // serve cluster jobs once a model is up, if we're linked
   });
   f.on('stats', ({ tokensPerSec }) => { llmStatus = Object.assign({}, llmStatus, { tokensPerSec }); sendLlmStatus(); });
+  // A card's server died and is restarting. With no other card serving, the
+  // row said ready all through it while chat and cluster jobs failed. It says
+  // "Restarting…" until 'ready' comes back.
+  f.on('crashed', () => {
+    if (f.isReady()) return;
+    llmStatus = Object.assign({}, llmStatus, { ready: false, note: 'Restarting…' });
+    sendLlmStatus();
+  });
+  // A card would not load at its context size and is retrying at the next one
+  // down. Show the window it will really have, not the ladder's top.
+  f.on('ctx-downgrade', () => {
+    llmStatus = Object.assign({}, llmStatus, { ctxSize: f.ctxSize() });
+    sendLlmStatus();
+  });
   f.on('busy', (e) => {
     const card = cardForPrompt(e, llmBusIds);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
@@ -1532,7 +1563,9 @@ function buildFleet() {
       sendLlmStatus();
     }
   });
-  f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
+  // Logged, not swallowed: a binary that cannot be run says why only here.
+  // The fleet keeps any other cards up.
+  f.on('error', (e) => send('miner:log', { level: 'error', line: 'local LLM error: ' + e.message }));
   f.on('stopped', () => {
     // A fleet that stopped on its own is not used again: the next run builds a
     // new one, which starts its own "ready" and "serving" flags. A dead one
@@ -1623,7 +1656,7 @@ function stopLlm() {
 // only then. Called whenever either changes.
 function syncLanShare() {
   const want = loadSettings().shareLlm === true && !!fleet && fleet.isReady();
-  lanShare.sync(want, { name: servingModel.name, ctxSize: ctxLadder(servingModel)[0] });
+  lanShare.sync(want, { name: servingModel.name, ctxSize: llmStatus.ctxSize });
 }
 
 // ── In-app chat: stream the local llama-server's OpenAI chat completions ──────

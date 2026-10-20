@@ -707,6 +707,138 @@ describe('LlmFleet', () => {
   });
 });
 
+// The context window each card really has. LlmManager steps down a ladder
+// when a card will not load at the top, and nobody heard it: the shells kept
+// telling clients the top rung, twice the real window on the 27B's ladder.
+describe('context size', () => {
+  const LADDER = { modelPath: '/m.gguf', ctxSize: 262144, ctxLadder: [262144, 131072, 65536] };
+
+  test('passes on a step down with the card, and reports the window it will have', async () => {
+    const { fleet, mgrs } = makeFleet();
+    const seen = [];
+    fleet.on('ctx-downgrade', (e) => seen.push(e));
+    await fleet.start([{ index: 0 }], LADDER);
+    expect(fleet.ctxSize()).toBe(262144);           // loading at the top rung
+    mgrs[0].emit('ctx-downgrade', { from: 262144, to: 131072 });
+    expect(seen).toEqual([{ index: 0, from: 262144, to: 131072 }]);
+    expect(fleet.ctxSize()).toBe(131072);           // still loading, at the new rung
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    expect(fleet.ctxSize()).toBe(131072);
+  });
+
+  test('the smallest window among ready cards; a card still loading does not count yet', async () => {
+    const { fleet, mgrs } = makeFleet();
+    await fleet.start([{ index: 0 }, { index: 1 }], LADDER);
+    mgrs[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await drain();
+    mgrs[1].emit('ctx-downgrade', { from: 262144, to: 131072 });
+    expect(fleet.ctxSize()).toBe(262144);           // card 1 serves nothing yet
+    mgrs[1].emit('ready', { baseUrl: 'http://127.0.0.1:8081' });
+    expect(fleet.ctxSize()).toBe(131072);           // a caller can land on either
+  });
+
+  test('is null when no live card says, and ignores stopped ones', async () => {
+    const { fleet } = makeFleet();
+    expect(fleet.ctxSize()).toBeNull();
+    await fleet.start([{ index: 0 }], { modelPath: '/m.gguf' });   // no ctxSize in the run
+    expect(fleet.ctxSize()).toBeNull();
+    const f2 = makeFleet();
+    await f2.fleet.start([{ index: 0 }], LADDER);
+    f2.mgrs[0].emit('stopped', 1);
+    expect(f2.fleet.ctxSize()).toBeNull();
+  });
+
+  test('an adopted server reports the window it said it has', () => {
+    const { fleet } = makeFleet();
+    fleet.adopt('http://127.0.0.1:8080', { ctxSize: 131072 });
+    expect(fleet.ctxSize()).toBe(131072);
+    const bare = makeFleet().fleet;
+    bare.adopt('http://127.0.0.1:8080');
+    expect(bare.ctxSize()).toBeNull();
+  });
+});
+
+// An adopted server has no manager to say it exited. It stayed ready for good,
+// and the UI, the network gate and the cluster worker kept using a model that
+// was not there.
+describe('adopted server health', () => {
+  const tick = async () => { for (let i = 0; i < 5; i++) await Promise.resolve(); };
+  let answers;
+  function watched(over = {}) {
+    answers = [];
+    const probeHealth = jest.fn(() => Promise.resolve(answers.length ? answers.shift() : true));
+    const f = makeFleet(Object.assign({ probeHealth, adoptPollMs: 1000 }, over));
+    const logs = [];
+    f.fleet.on('log', (l) => logs.push(l));
+    const stopped = jest.fn();
+    f.fleet.on('stopped', stopped);
+    return Object.assign(f, { probeHealth, logs, stopped });
+  }
+
+  beforeEach(() => { jest.useFakeTimers(); });
+  afterEach(() => { jest.useRealTimers(); });
+
+  test('two missed checks in a row take it out, and the fleet says stopped', async () => {
+    const { fleet, workers, probeHealth, logs, stopped } = watched();
+    fleet.syncWorkers(true);
+    fleet.adopt('http://127.0.0.1:8080');
+    answers.push(false, true, false, false);
+    jest.advanceTimersByTime(1000); await tick();   // miss
+    jest.advanceTimersByTime(1000); await tick();   // back: the count starts over
+    jest.advanceTimersByTime(1000); await tick();   // miss
+    expect(fleet.isReady()).toBe(true);
+    expect(stopped).not.toHaveBeenCalled();
+    jest.advanceTimersByTime(1000); await tick();   // second miss in a row
+    expect(probeHealth).toHaveBeenCalledWith('http://127.0.0.1:8080');
+    expect(fleet.isReady()).toBe(false);
+    expect(workers[0].stopped).toBe(true);
+    expect(logs).toContainEqual({ level: 'error', line: 'local LLM at http://127.0.0.1:8080 stopped answering' });
+    expect(stopped).toHaveBeenCalledWith(null);
+    // It is not asked again.
+    jest.advanceTimersByTime(5000); await tick();
+    expect(probeHealth).toHaveBeenCalledTimes(4);
+    expect(jest.getTimerCount()).toBe(0);
+  });
+
+  test('stop() ends the checks, and an answer still on its way is ignored', async () => {
+    const { fleet, probeHealth, stopped } = watched();
+    let answer;
+    probeHealth.mockImplementation(() => new Promise((r) => { answer = r; }));
+    fleet.adopt('http://127.0.0.1:8080');
+    jest.advanceTimersByTime(1000);
+    fleet.stop();
+    expect(jest.getTimerCount()).toBe(0);
+    answer(false);
+    await tick();
+    expect(stopped).not.toHaveBeenCalled();
+  });
+
+  test('an answer that lands after it was already taken out is ignored', async () => {
+    const { fleet, probeHealth, stopped } = watched();
+    const pending = [];
+    probeHealth.mockImplementation(() => new Promise((r) => { pending.push(r); }));
+    fleet.adopt('http://127.0.0.1:8080');
+    // Two checks out at once, as on a machine too busy to answer within the poll.
+    jest.advanceTimersByTime(1000);
+    jest.advanceTimersByTime(1000);
+    jest.advanceTimersByTime(1000);
+    pending[0](false); pending[1](false);
+    await tick();
+    expect(stopped).toHaveBeenCalledTimes(1);
+    pending[2](false);
+    await tick();
+    expect(stopped).toHaveBeenCalledTimes(1);
+  });
+
+  test('with no probe it is not polled, as before', () => {
+    const { fleet } = makeFleet();
+    fleet.adopt('http://127.0.0.1:8080');
+    expect(jest.getTimerCount()).toBe(0);
+    jest.advanceTimersByTime(60000);
+    expect(fleet.isReady()).toBe(true);
+  });
+});
+
 describe('stopAndWait', () => {
   // stop() signals and returns; a 30 GB model is still tearing down when it does.
   // The caller restarting the miner needs the card back, not a promise that

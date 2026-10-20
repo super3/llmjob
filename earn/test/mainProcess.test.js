@@ -1762,6 +1762,80 @@ describe('local LLM', () => {
     expect(ctx.sent('miner:stopped')).toHaveLength(0);
   });
 
+  // After an update the lingering server is often the 27B a 5090 ran before.
+  // This run planned nothing, so it was labelled with the default model: on the
+  // hero, the board, telemetry and every cluster job sent to it.
+  it('names the model an adopted server really serves, and its window', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true }));
+        c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode({ connected: true }));
+      },
+    });
+    const tier = ctx.config.LLM.tiers[0];
+    wireHealthOk(ctx);
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url === 'http://127.0.0.1:8080/v1/models'
+      ? { object: 'list', data: [{ id: tier.name, meta: { n_ctx: 131072 } }] } : null));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(0);
+    expect(ctx.io.getJson).toHaveBeenCalledWith('http://127.0.0.1:8080/v1/models', { timeout: 2000 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({
+      ready: true, model: tier.name, vramMb: tier.vramFullMb, ctxSize: 131072,
+    });
+    expect(ctx.JobWorker.instances[0].opts.servingModel()).toBe(tier);
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(false, { name: tier.name, ctxSize: 131072 });
+  });
+
+  it('keeps the label for an adopted server it does not know, but takes its window', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url.endsWith('/v1/models')
+      ? { data: [{ id: 'someone-elses-model', meta: { n_ctx: 8192 } }] } : null));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, model: ctx.config.LLM.model.name, ctxSize: 8192 });
+  });
+
+  it('a STOP while it asks an adopted server what it serves adopts nothing', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    let answer;
+    ctx.io.getJson.mockImplementation((url) => (url.endsWith('/v1/models')
+      ? new Promise((r) => { answer = r; }) : Promise.resolve(null)));
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.emit('miner:stop');
+    answer({ data: [{ id: 'x' }] });
+    await flush();
+    expect(ctx.sent('llm:status').filter((st) => st.ready)).toHaveLength(0);
+    expect(ctx.sent('miner:log').map((l) => l.line).join('\n')).not.toContain('reusing it');
+  });
+
+  // Often the outgoing app's server, which goes away moments after the update.
+  // With no manager to say so it stayed ready for good, and chat, the network
+  // gate and the cluster worker kept using a model that was not there.
+  it('lets go of an adopted server once it stops answering', async () => {
+    const ctx = await boot();
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
+    const poll = ctx.interval(10000);
+    expect(poll.unref).toHaveBeenCalled();
+
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('connect ECONNREFUSED')));
+    poll.fn();
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });   // one miss is not an exit
+    poll.fn();
+    await flush();
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('local LLM at http://127.0.0.1:8080 stopped answering');
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false });
+    // An llm-only START ends, as it does when a model it started dies.
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
   it('refuses to start the LLM without enough free VRAM (llm-only ends the session)', async () => {
     const ctx = await boot();
     // One card with 4000 MB free — below the model's floor. The LLM sizes
@@ -2177,8 +2251,10 @@ describe('local LLM', () => {
     expect(ctx.JobWorker.instances).toHaveLength(2);
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, webUrl: 'http://127.0.0.1:8080' });
 
-    // a transient error on one card is swallowed — the fleet keeps the others up
+    // An error on one card is logged, not swallowed: a binary that cannot run
+    // says why only here. The fleet keeps the others up.
     g0.emit('error', new Error('transient blip'));
+    expect(ctx.sent('miner:log')).toContainEqual({ level: 'error', line: 'local LLM error: transient blip' });
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true });
 
     // a telemetry ping sums active jobs across every worker (each mock reports 1)
@@ -2194,6 +2270,62 @@ describe('local LLM', () => {
     await ctx.invoke('node:disconnect');
     expect(ctx.JobWorker.instances[0].stop).toHaveBeenCalled();
     expect(ctx.JobWorker.instances[1].stop).toHaveBeenCalled();
+  });
+
+  // A restart after a crash is a model that is down. The row said ready all
+  // through it while chat and cluster jobs failed against it.
+  it('a crash restart is not shown as ready, unless another card still serves', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.probe.detectGpusVram.mockResolvedValue([
+          { index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 },
+          { index: 1, name: 'RTX 4090', usedMb: 1000, totalMb: 24000 },
+        ]);
+        c.probe.findFreePort.mockImplementation((h, p) => Promise.resolve(p));
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const g0 = ctx.LlmManager.instances[0];
+    g0.emit('ready', { baseUrl: g0.baseUrl });
+    await flush();
+    const g1 = ctx.LlmManager.instances[1];
+    g1.emit('ready', { baseUrl: g1.baseUrl });
+    await flush();
+
+    const sent = ctx.sent('llm:status').length;
+    g0.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+    expect(ctx.sent('llm:status')).toHaveLength(sent);   // card 1 still serves
+    g1.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, note: 'Restarting…' });
+    g0.emit('ready', { baseUrl: g0.baseUrl });   // a restart landed
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, note: null });
+    expect(ctx.sent('miner:stopped')).toHaveLength(0);
+  });
+
+  // One step down the 27B's ladder halves the window. The API tab and the
+  // network gate kept the top rung: twice what the server had.
+  it('shows and shares the window the card really loaded at', async () => {
+    const ctx = await boot({
+      before: (c) => {
+        c.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+        c.fs.readFileSync.mockReturnValue('{"shareLlm":true}');
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32607 }]);
+        c.LlmEngineManager.behavior.ensureMmproj = () => Promise.resolve('/tmp/llm/mmproj.gguf');
+      },
+    });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const tier = ctx.config.LLM.tiers[0];
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ model: tier.name, ctxSize: 262144 });
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, ctxSize: 131072 });
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, ctxSize: 131072 });
+    expect(ctx.lanShare.sync).toHaveBeenLastCalledWith(true, { name: tier.name, ctxSize: 131072 });
   });
 
   // Chat went to card 0 whatever it was doing: 25 tok/s on a mining RTX PRO

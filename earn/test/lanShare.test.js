@@ -31,7 +31,7 @@ describe('lanAddresses', () => {
 function fakeGates() {
   const made = [];
   const makeGate = (opts) => {
-    const g = { opts, start: jest.fn(() => g), stop: jest.fn() };
+    const g = { opts, start: jest.fn(() => g), stop: jest.fn(), setCtxSize: jest.fn() };
     made.push(g);
     return g;
   };
@@ -65,6 +65,17 @@ describe('createLanShare', () => {
     expect(log).toHaveBeenLastCalledWith('stopped sharing the local LLM on the network');
     expect(onChange).toHaveBeenCalledTimes(2);
     expect(share.status()).toBeNull();
+  });
+
+  // A card that dropped down its context ladder after the gate came up. The
+  // gate reported the size it was built with for as long as it ran.
+  test('a gate that is already up takes the new context size', () => {
+    const { made, makeGate } = fakeGates();
+    const share = createLanShare({ upstreamUrl: () => null, makeGate, interfaces: ifaces });
+    share.sync(true, { name: 'qwen', ctxSize: 262144 });
+    share.sync(true, { name: 'qwen', ctxSize: 131072 });
+    expect(made).toHaveLength(1);
+    expect(made[0].setCtxSize).toHaveBeenCalledWith(131072);
   });
 
   test('forwards to the port the fleet really bound, or 8080 before it says', () => {

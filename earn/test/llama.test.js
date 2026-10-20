@@ -569,3 +569,30 @@ describe('parseUsingDevice', () => {
     expect(parseUsingDevice(null)).toBeNull();
   });
 });
+
+// What an adopted llama-server says it serves (main.js reads it on adopt), in
+// the shape b9902's /v1/models answers with.
+describe('parseServedModel', () => {
+  const { parseServedModel } = require('../src/shared/llama');
+
+  test('reads the alias and the real context window', () => {
+    const body = {
+      object: 'list',
+      data: [{ id: 'Qwen3.8-27B-UD-Q4_K_XL', object: 'model', owned_by: 'llamacpp',
+        meta: { n_ctx: 131072, n_ctx_train: 262144, n_vocab: 151936 } }],
+    };
+    expect(parseServedModel(body)).toEqual({ name: 'Qwen3.8-27B-UD-Q4_K_XL', ctxSize: 131072 });
+  });
+
+  test('a name with no window gives a null window', () => {
+    expect(parseServedModel({ data: [{ id: 'm' }] })).toEqual({ name: 'm', ctxSize: null });
+    expect(parseServedModel({ data: [{ id: 'm', meta: { n_ctx: 0 } }] })).toEqual({ name: 'm', ctxSize: null });
+  });
+
+  test('anything else is null', () => {
+    for (const junk of [null, undefined, {}, { data: 'x' }, { data: [] }, { data: [null] }, { data: [{ id: 7 }] },
+      { status: 'ok' }]) {
+      expect(parseServedModel(junk)).toBeNull();
+    }
+  });
+});

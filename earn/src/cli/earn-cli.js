@@ -633,6 +633,10 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
     serveLlmState.ready = true;
     log('🧠 local LLM ready — OpenAI endpoint ' + baseUrl + '/v1');
   });
+  // A card's server died and is restarting. Telemetry and the stats file said
+  // ready all through it; now they say so only while another card serves, and
+  // 'ready' above puts it back when the restart lands.
+  fleet.on('crashed', () => { serveLlmState.ready = fleet.isReady(); });
   // One keep-alive ping loop for the whole fleet, started on the first ready
   // card: pings ride along with serving so the node stays online on the
   // dashboard (and never gets pruned) while it works.
@@ -1251,12 +1255,24 @@ async function run(argv) {
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
 
+    // The context window the gate reports while the model is down, from the
+    // fleet once a card has loaded or dropped down its ladder. Before, the gate
+    // kept the ladder's top rung, so after one step down the 27B's ladder
+    // clients were told twice the real window. Kept after the fleet stops:
+    // demand mode answers from it all the time it mines.
+    const advertiseCtx = (fleet) => {
+      const sync = () => { if (auto) auto.setCtxSize(fleet.ctxSize()); };
+      fleet.on('ready', sync);
+      fleet.on('ctx-downgrade', sync);
+    };
+
     // llama-server dying must never be a silent clean exit: without this
     // listener an LLM-only run drains the event loop and exits 0, so a systemd
     // Restart=on-failure supervisor never restarts the node. A deliberate stop
     // goes through fleet.stop(), which suppresses the fleet's 'stopped' event —
     // so reaching here always means the whole fleet died on its own.
     const watchLlm = (fleet) => {
+      advertiseCtx(fleet);
       fleet.on('stopped', (code) => {
         // Keep `model`: the run is over but the last telemetry ping should still
         // name what this node was serving, and fullTelemetry dereferences it.
@@ -1309,6 +1325,12 @@ async function run(argv) {
         isLlmReady: () => !!(llm && llm.readyCount && llm.readyCount() > 0),
         // Returns the fleet; the gate owns waiting for it to answer.
         startLlm: async () => {
+          // A fleet that is still up is restarting after a crash: the gate is
+          // SERVING with no card ready. Hand it back and the gate waits for its
+          // 'ready'. Planning another put a second server on the card and lost
+          // the handle to the first, which kept restarting with nothing able
+          // to stop it.
+          if (llm && llm.hasSpawned()) return llm;
           // The miner has exited but the driver may not have reclaimed its VRAM
           // yet; plan against the card as it will be, not as it momentarily reads.
           // Ask for exactly what the planner will demand a moment later, using the
@@ -1323,6 +1345,7 @@ async function run(argv) {
           // nothing is co-resident in demand mode.
           llm = await startLlm(settings, 0, autoPlan.model, false);
           if (llm) {
+            advertiseCtx(llm);
             llm.on('stopped', () => {
               if (auto && auto.isSwitching()) return;
               // Keep `model` for the same reason the up-front handler does: the

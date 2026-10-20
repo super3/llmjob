@@ -375,8 +375,19 @@ function describeLlmStart(plan) {
   return line;
 }
 
+// What a running llama-server says it serves, from its /v1/models answer:
+// { name, ctxSize }. The name is its --alias, which we start it with, so a
+// server of ours names its catalogue model. ctxSize is its real window
+// (meta.n_ctx), or null if it does not say. Null for anything else.
+function parseServedModel(body) {
+  const m = body && Array.isArray(body.data) ? body.data[0] : null;
+  if (!m || typeof m.id !== 'string') return null;
+  const n = Number(m.meta && m.meta.n_ctx);
+  return { name: m.id, ctxSize: n > 0 ? n : null };
+}
+
 module.exports = {
   resolveServerBinary, resolveServerUrl, serverBaseUrl, buildServerArgs, buildServerEnv, isServerReady,
   parseTiming, parseSlotEvent, isDeviceLost, parseUsingDevice, parseUsingDeviceLine,
-  parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart,
+  parseDeviceList, matchLlmDevices, placeLlmPlan, describeLlmStart, parseServedModel,
 };

@@ -246,6 +246,17 @@ describe('LlmGateServer internals', () => {
     expect(b.gate).toBeDefined();
   });
 
+  // A card that would not load at the top of its ladder serves a smaller
+  // window, and the gate is told once it knows. Junk keeps the last good size.
+  test('a new context size is reported from then on, and junk is ignored', () => {
+    const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M', ctxSize: 262144 });
+    gs.setCtxSize(131072);
+    for (const junk of [null, undefined, 0, -1, 'x']) gs.setCtxSize(junk);
+    const res = fakeRes();
+    gs._passive({ url: '/v1/models' }, res);
+    expect(JSON.parse(res.chunks[0]).data[0].meta).toEqual({ n_ctx: 131072, n_ctx_train: 131072 });
+  });
+
   test('with no context size configured the field is omitted, not guessed', () => {
     const gs = new LlmGateServer({ gate: new LlmGate({}), modelName: 'M' });
     for (const [path, probe] of [['/v1/models', (b) => b.data[0].meta],

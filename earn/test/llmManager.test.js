@@ -3,8 +3,10 @@
 const { EventEmitter } = require('events');
 const { LlmManager } = require('../src/main/llmManager');
 
+// A process that started: it has a pid, as every real one that spawned does.
 function makeChild() {
   const proc = new EventEmitter();
+  proc.pid = 4242;
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
   proc.kill = jest.fn();
@@ -320,6 +322,86 @@ describe('LlmManager', () => {
 
     expect(spawn).toHaveBeenCalledTimes(1); // retry was cancelled
     expect(m.running).toBe(false);
+  });
+});
+
+// A binary that cannot be run at all (missing, not executable). Node gives the
+// process no pid, emits 'error' and then 'close', and never 'exit'. Without
+// 'exit' nothing said 'stopped': the GUI sat on "Starting…" and an llm-only CLI
+// run idled forever.
+describe('LlmManager spawn failure', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+  function failing(extra = {}) {
+    const children = [];
+    const spawn = jest.fn(() => {
+      const c = makeChild();
+      delete c.pid;
+      children.push(c);
+      return c;
+    });
+    const m = new LlmManager({ spawn, sleep: () => Promise.resolve(), startAttempts: 3, retryDelayMs: 0, ...extra });
+    const seen = { stopped: [], errors: [], downs: 0 };
+    m.on('stopped', (code) => seen.stopped.push(code));
+    m.on('error', (e) => seen.errors.push(e.message));
+    m.on('ctx-downgrade', () => { seen.downs++; });
+    return { m, spawn, children, seen };
+  }
+  const enoent = () => Object.assign(new Error('spawn llama-server ENOENT'), { code: 'ENOENT' });
+
+  test('says stopped at once, with no retries and no step down the ladder', async () => {
+    const { m, spawn, children, seen } = failing();
+    m.start({ modelPath: '/m.gguf', ctxLadder: [262144, 131072] });
+    children[0].emit('error', enoent());
+    await flush();
+    expect(seen.errors).toEqual(['spawn llama-server ENOENT']);
+    expect(seen.stopped).toEqual([null]);
+    expect(seen.downs).toBe(0);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    expect(m.running).toBe(false);
+    expect(m.proc).toBeNull();
+    // Node sends no 'exit' after this, but one that came must not end it twice.
+    children[0].emit('exit', -2);
+    await flush();
+    expect(seen.stopped).toEqual([null]);
+    expect(spawn).toHaveBeenCalledTimes(1);
+    // And the manager can be started again.
+    expect(m.start({ modelPath: '/m.gguf' })).toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(2);
+  });
+
+  test('a stop() before the error still gets its stopped', () => {
+    // LlmFleet.stopAndWait waits on this. The kill does nothing to a process
+    // that never started, so no exit is coming.
+    const { m, children, seen } = failing();
+    m.start({});
+    expect(m.stop()).toBe(true);
+    children[0].emit('error', enoent());
+    expect(seen.stopped).toEqual([null]);
+  });
+
+  test('a late error from an earlier process does not stop the one now running', async () => {
+    const { m, spawn, children, seen } = failing();
+    m.start({});
+    children[0].emit('exit', 1);   // exited before ready → retry
+    await flush();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    children[0].emit('error', enoent());
+    expect(seen.stopped).toEqual([]);
+    expect(m.running).toBe(true);
+  });
+
+  test('an error from a process that started waits for its exit', () => {
+    const child = makeChild();
+    const m = new LlmManager({ spawn: () => child });
+    const stopped = jest.fn();
+    m.on('stopped', stopped);
+    m.on('error', () => {});
+    m.start({});
+    child.emit('error', new Error('kill EPERM'));
+    expect(stopped).not.toHaveBeenCalled();
+    expect(m.running).toBe(true);
+    child.emit('exit', 1);
+    expect(stopped).toHaveBeenCalledWith(1);
   });
 });
 

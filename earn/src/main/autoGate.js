@@ -39,7 +39,13 @@ function createAutoGate(opts) {
       resolve();
     };
     miner.once('stopped', finish);
+    // A miner that is not running says no 'stopped' (PearlMiner.stop returns
+    // false), so there is nothing to wait for. That is the crash-restart case:
+    // the gate is SERVING with the miner long stopped, the model is restarting,
+    // and a request asks to serve. Waiting there stalled it the full guard.
+    const running = miner.isRunning();
     try { miner.stop(); } catch { finish(); }
+    if (!running) { finish(); return; }
     // Never wedge the gate on an engine that will not exit.
     guard = setTimeout(finish, minerStopTimeoutMs);
     guard.unref();
@@ -101,6 +107,7 @@ function createAutoGate(opts) {
     gate,
     server,
     isSwitching: () => switching,
+    setCtxSize: (n) => server.setCtxSize(n),
     start() { server.start(); return this; },
     stop() { server.stop(); },
   };
@@ -134,6 +141,7 @@ function createServeGate(opts = {}) {
     server,
     // Nothing here ever stops an engine, so no engine death is ever ours.
     isSwitching: () => false,
+    setCtxSize: (n) => server.setCtxSize(n),
     start() { server.start(); return this; },
     stop() { server.stop(); },
   };

@@ -7,6 +7,10 @@ const { EventEmitter } = require('events');
 // this), and that rate is mostly setup cost, not the card.
 const MIN_RATE_TOKENS = 32;
 
+// Health checks an adopted server may miss in a row before it counts as gone.
+// One slow answer on a busy machine is not an exit.
+const ADOPT_MISSES = 2;
+
 // Supervises a FLEET of local llama-server instances — one per eligible GPU (see
 // shared/llmPlan.planLlmInstances) — plus one cluster job-worker per ready
 // instance, so a multi-GPU rig serves the model from every card that has room
@@ -23,6 +27,9 @@ const MIN_RATE_TOKENS = 32;
 //                                       activeJobs() } fully wired by the caller,
 //                                       or null to not serve this instance
 //   host, basePort                   -> where the first instance binds
+//   probeHealth(baseUrl)             -> Promise<boolean> that never rejects,
+//                                       polled every adoptPollMs for an
+//                                       adopted server
 //
 // Aggregate events:
 //   log      { level, line }   re-emitted from every instance
@@ -30,6 +37,10 @@ const MIN_RATE_TOKENS = 32;
 //   first-ready { baseUrl }    once, on the first instance to become ready
 //   stats    { tokensPerSec, promptTokensPerSec }  latest generation and prefill
 //                                                  rates from any instance
+//   crashed  { index, code, restartInMs, attempt }  an instance died and is
+//                              restarting; it is out of service until 'ready'
+//   ctx-downgrade { index, from, to }  an instance would not load at `from` and
+//                              retries at `to` (see ctxSize())
 //   gpu-lost { index, busId, losses }  an instance gave up on its card after
 //                              losing the GPU again and again
 //   stopped                    once, when the last running instance stops
@@ -44,7 +55,9 @@ class LlmFleet extends EventEmitter {
     this.basePort = opts.basePort;
     // How long one instance gets to load before the next is started anyway.
     this.startSettleMs = opts.startSettleMs || 600000;
-    this.instances = []; // { index, port, mgr, ready, stopped, baseUrl, worker }
+    this.probeHealth = opts.probeHealth || null;
+    this.adoptPollMs = opts.adoptPollMs || 10000;
+    this.instances = []; // { index, port, mgr, ready, stopped, baseUrl, worker, ctxSize }
     this._serve = false;
     this._lastTps = 0;
     this._lastPromptTps = 0;
@@ -155,7 +168,12 @@ class LlmFleet extends EventEmitter {
     if (this._stopping) return null;
     this._nextPort = port + 1; // the next instance probes from the following port
     const mgr = this.makeManager();
-    const inst = { index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null, tps: 0 };
+    // ctxSize starts at the top of the run's ladder and follows the manager
+    // down it (_onCtxDowngrade).
+    const inst = {
+      index: e.index, port, mgr, ready: false, stopped: false, baseUrl: null, worker: null, tps: 0,
+      ctxSize: this._run.ctxSize || null,
+    };
     this.instances.push(inst);
     mgr.on('log', (l) => this.emit('log', l));
     mgr.on('ready', ({ baseUrl }) => this._onReady(inst, baseUrl));
@@ -169,6 +187,7 @@ class LlmFleet extends EventEmitter {
     const busId = () => mgr.deviceBusId || e.busId || null;
     mgr.on('busy', (busy) => this.emit('busy', { index: inst.index, busId: busId(), busy }));
     mgr.on('crashed', (info) => this._onCrashed(inst, info));
+    mgr.on('ctx-downgrade', (info) => this._onCtxDowngrade(inst, info));
     mgr.on('gpu-lost', (info) => this._onGpuLost(inst, busId(), info));
     mgr.on('stopped', (code) => this._onStopped(inst, code));
     mgr.on('error', (err) => this.emit('error', err));
@@ -189,13 +208,41 @@ class LlmFleet extends EventEmitter {
   // after an "Update & restart") as a ready instance, without spawning a process
   // — reusing it beats spawning a second server that would double-load the model
   // and risk an OOM. It has no GPU index (unknown placement), so it never appears
-  // in servingIndices(). Returns the adopted instance.
-  adopt(baseUrl) {
-    const inst = { index: null, port: null, mgr: null, ready: true, stopped: false, baseUrl, worker: null, tps: 0 };
+  // in servingIndices(). `ctxSize` is the window the server itself reports.
+  // Returns the adopted instance.
+  adopt(baseUrl, { ctxSize } = {}) {
+    const inst = {
+      index: null, port: null, mgr: null, ready: true, stopped: false, baseUrl, worker: null, tps: 0,
+      ctxSize: ctxSize || null,
+    };
     this.instances.push(inst);
     this._sawFirstReady = true;
     if (this._serve) this._ensureWorker(inst);
+    this._watchAdopted(inst);
     return inst;
+  }
+
+  // An adopted server has no manager to say it exited, so ask it now and then.
+  // Without this it stayed ready for good: often it is the outgoing app's
+  // server, which goes away moments later, and the UI, the network gate and
+  // the cluster worker kept using a model that was not there. Gone, it is
+  // stopped like any other instance, so the fleet says 'stopped' once nothing
+  // else serves.
+  _watchAdopted(inst) {
+    if (!this.probeHealth) return;
+    let misses = 0;
+    inst._poll = setInterval(() => {
+      this.probeHealth(inst.baseUrl).then((ok) => {
+        // stop() may have dropped it while the probe was out.
+        if (inst.stopped || !this.instances.includes(inst)) return;
+        misses = ok ? 0 : misses + 1;
+        if (misses < ADOPT_MISSES) return;
+        clearInterval(inst._poll);
+        this.emit('log', { level: 'error', line: 'local LLM at ' + inst.baseUrl + ' stopped answering' });
+        this._onStopped(inst, null);
+      });
+    }, this.adoptPollMs);
+    inst._poll.unref();
   }
 
   // Resolve when `inst` has either become ready or stopped for good, or when
@@ -240,6 +287,13 @@ class LlmFleet extends EventEmitter {
     inst.ready = false;
     if (inst.worker) { inst.worker.stop(); inst.worker = null; }
     this.emit('crashed', Object.assign({ index: inst.index }, info));
+  }
+
+  // The manager dropped this instance to a smaller context size because it would
+  // not load at the larger one. Kept per instance, for ctxSize().
+  _onCtxDowngrade(inst, info) {
+    inst.ctxSize = info.to;
+    this.emit('ctx-downgrade', Object.assign({ index: inst.index }, info));
   }
 
   // The manager gave up on this card after losing the GPU again and again, and
@@ -350,6 +404,18 @@ class LlmFleet extends EventEmitter {
   isReady() { return this.instances.some((i) => i.ready); }
   readyCount() { return this.instances.filter((i) => i.ready).length; }
 
+  // The context window to advertise: the smallest one a ready instance runs at,
+  // since a caller can land on any of them. With none ready, the smallest one
+  // a live instance is loading at, which is what it will serve. Null when no
+  // instance says. The shells used to advertise the ladder's top rung, which
+  // after one step down the 27B's ladder is twice the real window.
+  ctxSize() {
+    const ready = this.instances.filter((i) => i.ready);
+    const pool = ready.length ? ready : this.instances.filter((i) => !i.stopped);
+    const sizes = pool.map((i) => i.ctxSize).filter((n) => n > 0);
+    return sizes.length ? Math.min(...sizes) : null;
+  }
+
   // Total jobs in flight across every instance's worker (for node telemetry).
   activeJobs() {
     return this.instances.reduce((a, i) => a + (i.worker ? Number(i.worker.activeJobs()) || 0 : 0), 0);
@@ -412,6 +478,7 @@ class LlmFleet extends EventEmitter {
     this._pending = []; // nothing further should spawn
     for (const inst of this.instances) {
       if (inst._settle) inst._settle(); // unblock a serialised start mid-flight
+      if (inst._poll) clearInterval(inst._poll);
       if (inst.worker) { inst.worker.stop(); inst.worker = null; }
       if (inst.mgr) inst.mgr.stop();
     }

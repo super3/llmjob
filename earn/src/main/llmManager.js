@@ -48,8 +48,9 @@ const {
 //   log      { level: 'info'|'error', line }
 //   stats    { tokensPerSec, promptTokensPerSec, tokens }  one phase per event
 //   crashed  { code, restartInMs, attempt }   — down, restarting shortly
+//   ctx-downgrade { from, to }   — would not start at `from`, retrying at `to`
 //   gpu-lost { losses }   — gave up after gpuLossLimit lost GPUs; 'stopped' follows
-//   stopped  exitCode
+//   stopped  exitCode, or null when no process was left to exit
 //   error    Error
 class LlmManager extends EventEmitter {
   constructor({
@@ -144,9 +145,24 @@ class LlmManager extends EventEmitter {
     if (proc.stdout) proc.stdout.on('data', (c) => { this._onData(c); this._scanSlots(c, 'out', proc); });
     // llama logs to stderr
     if (proc.stderr) proc.stderr.on('data', (c) => { this._onData(c); this._scanSlots(c, 'err', proc); });
-    proc.on('exit', (code) => this._onExit(code));
-    proc.on('error', (err) => this.emit('error', err));
-
+    let spawnFailed = false;
+    proc.on('exit', (code) => { if (!spawnFailed) this._onExit(code); });
+    proc.on('error', (err) => {
+      this.emit('error', err);
+      // A binary that could not be run at all (missing, not executable) has no
+      // pid and never emits 'exit', so nothing said 'stopped': the GUI sat on
+      // "Starting…" and an llm-only CLI run idled forever. The same file fails
+      // the same way, so this skips the retries and the context ladder. Any
+      // other 'error' comes from a process that did start, and its 'exit' still
+      // follows. Node sends no 'exit' after a failed spawn, but one that did
+      // must not end the run a second time.
+      if (proc.pid === undefined && proc === this.proc) {
+        spawnFailed = true;
+        this.proc = null;
+        this.running = false;
+        this.emit('stopped', null);
+      }
+    });
   }
 
   _onExit(code) {
@@ -318,9 +334,8 @@ class LlmManager extends EventEmitter {
   // waiting to spawn, so nothing would ever exit and nothing said 'stopped'.
   // LlmFleet.stopAndWait waited out its whole timeout for it, and the CLI's auto
   // mode handed the card back to the miner 45 s late, logging that the LLM "did
-  // not exit". One case is still open: a spawn that fails outright (missing
-  // binary, fork error) emits 'error' but never 'exit', so it never says
-  // 'stopped' either.
+  // not exit". A spawn that failed outright has no 'exit' either; its 'error'
+  // says 'stopped' instead (see _spawn).
   stop() {
     if (!this.running && !this.proc) return false;
     this._stopping = true; // cancels any pending retry

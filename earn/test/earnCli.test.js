@@ -2328,6 +2328,7 @@ jest.mock('../src/main/autoGate', () => {
       // (the stats file, and the watch view) goes through it.
       gate: { state: 'MINING', inFlight: 0, quietMs: 60000, quietFor: () => 0 },
       isSwitching() { return this.switching; },
+      setCtxSize: jest.fn(),
       start() { this.started = true; return this; },
       stop: jest.fn(),
     };
@@ -2343,6 +2344,7 @@ jest.mock('../src/main/autoGate', () => {
       started: false,
       isSwitching() { return false; },
       gate: { state: 'SERVING', inFlight: 0, quietMs: Infinity, quietFor: () => 0 },
+      setCtxSize: jest.fn(),
       start() { this.started = true; return this; },
       stop: jest.fn(),
     };
@@ -2858,6 +2860,44 @@ test('a failed restart with no model loaded still exits non-zero', async () => {
   expect(allErr()).toContain('engine failed to restart after serving');
 });
 
+// A request during a crash restart: the gate is SERVING with no card ready, so
+// it wakes the model again. That planned a second fleet on top of the one
+// restarting and lost the handle to the first, which nothing could then stop.
+test('a wake during a crash restart waits for the same fleet instead of starting another', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createAutoGate.instances[0];
+
+  const waking = gate.opts.startLlm();
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  const fleet = await waking;
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(262144);
+
+  llm.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+  expect(gate.opts.isLlmReady()).toBe(false);
+  m.probe.detectGpusVram.mockClear();
+  await expect(gate.opts.startLlm()).resolves.toBe(fleet);
+  expect(m.LlmManager.instances).toHaveLength(1);
+  expect(m.probe.detectGpusVram).not.toHaveBeenCalled();   // nothing planned
+
+  // The restart could not load at the top rung: the gate is told the real window.
+  llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  expect(gate.opts.isLlmReady()).toBe(true);
+
+  gate.switching = false;
+  m.PearlEngine.instances[0].emit('stopped', 0);
+  await expect(p).resolves.toBe(0);
+});
+
 test('handing the card back waits for the model to actually release its VRAM', async () => {
   // LlmFleet.stop() signals llama-server and returns; it does not join. Restarting
   // the miner straight away put it on a card still holding ~30 GB, and its core
@@ -2987,6 +3027,54 @@ test('llm mode serves on the gate port, not on llama-server\'s own', async () =>
 
   // 1, not 0: an LLM-only run whose fleet dies is never a clean exit, or a
   // Restart=on-failure supervisor would never bring the node back.
+  llm.emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
+});
+
+// The 27B's ladder halves the window per step. The gate is the endpoint
+// clients read the window from while the model is down, and it kept the top
+// rung, so one step down told them twice what the server had.
+test('the llm-mode gate reports the window the card really loaded at', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0']);
+  await settle();
+  const gate = m.autoGate.createServeGate.instances[0];
+  expect(gate.opts.ctxSize).toBe(262144);
+  const llm = m.LlmManager.instances[0];
+  llm.emit('ctx-downgrade', { from: 262144, to: 131072 });
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  expect(gate.setCtxSize).toHaveBeenLastCalledWith(131072);
+  llm.emit('stopped', 0);
+  await expect(p).resolves.toBe(1);
+});
+
+// Telemetry and the stats file read serveLlmState.ready. A restart after a crash
+// is a model that is down, and they said ready all through it.
+test('a crash restart is not reported as ready', async () => {
+  const m = load();
+  m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+  m.LlmEngineManager.serverInstalled = true;
+  m.LlmEngineManager.modelInstalled = true;
+  m.LlmEngineManager.mmprojInstalled = true;
+  const p = m.run(['--mode', 'llm', '--no-update', '--no-serve', '--gate-port', '0', '--stats-file', '/tmp/s.json']);
+  await settle();
+  const llm = m.LlmManager.instances[0];
+  const written = () => {
+    m.fs.writeFileSync.mockClear();
+    intervalFor(10000).fn();
+    return JSON.parse(m.fs.writeFileSync.mock.calls[0][1]);
+  };
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+  expect(written().model.ready).toBe(true);
+  llm.emit('crashed', { code: 139, restartInMs: 3000, attempt: 1 });
+  expect(written().model.ready).toBe(false);
+  llm.emit('ready', { baseUrl: 'http://127.0.0.1:8080' });   // the restart landed
+  expect(written().model.ready).toBe(true);
   llm.emit('stopped', 0);
   await expect(p).resolves.toBe(1);
 });
