@@ -1109,8 +1109,10 @@ uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // Turing's band depth for the B-direct fold (see PEARL_BD_L2_SHARE). Bands of
 // column groups (PEARL_BD_WALK 1): 8, halved while a band's B -- depth x 256
 // columns x k bytes -- is more than PEARL_BD_L2_SHARE percent of the L2, never
-// below 2. Bands of row groups (PEARL_BD_WALK 0): 16, halved while a band's A --
-// depth x 128 rows x k bytes -- is, never below 4. -DPEARL_BD_BAND=N forces N.
+// below 2; then 5 instead of 4 where five groups' B is at most
+// PEARL_BD_FIVE_SHARE percent of it. Bands of row groups (PEARL_BD_WALK 0): 16,
+// halved while a band's A -- depth x 128 rows x k bytes -- is, never below 4.
+// -DPEARL_BD_BAND=N forces N.
 uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
 #ifdef PEARL_BD_BAND
   (void)k;
@@ -1123,6 +1125,8 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
   if (l2 == 0u) return band;
   while (band > floor && (uint64_t)band * unit * 100u > l2 * (uint64_t)PEARL_BD_L2_SHARE)
     band /= 2u;
+  if (PEARL_BD_WALK && band == 4u && 5u * unit * 100u <= l2 * (uint64_t)PEARL_BD_FIVE_SHARE)
+    band = 5u;
   return band;
 #endif
 }

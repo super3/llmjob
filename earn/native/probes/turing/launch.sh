@@ -229,11 +229,13 @@ summarise() {
 fits $(( VERIFY_SECS + 60 )) && { run_verify ctl || die "the default shape failed verify-hits"; }
 
 # 2. Band depth, on bench. The rule's band is what pearl_bd_band_for picks for this L2
-# (column bands: 8, halved while 8 x 512 KB is over 75% of it, never below 2).
+# (column bands: 8, halved while 8 x 512 KB is over 75% of it, never below 2; then 5
+# instead of 4 where 5 x 512 KB is at most 65% of it).
 RULE=8; while [ $RULE -gt 2 ] && [ $(( RULE * 524288 * 100 )) -gt $(( L2 * 75 )) ]; do RULE=$(( RULE / 2 )); done
+[ $RULE = 4 ] && [ $(( 5 * 524288 * 100 )) -le $(( L2 * 65 )) ] && RULE=5
 if [ -z "${BANDS:-}" ]; then
   if [ "$L2" -le 3670016 ]; then BANDS="5 6"        # 3 MB: 2.5 and 3 MB of B
-  elif [ "$L2" -lt 5242880 ]; then BANDS="5 6 8"    # 4 MB
+  elif [ "$L2" -lt 5242880 ]; then BANDS="4 6 8"    # 4 MB
   else BANDS="6 9 10"; fi                           # 5.5 MB and up
 fi
 BPTS=("b$RULE"); for b in $BANDS; do [ "$b" != "$RULE" ] && BPTS+=("b$b"); done

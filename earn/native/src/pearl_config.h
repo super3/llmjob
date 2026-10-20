@@ -645,9 +645,10 @@ typedef struct {
 // stays in L2 is kept to PEARL_BD_L2_SHARE percent of it (pearl_bd_band_for).
 // With column bands (PEARL_BD_WALK 1, the default): 8 column groups, halved
 // while depth x 256 columns x k bytes (512 KB a group at the mainnet k) is
-// over that, never below 2. So 4 on the 3-4 MB cards (RTX 2060 to 2080) and 8
-// on the 2080 Ti (5.5 MB). With row bands (PEARL_BD_WALK 0): 16 row groups,
-// halved while depth x 128 rows x k bytes (256 KB) is over it, never below 4:
+// over that, never below 2. So 4 on the 3 MB RTX 2060, 5 on the 4 MB cards
+// (see PEARL_BD_FIVE_SHARE) and 8 on the 2080 Ti (5.5 MB). With row bands
+// (PEARL_BD_WALK 0): 16 row groups, halved while depth x 128 rows x k bytes
+// (256 KB) is over it, never below 4:
 // 8 on the 3-4 MB cards and 16 on the 2080 Ti.
 //
 // Row bands of 16 hold 4 MB of A, so on a 3-4 MB L2 A came from DRAM once per
@@ -658,6 +659,24 @@ typedef struct {
 // -DPEARL_BD_BAND=N forces N on every card. Host only.
 #ifndef PEARL_BD_L2_SHARE
 #define PEARL_BD_L2_SHARE 75u
+#endif
+// With column bands, 5 groups instead of the 4 the rule above gives, where five
+// groups' B is at most this percent of the L2: 2.5 MB fits 65% of a 4 MB L2
+// (2.6 MB) but not of a 3 MB one (1.95 MB). So the 4 MB cards (RTX 2060 Super to
+// 2080 Super, and the T4) take 5, and nothing else moves.
+//
+// Measured 2026-10-20, hashrate.js, 3 interleaved rounds of 60 s, band 5
+// against 4, verify-hits 400/400 at band 5 on all three cards
+// (probes/turing/launch.sh):
+//   RTX 2060 12 GB (3 MB, South Korea, 150 W): -0.70%, 0 of 3 rounds
+//   RTX 2070 (4 MB, Ontario, 175 W):           +0.30%, 3 of 3, and +0.28 to
+//                                              +0.32% in 3 more A/B pairs
+//   RTX 2080 (4 MB, Colorado, 275 W):          +0.21%, 3 of 3
+// On bench, band 6 was +0.21% (2070) and +0.13% (2080), and 8, all of the L2,
+// -2.3% and -2.1%. The 2060 Super, 2070 Super, 2080 Super and T4 have the same
+// L2 but did not run. Host only.
+#ifndef PEARL_BD_FIVE_SHARE
+#define PEARL_BD_FIVE_SHARE 65u
 #endif
 // The B-direct fold's tile walk. 1 (the default): bands of column groups
 // across every row group, so a band's B stays in L2 and A streams from DRAM. 0:
