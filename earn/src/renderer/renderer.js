@@ -1239,7 +1239,9 @@
     // Awaited so a rig that mines only Monero can resume too.
     await checkXmr();
     setInterval(() => { refreshBalance(); refreshXmrBalance(); }, BAL_REFRESH_MS);
-    if (resumeMining && (isValid(state.address) || cpuReady())) start();
+    // start() resumes whatever START could start, an LLM-only or Auto run with
+    // no payout address too. Main saves resumeMining for any running START.
+    if (resumeMining) start();
   }
 
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);

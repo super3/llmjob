@@ -4324,6 +4324,69 @@ describe('a START that ends on its own', () => {
     await flush();
     expect(ctx.sent('miner:stopped')).toHaveLength(1);
   });
+
+  // Every card failed and the engine stopped itself. The START used to stay on
+  // STOP with nothing mining.
+  it('mining mode whose engine gives up ends the START', async () => {
+    const ctx = await boot();
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m._running = false;
+    m.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('miner:log').map((l) => l.line)).toContain('engine exited (code 1)');
+  });
+
+  it('an engine that gives up beside a running model leaves the START to the model', async () => {
+    const ctx = await boot();
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const m = ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1];
+    m.emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    m._running = false;
+    m.emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    // And then the model goes too: nothing runs.
+    llm.emit('stopped');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
+  // A fleet that stopped on its own was used again: its "was ready" flag hid
+  // the error when the next model died before it was ready.
+  it('a model that stopped on its own is not reused by the next run', async () => {
+    const ctx = await boot();
+    ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 2000 });
+    const AUTO = { address: VALID_ADDR, mode: 'auto' };
+    ctx.emit('miner:start', AUTO);
+    await flush();
+    ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    const first = ctx.LlmManager.instances[0];
+    first.emit('ready', { baseUrl: first.baseUrl });
+    await flush();
+    first.emit('stopped');
+    await flush();
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+
+    // START again: the miner still runs, and the model comes back on a new fleet.
+    ctx.emit('miner:start', Object.assign({ worker: 'again' }, AUTO));
+    await flush();
+    ctx.PearlEngine.instances[ctx.PearlEngine.instances.length - 1].emit('event', { type: 'status', hashrate: '5' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(2);
+    ctx.LlmManager.instances[1].emit('stopped', 1);
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ error: 'The local LLM stopped before it was ready. See Logs.' });
+  });
 });
 
 // The model download can't be cancelled, so it goes on after STOP. It must not
@@ -4577,6 +4640,39 @@ describe('CPU mining (Monero)', () => {
     expect(ctx.XmrEngine.instances[0].isRunning()).toBe(true);
   });
 
+  // The CPU engine stopped itself (code 1). With nothing else running, the
+  // START used to stay on STOP with nothing mining.
+  it('a CPU miner that gives up ends a START it was all of, and still says why', async () => {
+    const ctx = await boot();
+    await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+    const cpu = ctx.XmrEngine.instances[0];
+    cpu.running = false;
+    cpu.emit('error', new Error('the CPU miner stopped (exit code 1)'));
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({
+      state: 'stopped', error: 'the CPU miner stopped (exit code 1)',
+    });
+    // The next START starts it again, with no old error.
+    await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+    expect(ctx.XmrEngine.instances).toHaveLength(2);
+    expect(ctx.sent('cpu:stats').slice(-1)[0]).toMatchObject({ state: 'mining', error: null });
+  });
+
+  it('a CPU miner that gives up beside the GPU miner leaves the START running', async () => {
+    const ctx = await boot();
+    await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
+    const cpu = ctx.XmrEngine.instances[0];
+    cpu.running = false;
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toEqual([]);
+    // A stop we asked for, and a late one from an engine let go of, end nothing.
+    cpu.emit('stopped', 0);
+    ctx.emit('miner:stop');
+    cpu.emit('stopped', 1);
+    expect(ctx.sent('miner:stopped')).toHaveLength(1);
+  });
+
   it('a START that turns it off stops the one running', async () => {
     const ctx = await boot();
     await start(ctx, { cpuMining: true, xmrAddress: XMR_ADDR });
@@ -4588,6 +4684,25 @@ describe('CPU mining (Monero)', () => {
   describe('with idle-only on', () => {
     const watcher = (ctx) => ctx.timers.intervals.find((h) => h.fn.name === 'checkIdle');
     const idle = (ctx, state) => ctx.electron.powerMonitor.getSystemIdleState.mockReturnValue(state);
+
+    // A Monero-only START: no Pearl address, no LLM. The first pause used to
+    // end it, because nothing ran while paused.
+    it('keeps a Monero-only START through a pause', async () => {
+      const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });
+      await start(ctx, { address: '', mode: 'mining', cpuMining: true, xmrAddress: XMR_ADDR });
+      expect(ctx.sent('miner:idle')).toEqual([{ paused: true, idleAfterSec: 300 }]);
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+      expect(watcher(ctx)).toBeDefined();
+      idle(ctx, 'idle');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.XmrEngine.instances).toHaveLength(1);
+      expect(ctx.XmrEngine.instances[0].isRunning()).toBe(true);
+      idle(ctx, 'active');
+      watcher(ctx).fn();
+      await flush();
+      expect(ctx.sent('miner:stopped')).toEqual([]);
+    });
 
     it('waits for the computer to be idle, and stops when someone is back', async () => {
       const ctx = await boot({ before: withPrefs({ mineWhenIdle: true }) });

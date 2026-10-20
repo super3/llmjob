@@ -1180,6 +1180,17 @@ describe('init interleavings', () => {
     expect(api.startMiner).not.toHaveBeenCalled();
     expect($('btn-start').hidden).toBe(false);
   });
+
+  // An update restart saves resumeMining for any running START. LLM-only and
+  // Auto start without a payout address, so they resume without one too.
+  it.each(['llm', 'auto'])('resumes an %s START that has no payout address', async (mode) => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: '', mode, resumeMining: true });
+    await boot({ api });
+    expect(api.startMiner).toHaveBeenCalledTimes(1);
+    expect(api.startMiner.mock.calls[0][0].mode).toBe(mode);
+    expect($('btn-stop').hidden).toBe(false);
+  });
 });
 
 // The Mine view's height, asserted against the stylesheet rather than the DOM.

@@ -439,6 +439,19 @@ function startCpuMining(settings) {
   engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
   // Every status change and hashrate tick (every 2 s) updates the Mine tab.
   engine.on('event', () => { if (cpuMiner === engine) sendCpu(); });
+  // Code 1: the engine gave up on its own. A stop we asked for is code 0, and
+  // stopCpuMining lets go of the engine first anyway. With nothing else
+  // running the START ends, or the window shows STOP over nothing. The line
+  // keeps saying why.
+  engine.on('stopped', (code) => {
+    if (code !== 1 || cpuMiner !== engine) return;
+    const why = cpuError;
+    endIfNothingRuns((miner && miner.isRunning()) || llmRunsOrComing());
+    if (!session) {
+      cpuError = why;
+      sendCpu();
+    }
+  });
   cpuMiner = engine;
   if (plan.reason) say('info', plan.reason);
   engine.start({
@@ -723,14 +736,14 @@ async function startMining(settings, llmCoRuns) {
 // Miner event wiring. PearlEngine translates our miner's events into the two
 // the UI reads (a periodic `status` and one `connected`), so nothing
 // downstream of here knows what produced them.
-function wireMinerEvents(miner, endpoint) {
-  miner.on('log', (l) => send('miner:log', l));
+function wireMinerEvents(engine, endpoint) {
+  engine.on('log', (l) => send('miner:log', l));
   // Said once, not on every 5s retry. The engine's own line repeats verbatim and
   // names neither the host it tried nor the fact that the name never resolved,
   // so a rig that cannot do DNS looks identical to a pool that is down — which
   // is how a user ends up staring at eight lines of "No such host is known".
   let dnsHinted = false;
-  miner.on('event', (e) => {
+  engine.on('event', (e) => {
     applyEvent(stats, e, Date.now());
     if (e.type === 'connect-failed' && e.dns && !dnsHinted) {
       dnsHinted = true;
@@ -741,10 +754,15 @@ function wireMinerEvents(miner, endpoint) {
       });
     }
   });
-  miner.on('error', (err) => reportLaunchFailure(err));
-  miner.on('stopped', (code) => send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' }));
+  engine.on('error', (err) => reportLaunchFailure(err));
+  engine.on('stopped', (code) => {
+    send('miner:log', { level: 'info', line: 'engine exited (code ' + code + ')' });
+    // Code 1: every card failed and the engine stopped itself. With nothing
+    // else running the START ends, as when the LLM stops on its own.
+    if (code === 1 && engine === miner) endIfNothingRuns(llmRunsOrComing());
+  });
   // The pool took the login, so this address is one that worked.
-  miner.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
+  engine.on('authorized', (e) => poolLookup().worked(e.host, e.address, e.family));
 }
 
 function stopMining() {
@@ -1516,6 +1534,11 @@ function buildFleet() {
   });
   f.on('error', () => { /* transient instance error — the fleet keeps the others */ });
   f.on('stopped', () => {
+    // A fleet that stopped on its own is not used again: the next run builds a
+    // new one, which starts its own "ready" and "serving" flags. A dead one
+    // kept llmEverReady from its last run, which hid the error below, and it
+    // never says 'stopped' a second time.
+    if (fleet === f) fleet = null;
     cancelChat('the local LLM stopped');
     resetLlmStatus();
     syncLanShare();
@@ -1529,9 +1552,8 @@ function buildFleet() {
     // An LLM-only session ends when the fleet exits, and so does one whose miner
     // never started — or the UI keeps showing a running session with nothing
     // running, and the idle watcher can bring things back behind it (see
-    // runPlan). Not while idle-only has mining paused: that START still stands,
-    // and mining comes back on the next resume.
-    if ((!miner || !miner.isRunning()) && !cpuRunning() && !(session && session.paused)) endSession();
+    // runPlan).
+    endIfNothingRuns(miner && miner.isRunning());
   });
   return f;
 }
@@ -1985,11 +2007,26 @@ async function runPlan(queuedSettings) {
     // End the START itself, not just the window's STOP button: a session left
     // behind kept the idle watcher going, which could bring the model back while
     // the window showed START.
-    if (!started && !plan.miner && !cpuRunning()) endSession();
+    if (!started) endIfNothingRuns(plan.miner);
   } else {
     stopLlm();
-    if (!plan.miner && !cpuRunning()) endSession();
+    endIfNothingRuns(plan.miner);
   }
+}
+
+// End the START when nothing runs for it: `others` is what the caller knows
+// still runs, besides the CPU miner. A START that idle-only has paused still
+// stands, though its miners are off: mining comes back on the next resume. A
+// Monero-only START with idle-only on used to end itself on its first pause.
+function endIfNothingRuns(others) {
+  if (others || cpuRunning() || (session && session.paused)) return;
+  endSession();
+}
+
+// Whether the local LLM runs, or a run is still bringing it up. A miner that
+// gives up on its own leaves the START to these.
+function llmRunsOrComing() {
+  return !!planRun || !!(fleet && (fleet.hasSpawned() || fleet.isReady()));
 }
 
 // Single-flight wrapper around runPlan. `miner:start` is a plain IPC event with
@@ -2161,8 +2198,9 @@ ipcMain.handle('settings:get', () => {
     },
     loadSettings(),
   ));
-  // The renderer already resumes mining after an update; a launch at login asks
-  // for the same thing. It only starts with a valid payout address.
+  // The renderer already resumes a START after an update; a launch at login asks
+  // for the same thing. It starts only what START could: with no payout
+  // address, an LLM-only or Auto run, or the CPU miner.
   if (startMiningOnLaunch) s.resumeMining = true;
   startMiningOnLaunch = false;
   return s;
