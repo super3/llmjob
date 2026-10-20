@@ -77,7 +77,9 @@ KX_API = "https://pool.kryptex.com/prl/api"
 # Each pool's own page for an address, linked from the report's pool table. HeroMiners' home page looks up
 # ?wallet= (its home.html); Kryptex's miner page is a path.
 HM_PAGE = "https://{coin}.herominers.com/?wallet={addr}"
-KX_PAGE = "https://pool.kryptex.com/prl/miner/stats/{addr}"
+KX_PAGE = "https://pool.kryptex.com/{coin}/miner/stats/{addr}"
+# Kryptex's Monero pool, read for the report's XMR Kryptex row.
+KXX_API = "https://pool.kryptex.com/xmr/api"
 
 
 def now(): return time.time()
@@ -972,6 +974,27 @@ class W:
             g["xmr_coins"] = g.get("xmr_coins", 0.0) + (hashes - last if hashes >= last else hashes) * mk["per_hash"]
             g["xmr_hashes"], g["xmr_khs"], g["xmr_seen"] = hashes, khs, t
 
+    def kx_xmr(self, t):
+        """Kryptex's Monero pool for our Monero address, for the report's XMR Kryptex row: its workers' 30-minute
+        hashrate and what it holds and has paid, at most every 5 minutes, failed tries included."""
+        st, addr = self.st, self.cfg["xmr_wallet"]
+        if t - max((st.get("kxx_tot") or {}).get("t", 0), st.get("kxx_try", 0)) < 5 * MIN:
+            return
+        st["kxx_try"] = t
+        s1, b = http("GET", f"{KXX_API}/v1/miner/balance/{addr}", timeout=30)
+        s2, p = http("GET", f"{KXX_API}/v1/miner/payouts/{addr}", timeout=30)
+        s3, ws = http("GET", f"{KXX_API}/v3/miner/workers/{addr}", timeout=30)
+        if s1 != 200 or not isinstance(b, dict) or s2 != 200 or not isinstance(p, dict):
+            return
+        rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
+        try:
+            st["kxx_tot"] = {"t": t, "confirmed": float(b.get("confirmed") or 0),
+                             "unconfirmed": float(b.get("unconfirmed") or 0),
+                             "paid": sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict)),
+                             "khs": sum(float(x.get("avg_hashrate_30m") or 0) for x in rows if isinstance(x, dict)) / 1000}
+        except (TypeError, ValueError):
+            pass
+
     def create(self, cls, pri, taken=(), tries=0):
         """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
         so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name in the
@@ -1197,6 +1220,7 @@ class W:
         if xg:
             self.xmr_market()
             self.xmr_pool(xg, t)
+            self.kx_xmr(t)
         for g in by_name.values():
             if g["last_share"] and not g["first_share_said"]:
                 g["first_share_said"] = True
@@ -1647,11 +1671,15 @@ class W:
         if kt:
             # Kryptex gives each worker's hashrate now, not an account average: the sum over our Kryptex boxes.
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
-            pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(addr=wallet)}) | {kths:.0f} TH/s | {kt['confirmed']:.3f} "
-                        f"| {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
+            pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
+                        f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
         if xt:
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
+        kxx = st.get("kxx_tot") if xon else None
+        if kxx:
+            pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
+                        f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 

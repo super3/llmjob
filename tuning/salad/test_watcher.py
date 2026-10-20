@@ -1514,14 +1514,62 @@ class TestMonero(Base):
         # each row on one line in a chat window, as shown (bold marks and escapes aren't)
         self.assertTrue(all(len(shown(l)) <= 90 for l in rows), max(rows, key=len))
 
+    def kx_api(self, balance=(200, {"confirmed": 2.061e-06, "unconfirmed": 5e-07, "threshold": 0.1})):
+        self.x.cfg["xmr_wallet"] = "4xyz"
+        self.http.on("GET", "kryptex.com/xmr/api/v1/miner/balance/4xyz$", balance)
+        self.http.on("GET", "kryptex.com/xmr/api/v1/miner/payouts/4xyz$",
+                     (200, {"count": 2, "results": [{"received": "0.1"}, {"received": "0.12"}]}))
+        self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/4xyz$",
+                     (200, {"results": [{"worker": "a", "avg_hashrate_30m": "1500"}, {"worker": "b", "avg_hashrate_30m": "500"}]}))
+
+    def test_kryptexs_monero_pool_is_read_at_most_every_5_minutes(self):
+        self.kx_api()
+        t = self.clock[0]
+        self.x.kx_xmr(t)
+        kxx = self.x.st["kxx_tot"]
+        self.assertAlmostEqual(kxx["confirmed"], 2.061e-06)
+        self.assertAlmostEqual(kxx["unconfirmed"], 5e-07)
+        self.assertAlmostEqual(kxx["paid"], 0.22)  # the sum of its payouts
+        self.assertAlmostEqual(kxx["khs"], 2.0)    # the workers' 30-minute hashrates, in kH/s
+        self.x.kx_xmr(t + 240)
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 1)
+        self.x.kx_xmr(t + 300)
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 2)
+
+    def test_a_failed_read_of_kryptexs_monero_pool_keeps_the_last_and_waits_5_minutes(self):
+        self.kx_api()
+        t = self.clock[0]
+        self.x.kx_xmr(t)
+        self.kx_api(balance=(500, {}))
+        self.x.kx_xmr(t + 300)
+        self.assertEqual(self.x.st["kxx_tot"]["t"], t)
+        self.x.kx_xmr(t + 540)  # 4 minutes after the failed try
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 2)
+
+    def test_the_pool_table_shows_kryptexs_monero_pool(self):
+        self.group()
+        self.x.cfg["xmr_wallet"] = "4xyz"
+        self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0, "pending": 0.0001, "khs_1h": 1.5}
+        self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn("| 🪙 [XMR Kryptex](https://pool.kryptex.com/xmr/miner/stats/4xyz) | 0.0 kH/s "
+                      "| 0.000002 | 0.000000 | 0.000000 |", report)
+        rows = report.split("| Pool |")[1].splitlines()
+        self.assertTrue(rows.index(next(l for l in rows if "XMR Kryptex" in l))
+                        > rows.index(next(l for l in rows if "XMR HeroMiners" in l)))  # under HeroMiners' row
+
     def test_without_an_address_the_table_is_unchanged(self):
         self.x.cfg["xmr_wallet"] = ""
         self.group()
+        self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         self.assertNotIn("kH/s", report)
         self.assertNotIn("Monero", report)
+        self.assertNotIn("XMR", report)
 
 
 class TestKryptex(Base):

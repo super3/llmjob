@@ -461,7 +461,10 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
   mining to the address. Locked-in and not-yet-locked rows were here before; they were dropped on 14 October.
   Each pool's name links to its page for our address (since 20 October): HeroMiners' `?wallet=` lookup on
-  pearl.herominers.com and monero.herominers.com, and Kryptex's `/prl/miner/stats/` page.
+  pearl.herominers.com and monero.herominers.com, and Kryptex's `/prl/miner/stats/` and `/xmr/miner/stats/`
+  pages. The **XMR Kryptex** row (since 20 October) is Kryptex's Monero pool for our Monero address, read every
+  5 minutes: its workers' 30-minute hashrate, the coins confirmed (paid out from 0.1 XMR), pending and paid. It
+  shows whenever Monero is on, even with no box mining there yet.
 - **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counted it),
   what each credited PRL cost to mine and the credit left. The credit left is now in the first line; the other
   two were dropped on 20 October as not helpful (for a few minutes the three were rows under the All row, and
