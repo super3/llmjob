@@ -36,7 +36,8 @@ const { parseChatStream } = require('../shared/llmChat');
 
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
 // (callers must check `status`); rejects only on transport errors/timeouts.
-function postJson(url, body, timeoutMs) {
+// `opts.signal` aborts the request, as the job worker does to a held poll.
+function postJson(url, body, timeoutMs, opts = {}) {
   return new Promise((resolve, reject) => {
     let u;
     try { u = new URL(url); } catch (e) { return reject(e); }
@@ -46,6 +47,7 @@ function postJson(url, body, timeoutMs) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
       timeout: timeoutMs || 30000,
+      signal: opts.signal,
     }, (res) => {
       let raw = '';
       res.setEncoding('utf8');

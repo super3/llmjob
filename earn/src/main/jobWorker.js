@@ -52,6 +52,12 @@ class JobWorker extends EventEmitter {
     this.active = 0;
     this._timer = null;
     this._delay = this.pollMinMs;
+    // Bumped by start() and stop(), so a poll or a tick from an earlier run can
+    // tell it is stale. A quick stop() and start() inside a held poll otherwise
+    // left the old loop rescheduling itself beside the new one.
+    this._run = 0;
+    // The poll the server is holding, so stop() can abort it.
+    this._poll = null;
   }
 
   activeJobs() { return this.active; }
@@ -65,13 +71,18 @@ class JobWorker extends EventEmitter {
   start() {
     if (this.running) return;
     this.running = true;
+    this._run++;
     this._delay = this.pollMinMs;
     this._tick();
   }
 
+  // Also aborts the held poll: the server stops holding it when the connection
+  // closes, and so stops claiming jobs for a worker that will not run them.
   stop() {
     this.running = false;
+    this._run++;
     if (this._timer) { this.cancel(this._timer); this._timer = null; }
+    if (this._poll) { this._poll.abort(); this._poll = null; }
   }
 
   // One poll → run any assigned jobs → re-open. Never rejects; a failure is
@@ -90,6 +101,7 @@ class JobWorker extends EventEmitter {
   // is not a completed wait.
   _tick() {
     if (!this.running) return;
+    const run = this._run;
     const startedAt = this.now();
     this.pollOnce()
       .then((count) => {
@@ -106,16 +118,39 @@ class JobWorker extends EventEmitter {
         else this._delay = Math.min(Math.max(this._delay, this.pollMinMs) * 2, this.pollMaxMs);
       })
       .catch((e) => {
+        // The poll stop() aborted is not an error.
+        if (run !== this._run) return;
         this._delay = Math.min(Math.max(this._delay, this.pollMinMs) * 2, this.pollMaxMs);
         try { this.emit('error', e); } catch (e2) { /* listener-less 'error' must not kill the loop */ }
       })
-      .then(() => { if (this.running) this._timer = this.schedule(() => this._tick(), this._delay); });
+      .then(() => { if (this.running && run === this._run) this._timer = this.schedule(() => this._tick(), this._delay); });
   }
 
   // Ask the server for work and process whatever it assigns. Returns the count.
   async pollOnce() {
-    const res = await this.post(this.serverUrl + '/api/jobs/poll', this._sign({ maxJobs: 1 }));
+    const run = this._run;
+    const poll = new AbortController();
+    this._poll = poll;
+    let res;
+    try {
+      res = await this.post(this.serverUrl + '/api/jobs/poll', this._sign({ maxJobs: 1 }), { signal: poll.signal });
+    } finally {
+      if (this._poll === poll) this._poll = null;
+    }
     const jobs = (res && res.data && res.data.jobs) || [];
+    // Stopped while the server held the poll, and it claimed a job in the moment
+    // before the abort. The worker stops when its llama-server does, so running
+    // the job would fail it on a refused connection. Fail it now, saying why, so
+    // the caller can retry at once instead of waiting out the 10-minute lock.
+    if (run !== this._run) {
+      for (const job of jobs) {
+        const lock = job.lockToken ? { lockToken: job.lockToken } : {};
+        const error = 'the node stopped before it ran this job';
+        await this.post(this.serverUrl + '/api/jobs/' + job.id + '/fail', this._sign({ ...lock, error })).catch(() => {});
+        this.emit('failed', { id: job.id, error });
+      }
+      return 0;
+    }
     for (const job of jobs) await this.processJob(job);
     return jobs.length;
   }

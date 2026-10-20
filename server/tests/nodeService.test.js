@@ -556,6 +556,18 @@ describe('NodeService', () => {
       expect(speed.stale).toBe(true);
       expect(speed.known).toBe(false); // so it neither gates the node nor counts as measured
     });
+
+    // The daily re-measure of a gated node used to blend into its day-old slow
+    // figure, moving it only 30% of the way, so the node stayed gated for days.
+    it('replaces a stale figure rather than blending into it', async () => {
+      const id = await seed('h');
+      await service.recordSpeedSample(id, 160, 20000); // 8 tok/s: gated
+      await db.query('UPDATE nodes SET speed_at = $1 WHERE node_id = $2',
+        [Date.now() - NodeService.SPEED_STALE_MS - 1000, id]);
+      const after = await service.recordSpeedSample(id, 400, 10000); // 40 tok/s
+      expect(after.tps).toBeCloseTo(40, 5);
+      expect(after.samples).toBe(2);
+    });
   });
 
   describe('listServingNodes', () => {

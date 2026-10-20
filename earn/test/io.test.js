@@ -104,6 +104,17 @@ describe('postJson', () => {
     await expect(io.postJson('::nope::', {})).rejects.toBeDefined();
   });
 
+  // The job worker aborts a held poll when it stops.
+  it('passes an abort signal to the request', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const ctl = new AbortController();
+    const p = io.postJson('https://host/api', {}, 1000, { signal: ctl.signal });
+    expect(https.request.mock.calls[0][1]).toMatchObject({ signal: ctl.signal });
+    res.emit('end');
+    await expect(p).resolves.toEqual({ status: 200, data: null, raw: '' });
+  });
+
   it('rejects on a transport error', async () => {
     const res = fakeRes();
     const reqs = wire(https, [res]);

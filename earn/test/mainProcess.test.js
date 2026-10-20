@@ -433,6 +433,9 @@ function loadMain(opts = {}) {
   require('../src/main/main');
   ctx.invoke = (ch, ...a) => ctx.electron._handlers[ch]({}, ...a);
   ctx.emit = (ch, ...a) => ctx.electron._listeners[ch]({}, ...a);
+  // A window that is already listening for log lines, as the renderer's onLog
+  // makes it (see send in main.js). A test of the hold-back passes logReady: false.
+  if (opts.logReady !== false) ctx.emit('log:ready');
   ctx.win = () => ctx.electron._windows[0];
   ctx.sent = (ch) => ctx.electron._windows
     .flatMap((w) => w.webContents.send.mock.calls)
@@ -477,6 +480,18 @@ function wireHealthOk(ctx) {
   });
 }
 
+// The first load of main.js transforms and instruments it and most of the app
+// with it. That one-time cost fell on the first test, and on a busy CPU it ran
+// past the 5-second test timeout. Paying it here keeps every test's own time
+// honest; the globals loadMain sets are put back as afterEach does.
+beforeAll(() => {
+  loadMain();
+  Object.assign(global, REAL_TIMERS);
+  delete process.resourcesPath;
+  Object.defineProperty(process, 'platform', REAL_PLATFORM);
+  Object.defineProperty(process, 'arch', REAL_ARCH);
+}, 60000);
+
 let errorSpy;
 beforeEach(() => {
   errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -490,6 +505,35 @@ afterEach(() => {
 });
 
 // ── boot / window lifecycle ──────────────────────────────────────────────────
+
+// Log lines sent before the renderer subscribes wait for it (see send).
+describe('log lines before the window is listening', () => {
+  const blip = (ctx, i) => ctx.updater._events.error(new Error('blip ' + i));
+  const blips = (ctx) => ctx.sent('miner:log').map((l) => l.line).filter((l) => /blip/.test(l));
+
+  it('wait for onLog, then go out in order, the last 200 of them', async () => {
+    const ctx = await boot({ isPackaged: true, logReady: false });
+    for (let i = 0; i < 205; i++) blip(ctx, i);
+    expect(ctx.sent('miner:log')).toEqual([]);
+    ctx.emit('log:ready');
+    const got = blips(ctx);
+    expect(got).toHaveLength(200);
+    expect(got[0]).toMatch(/blip 5$/);
+    expect(got[199]).toMatch(/blip 204$/);
+    // Listening now: a line goes straight out.
+    blip(ctx, 'now');
+    expect(blips(ctx).pop()).toMatch(/blip now/);
+  });
+
+  it('a page that loads again holds them until its onLog subscribes', async () => {
+    const ctx = await boot({ isPackaged: true });
+    ctx.win()._wcEvents['did-start-loading']();
+    blip(ctx, 'reload');
+    expect(blips(ctx).some((l) => /blip reload/.test(l))).toBe(false);
+    ctx.emit('log:ready');
+    expect(blips(ctx).pop()).toMatch(/blip reload/);
+  });
+});
 
 const { ALL_LAYERS } = require('../src/shared/vram');
 
@@ -957,6 +1001,15 @@ describe('updater', () => {
       });
       expect(ctx.fs.writeFileSync).toHaveBeenCalledWith(COPY, UPDATE_CONFIG);
       expect(readFrom).toBe(COPY);
+      expect(logs(ctx)).toEqual([{ level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' }]);
+    });
+
+    // It runs at startup, before the renderer subscribes to log lines (after
+    // its first round trips), and the warning was dropped. It waits now.
+    it('and the warning reaches a window that starts listening late', async () => {
+      const ctx = await boot({ isPackaged: true, resourcesPath: '/res', logReady: false, before: onDisk(null) });
+      expect(logs(ctx)).toEqual([]);
+      ctx.emit('log:ready');
       expect(logs(ctx)).toEqual([{ level: 'warn', line: 'the updater\'s app-update.yml was missing or damaged — using a good copy from the app\'s data folder' }]);
     });
 
@@ -2067,8 +2120,10 @@ describe('local LLM', () => {
     expect(logs).toContain('cluster job j2 failed: oom');
     expect(logs).toContain('serving cluster jobs for the LLMJob network');
 
-    worker.opts.post('https://x/api', { a: 1 });
-    expect(ctx.io.postJson).toHaveBeenCalledWith('https://x/api', { a: 1 }, 30000);
+    // The worker's abort signal reaches the request (see JobWorker.stop).
+    const signal = new AbortController().signal;
+    worker.opts.post('https://x/api', { a: 1 }, { signal });
+    expect(ctx.io.postJson).toHaveBeenCalledWith('https://x/api', { a: 1 }, 30000, { signal });
     const onDelta = jest.fn();
     const onReasoning = jest.fn();
     await worker.opts.runJob({ messages: [] }, { onDelta, onReasoning });
@@ -2478,8 +2533,11 @@ describe('a card that keeps losing its GPU', () => {
 
     giveUp(first);
     await flush();
-    // Keyed by the card's bus id, which stays with it when cards move.
-    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: { '0:1:0.0': [tier.name] } });
+    // Keyed by the card's bus id, which stays with it when cards move, and by
+    // its number and name, marked, for a start that gets no bus ids.
+    expect(ctx.read()).toEqual({ version: '0.0.0-test', cards: {
+      '0:1:0.0': [tier.name], '0:NVIDIA RTX PRO 4500 Blackwell +bus': [tier.name],
+    } });
     expect(ctx.sent('miner:log').map((l) => l.line)).toContain(tier.name + ' kept losing GPU 0. It won\'t be started'
       + ' there again until the app updates or you press START LLM on the Chat tab.');
     expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR });
@@ -2520,6 +2578,54 @@ describe('a card that keeps losing its GPU', () => {
     const writes = ctx.fs.writeFileSync.mock.calls.length;
     ctx.emit('llm:retry');
     expect(ctx.fs.writeFileSync.mock.calls.length).toBe(writes);
+  });
+
+  // A start does not always know the bus ids: nvidia-smi can fail to give them
+  // on one start and not the next. A loss saved with them is found without.
+  it('finds a loss saved with bus ids on a start that gets none', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: {
+      '0:1:0.0': [tier.name], '0:NVIDIA RTX PRO 4500 Blackwell +bus': [tier.name],
+    } }, {});
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances[0].start.mock.calls[0][0].alias).toBe(ctx.config.LLM.model.name);
+  });
+
+  // On a rig nvidia-smi can't read, only llama-server may name the card's bus
+  // id. The loss was saved under that alone, the next start looked up 'auto',
+  // and the model went back on the failing card.
+  it('finds a loss under the bus id llama-server printed, on a rig without nvidia-smi', async () => {
+    const ctx = await bootWith([], null, {});
+    const gemma = ctx.config.LLM.model;
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    const first = ctx.LlmManager.instances[0];
+    first.emit('ready', { baseUrl: first.baseUrl });
+    await flush();
+    first.deviceBusId = '0000:01:00.0';
+    giveUp(first);
+    await flush();
+    expect(ctx.read().cards).toEqual({ '0:1:0.0': [gemma.name], 'auto +bus': [gemma.name] });
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: false, error: ERROR });
+  });
+
+  // A server already on the port (one left from a restart) is reused, not
+  // planned, so nothing is held back on it: the old sentence has to go.
+  it('clears the held sentence when it reuses a running server', async () => {
+    const tier = require('../src/shared/config').LLM.tiers[0];
+    const gemma = require('../src/shared/config').LLM.model;
+    const ctx = await bootWith([PRO], { version: '0.0.0-test', cards: { '0:1:0.0': [tier.name, gemma.name] } }, BUS);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop().held).toMatch(/kept losing the GPU/);
+    wireHealthOk(ctx);
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    expect(ctx.sent('llm:status').pop()).toMatchObject({ ready: true, held: null });
   });
 
   // An update may have fixed what went wrong.

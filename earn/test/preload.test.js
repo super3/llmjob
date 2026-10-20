@@ -74,6 +74,18 @@ describe('send-based methods', () => {
   });
 });
 
+// Main holds log lines back until the window listens: subscribing says so.
+describe('onLog', () => {
+  it('tells main the window is listening once it has subscribed', () => {
+    ipcRenderer.on.mockClear();
+    ipcRenderer.send.mockClear();
+    api.onLog(jest.fn());
+    expect(ipcRenderer.on).toHaveBeenCalledWith('miner:log', expect.any(Function));
+    expect(ipcRenderer.send).toHaveBeenCalledWith('log:ready');
+    expect(ipcRenderer.on.mock.invocationCallOrder[0]).toBeLessThan(ipcRenderer.send.mock.invocationCallOrder[0]);
+  });
+});
+
 describe('event subscriptions', () => {
   // [apiMethod, channel, forwardsPayload]
   const cases = [

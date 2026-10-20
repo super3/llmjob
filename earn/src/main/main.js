@@ -289,8 +289,23 @@ function refreshLoginItem(appImage) {
   }
 }
 
+// Log lines wait here until the window is listening. The renderer subscribes
+// after its first round trips (settings, then GPU and region detection), so a
+// line sent at startup, such as the updater's repair warning, was dropped. The
+// preload's onLog says when it is listening ('log:ready'), and a page that
+// loads again starts over (see createWindow).
+const LOG_BACKLOG_MAX = 200;
+let logListening = false;
+let logBacklog = [];
+
 function send(channel, payload) {
-  if (win && !win.isDestroyed()) win.webContents.send(channel, payload);
+  if (!win || win.isDestroyed()) return;
+  if (channel === 'miner:log' && !logListening) {
+    logBacklog.push(payload);
+    if (logBacklog.length > LOG_BACKLOG_MAX) logBacklog.shift();
+    return;
+  }
+  win.webContents.send(channel, payload);
 }
 
 // Open a URL in the user's browser, but only http(s). The renderer can hand any
@@ -980,6 +995,9 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  // A page that loads, or loads again, is not listening for log lines until
+  // its onLog says so (see send).
+  win.webContents.on('did-start-loading', () => { logListening = false; });
   win.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   // A launch at login stays in the tray. Only when there is a tray to find it
@@ -1158,8 +1176,8 @@ const GPU_LOST_ERROR = 'GPU kept failing — START LLM to retry';
 // (LlmManager 'gpu-lost'). Remember the card and the model, so the next START
 // or launch at login does not load that model there again.
 function rememberGpuLoss(e) {
-  const key = gpuLoss.cardKey(e.index, llmCards, llmBusIds, e.busId);
-  saveGpuLost(gpuLoss.remember(loadGpuLost(), key, servingModel.name));
+  const keys = gpuLoss.saveKeys(e.index, llmCards, llmBusIds, e.busId);
+  saveGpuLost(gpuLoss.remember(loadGpuLost(), keys, servingModel.name));
   send('miner:log', { level: 'error', line: servingModel.name + ' kept losing ' + (e.index == null ? 'the GPU' : 'GPU ' + e.index)
     + '. It won\'t be started there again until the app updates or you press START LLM on the Chat tab.' });
 }
@@ -1295,7 +1313,9 @@ async function startLlm(reserveMb, epoch) {
   if (healthy) {
     fleet.adopt(targetBase);
     llmEverReady = true;
-    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, endpoint: targetBase + '/v1', webUrl: targetBase });
+    // `held` too: a server this run did not plan was not held to any model, and
+    // an old "kept losing GPU" sentence stayed in the LLM tooltip.
+    llmStatus = Object.assign({}, llmStatus, { ready: true, error: null, note: null, held: null, endpoint: targetBase + '/v1', webUrl: targetBase });
     send('miner:log', { level: 'info', line: 'local LLM already running on ' + targetBase + ' — reusing it' });
     sendLlmStatus();
     syncLanShare();
@@ -1319,7 +1339,7 @@ async function startLlm(reserveMb, epoch) {
   // that lost it even under the smallest model is left out altogether. Without
   // nvidia-smi there are no cards, and the one llama.cpp picks is index null.
   const gpuLost = loadGpuLost();
-  const lostOn = (index) => gpuLost.cards[gpuLoss.cardKey(index, cards, busIds)] || [];
+  const lostOn = (index) => gpuLoss.lostModels(gpuLost, gpuLoss.lookupKeys(index, cards, busIds));
   const usable = cards.filter((c) => !lostOn(c.index).includes(LLM.model.name));
   if (cards.length ? !usable.length : lostOn(null).includes(LLM.model.name)) {
     const why = 'not starting the local LLM: it kept losing the GPU even with ' + LLM.model.name
@@ -1814,7 +1834,7 @@ function makeJobWorker(baseUrl) {
   const w = new JobWorker({
     identity: { nodeId: node.nodeId, publicKey: node.publicKey, secretKey: node.secretKey },
     serverUrl: node.serverUrl || NODE.serverUrl,
-    post: (url, body) => postJson(url, body, 30000),
+    post: (url, body, opts) => postJson(url, body, 30000, opts),
     runJob: (chatBody, { onDelta, onReasoning }) => streamChatCompletion(baseUrl, chatBody, onDelta, onReasoning).done,
     servingModel: () => servingModel,
   });
@@ -2193,6 +2213,13 @@ ipcMain.on('open-external', (_e, url) => { openExternalSafe(url); });
 // switch, mining start/stop, etc.), so the frame never leaves a gap under the
 // footer or clips a taller view.
 ipcMain.on('app:fit', () => { fitWindowToContent(); });
+// The window is listening for log lines: send what waited (see send).
+ipcMain.on('log:ready', () => {
+  logListening = true;
+  const lines = logBacklog;
+  logBacklog = [];
+  for (const line of lines) send('miner:log', line);
+});
 ipcMain.on('clipboard:write', (_e, text) => { clipboard.writeText(String(text == null ? '' : text)); });
 ipcMain.on('llm:chat', (_e, messages) => llmChat(messages));
 // START LLM on the Chat or API tab: the cards that kept losing their GPU get

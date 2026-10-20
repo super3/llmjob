@@ -463,7 +463,7 @@ function makeCliJobWorker(nodeCfg, base, baseUrl, gate) {
   const w = new JobWorker({
     identity: { nodeId: nodeCfg.nodeId, publicKey: nodeCfg.publicKey, secretKey: nodeCfg.secretKey },
     serverUrl: base,
-    post: (url, body) => postJson(url, body, 30000),
+    post: (url, body, opts) => postJson(url, body, 30000, opts),
     runJob: gate
       ? async (chatBody, h) => {
         // begin()/end() bracket the WHOLE job, not just the wake. shouldRelease()

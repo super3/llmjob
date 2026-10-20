@@ -507,4 +507,82 @@ describe('start / stop loop + backoff', () => {
     await flush();
     expect(sch.scheduled).toHaveLength(0);
   });
+
+  // A worker stops when its llama-server does. The server holds an empty poll
+  // open for up to 25s and keeps claiming jobs for it until the connection
+  // closes, so stop() has to close it.
+  test('stop() aborts the held poll; the aborted poll is not an error and schedules nothing', async () => {
+    let signal;
+    const post = (url, body, opts) => new Promise((resolve, reject) => {
+      signal = opts.signal;
+      signal.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+    const sch = makeScheduler();
+    const errors = [];
+    const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1, schedule: sch.schedule, cancel: sch.cancel });
+    w.on('error', (e) => errors.push(e.message));
+    w.start();
+    await flush();
+    expect(signal.aborted).toBe(false);
+    w.stop();
+    expect(signal.aborted).toBe(true);
+    await flush();
+    expect(errors).toEqual([]);
+    expect(sch.scheduled).toHaveLength(0);
+  });
+
+  // The server can claim a job in the moment before the abort reaches it. The
+  // worker does not run it against a model that is going away, which failed it
+  // on a refused connection; it fails it at once, saying why, so the caller can
+  // retry instead of waiting out the 10-minute lock.
+  test('a job claimed just before stop() is failed with the reason, not run', async () => {
+    let answer;
+    const calls = [];
+    const post = (url, body) => {
+      calls.push({ url, body });
+      if (url.endsWith('/poll')) {
+        return new Promise((r) => { answer = () => r({ status: 200, data: { jobs: [{ id: 'J1', prompt: 'p', lockToken: 'tok' }, { id: 'J2', prompt: 'p' }] } }); });
+      }
+      return url.endsWith('J2/fail') ? Promise.reject(new Error('offline')) : Promise.resolve({ status: 200 });
+    };
+    const runJob = jest.fn(() => Promise.resolve());
+    const sch = makeScheduler();
+    const failed = [];
+    const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob, now: () => 1, schedule: sch.schedule, cancel: sch.cancel });
+    w.on('failed', (e) => failed.push(e));
+    w.start();
+    await flush();
+    w.stop();
+    answer(); // a post that answers despite the abort: the server had already claimed
+    await flush();
+    expect(runJob).not.toHaveBeenCalled();
+    const why = 'the node stopped before it ran this job';
+    expect(calls.find((c) => c.url === 's/api/jobs/J1/fail').body).toMatchObject({ lockToken: 'tok', error: why });
+    const j2 = calls.find((c) => c.url === 's/api/jobs/J2/fail').body;
+    expect(j2).toMatchObject({ error: why });
+    expect(j2.lockToken).toBeUndefined();
+    expect(failed).toEqual([{ id: 'J1', error: why }, { id: 'J2', error: why }]);
+    expect(sch.scheduled).toHaveLength(0);
+  });
+
+  // stop() and start() inside one held poll: the old poll answers after the new
+  // loop has begun. It used to reschedule itself, leaving two loops polling.
+  test('a quick stop() and start() inside a held poll leaves one loop', async () => {
+    const answers = [];
+    const post = () => new Promise((r) => answers.push(() => r({ status: 200, data: { jobs: [] } })));
+    const sch = makeScheduler();
+    const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1, schedule: sch.schedule, cancel: sch.cancel });
+    w.start();
+    await flush();
+    w.stop();
+    w.start();
+    await flush();
+    expect(answers).toHaveLength(2);
+    answers[0]();
+    await flush();
+    expect(sch.scheduled).toHaveLength(0);
+    answers[1]();
+    await flush();
+    expect(sch.scheduled).toHaveLength(1);
+  });
 });

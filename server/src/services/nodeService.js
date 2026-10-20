@@ -301,10 +301,15 @@ class NodeService {
     const rate = t / (ms / 1000);
     if (rate > MAX_SAMPLE_TPS) return null;
 
-    const r = await this.db.query('SELECT measured_tps, speed_samples FROM nodes WHERE node_id = $1', [nodeId]);
+    const r = await this.db.query('SELECT measured_tps, speed_samples, speed_at FROM nodes WHERE node_id = $1', [nodeId]);
     if (!r.rows.length) return null;
 
-    const prev = num(r.rows[0].measured_tps);
+    // A figure past SPEED_STALE_MS counts as unknown, as getSpeed says, so the
+    // new reading replaces it. Blending into it kept a gated node's old slow
+    // figure for days: the daily re-measure only moved it 30% of the way.
+    const at = num(r.rows[0].speed_at);
+    const stale = at == null || (Date.now() - at) > SPEED_STALE_MS;
+    const prev = stale ? null : num(r.rows[0].measured_tps);
     const samples = Number(r.rows[0].speed_samples) || 0;
     const next = (opts.replace || prev == null) ? rate : prev * (1 - SPEED_ALPHA) + rate * SPEED_ALPHA;
 

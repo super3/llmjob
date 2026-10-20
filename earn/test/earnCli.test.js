@@ -1707,8 +1707,10 @@ describe('local LLM', () => {
     expect(jw.opts.serverUrl).toBe(NODE.serverUrl);
 
     // Exercise the worker's wiring back into io.
-    await jw.opts.post('http://u', { a: 1 });
-    expect(m.io.postJson).toHaveBeenCalledWith('http://u', { a: 1 }, 30000);
+    // The worker's abort signal reaches the request (see JobWorker.stop).
+    const signal = new AbortController().signal;
+    await jw.opts.post('http://u', { a: 1 }, { signal });
+    expect(m.io.postJson).toHaveBeenCalledWith('http://u', { a: 1 }, 30000, { signal });
     const onDelta = jest.fn();
     const onReasoning = jest.fn();
     await jw.opts.runJob({ messages: [] }, { onDelta, onReasoning });
