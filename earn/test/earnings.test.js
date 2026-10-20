@@ -48,4 +48,11 @@ describe('earnings', () => {
     expect(prlToUsd(10, oneADay)).toBeCloseTo(5, 5);
     expect(prlToUsdLabel(10, oneADay)).toBe('$5.00');
   });
+
+  test('dollar labels have a thousands separator', () => {
+    const oneADay = { DIFFICULTY: (1e12 * 86400) / HASHES_PER_DIFFICULTY, BLOCK_REWARD: 2000, FEE: 1, PRL_USD: 0.5 };
+    expect(prlToUsdLabel(2221.38, oneADay)).toBe('$1,110.69');
+    expect(prlToUsdLabel(999.98, oneADay)).toBe('$499.99');
+    expect(estDailyUsdLabel(2.5, oneADay)).toBe('$2,500.00');
+  });
 });

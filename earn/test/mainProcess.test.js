@@ -4562,7 +4562,7 @@ describe('CPU mining (Monero)', () => {
 
     ctx.io.getJson.mockResolvedValueOnce({ stats: { balance: '12500000000', paid: '0' } });
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toEqual({ pending: 0.0125, paid: 0, earned: 0.0125, usd: null });
-    expect(ctx.io.getJson).toHaveBeenLastCalledWith(
+    expect(ctx.io.getJson).toHaveBeenCalledWith(
       'https://monero.herominers.com/api/stats_address?address=' + XMR_ADDR + '&longpoll=false');
     // No balance yet: the pool leaves the field out.
     ctx.io.getJson.mockResolvedValueOnce({ stats: { shares_good: 12 } });
@@ -4573,6 +4573,33 @@ describe('CPU mining (Monero)', () => {
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
+  });
+
+  // Its dollar figure for Settings: the pool's own XMR price, from /api/stats,
+  // read at most every 10 minutes like the PRL price.
+  it('prices the Monero balance with the pool XMR price, read at most every 10 minutes', async () => {
+    const ctx = loadMain();
+    const STATS = 'https://monero.herominers.com/api/stats';
+    let price = { pool: { price: { usd: '600.00' } } };
+    // 2 XMR on the pool.
+    ctx.io.getJson.mockImplementation((url) => (url !== STATS ? Promise.resolve({ stats: { balance: '2000000000000', paid: '0' } })
+      : price ? Promise.resolve(price) : Promise.reject(new Error('offline'))));
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1e12);
+    try {
+      expect((await ctx.invoke('xmr:balance', XMR_ADDR)).usd).toBe(1200);
+      price = { pool: { price: { usd: '700.00' } } };
+      expect((await ctx.invoke('xmr:balance', XMR_ADDR)).usd).toBe(1200);
+      expect(ctx.io.getJson.mock.calls.filter(([u]) => u === STATS)).toHaveLength(1);
+      now.mockReturnValue(1e12 + 10 * 60 * 1000);
+      expect((await ctx.invoke('xmr:balance', XMR_ADDR)).usd).toBe(1400);
+      // A failed read keeps the last price.
+      now.mockReturnValue(1e12 + 30 * 60 * 1000);
+      price = null;
+      expect((await ctx.invoke('xmr:balance', XMR_ADDR)).usd).toBe(1400);
+      expect(ctx.io.getJson.mock.calls.filter(([u]) => u === STATS)).toHaveLength(3);
+    } finally {
+      now.mockRestore();
+    }
   });
 });
 
