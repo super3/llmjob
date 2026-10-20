@@ -56,6 +56,11 @@ VARIANTS=(
   "cmr255|-maxrregcount=255|a9500fa5f046"
   "cmr255rul8|-maxrregcount=255 -Xptxas --register-usage-level=8|23d035369029"
 )
+# VARIANTS_SPEC="name|flags;name|flags" races these builds instead, with no expected
+# hash: the fold's ablation builds (-DPEARL_ABLATE_*), or a candidate behind a -D
+# switch against base. Name the shipped build "base" so the others are measured
+# against it.
+if [ -n "${VARIANTS_SPEC:-}" ]; then IFS=';' read -r -a VARIANTS <<< "$VARIANTS_SPEC"; fi
 if [ -n "${ONLY:-}" ]; then
   keep=()
   for v in "${VARIANTS[@]}"; do case " $ONLY " in *" ${v%%|*} "*) keep+=("$v") ;; esac; done
@@ -149,7 +154,7 @@ build_variant() {   # name flags expect
   st=$(awk '/Compiling entry function .pearl_tile_fold_wmma. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
   h=$(fold_hash "$K/build/Release/pearl_core.node")
   echo "$h" > "$K/fold.hash"
-  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') fold=$h expect=$expect $([ "$h" = "$expect" ] && echo match || echo MISMATCH) flags=[$flags]"
+  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') fold=$h $([ -z "$expect" ] && echo "expect=-" || { [ "$h" = "$expect" ] && echo "expect=$expect match" || echo "expect=$expect MISMATCH"; }) flags=[$flags]"
   touch "$K/ok"
 }
 
