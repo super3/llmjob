@@ -879,7 +879,7 @@ class TestPoolTotals(Base):
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
         self.assertIn("| **+5.12\\*** |\n", report)  # the All row
-        self.assertIn("Spent $6.00* on Salad for 8.00* PRL, $0.75* each · Salad credit left $", report)
+        self.assertIn(f"| Salad{w.NB}spent | — | — | — | $6.00* |\n| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.75* |\n", report)
         self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
         self.assertNotIn("has credited", report)   # the ratio is in the notes, not the report, since 20 October
         self.assertNotIn("Locked", report)
@@ -928,17 +928,25 @@ class TestCreditRatio(Base):
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
         self.assertTrue(all(len(l) <= 90 for l in rows))
 
-    def test_one_short_line_under_the_tables(self):
+    def test_salads_figures_are_rows_under_the_all_row(self):
         self.x.st["kx_tot"] = {"t": T0, "total": 1.0, "confirmed": 1.0, "unconfirmed": 0.0, "paid": 0.0}
         self.x.cfg["safetrade"] = {"sold": 1.0, "received": 1.5, "fees": 0.0, "usdt": 1.5}
         report = self.report(cfg={"max_active": 10, "xmr_wallet": "4" + "a" * 94, "xmr_groups": ["*"]})
-        under = report.rstrip("\n").split("\n\n")[-1]
-        # What each PRL cost and the credit left, nothing more (8 PRL at the 75% credited is 6, for $6.00).
-        self.assertEqual(under, "Spent $6.00* on Salad for 6.00* PRL, $1.00* each · Salad credit left $94.00*, "
-                                "nothing billing now")
+        rows = [l for l in report.split("\n") if l.startswith("| ")]
+        at = next(i for i, l in enumerate(rows) if l.startswith("| **All**"))
+        # What Salad cost, what each PRL cost (8 PRL at the 75% credited is 6, for $6.00) and the credit left;
+        # no box is billing, so no hours.
+        self.assertEqual(rows[at + 1:at + 4], [f"| Salad{w.NB}spent | — | — | — | — | $6.00* |",
+                                              f"| Cost{w.NB}per{w.NB}PRL | — | — | — | — | $1.00* |",
+                                              f"| Credit{w.NB}left | — | — | — | — | $94.00* |"])
+        self.assertTrue(report.endswith(" |\n"))                     # nothing under the tables
         for gone in ("⛏️ mining ·", "our own count or estimate", "(K) mines Pearl on Kryptex", "is Salad's bill",
-                     "has credited", "pays out from", "SafeTrade", "have mined", "credit_offset"):
+                     "has credited", "pays out from", "SafeTrade", "have mined", "credit_offset", "on Salad for"):
             self.assertNotIn(gone, report)
+
+    def test_the_credit_row_says_how_many_hours_it_lasts(self):
+        self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit
+        self.assertIn(f"| Credit{w.NB}left{w.NB}(627*{w.NB}h) | — | — | — | $94.00* |\n", self.report(cfg={"max_active": 2}))
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -958,10 +966,11 @@ class TestCreditRatio(Base):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
         self.assertIn("| **+2.34\\*** |\n", report)  # the All row
-        self.assertIn("Spent $6.00* on Salad for 6.00* PRL, $1.00* each", report)
+        self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $1.00* |", report)
 
     def test_the_ratio_has_a_floor(self):
-        self.assertIn("for 7.20* PRL", self.report(cfg={"yield_floor": 0.9}))   # 8 × 90%, not 8 × 75%
+        # $6.00 for 8 × 90% = 7.20 PRL, not 8 × 75%
+        self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.83* |", self.report(cfg={"yield_floor": 0.9}))
         self.assertAlmostEqual(self.x.credit_ratio(), 0.9)
 
     def test_the_rules_use_config_yield(self):
@@ -971,7 +980,8 @@ class TestCreditRatio(Base):
         self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
-            self.assertIn("for 6.00* PRL", f.read())                   # the table still counts on the ratio
+            # the table still counts on the ratio: $6.00 for 6 PRL, not 8
+            self.assertIn(f"| Cost{w.NB}per{w.NB}PRL | — | — | — | $1.00* |", f.read())
 
     def test_a_pc_judged_at_the_credited_rate(self):
         # 199 TH/s at medium clears 10% at the network's rate (+18%), not at 75% of it (−9%).
@@ -1064,7 +1074,7 @@ class TestStartingBoxes(Base):
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
-        self.assertRegex(report, r"Salad credit left \$[\d.]+\*, about \d+\* h at \$\d+\.\d\d/hr\n")
+        self.assertRegex(report, rf"\| Credit{w.NB}left{w.NB}\(\d+\*{w.NB}h\) \| — \| — \| — \| \$[\d.]+\* \|\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
         a = self.group(pri="medium")
@@ -2441,7 +2451,7 @@ class TestKryptex(Base):
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)
         # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
         self.assertIn("| **+5.51\\*** |\n", report)
-        self.assertIn("Spent $11.00* on Salad for 11.88* PRL, $0.93* each", report)
+        self.assertIn(f"| Salad{w.NB}spent | — | — | — | $11.00* |\n| Cost{w.NB}per{w.NB}PRL | — | — | — | $0.93* |\n", report)
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False
