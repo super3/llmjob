@@ -2882,11 +2882,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
   if (ctx->foldBDirect) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "%s 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
-             PEARL_BD_KORDER     ? (PEARL_BD_A_REALIGN ? "A-direct, k-lo first"
-                                                       : "A-direct, no realign, k-lo first")
-             : PEARL_BD_A_DIRECT ? (PEARL_BD_A_REALIGN ? "A-direct" : "A-direct, no realign")
-                                 : "B-direct",
+             "%s%s%s%s 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             PEARL_BD_A_DIRECT ? "A-direct" : "B-direct",
+             PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? ", no realign" : "",
+             PEARL_BD_KORDER ? ", k-lo first" : "", PEARL_BD_HASH_SPREAD ? ", hash spread" : "",
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
     return ctx->foldName;

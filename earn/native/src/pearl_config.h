@@ -801,6 +801,29 @@ typedef struct {
 #if PEARL_BD_KORDER && !PEARL_BD_A_DIRECT
 #error "PEARL_BD_KORDER orders the A-direct fold's IMMA: it needs PEARL_BD_A_DIRECT=1"
 #endif
+// The transcript hash spread through the next tile (PEARL_BD_HASH_SPREAD 1; 0, the
+// default, hashes at the hand-off). With 0, four warps hash the tile's 128 regions
+// after the hand-off while the other warp on each of their schedulers starts the next
+// tile alone, and at the end of that tile the other warps wait at the hand-off while
+// the hashers catch up alone. In the sm_75 SASS a hasher's path from the hand-off to
+// its next mma is 773 instructions and 1341 stall cycles, against 28 and 112 for the
+// others: at least 1.2K cycles of one warp feeding the tensor pipe at each end of a
+// tile (the hash timed at about 2.3K with clock()). With 1, every warp hashes its own
+// 16 regions of the last tile, two lanes a region, half a round in each chunk of the
+// next tile, between its mma (pearl_fold_bd.cuh). Then nothing makes the warps meet at
+// the end of a tile, so the four that hashed pass the hand-off two k-steps before the
+// end of theirs: each scheduler's two warps stay that far apart, about as far as the
+// hash put them, and neither issues alone. Persistent A-direct without the realign
+// only. Not measured yet. The host reads it only for the fold's name.
+#ifndef PEARL_BD_HASH_SPREAD
+#define PEARL_BD_HASH_SPREAD 0
+#endif
+#if PEARL_BD_HASH_SPREAD != 0 && PEARL_BD_HASH_SPREAD != 1
+#error "PEARL_BD_HASH_SPREAD is 0 or 1"
+#endif
+#if PEARL_BD_HASH_SPREAD && !(PEARL_BD_A_DIRECT && PEARL_BD_PERSIST && !PEARL_BD_A_REALIGN)
+#error "PEARL_BD_HASH_SPREAD is a form of the persistent A-direct fold without the realign"
+#endif
 // The B-direct fold's shared: this many A stages, then this many transcript buffers.
 #define PEARL_BD_SMEM_A_STAGES (PEARL_BD_A_DIRECT ? 0 : PEARL_BD_A_STAGES)
 #define PEARL_BD_T_BUFS (PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? 2 : 1)

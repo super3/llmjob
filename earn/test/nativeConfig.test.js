@@ -232,7 +232,13 @@ describe('native target test', () => {
     // These and pearl_hash_word_msf's are the only places that pick the word.
     // A new one has to be added above.
     expect(count(KERNEL, '? pearl_bswap32(')).toBe(sites.length + 1);
-    expect(count(FOLD_BD, 'pearl_bswap32(')).toBe(0);
+    // Turing's spread hash (PEARL_BD_HASH_SPREAD) splits the state by columns over
+    // a lane pair too: once fourteen steps are done, lane 0's hs[0] and hs[4] are s0
+    // and s8, and lane 1's hs[3] and hs[7] are s7 and s15
+    // (earn/test/turingHashSpread.test.js runs it against BLAKE3).
+    expect(FOLD_BD).toContain('hs_w = test.hash_big_endian ? hs[0] ^ hs[4] : hs[3] ^ hs[7];');
+    expect(FOLD_BD).toContain('const uint32_t msw = test.hash_big_endian ? pearl_bswap32(hs_w) : hs_w;');
+    expect(count(FOLD_BD, 'pearl_bswap32(')).toBe(1);
     // And each test passes a tie on to the full compare: it rejects only a top
     // word greater than the target's.
     for (const src of [KERNEL, FOLD_BD]) {
