@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('events');
 const {
-  buildAuthorize, buildSubmit, encode, parseMessage,
+  buildAuthorize, buildSubmit, encode, parseMessage, isKryptexHost,
 } = require('../shared/miner/stratum');
 const {
   PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52,
@@ -10,7 +10,7 @@ const {
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
 const { gzipSizes } = require('../shared/miner/plainProof');
-const { combinePayoutAddress } = require('../shared/address');
+const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
@@ -189,12 +189,19 @@ class PearlMiner extends EventEmitter {
       return false;
     }
 
-    const wallet = combinePayoutAddress(settings.address, settings.mdlAddress);
+    const [host, port] = String(settings.endpoint || '').split(':');
+    // Kryptex has no MDL merge mining, and answered a login carrying an MDL
+    // address with "Invalid login" (2026-10-20), so there the rig mines
+    // Pearl alone. HeroMiners takes the combined address.
+    const mdl = isKryptexHost(host) ? null : settings.mdlAddress;
+    if (mdl !== settings.mdlAddress && isValidMdlAddress(normalizeAddress(settings.mdlAddress))) {
+      this.emit('log', { level: 'warn', line: 'Kryptex has no MDL merge mining: mining Pearl only' });
+    }
+    const wallet = combinePayoutAddress(settings.address, mdl);
     const worker = settings.worker || 'rig01';
     // Kept for a card restarted mid-run, which is wired like the ones started here.
     this.wallet = wallet;
     this.worker = worker;
-    const [host, port] = String(settings.endpoint || '').split(':');
 
     if (!this._startCores(settings, wallet, worker)) {
       this.running = false;

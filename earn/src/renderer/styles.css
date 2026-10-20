@@ -274,12 +274,16 @@ input.field-box { user-select: text; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; border-bottom: 1px solid #f0ede5; }
 .settings-row:last-child { border-bottom: none; }
 .settings-row .rk { font-size: 13.5px; color: var(--ink-3); font-weight: 500; }
-/* Connection: Pool region and Worker name side by side, small labels above each.
-   They were stacked while a Static difficulty field shared the grid, which half
-   the width squeezed; that field is gone. Side by side saves ~60px, which the
-   Local network section needs to keep Settings inside its 470px without a
-   scrollbar. */
+/* Connection: Pool region, Pearl pool and Worker name side by side, small
+   labels above each. They were stacked while a Static difficulty field shared
+   the grid, which half the width squeezed; that field is gone. One row keeps
+   Settings inside its 470px without a scrollbar: a second row for the pools
+   overflowed it by 40px, so the Monero pool sits beside the Monero address. */
 .conn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+/* Region, Pearl pool, worker: the two selects as wide as their longest option,
+   the worker name the rest. In a window narrowed toward its 560px minimum the
+   selects give way before the worker box drops under 100px. */
+.conn-grid.three { grid-template-columns: minmax(0, auto) minmax(0, auto) minmax(100px, 1fr); }
 .settings-note + .conn-grid { margin-top: 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 /* One height for both: a select draws 2px taller than a text input, which shows
@@ -288,6 +292,8 @@ input.field-box { user-select: text; }
 .rv-input { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); background: var(--field); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; outline: none; user-select: text; }
 .rv-input:focus { border-color: var(--accent); }
 select.rv-input { cursor: pointer; }
+/* The pools lock while mining. */
+select.rv-input:disabled { cursor: default; color: var(--muted); }
 /* A text button beside the Settings title, filled once an update is ready. */
 .update-check-btn { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 0; cursor: pointer; }
 .update-check-btn:hover:not(:disabled) { text-decoration: underline; }
@@ -366,6 +372,7 @@ select.rv-input { cursor: pointer; }
 .section-meta .usd { color: var(--muted-2); }
 .xmr-row { display: flex; gap: 10px; }
 .xmr-input { flex: 1; min-width: 0; margin-bottom: 0; padding: 10px 14px; }
+.xmr-pool { flex: none; padding: 8px 11px; }
 /* The thread count in the CPU Mining title: a text dropdown as wide as its
    choice, so "Auto (11 threads)" is never cut off as it was in a 150px box. */
 .cpu-threads { min-width: 0; height: 18px; padding: 0 4px; border: none; border-radius: 4px; background: transparent; font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--muted); cursor: pointer; }

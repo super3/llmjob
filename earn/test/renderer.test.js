@@ -62,8 +62,8 @@ function makeFullApi() {
     }),
     getConfig: jest.fn().mockResolvedValue({
       regions: {
-        us2: { flag: 'US', label: 'US', name: 'Dallas' },
-        eu1: { flag: 'EU', label: 'EU', name: 'Falkenstein' },
+        us2: { flag: 'US', label: 'us2', name: 'Dallas' },
+        eu1: { flag: 'EU', label: 'eu1', name: 'Falkenstein' },
       },
       // main always sends these. The region fallback reads defaults.region
       // rather than carrying its own copy of the default, which is what used to
@@ -180,7 +180,9 @@ describe('boot with the full bridge', () => {
     expect($('set-worker').value).toBe('w1');
     const opts = Array.from($('set-region').options).map((o) => o.value);
     expect(opts).toEqual(['us2', 'eu1']);
-    expect($('set-region').options[0].textContent).toBe('US US · Dallas');
+    // The flag and the place, not the id: it names a HeroMiners server, and the
+    // region picks Kryptex's server too.
+    expect($('set-region').options[0].textContent).toBe('US Dallas');
     // The saved region stands. Detection used to replace it on every launch,
     // and the next START saved the replacement.
     expect($('set-region').value).toBe('us2');
@@ -211,6 +213,49 @@ describe('boot with the full bridge', () => {
     expect(lines).toHaveLength(2000);
     expect(lines[0].textContent).toMatch(/ line 6$/);
     expect(lines[1999].textContent).toMatch(/ line 2005$/);
+  });
+
+  // A pool per coin, each with its fee. The Pearl balance is the Pearl pool's
+  // and follows a change of pool at once; an answer for the pool just left is
+  // dropped. Neither pool changes while mining: the change would wait for the
+  // next START, and the balance would show a pool that isn't mining.
+  it('offers a pool per coin and reads the balance from the Pearl pool', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({
+      address: ADDR, worker: 'w1', region: 'us2', regionSaved: true, prlPool: 'kryptex', xmrPool: 'herominers',
+    });
+    api.getConfig.mockResolvedValue({
+      regions: {}, defaults: { region: 'us2' },
+      pools: {
+        herominers: { name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9 },
+        kryptex: { name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1 },
+      },
+    });
+    await boot({ api });
+    const texts = (id) => Array.from($(id).options).map((o) => o.textContent);
+    expect(texts('set-prl-pool')).toEqual(['HeroMiners · no fee', 'Kryptex · 3% fee']);
+    expect(texts('set-xmr-pool')).toEqual(['HeroMiners · 0.9% fee', 'Kryptex · 1% fee']);
+    expect([$('set-prl-pool').value, $('set-xmr-pool').value]).toEqual(['kryptex', 'herominers']);
+    expect(api.getBalance).toHaveBeenCalledWith(ADDR, 'kryptex');
+    expect($('balance').textContent).toBe('1,234.568');
+
+    let pay;
+    api.getBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    $('set-prl-pool').value = 'herominers';
+    $('set-prl-pool').dispatchEvent(new window.Event('change', { bubbles: true }));
+    expect(api.getBalance).toHaveBeenLastCalledWith(ADDR, 'herominers');
+    expect($('balance').textContent).toBe('0.000');
+    $('set-prl-pool').value = 'kryptex';
+    $('set-prl-pool').dispatchEvent(new window.Event('change', { bubbles: true }));
+    pay({ earned: 99, usd: 1 });
+    await flush();
+    expect($('balance').textContent).toBe('1,234.568');
+
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ prlPool: 'kryptex', xmrPool: 'herominers' }));
+    expect([$('set-prl-pool').disabled, $('set-xmr-pool').disabled]).toEqual([true, true]);
+    click($('btn-stop'));
+    expect([$('set-prl-pool').disabled, $('set-xmr-pool').disabled]).toEqual([false, false]);
   });
 
   // A fresh install has no region of its own yet, so it takes the nearest.
@@ -528,7 +573,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
       address: ADDR, worker: 'w1', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, prlPool: 'herominers', xmrPool: 'herominers',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -594,8 +639,10 @@ describe('boot with the full bridge', () => {
     expect($('engine-status').classList.contains('err')).toBe(true);
     cbs.engine({ phase: 'error' });
     expect($('engine-status').textContent).toMatch(/Engine setup failed/);
-    // main-process stop resets the dashboard
+    // main-process stop resets the dashboard, and unlocks the pools
+    expect($('set-prl-pool').disabled).toBe(true);
     cbs.stopped();
+    expect($('set-prl-pool').disabled).toBe(false);
     expect($('btn-start').hidden).toBe(false);
     expect($('hashrate').textContent).toBe('0.0');
     expect($('device-label').textContent).toBe('RTX 4090');
@@ -607,7 +654,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'this-rig', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, prlPool: 'herominers', xmrPool: 'herominers',
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -1883,12 +1930,39 @@ describe('CPU mining', () => {
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-row').hidden).toBe(false);
-    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR);
+    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR, 'herominers');
     $('set-cpu-threads').value = '5';
     change($('set-cpu-threads'));
     expect(noteHidden()).toBe(true);
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
+  });
+
+  // The Monero balance is the Monero pool's, and follows a change of pool at
+  // once; an answer for the pool just left is dropped.
+  it('reads the Monero balance from the Monero pool picked', async () => {
+    const { api } = cpuApi({ xmrAddress: XMR_ADDR, xmrPool: 'kryptex' });
+    api.getConfig.mockResolvedValue({
+      regions: {}, defaults: { region: 'us2' }, cpu: CPU,
+      pools: { herominers: { name: 'HeroMiners', xmrFeePct: 0.9 }, kryptex: { name: 'Kryptex', xmrFeePct: 1 } },
+    });
+    await boot({ api });
+    expect($('set-xmr-pool').value).toBe('kryptex');
+    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR, 'kryptex');
+    expect($('xmr-balance').textContent).toBe('0.0125');
+    let pay;
+    api.getXmrBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    $('set-xmr-pool').value = 'herominers';
+    change($('set-xmr-pool'));
+    expect(api.getXmrBalance).toHaveBeenLastCalledWith(XMR_ADDR, 'herominers');
+    expect($('xmr-balance').textContent).toBe('0.0000');
+    $('set-xmr-pool').value = 'kryptex';
+    change($('set-xmr-pool'));
+    pay({ earned: 7 });
+    await flush();
+    expect($('xmr-balance').textContent).toBe('0.0125');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ xmrPool: 'kryptex' }));
   });
 
   it('a build without the CPU miner says so, and a saved address can only be cleared', async () => {

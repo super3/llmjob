@@ -34,7 +34,8 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion, xmrEndpointFor,
+  REGIONS, DEFAULTS, POOLS, KRYPTEX, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
+  resolveEndpoint, migrateRegion, xmrEndpointFor, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -48,7 +49,9 @@ const { buildChatBody } = require('../shared/llmChat');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
 const { placeLlmPlan, describeLlmStart, parseServedModel } = require('../shared/llama');
-const { buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd } = require('../shared/balance');
+const {
+  buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd, buildKryptexBalanceUrl, parseKryptexBalance,
+} = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
@@ -316,17 +319,25 @@ function openExternalSafe(url) {
   }
 }
 
+// A Kryptex balance for either coin: the same fields as the HeroMiners ones,
+// or null on any failure.
+async function fetchKryptexBalance(coin, address, priceUsd) {
+  const json = await getJson(buildKryptexBalanceUrl(KRYPTEX.apiBase, coin, address)).catch(() => null);
+  return parseKryptexBalance(json, priceUsd);
+}
+
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
 // resolves the parsed { pending, paid, earned, usd } or null (unknown address,
 // offline, non-200, bad JSON). `priceUsd` (optional) adds a USD figure. Runs
 // here in the main process so it isn't subject to the renderer's CSP /
-// cross-origin restrictions.
+// cross-origin restrictions. `pool` is the one Settings has picked for Pearl.
 //
 // This used to take buildUrl/parse/validate overrides so the merge-mined MDL
 // record could be read from its own route with its own payload shape. MDL is
 // gone, so the indirection is gone with it — one address kind, one route.
-async function fetchBalance(address, priceUsd) {
+async function fetchBalance(address, priceUsd, pool) {
   if (!isValidAddress(address)) return null;
+  if (poolId(pool) === 'kryptex') return fetchKryptexBalance('prl', address, priceUsd);
   let json;
   try {
     json = await getJson(buildBalanceUrl(String(address).trim()));
@@ -341,13 +352,17 @@ async function fetchBalance(address, priceUsd) {
   }
 }
 
-// The Monero balance on HeroMiners' Monero pool, the CPU miner's. Same pool
-// software and payload as the Pearl one, in 1e12 units, and with no `balance`
-// field until there is one. Best-effort like fetchBalance: null on any failure.
-// Its dollar value uses the pool's XMR price; without one, usd is null and
-// Settings shows the balance without dollars.
-async function fetchXmrBalance(address) {
+// The Monero balance on the CPU miner's pool. HeroMiners' Monero pool runs the
+// same software and payload as the Pearl one, in 1e12 units, and with no
+// `balance` field until there is one. Best-effort like fetchBalance: null on
+// any failure. Its dollar value uses HeroMiners' XMR price, on either pool;
+// without one, usd is null and Settings shows the balance without dollars.
+async function fetchXmrBalance(address, pool) {
   if (!checkXmrAddress(address).ok) return null;
+  if (poolId(pool) === 'kryptex') {
+    const price = await xmrPriceUsd();
+    return fetchKryptexBalance('xmr', address, price == null ? undefined : price);
+  }
   const json = await getJson(buildBalanceUrl(String(address).trim(), XMR.apiBase)).catch(() => null);
   if (json == null) return null;
   const price = await xmrPriceUsd();
@@ -450,8 +465,8 @@ function startCpuMining(settings) {
   engine.start({
     address: String(settings.xmrAddress).trim(),
     worker: settings.worker || DEFAULTS.worker,
-    // The Monero host follows the Pearl region.
-    endpoint: xmrEndpointFor(migrateRegion(settings.region)),
+    // The Monero host follows the Pearl region, on the Monero pool.
+    endpoint: xmrEndpointFor(migrateRegion(settings.region), settings.xmrPool),
     threads: plan.threads,
   });
   sendCpu();
@@ -523,7 +538,9 @@ function statsView(snap) {
     gpu: format.formatDeviceLabel(snap.gpus.map((g) => g.gpu)) || snap.gpu,
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
-    estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
+    // After the fee of the pool this START mines Pearl on.
+    estDay: earnings.estDailyUsdLabel(snap.total,
+      Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.prlPool) })),
   };
 }
 
@@ -2142,6 +2159,9 @@ ipcMain.handle('settings:get', () => {
   // The renderer picks the nearest region only when none was saved. The region
   // above is filled in either way, so it can't tell by itself.
   s.regionSaved = !!saved.region;
+  // A pool that exists, like the region: an unknown one would blank its <select>.
+  s.prlPool = poolId(s.prlPool);
+  s.xmrPool = poolId(s.xmrPool);
   // The renderer already resumes a START after an update; a launch at login asks
   // for the same thing. It starts only what START could: with no payout
   // address, an LLM-only or Auto run, or the CPU miner.
@@ -2162,6 +2182,7 @@ ipcMain.handle('config:get', () => {
   const plan = cpuPlan(0);
   return {
     regions: REGIONS,
+    pools: POOLS,
     // The worker default is this machine's, as settings:get fills it, so a
     // Worker box cleared in Settings falls back to it rather than to "rig01".
     defaults: Object.assign({}, DEFAULTS, { worker: defaultWorker() }),
@@ -2174,8 +2195,8 @@ ipcMain.handle('config:get', () => {
 });
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
-ipcMain.handle('xmr:balance', (_e, address) => fetchXmrBalance(address));
+ipcMain.handle('balance:get', (_e, address, pool) => fetchBalance(address, liveEcon.PRL_USD, pool));
+ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, pool));
 // The renderer has no Keccak, so the address check runs here.
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));

@@ -726,6 +726,16 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('settings:get')).toMatchObject({ region: 'fr', regionSaved: true });
   });
 
+  // Each coin's pool names an option that exists: the saved one, else the
+  // default, which is also what a file from before the choice gets.
+  it('settings:get hands back a known pool for each coin', async () => {
+    const ctx = loadMain();
+    expect(await ctx.invoke('settings:get')).toMatchObject({ prlPool: 'herominers', xmrPool: 'herominers' });
+    ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
+    ctx.fs.readFileSync.mockReturnValue('{"prlPool":"kryptex","xmrPool":"nowhere"}');
+    expect(await ctx.invoke('settings:get')).toMatchObject({ prlPool: 'kryptex', xmrPool: 'herominers' });
+  });
+
   // Every state file is replaced whole, through a temp file renamed over it,
   // so a power cut mid-write cannot leave half of one.
   it('saves settings through a temp file renamed over settings.json', async () => {
@@ -753,6 +763,7 @@ describe('simple ipc handlers', () => {
     // so the renderer never falls back to the shared "rig01".
     expect(await ctx.invoke('config:get')).toEqual({
       regions: ctx.config.REGIONS,
+      pools: ctx.config.POOLS,
       defaults: Object.assign({}, ctx.config.DEFAULTS, { worker: defaultWorker() }),
       platform: { minerSupported: true },
       cpu: { available: 8, auto: 7, reason: null, canMine: true, worker: true },
@@ -894,6 +905,21 @@ describe('balance handlers', () => {
     // a payload whose property access throws exercises the parse catch
     ctx.io.getJson.mockResolvedValueOnce({ get stats() { throw new Error('boom'); } });
     expect(await ctx.invoke('balance:get', VALID_ADDR)).toBeNull();
+  });
+
+  // Kryptex answers in whole coins, from its own API.
+  it('balance:get reads Kryptex when Settings picks it for Pearl', async () => {
+    const ctx = loadMain();
+    ctx.io.getJson.mockResolvedValueOnce({ reward: { week: 1 }, paid: 2, unpaid: 0.5 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR, 'kryptex'))
+      .toEqual({ pending: 0.5, paid: 2, earned: 2.5, usd: 2.5 * ctx.config.ECON.PRL_USD });
+    expect(ctx.io.getJson).toHaveBeenLastCalledWith(
+      'https://pool.kryptex.com/prl/api/v1/miner/payouts/' + VALID_ADDR + '/stats');
+    ctx.io.getJson.mockRejectedValueOnce(new Error('offline'));
+    expect(await ctx.invoke('balance:get', VALID_ADDR, 'kryptex')).toBeNull();
+    ctx.io.getJson.mockResolvedValueOnce({ paid: 'x', unpaid: 1 });
+    expect(await ctx.invoke('balance:get', VALID_ADDR, 'kryptex')).toBeNull();
+    expect(await ctx.invoke('balance:get', 'nope', 'kryptex')).toBeNull();
   });
 
   it('live economics feed the balance USD conversion', async () => {
@@ -1523,6 +1549,27 @@ describe('mining', () => {
     release([{ index: 0, name: 'RTX 4090' }]);
     await flush();
     expect(ctx.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // Kryptex's server for the region, and its 3% fee off the estimate: the same
+  // hashrate on HeroMiners, which takes none, estimates 1/0.97 as much.
+  it('mines Pearl on Kryptex when Settings picks it, and takes its fee off the estimate', async () => {
+    const estimate = async (prlPool) => {
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', region: 'us2', prlPool });
+      await flush();
+      const miner = ctx.PearlEngine.instances[0];
+      miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 300, gpu: 'RTX 4090' });
+      ctx.interval(1000).fn();
+      await flush();
+      const usd = Number(ctx.sent('miner:stats').slice(-1)[0].estDay.replace(/[$,]/g, ''));
+      return { endpoint: miner.start.mock.calls[0][0].endpoint, usd };
+    };
+    const kx = await estimate('kryptex');
+    const hm = await estimate('herominers');
+    expect([kx.endpoint, hm.endpoint]).toEqual(['prl-us.kryptex.network:7048', 'us2.pearl.herominers.com:1200']);
+    expect(hm.usd).toBeGreaterThan(1);
+    expect(kx.usd / hm.usd).toBeCloseTo(0.97, 2);
   });
 
   // The device label names every card that is mining. One name for two working
@@ -5068,6 +5115,27 @@ describe('CPU mining (Monero)', () => {
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
     ctx.io.getJson.mockResolvedValueOnce(null);
     expect(await ctx.invoke('xmr:balance', XMR_ADDR)).toBeNull();
+  });
+
+  // On Kryptex the coins are Kryptex's, and the price is still HeroMiners'.
+  it('reads the Monero balance from Kryptex when Settings picks it', async () => {
+    const STATS = 'https://monero.herominers.com/api/stats';
+    const KX = 'https://pool.kryptex.com/xmr/api/v1/miner/payouts/' + XMR_ADDR + '/stats';
+    let ctx = loadMain();
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url === STATS
+      ? { pool: { price: { usd: '600.00' } } } : url === KX ? { paid: 1, unpaid: 0.5 } : null));
+    expect(await ctx.invoke('xmr:balance', XMR_ADDR, 'kryptex')).toEqual({ pending: 0.5, paid: 1, earned: 1.5, usd: 900 });
+    // Without a price, the coins alone.
+    ctx = loadMain();
+    ctx.io.getJson.mockImplementation((url) => Promise.resolve(url === KX ? { paid: 0, unpaid: 0.25 } : null));
+    expect(await ctx.invoke('xmr:balance', XMR_ADDR, 'kryptex')).toEqual({ pending: 0.25, paid: 0, earned: 0.25, usd: null });
+  });
+
+  it('mines Monero on Kryptex when Settings picks it, on its server nearest the region', async () => {
+    const ctx = await boot();
+    await start(ctx, { region: 'fi', cpuMining: true, xmrAddress: XMR_ADDR, xmrPool: 'kryptex' });
+    expect(ctx.XmrEngine.instances[0].start).toHaveBeenCalledWith(
+      expect.objectContaining({ endpoint: 'xmr-eu.kryptex.network:7029' }));
   });
 
   // Its dollar figure for Settings: the pool's own XMR price, from /api/stats,

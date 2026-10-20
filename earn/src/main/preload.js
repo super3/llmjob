@@ -8,8 +8,9 @@ contextBridge.exposeInMainWorld('llmjob', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   detectGpu: () => ipcRenderer.invoke('gpu:detect'),
   detectRegion: () => ipcRenderer.invoke('region:detect'),
-  getBalance: (address) => ipcRenderer.invoke('balance:get', address),
-  getXmrBalance: (address) => ipcRenderer.invoke('xmr:balance', address),
+  // `pool` is the pool picked for that coin in Settings (config POOLS).
+  getBalance: (address, pool) => ipcRenderer.invoke('balance:get', address, pool),
+  getXmrBalance: (address, pool) => ipcRenderer.invoke('xmr:balance', address, pool),
   checkXmrAddress: (address) => ipcRenderer.invoke('xmr:check', address),
   getLlmStatus: () => ipcRenderer.invoke('llm:status'),
   onLlm: (cb) => ipcRenderer.on('llm:status', (_e, d) => cb(d)),

@@ -719,6 +719,18 @@ describe('mining', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // Kryptex has no merge mining: the miner leaves the MDL address out of the
+  // login there, so the startup line doesn't name it either.
+  test('--pool on Kryptex does not claim an MDL address it will not send', async () => {
+    const m = load();
+    const p = m.run(['-a', ADDR, '--mdl', MDL, '--mode', 'mining', '--no-update', '--pool', 'prl-us.kryptex.network:7048']);
+    await settle();
+    expect(allOut()).toContain('address:    ');
+    expect(allOut()).not.toContain('(+MDL');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('--pool with Monero still detects a region, for the Monero host', async () => {
     const XMR_ADDR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
     const m = load();

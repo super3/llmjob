@@ -41,7 +41,7 @@
     connectReach: $('connect-reach'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
-    setWorker: $('set-worker'), setRegion: $('set-region'),
+    setWorker: $('set-worker'), setRegion: $('set-region'), setPrlPool: $('set-prl-pool'), setXmrPool: $('set-xmr-pool'),
     setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
@@ -72,6 +72,8 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
+    // The pool each coin mines on (config POOLS). main fills in the default.
+    prlPool: 'herominers', xmrPool: 'herominers',
     shareLlm: false,     // API tab: share the local LLM on port 8000
     // The card the ENGINE says it is mining on, once it says so. `gpu` above is
     // only the startup auto-detect, and on a multi-GPU rig the two can be
@@ -708,9 +710,10 @@
 
   async function refreshXmrBalance() {
     const a = state.xmrAddress.trim();
+    const pool = state.xmrPool;
     if (!state.cpuMining || !state.xmrOk || !api.getXmrBalance) return;
-    const b = await api.getXmrBalance(a);
-    if (!b || a !== state.xmrAddress.trim()) return;
+    const b = await api.getXmrBalance(a, pool);
+    if (!b || a !== state.xmrAddress.trim() || pool !== state.xmrPool) return;
     state.xmrBalance = b.earned;
     state.xmrUsd = b.usd;
     renderCpuRow();
@@ -767,6 +770,10 @@
       state.cpuView = null;
     }
     el.btnStart.disabled = !canStart();
+    // A pool change takes the next START, and each balance shows the pool
+    // picked, so the pools stay put while mining, as the Monero address does.
+    el.setPrlPool.disabled = state.mining;
+    el.setXmrPool.disabled = state.mining;
     renderCpuSettings();
     renderCpuRow();
   }
@@ -788,9 +795,10 @@
 
   async function refreshBalance() {
     const addr = state.address.trim();
+    const pool = state.prlPool;
     if (!isValid(addr) || !api.getBalance) return;
-    const b = await api.getBalance(addr);
-    if (!b || addr !== state.address.trim()) return;
+    const b = await api.getBalance(addr, pool);
+    if (!b || addr !== state.address.trim() || pool !== state.prlPool) return;
     el.balance.textContent = fmt3(b.earned);
     el.balanceUsd.textContent = b.usd != null ? '≈ ' + fmtUsd(b.usd) : '';
   }
@@ -914,6 +922,8 @@
       cpuMining: state.cpuMining,
       xmrAddress: state.xmrAddress.trim(),
       cpuThreads: state.cpuThreads,
+      prlPool: state.prlPool,
+      xmrPool: state.xmrPool,
     };
   }
 
@@ -1117,6 +1127,20 @@
       if (xmrCheckTimer) clearTimeout(xmrCheckTimer);
       xmrCheckTimer = setTimeout(checkXmr, 400);
     });
+    // Each balance follows its pool at once: the old pool's figure is not this
+    // one's, so it reads 0 until the new pool answers.
+    el.setPrlPool.addEventListener('change', () => {
+      state.prlPool = el.setPrlPool.value;
+      resetBalance();
+      refreshBalance();
+    });
+    el.setXmrPool.addEventListener('change', () => {
+      state.xmrPool = el.setXmrPool.value;
+      state.xmrBalance = null;
+      state.xmrUsd = null;
+      renderCpuRow();
+      refreshXmrBalance();
+    });
     el.setCpuThreads.addEventListener('change', () => {
       state.cpuThreads = Number(el.setCpuThreads.value) || 0;
       renderCpuSettings();
@@ -1157,9 +1181,23 @@
       Object.keys(regions).forEach((key) => {
         const opt = document.createElement('option');
         opt.value = key;
-        opt.textContent = regions[key].flag + ' ' + regions[key].label + ' · ' + regions[key].name;
+        // Not the id: it names a HeroMiners server, and the region picks
+        // Kryptex's too.
+        opt.textContent = regions[key].flag + ' ' + regions[key].name;
         el.setRegion.appendChild(opt);
       });
+      // Each pool with that coin's fee, which comes off what the rig earns.
+      const pools = (config && config.pools) || {};
+      const fee = (pct) => (pct ? pct + '% fee' : 'no fee');
+      for (const [select, feeKey] of [[el.setPrlPool, 'prlFeePct'], [el.setXmrPool, 'xmrFeePct']]) {
+        select.innerHTML = '';
+        Object.keys(pools).forEach((key) => {
+          const opt = document.createElement('option');
+          opt.value = key;
+          opt.textContent = pools[key].name + ' · ' + fee(pools[key][feeKey]);
+          select.appendChild(opt);
+        });
+      }
     }
     let resumeMining = false;
     let regionSaved = false;
@@ -1179,6 +1217,11 @@
       // names an option that exists.
       el.setRegion.value = s.region || state.defaultRegion;
       regionSaved = !!s.regionSaved;
+      // main hands back a known pool for each, the default when none was saved.
+      state.prlPool = s.prlPool || state.prlPool;
+      state.xmrPool = s.xmrPool || state.xmrPool;
+      el.setPrlPool.value = state.prlPool;
+      el.setXmrPool.value = state.xmrPool;
       // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
       // for a fresh install. This fallback only fires on a FALSY stored mode —
       // a hand-edited or half-written settings.json holding null or "" — and it

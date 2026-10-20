@@ -102,6 +102,22 @@ describe('PearlMiner — start', () => {
     expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '+' + MDL);
   });
 
+  // Kryptex has no merge mining, and answered a login carrying an MDL address
+  // with "Invalid login". There the rig mines Pearl alone, and says so.
+  test('leaves an MDL address out of a Kryptex login', () => {
+    const { m, sock, events } = boot();
+    m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048', mdlAddress: MDL });
+    sock.emit('connect');
+    expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '/rig01');
+    expect(events.log).toContainEqual({ level: 'warn', line: 'Kryptex has no MDL merge mining: mining Pearl only' });
+    m.stop();
+    // Without one there is nothing to say.
+    const quiet = boot();
+    quiet.m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048', mdlAddress: 'nope' });
+    expect(quiet.events.log.map((l) => l.line)).not.toContain('Kryptex has no MDL merge mining: mining Pearl only');
+    quiet.m.stop();
+  });
+
   test('a malformed MDL address is dropped, not sent', () => {
     const { m, sock } = boot();
     m.start({ ...settings, mdlAddress: 'nope' });
