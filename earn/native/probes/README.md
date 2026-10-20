@@ -1647,7 +1647,7 @@ A-direct's own ablations, bench, 3 interleaved rounds, raw / per GHz:
 |---|---|---|---|
 | readout and hash together | +6.5% / +6.5% | +6.1% / +6.1% | +6.7% / +6.3% |
 | B loaded once a tile | +9.9% / +2.2% | +8.4% / +2.4% | +10.1% / +2.4% |
-| transcript stores | +1.7% / +1.3% | +1.3% / +1.3% | +1.0% / +0.3% |
+| readout shuffles (`PEARL_ABLATE_TRANSCRIPT`: the gather only, the stores stay) | +1.7% / +1.3% | +1.3% / +1.3% | +1.0% / +0.3% |
 | hash only | -0.8% / -2.0% | -3.2% / -3.2% | -2.0% / -4.7% |
 | readout only (spills 36 bytes) | -8.6% / -10.6% | -7.0% / -8.8% | -5.7% / -8.9% |
 | B not shared in L1 | -13.7% / -16.4% | -6.1% / -5.1% | -5.6% / -6.7% |
