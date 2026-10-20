@@ -879,7 +879,6 @@ class TestPoolTotals(Base):
             report = f.read()
         # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
         self.assertIn("| **+5.12\\*** |\n", report)  # the All row
-        self.assertIn(" · PRL $1.39 (costs us $0.75*) · ", report)
         self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
         self.assertNotIn("has credited", report)   # the ratio is in the notes, not the report, since 20 October
         self.assertNotIn("Locked", report)
@@ -917,9 +916,8 @@ class TestCreditRatio(Base):
 
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
-        # What each PRL cost (8 PRL at the 75% credited is 6, for $6.00) and the credit left; no box is billing,
-        # so no hours.
-        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 (costs us $1.00*) · 0/1 mining · Salad $94.00* left")
+        # The credit left ($100 less $6.00 spent); no box is billing, so no hours.
+        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 · 0/1 mining · Salad $94.00* left")
 
     def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
         report = self.report(cfg={"max_active": 10})
@@ -939,7 +937,7 @@ class TestCreditRatio(Base):
         self.assertTrue(report.endswith(" |\n"))                     # nothing under the tables
         for gone in ("⛏️ mining ·", "our own count or estimate", "(K) mines Pearl on Kryptex", "is Salad's bill",
                      "has credited", "pays out from", "SafeTrade", "have mined", "credit_offset", "on Salad for",
-                     "spent", "Cost per", "Credit left"):
+                     "spent", "Cost per", "Credit left", "costs us"):
             self.assertNotIn(gone, report)
 
     def test_the_heading_says_how_many_hours_the_credit_lasts(self):
@@ -964,11 +962,10 @@ class TestCreditRatio(Base):
         report = self.report()
         # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
         self.assertIn("| **+2.34\\*** |\n", report)  # the All row
-        self.assertIn(" · PRL $1.39 (costs us $1.00*) · ", report)
 
     def test_the_ratio_has_a_floor(self):
-        # $6.00 for 8 × 90% = 7.20 PRL, not 8 × 75%
-        self.assertIn(" · PRL $1.39 (costs us $0.83*) · ", self.report(cfg={"yield_floor": 0.9}))
+        # 8 × 90% = 7.20 PRL, not 8 × 75%: 7.20 × 1.39 − 6.00 = +4.01 in the All row
+        self.assertIn("| **+4.01\\*** |\n", self.report(cfg={"yield_floor": 0.9}))
         self.assertAlmostEqual(self.x.credit_ratio(), 0.9)
 
     def test_the_rules_use_config_yield(self):
@@ -978,8 +975,8 @@ class TestCreditRatio(Base):
         self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
-            # the table still counts on the ratio: $6.00 for 6 PRL, not 8
-            self.assertIn(" · PRL $1.39 (costs us $1.00*) · ", f.read())
+            # the table still counts on the ratio: 6 PRL, not 8 (6 × 1.39 − 6.00 = +2.34 in the All row)
+            self.assertIn("| **+2.34\\*** |\n", f.read())
 
     def test_a_pc_judged_at_the_credited_rate(self):
         # 199 TH/s at medium clears 10% at the network's rate (+18%), not at 75% of it (−9%).
@@ -2449,7 +2446,6 @@ class TestKryptex(Base):
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)
         # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
         self.assertIn("| **+5.51\\*** |\n", report)
-        self.assertIn(" · PRL $1.39 (costs us $0.93*) · ", report)
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False

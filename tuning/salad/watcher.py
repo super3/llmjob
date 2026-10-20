@@ -1403,7 +1403,6 @@ class W:
         groups = list(st["groups"].values())
         spend = sum(g["spend"] for g in groups)
         prl = sum(self.credited(g, hy, ky) for g in groups)
-        cost_prl = spend / prl if prl > 0 else 0.0
         coins = sum(g.get("xmr_coins", 0.0) for g in groups)
         # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
         ts = st.get("trader_status") or self.cfg.get("safetrade")
@@ -1484,13 +1483,12 @@ class W:
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
-        # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. What each
-        # credited PRL cost sits beside the price, and the Salad credit left (with the hours it lasts at the All
-        # row's $/hr) at the end. Until 20 October those two were under the tables, with what Salad had cost (in
-        # Profit $ already), and before that in a paragraph that also gave each pool's credit ratio and payout
-        # threshold, SafeTrade's sales and the XMR mined; the key to the symbols is in the README.
-        head = (f"**{stamp(t)}** · PRL ${price:.2f}" + (f" (costs us ${cost_prl:.2f}{EST})" if prl > 0 else "")
-                + f" · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
+        # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
+        # credit left (with the hours it lasts at the All row's $/hr) ends the line. Until 20 October it was under
+        # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
+        # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
+        # symbols is in the README.
+        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
                 + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
