@@ -137,7 +137,12 @@ class JobWorker extends EventEmitter {
     } finally {
       if (this._poll === poll) this._poll = null;
     }
-    const jobs = (res && res.data && res.data.jobs) || [];
+    // A refused poll is an error, not an empty queue. A 404 for a node the
+    // server does not know, or a 401 for a bad signature, read as "no jobs",
+    // so a node that could never be given work polled on in silence. As an
+    // error it is reported, and backs off like any other.
+    if (!this._ok(res)) throw new Error('the server refused the poll (HTTP ' + ((res && res.status) || 0) + ')');
+    const jobs = (res.data && res.data.jobs) || [];
     // Stopped while the server held the poll, and it claimed a job in the moment
     // before the abort. The worker stops when its llama-server does, so running
     // the job would fail it on a refused connection. Fail it now, saying why, so

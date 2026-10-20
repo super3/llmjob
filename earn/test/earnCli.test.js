@@ -1886,6 +1886,83 @@ describe('local LLM', () => {
     await expect(p).resolves.toBe(1);
   });
 
+  // A register that failed was the only one the process ever tried, so a server
+  // that was down at that moment left the node polling for jobs it could never
+  // be given. The keep-alive tries again.
+  test('a failed registration is retried by the next keep-alive ping', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: false }));
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.io.postJson.mockRejectedValueOnce(new Error('offline'));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allErr()).toContain('could not register with the network');
+    expect(allOut()).not.toContain('serving public jobs as an unlinked node');
+
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await settle();
+    const registers = () => m.io.postJson.mock.calls.filter((c) => String(c[0]).endsWith('/api/nodes/register'));
+    expect(registers()).toHaveLength(2);   // the first ping's retry
+    expect(allOut()).toContain('serving public jobs as an unlinked node (abc123)');
+    await intervalFor(NODE.pingIntervalMs).fn();
+    expect(registers()).toHaveLength(2);   // registered: no more
+
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // Minting an identity writes node.json. A disk that refuses it ended an llm
+  // run with 'fatal' before any model started.
+  test('an identity that cannot be written still runs the LLM locally', async () => {
+    const m = load();
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('EROFS: read-only file system'); });
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+
+    expect(allErr()).toContain('could not set up this node\'s identity (EROFS: read-only file system) — running the LLM locally only');
+    const llm = m.LlmManager.instances[0];
+    expect(llm.start).toHaveBeenCalled();
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await settle();
+    expect(m.JobWorker.instances).toHaveLength(0);
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // The serving pings run from a timer. Signing outside the try made a corrupt
+  // key in node.json an unhandled rejection there.
+  test('a corrupt key in node.json cannot break a serving ping', async () => {
+    const m = load();
+    m.nodeStore.loadNode.mockReturnValue(makeNode({ connected: true, secretKey: 'not-a-key' }));
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await settle();
+    await expect(intervalFor(NODE.pingIntervalMs).fn()).resolves.toEqual({ error: expect.any(String) });
+    llm.emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
+  // A cached binary has to go through ensureServer: that is where a binary left
+  // without its execute bit gets it back. Returning the cached path skipped it,
+  // and such a binary failed with EACCES on every start.
+  test('a cached llama-server goes through ensureServer, which repairs its execute bit', async () => {
+    const m = load();
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--mode', 'llm', '--no-update']);
+    await settle();
+    expect(allOut()).toContain('LLM server found: /cache/llama-server');
+    const engine = m.LlmEngineManager.instances.find((e) => e.isServerInstalled.mock.calls.length);
+    expect(engine.ensureServer).toHaveBeenCalled();
+    expect(m.LlmManager.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ binaryPath: '/cache/llama-server' }));
+    m.LlmManager.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(1);
+  });
+
   test('--no-serve keeps the model entirely local: no registration, no worker', async () => {
     const m = load();
     // No stored identity, and --no-serve must not mint one: an opted-out box
@@ -2117,17 +2194,36 @@ describe('both mode', () => {
     m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
     m.LlmEngineManager.serverInstalled = true;
     m.LlmEngineManager.modelInstalled = true;
-    // Serving is on and there is no stored identity, so one is minted -- and the
-    // key file can't be written.
-    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('ENOSPC: no space left on device'); });
+    // Anything that throws in the not-awaited start.
+    m.probe.detectPciBusIds.mockRejectedValue(new Error('nvidia-smi exploded'));
     const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
     await settle(8);
 
-    expect(allErr()).toContain('LLM start failed: ENOSPC: no space left on device — mining carries on');
+    expect(allErr()).toContain('LLM start failed: nvidia-smi exploded — mining carries on');
     let done = false;
     p.then(() => { done = true; });
     await settle();
     expect(done).toBe(false);   // still mining
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Serving is on and there is no stored identity, so one is minted -- and the
+  // key file can't be written. The model runs, locally.
+  test('an identity that cannot be written leaves the LLM beside the miner local-only', async () => {
+    const m = load();
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'A4000', usedMb: 1000, totalMb: 16000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('ENOSPC: no space left on device'); });
+    const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update', '--no-report']);
+    await settle(8);
+
+    expect(allErr()).toContain('could not set up this node\'s identity (ENOSPC: no space left on device) — running the LLM locally only');
+    const llm = m.LlmManager.instances[0];
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await settle();
+    expect(m.JobWorker.instances).toHaveLength(0);
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
@@ -2248,7 +2344,7 @@ describe('connect subcommand', () => {
   test('a 201 join without a user links "your account" under the hostname worker name', async () => {
     const m = load();
     m.io.postJson.mockResolvedValueOnce({ status: 201, data: {} });
-    // The GPU probe explodes synchronously — cachedDeviceName absorbs it.
+    // The GPU probe explodes synchronously — nodeClient.deviceName absorbs it.
     m.cp.execFile.mockImplementation(() => { throw new Error('spawn fail'); });
     const p = m.run(['connect', '-t', 'tok']);
     await settle();
@@ -3213,6 +3309,36 @@ describe('demand mode still serves the cluster', () => {
     await pinger.fn();
     expect(m.io.postJson).toHaveBeenCalled();
 
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // A demand wake starts its fleet without workers: jobs run on demand mode's
+  // own worker. Counting the fleet alone reported 0 active jobs all along.
+  test('counts the jobs on its own worker in the telemetry', async () => {
+    const m = load();
+    serving(m);
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    m.io.postJson.mockClear();
+    await intervalFor(NODE.pingIntervalMs).fn();
+    expect(m.io.postJson.mock.calls[0][1].activeJobs).toBe(2);   // the mock worker runs 2
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // Demand mode resolves its identity up front. A disk that refused node.json
+  // ended the run with 'fatal'; it mines on, serving nothing.
+  test('an identity that cannot be written leaves it mining, with no poller', async () => {
+    const m = load();
+    serving(m);
+    m.nodeStore.loadNode.mockReturnValue(null);
+    m.nodeStore.getOrCreateNode.mockImplementation(() => { throw new Error('ENOSPC: no space left on device'); });
+    const p = m.run(['--address', ADDR, '--no-update', '--gate-port', '0']);
+    await settle();
+    expect(allErr()).toContain('could not set up this node\'s identity (ENOSPC: no space left on device)');
+    expect(m.JobWorker.instances).toHaveLength(0);
+    expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
     m.PearlEngine.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

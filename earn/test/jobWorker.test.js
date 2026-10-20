@@ -49,7 +49,7 @@ describe('constructor defaults', () => {
 
 describe('pollOnce', () => {
   test('returns 0 and processes nothing across all empty shapes', async () => {
-    for (const resp of [undefined, {}, { data: {} }, { data: { jobs: [] } }]) {
+    for (const resp of [{ status: 200 }, { status: 200, data: {} }, { status: 204, data: { jobs: [] } }]) {
       const { post, calls } = makePost(() => resp);
       const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(), now: () => 1 });
       expect(await w.pollOnce()).toBe(0);
@@ -59,6 +59,18 @@ describe('pollOnce', () => {
       const ok = nacl.sign.detached.verify(
         naclUtil.decodeUTF8('nnn111:1'), naclUtil.decodeBase64(calls[0].body.signature), naclUtil.decodeBase64(IDENT.publicKey));
       expect(ok).toBe(true);
+    }
+  });
+
+  // A 404 (a node the server does not know) or a 401 used to read as an empty
+  // queue, so a node that could never get work polled on and said nothing.
+  test('rejects on a refused poll instead of reporting an empty queue', async () => {
+    for (const [resp, status] of [[{ status: 404, data: { error: 'Node not found' } }, 404], [undefined, 0]]) {
+      const { post } = makePost(() => resp);
+      const runJob = jest.fn();
+      const w = new JobWorker({ identity: IDENT, serverUrl: 's', post, runJob, now: () => 1 });
+      await expect(w.pollOnce()).rejects.toThrow('the server refused the poll (HTTP ' + status + ')');
+      expect(runJob).not.toHaveBeenCalled();
     }
   });
 });
@@ -457,6 +469,28 @@ describe('start / stop loop + backoff', () => {
     sch.scheduled[2].fn(); await flush();
     const ticks = sch.scheduled.filter((s) => s.ms !== 30000);
     expect(ticks[ticks.length - 1].ms).toBe(1000);   // work → back to the floor
+  });
+
+  // The held-poll rule must not swallow a refusal. A refused poll that took a
+  // while (a slow server, say) looked like a held empty one and re-opened at
+  // once; it is an error now, so it is reported and backs off.
+  test('a refused poll is emitted and backs off, however long it took', async () => {
+    const sch = makeScheduler();
+    const errors = [];
+    const { post } = makePost(() => ({ status: 404, data: { error: 'Node not found' } }));
+    let t = 0;
+    const w = new JobWorker({
+      identity: IDENT, serverUrl: 's', post, runJob: () => Promise.resolve(),
+      now: () => { t += 25000; return t; },   // looks held
+      schedule: sch.schedule, cancel: sch.cancel, pollMinMs: 1000, pollMaxMs: 4000,
+    });
+    w.on('error', (e) => errors.push(e.message));
+    w.start();
+    await flush();
+    sch.scheduled[0].fn(); await flush();
+    expect(errors).toEqual(['the server refused the poll (HTTP 404)', 'the server refused the poll (HTTP 404)']);
+    expect(sch.scheduled.map((s) => s.ms)).toEqual([2000, 4000]);
+    w.stop();
   });
 
   test('a poll error backs off, is emitted when listened, and never kills the loop when not', async () => {

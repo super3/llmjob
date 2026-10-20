@@ -2177,6 +2177,8 @@ describe('local LLM', () => {
     worker.emit('done', { id: 'j1' });
     worker.emit('failed', { id: 'j2', error: 'oom' });
     const logs = ctx.sent('miner:log').map((l) => l.line);
+    // Logged, not dropped: a node whose polls kept failing looked idle.
+    expect(logs).toContain('job poll failed: poll blip (retrying)');
     expect(logs).toContain('cluster job j1 — running locally');
     expect(logs).toContain('cluster job j1 — done');
     expect(logs).toContain('cluster job j2 failed: oom');
@@ -3133,6 +3135,68 @@ describe('node linking', () => {
       .toContain('could not register with the network');
     expect(node.nodeId).toBe('5840fc');
     expect(ctx.nodeStore.saveNode).not.toHaveBeenCalled();
+  });
+
+  // A register that failed was the only one this run tried, so a server that
+  // was down at that moment left the node polling for jobs it could never get.
+  it('retries a failed registration with the next ping, and logs the failure once', async () => {
+    const node = fakeNode({ connected: false });
+    const ctx = await boot({
+      before: (c) => {
+        c.nodeStore.getOrCreateNode.mockReturnValue(node);
+        c.nodeStore.loadNode.mockReturnValue(node);
+        c.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+      },
+    });
+    ctx.io.postJson.mockRejectedValue(new Error('offline'));
+
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush();
+    ctx.LlmManager.instances[0].emit('ready', { baseUrl: 'http://127.0.0.1:8080' });
+    await flush();
+    const registers = () => ctx.io.postJson.mock.calls.filter((c) => c[0].endsWith('/api/nodes/register'));
+    const tried = registers().length;
+    expect(tried).toBeGreaterThan(0);
+    const lines = () => ctx.sent('miner:log').map((l) => l.line).join('\n');
+    expect(lines().match(/could not register with the network/g)).toHaveLength(1);
+
+    ctx.io.postJson.mockResolvedValue({ status: 200, data: {} });
+    await ctx.interval(ctx.config.NODE.pingIntervalMs).fn();
+    expect(registers()).toHaveLength(tried + 1);
+    expect(lines()).toContain('serving public jobs as an unlinked node (abc123)');
+    expect(lines().match(/could not register with the network/g)).toHaveLength(1);
+  });
+
+  // `connect --server` in the CLI stores a server in the node.json both shells
+  // share. The GUI registered and polled there, but pinged and joined the
+  // default, so the node showed offline on the server it served.
+  it('pings and joins at the server node.json names', async () => {
+    const node = fakeNode({ serverUrl: 'https://custom.example' });
+    const ctx = await boot({
+      before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(node); },
+    });
+    ctx.io.postJson.mockResolvedValueOnce({ status: 201, data: { user: 'alice' } });
+    await ctx.invoke('node:connect', { token: 'tok' });
+    expect(ctx.io.postJson.mock.calls[0][0]).toBe('https://custom.example/api/nodes/join');
+
+    ctx.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, serverUrl: 'https://custom.example' }));
+    ctx.io.postJson.mockClear();
+    await ctx.interval(ctx.config.NODE.pingIntervalMs).fn();
+    expect(ctx.io.postJson.mock.calls[0][0]).toBe('https://custom.example/api/nodes/ping');
+  });
+
+  // The ping runs from a timer. Signing outside its try made a corrupt key in
+  // node.json an unhandled rejection there.
+  it('a corrupt key in node.json cannot break a ping', async () => {
+    const ctx = await boot({
+      before: (c) => { c.nodeStore.getOrCreateNode.mockReturnValue(fakeNode()); },
+    });
+    ctx.io.postJson.mockResolvedValueOnce({ status: 201, data: {} });
+    await ctx.invoke('node:connect', { token: 'tok' });
+    ctx.nodeStore.loadNode.mockReturnValue(fakeNode({ connected: true, secretKey: 'not-a-key' }));
+    ctx.io.postJson.mockClear();
+    await expect(ctx.interval(ctx.config.NODE.pingIntervalMs).fn()).resolves.toBeUndefined();
+    expect(ctx.io.postJson).not.toHaveBeenCalled();
   });
 
   it('node:connect adopts the id the server reports', async () => {

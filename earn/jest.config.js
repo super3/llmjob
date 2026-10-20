@@ -40,6 +40,9 @@ module.exports = {
     // the kind of code the 100% gate is worth having on.
     'src/main/llmGateServer.js', 'src/main/autoGate.js', 'src/main/lanShare.js',
     'src/main/io.js', 'src/main/nodeStore.js', 'src/main/probe.js', 'src/main/preload.js',
+    // What both shells share for the network node and the LLM's start-up. Their
+    // copies used to sit in main.js, outside this gate, and in the CLI.
+    'src/main/nodeClient.js', 'src/main/llmLaunch.js',
     // Our own Pearl miner: the protocol/lifecycle half. The CUDA core it
     // drives lives in earn/native and is not measurable here — which is
     // exactly why the JS side is held to the full gate.

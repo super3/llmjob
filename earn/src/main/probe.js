@@ -4,12 +4,10 @@
 // (main.js) and the headless CLI (earn-cli.js). Both shells previously kept
 // byte-for-byte copies of these nvidia-smi / socket wrappers, so a fix to VRAM
 // summing or region timing had to be made twice. Keeping them here means it
-// lands in both. Thin wrappers over net/http/https/child_process — unit-tested
-// by mocking those core modules.
+// lands in both. Thin wrappers over net/child_process and io.postJson —
+// unit-tested by mocking those.
 
 const net = require('net');
-const http = require('http');
-const https = require('https');
 const { execFile, spawn } = require('child_process');
 
 const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
@@ -20,6 +18,7 @@ const {
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
+const { postJson } = require('./io');
 // Measure TCP connect latency (ms) to a "host:port" Stratum endpoint, or null
 // if it can't be reached within the timeout. Never rejects.
 function pingEndpoint(endpoint, timeoutMs) {
@@ -239,27 +238,11 @@ function detectLlmBusIds(binaryPath, modelPath) {
   });
 }
 
-// Publish this miner's live status to the network board (best-effort — never
-// throws; timeouts and errors are swallowed so mining is never affected).
+// Publish this miner's live status to the network board. Best effort: it never
+// rejects, so a failed report cannot affect mining. It used to be its own HTTP
+// client, which could hang on a cut response the same way postJson did.
 function postMinerReport(payload) {
-  return new Promise((resolve) => {
-    try {
-      const body = JSON.stringify(payload);
-      const u = new URL(NETWORK.reportUrl);
-      const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.request(u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-        timeout: 8000,
-      }, (res) => { res.resume(); res.on('end', resolve); });
-      req.on('error', () => resolve());
-      req.on('timeout', () => { req.destroy(); resolve(); });
-      req.write(body);
-      req.end();
-    } catch (e) {
-      resolve();
-    }
-  });
+  return postJson(NETWORK.reportUrl, payload, 8000).then(() => {}, () => {});
 }
 
 // Find a port llama-server can actually bind, preferring `start` (8080), walking

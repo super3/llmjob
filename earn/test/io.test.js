@@ -123,12 +123,82 @@ describe('postJson', () => {
     await expect(p).rejects.toThrow('boom');
   });
 
-  it('rejects when the request times out', async () => {
-    const res = fakeRes();
-    const reqs = wire(https, [res]);
+  // A complete response ends, then closes, as Node's does. The close changes
+  // nothing.
+  it('settles once: the close after a complete response is ignored', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
     const p = io.postJson('https://host/api', {});
-    reqs[0].emit('timeout');
-    await expect(p).rejects.toThrow('request timed out');
+    res.emit('data', '{"n":1}');
+    res.emit('end');
+    res.emit('close');
+    await expect(p).resolves.toEqual({ status: 200, data: { n: 1 }, raw: '{"n":1}' });
+  });
+
+  // The hang: a connection cut after the headers ends the response with
+  // 'aborted' and 'close', never 'end', and the request emits no 'error'. The
+  // promise used to stay pending forever, and the job worker's poll loop with it.
+  it('rejects when the response is cut before it ends', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.postJson('https://host/api', {});
+    res.emit('data', '{"jobs":');
+    res.emit('aborted');
+    res.emit('close');
+    await expect(p).rejects.toThrow('the connection closed before the response ended');
+  });
+
+  it('rejects when the response errors', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.postJson('https://host/api', {});
+    res.emit('error', new Error('aborted'));
+    res.emit('close');
+    await expect(p).rejects.toThrow('aborted');
+  });
+
+  // The timeout is a deadline for the whole request. A socket idle timeout
+  // never fires on a server that trickles a byte at a time.
+  it('rejects at the deadline even while the body still trickles in', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.postJson('https://host/api', {}, 1000);
+      const settled = jest.fn();
+      p.then(settled, settled);
+      for (let i = 0; i < 9; i++) { res.emit('data', ' '); jest.advanceTimersByTime(100); }
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(100);
+      await expect(p).rejects.toThrow('request timed out');
+      expect(reqs[0].destroy).toHaveBeenCalledWith(expect.any(Error));
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('defaults the deadline to 30 s and clears it once settled', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.postJson('https://host/api', {});
+      jest.advanceTimersByTime(29999);
+      res.emit('end');
+      await expect(p).resolves.toEqual({ status: 200, data: null, raw: '' });
+      jest.advanceTimersByTime(60000);
+      expect(reqs[0].destroy).not.toHaveBeenCalled();
+
+      const res2 = fakeRes({ statusCode: 200 });
+      const reqs2 = wire(https, [res2]);
+      const p2 = io.postJson('https://host/api', {});
+      jest.advanceTimersByTime(30000);
+      await expect(p2).rejects.toThrow('request timed out');
+      expect(reqs2[0].destroy).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 
@@ -142,20 +212,20 @@ describe('getJson', () => {
     await expect(p).resolves.toEqual({ ok: true });
     expect(https.get).toHaveBeenCalledWith(
       expect.any(URL),
-      expect.objectContaining({ timeout: 1000, headers: { 'User-Agent': 'x' } }),
+      expect.objectContaining({ headers: { 'User-Agent': 'x' } }),
       expect.any(Function),
     );
   });
 
-  it('works over http with the default timeout', async () => {
+  it('works over http', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire(http, [res]);
     const p = io.getJson('http://host/api');
     res.emit('data', '{"n":1}');
     res.emit('end');
+    res.emit('close');
     await expect(p).resolves.toEqual({ n: 1 });
-    expect(http.get).toHaveBeenCalledWith(
-      expect.any(URL), expect.objectContaining({ timeout: 8000 }), expect.any(Function));
+    expect(http.get).toHaveBeenCalled();
   });
 
   it('resolves null on a non-200', async () => {
@@ -173,14 +243,33 @@ describe('getJson', () => {
     await expect(p).resolves.toBeNull();
   });
 
-  it('aborts an oversized body and resolves null', async () => {
+  // A destroyed response never emits 'end'. The old fake emitted one anyway,
+  // which is the only reason this passed while the real thing hung forever.
+  it('aborts an oversized body and resolves null at once', async () => {
     const res = fakeRes({ statusCode: 200 });
     const reqs = wire(https, [res]);
     const p = io.getJson('https://host/api');
     res.emit('data', 'x'.repeat(4_000_001));
-    res.emit('end');
     await expect(p).resolves.toBeNull();
     expect(reqs[0].destroy).toHaveBeenCalled();
+  });
+
+  it('resolves null when the response is cut before it ends', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('data', '{"tag_name":');
+    res.emit('aborted');
+    res.emit('close');
+    await expect(p).resolves.toBeNull();
+  });
+
+  it('resolves null when the response errors', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire(https, [res]);
+    const p = io.getJson('https://host/api');
+    res.emit('error', new Error('aborted'));
+    await expect(p).resolves.toBeNull();
   });
 
   it('resolves null on an invalid URL', async () => {
@@ -195,13 +284,27 @@ describe('getJson', () => {
     await expect(p).resolves.toBeNull();
   });
 
-  it('resolves null on a request timeout', async () => {
-    const res = fakeRes({ statusCode: 200 });
-    const reqs = wire(https, [res]);
-    const p = io.getJson('https://host/api');
-    reqs[0].emit('timeout');
-    await expect(p).resolves.toBeNull();
-    expect(reqs[0].destroy).toHaveBeenCalled();
+  it('resolves null at the deadline (default 8 s), even while the body trickles in', async () => {
+    jest.useFakeTimers();
+    try {
+      const res = fakeRes({ statusCode: 200 });
+      const reqs = wire(https, [res]);
+      const p = io.getJson('https://host/api');
+      for (let i = 0; i < 7; i++) { res.emit('data', ' '); jest.advanceTimersByTime(1000); }
+      expect(reqs[0].destroy).not.toHaveBeenCalled();
+      jest.advanceTimersByTime(1000);
+      await expect(p).resolves.toBeNull();
+      expect(reqs[0].destroy).toHaveBeenCalled();
+
+      const res2 = fakeRes({ statusCode: 200 });
+      const reqs2 = wire(https, [res2]);
+      const p2 = io.getJson('https://host/api', { timeout: 2000 });
+      jest.advanceTimersByTime(2000);
+      await expect(p2).resolves.toBeNull();
+      expect(reqs2[0].destroy).toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
 

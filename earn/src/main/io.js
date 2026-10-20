@@ -34,8 +34,43 @@ function isTlsTrustError(err) {
 }
 const { parseChatStream } = require('../shared/llmChat');
 
+// Both JSON helpers below settle exactly once, and on every way a request ends.
+//
+// They used to settle only on the response's 'end' or the request's 'error' or
+// 'timeout'. A response cut after its headers (a server restart, a proxy
+// dropping the connection) emits none of those: Node ends it with 'aborted' and
+// 'close', and the socket is gone, so its idle timeout never fires either. The
+// promise stayed pending forever. The job worker only polls again once its
+// poll settles, so one cut response stopped cluster polling for good, and the
+// CLI could stall at startup on its update check.
+//
+// So the response's 'close' and 'error' settle too, and `timeoutMs` is a
+// deadline for the whole request rather than a limit on silence: a server
+// trickling a byte at a time never went quiet long enough to trip the old one.
+function settleOnce(resolve, reject) {
+  let done = false;
+  let timer = null;
+  const end = (fn) => (v) => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    fn(v);
+  };
+  return {
+    resolve: end(resolve),
+    reject: end(reject),
+    // Unref'd: a request in flight holds the process open through its socket,
+    // and this timer must not hold it open on its own.
+    deadline: (ms, onTimeout) => {
+      timer = setTimeout(onTimeout, ms);
+      timer.unref();
+    },
+  };
+}
+
 // Minimal JSON POST → { status, data, raw }. Resolves for ANY HTTP status
-// (callers must check `status`); rejects only on transport errors/timeouts.
+// (callers must check `status`); rejects on transport errors, a response cut
+// before its end, and after `timeoutMs` (default 30 s) for the whole request.
 // `opts.signal` aborts the request, as the job worker does to a held poll.
 function postJson(url, body, timeoutMs, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -43,10 +78,10 @@ function postJson(url, body, timeoutMs, opts = {}) {
     try { u = new URL(url); } catch (e) { return reject(e); }
     const lib = u.protocol === 'http:' ? http : https;
     const payload = JSON.stringify(body);
+    const out = settleOnce(resolve, reject);
     const req = lib.request(u, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) },
-      timeout: timeoutMs || 30000,
       signal: opts.signal,
     }, (res) => {
       let raw = '';
@@ -55,36 +90,48 @@ function postJson(url, body, timeoutMs, opts = {}) {
       res.on('end', () => {
         let data = null;
         try { data = raw ? JSON.parse(raw) : null; } catch (e) { /* non-JSON */ }
-        resolve({ status: res.statusCode || 0, data, raw });
+        out.resolve({ status: res.statusCode || 0, data, raw });
       });
+      res.on('error', out.reject);
+      // After 'end' this is a no-op; before it, the response was cut.
+      res.on('close', () => out.reject(new Error('the connection closed before the response ended')));
     });
-    req.on('error', reject);
-    req.on('timeout', () => { req.destroy(new Error('request timed out')); });
+    req.on('error', out.reject);
+    out.deadline(timeoutMs || 30000, () => req.destroy(new Error('request timed out')));
     req.write(payload);
     req.end();
   });
 }
 
 // Best-effort JSON GET: resolves the parsed object, or null on any error,
-// non-200, timeout, or unparseable body. Never rejects. `opts.headers` and
-// `opts.timeout` (ms, default 8000) tune the request; a 4 MB cap guards against
-// a runaway body. Shared by the app's economics/balance fetches and the CLI
-// self-updater's release check, which each used to keep their own copy.
+// non-200, timeout, cut response or unparseable body. Never rejects.
+// `opts.headers` and `opts.timeout` (ms, default 8000, for the whole request)
+// tune the request; a 4 MB cap guards against a runaway body. Shared by the
+// app's economics/balance fetches and the CLI self-updater's release check,
+// which each used to keep their own copy.
 function getJson(url, opts = {}) {
   return new Promise((resolve) => {
+    const out = settleOnce(resolve, resolve);
     try {
       const u = new URL(url);
       const lib = u.protocol === 'http:' ? http : https;
-      const req = lib.get(u, { timeout: opts.timeout || 8000, headers: opts.headers }, (res) => {
-        if (res.statusCode !== 200) { res.resume(); return resolve(null); }
+      const req = lib.get(u, { headers: opts.headers }, (res) => {
+        if (res.statusCode !== 200) { res.resume(); return out.resolve(null); }
         let data = '';
-        res.on('data', (c) => { data += c; if (data.length > 4e6) req.destroy(); });
-        res.on('end', () => { try { resolve(JSON.parse(data)); } catch (e) { resolve(null); } });
+        res.on('data', (c) => {
+          data += c;
+          // Over the cap: drop the connection and answer now. A destroyed
+          // response never emits 'end', which is what this used to wait for.
+          if (data.length > 4e6) { req.destroy(); out.resolve(null); }
+        });
+        res.on('end', () => { try { out.resolve(JSON.parse(data)); } catch (e) { out.resolve(null); } });
+        res.on('error', () => out.resolve(null));
+        res.on('close', () => out.resolve(null));
       });
-      req.on('error', () => resolve(null));
-      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.on('error', () => out.resolve(null));
+      out.deadline(opts.timeout || 8000, () => { req.destroy(); out.resolve(null); });
     } catch (e) {
-      resolve(null);
+      out.resolve(null);
     }
   });
 }
