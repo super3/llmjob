@@ -1127,6 +1127,74 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
 #endif
 }
 
+// Turing's launch shape for the B-direct fold, as pearl_host_create settles it for one
+// card: the band depth, the batch width (valid column offsets a launch) and whether the
+// two pipeline slots run on two streams. Only the band depends on the card today. The
+// width is the profile's col_batch and the streams are PEARL_FOLD_STREAMS on every RTX 20
+// card. A per-card winner of the launch sweep (probes/turing/launch.sh) ships as a change
+// here, keyed on the SM count and the L2 as the band is. A width must pass
+// pearl_bd_width_ok.
+struct PearlBdLaunch {
+  uint32_t band;
+  uint32_t colBatch;
+  bool streams;
+};
+
+// A power of two of at least one tile's 16 column offsets that divides the valid offsets,
+// so a salt still splits into whole batches.
+bool pearl_bd_width_ok(uint32_t colBatch, uint32_t colsValid) {
+  return colBatch >= 16u && (colBatch & (colBatch - 1u)) == 0u && colBatch <= colsValid
+         && colsValid % colBatch == 0u;
+}
+
+PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_t colBatch) {
+  (void)sms;  // nothing is keyed on it yet
+  PearlBdLaunch s;
+  s.band = pearl_bd_band_for(k, l2);
+  s.colBatch = colBatch;
+  s.streams = PEARL_FOLD_STREAMS != 0;
+  return s;
+}
+
+// The launch sweep's overrides, read once when a context is made on a card that runs the
+// B-direct fold. They exist so probes/turing/launch.sh can measure several launch shapes
+// with one build on a rented card. Nothing in the app sets them, and unset they change
+// nothing.
+//   PEARL_BD_SWEEP_BAND=N       column groups a band, 1 to 64
+//   PEARL_BD_SWEEP_COL_BATCH=N  column offsets a launch (pearl_bd_width_ok)
+//   PEARL_BD_SWEEP_STREAMS=0|1  the two pipeline slots on one stream, or on two
+// A value that does not parse or is out of range is ignored. Returns whether any was set.
+bool pearl_bd_sweep_env(const char *name, uint32_t *out) {
+  const char *v = getenv(name);
+  if (!v || !*v) return false;
+  char *end = nullptr;
+  const unsigned long x = strtoul(v, &end, 10);
+  if (*end != '\0' || x > 0xFFFFFFFFul) {
+    fprintf(stderr, "[pearl] %s=%s ignored: not a number\n", name, v);
+    return false;
+  }
+  *out = (uint32_t)x;
+  return true;
+}
+
+bool pearl_bd_sweep(PearlBdLaunch *s, uint32_t colsValid) {
+  bool any = false;
+  uint32_t v = 0;
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_BAND", &v)) {
+    any = true;
+    if (v >= 1u && v <= 64u) s->band = v;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_COL_BATCH", &v)) {
+    any = true;
+    if (pearl_bd_width_ok(v, colsValid)) s->colBatch = v;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_STREAMS", &v)) {
+    any = true;
+    if (v <= 1u) s->streams = v != 0u;
+  }
+  return any;
+}
+
 // The column offsets one batch of Ampere's tall fold covers (see PEARL_AMPERE_COL_BATCH):
 // the profile's col_batch, or PEARL_AMPERE_COL_BATCH if that is narrower, is a whole
 // number of tiles' 16 column offsets, and divides the valid offsets, so a salt still
@@ -1610,15 +1678,45 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       CUDA_OK(cudaMalloc(&ctx->dTrG[s], (size_t)ctx->batch * 16u * sizeof(uint32_t)),
               "allocating the transcript buffers (unfused or wgmma fold)");
   }
-  // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
-  // PEARL_BD_L2_SHARE.
+  // Turing (the B-direct fold): a band of column groups whose B fits the L2 (see
+  // PEARL_BD_L2_SHARE), and the rest of the launch shape (pearl_bd_launch_for).
   if (ctx->foldBDirect) {
-    int l2 = 0;
+    int l2 = 0, sms = 0;
     if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
       (void)cudaGetLastError();
       l2 = 0;
     }
-    ctx->bdBand = pearl_bd_band_for(profile->k, (uint64_t)l2);
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      sms = 0;
+    }
+    PearlBdLaunch s =
+        pearl_bd_launch_for(profile->k, (uint64_t)l2, (uint32_t)sms, ctx->colBatch);
+    const PearlBdLaunch rule = s;
+    // The sweep's overrides (pearl_bd_sweep). The line says what took effect, so a
+    // reading can be credited to the shape that ran.
+    if (pearl_bd_sweep(&s, ctx->colsValid))
+      fprintf(stderr,
+              "[pearl] launch sweep: band %u (rule %u), col_batch %u (rule %u), streams %d "
+              "(rule %d); %d SMs, L2 %d KB\n",
+              s.band, rule.band, s.colBatch, rule.colBatch, (int)s.streams, (int)rule.streams,
+              sms, l2 / 1024);
+    ctx->bdBand = s.band;
+    if (s.colBatch != ctx->colBatch) {
+      ctx->colBatch = s.colBatch;
+      ctx->batch = ctx->colBatch * ctx->rowsValid;
+    }
+    // One stream (the legacy default stream, as with PEARL_FOLD_STREAMS 0) or two.
+    if (s.streams && !ctx->foldStream[0]) {
+      for (int i = 0; i < Ctx::kSlots; i++)
+        CUDA_OK(cudaStreamCreateWithFlags(&ctx->foldStream[i], cudaStreamDefault),
+                "creating the fold streams");
+    } else if (!s.streams && ctx->foldStream[0]) {
+      for (int i = 0; i < Ctx::kSlots; i++) {
+        cudaStreamDestroy(ctx->foldStream[i]);
+        ctx->foldStream[i] = nullptr;
+      }
+    }
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->bdBand, ctx->bdBand};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
