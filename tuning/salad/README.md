@@ -359,7 +359,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**18:49 EDT, Wed 14 Oct** · PRL $1.901 · 8/10 mining
+**6:49 pm EDT, Wed 14 Oct** · PRL $1.901 · 8/10 mining
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
@@ -374,7 +374,8 @@ The report is **one table** with six columns (five without a Monero address), so
 | 🪙 XMR HeroMiners | 32.1 kH/s | 0.002222 | 0.000000 | 0.000000 |
 ```
 
-- **The first line** gives only what the table doesn't: the time (New York: EDT or EST), the PRL price and how many boxes are mining
+- **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
+  24-hour time until 20 October), the PRL price and how many boxes are mining
   out of the slots (`max_active`, or Salad's quota if lower). Profit an hour, the margin and the profit so far are in the **All** row.
 - **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
   always has `max_active` box rows.
@@ -394,9 +395,13 @@ The report is **one table** with six columns (five without a Monero address), so
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
   mining to the address. Locked-in and not-yet-locked rows were here before; they were dropped on 14 October.
-- **Under the table**, one line gives the key (what ⛏️ ⏳ ⏹️ and `*` mean), and one more gives the money trail:
-  what Salad cost and what each PRL cost to mine, what share of our estimate the pool has credited, what
-  SafeTrade sold and holds, the XMR our boxes have mined, and the Salad credit left.
+- **Under the table**, one line gives the money trail: what Salad cost and what each PRL cost to mine, what
+  share of our estimate each pool has credited, what SafeTrade sold and holds, the XMR our boxes have mined,
+  and the Salad credit left.
+- **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
+  20 October): ⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · ⬜ empty slot · `*` our own count or estimate,
+  or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
+  · (K) mines Pearl on Kryptex, the rest on HeroMiners.
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before

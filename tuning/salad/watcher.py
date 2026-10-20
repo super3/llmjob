@@ -85,9 +85,15 @@ def iso(t): return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m
 NY = ZoneInfo("America/New_York")
 
 
+def clock(t):
+    """New York time on the 12-hour clock, which the user reads more easily than 24-hour time: 8:05 pm EDT."""
+    d = dt.datetime.fromtimestamp(t, NY)
+    return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
+
+
 def stamp(t):
     d = dt.datetime.fromtimestamp(t, NY)
-    return f"{d:%H:%M %Z}, {d:%a} {d.day} {d:%b}"
+    return f"{clock(t)}, {d:%a} {d.day} {d:%b}"
 
 
 def parse_iso(s):
@@ -1482,13 +1488,8 @@ class W:
         head = f"**{stamp(t)}** · PRL ${price:.3f} · {mining}/{slots} mining"
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
-        # What doesn't fit on a row, in two lines: the key, then the money trail.
-        key = ("⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped" + (" · ⬜ empty slot" if empty else "")
-               + " · * our own count or estimate, or entered by hand; the rest "
-               "comes from an API (Salad, the pool, prlscan, CoinGecko) or the trader's log. TH/s is Pearl on the GPU"
-               + (", kH/s Monero on the CPU" if xon else "") + "; $/hr is Salad's bill. Profit $ counts sold PRL at what "
-               "it sold for and the rest at today's price" + (", plus Monero" if xon else "") + "."
-               + (" (K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners." if kt else ""))
+        # What doesn't fit on a row: the money trail. The key to the symbols is in the README; it was a line
+        # here until 20 October, repeated in every report.
         trail = [f"Spent ${spend:.2f}{EST} on Salad"]
         if prl > 0:
             trail[0] += (f" for {prl:.3f}{EST} PRL" + (f" ({est:.3f}{EST} at the network's rate × {y:.0%}{EST} credited)"
@@ -1506,7 +1507,7 @@ class W:
                          f"rate ({ky:.0%}{EST}; {self.cfg['kryptex_pay']:.0%} expected), "
                          "and pays out from 1 PRL")
         if ts:
-            when = (f"at the {time.strftime('%H:%M', time.gmtime(ts['t']))}Z run" if ts.get("t") else "entered by hand")
+            when = f"at the {clock(ts['t'])} run" if ts.get("t") else "entered by hand"
             trail.append(f"SafeTrade {when}: {sold:.3f}{h} PRL sold for {net:.2f}{h} USDT net"
                          + (f" (avg {ts['received'] / sold:.4f}{h})" if sold else "")
                          + f", holds {ts.get('usdt', 0):.2f}{h} USDT and {ts.get('prl', 0) + ts.get('prl_locked', 0):.3f}{h} PRL"
@@ -1519,7 +1520,7 @@ class W:
                      + " (our count: set config credit_offset from the portal now and then)")
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, "",
-                 key, "", ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
+                 ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         with open(REPORT + ".tmp", "w") as f:

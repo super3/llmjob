@@ -899,25 +899,39 @@ class TestCreditRatio(Base):
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**03:00 EST, Fri 15 Jan** · PRL $1.390 · "))
+        self.assertTrue(self.report().startswith("**3:00 am EST, Fri 15 Jan** · PRL $1.390 · "))
 
     def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
         t = w.parse_iso("2026-10-17T15:53:00Z")
-        self.assertEqual(w.stamp(t), "11:53 EDT, Sat 17 Oct")
+        self.assertEqual(w.stamp(t), "11:53 am EDT, Sat 17 Oct")
+
+    def test_the_time_is_on_the_12_hour_clock(self):
+        at = lambda s: w.clock(w.parse_iso(s))
+        self.assertEqual(at("2026-10-20T00:00:00Z"), "8:00 pm EDT")     # 20:00 in New York
+        self.assertEqual(at("2026-10-19T16:05:00Z"), "12:05 pm EDT")    # noon
+        self.assertEqual(at("2026-10-20T04:30:00Z"), "12:30 am EDT")    # midnight
+        self.assertEqual(at("2027-01-15T14:00:00Z"), "9:00 am EST")
 
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
-        self.assertEqual(first, "**03:00 EST, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
+        self.assertEqual(first, "**3:00 am EST, Fri 15 Jan** · PRL $1.390 · 0/1 mining")
 
     def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
         report = self.report(cfg={"max_active": 10})
         empty = f"| ⬜{w.NB}empty | — | — | — | — |"
         self.assertEqual(report.count(empty + "\n"), 9)              # 1 group, 10 slots
         self.assertIn(" · 0/10 mining\n", report)                    # counted against the slots, not the groups
-        self.assertIn("⏹️ stopped · ⬜ empty slot · *", report)
-        rows = [l for l in report.split("\n") if l.startswith("| ")]
+        rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
         self.assertTrue(all(len(l) <= 90 for l in rows))
+
+    def test_no_key_under_the_table(self):
+        self.x.st["kx_tot"] = {"t": T0, "total": 1.0, "confirmed": 1.0, "unconfirmed": 0.0, "paid": 0.0}
+        report = self.report(cfg={"max_active": 10, "xmr_wallet": "4" + "a" * 94, "xmr_groups": ["*"]})
+        under = report.rstrip("\n").split("\n\n")[-1]
+        self.assertTrue(under.startswith("Spent $"), under)          # the money trail follows the tables
+        for gone in ("⛏️ mining ·", "our own count or estimate", "(K) mines Pearl on Kryptex", "is Salad's bill"):
+            self.assertNotIn(gone, report)
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -1044,7 +1058,6 @@ class TestStartingBoxes(Base):
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
-        self.assertIn("* our own count or estimate, or entered by hand", report)
         self.assertRegex(report, r"Salad credit left \$[\d.]+\* of \$[\d.]+\*, \d+\* h at \$[\d.]+/hr \(our count")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
@@ -1210,7 +1223,7 @@ class TestTraderStatus(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("SafeTrade at the 09:05Z run: 5.256 PRL sold for 7.09 USDT net (avg 1.3507), holds 7.08 USDT and "
+        self.assertIn("SafeTrade at the 4:05 am EST run: 5.256 PRL sold for 7.09 USDT net (avg 1.3507), holds 7.08 USDT and "
                       "0.000 PRL; last run sold 5.2564 PRL at 1.3507.", report)
         # The box's Profit $ counts its sold PRL at what it sold for: 7.0858 USDT net + 4.7436 unsold PRL × $1.39
         # − $8.00 = +5.68, not 10 × 1.39 − 8.
@@ -2419,7 +2432,6 @@ class TestKryptex(Base):
         self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", report)
-        self.assertIn("(K) mines Pearl on Kryptex (PPS+), the rest on HeroMiners.", report)
         self.assertIn("The PRL pool HeroMiners has credited 80%* of our estimate over 20 blocks", report)
         self.assertIn("Kryptex has credited 3.880 PRL for 4.000* at the network's rate (97%*; 94% expected), "
                       "and pays out from 1 PRL", report)
