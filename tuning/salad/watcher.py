@@ -91,9 +91,14 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
+def ordinal(n):
+    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
+
+
 def stamp(t):
+    """The report's time and date, the way the user reads them: 8:09 pm EDT, Mon. 19th Oct."""
     d = dt.datetime.fromtimestamp(t, NY)
-    return f"{clock(t)}, {d:%a} {d.day} {d:%b}"
+    return f"{clock(t)}, {d:%a}. {ordinal(d.day)} {d:%b}"
 
 
 def parse_iso(s):
@@ -1485,7 +1490,7 @@ class W:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row.
-        head = f"**{stamp(t)}** · PRL ${price:.3f} · {mining}/{slots} mining"
+        head = f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining"
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         # What doesn't fit on a row: the money trail. The key to the symbols is in the README; it was a line

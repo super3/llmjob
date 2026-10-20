@@ -359,7 +359,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**6:49 pm EDT, Wed 14 Oct** · PRL $1.901 · 8/10 mining
+**6:49 pm EDT, Wed. 14th Oct** · PRL $1.90 · 8/10 mining
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
 |---|---|---|---|---|---|
@@ -375,7 +375,7 @@ The report is **one table** with six columns (five without a Monero address), so
 ```
 
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
-  24-hour time until 20 October), the PRL price and how many boxes are mining
+  24-hour time until 20 October), the date ("Mon. 19th Oct"), the PRL price in cents and how many boxes are mining
   out of the slots (`max_active`, or Salad's quota if lower). Profit an hour, the margin and the profit so far are in the **All** row.
 - **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
   always has `max_active` box rows.
