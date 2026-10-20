@@ -32,8 +32,11 @@ body {
 /* Every screen is the SAME height (matching the design mocks), so the window
    never grows or shrinks when switching tabs and the footer (View Logs / Need
    Help) stays put. Views with unbounded or overflowing content (chat, logs,
-   settings) scroll internally instead of stretching the frame. */
-#view-chat, #view-api, #view-settings, #view-logs { height: 470px; }
+   settings) scroll internally instead of stretching the frame.
+   --fill is the spare height of a window made taller than this by hand, set by
+   watchWindowFit in renderer.js and 0 at the fitted size. Every view grows by
+   exactly that, so the footer sits at the bottom of the window on every tab. */
+#view-chat, #view-api, #view-settings, #view-logs { height: calc(470px + var(--fill, 0px)); }
 /* Mine is the one screen that legitimately gets TALLER: the update banner and
    the engine-error line appear above content of a fixed size, so they push the
    START button down. At a hard height it overflowed its own section and painted
@@ -41,8 +44,9 @@ body {
    Nothing clipped or scrolled, either: a fixed height means the overflow never
    grows .app, so the ResizeObserver never fires and the window is never refitted.
    min-height keeps every screen the same 470px in the ordinary case, and lets
-   this one grow the frame when it has to. */
-#view-mine { min-height: 470px; }
+   this one grow the frame when it has to. The chart takes the --fill, and the
+   floor rises with it, so START/STOP keeps its place above the footer. */
+#view-mine { min-height: calc(470px + var(--fill, 0px)); }
 /* Chat and logs fill the height so their scroller sits above the footer. */
 #view-chat, #view-api, #view-logs { display: flex; flex-direction: column; }
 /* Settings fits the frame. If a longer state ever runs past it, it scrolls
@@ -84,7 +88,8 @@ input.field-box { user-select: text; }
 
 /* hashrate chart card */
 .chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 16px 16px 16px; margin-bottom: 26px; }
-.chart-card svg { display: block; }
+/* 84px is CHART_PX in renderer.js, which sizes the viewBox to match. */
+.chart-card svg { display: block; height: calc(84px + var(--fill, 0px)); }
 .mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 18px; padding-top: 18px; border-top: 1px solid #ebe9e1; }
 /* Per the design mock the three stats anchor to their own edges — left, centre,
    right — rather than all hugging the left of their grid cell. Aligning the cell
@@ -352,10 +357,27 @@ select.rv-input { cursor: pointer; }
 
 /* Monero on the CPU: one line under the GPU card, and its Settings fields. */
 /* The address box and its badge are the old merge-mining ones, in Monero orange. */
-.badge-xmr { display: inline-block; margin-left: 6px; padding: 0 6px; line-height: 14px; border-radius: 5px; background: #fff1e6; color: #e8590c; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; text-transform: none; }
+/* Centred on the title's capitals: vertical-align: middle alone left it 2px
+   low, measured on the rendered pixels. */
+.badge-xmr { display: inline-block; position: relative; top: -2px; margin-left: 6px; padding: 0 6px; line-height: 14px; border-radius: 5px; background: #fff1e6; color: #e8590c; font-size: 9.5px; font-weight: 700; letter-spacing: .04em; vertical-align: middle; text-transform: none; }
+/* The CPU Mining title carries the thread count as a small text dropdown, and
+   the Monero balance at the right, over a full-width address: set like the
+   Pearl balance over the payout address. Centred, the row stays close to the
+   title's own height, so Settings still fits its 470px. */
+.xmr-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.xmr-head-main { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.xmr-head .section-meta { flex: none; }
+.section-meta { font-size: 13px; line-height: 14px; font-weight: 400; letter-spacing: 0; text-transform: none; color: var(--muted); white-space: nowrap; }
+.section-meta b { color: var(--ink); font-weight: 600; }
+.section-meta .coin { margin-left: 3px; }
+.section-meta .usd { color: var(--muted-2); }
 .xmr-row { display: flex; gap: 10px; }
 .xmr-input { flex: 1; min-width: 0; margin-bottom: 0; padding: 10px 14px; }
-.cpu-threads { flex: none; width: 150px; }
+/* The thread count in the CPU Mining title: a text dropdown as wide as its
+   choice, so "Auto (11 threads)" is never cut off as it was in a 150px box. */
+.cpu-threads { min-width: 0; height: 18px; padding: 0 4px; border: none; border-radius: 4px; background: transparent; font-size: 12px; letter-spacing: 0; text-transform: none; color: var(--muted); cursor: pointer; }
+.cpu-threads:disabled { cursor: default; }
+.cpu-threads:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* At most two lines, so Settings stays inside its 470px; the title has all of it. */
 .settings-note.one-line { margin-top: 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-note.err { color: #dc2626; }

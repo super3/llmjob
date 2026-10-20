@@ -35,8 +35,13 @@ function estDailyUsd(ths, econ = ECON) {
   return estDailyPrl(ths, econ) * econ.PRL_USD;
 }
 
+// Dollars with a thousands separator: $1,110.69.
+function usdLabel(n) {
+  return '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 function estDailyUsdLabel(ths, econ = ECON) {
-  return '$' + estDailyUsd(ths, econ).toFixed(2);
+  return usdLabel(estDailyUsd(ths, econ));
 }
 
 function prlToUsd(prl, econ = ECON) {
@@ -44,7 +49,7 @@ function prlToUsd(prl, econ = ECON) {
 }
 
 function prlToUsdLabel(prl, econ = ECON) {
-  return '$' + prlToUsd(prl, econ).toFixed(2);
+  return usdLabel(prlToUsd(prl, econ));
 }
 
 module.exports = {

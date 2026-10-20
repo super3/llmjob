@@ -60,7 +60,7 @@
           <div class="hero-sub"><span class="dot2" id="llm-hero-dot"></span><span class="hero-label">LLM</span><span class="hw-tag">GPU</span><span class="hero-detail mono" id="llm-hero-detail">—</span></div>
         </div>
       </div>
-      <svg viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
+      <svg id="mk-chart" viewBox="0 0 480 56" width="100%" height="84" preserveAspectRatio="none">
         <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
         <path id="mk-area" d="M0 56 L0 55 L480 55 L480 56 Z" fill="url(#mkFill)"></path>
         <path id="mk-line" d="M0 55 L480 55" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
@@ -200,11 +200,18 @@
       </div>
     </div>
 
-    <!-- Like merge mining was: an optional address, and blank means off. -->
-    <div class="settings-section">CPU Mining <span class="badge-xmr">XMR</span></div>
+    <!-- Like merge mining was: an optional address, and blank means off. Its
+         balance sits above it, as the Pearl balance does above the payout address. -->
+    <div class="settings-section xmr-head">
+      <span class="xmr-head-main">
+        <span>CPU Mining <span class="badge-xmr">XMR</span></span>
+        <span aria-hidden="true">·</span>
+        <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero" aria-label="CPU threads for Monero"></select>
+      </span>
+      <span class="section-meta" id="xmr-balance-meta" hidden>Balance: <b class="mono" id="xmr-balance">0.0000</b><b class="coin">XMR</b> <span class="usd" id="xmr-balance-usd">≈ $0.00</span></span>
+    </div>
     <div class="xmr-row">
       <input id="set-xmr" class="field-box xmr-input" type="text" spellcheck="false" placeholder="Paste your 4… or 8… Monero address (optional)" />
-      <select id="set-cpu-threads" class="rv-input cpu-threads" title="CPU threads for Monero"></select>
     </div>
     <p id="cpu-note" class="settings-note one-line" hidden></p>
 

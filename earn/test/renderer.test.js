@@ -157,9 +157,18 @@ afterEach(() => {
   delete window.ResizeObserver;
   delete ROStub.cb;
   delete ROStub.observed;
+  // The root outlives each test's body; a window-fill test leaves its fill on it.
+  document.documentElement.style.removeProperty('--fill');
 });
 
 describe('boot with the full bridge', () => {
+  it('shows the balance in dollars with a thousands separator', async () => {
+    const { api } = makeFullApi();
+    api.getBalance.mockResolvedValue({ earned: 578.559, usd: 1110.69 });
+    await boot({ api });
+    expect($('balance-usd').textContent).toBe('≈ $1,110.69');
+  });
+
   it('populates settings, regions, balances, gpu and version at init', async () => {
     const { api } = makeFullApi();
     await boot({ api });
@@ -1204,13 +1213,148 @@ describe('mine view height', () => {
     const decls = mineRules.map(([, body]) => body).join(';');
     // A bare `height:` on this view is the regression; min-height is the fix.
     expect(/(^|;)\s*height\s*:/.test(decls)).toBe(false);
-    expect(/min-height\s*:\s*\d/.test(decls)).toBe(true);
+    expect(/min-height\s*:\s*(calc\(\s*)?\d/.test(decls)).toBe(true);
   });
 
   // The views that scroll internally still need a definite height, or their
   // flex children (chat list, log terminal) grow instead of scrolling.
   it('leaves the internally-scrolling views on a fixed height', () => {
-    expect(/#view-chat[^{]*{[^}]*height:\s*\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
+    expect(/#view-chat[^{]*{[^}]*height:\s*(calc\(\s*)?\d/.test(CSS.replace(/\/\*[\s\S]*?\*\//g, ''))).toBe(true);
+  });
+
+  // A window taller than the content is filled by adding --fill to every view
+  // and to the chart. A view left out would leave the footer short of the
+  // bottom on that tab, or, for Mine, push START/STOP down without the chart.
+  it('adds the spare height of a taller window to every view and the chart', () => {
+    const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = (sel) => {
+      const rule = bare.split('}').map((c) => c.split('{')).find((p) => p.length === 2 && p[0].split(',').map((s) => s.trim()).includes(sel));
+      return rule ? rule[1] : '';
+    };
+    for (const v of ['#view-chat', '#view-api', '#view-settings', '#view-logs']) {
+      expect(body(v)).toMatch(/(^|;)\s*height:\s*calc\(470px \+ var\(--fill, 0px\)\)/);
+    }
+    expect(body('#view-mine')).toMatch(/min-height:\s*calc\(470px \+ var\(--fill, 0px\)\)/);
+    // The chart's own height matches the svg's height attribute and CHART_PX.
+    expect(body('.chart-card svg')).toMatch(/height:\s*calc\(84px \+ var\(--fill, 0px\)\)/);
+    expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 56" width="100%" height="84"/);
+  });
+});
+
+// A window made taller than the content by hand: snapped to half the screen, or
+// maximised. jsdom does no layout, so .app's height is modelled as styles.css
+// lays it out: the content's own height plus whatever --fill the renderer set.
+describe('a window taller than the content', () => {
+  const root = () => document.documentElement;
+  const fill = () => root().style.getPropertyValue('--fill');
+  let content;
+  let innerHeight;
+  let saved;
+
+  beforeEach(() => {
+    saved = Object.getOwnPropertyDescriptor(window, 'innerHeight');
+    Object.defineProperty(window, 'innerHeight', { configurable: true, get: () => innerHeight });
+  });
+  afterEach(() => {
+    if (saved) Object.defineProperty(window, 'innerHeight', saved);
+    else delete window.innerHeight;
+  });
+
+  // Boots fitted: the first observation asks for a fit, as on every launch.
+  async function bootFitted(api) {
+    await boot({ api, resizeObserver: ROStub });
+    content = 653;
+    innerHeight = 653;
+    document.querySelector('.app').getBoundingClientRect = () => ({ height: content + (parseFloat(fill()) || 0) });
+    ROStub.cb();
+    jest.advanceTimersByTime(80);
+    expect(api.fitWindow).toHaveBeenCalledTimes(1);
+  }
+  const resizeTo = (h) => { innerHeight = h; ROStub.cb(); };
+  const contentTo = (h) => { content = h; ROStub.cb(); };
+  const ys = (d) => d.split(/[ML]\s*/).filter(Boolean).map((p) => Number(p.trim().split(/\s+/)[1]));
+
+  it('watches the window as well as the content', async () => {
+    const observed = [];
+    class Spy { constructor(cb) { Spy.cb = cb; } observe(elm) { observed.push(elm); } }
+    await boot({ api: makeFullApi().api, resizeObserver: Spy });
+    expect(observed).toEqual([root(), document.querySelector('.app')]);
+  });
+
+  it('leaves a fitted window exactly as it was', async () => {
+    const { api } = makeFullApi();
+    await bootFitted(api);
+    resizeTo(653);
+    expect(fill()).toBe('');
+    // A fit can leave a pixel or two; that is not spare height.
+    resizeTo(655);
+    expect(fill()).toBe('');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 56');
+    expect($('mk-line').getAttribute('d')).toBe('M0 55 L480 55');
+    expect($('mk-area').getAttribute('d')).toBe('M0 56 L0 55 L480 55 L480 56 Z');
+  });
+
+  it('gives the spare height to the views and the chart, and takes it back', async () => {
+    const { api } = makeFullApi();
+    await bootFitted(api);
+    resizeTo(720); // the 654x759 half of a 1280x800 screen
+    expect(fill()).toBe('67px');
+    // 84 + 67 px tall at the same 1.5 px per unit: 56 * 151 / 84 = 100.7.
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 100.7');
+    expect($('mk-line').getAttribute('d')).toBe('M0 99.7 L480 99.7');
+    expect($('mk-area').getAttribute('d')).toBe('M0 100.7 L0 99.7 L480 99.7 L480 100.7 Z');
+    ROStub.cb(); // the fill grew .app; the content did not change, so nothing moves
+    expect(fill()).toBe('67px');
+    resizeTo(653);
+    expect(fill()).toBe('');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 56');
+    // Shorter than the content: no fill, the page scrolls as before.
+    resizeTo(600);
+    expect(fill()).toBe('');
+    jest.advanceTimersByTime(500);
+    expect(api.fitWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it('draws the line at the same scale, only taller', async () => {
+    const { api, cbs } = makeFullApi();
+    await bootFitted(api);
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+    cbs.stats({ total: '226.0', acceptedLabel: '9', uptime: '5m', estDay: '$2.50', gpu: 'g', points: [226, 226, 225, 226, 120, 118, 119, 121] });
+    const before = ys($('mk-line').getAttribute('d'));
+    resizeTo(737); // 84 px spare doubles the chart: 56 units become 112
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 112');
+    const after = ys($('mk-line').getAttribute('d'));
+    // Each is rounded to 0.1, so doubling can be off by up to 0.15.
+    after.forEach((y, i) => expect(Math.abs(y - 2 * before[i])).toBeLessThanOrEqual(0.151));
+    // Stopping draws the flat line at the new height.
+    click($('btn-stop'));
+    expect($('mk-line').getAttribute('d')).toBe('M0 111 L480 111');
+  });
+
+  it('keeps a taller window its size while the content changes, until it no longer fits', async () => {
+    const { api } = makeFullApi();
+    await bootFitted(api);
+    resizeTo(720);
+    contentTo(638); // a shorter tab: the fill takes the difference
+    expect(fill()).toBe('82px');
+    contentTo(703); // the update banner: still fits
+    expect(fill()).toBe('17px');
+    jest.advanceTimersByTime(500);
+    expect(api.fitWindow).toHaveBeenCalledTimes(1);
+    contentTo(740); // no longer fits: the window grows to it, as before
+    expect(fill()).toBe('');
+    jest.advanceTimersByTime(80);
+    expect(api.fitWindow).toHaveBeenCalledTimes(2);
+  });
+
+  it('still fits a fitted window to its content', async () => {
+    const { api } = makeFullApi();
+    await bootFitted(api);
+    contentTo(638); // a fitted window follows the content down, with no fill
+    expect(fill()).toBe('');
+    jest.advanceTimersByTime(80);
+    expect(api.fitWindow).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -1625,6 +1769,40 @@ describe('CPU mining', () => {
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-row').title).not.toContain('XMR earned');
+  });
+
+  // Settings shows the Monero balance above its address, as the Mine view shows
+  // the Pearl balance above the payout address.
+  it('shows the Monero balance above its address once the address checks out', async () => {
+    const xmrMeta = () => [$('xmr-balance-meta').hidden, $('xmr-balance').textContent, $('xmr-balance-usd').textContent];
+    const { api } = cpuApi({});
+    let pay;
+    api.getXmrBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    await boot({ api });
+    expect(xmrMeta()).toEqual([true, '0.0000', '≈ $0.00']); // no address: hidden
+    setInput($('set-xmr'), XMR_ADDR);
+    expect(xmrMeta()[0]).toBe(true); // not until the check says it is good
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(xmrMeta()).toEqual([false, '0.0000', '≈ $0.00']); // the pool has not answered yet
+    pay({ earned: 1.5, pending: 0.0098, paid: 1.4902, usd: 1234.5 });
+    await flush();
+    expect(xmrMeta()).toEqual([false, '1.5000', '≈ $1,234.50']);
+
+    // Without a price from the pool it shows the coins alone.
+    api.getXmrBalance.mockResolvedValueOnce({ earned: 0.0098, usd: null });
+    setInput($('set-xmr'), XMR_ADDR + ' ');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(xmrMeta()).toEqual([false, '0.0098', '']);
+
+    // A wrong address, or none, hides it again.
+    setInput($('set-xmr'), 'nope');
+    jest.advanceTimersByTime(400);
+    await flush();
+    expect(xmrMeta()[0]).toBe(true);
+    setInput($('set-xmr'), '');
+    expect(xmrMeta()[0]).toBe(true);
   });
 
   it('typing an address and the thread count update the section', async () => {

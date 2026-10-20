@@ -54,7 +54,7 @@ const { JobWorker } = require('./jobWorker');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
-const { buildBalanceUrl, parseBalance } = require('../shared/balance');
+const { buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd } = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
@@ -336,11 +336,29 @@ async function fetchBalance(address, priceUsd) {
 // The Monero balance on HeroMiners' Monero pool, the CPU miner's. Same pool
 // software and payload as the Pearl one, in 1e12 units, and with no `balance`
 // field until there is one. Best-effort like fetchBalance: null on any failure.
+// Its dollar value uses the pool's XMR price; without one, usd is null and
+// Settings shows the balance without dollars.
 async function fetchXmrBalance(address) {
   if (!checkXmrAddress(address).ok) return null;
   const json = await getJson(buildBalanceUrl(String(address).trim(), XMR.apiBase)).catch(() => null);
   if (json == null) return null;
-  return parseBalance(json, undefined, { units: XMR.coinUnits, absentIsZero: true });
+  const price = await xmrPriceUsd();
+  return parseBalance(json, price == null ? undefined : price, { units: XMR.coinUnits, absentIsZero: true });
+}
+
+// HeroMiners' XMR price, read at most every 10 minutes, as often as the PRL
+// price. A failed read keeps the last price.
+const XMR_PRICE_MAX_AGE_MS = 10 * 60 * 1000;
+let xmrPrice = null;
+let xmrPriceAt = 0;
+async function xmrPriceUsd() {
+  if (xmrPrice != null && Date.now() - xmrPriceAt < XMR_PRICE_MAX_AGE_MS) return xmrPrice;
+  const usd = parsePoolPriceUsd(await getJson(buildPoolStatsUrl(XMR.apiBase)).catch(() => null));
+  if (usd != null) {
+    xmrPrice = usd;
+    xmrPriceAt = Date.now();
+  }
+  return xmrPrice;
 }
 
 // ── CPU mining (Monero) ─────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance,
+  POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
 } = require('../src/shared/balance');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -167,5 +167,29 @@ describe('parseBalance for Monero', () => {
 
   test('falls back to the default units for a bad one', () => {
     expect(parseBalance({ stats: { balance: String(COIN_UNITS) } }, null, { units: 0 }).pending).toBe(1);
+  });
+});
+
+// The Monero balance's dollar figure uses the pool's own XMR price, from
+// /api/stats, where HeroMiners gives it as a string under pool.price.
+describe('the pool price', () => {
+  test('is read from /api/stats on the given pool', () => {
+    expect(buildPoolStatsUrl('https://monero.herominers.com')).toBe('https://monero.herominers.com/api/stats');
+    expect(buildPoolStatsUrl()).toBe(POOL_BASE + '/api/stats');
+  });
+
+  test('is pool.price.usd as a number', () => {
+    expect(parsePoolPriceUsd({ pool: { price: { usd: '605.41', btc: '0.00739276' } } })).toBe(605.41);
+    expect(parsePoolPriceUsd({ pool: { price: { usd: 605.41 } } })).toBe(605.41);
+  });
+
+  test('is null when the payload has none', () => {
+    expect(parsePoolPriceUsd(null)).toBeNull();
+    expect(parsePoolPriceUsd({})).toBeNull();
+    expect(parsePoolPriceUsd({ pool: {} })).toBeNull();
+    expect(parsePoolPriceUsd({ pool: { price: {} } })).toBeNull();
+    expect(parsePoolPriceUsd({ pool: { price: { usd: '' } } })).toBeNull();
+    expect(parsePoolPriceUsd({ pool: { price: { usd: '0' } } })).toBeNull();
+    expect(parsePoolPriceUsd({ pool: { price: { usd: 'n/a' } } })).toBeNull();
   });
 });

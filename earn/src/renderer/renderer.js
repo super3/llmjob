@@ -19,7 +19,7 @@
     balanceMeta: $('balance-meta'), balance: $('balance'), balanceUsd: $('balance-usd'),
     getWallet: $('get-wallet'),
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
-    line: $('mk-line'), area: $('mk-area'),
+    chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
     mineDot: $('mine-dot'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
@@ -49,6 +49,7 @@
     idleStatus: $('idle-status'),
     // CPU mining (Monero)
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
+    xmrBalanceMeta: $('xmr-balance-meta'), xmrBalance: $('xmr-balance'), xmrBalanceUsd: $('xmr-balance-usd'),
     setCpuThreads: $('set-cpu-threads'),
     chartCard: $('chart-card'), activityLabel: $('activity-label'), mineLabel: $('mine-label'), llmCol: $('llm-col'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
@@ -81,7 +82,7 @@
     // Monero on the CPU (Settings → CPU Mining). On while a Monero address is
     // filled in, the way merge mining was. `cpu` is what main says this
     // computer can do; `cpuView` the CPU line main last sent.
-    cpuMining: false, xmrAddress: '', xmrOk: false, xmrChecking: false, xmrError: null, xmrBalance: null, cpuThreads: 0,
+    cpuMining: false, xmrAddress: '', xmrOk: false, xmrChecking: false, xmrError: null, xmrBalance: null, xmrUsd: null, cpuThreads: 0,
     cpu: null, cpuView: null,
   };
 
@@ -455,8 +456,35 @@
   }
 
   // ── Charts / mining stats ──────────────────────────────────────────────────
-  const FLAT_LINE = 'M0 55 L480 55';
-  const FLAT_AREA = 'M0 56 L0 55 L480 55 L480 56 Z';
+  // The chart's height on screen (.chart-card svg in styles.css) and its
+  // viewBox, which is 480 by 56 at that height. A window made taller than the
+  // content gives the chart the spare height (see watchWindowFit), and the
+  // viewBox grows by the same ratio, so the line keeps its scale and thickness
+  // and only the chart gets taller.
+  const CHART_PX = 84;
+  const CHART_W = 480;
+  const CHART_H = 56;
+  // The spare height, in px, and the points on the chart (null while stopped).
+  let fillPx = 0;
+  let chartPoints = null;
+
+  function chartHeight() {
+    return +(CHART_H * (CHART_PX + fillPx) / CHART_PX).toFixed(1);
+  }
+
+  // A flat line along the bottom, which is all a stopped rig has.
+  function flatPaths(H) {
+    const y = +(H - 1).toFixed(1);
+    return { line: 'M0 ' + y + ' L' + CHART_W + ' ' + y, area: 'M0 ' + H + ' L0 ' + y + ' L' + CHART_W + ' ' + y + ' L' + CHART_W + ' ' + H + ' Z' };
+  }
+
+  function drawChart() {
+    const H = chartHeight();
+    const p = chartPaths(chartPoints, H);
+    el.chart.setAttribute('viewBox', '0 0 ' + CHART_W + ' ' + H);
+    el.line.setAttribute('d', p.line);
+    el.area.setAttribute('d', p.area);
+  }
 
   // Points per side of the sparkline's smoothing window (so w = 2*SMOOTH_HALF+1).
   // 2 gives a five-point window, which is where the benefit stops: measured on a
@@ -511,9 +539,9 @@
     });
   }
 
-  function chartPaths(raw) {
-    const W = 480, H = 56;
-    if (!raw || !raw.length) return { line: FLAT_LINE, area: FLAT_AREA };
+  function chartPaths(raw, H) {
+    const W = CHART_W;
+    if (!raw || !raw.length) return flatPaths(H);
     const points = smooth(raw);
     let lo = Math.min.apply(null, points);
     let hi = Math.max.apply(null, points);
@@ -658,6 +686,19 @@
     el.cpuMeta.classList.toggle('quiet', !bad && (v ? v.state === 'mining' : el.cpuMeta.textContent === 'ready to start'));
     const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
     el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
+    renderXmrBalance();
+  }
+
+  // Settings → CPU Mining: the Monero balance above the address, as the Pearl
+  // balance is above the payout address. It shows once the address checks
+  // out, at 0 until the pool answers, and without dollars when the pool has
+  // no price.
+  function renderXmrBalance() {
+    const has = state.cpuMining && state.xmrOk;
+    el.xmrBalanceMeta.hidden = !has;
+    const known = has && state.xmrBalance != null;
+    el.xmrBalance.textContent = fmt4(known ? state.xmrBalance : 0);
+    el.xmrBalanceUsd.textContent = !known ? '≈ $0.00' : state.xmrUsd != null ? '≈ ' + fmtUsd(state.xmrUsd) : '';
   }
 
   async function refreshXmrBalance() {
@@ -666,12 +707,14 @@
     const b = await api.getXmrBalance(a);
     if (!b || a !== state.xmrAddress.trim()) return;
     state.xmrBalance = b.earned;
+    state.xmrUsd = b.usd;
     renderCpuRow();
   }
 
   async function checkXmr() {
     const a = state.xmrAddress.trim();
     state.xmrBalance = null;
+    state.xmrUsd = null;
     if (!a || !api.checkXmrAddress) {
       state.xmrOk = false;
       state.xmrChecking = false;
@@ -713,8 +756,8 @@
       el.uptime.textContent = '0m 00s';
       el.estday.textContent = '$0.00';
       el.deviceLabel.textContent = state.gpu || 'GPU · auto-detect';
-      el.line.setAttribute('d', FLAT_LINE);
-      el.area.setAttribute('d', FLAT_AREA);
+      chartPoints = null;
+      drawChart();
       el.engineStatus.hidden = true;
       state.cpuView = null;
     }
@@ -730,6 +773,8 @@
   }
 
   const fmt3 = (n) => Number(n).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 });
+  // Dollars with a thousands separator, as the PRL balance has: $1,110.69.
+  const fmtUsd = (n) => '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   function resetBalance() {
     el.balance.textContent = '0.000';
@@ -742,7 +787,7 @@
     const b = await api.getBalance(addr);
     if (!b || addr !== state.address.trim()) return;
     el.balance.textContent = fmt3(b.earned);
-    el.balanceUsd.textContent = b.usd != null ? '≈ $' + b.usd.toFixed(2) : '';
+    el.balanceUsd.textContent = b.usd != null ? '≈ ' + fmtUsd(b.usd) : '';
   }
 
 
@@ -796,9 +841,8 @@
     if (s.gpu) state.engineGpu = s.gpu;
     const deviceName = state.engineGpu || state.gpu;
     if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, state.temp);
-    const p = chartPaths(s.points);
-    el.line.setAttribute('d', p.line);
-    el.area.setAttribute('d', p.area);
+    chartPoints = s.points;
+    drawChart();
   }
 
   function applyCpuStats(v) {
@@ -909,19 +953,55 @@
   // asked for another fit, which nudged it again. The window resized
   // continuously on startup until a minimize/restore settled it, and any manual
   // resize started it off once more.
+  //
+  // A window made taller by hand (snapped to half the screen, maximised) is
+  // filled instead of left with a gap under the footer: --fill, the spare
+  // height, is added to every view (styles.css), and on Mine it goes to the
+  // chart, so START/STOP and the footer sit at the bottom of the window. Every
+  // view grows by exactly --fill, so .app minus the fill is the content's own
+  // height, and that is what a fit is about. At the fitted size the fill is 0
+  // and nothing changes.
+  //
+  // A fitted window still follows its content, as before. A taller one keeps
+  // its size when the content changes, and the fill takes up the difference,
+  // until the content no longer fits it.
   function watchWindowFit() {
     if (!api.fitWindow || typeof ResizeObserver === 'undefined') return;
     const appEl = document.querySelector('.app');
     if (!appEl) return;
+    const root = document.documentElement;
+    const content = () => appEl.getBoundingClientRect().height - fillPx;
+    // Spare height under a fit's tolerance (FIT_TOLERANCE_PX in main) is
+    // ignored, so a fitted window that is a pixel or two off is left as it was.
+    const spare = () => {
+      const px = Math.floor(window.innerHeight - content());
+      return px > 2 ? px : 0;
+    };
+    const setFill = (px) => {
+      if (px === fillPx) return;
+      fillPx = px;
+      if (px) root.style.setProperty('--fill', px + 'px');
+      else root.style.removeProperty('--fill');
+      drawChart();
+    };
     let t = null;
     let lastH = null;
+    // Both the window (the root fills it) and the content: either changes the fill.
     const ro = new ResizeObserver(() => {
-      const h = Math.ceil(appEl.getBoundingClientRect().height);
-      if (h === lastH) return;
+      const h = Math.ceil(content());
+      if (h === lastH) {
+        setFill(spare());
+        return;
+      }
       lastH = h;
+      if (fillPx) {
+        setFill(spare());
+        if (fillPx) return;
+      }
       if (t) clearTimeout(t);
       t = setTimeout(() => api.fitWindow(), 80);
     });
+    ro.observe(root);
     ro.observe(appEl);
   }
 

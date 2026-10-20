@@ -101,4 +101,18 @@ function parseBalance(json, priceUsd, opts) {
   return { pending, paid, earned, usd };
 }
 
-module.exports = { POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance };
+// The pool's own price for its coin. HeroMiners' /api/stats carries it in USD as
+// pool.price.usd, a string. The Monero balance uses it for its dollar figure;
+// the Pearl balance uses prlscan's price instead (ECON_API).
+function buildPoolStatsUrl(base) {
+  return (base || POOL_BASE) + '/api/stats';
+}
+
+// The USD price, or null when the payload has none.
+function parsePoolPriceUsd(json) {
+  const price = json && json.pool && json.pool.price;
+  const usd = Number(price && price.usd);
+  return Number.isFinite(usd) && usd > 0 ? usd : null;
+}
+
+module.exports = { POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd };
