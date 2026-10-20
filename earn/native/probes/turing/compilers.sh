@@ -142,7 +142,12 @@ build_variant() {   # name flags expect
   if ! nvcc $COMMON $flags -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/ptxas.txt" 2>&1; then
     say "build $name FAIL: $(grep -m2 -iE 'error' "$K/ptxas.txt" | tr '\n' ' ')"; return 1
   fi
-  cp "$OUT/host/pearl_host.o" "$K/cuda-build/"
+  # The host with the same flags: a switch such as PEARL_BD_A_DIRECT changes what the
+  # host writes as well as what the fold reads, and the two must agree.
+  # shellcheck disable=SC2086
+  if ! nvcc $COMMON $flags -c "$K/src/pearl_host.cu" -o "$K/cuda-build/pearl_host.o" > "$K/host.txt" 2>&1; then
+    say "build $name FAIL: host: $(grep -m2 -iE 'error' "$K/host.txt" | tr '\n' ' ')"; return 1
+  fi
   ar rcs "$K/cuda-build/libpearl_cuda.a" "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o"
   (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) ||
