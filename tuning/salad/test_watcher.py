@@ -899,17 +899,15 @@ class TestCreditRatio(Base):
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**3:00 am EST, Fri. 15th Jan** · PRL $1.39 · "))
+        self.assertTrue(self.report().startswith("---\n\n**3:00 am EST, Fri, Jan 15** · PRL $1.39 · "))
 
     def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
         t = w.parse_iso("2026-10-17T15:53:00Z")
-        self.assertEqual(w.stamp(t), "11:53 am EDT, Sat. 17th Oct")
+        self.assertEqual(w.stamp(t), "11:53 am EDT, Sat, Oct 17")
 
-    def test_the_day_reads_as_an_ordinal(self):
-        days = {1: "1st", 2: "2nd", 3: "3rd", 4: "4th", 11: "11th", 12: "12th", 13: "13th",
-                21: "21st", 22: "22nd", 23: "23rd", 30: "30th", 31: "31st"}
-        self.assertEqual({n: w.ordinal(n) for n in days}, days)
-        self.assertEqual(w.stamp(w.parse_iso("2026-10-20T00:09:00Z")), "8:09 pm EDT, Mon. 19th Oct")
+    def test_the_date_is_in_us_style(self):
+        self.assertEqual(w.stamp(w.parse_iso("2026-10-20T00:09:00Z")), "8:09 pm EDT, Mon, Oct 19")
+        self.assertEqual(w.stamp(w.parse_iso("2026-11-01T15:00:00Z")), "10:00 am EST, Sun, Nov 1")  # no 0 before the day
 
     def test_the_time_is_on_the_12_hour_clock(self):
         at = lambda s: w.clock(w.parse_iso(s))
@@ -919,8 +917,9 @@ class TestCreditRatio(Base):
         self.assertEqual(at("2027-01-15T14:00:00Z"), "9:00 am EST")
 
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
-        first = self.report().split("\n")[0]
-        self.assertEqual(first, "**3:00 am EST, Fri. 15th Jan** · PRL $1.39 · 0/1 mining")
+        rule, gap, first = self.report().split("\n")[:3]
+        self.assertEqual((rule, gap), ("---", ""))                    # a rule sets the report apart from text above
+        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 · 0/1 mining")
 
     def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
         report = self.report(cfg={"max_active": 10})

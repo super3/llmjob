@@ -91,14 +91,10 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
-def ordinal(n):
-    return f"{n}{'th' if 11 <= n % 100 <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')}"
-
-
 def stamp(t):
-    """The report's time and date, the way the user reads them: 8:09 pm EDT, Mon. 19th Oct."""
+    """The report's time and date in US style, as the user asked: 8:09 pm EDT, Mon, Oct 19."""
     d = dt.datetime.fromtimestamp(t, NY)
-    return f"{clock(t)}, {d:%a}. {ordinal(d.day)} {d:%b}"
+    return f"{clock(t)}, {d:%a}, {d:%b} {d.day}"
 
 
 def parse_iso(s):
@@ -1524,7 +1520,8 @@ class W:
                      + (f", {hours:.0f}{EST} h at ${all_cost:.3f}/hr" if hours is not None else ", nothing billing now")
                      + " (our count: set config credit_offset from the portal now and then)")
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
-        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, "",
+        # A rule on top sets the report apart from whatever text comes before it where it's posted.
+        lines = ["---", "", head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, "",
                  ". ".join(x[0].upper() + x[1:] for x in trail) + "."]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
