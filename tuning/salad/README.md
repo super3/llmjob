@@ -170,8 +170,9 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-- **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column and its earnings count
-  in Profit/hr, Margin and Profit $, with a 🪙 row for what the boxes have mined, but they don't keep a slow PC or a weak class.
+- **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column, what each box has
+  earned is its XMR column, and its rate counts in Profit/hr and Margin, with a 🪙 row in the pool table, but they
+  don't keep a slow PC or a weak class.
 
 ## Kryptex (PPS+)
 
@@ -356,27 +357,29 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
   pays a share of each block it finds, so with few blocks credit runs well above or below the work;
   this fires only when it's short by more than 2 / √blocks too.
 
-The report is **one table** with six columns (five without a Monero address), so each row fits on one line in a chat window:
+The report is **one table** with seven columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**9:23 pm EDT, Mon, Oct 19** · PRL $1.92 · 10/10 mining · Salad $282.48* left (332* h)
+**9:49 pm EDT, Mon, Oct 19** · PRL $1.92 · 7/10 mining · Salad $282.17* left (643* h)
 
-| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |
-|---|---|---|---|---|---|
-| ⛏️ 5070-30 med (K) | 134 | 4.8 | 0.14 | +0.05* (+25%*) | -0.00* |
-| ⛏️ 3070-55 med | 84 | 2.4 | 0.08 | +0.03* (+29%*) | +0.03* |
-| ⛏️ 3060-45 low | 51 | 4.0 | 0.05 | +0.02* (+27%*) | +0.07* |
-| Others ×777 | — | — | — | — | +65.78* |
-| **All** | **824** | **32.0** | **0.85** | **+0.27\* (+24%\*)** | **+66.37\*** |
+| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |
+|---|---|---|---|---|---|---|
+| ⛏️ 3070-53 med | 78 | 4.8 | 0.08 | +0.02* (+20%*) | 0.569* | 0.000067* |
+| ⛏️ 3060-46 low (K) | 47 | 0.0 | 0.05 | +0.01* (+14%*) | 0.141 | 0.000021* |
+| ⏳ 5070-29 med (K) | — | — | — | — | 0.651 | 0.000052* |
+| Others ×781 | — | — | — | — | 155.386* | 0.009229* |
+| **All** | **410** | **20.8** | **0.44** | **+0.09\* (+17%\*)** | **157.402\*** | **0.009489\*** |
 
 | Pool | Hashrate (1h) | Confirmed | Pending | Paid |
 |---|---|---|---|---|
-| ⛏️ PRL HeroMiners | 371 TH/s | 0.871 | 1.331 | 149.210 |
-| ⛏️ PRL Kryptex | 385 TH/s | 0.968 | 1.572 | 3.269 |
-| 🪙 XMR HeroMiners | 30.5 kH/s | 0.009922 | 0.000000 | 0.000000 |
+| ⛏️ PRL HeroMiners | 365 TH/s | 0.871 | 1.331 | 149.210 |
+| ⛏️ PRL Kryptex | 140 TH/s | 0.968 | 1.719 | 3.269 |
+| 🪙 XMR HeroMiners | 30.7 kH/s | 0.009922 | 0.000000 | 0.000000 |
 ```
 
-That's the live report at 9:23 pm on 19 October with 7 of its 10 box rows left out, so the All row counts boxes not shown.
+That's the report the new code gave from the live ledger at 9:49 pm on 19 October with 7 of its 10 box rows left
+out, so the All row counts boxes not shown. Its PRL total, 157.402, was within 0.04 of what the two pools had
+credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
   24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents, how many boxes are
@@ -389,24 +392,34 @@ That's the live report at 9:23 pm on 19 October with 7 of its 10 box rows left o
 - Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
-- **Others** is one row for every group that has ended, with its count; the events say which were released and which failed.
+- **Others** is one row for every group that has ended, with its count and what they earned; the events say which
+  were released and which failed.
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
   by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
   events, not the table.
-- **Profit $** counts the PRL we expect the pool to credit for the box's speed (the network-rate estimate times
-  the pool's **credit ratio**, credited ÷ estimate once the pool has credited us in 10 blocks), plus its Monero,
-  less its Salad bill. Sold PRL counts at what it sold for and the rest at today's price. Before 14 October,
-  Profit $ valued sold PRL at today's price, which put it about $22 above what the pool and SafeTrade showed.
+- **PRL** is what the box has earned by its pools' own counts (since 20 October; it replaced Profit $, a dollar
+  estimate the user found didn't help):
+  - **On Kryptex**, its accepted shares from its worker's chart there (10-minute buckets, read every 5 minutes),
+    each at the network's pay for a share when first seen, times what Kryptex pays a share (`kryptex_pay`, 94%).
+    PPS+ pays a set amount a share, so this is exact but for its share of block fees. No star.
+  - **On HeroMiners**, the work HeroMiners counted for its worker (its share difficulty, `hashes`), valued the same
+    way, times HeroMiners' **credit ratio** (credited ÷ estimate once it has credited us in 10 blocks). HeroMiners
+    pays each block across recent shares, so what a share earns follows its luck: starred.
+  - A group that ended before 20 October has only the ledger's estimate (its speed at the network's rate, at each
+    pool's ratio), starred. Work a worker of the same name did before the group began isn't counted.
+- **XMR** is the box's Monero work as HeroMiners counted it, at the network's pay less HeroMiners' 0.9% fee:
+  starred, since HeroMiners pays by its luck. If Monero moves to Kryptex's PPS+ pool it can be exact too.
 - **The pool table** is what each pool reports for the account, with no stars: its own hashrate (1-hour average,
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig
   mining to the address. Locked-in and not-yet-locked rows were here before; they were dropped on 14 October.
-- **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counts it),
+- **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counted it),
   what each credited PRL cost to mine and the credit left. The credit left is now in the first line; the other
   two were dropped on 20 October as not helpful (for a few minutes the three were rows under the All row, and
   the cost per PRL sat beside the price). Before that line, a paragraph also gave each pool's credit ratio and
   payout threshold, what SafeTrade sold and holds, and the XMR our boxes had mined. The pool table shows the
-  coins; the credit ratios still set Profit $ and are in the 15-minute notes when they move.
+  coins; the credit ratios still set Profit/hr and the HeroMiners part of PRL, and are in the 15-minute notes when
+  they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · ⏳ waiting for a PC · ⏹️ stopped · ⬜ empty slot · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
@@ -416,15 +429,12 @@ A box on a new PC with no reading yet (under 15 minutes) is **starting**: it sho
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
 this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
 
-Every PRL carries the average cost, so spending now and selling hours later still gives one number.
-The cost is per credited PRL, not per estimated PRL: at 83% that's $1.35, not $1.12, and locked in on
-26.24 PRL sold for 35.53 USDT is +$0.22, not +$6.22.
-
 ## SafeTrade row
 
 When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes, and uses it for Profit $ (sold PRL at what it sold for). Until it can,
-sales entered by hand in config `safetrade` stand in. The report listed the sales under the table until 20 October.
+Railway logs, at most every 5 minutes. The report used it for Profit $ (sold PRL at what it sold for), with
+sales entered by hand in config `safetrade` standing in, until Profit $ went on 20 October; it listed the sales
+under the table until then too. Nothing in the report uses it now.
 
 It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
 cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
@@ -462,8 +472,9 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
 - **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
   straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: the
   Salad credit left (Salad's API has no balance or billing, so the watcher adds each
-  group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL expected, and
-  profit and margin (which carry SafeTrade's sales, entered by hand). Not starred: TH/s, kH/s, $/hr, the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+  group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
+  and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
+  (its own share count at its set pay a share), the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one

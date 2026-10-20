@@ -209,7 +209,9 @@ class W:
             it = b["items"][0]
             prl_th_hr = 1e12 * 3600 / (float(it["difficulty"]) * 2 ** 48) * float(it["reward_grains"]) / 1e8
             price = float(p["price_usd"])
-            st["mkt"] = {"price": price, "prl_th_hr": prl_th_hr, "usd_th_hr": prl_th_hr * price}
+            # A pool's work unit (share difficulty 1) is 2^32 hashes, so one share at 2^21 is 2^53 hashes.
+            st["mkt"] = {"price": price, "prl_th_hr": prl_th_hr, "usd_th_hr": prl_th_hr * price,
+                         "prl_unit": prl_th_hr * 2 ** 32 / (1e12 * 3600)}
             st["mkt_t"] = now()
         else:
             err(f"market fetch failed {s1} {s2}")
@@ -425,6 +427,60 @@ class W:
             return res
         st["kx_tot"] = kt
         return res
+
+    def prl_unit(self):
+        """The PRL the network pays for one unit of pool work (2^32 hashes) now, before any pool's cut."""
+        mk = self.st.get("mkt") or {}
+        return mk.get("prl_unit") or mk.get("prl_th_hr", 0.0) * 2 ** 32 / (1e12 * 3600)
+
+    def hm_count(self, g, w):
+        """The Pearl work HeroMiners has counted for a box's worker ("hashes": the difficulty of the shares it
+        accepted), each new unit valued at the network's pay for it when first seen."""
+        if not w or not self.st.get("mkt"):
+            return
+        try:
+            units = float(w.get("hashes") or 0)
+        except (TypeError, ValueError):
+            return
+        last = g.get("hm_units")
+        if last is None:
+            # A row an earlier group of the same name left: only work after this group started counts.
+            last = units if share_t(w) < g["created"] else 0.0
+        g["hm_gross"] = g.get("hm_gross", 0.0) + (units - last if units >= last else units) * self.prl_unit()
+        g["hm_units"] = units
+
+    def kx_count(self, groups, t):
+        """Each Kryptex box's accepted shares, from its worker's chart at Kryptex (10-minute buckets), at most every
+        5 minutes. PPS+ pays a set amount a share, so the shares, each bucket valued at the network's pay for a
+        share when first seen, give what the box has earned there. A bucket still filling is read again."""
+        st = self.st
+        for g in st["groups"].values():
+            if g["ended"] and "kx_b" in g:
+                del g["kx_b"]   # its totals stay; the buckets were only kept to read a filling one again
+        if t - st.get("kx_count_t", 0) < 5 * MIN or not st.get("mkt"):
+            return
+        st["kx_count_t"] = t
+        per_share = self.prl_unit() * 2 ** 21
+        for g in groups:
+            # On Kryptex now, or in the last hour, or mined there before these counts began and not read yet.
+            if not (g.get("kx") or t - (g.get("sw_t") or 0) < 3600
+                    or (g["has_pc"] and self.on_kx(g, g.get("machine"), t)) or (g.get("prl_kx") and "kx_gross" not in g)):
+                continue
+            s, c = http("GET", f"{KX_API}/v1/miner/chart/{self.cfg['wallet']}/{g['name']}-g0?days=2", timeout=30)
+            if s != 200 or not isinstance(c, list):
+                continue
+            b = g.setdefault("kx_b", {})
+            for p in c:
+                try:
+                    ts, v = str(int(p["timestamp"])), int(p.get("valid") or 0)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if int(ts) / 1000 + 600 <= g["created"]:
+                    continue   # a bucket that ended before the group began: an earlier group of the same name
+                if v > b.get(ts, [0])[0]:
+                    b[ts] = [v, b[ts][1] if ts in b else per_share]
+            g["kx_shares"] = sum(v for v, _ in b.values())
+            g["kx_gross"] = sum(v * ps for v, ps in b.values())
 
     def trader(self):
         """The SafeTrade autoseller's newest STATUS line (trader/trader.py), read from its Railway logs at most every
@@ -1007,8 +1063,10 @@ class W:
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()
+        self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
+            self.hm_count(g, w)
             self.pc_pool(g, x, w)
             ls = share_t(x)
             if ls >= g["created"]:
@@ -1388,30 +1446,39 @@ class W:
 
     # ---------- report ----------
     def write_report(self):
-        """A heading, then one table: a row per box and a total, the pools' own figures under it. Every row fits
-        on one line in a chat window."""
+        """A heading, then one table: a row per box with what it has earned in PRL and XMR, and a total, the pools'
+        own figures under it. Every row fits on one line in a chat window."""
         st, t = self.st, now()
         mk = st["mkt"]
-        # The table counts on what the pool credits: the network's rate times its credit ratio. The rules may
+        # Profit/hr counts on what the pool credits: the network's rate times its credit ratio. The rules may
         # use a different yield (config "yield"); the table shows what we expect to be paid.
         hy, ky = self.credit_ratio(), self.kx_ratio()
         yg = lambda g: ky if g.get("kx") else hy   # each box at its own pool's credit ratio
         price = mk["price"]
-        # Monero on the CPU: its earnings count in each box's profit, once config has an address.
+        # Monero on the CPU: its earnings count in each box's profit an hour, once config has an address.
         xon, xm = bool(self.cfg["xmr_wallet"]), st.get("xmr_mkt") or {}
-        xusd, xprice = xm.get("usd_khs_hr", 0.0), xm.get("price", 0.0)
+        xusd = xm.get("usd_khs_hr", 0.0)
         groups = list(st["groups"].values())
         spend = sum(g["spend"] for g in groups)
-        prl = sum(self.credited(g, hy, ky) for g in groups)
-        coins = sum(g.get("xmr_coins", 0.0) for g in groups)
-        # SafeTrade from the trader's logs, or from config "safetrade" (entered by hand) until those can be read.
-        ts = st.get("trader_status") or self.cfg.get("safetrade")
-        sold = (ts or {}).get("sold", 0)
-        net = (ts or {}).get("received", 0) - (ts or {}).get("fees", 0)
-        unsold = prl - sold
-        # A PRL is worth what it sold for if it sold, today's price if not, so the boxes' Profit $ adds up to
-        # locked in + not yet locked + Monero instead of valuing sold PRL at today's price.
-        per_prl = (net + max(unsold, 0) * price) / prl if ts and prl > 0 else price
+
+        def coins(g):
+            """The PRL a box has earned by its pools' own counts, and whether that's starred: its Kryptex shares
+            at what Kryptex pays a share, exact under PPS+ (but for its share of block fees), and its HeroMiners
+            work at HeroMiners' credit ratio, which follows that pool's luck. A group that ended before the pools'
+            counts were kept (20 October) has only the ledger's estimate."""
+            if "hm_units" not in g and "kx_gross" not in g:
+                return self.credited(g, hy, ky), g.get("prl", 0.0) > 0
+            h = g.get("hm_gross", 0.0) * hy
+            return g.get("kx_gross", 0.0) * self.cfg["kryptex_pay"] + h, h > 0
+
+        def prl_cell(gs, fmt=str):
+            got = [coins(g) for g in gs]
+            return fmt(f"{sum(c for c, _ in got):.3f}" + (EST if any(s for _, s in got) else ""))
+
+        def xmr_cell(gs, fmt=str):
+            # XMR from each box's Monero work as HeroMiners counted it, at the network's pay less its fee: HeroMiners
+            # pays by its luck, so starred.
+            return [fmt(f"{sum(g.get('xmr_coins', 0.0) for g in gs):.6f}{EST}")] if xon else []
 
         rows = []
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
@@ -1430,11 +1497,11 @@ class W:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            prof = self.credited(g, hy, ky) * per_prl + g.get("xmr_coins", 0.0) * xprice - g["spend"]
             # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if g.get("kx") else []))
-            # Each coin's speed (Pearl on the GPU, Monero on the CPU), then the bill, profit and margin.
+            # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
+            # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
                 cells = ["—"] + (["—"] if xon else []) + ["—", "—"]
@@ -1442,25 +1509,24 @@ class W:
                 cells = ["0"] + kc + [f"{cost:.2f}", "—"]
             else:
                 cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn)]
-            cells = " | ".join(cells)
-            rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} | {prof:+.2f}{EST} |"))
+            cells = " | ".join(cells + [prl_cell([g])] + xmr_cell([g]))
+            rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
         # A row for every slot, so a slot the search couldn't fill shows as empty instead of vanishing.
         slots = max(len(live), min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"]))
         empty = slots - len(live)
-        lines += [f"| ⬜{NB}empty |" + " — |" * (5 if xon else 4)] * empty
+        lines += [f"| ⬜{NB}empty |" + " — |" * (6 if xon else 4)] * empty
         ended = [g for g in groups if g["ended"]]
         if ended:
-            # Groups that have ended, as one row with their count; the events say which were released or failed.
-            eprof = (sum(self.credited(g, hy, ky) for g in ended) * per_prl + sum(g.get("xmr_coins", 0.0) for g in ended) * xprice
-                     - sum(g["spend"] for g in ended))
-            lines.append(f"| Others{NB}×{len(ended)} |"
-                         + " — |" * (4 if xon else 3) + f" {eprof:+.2f}{EST} |")
-        total = prl * per_prl + coins * xprice - spend
+            # Groups that have ended, as one row with their count and what they earned; the events say which were
+            # released or failed.
+            lines.append(f"| Others{NB}×{len(ended)} |" + " — |" * (4 if xon else 3)
+                         + " " + " | ".join([prl_cell(ended)] + xmr_cell(ended)) + " |")
         hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
-                     + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | {bold(f'{total:+.2f}{EST}')} |")
+                     + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | "
+                     + " | ".join([prl_cell(groups, bold)] + xmr_cell(groups, bold)) + " |")
         credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
         hours = credit / all_cost if all_cost > 0 else None
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
@@ -1490,7 +1556,7 @@ class W:
         # symbols is in the README.
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
                 + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
-        cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "Profit $"]
+        cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]

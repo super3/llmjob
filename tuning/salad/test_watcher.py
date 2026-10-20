@@ -40,6 +40,11 @@ class Fake:
         return [c for c in self.calls if c[0] == method and re.search(frag, c[1])]
 
 
+def shown(row):
+    """A Markdown table row as a chat window shows it: without bold marks or the backslashes before stars."""
+    return row.replace("**", "").replace("\\*", "*")
+
+
 class Base(unittest.TestCase):
     def setUp(self):
         for f in os.listdir(TMP):
@@ -869,16 +874,37 @@ class TestPoolTotals(Base):
         self.assertEqual(pt["blocks"], 4)
         self.assertAlmostEqual(pt["ths_1h"], 264765.8 * 419 / 93644)
 
+    def test_each_boxs_work_at_herominers_is_valued_as_it_comes_in(self):
+        g = self.group()
+        unit = USD_TH_HR / PRICE * 2 ** 32 / 3.6e15                                     # PRL for one unit of work (2^32 hashes)
+        row = lambda shares: {"hashes": str(shares * 2 ** 21), "lastShare": g["created"] + 60}
+        self.x.hm_count(g, row(1))                                       # one share
+        self.assertAlmostEqual(g["hm_gross"], 2 ** 21 * unit)
+        self.x.st["mkt"]["prl_th_hr"] *= 2                               # the network pays twice as much now
+        self.x.hm_count(g, row(3))                                       # two more shares, at the new pay
+        self.assertAlmostEqual(g["hm_gross"], 5 * 2 ** 21 * unit)
+        self.x.hm_count(g, row(1))                                       # the pool started the worker's count again
+        self.assertAlmostEqual(g["hm_gross"], 7 * 2 ** 21 * unit)
+        self.x.hm_count(g, None)                                         # no row: nothing changes
+        self.assertAlmostEqual(g["hm_gross"], 7 * 2 ** 21 * unit)
+
+    def test_work_an_earlier_group_of_the_same_name_left_doesnt_count(self):
+        g = self.group()
+        self.x.hm_count(g, {"hashes": str(5 * 2 ** 21), "lastShare": g["created"] - 600})
+        self.assertEqual(g["hm_gross"], 0)
+        self.x.hm_count(g, {"hashes": str(6 * 2 ** 21), "lastShare": g["created"] + 60})   # this group's first share
+        self.assertAlmostEqual(g["hm_gross"], 2 ** 21 * USD_TH_HR / PRICE * 2 ** 32 / 3.6e15)
+
     def test_the_report_shows_what_the_pool_credited(self):
         g = self.group()
-        g["prl"], g["spend"] = 8.0, 6.0
+        g["prl"], g["spend"], g["hm_units"], g["hm_gross"] = 8.0, 6.0, 1.0, 8.0
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
                                  "hashes": 0, "ths_1h": 0}
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        # 8 PRL mined for $6.00: $0.750 each. The pool has credited 6 of them. Nothing sold: 8 × (1.39 − 0.75) = +5.12.
-        self.assertIn("| **+5.12\\*** |\n", report)  # the All row
+        # Work worth 8 PRL at the network's rate; in under 10 blocks the pool's credit ratio isn't used yet.
+        self.assertIn("| **8.000\\*** |\n", report)  # the All row
         self.assertIn("| ⛏️ PRL | 0 TH/s | 0.500 | 4.000 | 1.500 |", report)  # straight from the pool: no stars
         self.assertNotIn("has credited", report)   # the ratio is in the notes, not the report, since 20 October
         self.assertNotIn("Locked", report)
@@ -888,7 +914,7 @@ class TestCreditRatio(Base):
     """Once the pool has credited us in 10 blocks, the table counts on the share of our estimate it credited."""
     def report(self, blocks=20, cfg=None):
         g = self.group()
-        g["prl"], g["spend"] = 8.0, 6.0
+        g["prl"], g["spend"], g["hm_units"], g["hm_gross"] = 8.0, 6.0, 1.0, 8.0
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": blocks,
                                  "hashes": 0, "ths_1h": 0}
         self.x.cfg.update(cfg or {})
@@ -926,7 +952,7 @@ class TestCreditRatio(Base):
         self.assertIn(" · 0/10 mining · Salad $", report)                    # counted against the slots, not the groups
         rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
-        self.assertTrue(all(len(l) <= 90 for l in rows))
+        self.assertTrue(all(len(shown(l)) <= 90 for l in rows))
 
     def test_nothing_but_the_tables_under_the_heading(self):
         self.x.st["kx_tot"] = {"t": T0, "total": 1.0, "confirmed": 1.0, "unconfirmed": 0.0, "paid": 0.0}
@@ -956,16 +982,17 @@ class TestCreditRatio(Base):
 
     def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
         self.x.cfg["xmr_wallet"] = "4abc"
-        self.assertIn(f"| ⬜{w.NB}empty | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
+        self.assertIn(f"| ⬜{w.NB}empty | — | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
 
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
-        # 75% of 8 PRL is 6, mined for $6.00: $1.000 each. Worth 6 × 1.39 − 6.00 = +2.34.
-        self.assertIn("| **+2.34\\*** |\n", report)  # the All row
+        # The box's work is worth 8 PRL at the network's rate; the pool credits 75%: 6.
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch | — | — | — | 6.000* |\n", report)
+        self.assertIn("| **6.000\\*** |\n", report)  # the All row
 
     def test_the_ratio_has_a_floor(self):
-        # 8 × 90% = 7.20 PRL, not 8 × 75%: 7.20 × 1.39 − 6.00 = +4.01 in the All row
-        self.assertIn("| **+4.01\\*** |\n", self.report(cfg={"yield_floor": 0.9}))
+        # 8 × 90% = 7.20 PRL, not 8 × 75%
+        self.assertIn("| **7.200\\*** |\n", self.report(cfg={"yield_floor": 0.9}))
         self.assertAlmostEqual(self.x.credit_ratio(), 0.9)
 
     def test_the_rules_use_config_yield(self):
@@ -975,8 +1002,8 @@ class TestCreditRatio(Base):
         self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
-            # the table still counts on the ratio: 6 PRL, not 8 (6 × 1.39 − 6.00 = +2.34 in the All row)
-            self.assertIn("| **+2.34\\*** |\n", f.read())
+            # the table still counts on the ratio: 6 PRL, not 8
+            self.assertIn("| **6.000\\*** |\n", f.read())
 
     def test_a_pc_judged_at_the_credited_rate(self):
         # 199 TH/s at medium clears 10% at the network's rate (+18%), not at 75% of it (−9%).
@@ -1057,8 +1084,8 @@ class TestStartingBoxes(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        # 3 PRL at $1.39 less $3.00 spent
-        self.assertIn(f"| Others{w.NB}×3 | — | — | — | +1.17* |", report)
+        # They ended before the pools' counts were kept: 1 PRL each by the ledger's estimate, before 10 blocks.
+        self.assertIn(f"| Others{w.NB}×3 | — | — | — | 3.000* |", report)
 
     def test_estimates_are_starred_and_api_figures_are_not(self):
         a = self.group(pri="medium")
@@ -1227,30 +1254,18 @@ class TestTraderStatus(Base):
         self.assertEqual(self.events().count("WARN can't read the trader's Railway logs"), 1)
         self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
 
-    def test_the_report_shows_safetrade(self):
+    def test_sales_dont_change_the_report(self):
         g = self.group()
-        g["prl"], g["spend"] = 10.0, 8.0   # $0.80 a PRL
-        self.x.st["trader_status"] = dict(self.STATUS)
-        self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
-            report = f.read()
-        self.assertNotIn("SafeTrade", report)   # its sales count in Profit $; the report no longer lists them
-        # The box's Profit $ counts its sold PRL at what it sold for: 7.0858 USDT net + 4.7436 unsold PRL × $1.39
-        # − $8.00 = +5.68, not 10 × 1.39 − 8.
-        self.assertIn("| — | +5.68* |\n", report)
-        self.assertNotIn("Locked", report)
-        self.assertIn("| **+5.68\\*** |\n", report)  # the All row
-
-    def test_sales_entered_by_hand_count_until_the_logs_can_be_read(self):
-        g = self.group()
-        g["prl"], g["spend"] = 10.0, 8.0
-        self.x.cfg["safetrade"] = {"sold": 5.2564, "received": 7.1, "fees": 0.0142, "usdt": 7.08}
-        self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
-            report = f.read()
-        # 7.0858 USDT net for the 5.2564 sold + 4.7436 unsold × $1.39 − $8.00 = +5.68, as from the logs.
-        self.assertIn("| **+5.68\\*** |\n", report)
-        self.assertNotIn("Locked", report)
+        g.update(prl=10.0, spend=8.0, hm_units=1.0, hm_gross=10.0)
+        for status, manual in ((dict(self.STATUS), None), (None, {"sold": 5.2564, "received": 7.1, "fees": 0.0142})):
+            self.x.st["trader_status"], self.x.cfg["safetrade"] = status, manual
+            self.x.write_report()
+            with open(os.path.join(TMP, "report.md")) as f:
+                report = f.read()
+            # The table counts coins earned (10 PRL of work, before 10 blocks), not dollars: no Profit $ since 20 October.
+            self.assertIn("| **10.000\\*** |\n", report)
+            for gone in ("SafeTrade", "Profit $", "Locked"):
+                self.assertNotIn(gone, report)
 
 
 class TestRound(Base):
@@ -1268,12 +1283,13 @@ class TestRound(Base):
         self.http.on("POST", "/log-entries", (200, {"items": items}))
         self.http.on("POST", "/log-entries", lambda b: (200, {"items": items}) if b["page_size"] <= 100 else (400, {}))
         self.http.on("GET", "herominers", (200, {"workers": [{"name": "biz-rtx4080-g0", "hashrate": 44500,
-                                                               "lastShare": int(T0) + 400}]}))
+                                                               "lastShare": int(T0) + 400, "hashes": str(2 ** 22)}]}))
         g["created"] = T0 - 3600
         self.clock[0] = T0 + 500
         self.x.round()
         self.x.round()  # the same log lines again are not counted twice
         self.assertAlmostEqual(g["prl"], 398 / 60 * USD_TH_HR / PRICE)
+        self.assertAlmostEqual(g["hm_gross"], 2 ** 22 * USD_TH_HR / PRICE * 2 ** 32 / 3.6e15)   # its 2 shares, once
         self.assertEqual(g["mined_min"], 2)
         self.assertEqual(g["last_share"], T0 + 420)  # the log's share at 08:07 is later than the pool's
         self.assertEqual(g["machine"], "m1")
@@ -1484,16 +1500,18 @@ class TestMonero(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
-        self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | Profit $ |", report)
-        # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. 0.0001 XMR is $0.05, in its Profit $.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | +0.05* |", report)
-        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | +0.00* |", report)
+        self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |", report)
+        # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
+        # 0.0001 XMR from HeroMiners' count of its Monero work, starred.
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | 0.000 | 0.000100* |", report)
+        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000* |", report)
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
         self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", report)  # straight from the pool: no stars
         rows =[l for l in report.split("| Pool |")[0].splitlines() if l.startswith("|")]
-        self.assertTrue(all(l.count("|") == 7 for l in rows))  # one table, with a kH/s column
-        self.assertTrue(all(len(l) <= 90 for l in rows), max(rows, key=len))  # each row on one line in a chat window
+        self.assertTrue(all(l.count("|") == 8 for l in rows))  # one table, with kH/s and XMR columns
+        # each row on one line in a chat window, as shown (bold marks and escapes aren't)
+        self.assertTrue(all(len(shown(l)) <= 90 for l in rows), max(rows, key=len))
 
     def test_without_an_address_the_table_is_unchanged(self):
         self.x.cfg["xmr_wallet"] = ""
@@ -2429,11 +2447,68 @@ class TestKryptex(Base):
         self.assertAlmostEqual(g["prl"], 3 * one)
         self.assertAlmostEqual(g["prl_kx"], one)   # only the new PC's reading
 
+    def test_each_kryptex_boxs_shares_are_read_from_its_chart(self):
+        g, h = self.group(kx=True), self.group()
+        share = USD_TH_HR / PRICE * 2 ** 32 / 3.6e15 * 2 ** 21                         # PRL the network pays for one share
+        t0 = int(g["created"]) * 1000
+        chart = [{"timestamp": t0, "valid": 3}, {"timestamp": t0 + 600000, "valid": 2}, {"timestamp": t0 + 1200000, "valid": 0}]
+        self.http.on("GET", f"/v1/miner/chart/.*/{g['name']}-g0", lambda body: (200, chart))
+        t = self.clock[0]
+        self.x.kx_count([g, h], t)
+        self.assertEqual(len(self.http.made("GET", "/miner/chart/")), 1)   # not for the box on HeroMiners
+        self.assertEqual(g["kx_shares"], 5)
+        self.assertAlmostEqual(g["kx_gross"], 5 * share)
+        self.x.kx_count([g, h], t + 4 * 60)                                  # at most every 5 minutes
+        self.assertEqual(len(self.http.made("GET", "/miner/chart/")), 1)
+        # The bucket still filling gets 2 more shares, and a new one starts, while the network pays twice as much:
+        # each bucket keeps the pay of when it was first seen.
+        self.x.st["mkt"]["prl_th_hr"] *= 2
+        chart[1]["valid"], chart[2]["valid"] = 4, 1
+        self.x.kx_count([g, h], t + 5 * 60)
+        self.assertEqual(g["kx_shares"], 8)
+        self.assertAlmostEqual(g["kx_gross"], 7 * share + 2 * share)
+        # Once the group ends its buckets go; what it earned stays.
+        g["ended"] = t
+        self.x.kx_count([], t + 6 * 60)
+        self.assertNotIn("kx_b", g)
+        self.assertEqual(g["kx_shares"], 8)
+
+    def test_a_box_that_just_left_kryptex_is_read_for_an_hour(self):
+        g = self.group()
+        g["sw_t"] = self.clock[0] - 50 * 60
+        self.http.on("GET", "/miner/chart/", (200, [{"timestamp": int(g["created"]) * 1000, "valid": 2}]))
+        self.x.kx_count([g], self.clock[0])
+        self.assertEqual(g["kx_shares"], 2)
+        g["sw_t"] = self.clock[0] - 61 * 60
+        self.x.kx_count([g], self.clock[0] + 5 * 60)
+        self.assertEqual(len(self.http.made("GET", "/miner/chart/")), 1)
+
+    def test_a_box_that_mined_on_kryptex_before_the_counts_began_is_read_once(self):
+        g = self.group()
+        g["prl_kx"] = 0.5                                            # in the ledger, from before 20 October
+        self.http.on("GET", "/miner/chart/", (200, [{"timestamp": int(g["created"]) * 1000, "valid": 2}]))
+        self.x.kx_count([g], self.clock[0])
+        self.assertEqual(g["kx_shares"], 2)
+        self.x.kx_count([g], self.clock[0] + 5 * 60)
+        self.assertEqual(len(self.http.made("GET", "/miner/chart/")), 1)
+
+    def test_the_prl_column_is_by_the_pools_counts(self):
+        kg, mixed, old, new = self.group(kx=True), self.group(kx=True), self.group(), self.group()
+        kg.update(kx_shares=100, kx_gross=1.0)                       # only Kryptex: 94% of 1.0, not starred
+        mixed.update(kx_shares=100, kx_gross=1.0, hm_units=1.0, hm_gross=1.0)   # and HeroMiners before it switched
+        old.update(ended=self.clock[0], prl=2.0)                     # ended before the counts: the ledger's estimate
+        new.update(ended=self.clock[0], hm_units=1.0, hm_gross=0.5)  # ended since
+        report = self.report()
+        self.assertRegex(report, rf"4080{w.NB}batch{w.NB}\(K\) \|[^\n]*\| 0\.940 \|\n")
+        self.assertRegex(report, rf"4080-2{w.NB}batch{w.NB}\(K\) \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
+        self.assertIn(f"| Others{w.NB}×2 | — | — | — | 2.500* |\n", report)
+        self.assertIn("| **5.380\\*** |\n", report)
+
     def test_the_report_marks_kryptex_boxes_and_shows_both_pools(self):
         kg = self.group()
         hg = self.group()
-        kg.update(kx=True, prl=4.0, prl_kx=4.0, spend=3.0, has_pc=True, pool_ths=199.6)
-        hg["prl"], hg["spend"] = 10.0, 8.0
+        kg.update(kx=True, prl=4.0, prl_kx=4.0, spend=3.0, has_pc=True, pool_ths=199.6, kx_shares=2000, kx_gross=4.0)
+        hg.update(prl=10.0, spend=8.0, hm_units=1.0, hm_gross=10.0)
         self.x.st["pool_tot"] = {"t": T0, "paid": 6.0, "balance": 1.0, "unconfirmed": 1.0, "blocks": 20,
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
@@ -2444,8 +2519,11 @@ class TestKryptex(Base):
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", report)
         self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
         self.assertAlmostEqual(self.x.credit_ratio(), 0.8)
-        # 4 × 0.97 + 10 × 0.8 = 11.88 PRL credited, for $11.00: (11.88 × 1.39) − 11 = +5.51.
-        self.assertIn("| **+5.51\\*** |\n", report)
+        # Kryptex pays 94% of a share's value, so its shares (4 PRL at the network's rate) are 3.76 PRL, not starred.
+        # HeroMiners' count (10 PRL of work) at its credit ratio is 8, starred: it pays by its luck.
+        self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
+        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
+        self.assertIn("| **11.760\\*** |\n", report)
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False
@@ -2461,10 +2539,14 @@ class TestKryptex(Base):
                                                                "lastShare": int(T0) + 450}]}))
         self.http.on("GET", "v3/miner/workers", (200, {"results": [
             {"worker": "biz-rtx4080-g0", "valid": 3, "avg_hashrate_30m": "200000000000000", "last_share": (int(T0) + 400) * 1000}]}))
+        # Its chart: 4 shares in a bucket since the group began, and 9 in one that ended before (the earlier group's).
+        self.http.on("GET", "/miner/chart/", (200, [{"timestamp": int(T0 - 7200) * 1000, "valid": 9},
+                                                     {"timestamp": int(T0 - 600) * 1000, "valid": 4}]))
         self.x.st["kx_tot"] = {"t": T0 + 400, "total": 0, "confirmed": 0, "unconfirmed": 0, "paid": 0}
         g["created"] = T0 - 3600
         self.clock[0] = T0 + 500
         self.x.round()
+        self.assertEqual(g["kx_shares"], 4)
         self.assertEqual(g["last_share"], T0 + 400)
         self.assertAlmostEqual(g["pool_ths"], 200.0)
         self.assertTrue(g["kx"])   # it has a PC: nothing to switch
