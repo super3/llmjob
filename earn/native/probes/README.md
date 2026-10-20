@@ -1476,4 +1476,96 @@ Three experiments run side by side, on Vast RTX 20 cards. Each has a box script 
 | Launch shape (`launch.sh`) | sweeps how much each launch covers and how many run at once, per card | 0-2% | the same rule, per card |
 | Hand-scheduled inner loop (`sass.sh`) | one k-step of the fold in hand-written Turing SASS, in a test program, against a pure-IMMA ceiling on the same card | the whole gap, if it works | not this round: it gets finished only if it holds more than about 93% of the IMMA peak per clock |
 
-Results go below as each one comes in.
+### Results (2026-10-20)
+
+All runs were on Vast, each script pinned to a commit of this PR's branch. The round cost
+$0.34.
+
+**Compilers: nothing ships.** Every CUDA toolkit from 12.4 to 13.4 builds the sm_75
+fold into the same machine code, byte for byte: the md5 of the kernel's `.text`, control
+bits included. ptxas 12.0 and 12.2 differ in one yield bit on the kernel's first
+instruction. CUDA 12.0's front end can't compile this source at all, so its figure is
+its ptxas on newer PTX. Two separate builds found the same.
+
+Two options do change the code:
+- `-Xptxas --register-usage-level=8` (6 to 10 give the same code): 252 registers, 668
+  instructions a chunk loop against 680, more operand reuse.
+- `-maxrregcount=255`: nvcc also hands cicc `-maxreg 255`, which changes the PTX.
+  ptxas ignores the flag under the kernel's launch bound, so 254 or lower changes
+  nothing.
+
+Raced on a 2080 Ti (Vietnam, 152869, 250 W) with `compilers.sh`: bench in 5 interleaved
+rounds of 20 s, hashrate.js in 3 rounds of 60 s, verify-hits on every build.
+
+| build | bench vs shipped | hashrate.js vs shipped | verify-hits |
+|---|---|---|---|
+| register-usage-level 8 | -0.71% | -0.60% | 400/400 |
+| -maxrregcount=255 | -3.18% | not run | 400/400 |
+| both | -2.69% | not run | 400/400 |
+
+The shipped build read 83.76 TH/s on bench and 83.52 on hashrate.js, at about 1370 MHz
+and 242 W. Fewer instructions in the loop did not make it faster. A cubin from ptxas
+13.4, in CUDA 13's new ELF format, packed into the 12.8 core, loaded and mined at 89.4
+TH/s on that card's driver 595.
+
+**Launch shape: band 5 on 4 MB cards, +0.2 to 0.3%.** `launch.sh`, hashrate.js in 3
+interleaved rounds of 60 s against the shipped shape (band 4 on 3-4 MB cards, 8 on the
+2080 Ti; batch width 2048; two streams). "Won" counts the rounds a shape beat the
+shipped one in. Every shape that reached hashrate.js passed verify-hits 400/400.
+
+| card (machine, power) | shipped | band 5 | batch 4096 | batch 1024 | one stream |
+|---|---|---|---|---|---|
+| RTX 2060 12 GB, 3 MB L2 (142755, 150 W of 184) | 47.42 TH/s | -0.70%, won 0/3 | +0.04%, 3/3 | +0.15%, 3/3 | +0.06%, 2/3 |
+| RTX 2070, 4 MB (141620, 175 W) | 47.18 | +0.30%, 3/3 | -0.06%, 2/3 | -0.08%, 1/3 | 0.00%, 1/3 |
+| RTX 2080, 4 MB (149439, 275 W) | 77.76 | +0.21%, 3/3 | +0.01%, 1/3 | +0.01%, 1/3 | -0.04%, 0/3 |
+
+- On the 2070, band 5 won 3 more A/B pairs as well, by +0.28 to +0.32%.
+- On bench, band 6 was +0.21% on the 2070 and +0.13% on the 2080, and band 8 (all of a
+  4 MB L2) -2.3% and -2.1%. On the 2060, bands 5 and 6 were -0.6% and -1.1%.
+- So the host now gives 4 MB cards 5 column groups a band (`PEARL_BD_FIVE_SHARE`). That
+  covers the 2060 Super to 2080 Super and the T4; the Supers and the T4 did not run.
+- Batch width and one vs two streams are inside ±0.15% wherever they could be read. A
+  launch lasts 100-185 ms with the next one queued, so there was little to win there.
+- The 2080 Ti (Norway, 153219, 250 W) is not used. Heat held it at 83-84 C and 1305 MHz,
+  at about 199 W, and its rate drifted from 59.1 to 62.2 TH/s during the run, so its
+  pairs disagree (one stream: +0.15%, -1.25%, +1.77%). On bench, bands 6, 9 and 10 read
+  +1.3% over 8, but band 6 on hashrate.js read -0.4%.
+
+**Hand-scheduled inner loop: stop, as planned.** `sass.sh` on a 2080 Ti (California,
+152453, capped at 180 W, 1220-1480 MHz). Medians of 7 interleaved rounds, IMMA per clock
+per SM, as a percentage of the pure-IMMA ceiling (0.9999 of 1024 MAC a clock):
+
+| kernel | B from L2 | L1 diagnostic |
+|---|---|---|
+| ptxas ceiling | 100.0 | |
+| hand-written ceiling | 99.7 | |
+| ptxas loop | 98.9 | 96.1 |
+| hand1: B one k-step ahead, as in the fold | 98.8 | 95.1 |
+| hand2: two ahead | 99.1 | 90.0 |
+| hand3: three ahead, no IMMA scoreboards | 99.1 | 93.0 |
+
+Every hand kernel matched ptxas's results word for word, and ptxas's matched a CPU
+reference. CuAssembler at `96a9f72` assembled them.
+
+The rule was: finish it if the hand loop holds more than about 93%. It does, but so does
+ptxas's own loop, at 98.9%. The rule assumed ptxas sat well under 93%, and it doesn't.
+Three separate reviews of the code and SASS found:
+- The test loop is a faithful copy of the fold's loop body. With the fold's seams
+  ablated, its chunk loop has the same instruction mix, and stall sums within 0.3%.
+- The test can't see how good a schedule is. With two warps per scheduler and B in L2,
+  each warp fills the other's gaps. Where one warp runs alone, at the seams, a hand
+  schedule's edge is larger. A rough estimate for a whole hand-scheduled fold is 0.5-2%,
+  not 5-7%.
+- The fold runs at about 85-88% of peak per clock today. The 79% in pearl_config.h is
+  from before four later gains. By static counts and a model, not a measurement, the
+  12-15 points left split about like this: the schedule, at most 1; the chunk seam
+  (barrier, readout, A staging), 1-1.5; the hash and tile hand-off, 1-2. The other 8-11
+  are most likely B's L2 latency under the full fold's load, which the per-chunk barrier
+  turns into lost cycles.
+- The deeper B prefetch that made hand2 and hand3 fast needs about 32 more registers than
+  the fold's 254 leave.
+
+So hand-writing the inner loop is not the way to the gap. The fold's own ablations would
+show where it is: `PEARL_ABLATE_BHIT`, `_AHIT`, `_BARRIER`, `_READOUT`, `_STAGING` and
+`_TRANSCRIPT_HASH`, timed per clock on a 2080 Ti and a 2060. None has run on the current
+build.

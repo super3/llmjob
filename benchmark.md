@@ -243,6 +243,13 @@ against SRBMiner 3.7.4.
   miner.
 - **RTX 2060, Australia:** our miner found no pool share in its 5 minutes
   (about 1.6 were expected). Its hit check passed 400 of 400.
+- **Speed tests, 2026-10-20 (not re-measures):** a launch sweep (hashrate.js,
+  no pool) on an RTX 2060 12 GB, an RTX 2070 and the Colorado 2080's own
+  machine found one gain. On cards with a 4 MB L2, a band of 5 column groups
+  instead of 4 was +0.30% on the 2070 and +0.21% on the 2080 (77.76 → 77.92
+  TH/s), and -0.70% on the 3 MB 2060. The core after v0.6.5 uses 5 on 4 MB
+  cards, so this table's 2060 Super, 2070 Super, 2070 and 2080 rows are from
+  band 4. Details are in earn/native/probes/README.md.
 
 ### Monero on the CPU
 
