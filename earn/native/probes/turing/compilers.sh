@@ -389,7 +389,6 @@ fi
 # block has one, two or a few on any RTX 20 card (30 to 72 blocks): a persistent
 # block's first and last hand-offs. Each build's lines must match base's, batch for
 # batch; an ablation build (output meaningless) fails. A run stops after COMPLETE_SECS.
-# This stage has not run on a card yet.
 if has complete && [ -f "$OUT/v/base/ok" ]; then
   IFS=';' read -r -a shapes <<< "$COMPLETE_SHAPES"
   order=(base)

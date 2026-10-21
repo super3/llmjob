@@ -1969,8 +1969,8 @@ What it says:
   assumes away; 0.15% does not pay for that.
   Later the same day it shipped that way after all: a second sm_75 kernel with HASH_RG's
   code (`ac1a72f2434b`) that the host runs on cards with 4 MB of L2 or more, the first
-  kernel staying `5c97fbadf64a` (`PEARL_BD_RG_KERNEL` in pearl_config.h). Not yet raced as
-  a two-kernel build.
+  kernel staying `5c97fbadf64a` (`PEARL_BD_RG_KERNEL` in pearl_config.h). Raced as a
+  two-kernel build below.
 
 Nothing else from this round ships. The first sm_75 kernel is still `5c97fbadf64a`.
 HASH_RG's code runs as the second kernel on 4 MB cards (see above).
@@ -2043,6 +2043,36 @@ TALL is reverted. `b2163fa` keeps the code and its tests.
 What is left: the design round found no other fold change worth a race. On the 4 MB
 cards the measured gap to SRBMiner (row figures from earlier days) is about 0.8% on the
 2080 and 1.7% on the 2070.
+
+### A second sm_75 kernel: HASH_RG's fold on cards with 4 MB of L2 (2026-10-21)
+
+`HASH_RG` was ahead on every card with 4 MB of L2 or more and behind on the 3 MB 2060
+(rounds 5 and 6). Now both folds ship: `pearl_fold_bd` is a template on the hasher role,
+`pearl_tile_fold_wmma` runs the default (`5c97fbadf64a`) and `pearl_tile_fold_wmma_rg`
+runs HASH_RG's (`ac1a72f2434b`), both exactly the code raced, 243 registers, no spill.
+The host runs the second on a card with at least 4 MB of L2 (`pearl_bd_rg_for`): the 2060
+Super, 2070, 2070 Super, 2080, 2080 Super, 2080 Ti and T4. The 3 MB 2060s and the GTX 16
+cards keep the first. `-DPEARL_BD_RG_KERNEL=0|1|2` (never, always, by L2, the default)
+and `PEARL_BD_SWEEP_HASH_RG=0|1` at run time are for races; `compilers.sh` prints both
+kernels' hashes and which one a build runs (`runs=`). Every other architecture's kernels
+are byte-identical; each gains an empty `pearl_tile_fold_wmma_rg`.
+
+Raced with `compilers.sh` (commit `7e18384`): the new default (`auto`) against the same
+build forced to the first kernel (`base`, `-DPEARL_BD_RG_KERNEL=0`). hashrate.js, 5
+interleaved rounds of 60 s:
+
+| card | L2 | kernel `auto` ran | raw | per clock | rounds |
+|---|---|---|---|---|---|
+| RTX 2080, Colorado row machine (149439, 275 W) | 4 MB | second | +0.17% | +0.18% | +0.1 +0.2 +0.2 +0.2 +0.2 |
+| RTX 2070, South Korea (148606, held at 130 W) | 4 MB | second | +0.19% | +0.10% | -0.2 +0.3 +0.2 +0.2 +0.3 |
+| RTX 2060 Super, Vietnam (26278, held at 135 W) | 4 MB | second | +0.18% | +0.46% | -0.2 +0.2 +0.2 +0.1 +0.3 |
+| RTX 2060 12 GB, South Korea row machine (27568, 184 W) | 3 MB | first | -0.04% | +0.02% | -0.1 0.0 0.0 +0.1 0.0 |
+
+The fold name said `HASH_RG` on the three 4 MB cards and not on the 2060, so each card
+ran the kernel the rule picks. verify-hits 400/400 and the complete stage in all four
+shapes passed on all four cards. The 4 MB cards gain what `HASH_RG` gained alone in rounds
+5 and 6, and the 2060 is level, as it runs the same kernel either way. The T4 and the
+2070 and 2080 Super were not measured.
 
 ### Pool runs of a checkout's core: `turing/pool.sh`
 

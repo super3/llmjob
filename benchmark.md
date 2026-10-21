@@ -273,6 +273,17 @@ against SRBMiner 3.7.4.
   50.8 (1515 MHz, 146 W, 65 °C), 98.3%. On v0.5.14 these rows read 89.0,
   77.6 and 47.8. The same 2070 ran at 1455-1515 MHz across the 20th and
   21st's rentals, so one run moves by a few percent with the card's heat.
+  These ran before the second fold kernel below.
+- **Second fold kernel, 2026-10-21 (not re-measures):** the core after
+  v0.6.6 runs a second RTX 20 fold kernel, in which the second row group
+  hashes, on cards with 4 MB of L2 or more, and the first on the rest.
+  hashrate.js (no pool), 5 rounds of 60 s, against the same build forced to
+  the first kernel: the Colorado 2080 row's own machine (149439) 81.83 →
+  81.98 TH/s (+0.17%), a South Korea 2070 (148606) +0.19% and a Vietnam
+  2060 Super (26278) +0.18%; the South Korea 2060 row's own machine (27568,
+  3 MB) runs the first kernel either way, 54.12 → 54.12. That is the 2060
+  Super, 2070 Super, 2070, 2080 and 2080 Ti rows here, and the T4. Details
+  are in earn/native/probes/README.md.
 
 ### Monero on the CPU
 
@@ -688,8 +699,9 @@ the CUDA 12.8 core on this compute 7.5 card.
   "How a host is tested").
 - **Band depth:** this row ran v0.5.14, which mines the T4's 4 MB L2 at a band
   of 4 column groups. The core after v0.6.6 uses 5 on 4 MB cards, on the
-  strength of an RTX 2070 and 2080 (see the RTX 20-series notes). No T4 has
-  run it.
+  strength of an RTX 2070 and 2080 (see the RTX 20-series notes). It also
+  runs the second RTX 20 fold kernel on 4 MB cards (same notes). No T4 has
+  run either.
 
 ## Hosts replaced in this run
 

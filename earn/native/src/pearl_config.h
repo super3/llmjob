@@ -1139,7 +1139,9 @@ typedef struct {
 // +0.13% on a 2060 Super (4 MB, round 6), +0.13% on a 2080 Ti (5.5 MB, round 5's patch),
 // -0.13% on a 2060 12 GB (3 MB, round 6). GTX 16 cards (1 to 1.5 MB) get the first
 // kernel. The T4, the 2070 Super and the 2080 Super (4 MB) get the second; none of the
-// three was measured. The two-kernel build itself has not been raced yet.
+// three was measured. Raced as two kernels (2026-10-21, probes/README.md), hashrate.js
+// against the first kernel: +0.17% on a 2080, +0.19% on a 2070 and +0.18% on a 2060 Super,
+// and level on a 2060 12 GB, which runs the first kernel either way.
 // The second kernel is built wherever HASH_RG's code can be, whatever the policy, so
 // the sweep's override (PEARL_BD_SWEEP_HASH_RG) works on any such build. It is not built
 // for another fold, with RED or with the split hash (HASH_RG's #error guards), nor with
