@@ -56,6 +56,7 @@ Config keys:
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
+| `kryptex_xmr_pay` | What Kryptex credits for Monero work, as a share of the network's pay for it (0.94, measured 21 October). The report's XMR column values each box's Kryptex work at it (see [Monero](#monero-on-the-cpu)). |
 | `xmr_kx`, `xmr_kx_host`, `xmr_kx_ver` | Monero to Kryptex's PPS+ pool (`xmr-us.kryptex.network:7029`) instead of HeroMiners', with release `v0.6.6` or later (the first with `--xmr-pool`). A running group is switched by its command alone (see [Monero](#monero-on-the-cpu)). `false`: HeroMiners, and every command is as before. |
 | `kryptex_groups`, `kryptex_host`, `kryptex_ver`, `kryptex_pay`, `kryptex_token` | How many groups mine Pearl on Kryptex instead of HeroMiners (see [Kryptex](#kryptex-pps)), its stratum (`prl-us.kryptex.network:7048`), the release a Kryptex box needs at least (v0.6.1, the first with `--pool`) and the share of each share's value it pays (0.94, measured; used until Kryptex has credited 1 PRL). Change `kryptex_token` to restart the test after it stopped. 0: none, and the table is as before. |
 | `kx_in_place` | While fewer than `kryptex_groups` are on Kryptex, also switch boxes that are mining on HeroMiners, by updating their command: Salad usually restarts each one on the same PC (see [Kryptex](#kryptex-pps)). `false`: a mining box keeps its pool until its next PC. |
@@ -181,10 +182,15 @@ started with until it restarts. It comes back on the new version about 2 minutes
   its PC, where Salad usually restarts it with the new command within minutes. The vCPUs and RAM don't change.
   Kryptex's Monero pool is PPS+: it pays for each share, not by its luck, less 1% (HeroMiners takes 0.9%). It pays
   out from 0.1 XMR unless the address's threshold is lowered on Kryptex's site (0.01 at least); HeroMiners pays from
-  0.01. Kryptex's API gives each worker's average rate but no count of hashes, so a box's XMR there is its worker's
-  30-minute average over the time since the last read (every 5 minutes, 30 minutes at most), at the network's pay
-  less 1%. It is starred and runs about 15 minutes behind the box. A box's kH/s is its rate at each pool that saw it
-  in the last 15 minutes: both for a few minutes after a switch.
+  0.01. A box's XMR there is counted from its worker's chart (since 21 October; see
+  [Checks against the pool](#checks-against-the-pool)). A box's kH/s is its rate at each pool that saw it in the
+  last 15 minutes: both for a few minutes after a switch.
+- **What Kryptex pays for Monero** (`kryptex_xmr_pay`, 94%). From 6 pm on 20 October to 10 am on 21 October EDT,
+  Kryptex credited 94% of the network's pay for the work its charts showed, each 10-minute bucket valued at the
+  difficulty then (HeroMiners' difficulty chart). The ratio held between 93% and 95% all night: its 1% fee and
+  about 5% more. The credit kept pace with the work. No lag showed, though the balance reports a `maturation_time`
+  of 2 hours. Until 21 October a box's XMR there was its worker's 30-minute rate over the time since the last read,
+  at the network's pay less 1%, starred: about 5% high, and up to 15 minutes behind the box.
 
 ## Gemma beside mining
 
@@ -464,10 +470,17 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
     pays each block across recent shares, so what a share earns follows its luck: starred.
   - A group that ended before 20 October has only the ledger's estimate (its speed at the network's rate, at each
     pool's ratio), starred. Work a worker of the same name did before the group began isn't counted.
-- **XMR** is the box's Monero work as HeroMiners counted it, at the network's pay less HeroMiners' 0.9% fee:
-  starred, since HeroMiners pays by its luck. On Kryptex (since 20 October) it is the box's rate there over time, at
-  the network's pay less Kryptex's 1% (see [Monero](#monero-on-the-cpu)): starred too, since Kryptex's API gives no
-  count of hashes.
+- **XMR** is what the box has earned in Monero by its pools' own counts:
+  - **On Kryptex** (since 21 October), the work Kryptex accepted from its worker, from the worker's chart there
+    (10-minute buckets, read every 5 minutes; a bucket's hashrate times 600 is its accepted hashes). Each bucket is
+    valued at the network's pay for a hash when first seen, times what Kryptex pays for it (`kryptex_xmr_pay`, 94%;
+    see [Monero](#monero-on-the-cpu)). PPS+ pays a set amount for the work, so this is exact but for its share of
+    block fees. No star. The chart reaches back 2 days, so the first read counted all the work since Monero went to
+    Kryptex on 20 October. Up to 5 minutes of work just before a box ends can be missed.
+  - **On HeroMiners**, the box's Monero work as HeroMiners counted it, at the network's pay less its 0.9% fee:
+    starred, since HeroMiners pays by its luck. A box that mined on both is starred for its HeroMiners part.
+  - A group that ended before 21 October has its rate on Kryptex over time there instead (see
+    [Monero](#monero-on-the-cpu)), starred.
 - **The pool table** is what each pool reports for the account, with no stars: its own hashrate (1-hour average,
   which still counts a box that lost its PC in the last hour), the coins confirmed (unlocked, paid out from
   1 PRL or 0.01 XMR), pending (in blocks not yet confirmed) and paid. The XMR pool's figures count any other rig

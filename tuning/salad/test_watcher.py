@@ -1505,7 +1505,7 @@ class TestMonero(Base):
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
         # 0.0001 XMR from HeroMiners' count of its Monero work, starred.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | 0.000 | 0.000100* |", report)
-        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000* |", report)
+        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
         self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", shown(report))  # straight from the pool: no stars
@@ -1664,23 +1664,93 @@ class TestMonero(Base):
         self.assertIn("--xmr-pool", self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]["command"][2])
         self.assertEqual(g["kxx_khs"], 1.5)   # its rate on Kryptex
 
-    def test_each_boxs_work_on_kryptex_is_valued_from_its_rate_there(self):
+    def xmr_chart(self, g, *buckets):
+        """Kryptex's chart for the box's Monero worker: (seconds after the group began, hashrate in H/s) a bucket."""
+        self.http.on("GET", rf"kryptex.com/xmr/api/v1/miner/chart/4xyz/{g['name']}-g0\?days=2$",
+                     (200, [{"timestamp": (g["created"] + s) * 1000, "valid": 1, "hashrate": hr} for s, hr in buckets]))
+
+    def kx_box(self, per_hash=1e-10, **kw):
+        """A box mining Monero on Kryptex, with what a hash earns on the network (HeroMiners' figure, less its fee)."""
         g = self.group()
+        g.update(dict(xmr_kx=True, had_pc=True), **kw)
         self.kx_api()
-        self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/4xyz$",
-                     (200, {"results": [{"worker": f"{g['name']}-g0", "avg_hashrate_30m": "2000"},
-                                        {"worker": "kx-xmr-test", "avg_hashrate_30m": "0"}]}))
-        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": 1e-12 * (1 - w.XMR_FEE),
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 500.0, "per_hash": per_hash * (1 - w.XMR_FEE),
                                 "usd_khs_hr": 0.002}
+        return g
+
+    def xmr_row(self, name):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            return next(l for l in f.read().splitlines() if name in l)
+
+    def test_each_boxs_work_on_kryptex_is_counted_from_its_worker_chart(self):
+        g = self.kx_box()
+        t = self.clock[0]
+        # A bucket that ended before the group began, one it began in, one filling and one with no work.
+        self.xmr_chart(g, (-1200, 5000.0), (-300, 1000.0), (300, 2000.0), (900, 0.0))
+        self.x.kx_xmr([g], t)
+        self.assertAlmostEqual(g["kxx_gross"] / ((600_000 + 1_200_000) * 1e-10), 1, places=9)   # hashrate × 600
+        self.assertEqual(g["xmr_coins"], 0.0)
+        self.assertEqual(len(g["kxx_b"]), 2)
+        # 5 minutes on, a hash pays twice as much: the filling bucket keeps its first value, the new one gets the new.
+        self.x.st["xmr_mkt"]["per_hash"] *= 2
+        self.xmr_chart(g, (-300, 1000.0), (300, 3000.0), (900, 1000.0))
+        self.x.kx_xmr([g], t + 300)
+        self.assertAlmostEqual(g["kxx_gross"] / ((600_000 + 1_800_000) * 1e-10 + 600_000 * 2e-10), 1, places=9)
+        self.xmr_chart(g, (300, 1500.0))   # a smaller reading of a bucket never lowers it
+        self.x.kx_xmr([g], t + 600)
+        self.assertAlmostEqual(g["kxx_gross"] / 3.6e-4, 1, places=9)
+        # At what Kryptex pays for the network's work (94%), with no star: 0.000360 × 0.94.
+        self.assertIn("| 0.000 | 0.000338 |", self.xmr_row("4080"))
+        self.x.cfg["kryptex_xmr_pay"] = 0.5
+        self.assertIn("| 0.000 | 0.000180 |", self.xmr_row("4080"))
+
+    def test_the_first_chart_read_drops_the_estimates_from_the_kryptex_rate(self):
+        # 0.0005 XMR so far: HeroMiners' count of its 2 million hashes there, and estimates from its rate on Kryptex.
+        g = self.kx_box(xmr_coins=0.0005, xmr_hashes=2e6)
+        self.xmr_chart(g, (300, 1000.0))
         t = self.clock[0]
         self.x.kx_xmr([g], t)
-        self.assertEqual(g.get("xmr_coins", 0.0), 0.0)   # the first read only starts its clock
-        self.assertEqual(g["kxx_khs"], 2.0)
+        self.assertAlmostEqual(g["xmr_coins"], 2e6 * 1e-10 * (1 - w.XMR_FEE))   # HeroMiners' count alone
+        g["xmr_coins"] += 1e-5   # more work on HeroMiners (xmr_pool)
         self.x.kx_xmr([g], t + 300)
-        # 5 minutes at 2 kH/s, less Kryptex's 1% (not HeroMiners' 0.9%)
-        self.assertAlmostEqual(g["xmr_coins"] / (2000 * 300 * 1e-12 * 0.99), 1, places=9)
-        self.x.kx_xmr([g], t + 300 + 3600)   # an hour without a read: the average's 30 minutes count
-        self.assertAlmostEqual(g["xmr_coins"] / (2000 * (300 + 1800) * 1e-12 * 0.99), 1, places=9)
+        self.assertAlmostEqual(g["xmr_coins"], 2e6 * 1e-10 * (1 - w.XMR_FEE) + 1e-5)   # not dropped again
+        # Starred, for its HeroMiners part: 0.0001982 + 0.00001 + 600,000 hashes × 1e-10 × 94% = 0.0002646.
+        self.assertIn("| 0.000 | 0.000265* |", self.xmr_row("4080"))
+
+    def test_a_box_is_read_once_it_has_had_a_pc_with_its_monero_on_kryptex(self):
+        g = self.kx_box(had_pc=False)
+        t = self.clock[0]
+        self.x.kx_xmr([g], t)
+        g.update(had_pc=True, xmr_kx=False)          # Monero on HeroMiners
+        self.x.kx_xmr([g], t + 300)
+        self.assertFalse(self.http.made("GET", "xmr/api/v1/miner/chart/"))
+        self.assertNotIn("kxx_b", g)
+        g["xmr_kx"] = True
+        self.http.on("GET", "xmr/api/v1/miner/chart/", (500, []))   # a failed read changes nothing
+        self.x.kx_xmr([g], t + 600)
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/chart/")), 1)
+        self.assertNotIn("kxx_b", g)
+        self.xmr_chart(g, (300, 1000.0))
+        self.x.kx_xmr([g], t + 900)
+        g["xmr_kx"] = False                          # back on HeroMiners: its last Kryptex buckets are still read
+        self.x.kx_xmr([g], t + 1200)
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/chart/")), 3)
+        self.x.st["xmr_mkt"] = None                  # with nothing to value it at, the chart isn't read
+        self.x.kx_xmr([g], t + 1500)
+        self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/chart/")), 3)
+
+    def test_an_ended_box_keeps_its_kryptex_total_without_its_buckets(self):
+        g = self.kx_box()
+        self.xmr_chart(g, (300, 1000.0))
+        self.x.kx_xmr([g], self.clock[0])
+        g["ended"] = self.clock[0] + 60
+        self.x.kx_xmr([], self.clock[0] + 120)
+        self.assertNotIn("kxx_b", g)
+        self.assertAlmostEqual(g["kxx_gross"], 6e-5)
+        old = self.group()
+        old.update(ended=self.clock[0], xmr_coins=0.0001)   # ended before the charts: its rate over time, starred
+        self.assertIn("| 0.000 | 0.000156* |", self.xmr_row(f"Others{w.NB}×2"))   # 0.0001 + 0.00006 × 94%
 
     def test_a_boxs_khs_counts_each_monero_pool_that_saw_it_lately(self):
         g = self.group()

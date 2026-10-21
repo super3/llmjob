@@ -62,6 +62,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # xmr_kx_ver or later (the first with --xmr-pool). A running group is switched by its command alone (see
                # xmr_kx_sync).
                "xmr_kx": False, "xmr_kx_host": "xmr-us.kryptex.network:7029", "xmr_kx_ver": "v0.6.6",
+               # What Kryptex credits for Monero work, as a share of the network's pay for it: 94% of what its charts
+               # showed from 20 October 6 pm to 21 October 10 am EDT, at the difficulty then (its 1% fee and more).
+               "kryptex_xmr_pay": 0.94,
                # Kryptex's PPS+ pool for Pearl: kryptex_groups groups mine there instead of HeroMiners, with release
                # kryptex_ver or later (the first with --pool). New groups start there while fewer are, and groups
                # waiting for a PC are switched (see kx_sync). Two Kryptex boxes that mine no shares, while no other
@@ -77,7 +80,6 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # while the LLM answers a prompt (the server's speed test is one); box.sh says so, and the rules wait.
                "llm": False, "llm_ver": "v0.6.5"}
 XMR_FEE = 0.009   # HeroMiners' Monero pool fee
-KXX_FEE = 0.01    # Kryptex's Monero PPS+ fee (its /v1/pool/info, 20 October)
 KX_API = "https://pool.kryptex.com/prl/api"
 # Each pool's own page for an address, linked from the report's pool table. HeroMiners' home page looks up
 # ?wallet= (its home.html); Kryptex's miner page is a path.
@@ -1013,12 +1015,15 @@ class W:
             g["xmr_hashes"], g["xmr_khs"], g["xmr_seen"] = hashes, khs, t
 
     def kx_xmr(self, groups, t):
-        """Kryptex's Monero pool for our Monero address, for the report's XMR Kryptex row: its workers' 30-minute
-        hashrate and what it holds and has paid, at most every 5 minutes, failed tries included. Each Monero box's
-        worker there ("<group>-g0") gives its CPU rate, and the XMR it earned is that rate over the time since the
-        last read (30 minutes at most, the span of the average) at what a hash earns less Kryptex's fee. Kryptex's
-        API gives no count of hashes, so this lags the box by the average's span, and is starred like HeroMiners'."""
+        """Kryptex's Monero pool for our Monero address, at most every 5 minutes, failed tries included: for the
+        report's XMR Kryptex row, its workers' 30-minute hashrate and what it holds and has paid; for each Monero box,
+        its worker's ("<group>-g0") rate there and the work Kryptex accepted from it. That work is from the worker's
+        chart, in 10-minute buckets (a bucket's hashrate times 600 is its accepted hashes), each bucket valued at the
+        network's pay for a hash when first seen. A bucket still filling is read again."""
         st, addr = self.st, self.cfg["xmr_wallet"]
+        for g in st["groups"].values():
+            if g["ended"] and "kxx_b" in g:
+                del g["kxx_b"]   # its total stays; the buckets were only kept to read a filling one again
         if t - max((st.get("kxx_tot") or {}).get("t", 0), st.get("kxx_try", 0)) < 5 * MIN:
             return
         st["kxx_try"] = t
@@ -1039,16 +1044,33 @@ class W:
         ws = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
         for g in groups:
             x = ws.get(f"{g['name']}-g0")
-            if not x:
+            if x:
+                try:
+                    g["kxx_khs"], g["kxx_seen"] = float(x.get("avg_hashrate_30m") or 0) / 1000, t
+                except (TypeError, ValueError):
+                    pass
+            if not mk or not ((g.get("xmr_kx") and g.get("had_pc")) or "kxx_b" in g):
                 continue
-            try:
-                khs = float(x.get("avg_hashrate_30m") or 0) / 1000
-            except (TypeError, ValueError):
+            s, c = http("GET", f"{KXX_API}/v1/miner/chart/{addr}/{g['name']}-g0?days=2", timeout=30)
+            if s != 200 or not isinstance(c, list):
                 continue
-            if mk and g.get("kxx_seen"):
-                per_hash = mk["per_hash"] / (1 - XMR_FEE) * (1 - KXX_FEE)
-                g["xmr_coins"] = g.get("xmr_coins", 0.0) + khs * 1000 * min(t - g["kxx_seen"], 30 * MIN) * per_hash
-            g["kxx_khs"], g["kxx_seen"] = khs, t
+            if "kxx_b" not in g:
+                # The chart holds all its Kryptex work (Monero went there on 20 October, inside its 2 days), so the
+                # estimates from its rate there, kept in xmr_coins until 21 October, give way to it: xmr_coins is
+                # HeroMiners' count alone again, at today's pay.
+                g["xmr_coins"] = g.get("xmr_hashes", 0.0) * mk["per_hash"]
+            b = g.setdefault("kxx_b", {})
+            per_hash = mk["per_hash"] / (1 - XMR_FEE)
+            for p in c:
+                try:
+                    ts, h = str(int(p["timestamp"])), float(p.get("hashrate") or 0) * 600
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if int(ts) / 1000 + 600 <= g["created"]:
+                    continue   # a bucket that ended before the group began: an earlier group of the same name
+                if h > b.get(ts, [0])[0]:
+                    b[ts] = [h, b[ts][1] if ts in b else per_hash]
+            g["kxx_gross"] = sum(h * ph for h, ph in b.values())
 
     def create(self, cls, pri, taken=(), tries=0):
         """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
@@ -1656,10 +1678,17 @@ class W:
             got = [coins(g) for g in gs]
             return fmt(f"{sum(c for c, _ in got):.3f}" + (EST if any(s for _, s in got) else ""))
 
+        def xmr_coins(g):
+            """The XMR a box has earned, and whether that's starred: its Kryptex work from its worker's chart (see
+            kx_xmr) at what Kryptex pays (kryptex_xmr_pay), exact under PPS+ but for its share of block fees, and its
+            Monero work as HeroMiners counted it, at the network's pay less its fee, which HeroMiners pays by its
+            luck. A group that ended before the charts were read (21 October) has its Kryptex rate over time there."""
+            h = g.get("xmr_coins", 0.0)
+            return g.get("kxx_gross", 0.0) * self.cfg["kryptex_xmr_pay"] + h, h > 0
+
         def xmr_cell(gs, fmt=str):
-            # XMR from each box's Monero work as HeroMiners counted it, at the network's pay less its fee: HeroMiners
-            # pays by its luck, so starred. Plus its work on Kryptex, from its rate there (see kx_xmr): starred too.
-            return [fmt(f"{sum(g.get('xmr_coins', 0.0) for g in gs):.6f}{EST}")] if xon else []
+            got = [xmr_coins(g) for g in gs]
+            return [fmt(f"{sum(c for c, _ in got):.6f}" + (EST if any(s for _, s in got) else ""))] if xon else []
 
         rows = []
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
