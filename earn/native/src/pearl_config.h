@@ -863,7 +863,8 @@ typedef struct {
 //
 // PEARL_BD_TADDR: the readout's store index in one register, moved to the tile's
 // transcript buffer once a tile, instead of rebuilt from the thread index every
-// chunk. Alone it lets ptxas sink the next tile's loads past the hand-off.
+// chunk. Alone it lets ptxas sink the next tile's loads past the hand-off. Raced alone
+// on the lean default in round 6 (2026-10-21): -0.3 to -1.2% raw on four cards.
 //
 // PEARL_BD_RED: the readout by red.shared.xor, as PEARL_TALL_RED_READOUT does on Ada,
 // Ampere and Blackwell, where it won on every card. Each of the four lanes that hold
@@ -1048,8 +1049,9 @@ typedef struct {
 // ahead, 5 (c6910403ef8b). On the fold before LEAN
 // (-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0) it builds (247 registers) but fails three
 // gates (loads 15 and 12 IMMA ahead, 19 IMMA on one scoreboard), so that and any other
-// fold is an error. Not measured on a card. Device only; the host reads it only for the
-// fold's name.
+// fold is an error. Raced in round 6 (2026-10-21, probes/README.md): -1.9 to -2.5% raw
+// on a 2060, a 2060 Super, a 2070 and a 2080 (bench), and level with ROWPAIR (-0.4 to 0.0%).
+// Device only; the host reads it only for the fold's name.
 #ifndef PEARL_BD_LAST_RO
 #define PEARL_BD_LAST_RO 0
 #endif
@@ -1105,8 +1107,11 @@ typedef struct {
 // LAST_RO alone it issues two of the tail's loads 16 IMMA earlier. With RED ptxas
 // reschedules RED's chunk loop in each form tried (469 to 617 of 646 instructions in
 // place), so RED is an error; so is the split hash, whose pairs are the default's
-// hashers. Not measured on a card. Device only; the host reads it only for the fold's
-// name.
+// hashers. Raced in round 6 (2026-10-21, probes/README.md), hashrate.js against the
+// default: +0.16% on a 2070, +0.17% on a 2080 and +0.13% on a 2060 Super (all 4 MB of
+// L2), -0.13% on a 2060 12 GB (3 MB, all five rounds behind), as the round-5 patch did.
+// So it stays off: one sm_75 kernel serves both, and it would cost the 3 MB card what it
+// gives the others. Device only; the host reads it only for the fold's name.
 #ifndef PEARL_BD_HASH_RG
 #define PEARL_BD_HASH_RG 0
 #endif
@@ -1170,8 +1175,9 @@ typedef struct {
 // store the readout their own way. Round 2 put the shuffles' price at up to the +1.3% per
 // clock their ablation measured before k-lo first; on the lean default that ablation
 // read -1.7 to -3.7% raw (probes/README.md, round 4), so what five fewer shuffles gain
-// now is not known. Not measured on a card. Device only; the host reads it only for the
-// fold's name.
+// now is not known. Raced in round 6 (2026-10-21, probes/README.md): -0.2 to -0.5% raw
+// on four cards (bench); with HASH_RG -0.3 to +0.2%, and in hashrate.js +0.16% on a 2060
+// and -0.04% on a 2060 Super. Device only; the host reads it only for the fold's name.
 #ifndef PEARL_BD_ROWPAIR
 #define PEARL_BD_ROWPAIR 0
 #endif

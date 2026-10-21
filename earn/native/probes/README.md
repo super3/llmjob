@@ -1904,6 +1904,65 @@ left between this fold and its readout-and-hash-free ceiling (+1 to +2% per cloc
 round 4) is the readout's and hash's own work, and the rest of the gap to the IMMA peak
 is energy at the power limit.
 
+### Round 6: the tile's edges and the readout, and nothing ships (2026-10-21)
+
+Three switches aimed at what round 5 left: the readout's and hash's own work, and the
+tile's last chunk, whose readout has nothing to hide behind (`pearl_config.h`, where each
+is described). Each gives the same transcripts, hashes and hits:
+
+- `PEARL_BD_LAST_RO`: a tile's last chunk read out during the next tile's first two
+  k-steps, with the hand-off after those stores. 252 registers.
+- `PEARL_BD_HASH_RG`: row group 1 hashes all 128 regions (round 5's `hashrg` patch, in
+  source). 243 registers, the default's chunk loop exactly.
+- `PEARL_BD_ROWPAIR`: A's rows permuted in each warp tile so the readout gathers a
+  region with one shuffle instead of six. 247 registers.
+
+Raced with `compilers.sh` (commit `c264bda`) against the default, with `TADDR` alone and
+the combinations, on four cards: an RTX 2060 12 GB (South Korea, 143726, held by its host
+at 130 W), an RTX 2060 Super (Vietnam, 29591, held at 135 W), the South Korea 2070
+(139007, 150 W) and the Colorado 2080 row machine (149439, 275 W). bench, 3 interleaved
+rounds of 20 s, raw against the default:
+
+| build | 2060 | 2060 Super | 2070 | 2080 |
+|---|---|---|---|---|
+| `LAST_RO` | -2.48% | -1.93% | -1.96% | -2.05% |
+| `TADDR` | -0.30% | -1.20% | -0.65% | -0.36% |
+| `ROWPAIR` | -0.23% | -0.47% | -0.54% | -0.24% |
+| `LAST_RO` + `ROWPAIR` | -0.25% | -0.13% | -0.38% | -0.04% |
+| `HASH_RG` | -0.12% | +0.09% | -0.03% | +0.15% |
+| `LAST_RO` + `HASH_RG` | -2.95% | -2.05% | -2.17% | -2.20% |
+| `ROWPAIR` + `HASH_RG` | +0.11% | +0.23% | -0.26% | +0.15% |
+| all three | -0.48% | +0.02% | -0.34% | +0.06% |
+
+Every build passed verify-hits 400/400 and the complete stage in all four shapes on all
+four cards.
+
+hashrate.js, 60 s rounds against the default. The race ran the bench's fastest build on
+each card; `HASH_RG` on the 2060s ran on a second rental, 5 rounds, the 2060 there being
+143581, another South Korea 2060 12 GB held at 130 W:
+
+| card | build | rounds | raw | per clock |
+|---|---|---|---|---|
+| 2070 | `HASH_RG` | 3, every one ahead | +0.16% | +0.21% |
+| 2080 | `HASH_RG` | 3, every one ahead | +0.17% | +0.22% |
+| 2060 Super | `HASH_RG` | 5 (-1.1 while the card heated, then +0.5 +0.3 +0.1 +0.1) | +0.13% | +0.14% |
+| 2060 12 GB | `HASH_RG` | 5, every one behind | -0.13% | -0.06% |
+| 2060 12 GB | `ROWPAIR` + `HASH_RG` | 3, every one ahead | +0.16% | +0.23% |
+| 2060 Super | `ROWPAIR` + `HASH_RG` | 3 | -0.04% | +0.10% |
+
+What it says:
+- Moving the last chunk's readout into the next tile costs about 2% on every card. Most
+  of it comes back with ROWPAIR's one-shuffle readout, which points at the moved
+  shuffles, but the pair is level at best.
+- ROWPAIR saves five shuffles a region and still loses 0.2-0.5% on its own.
+- `HASH_RG` repeats round 5: +0.13 to +0.17% on the cards with 4 MB of L2 (and the 2080
+  Ti's 5.5 MB, round 5), -0.13% on the 3 MB 2060. One sm_75 kernel serves every card, and
+  the South Korea 2060 12 GB row is itself about 0.5% behind PeakMiner, so it stays off.
+  A per-card choice would need a second kernel, which every fold-hash tool and test here
+  assumes away; 0.15% does not pay for that.
+
+Nothing from this round ships. The default is still `5c97fbadf64a`.
+
 ### Pool runs of a checkout's core: `turing/pool.sh`
 
 `WALLET=prl1... SRC=<checkout> OUT=<dir> bash earn/native/probes/turing/pool.sh` builds the
