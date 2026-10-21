@@ -1,5 +1,6 @@
 'use strict';
 
+const zlib = require('zlib');
 const { unpackSide, buildShareProof, sameIndices, CHUNK_LEN } = require('../src/shared/miner/shareProof');
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const { buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
@@ -85,6 +86,23 @@ describe('buildShareProof', () => {
     const b = buildShareProof(hitAt(), jobKey, TINY);
     expect(typeof b).toBe('string');
     expect(Buffer.from(b, 'base64').length).toBeGreaterThan(1024);
+    expect(buildShareProof(hitAt(), jobKey, TINY, { gzip: false })).toBe(b);
+  });
+
+  // On a connection whose pool agreed to compressed proofs: the same proof,
+  // gzipped, and the pool's gunzip gets back exactly the plain bytes.
+  test('a sound hit encodes gzipped when asked', () => {
+    const plain = buildShareProof(hitAt(), jobKey, TINY);
+    const gz = buildShareProof(hitAt(), jobKey, TINY, { gzip: true });
+    expect(gz).not.toBe(plain);
+    expect(zlib.gunzipSync(Buffer.from(gz, 'base64'))).toEqual(Buffer.from(plain, 'base64'));
+  });
+
+  // Compression does not get a proof past the checks.
+  test('a hit that cannot be certified is refused gzipped too', () => {
+    const h = hitAt();
+    h.proofA.leafData[0] ^= 0xff;
+    expect(buildShareProof(h, jobKey, TINY, { gzip: true })).toBeNull();
   });
 
   // Omitting the profile means the mainnet one, exactly as everywhere else in

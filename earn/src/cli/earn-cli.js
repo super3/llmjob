@@ -35,9 +35,12 @@ const { createNodeClient, serverOf } = require('../main/nodeClient');
 const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
-const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor } = require('../shared/config');
+const {
+  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
+} = require('../shared/config');
+const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
-const { buildMinerReports } = require('../shared/minerReport');
+const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
@@ -833,7 +836,9 @@ async function run(argv) {
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
     endpoint = resolveEndpoint(settings);
-    log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+    // Kryptex has no merge mining, so the miner leaves the MDL address out there.
+    const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
+    log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     // An old AlphaPool id (--region eu1) mines in the region it maps to.
     if (settings.legacyRegion) {
       log('region ' + settings.legacyRegion + ' is now ' + settings.region
@@ -949,6 +954,8 @@ async function run(argv) {
         // and to the network board. The GUI has always passed it (main.js);
         // omitting it here was an oversight, not a decision.
         readTemps: () => probe.detectGpuTemps(),
+        // Sent with the pool login, as the Monero miner's is.
+        agent: 'llmjob-earn/' + pkg.version,
       });
       // The pool took the login, so this address is one that worked.
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
@@ -1016,7 +1023,11 @@ async function run(argv) {
             nodeId: demandServing.nodeId,
           };
         }
-        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
+        // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+        // running), for every row. The CPU miner starts after this reporter and
+        // can give up on its own, so it is read at each report.
+        const host = hostStats(os, xmr && xmr.engine);
+        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving, host).map(postMinerReport));
       };
       reportNow = report;
       report();

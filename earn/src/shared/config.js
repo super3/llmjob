@@ -6,7 +6,8 @@
 // and earn/native. There is no external engine to download, no vendored binary
 // and no dev fee.
 //
-// The pool is HeroMiners. AlphaPool was dropped along with alpha-miner: it gates
+// The default pool is HeroMiners, and Kryptex is the other choice (POOLS
+// below). AlphaPool was dropped along with alpha-miner: it gates
 // its stratum behind a GPU-solved challenge and then DICTATES the mining
 // geometry (M/N=131072, K=4096, a 2x64 tile), which is shaped for Hopper's
 // wgmma and awkward on everything else. HeroMiners sends a header and a target
@@ -31,6 +32,37 @@ const REGIONS = {
   au: { label: 'au', flag: '🇦🇺', name: 'Oceania · Australia', endpoint: 'au.pearl.herominers.com:1200' },
 };
 
+// Kryptex's servers, one per continent: prl-<id>.kryptex.network for Pearl and
+// xmr-<id> for Monero (KRYPTEX below). Its Middle East name pointed at the eu
+// servers on 2026-10-20, and its Russian one refused connections from the US.
+const KRYPTEX_REGIONS = {
+  us: { flag: '🇺🇸', name: 'N. America' },
+  eu: { flag: '🇪🇺', name: 'Europe' },
+  br: { flag: '🇧🇷', name: 'S. America · Brazil' },
+  sg: { flag: '🇸🇬', name: 'Asia · Singapore' },
+  hk: { flag: '🇭🇰', name: 'Asia · Hong Kong' },
+};
+
+// The pools the app can mine on, each with its servers. Settings → Connection
+// picks one pool and server for both coins: Pearl on the GPU and Monero on the
+// CPU. HeroMiners is the default. Fees are each pool's own: HeroMiners'
+// /api/stats (Pearl 0, Monero 0.9) and Kryptex's /{prl,xmr}/api/v1/pool/info
+// (Pearl 3, Monero 1, both pay-per-share), read on 2026-10-20.
+const POOLS = {
+  herominers: { name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9, regions: REGIONS },
+  kryptex: { name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1, regions: KRYPTEX_REGIONS },
+};
+const DEFAULT_POOL = 'herominers';
+
+// Kryptex's ports and its balance API (shared/balance). The same stratum
+// protocol as HeroMiners for both coins; the login differences are in the two
+// stratum clients (isKryptexHost).
+const KRYPTEX = {
+  prlPort: 7048,
+  xmrPort: 7029,
+  apiBase: 'https://pool.kryptex.com',
+};
+
 const DEFAULTS = {
   region: 'us',
   worker: 'rig01',
@@ -40,15 +72,16 @@ const DEFAULTS = {
 //
 // The dev fee is zero and there is no dev-address code path: the engine is our
 // own CUDA core (earn/native), written against the ISC-licensed reference, not a
-// derivative of any fee-bearing miner. The pool fee is HeroMiners' own, read
-// from https://pearl.herominers.com/api/stats: fee 0.
+// derivative of any fee-bearing miner. The pool fee is the default pool's; a
+// rig on another pool gets that pool's (feeShare below).
 const MINER = {
   devFeePct: 0,
-  poolFeePct: 0,
+  poolFeePct: POOLS[DEFAULT_POOL].prlFeePct,
 };
 
 // Monero on the CPU, opt-in and off by default (main/xmrEngine.js drives the
-// worker built from earn/xmr-worker), on HeroMiners. From its
+// worker built from earn/xmr-worker), on HeroMiners unless Kryptex is picked.
+// From HeroMiners'
 // https://monero.herominers.com/api/stats on 2026-10-11: coinUnits 1e12, which
 // turns the balance API's atomic units into XMR. Port 1111 starts at difficulty
 // 480,000; 1112 is its NiceHash port. The host follows the Pearl region
@@ -422,16 +455,41 @@ function regionFor(region) {
   return REGIONS[region] || REGIONS[DEFAULTS.region];
 }
 
-function endpointFor(region) {
+// The pool id for whatever was saved: a known one, else the default. A
+// settings file from before the choice has none.
+function poolId(pool) {
+  return Object.prototype.hasOwnProperty.call(POOLS, pool) ? pool : DEFAULT_POOL;
+}
+
+// A server the pool has, for whatever was saved: on HeroMiners through
+// migrateRegion, on another pool as saved, else that pool's first.
+function liveRegion(pool, region) {
+  const id = poolId(pool);
+  if (id === DEFAULT_POOL) return migrateRegion(region);
+  const regions = POOLS[id].regions;
+  return Object.prototype.hasOwnProperty.call(regions, region) ? region : Object.keys(regions)[0];
+}
+
+// The Pearl endpoint for a server on a pool.
+function endpointFor(region, pool) {
+  if (poolId(pool) === 'kryptex') return 'prl-' + liveRegion(pool, region) + '.kryptex.network:' + KRYPTEX.prlPort;
   return regionFor(region).endpoint;
+}
+
+// The share of the Pearl a rig mines that it is paid, after the dev fee and
+// the pool's fee: ECON.FEE for the default pool.
+function feeShare(pool) {
+  return 1 - (MINER.devFeePct + POOLS[poolId(pool)].prlFeePct) / 100;
 }
 
 // The Monero pool host for a Pearl region, so the CPU miner picks its pool the
 // way the GPU miner does: us2 mines on us2.monero.herominers.com. HeroMiners
 // has a Monero name for each of the regions above. On 2026-10-12 they all
 // pointed at one server in Frankfurt, so today this changes nothing, but a
-// region the pool adds later is used without a release.
-function xmrEndpointFor(region) {
+// region the pool adds later is used without a release. Kryptex's Monero
+// servers have the same names as its Pearl ones.
+function xmrEndpointFor(region, pool) {
+  if (poolId(pool) === 'kryptex') return 'xmr-' + liveRegion(pool, region) + '.kryptex.network:' + KRYPTEX.xmrPort;
   return (REGIONS[region] ? region : DEFAULTS.region) + '.monero.herominers.com:' + XMR.port;
 }
 
@@ -466,11 +524,12 @@ function splitEndpoint(endpoint) {
 }
 
 // The endpoint to mine against: a normalised override if there is one, else the
-// region's. One function so the argument vector and the "connecting to …" log
-// line can never disagree about where the rig is actually pointed.
+// region's on the chosen pool. One function so the argument vector and the
+// "connecting to …" log line can never disagree about where the rig is
+// actually pointed.
 function resolveEndpoint(settings) {
   const s = settings || {};
-  return normalizeEndpoint(s.endpoint) || endpointFor(s.region || DEFAULTS.region);
+  return normalizeEndpoint(s.endpoint) || endpointFor(s.region || DEFAULTS.region, s.pool);
 }
 
 // Where a saved AlphaPool region should land now that the pool is HeroMiners.
@@ -511,7 +570,7 @@ function regionLabel(region) {
 
 
 module.exports = {
-  REGIONS, LEGACY_REGIONS, DEFAULTS, MINER, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
-  regionFor, endpointFor, xmrEndpointFor, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
-  migrateRegion,
+  REGIONS, KRYPTEX_REGIONS, LEGACY_REGIONS, DEFAULTS, POOLS, DEFAULT_POOL, KRYPTEX, MINER, XMR, NETWORK, ECON, ECON_API,
+  LLM, NODE, regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint,
+  splitEndpoint, regionLabel, migrateRegion,
 };

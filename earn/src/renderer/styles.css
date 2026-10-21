@@ -274,12 +274,15 @@ input.field-box { user-select: text; }
 .settings-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 14px; border-bottom: 1px solid #f0ede5; }
 .settings-row:last-child { border-bottom: none; }
 .settings-row .rk { font-size: 13.5px; color: var(--ink-3); font-weight: 500; }
-/* Connection: Pool region and Worker name side by side, small labels above each.
+/* Connection: Pool and Worker name side by side, small labels above each.
    They were stacked while a Static difficulty field shared the grid, which half
-   the width squeezed; that field is gone. Side by side saves ~60px, which the
-   Local network section needs to keep Settings inside its 470px without a
-   scrollbar. */
+   the width squeezed; that field is gone. One row keeps Settings inside its
+   470px without a scrollbar, with 26px to spare. */
 .conn-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+/* The pool menu as wide as its longest choice, the worker name the rest. In a
+   window narrowed toward its 560px minimum the menu gives way before the
+   worker box drops under 100px. */
+.conn-grid.pool-grid { grid-template-columns: minmax(0, auto) minmax(100px, 1fr); }
 .settings-note + .conn-grid { margin-top: 12px; }
 .conn-field .fk { font-size: 12px; color: var(--muted-2, #8a8f98); font-weight: 500; margin-bottom: 5px; }
 /* One height for both: a select draws 2px taller than a text input, which shows
@@ -288,6 +291,25 @@ input.field-box { user-select: text; }
 .rv-input { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); background: var(--field); border: 1px solid var(--line); border-radius: 7px; padding: 6px 11px; outline: none; user-select: text; }
 .rv-input:focus { border-color: var(--accent); }
 select.rv-input { cursor: pointer; }
+/* The pool locks while mining. */
+select.rv-input:disabled { cursor: default; color: var(--muted); }
+/* The pool's name in front of the server picked, since a <select> shows only
+   the option's text. The wrapper draws the box, and the select's transparent
+   left border makes room for the name. Left padding would too, but the open
+   list copies the select's padding and would start a name's width in.
+   --pool-ch is the name's length in characters, which the monospace font makes
+   its width. The right padding takes what a longer name would, so the menu
+   keeps its width when the pool changes and the worker box doesn't move. */
+.pool-pick { position: relative; height: 35px; box-sizing: border-box; border: 1px solid var(--line); border-radius: 7px; background: var(--field); }
+.pool-pick:focus-within { border-color: var(--accent); }
+.pool-name { position: absolute; left: 11px; top: 0; bottom: 0; display: flex; align-items: center; pointer-events: none; white-space: pre; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 13px; color: var(--ink-3); }
+.pool-pick select.rv-input {
+  height: 33px; border: 0; border-radius: 6px; background: transparent;
+  border-left: calc(7px + var(--pool-ch, 0) * 1ch) solid transparent;
+  padding-left: 4px;
+  padding-right: calc(11px + (var(--pool-ch-max, 0) - var(--pool-ch, 0)) * 1ch);
+}
+.pool-pick:has(select:disabled) .pool-name { color: var(--muted); }
 /* A text button beside the Settings title, filled once an update is ready. */
 .update-check-btn { display: inline-flex; align-items: center; gap: 6px; border: none; background: none; color: var(--accent); font-family: inherit; font-weight: 600; font-size: 12.5px; padding: 0; cursor: pointer; }
 .update-check-btn:hover:not(:disabled) { text-decoration: underline; }

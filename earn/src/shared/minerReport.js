@@ -36,15 +36,25 @@
 // have the LLM loaded (llmModel set) and still serve nobody, which is exactly the
 // case the board couldn't previously show. It's rig-level, not per-card, so it
 // rides on every row of a multi-GPU host.
-function buildMinerReports(settings, snap, gpuVram, version, serving) {
+//
+// `host` (optional) is the rest of what belongs to the machine rather than a
+// card: { ramUsedMb, ramTotalMb, xmrHashrate }, from hostStats() below. Like
+// nodeId it rides on every row, so the server must take it once per host and
+// never sum it across cards. Anything missing reports null, which the server
+// stores as "unknown", the same as a client too old to send it.
+function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const s = settings || {};
   const n = snap || {};
+  const h = host || {};
   const base = {
     address: String(s.address || '').trim(),
     worker: String(s.worker || 'rig01').trim() || 'rig01',
     region: s.region || 'us2',
     version: version != null ? String(version) : null, // earn client version, so the board can see fleet versions
     nodeId: serving && serving.nodeId ? String(serving.nodeId) : null,
+    ramUsedMb: numOrNull(h.ramUsedMb),
+    ramTotalMb: numOrNull(h.ramTotalMb),
+    xmrHashrate: numOrNull(h.xmrHashrate),
   };
 
   const serveModel = serving && serving.model ? String(serving.model) : null;
@@ -112,4 +122,55 @@ function buildMinerReports(settings, snap, gpuVram, version, serving) {
   });
 }
 
-module.exports = { buildMinerReports };
+// A finite number, or null. Number(null) is 0, so null is checked first: a
+// field nobody measured must not read as a measured zero.
+function numOrNull(v) {
+  if (v == null) return null;
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+}
+
+const MB = 1024 * 1024;
+
+// This machine's system RAM in whole MB: used is total minus free, as the OS
+// reports them. In a container with a memory limit (docker --memory, a rented
+// Vast box) the OS figures are the whole host's, other tenants included, so
+// the limit is the total and used is what the container has in use. That is
+// the same cap readCpuFacts puts on memory for the CPU miner's plan. `os` is
+// Node's os module and `proc` the process, passed in so the tests can hand them
+// any numbers. A reading that makes no sense comes back null, so the board
+// shows it as unknown rather than wrong.
+function readRamMb(os, proc) {
+  const p = proc || process;
+  let total = Number(os.totalmem());
+  if (!(total > 0)) return { usedMb: null, totalMb: null };
+  let free = Number(os.freemem());
+  // constrainedMemory() is 0, or a huge number, when nothing limits us.
+  const limit = typeof p.constrainedMemory === 'function' ? Number(p.constrainedMemory()) : 0;
+  if (limit > 0 && limit < total) {
+    total = limit;
+    // The limit minus what the container uses, by its cgroup's count; 0 while
+    // use runs past the limit, which it can for a moment. Without it, used is
+    // unknown: the OS's free figure is the host's, not ours.
+    free = typeof p.availableMemory === 'function' ? Math.min(Number(p.availableMemory()), total) : NaN;
+  }
+  const used = free >= 0 && free <= total ? total - free : null;
+  return { usedMb: used == null ? null : Math.round(used / MB), totalMb: Math.round(total / MB) };
+}
+
+// The `host` fields for buildMinerReports, read now: system RAM, and the Monero
+// miner's hashrate in H/s. `cpu` is the XmrEngine, or null when CPU mining is
+// off. One that is not running reports null as well, so the board can tell "not
+// CPU mining" from "CPU mining at 0 H/s", which is what a running engine reads
+// while its pool is out (the GPU figure does the same). `proc` is for the
+// tests; the shells leave it out and get the real process.
+function hostStats(os, cpu, proc) {
+  const ram = readRamMb(os, proc);
+  return {
+    ramUsedMb: ram.usedMb,
+    ramTotalMb: ram.totalMb,
+    xmrHashrate: cpu && cpu.isRunning() ? Number(cpu.snapshot().hashrate) || 0 : null,
+  };
+}
+
+module.exports = { buildMinerReports, hostStats, readRamMb };

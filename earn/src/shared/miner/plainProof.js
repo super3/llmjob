@@ -1,5 +1,6 @@
 'use strict';
 
+const zlib = require('zlib');
 const { CHUNK_LEN } = require('./merkle');
 
 // The `plain_proof` field of a share submission: base64 of a bincode-encoded
@@ -26,6 +27,10 @@ const { CHUNK_LEN } = require('./merkle');
 //
 // The verifier accepts a legacy V1 blob too, which is the same bytes without
 // the trailing Option tag. We always write the current form.
+//
+// On a connection where the pool agreed to compressed proofs (Kryptex's
+// "type":"v2", see stratum.js), the field is base64 of those bytes gzipped
+// instead. Both forms are made by encodePlainProof and nowhere else.
 
 const BINCODE_OPTION_NONE = 0x00;
 
@@ -99,13 +104,28 @@ function serializePlainProof(pp) {
   ]);
 }
 
-function encodePlainProof(pp) {
-  return serializePlainProof(pp).toString('base64');
+// The `plain_proof` field: base64(bincode), or base64(gzip(bincode)) when
+// `gzip` is set. gzip is the file format (RFC 1952), which is what the pool
+// unpacks: not raw deflate, and not a zlib stream.
+//
+// It shrinks to a few percent because the operands the proof carries are the
+// core's constant fill (PROFILE.operandFill): each 1024-byte leaf is one byte
+// value over and over, but for the salt stamped into A's first 11 bytes.
+function encodePlainProof(pp, { gzip = false } = {}) {
+  const bytes = serializePlainProof(pp);
+  return (gzip ? zlib.gzipSync(bytes) : bytes).toString('base64');
+}
+
+// A compressed field's size before and after compression, in bytes, for the
+// log. Measured by unpacking it, as the pool will.
+function gzipSizes(field) {
+  const sent = Buffer.from(field, 'base64');
+  return { plain: zlib.gunzipSync(sent).length, sent: sent.length };
 }
 
 module.exports = {
   BINCODE_OPTION_NONE,
   u64le, seqOfU64, seqOfByteVecs, seqOfDigests,
   serializeMerkleProof, serializeMatrixMerkleProof,
-  serializePlainProof, encodePlainProof,
+  serializePlainProof, encodePlainProof, gzipSizes,
 };

@@ -61,9 +61,20 @@ function makeFullApi() {
       address: ADDR, worker: 'w1', region: 'us2', regionSaved: true,
     }),
     getConfig: jest.fn().mockResolvedValue({
-      regions: {
-        us2: { flag: 'US', label: 'US', name: 'Dallas' },
-        eu1: { flag: 'EU', label: 'EU', name: 'Falkenstein' },
+      // Each pool with its servers, the way main sends config POOLS.
+      pools: {
+        herominers: {
+          name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9, regions: {
+            us2: { flag: 'US', label: 'us2', name: 'Dallas' },
+            eu1: { flag: 'EU', label: 'eu1', name: 'Falkenstein' },
+          },
+        },
+        kryptex: {
+          name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1, regions: {
+            us: { flag: 'US', name: 'N. America' },
+            eu: { flag: 'EU', name: 'Europe' },
+          },
+        },
       },
       // main always sends these. The region fallback reads defaults.region
       // rather than carrying its own copy of the default, which is what used to
@@ -178,12 +189,24 @@ describe('boot with the full bridge', () => {
     await boot({ api });
     expect($('addr-input').value).toBe(ADDR);
     expect($('set-worker').value).toBe('w1');
-    const opts = Array.from($('set-region').options).map((o) => o.value);
-    expect(opts).toEqual(['us2', 'eu1']);
-    expect($('set-region').options[0].textContent).toBe('US US · Dallas');
+    // One menu for pool and server: a group per pool, headed by its fees, with
+    // its servers under it, each the flag and the place.
+    const opts = Array.from($('set-pool').options).map((o) => o.value);
+    expect(opts).toEqual(['herominers:us2', 'herominers:eu1', 'kryptex:us', 'kryptex:eu']);
+    expect(Array.from($('set-pool').querySelectorAll('optgroup')).map((g) => g.label))
+      .toEqual(['HeroMiners · fees 0% Pearl, 0.9% Monero', 'Kryptex · fees 3% Pearl, 1% Monero']);
+    expect($('set-pool').options[0].textContent).toBe('US Dallas');
+    // A screen reader reads an option without its group, so each names its pool.
+    expect($('set-pool').options[0].getAttribute('aria-label')).toBe('HeroMiners, Dallas');
     // The saved region stands. Detection used to replace it on every launch,
     // and the next START saved the replacement.
-    expect($('set-region').value).toBe('us2');
+    expect($('set-pool').value).toBe('herominers:us2');
+    // The pool's name in front of the server, with room made for it.
+    expect($('pool-name').textContent).toBe('HeroMiners · ');
+    // That name is hidden from screen readers, so the select's own name has it.
+    expect($('set-pool').getAttribute('aria-label')).toBe('Pool: HeroMiners');
+    expect($('set-pool').style.getPropertyValue('--pool-ch')).toBe('13');
+    expect($('set-pool').style.getPropertyValue('--pool-ch-max')).toBe('13');
     expect(api.detectRegion).not.toHaveBeenCalled();
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('balance').textContent).toBe('1,234.568');
@@ -213,13 +236,66 @@ describe('boot with the full bridge', () => {
     expect(lines[1999].textContent).toMatch(/ line 2005$/);
   });
 
+  // One pool and server for both coins. The balance is the pool's and follows
+  // a change of pool at once; an answer for the pool just left is dropped.
+  // Another server on the same pool keeps it. The pool doesn't change while
+  // mining: the change would wait for the next START, and the balance would
+  // show a pool that isn't mining.
+  it('picks one pool and server, and reads the balance from that pool', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: ADDR, worker: 'w1', region: 'eu', regionSaved: true, pool: 'kryptex' });
+    await boot({ api });
+    expect($('set-pool').value).toBe('kryptex:eu');
+    expect($('pool-name').textContent).toBe('Kryptex · ');
+    expect($('set-pool').getAttribute('aria-label')).toBe('Pool: Kryptex');
+    // The longer name's room goes on the right, so the menu keeps its width.
+    expect(['--pool-ch', '--pool-ch-max'].map((v) => $('set-pool').style.getPropertyValue(v))).toEqual(['10', '13']);
+    expect(api.getBalance).toHaveBeenCalledWith(ADDR, 'kryptex');
+    expect($('balance').textContent).toBe('1,234.568');
+
+    const pick = (value) => {
+      $('set-pool').value = value;
+      $('set-pool').dispatchEvent(new window.Event('change', { bubbles: true }));
+    };
+    let pay;
+    api.getBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    pick('herominers:eu1');
+    expect(api.getBalance).toHaveBeenLastCalledWith(ADDR, 'herominers');
+    expect($('balance').textContent).toBe('0.000');
+    expect($('pool-name').textContent).toBe('HeroMiners · ');
+    expect($('set-pool').getAttribute('aria-label')).toBe('Pool: HeroMiners');
+    pick('kryptex:eu');
+    pay({ earned: 99, usd: 1 });
+    await flush();
+    expect($('balance').textContent).toBe('1,234.568');
+    const reads = api.getBalance.mock.calls.length;
+    pick('kryptex:us');
+    expect(api.getBalance).toHaveBeenCalledTimes(reads);
+    expect($('balance').textContent).toBe('1,234.568');
+
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ pool: 'kryptex', region: 'us' }));
+    expect($('set-pool').disabled).toBe(true);
+    click($('btn-stop'));
+    expect($('set-pool').disabled).toBe(false);
+  });
+
   // A fresh install has no region of its own yet, so it takes the nearest.
   it('picks the nearest region only when none was saved', async () => {
     const { api } = makeFullApi();
     api.getSettings.mockResolvedValue({ address: ADDR, worker: 'w1', region: 'us2', regionSaved: false });
     await boot({ api });
     expect(api.detectRegion).toHaveBeenCalledTimes(1);
-    expect($('set-region').value).toBe('eu1');
+    expect($('set-pool').value).toBe('herominers:eu1');
+  });
+
+  // Detection measures HeroMiners' servers, so it leaves a Kryptex pick alone.
+  it('leaves a Kryptex server alone when no region was saved', async () => {
+    const { api } = makeFullApi();
+    api.getSettings.mockResolvedValue({ address: ADDR, worker: 'w1', region: 'us', regionSaved: false, pool: 'kryptex' });
+    await boot({ api });
+    expect(api.detectRegion).toHaveBeenCalledTimes(1);
+    expect($('set-pool').value).toBe('kryptex:us');
   });
 
   // A cleared Worker box falls back to this machine's name, which the box shows
@@ -454,7 +530,7 @@ describe('boot with the full bridge', () => {
   // would arm a START that runs nothing at all.
   it('drops the mining modes when the platform has no engine', async () => {
     const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    api.getConfig.mockResolvedValue({ platform: { minerSupported: false } });
     // Stored 'mining' on a box that cannot mine: the button is hidden, so leaving
     // the mode selected would light nothing and arm a run that does nothing.
     api.getSettings.mockResolvedValue({ address: ADDR, mode: 'mining' });
@@ -483,7 +559,7 @@ describe('boot with the full bridge', () => {
   // and START would arm a plan whose mining half is refused anyway.
   it('rewrites a saved mining mode to auto on a platform that cannot mine', async () => {
     const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: false } });
+    api.getConfig.mockResolvedValue({ platform: { minerSupported: false } });
     api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
     await boot({ api });
 
@@ -494,7 +570,7 @@ describe('boot with the full bridge', () => {
 
   it('keeps every mode where mining works, including when config omits the platform', async () => {
     const { api } = makeFullApi();
-    api.getConfig.mockResolvedValue({ regions: {}, platform: { minerSupported: true } });
+    api.getConfig.mockResolvedValue({ platform: { minerSupported: true } });
     api.getSettings.mockResolvedValue({ address: ADDR, mode: 'both' });
     await boot({ api });
     expect(document.querySelector('[data-mode="mining"]').hidden).toBe(false);
@@ -528,7 +604,7 @@ describe('boot with the full bridge', () => {
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith({
       address: ADDR, worker: 'w1', region: 'us2', mode: 'auto', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers',
     });
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
@@ -594,20 +670,22 @@ describe('boot with the full bridge', () => {
     expect($('engine-status').classList.contains('err')).toBe(true);
     cbs.engine({ phase: 'error' });
     expect($('engine-status').textContent).toMatch(/Engine setup failed/);
-    // main-process stop resets the dashboard
+    // main-process stop resets the dashboard, and unlocks the pool
+    expect($('set-pool').disabled).toBe(true);
     cbs.stopped();
+    expect($('set-pool').disabled).toBe(false);
     expect($('btn-start').hidden).toBe(false);
     expect($('hashrate').textContent).toBe('0.0');
     expect($('device-label').textContent).toBe('RTX 4090');
     expect($('engine-status').hidden).toBe(true);
     // restart with every settings fallback (empty worker/region/mode)
     setInput($('set-worker'), '');
-    $('set-region').value = 'zz'; // no such option → '' → falls back to defaults.region
+    $('set-pool').value = 'zz'; // no such option → '' → the pool picked, and defaults.region
     click($('mode-empty'));
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenLastCalledWith({
       address: ADDR, worker: 'this-rig', region: 'us2', mode: 'mining', mdlAddress: '', shareLlm: false,
-      cpuMining: false, xmrAddress: '', cpuThreads: 0,
+      cpuMining: false, xmrAddress: '', cpuThreads: 0, pool: 'herominers',
     });
     // A new run forgets the last run's card, so an engine that names none (an
     // older core, or a rig with no CUDA device list to report) shows the detected
@@ -1051,7 +1129,9 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
     expect($('addr-input').value).toBe('');
     // No config, so no machine name to fall back to; main fills the default.
     expect($('set-worker').value).toBe('');
-    expect($('set-region').options).toHaveLength(0);
+    expect($('set-pool').options).toHaveLength(0);
+    // No pools from main, so no pool name to give.
+    expect($('set-pool').getAttribute('aria-label')).toBe('Pool');
     // A falsy stored mode falls back to DEFAULT_MODE, not to mining-only:
     // mining-only switches the LLM off silently, which reads as "the LLM is
     // broken" with nothing in the logs to say otherwise.
@@ -1116,7 +1196,7 @@ describe('partial bridge (fallback settings, missing action methods)', () => {
 describe('no bridge at all', () => {
   it('boots and stays interactive with window.llmjob missing', async () => {
     await boot({ noApi: true });
-    expect($('set-region').options).toHaveLength(0);
+    expect($('set-pool').options).toHaveLength(0);
     expect($('chat-suggestions').children).toHaveLength(3);
     expect($('mode-hint').textContent).toMatch(/Balances mining/); // default auto
     expect($('device-label').textContent).toBe('GPU · auto-detect');
@@ -1615,7 +1695,7 @@ describe('CPU mining', () => {
   function cpuApi(settings, cpu) {
     const { api, cbs } = makeFullApi();
     api.getSettings.mockResolvedValue(Object.assign({ address: ADDR, worker: 'w1', region: 'us2' }, settings));
-    api.getConfig.mockResolvedValue({ regions: {}, defaults: { region: 'us2' }, cpu: cpu === undefined ? CPU : cpu });
+    api.getConfig.mockResolvedValue({ defaults: { region: 'us2' }, cpu: cpu === undefined ? CPU : cpu });
     api.checkXmrAddress = jest.fn((a) => Promise.resolve(a === XMR_ADDR
       ? { ok: true, kind: 'subaddress' } : { ok: false, error: 'the checksum does not match: check for a typo' }));
     api.getXmrBalance = jest.fn().mockResolvedValue({ earned: 0.0125, pending: 0.0125, paid: 0 });
@@ -1883,12 +1963,42 @@ describe('CPU mining', () => {
     jest.advanceTimersByTime(400);
     await flush();
     expect($('cpu-row').hidden).toBe(false);
-    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR);
+    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR, 'herominers');
     $('set-cpu-threads').value = '5';
     change($('set-cpu-threads'));
     expect(noteHidden()).toBe(true);
     click($('btn-start'));
     expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ cpuMining: true, cpuThreads: 5 }));
+  });
+
+  // The Monero balance is the pool's too, and follows a change of pool at
+  // once; an answer for the pool just left is dropped.
+  it('reads the Monero balance from the pool picked', async () => {
+    const { api } = cpuApi({ xmrAddress: XMR_ADDR, pool: 'kryptex', region: 'eu' });
+    api.getConfig.mockResolvedValue({
+      defaults: { region: 'us2' }, cpu: CPU,
+      pools: {
+        herominers: { name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9, regions: { us2: { flag: 'US', name: 'Dallas' } } },
+        kryptex: { name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1, regions: { eu: { flag: 'EU', name: 'Europe' } } },
+      },
+    });
+    await boot({ api });
+    expect($('set-pool').value).toBe('kryptex:eu');
+    expect(api.getXmrBalance).toHaveBeenCalledWith(XMR_ADDR, 'kryptex');
+    expect($('xmr-balance').textContent).toBe('0.0125');
+    let pay;
+    api.getXmrBalance.mockImplementationOnce(() => new Promise((r) => { pay = r; }));
+    $('set-pool').value = 'herominers:us2';
+    change($('set-pool'));
+    expect(api.getXmrBalance).toHaveBeenLastCalledWith(XMR_ADDR, 'herominers');
+    expect($('xmr-balance').textContent).toBe('0.0000');
+    $('set-pool').value = 'kryptex:eu';
+    change($('set-pool'));
+    pay({ earned: 7 });
+    await flush();
+    expect($('xmr-balance').textContent).toBe('0.0125');
+    click($('btn-start'));
+    expect(api.startMiner).toHaveBeenCalledWith(expect.objectContaining({ pool: 'kryptex', region: 'eu' }));
   });
 
   it('a build without the CPU miner says so, and a saved address can only be cleared', async () => {

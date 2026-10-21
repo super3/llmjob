@@ -95,18 +95,30 @@
   .nt-top .ttl { font-weight: 700; font-size: 16px; letter-spacing: -.01em; }
   .nt-top .upd { font-size: 12px; color: #a7abb2; font-family: "IBM Plex Mono", monospace; }
   .nt-scroll { overflow-x: auto; }
-  /* VRAM/hashrate are whole numbers with the unit as a small suffix, so those
+  /* VRAM/RAM/hashrate are whole numbers with the unit as a small suffix, so those
      tracks only have to hold a few digits; that plus a 6…6 address buys the width
      back for the GPU and LLM names, the two columns that actually need it. The
      GPU floor fits a full "NVIDIA GeForce RTX 4070 SUPER" even when the table is
-     scrolled at its minimum width on a phone. */
-  .nt-cols, .miner-row { display: grid; grid-template-columns: 44px 124px minmax(256px, 1fr) 136px 86px 76px 82px; gap: 16px; align-items: center; min-width: 900px; }
+     scrolled at its minimum width on a phone.
+
+     RAM takes the same track as VRAM. Eight tracks at the old sizes need 1002px,
+     and a row only gets 978px inside the 1080px page, so the board would have
+     scrolled sideways on every desktop. The room came from the rank column's
+     spare width (44px → 32px), the gaps (16px → 12px), and the slack in the
+     number columns: 84px holds "999 / 999 GB" (82.5px), and hashrate and last
+     seen take the narrow layout's 72px and 78px (their headers need 66px). That
+     leaves the GPU column 284px, enough for a full "NVIDIA GeForce RTX 4070 Ti
+     SUPER × 2" and its chevron (281px). Without the number columns' slack it
+     got 272px and cut off the "× 2", and the board shows that count nowhere
+     else until the row is opened.
+     min-width is the tracks plus the gaps. */
+  .nt-cols, .miner-row { display: grid; grid-template-columns: 32px 124px minmax(256px, 1fr) 136px 84px 84px 72px 78px; gap: 12px; align-items: center; min-width: 950px; }
   .nt-cols { padding: 11px 22px; border-bottom: 1px solid #efeee8; font-size: 11.5px; color: var(--muted-3); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
-  .nt-cols .r, .mr-vram, .mr-hash, .mr-last { text-align: right; }
-  .mr-vram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
+  .nt-cols .r, .mr-vram, .mr-ram, .mr-hash, .mr-last { text-align: right; }
+  .mr-vram, .mr-ram { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: #6b7077; }
   /* Unit suffix: small and muted, so the column reads as numbers and the unit
      costs a fraction of the width a full-size "GB" / "TH/s" would. */
-  .mr-vram .u, .mr-hash .u { font-size: 10px; font-weight: 400; color: var(--muted-3); margin-left: 3px; }
+  .mr-vram .u, .mr-ram .u, .mr-hash .u { font-size: 10px; font-weight: 400; color: var(--muted-3); margin-left: 3px; }
   .miner-row { padding: 13px 22px; border-bottom: 1px solid #f4f3ee; }
   .mr-rank { font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--muted-3); }
   .mr-addr { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -150,11 +162,18 @@
      at different weights once a multi-GPU rig is opened. */
   .mr-cards .mr-llm .mr-llm-on { color: #8a8f98; }
   .mr-cards .mr-hash { color: #7d9fe0; }
-  /* Below ~1040px the GPU column can no longer fit a full "NVIDIA GeForce RTX
+  /* Below ~1080px the GPU column can no longer fit a full "NVIDIA GeForce RTX
      4070 SUPER" — end-ellipsis would hide the model behind the vendor prefix,
      so swap to the model-only name. The shorter text frees real width, so also
      drop the column sizing reserved for full names — otherwise the table scrolls
      against fixed slack instead of content.
+
+     The desktop tracks need 950px, and a row gets the window minus 102px (the
+     page's side padding, the table border and the row padding) minus a
+     scrollbar of up to 17px, so they fit down to about 1069px. The switch is at
+     1080 so that just above it the GPU column (268px there) still holds
+     today's longest multi-GPU label, "NVIDIA GeForce RTX 4070 SUPER × 5"
+     (258.5px with its chevron). It was 1040 before the RAM column.
 
      The address track is sized FROM the address, not guessed: shortAddr renders
      6…6 = 13 monospace chars at 13px (0.6em advance ≈ 101.4px), plus the 7px
@@ -164,11 +183,15 @@
      identifiable, and only there, which is why it survived a month unnoticed.
      130px leaves ~1.5 characters of slack so a monospace fallback with wider
      metrics cannot re-break it. If shortAddr ever gets longer, this grows with
-     it. */
-  @media (max-width: 1040px) {
+     it.
+
+     RAM gets 84px here against VRAM's 78: a server's RAM runs to three digits
+     on both sides ("123 / 251 GB", 82.5px), and in a narrower track the cell
+     wraps onto a second line and makes its row taller than the rest. */
+  @media (max-width: 1080px) {
     .mr-gpu .gpu-f { display: none; }
     .mr-gpu .gpu-s { display: inline; }
-    .nt-cols, .miner-row { grid-template-columns: 32px 130px minmax(178px, 1fr) 120px 78px 72px 78px; gap: 12px; min-width: 760px; }
+    .nt-cols, .miner-row { grid-template-columns: 32px 130px minmax(178px, 1fr) 120px 78px 84px 72px 78px; gap: 12px; min-width: 856px; }
   }
   .mr-hash { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; color: var(--accent); }
   .mr-last { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--muted-3); }
@@ -240,7 +263,7 @@
     </div>
     <div class="nt-scroll">
       <div class="nt-cols">
-        <div>#</div><div>Address</div><div>GPU</div><div>LLM</div><div class="r">VRAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
+        <div>#</div><div>Address</div><div>GPU</div><div>LLM</div><div class="r">VRAM</div><div class="r">RAM</div><div class="r">Hashrate</div><div class="r">Last seen</div>
       </div>
       <div id="miners"></div>
     </div>
@@ -260,7 +283,7 @@
     // (sorted by 1h hashrate) and pass them to render().
     function esc(str) { return String(str).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
     // Truncate the middle of the payout address for a bit of anonymity; the
-    // narrow form fits the tighter address column on sub-1040px screens.
+    // narrow form fits the tighter address column on sub-1080px screens.
     // First six and last six characters: enough to tell rows apart, and the width
     // saved goes to the GPU and LLM columns. Same on both breakpoints — it is
     // already short enough for a phone.
@@ -269,9 +292,9 @@
       return a.length > 13 ? a.slice(0, 6) + '…' + a.slice(-6) : a;
     }
     function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
-    // VRAM as "used / total GB" (from MB); "—" when total is unknown (non-NVIDIA
-    // rig or an older client that doesn't report it).
-    function fmtVram(usedMb, totalMb) {
+    // VRAM or RAM as "used / total GB" (from MB); "—" when the total is unknown
+    // (an older client that doesn't report it, or for VRAM a non-NVIDIA rig).
+    function fmtMem(usedMb, totalMb) {
       const t = Number(totalMb) || 0;
       if (t <= 0) return '—';
       const gb = (mb) => Math.round(Math.max(0, Number(mb) || 0) / 1024).toString();
@@ -387,7 +410,9 @@
         '<div class="mr-gpu" title="' + esc(c.gpu) + '"><span class="ci">[' + j + ']</span>' +
           '<span class="gpu-name"><span class="gpu-f">' + esc(c.gpu) + '</span><span class="gpu-s">' + esc(shortGpu(c.gpu)) + '</span></span></div>' +
         llmCell(c.llmModel) +
-        '<div class="mr-vram">' + fmtVram(c.vramUsedMb, c.vramTotalMb) + '</div>' +
+        '<div class="mr-vram">' + fmtMem(c.vramUsedMb, c.vramTotalMb) + '</div>' +
+        // RAM is the machine's, not a card's: shown once, on the host row.
+        '<div class="mr-ram"></div>' +
         '<div class="mr-hash">' + fmtHash(c.hash) + '</div>' +
         '<div class="mr-last"></div>' +
       '</div>';
@@ -410,7 +435,8 @@
                 '<div class="mr-addr"><span class="dot"></span><span class="a">' + esc(shortAddr(m.addr)) + '</span></div>' +
                 gpuCell(m.gpu, chev) +
                 llmCell(m.llmModel, m.nodeId) +
-                '<div class="mr-vram">' + fmtVram(m.vramUsedMb, m.vramTotalMb) + '</div>' +
+                '<div class="mr-vram">' + fmtMem(m.vramUsedMb, m.vramTotalMb) + '</div>' +
+                '<div class="mr-ram">' + fmtMem(m.ramUsedMb, m.ramTotalMb) + '</div>' +
                 '<div class="mr-hash">' + fmtHash(m.hash) + '</div>' +
                 '<div class="mr-last">' + esc(m.last) + '</div>' +
               '</div>';
