@@ -184,6 +184,12 @@ def vnum(ver):
     return tuple(int(x) for x in re.findall(r"\d+", ver))
 
 
+def cmd_ver(cmd):
+    """The release a box command starts: box.sh pins v0.5.13 unless the command's sed puts another in (cmd_for)."""
+    m = re.search(r"VER=v[\d.]+;/VER=(v[\d.]+);/", cmd)
+    return m.group(1) if m else "v0.5.13"
+
+
 def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
@@ -734,6 +740,30 @@ class W:
             else:
                 event(f"WARN Monero to {pool} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
 
+    def ver_sync(self, active, t):
+        """Move each group to the release config gives it (box_ver, or ver_override for that group) when that is newer
+        than the one it runs, by updating its command only, as llm_sync does: a box that is mining keeps its PC, where
+        Salad usually restarts it with the new release within minutes; one waiting for a PC starts that way at its
+        next. A release is never lowered this way. Until 21 October box_ver reached new groups only. A group still
+        preparing its image is left for a later round, and a refused update is tried again after 10 minutes."""
+        for g in active:
+            if g["ended"] or g.get("status") == "pending" or t - g.get("ver_try", 0) < 600:
+                continue
+            ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
+            old = g.get("ver") or "v0"
+            if vnum(ver) <= vnum(old):
+                continue
+            g["ver_try"] = t
+            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+                        ctype="application/merge-patch+json")
+            if 200 <= s < 300:
+                g["ver"], g["llm"], g["xmr_kx"] = ver, bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+                event(f"RELEASE {g['name']}: miner {old} -> {ver}; "
+                      + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
+                         else "it starts that way on its next PC"))
+            else:
+                event(f"WARN release {ver} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
+
     def paused(self, g, t):
         """Whether mining is paused on the box now while its LLM answers a prompt: box.sh said so in the last 5
         minutes (the logs come a minute or two late), and the pause began under 15 minutes ago."""
@@ -876,8 +906,9 @@ class W:
         # The PC it is on, or just left, keeps the pool its readings are booked to: the box there started on the
         # command before this one.
         m = g.get("machine") or (g.get("left") or [None])[-1]
+        # The release too, so ver_sync judges the command Salad has.
         g.update(kx=on, kx_since=t if on else None, sw_t=t, sw_from=m, sw_prev=self.on_kx(g, m, t),
-                 kx_share=None if on else g.get("kx_share"))
+                 kx_share=None if on else g.get("kx_share"), ver=cmd_ver(cmd))
         self.st["kx_any_t"] = t
         event(f"WARN {g['name']}: Salad has the {'Kryptex' if on else 'HeroMiners'} command for it, though the ledger "
               f"said {'HeroMiners' if on else 'Kryptex'} (an update that timed out went through); the ledger follows "
@@ -1295,6 +1326,7 @@ class W:
         self.kx_sync(list(by_name.values()), t)
         self.llm_sync(list(by_name.values()), t)
         self.xmr_kx_sync(list(by_name.values()), t)
+        self.ver_sync(list(by_name.values()), t)
         xg = [g for g in by_name.values() if g.get("xmr")]
         if xg:
             self.xmr_market()

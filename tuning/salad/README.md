@@ -34,7 +34,7 @@ Config keys:
 | `search_token` | Change it to run a search now. |
 | `restart_token` | Change it after a top-up: restarts groups Salad stopped for lack of credit. |
 | `credit_start`, `credit_offset` | Credit left = start + offset − spend. Set the offset when the portal shows a different balance. |
-| `box_ver` | Miner release for new groups. `ver_override` maps a group name to a release, to try one on a single group. |
+| `box_ver` | Miner release for every group. A running group on an older release is moved to it in place, by its command alone, as Gemma is: a box that is mining keeps its PC, where Salad usually restarts it within minutes (since 21 October; before, new groups only). A release is never lowered this way. `ver_override` maps a group name to a release, to try one on a single group first. |
 | `wallet` | Payout address, if `PRL_WALLET` isn't set. |
 | `report_min` | Minutes between `REPORT` lines. |
 | `min_margin` | The margin every class and PC must clear (0.10). |

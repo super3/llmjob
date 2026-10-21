@@ -1650,6 +1650,68 @@ class TestMonero(Base):
         self.x.xmr_kx_sync([a, b, c], t + 11 * 60)      # so none is sent again
         self.assertEqual(len(self.http.made("PATCH", "/containers/")), n)
 
+    def test_a_newer_release_in_config_moves_each_group_in_place(self):
+        self.x.cfg["xmr_groups"] = ["*"]
+        mining, waiting, preparing = self.group(), self.group(status="deploying"), self.group(status="pending")
+        mining.update(has_pc=True, machine="m1", instance="inst-m1")
+        self.http.on("PATCH", "/containers/", (200, {}))
+        t = self.clock[0]
+        self.x.ver_sync([mining, waiting, preparing], t)
+        self.assertFalse(self.http.made("PATCH", "/containers/"))   # each runs config's release already
+        self.x.cfg["box_ver"] = "v0.6.7"
+        self.x.ver_sync([mining, waiting, preparing], t)
+        made = self.http.made("PATCH", "/containers/")
+        self.assertEqual(len(made), 2)   # not the group still preparing its image
+        self.assertTrue(all("VER=v0.6.7;" in c[2]["container"]["command"][2] for c in made))
+        self.assertTrue(all(list(c[2]["container"]) == ["command"] for c in made))   # same vCPUs and RAM
+        self.assertFalse(self.http.made("POST", "/restart") or self.http.made("POST", "/reallocate"))   # keeps its PC
+        self.assertEqual((mining["ver"], waiting["ver"], preparing["ver"]), ("v0.6.7", "v0.6.7", "v0.6.0"))
+        self.assertIn(f"RELEASE {mining['name']}: miner v0.6.0 -> v0.6.7; it keeps this PC, where Salad usually "
+                      "restarts it that way within minutes", self.events())
+        self.assertIn(f"RELEASE {waiting['name']}: miner v0.6.0 -> v0.6.7; it starts that way on its next PC",
+                      self.events())
+        self.x.ver_sync([mining, waiting], t + 11 * 60)   # done: nothing more to send
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)
+
+    def test_one_group_can_go_first_and_no_release_is_lowered(self):
+        a, b = self.group(), self.group(cls="RTX 2060 (6 GB)")   # b mines no Monero: config's v0.5.13
+        self.http.on("PATCH", "/containers/", (200, {}))
+        t = self.clock[0]
+        self.x.cfg["ver_override"] = {b["name"]: "v0.6.7"}
+        self.x.ver_sync([a, b], t)
+        self.assertEqual([c[1].rsplit("/", 1)[1] for c in self.http.made("PATCH", "/containers/")], [b["name"]])
+        self.assertEqual((a["ver"], b["ver"]), ("v0.6.0", "v0.6.7"))
+        self.x.cfg.update(ver_override={a["name"]: "v0.5.0"}, box_ver="v0.5.0")
+        self.x.ver_sync([a, b], t + 11 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 1)   # neither goes back
+        self.assertEqual((a["ver"], b["ver"]), ("v0.6.0", "v0.6.7"))
+
+    def test_a_refused_release_update_is_tried_again_after_10_minutes(self):
+        g = self.group()
+        self.http.on("PATCH", "/containers/", (409, {"error": "busy"}))
+        self.x.cfg["box_ver"] = "v0.6.7"
+        t = self.clock[0]
+        self.x.ver_sync([g], t)
+        self.assertIn(f"WARN release v0.6.7 for {g['name']} refused: HTTP 409", self.events())
+        self.assertEqual(g["ver"], "v0.6.0")
+        self.x.ver_sync([g], t + 5 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 1)
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.ver_sync([g], t + 11 * 60)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)
+        self.assertEqual(g["ver"], "v0.6.7")
+
+    def test_a_round_moves_groups_to_a_newer_release(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("PATCH", "/containers/biz-rtx4080", (200, {}))
+        w.save(w.CFG, {"search": False, "xmr_wallet": XMR, "xmr_groups": ["biz-rtx4080"], "box_ver": "v0.6.7"})
+        self.x.round()   # it re-reads config.json
+        self.assertIn("VER=v0.6.7;", self.http.made("PATCH", "/containers/biz-rtx4080")[-1][2]["container"]["command"][2])
+        self.assertEqual(g["ver"], "v0.6.7")
+
     def test_a_round_switches_monero_to_kryptex_and_reads_kryptex(self):
         self.x.cfg["search"] = False
         g = self.group()
@@ -2572,12 +2634,23 @@ class TestKryptex(Base):
         self.x.round()
         self.assertEqual(g["kx_share"], T0 + 520)
 
+    def test_a_release_update_keeps_a_kryptex_box_on_kryptex(self):
+        g = self.group(kx=True)
+        self.http.on("PATCH", "/containers/", (200, {}))
+        self.x.cfg["box_ver"] = "v0.6.7"
+        self.x.ver_sync([g], self.clock[0])
+        cmd = self.http.made("PATCH", "/containers/")[-1][2]["container"]["command"][2]
+        self.assertIn("--pool prl-us.kryptex.network:7048", cmd)
+        self.assertEqual(w.cmd_ver(cmd), "v0.6.7")
+        self.assertEqual(w.cmd_ver(w.cmd_for("biz-rtx4080", "prl1abc", "v0.5.13")), "v0.5.13")   # box.sh's own
+
     def test_the_ledger_follows_the_command_salad_has(self):
         self.config_file()
         g = self.group()
         box = "apt-get ...; curl -fsSL x | sed > /root/box.sh; bash /root/box.sh"
         cmd = {"current_state": {"status": "running"},
-               "container": {"command": ["/bin/sh", "-c", box.replace("sed", "sed -e '--pool prl-us.kryptex.network:7048'")]}}
+               "container": {"command": ["/bin/sh", "-c", box.replace(
+                   "sed", "sed -e 's/^VER=v0.5.13;/VER=v0.6.1;/' -e '--pool prl-us.kryptex.network:7048'")]}}
         self.http.on("GET", "/containers/biz-rtx4080$", (200, cmd))
         self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
         g["sw_t"] = self.clock[0]                          # just switched: Salad may not show it yet
@@ -2589,6 +2662,7 @@ class TestKryptex(Base):
         self.assertTrue(g["kx"])
         self.assertEqual(g["kx_since"], self.clock[0])
         self.assertEqual((g["sw_from"], g["sw_prev"]), ("m1", False))   # the box on m1 started on HeroMiners
+        self.assertEqual(g["ver"], "v0.6.1")                            # and the release Salad has
         self.assertIn("WARN biz-rtx4080: Salad has the Kryptex command for it, though the ledger said HeroMiners",
                       self.events())
         self.assertFalse(self.http.made("PATCH", "/containers/"))   # one on Kryptex: nothing else switched
