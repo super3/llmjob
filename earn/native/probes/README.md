@@ -1963,6 +1963,75 @@ What it says:
 
 Nothing from this round ships. The default is still `5c97fbadf64a`.
 
+### Round 7: a 192x256 tile loses; what the design round ruled out (2026-10-21)
+
+A design round looked for the last 1-2.5% from five angles, each built and decoded from
+the default fold (`5c97fbadf64a`), without a GPU. What it found:
+
+- Operand bytes. A warp moves 32 B per IMMA from L1 to registers and the block 12 B per
+  IMMA from L2 to L1, the minimum for 64x64 warp tiles, 8 warps and 128x256. A 64x80
+  warp tile needs about 281 registers; 9 or more warps do not fit the register file;
+  B shared between the pair through shared memory is the staging A-direct removed. The
+  `.L2::128B` and `.L2::256B` load hints need sm_80.
+- Readout and hash. The fold's 64 LOP3 a chunk are at their floor, and the hash's 699
+  instructions a tile are about 50 above it. What else is above the floor is what
+  ROWPAIR and TADDR removed in round 6, and both lost.
+- Instruction count. The k-step offset in the load's immediate saves 8 of 661
+  instructions a pass (243 registers, `32c8071945ef`); every instruction cut on these
+  cards has been level or behind, so it was not raced.
+- L2 and DRAM. Band 6, reversed bands, a k-step-major A', prefetching A and B evict-last
+  each model at 0.005-0.15%. sm_75 has no L2 eviction control: `.L1::evict_first`
+  compiles to `LDG.E.EF`, the bit round 5's `rg_aef` set, so its -1 to -3.6% most likely
+  came from A leaving L1 before its row group's other warps read it, not from L2.
+
+One candidate survived review: `PEARL_BD_TALL`, eight 96x64 warp tiles over a 192x256
+tile, which moves 17% fewer bytes from L1 to registers per IMMA (commit `b2163fa`, fold
+`3f1291083f13`, 255 registers, 12 bytes of spill outside the loops; the host's tile
+count, 24 KB of transcript shared memory and a link check that host and fold were built
+alike). The review put it at about +0.5% raw on the 2070, with a 25-30% chance of
+shipping.
+
+Raced with `compilers.sh` on four cards: an RTX 2070 (Vietnam, 18386, 175 W, held by
+heat at 150-160 W and 80 C; the box restarted and ran the race twice), an RTX 2060 Super
+(Vietnam, 26278, held at 135 W), an RTX 2060 12 GB (South Korea, 143581, held at 130 W)
+and an RTX 2080 Ti (Brazil, 147909, held at 150 W and about 820 MHz). hashrate.js, 3
+interleaved rounds of 60 s against the default:
+
+| card | raw | per clock | clock |
+|---|---|---|---|
+| 2070 | -2.32%, and -0.79% on the second run | -3.18%, -1.76% | +0.9% |
+| 2060 Super | -0.33% | -1.23% | +0.9% |
+| 2060 12 GB | -0.80% | -2.32% | +1.6% |
+| 2080 Ti | -3.63% | -0.83% | -2.8% |
+
+It passed verify-hits 400/400 and the complete stage in all four shapes on all four
+cards. The clock rose on three cards, as the design said it would, but the work per clock
+fell more.
+
+The hash explains it. A bench-only pair with the transcript hash switched off
+(`PEARL_ABLATE_TRANSCRIPT_HASH`, output meaningless), raw against the default:
+
+| build | 2070 | 2060 Super | 2060 | 2080 Ti |
+|---|---|---|---|---|
+| default, hash off | -3.3% | -3.9% | -3.7% | -1.8% |
+| TALL | -3.1% | -0.5% | -0.7% | -4.2% |
+| TALL, hash off | -2.3% | +0.9% | +1.0% | -0.1% |
+
+In the default, the hash helps: switching it off costs 1.8-3.9%, as round 4 measured.
+Most likely this is because while one warp of each pair hashes, its partner runs ahead
+into the next tile, and the hasher then finds B already in L1. In TALL each hasher
+hashes 48 regions in two passes, and there the hash costs 1.0-3.2%, about all of TALL's
+loss. Without the hash, TALL is about
+1% ahead on the two 2060s, which is roughly what the design expected from the bytes.
+Getting that back would need a hash that keeps the default's offset between the pair
+without doubling the lone phase; nothing designed so far does.
+
+TALL is reverted. `b2163fa` keeps the code and its tests.
+
+What is left: the design round found no other fold change worth a race. On the 4 MB
+cards the measured gap to SRBMiner (row figures from earlier days) is about 0.8% on the
+2080 and 1.7% on the 2070.
+
 ### Pool runs of a checkout's core: `turing/pool.sh`
 
 `WALLET=prl1... SRC=<checkout> OUT=<dir> bash earn/native/probes/turing/pool.sh` builds the

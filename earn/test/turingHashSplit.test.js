@@ -1002,18 +1002,15 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
     // The block's walk and the hand-off, as simulate runs them.
     const from = FOLD_CODE.indexOf('  if (blockIdx.x >= tiles) return;');
     const persist = FOLD_CODE.slice(from, FOLD_CODE.indexOf('  if (blockIdx.x >= tiles) return;', from + 1));
-    // One __syncthreads a tile, with the split, without it, or in PEARL_BD_TALL's own
-    // hand-off, after the prologue's.
-    expect(persist.split('__syncthreads();').length - 1).toBe(4);
+    // One __syncthreads a tile, with the split or without, after the prologue's.
+    expect(persist.split('__syncthreads();').length - 1).toBe(3);
     inOrder(persist,
       '  if (threadIdx.x == 0u) sNext[0] = gridDim.x + atomicAdd(tile_ctr, 1u);',
       lines('#if PEARL_BD_HASH_SPLIT', '  if (threadIdx.x < 128u) sHread[threadIdx.x >> 5][threadIdx.x & 31u] = 0u;'),
       lines('  __syncthreads();', '  uint32_t it = 0u;', '  for (uint32_t v = blockIdx.x; v < tiles; it++) {',
-        '#if PEARL_BD_TALL'),
-      lines('#elif PEARL_BD_T_BUFS == 2', '    tbuf = (it & 1u) * TWORDS;'),
+        '#if PEARL_BD_T_BUFS == 2', '    tbuf = (it & 1u) * TWORDS;'),
       lines('    uint32_t vgrab = 0u;', '    if (threadIdx.x == 0u) vgrab = gridDim.x + atomicAdd(tile_ctr, 1u);',
-        '    uint32_t vnext = 0u;', '    tile([&]() {', '#if PEARL_BD_TALL'),
-      lines('#else', '      vnext = sNext[it & 1u];'),
+        '    uint32_t vnext = 0u;', '    tile([&]() {', '      vnext = sNext[it & 1u];'),
       lines(
         '#if PEARL_BD_HASH_SPLIT',
         '    uint32_t hseq = it;',
@@ -1030,7 +1027,7 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
         '      if (hseq != 0u) split_rest(h, tm, hseq);',
         '      sVprev[h.s][h.lane] = v;',
         '    }',
-        '#elif PEARL_BD_TALL'),
+        '#else'),
       lines(
         '#endif',
         '    aoff = aoffn;',

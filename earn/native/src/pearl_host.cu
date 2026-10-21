@@ -133,14 +133,6 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *base,
                                                      uint32_t rank, uint64_t read_vecs,
                                                      uint32_t fill_word);
 #endif
-#if PEARL_BD_TALL
-// The fold and this host must both be built with PEARL_BD_TALL: it changes the tile
-// count and the shared size here. Each side defines one of these names and refers to
-// the other's (pearl_kernel.cu), so a mix does not link (the bench) or load (the addon).
-extern "C" const unsigned pearl_bd_tall_fold;
-extern "C" const unsigned pearl_bd_tall_host = 1u;
-extern "C" const unsigned *const pearl_bd_tall_host_needs = &pearl_bd_tall_fold;
-#endif
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -2511,14 +2503,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                colsPerSpan, col_groups, ctx->colsValid);
     return false;
   }
-#if PEARL_BD_TALL
-  // Turing's B-direct fold built with PEARL_BD_TALL takes a ragged last row group, as
-  // the tall fold does (below), so only its columns have to tile.
-  const bool rowsTile = ctx->foldBDirect || rowBlocks % warpRows == 0;
-#else
-  const bool rowsTile = rowBlocks % warpRows == 0;
-#endif
-  if (!ctx->foldTall && (warpsPerBlock % warpRows != 0 || !rowsTile
+  if (!ctx->foldTall && (warpsPerBlock % warpRows != 0 || rowBlocks % warpRows != 0
                          || warpCols == 0 || colBlocks % warpCols != 0)) {
     if (err && err_len)
       snprintf(err, err_len,
@@ -2546,16 +2531,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const unsigned tallRowGroups =
       (unsigned)((ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS);
   const unsigned ctasPerTile = ctx->foldCluster ? (unsigned)PEARL_TALL_CLUSTER_SIZE : 1u;
-  unsigned tiles =
+  const unsigned tiles =
       ctx->foldTall
           ? ((tallRowGroups + ctasPerTile - 1u) / ctasPerTile)
                 * (unsigned)(col_groups / PEARL_TALL_COL_OFFSETS)
           : (unsigned)((rowBlocks / warpRows) * (colBlocks / warpCols));
-#if PEARL_BD_TALL
-  // PEARL_BD_TALL: 192x256 tiles, 12 row offsets by 16 column offsets, the last row group
-  // ragged, as the tall fold's. The fold works out the same row groups from rows_valid.
-  if (ctx->foldBDirect) tiles = tallRowGroups * (unsigned)(colBlocks / warpCols);
-#endif
   const unsigned tileCtas = tiles * ctasPerTile;
   // Turing's B-direct fold reads B' in blocks of 16 columns, and the draw writes
   // it that way only when n is a whole number of them (draw_noise).
@@ -2579,21 +2559,6 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     return false;
   }
 #endif
-#if PEARL_BD_TALL
-  // PEARL_BD_TALL reads A' past m, up to the padding PEARL_TALL_A_ROWS gives it (zeroed
-  // when A' is allocated), with 32-bit offsets. It reads A' in pairs of 16-row blocks up
-  // to its last row, and the draw pairs every block only when m is a multiple of 32.
-  if (ctx->foldBDirect
-      && (ctx->profile.m % 32u != 0u
-          || (uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k > 0xFFFFFFFFull)) {
-    if (err && err_len)
-      snprintf(err, err_len,
-               "A-direct fold with PEARL_BD_TALL: m must be a multiple of 32 and the padded "
-               "A' under 4 GB (m %u, k %u)",
-               ctx->profile.m, k);
-    return false;
-  }
-#endif
   // Two full-chunk stages (one on Turing's one-stage fold); the transcripts live
   // in registers and global now. The tall fold: three 64-deep stages, its ring's
   // barriers, and the transcripts, laid out differently by the cp.async and TMA
@@ -2602,7 +2567,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // region (pearl_fold_bd.cuh): 40 KB. A-direct (PEARL_BD_A_DIRECT) has no A
   // stages (PEARL_BD_SMEM_A_STAGES 0) and one or two transcript buffers
   // (PEARL_BD_T_BUFS): 8 or 16 KB.
-  size_t smem =
+  const size_t smem =
       ctx->foldTall ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
       : ctx->foldBDirect
           ? (size_t)PEARL_BD_SMEM_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
@@ -2614,13 +2579,6 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                 * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
                    + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
                 * PEARL_SB_STRIDE;
-#if PEARL_BD_TALL
-  // PEARL_BD_TALL: a warp holds six row offsets' regions, not four, so its two
-  // transcript buffers are 12 KB each: 24 KB. It has no A stages and no split hash.
-  if (ctx->foldBDirect)
-    smem = (size_t)PEARL_BD_T_BUFS * warpsPerBlock * PEARL_TALL_ROW_TILES * PEARL_WMMA_COL_BLK
-           * PEARL_JACKPOT_BUCKETS * 4u;
-#endif
   // The fold writes each transcript slot exactly once only when every chunk
   // has its own bucket. A geometry with more chunks than buckets would fold
   // into whatever the buffer already held; refuse it rather than mine garbage.
@@ -2943,11 +2901,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
   if (ctx->foldBDirect) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "%s%s%s %s, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             "%s%s%s 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
              PEARL_BD_A_DIRECT ? "A-direct" : "B-direct",
              PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? ", no realign" : "",
              PEARL_BD_KORDER ? ", k-lo first" : "",
-             PEARL_BD_TALL ? "192x256, 8 warps of 96x64" : "128x256, 8 warps of 64x64",
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
 #if PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 \

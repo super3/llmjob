@@ -1638,14 +1638,6 @@ __host__ __device__ constexpr uint32_t pearl_slots_before(uint64_t sched, uint32
 #define PEARL_STAGE_ASCHED 0x20ull           // A0 A1 at point 1
 #endif
 #endif
-#if PEARL_BD_TALL
-// PEARL_BD_TALL changes the host's tile count and shared size as well as the fold, so
-// both must be built with it. Each side defines one of these names and refers to the
-// other's (pearl_host.cu). A mix does not link (the bench) or load (the addon).
-extern "C" const unsigned pearl_bd_tall_host;
-extern "C" const unsigned pearl_bd_tall_fold = 1u;
-extern "C" const unsigned *const pearl_bd_tall_fold_needs = &pearl_bd_tall_host;
-#endif
 
 // Bounds follow the geometry rather than being pinned at 512.
 //
