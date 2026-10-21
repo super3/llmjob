@@ -13,7 +13,11 @@ const path = require('path');
 // zero. TADDR holds the store's index in a register. RUNBASE reads the chunk loop's
 // load offsets from a base held once a pass. TAIL_LDG loads the next tile's k-step 0
 // with coherent loads. GATE 1 gates only the even n-block's B word. HIT_COORDS works
-// out a region's number only for a hit.
+// out a region's number only for a hit. PEARL_BD_LAST_RO, written for LEAN and
+// HIT_COORDS, reads each tile's last chunk out in the next tile's first k-steps.
+// PEARL_BD_HASH_RG has the second row group hash every region. PEARL_BD_ROWPAIR draws A'
+// with its rows permuted so that two lanes hold a region, and the readout shuffles once:
+// the draw (pearl_materialize16_afrag) is read out of pearl_kernel.cu and run here too.
 //
 // Nothing here can run the device code. A small C preprocessor below picks out the
 // code a build with given switches compiles, and the checks run that code's
@@ -379,6 +383,10 @@ const THREADS = 256;
 const KSTEP = 'auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last, uint32_t dch = 0u) {';
 const HASH_TILE_V = 'auto hash_tile = [&](uint32_t vtile) {';
 const HASH_TILE_RC = 'auto hash_tile = [&](uint32_t rbg, uint32_t cbg) {';
+const OSID = 'uint32_t osid = sid; asm("" : "+r"(osid));';
+// PEARL_BD_ROWPAIR's readout store, and the head of its predicated form.
+const RP_ST = 'auto readout_st = [&](uint32_t c, uint32_t x) {';
+const PRED_ST = '{ asm volatile("{ .reg .pred p; setp.eq.u32 p, %2, 0; @p st.shared.u32 [%0], %1; }" ::"r"(sT0 + 4u * (';
 function ids(t) {
   const warp = t >> 5;
   return { 'threadIdx.x': t, warp, lane: t & 31, wr: warp >> 2, sid: t & 127 };
@@ -411,12 +419,30 @@ function readoutCode(spec) {
     out.expr[name] = expr;
     out.fn[name] = cfun(f, expr);
   };
-  out.st = flat(block(f.text, 'auto readout_st = [&](uint32_t rl, uint32_t c, uint32_t x) {'));
+  out.st = flat(block(f.text, f.text.includes(RP_ST) ? RP_ST : 'auto readout_st = [&](uint32_t rl, uint32_t c, uint32_t x) {'));
   out.ht = flat(block(f.text, f.text.includes(HASH_TILE_V) ? HASH_TILE_V : HASH_TILE_RC));
   out.loop = flat(block(f.text, 'for (uint32_t v = blockIdx.x; v < tiles; it++) {'));
   const st = out.st.slice(out.st.indexOf('{'));
   let x;
-  if ((x = shape(st, '{ asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(sT0 + 4u * (@)), "r"(x) : "memory"); }'))) {
+  if (out.st.startsWith(RP_ST)) {
+    // PEARL_BD_ROWPAIR: one word a lane, as a C++ if or one predicated st.shared at sT0
+    // plus 4 index bytes, the lane storing where the predicate's operand is 0.
+    out.store = 'rowpair';
+    if ((x = shape(st, '{ if (@) sT[@] = x; }'))) {
+      out.form = 'if';
+      set('writer', x[0]);
+      set('store', x[1]);
+    } else if (st.startsWith(PRED_ST)
+      && (x = shape(st.slice(PRED_ST.length), '@)), "r"(x), "r"(@) : "memory"); }'))) {
+      out.form = 'pred';
+      set('store', x[0]);
+      out.expr.writer = `(${x[1]}) == 0`;
+      const w = cfun(f, x[1]);
+      out.fn.writer = (env) => (w(env) === 0 ? 1 : 0);
+    } else {
+      throw new Error(`readout_st of "${spec}": ${out.st}`);
+    }
+  } else if ((x = shape(st, '{ asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(sT0 + 4u * (@)), "r"(x) : "memory"); }'))) {
     out.store = 'red';
     set('store', x[0]);
   } else if ((x = shape(st, '{ if (((lane >> 2) & 3u) == 0u) sT[@] = x; }'))) {
@@ -442,6 +468,13 @@ function readoutCode(spec) {
   x = find(out.ht, 'const bool hasher = @; const uint32_t L = @; if (hasher) {');
   set('hasher', x[0]);
   set('hL', x[1]);
+  // PEARL_BD_HASH_RG's copy of sid behind an empty asm: the same value, hidden from NVVM.
+  if (out.ht.includes(OSID)) {
+    for (const k of ['hasher', 'hL']) {
+      const g = out.fn[k];
+      out.fn[k] = (env) => g({ ...env, osid: env.sid });
+    }
+  }
   set('read', find(out.ht, 'for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[@];')[0]);
   const zero = pattern('for (uint32_t c = 0; c < 16u; c++) sT[@] = 0u;', false).exec(out.ht);
   if (zero) {
@@ -610,6 +643,110 @@ function simulate(spec, { tiles, seed, mutate = '' }) {
   return res;
 }
 
+// The words thread t stores into buffer tbuf in a tile, as { c, L, a }: chunk, region
+// and index, from the build's readout_st. The default's: lanes 0-3 and 16-19, two
+// regions each. PEARL_BD_ROWPAIR's: its writer lanes, one region each, at its held index
+// moved to the buffer.
+function writesOf(m, t, tbuf) {
+  const { warp, lane } = ids(t);
+  const out = [];
+  if (m.store === 'default') {
+    if (((lane >> 2) & 3) !== 0) return out;
+    for (let c = 0; c < 16; c++) {
+      for (let rl = 0; rl < 2; rl++) {
+        const L = m.fn.L({ warp, lane, rl });
+        out.push({ c, L, a: m.fn.store({ tbuf, L, c }) });
+      }
+    }
+  } else if (m.store === 'rowpair') {
+    if (!m.fn.writer({ lane })) return out;
+    const L = m.fn.L0(ids(t));
+    const tK = m.fn.tKtile({ tK: m.fn.tK0({ L0: L }), tbuf });
+    for (let c = 0; c < 16; c++) out.push({ c, L, a: m.fn.store({ tK, c }) });
+  } else {
+    throw new Error(`no writes for ${m.store}`);
+  }
+  return out;
+}
+
+// One block's tiles under PEARL_BD_LAST_RO, thread by thread, as simulate runs RED's.
+// Between two barriers the threads run in a random order, each in its own program
+// order: after hand-off it - 1 a hasher reads its region of tile it - 1; then each
+// thread moves tbuf to tile it's buffer (the loop's top), stores tile it's chunks 0-14
+// (tile()) and its chunk 15 (tile_head, in the next tile's first k-steps), all before
+// hand-off it. Without LAST_RO chunk 15 is stored at the tile's end, still before
+// hand-off it, so the same run checks the default's buffers too. At each hand-off the
+// finished tile's buffer must hold all 2048 of its words, and each word a hasher reads
+// must be the one its own tile stored there. mutate breaks one thing, to show the checks
+// would see it.
+function simulateLastRo(spec, { tiles, seed, mutate = '' }) {
+  const m = readoutCode(spec);
+  expect(['default', 'rowpair']).toContain(m.store);
+  const rand = xorshift(seed);
+  const sT = new Array(2 * GEOM.TWORDS).fill('');
+  const res = { read: 0, wrong: 0, outside: 0, badHandoff: 0 };
+  const tbufOf = (it) => (mutate === 'one-buffer' ? 0 : m.fn.tbuf({ it }));
+  const poke = (a, fn) => {
+    if (a < 0 || a >= sT.length) res.outside++;
+    else fn(a);
+  };
+  const run = (queues) => {
+    const live = queues.map((q, i) => i).filter((i) => queues[i].length);
+    const pos = new Array(queues.length).fill(0);
+    while (live.length) {
+      const k = rand() % live.length;
+      const i = live[k];
+      queues[i][pos[i]++]();
+      if (pos[i] === queues[i].length) {
+        live[k] = live[live.length - 1];
+        live.pop();
+      }
+    }
+  };
+  // Chunk 15's stores moved past the barrier ('head-after-barrier'): they open the
+  // thread's next queue.
+  const late = Array.from({ length: THREADS }, () => []);
+  const words = new Set();
+  for (let it = 0; it <= tiles; it++) {
+    const queues = late.map((q) => q.splice(0));
+    for (let t = 0; t < THREADS; t++) {
+      if (it >= 1 && m.fn.hasher(ids(t))) {
+        const L = m.fn.hL(ids(t));
+        for (let c = 0; c < 16; c++) {
+          const a = m.fn.read({ tbuf: tbufOf(it - 1), L, c });
+          queues[t].push(() => poke(a, () => {
+            res.read++;
+            if (sT[a] !== `${it - 1}.${L}.${c}`) res.wrong++;
+          }));
+        }
+      }
+      if (it < tiles) {
+        const flipped = writesOf(m, t, tbufOf(it + 1));
+        writesOf(m, t, tbufOf(it)).forEach(({ c, L, a: own }, i) => {
+          const head = c === 15;
+          const a = head && mutate === 'flip-before-head' ? flipped[i].a : own;
+          words.add(`${it}.${own}.${L}.${c}`);
+          (head && mutate === 'head-after-barrier' ? late[t] : queues[t])
+            .push(() => poke(a, () => { sT[a] = `${it}.${L}.${c}`; }));
+        });
+      }
+    }
+    run(queues);
+    // Hand-off it: tile it's buffer holds its words.
+    if (it < tiles) {
+      for (const w of words) {
+        const [tile, a, L, c] = w.split('.').map(Number);
+        if (tile === it && sT[a] !== `${it}.${L}.${c}`) res.badHandoff++;
+      }
+      const mine = [...words].filter((w) => w.startsWith(`${it}.`)).map((w) => Number(w.split('.')[1]));
+      if (new Set(mine).size !== GEOM.TWORDS || mine.some((a) => a < tbufOf(it) || a >= tbufOf(it) + GEOM.TWORDS)) {
+        res.badHandoff++;
+      }
+    }
+  }
+  return res;
+}
+
 // tile()'s code in a build with these flags, run on the CPU: every kstep call of one
 // tile in order, with its k-step and the offsets its loads read (the build's own ao
 // and bo), and the readout stores' chunks. offs: the tile's aoff and boff, and the
@@ -662,6 +799,9 @@ function tileCalls(spec, extra, offs) {
       } else if ((m = shape(line, 'for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, @, rx[rl]);')
         || shape(line, 'for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, @);'))) {
         for (let rl = 0; rl < 2; rl++) stores.push(`${rl}.${ev(m[0], env)}`);
+      } else if ((m = shape(line, 'readout_st(@, readout_gather(rxs[0] ^ rxs[1]));') || shape(line, 'readout(@);'))) {
+        // PEARL_BD_ROWPAIR: one word a lane a chunk.
+        stores.push(`w.${ev(m[0], env)}`);
       } else if (/\b(arun|brun|aoff|boff|kstep|readout_st|readout|next_srcs|chunk)\b/.test(line)
         && !line.startsWith('for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rxs[rl]);')) {
         throw new Error(`tile() line not understood: ${line}`);
@@ -670,6 +810,123 @@ function tileCalls(spec, extra, offs) {
   }
   run(lines);
   return { calls, stores, expr, sites: count(lines.join(NL), 'kstep(') };
+}
+
+// region_of in hash_tile, read out of a build and run line by line: the number a hit
+// reports for region L of the tile at row group rbg and column group cbg.
+function regionOfCode(f) {
+  const ro = flat(block(f.text, 'auto region_of = [&](uint32_t rbg_, uint32_t cbg_) -> uint32_t {'));
+  const steps = [...ro.matchAll(/const uint32_t (\w+) = ([^;]+);/g)].map((x) => [x[1], x[2]]);
+  const ret = find(ro, 'return @; }')[0];
+  const fn = (L, rbg, cbg, rowsValid) => {
+    const env = { L, rbg_: rbg, cbg_: cbg, rows_valid: rowsValid };
+    for (const [name, e] of steps) env[name] = cfun(f, e)(env);
+    return cfun(f, ret)(env);
+  };
+  return { steps, ret, fn };
+}
+
+// pearl_materialize16_afrag as an sm_75 compile with these flags builds it, read out of
+// pearl_kernel.cu: place(v, rows, kLog2) is the byte of A' where thread v stores word 0
+// of its sixteen row-major bytes (v * 16 on); word w goes 16 w bytes on.
+const KERNEL = read('pearl_kernel.cu');
+const drawCodes = new Map();
+function drawCode(spec) {
+  if (drawCodes.has(spec)) return drawCodes.get(spec);
+  const sig = 'extern "C" __global__ void pearl_materialize16_afrag(';
+  const at = KERNEL.indexOf(sig);
+  expect(at).toBeGreaterThanOrEqual(0);
+  const c = config(spec);
+  expect(c.errors).toEqual([]);
+  const defs = new Map([...c.defs, ...D('PEARL_TURING_BD_BODY=1')]);
+  const r = preprocess(KERNEL.slice(at, KERNEL.indexOf(NL + '}', at) + 2), defs);
+  const text = flat(r.lines.join(NL));
+  // Thread v's row and k, and where its words go from o.
+  for (const pin of ['const uint64_t idx = v << 4;', 'const uint32_t r = (uint32_t)(idx >> k_log2);',
+    'const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));',
+    'const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]',
+    'packed |= ((uint32_t)sv & 0xffu) << (j * 8);', 'o[w * 4] = packed;']) {
+    expect([spec, pin, text.includes(pin)]).toEqual([spec, pin, true]);
+  }
+  const from = text.indexOf('const uint4 *__restrict__ pp = ');
+  const to = text.indexOf('uint32_t *o = reinterpret_cast<uint32_t *>(out + ');
+  expect(from).toBeGreaterThan(0);
+  expect(to).toBeGreaterThan(from);
+  const uncast = (e) => e.replace(/\((?:uint32_t|uint64_t)\)/g, '');
+  const steps = [...text.slice(from, to).matchAll(/const (?:uint32_t|uint64_t|bool) (\w+) = ([^;]+);/g)]
+    .map((x) => [x[1], x[2]]);
+  const off = find(text.slice(to), 'uint32_t *o = reinterpret_cast<uint32_t *>(out + @) + reg;')[0];
+  const g = { defs };
+  const fns = steps.map(([n, e]) => [n, cfun(g, uncast(e))]);
+  const offFn = cfun(g, uncast(off));
+  const out = {
+    text, steps, off,
+    place: (v, rows, kLog2) => {
+      const idx = v * 16;
+      const env = { r: Math.floor(idx / 2 ** kLog2), kk: idx % 2 ** kLog2, rows, k_log2: kLog2 };
+      for (const [n, fn] of fns) env[n] = fn(env);
+      return offFn(env) + env.reg * 4;
+    },
+  };
+  drawCodes.set(spec, out);
+  return out;
+}
+
+// The draw of an A' of rows x 2^kLog2 bytes, on byte indices: out[o] is the row-major
+// index of the byte stored at o. Counts bytes stored twice or outside A'.
+function drawIndices(dc, rows, kLog2) {
+  const k = 2 ** kLog2;
+  const out = new Int32Array(rows * k).fill(-1);
+  let twice = 0;
+  let outside = 0;
+  for (let v = 0; v < (rows * k) / 16; v++) {
+    const at = dc.place(v, rows, kLog2);
+    for (let w = 0; w < 4; w++) {
+      for (let j = 0; j < 4; j++) {
+        const o = at + w * 16 + j;
+        if (o < 0 || o >= out.length) outside++;
+        else if (out[o] !== -1) twice++;
+        else out[o] = v * 16 + 4 * w + j;
+      }
+    }
+  }
+  return { out, twice, outside, unwritten: out.filter((x) => x === -1).length };
+}
+
+// The rows of A' the fold reads as each warp tile's 64 rows, from a draw: rowAt[64 G + m]
+// is the row the fold's row m of warp tile G (row group G / 2, row slot G & 1) holds.
+// The A-direct fold loads quad q of its four 16-row blocks at (4 G + q) * FRAG_BLOCK +
+// 512 s + 16 lane, and k-lo first takes m-block mb's word u (rows 0-7 or 8-15) of half hi
+// (k 0-15 or 16-31) from quad (mb / 2) * 2 + hi, word (mb & 1) * 2 + u: lane 4 g + t's
+// bytes 4 t..+3 of row 16 mb + 8 u + g at k 32 s + 16 hi. Throws unless every byte of a
+// fold row comes from one row of A', at its own k.
+function foldRows(drawn, groups, kLog2) {
+  const k = 2 ** kLog2;
+  const FB = (k / 32) * 512;
+  const rowAt = new Array(groups * 64).fill(-1);
+  for (let G = 0; G < groups; G++) {
+    for (let mb = 0; mb < 4; mb++) {
+      for (let u = 0; u < 2; u++) {
+        for (let lane = 0; lane < 32; lane++) {
+          const m = 16 * mb + 8 * u + (lane >> 2);
+          for (let s = 0; s < k / 32; s++) {
+            for (let hi = 0; hi < 2; hi++) {
+              const q = (mb >> 1) * 2 + hi;
+              const word = (mb & 1) * 2 + u;
+              for (let j = 0; j < 4; j++) {
+                const idx = drawn[(4 * G + q) * FB + 512 * s + 16 * lane + 4 * word + j];
+                const row = Math.floor(idx / k);
+                if (idx % k !== 32 * s + 16 * hi + 4 * (lane & 3) + j) throw new Error(`fold row ${G}.${m}: wrong k`);
+                if (rowAt[64 * G + m] === -1) rowAt[64 * G + m] = row;
+                if (rowAt[64 * G + m] !== row) throw new Error(`fold row ${G}.${m}: rows ${rowAt[64 * G + m]} and ${row}`);
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return rowAt;
 }
 
 describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and their parts)', () => {
@@ -1069,7 +1326,9 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(FOLD).toContain('pearl_fold_bd(const int8_t *__restrict__ Aprime,' + NL
       + '                                              const int8_t *__restrict__ Bprime,');
     expect(FOLD).toContain('      aoffn = a_off(rbgn);' + NL + '      boffn = b_off(cbgn);');
-    expect(FOLD).toContain('    // The next tile\'s k-step 0 is already in af[0] and bf[0].' + NL
+    expect(FOLD).toContain('    // The next tile\'s k-step 0 is already in af[0] and bf[0]. With LAST_RO tile_head' + NL
+      + '    // has run its k-steps 0-1, af[0] and bf[0] hold its k-step 2, and these two lines' + NL
+      + '    // repeat the ones before tile_head.' + NL
       + '    aoff = aoffn;' + NL + '    boff = boffn;');
     expect(FOLD).toContain('for (uint32_t mb = 0; mb < MB; mb++) af[0][mb] = pearl_bd_ldg(Aprime + aoff + mb * FRAG_BLOCK);');
     expect(FOLD).toContain('for (uint32_t j = 0; j < 4u; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);');
@@ -1133,18 +1392,10 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       return ((ocgb * 4 + ocb) * rowsValid + orb * 4 + oreg) >>> 0;
     };
     // region_of, read out of the source and run line by line.
-    const f = built('');
-    const ro = flat(block(f.text, 'auto region_of = [&](uint32_t rbg_, uint32_t cbg_) -> uint32_t {'));
-    const steps = [...ro.matchAll(/const uint32_t (\w+) = ([^;]+);/g)].map((x) => [x[1], x[2]]);
+    const { steps, ret, fn: regionOf } = regionOfCode(built(''));
     expect(steps).toEqual([['ow', 'L / warp_regions'], ['ocb', '(L % warp_regions) / regions_per_warp'],
       ['oreg', 'L % regions_per_warp'], ['orb', 'rbg_ * 2u + ow / 4u'], ['ocgb', 'cbg_ * 4u + ow % 4u']]);
-    const ret = find(ro, 'return @; }')[0];
     expect(ret).toBe('(ocgb * 4u + ocb) * rows_valid + orb * regions_per_warp + oreg');
-    const regionOf = (L, rbg, cbg, rowsValid) => {
-      const env = { L, rbg_: rbg, cbg_: cbg, rows_valid: rowsValid };
-      for (const [name, e] of steps) env[name] = cfun(f, e)(env);
-      return cfun(f, ret)(env);
-    };
     let checked = 0;
     for (const rowsValid of [16, 64, 1000, 4096]) {
       for (let L = 0; L < 128; L++) {
@@ -1190,6 +1441,425 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     }
   });
 
+  test('LAST_RO reads each tile\'s last chunk out in the next tile\'s first k-steps, before the hand-off', () => {
+    const at = HEADER.indexOf('#ifndef PEARL_BD_LAST_RO' + NL);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(HEADER.slice(at).split(NL)[1]).toBe('#define PEARL_BD_LAST_RO 0');
+    expect(config('').value('PEARL_BD_LAST_RO')).toBe(0);
+    // It builds on the default fold with LEAN and HIT_COORDS, and with SNAKE on top.
+    for (const spec of ['LAST_RO=1', 'LAST_RO=1 LEAN=1 HIT_COORDS=1', 'LAST_RO=1 SNAKE=1']) {
+      expect([spec, config(spec).errors, fold(spec).errors]).toEqual([spec, [], []]);
+    }
+    const refused = (spec, msg) => {
+      const errors = config(spec).errors;
+      expect([spec, errors.length > 0]).toEqual([spec, true]);
+      expect(errors.join(NL)).toContain(msg);
+    };
+    refused('LAST_RO=2', 'PEARL_BD_LAST_RO is 0 or 1');
+    for (const s of [OFF, 'LEAN=0', 'HIT_COORDS=0', 'RUNBASE=0', 'TAIL_LDG=0', 'GATE=2', 'PERSIST=0',
+      'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+      refused(`LAST_RO=1 ${s}`, 'PEARL_BD_LAST_RO is written for the default fold with LEAN and HIT_COORDS');
+    }
+    for (const s of ['RED=1 GATE=1', 'TADDR=1', 'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1']) {
+      refused(`LAST_RO=1 ${s}`, 'PEARL_BD_LAST_RO is not built with PEARL_BD_RED, _TADDR or the split hash');
+    }
+    // Off, no fold builds any of it.
+    for (const spec of ['', OFF, 'RED=1', 'SNAKE=1', 'PERSIST=0', 'A_DIRECT=0']) {
+      expect([spec, built(spec).text.includes('tile_head')]).toEqual([spec, false]);
+    }
+
+    const f = built('LAST_RO=1');
+    // tile() is the chunk loop and the tail: no zeroing, no k-step 0 or 1, no last readout.
+    const tile = flat(block(f.text, 'auto tile = [&](auto next_srcs) {'));
+    for (const x of ['acc[mb][nb][i] = 0', 'kstep(0u, ', 'readout(rl, chunks - 1u)']) {
+      expect([x, tile.includes(x)]).toEqual([x, false]);
+    }
+    // Its k-steps load what the default's k-steps 2-63 load, and it stores chunks 0-14,
+    // each after the k-step that ends its pass.
+    const strip = (c) => ({ ch: c.ch, t: c.t, ro: c.ro, last: c.last, s: c.s, ao: c.ao, bo: c.bo, nxt: c.nxt });
+    const o = { aoff: 0x10, boff: 0x7ff0, aoffn: 0x40000, boffn: 0x80 };
+    const got = tileCalls('LAST_RO=1', '', o);
+    const want = tileCalls('', '', o);
+    expect(got.sites).toBe(6);
+    expect(got.calls.map(strip)).toEqual(want.calls.slice(2).map(strip));
+    expect(got.stores).toEqual(want.stores.filter((x) => !x.endsWith('.15')));
+    expect(tile).toContain('kstep(chunk + 1u, 0u, RO, false, 1u); uint32_t rx[RPL]; #pragma unroll '
+      + 'for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rxs[rl]); '
+      + 'kstep(chunk + 1u, 1u, false, false, 1u); #pragma unroll '
+      + 'for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunk, rx[rl]); }');
+
+    // tile_head: with a tile before it, each pair's fold, then the pair's two k-lo words
+    // gated on it; then the accumulators zeroed and k-step 0 from the tile's offsets,
+    // the words gathered and stored as chunk 15 to tbuf, and k-step 1.
+    const head = flat(block(f.text, 'auto tile_head = [&](bool prev) {'));
+    let pos = -1;
+    for (const x of ['if (prev) {', 'rx[rl] = fold_pair(rx[rl], rl, j);', 'const uint32_t g = rx[0] ^ rx[1];',
+      'b0 = (int)pearl_bd_after((uint32_t)b0, g);', 'b2 = (int)pearl_bd_after((uint32_t)b2, g);',
+      'acc[mb][nb][i] = 0;', 'arun = aoff; brun = boff; kstep(0u, 0u, false, false); if (prev) {',
+      'rx[rl] = readout_gather(rx[rl]);', 'readout_st(rl, chunks - 1u, rx[rl]); } kstep(0u, 1u, false, false); }']) {
+      const i = head.indexOf(x, pos + 1);
+      expect([x, i > pos]).toEqual([x, true]);
+      pos = i;
+    }
+    expect(count(head, 'kstep(')).toBe(2);
+    expect(count(head, 'readout_st(')).toBe(1);
+    // The gated words are the ones k-step 0's k-lo pass reads for pair j (b_word, cur 0,
+    // hi 0: odd 0 is b0, odd 1 is b2), and pearl_bd_after leaves a word as it is.
+    expect(head).toContain('int4 &q = bf[0][(j / 2u) * 2u]; int &b0 = j & 1u ? q.z : q.x, &b2 = j & 1u ? q.w : q.y;');
+    expect(flat(block(f.text, KSTEP))).toContain('auto b_word = [&](uint32_t j, uint32_t hi, uint32_t odd) -> uint32_t { '
+      + 'const int4 v = bf[cur][(j / 2u) * 2u + hi]; return (uint32_t)(j & 1u ? (odd ? v.w : v.z) : (odd ? v.y : v.x)); };');
+    expect(flat(block(f.text, KSTEP))).toContain('const uint32_t cur = t & 1u, nxt = (t + 1u) & 1u;');
+    expect(FOLD).toContain('asm("prmt.b32 %0, %1, %2, 0x3210;" : "=r"(r) : "r"(b), "r"(x));');
+
+    // The first tile's k-steps 0-1 before the prologue's barrier; each later tile's after
+    // the tile before, from next_srcs's offsets, then the hand-off and the hash of the
+    // tile before. tbuf moves on only at the loop's top, past that hash.
+    expect(f.flat).toContain('tile_prologue(); } tile_head(false); __syncthreads(); uint32_t it = 0u; '
+      + 'for (uint32_t v = blockIdx.x; v < tiles; it++) {');
+    const loop = flat(block(f.text, 'for (uint32_t v = blockIdx.x; v < tiles; it++) {'));
+    expect(loop.startsWith('for (uint32_t v = blockIdx.x; v < tiles; it++) { tbuf = (it & 1u) * TWORDS; '
+      + 'uint32_t vgrab = 0u;')).toBe(true);
+    expect(loop).toContain('tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn); aoffn = a_off(rbgn); boffn = b_off(cbgn); }); '
+      + 'aoff = aoffn; boff = boffn; tile_head(true); if (threadIdx.x == 0u) sNext[(it + 1u) & 1u] = vgrab; '
+      + '__syncthreads(); hash_tile(v); aoff = aoffn; boff = boffn; v = vnext; }');
+    expect([count(loop, 'tbuf ='), count(loop, '__syncthreads()'), count(f.flat, 'tile_head(')]).toEqual([1, 1, 2]);
+    expect(flat(block(f.text, HASH_TILE_V))).toContain('tm[c] = sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))];');
+  });
+
+  test('with LAST_RO every word a hasher reads is its own tile\'s, in any thread order', () => {
+    for (const [spec, tiles, seed] of [['LAST_RO=1', 1, 2], ['LAST_RO=1', 2, 4], ['LAST_RO=1', 7, 5],
+      ['LAST_RO=1 SNAKE=1', 5, 8]]) {
+      expect([spec, tiles, simulateLastRo(spec, { tiles, seed })])
+        .toEqual([spec, tiles, { read: tiles * 128 * 16, wrong: 0, outside: 0, badHandoff: 0 }]);
+    }
+    // And it sees each of these: tbuf moved on before tile_head's stores, those stores
+    // after the barrier, or one buffer for both tiles.
+    const broken = (mutate) => simulateLastRo('LAST_RO=1', { tiles: 4, seed: 11, mutate });
+    expect(broken('flip-before-head')).toMatchObject({ badHandoff: 4 * 128, outside: 0 });
+    expect(broken('flip-before-head').wrong).toBeGreaterThan(0);
+    expect(broken('head-after-barrier').badHandoff).toBe(4 * 128);
+    expect(broken('one-buffer').wrong).toBeGreaterThan(0);
+  });
+
+  // The builds HASH_RG is written for: the default fold, with or without LEAN's parts,
+  // HIT_COORDS, SNAKE, LAST_RO and ROWPAIR.
+  const RG_SPECS = ['HASH_RG=1', `${OFF} HASH_RG=1`, 'HIT_COORDS=0 HASH_RG=1', 'SNAKE=1 HASH_RG=1',
+    'LAST_RO=1 HASH_RG=1', 'LAST_RO=1 SNAKE=1 HASH_RG=1', 'ROWPAIR=1 HASH_RG=1', 'ROWPAIR=1 LAST_RO=1 HASH_RG=1'];
+
+  test('HASH_RG has the second row group hash every region once, and changes only who hashes', () => {
+    const at = HEADER.indexOf('#ifndef PEARL_BD_HASH_RG' + NL);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(HEADER.slice(at).split(NL)[1]).toBe('#define PEARL_BD_HASH_RG 0');
+    expect(config('').value('PEARL_BD_HASH_RG')).toBe(0);
+    for (const spec of RG_SPECS) {
+      expect([spec, config(spec).errors, fold(spec).errors]).toEqual([spec, [], []]);
+    }
+    const refused = (spec, msg) => {
+      const errors = config(spec).errors;
+      expect([spec, errors.length > 0]).toEqual([spec, true]);
+      expect(errors.join(NL)).toContain(msg);
+    };
+    refused('HASH_RG=2', 'PEARL_BD_HASH_RG is 0 or 1');
+    for (const s of ['PERSIST=0', 'A_REALIGN=1', 'KORDER=0', 'A_DIRECT=0', 'GROUPS=1']) {
+      refused(`HASH_RG=1 ${s}`, 'PEARL_BD_HASH_RG is written for the default fold');
+    }
+    for (const s of ['RED=1', 'RED=1 GATE=1', 'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1']) {
+      refused(`HASH_RG=1 ${s}`, 'PEARL_BD_HASH_RG is not built with PEARL_BD_RED or the split hash');
+    }
+    // Off, no fold builds any of it.
+    for (const spec of ['', OFF, 'LAST_RO=1', 'SNAKE=1', 'RED=1', 'PERSIST=0', 'A_DIRECT=0', 'ROWPAIR=1']) {
+      expect([spec, built(spec).text.includes('osid')]).toEqual([spec, false]);
+    }
+
+    // The default's hashers: warps 0, 1, 6 and 7, one on each scheduler (warp & 3).
+    const d = readoutCode('');
+    const hashWarps = (m) => [...new Set(Array.from({ length: THREADS }, (_, t) => t)
+      .filter((t) => m.fn.hasher(ids(t))).map((t) => t >> 5))];
+    expect(hashWarps(d)).toEqual([0, 1, 6, 7]);
+    for (const spec of RG_SPECS) {
+      // The role: the default's test flipped by sid < 64 on the copy of sid behind an
+      // empty asm, and region L = that copy. So threads 128-255, warps 4-7, again one on
+      // each scheduler, hash, and thread t takes region t & 127: each region once.
+      const m = readoutCode(spec);
+      expect([spec, m.expr.hasher, m.expr.hL])
+        .toEqual([spec, '(wr ? sid >= 64u : sid < 64u) != (osid < 64u)', 'osid']);
+      expect(m.ht).toContain(`{ ${OSID} const bool hasher = `);
+      expect(hashWarps(m)).toEqual([4, 5, 6, 7]);
+      for (let t = 0; t < THREADS; t++) {
+        expect([t, m.fn.hasher(ids(t)), m.fn.hasher(ids(t)) ? m.fn.hL(ids(t)) : -1])
+          .toEqual([t, t >= 128 ? 1 : 0, t >= 128 ? t & 127 : -1]);
+      }
+      // The rest is the build's without the switch, word for word: the fold outside
+      // hash_tile, and hash_tile from its if (hasher) on, so the same reads, the same
+      // hash and, from the same L, the same region number for a hit.
+      const base = spec.replace('HASH_RG=1', '').trim();
+      const a = built(base).text;
+      const b = built(spec).text;
+      const head = a.includes(HASH_TILE_V) ? HASH_TILE_V : HASH_TILE_RC;
+      const ha = block(a, head);
+      const hb = block(b, head);
+      expect([spec, b.replace(hb, '') === a.replace(ha, '')]).toEqual([spec, true]);
+      const rest = (h) => flat(h.slice(h.indexOf('if (hasher) {')));
+      expect([spec, rest(hb)]).toEqual([spec, rest(ha)]);
+    }
+  });
+
+  test('with HASH_RG every word a hasher reads is its own tile\'s, in any thread order', () => {
+    for (const [spec, tiles, seed] of [['HASH_RG=1', 1, 3], ['HASH_RG=1', 6, 7], ['LAST_RO=1 HASH_RG=1', 2, 9],
+      ['LAST_RO=1 HASH_RG=1', 7, 12], ['LAST_RO=1 SNAKE=1 HASH_RG=1', 5, 13]]) {
+      expect([spec, tiles, simulateLastRo(spec, { tiles, seed })])
+        .toEqual([spec, tiles, { read: tiles * 128 * 16, wrong: 0, outside: 0, badHandoff: 0 }]);
+    }
+  });
+
+  // The builds ROWPAIR is written for: the default fold with LEAN's parts, with or
+  // without HIT_COORDS, HASH_RG, SNAKE and LAST_RO.
+  const RP_SPECS = ['ROWPAIR=1', 'ROWPAIR=1 HIT_COORDS=0', 'ROWPAIR=1 HASH_RG=1', 'ROWPAIR=1 SNAKE=1',
+    'ROWPAIR=1 LAST_RO=1', 'ROWPAIR=1 LAST_RO=1 HASH_RG=1', 'ROWPAIR=1 LAST_RO=1 SNAKE=1'];
+  const noRp = (spec) => spec.replace('ROWPAIR=1', '').trim();
+
+  test('ROWPAIR is off by default, builds on LEAN\'s parts, and the header refuses the rest', () => {
+    const at = HEADER.indexOf('#ifndef PEARL_BD_ROWPAIR' + NL);
+    expect(at).toBeGreaterThanOrEqual(0);
+    expect(HEADER.slice(at).split(NL)[1]).toBe('#define PEARL_BD_ROWPAIR 0');
+    expect(config('').value('PEARL_BD_ROWPAIR')).toBe(0);
+    for (const spec of [...RP_SPECS, 'ROWPAIR=1 LEAN=1 HIT_COORDS=1', 'ROWPAIR=1 LAST_RO=1 SNAKE=1 HASH_RG=1',
+      'ROWPAIR=1 SNAKE=1 HASH_RG=1', `${OFF} ROWPAIR=1 RUNBASE=1 TAIL_LDG=1 GATE=1`]) {
+      expect([spec, config(spec).errors, fold(spec).errors]).toEqual([spec, [], []]);
+    }
+    const refused = (spec, msg) => {
+      const errors = config(spec).errors;
+      expect([spec, errors.length > 0]).toEqual([spec, true]);
+      expect(errors.join(NL)).toContain(msg);
+    };
+    refused('ROWPAIR=2', 'PEARL_BD_ROWPAIR is 0 or 1');
+    for (const s of [OFF, 'LEAN=0', 'RUNBASE=0', 'TAIL_LDG=0', 'GATE=2', 'PERSIST=0', 'A_REALIGN=1', 'KORDER=0',
+      'A_DIRECT=0', 'GROUPS=1']) {
+      refused(`ROWPAIR=1 ${s}`, 'PEARL_BD_ROWPAIR is written for the default fold with LEAN\'s parts');
+    }
+    for (const s of ['RED=1 GATE=1', 'TADDR=1', 'HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1 GATE=1']) {
+      refused(`ROWPAIR=1 ${s}`, 'PEARL_BD_ROWPAIR is not built with PEARL_BD_RED, _TADDR or the split hash');
+    }
+    // Off, no fold builds any of it, and the draw is the one the other tests pin.
+    for (const spec of ['', OFF, 'LAST_RO=1', 'HASH_RG=1', 'SNAKE=1', 'RED=1', 'PERSIST=0', 'A_REALIGN=1',
+      'KORDER=0']) {
+      const f = built(spec);
+      for (const x of ['(lane & 4u)', 'rxs[0] ^ rxs[1]', 'readout_x()', RP_ST]) {
+        expect([spec, x, f.text.includes(x)]).toEqual([spec, x, false]);
+      }
+      expect([spec, /\brq\b/.test(drawCode(spec).text)]).toEqual([spec, false]);
+    }
+    // The draw with the switch is k-lo first's paired draw (the turingKorder test's) of
+    // row rq instead of r.
+    const on = drawCode('ROWPAIR=1');
+    const off = drawCode('');
+    expect(on.steps.slice(0, 2).map((s) => s[0])).toEqual(['o6', 'rq']);
+    expect(on.steps.slice(2)).toEqual(off.steps.map(([n, e]) => [n, e.replace(/\br\b/g, 'rq')]));
+    expect(on.off).toBe(off.off.replace(/\br\b/g, 'rq'));
+    expect(off.steps.map((s) => s[0])).toEqual(['bl', 'paired', 'dbl', 'blk', 'reg']);
+    expect(KERNEL).toContain('#if PEARL_BD_ROWPAIR' + NL + '  // PEARL_BD_ROWPAIR (see pearl_config.h): row r');
+  });
+
+  test('ROWPAIR\'s draw writes every byte once, and each fold row is one permuted row of A\'', () => {
+    // round 2's rowpair_check.py: row o = 32 s + 8 j + 4 b + 2 u1 + u0 of each warp tile
+    // at the fold's row 16 j + 8 u0 + 4 s + 2 b + u1.
+    const mrow = (o) => (((o >> 3) & 3) << 4) | ((o & 1) << 3) | (((o >> 5) & 1) << 2) | (((o >> 2) & 1) << 1)
+      | ((o >> 1) & 1);
+    const inv = new Array(64);
+    for (let o = 0; o < 64; o++) inv[mrow(o)] = o;
+    expect(new Set(inv).size).toBe(64);
+    const kLog2 = 7;
+    for (const rows of [64, 128, 272, 336, 512]) {
+      const on = drawIndices(drawCode('ROWPAIR=1'), rows, kLog2);
+      const off = drawIndices(drawCode(''), rows, kLog2);
+      for (const d of [on, off]) expect([rows, d.twice, d.outside, d.unwritten]).toEqual([rows, 0, 0, 0]);
+      // The rows the fold reads, every whole warp tile's: with the switch the permuted
+      // rows, without it each row in place.
+      const groups = Math.floor(rows / 64);
+      const rOn = foldRows(on.out, groups, kLog2);
+      const rOff = foldRows(off.out, groups, kLog2);
+      for (let i = 0; i < 64 * groups; i++) {
+        expect([rows, i, rOn[i], rOff[i]]).toEqual([rows, i, (i & ~63) + inv[i & 63], i]);
+      }
+      // Rows past the last whole 64 (the last 16 of 272 and 336) are where the draw
+      // without the switch puts them, byte for byte.
+      const k = 2 ** kLog2;
+      const tail = groups * 64 * k;
+      expect([rows, Array.from(on.out.slice(tail)).every((x, i) => x === off.out[tail + i])]).toEqual([rows, true]);
+    }
+  });
+
+  test('ROWPAIR\'s lanes L and L ^ 4 hold one whole region: the one hash_tile reads and numbers', () => {
+    // For every writer lane of every warp of a tile: the rows and columns its readout
+    // xors (its accumulators and its shuffle partners'), against the region that
+    // regionToTile (the JS reference) gives for the number hash_tile reports for the
+    // region it stores. Lane 4 g + t's accumulator i of m-block mb and n-block nb is the
+    // fold's row 16 mb + g + 8 (i >> 1), column 8 nb + 2 t + (i & 1) of the warp tile
+    // (the m8n8k16 layout; a_word(mb, hi, u) feeds acc[][][2 u] and [2 u + 1]), and
+    // fold_pair(x, rl, np) reads m-blocks 2 rl and 2 rl + 1 of n-blocks 2 np and 2 np + 1.
+    const { regionToTile } = require('../src/shared/miner/pearlhash');
+    const fp = flat(block(built('ROWPAIR=1').text, 'auto fold_pair = [&](uint32_t x, uint32_t rl, uint32_t np) -> uint32_t {'));
+    expect(fp).toContain('const int32_t *p0 = acc[2u * rl][2u * np], *p1 = acc[2u * rl + 1u][2u * np];');
+    expect(fp).toContain('const int32_t *p2 = acc[2u * rl][2u * np + 1u], *p3 = acc[2u * rl + 1u][2u * np + 1u];');
+    expect(flat(block(built('ROWPAIR=1').text, KSTEP))).toContain('pearl_bd_imma(acc[mb][2u * j][2], acc[mb][2u * j][3], '
+      + 'a_word(mb, 0u, 1u), b0[mb / 2u]);');
+    const kLog2 = 7;
+    for (const [spec, M] of [['ROWPAIR=1', 256], ['ROWPAIR=1 LAST_RO=1', 272], ['', 256], ['', 272]]) {
+      const N = 512;
+      const m = readoutCode(spec);
+      const f = m.f;
+      const rowAt = foldRows(drawIndices(drawCode(spec), M, kLog2).out, Math.floor(M / 64), kLog2);
+      const regionOf = regionOfCode(f).fn;
+      const rp = m.store === 'rowpair';
+      // The lanes whose shares a writer's word xors (its own and its gather's shuffles'),
+      // and the m-blocks of its region rl (with ROWPAIR both chains, all four).
+      const gather = flat(block(f.text, 'auto readout_gather = [&](uint32_t x) -> uint32_t {'));
+      const offsets = [...gather.matchAll(/__shfl_xor_sync\(0xffffffffu, x, (\d+)\)/g)].map((x) => Number(x[1]));
+      expect([spec, offsets.length > 0]).toEqual([spec, true]);
+      const sharers = (lane) => [lane, ...offsets.map((o) => lane ^ o)];
+      const mbs = (rl) => (rp ? [0, 1, 2, 3] : [2 * rl, 2 * rl + 1]);
+      let regions = 0;
+      for (const [rbg, cbg] of [[0, 0], [0, 1], [1, 0], [1, 1]]) {
+        const seen = new Set();
+        for (let t = 0; t < THREADS; t++) {
+          const { warp, lane, wr } = ids(t);
+          const wc = warp & 3;
+          const writes = rp ? (m.fn.writer({ lane }) ? [[m.fn.L0(ids(t)), 0]] : [])
+            : (((lane >> 2) & 3) === 0 ? [0, 1].map((rl) => [m.fn.L({ warp, lane, rl }), rl]) : []);
+          for (const [L, rl] of writes) {
+            const rows = new Set();
+            const cols = new Set();
+            for (const l of sharers(lane)) {
+              for (const mb of mbs(rl)) {
+                for (const h of [0, 1]) rows.add(rowAt[64 * (2 * rbg + wr) + 16 * mb + (l >> 2) + 8 * h]);
+              }
+              for (let nb = 0; nb < 8; nb++) {
+                for (const cc of [0, 1]) cols.add(256 * cbg + 64 * wc + 8 * nb + 2 * (l & 3) + cc);
+              }
+            }
+            const want = regionToTile(regionOf(L, rbg, cbg, M / 16), { m: M, n: N });
+            const sorted = (x) => [...x].sort((a, b) => a - b);
+            expect([spec, t, L, sorted(rows), sorted(cols)])
+              .toEqual([spec, t, L, sorted(want.rows), sorted(want.cols)]);
+            seen.add(L);
+            regions++;
+          }
+        }
+        expect([spec, seen.size]).toEqual([spec, 128]);
+      }
+      expect(regions).toBe(4 * 128);
+    }
+  });
+
+  test('ROWPAIR stores each region\'s word where the default does, from 16 lanes a warp on 16 banks', () => {
+    const base = readoutCode('');
+    for (const spec of RP_SPECS) {
+      const m = readoutCode(spec);
+      const lastRo = spec.includes('LAST_RO');
+      // A C++ if with LAST_RO, one predicated st.shared without it.
+      expect([spec, m.store, m.form]).toEqual([spec, 'rowpair', lastRo ? 'if' : 'pred']);
+      expect([spec, m.expr.writer]).toEqual([spec, lastRo ? '(lane & 4u) == 0u' : '(lane & 4u) == 0']);
+      expect(m.expr.store).toBe('tK ^ c');
+      if (!lastRo) {
+        expect(m.st).toBe(`${RP_ST}${PRED_ST.slice(1)}tK ^ c)), "r"(x), "r"(lane & 4u) : "memory"); }`);
+        expect(find(m.f.flat, 'const uint32_t sT0 = @;')[0]).toBe('(uint32_t)__cvta_generic_to_shared(sT)');
+      }
+      expect(m.expr.L0).toBe('warp * warp_regions + (lane & 3u) * regions_per_warp + (lane >> 3)');
+      expect(m.expr.tK0).toBe('L0 * 16u | ((L0 >> 1) & 15u)');
+      expect(m.expr.tbuf).toBe('(it & 1u) * TWORDS');
+      expect(m.expr.tKtile).toBe('(tK & (TWORDS - 1u)) | tbuf');
+      expect(m.loop.indexOf('tK = (tK & (TWORDS - 1u)) | tbuf;')).toBeLessThan(m.loop.indexOf('tile([&]() {'));
+      for (const tbuf of [0, GEOM.TWORDS]) {
+        const hits = new Uint8Array(2 * GEOM.TWORDS);
+        for (let w = 0; w < WARPS; w++) {
+          const writers = Array.from({ length: 32 }, (_, l) => w * 32 + l).filter((t) => m.fn.writer(ids(t)));
+          expect(writers.map((t) => t & 31)).toEqual([0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27]);
+          for (let c = 0; c < CHUNKS; c++) {
+            const banks = new Set();
+            for (const t of writers) {
+              const L = m.fn.L0(ids(t));
+              const tK0 = m.fn.tK0({ L0: L });
+              // TWORDS is above the index's bits, so the per-tile fold just sets the buffer.
+              expect(tK0).toBeLessThan(GEOM.TWORDS);
+              // Moved to the other buffer for a tile, then to this one.
+              const tK = m.fn.tKtile({ tK: m.fn.tKtile({ tK: tK0, tbuf: GEOM.TWORDS - tbuf }), tbuf });
+              const a = m.fn.store({ tK, c });
+              expect(a).toBe(base.fn.store({ tbuf, L, c }));
+              hits[a]++;
+              banks.add(a % 32);
+            }
+            expect([spec, w, c, banks.size]).toEqual([spec, w, c, 16]);
+          }
+        }
+        expect(hits.slice(tbuf, tbuf + GEOM.TWORDS).every((n) => n === 1)).toBe(true);
+        expect(hits.reduce((a, n) => a + n, 0)).toBe(GEOM.TWORDS);
+      }
+      // The hashers read the default's word c of region L, so they find these.
+      expect(m.expr.read).toBe('tbuf + L * 16u + (c ^ ((L >> 1) & 15u))');
+    }
+  });
+
+  test('ROWPAIR folds a lane\'s two chains into one word, shuffles once and stores once a chunk', () => {
+    const SHFL = 'x ^= __shfl_xor_sync(0xffffffffu, x, 4);';
+    for (const spec of RP_SPECS) {
+      const f = built(spec);
+      const g = built(noRp(spec));
+      const lastRo = spec.includes('LAST_RO');
+      expect(flat(block(f.text, 'auto readout_gather = [&](uint32_t x) -> uint32_t {')))
+        .toBe(`auto readout_gather = [&](uint32_t x) -> uint32_t { ${SHFL} return x; }`);
+      if (lastRo) {
+        // Nothing calls readout_x or readout with LAST_RO, so neither is built.
+        expect([spec, f.text.includes('auto readout_x'), f.text.includes('auto readout =')])
+          .toEqual([spec, false, false]);
+      } else {
+        expect(flat(block(f.text, 'auto readout_x = [&]() -> uint32_t {'))).toBe('auto readout_x = [&]() -> uint32_t { '
+          + 'uint32_t x = 0u, y = 0u; #pragma unroll for (uint32_t np = 0; np < NB / 2u; np++) { '
+          + `x = fold_pair(x, 0u, np); y = fold_pair(y, 1u, np); } x ^= y; ${SHFL} return x; }`);
+        expect(f.flat).toContain('auto readout = [&](uint32_t c) { readout_st(c, readout_x()); };');
+      }
+      expect([spec, count(f.text, '__shfl_xor_sync(')]).toEqual([spec, lastRo ? 1 : 2]);
+      // The k-steps, their folds and their gates are the build's without the switch.
+      for (const head of [KSTEP, 'auto fold_pair = [&](uint32_t x, uint32_t rl, uint32_t np) -> uint32_t {']) {
+        expect([spec, block(f.text, head)]).toEqual([spec, block(g.text, head)]);
+      }
+      // The chunk loop gathers the two chains' xor and stores it before k-step 1, LAST_RO
+      // or not; the tail reads out the last chunk, or with LAST_RO tile_head does.
+      const tile = flat(block(f.text, 'auto tile = [&](auto next_srcs) {'));
+      expect(tile).toContain('kstep(chunk + 1u, 0u, RO, false, 1u); readout_st(chunk, readout_gather(rxs[0] ^ rxs[1])); '
+        + 'kstep(chunk + 1u, 1u, false, false, 1u); }');
+      expect([spec, tile.endsWith('kstep(chunks - 1u, 3u, false, true); readout(chunks - 1u); }')])
+        .toEqual([spec, !lastRo]);
+      if (lastRo) {
+        expect(flat(block(f.text, 'auto tile_head = [&](bool prev) {'))).toContain('kstep(0u, 0u, false, false); '
+          + 'if (prev) { readout_st(chunks - 1u, readout_gather(rx[0] ^ rx[1])); } kstep(0u, 1u, false, false); }');
+      }
+      // The same loads, and one store a chunk: 0-15, or 0-14 with chunk 15 in tile_head.
+      const o = { aoff: 0x10, boff: 0x7ff0, aoffn: 0x40000, boffn: 0x80 };
+      const got = tileCalls(spec, '', o);
+      const want = tileCalls(noRp(spec), '', o);
+      expect([spec, got.calls]).toEqual([spec, want.calls]);
+      expect([spec, got.stores]).toEqual([spec, Array.from({ length: lastRo ? 15 : 16 }, (_, c) => `w.${c}`)]);
+    }
+    // The diagnostic build skips the one shuffle.
+    expect(count(built('ROWPAIR=1', 'PEARL_ABLATE_TRANSCRIPT').text, '__shfl')).toBe(0);
+  });
+
+  test('with ROWPAIR every word a hasher reads is its own tile\'s, in any thread order', () => {
+    for (const [spec, tiles, seed] of [['ROWPAIR=1', 1, 21], ['ROWPAIR=1', 6, 22], ['ROWPAIR=1 HASH_RG=1', 5, 23],
+      ['ROWPAIR=1 LAST_RO=1', 1, 24], ['ROWPAIR=1 LAST_RO=1', 2, 25], ['ROWPAIR=1 LAST_RO=1', 7, 26],
+      ['ROWPAIR=1 LAST_RO=1 HASH_RG=1', 5, 27], ['ROWPAIR=1 LAST_RO=1 SNAKE=1', 4, 28]]) {
+      expect([spec, tiles, simulateLastRo(spec, { tiles, seed })])
+        .toEqual([spec, tiles, { read: tiles * 128 * 16, wrong: 0, outside: 0, badHandoff: 0 }]);
+    }
+    // The breakages the LAST_RO test shows, seen here too: chunk 15 is 128 words a tile
+    // either way.
+    const broken = (mutate) => simulateLastRo('ROWPAIR=1 LAST_RO=1', { tiles: 4, seed: 29, mutate });
+    expect(broken('flip-before-head')).toMatchObject({ badHandoff: 4 * 128, outside: 0 });
+    expect(broken('flip-before-head').wrong).toBeGreaterThan(0);
+    expect(broken('head-after-barrier').badHandoff).toBe(4 * 128);
+    expect(broken('one-buffer').wrong).toBeGreaterThan(0);
+  });
+
   test('the fold name the bench prints names every switch that is on', () => {
     // pearl_host_fold_name: the default's name, then the switches, so a reading from
     // one of them is not credited to the default fold.
@@ -1202,7 +1872,7 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     const body = HOST.slice(from, to);
     const cond = body.split(NL).slice(0, 2).join(' ').split(BS).join(' ').replace('#if', '').replace(/\s+/g, ' ').trim();
     expect(cond).toBe('PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 '
-      + '|| PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT');
+      + '|| PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG');
     const names = [...body.matchAll(/(PEARL_BD_\w+(?: != 2)?) \? "( [\w=]+)" : ""/g)].map((x) => [x[1], x[2]]);
     expect(names).toEqual([['PEARL_BD_RUNBASE', ' RUNBASE'], ['PEARL_BD_TAIL_LDG', ' TAIL_LDG'],
       ['PEARL_BD_GATE != 2', ' GATE=1'], ['PEARL_BD_TADDR', ' TADDR'], ['PEARL_BD_RED', ' RED'],
@@ -1210,13 +1880,21 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(body).toContain('", with%s%s%s%s%s%s%s",');
     expect(body).toContain('if (PEARL_BD_HASH_SPLIT)' + NL
       + '        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_SPLIT=%d", PEARL_BD_HASH_SPLIT);');
+    expect(body).toContain('      n = strlen(c->foldName);' + NL
+      + '      if (PEARL_BD_LAST_RO) snprintf(c->foldName + n, sizeof c->foldName - n, " LAST_RO");');
+    expect(body).toContain('      n = strlen(c->foldName);' + NL
+      + '      if (PEARL_BD_HASH_RG) snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");');
+    expect(body).toContain('      n = strlen(c->foldName);' + NL
+      + '      if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");');
     // What it appends for a build, from the header's macros.
     const suffix = (spec) => {
       const c = config(spec);
       expect([spec, c.errors]).toEqual([spec, []]);
       if (!c.value(cond)) return '';
       const split = c.value('PEARL_BD_HASH_SPLIT');
-      return ', with' + names.map(([e, n]) => (c.value(e) ? n : '')).join('') + (split ? ' HASH_SPLIT=' + split : '');
+      return ', with' + names.map(([e, n]) => (c.value(e) ? n : '')).join('') + (split ? ' HASH_SPLIT=' + split : '')
+        + (c.value('PEARL_BD_LAST_RO') ? ' LAST_RO' : '') + (c.value('PEARL_BD_HASH_RG') ? ' HASH_RG' : '')
+        + (c.value('PEARL_BD_ROWPAIR') ? ' ROWPAIR' : '');
     };
     // With no flags, LEAN's parts and HIT_COORDS. With every switch off, on the default
     // fold or another, nothing.
@@ -1235,6 +1913,17 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(suffix('SNAKE=1 RED=1 GATE=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG GATE=1 TADDR RED SNAKE');
     expect(suffix('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1')).toBe(', with RUNBASE TAIL_LDG HIT_COORDS HASH_SPLIT=4');
     expect(suffix('HASH_SPLIT=4 RUNBASE=1 TAIL_LDG=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG HASH_SPLIT=4');
+    expect(suffix('LAST_RO=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS LAST_RO');
+    expect(suffix('LAST_RO=1 SNAKE=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS SNAKE LAST_RO');
+    // HASH_RG builds without LEAN too, so the #if names it there.
+    expect(suffix('HASH_RG=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS HASH_RG');
+    expect(suffix(`${OFF} HASH_RG=1`)).toBe(', with HASH_RG');
+    expect(suffix('LAST_RO=1 SNAKE=1 HASH_RG=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS SNAKE LAST_RO HASH_RG');
+    // ROWPAIR needs LEAN's parts, which the #if already names.
+    expect(suffix('ROWPAIR=1')).toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS ROWPAIR');
+    expect(suffix('ROWPAIR=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG GATE=1 ROWPAIR');
+    expect(suffix('ROWPAIR=1 LAST_RO=1 SNAKE=1 HASH_RG=1'))
+      .toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS SNAKE LAST_RO HASH_RG ROWPAIR');
     // Each part alone names just itself.
     for (const s of ['RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1', 'HIT_COORDS=1']) {
       expect([s, suffix(`${OFF} ${s}`)])
@@ -1243,7 +1932,8 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     // The longest name fits the buffer.
     expect(HOST).toContain('  char foldName[224] = {0};');
     const longest = 'A-direct, no realign, k-lo first 128x256, 8 warps of 64x64, 2 row groups, persistent, '
-      + 'band 64, m8n8k16 (Turing), with RUNBASE TAIL_LDG GATE=1 TADDR RED HIT_COORDS SNAKE HASH_SPLIT=13';
+      + 'band 64, m8n8k16 (Turing), with RUNBASE TAIL_LDG GATE=1 TADDR RED HIT_COORDS SNAKE HASH_SPLIT=13 LAST_RO '
+      + 'HASH_RG ROWPAIR';
     expect(longest.length).toBeLessThan(224);
   });
 });

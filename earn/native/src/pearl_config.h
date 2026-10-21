@@ -1005,7 +1005,187 @@ typedef struct {
     && !(PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG && PEARL_BD_GATE == 1)
 #error "PEARL_BD_SNAKE stacks with PEARL_BD_RED only with RUNBASE, TAIL_LDG and -DPEARL_BD_GATE=1: the other SNAKE + RED builds fail the gates"
 #endif
-// PEARL_BD_HASH_SPLIT=N (0 by default, 1 to 13), from the same round: each scheduler's
+// PEARL_BD_LAST_RO (0 by default), from round 6 (2026-10-21): a tile's last chunk is
+// read out in the next tile's first two k-steps, as every other chunk is in the k-step
+// after it. Without it a tile ends with chunk 15's readout after its last IMMA: in the
+// default's SASS, 79 instructions and 177 cycles of static stalls between that IMMA and
+// the hand-off barrier (31 LOP3, most of them the fold's, 6 SHFL, 3 STS, the next tile's
+// 8 loads, and address math). The hasher, the last warp to the barrier, runs them while
+// its partner waits there; the round-2 design put them at 181-190 cycles a tile. With
+// the switch the next tile's k-step 0 folds each B pair's accumulators just before the
+// pair's first IMMA, which take C = 0; the words are stored to the finished tile's
+// buffer by the end of k-step 1; then come the hand-off barrier and the hash. The
+// block's first tile has no tile before it, and its last runs those two k-steps over its
+// own operands and drops what they add (256 IMMA a block a launch, against a branch in
+// the loop). The words and their buffers are the same, so transcripts, hashes and hits
+// are the same bit for bit. pearl_fold_bd.cuh (tile_head and the persistent loop) has
+// the order of the stores, the barrier and the two buffers.
+// earn/test/turingLastRo.test.js runs the fold's source for blocks of 1 to 6 tiles,
+// warps in a random order, and checks each hand-off's buffer against the build without
+// the switch.
+//
+// Two things had to move with it. The B words of the pair's C = 0 IMMA both wait on the
+// fold (pearl_bd_after), or ptxas runs those IMMA first and spills (255 registers, 56
+// bytes). And the chunk loop stores its readout after the pass's last k-step instead of
+// before it: in place, ptxas left that k-step's eight loads of the next pass behind the
+// stores, at the pass's end, 10 IMMA before their use, in every variant of the head
+// tried (it fails the last three of LEAN's five gates, above). The hash now runs with
+// the next tile's accumulators live, in 701 instructions (the default's 702).
+//
+// ptxas 12.8: 252 registers, no spill, 659 instructions a chunk-loop pass (the default's
+// 661). The chunk loop's stores, after its last k-step, are a branch: a convergence
+// region (BSSY, BSYNC) around the pass's last 15 IMMA, then the writer lanes' 10
+// address instructions and 2 STS; the default predicates its two STS. The split hash
+// stores with a predicated st.shared to avoid that branch (pearl_fold_bd.cuh, its
+// readout_st); that form was not built with LAST_RO. The tile's last IMMA is followed
+// by the barrier, nothing between; the fold's 64 LOP3 and 8 PRMT sit among the last
+// IMMA of k-step 63 and the first of k-step 0, and the shuffles and stores among the
+// last 32 of k-step 1. Loop loads go out 84 IMMA or more before their use and the first
+// loop IMMA's 214 (the default's 128 and 213), with 6 IMMA whose read and result share
+// a scoreboard: it misses the fifth of LEAN's gates (at most 5) by one (round 5's
+// sbfix1, which moved five such reads off, measured nothing). Fold machine code
+// 5eab66767c5b. With SNAKE it passes all five: 249 registers, loads 98 and 215 IMMA
+// ahead, 5 (c6910403ef8b). On the fold before LEAN
+// (-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0) it builds (247 registers) but fails three
+// gates (loads 15 and 12 IMMA ahead, 19 IMMA on one scoreboard), so that and any other
+// fold is an error. Not measured on a card. Device only; the host reads it only for the
+// fold's name.
+#ifndef PEARL_BD_LAST_RO
+#define PEARL_BD_LAST_RO 0
+#endif
+#if PEARL_BD_LAST_RO != 0 && PEARL_BD_LAST_RO != 1
+#error "PEARL_BD_LAST_RO is 0 or 1"
+#endif
+#if PEARL_BD_LAST_RO \
+    && !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG && PEARL_BD_GATE == 1 \
+         && PEARL_BD_HIT_COORDS)
+#error "PEARL_BD_LAST_RO is written for the default fold with LEAN and HIT_COORDS: A-direct, k-lo first, persistent, two row groups, two transcript buffers, RUNBASE, TAIL_LDG and GATE 1"
+#endif
+#if PEARL_BD_LAST_RO && (PEARL_BD_RED || PEARL_BD_TADDR || PEARL_BD_HASH_SPLIT)
+#error "PEARL_BD_LAST_RO is not built with PEARL_BD_RED, _TADDR or the split hash, which change the readout's store or the hand-off"
+#endif
+// PEARL_BD_HASH_RG (0 by default), from round 6 (2026-10-21): the second row group's
+// four warps (4-7, one on each scheduler) hash all 128 regions at the hand-off, region
+// L = sid, instead of warps 0, 1, 6 and 7. Each scheduler still has one warp hashing
+// while the other starts the next tile, and each region is hashed once by the same
+// code, so hashes, hits and region numbers are the same; only a hit's slot within a
+// batch can change, and the host sorts hits by region (pearl_host_collect). As shipped,
+// two of a row group's four warps, which read the same A lines, run about a hash behind
+// the other two. With the switch a row group's warps run in phase, and only B's pairs
+// (warps w and w + 4) run a hash apart. The round-4 design's L1 model put that at 0 to
+// +0.8% raw, all energy and none per clock. Round 5 raced it as a three-instruction patch
+// of the default's cubin (probes/turing/sm75/hashrg.json, 6d9fcd3f8d0e): -0.16% on a 2060
+// (bench), +0.13 to +0.18% on a 2070, a 2080 and a 2080 Ti (hashrate.js). That patch fits
+// only the default's code; in source it stacks with LAST_RO.
+// earn/test/turingHashRg.test.js checks that threads 128-255 hash regions 0-127 once a
+// tile, with the default's region numbers, and that the hits after the host's sort are
+// the same.
+//
+// Written plainly (hasher = wr != 0, fold 861425576988), ptxas rescheduled the chunk loop:
+// 246 registers, static stalls 2177 cycles a pass against 2194, and a lone warp's static
+// waits at non-IMMA 305 cycles a pass against 227. In the PTX, next_srcs then took
+// a_off's wr * 4 from a value held since the prologue ((threadIdx.x >> 5) & ~3) instead
+// of from wr, which the hash had shared with it. An opaque wr, an opaque thread index,
+// row group 0 hashing and an opaque 0 in the default's test built that same loop. So
+// hash_tile keeps the default's test and flips it with sid < 64 on a copy of sid behind
+// an empty asm, osid (the default's test xor sid < 64 is wr), with L = osid; the PTX
+// before the hand-off is then the default's. With L = sid the loop's predicate registers
+// were renumbered.
+//
+// ptxas 12.8: 243 registers, no spill, and the default's chunk loop exactly: the same
+// 661 instructions, registers and control bits. Outside the loop 3 of the tail's 445
+// instructions differ (the role test) and 15 of the 920 after the barrier (the hash's
+// first few and a hit's region number), where the patch changed 3 in all. It passes
+// LEAN's five gates with the default's figures. Fold machine code ac1a72f2434b. With
+// SNAKE (2f4f2041b56a) the loop is SNAKE's exactly. With LAST_RO (e17e255bd8c0), LAST_RO
+// and SNAKE (669cbcb07f55), HIT_COORDS 0 (4b7f96642043) or the fold before LEAN
+// (-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0, e9bbf1c82a06) it is that build's loop with
+// its predicate registers renumbered, at the same register count and the same gates; in
+// those four ptxas orders the hash differently, in as many instructions, and with
+// LAST_RO alone it issues two of the tail's loads 16 IMMA earlier. With RED ptxas
+// reschedules RED's chunk loop in each form tried (469 to 617 of 646 instructions in
+// place), so RED is an error; so is the split hash, whose pairs are the default's
+// hashers. Not measured on a card. Device only; the host reads it only for the fold's
+// name.
+#ifndef PEARL_BD_HASH_RG
+#define PEARL_BD_HASH_RG 0
+#endif
+#if PEARL_BD_HASH_RG != 0 && PEARL_BD_HASH_RG != 1
+#error "PEARL_BD_HASH_RG is 0 or 1"
+#endif
+#if PEARL_BD_HASH_RG && !PEARL_BD_DEFAULT_FOLD
+#error "PEARL_BD_HASH_RG is written for the default fold: A-direct, k-lo first, persistent, two row groups, two transcript buffers"
+#endif
+#if PEARL_BD_HASH_RG && (PEARL_BD_RED || PEARL_BD_HASH_SPLIT)
+#error "PEARL_BD_HASH_RG is not built with PEARL_BD_RED or the split hash: with RED ptxas reschedules the chunk loop, and the split hash pairs each scheduler's warps by the default's hashers"
+#endif
+// PEARL_BD_ROWPAIR (0 by default), from round 6 (2026-10-21), designed in round 2: the
+// readout gathers a region's word with one shuffle instead of six. As shipped, lanes L,
+// L ^ 4, L ^ 8 and L ^ 12 each hold a quarter of a region in a pair of m-blocks, so a
+// chunk's readout takes 3 shuffles and 2 xors a region, two regions a lane, and lanes 0-3
+// and 16-19 store two words each. With the switch pearl_materialize16_afrag draws A' with
+// the rows of each whole 64-row warp tile permuted (row 32 s + 8 j + 4 b + 2 u1 + u0 at
+// the fold's row 16 j + 8 u0 + 4 s + 2 b + u1, then paired for k-lo first as before), so
+// lanes L and L ^ 4 hold all of region warp * 16 + (L & 3) * 4 + L / 8, a lane its half
+// in all four m-blocks. The fold xors a lane's two fold chains (the k-lo gates' rxs[0]
+// and rxs[1], unchanged), shuffles once (xor 4), and lanes 0-3, 8-11, 16-19 and 24-27
+// store one word each, at an index held in a register as TADDR's is (rebuilt from the
+// thread index every chunk instead, the round-2 build issued its loads 11 IMMA before
+// their use). A region holds the same 256 sums and the same word goes to the same place,
+// which hash_tile reads and numbers as before, so transcripts, hashes, hits and region
+// numbers are the same bit for bit. Rows past the last whole 64 keep their place: the
+// fold never reads them. The draw and the fold are both sm_75 device code from
+// pearl_kernel.cu, built with the same flags, so they always agree.
+// earn/test/turingRedReadout.test.js and turingRowpair.test.js check it from the source:
+// every byte drawn once, each fold row's bytes the permuted row's, the two lanes'
+// accumulators exactly the region regionToTile gives for the number hash_tile reports,
+// and the two buffers in a random thread order. turingRowpair.test.js also runs the
+// readout end to end on random A and B against foldTranscript.
+//
+// ptxas 12.8: 247 registers, no spill, 639 instructions a chunk-loop pass against the
+// default's 661: 1 SHFL, 1 STS, 68 LOP3 and 2 predicated instructions, against 6, 2, 75
+// and 21. Static stalls 2175 cycles a pass against 2194. Loop loads go out 86 IMMA or
+// more before their use and the first loop IMMA's 216 (the default's 128 and 213), with
+// 4 IMMA whose read and result share a scoreboard: it passes LEAN's five gates. Between
+// the tile's last IMMA and the hand-off barrier, 53 instructions and 108 cycles of static
+// stalls, against 79 and 177. Fold machine code 556eaa279b12. The store is one predicated
+// st.shared: as a C++ if, as round 2 built it, 7 IMMA share a scoreboard (245 registers,
+// 4459ec464c0a). With HASH_RG (d41a89eacf8f) and with HIT_COORDS 0 (65f1f4a5da21) the
+// loop is this one with its predicate registers renamed; with SNAKE (b26e9c316017, and
+// with HASH_RG eb274131e1df) loads go out 101 IMMA ahead, 1 IMMA on one scoreboard. All
+// pass the five gates.
+//
+// With LAST_RO (41e0ca6196a4): 249 registers, 639 a pass, static stalls 2132, loads 69
+// and 215 IMMA ahead, 5 IMMA on one scoreboard, and nothing between the tile's last
+// IMMA and the barrier; it passes all five, where LAST_RO alone misses the fifth. Its
+// store is the C++ if (with the predicated one the first loop IMMA's loads go out 67
+// IMMA ahead), and the chunk loop stores before k-step 1, not after it as LAST_RO does
+// without the switch (there: 6 IMMA on one scoreboard). With HASH_RG too (0c7e2fe8e36b)
+// it is that loop with its predicate registers renamed. LAST_RO and SNAKE (131bf13d0bea,
+// with HASH_RG 834ee04533a8): 246 registers, and 6 IMMA on one scoreboard miss the fifth
+// gate by one. On the fold before LEAN (-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0) it
+// builds round 2's code exactly (8d08492bbf70), but ptxas sinks the next tile's loads
+// past the hand-off barrier and 12 IMMA share a scoreboard, so that and any fold without
+// RUNBASE, TAIL_LDG and GATE 1 is an error; so are RED, TADDR and the split hash, which
+// store the readout their own way. Round 2 put the shuffles' price at up to the +1.3% per
+// clock their ablation measured before k-lo first; on the lean default that ablation
+// read -1.7 to -3.7% raw (probes/README.md, round 4), so what five fewer shuffles gain
+// now is not known. Not measured on a card. Device only; the host reads it only for the
+// fold's name.
+#ifndef PEARL_BD_ROWPAIR
+#define PEARL_BD_ROWPAIR 0
+#endif
+#if PEARL_BD_ROWPAIR != 0 && PEARL_BD_ROWPAIR != 1
+#error "PEARL_BD_ROWPAIR is 0 or 1"
+#endif
+#if PEARL_BD_ROWPAIR \
+    && !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE && PEARL_BD_TAIL_LDG && PEARL_BD_GATE == 1)
+#error "PEARL_BD_ROWPAIR is written for the default fold with LEAN's parts: A-direct, k-lo first, persistent, two row groups, two transcript buffers, RUNBASE, TAIL_LDG and GATE 1"
+#endif
+#if PEARL_BD_ROWPAIR && (PEARL_BD_RED || PEARL_BD_TADDR || PEARL_BD_HASH_SPLIT)
+#error "PEARL_BD_ROWPAIR is not built with PEARL_BD_RED, _TADDR or the split hash, which have readout stores of their own"
+#endif
+// PEARL_BD_HASH_SPLIT=N (0 by default, 1 to 13), from SNAKE's round: each scheduler's
 // two warps share its hash. As shipped, the hasher on a scheduler (warp 0, 1, 6 or 7)
 // hashes its 32 regions of a tile after the hand-off while its partner (4, 5, 2 or 3)
 // starts the next tile alone, and at the next hand-off the partner waits at the

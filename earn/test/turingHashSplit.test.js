@@ -919,7 +919,8 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
     expect(KERNEL).toContain('  pearl_transcript_hash(k2, m2, h);');
     expect(KERNEL).toContain('  blake3_compress(key, m, 0, 64, PEARL_TRANSCRIPT_FLAGS, out16);');
 
-    // The ids, the reads, hash_tile's hasher and region, and the readout's store.
+    // The ids, the reads, hash_tile's hasher and region (the default's: the split refuses
+    // PEARL_BD_HASH_RG), and the readout's store.
     expect(code(body(FOLD, 'auto hs_ids = [&]() -> PearlBdHs {'))).toContain(lines(
       '    uint32_t t = threadIdx.x;', '    asm volatile("" : "+r"(t));', '    PearlBdHs h;',
       '    h.s = (t >> 5) & 3u;', '    h.lane = t & 31u;', '    h.L = h.s * 32u + h.lane;',
@@ -929,7 +930,7 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
       .toContain('for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[buf + h.L * 16u + (c ^ ((h.L >> 1) & 15u))];');
     expect(FOLD_CODE).toContain('  __shared__ uint32_t sHread[4][32], sVprev[4][32];');
     expect(FOLD_CODE).toContain(lines(
-      '#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST',
+      '#elif PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST',
       '    const bool hasher = wr ? sid >= 64u : sid < 64u;',
       '    const uint32_t L = wr * 64u + (sid & 63u);'));
     expect(FOLD_CODE).toContain('  const uint32_t sid = threadIdx.x & 127u;');

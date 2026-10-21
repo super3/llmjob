@@ -355,6 +355,29 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     const uint32_t t3 = pearl_xor3((uint32_t)p3[0], (uint32_t)p3[1], (uint32_t)p3[2]);
     return pearl_xor3(t3, (uint32_t)p3[3], rest);
   };
+#if !PEARL_BD_LAST_RO
+#if PEARL_BD_ROWPAIR
+  // PEARL_BD_ROWPAIR (see pearl_config.h): the host draws A' with the rows of each
+  // 64-row warp tile permuted (pearl_materialize16_afrag), so lanes L and L ^ 4 hold
+  // all of region warp * 16 + (L & 3) * 4 + L / 8, a lane its half in the accumulators
+  // of all four m-blocks. Its two fold chains (rl 0 and 1, which the k-lo gates wait
+  // on as without the switch) are two parts of that half: xored, then one shuffle, and
+  // lanes 0-3, 8-11, 16-19 and 24-27 store the word where hash_tile reads it.
+  auto readout_x = [&]() -> uint32_t {
+    uint32_t x = 0u, y = 0u;
+#pragma unroll
+    for (uint32_t np = 0; np < NB / 2u; np++) {
+      x = fold_pair(x, 0u, np);
+      y = fold_pair(y, 1u, np);
+    }
+    x ^= y;
+#ifndef PEARL_ABLATE_TRANSCRIPT
+    // Diagnostic only when defined: skip the shuffle. Output is meaningless.
+    x ^= __shfl_xor_sync(0xffffffffu, x, 4);
+#endif
+    return x;
+  };
+#else
   // Region rl of this lane for chunk c: fold it, gather the other three lanes'
   // shares, and lanes 0-3 and 16-19 write the region's word. Word c of region L
   // sits at L * 16 + (c ^ ((L >> 1) & 15)), so the eight writers hit eight
@@ -374,6 +397,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     return x;
   };
+#endif  // PEARL_BD_ROWPAIR
+#endif  // !PEARL_BD_LAST_RO
 #if PEARL_BD_T_BUFS == 2
   // Two transcript buffers (A-direct with PEARL_BD_A_REALIGN 0): this tile's
   // words go to buffer tile & 1, so the next tile's never land on words a hasher
@@ -396,6 +421,16 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     const uint32_t L0 = warp * warp_regions + (lane & 3u) * regions_per_warp + ((lane >> 4) & 1u);
     tK = L0 * 16u | ((L0 >> 1) & 15u);
   }
+#elif PEARL_BD_ROWPAIR
+  // ROWPAIR's store index, held as TADDR's is: the word for chunk c is tK ^ c, with tK =
+  // tbuf | L0 * 16 | ((L0 >> 1) & 15) and L0 the lane's region, the default's word c
+  // of region L0. Rebuilt from the thread index every chunk instead, the round-2 build
+  // issued its loop loads 11 IMMA before their use.
+  uint32_t tK;
+  {
+    const uint32_t L0 = warp * warp_regions + (lane & 3u) * regions_per_warp + (lane >> 3);
+    tK = L0 * 16u | ((L0 >> 1) & 15u);
+  }
 #endif
 #if PEARL_BD_RED
   // PEARL_BD_RED: every lane xors its share of the region into the word
@@ -414,6 +449,24 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #elif PEARL_BD_TADDR
   auto readout_st = [&](uint32_t rl, uint32_t c, uint32_t x) {
     if (((lane >> 2) & 3u) == 0u) sT[tK ^ (33u * rl) ^ c] = x;
+  };
+#elif PEARL_BD_ROWPAIR && PEARL_BD_LAST_RO
+  // PEARL_BD_ROWPAIR: one word a lane, from lanes 0-3, 8-11, 16-19 and 24-27, whose
+  // 16 words of a chunk sit in 16 banks. With LAST_RO it is a C++ if: with the
+  // predicated store below, ptxas issued the first loop IMMA's loads only 67 IMMA
+  // before it.
+  auto readout_st = [&](uint32_t c, uint32_t x) {
+    if ((lane & 4u) == 0u) sT[tK ^ c] = x;
+  };
+#elif PEARL_BD_ROWPAIR
+  // Without LAST_RO it is one predicated st.shared, like the split hash's: with the C++
+  // if above, ptxas put 7 of the chunk loop's IMMA with their read and result on one
+  // scoreboard.
+  const uint32_t sT0 = (uint32_t)__cvta_generic_to_shared(sT);
+  auto readout_st = [&](uint32_t c, uint32_t x) {
+    asm volatile("{ .reg .pred p; setp.eq.u32 p, %2, 0; @p st.shared.u32 [%0], %1; }"
+                 ::"r"(sT0 + 4u * (tK ^ c)), "r"(x), "r"(lane & 4u)
+                 : "memory");
   };
 #elif PEARL_BD_HASH_SPLIT
   // The same store as one predicated st.shared (lanes 0-3 and 16-19). With the C++ if,
@@ -437,18 +490,40 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     }
   };
 #endif
+#if PEARL_BD_LAST_RO
+  // PEARL_BD_LAST_RO has no readout or readout_x (above): the chunk loop and tile_head
+  // read out with readout_gather and readout_st, and nvcc warned about the unused one.
+#elif PEARL_BD_ROWPAIR
+  auto readout = [&](uint32_t c) { readout_st(c, readout_x()); };
+#else
   auto readout = [&](uint32_t rl, uint32_t c) { readout_st(rl, c, readout_x(rl)); };
+#endif
 
-  // After the hand-off, every word of the group's regions is written. Hashing
-  // thread L takes region L of the group's 64 (the block's 128), the same
-  // arithmetic its warp used to write it, for the tile at row group rbg and
-  // column group cbg.
+  // After the hand-off, every word of the regions hashed here is written. Hashing
+  // thread L takes region L of the block's 128, the same arithmetic its warp used to
+  // write it, for the tile at row group rbg and column group cbg. With two row groups
+  // each hashes its own 64 by default, so a hand-off at the group's own barrier
+  // (PEARL_BD_BAR) is enough. With PEARL_BD_HASH_RG the second hashes all 128, the
+  // first's too: that needs the persistent loop's hand-off, the whole block's.
 #if PEARL_BD_HIT_COORDS
   auto hash_tile = [&](uint32_t vtile) {
 #else
   auto hash_tile = [&](uint32_t rbg, uint32_t cbg) {
 #endif
-#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
+#if PEARL_BD_HASH_RG
+    // PEARL_BD_HASH_RG (see pearl_config.h): the second group's four warps, one on each
+    // scheduler, hash all 128 regions, region L = sid. The test is the default's below,
+    // flipped where a copy of sid behind an empty asm (osid) is under 64: in the second
+    // group (sid >= 64) != (sid < 64) is true, in the first (sid < 64) != (sid < 64) is
+    // false. Written as wr != 0, the tile's next_srcs no longer shared wr with the hash
+    // and took a_off's wr * 4 from a value held since the prologue: 246 registers, and
+    // ptxas scheduled the chunk loop differently. This form, with L = osid, leaves the
+    // code before the hand-off as the default's.
+    uint32_t osid = sid;
+    asm("" : "+r"(osid));
+    const bool hasher = (wr ? sid >= 64u : sid < 64u) != (osid < 64u);
+    const uint32_t L = osid;
+#elif PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
     // The first group hashes on schedulers 0-1 and the second on 2-3, so each
     // scheduler keeps one warp on the next tile's chunk 0.
     const bool hasher = wr ? sid >= 64u : sid < 64u;
@@ -647,6 +722,15 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     return (col_off + cbg_ * 16u + wc * 4u) * FRAG_BLOCK + lane * 16u;
   };
   // The readout's shuffles (readout_x's second half); PEARL_BD_RED has none.
+#if PEARL_BD_ROWPAIR
+  // PEARL_BD_ROWPAIR's one, of the xor of the lane's two folds.
+  auto readout_gather = [&](uint32_t x) -> uint32_t {
+#ifndef PEARL_ABLATE_TRANSCRIPT
+    x ^= __shfl_xor_sync(0xffffffffu, x, 4);
+#endif
+    return x;
+  };
+#else
   auto readout_gather = [&](uint32_t x) -> uint32_t {
 #if !defined(PEARL_ABLATE_TRANSCRIPT) && !PEARL_BD_RED
     const uint32_t s4 = __shfl_xor_sync(0xffffffffu, x, 4);
@@ -656,6 +740,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     return x;
   };
+#endif
 
   // af[b][mb]: A's fragments, as bf[b][j] are B's, for this k-step (b = t & 1)
   // and the next. aoff and boff: this tile's offsets; aoffn and boffn: those
@@ -913,6 +998,10 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // c, k-step 0 of chunk c + 1 with c's readout folded in, c's stores, then
   // k-step 1. next_srcs sets aoffn and boffn before the last k-step.
   auto tile = [&](auto next_srcs) {
+#if PEARL_BD_LAST_RO
+    // K-steps 0-1 are tile_head's (below), and the last chunk's readout is in the
+    // next tile's or after this one.
+#else
 #pragma unroll
     for (uint32_t mb = 0; mb < MB; mb++)
 #pragma unroll
@@ -925,6 +1014,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     kstep(0u, 0u, false, false);
     kstep(0u, 1u, false, false);
+#endif
 #if PEARL_BD_A_REALIGN
     // Chunk 0, peeled: the row group meets once a tile, before the readout's
     // stores of chunk 0. A warp that does not hash has done five k-steps by then
@@ -963,13 +1053,33 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       kstep(chunk, 3u, false, false);
       kstep(chunk + 1u, 0u, RO, false, 1u);
 #ifndef PEARL_ABLATE_READOUT
+#if PEARL_BD_ROWPAIR
+      // One word, stored here with LAST_RO too. LAST_RO's reason to store after k-step
+      // 1 does not hold for it: here its loop's loads go out 69 IMMA or more before
+      // their use, and after k-step 1 one more IMMA has its read and result on one
+      // scoreboard (6, against 5).
+      readout_st(chunk, readout_gather(rxs[0] ^ rxs[1]));
+#else
       uint32_t rx[RPL];
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rxs[rl]);
+#if PEARL_BD_LAST_RO
+      // The stores come after k-step 1 (below).
+#else
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunk, rx[rl]);
 #endif
+#endif
+#endif
       kstep(chunk + 1u, 1u, false, false, 1u);
+#if PEARL_BD_LAST_RO && !PEARL_BD_ROWPAIR && !defined(PEARL_ABLATE_READOUT)
+      // With the last readout in tile_head, ptxas no longer hoisted k-step 1's loads
+      // of the next pass above these stores, as it does without the switch: it issued
+      // them at the pass's end, 10 IMMA before their use. Stored after k-step 1, the
+      // loads come first in the source and go out 84 IMMA or more ahead.
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunk, rx[rl]);
+#endif
     }
     next_srcs();
 #if PEARL_BD_RUNBASE
@@ -978,11 +1088,68 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     kstep(chunks - 1u, 2u, false, false);
     kstep(chunks - 1u, 3u, false, true);
+#if !PEARL_BD_LAST_RO
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
     // so the accumulators stay live.
+#if PEARL_BD_ROWPAIR
+    readout(chunks - 1u);
+#else
 #pragma unroll
     for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunks - 1u);
+#endif
+#endif
   };
+
+#if PEARL_BD_LAST_RO
+  // A tile's k-steps 0-1 (PEARL_BD_LAST_RO, see pearl_config.h). prev: a tile came
+  // before it in the block, and that tile's last chunk is read out here, as each other
+  // chunk is in the first k-step of the chunk after it (with PEARL_ABLATE_READOUT too:
+  // it is then the tile's only readout). The accumulators hold that chunk's sums until
+  // this tile's first IMMA overwrite them, so each B pair's are folded before the
+  // pair's k-lo IMMA: both of the pair's k-lo B words go through pearl_bd_after, gated
+  // on both regions' folds, because those IMMA take C = 0 (the tile's start) and read
+  // nothing the fold reads; left free, ptxas ran them first, held the old accumulators
+  // beside the new and spilled. The words are gathered and stored to the last tile's
+  // buffer (tbuf, moved on at the loop's top only after the hash), and the caller's
+  // hand-off barrier after k-step 1 publishes them. ptxas keeps k-step 1's loads of
+  // k-step 2 ahead of that barrier, as TAIL_LDG keeps the tail's.
+  auto tile_head = [&](bool prev) {
+    uint32_t rx[RPL] = {0u, 0u};
+    if (prev) {
+#pragma unroll
+      for (uint32_t j = 0; j < 4u; j++) {
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = fold_pair(rx[rl], rl, j);
+        // Pair j's k-lo words (b_word): x and y of quad 0 or 2, or z and w.
+        const uint32_t g = rx[0] ^ rx[1];
+        int4 &q = bf[0][(j / 2u) * 2u];
+        int &b0 = j & 1u ? q.z : q.x, &b2 = j & 1u ? q.w : q.y;
+        b0 = (int)pearl_bd_after((uint32_t)b0, g);
+        b2 = (int)pearl_bd_after((uint32_t)b2, g);
+      }
+    }
+#pragma unroll
+    for (uint32_t mb = 0; mb < MB; mb++)
+#pragma unroll
+      for (uint32_t nb = 0; nb < NB; nb++)
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
+    arun = aoff;
+    brun = boff;
+    kstep(0u, 0u, false, false);
+    if (prev) {
+#if PEARL_BD_ROWPAIR
+      readout_st(chunks - 1u, readout_gather(rx[0] ^ rx[1]));
+#else
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) rx[rl] = readout_gather(rx[rl]);
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++) readout_st(rl, chunks - 1u, rx[rl]);
+#endif
+    }
+    kstep(0u, 1u, false, false);
+  };
+#endif
 
 #if PEARL_BD_PERSIST
   // Persistent, as the staged form: block b starts on tile b and takes every
@@ -1010,12 +1177,17 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     boff = b_off(cbg0);
     tile_prologue();
   }
+#if PEARL_BD_LAST_RO
+  // The first tile's k-steps 0-1, with no tile before it to read out. They touch no
+  // shared memory, so they can run before the barrier.
+  tile_head(false);
+#endif
   __syncthreads();
   uint32_t it = 0u;
   for (uint32_t v = blockIdx.x; v < tiles; it++) {
 #if PEARL_BD_T_BUFS == 2
     tbuf = (it & 1u) * TWORDS;
-#if PEARL_BD_TADDR
+#if PEARL_BD_TADDR || PEARL_BD_ROWPAIR
     // The readout's index into this tile's buffer (TWORDS, 2048, is above its bits).
     tK = (tK & (TWORDS - 1u)) | tbuf;
     asm volatile("" : "+r"(tK));
@@ -1036,6 +1208,19 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       aoffn = a_off(rbgn);
       boffn = b_off(cbgn);
     });
+#if PEARL_BD_LAST_RO
+    // This tile's last chunk, read out in the next tile's k-steps 0-1, which run
+    // before this tile's hand-off, so every word of the tile is stored before the
+    // barrier below. The next tile writes the other buffer, and only from its chunk
+    // 0's readout, after that barrier; the hashers read this buffer after it, and the
+    // tile after next writes here only past the next hand-off, which they reach after
+    // their reads. The block's last tile runs them too, over its own operands (next_srcs
+    // gave it its own offsets), and nothing reads what they add: 256 IMMA a block a
+    // launch, against a branch in the loop.
+    aoff = aoffn;
+    boff = boffn;
+    tile_head(true);
+#endif
 #if PEARL_BD_HASH_SPLIT
     // Hand-off it of the split hash (see split_first): the pair hashes tile it - 1 from
     // the other buffer, X before the barrier and Y after it.
@@ -1066,7 +1251,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     }
 #endif
 #endif  // PEARL_BD_HASH_SPLIT
-    // The next tile's k-step 0 is already in af[0] and bf[0].
+    // The next tile's k-step 0 is already in af[0] and bf[0]. With LAST_RO tile_head
+    // has run its k-steps 0-1, af[0] and bf[0] hold its k-step 2, and these two lines
+    // repeat the ones before tile_head.
     aoff = aoffn;
     boff = boffn;
     v = vnext;

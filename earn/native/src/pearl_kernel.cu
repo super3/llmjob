@@ -1113,6 +1113,27 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
   const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
                           (uint32_t)b4.w};
   const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#if PEARL_BD_ROWPAIR
+  // PEARL_BD_ROWPAIR (see pearl_config.h): row r of each whole 64-row warp tile, r =
+  // 64 G + 32 s + 8 j + 4 b + 2 u1 + u0, goes to the fold's row rq = 64 G + 16 j + 8 u0 +
+  // 4 s + 2 b + u1, which is then paired as below. That row is lane 4 (4 s + 2 b + u1)
+  // + t's, so lanes L and L ^ 4 hold the 16 rows of one region (rows 32 s + 4 b + {0-3,
+  // 8-11, 16-19, 24-27}). Only the values' places move. Rows past the last whole 64
+  // stay where they are: the fold never reads them, and permuted they would land past
+  // the end of A'.
+  const uint32_t o6 = r & 63u;
+  const uint32_t rq = (r | 63u) < rows
+                          ? (r & ~63u) | (((o6 >> 3) & 3u) << 4) | ((o6 & 1u) << 3)
+                                | (((o6 >> 5) & 1u) << 2) | (((o6 >> 2) & 1u) << 1) | ((o6 >> 1) & 1u)
+                          : r;
+  const uint32_t bl = rq >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((rq >> 3) & 1u)
+                              : ((kk >> 4) & 1u) * 2u + ((rq >> 3) & 1u);
+  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (rq & 7u) * 64u) + reg;
+#else
 #if PEARL_BD_KORDER
   // Paired as B' is (pearl_materialize16_frag): block 2p's slot holds both
   // blocks' a0, a1 and block 2p + 1's their a2, a3.
@@ -1127,6 +1148,7 @@ extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ 
   const uint32_t reg = ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
 #endif
   uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+#endif  // PEARL_BD_ROWPAIR
 #pragma unroll
   for (int w = 0; w < 4; w++) {
     const uint4 q0 = pp[w * 2];

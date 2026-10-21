@@ -2908,7 +2908,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
 #if PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 \
-    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT
+    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG
     // The fold's default-off switches (pearl_config.h, after PEARL_BD_A_DIRECT_TAG), so
     // a reading from one of them is not credited to the default fold. LEAN shows as
     // its parts.
@@ -2923,6 +2923,14 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       n = strlen(c->foldName);
       if (PEARL_BD_HASH_SPLIT)
         snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_SPLIT=%d", PEARL_BD_HASH_SPLIT);
+      // LAST_RO needs LEAN's parts, so the #if above lets it through.
+      n = strlen(c->foldName);
+      if (PEARL_BD_LAST_RO) snprintf(c->foldName + n, sizeof c->foldName - n, " LAST_RO");
+      n = strlen(c->foldName);
+      if (PEARL_BD_HASH_RG) snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
+      // ROWPAIR, like LAST_RO, needs LEAN's parts.
+      n = strlen(c->foldName);
+      if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
     }
 #endif
     return ctx->foldName;
