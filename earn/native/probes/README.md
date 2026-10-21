@@ -1903,3 +1903,13 @@ What it says: the schedule-level losses the model can see are gone or not real. 
 left between this fold and its readout-and-hash-free ceiling (+1 to +2% per clock,
 round 4) is the readout's and hash's own work, and the rest of the gap to the IMMA peak
 is energy at the power limit.
+
+### Pool runs of a checkout's core: `turing/pool.sh`
+
+`WALLET=prl1... SRC=<checkout> OUT=<dir> bash earn/native/probes/turing/pool.sh` builds the
+default core with `compilers.sh`, runs verify-hits.js on it for 90 s, then runs the CLI
+(`--mode mining`, no Monero) on `us.pearl.herominers.com:1200`: a 60 s warm-up that is not
+measured, then 5 minutes. It reports the mean of the CLI's readings after the first minute,
+as benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
+miner runs. It differs from benchmark.md's method only in using this checkout's core instead
+of the release files, so its results go in a section's notes and never change a row.
