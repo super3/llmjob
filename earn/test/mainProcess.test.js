@@ -726,14 +726,21 @@ describe('simple ipc handlers', () => {
     expect(await ctx.invoke('settings:get')).toMatchObject({ region: 'fr', regionSaved: true });
   });
 
-  // Each coin's pool names an option that exists: the saved one, else the
-  // default, which is also what a file from before the choice gets.
-  it('settings:get hands back a known pool for each coin', async () => {
+  // The pool and server name an option that exists: the saved ones, else
+  // defaults, which is also what a file from before the choice gets.
+  it('settings:get hands back a known pool and a server it has', async () => {
     const ctx = loadMain();
-    expect(await ctx.invoke('settings:get')).toMatchObject({ prlPool: 'herominers', xmrPool: 'herominers' });
+    expect(await ctx.invoke('settings:get')).toMatchObject({ pool: 'herominers', region: 'us' });
     ctx.fs.existsSync.mockImplementation((p) => p === SETTINGS_PATH);
-    ctx.fs.readFileSync.mockReturnValue('{"prlPool":"kryptex","xmrPool":"nowhere"}');
-    expect(await ctx.invoke('settings:get')).toMatchObject({ prlPool: 'kryptex', xmrPool: 'herominers' });
+    const saved = async (json) => {
+      ctx.fs.readFileSync.mockReturnValue(json);
+      const s = await ctx.invoke('settings:get');
+      return [s.pool, s.region];
+    };
+    expect(await saved('{"pool":"kryptex","region":"eu"}')).toEqual(['kryptex', 'eu']);
+    expect(await saved('{"pool":"kryptex","region":"de"}')).toEqual(['kryptex', 'us']);
+    expect(await saved('{"pool":"nowhere","region":"eu"}')).toEqual(['herominers', 'us']);
+    expect(await saved('{"region":"eu1"}')).toEqual(['herominers', 'de']);
   });
 
   // Every state file is replaced whole, through a temp file renamed over it,
@@ -762,7 +769,6 @@ describe('simple ipc handlers', () => {
     // The worker default is this machine's, the same one settings:get fills in,
     // so the renderer never falls back to the shared "rig01".
     expect(await ctx.invoke('config:get')).toEqual({
-      regions: ctx.config.REGIONS,
       pools: ctx.config.POOLS,
       defaults: Object.assign({}, ctx.config.DEFAULTS, { worker: defaultWorker() }),
       platform: { minerSupported: true },
@@ -1551,12 +1557,12 @@ describe('mining', () => {
     expect(ctx.PearlEngine.instances).toHaveLength(0);
   });
 
-  // Kryptex's server for the region, and its 3% fee off the estimate: the same
+  // The Kryptex server picked, and its 3% fee off the estimate: the same
   // hashrate on HeroMiners, which takes none, estimates 1/0.97 as much.
   it('mines Pearl on Kryptex when Settings picks it, and takes its fee off the estimate', async () => {
-    const estimate = async (prlPool) => {
+    const estimate = async (pool, region) => {
       const ctx = await boot();
-      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', region: 'us2', prlPool });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining', region, pool });
       await flush();
       const miner = ctx.PearlEngine.instances[0];
       miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 300, gpu: 'RTX 4090' });
@@ -1565,9 +1571,9 @@ describe('mining', () => {
       const usd = Number(ctx.sent('miner:stats').slice(-1)[0].estDay.replace(/[$,]/g, ''));
       return { endpoint: miner.start.mock.calls[0][0].endpoint, usd };
     };
-    const kx = await estimate('kryptex');
-    const hm = await estimate('herominers');
-    expect([kx.endpoint, hm.endpoint]).toEqual(['prl-us.kryptex.network:7048', 'us2.pearl.herominers.com:1200']);
+    const kx = await estimate('kryptex', 'eu');
+    const hm = await estimate('herominers', 'us2');
+    expect([kx.endpoint, hm.endpoint]).toEqual(['prl-eu.kryptex.network:7048', 'us2.pearl.herominers.com:1200']);
     expect(hm.usd).toBeGreaterThan(1);
     expect(kx.usd / hm.usd).toBeCloseTo(0.97, 2);
   });
@@ -5131,11 +5137,12 @@ describe('CPU mining (Monero)', () => {
     expect(await ctx.invoke('xmr:balance', XMR_ADDR, 'kryptex')).toEqual({ pending: 0.25, paid: 0, earned: 0.25, usd: null });
   });
 
-  it('mines Monero on Kryptex when Settings picks it, on its server nearest the region', async () => {
+  // One pick for both coins: Monero mines on the pool and server Pearl does.
+  it('mines Monero on the pool and server picked for Pearl', async () => {
     const ctx = await boot();
-    await start(ctx, { region: 'fi', cpuMining: true, xmrAddress: XMR_ADDR, xmrPool: 'kryptex' });
+    await start(ctx, { region: 'sg', pool: 'kryptex', cpuMining: true, xmrAddress: XMR_ADDR });
     expect(ctx.XmrEngine.instances[0].start).toHaveBeenCalledWith(
-      expect.objectContaining({ endpoint: 'xmr-eu.kryptex.network:7029' }));
+      expect.objectContaining({ endpoint: 'xmr-sg.kryptex.network:7029' }));
   });
 
   // Its dollar figure for Settings: the pool's own XMR price, from /api/stats,

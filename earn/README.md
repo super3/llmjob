@@ -72,10 +72,14 @@ separate engine to download or start. The installer ships the cores in
 and the CLI looks for them beside its binary. If no core loads, the app says so
 and doesn't mine.
 
-It mines on **HeroMiners** (`<region>.pearl.herominers.com:1200`), in the
-region with the lowest latency unless one is pinned: `us`, `us2`, `ca`, `br`,
-`de`, `fi`, `fr`, `tr`, `sg`, `hk`, `kr` or `au`. The pool sends a block header
-and a target, and the core chooses how to search.
+By default it mines on **HeroMiners** (`<region>.pearl.herominers.com:1200`),
+in the region with the lowest latency unless one is pinned: `us`, `us2`, `ca`,
+`br`, `de`, `fi`, `fr`, `tr`, `sg`, `hk`, `kr` or `au`. The desktop app's Pool
+menu (Settings → Connection) can pick **Kryptex** instead, on one of its
+servers: `prl-<server>.kryptex.network:7048`, where the server is `us`, `eu`,
+`br`, `sg` or `hk`. Kryptex charges 3% and has no MDL merge mining. The CLI
+mines there with `--pool`. Either pool sends a block header and a target, and
+the core chooses how to search.
 
 Earlier versions wrapped AlphaPool's `alpha-miner`. That engine and
 that pool are gone. An old AlphaPool region id (`us1`, `eu1`, `eu2`, `ru1`,
@@ -262,7 +266,11 @@ payment ID, are not taken.
 **The pool** is HeroMiners' Monero pool, port 1111, in the same region as the
 Pearl pool: a rig on `us2` mines Monero on `us2.monero.herominers.com`. Today
 every regional name points at one server in Frankfurt. It charges 0.9%, and pays every
-10 minutes once the balance reaches 0.01 XMR. There is no dev fee.
+10 minutes once the balance reaches 0.01 XMR. In the desktop app, picking
+Kryptex in the Pool menu moves Monero there too, to the same server
+(`xmr-<server>.kryptex.network:7029`), at 1% and a 0.01 XMR minimum payout. The
+CLI mines Monero on HeroMiners unless `--xmr-pool` names another endpoint.
+There is no dev fee.
 
 **How many threads.** It counts the CPUs this process may use, its affinity
 and any container CPU limit (cgroup), not just the machine's cores, and always

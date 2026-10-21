@@ -34,8 +34,8 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, POOLS, KRYPTEX, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
-  resolveEndpoint, migrateRegion, xmrEndpointFor, poolId, feeShare,
+  DEFAULTS, POOLS, KRYPTEX, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
+  resolveEndpoint, liveRegion, xmrEndpointFor, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -176,12 +176,14 @@ const settingsLog = (m) => console.error(m);
 function loadSettings() {
   return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
-// Translate a saved AlphaPool region onto a live one. Not a write: the renderer
-// hands the migrated id straight back when the user next saves, so the file
-// heals itself without a startup rewrite that would touch a settings file we
-// might have failed to read properly.
+// A pool that exists and a server it has, with a saved AlphaPool region
+// translated onto a live one. Not a write: the renderer hands the migrated id
+// straight back when the user next saves, so the file heals itself without a
+// startup rewrite that would touch a settings file we might have failed to
+// read properly.
 function withLiveRegion(s) {
-  return Object.assign({}, s, { region: migrateRegion(s.region) });
+  const pool = poolId(s.pool);
+  return Object.assign({}, s, { pool, region: liveRegion(pool, s.region) });
 }
 
 function persistSettings(s) {
@@ -465,8 +467,8 @@ function startCpuMining(settings) {
   engine.start({
     address: String(settings.xmrAddress).trim(),
     worker: settings.worker || DEFAULTS.worker,
-    // The Monero host follows the Pearl region, on the Monero pool.
-    endpoint: xmrEndpointFor(migrateRegion(settings.region), settings.xmrPool),
+    // The pool and server picked for Pearl.
+    endpoint: xmrEndpointFor(liveRegion(settings.pool, settings.region), settings.pool),
     threads: plan.threads,
   });
   sendCpu();
@@ -540,7 +542,7 @@ function statsView(snap) {
     uptime: format.formatUptime(snap.uptimeSec),
     // After the fee of the pool this START mines Pearl on.
     estDay: earnings.estDailyUsdLabel(snap.total,
-      Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.prlPool) })),
+      Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.pool) })),
   };
 }
 
@@ -2134,8 +2136,8 @@ function setPrefs(change) {
   return saved;
 }
 
-// The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
-// reach a <select> with no matching option, which blanks it silently.
+// The renderer gets a pool and region that EXIST. A saved AlphaPool id would
+// otherwise reach a <select> with no matching option, which blanks it silently.
 // A launch at login starts mining once, the first time the renderer asks.
 let startMiningOnLaunch = hiddenLaunch;
 
@@ -2159,9 +2161,6 @@ ipcMain.handle('settings:get', () => {
   // The renderer picks the nearest region only when none was saved. The region
   // above is filled in either way, so it can't tell by itself.
   s.regionSaved = !!saved.region;
-  // A pool that exists, like the region: an unknown one would blank its <select>.
-  s.prlPool = poolId(s.prlPool);
-  s.xmrPool = poolId(s.xmrPool);
   // The renderer already resumes a START after an update; a launch at login asks
   // for the same thing. It starts only what START could: with no payout
   // address, an LLM-only or Auto run, or the CPU miner.
@@ -2181,7 +2180,7 @@ ipcMain.handle('config:get', () => {
   // install has the worker that does it.
   const plan = cpuPlan(0);
   return {
-    regions: REGIONS,
+    // Each pool with its servers, for the Settings pool menu.
     pools: POOLS,
     // The worker default is this machine's, as settings:get fills it, so a
     // Worker box cleared in Settings falls back to it rather than to "rig01".

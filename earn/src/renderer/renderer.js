@@ -41,7 +41,7 @@
     connectReach: $('connect-reach'),
     // settings
     modeSeg: $('mode-seg'), modeHint: $('mode-hint'),
-    setWorker: $('set-worker'), setRegion: $('set-region'), setPrlPool: $('set-prl-pool'), setXmrPool: $('set-xmr-pool'),
+    setWorker: $('set-worker'), setPool: $('set-pool'), poolName: $('pool-name'),
     setShare: $('set-share'), shareNote: $('share-note'),
     appVersion: $('app-version'), btnCheckUpdate: $('btn-check-update'), updateCheckLabel: $('update-check-label'), updateStatus: $('update-status'),
     prefTray: $('pref-tray'), prefStartup: $('pref-startup'), prefIdle: $('pref-idle'),
@@ -72,8 +72,9 @@
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
-    // The pool each coin mines on (config POOLS). main fills in the default.
-    prlPool: 'herominers', xmrPool: 'herominers',
+    // The pool both coins mine on (config POOLS). main fills in the default.
+    pool: 'herominers',
+    poolNames: {},       // pool id -> name, from config.pools
     shareLlm: false,     // API tab: share the local LLM on port 8000
     // The card the ENGINE says it is mining on, once it says so. `gpu` above is
     // only the startup auto-detect, and on a multi-GPU rig the two can be
@@ -710,10 +711,10 @@
 
   async function refreshXmrBalance() {
     const a = state.xmrAddress.trim();
-    const pool = state.xmrPool;
+    const pool = state.pool;
     if (!state.cpuMining || !state.xmrOk || !api.getXmrBalance) return;
     const b = await api.getXmrBalance(a, pool);
-    if (!b || a !== state.xmrAddress.trim() || pool !== state.xmrPool) return;
+    if (!b || a !== state.xmrAddress.trim() || pool !== state.pool) return;
     state.xmrBalance = b.earned;
     state.xmrUsd = b.usd;
     renderCpuRow();
@@ -770,10 +771,9 @@
       state.cpuView = null;
     }
     el.btnStart.disabled = !canStart();
-    // A pool change takes the next START, and each balance shows the pool
-    // picked, so the pools stay put while mining, as the Monero address does.
-    el.setPrlPool.disabled = state.mining;
-    el.setXmrPool.disabled = state.mining;
+    // A pool change takes the next START, and the balances show the pool
+    // picked, so the pool stays put while mining, as the Monero address does.
+    el.setPool.disabled = state.mining;
     renderCpuSettings();
     renderCpuRow();
   }
@@ -795,10 +795,10 @@
 
   async function refreshBalance() {
     const addr = state.address.trim();
-    const pool = state.prlPool;
+    const pool = state.pool;
     if (!isValid(addr) || !api.getBalance) return;
     const b = await api.getBalance(addr, pool);
-    if (!b || addr !== state.address.trim() || pool !== state.prlPool) return;
+    if (!b || addr !== state.address.trim() || pool !== state.pool) return;
     el.balance.textContent = fmt3(b.earned);
     el.balanceUsd.textContent = b.usd != null ? '≈ ' + fmtUsd(b.usd) : '';
   }
@@ -903,6 +903,32 @@
     renderMiningState();
   }
 
+  // The pool menu's value is "pool:region", so one choice names both.
+  function poolChoice() {
+    const [pool, region] = el.setPool.value.split(':');
+    return { pool: pool || state.pool, region: region || state.defaultRegion };
+  }
+
+  // The pool's name in front of the server, and the room the select makes for
+  // it and for the longest name (styles .pool-pick). The drawn name is hidden
+  // from screen readers, so the select's own name carries it: three servers
+  // are named the same on both pools.
+  function renderPoolName() {
+    const prefix = (name) => (name ? name + ' · ' : '');
+    const name = state.poolNames[poolChoice().pool];
+    const text = prefix(name);
+    el.poolName.textContent = text;
+    el.setPool.setAttribute('aria-label', name ? 'Pool: ' + name : 'Pool');
+    el.setPool.style.setProperty('--pool-ch', String(text.length));
+    const longest = Math.max(0, ...Object.values(state.poolNames).map((n) => prefix(n).length));
+    el.setPool.style.setProperty('--pool-ch-max', String(longest));
+  }
+
+  function pickPool(pool, region) {
+    el.setPool.value = pool + ':' + region;
+    renderPoolName();
+  }
+
   // mdlAddress is carried through untouched, never shown. Merge mining is
   // retired from the UI, but an address someone already configured keeps
   // earning — and settings are persisted FROM this object, so omitting the key
@@ -910,10 +936,11 @@
   // we are deliberately preserving. There is no way to set one any more; this
   // only round-trips what is already there.
   function currentSettings() {
+    const choice = poolChoice();
     return {
       address: state.address.trim(),
       worker: el.setWorker.value.trim() || state.defaultWorker,
-      region: el.setRegion.value || state.defaultRegion,
+      region: choice.region,
       mode: state.mode || 'mining',
       mdlAddress: state.mdlAddress || '',
       // Carried so a START, which rewrites settings.json from this object, keeps
@@ -922,8 +949,7 @@
       cpuMining: state.cpuMining,
       xmrAddress: state.xmrAddress.trim(),
       cpuThreads: state.cpuThreads,
-      prlPool: state.prlPool,
-      xmrPool: state.xmrPool,
+      pool: choice.pool,
     };
   }
 
@@ -1127,15 +1153,16 @@
       if (xmrCheckTimer) clearTimeout(xmrCheckTimer);
       xmrCheckTimer = setTimeout(checkXmr, 400);
     });
-    // Each balance follows its pool at once: the old pool's figure is not this
-    // one's, so it reads 0 until the new pool answers.
-    el.setPrlPool.addEventListener('change', () => {
-      state.prlPool = el.setPrlPool.value;
+    // Both balances follow the pool at once: the old pool's figures are not
+    // this one's, so they read 0 until the new pool answers. Another server on
+    // the same pool keeps them.
+    el.setPool.addEventListener('change', () => {
+      renderPoolName();
+      const { pool } = poolChoice();
+      if (pool === state.pool) return;
+      state.pool = pool;
       resetBalance();
       refreshBalance();
-    });
-    el.setXmrPool.addEventListener('change', () => {
-      state.xmrPool = el.setXmrPool.value;
       state.xmrBalance = null;
       state.xmrUsd = null;
       renderCpuRow();
@@ -1171,33 +1198,30 @@
       // Before the saved settings are applied — usableMode() below depends on it.
       applyPlatform(config && config.platform);
       state.cpu = (config && config.cpu) || null;
-      const regions = (config && config.regions) || {};
       const cfgDefaults = (config && config.defaults) || {};
       state.defaultRegion = cfgDefaults.region || state.defaultRegion;
       state.defaultWorker = cfgDefaults.worker || state.defaultWorker;
       // A cleared box shows the name a START will use.
       el.setWorker.placeholder = state.defaultWorker;
-      el.setRegion.innerHTML = '';
-      Object.keys(regions).forEach((key) => {
-        const opt = document.createElement('option');
-        opt.value = key;
-        // Not the id: it names a HeroMiners server, and the region picks
-        // Kryptex's too.
-        opt.textContent = regions[key].flag + ' ' + regions[key].name;
-        el.setRegion.appendChild(opt);
-      });
-      // Each pool with that coin's fee, which comes off what the rig earns.
+      // A group per pool, headed by its fees, which come off what the rig
+      // earns, with its servers under it.
       const pools = (config && config.pools) || {};
-      const fee = (pct) => (pct ? pct + '% fee' : 'no fee');
-      for (const [select, feeKey] of [[el.setPrlPool, 'prlFeePct'], [el.setXmrPool, 'xmrFeePct']]) {
-        select.innerHTML = '';
-        Object.keys(pools).forEach((key) => {
+      el.setPool.innerHTML = '';
+      Object.keys(pools).forEach((id) => {
+        const p = pools[id];
+        state.poolNames[id] = p.name;
+        const group = document.createElement('optgroup');
+        group.label = p.name + ' · fees ' + p.prlFeePct + '% Pearl, ' + p.xmrFeePct + '% Monero';
+        Object.keys(p.regions).forEach((key) => {
           const opt = document.createElement('option');
-          opt.value = key;
-          opt.textContent = pools[key].name + ' · ' + fee(pools[key][feeKey]);
-          select.appendChild(opt);
+          opt.value = id + ':' + key;
+          opt.textContent = p.regions[key].flag + ' ' + p.regions[key].name;
+          // A screen reader reads the option alone, without its group.
+          opt.setAttribute('aria-label', p.name + ', ' + p.regions[key].name);
+          group.appendChild(opt);
         });
-      }
+        el.setPool.appendChild(group);
+      });
     }
     let resumeMining = false;
     let regionSaved = false;
@@ -1213,15 +1237,11 @@
       el.setXmr.value = state.xmrAddress;
       state.cpuThreads = Number(s.cpuThreads) || 0;
       el.setWorker.value = s.worker || state.defaultWorker;
-      // main migrates a stale AlphaPool id before we see it, so this always
-      // names an option that exists.
-      el.setRegion.value = s.region || state.defaultRegion;
+      // main hands back a known pool and a server it has, with a stale
+      // AlphaPool id migrated, so this always names an option that exists.
+      state.pool = s.pool || state.pool;
+      pickPool(state.pool, s.region || state.defaultRegion);
       regionSaved = !!s.regionSaved;
-      // main hands back a known pool for each, the default when none was saved.
-      state.prlPool = s.prlPool || state.prlPool;
-      state.xmrPool = s.xmrPool || state.xmrPool;
-      el.setPrlPool.value = state.prlPool;
-      el.setXmrPool.value = state.xmrPool;
       // 'auto' to match shared/llmMode's DEFAULT_MODE, which is what main sends
       // for a fresh install. This fallback only fires on a FALSY stored mode —
       // a hand-edited or half-written settings.json holding null or "" — and it
@@ -1253,7 +1273,8 @@
     // saved the replacement. Offline at login, that was the US fallback.
     if (api.detectRegion && !state.mining && !regionSaved) {
       const region = await api.detectRegion();
-      if (region) el.setRegion.value = region;
+      // Detection measures HeroMiners' servers.
+      if (region && state.pool === 'herominers') pickPool(state.pool, region);
     }
     if (api.onStats) api.onStats(applyStats);
     if (api.onCpuStats) api.onCpuStats(applyCpuStats);

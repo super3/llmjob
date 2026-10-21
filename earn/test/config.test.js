@@ -1,8 +1,9 @@
 'use strict';
 
 const {
-  REGIONS, DEFAULTS, MINER, XMR, ECON, POOLS, DEFAULT_POOL, KRYPTEX,
-  regionFor, endpointFor, xmrEndpointFor, poolId, feeShare, normalizeEndpoint, resolveEndpoint, splitEndpoint, regionLabel,
+  REGIONS, DEFAULTS, MINER, XMR, ECON, POOLS, DEFAULT_POOL, KRYPTEX, KRYPTEX_REGIONS,
+  regionFor, endpointFor, xmrEndpointFor, poolId, liveRegion, feeShare, normalizeEndpoint, resolveEndpoint, splitEndpoint,
+  regionLabel,
   migrateRegion, LEGACY_REGIONS,
 } = require('../src/shared/config');
 
@@ -64,21 +65,29 @@ describe('XMR', () => {
   });
 });
 
-// Kryptex, the other pool for both coins: one server per continent, picked
-// from the region, and a fee on each coin.
+// Kryptex, the other pool: one server per continent, and a fee on each coin.
 describe('pools', () => {
   test('HeroMiners is the default, and Kryptex takes 3% on Pearl and 1% on Monero', () => {
     expect(DEFAULT_POOL).toBe('herominers');
     expect(POOLS).toEqual({
-      herominers: { name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9 },
-      kryptex: { name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1 },
+      herominers: { name: 'HeroMiners', prlFeePct: 0, xmrFeePct: 0.9, regions: REGIONS },
+      kryptex: { name: 'Kryptex', prlFeePct: 3, xmrFeePct: 1, regions: KRYPTEX_REGIONS },
     });
     expect(KRYPTEX).toEqual({ prlPort: 7048, xmrPort: 7029, apiBase: 'https://pool.kryptex.com' });
   });
 
-  test('every region names one of the Kryptex servers', () => {
-    for (const r of Object.values(REGIONS)) expect(['us', 'eu', 'br', 'sg', 'hk']).toContain(r.kryptex);
-    expect([REGIONS.us2.kryptex, REGIONS.fi.kryptex, REGIONS.kr.kryptex, REGIONS.au.kryptex]).toEqual(['us', 'eu', 'hk', 'sg']);
+  test('Kryptex has a server per continent, each with a flag and a name', () => {
+    expect(Object.keys(KRYPTEX_REGIONS)).toEqual(['us', 'eu', 'br', 'sg', 'hk']);
+    for (const r of Object.values(KRYPTEX_REGIONS)) expect(r).toEqual({ flag: expect.any(String), name: expect.any(String) });
+  });
+
+  test('a saved server the pool does not have becomes one it has', () => {
+    expect(liveRegion('kryptex', 'eu')).toBe('eu');
+    for (const r of [undefined, '', 'de', 'toString']) expect(liveRegion('kryptex', r)).toBe('us');
+    // HeroMiners' own, with an AlphaPool id translated as migrateRegion does.
+    expect(liveRegion('herominers', 'fi')).toBe('fi');
+    expect(liveRegion(undefined, 'eu1')).toBe('de');
+    expect(liveRegion('herominers', 'eu')).toBe(DEFAULTS.region);
   });
 
   test('a saved pool that is not one of them gets the default', () => {
@@ -87,15 +96,15 @@ describe('pools', () => {
     for (const p of [undefined, null, '', 'nope', 'toString']) expect(poolId(p)).toBe(DEFAULT_POOL);
   });
 
-  test('Kryptex mines both coins on its server for the region', () => {
-    expect(endpointFor('de', 'kryptex')).toBe('prl-eu.kryptex.network:7048');
-    expect(endpointFor('???', 'kryptex')).toBe('prl-us.kryptex.network:7048');
+  test('Kryptex mines both coins on the server picked', () => {
+    expect(endpointFor('eu', 'kryptex')).toBe('prl-eu.kryptex.network:7048');
+    expect(endpointFor('de', 'kryptex')).toBe('prl-us.kryptex.network:7048');
     expect(endpointFor('sg', 'nope')).toBe('sg.pearl.herominers.com:1200');
     expect(xmrEndpointFor('hk', 'kryptex')).toBe('xmr-hk.kryptex.network:7029');
     expect(xmrEndpointFor('nowhere', 'kryptex')).toBe('xmr-us.kryptex.network:7029');
-    expect(resolveEndpoint({ region: 'br', prlPool: 'kryptex' })).toBe('prl-br.kryptex.network:7048');
+    expect(resolveEndpoint({ region: 'br', pool: 'kryptex' })).toBe('prl-br.kryptex.network:7048');
     // An override still wins over the pool.
-    expect(resolveEndpoint({ endpoint: 'pool.example:1', region: 'br', prlPool: 'kryptex' })).toBe('pool.example:1');
+    expect(resolveEndpoint({ endpoint: 'pool.example:1', region: 'br', pool: 'kryptex' })).toBe('pool.example:1');
   });
 
   test('the earnings share is what is left after the Pearl fee of the pool', () => {
