@@ -744,14 +744,16 @@ class W:
         """Move each group to the release config gives it (box_ver, or ver_override for that group) when that is newer
         than the one it runs, by updating its command only, as llm_sync does: a box that is mining keeps its PC, where
         Salad usually restarts it with the new release within minutes; one waiting for a PC starts that way at its
-        next. A release is never lowered this way. Until 21 October box_ver reached new groups only. A group still
-        preparing its image is left for a later round, and a refused update is tried again after 10 minutes."""
+        next. box_ver never lowers a release; ver_override does, for the group it names, to take it back from a bad
+        one: v0.6.7's Linux cores need glibc 2.38, and the boxes' Ubuntu 22.04 has 2.35, so on 21 October the first
+        box moved to it ran no miner. Until then box_ver reached new groups only. A group still preparing its image is
+        left for a later round, and a refused update is tried again after 10 minutes."""
         for g in active:
             if g["ended"] or g.get("status") == "pending" or t - g.get("ver_try", 0) < 600:
                 continue
             ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
             old = g.get("ver") or "v0"
-            if vnum(ver) <= vnum(old):
+            if vnum(ver) == vnum(old) or (vnum(ver) < vnum(old) and g["name"] not in self.cfg["ver_override"]):
                 continue
             g["ver_try"] = t
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},

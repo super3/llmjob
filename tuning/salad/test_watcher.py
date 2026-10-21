@@ -1685,6 +1685,13 @@ class TestMonero(Base):
         self.x.ver_sync([a, b], t + 11 * 60)
         self.assertEqual(len(self.http.made("PATCH", "/containers/")), 1)   # neither goes back
         self.assertEqual((a["ver"], b["ver"]), ("v0.6.0", "v0.6.7"))
+        # Named in ver_override, a group does go back, to leave a bad release.
+        self.x.cfg["ver_override"] = {b["name"]: "v0.6.6"}
+        self.x.ver_sync([a, b], t + 22 * 60)
+        self.assertIn("VER=v0.6.6;", self.http.made("PATCH", "/containers/")[-1][2]["container"]["command"][2])
+        self.assertEqual(len(self.http.made("PATCH", "/containers/")), 2)
+        self.assertEqual(b["ver"], "v0.6.6")
+        self.assertIn(f"RELEASE {b['name']}: miner v0.6.7 -> v0.6.6", self.events())
 
     def test_a_refused_release_update_is_tried_again_after_10_minutes(self):
         g = self.group()
