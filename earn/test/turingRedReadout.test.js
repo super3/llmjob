@@ -295,7 +295,30 @@ function config(spec) {
   return { errors: r.errors, defs: r.defs, value: (name) => Number(compile(name)(ifScope(r.defs))) };
 }
 
-// The fold an sm_75 compile with these flags builds. extra: flags set after the
+// The fold as the compiler instantiates pearl_fold_bd<kHashRg>: the template line and its
+// static_assert dropped, and the hashers' if constexpr resolved to the branch kHashRg
+// picks, as the const declarations it amounts to. pearl_tile_fold_wmma passes
+// PEARL_BD_HASH_RG, pearl_tile_fold_wmma_rg (the second sm_75 kernel) true.
+const RG_TEMPLATE = 'template <bool kHashRg>' + NL;
+const RG_ASSERT = '  static_assert(!kHashRg || PEARL_BD_HASH_RG_OK,' + NL
+  + '                "the second row group hashes only where PEARL_BD_HASH_RG builds");' + NL;
+const ROLE_HEAD = '    bool hasher;' + NL + '    uint32_t L;' + NL + '    if constexpr (kHashRg) {' + NL;
+const ROLE_ELSE = NL + '    } else {' + NL;
+const ROLE_END = NL + '    }' + NL;
+function instantiate(text, rg) {
+  for (const part of [RG_TEMPLATE, RG_ASSERT, ROLE_HEAD]) expect([part, text.split(part).length - 1]).toEqual([part, 1]);
+  const t = text.replace(RG_TEMPLATE, '').replace(RG_ASSERT, '');
+  const at = t.indexOf(ROLE_HEAD);
+  const mid = t.indexOf(ROLE_ELSE, at);
+  const end = t.indexOf(ROLE_END, mid + ROLE_ELSE.length);
+  const branch = rg ? t.slice(at + ROLE_HEAD.length, mid) : t.slice(mid + ROLE_ELSE.length, end);
+  const lines = branch.split(NL).map((l) => l.slice(2).replace(/^( *)hasher = /, '$1const bool hasher = ')
+    .replace(/^( *)L = /, '$1const uint32_t L = '));
+  return t.slice(0, at) + lines.join(NL) + NL + t.slice(end + ROLE_END.length);
+}
+
+// The fold an sm_75 compile with these flags builds, as pearl_tile_fold_wmma
+// instantiates it. extra: flags set after the
 // header, past its guards.
 const folds = new Map();
 function fold(spec, extra = '') {
@@ -308,7 +331,7 @@ function fold(spec, extra = '') {
     defs.set('PEARL_FOLD_THREADS', { params: null, body: 'PEARL_FOLD_TURING_THREADS' });
     defs.set('PEARL_STAGE_REGS', { params: null, body: '1' });
     defs.set('PEARL_JACKPOT_BUCKETS', { params: null, body: /#define PEARL_JACKPOT_BUCKETS (\d+)/.exec(HEADER)[1] });
-    const r = preprocess(FOLD, defs);
+    const r = preprocess(instantiate(FOLD, c.value('PEARL_BD_HASH_RG') === 1), defs);
     const text = r.lines.join(NL);
     folds.set(key, { text, flat: flat(text), errors: r.errors, defs });
   }
@@ -1870,9 +1893,9 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(fn).toBeGreaterThan(0);
     expect(from).toBeGreaterThan(HOST.indexOf('PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);', fn));
     const body = HOST.slice(from, to);
-    const cond = body.split(NL).slice(0, 2).join(' ').split(BS).join(' ').replace('#if', '').replace(/\s+/g, ' ').trim();
+    const cond = body.split(NL).slice(0, 3).join(' ').split(BS).join(' ').replace('#if', '').replace(/\s+/g, ' ').trim();
     expect(cond).toBe('PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 '
-      + '|| PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG');
+      + '|| PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG || PEARL_BD_RG_KERNEL_BUILT');
     const names = [...body.matchAll(/(PEARL_BD_\w+(?: != 2)?) \? "( [\w=]+)" : ""/g)].map((x) => [x[1], x[2]]);
     expect(names).toEqual([['PEARL_BD_RUNBASE', ' RUNBASE'], ['PEARL_BD_TAIL_LDG', ' TAIL_LDG'],
       ['PEARL_BD_GATE != 2', ' GATE=1'], ['PEARL_BD_TADDR', ' TADDR'], ['PEARL_BD_RED', ' RED'],
@@ -1882,19 +1905,28 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
       + '        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_SPLIT=%d", PEARL_BD_HASH_SPLIT);');
     expect(body).toContain('      n = strlen(c->foldName);' + NL
       + '      if (PEARL_BD_LAST_RO) snprintf(c->foldName + n, sizeof c->foldName - n, " LAST_RO");');
+    // HASH_RG built in, or the second sm_75 kernel running (Ctx::bdHashRg).
     expect(body).toContain('      n = strlen(c->foldName);' + NL
-      + '      if (PEARL_BD_HASH_RG) snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");');
+      + '      // HASH_RG built in, or the second kernel running on this card.' + NL
+      + '      if (PEARL_BD_HASH_RG || c->bdHashRg)' + NL
+      + '        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");');
+    // Nothing on, as when the second kernel is built but not running: no ", with".
+    expect(body).toContain('      size_t n = strlen(c->foldName);' + NL + '      const size_t named = n;' + NL);
+    expect(body).toContain('      if (strlen(c->foldName) == named + strlen(", with")) c->foldName[named] = 0;' + NL + '    }');
     expect(body).toContain('      n = strlen(c->foldName);' + NL
       + '      if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");');
-    // What it appends for a build, from the header's macros.
-    const suffix = (spec) => {
+    // What it appends for a build, from the header's macros; rg: the card runs the second
+    // sm_75 kernel, which only a build that has it can.
+    const suffix = (spec, rg = false) => {
       const c = config(spec);
       expect([spec, c.errors]).toEqual([spec, []]);
+      if (rg) expect([spec, c.value('PEARL_BD_RG_KERNEL_BUILT')]).toEqual([spec, 1]);
       if (!c.value(cond)) return '';
       const split = c.value('PEARL_BD_HASH_SPLIT');
-      return ', with' + names.map(([e, n]) => (c.value(e) ? n : '')).join('') + (split ? ' HASH_SPLIT=' + split : '')
-        + (c.value('PEARL_BD_LAST_RO') ? ' LAST_RO' : '') + (c.value('PEARL_BD_HASH_RG') ? ' HASH_RG' : '')
+      const s = ', with' + names.map(([e, n]) => (c.value(e) ? n : '')).join('') + (split ? ' HASH_SPLIT=' + split : '')
+        + (c.value('PEARL_BD_LAST_RO') ? ' LAST_RO' : '') + (c.value('PEARL_BD_HASH_RG') || rg ? ' HASH_RG' : '')
         + (c.value('PEARL_BD_ROWPAIR') ? ' ROWPAIR' : '');
+      return s === ', with' ? '' : s;
     };
     // With no flags, LEAN's parts and HIT_COORDS. With every switch off, on the default
     // fold or another, nothing.
@@ -1924,6 +1956,12 @@ describe('Turing red readout and lean loads (PEARL_BD_RED, PEARL_BD_LEAN and the
     expect(suffix('ROWPAIR=1 HIT_COORDS=0')).toBe(', with RUNBASE TAIL_LDG GATE=1 ROWPAIR');
     expect(suffix('ROWPAIR=1 LAST_RO=1 SNAKE=1 HASH_RG=1'))
       .toBe(', with RUNBASE TAIL_LDG GATE=1 HIT_COORDS SNAKE LAST_RO HASH_RG ROWPAIR');
+    // The second sm_75 kernel running names HASH_RG as the switch does, on the fold before
+    // LEAN too, where the #if lets the name through for it.
+    for (const s of ['', OFF, 'SNAKE=1', 'LAST_RO=1', 'ROWPAIR=1', 'ROWPAIR=1 LAST_RO=1 SNAKE=1', 'TADDR=1']) {
+      expect([s, suffix(s, true)]).toEqual([s, suffix(`${s} HASH_RG=1`)]);
+    }
+    expect(suffix(OFF, true)).toBe(', with HASH_RG');
     // Each part alone names just itself.
     for (const s of ['RUNBASE=1', 'TAIL_LDG=1', 'TADDR=1', 'GATE=1', 'HIT_COORDS=1']) {
       expect([s, suffix(`${OFF} ${s}`)])

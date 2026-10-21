@@ -1110,8 +1110,10 @@ typedef struct {
 // hashers. Raced in round 6 (2026-10-21, probes/README.md), hashrate.js against the
 // default: +0.16% on a 2070, +0.17% on a 2080 and +0.13% on a 2060 Super (all 4 MB of
 // L2), -0.13% on a 2060 12 GB (3 MB, all five rounds behind), as the round-5 patch did.
-// So it stays off: one sm_75 kernel serves both, and it would cost the 3 MB card what it
-// gives the others. Device only; the host reads it only for the fold's name.
+// So the switch stays off, and its code ships as a second sm_75 kernel that the host
+// runs on cards with 4 MB of L2 or more (PEARL_BD_RG_KERNEL, below). With the switch on,
+// the first kernel is HASH_RG's code on every card and there is no second kernel. The
+// host reads it for the fold's name and for whether the second kernel exists.
 #ifndef PEARL_BD_HASH_RG
 #define PEARL_BD_HASH_RG 0
 #endif
@@ -1124,6 +1126,34 @@ typedef struct {
 #if PEARL_BD_HASH_RG && (PEARL_BD_RED || PEARL_BD_HASH_SPLIT)
 #error "PEARL_BD_HASH_RG is not built with PEARL_BD_RED or the split hash: with RED ptxas reschedules the chunk loop, and the split hash pairs each scheduler's warps by the default's hashers"
 #endif
+// Where HASH_RG's code can be built: the default fold, without RED or the split hash
+// (the guards above).
+#define PEARL_BD_HASH_RG_OK (PEARL_BD_DEFAULT_FOLD && !PEARL_BD_RED && !PEARL_BD_HASH_SPLIT)
+// PEARL_BD_RG_KERNEL: which RTX 20 cards run HASH_RG's code. 0 never, 1 always, 2 (the
+// default) on cards with at least PEARL_BD_RG_L2_MIN bytes (4 MB) of L2. The code is a
+// second sm_75 kernel, pearl_tile_fold_wmma_rg: the same fold with kHashRg = true. One
+// build carries both kernels and the host picks one per card (pearl_bd_rg_for in
+// pearl_host.cu). Under CUDA 12.8 the second kernel's machine code is HASH_RG's,
+// ac1a72f2434b (243 registers, no spill), and the first kernel's stays 5c97fbadf64a.
+// Why 4 MB: hashrate.js against the default, +0.16% on a 2070, +0.17% on a 2080 and
+// +0.13% on a 2060 Super (4 MB, round 6), +0.13% on a 2080 Ti (5.5 MB, round 5's patch),
+// -0.13% on a 2060 12 GB (3 MB, round 6). GTX 16 cards (1 to 1.5 MB) get the first
+// kernel. The T4, the 2070 Super and the 2080 Super (4 MB) get the second; none of the
+// three was measured. The two-kernel build itself has not been raced yet.
+// The second kernel is built wherever HASH_RG's code can be, whatever the policy, so
+// the sweep's override (PEARL_BD_SWEEP_HASH_RG) works on any such build. It is not built
+// for another fold, with RED or with the split hash (HASH_RG's #error guards), nor with
+// PEARL_BD_HASH_RG=1, where the first kernel already is that code. Then the host always
+// runs the first kernel. Only the host reads the policy. The kernel file reads
+// PEARL_BD_RG_KERNEL_BUILT, which the policy does not change.
+#ifndef PEARL_BD_RG_KERNEL
+#define PEARL_BD_RG_KERNEL 2
+#endif
+#if PEARL_BD_RG_KERNEL != 0 && PEARL_BD_RG_KERNEL != 1 && PEARL_BD_RG_KERNEL != 2
+#error "PEARL_BD_RG_KERNEL is 0 (never), 1 (always) or 2 (by L2)"
+#endif
+#define PEARL_BD_RG_L2_MIN 4194304u
+#define PEARL_BD_RG_KERNEL_BUILT (PEARL_TURING_BDIRECT && PEARL_BD_HASH_RG_OK && !PEARL_BD_HASH_RG)
 // PEARL_BD_ROWPAIR (0 by default), from round 6 (2026-10-21), designed in round 2: the
 // readout gathers a region's word with one shuffle instead of six. As shipped, lanes L,
 // L ^ 4, L ^ 8 and L ^ 12 each hold a quarter of a region in a pair of m-blocks, so a

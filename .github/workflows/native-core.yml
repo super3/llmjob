@@ -305,8 +305,10 @@ jobs:
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
-      # above for both fold kernels, for Hopper's wgmma fold
-      # (pearl_tile_fold_hopper, a body only on sm_90a) and for the transcript
+      # above for both fold kernels, for RTX 20's second fold kernel
+      # (pearl_tile_fold_wmma_rg, PEARL_BD_RG_KERNEL; a body only on sm_75),
+      # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
+      # sm_90a) and for the transcript
       # hash kernel (pearl_tall_hash80, a body only on sm_80 and sm_90a), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
@@ -353,12 +355,14 @@ jobs:
           bad=0
           seen_tall=0
           seen_wmma=0
+          seen_wmma_rg=0
           seen_h80=0
           seen_hopper=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
               pearl_tile_fold_wmma) seen_wmma=1 ;;
+              pearl_tile_fold_wmma_rg) seen_wmma_rg=1 ;;
               pearl_tall_hash80) seen_h80=1 ;;
               pearl_tile_fold_hopper) seen_hopper=1 ;;
               *) continue ;;
@@ -376,8 +380,8 @@ jobs:
           done <<< "$rows"
           # Nothing found is a failure, not a pass: the names changed, or ptxas
           # was not run with -v.
-          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ]; then
-            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma, pearl_tall_hash80 and pearl_tile_fold_hopper; was pearl_kernel.cu compiled with -Xptxas -v?"
+          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_wmma_rg" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma, pearl_tile_fold_wmma_rg, pearl_tall_hash80 and pearl_tile_fold_hopper; was pearl_kernel.cu compiled with -Xptxas -v?"
             exit 1
           fi
           exit $bad

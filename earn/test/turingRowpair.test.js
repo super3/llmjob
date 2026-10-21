@@ -1010,10 +1010,14 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '#endif',
     ]);
     // The hashers, their reads and a hit's region number.
+    // The default's, the else branch of pearl_fold_bd<kHashRg>'s role (see
+    // turingHashRg.test.js for the other).
     pin(FOLD_CODE, [
-      '#elif PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST',
-      '    const bool hasher = wr ? sid >= 64u : sid < 64u;',
-      '    const uint32_t L = wr * 64u + (sid & 63u);',
+      '    } else {',
+      '      hasher = wr ? sid >= 64u : sid < 64u;',
+      '      L = wr * 64u + (sid & 63u);',
+      '    }',
+      '#elif PEARL_BD_GROUPS == 2',
     ]);
     pin(FOLD_CODE, [
       '    if (hasher) {',

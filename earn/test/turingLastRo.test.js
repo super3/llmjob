@@ -292,8 +292,31 @@ const headerDefine = (name) => {
 };
 const CODE_MACROS = ['PEARL_FOLD_K', 'PEARL_FOLD_RANK', 'PEARL_FOLD_CHUNKS', 'PEARL_JACKPOT_BUCKETS'];
 
+// The fold as the compiler instantiates pearl_fold_bd<kHashRg>: the template line and its
+// static_assert dropped, and the hashers' if constexpr resolved to the branch kHashRg
+// picks, as the const declarations it amounts to. pearl_tile_fold_wmma passes
+// PEARL_BD_HASH_RG, pearl_tile_fold_wmma_rg (the second sm_75 kernel) true.
+const RG_TEMPLATE = 'template <bool kHashRg>' + NL;
+const RG_ASSERT = '  static_assert(!kHashRg || PEARL_BD_HASH_RG_OK,' + NL
+  + '                "the second row group hashes only where PEARL_BD_HASH_RG builds");' + NL;
+const ROLE_HEAD = '    bool hasher;' + NL + '    uint32_t L;' + NL + '    if constexpr (kHashRg) {' + NL;
+const ROLE_ELSE = NL + '    } else {' + NL;
+const ROLE_END = NL + '    }' + NL;
+function instantiate(text, rg) {
+  for (const part of [RG_TEMPLATE, RG_ASSERT, ROLE_HEAD]) expect([part, text.split(part).length - 1]).toEqual([part, 1]);
+  const t = text.replace(RG_TEMPLATE, '').replace(RG_ASSERT, '');
+  const at = t.indexOf(ROLE_HEAD);
+  const mid = t.indexOf(ROLE_ELSE, at);
+  const end = t.indexOf(ROLE_END, mid + ROLE_ELSE.length);
+  const branch = rg ? t.slice(at + ROLE_HEAD.length, mid) : t.slice(mid + ROLE_ELSE.length, end);
+  const lines = branch.split(NL).map((l) => l.slice(2).replace(/^( *)hasher = /, '$1const bool hasher = ')
+    .replace(/^( *)L = /, '$1const uint32_t L = '));
+  return t.slice(0, at) + lines.join(NL) + NL + t.slice(end + ROLE_END.length);
+}
+
 // The fold an sm_75 compile with these flags builds, from pearl_fold_bd.cuh's text (or an
-// edit of it). extra: flags set after the header, past its guards.
+// edit of it), as pearl_tile_fold_wmma instantiates it. extra: flags set after the header,
+// past its guards.
 const folds = new Map();
 function fold(spec, extra = '', text = FOLD) {
   const key = spec + '|' + extra + '|' + (text === FOLD ? '' : text);
@@ -304,7 +327,7 @@ function fold(spec, extra = '', text = FOLD) {
     defs.set('PEARL_FOLD_THREADS', { params: null, body: 'PEARL_FOLD_TURING_THREADS' });
     defs.set('PEARL_STAGE_REGS', { params: null, body: '1' });
     for (const name of CODE_MACROS) defs.set(name, { params: null, body: headerDefine(name) });
-    const r = preprocess(text, defs);
+    const r = preprocess(instantiate(text, c.value('PEARL_BD_HASH_RG') === 1), defs);
     const t = r.lines.join(NL);
     folds.set(key, { text: t, flat: flat(t), errors: r.errors, defs });
   }

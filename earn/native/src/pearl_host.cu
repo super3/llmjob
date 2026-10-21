@@ -138,6 +138,15 @@ extern "C" __global__ void pearl_tile_fold_wmma(
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
+#if PEARL_BD_RG_KERNEL_BUILT
+// The second RTX 20 kernel: the same fold with the second row group hashing
+// (PEARL_BD_RG_KERNEL). Picked per card by pearl_bd_rg_for.
+extern "C" __global__ void pearl_tile_fold_wmma_rg(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#endif
 extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -249,6 +258,9 @@ struct Ctx {
   bool foldBDirect = false;
   // The B-direct fold's band depth on this card (see PEARL_BD_L2_SHARE).
   uint32_t bdBand = 0;
+  // Whether this card runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
+  // (PEARL_BD_RG_KERNEL), instead of pearl_tile_fold_wmma. Set at create, never after.
+  bool bdHashRg = false;
   // pearl_host_fold_name's text when it has to be formatted.
   char foldName[224] = {0};
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
@@ -928,6 +940,8 @@ void resolve_fold(Ctx *ctx) {
   char *err = ctx->foldErr;
   const size_t err_len = sizeof ctx->foldErr;
   err[0] = 0;
+  // Which binary loaded, read off the default kernel. The second sm_75 kernel
+  // (pearl_tile_fold_wmma_rg) is picked later, at create, and checks its own.
   cudaFuncAttributes fa;
   const bool haveAttrs =
       cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
@@ -1140,6 +1154,31 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
 #endif
 }
 
+// Whether a card with this L2 runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
+// (PEARL_BD_RG_KERNEL): with the default policy 2, at least PEARL_BD_RG_L2_MIN bytes
+// (4 MB). Round 6 measured HASH_RG's code +0.13 to +0.17% on 4 MB cards and -0.13% on
+// a 3 MB one. Round 5's patch measured +0.13% on the 5.5 MB 2080 Ti. An L2 of 0 (not
+// known) keeps the default kernel. Policy 0 never picks it and 1 always does. Never
+// where the build has no second kernel.
+bool pearl_bd_rg_for(uint64_t l2) {
+  if (!PEARL_BD_RG_KERNEL_BUILT) return false;
+  if (PEARL_BD_RG_KERNEL == 1) return true;
+  if (PEARL_BD_RG_KERNEL == 0) return false;
+  return l2 >= (uint64_t)PEARL_BD_RG_L2_MIN;
+}
+
+// The wmma fold kernel this context launches: the second sm_75 kernel when the card
+// picked it (Ctx::bdHashRg), else pearl_tile_fold_wmma. Every attribute call, the
+// occupancy query and the launch use the same one.
+const void *pearl_wmma_fold_fn(const Ctx *ctx) {
+#if PEARL_BD_RG_KERNEL_BUILT
+  if (ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg);
+#else
+  (void)ctx;
+#endif
+  return reinterpret_cast<const void *>(pearl_tile_fold_wmma);
+}
+
 // Turing's launch shape for the B-direct fold, as pearl_host_create settles it for one
 // card: the band depth, the batch width (valid column offsets a launch) and whether the
 // two pipeline slots run on two streams. Only the band depends on the card today. The
@@ -1151,6 +1190,8 @@ struct PearlBdLaunch {
   uint32_t band;
   uint32_t colBatch;
   bool streams;
+  // Whether the second kernel runs (pearl_bd_rg_for).
+  bool hashRg;
 };
 
 // A power of two of at least one tile's 16 column offsets that divides the valid offsets,
@@ -1166,6 +1207,7 @@ PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_
   s.band = pearl_bd_band_for(k, l2);
   s.colBatch = colBatch;
   s.streams = PEARL_FOLD_STREAMS != 0;
+  s.hashRg = pearl_bd_rg_for(l2);
   return s;
 }
 
@@ -1176,6 +1218,8 @@ PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_
 //   PEARL_BD_SWEEP_BAND=N       column groups a band, 1 to 64
 //   PEARL_BD_SWEEP_COL_BATCH=N  column offsets a launch (pearl_bd_width_ok)
 //   PEARL_BD_SWEEP_STREAMS=0|1  the two pipeline slots on one stream, or on two
+//   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);
+//                               1 is ignored in a build without the second kernel
 // A value that does not parse or is out of range is ignored. Returns whether any was set.
 bool pearl_bd_sweep_env(const char *name, uint32_t *out) {
   const char *v = getenv(name);
@@ -1204,6 +1248,10 @@ bool pearl_bd_sweep(PearlBdLaunch *s, uint32_t colsValid) {
   if (pearl_bd_sweep_env("PEARL_BD_SWEEP_STREAMS", &v)) {
     any = true;
     if (v <= 1u) s->streams = v != 0u;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_HASH_RG", &v)) {
+    any = true;
+    if (v <= 1u) s->hashRg = v != 0u && PEARL_BD_RG_KERNEL_BUILT;
   }
   return any;
 }
@@ -1706,14 +1754,29 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     PearlBdLaunch s =
         pearl_bd_launch_for(profile->k, (uint64_t)l2, (uint32_t)sms, ctx->colBatch);
     const PearlBdLaunch rule = s;
-    // The sweep's overrides (pearl_bd_sweep). The line says what took effect, so a
-    // reading can be credited to the shape that ran.
-    if (pearl_bd_sweep(&s, ctx->colsValid))
+    // The sweep's overrides (pearl_bd_sweep).
+    const bool swept = pearl_bd_sweep(&s, ctx->colsValid);
+#if PEARL_BD_RG_KERNEL_BUILT
+    // The second kernel only if its sm_75 body is what loaded, as resolve_fold checks
+    // the first; otherwise the default kernel runs, and s.hashRg says so.
+    if (s.hashRg) {
+      cudaFuncAttributes fr;
+      if (cudaFuncGetAttributes(&fr, reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg))
+              == cudaSuccess
+          && fr.binaryVersion == 75)
+        ctx->bdHashRg = true;
+      else
+        (void)cudaGetLastError();
+    }
+#endif
+    s.hashRg = ctx->bdHashRg;
+    // The line says what took effect, so a reading can be credited to the shape that ran.
+    if (swept)
       fprintf(stderr,
               "[pearl] launch sweep: band %u (rule %u), col_batch %u (rule %u), streams %d "
-              "(rule %d); %d SMs, L2 %d KB\n",
+              "(rule %d), hash_rg %d (rule %d); %d SMs, L2 %d KB\n",
               s.band, rule.band, s.colBatch, rule.colBatch, (int)s.streams, (int)rule.streams,
-              sms, l2 / 1024);
+              (int)s.hashRg, (int)rule.hashRg, sms, l2 / 1024);
     ctx->bdBand = s.band;
     if (s.colBatch != ctx->colBatch) {
       ctx->colBatch = s.colBatch;
@@ -2462,7 +2525,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const uint32_t stageBufs =
       ctx->foldTuring && PEARL_TURING_WIDE ? PEARL_TURING_WIDE_STAGE_BUFS : PEARL_STAGE_BUFS;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
-                                     : reinterpret_cast<const void *>(pearl_tile_fold_wmma);
+                                     : pearl_wmma_fold_fn(ctx);
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -2747,6 +2810,12 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+#if PEARL_BD_RG_KERNEL_BUILT
+  else if (ctx->bdHashRg)
+    pearl_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
   else
     pearl_tile_fold_wmma<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
@@ -2908,13 +2977,15 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
 #if PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 \
-    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG
+    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG \
+    || PEARL_BD_RG_KERNEL_BUILT
     // The fold's default-off switches (pearl_config.h, after PEARL_BD_A_DIRECT_TAG), so
     // a reading from one of them is not credited to the default fold. LEAN shows as
     // its parts.
     {
       Ctx *c = const_cast<Ctx *>(ctx);
       size_t n = strlen(c->foldName);
+      const size_t named = n;
       snprintf(c->foldName + n, sizeof c->foldName - n, ", with%s%s%s%s%s%s%s",
                PEARL_BD_RUNBASE ? " RUNBASE" : "", PEARL_BD_TAIL_LDG ? " TAIL_LDG" : "",
                PEARL_BD_GATE != 2 ? " GATE=1" : "", PEARL_BD_TADDR ? " TADDR" : "",
@@ -2927,10 +2998,14 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       n = strlen(c->foldName);
       if (PEARL_BD_LAST_RO) snprintf(c->foldName + n, sizeof c->foldName - n, " LAST_RO");
       n = strlen(c->foldName);
-      if (PEARL_BD_HASH_RG) snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
+      // HASH_RG built in, or the second kernel running on this card.
+      if (PEARL_BD_HASH_RG || c->bdHashRg)
+        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
       // ROWPAIR, like LAST_RO, needs LEAN's parts.
       n = strlen(c->foldName);
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
+      // With nothing on (the second kernel built but not running), no ", with".
+      if (strlen(c->foldName) == named + strlen(", with")) c->foldName[named] = 0;
     }
 #endif
     return ctx->foldName;

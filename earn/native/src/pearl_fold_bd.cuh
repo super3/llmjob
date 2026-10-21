@@ -210,6 +210,9 @@ __device__ __forceinline__ int4 pearl_bd_lda(const int8_t *p) {
   return __ldcg(reinterpret_cast<const int4 *>(p));
 }
 
+// kHashRg: the second row group hashes (PEARL_BD_HASH_RG's role, below). The default
+// kernel passes PEARL_BD_HASH_RG; pearl_tile_fold_wmma_rg passes true.
+template <bool kHashRg>
 __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                                               const int8_t *__restrict__ Bprime, uint32_t col_off,
                                               uint32_t rows_valid, uint32_t tiles,
@@ -231,6 +234,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "two A stages of the tile's rows");
   static_assert(PEARL_ROWS_MASK == 0x1Bu && PEARL_COLS_MASK == 0x39u,
                 "the readout folds the regions the m16n8k32 accumulators hold");
+  static_assert(!kHashRg || PEARL_BD_HASH_RG_OK,
+                "the second row group hashes only where PEARL_BD_HASH_RG builds");
   const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
   constexpr uint32_t regions_per_warp = 4u, warp_regions = 16u;
@@ -503,31 +508,40 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // thread L takes region L of the block's 128, the same arithmetic its warp used to
   // write it, for the tile at row group rbg and column group cbg. With two row groups
   // each hashes its own 64 by default, so a hand-off at the group's own barrier
-  // (PEARL_BD_BAR) is enough. With PEARL_BD_HASH_RG the second hashes all 128, the
-  // first's too: that needs the persistent loop's hand-off, the whole block's.
+  // (PEARL_BD_BAR) is enough. With HASH_RG's role (kHashRg) the second hashes all 128,
+  // the first's too: that needs the persistent loop's hand-off, the whole block's.
 #if PEARL_BD_HIT_COORDS
   auto hash_tile = [&](uint32_t vtile) {
 #else
   auto hash_tile = [&](uint32_t rbg, uint32_t cbg) {
 #endif
-#if PEARL_BD_HASH_RG
-    // PEARL_BD_HASH_RG (see pearl_config.h): the second group's four warps, one on each
-    // scheduler, hash all 128 regions, region L = sid. The test is the default's below,
-    // flipped where a copy of sid behind an empty asm (osid) is under 64: in the second
-    // group (sid >= 64) != (sid < 64) is true, in the first (sid < 64) != (sid < 64) is
-    // false. Written as wr != 0, the tile's next_srcs no longer shared wr with the hash
-    // and took a_off's wr * 4 from a value held since the prologue: 246 registers, and
-    // ptxas scheduled the chunk loop differently. This form, with L = osid, leaves the
-    // code before the hand-off as the default's.
-    uint32_t osid = sid;
-    asm("" : "+r"(osid));
-    const bool hasher = (wr ? sid >= 64u : sid < 64u) != (osid < 64u);
-    const uint32_t L = osid;
-#elif PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
-    // The first group hashes on schedulers 0-1 and the second on 2-3, so each
-    // scheduler keeps one warp on the next tile's chunk 0.
-    const bool hasher = wr ? sid >= 64u : sid < 64u;
-    const uint32_t L = wr * 64u + (sid & 63u);
+#if PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST
+    // Which role is the template's kHashRg: true in pearl_tile_fold_wmma_rg, and in
+    // pearl_tile_fold_wmma only with PEARL_BD_HASH_RG. Picked with if constexpr where it
+    // was an #if, each kernel's code is what that #if built: 5c97fbadf64a and
+    // ac1a72f2434b under CUDA 12.8.
+    bool hasher;
+    uint32_t L;
+    if constexpr (kHashRg) {
+      // HASH_RG's role (see PEARL_BD_HASH_RG in pearl_config.h): the second group's
+      // four warps, one on each scheduler, hash all 128 regions, region L = sid. The
+      // test is the default's below, flipped where a copy of sid behind an empty asm
+      // (osid) is under 64: in the second group (sid >= 64) != (sid < 64) is true, in
+      // the first (sid < 64) != (sid < 64) is false. Written as wr != 0, the tile's
+      // next_srcs no longer shared wr with the hash and took a_off's wr * 4 from a value
+      // held since the prologue: 246 registers, and ptxas scheduled the chunk loop
+      // differently. This form, with L = osid, leaves the code before the hand-off as
+      // the default's.
+      uint32_t osid = sid;
+      asm("" : "+r"(osid));
+      hasher = (wr ? sid >= 64u : sid < 64u) != (osid < 64u);
+      L = osid;
+    } else {
+      // The first group hashes on schedulers 0-1 and the second on 2-3, so each
+      // scheduler keeps one warp on the next tile's chunk 0.
+      hasher = wr ? sid >= 64u : sid < 64u;
+      L = wr * 64u + (sid & 63u);
+    }
 #elif PEARL_BD_GROUPS == 2
     const bool hasher = sid < 64u;
     const uint32_t L = wr * 64u + sid;

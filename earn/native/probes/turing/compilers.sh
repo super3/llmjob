@@ -16,7 +16,7 @@
 # B-direct fold (pearl_fold_bd.cuh) the same machine code, byte for byte; 12.0 and
 # 12.2 differ in one control bit before the loop. So another toolkit cannot change
 # the sm_75 fold, and no run here spends GPU time on one. What does change it:
-#   base        what ships: CUDA 12.8.1, no extra flags. 254 registers, 680 instructions
+#   base        what ships, first kernel only: CUDA 12.8.1. 254 registers, 680 instructions
 #               a chunk loop (512 IMMA).
 #   rul8        -Xptxas --register-usage-level=8 (any of 6-10 gives the same code). 252
 #               registers, 668 instructions a loop, the chunk barrier 24 IMMA later.
@@ -53,17 +53,29 @@ has() { case "$STAGES" in *" $1 "*) return 0 ;; esac; return 1; }
 # name|nvcc flags|the fold's machine code (md5 of its .text section, first 12 hex)
 # under CUDA 12.8.1 from this source, as built without a GPU. A mismatch is reported
 # and the run goes on: the comparison still holds, but it is not the code analysed.
+# Two kernels. A default build has a second sm_75 kernel, pearl_tile_fold_wmma_rg
+# (PEARL_BD_RG_KERNEL in pearl_config.h). The host runs it instead of the first on
+# cards with 4 MB of L2 or more, such as the 2060 Super, 2070, 2080 and 2080 Ti.
+# fold=, the expect check, the patch and fold.hash are all about the first kernel. A
+# build that should run the first kernel on those cards takes -DPEARL_BD_RG_KERNEL=0,
+# as the builds below do. A build with a patch list gets it added, so its base needs
+# it too (base|-DPEARL_BD_RG_KERNEL=0|5c97fbadf64a). The build line's runs= says which
+# kernel runs: fold (the first, on every card), rg (the second, on every card) or
+# rg_if_L2>=4MB. The bench stage's "runs fold:" line ends in HASH_RG when the second
+# one ran.
 VARIANTS=(
-  "base||ac306adc8702"
-  "rul8|-Xptxas --register-usage-level=8|8fa27fbb65da"
-  "cmr255|-maxrregcount=255|a9500fa5f046"
-  "cmr255rul8|-maxrregcount=255 -Xptxas --register-usage-level=8|23d035369029"
+  "base|-DPEARL_BD_RG_KERNEL=0|ac306adc8702"
+  "rul8|-DPEARL_BD_RG_KERNEL=0 -Xptxas --register-usage-level=8|8fa27fbb65da"
+  "cmr255|-DPEARL_BD_RG_KERNEL=0 -maxrregcount=255|a9500fa5f046"
+  "cmr255rul8|-DPEARL_BD_RG_KERNEL=0 -maxrregcount=255 -Xptxas --register-usage-level=8|23d035369029"
 )
 # VARIANTS_SPEC="name|flags;name|flags" races these builds instead, with no expected
 # hash: the fold's ablation builds (-DPEARL_ABLATE_*), or a candidate behind a -D
 # switch against base. Name the shipped build "base" so the others are measured
-# against it. An entry may add the expected hash and a 4th field, a patch list
-# ("name|flags|expect|sm75/sbfix1.json", relative to this directory): that build's
+# against it. A -D switch most often changes the second kernel too (LAST_RO's is
+# e17e255bd8c0), and without -DPEARL_BD_RG_KERNEL=0 that is what 4 MB cards run (see
+# "Two kernels" above). An entry may add the expected hash and a 4th field, a patch
+# list ("name|flags|expect|sm75/sbfix1.json", relative to this directory): that build's
 # sm_75 cubin is edited after ptxas by sm75patch.py (see patch_fold below), for a change
 # no source switch can make ptxas emit, such as one control bit.
 if [ -n "${VARIANTS_SPEC:-}" ]; then IFS=';' read -r -a VARIANTS <<< "$VARIANTS_SPEC"; fi
@@ -98,6 +110,12 @@ fold_hash() {   # $1 = an object, .node or cubin; prints the sm_75 fold's code h
   esac
   # Every sm_75 image (the addon also carries pearl_host.cu's); the fold is in one.
   python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk '$1 == "pearl_tile_fold_wmma" {print $2; exit}'
+  rm -rf "$d"
+}
+rg_hash() {   # $1 = an object or .node; the second sm_75 kernel's code hash (PEARL_BD_RG_KERNEL)
+  local d; d=$(mktemp -d "$OUT/x.XXXX")
+  (cd "$d" && cuobjdump -xelf all "$1" > /dev/null 2>&1)
+  python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk '$1 == "pearl_tile_fold_wmma_rg" {print $2; exit}'
   rm -rf "$d"
 }
 
@@ -176,6 +194,11 @@ build_variant() {   # name flags expect [patch list]
       { say "build $name FAIL: patch: cannot read the patch list probes/turing/$patch"; return 1; }
     keep=(--keep --keep-dir "$K/keep"); mkdir -p "$K/keep"
   fi
+  # sm75patch.py edits only the first kernel. Without this, cards with 4 MB of L2 or
+  # more would run the second, unpatched one. Left alone if the entry sets the policy.
+  if [ -n "$patch" ] && [[ "$flags" != *PEARL_BD_RG_KERNEL=* ]]; then
+    flags="${flags:+$flags }-DPEARL_BD_RG_KERNEL=0"
+  fi
   # shellcheck disable=SC2086
   if ! nvcc $COMMON $flags "${keep[@]}" -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/ptxas.txt" 2>&1; then
     say "build $name FAIL: $(grep -m2 -iE 'error' "$K/ptxas.txt" | tr '\n' ' ')"; return 1
@@ -194,15 +217,32 @@ build_variant() {   # name flags expect [patch list]
   nvcc -O3 -std=c++17 -cudart static $GC -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
-  local st h
+  local st h rst rg runs
   st=$(awk '/Compiling entry function .pearl_tile_fold_wmma. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
+  # The second sm_75 kernel, which the host runs on cards with 4 MB of L2 or more
+  # (PEARL_BD_RG_KERNEL): its code hash, registers and spill, or rg=none in a build
+  # without it. The patch, the expect check and fold.hash stay on the first.
+  rst=$(awk '/Compiling entry function .pearl_tile_fold_wmma_rg. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
+  rg=$(rg_hash "$K/build/Release/pearl_core.node")
+  if [ -n "$rg" ]; then
+    rg="rg=$rg rg_regs=$(echo "$rst" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') rg_spill=$(echo "$rst" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$rst" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+')"
+  else
+    rg="rg=none"
+  fi
+  # Which kernel runs (see "Two kernels" above): the policy is 2 unless the flags set it.
+  case " $flags " in
+    *PEARL_BD_RG_KERNEL=0*) runs=fold ;;
+    *PEARL_BD_RG_KERNEL=1*) runs=rg ;;
+    *) runs='rg_if_L2>=4MB' ;;
+  esac
+  [ "$rg" = rg=none ] && runs=fold
   h=$(fold_hash "$K/build/Release/pearl_core.node")
   echo "$h" > "$K/fold.hash"
   # The addon and bench must carry the patched fold: a build that lost the patch is base.
   if [ -n "$patch" ] && { [ "$h" != "$after" ] || [ "$(fold_hash "$K/bench")" != "$after" ]; }; then
     say "build $name FAIL: patch: the addon's fold is ${h:-unreadable}, bench's $(fold_hash "$K/bench"), not the patch list's $after"; return 1
   fi
-  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') fold=$h $([ -z "$expect" ] && echo "expect=-" || { [ "$h" = "$expect" ] && echo "expect=$expect match" || echo "expect=$expect MISMATCH"; })$([ -n "$patch" ] && echo " patch=[$patch, $(grep -oE '[0-9]+ words' "$K/patch.txt")]") flags=[$flags]"
+  say "build $name regs=$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') spill=$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$st" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+') $rg runs=$runs fold=$h $([ -z "$expect" ] && echo "expect=-" || { [ "$h" = "$expect" ] && echo "expect=$expect match" || echo "expect=$expect MISMATCH"; })$([ -n "$patch" ] && echo " patch=[$patch, $(grep -oE '[0-9]+ words' "$K/patch.txt")]") flags=[$flags]"
   touch "$K/ok"
 }
 
@@ -411,7 +451,8 @@ if has probe && [ -f "$OUT/v/base/ok" ]; then
     (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
       CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) || { say "probe ptxas $ver FAIL: node-gyp"; continue; }
     inside=$(fold_hash "$K/build/Release/pearl_core.node")
-    out=$(cd "$SRC/earn" && timeout -k 10 120 node native/probes/hashrate.js "$K/build/Release/pearl_core.node" 20 5 2>&1 | tr '\n' ' ')
+    # The first kernel on every card, the one fold= and in-node= hash.
+    out=$(cd "$SRC/earn" && PEARL_BD_SWEEP_HASH_RG=0 timeout -k 10 120 node native/probes/hashrate.js "$K/build/Release/pearl_core.node" 20 5 2>&1 | tr '\n' ' ')
     th=$(echo "$out" | grep -oE '"th":[0-9.]+' | cut -d: -f2)
     if [ -n "$th" ]; then res="loads, $th TH/s"
     else res="does not run: $(echo "$out" | grep -oE '(error|Error)[^{}]{0,200}' | head -1 | sed 's/ \{2,\}at .*//')"; fi

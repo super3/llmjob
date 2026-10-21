@@ -142,10 +142,16 @@ if [ -z "$DRY" ]; then
       cuda-build/pearl_host.o -o bench > bench-build.log 2>&1) ||
     die "build: $(cat "$B"/ptxas.txt "$B"/*.log 2> /dev/null | grep -m3 -i error | tr '\n' ' ')"
   [ -f "$NODEF" ] || die "build: no pearl_core.node"
-  fold=$(tr -d '\r' < "$B/ptxas.txt" | awk '/Compiling entry function .pearl_tile_fold_wmma./ { on = 1; next }
-    on && /spill stores/ { match($0, /[0-9]+ bytes spill stores/); st = substr($0, RSTART, RLENGTH - 19) }
-    on && /Used [0-9]+ registers/ { match($0, /Used [0-9]+ registers/); print substr($0, RSTART + 5, RLENGTH - 15) " registers, " st " bytes spilled"; exit }')
-  say "build ok sm_75 with $("$NVCC" --version | grep -o 'V[0-9][0-9.]*'): fold $fold; $(elapsed) min"
+  # Registers and spill of one kernel. The name is matched with its quotes, so the fold
+  # does not also match pearl_tile_fold_wmma_rg, the second kernel (PEARL_BD_RG_KERNEL),
+  # which the core runs instead on cards with 4 MB of L2 or more.
+  kstat() {
+    tr -d '\r' < "$B/ptxas.txt" | awk -v k="'$1'" '/Compiling entry function/ { on = index($0, "function " k " ") > 0; next }
+      on && /spill stores/ { match($0, /[0-9]+ bytes spill stores/); st = substr($0, RSTART, RLENGTH - 19) }
+      on && /Used [0-9]+ registers/ { match($0, /Used [0-9]+ registers/); print substr($0, RSTART + 5, RLENGTH - 15) " registers, " st " bytes spilled"; exit }'
+  }
+  fold=$(kstat pearl_tile_fold_wmma); rgfold=$(kstat pearl_tile_fold_wmma_rg)
+  say "build ok sm_75 with $("$NVCC" --version | grep -o 'V[0-9][0-9.]*'): fold $fold; second kernel ${rgfold:-none}; $(elapsed) min"
 fi
 [ -n "${LAUNCH_BUILD_ONLY:-}" ] && { say "done (build only) $(elapsed) min"; exit 0; }
 

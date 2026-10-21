@@ -433,7 +433,7 @@ describe('RTX 20 fold patches (probes/turing/sm75)', () => {
     // Everything else the patch adds is behind [ -n "$patch" ].
     const at = COMPILERS.indexOf('build_variant() {');
     const bv = COMPILERS.slice(at, COMPILERS.indexOf(NL + '}', at));
-    expect(bv.split('[ -n "$patch" ]').length - 1).toBe(4);
+    expect(bv.split('[ -n "$patch" ]').length - 1).toBe(5);
     expect(bv).toContain('  if [ -n "$patch" ]; then' + NL + '    list=$NATIVE/probes/turing/$patch' + NL);
     expect(bv).toContain('    keep=(--keep --keep-dir "$K/keep"); mkdir -p "$K/keep"' + NL + '  fi');
     expect(bv.split('keep=(--keep').length - 1).toBe(1);

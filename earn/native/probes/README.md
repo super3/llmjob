@@ -1854,6 +1854,13 @@ the clock moves in 15 MHz steps. hashrate.js rounds go only to base and the benc
 fastest build, so to get them for each list, race it alone against base
 (`ONLY='base sbfix1'`), or name `sbfix1` base to set `sbfix2` against it.
 
+Since the second sm_75 kernel (`PEARL_BD_RG_KERNEL` in pearl_config.h), a default build
+runs `pearl_tile_fold_wmma_rg` on cards with 4 MB of L2 or more, and a list patches only
+`pearl_tile_fold_wmma`. So an entry with a list gets `-DPEARL_BD_RG_KERNEL=0` added, and
+runs the patched first kernel on every card. Give base the same flag
+(`base|-DPEARL_BD_RG_KERNEL=0|5c97fbadf64a`) so both sides run the first kernel. The build
+line's `runs=` says which kernel each build runs.
+
 The lists in `probes/turing/sm75/`, all for the default fold (`5c97fbadf64a`), each
 checked by applying it to a fresh CUDA 12.8 build:
 
@@ -1960,8 +1967,13 @@ What it says:
   the South Korea 2060 12 GB row is itself about 0.5% behind PeakMiner, so it stays off.
   A per-card choice would need a second kernel, which every fold-hash tool and test here
   assumes away; 0.15% does not pay for that.
+  Later the same day it shipped that way after all: a second sm_75 kernel with HASH_RG's
+  code (`ac1a72f2434b`) that the host runs on cards with 4 MB of L2 or more, the first
+  kernel staying `5c97fbadf64a` (`PEARL_BD_RG_KERNEL` in pearl_config.h). Not yet raced as
+  a two-kernel build.
 
-Nothing from this round ships. The default is still `5c97fbadf64a`.
+Nothing else from this round ships. The first sm_75 kernel is still `5c97fbadf64a`.
+HASH_RG's code runs as the second kernel on 4 MB cards (see above).
 
 ### Round 7: a 192x256 tile loses; what the design round ruled out (2026-10-21)
 

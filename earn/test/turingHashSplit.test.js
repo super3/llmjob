@@ -929,10 +929,14 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
     expect(body(FOLD, 'auto load_tm = [&](const PearlBdHs &h, uint32_t buf, uint32_t (&tm)[16]) {'))
       .toContain('for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[buf + h.L * 16u + (c ^ ((h.L >> 1) & 15u))];');
     expect(FOLD_CODE).toContain('  __shared__ uint32_t sHread[4][32], sVprev[4][32];');
+    // The split build has no second sm_75 kernel (PEARL_BD_RG_KERNEL_BUILT), so its one
+    // kernel takes this, the default's branch of the role.
     expect(FOLD_CODE).toContain(lines(
-      '#elif PEARL_BD_GROUPS == 2 && PEARL_BD_PERSIST',
-      '    const bool hasher = wr ? sid >= 64u : sid < 64u;',
-      '    const uint32_t L = wr * 64u + (sid & 63u);'));
+      '    } else {',
+      '      hasher = wr ? sid >= 64u : sid < 64u;',
+      '      L = wr * 64u + (sid & 63u);',
+      '    }',
+      '#elif PEARL_BD_GROUPS == 2'));
     expect(FOLD_CODE).toContain('  const uint32_t sid = threadIdx.x & 127u;');
     expect(FOLD_CODE).toContain('  const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;');
     expect(FOLD_CODE).toContain('  const uint32_t wr = warp >> 2, wc = warp & 3u;');
@@ -1051,7 +1055,13 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
         '#endif'));
     // The fold is the kernel's whole body, called once a launch, so sHread starts at
     // 0 in every launch and nothing of an earlier call is in flight.
-    expect(KERNEL.split('pearl_fold_bd(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);').length).toBe(2);
+    // The second sm_75 kernel calls it too, but only where PEARL_BD_RG_KERNEL_BUILT, which
+    // the split hash never is: each call is its own kernel's whole body.
+    expect(KERNEL.split('pearl_fold_bd<PEARL_BD_HASH_RG != 0>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);').length).toBe(2);
+    expect(KERNEL.split('pearl_fold_bd<true>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);').length).toBe(2);
+    expect(KERNEL.split('pearl_fold_bd<').length).toBe(3);
+    expect(HEADER).toContain('#define PEARL_BD_HASH_RG_OK (PEARL_BD_DEFAULT_FOLD && !PEARL_BD_RED && !PEARL_BD_HASH_SPLIT)');
+    expect(HEADER).toContain('#define PEARL_BD_RG_KERNEL_BUILT (PEARL_TURING_BDIRECT && PEARL_BD_HASH_RG_OK && !PEARL_BD_HASH_RG)');
   });
 
   test('each half, for every N, gives BLAKE3\'s keyed hash, through the shared slot', () => {

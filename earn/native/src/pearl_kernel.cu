@@ -1663,7 +1663,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       || blockDim.x != PEARL_FOLD_THREADS)
     return;
   (void)m; (void)n; (void)col_groups;
-  pearl_fold_bd(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
+  pearl_fold_bd<PEARL_BD_HASH_RG != 0>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
 #else
 
   // Compile-time geometry. The host has already refused anything else, so this
@@ -2792,6 +2792,30 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   }
 #endif  // PEARL_TURING_BD_BODY
 }
+
+#if PEARL_BD_RG_KERNEL_BUILT
+// The second RTX 20 kernel (PEARL_BD_RG_KERNEL, pearl_config.h): the B-direct fold with
+// the second row group hashing, PEARL_BD_HASH_RG's code. The host runs it instead of
+// pearl_tile_fold_wmma on cards with at least 4 MB of L2 (pearl_bd_rg_for). The same
+// arguments and the same checks. Only the sm_75 build has a body; the other builds have
+// an empty kernel the host never launches.
+extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold_wmma_rg(
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
+    uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
+    uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits) {
+#if PEARL_TURING_BD_BODY
+  if (k_arg != PEARL_FOLD_K || rank_arg != PEARL_FOLD_RANK || chunks_arg != PEARL_FOLD_CHUNKS
+      || blockDim.x != PEARL_FOLD_THREADS)
+    return;
+  (void)m; (void)n; (void)col_groups;
+  pearl_fold_bd<true>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
+#else
+  (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;
+  (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)test; (void)hits;
+#endif
+}
+#endif
 
 // The tall fold (PEARL_FOLD_TALL, Ada, Ampere and Blackwell): pearl_tile_fold_wmma's fold
 // over a 192x256 CTA tile -- eight 96x64 warp tiles, three 64-deep stages, and an
