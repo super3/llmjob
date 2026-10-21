@@ -76,7 +76,7 @@ Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `dep
 
     The HiveOS package is two more assets: `llmjob-earn-$NEW.tar.gz` and its unversioned copy `llmjob-earn-hiveos.tar.gz`. A failure to build or upload them only warns (the run summary says so), so the release can go out without them; check for both, and if they're missing, say so in your report rather than calling the release complete. The home page's flight sheet names `llmjob-earn-$NEW.tar.gz`, so its Installation URL is a dead link until that file is on the release. If the summary warns that the tarballs on the release are from an earlier run, both will be there but they hold that earlier run's binary and cores; report that too. To check the layout, `tar -tvzf` the versioned one: an `llmjob-earn/` folder with `h-config.sh`, `h-run.sh` and `h-stats.sh` (0755), `h-manifest.conf` stamped `CUSTOM_VERSION=$NEW`, `llmjob-earn-cli-linux` (0755), `llmjob-xmr-worker` (0755) and the cores (0644). The `Package HiveOS custom miner` step prints the same listing in the run log.
 
-11. **Write the release notes — the body is empty until you do.** The release is created by `electron-builder --publish always` (`miner-build.yml`), which publishes it with a **blank body**, titled just `$NEW`. Nothing in the workflow ever writes notes, so the changelog is empty unless you fill it in. Every release through v0.3.9 shipped that way. This is the last step of the release, not an optional extra.
+11. **Write the release notes — the body is empty until you do.** The release is created by `electron-builder --publish always` (`miner-build.yml`), which publishes it with a **blank body**, titled just `$NEW`. Nothing in the workflow ever writes notes, so the changelog is empty unless you fill it in. Every release through v0.3.9 shipped that way. It is part of the release, not an optional extra.
 
     - Build the notes from `git log --oneline --no-merges vPREV..v$NEW`, grouped into the same buckets as the PR body — but write them for **someone running a rig**, not as raw commit titles. "Accepted shares and worker names stay stable when a card ages out" beats "Keep shares and worker names stable when a card ages out"; a bare `git log` dump is not release notes.
     - Lead with the install/update line: existing installs auto-update via `latest.yml`, new installs want the `LLMJob-Earn-Setup-$NEW.exe` / `LLMJob-Earn-$NEW.AppImage` names. HiveOS rigs don't auto-update: give the flight sheet's Installation URL, `https://github.com/super3/llmjob/releases/download/v$NEW/llmjob-earn-$NEW.tar.gz` (only when the HiveOS assets are on the release).
@@ -88,6 +88,13 @@ Install **Node 22**, not the newest LTS. CI (`test.yml`, `miner-build.yml`, `dep
     - Verify it took — `gh release view v$NEW --json name,isDraft,body` — rather than trusting the command's exit code.
 
     If you'd rather fix this at the source, it needs a workflow step after the Linux publish that runs `gh release edit` (with `--generate-notes`, or from a checked-in changelog). That's a separate PR off `main` — don't fold a `.github/workflows/` change into the release commit.
+
+12. **Update this rig to the release and leave it mining.** Do this after every release, without being asked. This box is rig01, a production rig, and the founder expects it on the new version straight away. The app downloads the update by itself but installs it only when it quits, so a rig that never restarts stays on the old version. v0.6.7 sat unapplied on rig01 until the founder noticed its RAM column was empty.
+    - Check `%LOCALAPPDATA%\llmjob-earn-updater\pending\`. Its installer's sha512 must match the release's `latest.yml`. If it isn't there yet, download `LLMJob-Earn-Setup-$NEW.exe` from the release and check it the same way.
+    - Set `"resumeMining": true` in `%APPDATA%\llmjob-earn\settings.json`, then close the app gracefully: `taskkill /PID <main pid>`, never `/F`. A graceful quit installs the pending update within seconds. If nothing was pending, run the checked installer with `/S`.
+    - Confirm `LLMJob Earn.exe` reports version `$NEW`, then start it yourself; the installer doesn't. Use `Start-Process` from PowerShell.
+    - Confirm it is mining: about 100% GPU and 450 W, and a row on `https://llmjob-production.up.railway.app/api/miners` with version `$NEW` and a hashrate. Match the row on worker `rig01` and address `prl1px5ervx6…` together.
+    - Report the version and hashrate with the release URL.
 
 ## Notes
 
