@@ -198,6 +198,19 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
 
 ## Gaps and next steps
 
+- Re-run `build-amd.sh check` and `run-cpu-checks.sh` first. They last passed on 10 October, and the
+  sources they build have changed since (noted on 21 October, when this port moved into PR #261): the
+  part of `pearl_kernel.cu` above the cut now includes the Pascal fold's header (`pearl_fold_dp4a.h`)
+  and the RTX 20 kernels that draw A' and B' in fragment order, and `pearl_config.h` and
+  `pearl_core.cc` changed too. By reading, none of it does anything here: the RTX 20 kernels have
+  bodies only on sm_75, the Pascal helpers fall back to plain C++ without `__CUDA_ARCH__`, and
+  `pearl_materialize16`, which this host draws with, is unchanged. Nothing has compiled it since.
+- A first hardware run can be on Salad. On 18 October PR #261 ran ten Salad AMD PCs (RX 7800 XT to
+  RX 9070 XT) on the `rocm/dev-ubuntu-24.04:7.2` image: `rocminfo` named every card and AMD's
+  OpenCL listed each as one device, so ROCm reaches the GPU through WSL2 there. SRBMiner mined
+  Pearl on all ten through OpenCL at 32–85 TH/s, the figure to beat (`benchmark.md`, "AMD Radeon").
+  `amd-smi` gave no power or clocks. Those classes cost $0.04–0.20 an hour, and
+  `tuning/salad/bench.sh` runs a box on them.
 - Pause only the LLM's card for a prompt on a rig of several AMD cards (see "Using it in
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
