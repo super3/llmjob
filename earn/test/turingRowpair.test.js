@@ -755,6 +755,9 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '  auto a_off = [&](uint32_t rbg_) -> uint32_t {',
       '    return (rbg_ * 8u + wr * 4u) * FRAG_BLOCK + lane * 16u;',
       '  };',
+      '#endif',
+    ]);
+    pin(FOLD_CODE, [
       '  auto b_off = [&](uint32_t cbg_) -> uint32_t {',
       '#ifdef PEARL_ABLATE_BSHARE',
       '    cbg_ = wr ? cbg_ ^ 1u : cbg_;',
@@ -999,9 +1002,9 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '#else',
     ]);
     // The held index moves to the tile's buffer at the top of each tile.
+    pin(FOLD_CODE, ['  for (uint32_t v = blockIdx.x; v < tiles; it++) {', '#if PEARL_BD_TALL']);
     pin(FOLD_CODE, [
-      '  for (uint32_t v = blockIdx.x; v < tiles; it++) {',
-      '#if PEARL_BD_T_BUFS == 2',
+      '#elif PEARL_BD_T_BUFS == 2',
       '    tbuf = (it & 1u) * TWORDS;',
       '#if PEARL_BD_TADDR || PEARL_BD_ROWPAIR',
       '    tK = (tK & (TWORDS - 1u)) | tbuf;',
@@ -1017,6 +1020,7 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
     ]);
     pin(FOLD_CODE, [
       '    if (hasher) {',
+      '#endif',
       '      uint32_t tm[16];',
       '#pragma unroll',
       '      for (uint32_t c = 0; c < 16u; c++) tm[c] = sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))];',

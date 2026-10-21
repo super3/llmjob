@@ -2183,7 +2183,9 @@ describe('Turing last chunk read out in the next tile (PEARL_BD_LAST_RO)', () =>
     // before it, from next_srcs's offsets, then the hand-off and the hash. tbuf moves on
     // only at the loop's top.
     expect(FOLD).toContain('    tile_prologue();' + NL + '  }' + NL + '#if PEARL_BD_LAST_RO' + NL);
-    expect(FOLD).toContain('  tile_head(false);' + NL + '#endif' + NL + '  __syncthreads();' + NL + '  uint32_t it = 0u;');
+    // PEARL_BD_TALL's first write of sCur sits between them, in its own #if.
+    expect(FOLD).toContain('  tile_head(false);' + NL + '#endif' + NL + '#if PEARL_BD_TALL' + NL);
+    expect(FOLD).toContain('#endif' + NL + '  __syncthreads();' + NL + '  uint32_t it = 0u;');
     expect(FOLD).toContain('      boffn = b_off(cbgn);' + NL + '    });' + NL + '#if PEARL_BD_LAST_RO' + NL);
     expect(FOLD).toContain('    aoff = aoffn;' + NL + '    boff = boffn;' + NL + '    tile_head(true);' + NL + '#endif' + NL
       + '#if PEARL_BD_HASH_SPLIT' + NL);
@@ -2368,8 +2370,7 @@ describe('Turing last chunk read out in the next tile (PEARL_BD_LAST_RO)', () =>
     const first = run([['  tile_head(false);' + NL, '']]);
     expect(first.bad['an IMMA on garbage']).toBeGreaterThan(0);
     // next_srcs without its clamp: the last tile's tail and head load past the last tile.
-    const clamp = run([['      tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn);' + NL + '      aoffn = a_off(rbgn);',
-      '      tile_coords(vnext, rbgn, cbgn);' + NL + '      aoffn = a_off(rbgn);']]);
+    const clamp = run([['      tile_coords(vnext < tiles ? vnext : v, rbgn, cbgn);', '      tile_coords(vnext, rbgn, cbgn);']]);
     expect(clamp.bad['a load past the last tile']).toBeGreaterThan(0);
     expect(clamp.report.heads[clamp.report.heads.length - 1]).toBe('1:1');
   }, 60000);

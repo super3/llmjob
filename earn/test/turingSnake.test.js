@@ -694,10 +694,11 @@ describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
       expect(CODE.indexOf(off, cur)).toBeLessThan(at);
     }
     // The copy has the fold's only #if PEARL_BD_SNAKE blocks but the ABLATE_BLOAD
-    // guard, and all its IMMA: pearl_bd_imma's definition and these 16 calls.
+    // guard, and all its IMMA: pearl_bd_imma's definition and these 16 calls. The other 8
+    // are PEARL_BD_TALL's k-step, a build SNAKE is an error with.
     expect(CODE.filter((l) => l.trim().startsWith('#if PEARL_BD_SNAKE')).length).toBe(4);
     expect(KSTEP.filter((l) => l === '#if PEARL_BD_SNAKE').length).toBe(3);
-    expect(FOLD.split('pearl_bd_imma(').length - 1).toBe(1 + 16);
+    expect(FOLD.split('pearl_bd_imma(').length - 1).toBe(1 + 16 + 8);
     expect(KSTEP.join(NL).split('pearl_bd_imma(').length - 1).toBe(16);
     // The pieces the run copies: the gate, the IMMA, the default's mma and words, the
     // prologue's loads, the loads' wrapper and the fold's sizes.
