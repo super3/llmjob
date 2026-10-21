@@ -124,11 +124,29 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *base,
                                                     uint32_t rank, uint64_t read_vecs,
                                                     uint32_t fill_word);
 #endif
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+// Built only with A-direct (PEARL_BD_A_DIRECT), the only reader of its layout.
+extern "C" __global__ void pearl_materialize16_afrag(const int8_t *base,
+                                                     const int8_t *dense,
+                                                     const uint32_t *perm, int8_t *out,
+                                                     uint32_t rows, uint32_t k_log2,
+                                                     uint32_t rank, uint64_t read_vecs,
+                                                     uint32_t fill_word);
+#endif
 extern "C" __global__ void pearl_tile_fold_wmma(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
+#if PEARL_BD_RG_KERNEL_BUILT
+// The second RTX 20 kernel: the same fold with the second row group hashing
+// (PEARL_BD_RG_KERNEL). Picked per card by pearl_bd_rg_for.
+extern "C" __global__ void pearl_tile_fold_wmma_rg(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#endif
 extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -240,6 +258,9 @@ struct Ctx {
   bool foldBDirect = false;
   // The B-direct fold's band depth on this card (see PEARL_BD_L2_SHARE).
   uint32_t bdBand = 0;
+  // Whether this card runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
+  // (PEARL_BD_RG_KERNEL), instead of pearl_tile_fold_wmma. Set at create, never after.
+  bool bdHashRg = false;
   // pearl_host_fold_name's text when it has to be formatted.
   char foldName[224] = {0};
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
@@ -919,6 +940,8 @@ void resolve_fold(Ctx *ctx) {
   char *err = ctx->foldErr;
   const size_t err_len = sizeof ctx->foldErr;
   err[0] = 0;
+  // Which binary loaded, read off the default kernel. The second sm_75 kernel
+  // (pearl_tile_fold_wmma_rg) is picked later, at create, and checks its own.
   cudaFuncAttributes fa;
   const bool haveAttrs =
       cudaFuncGetAttributes(&fa, reinterpret_cast<const void *>(pearl_tile_fold_wmma))
@@ -1109,8 +1132,10 @@ uint32_t pearl_tma_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // Turing's band depth for the B-direct fold (see PEARL_BD_L2_SHARE). Bands of
 // column groups (PEARL_BD_WALK 1): 8, halved while a band's B -- depth x 256
 // columns x k bytes -- is more than PEARL_BD_L2_SHARE percent of the L2, never
-// below 2. Bands of row groups (PEARL_BD_WALK 0): 16, halved while a band's A --
-// depth x 128 rows x k bytes -- is, never below 4. -DPEARL_BD_BAND=N forces N.
+// below 2; then 5 instead of 4 where five groups' B is at most
+// PEARL_BD_FIVE_SHARE percent of it. Bands of row groups (PEARL_BD_WALK 0): 16,
+// halved while a band's A -- depth x 128 rows x k bytes -- is, never below 4.
+// -DPEARL_BD_BAND=N forces N.
 uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
 #ifdef PEARL_BD_BAND
   (void)k;
@@ -1123,8 +1148,112 @@ uint32_t pearl_bd_band_for(uint32_t k, uint64_t l2) {
   if (l2 == 0u) return band;
   while (band > floor && (uint64_t)band * unit * 100u > l2 * (uint64_t)PEARL_BD_L2_SHARE)
     band /= 2u;
+  if (PEARL_BD_WALK && band == 4u && 5u * unit * 100u <= l2 * (uint64_t)PEARL_BD_FIVE_SHARE)
+    band = 5u;
   return band;
 #endif
+}
+
+// Whether a card with this L2 runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
+// (PEARL_BD_RG_KERNEL): with the default policy 2, at least PEARL_BD_RG_L2_MIN bytes
+// (4 MB). Round 6 measured HASH_RG's code +0.13 to +0.17% on 4 MB cards and -0.13% on
+// a 3 MB one. Round 5's patch measured +0.13% on the 5.5 MB 2080 Ti. An L2 of 0 (not
+// known) keeps the default kernel. Policy 0 never picks it and 1 always does. Never
+// where the build has no second kernel.
+bool pearl_bd_rg_for(uint64_t l2) {
+  if (!PEARL_BD_RG_KERNEL_BUILT) return false;
+  if (PEARL_BD_RG_KERNEL == 1) return true;
+  if (PEARL_BD_RG_KERNEL == 0) return false;
+  return l2 >= (uint64_t)PEARL_BD_RG_L2_MIN;
+}
+
+// The wmma fold kernel this context launches: the second sm_75 kernel when the card
+// picked it (Ctx::bdHashRg), else pearl_tile_fold_wmma. Every attribute call, the
+// occupancy query and the launch use the same one.
+const void *pearl_wmma_fold_fn(const Ctx *ctx) {
+#if PEARL_BD_RG_KERNEL_BUILT
+  if (ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg);
+#else
+  (void)ctx;
+#endif
+  return reinterpret_cast<const void *>(pearl_tile_fold_wmma);
+}
+
+// Turing's launch shape for the B-direct fold, as pearl_host_create settles it for one
+// card: the band depth, the batch width (valid column offsets a launch) and whether the
+// two pipeline slots run on two streams. Only the band depends on the card today. The
+// width is the profile's col_batch and the streams are PEARL_FOLD_STREAMS on every RTX 20
+// card. A per-card winner of the launch sweep (probes/turing/launch.sh) ships as a change
+// here, keyed on the SM count and the L2 as the band is. A width must pass
+// pearl_bd_width_ok.
+struct PearlBdLaunch {
+  uint32_t band;
+  uint32_t colBatch;
+  bool streams;
+  // Whether the second kernel runs (pearl_bd_rg_for).
+  bool hashRg;
+};
+
+// A power of two of at least one tile's 16 column offsets that divides the valid offsets,
+// so a salt still splits into whole batches.
+bool pearl_bd_width_ok(uint32_t colBatch, uint32_t colsValid) {
+  return colBatch >= 16u && (colBatch & (colBatch - 1u)) == 0u && colBatch <= colsValid
+         && colsValid % colBatch == 0u;
+}
+
+PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_t colBatch) {
+  (void)sms;  // nothing is keyed on it yet
+  PearlBdLaunch s;
+  s.band = pearl_bd_band_for(k, l2);
+  s.colBatch = colBatch;
+  s.streams = PEARL_FOLD_STREAMS != 0;
+  s.hashRg = pearl_bd_rg_for(l2);
+  return s;
+}
+
+// The launch sweep's overrides, read once when a context is made on a card that runs the
+// B-direct fold. They exist so probes/turing/launch.sh can measure several launch shapes
+// with one build on a rented card. Nothing in the app sets them, and unset they change
+// nothing.
+//   PEARL_BD_SWEEP_BAND=N       column groups a band, 1 to 64
+//   PEARL_BD_SWEEP_COL_BATCH=N  column offsets a launch (pearl_bd_width_ok)
+//   PEARL_BD_SWEEP_STREAMS=0|1  the two pipeline slots on one stream, or on two
+//   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);
+//                               1 is ignored in a build without the second kernel
+// A value that does not parse or is out of range is ignored. Returns whether any was set.
+bool pearl_bd_sweep_env(const char *name, uint32_t *out) {
+  const char *v = getenv(name);
+  if (!v || !*v) return false;
+  char *end = nullptr;
+  const unsigned long x = strtoul(v, &end, 10);
+  if (*end != '\0' || x > 0xFFFFFFFFul) {
+    fprintf(stderr, "[pearl] %s=%s ignored: not a number\n", name, v);
+    return false;
+  }
+  *out = (uint32_t)x;
+  return true;
+}
+
+bool pearl_bd_sweep(PearlBdLaunch *s, uint32_t colsValid) {
+  bool any = false;
+  uint32_t v = 0;
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_BAND", &v)) {
+    any = true;
+    if (v >= 1u && v <= 64u) s->band = v;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_COL_BATCH", &v)) {
+    any = true;
+    if (pearl_bd_width_ok(v, colsValid)) s->colBatch = v;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_STREAMS", &v)) {
+    any = true;
+    if (v <= 1u) s->streams = v != 0u;
+  }
+  if (pearl_bd_sweep_env("PEARL_BD_SWEEP_HASH_RG", &v)) {
+    any = true;
+    if (v <= 1u) s->hashRg = v != 0u && PEARL_BD_RG_KERNEL_BUILT;
+  }
+  return any;
 }
 
 // The column offsets one batch of Ampere's tall fold covers (see PEARL_AMPERE_COL_BATCH):
@@ -1610,17 +1739,64 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       CUDA_OK(cudaMalloc(&ctx->dTrG[s], (size_t)ctx->batch * 16u * sizeof(uint32_t)),
               "allocating the transcript buffers (unfused or wgmma fold)");
   }
-  // Turing (the B-direct fold): a band of row groups whose A fits the L2. See
-  // PEARL_BD_L2_SHARE.
+  // Turing (the B-direct fold): a band of column groups whose B fits the L2 (see
+  // PEARL_BD_L2_SHARE), and the rest of the launch shape (pearl_bd_launch_for).
   if (ctx->foldBDirect) {
-    int l2 = 0;
+    int l2 = 0, sms = 0;
     if (cudaDeviceGetAttribute(&l2, cudaDevAttrL2CacheSize, ctx->device) != cudaSuccess) {
       (void)cudaGetLastError();
       l2 = 0;
     }
-    ctx->bdBand = pearl_bd_band_for(profile->k, (uint64_t)l2);
-    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
-    const uint32_t bands[Ctx::kSlots] = {ctx->bdBand, ctx->bdBand};
+    if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device) != cudaSuccess) {
+      (void)cudaGetLastError();
+      sms = 0;
+    }
+    PearlBdLaunch s =
+        pearl_bd_launch_for(profile->k, (uint64_t)l2, (uint32_t)sms, ctx->colBatch);
+    const PearlBdLaunch rule = s;
+    // The sweep's overrides (pearl_bd_sweep).
+    const bool swept = pearl_bd_sweep(&s, ctx->colsValid);
+#if PEARL_BD_RG_KERNEL_BUILT
+    // The second kernel only if its sm_75 body is what loaded, as resolve_fold checks
+    // the first; otherwise the default kernel runs, and s.hashRg says so.
+    if (s.hashRg) {
+      cudaFuncAttributes fr;
+      if (cudaFuncGetAttributes(&fr, reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg))
+              == cudaSuccess
+          && fr.binaryVersion == 75)
+        ctx->bdHashRg = true;
+      else
+        (void)cudaGetLastError();
+    }
+#endif
+    s.hashRg = ctx->bdHashRg;
+    // The line says what took effect, so a reading can be credited to the shape that ran.
+    if (swept)
+      fprintf(stderr,
+              "[pearl] launch sweep: band %u (rule %u), col_batch %u (rule %u), streams %d "
+              "(rule %d), hash_rg %d (rule %d); %d SMs, L2 %d KB\n",
+              s.band, rule.band, s.colBatch, rule.colBatch, (int)s.streams, (int)rule.streams,
+              (int)s.hashRg, (int)rule.hashRg, sms, l2 / 1024);
+    ctx->bdBand = s.band;
+    if (s.colBatch != ctx->colBatch) {
+      ctx->colBatch = s.colBatch;
+      ctx->batch = ctx->colBatch * ctx->rowsValid;
+    }
+    // One stream (the legacy default stream, as with PEARL_FOLD_STREAMS 0) or two.
+    if (s.streams && !ctx->foldStream[0]) {
+      for (int i = 0; i < Ctx::kSlots; i++)
+        CUDA_OK(cudaStreamCreateWithFlags(&ctx->foldStream[i], cudaStreamDefault),
+                "creating the fold streams");
+    } else if (!s.streams && ctx->foldStream[0]) {
+      for (int i = 0; i < Ctx::kSlots; i++) {
+        cudaStreamDestroy(ctx->foldStream[i]);
+        ctx->foldStream[i] = nullptr;
+      }
+    }
+    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter,
+    // with PEARL_BD_A_DIRECT_TAG set when this host draws A' for A-direct.
+    const uint32_t tag = PEARL_BD_A_DIRECT ? PEARL_BD_A_DIRECT_TAG : 0u;
+    const uint32_t bands[Ctx::kSlots] = {ctx->bdBand | tag, ctx->bdBand | tag};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
                        cudaMemcpyHostToDevice),
             "setting the B-direct fold's band depth");
@@ -1854,16 +2030,28 @@ void draw_noise(Ctx *ctx, bool isA) {
   const uint32_t blockRows =
       ctx->foldTiled ? (isA ? (ctx->foldHopper ? PEARL_HOPPER_BM : PEARL_TALL_BM) : PEARL_TALL_BN)
                      : 0u;
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+  if (ctx->foldBDirect && isA && kPow2 && rows % 16u == 0u && k >= 32u) {
+    // A-direct (PEARL_BD_A_DIRECT): A' fragment-ordered too, in the order the
+    // fold's A operand takes (pearl_materialize16_afrag). Every A' this context
+    // ever has comes through here: the job's full draw and every restamp for a
+    // new salt (restamp and the host-hashed path in pearl_host_reseed both end
+    // in draw_noise(ctx, true)). The search refuses A-direct for any m this
+    // branch does not take.
+    pearl_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
+        src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+  } else
+#endif
 #if PEARL_TURING_BDIRECT
   if (ctx->foldBDirect && !isA && kPow2 && rows % 16u == 0u && k >= 32u) {
     // The same values, in the fragment order Turing's B-direct fold loads B'
-    // in (pearl_materialize16_frag). A' stays row-major, so a restamp, which
-    // redraws only A', is unchanged. Decided per card when its context was
-    // created (resolve_fold). The search refuses the B-direct fold for any
-    // geometry this branch does not take. Turing has no tall fold, so `fused`
-    // is never set here and pearl_gen_dense above has written the dense factor
-    // this reads; under the constant fill it reads B through read_vecs, like
-    // every other materialise.
+    // in (pearl_materialize16_frag). B' is drawn once a job; a restamp redraws
+    // only A' (row-major, or fragment-ordered with A-direct, above). Decided
+    // per card when its context was created (resolve_fold). The search refuses
+    // the B-direct fold for any geometry this branch does not take. Turing has
+    // no tall fold, so `fused` is never set here and pearl_gen_dense above has
+    // written the dense factor this reads; under the constant fill it reads B
+    // through read_vecs, like every other materialise.
     pearl_materialize16_frag<<<draw_blocks(len / 16), kDrawThreads>>>(
         src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
   } else
@@ -2337,7 +2525,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const uint32_t stageBufs =
       ctx->foldTuring && PEARL_TURING_WIDE ? PEARL_TURING_WIDE_STAGE_BUFS : PEARL_STAGE_BUFS;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
-                                     : reinterpret_cast<const void *>(pearl_tile_fold_wmma);
+                                     : pearl_wmma_fold_fn(ctx);
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -2419,19 +2607,37 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       snprintf(err, err_len, "B-direct fold: n %u is not a multiple of 16", ctx->profile.n);
     return false;
   }
+#if PEARL_BD_A_DIRECT
+  // A-direct reads A' in blocks of 16 rows as well, and the draw writes it that
+  // way only when m is a whole number of them. It addresses both operands with
+  // 32-bit byte offsets.
+  if (ctx->foldBDirect
+      && (ctx->profile.m % 16u != 0u || (uint64_t)ctx->profile.m * k > 0xFFFFFFFFull
+          || (uint64_t)ctx->profile.n * k > 0xFFFFFFFFull)) {
+    if (err && err_len)
+      snprintf(err, err_len,
+               "A-direct fold: m must be a multiple of 16 and each operand under 4 GB "
+               "(m %u, n %u, k %u)",
+               ctx->profile.m, ctx->profile.n, k);
+    return false;
+  }
+#endif
   // Two full-chunk stages (one on Turing's one-stage fold); the transcripts live
   // in registers and global now. The tall fold: three 64-deep stages, its ring's
   // barriers, and the transcripts, laid out differently by the cp.async and TMA
   // builds (see PEARL_TALL_SMEM). Turing's B-direct fold: PEARL_BD_A_STAGES
   // stages of the tile's A rows, then the block's transcripts, 64 bytes a
-  // region (pearl_fold_bd.cuh): 40 KB.
+  // region (pearl_fold_bd.cuh): 40 KB. A-direct (PEARL_BD_A_DIRECT) has no A
+  // stages (PEARL_BD_SMEM_A_STAGES 0) and one or two transcript buffers
+  // (PEARL_BD_T_BUFS): 8 or 16 KB.
   const size_t smem =
       ctx->foldTall ? (ctx->foldTma ? (size_t)PEARL_TALL_SMEM_TMA : (size_t)PEARL_TALL_SMEM)
       : ctx->foldBDirect
-          ? (size_t)PEARL_BD_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
+          ? (size_t)PEARL_BD_SMEM_A_STAGES * warpRows * regionsPerWarp * PEARL_ROWS_COUNT
                     * PEARL_SB_STRIDE
-                + (size_t)warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
+                + (size_t)PEARL_BD_T_BUFS * warpsPerBlock * regionsPerWarp * PEARL_WMMA_COL_BLK
                       * PEARL_JACKPOT_BUCKETS * 4u
+                + (size_t)PEARL_BD_SPLIT_SMEM
           : (size_t)stageBufs
                 * ((size_t)warpCols * PEARL_WMMA_COL_BLK * 16
                    + (size_t)warpRows * regionsPerWarp * PEARL_ROWS_COUNT)
@@ -2474,6 +2680,34 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
                  cudaGetErrorString(se));
       return false;
     }
+#if PEARL_BD_A_DIRECT
+    // A-direct keeps only the transcripts in shared and reads A and B through
+    // L1, so it asks for Turing's smaller shared split: 32 KB of shared and 64
+    // KB of L1 (PEARL_BD_A_DIRECT_CARVEOUT). It is a hint the fold runs without,
+    // so a refusal is dropped rather than failing the search.
+#if PEARL_BD_HASH_SPLIT
+    // The split hash's state takes the footprint to 24 KB and 1152 bytes of static
+    // shared. Past the split the driver would take the other one, and the fold
+    // would run with half the L1, slower without saying so, so that is refused.
+    if (ctx->foldBDirect) {
+      int smPerSm = 0;
+      cudaDeviceGetAttribute(&smPerSm, cudaDevAttrMaxSharedMemoryPerMultiprocessor, ctx->device);
+      const size_t split = (size_t)smPerSm * PEARL_BD_A_DIRECT_CARVEOUT / 100u;
+      if (smPerSm > 0 && smem + fs.sharedSizeBytes > split) {
+        if (err && err_len)
+          snprintf(err, err_len,
+                   "A-direct fold needs %zu B of shared a block (+%zu static), past the %zu B "
+                   "split it asks for",
+                   smem, (size_t)fs.sharedSizeBytes, split);
+        return false;
+      }
+    }
+#endif
+    if (ctx->foldBDirect
+        && cudaFuncSetAttribute(foldFn, cudaFuncAttributePreferredSharedMemoryCarveout,
+                                PEARL_BD_A_DIRECT_CARVEOUT) != cudaSuccess)
+      (void)cudaGetLastError();
+#endif
     ctx->smemOptedIn = true;
   }
   // The fold is persistent: exactly as many blocks as can be resident, each
@@ -2576,6 +2810,12 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+#if PEARL_BD_RG_KERNEL_BUILT
+  else if (ctx->bdHashRg)
+    pearl_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
   else
     pearl_tile_fold_wmma<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
@@ -2730,9 +2970,44 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldWide) return "wmma 128x256, 8 warps of 64x64";
   if (ctx->foldBDirect) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "B-direct 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             "%s%s%s 128x256, 8 warps of 64x64, %d row group%s, %s, band %u, m8n8k16 (Turing)",
+             PEARL_BD_A_DIRECT ? "A-direct" : "B-direct",
+             PEARL_BD_A_DIRECT && !PEARL_BD_A_REALIGN ? ", no realign" : "",
+             PEARL_BD_KORDER ? ", k-lo first" : "",
              PEARL_BD_GROUPS, PEARL_BD_GROUPS == 2 ? "s" : "",
              PEARL_BD_PERSIST ? "persistent" : "a block a tile", ctx->bdBand);
+#if PEARL_BD_RUNBASE || PEARL_BD_TAIL_LDG || PEARL_BD_TADDR || PEARL_BD_RED || PEARL_BD_GATE != 2 \
+    || PEARL_BD_HIT_COORDS || PEARL_BD_SNAKE || PEARL_BD_HASH_SPLIT || PEARL_BD_HASH_RG \
+    || PEARL_BD_RG_KERNEL_BUILT
+    // The fold's default-off switches (pearl_config.h, after PEARL_BD_A_DIRECT_TAG), so
+    // a reading from one of them is not credited to the default fold. LEAN shows as
+    // its parts.
+    {
+      Ctx *c = const_cast<Ctx *>(ctx);
+      size_t n = strlen(c->foldName);
+      const size_t named = n;
+      snprintf(c->foldName + n, sizeof c->foldName - n, ", with%s%s%s%s%s%s%s",
+               PEARL_BD_RUNBASE ? " RUNBASE" : "", PEARL_BD_TAIL_LDG ? " TAIL_LDG" : "",
+               PEARL_BD_GATE != 2 ? " GATE=1" : "", PEARL_BD_TADDR ? " TADDR" : "",
+               PEARL_BD_RED ? " RED" : "", PEARL_BD_HIT_COORDS ? " HIT_COORDS" : "",
+               PEARL_BD_SNAKE ? " SNAKE" : "");
+      n = strlen(c->foldName);
+      if (PEARL_BD_HASH_SPLIT)
+        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_SPLIT=%d", PEARL_BD_HASH_SPLIT);
+      // LAST_RO needs LEAN's parts, so the #if above lets it through.
+      n = strlen(c->foldName);
+      if (PEARL_BD_LAST_RO) snprintf(c->foldName + n, sizeof c->foldName - n, " LAST_RO");
+      n = strlen(c->foldName);
+      // HASH_RG built in, or the second kernel running on this card.
+      if (PEARL_BD_HASH_RG || c->bdHashRg)
+        snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
+      // ROWPAIR, like LAST_RO, needs LEAN's parts.
+      n = strlen(c->foldName);
+      if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
+      // With nothing on (the second kernel built but not running), no ", with".
+      if (strlen(c->foldName) == named + strlen(", with")) c->foldName[named] = 0;
+    }
+#endif
     return ctx->foldName;
   }
   if (ctx->foldTuring)

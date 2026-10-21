@@ -949,6 +949,11 @@ out of the fold.
 - `bench.exe <secs>` (built from `bench.cu`) -- fold plus finalize, no redraws. It benches
   the mainnet fill, now the constant one; `PEARL_OPERAND_FILL_CODE=0` benches the hashed
   fill from the same binary.
+- `PEARL_HITLIST=<batches> bench.exe 0 [m] [col_batch]` -- every hit the build finds, 16
+  to 32 a batch on average, as a line a batch, from nonce 0 under salt 0. Two builds that
+  compute the same hashes print the same lines. It catches what `verify-hits.js` cannot:
+  a build that drops hits. `turing/compilers.sh` runs it on every build against base
+  (stage `complete`).
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no
@@ -1458,3 +1463,623 @@ The same arithmetic says why a memory-clock lock would have hurt these cards bef
 change: at 7001 MHz a 5060 has 224 GB/s, against the ~360 GB/s the 2048-wide walk needed.
 Now a launch reads A' once and B' once, ~8 GB/s on a 5060. Vast containers may not set
 clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.
+
+## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
+
+On the RTX 20 cards we mine at 92-99% of the faster competitor (benchmark.md, "RTX
+20-series"). The clocks match, so the gap is work per clock: we do 5-7.5% less.
+pearl_config.h puts the B-direct fold at about 79% of the tensor pipe's peak per clock
+on a 2080 Ti, measured before the last round's gains (85-88% now, see the results), and
+the seam costs left over (the chunk barrier, the readout, the hash) are ones that
+reordering the source could not hide, because ptxas moves them back.
+
+Three experiments run side by side, on Vast RTX 20 cards. Each has a box script in
+`probes/turing/` that prints its results as tagged lines.
+
+| Experiment | What it does | Expected | When it ships |
+|---|---|---|---|
+| Compilers (`compilers.sh`) | builds the sm_75 fold with other CUDA versions and register limits; each ptxas orders the fold's instructions differently | 0-3% | a variant that wins three interleaved rounds and passes verify-hits 400/400 |
+| Launch shape (`launch.sh`) | sweeps how much each launch covers and how many run at once, per card | 0-2% | the same rule, per card |
+| Hand-scheduled inner loop (`sass.sh`) | one k-step of the fold in hand-written Turing SASS, in a test program, against a pure-IMMA ceiling on the same card | the whole gap, if it works | not this round: it gets finished only if it holds more than about 93% of the IMMA peak per clock |
+
+### Results (2026-10-20)
+
+All runs were on Vast, each script pinned to a commit of this PR's branch. The round cost
+$0.34.
+
+**Compilers: nothing ships.** CUDA 12.4, 12.6, 12.8, 12.9, 13.0, 13.3 and 13.4 all build
+the sm_75 fold into the same machine code, byte for byte: the md5 of the kernel's
+`.text`, control bits included. 12.5, 13.1 and 13.2 were not built. ptxas 12.0 and
+12.2 differ in one yield bit on the kernel's first instruction. CUDA 12.0's front end
+can't compile this source at all, so its figure is its ptxas on newer PTX. Two separate
+builds found the same.
+
+Two options do change the code:
+- `-Xptxas --register-usage-level=8` (6 to 10 give the same code): 252 registers, 668
+  instructions a chunk loop against 680, more operand reuse.
+- `-maxrregcount=255`: nvcc also hands cicc `-maxreg 255`, which changes the PTX.
+  ptxas ignores the flag under the kernel's launch bound, so 254 or lower changes
+  nothing.
+
+Raced on a 2080 Ti (Vietnam, 152869, 250 W) with `compilers.sh`: bench in 5 interleaved
+rounds of 20 s, hashrate.js in 3 rounds of 60 s, verify-hits on every build but the
+shipped one.
+
+| build | bench vs shipped | hashrate.js vs shipped | verify-hits |
+|---|---|---|---|
+| register-usage-level 8 | -0.71% | -0.60% | 400/400 |
+| -maxrregcount=255 | -3.18% | not run | 400/400 |
+| both | -2.69% | not run | 400/400 |
+
+The shipped build read 83.76 TH/s on bench and 83.52 on hashrate.js, at about 1370 MHz
+and 242 W. Fewer instructions in the loop did not make it faster. A cubin from ptxas
+13.4, in CUDA 13's new ELF format, packed into the 12.8 core, loaded and mined on that
+card's driver 595. Its fold is the shipped build's code, byte for byte, so its 89.4 TH/s
+in a 20 s load check is the card running cooler, not a speed difference.
+
+**Launch shape: band 5 on 4 MB cards, +0.2 to 0.3%.** `launch.sh`, hashrate.js in 3
+interleaved rounds of 60 s against the shipped shape (band 4 on 3-4 MB cards, 8 on the
+2080 Ti; batch width 2048; two streams). "Won" counts the rounds a shape beat the
+shipped one in. The shipped shape and every band that reached hashrate.js passed
+verify-hits 400/400. The batch-width and one-stream shapes were not checked.
+
+| card (machine, power) | shipped | band 5 | batch 4096 | batch 1024 | one stream |
+|---|---|---|---|---|---|
+| RTX 2060 12 GB, 3 MB L2 (142755, 150 W of 184) | 47.42 TH/s | -0.70%, won 0/3 | +0.04%, 3/3 | +0.15%, 3/3 | +0.06%, 2/3 |
+| RTX 2070, 4 MB (141620, 175 W) | 47.18 | +0.30%, 3/3 | -0.06%, 2/3 | -0.08%, 1/3 | 0.00%, 1/3 |
+| RTX 2080, 4 MB (149439, 275 W) | 77.76 | +0.21%, 3/3 | +0.01%, 1/3 | +0.01%, 1/3 | -0.04%, 0/3 |
+
+- On the 2070, band 5 won 3 more A/B pairs as well, by +0.28 to +0.32%.
+- On bench, band 6 was +0.21% on the 2070 and +0.13% on the 2080, and band 8 (all of a
+  4 MB L2) -2.3% and -2.1%. On the 2060, bands 5 and 6 were -0.6% and -1.1%.
+- So the host now gives every sm_75 card with a 4 MB L2 5 column groups a band
+  (`PEARL_BD_FIVE_SHARE`): the 2060 Super to 2080 Super, the T4, and parts such as the
+  Quadro RTX 4000 and 5000. Of those, only the 2070 and 2080 ran.
+- Batch width and one vs two streams are inside ±0.15% wherever they could be read. By
+  the launch agent's estimate a launch lasts 100-185 ms with the next one queued, so
+  there was little to win there.
+- The 2080 Ti (Norway, 153219, 250 W) is not used. Heat held it at 83-84 C and 1305 MHz,
+  at about 199 W. Its control read 59.0-59.3 TH/s through the three main rounds, then
+  drifted up to 61.2 (and one stream to 62.2) during the confirm pairs at the same
+  clock, so those pairs disagree (one stream: +0.15%, -1.25%, +1.77%). On bench, bands
+  6, 9 and 10 read +1.3% over 8, but band 6 on hashrate.js read -0.4%.
+
+**Hand-scheduled inner loop: stop, as planned.** `sass.sh` on a 2080 Ti (California,
+152453, capped at 180 W; kernel medians 1219-1445 MHz). Medians of 7 interleaved
+rounds, IMMA per clock per SM, as a percentage of the pure-IMMA ceiling (0.9999 of 1024
+MAC a clock):
+
+| kernel | B from L2 | L1 diagnostic |
+|---|---|---|
+| ptxas ceiling | 100.0 | |
+| hand-written ceiling | 99.7 | |
+| ptxas loop | 98.9 | 96.1 |
+| hand1: B one k-step ahead, as in the fold | 98.8 | 95.1 |
+| hand2: two ahead | 99.1 | 90.0 |
+| hand3: three ahead, no IMMA scoreboards | 99.1 | 93.0 |
+
+Every hand kernel matched ptxas's results word for word, and ptxas's matched a CPU
+reference. CuAssembler at `96a9f72` assembled them.
+
+The rule was: finish it if the hand loop holds more than about 93%. It does, but so does
+ptxas's own loop, at 98.9%. The rule assumed ptxas sat well under 93%, and it doesn't.
+Three separate reviews of the code and SASS found:
+- The test loop is a faithful copy of the fold's loop body. With the fold's seams
+  ablated, its chunk loop has the same instruction mix, and stall sums within 0.3%.
+- The test can't see how good a schedule is. With two warps per scheduler and B in L2,
+  each warp fills the other's gaps. Where one warp runs alone, at the seams, a hand
+  schedule's edge is larger. A rough estimate for a whole hand-scheduled fold is 0.5-2%,
+  not 5-7%.
+- The fold runs at about 85-88% of peak per clock today. The 79% in pearl_config.h is
+  from before four later gains. By static counts and a model, not a measurement, the
+  12-15 points left split about like this: the schedule, at most 1; the chunk seam
+  (barrier, readout, A staging), 1-1.5; the hash and tile hand-off, 1-2. The other 8-11
+  are most likely B's L2 latency under the full fold's load, which the per-chunk barrier
+  turns into lost cycles.
+- The deeper B prefetch that made hand2 and hand3 fast needs about 32 more registers than
+  the fold's 254 leave.
+
+So hand-writing the inner loop is not the way to the gap. The fold's own ablations would
+show where it is: `PEARL_ABLATE_BHIT`, `_AHIT`, `_BARRIER`, `_READOUT`, `_STAGING` and
+`_TRANSCRIPT_HASH`, timed per clock on a 2080 Ti and a 2060. None has run on the current
+build.
+
+### Where the fold loses time: its ablations, per clock (2026-10-20)
+
+`compilers.sh` with `VARIANTS_SPEC` set to the fold's ablation builds, bench in 3
+interleaved rounds of 20 s against the shipped build (commit `1e981cd`), on three cards
+held at their power limit: an RTX 2080 Ti (Vietnam, 152869, 250 W, about 1365 MHz), an
+RTX 2070 (South Korea, 139007, the benchmark row's own machine, 150 W) and an RTX 2060
+12 GB (South Korea, 142755, 150 W). Each build computes wrong answers; they only price a
+cost. Medians of the three rounds, raw TH/s and TH/s per GHz:
+
+| switched off | 2080 Ti raw / per GHz | 2070 | 2060 |
+|---|---|---|---|
+| all seams: barrier, A staging, readout, hash | +18.0% / +10.0% | +17.6% / +10.1% | +18.0% / +10.0% |
+| B loaded once a tile, not every k-step | +9.6% / +3.0% | +8.3% / +2.5% | +8.3% / +3.1% |
+| A staging | +6.9% / -0.7% | +6.5% / -0.4% | +6.8% / -0.3% |
+| the per-chunk barrier | -11.6% / -10.6% | -8.9% / -6.0% | -7.9% / -7.0% |
+| B always an L1 hit | +0.9% / -6.3% | -0.3% / -6.5% | -0.3% / -6.4% |
+| A always an L2 hit | -4.0% / -6.1% | -2.2% / -3.2% | -1.9% / -4.2% |
+| readout | -3.0% / -1.9% | -1.0% / +0.5% | -0.4% / 0.0% |
+| transcript hash | -1.2% / -3.0% | -2.4% / -4.5% | -1.9% / -3.6% |
+
+The shipped build read 83.1, 48.5 and 47.9 TH/s. Four of the builds spill a little
+(A always an L2 hit 8 bytes, B once a tile 56, no barrier 36, no staging 12), so they
+slightly understate what they price.
+
+What it says:
+- The seams, together, cost about 10% per clock on all three cards. With them gone the
+  2080 Ti fold runs at about 97% of the IMMA peak per clock, against about 91% for the
+  best competitor (PeakMiner, 88.5 TH/s at about 1390 MHz) and 87% for ours.
+- They don't add up one at a time. Taking the barrier away alone costs 8-12%: the warps
+  drift apart while A is still staged through shared. It pays only together with A's
+  staging, which it exists to protect.
+- A's staging costs power, not work per clock: without it the clock rises about 7% at the
+  same work per clock.
+- B's L2 latency is not the limit, as the earlier reviews guessed: with every B load an
+  L1 hit the fold is no faster, it only runs at a higher clock for the same rate.
+- B's traffic costs about 3% per clock, and more in clock.
+
+So the way to the gap is to drop A's staging and the per-chunk barrier together: load A
+straight from global into registers, fragment-ordered, the way B already is. An earlier
+attempt at that faulted with an illegal address and was dropped (pearl_config.h), never
+measured.
+
+### A-direct: A loaded like B, no staging and no barrier a chunk (2026-10-20)
+
+`PEARL_BD_A_DIRECT` (now on by default, with `PEARL_BD_A_REALIGN` 0): the host writes A'
+fragment-ordered, as it writes B', and each warp loads its A fragments straight from
+global a k-step ahead, beside its B. A's shared staging and the per-chunk barrier go
+together, which is the pair the ablations above priced. Raced against the staged fold
+with `compilers.sh` (commit `4aa459d`), hashrate.js in 3 interleaved rounds of 60 s,
+every round won, verify-hits 400/400 with and without the per-tile meeting on all three:
+
+| card | staged | A-direct | per clock |
+|---|---|---|---|
+| RTX 2080 Ti (Vietnam, 152869, 250 W) | 82.75 TH/s | 84.75 (+2.6%) | +2.5% |
+| RTX 2070 (South Korea, 139007, 150 W) | 46.30 | 48.01 (+3.7%) | +1.3% |
+| RTX 2060 12 GB (South Korea, 142755, 150 W) | 47.00 | 47.88 (+1.9%) | +2.1% |
+
+On the 2070 the full-loop race ran the build with the per-tile meeting; on bench the two
+were level there, and without the meeting was ahead per clock on all three cards (+2.0%,
++1.3%, +3.6%), so that is the default. The 2080 Ti is now at about 89.6% of the IMMA peak
+per clock, against about 91% for the best competitor.
+
+A-direct's own ablations, bench, 3 interleaved rounds, raw / per GHz:
+
+| switched off | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| readout and hash together | +6.5% / +6.5% | +6.1% / +6.1% | +6.7% / +6.3% |
+| B loaded once a tile | +9.9% / +2.2% | +8.4% / +2.4% | +10.1% / +2.4% |
+| readout shuffles (`PEARL_ABLATE_TRANSCRIPT`: the gather only, the stores stay) | +1.7% / +1.3% | +1.3% / +1.3% | +1.0% / +0.3% |
+| hash only | -0.8% / -2.0% | -3.2% / -3.2% | -2.0% / -4.7% |
+| readout only (spills 36 bytes) | -8.6% / -10.6% | -7.0% / -8.8% | -5.7% / -8.9% |
+| B not shared in L1 | -13.7% / -16.4% | -6.1% / -5.1% | -5.6% / -6.7% |
+
+- The readout and the hash together are what is left, about 6% per clock on all three.
+  With both off the 2080 Ti would run at 95% of the IMMA peak per clock.
+- One at a time they read negative. The two warps of a scheduler that share B are one
+  hasher and one not, so while one hashes, the other issues IMMA alone, and a lone warp
+  waits on its own recent IMMA results (24 such waits a pass in ptxas's order, per the
+  hand-SASS probe above).
+- Sharing B in L1 between those two warps is worth 6-16%.
+
+### Round 2: k-lo first wins, the spread hash loses (2026-10-20)
+
+Two changes aimed at the readout-and-hash seam, raced with `compilers.sh` (commit
+`e487ba1`) against the A-direct default on the same three cards, bench in 3 interleaved
+rounds of 20 s, then hashrate.js for the winner in 3 rounds of 60 s, and verify-hits on
+every build:
+
+- `PEARL_BD_KORDER`: issue every accumulator pair's k-lo IMMA, then every pair's k-hi
+  IMMA, so the two IMMA on a pair are 64 apart and a warp issuing alone waits less on
+  its own results. The host draws A' and B' in pairs of 16-row blocks to match.
+  `earn/test/turingKorder.test.js` checks the words each IMMA reads. 239 registers.
+- `PEARL_BD_HASH_SPREAD` (commit `e487ba1`): each warp hashes its own 16 regions of the
+  last tile while it folds the next, half a BLAKE3 round a chunk, on lane pairs, instead
+  of one warp of each scheduler hashing all of them at the hand-off. 252 registers.
+- Both together: 248 registers.
+
+bench, raw / per GHz against the default (every round in the same direction except the
+2080 Ti's first korder round, -0.5%):
+
+| build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| k-lo first | +2.0% / +2.0% | +1.9% / +1.4% | +2.4% / +2.0% |
+| spread hash | -3.5% / -4.6% | -2.4% / -2.4% | -2.1% / -2.5% |
+| both | -5.2% / -6.2% | -6.0% / -4.4% | -5.9% / -7.3% |
+
+hashrate.js, k-lo first against the default, every round won:
+
+| card | default | k-lo first | per clock |
+|---|---|---|---|
+| RTX 2080 Ti (Vietnam, 152869, 250 W) | 85.22 TH/s | 86.81 (+1.9%) | +1.8% |
+| RTX 2070 (South Korea, 139007, 150 W) | 48.04 | 48.82 (+1.6%) | +1.6% |
+| RTX 2060 12 GB (South Korea, 142755, 150 W) | 47.91 | 48.97 (+2.2%) | +1.5% |
+
+verify-hits 400/400 for all three builds on all three cards. k-lo first is now the
+default with A-direct (`PEARL_BD_KORDER`, `pearl_config.h`); the default fold's machine
+code is the build raced here (`faf18b40f3a8` under CUDA 12.8). The 2080 Ti is now at
+about 91.3% of the IMMA peak per clock (63.57 TH/s per GHz against 69.63), against about
+91.4% for the best competitor (PeakMiner, from the benchmark row's pool run).
+
+The spread hash loses on every card, and costs more with k-lo first than alone. Spread
+through the chunk loop, the hash's instructions and shuffles take issue slots and
+registers from every warp in every chunk, which costs more than one warp of a scheduler
+leaving its partner to issue alone once a tile. It is taken out again; `e487ba1` keeps
+the code.
+
+### Candidates built before A-direct, never raced
+
+Four switches were built on the staged fold in the first round and never merged, pushed
+or raced. The ablations above ruled out what three of them were for, and A-direct removed
+what the fourth worked around:
+
+| switch | idea | why not raced |
+|---|---|---|
+| `PEARL_BD_A_HINT` | load A evict-first so B stays in L2 | B's L2 latency is not the limit (B always an L1 hit is no faster per clock) |
+| `PEARL_BD_B_AHEAD` | load B two k-steps ahead | same; it also needed 16 more registers |
+| `PEARL_BD_WALK2D` | walk each band in blocks of row groups so one B fetch serves a block | same |
+| `PEARL_BD_SPLIT_BAR` | split the per-chunk barrier so a late B load stalls fewer warps | A-direct has no per-chunk barrier |
+
+### Round 3: the lean loads win, the red readout, snake and split hash don't (2026-10-20)
+
+A design round decoded the k-lo-first fold's SASS, modelled its schedule, and picked
+five switches (`pearl_config.h`, after `PEARL_BD_A_DIRECT_TAG`, where each is
+described). Each gives the same transcripts, hashes and hits:
+
+- `PEARL_BD_LEAN`: the loop's load base held once a pass (`RUNBASE`), the next tile's
+  first k-step loaded coherent so ptxas keeps it ahead of the hand-off (`TAIL_LDG`),
+  and only the even n-block's readout gate (`GATE` 1). ptxas then issues the loop's
+  loads 128 IMMA or more before their use, against 94. 243 registers.
+- `PEARL_BD_RED`: the readout by `red.shared.xor` instead of shuffles, as on the other
+  cards, with the transcript words zeroed before each use. 252 registers.
+- `PEARL_BD_SNAKE`: k-lo first's IMMA reordered so each shares an operand with the one
+  before. 240 registers.
+- `PEARL_BD_HASH_SPLIT=N`: the warp that waits at the hand-off runs the first N of the
+  last tile's 14 hash half-rounds, so its partner has less to do alone. 254 registers.
+- `PEARL_BD_HIT_COORDS`: a hasher works out its tile's coordinates only for a hit.
+
+Raced with `compilers.sh` (commit `8603e43`) against the k-lo-first default on an RTX
+2080 Ti (Thailand, 95392, a benchmark row's machine, held by its host at 170 W and
+about 1060 MHz; the Vietnam card was rented), the South Korea 2070 (139007, 150 W)
+and an RTX 2060 12 GB (South Korea, 27564, 170 W; 142755 was rented). bench, 3
+interleaved rounds of 20 s, raw / per GHz:
+
+| build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| LEAN + HIT_COORDS | +1.27% / +1.35% | +1.00% / +1.05% | +1.38% / +0.53% |
+| LEAN | +1.16% / +0.92% | +0.90% / +0.97% | +1.27% / +0.42% |
+| RED + HIT_COORDS | +0.66% / +0.75% | +0.76% / +0.77% | +0.39% / +0.39% |
+| RED | +0.44% / +1.02% | +0.76% / +0.83% | +0.30% / +0.30% |
+| RUNBASE + TAIL_LDG | +0.84% / -0.06% | +0.27% / -0.65% | +0.07% / -0.78% |
+| SNAKE + RUNBASE + TAIL_LDG | +1.33% / +0.14% | +0.17% / -0.72% | +0.10% / -0.71% |
+| SNAKE | +0.03% / +0.64% | -0.37% / -0.27% | +0.18% / +0.18% |
+| HASH_SPLIT 3 / 4 / 6 | +0.3 to +0.6% / -1.3 to -1.5% | -0.2 to -0.3% / -1.1 to -1.2% | -1.1 to -1.3% / -2.0 to -2.1% |
+
+Every build passed verify-hits 400/400 on all three cards, and the new `complete` stage:
+each found exactly base's hits, batch for batch, in the default shape and in three
+narrow ones where a block has one, two or a few tiles.
+
+hashrate.js, LEAN + HIT_COORDS against the default, 3 rounds of 60 s:
+
+| card | default | LEAN + HIT_COORDS | per clock |
+|---|---|---|---|
+| RTX 2070 (South Korea, 139007, 150 W) | 50.75 TH/s | 51.32 (+1.1%), every round ahead | +1.0% |
+| RTX 2060 12 GB (South Korea, 27564, 170 W) | 49.68 | 50.41 (+1.5%), every round ahead | +0.9% |
+| RTX 2080 Ti (Thailand, 95392, 167 W) | 69.63 | +0.2% (rounds +0.2, -0.3, +1.0) | +1.2% |
+
+The 2080 Ti's rounds came from a second rental (bench there: +1.00% / +1.04%, every
+round ahead), since the race's hashrate stage took the build fastest on its bench,
+SNAKE + RUNBASE + TAIL_LDG (+1.1% raw, -0.2% per clock). That card is held by its host
+far under its 250 W: LEAN does more work a clock at the same power, so it runs about
+10 MHz slower, and most of its per-clock gain does not show raw.
+
+LEAN + HIT_COORDS is now the default (`5c97fbadf64a` under CUDA 12.8);
+`-DPEARL_BD_LEAN=0 -DPEARL_BD_HIT_COORDS=0` builds the fold before it.
+
+What it says:
+- The load placement is what LEAN buys: its loads go out early, and its GATE 1 halves
+  the readout's gating PRMTs. RUNBASE and TAIL_LDG alone gain raw only through
+  clock, and are level or a little behind per clock.
+- RED's shuffle-free readout gains, but less than the +1.3% per clock its shuffles cost
+  before k-lo first, which had already spread them out, and it cannot take GATE 1
+  without failing the load gates.
+- SNAKE moved the readout's waits instead of removing them.
+- The split hash costs 1-2% per clock on every card. Either the lone phases it shortens
+  are smaller than the model put them, or its release fence and 254 registers cost
+  more; this round cannot tell which.
+
+### Round 4: nothing stacks on the lean loads; what is left (2026-10-20)
+
+`compilers.sh` (commit `90da50c`) on the LEAN + HIT_COORDS default, on five cards: the
+Thailand 2080 Ti (95392, held by its host at 167 W), the South Korea 2070 (139007) and
+2060 12 GB (27564), and two benchmark rows' own machines, the Germany 2060 Super (149900,
+which ran at 124-141 W of its 175 W, held by heat) and the Colorado 2080 (149439, 275 W).
+
+The two builds that put a round-3 switch on top of LEAN lose on every card. Both passed
+verify-hits 400/400 and the complete stage:
+
+| build | 2080 Ti | 2070 | 2060 | 2060 Super | 2080 |
+|---|---|---|---|---|---|
+| RED + GATE 1, bench raw | -0.5% | -0.5% | -0.4% | -0.5% | -0.4% |
+| RED + GATE 1, hashrate.js raw | -1.9% | -0.4% | -0.4% | -0.7% | -0.3% |
+| SNAKE on LEAN, bench raw | -0.8% | -0.7% | -2.6% | -1.3% | -2.7% |
+
+The fold's ablations again, on the new default (bench only, output meaningless), raw /
+per GHz:
+
+| switched off | 2080 Ti | 2070 | 2060 | 2060 Super | 2080 |
+|---|---|---|---|---|---|
+| readout and hash | +4.3% / +1.6% | +1.9% / +1.9% | +0.7% / -0.8% | +2.3% / +2.0% | +1.1% / +1.1% |
+| hash only | -2.3% / -2.2% | -3.9% / -2.4% | -3.9% / -3.9% | -1.9% / -1.8% | -3.7% / -3.6% |
+| readout shuffles only | -1.7% / -4.2% | -2.9% / -2.9% | -3.7% / -4.4% | -2.9% / -2.9% | -2.7% / -2.5% |
+| B loaded once a tile | +3.0% / +0.4% | +6.6% / +0.8% | +6.4% / 0.0% | +4.7% / +0.5% | +4.4% / +0.7% |
+
+What it says:
+- The readout and hash seam, +6.1 to +6.5% per clock on A-direct, is down to about +1 to
+  +2% on four cards and nothing on the 2060: k-lo first and the lean loads took most of
+  it.
+- Per clock the default now runs at about 91-94% of the IMMA peak on these cards: 65.6,
+  34.0, 31.6, 32.4 and 43.7 TH/s per GHz against 69.6, 36.9, 34.8, 34.8 and 47.1.
+- What is left is mostly energy. Loading B once a tile, which halves the operand bytes
+  moved from L1 to registers, is worth +3 to +6.6% raw on these power-held cards, and
+  almost all of it is clock.
+- hashrate.js on the three benchmark rows' own machines read 51.1 TH/s on the 2070 (the
+  row's best, SRBMiner, read 51.7 in its pool run), 81.9 on the 2080 (82.8) and 46.0 on
+  the 2060 Super (46.4). Those are different methods on different days, so they place
+  the rows near 99% at best guess, not a measurement of "% of best".
+
+### Racing a patched fold: compilers.sh's patch field
+
+Some changes can't be made from the source: ptxas sets the control bits (stalls,
+scoreboards, waits) itself. So a `VARIANTS_SPEC` entry in `compilers.sh` may take a
+fourth field, a patch list relative to `probes/turing/`
+(`sbfix1||8c23128cae97|sm75/sbfix1.json`). That build compiles `pearl_kernel.cu` with
+`--keep`, patches the cubin ptxas wrote with `sm75patch.py`, then runs nvcc's own
+fatbinary and host-compile steps again (from `--dryrun`) to put it in `pearl_kernel.o`.
+It fails unless the addon and bench then carry the list's `after` hash. Entries with
+two or three fields build as before. `sm75patch.py <cubin> <list>` (standard library,
+run with `python3 -I`) finds `.text.pearl_tile_fold_wmma` through the ELF section
+headers, and refuses, leaving the file alone, unless the section's md5 (first 12 hex,
+as `compilers.sh` prints it) is the list's `before` and every word to change still holds
+its `old` bytes. So a list fits only the code it was made from, and has to be made again
+after any change to the sm_75 fold. It also refuses a word the driver may rewrite when
+it loads the cubin: one at an offset the fold's `.nv.info` lists (its EXIT,
+cooperative-groups and warp-wide instructions today), or under a relocation. Each word
+gives its offset in the section, its old and new 16 bytes in file order, and a note.
+The bench and hashrate summaries also print the mean SM clock beside the median, since
+the clock moves in 15 MHz steps. hashrate.js rounds go only to base and the bench's
+fastest build, so to get them for each list, race it alone against base
+(`ONLY='base sbfix1'`), or name `sbfix1` base to set `sbfix2` against it.
+
+Since the second sm_75 kernel (`PEARL_BD_RG_KERNEL` in pearl_config.h), a default build
+runs `pearl_tile_fold_wmma_rg` on cards with 4 MB of L2 or more, and a list patches only
+`pearl_tile_fold_wmma`. So an entry with a list gets `-DPEARL_BD_RG_KERNEL=0` added, and
+runs the patched first kernel on every card. Give base the same flag
+(`base|-DPEARL_BD_RG_KERNEL=0|5c97fbadf64a`) so both sides run the first kernel. The build
+line's `runs=` says which kernel each build runs.
+
+The lists in `probes/turing/sm75/`, all for the default fold (`5c97fbadf64a`), each
+checked by applying it to a fresh CUDA 12.8 build:
+
+| list | words | after | what it changes |
+|---|---|---|---|
+| `sbfix1.json` | 15 | `8c23128cae97` | two chunk-loop IMMA waits moved off the IMMA just before them, five IMMA operand reads moved to SB5, three repair waits; control bits only |
+| `sbfix2.json` | 18 | `19e018bf281a` | `sbfix1`, and no wait on the IMMA at 2030, 3560 and 4240, whose input is 84 or more cycles old; relies on an IMMA latency nobody has measured (below) |
+| `hashrg.json` | 3 | `6d9fcd3f8d0e` | row group 1 hashes instead of row group 0; each region still hashed once |
+| `rg_aef.json` | 39 | `d09b308bae13` | `hashrg`, and all 36 A loads made evict-first (`LDG.E.EF`) |
+
+`sbfix2` is not safe just because it passes a race. With its three waits gone, 91 IMMAs
+read an earlier IMMA's result with nothing but distance (84 cycles or more) to make
+them wait for it. ptxas never does that in this loop: a static check of every register
+hazard finds no such pair in the default fold, and none added by `sbfix1`. So `sbfix2`
+is right only if an IMMA result always lands within 84 cycles, on every compute 7.5
+card (the GTX 16 cards and the T4 get the same cubin). Nobody has measured that. A
+result that lands late now and then gives a wrong hash and drops a real hit without an
+error: verify-hits checks 400 hits and complete about 15,000 to 30,000, so they catch
+only a frequent fault, and bench counts the lost work as speed. Before it can ship,
+measure the IMMA latency on a card (a hand kernel with the consumer at set distances),
+and run complete for 30 minutes.
+
+### Round 5: the cubin patches do nothing on cards (2026-10-20)
+
+The round-4 design's best candidates were edits ptxas will not make from source, raced with
+`compilers.sh`'s patch field (commit `8a0651f`) on the South Korea 2070 (139007) and 2060
+12 GB (27564), the Colorado 2080 row machine (149439) and a Vietnam 2080 Ti (152869, 250
+W). The scheduler model, recalibrated on 16 measured builds, put SBFIX=1 at +0.4 to +0.8%
+per clock:
+
+| build | 2060 | 2070 | 2080 | 2080 Ti |
+|---|---|---|---|---|
+| `sbfix1`: five IMMA and five readout LOP3 off a shared scoreboard, hashrate.js raw | -0.02% | +0.08% | -0.02% | -0.17% |
+| `sbfix2`: also three IMMA-to-IMMA waits dropped, bench raw | +0.01% | +0.04% | -0.03% | -0.01% |
+| `hashrg`: row group 1 hashes instead of one warp of each pair, hashrate.js raw | -0.16% (bench) | +0.18% | +0.15% | +0.13% |
+| `rg_aef`: that plus A loaded evict-first, bench raw | -2.3% | -2.3% | -1.0% | -3.6% |
+
+Every build passed verify-hits 400/400 and the complete stage in all four shapes. The
+model's "false waits" cost the cards nothing it can measure: a warp waiting on an IMMA 4
+cycles back finds its partner issuing, so the scheduler model's lone-warp losses there
+were not real. Making A evict-first costs 1-3.6%: A is read again within the band, and
+losing it from L2 costs more than keeping B. `hashrg` is ahead in every hashrate.js round
+on three cards, by less than 0.2%, which is too little to ship a patched cubin for.
+Nothing from this round ships, so the default build stays unpatched.
+
+What it says: the schedule-level losses the model can see are gone or not real. What is
+left between this fold and its readout-and-hash-free ceiling (+1 to +2% per clock,
+round 4) is the readout's and hash's own work, and the rest of the gap to the IMMA peak
+is energy at the power limit.
+
+### Round 6: the tile's edges and the readout, and nothing ships (2026-10-21)
+
+Three switches aimed at what round 5 left: the readout's and hash's own work, and the
+tile's last chunk, whose readout has nothing to hide behind (`pearl_config.h`, where each
+is described). Each gives the same transcripts, hashes and hits:
+
+- `PEARL_BD_LAST_RO`: a tile's last chunk read out during the next tile's first two
+  k-steps, with the hand-off after those stores. 252 registers.
+- `PEARL_BD_HASH_RG`: row group 1 hashes all 128 regions (round 5's `hashrg` patch, in
+  source). 243 registers, the default's chunk loop exactly.
+- `PEARL_BD_ROWPAIR`: A's rows permuted in each warp tile so the readout gathers a
+  region with one shuffle instead of six. 247 registers.
+
+Raced with `compilers.sh` (commit `c264bda`) against the default, with `TADDR` alone and
+the combinations, on four cards: an RTX 2060 12 GB (South Korea, 143726, held by its host
+at 130 W), an RTX 2060 Super (Vietnam, 29591, held at 135 W), the South Korea 2070
+(139007, 150 W) and the Colorado 2080 row machine (149439, 275 W). bench, 3 interleaved
+rounds of 20 s, raw against the default:
+
+| build | 2060 | 2060 Super | 2070 | 2080 |
+|---|---|---|---|---|
+| `LAST_RO` | -2.48% | -1.93% | -1.96% | -2.05% |
+| `TADDR` | -0.30% | -1.20% | -0.65% | -0.36% |
+| `ROWPAIR` | -0.23% | -0.47% | -0.54% | -0.24% |
+| `LAST_RO` + `ROWPAIR` | -0.25% | -0.13% | -0.38% | -0.04% |
+| `HASH_RG` | -0.12% | +0.09% | -0.03% | +0.15% |
+| `LAST_RO` + `HASH_RG` | -2.95% | -2.05% | -2.17% | -2.20% |
+| `ROWPAIR` + `HASH_RG` | +0.11% | +0.23% | -0.26% | +0.15% |
+| all three | -0.48% | +0.02% | -0.34% | +0.06% |
+
+Every build passed verify-hits 400/400 and the complete stage in all four shapes on all
+four cards.
+
+hashrate.js, 60 s rounds against the default. The race ran the bench's fastest build on
+each card; `HASH_RG` on the 2060s ran on a second rental, 5 rounds, the 2060 there being
+143581, another South Korea 2060 12 GB held at 130 W:
+
+| card | build | rounds | raw | per clock |
+|---|---|---|---|---|
+| 2070 | `HASH_RG` | 3, every one ahead | +0.16% | +0.21% |
+| 2080 | `HASH_RG` | 3, every one ahead | +0.17% | +0.22% |
+| 2060 Super | `HASH_RG` | 5 (-1.1 while the card heated, then +0.5 +0.3 +0.1 +0.1) | +0.13% | +0.14% |
+| 2060 12 GB | `HASH_RG` | 5, every one behind | -0.13% | -0.06% |
+| 2060 12 GB | `ROWPAIR` + `HASH_RG` | 3, every one ahead | +0.16% | +0.23% |
+| 2060 Super | `ROWPAIR` + `HASH_RG` | 3 | -0.04% | +0.10% |
+
+What it says:
+- Moving the last chunk's readout into the next tile costs about 2% on every card. Most
+  of it comes back with ROWPAIR's one-shuffle readout, which points at the moved
+  shuffles, but the pair is level at best.
+- ROWPAIR saves five shuffles a region and still loses 0.2-0.5% on its own.
+- `HASH_RG` repeats round 5: +0.13 to +0.17% on the cards with 4 MB of L2 (and the 2080
+  Ti's 5.5 MB, round 5), -0.13% on the 3 MB 2060. One sm_75 kernel serves every card, and
+  the South Korea 2060 12 GB row is itself about 0.5% behind PeakMiner, so it stays off.
+  A per-card choice would need a second kernel, which every fold-hash tool and test here
+  assumes away; 0.15% does not pay for that.
+  Later the same day it shipped that way after all: a second sm_75 kernel with HASH_RG's
+  code (`ac1a72f2434b`) that the host runs on cards with 4 MB of L2 or more, the first
+  kernel staying `5c97fbadf64a` (`PEARL_BD_RG_KERNEL` in pearl_config.h). Raced as a
+  two-kernel build below.
+
+Nothing else from this round ships. The first sm_75 kernel is still `5c97fbadf64a`.
+HASH_RG's code runs as the second kernel on 4 MB cards (see above).
+
+### Round 7: a 192x256 tile loses; what the design round ruled out (2026-10-21)
+
+A design round looked for the last 1-2.5% from five angles, each built and decoded from
+the default fold (`5c97fbadf64a`), without a GPU. What it found:
+
+- Operand bytes. A warp moves 32 B per IMMA from L1 to registers and the block 12 B per
+  IMMA from L2 to L1, the minimum for 64x64 warp tiles, 8 warps and 128x256. A 64x80
+  warp tile needs about 281 registers; 9 or more warps do not fit the register file;
+  B shared between the pair through shared memory is the staging A-direct removed. The
+  `.L2::128B` and `.L2::256B` load hints need sm_80.
+- Readout and hash. The fold's 64 LOP3 a chunk are at their floor, and the hash's 699
+  instructions a tile are about 50 above it. What else is above the floor is what
+  ROWPAIR and TADDR removed in round 6, and both lost.
+- Instruction count. The k-step offset in the load's immediate saves 8 of 661
+  instructions a pass (243 registers, `32c8071945ef`); every instruction cut on these
+  cards has been level or behind, so it was not raced.
+- L2 and DRAM. Band 6, reversed bands, a k-step-major A', prefetching A and B evict-last
+  each model at 0.005-0.15%. sm_75 has no L2 eviction control: `.L1::evict_first`
+  compiles to `LDG.E.EF`, the bit round 5's `rg_aef` set, so its -1 to -3.6% most likely
+  came from A leaving L1 before its row group's other warps read it, not from L2.
+
+One candidate survived review: `PEARL_BD_TALL`, eight 96x64 warp tiles over a 192x256
+tile, which moves 17% fewer bytes from L1 to registers per IMMA (commit `b2163fa`, fold
+`3f1291083f13`, 255 registers, 12 bytes of spill outside the loops; the host's tile
+count, 24 KB of transcript shared memory and a link check that host and fold were built
+alike). The review put it at about +0.5% raw on the 2070, with a 25-30% chance of
+shipping.
+
+Raced with `compilers.sh` on four cards: an RTX 2070 (Vietnam, 18386, 175 W, held by
+heat at 150-160 W and 80 C; the box restarted and ran the race twice), an RTX 2060 Super
+(Vietnam, 26278, held at 135 W), an RTX 2060 12 GB (South Korea, 143581, held at 130 W)
+and an RTX 2080 Ti (Brazil, 147909, held at 150 W and about 820 MHz). hashrate.js, 3
+interleaved rounds of 60 s against the default:
+
+| card | raw | per clock | clock |
+|---|---|---|---|
+| 2070 | -2.32%, and -0.79% on the second run | -3.18%, -1.76% | +0.9% |
+| 2060 Super | -0.33% | -1.23% | +0.9% |
+| 2060 12 GB | -0.80% | -2.32% | +1.6% |
+| 2080 Ti | -3.63% | -0.83% | -2.8% |
+
+It passed verify-hits 400/400 and the complete stage in all four shapes on all four
+cards. The clock rose on three cards, as the design said it would, but the work per clock
+fell more.
+
+The hash explains it. A bench-only pair with the transcript hash switched off
+(`PEARL_ABLATE_TRANSCRIPT_HASH`, output meaningless), raw against the default:
+
+| build | 2070 | 2060 Super | 2060 | 2080 Ti |
+|---|---|---|---|---|
+| default, hash off | -3.3% | -3.9% | -3.7% | -1.8% |
+| TALL | -3.1% | -0.5% | -0.7% | -4.2% |
+| TALL, hash off | -2.3% | +0.9% | +1.0% | -0.1% |
+
+In the default, the hash helps: switching it off costs 1.8-3.9%, as round 4 measured.
+Most likely this is because while one warp of each pair hashes, its partner runs ahead
+into the next tile, and the hasher then finds B already in L1. In TALL each hasher
+hashes 48 regions in two passes, and there the hash costs 1.0-3.2%, about all of TALL's
+loss. Without the hash, TALL is about
+1% ahead on the two 2060s, which is roughly what the design expected from the bytes.
+Getting that back would need a hash that keeps the default's offset between the pair
+without doubling the lone phase; nothing designed so far does.
+
+TALL is reverted. `b2163fa` keeps the code and its tests.
+
+What is left: the design round found no other fold change worth a race. On the 4 MB
+cards the measured gap to SRBMiner (row figures from earlier days) is about 0.8% on the
+2080 and 1.7% on the 2070.
+
+### A second sm_75 kernel: HASH_RG's fold on cards with 4 MB of L2 (2026-10-21)
+
+`HASH_RG` was ahead on every card with 4 MB of L2 or more and behind on the 3 MB 2060
+(rounds 5 and 6). Now both folds ship: `pearl_fold_bd` is a template on the hasher role,
+`pearl_tile_fold_wmma` runs the default (`5c97fbadf64a`) and `pearl_tile_fold_wmma_rg`
+runs HASH_RG's (`ac1a72f2434b`), both exactly the code raced, 243 registers, no spill.
+The host runs the second on a card with at least 4 MB of L2 (`pearl_bd_rg_for`): the 2060
+Super, 2070, 2070 Super, 2080, 2080 Super, 2080 Ti and T4. The 3 MB 2060s and the GTX 16
+cards keep the first. `-DPEARL_BD_RG_KERNEL=0|1|2` (never, always, by L2, the default)
+and `PEARL_BD_SWEEP_HASH_RG=0|1` at run time are for races; `compilers.sh` prints both
+kernels' hashes and which one a build runs (`runs=`). Every other architecture's kernels
+are byte-identical; each gains an empty `pearl_tile_fold_wmma_rg`.
+
+Raced with `compilers.sh` (commit `7e18384`): the new default (`auto`) against the same
+build forced to the first kernel (`base`, `-DPEARL_BD_RG_KERNEL=0`). hashrate.js, 5
+interleaved rounds of 60 s:
+
+| card | L2 | kernel `auto` ran | raw | per clock | rounds |
+|---|---|---|---|---|---|
+| RTX 2080, Colorado row machine (149439, 275 W) | 4 MB | second | +0.17% | +0.18% | +0.1 +0.2 +0.2 +0.2 +0.2 |
+| RTX 2070, South Korea (148606, held at 130 W) | 4 MB | second | +0.19% | +0.10% | -0.2 +0.3 +0.2 +0.2 +0.3 |
+| RTX 2060 Super, Vietnam (26278, held at 135 W) | 4 MB | second | +0.18% | +0.46% | -0.2 +0.2 +0.2 +0.1 +0.3 |
+| RTX 2060 12 GB, South Korea row machine (27568, 184 W) | 3 MB | first | -0.04% | +0.02% | -0.1 0.0 0.0 +0.1 0.0 |
+
+The fold name said `HASH_RG` on the three 4 MB cards and not on the 2060, so each card
+ran the kernel the rule picks. verify-hits 400/400 and the complete stage in all four
+shapes passed on all four cards. The 4 MB cards gain what `HASH_RG` gained alone in rounds
+5 and 6, and the 2060 is level, as it runs the same kernel either way. The T4 and the
+2070 and 2080 Super were not measured.
+
+### Pool runs of a checkout's core: `turing/pool.sh`
+
+`WALLET=prl1... SRC=<checkout> OUT=<dir> bash earn/native/probes/turing/pool.sh` builds the
+default core with `compilers.sh`, runs verify-hits.js on it for 90 s, then runs the CLI
+(`--mode mining`, no Monero) on `us.pearl.herominers.com:1200`: a 60 s warm-up that is not
+measured, then 5 minutes. It reports the mean of the CLI's readings after the first minute,
+as benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
+miner runs. It differs from benchmark.md's method only in using this checkout's core instead
+of the release files, so its results go in a section's notes and never change a row.

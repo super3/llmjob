@@ -243,6 +243,47 @@ against SRBMiner 3.7.4.
   miner.
 - **RTX 2060, Australia:** our miner found no pool share in its 5 minutes
   (about 1.6 were expected). Its hit check passed 400 of 400.
+- **Speed tests, 2026-10-20 (not re-measures):** a launch sweep (hashrate.js,
+  no pool) on an RTX 2060 12 GB, an RTX 2070 and the Colorado 2080's own
+  machine found one gain. A band of 5 column groups instead of 4 was +0.30%
+  on the 2070 and +0.21% on the 2080 (both 4 MB L2; 77.76 → 77.92 TH/s), and
+  -0.70% on the 2060 (3 MB). This table's rows ran v0.5.14, which mines 4 MB
+  cards at band 4; the core after v0.6.6 uses 5 on them. That is the 2060
+  Super, 2070 Super, 2070 and 2080 rows here, and the T4. Details are in
+  earn/native/probes/README.md.
+- **Fold speed tests, 2026-10-20 (not re-measures):** three fold changes,
+  each raced with hashrate.js (no pool) against the build before it, 3
+  rounds of 60 s, on a 2080 Ti, the South Korea 2070 row's own machine
+  (139007) and a South Korea 2060 12 GB. A-direct, which loads A the way B
+  is loaded, on a Vietnam 2080 Ti (152869) and the 2060 142755: 82.75 →
+  84.75, 46.30 → 48.01 and 47.00 → 47.88 TH/s. Then k-lo first, which
+  reorders the IMMA, on the same three: 85.22 → 86.81, 48.04 → 48.82 and
+  47.91 → 48.97 TH/s. Then the lean loads, on the Thailand row's own 2080
+  Ti (95392, held by its host at 167 W) and the 2060 27564: +0.2%, 50.75 →
+  51.32 and 49.68 → 50.41 TH/s. Together that is about +4.6%, +6.6% and
+  +5.7%. All three are in the core after v0.6.6. Details are in
+  earn/native/probes/README.md.
+- **Pool runs of the branch core, 2026-10-21 (not re-measures):** the
+  core after v0.6.6, built from its commit rather than release files, on
+  three rows' own machines, 00:31-00:41 UTC, by "How a host is tested"
+  otherwise: verify-hits 400/400, a 60 s warm-up, then 5 minutes on
+  us.pearl.herominers.com, ours only (probes/turing/pool.sh). Pennsylvania
+  2080 Ti 94.0 TH/s (1470 MHz, 255 W, 68 °C), 100.9% of the row's best;
+  Colorado 2080 82.1 (1875 MHz, 273 W, 53 °C), 99.2%; South Korea 2070
+  50.8 (1515 MHz, 146 W, 65 °C), 98.3%. On v0.5.14 these rows read 89.0,
+  77.6 and 47.8. The same 2070 ran at 1455-1515 MHz across the 20th and
+  21st's rentals, so one run moves by a few percent with the card's heat.
+  These ran before the second fold kernel below.
+- **Second fold kernel, 2026-10-21 (not re-measures):** the core after
+  v0.6.6 runs a second RTX 20 fold kernel, in which the second row group
+  hashes, on cards with 4 MB of L2 or more, and the first on the rest.
+  hashrate.js (no pool), 5 rounds of 60 s, against the same build forced to
+  the first kernel: the Colorado 2080 row's own machine (149439) 81.83 →
+  81.98 TH/s (+0.17%), a South Korea 2070 (148606) +0.19% and a Vietnam
+  2060 Super (26278) +0.18%; the South Korea 2060 row's own machine (27568,
+  3 MB) runs the first kernel either way, 54.12 → 54.12. That is the 2060
+  Super, 2070 Super, 2070, 2080 and 2080 Ti rows here, and the T4. Details
+  are in earn/native/probes/README.md.
 
 ### Monero on the CPU
 
@@ -656,6 +697,11 @@ the CUDA 12.8 core on this compute 7.5 card.
   is its default and maximum: ours at 825 MHz, the competitors at 840 MHz.
 - **Hit check:** the longer check ran on another T4 in the same machine (see
   "How a host is tested").
+- **Band depth:** this row ran v0.5.14, which mines the T4's 4 MB L2 at a band
+  of 4 column groups. The core after v0.6.6 uses 5 on 4 MB cards, on the
+  strength of an RTX 2070 and 2080 (see the RTX 20-series notes). It also
+  runs the second RTX 20 fold kernel on 4 MB cards (same notes). No T4 has
+  run either.
 
 ## Hosts replaced in this run
 

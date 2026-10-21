@@ -36,7 +36,81 @@ extern "C" void *pearl_host_create(const PearlProfile *, char *, size_t);
 extern "C" void pearl_host_destroy(void *);
 extern "C" void pearl_host_set_job(void *, const uint8_t *, const uint8_t *);
 extern "C" bool pearl_host_search(void *, uint64_t, uint32_t, PearlSearchResult *, uint64_t *, char *, size_t);
+extern "C" bool pearl_host_next_hit(void *, PearlSearchResult *);
+extern "C" void pearl_host_reseed(void *, uint64_t);
 extern "C" const char *pearl_host_fold_name(void *);
+
+static void fnv(uint64_t &d, const void *p, size_t n) {
+  const uint8_t *q = static_cast<const uint8_t *>(p);
+  for (size_t i = 0; i < n; i++) d = (d ^ q[i]) * 1099511628211ull;
+}
+
+// PEARL_HITLIST=<batches>: every hit this build finds, to compare with another build's
+// (probes/turing/compilers.sh, stage "complete"). The fold reports a hit only after it
+// recomputes the whole hash from the transcript, so a fold whose filter misses (a split
+// hash that reads a stale state, say) drops hits and reports no wrong one: verify-hits.js
+// passes it, and the bench reads the lost work as speed. Here the target has
+// PEARL_HITLIST_BITS leading zero bits, by default as many as leave 16 to 32 hits a
+// batch on average, well under PEARL_MAX_HITS, so a batch's list is every hit in it.
+// From nonce 0 under salt 0, re-drawn at the next salt after every m*n regions as the
+// miner does, it prints a line a batch (its salt, nonce, hit count and a digest of its
+// hits' nonces and jackpot hashes, in region order) and then the totals. Two builds
+// that compute the same hashes print the same lines. A batch whose list is full
+// (PEARL_MAX_HITS) may have lost hits, and which ones changes from run to run: it is
+// counted as full, and only its count goes into the digest.
+static int hitlist(void *h, const PearlProfile &prof, const uint8_t *header, uint64_t regions,
+                   unsigned long batches) {
+  unsigned bits = 0;
+  while ((regions >> (bits + 1)) >= 16u) bits++;
+  if (getenv("PEARL_HITLIST_BITS")) bits = (unsigned)strtoul(getenv("PEARL_HITLIST_BITS"), nullptr, 10);
+  if (bits < 1 || bits > 255) { printf("hitlist FAIL: %u target bits\n", bits); return 1; }
+  // The target as the host reads it: a big-endian number, below 2^(256 - bits).
+  uint8_t target[PEARL_HASH_BYTES];
+  memset(target, 0xFF, sizeof target);
+  memset(target, 0x00, bits / 8);
+  target[bits / 8] = (uint8_t)(0xFFu >> (bits % 8));
+  pearl_host_set_job(h, header, target);
+  const uint64_t span = (uint64_t)(prof.m / PEARL_ROWS_COUNT) * (prof.n / PEARL_COLS_COUNT);
+  uint64_t nonce = 0, salt = 0, hits = 0, digest = 1469598103934665603ull;
+  unsigned long full = 0;
+  char err[512];
+  for (unsigned long b = 0; b < batches; b++) {
+    PearlSearchResult res;
+    uint64_t att = 0;
+    err[0] = 0;
+    const bool found = pearl_host_search(h, nonce, prof.col_batch, &res, &att, err, sizeof err);
+    if (err[0]) { printf("hitlist FAIL: batch %lu: %s\n", b, err); return 1; }
+    if (att == 0) { printf("hitlist FAIL: batch %lu: no attempts reported\n", b); return 1; }
+    uint64_t d = 1469598103934665603ull, n = 0;
+    if (found) {
+      fnv(d, &res.nonce, sizeof res.nonce);
+      fnv(d, res.jackpot_hash, PEARL_HASH_BYTES);
+      n++;
+      PearlSearchResult more;
+      while (pearl_host_next_hit(h, &more)) {
+        fnv(d, &more.nonce, sizeof more.nonce);
+        fnv(d, more.jackpot_hash, PEARL_HASH_BYTES);
+        n++;
+      }
+    }
+    const bool isfull = n >= PEARL_MAX_HITS;
+    if (isfull) { full++; d = n; }
+    printf("HL %lu salt=%llu nonce=%llu hits=%llu%s d=%016llx\n", b, (unsigned long long)salt,
+           (unsigned long long)nonce, (unsigned long long)n, isfull ? " full" : "",
+           (unsigned long long)d);
+    fnv(digest, &d, sizeof d);
+    hits += n;
+    nonce += att;
+    if (nonce >= span) {
+      pearl_host_reseed(h, ++salt);
+      nonce = 0;
+    }
+  }
+  printf("hitlist bits=%u regions=%llu batches=%lu hits=%llu full=%lu salts=%llu digest=%016llx\n",
+         bits, (unsigned long long)regions, batches, (unsigned long long)hits, full,
+         (unsigned long long)(salt + 1), (unsigned long long)digest);
+  return 0;
+}
 
 int main(int argc, char **argv) {
   double seconds = argc > 1 ? atof(argv[1]) : 20.0;
@@ -81,6 +155,11 @@ int main(int argc, char **argv) {
   pearl_host_search(h, nonce, prof.col_batch, &res, &attempts, err, sizeof err);
   if (err[0]) { printf("warmup failed: %s\n", err); return 1; }
   nonce += attempts;
+  if (getenv("PEARL_HITLIST")) {
+    const int rc = hitlist(h, prof, header, attempts, strtoul(getenv("PEARL_HITLIST"), nullptr, 10));
+    pearl_host_destroy(h);
+    return rc;
+  }
 
   cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
   cudaEventRecord(e0);

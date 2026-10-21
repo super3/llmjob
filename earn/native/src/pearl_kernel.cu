@@ -1043,8 +1043,22 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
   const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
                           (uint32_t)b4.w};
   const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#if PEARL_BD_KORDER
+  // Paired for the k-lo-first fold (PEARL_BD_KORDER): 16-row blocks 2p and 2p + 1
+  // trade halves, so block 2p's slot holds both blocks' k 0-15 words and block
+  // 2p + 1's their k 16-31 words, a lane's as {2p rows 0-7, 2p rows 8-15, 2p + 1
+  // rows 0-7, 2p + 1 rows 8-15}. A last block without a partner keeps the order
+  // above; the fold never reads it.
+  const uint32_t bl = r >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((r >> 3) & 1u)
+                              : ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
+#else
   const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
   const uint32_t reg = ((r >> 3) & 1u) * 2u + ((kk >> 4) & 1u);
+#endif
   uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
 #pragma unroll
   for (int w = 0; w < 4; w++) {
@@ -1065,6 +1079,95 @@ extern "C" __global__ void pearl_materialize16_frag(const int8_t *__restrict__ b
 #endif  // PEARL_TURING_BD_BODY
 }
 #endif  // PEARL_TURING_BDIRECT
+
+// pearl_materialize16_frag for A' (PEARL_BD_A_DIRECT): the same values and the same
+// blocks, but a lane's four words in the order an ldmatrix.x4 of the B-direct fold's
+// A hands them, which is the m16n8k32 A operand's order:
+//   word 0 rows 0-7 at k 0-15, word 1 rows 8-15 at k 0-15,
+//   word 2 rows 0-7 at k 16-31, word 3 rows 8-15 at k 16-31,
+// where B' puts k before rows. Element (row, kk) goes to
+//   ((row >> 4) * (k / 32) + (kk >> 5)) * 512 + ((row & 7) * 4 + ((kk >> 2) & 3)) * 16
+//     + (((kk >> 4) & 1) * 2 + ((row >> 3) & 1)) * 4 + (kk & 3),
+// so a warp loads one 16-row block of a k-step with one LDG.128, and the four words
+// are a0-a3 as they come. A copy, so that B's kernel stays exactly as it was; only
+// the word order differs. Needs rows a multiple of 16 and k a power of two of at
+// least 32; the host checks both. A body only in the pass that builds the fold.
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+extern "C" __global__ void pearl_materialize16_afrag(const int8_t *__restrict__ base,
+                                                     const int8_t *__restrict__ dense,
+                                                     const uint32_t *__restrict__ perm,
+                                                     int8_t *__restrict__ out,
+                                                     uint32_t rows, uint32_t k_log2,
+                                                     uint32_t rank, uint64_t read_vecs,
+                                                     uint32_t fill_word) {
+#if PEARL_TURING_BD_BODY
+  const uint64_t v = (uint64_t)blockIdx.x * blockDim.x + threadIdx.x;
+  if (v >= (((uint64_t)rows << k_log2) >> 4)) return;
+  const uint64_t idx = v << 4;
+  const uint32_t r = (uint32_t)(idx >> k_log2);
+  const uint32_t kk = (uint32_t)(idx & ((1ull << k_log2) - 1u));
+  const int8_t *__restrict__ row = dense + (size_t)r * rank;
+  const int4 b4 = v < read_vecs ? reinterpret_cast<const int4 *>(base)[v]
+                                : make_int4((int)fill_word, (int)fill_word, (int)fill_word,
+                                            (int)fill_word);
+  const uint32_t bw[4] = {(uint32_t)b4.x, (uint32_t)b4.y, (uint32_t)b4.z,
+                          (uint32_t)b4.w};
+  const uint4 *__restrict__ pp = reinterpret_cast<const uint4 *>(perm + (size_t)kk * 2u);
+#if PEARL_BD_ROWPAIR
+  // PEARL_BD_ROWPAIR (see pearl_config.h): row r of each whole 64-row warp tile, r =
+  // 64 G + 32 s + 8 j + 4 b + 2 u1 + u0, goes to the fold's row rq = 64 G + 16 j + 8 u0 +
+  // 4 s + 2 b + u1, which is then paired as below. That row is lane 4 (4 s + 2 b + u1)
+  // + t's, so lanes L and L ^ 4 hold the 16 rows of one region (rows 32 s + 4 b + {0-3,
+  // 8-11, 16-19, 24-27}). Only the values' places move. Rows past the last whole 64
+  // stay where they are: the fold never reads them, and permuted they would land past
+  // the end of A'.
+  const uint32_t o6 = r & 63u;
+  const uint32_t rq = (r | 63u) < rows
+                          ? (r & ~63u) | (((o6 >> 3) & 3u) << 4) | ((o6 & 1u) << 3)
+                                | (((o6 >> 5) & 1u) << 2) | (((o6 >> 2) & 1u) << 1) | ((o6 >> 1) & 1u)
+                          : r;
+  const uint32_t bl = rq >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((rq >> 3) & 1u)
+                              : ((kk >> 4) & 1u) * 2u + ((rq >> 3) & 1u);
+  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (rq & 7u) * 64u) + reg;
+#else
+#if PEARL_BD_KORDER
+  // Paired as B' is (pearl_materialize16_frag): block 2p's slot holds both
+  // blocks' a0, a1 and block 2p + 1's their a2, a3.
+  const uint32_t bl = r >> 4;
+  const bool paired = (bl | 1u) < (rows >> 4);
+  const uint32_t dbl = paired ? (bl & ~1u) | ((kk >> 4) & 1u) : bl;
+  const uint64_t blk = ((uint64_t)dbl << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = paired ? (bl & 1u) * 2u + ((r >> 3) & 1u)
+                              : ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
+#else
+  const uint64_t blk = ((uint64_t)(r >> 4) << (k_log2 - 5)) + (kk >> 5);
+  const uint32_t reg = ((kk >> 4) & 1u) * 2u + ((r >> 3) & 1u);
+#endif
+  uint32_t *o = reinterpret_cast<uint32_t *>(out + blk * 512u + (r & 7u) * 64u) + reg;
+#endif  // PEARL_BD_ROWPAIR
+#pragma unroll
+  for (int w = 0; w < 4; w++) {
+    const uint4 q0 = pp[w * 2];
+    const uint4 q1 = pp[w * 2 + 1];
+    const uint32_t p0[4] = {q0.x, q0.z, q1.x, q1.z};
+    const uint32_t p1[4] = {q0.y, q0.w, q1.y, q1.w};
+    uint32_t packed = 0;
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+      const int32_t a = (int32_t)(int8_t)(bw[w] >> (j * 8));
+      int32_t sv = a + (int32_t)row[p0[j]] - (int32_t)row[p1[j]];
+      sv = sv < -128 ? -128 : (sv > 127 ? 127 : sv);
+      packed |= ((uint32_t)sv & 0xffu) << (j * 8);
+    }
+    o[w * 4] = packed;  // lane 4 * (r & 7) + w, 16 bytes a lane
+  }
+#endif  // PEARL_TURING_BD_BODY
+}
+#endif  // PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
 
 // Re-draw an operand by rewriting a few of its bytes, and repair the stored
 // commitment tree to match.
@@ -1560,7 +1663,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
       || blockDim.x != PEARL_FOLD_THREADS)
     return;
   (void)m; (void)n; (void)col_groups;
-  pearl_fold_bd(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
+  pearl_fold_bd<PEARL_BD_HASH_RG != 0>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
 #else
 
   // Compile-time geometry. The host has already refused anything else, so this
@@ -2689,6 +2792,30 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
   }
 #endif  // PEARL_TURING_BD_BODY
 }
+
+#if PEARL_BD_RG_KERNEL_BUILT
+// The second RTX 20 kernel (PEARL_BD_RG_KERNEL, pearl_config.h): the B-direct fold with
+// the second row group hashing, PEARL_BD_HASH_RG's code. The host runs it instead of
+// pearl_tile_fold_wmma on cards with at least 4 MB of L2 (pearl_bd_rg_for). The same
+// arguments and the same checks. Only the sm_75 build has a body; the other builds have
+// an empty kernel the host never launches.
+extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold_wmma_rg(
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
+    uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
+    uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits) {
+#if PEARL_TURING_BD_BODY
+  if (k_arg != PEARL_FOLD_K || rank_arg != PEARL_FOLD_RANK || chunks_arg != PEARL_FOLD_CHUNKS
+      || blockDim.x != PEARL_FOLD_THREADS)
+    return;
+  (void)m; (void)n; (void)col_groups;
+  pearl_fold_bd<true>(Aprime, Bprime, col_off, rows_valid, tiles, test, hits);
+#else
+  (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;
+  (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)test; (void)hits;
+#endif
+}
+#endif
 
 // The tall fold (PEARL_FOLD_TALL, Ada, Ampere and Blackwell): pearl_tile_fold_wmma's fold
 // over a 192x256 CTA tile -- eight 96x64 warp tiles, three 64-deep stages, and an
