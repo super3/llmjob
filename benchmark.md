@@ -263,6 +263,16 @@ against SRBMiner 3.7.4.
   51.32 and 49.68 → 50.41 TH/s. Together that is about +4.6%, +6.6% and
   +5.7%. All three are in the core after v0.6.6. Details are in
   earn/native/probes/README.md.
+- **Pool runs of the branch core, 2026-10-21 (not re-measures):** the
+  core after v0.6.6, built from its commit rather than release files, on
+  three rows' own machines, 00:31-00:41 UTC, by "How a host is tested"
+  otherwise: verify-hits 400/400, a 60 s warm-up, then 5 minutes on
+  us.pearl.herominers.com, ours only (probes/turing/pool.sh). Pennsylvania
+  2080 Ti 94.0 TH/s (1470 MHz, 255 W, 68 °C), 100.9% of the row's best;
+  Colorado 2080 82.1 (1875 MHz, 273 W, 53 °C), 99.2%; South Korea 2070
+  50.8 (1515 MHz, 146 W, 65 °C), 98.3%. On v0.5.14 these rows read 89.0,
+  77.6 and 47.8. The same 2070 ran at 1455-1515 MHz across the 20th and
+  21st's rentals, so one run moves by a few percent with the card's heat.
 
 ### Monero on the CPU
 
