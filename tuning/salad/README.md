@@ -448,16 +448,19 @@ Salad sometimes answers a delete with 202 and keeps the group, so the runner loo
 minutes and deletes it again until Salad answers 404, with a note if it's still there after 10. A lane finishes
 only once its groups are gone.
 
-Two lanes run at once, one Salad slot each, each with its own files (`bench-amd-a.json`, `bench-amd-a_status.md`,
-`bench-amd-a.log`) and groups (`bench-a-rx9070xt-1`, ...). Lane a takes the RX 9070 XT, 9060 XT and 7800 XT
-(six PCs, about 3.5 hours), lane b the 7900 XTX and 7900 XT (four, about 2.5 hours), more when PCs are slow to
-come or get skipped:
+Up to three lanes run at once, one Salad slot each, each with its own files (`bench-amd-a.json`,
+`bench-amd-a_status.md`, `bench-amd-a.log`) and groups (`bench-a-rx9070xt-1`, ...). Lane a takes the RX 9070 XT
+and 9060 XT, lane b the 7900 XTX and 7900 XT, and lane c the 7800 XT (until 22 October lane a had it too). A PC
+takes about 25 minutes with the 10-minute hit check and about 17 with a 2-minute one (`BENCH_VERIFY_SECS=120`),
+more when PCs are slow to come or get skipped. A lane needs a free replica: the watcher's `max_active` plus the
+lanes must stay within Salad's quota, and lowering `max_active` doesn't end a group, so a lane waits until one ends.
 
 ```sh
 export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd BENCH_COMMIT=$(git rev-parse HEAD)
 BENCH_LANE=a nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
 BENCH_LANE=b nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
-python3 tuning/salad/bench.py table      # both lanes' rows, in benchmark.md's shape
+BENCH_LANE=c nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-c.out 2>&1 &
+python3 tuning/salad/bench.py table      # every lane's rows, in benchmark.md's shape
 ```
 
 Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a

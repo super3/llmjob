@@ -17,10 +17,11 @@ _spec.loader.exec_module(w)
 # BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon cards). Each set has its own
 # state, status and log files, so the two runs never share a place in a plan.
 SET = os.environ.get("BENCH_SET", "gtx")
-# BENCH_LANE ("a" or "b", AMD set only) splits the set into two runs that go at the same time, one Salad slot each.
+# BENCH_LANE ("a", "b" or "c", AMD set only) splits the set into runs that go at the same time, one Salad slot each.
 # Each lane has its own files and group names and takes its own classes. No lane: the whole set in one run.
+# The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
 LANE = os.environ.get("BENCH_LANE", "")
-LANES = {"a": ["RX 9070 XT", "RX 9060 XT", "RX 7800 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"]}
+LANES = {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]}
 NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)

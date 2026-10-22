@@ -224,6 +224,7 @@ class TestBenchAMD(unittest.TestCase):
         cls.la = load_bench(BENCH_SET="amd", BENCH_LANE="a", BENCH_COMMIT="c0ffee", BENCH_BASE_SHA="beef",
                             BENCH_VERIFY_SECS="900")
         cls.lb = load_bench(BENCH_SET="amd", BENCH_LANE="b", BENCH_COMMIT="c0ffee")
+        cls.lc = load_bench(BENCH_SET="amd", BENCH_LANE="c", BENCH_COMMIT="c0ffee")
 
     def with_salad(self, m, calls, now=30_000, **kw):
         old = (m.w.http, m.w.now)
@@ -262,13 +263,16 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual(b.RUN_MIN, 45)
 
     def test_each_lane_has_its_own_files_and_classes(self):
-        for m, lane in ((self.la, "a"), (self.lb, "b")):
+        for m, lane in ((self.la, "a"), (self.lb, "b"), (self.lc, "c")):
             self.assertEqual([os.path.basename(f) for f in (m.STATE, m.STATUS, m.LOG)],
                              [f"bench-amd-{lane}.json", f"bench-amd-{lane}_status.md", f"bench-amd-{lane}.log"])
-        self.assertEqual([p[0] for p in self.la.PLAN], ["AMD RX 9070 XT (16GB)", "AMD RX 9060 XT (16GB)",
-                                                       "AMD RX 7800 XT (16GB)"])
+        # Lane a keeps its first two classes in the same places, so a run already on them carries on.
+        self.assertEqual([p[0] for p in self.la.PLAN], ["AMD RX 9070 XT (16GB)", "AMD RX 9060 XT (16GB)"])
         self.assertEqual([p[0] for p in self.lb.PLAN], ["AMD RX 7900 XTX (24GB)", "AMD RX 7900 XT (20GB)"])
-        self.assertEqual(self.la.SECTIONS[0][1], ["RX 9070 XT", "RX 9060 XT", "RX 7800 XT"])
+        self.assertEqual([p[0] for p in self.lc.PLAN], ["AMD RX 7800 XT (16GB)"])
+        self.assertEqual(self.la.SECTIONS[0][1], ["RX 9070 XT", "RX 9060 XT"])
+        # Every card is in exactly one lane.
+        self.assertEqual(sorted(c for cs in self.la.LANES.values() for c in cs), sorted(self.a.SECTIONS[0][1]))
         self.assertEqual(len(self.la.ALL_SECTIONS[0][1]), 5)
         gtx_a = load_bench(BENCH_LANE="a")            # a lane means nothing to the GTX set
         self.assertEqual(len(gtx_a.PLAN), len(b.PLAN))
@@ -404,8 +408,9 @@ class TestBenchAMD(unittest.TestCase):
         self.assertIn("- `3d6cb276` (RX 9070 XT): copy 564 GB/s; hit check FAIL, 400 of 410 hits verified, 2 failed, "
                       "60 salts in 600 s, 6.83 hits a salt (jackpot hash mismatch (fold/transcript)); "
                       "SRBMiner ran first.", text)
-        self.assertIn("| RX 7800 XT | Salad (— W, 16 GB) | — | not run | not run | not run | — |", text)
+        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | not run | not run | — |", text)
         self.assertNotIn("RX 7900", text)                 # lane b's rows
+        self.assertNotIn("RX 7800", text)                 # lane c's
         self.assertNotIn("hits a salt", b.render({"results": {}}))
 
     def test_table_puts_the_two_lanes_together_in_benchmark_md_s_order(self):
