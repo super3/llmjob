@@ -583,7 +583,10 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
 Margin, and the total leaves it out until its first reading. Its bill still counts in $/hr. Before
-this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes.
+this, two boxes changing PCs at once took the total from +$0.41 to +$0.07 for a few minutes. A box paused
+for a prompt (🧠) with no reading in 10 minutes shows the same way, since 22 October: Gemma's speed test on a
+new PC can run past 10 minutes, and 3060-70 showed a margin of −3180% from its Monero alone, which took the
+All row's margin below zero. A box with no Pearl reading shows its profit an hour without a margin.
 
 ## SafeTrade row
 

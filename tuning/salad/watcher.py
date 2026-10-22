@@ -1757,8 +1757,11 @@ class W:
             earn = ths * mk["usd_th_hr"] * yg(g) + khs * xusd
             state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
                      else "⏳")
-            # A box on a new PC with no reading yet is starting: billed, but left out of the profit total.
-            start = bool(g["has_pc"] and not cur and g.get("pc_since") and t - g["pc_since"] < 15 * MIN)
+            # A box on a new PC with no reading yet is starting: billed, but left out of the profit total. So is one
+            # paused for a prompt: Gemma's speed test on a new PC can take 10 minutes or more, and with only Monero
+            # earning meanwhile its margin read -3180% on 22 October and turned the All row's margin negative.
+            start = bool(g["has_pc"] and not cur and (state == "🧠" or (g.get("pc_since") and
+                                                                         t - g["pc_since"] < 15 * MIN)))
             if g["has_pc"] and cur:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
@@ -1774,7 +1777,8 @@ class W:
             elif start:
                 cells = ["0"] + kc + [f"{cost:.2f}", "—"]
             else:
-                cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn)]
+                # No margin without a Pearl reading: Monero alone makes a margin of thousands of percent below zero.
+                cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn if ths > 0 else 0)]
             cells = " | ".join(cells + [prl_cell([g])] + xmr_cell([g]))
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.

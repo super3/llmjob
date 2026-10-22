@@ -1491,6 +1491,30 @@ class TestMonero(Base):
         self.assertAlmostEqual(mk["per_hash"], 0.6 / 6e11 * 0.991)
         self.assertAlmostEqual(mk["usd_khs_hr"], 0.6 / 6e11 * 0.991 * 3.6e6 * 500)
 
+    def test_a_box_paused_for_a_prompt_or_without_a_pearl_reading_has_no_margin(self):
+        # 22 October: 3060-70, paused for Gemma's speed test 20 minutes into its PC, showed "-0.05* (-3180%*)"
+        # from its Monero alone, and its bill turned the All row's margin negative.
+        t = self.clock[0]
+        self.x.st["xmr_mkt"] = {"t": t, "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 0.002}
+        p, d, ok = self.group(), self.group(cls="RTX 2060 (6 GB)"), self.group(cls="RTX 4070 (12 GB)")
+        for g in (p, d, ok):
+            g.update(has_pc=True, machine="m1", pc_since=t - 1800, xmr=True, xmr_khs=1.0, xmr_seen=t)
+        p.update(readings=[[t - 900, "m1", 200.0, 0]], pause_since=t - 600, paused_t=t - 60)
+        d["readings"] = [[t - 900, "m1", 40.0, 0]]       # no reading for 15 minutes, not paused: a quiet miner
+        ok["readings"] = [[t - 60, "m1", 200.0, 0]]
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            report = f.read()
+        self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}batch | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
+        rows = [l for l in report.splitlines() if l.startswith("| ") and "%" in l.split("|")[5]]
+        self.assertEqual(len(rows), 2)                     # the box with a reading, and the All row
+        # The paused box's bill is left out of the total, as a starting box's is; the quiet one's counts.
+        earn = 200 * self.x.st["mkt"]["usd_th_hr"] * self.x.credit_ratio() + 3 * 0.002
+        hr = earn - ok["price"] - d["price"]
+        self.assertIn(f"| **All** | **200** | **3.0** | **{p['price'] + d['price'] + ok['price']:.2f}** | "
+                      f"**{hr:+.2f}\\* ({hr / earn * 100:+.0f}%\\*)** |", report)
+
     def test_the_table_shows_monero(self):
         g = self.group()
         plain = self.group(cls="RTX 2060 (6 GB)")
