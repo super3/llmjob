@@ -388,6 +388,38 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   `/opt/rocm-wsl`, but on our boxes it answered `static --json` with nothing and `monitor` with only a
   header, so there's no power reading. `rocminfo` and AMD's OpenCL see the card.
 
+## AMD test boxes (amdtest.py)
+
+`amdtest.py` runs test boxes for the AMD (HIP) Pearl core in `earn/native/amd` on Salad's AMD classes. It
+manages only the groups `amdtest-rdna3` and `amdtest-rdna4` and refuses any other name. Each box runs
+`amdtest.sh` on the `rocm/dev-ubuntu-24.04:7.2` image (high priority, 4 vCPU, 8 GB by default): it installs
+git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
+in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
+`amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, cpuchecks, run).
+
+```sh
+python3 tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
+python3 tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,verify:120,hashrate:60:10   # next run, same PC
+python3 tuning/salad/amdtest.py wait amdtest-rdna3 --until 'all done' --since 14:05
+python3 tuning/salad/amdtest.py logs amdtest-rdna3 --since 30m
+python3 tuning/salad/amdtest.py status amdtest-rdna3
+```
+
+What it found on 22 October:
+
+- HIP works through Salad's WSL2 bridge. On an RX 7900 XTX and an RX 9070 XT the process loads
+  `/usr/lib/wsl/lib/libdxcore.so`, Salad's `/opt/rocm-host/lib/librocdxg.so.1.2.2` and the image's ROCm 7.2.0
+  HIP and HSA runtimes; there is no `/dev/kfd` or `/dev/dri`. HIP counts WGPs as CUs (48 on the 7900 XTX,
+  32 on the 9070 XT; rocminfo says 96 and 64).
+- A PATCH of `container.environment_variables` replaces the whole map; it does not merge, and a null is
+  stored as a value. `set-env` sends the full map.
+- After a PATCH, restarting the instance (`POST .../instances/<id>/restart`, which `set-env` does) started
+  the new run on the same PC 30 s later. Without it, Salad took 8 minutes and moved the box to another PC,
+  or showed a new instance and ran nothing for 15 minutes.
+- Salad's API accepts a 262,144-character variable and refuses 1,048,576 (HTTP 400). But a box given a
+  27,516- or 58,964-character `PATCH_GZ_B64` printed nothing at all after its restart, so keep patches
+  small or push the change; see the notes in `amdtest.py` for what was tried.
+
 ## The container
 
 - Image `nvidia/cuda:12.2.2-base-ubuntu22.04`. The 12.8.1 image sat in "preparing" for 45+ min. The

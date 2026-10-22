@@ -68,10 +68,12 @@ class TestAmdtest(unittest.TestCase):
         r = subprocess.run([sh, "-c", boot], capture_output=True, text=True, env={"PATH": os.environ["PATH"]})
         self.assertRegex(r.stdout, r"\[amdtest\] \d\d:\d\d:\d\d boot no BASE_SHA; idle")
 
-    def test_env_patch_sets_and_deletes(self):
-        cur = {"BASE_SHA": "a", "PATCH_GZ_B64": "xx", "TASKS": "card"}
+    def test_env_patch_sends_the_whole_map(self):
+        # Salad replaces the map on a PATCH, so every variable that stays is sent again; a stored null is dropped.
+        cur = {"BASE_SHA": "a", "PATCH_GZ_B64": "xx", "TASKS": "card", "WORKER": "amdtest-rdna3", "OLD": None}
         self.assertEqual(a.env_patch(cur, {"TASKS": "build"}, ["PATCH_GZ_B64", "NOPE"]),
-                         {"container": {"environment_variables": {"TASKS": "build", "PATCH_GZ_B64": None}}})
+                         {"container": {"environment_variables": {"BASE_SHA": "a", "TASKS": "build",
+                                                                  "WORKER": "amdtest-rdna3"}}})
 
     def test_parse_kv(self):
         self.assertEqual(a.parse_kv(["TASKS=a,b:1", "X=y=z"]), {"TASKS": "a,b:1", "X": "y=z"})
@@ -84,6 +86,7 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(a.since_t("30m", now), now - 1800)
         self.assertEqual(a.since_t("2h", now), now - 7200)
         self.assertEqual(a.since_t("13:05", now), a.w.parse_iso("2026-10-22T13:05:00Z"))
+        self.assertEqual(a.since_t("13:05:30", now), a.w.parse_iso("2026-10-22T13:05:30Z"))
         self.assertEqual(a.since_t("23:50", now), a.w.parse_iso("2026-10-21T23:50:00Z"))   # yesterday
         self.assertEqual(a.since_t("2026-10-22T12:00:00Z", now), now - 5400)
 

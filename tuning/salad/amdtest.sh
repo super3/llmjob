@@ -203,7 +203,8 @@ t_hashrate() {
   need_core hashrate || return 1
   (cd $A && timeout 3600 node ../probes/hashrate.js build/pearl_core_hip.node "${1:-60}" "${2:-10}") \
     > /root/hashrate.log 2>&1; local rc=$?
-  tail -n 10 /root/hashrate.log | emit hashrate
+  # hashrate.js asks nvidia-smi for clocks every 2 s; there is none here.
+  grep -v 'nvidia-smi' /root/hashrate.log | tail -n 10 | emit hashrate
   return $rc
 }
 

@@ -6,7 +6,7 @@ amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait`
   amdtest.py create NAME CLASS --sha SHA [--tasks LIST] [--env K=V ...] [--patch-from DIR] [--cpu 4 --mem 8192]
                                 [--retry SECS]
   amdtest.py set-env NAME [K=V ...] [--sha SHA] [--tasks LIST] [--unset K ...] [--patch-from DIR | --no-patch]
-                          [--restart]
+                          [--no-restart]
   amdtest.py status NAME
   amdtest.py logs NAME [--since 30m] [--any-machine] [--grep REGEX]
   amdtest.py wait NAME --until REGEX [--since 2m] [--timeout 480]
@@ -15,9 +15,10 @@ amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait`
 
 CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt.
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
-how a new run starts. Salad restarts the box with the new environment, usually on the same PC within minutes.
---patch-from DIR sends DIR's uncommitted and untracked changes against --sha (default: DIR's HEAD must be
-pushed, or pass --sha) as PATCH_GZ_B64, so a change can be tried without pushing it.
+how a new run starts. It updates the environment and then restarts the instance, which starts the new run on
+the same PC within a minute (22 October). Without the restart Salad took 8 minutes and moved the box, or did
+nothing for 15. --patch-from DIR sends DIR's uncommitted and untracked changes against BASE_SHA as
+PATCH_GZ_B64, so a change can be tried without pushing it; keep it small (see PATCH_MAX).
 
 Uses watcher.py's Salad client. The key is added by the proxy (or SALAD_API_KEY); nothing here prints it or any
 environment variable of the box.
@@ -84,24 +85,23 @@ def body(name, class_id, env, cpu=4, mem=8192, storage_gb=10, priority="high"):
 
 
 def env_patch(current, sets, unsets):
-    """The merge-patch body that sets and removes variables. A removed one is sent as null, which a JSON merge
-    patch reads as delete."""
-    env = dict(sets)
-    for k in unsets:
-        if k in current:
-            env[k] = None
+    """The update body for new variables. Salad replaces the whole environment_variables map on a PATCH (it does
+    not merge it, and stores a null as a value: found 22 October), so this sends the full map: the current one
+    with sets applied and unsets left out."""
+    env = {k: v for k, v in (current or {}).items() if v is not None and k not in unsets}
+    env.update(sets)
     return {"container": {"environment_variables": env}}
 
 
 def since_t(s, now):
-    """A start time from "30m", "2h", "90s", "13:20" (UTC, today, or yesterday if that is in the future) or ISO."""
+    """A start time from "30m", "2h", "90s", "13:20" or "13:20:30" (UTC, today, or yesterday if that is in the future) or ISO."""
     m = re.match(r"^(\d+)([smh])$", s)
     if m:
         return now - int(m.group(1)) * {"s": 1, "m": 60, "h": 3600}[m.group(2)]
-    m = re.match(r"^(\d\d?):(\d\d)$", s)
+    m = re.match(r"^(\d\d?):(\d\d)(?::(\d\d))?$", s)
     if m:
         d = dt.datetime.fromtimestamp(now, dt.timezone.utc).replace(hour=int(m.group(1)), minute=int(m.group(2)),
-                                                                     second=0, microsecond=0)
+                                                                     second=int(m.group(3) or 0), microsecond=0)
         t = d.timestamp()
         return t - 86400 if t > now + 60 else t
     return w.parse_iso(s)
@@ -183,9 +183,13 @@ def read_logs(name, start, end, depth=0):
     in half and read again (as watcher.py does)."""
     q = f'resource.type = "container" AND resource.labels.container_group_name = "{name}"'
     b = {"start_time": w.iso(start), "end_time": w.iso(end), "query": q, "page_size": 100, "sort_order": "asc"}
-    s, j = w.http("POST", f"{w.BASE}/log-entries", b, timeout=90)
-    if s != 200:
-        sys.stderr.write(f"log-entries: HTTP {s} {str(j)[:200]}\n")
+    for attempt in range(3):   # the log service times out now and then (HTTP 408)
+        s, j = w.http("POST", f"{w.BASE}/log-entries", b, timeout=90)
+        if s == 200:
+            break
+        sys.stderr.write(f"log-entries: HTTP {s} {str(j)[:120]}\n")
+        time.sleep(5)
+    else:
         return []
     items = (j or {}).get("items") or []
     if len(items) < 100 or depth >= 6 or end - start < 2:
@@ -223,6 +227,11 @@ def cmd_create(a):
         s, j = w.http("POST", w.CB, b)
         if 200 <= s < 300:
             print(f"created {name} on {cls}, {a.priority}, {a.cpu} vCPU, {a.mem} MB: {env_summary(env)}")
+            # Salad sometimes stops a new group at once, before it has a PC (amdtest-rdna4, 22 October). Start it.
+            time.sleep(20)
+            if ((group(name) or {}).get("current_state") or {}).get("status") == "stopped":
+                s, _ = w.http("POST", f"{w.CB}/{name}/start")
+                print(f"it was stopped at once; started it again: HTTP {s}")
             return
         msg = str(j)[:300]
         print(f"{time.strftime('%H:%M:%S', time.gmtime())}Z create {name}: HTTP {s} {msg}", flush=True)
@@ -276,8 +285,10 @@ def cmd_status(a):
     c = g.get("container") or {}
     res = c.get("resources") or {}
     print(f"{name}: {cs.get('status')} ({cs.get('description') or ''}), version {g.get('version')}, "
-          f"{c.get('priority')}, {res.get('cpu')} vCPU, {res.get('memory')} MB, image {c.get('image')}")
+          f"{g.get('priority') or c.get('priority')}, {res.get('cpu')} vCPU, {res.get('memory')} MB, image {c.get('image')}")
     print(f"  env: {env_summary(c.get('environment_variables'))}")
+    if cs.get("status") == "stopped":
+        print("  stopped: `amdtest.py start` it (Salad stops a new group before a PC sometimes)")
     for i in instances(name):
         print(f"  instance {i.get('instance_id') or i.get('id')}: {i.get('state')}, machine {i.get('machine_id')}, "
               f"version {i.get('version')}, updated {i.get('update_time')}")
@@ -362,7 +373,8 @@ def main(argv=None):
     e.add_argument("--unset", nargs="*", default=[])
     e.add_argument("--patch-from")
     e.add_argument("--no-patch", action="store_true")
-    e.add_argument("--restart", action="store_true", help="also restart the instance now")
+    e.add_argument("--no-restart", dest="restart", action="store_false",
+                   help="don't restart the instance; wait for Salad to (slow: often 8+ min, or not at all)")
     e.set_defaults(fn=cmd_set_env)
     s = sub.add_parser("status")
     s.add_argument("name")
