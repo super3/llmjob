@@ -637,6 +637,7 @@ class W:
         if 200 <= s < 300 or (gone_ok and s == 404):
             g["reallocs"] += 1 if count else 0
             g.setdefault("left", []).append(g["machine"])
+            g["left_t"] = now()
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
                   + (f"reallocation {g['reallocs']} of 3" if count else "not counted toward its 3"))
             g.update(machine=None, pc_since=None, lost_since=now(), profit_fail=0, has_pc=False)
@@ -1407,8 +1408,12 @@ class W:
             event(f"WARN {g['name']} shows status failed: {g.get('state_desc')}")
 
         mach = g.pop("_machine", None)
-        if g["has_pc"] and mach in g.get("left", []):
-            return  # the PC it was just moved off still shows; Salad bills it, but it isn't a new PC
+        # The PC it was just moved off can still show for a few minutes; Salad bills it, but it isn't a new PC.
+        # Only that PC, and only for 10 minutes: until 22 October any PC the group had ever left was skipped, for
+        # good, so 2070-3, handed back a bad PC it had left hours before, billed at 0 TH/s for 4.5 hours with no
+        # rule run on it (no bad-list check, no reading rule, no delete).
+        if g["has_pc"] and g.get("left") and mach == g["left"][-1] and t - (g.get("left_t") or 0) < 10 * MIN:
+            return
         if g["has_pc"]:
             if mach != g["machine"]:
                 first = not g["had_pc"]

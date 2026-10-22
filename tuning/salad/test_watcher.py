@@ -250,6 +250,38 @@ class TestNotMining(Base):
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
 
+class TestPCsLeftBefore(Base):
+    def test_the_pc_just_left_is_skipped_for_10_minutes_only(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 10, "m1")                       # no reading for 10 minutes: left
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        n = len(self.http.calls)
+        self.step(g, 1, "m1")                        # Salad still shows the old PC: not a new PC, nothing done
+        self.assertEqual(len(self.http.calls), n)
+        self.assertNotIn("NEW PC biz-rtx4080", self.events())
+        self.step(g, 10, "m1")                       # still there 11 minutes on: judged like any PC
+        self.assertIn("NEW PC biz-rtx4080 (RTX 4080 (16 GB), batch): PC m1", self.events())
+
+    def test_a_pc_left_hours_ago_is_a_new_pc(self):
+        # 22 October: 2070-3 was moved off 452ceb99, then handed 6091f458, a bad-listed PC it had left hours before.
+        # Every PC it had ever left was skipped, so no rule ran on it and it billed at 0 TH/s for 4.5 hours.
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 10, "m1")
+        self.assertIn("REALLOCATED biz-rtx4080 off PC m1", self.events())
+        self.step(g, 1, "m2")
+        self.mine(g, "m2", 199, 3)
+        self.x.reallocate(g, "slow")                 # moved off m2; m1 is its last PC but one
+        self.clock[0] += 3 * 3600
+        self.x.st["bad_pcs"]["m1"] = {"t": self.clock[0] - 600, "group": "biz-rtx4080-2", "why": "slow"}
+        n = len(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")                        # handed m1 again: a new PC, and on the bad list
+        self.assertIn("NEW PC biz-rtx4080 (RTX 4080 (16 GB), batch): PC m1", self.events())
+        self.assertEqual(len(self.http.made("POST", "/reallocate")), n + 1)
+        self.assertIn("(biz-rtx4080-2 left this PC at", self.events())
+
+
 class TestMinerStops(Base):
     def test_a_pc_whose_miner_stops_is_left(self):
         g = self.group(pri="medium")
