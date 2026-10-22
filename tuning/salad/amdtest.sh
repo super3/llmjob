@@ -1,0 +1,281 @@
+#!/bin/bash
+# Box script for testing the AMD (HIP) Pearl core on a Salad AMD PC. amdtest.py's container command fetches this
+# file at SCRIPT_SHA (default BASE_SHA) and runs it. It installs what the build needs, fetches the repo at BASE_SHA
+# into /opt/llmjob, applies PATCH_GZ_B64 if set, then runs TASKS in order and sleeps, so the logs can be read and
+# `amdtest.py set-env` can start the next run on the same PC.
+#
+# Every line it prints for amdtest.py is "[amdtest] HH:MM:SS <tag> ...". A command's output is "<tag> | <line>",
+# cut into pieces of at most 400 characters ("+" starts a continuation) so Salad's log service keeps each one.
+# It never prints environment variables: Salad's bridge sets some, and nothing here needs them shown. A "run"
+# script is the sender's responsibility.
+#
+# Environment (amdtest.py sets it):
+#   BASE_SHA      commit of super3/llmjob to test (required)
+#   PATCH_GZ_B64  optional: `git diff --binary` against BASE_SHA, gzipped and base64'd; applied with git apply.
+#                 If it changes this script, the patched script takes over after the patch.
+#   TASKS         comma list, run in order (default "card,hip"). Each is name[@fold][:arg[:arg...]]; @fold sets
+#                 PEARL_AMD_FOLD for that task only.
+#     env                     OS, ROCm, node, compiler, the bridge's files (names only)
+#     card                    /dev/dxg, rocminfo's GPU agents, Salad's amd-smi
+#     hip                     builds and runs amdtest_hip.cpp: devices, runtime libraries loaded, kernels checked
+#     check[:all|:gfx...]     ./build-amd.sh check for this card's target (or all 14, or the ones given)
+#     build[:gfx...]          ./build-amd.sh gpu for this card's target (or the ones given)
+#     foldtest[:m:cols:seed:reps:check]   build/pearl_amd_foldtest
+#     verify[@fold][:secs:bits]           node ../probes/verify-hits.js build/pearl_core_hip.node [120]
+#     profile[@fold][:secs:bits:m:n:fill] node test/verify-hits-profile.js build/pearl_core_hip.node ...
+#     hashrate[@fold][:secs:warm]         node ../probes/hashrate.js build/pearl_core_hip.node [60 10]
+#     mine[@fold][:secs]      the app's CLI with PEARL_CORE_VARIANT=amd on POOL; secs 0 = until stopped [600]
+#     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB)
+#     run                     the bash script in RUN_GZ_B64 (gzip+base64), from earn/native/amd
+#     sleep:secs              wait
+#   ARCH          gfx target to build for (default: rocminfo's first GPU agent)
+#   POOL, WORKER, WALLET      for mine (default prl-us.kryptex.network:7048, amdtest, the user's wallet)
+#
+# Salad's PCs run the container in WSL2: the GPU is behind /dev/dxg, and Salad puts its ROCm-to-WSL bridge
+# (/opt/rocm-wsl) first on PATH and LD_LIBRARY_PATH. This script only appends to PATH and never sets
+# LD_LIBRARY_PATH. Builds link libamdhip64 with a RUNPATH of /opt/rocm/lib, which LD_LIBRARY_PATH overrides.
+export DEBIAN_FRONTEND=noninteractive
+R=${AMDTEST_ROOT:-/opt/llmjob}   # AMDTEST_ROOT and AMDTEST_NM: for trying the script off a box
+A=$R/earn/native/amd
+NM=${AMDTEST_NM:-/opt/nm}
+NODE_VER=v22.22.0
+CLANG=/opt/rocm/lib/llvm/bin/clang++
+export PATH="$PATH:/opt/rocm/bin:/opt/node/bin"
+export NODE_ADDON_API=$NM/node_modules/node-addon-api
+POOL=${POOL:-prl-us.kryptex.network:7048}
+WORKER=${WORKER:-amdtest}
+WALLET=${WALLET:-prl1pw88rlj2y4cazjej2gzavhwxut2js9gws936eazajzrll5ehjul8sfp5u3t}
+TASKS=${TASKS:-card,hip}
+
+say() { echo "[amdtest] $(date -u +%T) $*"; }
+# emit TAG: every non-empty stdin line as "TAG | line", in pieces of at most 400 characters.
+emit() {
+  local tag=$1 line
+  tr '\r' '\n' | while IFS= read -r line || [ -n "$line" ]; do
+    [ -z "${line//[[:space:]]/}" ] && continue
+    while [ ${#line} -gt 400 ]; do say "$tag | ${line:0:400}"; line="+${line:400}"; done
+    say "$tag | $line"
+  done
+}
+idle() { say "idle $*"; sleep infinity; }
+fail() { say "FAIL $*"; idle "after a failure"; }
+
+setup() {
+  local pkgs="" t0=$(date +%s)
+  command -v git >/dev/null || pkgs="$pkgs git"
+  command -v curl >/dev/null || pkgs="$pkgs curl ca-certificates"
+  command -v make >/dev/null && [ -d /usr/include/c++ ] || pkgs="$pkgs build-essential"
+  command -v xz >/dev/null || pkgs="$pkgs xz-utils"
+  if [ -n "$pkgs" ]; then
+    { apt-get update -qq && apt-get install -y -qq --no-install-recommends $pkgs; } > /root/apt.log 2>&1 \
+      || { tail -5 /root/apt.log | emit setup; fail "apt-get install$pkgs"; }
+  fi
+  if [ "$(node -v 2>/dev/null | cut -d. -f1)" != v22 ]; then
+    mkdir -p /opt/node
+    curl -fsSL --retry 3 "https://nodejs.org/dist/$NODE_VER/node-$NODE_VER-linux-x64.tar.gz" \
+      | tar xz -C /opt/node --strip-components=1 || fail "node $NODE_VER download"
+    # /opt/node/bin is last on PATH; put node first only if the image has an older one.
+    hash -r; [ "$(node -v 2>/dev/null | cut -d. -f1)" = v22 ] || export PATH="/opt/node/bin:$PATH"
+  fi
+  if [ ! -f "$NODE_ADDON_API/napi.h" ]; then
+    npm install --prefix $NM --no-audit --no-fund --loglevel=error node-addon-api tweetnacl tweetnacl-util \
+      > /root/npm.log 2>&1 || { tail -5 /root/npm.log | emit setup; fail "npm install"; }
+  fi
+  say "setup ok in $(( $(date +%s) - t0 ))s: node $(node -v), apt:${pkgs:- none}"
+}
+
+fetch() {
+  rm -rf $R && mkdir -p $R && cd $R || fail "no $R"
+  if ! { git init -q && git remote add origin https://github.com/super3/llmjob.git \
+         && git fetch -q --depth 1 origin "$BASE_SHA" && git checkout -q FETCH_HEAD; } > /root/git.log 2>&1; then
+    tail -3 /root/git.log | emit fetch
+    fail "fetch $BASE_SHA"
+  fi
+  say "fetch ok $(git rev-parse --short=12 HEAD)"
+  if [ -n "${PATCH_GZ_B64:-}" ]; then
+    printf '%s' "$PATCH_GZ_B64" | base64 -d | gunzip > /root/patch.diff || fail "patch: not gzip+base64"
+    say "patch $(wc -c < /root/patch.diff) bytes, sha256 $(sha256sum /root/patch.diff | cut -c1-12)"
+    git apply --whitespace=nowarn /root/patch.diff > /root/apply.log 2>&1 \
+      || { emit patch < /root/apply.log; fail "patch does not apply to $BASE_SHA"; }
+    git diff --stat | tail -n 30 | emit patch
+  fi
+}
+
+# The card's target, from rocminfo's first GPU agent.
+target() {
+  timeout 60 rocminfo 2>/dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1
+}
+
+t_env() {
+  say "env os $(. /etc/os-release; echo "$PRETTY_NAME"), kernel $(uname -r), $(nproc) cpus, $(free -m | awk '/Mem:/{print $2}') MiB"
+  say "env rocm $(cat /opt/rocm/.info/version 2>/dev/null || echo ?), hip-clang $([ -x $CLANG ] && $CLANG --version | head -1 || echo missing)"
+  say "env node $(node -v 2>/dev/null), git $(git --version 2>/dev/null | cut -d' ' -f3), g++ $(g++ -dumpversion 2>/dev/null || echo none)"
+  # Facts about the bridge, without printing PATH or LD_LIBRARY_PATH themselves.
+  say "env rocm-wsl first on PATH: $(case "$PATH" in /opt/rocm-wsl/*) echo yes;; *) echo no;; esac)," \
+      "LD_LIBRARY_PATH set: $([ -n "${LD_LIBRARY_PATH:-}" ] && echo yes || echo no)," \
+      "has /opt/rocm-wsl: $(case ":${LD_LIBRARY_PATH:-}:" in *:/opt/rocm-wsl*) echo yes;; *) echo no;; esac)"
+  ls /opt/rocm-wsl 2>&1 | tr '\n' ' ' | emit env
+  for d in /opt/rocm-wsl/lib /opt/rocm-wsl/lib64 /usr/lib/wsl/lib; do
+    [ -d $d ] && say "env $d: $(ls $d | tr '\n' ' ')"
+  done
+  return 0
+}
+
+t_card() {
+  [ -c /dev/dxg ] && say "card /dev/dxg yes" || say "card /dev/dxg MISSING"
+  ls -l /dev/kfd /dev/dri 2>&1 | head -3 | emit card
+  local ri; ri=$(timeout 60 rocminfo 2>&1); local rc=$?
+  echo "$ri" | awk -F': +' '/^\*+$/{a++} /Marketing Name:/{m=$2} /^  Name:/{n=$2}
+    /Compute Unit:/{cu=$2} /Max Clock Freq/{mhz=$2}
+    /Device Type:/{if ($2 ~ /GPU/) g=1}
+    /ISA Info:/{if (g) {print "gpu " n ", " m ", CUs " cu ", " mhz " MHz"; g=0}}' | sed 's/  */ /g' | emit card
+  [ $rc -eq 0 ] || { echo "$ri" | tail -5 | emit card; say "card rocminfo rc=$rc"; }
+  local smi=/opt/rocm-wsl/bin/amd-smi
+  [ -x $smi ] && timeout 20 $smi static --asic --vram 2>&1 | grep -iE 'market|asic|vram_size|vram_type|device_id|gfx|target' | head -12 | emit card
+  say "card target ${ARCH:-$(target)}"
+}
+
+t_hip() {
+  local arch=${ARCH:-$(target)} bin=/root/amdtest_hip
+  [ -n "$arch" ] || { say "hip FAIL no gfx target from rocminfo"; return 1; }
+  [ -x $CLANG ] || { say "hip FAIL no hip-clang at $CLANG"; return 1; }
+  $CLANG -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O2 "$R/tuning/salad/amdtest_hip.cpp" \
+    -o $bin -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/hipcc.log 2>&1 \
+    || { tail -20 /root/hipcc.log | emit hip; say "hip FAIL compile"; return 1; }
+  ldd $bin | grep -E 'amdhip|hsa|dxg|rocprof|not found' | sed 's/ (0x[0-9a-f]*)//' | emit hip
+  timeout 120 $bin > /root/hip.log 2>&1; local rc=$?
+  emit hip < /root/hip.log
+  if [ $rc -ne 0 ]; then
+    # Once more with HIP's own log, which says where the runtime gave up.
+    AMD_LOG_LEVEL=3 timeout 120 $bin > /root/hip3.log 2>&1
+    grep -vE '^\s*$' /root/hip3.log | tail -30 | emit hip
+    say "hip FAIL rc=$rc"
+    return 1
+  fi
+}
+
+t_check() {
+  local archs
+  case "${1:-}" in all) archs="" ;; "") archs=${ARCH:-$(target)} ;; *) archs="$*" ;; esac
+  (cd $A && ./build-amd.sh check $archs) > /root/check.log 2>&1; local rc=$?
+  grep -vE '^\s*$' /root/check.log | tail -n 80 | emit check
+  return $rc
+}
+
+t_build() {
+  local archs="${*:-${ARCH:-$(target)}}" t0=$(date +%s)
+  (cd $A && ./build-amd.sh gpu $archs) > /root/build.log 2>&1; local rc=$?
+  if [ $rc -ne 0 ]; then
+    grep -E 'error|Error|build-amd' /root/build.log | head -20 | emit build
+    tail -10 /root/build.log | emit build
+  else
+    tail -1 /root/build.log | emit build
+    say "build $(grep -c 'warning:' /root/build.log) warnings, $(( $(date +%s) - t0 ))s"
+  fi
+  return $rc
+}
+
+need_core() { [ -f $A/build/pearl_core_hip.node ] || { say "$1 FAIL no build/pearl_core_hip.node (run build first)"; return 1; }; }
+
+t_foldtest() {
+  [ -x $A/build/pearl_amd_foldtest ] || { say "foldtest FAIL no build/pearl_amd_foldtest (run build first)"; return 1; }
+  (cd $A && timeout 1800 ./build/pearl_amd_foldtest "$@") > /root/foldtest.log 2>&1; local rc=$?
+  emit foldtest < /root/foldtest.log
+  return $rc
+}
+
+t_verify() {
+  need_core verify || return 1
+  (cd $A && timeout 3600 node ../probes/verify-hits.js build/pearl_core_hip.node "${1:-120}" ${2:+"$2"}) \
+    > /root/verify.log 2>&1; local rc=$?
+  tail -n 20 /root/verify.log | emit verify
+  return $rc
+}
+
+t_profile() {
+  need_core profile || return 1
+  (cd $A && timeout 3600 node test/verify-hits-profile.js build/pearl_core_hip.node "$@") > /root/profile.log 2>&1
+  local rc=$?; tail -n 20 /root/profile.log | emit profile
+  return $rc
+}
+
+t_hashrate() {
+  need_core hashrate || return 1
+  (cd $A && timeout 3600 node ../probes/hashrate.js build/pearl_core_hip.node "${1:-60}" "${2:-10}") \
+    > /root/hashrate.log 2>&1; local rc=$?
+  tail -n 10 /root/hashrate.log | emit hashrate
+  return $rc
+}
+
+# The app's CLI from source, with the AMD core. Every 60 s: the CLI's new lines, but only the last of its
+# once-a-second "TH/s" lines.
+t_mine() {
+  need_core mine || return 1
+  local secs=${1:-600} t0=$(date +%s) seen=0 n pid
+  say "mine $POOL worker $WORKER for ${secs}s (0 = until stopped)"
+  (cd $R/earn && PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$A/build/pearl_core_hip.node NODE_PATH=$NM/node_modules \
+     exec node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER" \
+       --no-report --no-serve --no-update) > /root/mine.log 2>&1 &
+  pid=$!
+  while :; do
+    sleep 60
+    n=$(wc -l < /root/mine.log)
+    tail -n +$((seen + 1)) /root/mine.log | head -n $((n - seen)) | tr '\r' '\n' | grep -v 'TH/s ·' | head -20 | emit mine
+    tail -n +$((seen + 1)) /root/mine.log | head -n $((n - seen)) | tr '\r' '\n' | grep 'TH/s ·' | tail -1 | emit mine
+    seen=$n
+    kill -0 $pid 2>/dev/null || { say "mine exited"; tail -5 /root/mine.log | emit mine; wait $pid; return 1; }
+    [ "$secs" -gt 0 ] && [ $(( $(date +%s) - t0 )) -ge "$secs" ] && break
+  done
+  kill $pid; wait $pid 2>/dev/null
+  return 0
+}
+
+t_cpuchecks() {
+  { apt-get install -y -qq --no-install-recommends libtbb-dev clang > /root/apt2.log 2>&1 \
+    && { [ -d /opt/hip-cpu ] || git clone -q --depth 1 https://github.com/ROCm/HIP-CPU /opt/hip-cpu; }; } \
+    || { tail -5 /root/apt2.log | emit cpuchecks; say "cpuchecks FAIL setup"; return 1; }
+  (cd $A && HIP_CPU_PATH=/opt/hip-cpu ./build-amd.sh cpu && ./test/run-cpu-checks.sh) > /root/cpuchecks.log 2>&1
+  local rc=$?; grep -E '^(PASS|FAIL|built| )' /root/cpuchecks.log | tail -n 40 | emit cpuchecks
+  return $rc
+}
+
+t_run() {
+  [ -n "${RUN_GZ_B64:-}" ] || { say "run FAIL no RUN_GZ_B64"; return 1; }
+  printf '%s' "$RUN_GZ_B64" | base64 -d | gunzip > /root/run.sh || { say "run FAIL not gzip+base64"; return 1; }
+  (cd $A && bash /root/run.sh) > /root/run.log 2>&1; local rc=$?
+  tail -n 60 /root/run.log | emit run
+  return $rc
+}
+
+if [ "${AMDTEST_STAGE:-}" != repo ]; then
+  say "boot sha ${BASE_SHA:-none}, tasks $TASKS, patch ${#PATCH_GZ_B64} chars"
+  [ -n "${BASE_SHA:-}" ] || idle "no BASE_SHA"
+  setup
+  fetch
+  # A patch that changes this script hands over to the patched copy, which skips what is done.
+  if ! cmp -s "$0" "$R/tuning/salad/amdtest.sh"; then
+    say "patched amdtest.sh takes over"
+    AMDTEST_STAGE=repo exec bash "$R/tuning/salad/amdtest.sh"
+  fi
+fi
+
+failed=""
+IFS=, read -ra LIST <<< "$TASKS"
+for item in "${LIST[@]}"; do
+  [ -n "$item" ] || continue
+  IFS=: read -ra P <<< "$item"
+  name=${P[0]%%@*}; fold=""; [ "$name" != "${P[0]}" ] && fold=${P[0]#*@}
+  args=("${P[@]:1}")
+  case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|cpuchecks|run) ;;
+    sleep) sleep "${args[0]:-60}"; continue ;;
+    *) say "$name FAIL unknown task"; failed="$failed $item"; continue ;;
+  esac
+  say "$name start${fold:+ fold=$fold}${args:+ ${args[*]}}"
+  t0=$(date +%s)
+  if [ -n "$fold" ]; then PEARL_AMD_FOLD=$fold "t_$name" "${args[@]}"; else "t_$name" "${args[@]}"; fi
+  rc=$?
+  say "$name done rc=$rc $(( $(date +%s) - t0 ))s"
+  [ $rc -eq 0 ] || failed="$failed $item"
+done
+say "all done, failed:${failed:- none}"
+idle "until the next set-env"
