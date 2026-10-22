@@ -421,6 +421,13 @@ What it found on 22 October:
   later. Why is not known yet. So: push the change and pass `--sha` rather than send a patch, and `realloc`
   a box that prints nothing for 10 minutes.
 - Salad's API accepts a 262,144-character variable and refuses 1,048,576 (HTTP 400).
+- A restart without a patch can go silent too. At 14:53 and 14:54 a `set-env --sha` with no patch, after a
+  clean run, printed nothing for 9 to 10 minutes on both boxes (PCs 45c94e40 and 51a4b5c2). `realloc` gave
+  each a new PC that printed `boot` within a minute.
+- Don't `delete` a box to change its class. After amdtest-rdna3 was deleted at 15:57, creating it again
+  failed with `name_conflict` every 30 s until at least 16:22, 25 minutes later. Salad holds a deleted
+  name (see "Salad API notes" above), and this tool can use no other name. `delete` only when the box is
+  done for good.
 
 ## The container
 

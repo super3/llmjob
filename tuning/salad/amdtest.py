@@ -347,6 +347,9 @@ def cmd_simple(a):
     else:
         s, j = w.http("POST", f"{w.CB}/{name}/{a.cmd}")
     print(f"{a.cmd} {name}: HTTP {s} {'' if 200 <= s < 300 else str(j)[:300]}")
+    if a.cmd == "delete" and 200 <= s < 300:
+        # Salad holds a deleted group's name, often for an hour, and this tool has no other name to use.
+        print(f"note: Salad holds the name {name} for a while; `create {name}` fails with name_conflict until then")
 
 
 def main(argv=None):

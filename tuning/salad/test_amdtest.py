@@ -1,7 +1,7 @@
 # Tests for amdtest.py's pure parts: names, classes, the create and update bodies, time parsing, log lines and
 # the patch it sends, with no Salad calls. Also checks amdtest.sh's syntax and the task line parsing.
 # Run: python3 -m unittest discover -s tuning/salad
-import base64, gzip, importlib.util, os, shutil, subprocess, tempfile, unittest
+import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, tempfile, unittest
 
 os.environ.setdefault("SALAD_MINE_DIR", tempfile.mkdtemp())
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,6 +39,17 @@ class TestAmdtest(unittest.TestCase):
         finally:
             a.w.http = old
         self.assertEqual(calls, [])
+
+    def test_delete_says_the_name_stays_held(self):
+        old = a.w.http
+        a.w.http = lambda *x, **k: (202, {})
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                a.main(["delete", "amdtest-rdna3"])
+        finally:
+            a.w.http = old
+        self.assertIn("name_conflict", out.getvalue())
 
     def test_short_class_names_never_mix_xt_and_xtx(self):
         self.assertEqual(a.class_name("7900xtx"), "AMD RX 7900 XTX (24GB)")
