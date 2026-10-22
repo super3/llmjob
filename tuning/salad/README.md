@@ -429,6 +429,33 @@ What it found on 22 October:
   name (see "Salad API notes" above), and this tool can use no other name. `delete` only when the box is
   done for good.
 
+## AMD benchmark (bench.py)
+
+`BENCH_SET=amd` fills benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
+PC, 5 minutes each after a 60 s warm-up, on `us.pearl.herominers.com:1200`. PeakMiner has no Pearl kernel for
+AMD and isn't run, so its column reads "not run" and "% of best" is ours against SRBMiner. No release has an AMD
+build, so each box (`bench.sh` on the ROCm image, high priority, 4 vCPU, 8 GB) uses `amdtest.sh`'s setup to
+build the HIP core at `BENCH_BASE_SHA` (default `BENCH_COMMIT`) for its card, prints the PC's device copy rate,
+runs `verify-hits.js` for `BENCH_VERIFY_SECS` (600), then runs the CLI from source and SRBMiner. The two PCs of
+a class take turns going first: after a recorded PC the next gets a new group, since a moved one keeps its
+command. A core that doesn't build or a failed hit check leaves "Ours" saying so and still runs SRBMiner. A PC
+takes about 30 minutes once it has the image; the runner gives it 50.
+
+Two lanes run at once, one Salad slot each, each with its own files (`bench-amd-a.json`, `bench-amd-a_status.md`,
+`bench-amd-a.log`) and groups (`bench-a-rx9070xt-1`, ...). Lane a takes the RX 9070 XT, 9060 XT and 7800 XT
+(six PCs, about 3.5 hours), lane b the 7900 XTX and 7900 XT (four, about 2.5 hours), more when PCs are slow to
+come or get skipped:
+
+```sh
+export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd BENCH_COMMIT=<pushed sha>
+BENCH_LANE=a nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
+BENCH_LANE=b nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
+python3 tuning/salad/bench.py table      # both lanes' rows, in benchmark.md's shape
+```
+
+Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a
+salt (hits / salts; the check's target makes 8).
+
 ## The container
 
 - Image `nvidia/cuda:12.2.2-base-ubuntu22.04`. The 12.8.1 image sat in "preparing" for 45+ min. The

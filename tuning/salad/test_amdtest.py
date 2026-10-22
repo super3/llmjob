@@ -164,6 +164,23 @@ class TestAmdtest(unittest.TestCase):
         self.assertTrue(lines[2].split(" | ", 1)[1].startswith("+x"))
         self.assertEqual(sum(l.split(" | ", 1)[1].lstrip("+").count("x") for l in lines[1:]), 1000)
 
+    def test_lib_stage_only_defines_the_functions(self):
+        # bench.sh sources it this way for setup, fetch, the build, the hit check and the CLI: nothing may run.
+        sh = os.path.join(HERE, "amdtest.sh")
+        r = subprocess.run(["bash", "-c", f'AMDTEST_STAGE=lib . {sh}; echo "rc=$?"; '
+                            "declare -F setup fetch target t_hip t_build t_verify mine_cli"],
+                           capture_output=True, text=True, env={"PATH": os.environ["PATH"], "BASE_SHA": "abc"})
+        self.assertEqual(r.stdout.splitlines(), ["rc=0", "setup", "fetch", "target", "t_hip", "t_build", "t_verify",
+                                                 "mine_cli"])
+        self.assertEqual(r.stderr, "")
+
+    def test_mine_runs_the_cli_through_mine_cli(self):
+        src = read(os.path.join(HERE, "amdtest.sh"))
+        body = src[src.index("mine_cli() {"):src.index("\n}\n", src.index("mine_cli() {"))]
+        self.assertIn("PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$A/build/pearl_core_hip.node NODE_PATH=$NM/node_modules", body)
+        self.assertIn('--address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER"', body)
+        self.assertIn("(mine_cli) > /root/mine.log 2>&1 &", src)
+
 
 if __name__ == "__main__":
     unittest.main()

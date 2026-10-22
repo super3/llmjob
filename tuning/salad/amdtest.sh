@@ -4,6 +4,9 @@
 # into /opt/llmjob, applies PATCH_GZ_B64 if set, then runs TASKS in order and sleeps, so the logs can be read and
 # `amdtest.py set-env` can start the next run on the same PC.
 #
+# bench.sh sources it with AMDTEST_STAGE=lib for its functions (setup, fetch, target, the t_ tasks, mine_cli)
+# and runs none of the tasks.
+#
 # Every line it prints for amdtest.py is "[amdtest] HH:MM:SS <tag> ...". A command's output is "<tag> | <line>",
 # cut into pieces of at most 400 characters ("+" starts a continuation) so Salad's log service keeps each one.
 # It never prints environment variables: Salad's bridge sets some, and nothing here needs them shown. A "run"
@@ -208,15 +211,20 @@ t_hashrate() {
   return $rc
 }
 
-# The app's CLI from source, with the AMD core. Every 60 s: the CLI's new lines, but only the last of its
-# once-a-second "TH/s" lines.
+# The app's CLI from source, with the AMD core, mining on POOL as WORKER for WALLET. It ends in exec, so call it
+# in a subshell. t_mine and bench.sh's ours both run it.
+mine_cli() {
+  cd $R/earn && PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$A/build/pearl_core_hip.node NODE_PATH=$NM/node_modules \
+    exec node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER" \
+      --no-report --no-serve --no-update
+}
+
+# Every 60 s: the CLI's new lines, but only the last of its once-a-second "TH/s" lines.
 t_mine() {
   need_core mine || return 1
   local secs=${1:-600} t0=$(date +%s) seen=0 n pid
   say "mine $POOL worker $WORKER for ${secs}s (0 = until stopped)"
-  (cd $R/earn && PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$A/build/pearl_core_hip.node NODE_PATH=$NM/node_modules \
-     exec node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER" \
-       --no-report --no-serve --no-update) > /root/mine.log 2>&1 &
+  (mine_cli) > /root/mine.log 2>&1 &
   pid=$!
   while :; do
     sleep 60
@@ -247,6 +255,9 @@ t_run() {
   tail -n 60 /root/run.log | emit run
   return $rc
 }
+
+# AMDTEST_STAGE=lib: sourced for its functions only (bench.sh does this), so stop here.
+[ "${AMDTEST_STAGE:-}" = lib ] && return 0
 
 if [ "${AMDTEST_STAGE:-}" != repo ]; then
   say "boot sha ${BASE_SHA:-none}, tasks $TASKS, patch ${#PATCH_GZ_B64} chars"

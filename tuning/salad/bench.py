@@ -5,6 +5,8 @@
 # minutes it writes both tables, filled so far, with what the box is doing now, to bench_status.md and a STATUS
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
+# BENCH_SET=amd runs the Radeon cards instead (our HIP core against SRBMiner), in one run or two lanes.
+# `bench.py table [STATE...]` prints the set's whole table from its lanes' state files.
 import json, os, re, sys, time, importlib.util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -12,12 +14,20 @@ _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "wa
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
 
-# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon baseline). Each set has its own
+# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon cards). Each set has its own
 # state, status and log files, so the two runs never share a place in a plan.
 SET = os.environ.get("BENCH_SET", "gtx")
-STATE, STATUS, LOG = (os.path.join(w.D, f"bench{'' if SET == 'gtx' else '-' + SET}{x}") for x in (".json", "_status.md", ".log"))
+# BENCH_LANE ("a" or "b", AMD set only) splits the set into two runs that go at the same time, one Salad slot each.
+# Each lane has its own files and group names and takes its own classes. No lane: the whole set in one run.
+LANE = os.environ.get("BENCH_LANE", "")
+LANES = {"a": ["RX 9070 XT", "RX 9060 XT", "RX 7800 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"]}
+NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
+STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
+# AMD set: the commit whose HIP core the boxes build (our miner there), and how long the hit check runs.
+BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
+VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
 # Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
 AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
@@ -46,17 +56,25 @@ SECTIONS = [("GTX 10-series (Pascal, sm_61, on Salad)", ["GTX 1080 Ti", "GTX 108
 MEM = {"GTX 1060": "6 GB", "GTX 1050 Ti": "4 GB", "GTX 1660 Super": "6 GB", "GTX 1660 Ti": "6 GB", "GTX 1660": "6 GB",
        "GTX 1650": "4 GB"}
 if SET == "amd":
-    # Our miner is CUDA only: 90 marks a card with no build, so "Ours" reads "no build". PeakMiner has no Pearl
-    # kernel for AMD and is run anyway; SRBMiner goes first, so a PeakMiner that quits at once doesn't leave
-    # SRBMiner a cold card.
-    PLAN = [("AMD RX 9070 XT (16GB)", ["RX 9070 XT"], 90), ("AMD RX 9060 XT (16GB)", ["RX 9060 XT"], 90),
-            ("AMD RX 7900 XTX (24GB)", ["RX 7900 XTX"], 90), ("AMD RX 7900 XT (20GB)", ["RX 7900 XT"], 90),
-            ("AMD RX 7800 XT (16GB)", ["RX 7800 XT"], 90)]
+    # Our miner and SRBMiner, 5 minutes each. No release has an AMD build, so ours is the HIP core at BASE_SHA,
+    # built on the box and run through the CLI from source after a hit check (bench.sh). PeakMiner has no Pearl
+    # kernel for AMD and isn't run.
+    PLAN = [("AMD RX 9070 XT (16GB)", ["RX 9070 XT"], 300), ("AMD RX 9060 XT (16GB)", ["RX 9060 XT"], 300),
+            ("AMD RX 7900 XTX (24GB)", ["RX 7900 XTX"], 300), ("AMD RX 7900 XT (20GB)", ["RX 7900 XT"], 300),
+            ("AMD RX 7800 XT (16GB)", ["RX 7800 XT"], 300)]
     EXTRA = {}
     SECTIONS = [("AMD Radeon (RDNA 3 and 4, on Salad)", ["RX 9070 XT", "RX 9060 XT", "RX 7900 XTX", "RX 7900 XT",
                                                          "RX 7800 XT"])]
     MEM = {"RX 9070 XT": "16 GB", "RX 9060 XT": "16 GB", "RX 7900 XTX": "24 GB", "RX 7900 XT": "20 GB",
            "RX 7800 XT": "16 GB"}
+    # On a PC that has the image: setup 1-4 min (apt is the slow part), build under a minute, the 10-minute hit
+    # check, SRBMiner's device list up to 1 min, then the warm-up and two 5-minute runs, about 12 min with the
+    # pauses between them. 26-29 min in all, which leaves 20 min for the image to download.
+    RUN_MIN = 50
+ALL_SECTIONS = SECTIONS          # every row of the set, for `table`
+if SET == "amd" and LANE in LANES:
+    PLAN = [p for p in PLAN if p[1][0] in LANES[LANE]]
+    SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS]
 
 
 def log(msg):
@@ -73,15 +91,44 @@ def row_for(card, rows):
     return next((r for r in rows if r.upper() == c), None)
 
 
+def hit_check(body):
+    """bench.sh's "hitcheck PASS|FAIL secs=600 hits=2202 verified=400 failed=0 salts=277" line, which can end in
+    "why=..." (the first failed hit's reason) or "error=..." (no result from verify-hits.js)."""
+    m = re.match(r"hitcheck (PASS|FAIL)\b(.*)", body)
+    if not m:
+        return None
+    rest, out = m.group(2), {"pass": m.group(1) == "PASS"}
+    free = re.search(r"\b(why|error)=(.*)$", rest)
+    if free:
+        out[free.group(1)] = free.group(2).strip()
+        rest = rest[:free.start()]
+    for k, v in re.findall(r"(\w+)=(\S+)", rest):
+        out[k] = int(v) if v.isdigit() else None
+    return out
+
+
 def parse(lines):
-    """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done."""
-    out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None}
+    """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
+    On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
+    out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
+           "core": None, "skipped": {}}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
             continue
         body = m.group(1).strip()
-        if body.startswith("card "):
+        if body.startswith("copy "):
+            c = re.match(r"copy (\d+(?:\.\d+)?) GB/s", body)
+            out["copy"] = float(c.group(1)) if c else None
+        elif body.startswith("hitcheck "):
+            out["hitcheck"] = hit_check(body)
+        elif body.startswith("skip "):
+            s = re.match(r"skip (\w+): (.*)", body)
+            if s:
+                out["skipped"][s.group(1)] = s.group(2)
+        elif body.startswith("fetch ok "):
+            out["core"] = body.split()[2]
+        elif body.startswith("card "):
             f = [x.strip() for x in body[5:].split(",")]
             out["card"] = {"name": f[0], "driver": f[1] if len(f) > 1 else "", "power": f[2] if len(f) > 2 else "",
                            "mem": f[4] if len(f) > 4 else ""}
@@ -127,12 +174,36 @@ def cell(v, why):
     return f"{v:.1f}" if v is not None else why
 
 
-def render(st):
-    """Both tables, in benchmark.md's shape, with what's filled so far."""
+def pc_note(row, h):
+    """The line under the AMD table for one PC: its device copy rate, the hit check, and which miner went first.
+    Hits a salt is hits / salts; the hit check's target makes it 8."""
+    parts = [f"copy {h['copy']:.0f} GB/s" if h.get("copy") else "copy not measured"]
+    hc = h.get("hitcheck")
+    if hc:
+        s = f"hit check {'PASS' if hc['pass'] else 'FAIL'}"
+        if hc.get("hits") is not None:
+            s += (f", {hc.get('verified')} of {hc['hits']} hits verified, {hc.get('failed')} failed, "
+                  f"{hc.get('salts')} salts in {hc.get('secs')} s")
+            if hc.get("salts"):
+                s += f", {hc['hits'] / hc['salts']:.2f} hits a salt"
+        if hc.get("why") or hc.get("error"):
+            s += f" ({hc.get('why') or hc.get('error')})"
+        parts.append(s)
+    else:
+        parts.append("no hit check")
+    if h.get("order"):
+        parts.append(("ours" if h["order"].startswith("ours") else "SRBMiner") + " ran first")
+    return f"- `{h['machine'][:8]}` ({row}): " + "; ".join(parts) + "."
+
+
+def render(st, sections=None):
+    """Both tables, in benchmark.md's shape, with what's filled so far. On AMD PeakMiner isn't run, so "% of best"
+    is ours against SRBMiner, and a line for each PC under the table gives its copy rate and hit check."""
     out = []
-    for title, rows in SECTIONS:
+    for title, rows in sections or SECTIONS:
         out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |",
                 "|---|---|---|---|---|---|---|"]
+        notes = [pc_note(r, h) for r in rows for h in st["results"].get(r, []) if SET == "amd"]
         for r in rows:
             hosts = st["results"].get(r, [])
             extra = any(r in e for e in EXTRA.values())
@@ -152,7 +223,18 @@ def render(st):
                 out.append(f"| {r} | Salad ({p}{mem}) | {h['machine'][:8]} | {cell(o, ow)} | {cell(pk, pw)} | "
                            f"{cell(sr, sw)} | {pct} |")
         out.append("")
+        if notes:
+            out += notes + [""]
     return "\n".join(out)
+
+
+def table(paths):
+    """The set's whole table from several state files (two lanes'), their results put together."""
+    st = {"results": {}}
+    for p in paths:
+        for row, hosts in ((w.load(p, None) or {}).get("results") or {}).items():
+            st["results"].setdefault(row, []).extend(hosts)
+    return render(st, ALL_SECTIONS)
 
 
 class Bench:
@@ -176,13 +258,24 @@ class Bench:
     def full(self, rows):
         return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
 
-    def command(self, ours_secs):
+    def order(self):
+        """Which miner goes first, and so gets the warm-up. GTX: by box. AMD: by how many PCs of the class are
+        recorded, so its two PCs take turns (each gets a group of its own, see move_on)."""
         if SET == "amd":
-            order = "srb,peak"
-        else:
-            order = "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
-        url = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/tuning/salad/bench.sh"
+            n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
+            return "ours,srb" if n % 2 == 0 else "srb,ours"
+        return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
+
+    def command(self, ours_secs, order):
+        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/tuning/salad"
+        url = f"{raw}/bench.sh"
         extra = f" SRB_EXTRA='{SRB_EXTRA}'" if SRB_EXTRA else ""
+        if SET == "amd":
+            # bench.sh builds and runs our core with amdtest.sh's functions, from the same commit, beside it.
+            return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
+                    f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
+                    f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
+                    f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra} "
                 f"bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
@@ -196,19 +289,23 @@ class Bench:
             return
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
             w.slug(cls).replace("rtx", "gtx")
-        name = f"bench-{slug}-{self.st['tries'] + 1}"[:60]
+        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}"[:60]
+        order = self.order()
+        # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
+        cpu, mem = (4, 8192) if SET == "amd" else (2, 4096)
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "never",
                 "autostart_policy": True,
                 "container": {"image": AMD_IMAGE if SET == "amd" else w.IMAGE, "priority": "high",
-                              "resources": {"cpu": 2, "memory": 4096, "gpu_classes": [cid],
+                              "resources": {"cpu": cpu, "memory": mem, "gpu_classes": [cid],
                                             "storage_amount": 10737418240},
-                              "command": ["/bin/sh", "-c", self.command(ours)]}}
+                              "command": ["/bin/sh", "-c", self.command(ours, order)]}}
         s, j = w.http("POST", w.CB, body)
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
             return
         t = w.now()
-        self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[])
+        self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
+                       order=order)
         log(f"CREATED {name} ({cls}, high)")
 
     def note(self, msg):
@@ -235,6 +332,11 @@ class Bench:
             if not self.full(rows):
                 self.note(f"{cls}: stopped after {self.st['tries']} boxes with rows still empty")
             self.next_class()
+            return
+        if SET == "amd" and why == "done":
+            # A moved instance keeps its group's command, so the next PC gets a new group: the other order.
+            log(f"NEW GROUP for the next PC of {cls}, so the other miner goes first")
+            self.delete()
             return
         inst = self.st.get("instance")
         s = 0
@@ -328,6 +430,10 @@ class Bench:
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
+            if SET == "amd":
+                res.update(copy=r["copy"], hitcheck=r["hitcheck"], core=r["core"], order=self.st.get("order"))
+                if r["skipped"].get("ours"):     # the core didn't build, or the hit check failed
+                    res["ours"] = (None, r["skipped"]["ours"])
             if ours != 90 and all(res[k][0] is None for k in ("ours", "peak", "srb")):
                 # Where our release has a build, a PC on which no miner gets work points at its network, not the
                 # card: try another PC instead of filling the row with it.
@@ -379,6 +485,8 @@ class Bench:
         self.wallet = os.environ.get("PRL_WALLET") or w.load(w.CFG, {}).get("wallet", "")
         if not self.wallet.startswith("prl1") or not COMMIT:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
+        if LANE and (SET != "amd" or LANE not in LANES):
+            sys.exit(f"BENCH_LANE is one of {', '.join(LANES)}, and only with BENCH_SET=amd")
         while True:
             try:
                 going = self.tick()
@@ -395,4 +503,9 @@ class Bench:
 
 
 if __name__ == "__main__":
-    Bench().run()
+    if sys.argv[1:2] == ["table"]:
+        # Default: the set's lane files on AMD (bench-amd-a.json, bench-amd-b.json), else its own.
+        print(table(sys.argv[2:] or ([os.path.join(w.D, f"bench-{SET}-{x}.json") for x in LANES] if SET == "amd"
+                                     else [STATE])))
+    else:
+        Bench().run()
