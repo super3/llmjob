@@ -51,7 +51,8 @@ because no L40 was for rent other than the New York one.
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon on Salad: SRBMiner 32–85 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
   mine Pearl on AMD (0), and our release is CUDA only. An unreleased AMD core mined at 93.8 TH/s on an
-  RX 9070 XT and 38–50 TH/s on two RX 7900 XTX PCs, on other PCs than SRBMiner's (the section's notes).
+  RX 9070 XT (110–118% of SRBMiner's rows) and 38–50 TH/s on two RX 7900 XTX PCs (94–95% at 50.4), on other
+  PCs than SRBMiner's (the section's notes).
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -792,8 +793,9 @@ Run on 18 October 2026, 00:04–02:28 UTC. These are the AMD cards Salad rents. 
 computer that runs containers in WSL2), named by the first 8 characters of its Salad machine ID. Each PC ran
 SRBMiner 3.7.1 and then PeakMiner 2.17.6, 5 minutes each after a 60-second unmeasured warm-up, on
 `us.pearl.herominers.com` (`tuning/salad/bench.sh` at `8da98db`, on the `rocm/dev-ubuntu-24.04:7.2` image).
-Our released miner is CUDA only, so "Ours" is "no build" and there's no "% of best". An unreleased AMD build
-was measured on other Salad PCs on 22 October; see the notes under the table.
+Our released miner is CUDA only. "Ours" is our unreleased AMD core, measured on 22 October on other Salad PCs,
+not the row's own (marked †, see the notes under the table). The founder asked for it in the rows. Its "% of
+best" compares across PCs, so read it loosely. Cards it hasn't run on say "not run".
 
 SRBMiner mines Pearl on every one of these cards, through AMD's OpenCL. PeakMiner started on all ten PCs and
 quit within 15 seconds with no hashrate and no shares: its README lists AMD support only for CSD,
@@ -801,16 +803,16 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RX 9070 XT | Salad (16 GB) | 83151dba | no build | 0 | 79.4 | — |
-| RX 9070 XT | Salad (16 GB) | 3d6cb276 | no build | 0 | 85.1 | — |
-| RX 9060 XT | Salad (16 GB) | e235d465 | no build | 0 | 42.2 | — |
-| RX 9060 XT | Salad (16 GB) | 3540c3e2 | no build | 0 | 40.7 | — |
-| RX 7900 XTX | Salad (24 GB) | d3b480e3 | no build | 0 | 52.8 | — |
-| RX 7900 XTX | Salad (24 GB) | 44d3716f | no build | 0 | 53.5 | — |
-| RX 7900 XT | Salad (20 GB) | 67c308d2 | no build | 0 | 46.8 | — |
-| RX 7900 XT | Salad (20 GB) | 2c7775f7 | no build | 0 | 44.6 | — |
-| RX 7800 XT | Salad (16 GB) | 56ae1be5 | no build | 0 | 32.4 | — |
-| RX 7800 XT | Salad (16 GB) | b9d70479 | no build | 0 | 32.4 | — |
+| RX 9070 XT | Salad (16 GB) | 83151dba | 93.8 † | 0 | 79.4 | 118% |
+| RX 9070 XT | Salad (16 GB) | 3d6cb276 | 93.8 † | 0 | 85.1 | 110% |
+| RX 9060 XT | Salad (16 GB) | e235d465 | not run | 0 | 42.2 | — |
+| RX 9060 XT | Salad (16 GB) | 3540c3e2 | not run | 0 | 40.7 | — |
+| RX 7900 XTX | Salad (24 GB) | d3b480e3 | 50.4 † | 0 | 52.8 | 95% |
+| RX 7900 XTX | Salad (24 GB) | 44d3716f | 50.4 † | 0 | 53.5 | 94% |
+| RX 7900 XT | Salad (20 GB) | 67c308d2 | not run | 0 | 46.8 | — |
+| RX 7900 XT | Salad (20 GB) | 2c7775f7 | not run | 0 | 44.6 | — |
+| RX 7800 XT | Salad (16 GB) | 56ae1be5 | not run | 0 | 32.4 | — |
+| RX 7800 XT | Salad (16 GB) | b9d70479 | not run | 0 | 32.4 | — |
 
 - **SRBMiner's figure** is its own hashrate at the end of the run, read from its API. After the first 30
   seconds every run stayed within about 4% of it, apart from one RX 7800 XT (`56ae1be5`, 28.7–33.0). The pool
@@ -830,7 +832,8 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   `5aa0069` (`2d540fe` on `51a4b5c2` and `ded998b6`; the core's sources are the same in both). It ran by a
   different method from "How a host is tested" (`tuning/salad/amdtest.py`: built on the box with ROCm 7.2;
   `hashrate.js` for 60 s after a 10 s warm-up; then the CLI from source on `prl-us.kryptex.network:7048`), on
-  PCs other than the rows', so the rows stay "no build" until a release has it. Each PC passed the fold check
+  PCs other than the rows'. Each card's best figure is in the rows, marked †, as the founder asked on 22 October;
+  by the rules above it would stay out of them until it ran on the row's own PC. Each PC passed the fold check
   (`pearl_amd_foldtest` at 2048 × 2048: wmma11 on gfx1100, wmma12 on gfx1201) and verified every hit it
   checked:
 
