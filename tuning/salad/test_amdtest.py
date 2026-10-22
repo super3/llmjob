@@ -3,7 +3,7 @@
 # Run: python3 -m unittest discover -s tuning/salad
 import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, tempfile, unittest
 
-os.environ.setdefault("SALAD_MINE_DIR", tempfile.mkdtemp())
+os.environ["SALAD_MINE_DIR"] = tempfile.mkdtemp()     # never an exported folder, where live files may be
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("amdtest", os.path.join(HERE, "amdtest.py"))
 a = importlib.util.module_from_spec(spec)

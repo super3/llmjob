@@ -1,14 +1,25 @@
 # Tests for bench.py's parsing and table, with no Salad calls, and for bench.sh: its helpers on their own, and the
 # whole script in a dry run with every box command stubbed.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, json, os, shutil, signal, subprocess, tempfile, unittest
+import importlib.util, json, os, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
-os.environ.setdefault("SALAD_MINE_DIR", tempfile.mkdtemp())
+# Never an exported folder: these tests write status and log files, and a lane's live ones may be there.
+TMP = tempfile.mkdtemp()
+os.environ["SALAD_MINE_DIR"] = TMP
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def no_network(method, url, *a, **k):
+    """Every bench module here gets this as its Salad client until a test puts in a stand-in: the proxy adds
+    the Salad key, so a test that reached the real client could create a group."""
+    raise AssertionError(f"a test reached the network: {method} {url}")
+
+
 spec = importlib.util.spec_from_file_location("bench", os.path.join(HERE, "bench.py"))
 b = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(b)
+b.w.http = no_network
 
 
 def read(path):
@@ -17,16 +28,18 @@ def read(path):
 
 
 def load_bench(**env):
-    """bench.py loaded afresh with these BENCH_ variables set (and every other one unset)."""
-    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS")
+    """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
+    whatever another test module set SALAD_MINE_DIR to."""
+    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
-    os.environ.update(env)
+    os.environ.update(env, SALAD_MINE_DIR=TMP)
     try:
         s = importlib.util.spec_from_file_location("bench_" + "_".join(env.values()), os.path.join(HERE, "bench.py"))
         m = importlib.util.module_from_spec(s)
         s.loader.exec_module(m)
+        m.w.http = no_network
         return m
     finally:
         for k, v in old.items():
@@ -151,6 +164,20 @@ class TestBench(unittest.TestCase):
         finally:
             b.w.http, b.w.now = old
 
+    def test_the_tests_leave_an_exported_salad_mine_dir_alone(self):
+        # The README has the operator export SALAD_MINE_DIR for the lanes. Tests run in that shell must not write
+        # their status and log lines into the live files there.
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "bench-amd-a.log"), "w") as f:
+            f.write("live\n")
+        r = subprocess.run([sys.executable, "-m", "unittest",
+                            "test_bench.TestBenchAMD.test_a_result_keeps_the_copy_rate_hit_check_core_and_order",
+                            "test_bench.TestBench.test_a_pc_where_no_miner_gets_work_is_not_recorded"],
+                           cwd=HERE, env=dict(os.environ, SALAD_MINE_DIR=d), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.listdir(d), ["bench-amd-a.log"])
+        self.assertEqual(read(os.path.join(d, "bench-amd-a.log")), "live\n")
+
 
 # An AMD box's lines: our core passes its hit check, then ours (first, with the warm-up) and SRBMiner.
 AMD_LINES = [
@@ -168,12 +195,13 @@ AMD_LINES = [
   + ["[bench] 10:18:20 start srb 300s"] \
   + [f"[bench] 10:20:00 sample srb t={t} hs=80000000000000 acc=2 rej=0 gpu=" for t in range(15, 301, 15)] \
   + ["[bench] 10:23:40 all done"]
+FULL_SHA = "002deae58de57e7311cd07031380aa4281601247"
 FAILED_CHECK = ["[bench] 10:11:30 hitcheck FAIL secs=600 hits=410 verified=400 failed=2 salts=60 "
                 "why=jackpot hash mismatch (fold/transcript)", "[bench] 10:11:30 skip ours: hit check failed"]
 
 
-def salad(calls, instances=None, classes=None):
-    """A stand-in for watcher.http: records each call and answers like Salad."""
+def salad(calls, instances=None, classes=None, logs=None):
+    """A stand-in for watcher.http: records each call and answers like Salad. logs: (machine, line) pairs."""
     def http(method, url, body=None, timeout=None):
         calls.append((method, url, body))
         if url.endswith("/gpu-classes"):
@@ -181,7 +209,9 @@ def salad(calls, instances=None, classes=None):
         if url.endswith("/instances"):
             return 200, {"instances": instances or []}
         if url.endswith("/log-entries"):
-            return 200, {"items": []}
+            return 200, {"items": [{"time": f"2026-10-22T{line.split()[1]}.{i:03d}Z", "text_log": line,
+                                    "resource": {"labels": {"machine_id": mach}}}
+                                   for i, (mach, line) in enumerate(logs or [])]}
         return 201, {}
     return http
 
@@ -205,6 +235,22 @@ class TestBenchAMD(unittest.TestCase):
         x.wallet = "prl1x"
         x.st.update(**st)
         return x
+
+    def run_alone(self, m, clock=None):
+        """For a test that calls run(): its state, status and log files in a folder of their own (run() saves its
+        state, which the other tests' Bench() would load), a wallet, and sleep moving clock on, or stopping a
+        loop that doesn't end."""
+        d, start = tempfile.mkdtemp(), clock[0] if clock else 0
+        def sleep(s):
+            if clock is None or clock[0] - start > 2 * 3600:
+                raise RuntimeError("run() didn't finish")
+            clock[0] += s
+        stack = mock.patch.multiple(m, STATE=f"{d}/s.json", STATUS=f"{d}/s.md", LOG=f"{d}/s.log")
+        stack.start()
+        self.addCleanup(stack.stop)
+        for p in (mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), mock.patch.object(m.time, "sleep", sleep)):
+            p.start()
+            self.addCleanup(p.stop)
 
     def test_its_own_files_and_salad_s_class_names(self):
         self.assertTrue(self.a.STATE.endswith("bench-amd.json"))
@@ -375,6 +421,122 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | not run | 79.4 | 118% |")
         self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | not run | 52.8 | 95% |")
         self.assertIn("- `aaaa1111` (RX 9070 XT): copy 564 GB/s; no hit check.", text)
+
+    def test_a_failed_check_on_the_pc_meant_to_go_first_says_srbminer_went_first(self):
+        # ORDER=ours,srb, but bench.sh drops ours after the failed check, so SRBMiner takes the warm-up.
+        lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
+        x, _ = self.done(self.la, lines, order="ours,srb")
+        h = x.st["results"]["RX 9070 XT"][0]
+        self.assertEqual(h["order"], "srb")
+        self.assertIn("(fold/transcript)); SRBMiner ran first.", self.la.render(x.st))
+        x, _ = self.done(self.la, AMD_LINES, order="ours,srb")      # one that passed keeps its order
+        self.assertEqual(x.st["results"]["RX 9070 XT"][0]["order"], "ours,srb")
+
+    def test_a_pc_salad_moves_the_box_to_by_itself_gets_a_row_of_its_own_lines(self):
+        # PC aaaaaaaa printed some lines, then Salad moved the instance to bbbbbbbb with no word from us, and B
+        # printed a whole passing run. B's row must not keep A's skip or average in A's samples.
+        a_fail = ["[bench] 09:30:01 card AMD Radeon RX 9070 XT, ?, , , ? MiB, gfx1201",
+                  "[bench] 09:31:10 copy 120 GB/s"] + FAILED_CHECK \
+            + [f"[bench] 09:42:00 sample srb t={t} hs=70000000000000 acc=1 rej=0 gpu=" for t in (15, 30)]
+        a_ours = AMD_LINES[:7] + [f"[bench] 09:45:00 sample ours t={t} hs=50000000000000 acc=1 rej=0 gpu="
+                                  for t in range(15, 301, 15)]
+        for a_lines in (a_fail, a_ours):
+            calls = []
+            logs = [("aaaaaaaa-pc", l) for l in a_lines[-3:]] + [("bbbbbbbb-pc", l) for l in AMD_LINES]
+            self.with_salad(self.la, calls, now=50_000, logs=logs,
+                            instances=[{"machine_id": "bbbbbbbb-pc", "id": "i2", "state": "running"}])
+            x = self.bench(self.la, cls=0, tries=0, group="bench-a-rx9070xt-1", created=40_000,
+                           machine="aaaaaaaa-pc", instance="i1", pc_t=40_000, log_t=49_000,
+                           lines=[f"t|{l}" for l in a_lines], results={}, notes=[], seen=[], order="ours,srb")
+            x.tick()
+            h = x.st["results"]["RX 9070 XT"][0]
+            self.assertEqual((h["machine"], h["ours"], h["srb"], h["copy"]),
+                             ("bbbbbbbb-pc", (94.0, None), (80.0, None), 564.0))
+            self.assertTrue(h["hitcheck"]["pass"])
+            self.assertEqual(h["order"], "ours,srb")
+            self.assertIn("PC bench-a-rx9070xt-1: bbbbbbbb (was aaaaaaaa)", read(self.la.LOG))
+            body = next(c[2] for c in calls if c[1].endswith("/log-entries"))
+            self.assertEqual(body["start_time"], self.la.w.iso(50_000 - 120))    # B's first lines, read again
+
+    def test_an_amd_run_needs_a_full_base_sha(self):
+        # A short one makes git fetch fail on every box ("couldn't find remote ref"), so the run is refused.
+        for env in ({"BENCH_COMMIT": "002deae"}, {"BENCH_COMMIT": FULL_SHA, "BENCH_BASE_SHA": "5aa0069"}):
+            m = load_bench(BENCH_SET="amd", BENCH_LANE="a", **env)
+            self.run_alone(m)
+            with self.assertRaises(SystemExit) as e:
+                m.Bench().run()
+            self.assertIn("full 40-character commit", str(e.exception))
+        for set_, env in (("amd", {"BENCH_COMMIT": "002deae", "BENCH_BASE_SHA": FULL_SHA}),
+                          ("amd", {"BENCH_COMMIT": FULL_SHA}),
+                          ("gtx", {"BENCH_COMMIT": "002deae"})):       # the GTX set only puts it in the URL
+            m = load_bench(BENCH_SET=set_, **env)
+            self.run_alone(m)
+            x = m.Bench()
+            with mock.patch.object(x, "tick", return_value=False):
+                x.run()
+            self.assertIn("FINISHED", read(m.LOG))
+
+    def test_the_time_given_a_box_grows_with_the_hit_check(self):
+        self.assertEqual(self.a.RUN_MIN, 50)
+        self.assertEqual(self.la.RUN_MIN, 55)                    # BENCH_VERIFY_SECS=900
+        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="1800").RUN_MIN, 70)
+        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="601").RUN_MIN, 51)
+        self.assertEqual(load_bench(BENCH_VERIFY_SECS="1800").RUN_MIN, 45)     # the GTX set runs no check
+
+    def test_a_deleted_group_is_looked_at_until_salad_says_it_is_gone(self):
+        now, calls, gone_at = [60_000], [], [None]
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url))
+            if method == "GET":
+                return (404, None) if gone_at[0] and now[0] >= gone_at[0] else (200, {"name": "x"})
+            return (202, None) if method == "DELETE" else (201, {})
+        old = (self.la.w.http, self.la.w.now)
+        self.la.w.http, self.la.w.now = http, (lambda: now[0])
+        self.addCleanup(lambda: setattr(self.la.w, "http", old[0]) or setattr(self.la.w, "now", old[1]))
+        g = "bench-a-rx9070xt-1"
+        x = self.bench(self.la, group=g, notes=[], gone={})
+        x.delete()                                # Salad says 202 and keeps it
+        self.assertEqual(list(x.st["gone"]), [g])
+        seen = []
+        for _ in range(16):                       # a minute a tick
+            calls.clear()
+            now[0] += 60
+            x.check_gone()
+            seen.append([m for m, _ in calls])
+        self.assertEqual(seen[:5], [[], [], [], [], ["GET", "DELETE"]])        # 5 min after each delete
+        self.assertEqual(seen[9], ["GET", "DELETE"])
+        self.assertEqual(len([n for n in x.st["notes"] if g in n]), 1)        # said once, at 10 min
+        self.assertIn("still on Salad 10 min after its delete", x.st["notes"][-1])
+        gone_at[0] = now[0] + 60
+        now[0] += 5 * 60
+        x.check_gone()
+        self.assertEqual(x.st["gone"], {})
+        self.assertIn(f"GONE {g}", read(self.la.LOG))
+        # One Salad has already removed (404) isn't looked at again.
+        self.la.w.http = lambda method, url, body=None, timeout=None: (404, None)
+        x.st["group"] = "bench-a-rx9070xt-2"
+        x.delete()
+        self.assertEqual(x.st["gone"], {})
+
+    def test_the_run_ends_only_once_salad_has_removed_its_last_group(self):
+        now, calls = [70_000], []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url))
+            if method == "GET":
+                return (404, None) if now[0] >= 70_000 + 11 * 60 else (200, {})
+            return 0, {"error": "timed out"}       # a delete that didn't get through
+        m = load_bench(BENCH_SET="amd", BENCH_LANE="a", BENCH_COMMIT=FULL_SHA)
+        m.w.http, m.w.now = http, (lambda: now[0])
+        self.run_alone(m, clock=now)
+        x = self.bench(m, cls=len(m.PLAN), group="bench-a-rx7800xt-2")
+        x.delete()
+        self.assertEqual(x.now_line(), "All classes done. Waiting for Salad to remove bench-a-rx7800xt-2.")
+        x.run()
+        self.assertGreaterEqual(now[0], 70_000 + 11 * 60)
+        self.assertEqual(x.st["gone"], {})
+        self.assertEqual(x.now_line(), "All classes done.")
+        self.assertEqual(calls.count(("DELETE", f"{m.w.CB}/bench-a-rx7800xt-2")), 3)   # at 0, 5 and 10 min
+        self.assertIn("FINISHED", read(m.LOG))
 
     def test_the_gtx_command_is_unchanged(self):
         calls = []

@@ -25,7 +25,8 @@ NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
-# AMD set: the commit whose HIP core the boxes build (our miner there), and how long the hit check runs.
+# AMD set: the commit whose HIP core the boxes build (our miner there; the full SHA, which git fetch needs), and
+# how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
 # Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
@@ -67,10 +68,11 @@ if SET == "amd":
                                                          "RX 7800 XT"])]
     MEM = {"RX 9070 XT": "16 GB", "RX 9060 XT": "16 GB", "RX 7900 XTX": "24 GB", "RX 7900 XT": "20 GB",
            "RX 7800 XT": "16 GB"}
-    # On a PC that has the image: setup 1-4 min (apt is the slow part), build under a minute, the 10-minute hit
-    # check, SRBMiner's device list up to 1 min, then the warm-up and two 5-minute runs, about 12 min with the
-    # pauses between them. 26-29 min in all, which leaves 20 min for the image to download.
-    RUN_MIN = 50
+    # On a PC that has the image: setup 1-4 min (apt is the slow part), build under a minute, the hit check,
+    # SRBMiner's device list up to 1 min, then the warm-up and two 5-minute runs, about 12 min with the pauses
+    # between them. 16-19 min plus the check in all; 40 plus the check leaves 20 min for the image to download.
+    # 50 with the default 10-minute check.
+    RUN_MIN = 40 + -(-VERIFY_SECS // 60)
 ALL_SECTIONS = SECTIONS          # every row of the set, for `table`
 if SET == "amd" and LANE in LANES:
     PLAN = [p for p in PLAN if p[1][0] in LANES[LANE]]
@@ -317,7 +319,35 @@ class Bench:
         if g:
             s, _ = w.http("DELETE", f"{w.CB}/{g}")
             log(f"DELETED {g}: HTTP {s}")
+            if s != 404:              # looked at again until Salad says it's gone (check_gone)
+                t = w.now()
+                self.st.setdefault("gone", {})[g] = {"t": t, "try": t, "said": False}
         self.st["group"] = None
+
+    def check_gone(self):
+        """Salad sometimes answers a delete with 202 and keeps the group (watcher.py's sweep), and a delete can
+        fail outright. Such a box sleeps on its PC at high, billing and holding a slot, and the watcher's sweep
+        only looks at "biz-" names. So 5 minutes after each delete the group is looked at again, and deleted
+        again until Salad answers 404. A note says so once it's still there 10 minutes after the first delete."""
+        t = w.now()
+        gone = self.st.setdefault("gone", {})
+        for g, d in list(gone.items()):
+            if t - d["try"] < 5 * MIN:
+                continue
+            s, _ = w.http("GET", f"{w.CB}/{g}")
+            if s == 404:
+                del gone[g]
+                log(f"GONE {g}")
+                continue
+            if s != 200:
+                continue                  # no answer: the next tick asks again
+            s, _ = w.http("DELETE", f"{w.CB}/{g}")
+            d["try"] = t
+            log(f"DELETED {g} again: HTTP {s}")
+            if not d["said"] and t - d["t"] >= 10 * MIN:
+                d["said"] = True
+                self.note(f"{g} still on Salad {(t - d['t']) / MIN:.0f} min after its delete; deleting it again "
+                          "every 5 min")
 
     def next_class(self):
         self.delete()
@@ -391,8 +421,13 @@ class Bench:
         if on:
             m = on[0]["machine_id"]
             if m != self.st.get("machine"):
-                self.st.update(machine=m, instance=on[0].get("instance_id") or on[0].get("id"), pc_t=t)
-                log(f"PC {self.st['group']}: {m[:8]}")
+                # A new PC, by our move or by Salad's own, which shows only as a new machine_id (README, "Salad API
+                # notes"): its row is built from its own lines only. Reading back 2 minutes catches its first
+                # lines; read() drops the old PC's.
+                old = self.st.get("machine")
+                self.st.update(machine=m, instance=on[0].get("instance_id") or on[0].get("id"), pc_t=t, lines=[],
+                               log_t=t - 120)
+                log(f"PC {self.st['group']}: {m[:8]}" + (f" (was {old[:8]})" if old else ""))
                 if m in self.st["seen"]:
                     self.move_on(f"PC {m[:8]} was benchmarked already")
                     return True
@@ -434,6 +469,8 @@ class Bench:
                 res.update(copy=r["copy"], hitcheck=r["hitcheck"], core=r["core"], order=self.st.get("order"))
                 if r["skipped"].get("ours"):     # the core didn't build, or the hit check failed
                     res["ours"] = (None, r["skipped"]["ours"])
+                    # bench.sh left ours out of the order too, so SRBMiner went first.
+                    res["order"] = ",".join(x for x in (res["order"] or "").split(",") if x and x != "ours") or None
             if ours != 90 and all(res[k][0] is None for k in ("ours", "peak", "srb")):
                 # Where our release has a build, a PC on which no miner gets work points at its network, not the
                 # card: try another PC instead of filling the row with it.
@@ -460,7 +497,8 @@ class Bench:
     def now_line(self):
         p = self.plan()
         if not p:
-            return "All classes done."
+            left = sorted(self.st.get("gone") or {})
+            return "All classes done." + (f" Waiting for Salad to remove {', '.join(left)}." if left else "")
         g = self.st.get("group")
         if not g:
             return f"Next: {p[0]}."
@@ -487,12 +525,16 @@ class Bench:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
         if LANE and (SET != "amd" or LANE not in LANES):
             sys.exit(f"BENCH_LANE is one of {', '.join(LANES)}, and only with BENCH_SET=amd")
+        if SET == "amd" and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
+            # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
+            sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
         while True:
             try:
                 going = self.tick()
+                self.check_gone()
                 self.status()
                 self.save()
-                if not going:
+                if not going and not self.st.get("gone"):    # done once Salad has removed every group too
                     self.status(force=True)
                     self.save()
                     log("FINISHED")

@@ -436,10 +436,15 @@ PC, 5 minutes each after a 60 s warm-up, on `us.pearl.herominers.com:1200`. Peak
 AMD and isn't run, so its column reads "not run" and "% of best" is ours against SRBMiner. No release has an AMD
 build, so each box (`bench.sh` on the ROCm image, high priority, 4 vCPU, 8 GB) uses `amdtest.sh`'s setup to
 build the HIP core at `BENCH_BASE_SHA` (default `BENCH_COMMIT`) for its card, prints the PC's device copy rate,
-runs `verify-hits.js` for `BENCH_VERIFY_SECS` (600), then runs the CLI from source and SRBMiner. The two PCs of
-a class take turns going first: after a recorded PC the next gets a new group, since a moved one keeps its
-command. A core that doesn't build or a failed hit check leaves "Ours" saying so and still runs SRBMiner. A PC
-takes about 30 minutes once it has the image; the runner gives it 50.
+runs `verify-hits.js` for `BENCH_VERIFY_SECS` (600), then runs the CLI from source and SRBMiner. That commit
+must be the full 40-character SHA: the box `git fetch`es it, and git finds no ref for a short one, so the runner
+refuses one. The two PCs of a class take turns going first: after a recorded PC the next gets a new group, since
+a moved one keeps its command. A core that doesn't build or a failed hit check leaves "Ours" saying so and still
+runs SRBMiner. A PC takes about 30 minutes once it has the image; the runner gives it 40 minutes plus the hit
+check (50 at 600 s). If Salad moves a box to another PC by itself, that PC's row is built from its own lines only.
+Salad sometimes answers a delete with 202 and keeps the group, so the runner looks at each deleted group every 5
+minutes and deletes it again until Salad answers 404, with a note if it's still there after 10. A lane finishes
+only once its groups are gone.
 
 Two lanes run at once, one Salad slot each, each with its own files (`bench-amd-a.json`, `bench-amd-a_status.md`,
 `bench-amd-a.log`) and groups (`bench-a-rx9070xt-1`, ...). Lane a takes the RX 9070 XT, 9060 XT and 7800 XT
@@ -447,7 +452,7 @@ Two lanes run at once, one Salad slot each, each with its own files (`bench-amd-
 come or get skipped:
 
 ```sh
-export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd BENCH_COMMIT=<pushed sha>
+export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd BENCH_COMMIT=$(git rev-parse HEAD)
 BENCH_LANE=a nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
 BENCH_LANE=b nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
 python3 tuning/salad/bench.py table      # both lanes' rows, in benchmark.md's shape
