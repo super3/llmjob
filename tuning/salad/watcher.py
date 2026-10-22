@@ -179,6 +179,25 @@ def slug(cls):
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
 
 
+def kx_paid(api, addr, most=100):
+    """Everything Kryptex has paid an address: its payouts list comes 15 to a page, newest first, so every page
+    is read, while the answer has a "next". Before 22 October only the first page was summed, so the paid total
+    dropped as old payouts left it, and with it the Kryptex credit ratio. None if a page fails (the caller keeps
+    its last total), or past `most` pages, rather than a total short of some payouts."""
+    paid = 0.0
+    for page in range(1, most + 1):
+        s, p = http("GET", f"{api}/v1/miner/payouts/{addr}" + (f"?page={page}" if page > 1 else ""), timeout=30)
+        if s != 200 or not isinstance(p, dict):
+            return None
+        try:
+            paid += sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict))
+        except (TypeError, ValueError):
+            return None
+        if not p.get("next") or not p.get("results"):
+            return paid
+    return None
+
+
 def vnum(ver):
     """A release tag as numbers, for comparing: "v0.6.0" -> (0, 6, 0)."""
     return tuple(int(x) for x in re.findall(r"\d+", ver))
@@ -452,13 +471,12 @@ class W:
             return res
         st["kx_tot_try"] = t
         s1, b = http("GET", f"{KX_API}/v1/miner/balance/{wallet}", timeout=30)
-        s2, p = http("GET", f"{KX_API}/v1/miner/payouts/{wallet}", timeout=30)
-        if s1 != 200 or not isinstance(b, dict) or s2 != 200 or not isinstance(p, dict):
+        paid = kx_paid(KX_API, wallet)
+        if s1 != 200 or not isinstance(b, dict) or paid is None:
             return res
         try:
             kt = {"t": t, "total": float(b.get("total") or 0), "confirmed": float(b.get("confirmed") or 0),
-                  "unconfirmed": float(b.get("unconfirmed") or 0),
-                  "paid": sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict))}
+                  "unconfirmed": float(b.get("unconfirmed") or 0), "paid": paid}
         except (TypeError, ValueError):
             return res
         st["kx_tot"] = kt
@@ -1061,15 +1079,14 @@ class W:
             return
         st["kxx_try"] = t
         s1, b = http("GET", f"{KXX_API}/v1/miner/balance/{addr}", timeout=30)
-        s2, p = http("GET", f"{KXX_API}/v1/miner/payouts/{addr}", timeout=30)
+        paid = kx_paid(KXX_API, addr)
         s3, ws = http("GET", f"{KXX_API}/v3/miner/workers/{addr}", timeout=30)
-        if s1 != 200 or not isinstance(b, dict) or s2 != 200 or not isinstance(p, dict):
+        if s1 != 200 or not isinstance(b, dict) or paid is None:
             return
         rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
         try:
             st["kxx_tot"] = {"t": t, "confirmed": float(b.get("confirmed") or 0),
-                             "unconfirmed": float(b.get("unconfirmed") or 0),
-                             "paid": sum(float(x.get("received") or 0) for x in p.get("results") or [] if isinstance(x, dict)),
+                             "unconfirmed": float(b.get("unconfirmed") or 0), "paid": paid,
                              "khs": sum(float(x.get("avg_hashrate_30m") or 0) for x in rows if isinstance(x, dict)) / 1000}
         except (TypeError, ValueError):
             pass

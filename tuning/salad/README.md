@@ -322,7 +322,9 @@ HeroMiners (since every box went to Kryptex on 20 October, the mark told nothing
   release it would have had anyway (v0.6.0 with Monero).
 - **Reading it:** Kryptex's API (`pool.kryptex.com/openapi.yaml`): each worker's last share and
   30-minute hashrate (`avg_hashrate_30m`, H/s) every round, and the wallet's balance and payouts every 5
-  minutes. The miner's own share count still feeds the
+  minutes. Kryptex lists payouts 15 to a page, and every page is read (`kx_paid`): until 22 October only the
+  first was, so the paid total fell as old payouts left it (16.655 of 23.452 PRL that day), and the report's
+  Kryptex margins read about 25 points low. The miner's own share count still feeds the
   rules, as for every box.
 - **Credit:** each pool has its own credit ratio. PRL mined while a box is on Kryptex is counted apart
   (`prl_kx`), so a switched box's earlier PRL stays with HeroMiners. HeroMiners' ratio is what it

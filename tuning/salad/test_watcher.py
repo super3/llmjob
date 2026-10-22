@@ -1536,6 +1536,14 @@ class TestMonero(Base):
         self.x.kx_xmr([], t + 300)
         self.assertEqual(len(self.http.made("GET", "xmr/api/v1/miner/balance")), 2)
 
+    def test_every_page_of_kryptexs_monero_payouts_is_counted(self):
+        self.kx_api()
+        self.http.on("GET", "kryptex.com/xmr/api/v1/miner/payouts/4xyz$",
+                     (200, {"count": 3, "next": "https://x/?page=2", "results": [{"received": "0.1"}, {"received": "0.12"}]}))
+        self.http.on("GET", r"kryptex.com/xmr/api/v1/miner/payouts/4xyz\?page=2$", (200, {"results": [{"received": "0.05"}]}))
+        self.x.kx_xmr([], self.clock[0])
+        self.assertAlmostEqual(self.x.st["kxx_tot"]["paid"], 0.27)
+
     def test_a_failed_read_of_kryptexs_monero_pool_keeps_the_last_and_waits_5_minutes(self):
         self.kx_api()
         t = self.clock[0]
@@ -2767,6 +2775,29 @@ class TestKryptex(Base):
         self.x.kx_pool()
         self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 1)  # totals at most every 5 minutes
         self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), 2)
+
+    def test_every_page_of_kryptexs_payouts_is_counted(self):
+        # Kryptex lists 15 payouts a page, newest first. Summing only the first page made the paid total drop
+        # as old payouts left it (16.677, then 16.655 after a payout, of 23.452 paid on 22 October).
+        wl = os.environ["PRL_WALLET"]
+        self.http.on("GET", f"v1/miner/balance/{wl}", (200, {"total": 0.5, "confirmed": 0.3, "unconfirmed": 0.2}))
+        self.http.on("GET", f"v1/miner/payouts/{wl}$", (200, {"count": 17, "next": f"https://x/?page=2",
+                                                             "results": [{"received": 1.0}] * 15}))
+        self.http.on("GET", rf"v1/miner/payouts/{wl}\?page=2$", (200, {"count": 17, "next": None,
+                                                                      "results": [{"received": 0.5}] * 2}))
+        self.x.kx_pool()
+        self.assertAlmostEqual(self.x.st["kx_tot"]["paid"], 16.0)
+        # Our own API base with ?page=N, not the "next" link, which names another host; nothing past the last page.
+        self.assertEqual([c[1].split("/payouts/")[1] for c in self.http.made("GET", "v1/miner/payouts")],
+                         [wl, f"{wl}?page=2"])
+        self.assertTrue(all(c[1].startswith(w.KX_API) for c in self.http.made("GET", "v1/miner/payouts")))
+        # A page that fails leaves the last totals as they were, rather than a sum short of some payouts.
+        self.http.on("GET", rf"v1/miner/payouts/{wl}\?page=2$", (502, None))
+        self.http.on("GET", f"v1/miner/balance/{wl}", (200, {"total": 9.0, "confirmed": 9.0, "unconfirmed": 0}))
+        self.clock[0] += 300
+        self.x.kx_pool()
+        self.assertEqual((self.x.st["kx_tot"]["paid"], self.x.st["kx_tot"]["total"]), (16.0, 0.5))
+        self.assertEqual(w.kx_paid(w.KX_API, wl, most=1), None)  # more pages than it reads: no total
 
     def test_each_pool_has_its_own_credit_ratio_and_a_switched_box_is_split(self):
         kg, hg = self.group(), self.group()
