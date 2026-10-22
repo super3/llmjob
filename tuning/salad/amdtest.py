@@ -15,10 +15,10 @@ amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait`
 
 CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt.
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
-how a new run starts. It updates the environment and then restarts the instance, which starts the new run on
-the same PC within a minute (22 October). Without the restart Salad took 8 minutes and moved the box, or did
-nothing for 15. --patch-from DIR sends DIR's uncommitted and untracked changes against BASE_SHA as
-PATCH_GZ_B64, so a change can be tried without pushing it; keep it small (see PATCH_MAX).
+how a new run starts. It updates the environment and then restarts the instance (--no-restart leaves that to
+Salad). See "AMD test boxes" in README.md for how long that took. --patch-from DIR sends DIR's uncommitted and
+untracked changes against BASE_SHA as PATCH_GZ_B64, so a change can be tried without pushing it. But on 22
+October no box given a patch printed anything (README.md, "AMD test boxes"): push and use --sha instead.
 
 Uses watcher.py's Salad client. The key is added by the proxy (or SALAD_API_KEY); nothing here prints it or any
 environment variable of the box.

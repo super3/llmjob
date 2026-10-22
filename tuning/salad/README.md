@@ -413,12 +413,14 @@ What it found on 22 October:
   32 on the 9070 XT; rocminfo says 96 and 64).
 - A PATCH of `container.environment_variables` replaces the whole map; it does not merge, and a null is
   stored as a value. `set-env` sends the full map.
-- After a PATCH, restarting the instance (`POST .../instances/<id>/restart`, which `set-env` does) started
-  the new run on the same PC 30 s later. Without it, Salad took 8 minutes and moved the box to another PC,
-  or showed a new instance and ran nothing for 15 minutes.
-- Salad's API accepts a 262,144-character variable and refuses 1,048,576 (HTTP 400). But a box given a
-  27,516- or 58,964-character `PATCH_GZ_B64` printed nothing at all after its restart, so keep patches
-  small or push the change; see the notes in `amdtest.py` for what was tried.
+- After a PATCH, `set-env` restarts the instance (`POST .../instances/<id>/restart`). Of eight runs
+  started by a PATCH, two printed: one with a restart (same PC, 30 s later) and one without (8 minutes
+  later, on another PC). The four given a `PATCH_GZ_B64` (4,788, 27,516, 58,964 and 123,900 characters)
+  printed nothing for 10 to 20 minutes, although Salad showed a new running instance, and so did the next
+  run without a patch on each of those two PCs. `realloc` fixed it: the box printed from a new PC a minute
+  later. Why is not known yet. So: push the change and pass `--sha` rather than send a patch, and `realloc`
+  a box that prints nothing for 10 minutes.
+- Salad's API accepts a 262,144-character variable and refuses 1,048,576 (HTTP 400).
 
 ## The container
 
