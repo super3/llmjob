@@ -5,12 +5,13 @@ A HIP port of the Pearl core in `../src`, for AMD Instinct and Radeon cards. It 
 is compiled unchanged against a HIP host. The app loads it only when asked to
 (`PEARL_CORE_VARIANT=amd`, see below).
 
-**Status: correct on the CPU, compiled for 14 AMD targets, not yet run on an AMD GPU.**
-No AMD card was available to write it. Correctness was shown by running the same kernel
-source on the CPU through HIP-CPU, with the matrix instructions emulated from AMD's
-documented lane layouts, and checking hits against the JS reference the way the pool
-does. The first run on hardware has to confirm the layouts (step 2 under "Testing on
-real hardware"). Nothing has been tuned for speed.
+**Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct).** On 22 October,
+unchanged, it passed steps 1-5 under "Testing on real hardware" on Salad: an RX 9070 XT (gfx1201)
+at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, every checked hit
+right and every share accepted on Kryptex (`benchmark.md`, "AMD Radeon", notes). It was written
+with no AMD card: correctness was first shown by running the same kernel source on the CPU
+through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
+checking hits against the JS reference the way the pool does. Nothing has been tuned for speed.
 
 Nothing here changes the NVIDIA build. The CUDA sources and `native-core.yml` are
 untouched; this folder reads `../src` and writes only to `./build`.
@@ -198,23 +199,22 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
 
 ## Gaps and next steps
 
-- Re-run `build-amd.sh check` and `run-cpu-checks.sh` first. They last passed on 10 October, and the
-  sources they build have changed since (noted on 21 October, when this port moved into PR #261): the
-  part of `pearl_kernel.cu` above the cut now includes the Pascal fold's header (`pearl_fold_dp4a.h`)
-  and the RTX 20 kernels that draw A' and B' in fragment order, and `pearl_config.h` and
-  `pearl_core.cc` changed too. By reading, none of it does anything here: the RTX 20 kernels have
-  bodies only on sm_75, the Pascal helpers fall back to plain C++ without `__CUDA_ARCH__`, and
-  `pearl_materialize16`, which this host draws with, is unchanged. Nothing has compiled it since.
-- A first hardware run can be on Salad. On 18 October PR #261 ran ten Salad AMD PCs (RX 7800 XT to
-  RX 9070 XT) on the `rocm/dev-ubuntu-24.04:7.2` image: `rocminfo` named every card and AMD's
-  OpenCL listed each as one device, so ROCm reaches the GPU through WSL2 there. SRBMiner mined
-  Pearl on all ten through OpenCL at 32–85 TH/s, the figure to beat (`benchmark.md`, "AMD Radeon").
-  `amd-smi` gave no power or clocks. Those classes cost $0.04–0.20 an hour, and
-  `tuning/salad/bench.sh` runs a box on them.
+- On 22 October `build-amd.sh check` compiled all 14 targets on ROCm 7.2 with no spills and no
+  scratch, and the 10 CPU checks passed on the current sources.
+- The first hardware runs were on Salad (`tuning/salad/amdtest.py`, which builds this folder on a
+  Salad AMD PC and runs the steps under "Testing on real hardware"). HIP reaches the GPU there
+  through WSL2: `/dev/dxg` and Salad's bridge `/opt/rocm-host/lib/librocdxg.so`, with no `/dev/kfd`.
+  Still open:
+  - Hits a salt came in under the 8 the target gives on three of four PCs (6.92-7.55, against 7.95
+    on the fourth), so on some PCs the card may search less than the rate it reports. Settle it with
+    a hit check of 600 s or more.
+  - SRBMiner on the same PC as this core, to tell the miner's speed from the PC's. Its figures
+    in `benchmark.md` (79-85 TH/s on an RX 9070 XT, 53 on an RX 7900 XTX) are from other PCs.
+  - The RX 9060 XT (gfx1200), RX 7800 XT (gfx1101) and RX 7900 XT haven't run.
 - Pause only the LLM's card for a prompt on a rig of several AMD cards (see "Using it in
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
-- Run steps 1-4 above on an MI300X, an RX 7900 and an RX 9070.
+- Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
 - Speed: nothing is tuned. Obvious first steps: DPP or `ds_swizzle` instead of
   `__shfl_xor` in the readout; `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
