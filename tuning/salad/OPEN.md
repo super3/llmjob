@@ -26,6 +26,7 @@ notes, and many had dropped off them with no fix or decision.
 | 6 | A class whose last 3 groups got no PC only went last in the search and still took any slot nothing else wanted: on 22 Oct the account was full for 573 min, in 567 of them with such a group waiting, and a class that gets PCs waited for one 84 times. Such a class is now left out for 3 h. Offered at 8:03 pm with a 9 pm default; live since 9:00 pm EDT on 22 Oct. | about $0.15–0.3/day | `45d9ca4` |
 | 12 | A box Salad restarted on the same PC went quiet while it started again, and the 6-minute rule gave the PC up: about 34 of 58 such moves in 14 days came just after box.sh started again there. A restart on a PC the box already mined on now starts the reading and share clocks again, once a PC. Live since 9:00 pm EDT on 22 Oct. | $0.1–0.3/day | `36ce1f2` |
 | 35 | Leave messages rounded the margin, so a box was dropped as "+10%, under 10%". A margin that would round to the bar now shows one decimal, rounded down. Live since 9:01 pm EDT on 22 Oct. | a wrong number in events | `7f1064e` |
+| 39 | The Monero market read had no sanity check or back-off. At least seven HeroMiners reads on 22 Oct gave a hash 10 to 2,300 times too little; each was kept 5 minutes or more, valued the chart buckets first seen then at almost nothing (19 buckets, 0.000016 XMR short in the XMR column) and, from 9 pm, took the rules' Monero to nearly 0: at 9:20 pm 4060-56 lost a PC at +10.5% with Monero (+8% without), a counted move. A read 3 times off is now set aside until it repeats, off buckets are valued again at the median, and a failed read waits 5 minutes. Live since 9:25 pm EDT on 22 Oct. | wrong XMR figures; one good PC and a counted move | `5651027` |
 
 ## Open: costs money
 
@@ -61,7 +62,6 @@ notes, and many had dropped off them with no fix or decision.
 | 36 | Other report figures: the Kryptex pool row, the All row's "+100%", credit hours, stale rows. | Each checked and fixed. |
 | 37 | A FIRST SHARE event can report a share from the PC the box was just moved off. | Match the share to the current PC. |
 | 38 | `events.log` lines carry no date. | Add the date. |
-| 39 | The Monero price fetch has no sanity check or back-off (429s in `watcher.err`). | Both. |
 | 40 | Monero on some boxes doesn't reach the pool (they show 0.0 kH/s while Pearl mines). | Find out why; $0.09/day a box. |
 
 ## Open: other
