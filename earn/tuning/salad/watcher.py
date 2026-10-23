@@ -57,7 +57,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
-               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", ""),
@@ -370,7 +370,11 @@ class W:
         if not pcs:
             return KNOWN[cls][0]
         n = len(pcs)
-        return pcs[n // 2] if n % 2 else (pcs[n // 2 - 1] + pcs[n // 2]) / 2
+        med = pcs[n // 2] if n % 2 else (pcs[n // 2 - 1] + pcs[n // 2]) / 2
+        # A PC a group left for its margin is stored at its slow rate, so with few PCs a class's rate can be one bad
+        # PC's: one RTX 5090 left at 131 TH/s would make the search expect 131 for every 5090, not 418, and never
+        # create one (OPEN.md #62). Until min_rate_pcs PCs, a slower median doesn't lower the benchmark.
+        return med if n >= self.cfg["min_rate_pcs"] else max(med, KNOWN[cls][0])
 
     def record_rates(self, t):
         """Keep each PC's latest rate, by class, for rate(). The first time, fill it from the readings in the
