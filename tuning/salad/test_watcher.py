@@ -390,6 +390,17 @@ class TestRule5Profit(Base):
         self.assertTrue(self.http.made("POST", "/reallocate"))
         self.assertIn("against its $0.190/hr (-62%, under 10%)", self.events())
 
+    def test_a_margin_just_under_the_bar_isn_t_shown_as_the_bar(self):
+        # 22 October: 3060-69 was moved off a PC as "+10%, under 10%".
+        self.assertEqual(w.under(0.0996, 0.10), "+9.9%")
+        self.assertEqual(w.under(0.096, 0.10), "+9.6%")
+        self.assertEqual(w.under(0.094, 0.10), "+9%")
+        self.assertEqual(w.under(-0.62, 0.10), "-62%")
+        g = self.group(pri="medium")                 # $0.19/hr: 180 TH/s earns $0.2106, +9.78%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 180, 5)
+        self.assertIn("against its $0.190/hr (+9.7%, under 10%)", self.events())
+
     def test_a_pc_that_pays_under_10_percent_is_left(self):
         g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%
         self.step(g, 1, "m1")

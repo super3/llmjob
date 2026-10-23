@@ -5,7 +5,7 @@
 # run/ next to this file. config.json there is re-read every round, so limits change without a restart.
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
 # cloud session the network proxy adds it instead.
-import json, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+import json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
 
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
@@ -1496,7 +1496,7 @@ class W:
                         mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
                             self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
-                                               f"{mg * 100:+.0f}% at this group's ${g['price']:.3f}/hr, under {bar:.0%}",
+                                               f"{under(mg, bar)} at this group's ${g['price']:.3f}/hr, under {bar:.0%}",
                                             count=False)
                             return
         else:
@@ -1591,7 +1591,7 @@ class W:
             if margin_of(avg * usd + xmr, g["price"]) < bar:
                 self.leave(g, f"earns ${avg * usd + xmr:.3f}/hr at {avg:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")
                               + f" on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
-                              f"({margin_of(avg * usd + xmr, g['price']) * 100:+.0f}%, under {bar:.0%})",
+                              f"({under(margin_of(avg * usd + xmr, g['price']), bar)}, under {bar:.0%})",
                            ths=avg)
                 return
             ten = post[-10:]
@@ -1965,6 +1965,12 @@ def with_margin(profit, earn):
 def margin_of(earn, price):
     """Profit as a share of earnings, as the first account measured it: (earn - price) / earn."""
     return (earn - price) / earn if earn > 0 else float("-inf")
+
+
+def under(m, bar):
+    """A margin under the bar, as a message shows it: whole points, or one decimal rounded down where whole points
+    would read as the bar (a box was left as "+10%, under 10%" on 22 October)."""
+    return f"{m * 100:+.0f}%" if round(m * 100) < round(bar * 100) else f"{math.floor(m * 1000) / 10:+.1f}%"
 
 
 def pct(a, b):
