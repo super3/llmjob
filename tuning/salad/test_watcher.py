@@ -533,14 +533,18 @@ class TestSweep(Base):
 
 
 class TestRule6PortBlocked(Base):
-    def test_reallocates_then_deletes_after_3(self):
+    def test_reallocates_without_using_a_move_then_counts_after_6(self):
+        # 22 October: 4060-54 was deleted on its fourth PC for a blocked port, the PC's fault, not the group's.
         g = self.group()
         self.step(g, 1, "m1")
         g["blocked"].append("m1")
         self.step(g, 1, "m1")
-        self.assertEqual(g["reallocs"], 1)
-        g["reallocs"] = 3
-        self.step(g, 1, "m2")
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("REALLOCATED biz-rtx4080 off PC m1 (PC blocks outbound port 1200); not counted toward its 3",
+                      self.events())
+        # A group that keeps landing on blocked PCs counts them from the seventh, so it can't move for ever.
+        g["reallocs"], g["port_moves"] = 3, 6
+        self.step(g, 11, "m2")
         g["blocked"].append("m2")
         self.step(g, 1, "m2")
         # Out of moves means bad PCs, not a bad class: released, so the class can still get new groups.
@@ -566,7 +570,7 @@ class TestRule6PortBlocked(Base):
         g["blocked"].append("m1")
         self.step(g, 1, "m1")
         self.step(g, 1, "m1")  # Salad still lists the old PC
-        self.assertEqual(g["reallocs"], 1)
+        self.assertEqual(g["port_moves"], 1)
         self.assertIsNone(g["machine"])
         self.step(g, 1, "m2")
         self.assertEqual(g["machine"], "m2")
@@ -607,6 +611,30 @@ class TestSearch(Base):
         self.x.search()
         made = [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")]
         self.assertEqual(made, [("biz-rtx4080", "low"), ("biz-rtx2060", "low")])
+
+    def test_the_search_trusts_salad_s_count_of_replicas_in_use(self):
+        # 22 October: Salad counted one replica more than we had for hours, so every search sent creates it then
+        # refused with created_replicas_quota_exceeded. With 1 group and 9 of 10 replicas in use, there's room for 1.
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                         "container_replicas_used": 9}}))
+        self.group(cls="RTX 4070 (12 GB)", pri="low")
+        n = len(self.http.made("POST", "/containers$"))
+        self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")) - n, 1)
+
+    def test_the_search_stops_at_the_first_quota_refusal(self):
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.http.on("POST", "/containers$", (400, {"type": "created_replicas_quota_exceeded"}))
+        self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")), 1)   # not one refused create per class
+        self.assertEqual(self.events().count("CREATE FAILED"), 1)
+        self.http.on("POST", "/containers$", (201, {}))
+        self.x.search()                                                    # the next search tries again
+        self.assertGreater(len(self.http.made("POST", "/containers$")), 2)
 
     def searched(self, kind, minutes_ago):
         """Search after a 4080 group ended `minutes_ago` with `kind`; return the groups created by the search."""
@@ -2089,7 +2117,7 @@ class TestKryptex(Base):
 
     def test_a_kryptex_box_leaves_a_pc_blocking_kryptexs_port_and_lists_it_for_kryptex_boxes_only(self):
         g = self.blocked_on_kryptex()
-        self.assertEqual(g["reallocs"], 1)
+        self.assertEqual((g["reallocs"], g["port_moves"]), (0, 1))     # moved, without using one of its 3
         self.assertTrue(g["kx"])                                          # a PC problem: it stays on Kryptex
         self.assertEqual(self.x.st["bad_pcs"]["m1"]["ports"], [7048])
         hm = self.group()                                                 # a HeroMiners box checks 1200: m1 may suit it

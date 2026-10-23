@@ -143,8 +143,11 @@ doesn't count toward its 3. (On 12 October one 2080 Ti
 PC that overheated to 66 TH/s was handed to a second group two hours later.) A PC Salad takes back isn't
 bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
-by rules 4 to 6; the next one deletes it, as released: running out of moves means bad PCs, not a bad
-class, so the class isn't barred from new groups.
+by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad
+class, so the class isn't barred from new groups. A move off a PC that blocks the pool port (rule 6) is the
+PC's fault and doesn't count, up to 6 a group, since 22 October (4060-54 was deleted on its fourth PC for one).
+The search also sizes its room by Salad's own count of replicas in use, and stops at the first create Salad
+refuses for its quota.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly on its first PC before the class had paid (no shares, under cost, never mined); a blocked
 port never fails a group. Its deletion event carries the box's last log

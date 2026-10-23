@@ -252,6 +252,7 @@ class W:
                                         "last_credit_alert": 0, "classes": {}, "classes_t": 0, "mkt": None, "mkt_t": 0,
                                         "pool": {}, "api_fail": 0}
         self.cfg = DEFAULT_CFG
+        self.quota_full = False   # set when Salad refuses a create for its replica quota; the search stops on it
 
     # ---------- data ----------
     def market(self):
@@ -1179,6 +1180,8 @@ class W:
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
             return self.create(cls, pri, taken | {name}, tries + 1)
+        if "quota_exceeded" in text:
+            self.quota_full = True   # the search stops here: every other create this round would be refused too
         if "no_credits_available" in text:
             if not st["credits_out"]:
                 event("ALERT Salad says no credits are available; not creating groups until a top-up")
@@ -1488,7 +1491,11 @@ class W:
                 ports = sorted({port} | set((self.bad_ports(old) or []) if held else []))
                 why = "PC blocks outbound port" + ("s " if len(ports) > 1 else " ") + " and ".join(map(str, ports))
                 bad[g["machine"]] = {"t": t, "group": g["name"], "why": why, "ports": ports}
-            self.reallocate(g, f"PC blocks outbound port {port}")
+            # The PC's fault, not the group's: the move doesn't use one of its 3 (on 22 October 4060-54 was deleted
+            # on its fourth PC for a blocked port). Up to 6 such moves; after that a group that keeps landing on
+            # blocked PCs counts them, so it can't move for ever.
+            g["port_moves"] = g.get("port_moves", 0) + 1
+            self.reallocate(g, f"PC blocks outbound port {port}", count=g["port_moves"] > 6)
             return
         # This PC's readings (one a minute). A PC that isn't mining 10 min after we got it is left.
         # Readings come from Salad's log service, which sometimes fails for minutes at a time. Missing readings
@@ -1611,17 +1618,22 @@ class W:
         st = self.st
         active = [g for g in st["groups"].values() if not g["ended"]]
         s, q = http("GET", f"{BASE}/quotas")
-        quota = (q or {}).get("container_groups_quotas", {}).get("container_replicas_quota", 10) if s == 200 else 10
+        c = (q or {}).get("container_groups_quotas", {}) if s == 200 else {}
+        quota = c.get("container_replicas_quota", 10)
         st["quota"] = quota
-        room = min(self.cfg["max_active"], quota) - len(active)
+        # Salad's own count of replicas in use, when it gives one: on 22 October it counted one more than we had
+        # for hours, so every search sent creates it then refused (created_replicas_quota_exceeded).
+        used = c.get("container_replicas_used")
+        room = min(self.cfg["max_active"] - len(active), quota - (len(active) if used is None else used))
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
         room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
         if room <= 0:
             return
         made = 0
+        self.quota_full = False
         for *_, cls, p in self.candidates(active, t):
-            if made >= room or st["credits_out"]:
+            if made >= room or st["credits_out"] or self.quota_full:
                 break
             # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
             if made and self.margin(cls, p) < self.cfg["min_margin"]:
