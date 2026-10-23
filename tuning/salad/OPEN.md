@@ -16,12 +16,12 @@ notes, and many had dropped off them with no fix or decision.
 | 1 | A group on any PC it had ever left was skipped by every rule. 2070-3 billed at 0 TH/s for 4.5 h. | $1.44/day while it lasted, about 80% of fleet profit | `9df635e` |
 | 2 | The report summed only page 1 of Kryptex's payouts: margins read about 25 points low for about a day. | Misled every decision read off the report | `b50df9c` |
 | 3 | A box paused for a prompt showed a margin like −3180% and turned the All row negative. | Display | `8e39885` |
+| 4 | The keep, leave, climb and search rules valued every box at HeroMiners' credit ratio (0.93) though every box mines on Kryptex (0.97). 63 of 125 margin moves and deletions in the 48 h before would not have happened. A review before it went live added: the pool a box's PC really mines on, Kryptex's ratio held through API outages, and a second margin check in the search. Live since 8:15 pm EDT on 22 Oct. | $0.2–0.5/day | `310c1f9`, `3874caf` |
 
 ## Open: costs money
 
 | # | Problem | Cost a day | Fix |
 |---|---|---|---|
-| 4 | The keep, leave, climb and search rules value every box at HeroMiners' credit ratio (0.93) though every box mines on Kryptex (0.97). PCs at a real +10–14% read under 10% and are left; waiting boxes are deleted when a dearer priority would clear. Of 125 margin moves and deletions in 48 h, 63 cleared 10% at Kryptex's ratio. | $0.2–0.5 | Use each box's own pool ratio (`ratio(g)`, already in the code) in the rules; Kryptex's for new groups. Bug fix. |
 | 5 | The rules count Pearl only, not each box's Monero (about 2 kH/s, $0.003/hr a box), so boxes that clear 10% with Monero are left. | $0.3–0.7 | Count Monero in the margin the rules use. Changes what "10%" means: decision. |
 | 6 | Classes that never get a PC on this account (4090, 5090, often 4070 Ti and 5070 Ti) keep taking slots: created, wait 10–20 min, deleted, tried again. | up to $1.0 of slot time; about $0.3–0.5 | Hold a class that got no PC for 3 h, not 10 min. |
 | 7 | Salad counts one replica more than we have (since about 1 pm on 22 Oct), and parallel creates hit the quota. | $0.3–0.5 | Use the quota call's own used count and stop at the first refusal (4 lines). Ask Salad about the phantom. |
@@ -47,7 +47,7 @@ notes, and many had dropped off them with no fix or decision.
 | 27 | The watcher runs inside this session's container. It and the keeper were down 167 min on 22 Oct (09:38–12:25Z) with no alert. | small on average; a risk | Run it somewhere that outlives the session, with an alert when it stops. |
 | 28 | The trader and SafeTrade can't be read from here, so unsold PRL or failed sales go unnoticed (it couldn't sell from 18 Oct 17:51Z until #269). | risk on about $9.4/day of PRL | A Railway token, then the trader's last sale and unsold PRL in the report. |
 | 29 | The RX 9070 XT pays on Salad (92.8 TH/s, about $0.02/hr at low) but the fleet can't rent AMD. | missed gain, about $0.5 a box | Release the AMD core; add a 9070 XT class. Decision. |
-| 30 | Smaller, none seen in the last 2 days: a failed bad-list move isn't retried; the swap rule can swap out a box still warming up; a class rate can come from one capped PC; the card line isn't used to reject a wrong card; our own groups can outbid each other; a failed miner download costs a counted move; a 5090 would run the 27B model, which stops mining for each prompt; a release trial runs on a box that mines well; a restart before a save can lose a counted move. | under $0.01 each | Each when it next shows. |
+| 30 | Smaller, none seen in the last 2 days: a failed bad-list move isn't retried; the swap rule can swap out a box still warming up; a class rate can come from one capped PC; the card line isn't used to reject a wrong card; our own groups can outbid each other; a failed miner download costs a counted move; a 5090 would run the 27B model, which stops mining for each prompt; a release trial runs on a box that mines well; a restart before a save can lose a counted move; the swap rule prices a replacement before the box it replaces frees a Kryptex slot (errs on the safe side). | under $0.01 each | Each when it next shows. |
 
 ## Open: numbers that are wrong or missing
 
