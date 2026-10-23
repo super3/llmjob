@@ -28,11 +28,15 @@
 #     profile[@fold][:secs:bits:m:n:fill] node test/verify-hits-profile.js build/pearl_core_hip.node ...
 #     hashrate[@fold][:secs:warm]         node ../probes/hashrate.js build/pearl_core_hip.node [60 10]
 #     mine[@fold][:secs]      the app's CLI with PEARL_CORE_VARIANT=amd on POOL; secs 0 = until stopped [600]
+#     srb[:secs:warm]         SRBMiner 3.7.1 on DUEL_POOL for secs [300] after a warm-up of its own [60]
+#     duel[:first:secs:warm]  benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
+#                             warm [60], then each runs secs [300]; ends with "duel <name> result ..." for each
 #     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB)
 #     run                     the bash script in RUN_GZ_B64 (gzip+base64), from earn/native/amd
 #     sleep:secs              wait
 #   ARCH          gfx target to build for (default: rocminfo's first GPU agent)
 #   POOL, WORKER, WALLET      for mine (default prl-us.kryptex.network:7048, amdtest, the user's wallet)
+#   DUEL_POOL     for srb and duel, both miners (default us.pearl.herominers.com:1200, the table's pool)
 #
 # Salad's PCs run the container in WSL2: the GPU is behind /dev/dxg, and Salad puts its ROCm-to-WSL bridge
 # (/opt/rocm-wsl) first on PATH and LD_LIBRARY_PATH. This script only appends to PATH and never sets
@@ -206,8 +210,10 @@ t_hashrate() {
   need_core hashrate || return 1
   (cd $A && timeout 3600 node ../probes/hashrate.js build/pearl_core_hip.node "${1:-60}" "${2:-10}") \
     > /root/hashrate.log 2>&1; local rc=$?
-  # hashrate.js asks nvidia-smi for clocks every 2 s; there is none here.
-  grep -v 'nvidia-smi' /root/hashrate.log | tail -n 10 | emit hashrate
+  # hashrate.js asks nvidia-smi for clocks every 2 s; there is none here. PEARL_AMD_TRACE=1 adds the core's
+  # "[pearl-amd]" timing lines, shown first.
+  grep '^\[pearl-amd\]' /root/hashrate.log | head -n 40 | emit hashrate
+  grep -v 'nvidia-smi' /root/hashrate.log | grep -v '^\[pearl-amd\]' | tail -n 10 | emit hashrate
   return $rc
 }
 
@@ -237,6 +243,90 @@ t_mine() {
   done
   kill $pid; wait $pid 2>/dev/null
   return 0
+}
+
+# SRBMiner 3.7.1 from its official release, checked against the published MD5 (bench.sh downloads the same file).
+SRB_DIR=/opt/srb
+srb_get() {
+  [ -x $SRB_DIR/SRBMiner-MULTI ] && return 0
+  mkdir -p $SRB_DIR && cd $SRB_DIR || return 1
+  curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz \
+    || { say "srb FAIL download"; return 1; }
+  echo "112223a663506023e31d7f9dbce3dfe2  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
+  tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
+}
+# Both miners mine on DUEL_POOL in srb and duel, as benchmark.md's AMD table did (bench.sh's pool).
+DUEL_POOL=${DUEL_POOL:-us.pearl.herominers.com:1200}
+srb_cli() {
+  cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
+    --worker "$WORKER-srb" --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel
+}
+ours_cli() { POOL=$DUEL_POOL WORKER=$WORKER-ours mine_cli; }
+# One sample as "TH/s accepted rejected": SRBMiner's from its API, ours from the CLI's last "TH/s ·" line.
+sample_srb() {
+  curl -s -m 3 http://127.0.0.1:21550 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{
+    const a=JSON.parse(s).algorithms[0];console.log((a.hashrate.gpu.total/1e12).toFixed(2),a.shares.accepted,a.shares.rejected)}catch(e){}})'
+}
+sample_ours() {
+  tr '\r' '\n' < /root/duel-ours.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1 \
+    | awk '{gsub(",","",$4); gsub(",","",$7); print $1, $4, $7}'
+}
+# run_miner NAME SECS MEASURED: runs ours or srb for SECS. Measured, it samples every 10 s, prints a line a minute,
+# and ends with "NAME result ...": the mean of the samples after the first minute, and the miner's last figure,
+# which is what benchmark.md's table takes for SRBMiner ("its own figure at the end").
+run_miner() {
+  local name=$1 secs=$2 measured=$3 pid t0 t s th acc rej n=0 sum=0 last="" fails=0
+  say "duel $name start ${secs}s$([ "$measured" = 1 ] || echo ' (warm-up, not measured)')"
+  ( ${name}_cli ) > /root/duel-$name.log 2>&1 &
+  pid=$!; t0=$(date +%s)
+  while :; do
+    sleep 10; t=$(( $(date +%s) - t0 ))
+    if ! kill -0 $pid 2>/dev/null; then
+      say "duel $name exited at ${t}s"; tr '\r' '\n' < /root/duel-$name.log | grep -v '^\s*$' | tail -5 | emit duel
+      fails=1; break
+    fi
+    if [ "$measured" = 1 ]; then
+      s=$(sample_$name); read -r th acc rej <<< "$s"
+      if [ -n "$th" ]; then
+        last="$th acc=$acc rej=$rej"
+        [ $t -gt 60 ] && { n=$((n + 1)); sum=$(awk "BEGIN{print $sum + $th}"); }
+      fi
+      if [ $((t % 60)) -lt 10 ]; then
+        say "duel $name t=${t}s th=${th:-?} acc=${acc:-?} rej=${rej:-?}"
+        grep '^\[pearl-amd\]' /root/duel-$name.log | tail -n 1 | emit duel   # with PEARL_AMD_TRACE=1
+      fi
+    fi
+    [ $t -ge "$secs" ] && break
+  done
+  kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  pkill -f SRBMiner-MULTI; pkill -f 'src/cli/earn-cli\.js'; sleep 8
+  if [ "$measured" = 1 ]; then
+    tr '\r' '\n' < /root/duel-$name.log | grep -iE 'error|reject|fail|stale' | grep -v 'TH/s ·' | tail -5 | emit duel
+    say "duel $name result mean_after_60s=$( [ $n -gt 0 ] && awk "BEGIN{printf \"%.2f\", $sum / $n}" || echo '?') n=$n last=${last:-?} secs=$secs"
+  fi
+  return $fails
+}
+
+# One miner for SECS after a WARM-second warm-up of itself.
+t_srb() {
+  srb_get || return 1
+  local secs=${1:-300} warm=${2:-60}
+  [ "$warm" -gt 0 ] && run_miner srb "$warm" 0
+  run_miner srb "$secs" 1
+}
+
+# benchmark.md's AMD method on one PC: the first miner warms the card for WARM seconds, unmeasured, then each
+# runs SECS seconds. FIRST is ours or srb. Ours is the CLI with this core (needs build first).
+t_duel() {
+  local first=${1:-ours} secs=${2:-300} warm=${3:-60} second rc=0
+  need_core duel || return 1
+  srb_get || return 1
+  case $first in ours) second=srb ;; srb) second=ours ;; *) say "duel FAIL first must be ours or srb"; return 1 ;; esac
+  say "duel pool $DUEL_POOL, first $first, ${secs}s each after a ${warm}s warm-up"
+  [ "$warm" -gt 0 ] && run_miner $first "$warm" 0
+  run_miner $first "$secs" 1 || rc=1
+  run_miner $second "$secs" 1 || rc=1
+  return $rc
 }
 
 t_cpuchecks() {
@@ -278,7 +368,7 @@ for item in "${LIST[@]}"; do
   IFS=: read -ra P <<< "$item"
   name=${P[0]%%@*}; fold=""; [ "$name" != "${P[0]}" ] && fold=${P[0]#*@}
   args=("${P[@]:1}")
-  case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|cpuchecks|run) ;;
+  case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|srb|duel|cpuchecks|run) ;;
     sleep) sleep "${args[0]:-60}"; continue ;;
     *) say "$name FAIL unknown task"; failed="$failed $item"; continue ;;
   esac
