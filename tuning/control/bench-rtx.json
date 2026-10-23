@@ -1,0 +1,3 @@
+{"default": {"core": "release", "flags": "", "env": {}},
+ "gpus": {"0": {"core": "build:relc"}},
+ "builds": {"relc": {"ref": "af4fbca214080622627de89ad1526e4df62ae08d"}}}
