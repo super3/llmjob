@@ -398,7 +398,8 @@ describe('coreFactory — choosing a build', () => {
 
     test('is null, with the reason, when it is not built; the CUDA build does not stand in', () => {
       const r = rig();
-      expect(factory(r, Object.assign({}, AMD_ENV, BLACKWELL))).toBeNull();
+      // platform: the message differs on Windows, which has no AMD core (next test).
+      expect(factory(r, Object.assign({ platform: 'linux' }, AMD_ENV, BLACKWELL))).toBeNull();
       expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
