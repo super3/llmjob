@@ -420,11 +420,16 @@ manages only the groups `amdtest-rdna3` and `amdtest-rdna4`, or those with `-2` 
 `amdtest.sh` on the `rocm/dev-ubuntu-24.04:7.2` image (high priority, 4 vCPU, 8 GB by default): it installs
 git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
-`amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, cpuchecks, run).
+`amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, srb, duel, cpuchecks, run).
+`duel` is benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
+CLI) and SRBMiner 3.7.1 run 5 minutes each on HeroMiners; it ends with ours' mean after the first minute and
+SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
+can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_WAIT=poll:60:10`.
 
 ```sh
 python3 tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
 python3 tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,verify:120,hashrate:60:10   # next run, same PC
+python3 tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,duel:srb   # SRBMiner first, then ours
 python3 tuning/salad/amdtest.py wait amdtest-rdna3 --until 'all done' --since 14:05
 python3 tuning/salad/amdtest.py logs amdtest-rdna3 --since 30m
 python3 tuning/salad/amdtest.py status amdtest-rdna3
