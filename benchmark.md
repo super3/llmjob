@@ -7,7 +7,10 @@ rows rerun on 2026-10-11 against SRBMiner 3.7.5. Each host runs all three
 miners one after another on the same pool, so rates within a row compare
 directly. Don't compare across rows: power limits and cooling differ from
 host to host. v0.6.0 adds Monero mining on the CPU and leaves the GPU miner
-as it was in v0.5.14, so these figures hold for it too.
+as it was in v0.5.14, so these figures hold for it too. v0.6.8 adds a core for
+GTX 10 cards (Pascal, below) and reads a hit's proof with one wait instead of
+about 120; the new kernel code builds only for sm_61, and every other card's
+kernels are as they were, so the figures hold for it as well.
 
 ## Summary
 
@@ -45,8 +48,9 @@ because no L40 was for rent other than the New York one.
   fold on the B200's own tensor instructions (tcgen05).
 - GTX 10-series: 0 for PeakMiner and SRBMiner. Pearl needs RTX 20xx or newer
   (PeakMiner's docs), and both got nothing on a GTX 1080 on Salad. Our release
-  has no Pascal build either; an unreleased one mined at 17.8 TH/s on a GTX
-  1080 Ti on Salad (the section's notes).
+  has a Pascal build from v0.6.8; before the release it mined at 17.8 TH/s on a
+  GTX 1080 Ti on Salad (the section's notes). The release hasn't been run on
+  these cards yet.
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon on Salad: SRBMiner 32–92 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
@@ -723,22 +727,24 @@ pearlhash on it.
 One card was measured, a GTX 1080 on Salad PC `c868132d` (180 W), on 17 October with `tuning/salad/bench.sh`
 (5 minutes each on `us.pearl.herominers.com` after a 60-second warm-up). PeakMiner 2.17.6 quit within 15
 seconds, twice, with no shares. SRBMiner 3.7.1 ran the full 5 minutes at 0 H/s with no shares, the card idle
-at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Our released miner
-has no Pascal build (its lowest target is sm_75, and its kernel uses int8 tensor cores, which Pascal lacks), so
-"Ours" is "no build". An unreleased Pascal build was measured afterwards; see the notes under the table.
+at 8 W and 139 MHz. The other rows are taken as 0 from that and PeakMiner's docs, without a run. Until v0.6.8
+our released miner had no Pascal build (its lowest target was sm_75, and its kernel uses int8 tensor cores, which
+Pascal lacks). v0.6.8 adds one, a fold on Pascal's `dp4a` instruction in its CUDA 12.8 core, but the release
+hasn't been run on these cards by "How a host is tested", so "Ours" is "not run". The same core was measured
+before the release; see the notes under the table.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| GTX 1080 Ti | Salad | not run | no build | 0 | 0 | — |
-| GTX 1080 | Salad (180 W) | c868132d | no build | 0 | 0 | — |
-| GTX 1070 | Salad | not run | no build | 0 | 0 | — |
-| GTX 1060 | Salad (6 GB) | not run | no build | 0 | 0 | — |
-| GTX 1050 Ti | Salad (4 GB) | not run | no build | 0 | 0 | — |
+| GTX 1080 Ti | Salad | not run | not run | 0 | 0 | — |
+| GTX 1080 | Salad (180 W) | c868132d | not run | 0 | 0 | — |
+| GTX 1070 | Salad | not run | not run | 0 | 0 | — |
+| GTX 1060 | Salad (6 GB) | not run | not run | 0 | 0 | — |
+| GTX 1050 Ti | Salad (4 GB) | not run | not run | 0 | 0 | — |
 
-- **Our Pascal core, not released (17–18 October).** PR #261 adds a fold on Pascal's `dp4a` instruction for
-  sm_61. It isn't in a release, and it ran by a different method from "How a host is tested" (`tuning/box.sh`
-  on a mining box, the CLI picking its own HeroMiners host, rates from the miner's minute lines), so the rows
-  stay "no build" until a release has it.
+- **Our Pascal core, before its release (17–18 October).** PR #261 adds a fold on Pascal's `dp4a` instruction
+  for sm_61, released in v0.6.8. These runs came before the release and by a different method from "How a host
+  is tested" (`tuning/box.sh` on a mining box, the CLI picking its own HeroMiners host, rates from the miner's
+  minute lines), so they stay here and the rows read "not run" until the release is run on these cards.
 - **GTX 1080 Ti, Salad PC `af9f7a6e` (250 W), commit `d425085`:** the hit check verified 156 of 156 hits, 24
   salts in 90 s, 20.4 TH/s at the end on a cool card. Mining: **17.8 TH/s**, the mean of the minute samples
   over 5 minutes after a 1-minute warm-up (17.5–18.0), the card at 100%, 214–222 W, 82–83 °C and 1594–1620
