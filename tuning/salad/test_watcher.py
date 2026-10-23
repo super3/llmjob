@@ -1587,6 +1587,20 @@ class TestBadPcs(Base):
         self.step(a, 1, None)       # Salad takes the PC back
         self.assertEqual(self.x.st.get("bad_pcs", {}), {})
 
+    def test_one_low_reading_doesnt_move_a_box_but_two_do(self):
+        # Rule 5 judges the median of the last 3 readings: on 20 October 5070-31 was moved off a PC at 133 TH/s for
+        # one reading of 3 between two of 133.
+        g = self.group(pri="medium")               # $0.19/hr: 200 TH/s is +19%, 120 is -35%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 200, 5)
+        self.mine(g, "m1", 50, 1)                  # one bad minute: the mean of 200, 200, 50 would be under 10%
+        self.mine(g, "m1", 200, 3)
+        self.assertEqual(self.http.made("POST", "/reallocate"), [])
+        self.assertEqual(self.x.pc_rate(g), 200)
+        self.mine(g, "m1", 120, 2)                 # the PC really slows: left on the second low reading
+        self.assertEqual(len(self.http.made("POST", "/reallocate")), 1)
+        self.assertIn("at 120 TH/s on PC m1", self.events())
+
     def test_a_pc_salad_takes_back_three_times_in_a_day_goes_on_the_bad_list(self):
         # 17-19 October: 3323a855 was handed to 3090 Ti groups 19 times in 38 hours and taken back within minutes
         # nearly every time.

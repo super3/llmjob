@@ -73,7 +73,7 @@ measured it. A 2060 at 40 TH/s earning $0.047/hr on a $0.030/hr PC is +36%, not 
 each PC on its own readings.
 
 **A class's rate** is the median TH/s of the PCs it has mined on here in the last `rate_days`, each PC
-on its last 3 readings after warm-up, capped and slow PCs included. Before a class has mined, it's the
+at the median of its last 3 readings after warm-up, capped and slow PCs included. Before a class has mined, it's the
 benchmark in `KNOWN`. The search, priority moves and swaps all use it. On 12 October the 3070 measured
 77 TH/s against a 59 benchmark. With `yield` 0.9 the benchmark cleared 10% only at batch, so a second
 3070 was released for want of a batch PC although 3070s clear low easily; the 2080 measured 64 against 72.
@@ -111,8 +111,11 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
 3. **Had a PC, lost it, no other within 20 min:** delete.
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
 5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
-   the last 3 readings (one a minute) must clear the margin at the PC's price. The first time they
-   don't, leave the PC. A PC with no mining reading 10 min after we got it is left too, and so is one
+   the median of the last 3 readings (one a minute) must clear the margin at the PC's price. The first
+   time it doesn't, leave the PC. The median since 23 October: with the mean, one bad minute moved good
+   boxes (24 of the 277 margin leaves in 12.6 days whose readings were kept; on 20 October 5070-31 left a
+   PC at 133 TH/s for one reading of 3 between two of 133). A PC that really slows shows it in 2 of 3
+   readings a minute later. A PC with no mining reading 10 min after we got it is left too, and so is one
    whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10

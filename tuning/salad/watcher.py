@@ -176,6 +176,11 @@ def save(path, obj):
     os.replace(tmp, path)
 
 
+def median3(readings):
+    """The median TH/s of the last 3 readings ([t, machine, ths, ...])."""
+    return sorted(r[2] for r in readings[-3:])[1]
+
+
 def slug(cls):
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
 
@@ -1637,8 +1642,11 @@ class W:
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
-        # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the last 3
-        # readings must clear min_margin at the PC's price, every round; the first time they don't, the PC is left.
+        # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last
+        # 3 readings must clear min_margin at the PC's price, every round; the first time it doesn't, the PC is left.
+        # The median, not the mean: in the 12.6 days to 23 October, 24 of 277 margin leaves whose readings were kept
+        # came from one reading 5% or more under the other two (one minute at 3 TH/s between two at 133), where the
+        # median cleared the bar. A PC that really slows shows it in 2 of 3 readings a minute later.
         # A pause for a prompt starts the warm-up again, from the first reading after it: those can be low.
         back = next((r[0] for r in cur if r[0] > pend), cur[0][0]) if cur else 0
         post = [r for r in cur if r[0] >= back + 2 * MIN] if cur else []
@@ -1646,18 +1654,18 @@ class W:
             # At the pool the box's PC mines on, which can differ from its command's for a while (see on_kx).
             # Its Monero counts too (xmr_usd).
             usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"], self.xmr_usd(g)
-            avg = sum(r[2] for r in post[-3:]) / 3
-            if margin_of(avg * usd + xmr, g["price"]) < bar:
-                self.leave(g, f"earns ${avg * usd + xmr:.3f}/hr at {avg:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")
+            ths = median3(post)
+            if margin_of(ths * usd + xmr, g["price"]) < bar:
+                self.leave(g, f"earns ${ths * usd + xmr:.3f}/hr at {ths:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")
                               + f" on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
-                              f"({under(margin_of(avg * usd + xmr, g['price']), bar)}, under {bar:.0%})",
-                           ths=avg)
+                              f"({under(margin_of(ths * usd + xmr, g['price']), bar)}, under {bar:.0%})",
+                           ths=ths)
                 return
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
             if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd + xmr, g["price"]) >= bar:
                 st["paid_classes"].append(g["class"])
-                event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({avg:.0f} TH/s); it counts as paid now")
+                event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({ths:.0f} TH/s); it counts as paid now")
 
     def critic(self, t):
         """Once an hour, checks the ledger against the pool and writes a DRIFT event when they disagree by more
@@ -1693,7 +1701,8 @@ class W:
                   f"({pct(cred - work, work)}, more than luck explains over {pt['blocks']} blocks)")
 
     def pc_rate(self, g):
-        """The miner's average TH/s on this PC's last 3 readings after warm-up, or None while there aren't 3."""
+        """The median TH/s of the miner's last 3 readings on this PC after warm-up, as rule 5 judges it, or None while
+        there aren't 3."""
         if not g.get("has_pc") or not g.get("machine") or not g.get("pc_since"):
             return None
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
@@ -1704,10 +1713,10 @@ class W:
         post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN and not (back and back <= r[0] < back + 2 * MIN)] if cur else []
         if len(post) < 3:
             return None
-        return sum(r[2] for r in post[-3:]) / 3
+        return median3(post)
 
     def pc_margin(self, g):
-        """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
+        """The margin at pc_rate, or None while there aren't 3 readings after warm-up."""
         rate = self.pc_rate(g)
         return None if rate is None else margin_of(rate * self.usd(self.on_kx(g, g["machine"], now())) + self.xmr_usd(g),
                                                    g["price"])
