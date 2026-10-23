@@ -376,6 +376,9 @@ __device__ __forceinline__ void pearl_amd_bar_wait() {
 #ifndef PEARL_AMD_PFX
 #define PEARL_AMD_PFX 0
 #endif
+#ifndef PEARL_AMD_TID
+#define PEARL_AMD_TID 0
+#endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
@@ -441,6 +444,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
 
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+#if PEARL_AMD_TID
+  // The compiler doesn't know threadIdx.x < 256 here, so it guarded the first staging unit
+  // (always A') with an exec-mask branch; told, the branch goes and the fold needs ~17 fewer VGPRs.
+  __builtin_assume(t >= 0 && t < T);
+#endif
   const int wr = wave / P::kWC, wc = wave % P::kWC;
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
