@@ -1039,21 +1039,32 @@ describe('mining', () => {
   // adds where the AMD core goes, once, and never sends an AMD rig to fetch the
   // CUDA one.
   const AMD_FIX = 'Fix: put pearl_core_hip.node from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.';
-  test('with the AMD core beside the binary but not loading, it adds no "put it there"', async () => {
+  // The loader has said why a core that is there won't load (a missing
+  // library, too old a glibc); "not found" or "put it there" would contradict it.
+  const WOULD_NOT_LOAD = (file) => (opts) => {
+    opts.log('error', 'Pearl core: ' + file + ' is there but would not load: libamdhip64.so.7: cannot open shared object file');
+    return null;
+  };
+  test('a core that is there but will not load gets no "not found" and no "put it there"', async () => {
     await withEnv({ PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
-      const beside = require('path').join(require('path').dirname(process.execPath), 'pearl_core_hip.node');
-      m.pearlCore.coreFactory.mockReturnValue(null);
+      m.pearlCore.coreFactory.mockImplementation(WOULD_NOT_LOAD('/opt/rig/pearl_core_hip.node'));
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
-      expect(m.fs.existsSync).toHaveBeenCalledWith(beside);
+      expect(allErr()).toContain('is there but would not load');
       expect(allErr()).not.toContain('Fix: put');
+    });
+    await withEnv({ PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockImplementation(WOULD_NOT_LOAD('/opt/rig/pearl_core.node'));
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(allErr()).not.toContain('pearl_core.node not found');
+      expect(allErr()).not.toContain('Fix: keep');
     });
   });
 
   test('--core amd asks for the AMD core, over PEARL_CORE_VARIANT', async () => {
     await withEnv({ PEARL_CORE_VARIANT: 'cu12', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
-      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
       m.pearlCore.coreFactory.mockReturnValue(null);
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'amd'])).resolves.toBe(1);
       expect(allErr()).toContain(AMD_FIX);
@@ -1064,7 +1075,6 @@ describe('mining', () => {
   test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
     await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
-      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
       m.pearlCore.coreFactory.mockReturnValue(null);
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
       expect(allErr()).toContain(AMD_FIX);
@@ -1072,14 +1082,14 @@ describe('mining', () => {
     });
   });
 
-  test('with PEARL_CORE_VARIANT=amd and a PEARL_CORE_PATH that did not load, the same, and auto serves the LLM', async () => {
+  // Only the named file is tried, so "put it next to the executable" can't help.
+  test('with PEARL_CORE_VARIANT=amd and a PEARL_CORE_PATH that did not load, no "put it there", and auto serves the LLM', async () => {
     await withEnv({ PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.nod' }, async () => {
       const m = load();
-      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
       m.pearlCore.coreFactory.mockReturnValue(null);
       const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update']);
       await settle();
-      expect(allErr()).toContain(AMD_FIX);
+      expect(allErr()).not.toContain('Fix: put');
       expect(allErr()).not.toContain('pearl_core.node');
       expect(allErr()).toContain('continuing with the local LLM only.');
       fire('SIGINT');
@@ -2766,6 +2776,28 @@ describe('--mine-mem-clock', () => {
     expect(allErr()).not.toContain(IGNORED);
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // On the AMD core the plan would be nvidia-smi's: an RTX 5090 beside the AMD
+  // cards would have its memory clock locked while it sits idle.
+  test('an AMD core locks no clock, even with an RTX 5090 in the rig', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--core', 'amd', '--gpu-index', '0,1']);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineMemClockByIndex).toEqual({});
+      expect(miner.settings.mineMemClockDefault).toBe(false);
+      expect(allOut()).not.toContain('memory clock 7001');
+      // HIP's indices go to the core as given, not filtered by nvidia-smi's list.
+      expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({
+        coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+      });
+      expect(allErr()).not.toContain('nvidia-smi does not list it');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
   });
 
   // The default. An RTX 5090 is locked without being asked, and the log

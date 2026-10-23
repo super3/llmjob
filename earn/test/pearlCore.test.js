@@ -234,10 +234,11 @@ describe('coreFactory — choosing a build', () => {
     expect(r.lines).toEqual([['info', 'Pearl core: CUDA 12.8 build · pearl_core_cu13.node is not installed']]);
   });
 
-  test('a CUDA 13 file that will not load counts as not installed', () => {
+  test('a CUDA 13 file that will not load hands over to the 12.8 build and says why', () => {
     const r = rig({ [CU13_BESIDE]: new Error('invalid ELF header') });
     expect(factory(r, BLACKWELL)({ rank: 128 })).toEqual({ build: 'cu12' });
-    expect(r.lines[0][1]).toBe('Pearl core: CUDA 12.8 build · pearl_core_cu13.node is not installed');
+    expect(r.lines[0]).toEqual(['warn', 'Pearl core: CUDA 12.8 build · ' + CU13_BESIDE
+      + ' is there but would not load: invalid ELF header']);
   });
 
   // A source checkout mines on its own build, whose toolkit is whatever that box
@@ -401,8 +402,21 @@ describe('coreFactory — choosing a build', () => {
       expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
-        + '(PEARL_CORE_VARIANT=amd; the Linux release has it beside the CLI binary, or build it with '
-        + 'earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)']]);
+        + '(PEARL_CORE_VARIANT=amd; the Linux release has it beside the CLI binary and in the AppImage, or build it '
+        + 'with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)']]);
+    });
+
+    // The CLI's --core sets PEARL_CORE_VARIANT, so the log names the flag; and
+    // Windows has no AMD core at all.
+    test('names --core when the CLI asked with it, and says the AMD core is Linux only on Windows', () => {
+      const r = rig();
+      expect(factory(r, Object.assign({ coreFlag: true, platform: 'win32' }, AMD_ENV))).toBeNull();
+      expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
+        + '(--core amd; the AMD core is built for Linux only)']]);
+      const amd = { createCore: jest.fn(() => ({ build: 'amd' })) };
+      const r2 = rig({ [AMD_BESIDE]: amd });
+      factory(r2, Object.assign({ coreFlag: true }, AMD_ENV));
+      expect(r2.lines).toEqual([['info', 'Pearl core: AMD build (ROCm) · --core amd']]);
     });
 
     // The release carries the core but not ROCm. Without the HIP runtime the file is
@@ -442,7 +456,22 @@ describe('coreFactory — choosing a build', () => {
       expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · PEARL_CORE_PATH=/opt/amd/pearl_core_hip.nod '
-        + 'did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)']]);
+        + 'not found (PEARL_CORE_VARIANT=amd, so no CUDA build is tried)']]);
+      // A relative path counts from the executable's folder, which the line says.
+      const r2 = rig();
+      expect(factory(r2, { env: { PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: 'build/pearl_core_hip.node' } })).toBeNull();
+      expect(r2.lines[0][1]).toBe('Pearl core: AMD build (ROCm) · PEARL_CORE_PATH=build/pearl_core_hip.node not found '
+        + "(a relative path counts from the executable's folder; PEARL_CORE_VARIANT=amd, so no CUDA build is tried)");
+    });
+
+    // Named without PEARL_CORE_VARIANT=amd, the AMD core is tried as the CUDA one
+    // would be, and a CUDA build that loads after it must not hide why it failed.
+    test('a PEARL_CORE_PATH that is there but will not load, with a CUDA build behind it, says why', () => {
+      const r = rig({ '/opt/amd/pearl_core_hip.node': new Error('libamdhip64.so.7: cannot open shared object file') });
+      expect(factory(r, { env: { PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.node' } })({})).toEqual({ build: 'cu12' });
+      expect(r.lines[0][0]).toBe('warn');
+      expect(r.lines[0][1]).toMatch(/^Pearl core: \/opt\/amd\/pearl_core_hip\.node is there but would not load: libamdhip64/);
+      expect(r.lines[1]).toEqual(['info', 'Pearl core: ' + CU12_BESIDE + ' (PEARL_CORE_PATH did not load)']);
     });
 
     test('a PEARL_CORE_PATH that is there but will not load says why', () => {

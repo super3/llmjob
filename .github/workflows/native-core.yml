@@ -618,16 +618,15 @@ jobs:
     runs-on: ubuntu-latest
     container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
     continue-on-error: true
-    timeout-minutes: 45
+    # A run takes about 3.5 minutes. The limit must stay under the 25 minutes
+    # pick-core-run.sh waits for the whole run: continue-on-error covers a job that
+    # fails, not one still running, so a slow job here would hold back every release.
+    timeout-minutes: 20
     steps:
+      # The image has hip-clang, the HIP runtime and build-essential (with binutils for
+      # objdump and strings), so nothing is installed from apt: that would only add two
+      # package servers that must be up for the AMD core to ship.
       - uses: actions/checkout@v4
-
-      # The image has hip-clang and the HIP runtime; these are what the host half and the
-      # checks below need (the Salad boxes install the same, tuning/salad/amdtest.sh's setup).
-      - name: Install the build tools
-        run: |
-          apt-get update -qq
-          apt-get install -y -qq --no-install-recommends build-essential binutils ca-certificates
 
       - uses: actions/setup-node@v4
         with:
@@ -649,7 +648,9 @@ jobs:
 
       - name: Install node-addon-api
         working-directory: earn/native/amd
-        run: npm install --no-save --no-audit --no-fund node-addon-api
+        # --prefix .: this folder has no package.json, and without it npm installs into
+        # earn/, the whole app's lockfile.
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
 
       # Every fold on every target, with no spill and no scratch memory. A fold that spills
       # still compiles, links and mines, only slower, and nothing else here would see it.

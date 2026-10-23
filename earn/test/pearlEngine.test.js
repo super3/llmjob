@@ -162,7 +162,7 @@ describe('PearlEngine — the surface main.js drives', () => {
     e.on('log', (l) => logs.push(l));
     e.start({ address: ADDR, worker: 'rig01', endpoint: 'h:1' });
     expect(e.isRunning()).toBe(false);
-    expect(logs.some((l) => /not built/i.test(l.line))).toBe(true);
+    expect(logs.some((l) => /No Pearl core loaded/.test(l.line))).toBe(true);
   });
 });
 

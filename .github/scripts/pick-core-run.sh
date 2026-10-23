@@ -172,7 +172,8 @@ if [ -z "$picked" ]; then
     # native-core's path filters cover, by new name or, for a rename, old name.
     res=$(ghapi "$api/compare/$candidate...$GITHUB_SHA?per_page=1" --jq '[.status, (.files | length),
       ([.files[] | .filename, .previous_filename | select(. != null)
-        | select(startswith("earn/native/") or . == ".github/workflows/native-core.yml")] | length)] | @tsv')
+        | select(startswith("earn/native/") or . == ".github/workflows/native-core.yml"
+                 or . == ".github/scripts/check-glibc-floor.sh")] | length)] | @tsv')
     IFS=$'\t' read -r status changed in_filters <<< "$res"
     if [ "$status" != ahead ] && [ "$status" != identical ]; then
       echo "  $(short "$candidate"): not in this commit's history ($status)"

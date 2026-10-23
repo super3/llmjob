@@ -14,6 +14,7 @@ set -euo pipefail
 GLIBC_MAX=2.35       # Ubuntu 22.04's glibc
 GLIBCXX_MAX=3.4.30   # its libstdc++ (GCC 12)
 CXXABI_MAX=1.3.13
+GCC_MAX=12.0.0       # its libgcc_s
 
 # The newest of two dotted versions.
 newest() { printf '%s\n%s\n' "$1" "$2" | sort -V | tail -n 1; }
@@ -25,7 +26,7 @@ for f in "$@"; do
     bad=1
     continue
   fi
-  for pair in GLIBC:$GLIBC_MAX GLIBCXX:$GLIBCXX_MAX CXXABI:$CXXABI_MAX; do
+  for pair in GLIBC:$GLIBC_MAX GLIBCXX:$GLIBCXX_MAX CXXABI:$CXXABI_MAX GCC:$GCC_MAX; do
     name=${pair%%:*}
     max=${pair##*:}
     # Each version tag once, as name_x.y.z. GLIBC_ never matches GLIBCXX_: the underscore

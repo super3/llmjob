@@ -61,11 +61,14 @@ function isPackaged() {
 // no coin miner it didn't ask for.
 //
 // `opts.amd`: this rig asked for the AMD core (--core amd or
-// PEARL_CORE_VARIANT=amd). The AMD core comes along then, or when one is
-// already beside the binary. On such a rig it is the core that mines, so it is
+// PEARL_CORE_VARIANT=amd). On such a rig it is the core that mines, so it is
 // paired as the 12.8 core is: downloaded before anything is replaced, and a
 // failed download fails the update. A release without one leaves the old copy
-// in place. Deleting it would leave the rig nothing to mine with.
+// in place. Deleting it would leave the rig nothing to mine with. A copy that
+// is merely there (the HiveOS package used off HiveOS, say) on a rig that
+// didn't ask is kept in step like the CUDA 13 core, after the binary, and is
+// removed if its download fails: that rig doesn't mine with it, and a failure
+// there must not hold back its update.
 async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
   const dir = path.dirname(exe);
@@ -75,7 +78,8 @@ async function applyUpdate(plan, execPath, opts) {
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
   const hipTmp = hip + '.new-' + process.pid;
-  const withHip = !!plan.coreHipUrl && (!!(opts && opts.amd) || fs.existsSync(hip));
+  const withHip = !!plan.coreHipUrl && !!(opts && opts.amd);
+  const keepHip = !!plan.coreHipUrl && !withHip && fs.existsSync(hip);
   try {
     await downloadFile(plan.downloadUrl, tmp);
     // Releases older than the split have no core asset; nothing to pair then.
@@ -115,6 +119,15 @@ async function applyUpdate(plan, execPath, opts) {
       // downloadFile removes its own partial file; this is one that arrived
       // but would not go in.
       fs.rmSync(cu13Tmp, { force: true });
+    }
+  }
+  if (keepHip) {
+    try {
+      await downloadFile(plan.coreHipUrl, hipTmp);
+      fs.renameSync(hipTmp, hip);
+    } catch (e) {
+      fs.rmSync(hipTmp, { force: true });
+      fs.rmSync(hip, { force: true });
     }
   }
   // The CPU worker. A failed download keeps the one already there, which the

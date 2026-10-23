@@ -287,8 +287,16 @@ jobs:
           # delete any copy an earlier run of this workflow left on the release:
           # that one came from a different native-core run than the 12.8 core
           # just uploaded, and the self-updater would pair them.
+          # An optional file whose upload fails must not stop the binary's: under set -e
+          # it would, and every rig would read the release as asset-missing. Its stale
+          # copy goes too, as when the build has none.
+          optional_failed() {
+            echo "::warning::uploading $1 to v$VERSION failed; publishing without it"
+            gh release delete-asset "v$VERSION" "$1" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          }
           if [ -f dist/pearl_core_cu13.node ]; then
-            gh release upload "v$VERSION" dist/pearl_core_cu13.node --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "v$VERSION" dist/pearl_core_cu13.node --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_core_cu13.node
           else
             echo "::warning::publishing v$VERSION without pearl_core_cu13.node"
             gh release delete-asset "v$VERSION" pearl_core_cu13.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
@@ -297,7 +305,8 @@ jobs:
           # release has none (src/cli/selfUpdater.js), so a stale one left here by an
           # earlier run is deleted: it would pair with this run's binary.
           if [ -f dist/pearl_core_hip.node ]; then
-            gh release upload "v$VERSION" dist/pearl_core_hip.node --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "v$VERSION" dist/pearl_core_hip.node --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_core_hip.node
           else
             echo "::warning::publishing v$VERSION without pearl_core_hip.node"
             gh release delete-asset "v$VERSION" pearl_core_hip.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
@@ -305,7 +314,8 @@ jobs:
           # The CPU worker, before the binary for the same reason as the cores.
           # Optional: a release without it keeps each rig's old one.
           if [ -f dist/llmjob-xmr-worker ]; then
-            gh release upload "v$VERSION" dist/llmjob-xmr-worker --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "v$VERSION" dist/llmjob-xmr-worker --clobber --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::uploading llmjob-xmr-worker to v$VERSION failed; rigs keep their old one"
           else
             echo "::warning::publishing v$VERSION without llmjob-xmr-worker"
           fi
@@ -404,9 +414,11 @@ jobs:
               if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' \
                    > "$RUNNER_TEMP/pr-body.md" 2>/dev/null \
                  && [ -n "$(tr -d '[:space:]' < "$RUNNER_TEMP/pr-body.md")" ]; then
-                # tr: a body edited on the web has CRLF line ends.
-                tr -d '\r' < "$RUNNER_TEMP/pr-body.md" \
-                  | awk '$0 == "<!-- end of release notes -->" { exit } { print }' >> "$NOTES"
+                # sub(): a body edited on the web has CRLF line ends. awk reads the
+                # file itself: piped, the writer could die of SIGPIPE when awk stops
+                # at the marker, and under pipefail that fails the step.
+                awk '{ sub(/\r$/, "") } $0 == "<!-- end of release notes -->" { exit } { print }' \
+                  "$RUNNER_TEMP/pr-body.md" >> "$NOTES"
                 printf '\n\n---\n\n' >> "$NOTES"
               else
                 echo "PR #$PR had no usable body — generated notes only."

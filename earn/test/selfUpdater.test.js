@@ -401,6 +401,36 @@ describe('applyUpdate', () => {
     out2.emit('finish');
     await expect(p).resolves.toBe('/opt/rig/earn');
     expect(fs.renameSync).toHaveBeenCalledWith(hip + '.new-' + process.pid, hip);
+    // After the binary, not paired with it: this rig didn't ask for it.
+    const at = (to) => fs.renameSync.mock.invocationCallOrder[fs.renameSync.mock.calls.findIndex((c) => c[1] === to)];
+    expect(at('/opt/rig/earn')).toBeLessThan(at(hip));
+  });
+
+  // Merely there, on a rig that didn't ask for it: a failed download must not
+  // hold back the update, and last release's copy goes rather than stay unpaired.
+  it('drops an AMD core it was not asked for when its download fails, and still updates', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+    fs.renameSync.mockImplementation((from, to) => { if (to === hip) throw new Error('EACCES'); });
+    fs.chmodSync.mockImplementation(() => {});
+    fs.existsSync.mockImplementation((f) => f === hip);
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: 'https://host/pearl_core_hip.node' },
+      '/opt/rig/earn', { amd: false });
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.renameSync).toHaveBeenCalledWith('/opt/rig/earn.new-' + process.pid, '/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(hip + '.new-' + process.pid, { force: true });
+    expect(fs.rmSync).toHaveBeenCalledWith(hip, { force: true });
   });
 
   // A failed AMD core download on an AMD rig leaves the old pair, which mines.

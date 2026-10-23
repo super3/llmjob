@@ -54,7 +54,7 @@ const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus,
+  describeSkippedGpus, planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
@@ -855,6 +855,10 @@ async function run(argv) {
     // chose some. Read here, with the rest of the startup probing, because the
     // start site below is inside a callback.
     settings.gpus = await detectMinerGpus(process.env, gpuPick ? gpuPick.indices : null);
+    // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
+    // with an NVIDIA card beside the AMD ones, its list would drop the AMD
+    // cards the indices name. The chosen indices go to the core as they are.
+    if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -954,24 +958,30 @@ async function run(argv) {
     // rig with driver 580+) is decided from one more nvidia-smi query and the
     // card list above; see shared/coreVariant. The factory logs its choice.
     cudaCards = await probe.detectCudaCards();
+    // Set when the loader found a core that would not load. It has said why
+    // (a missing library, too old a glibc), and "not found" would contradict it.
+    let loadFailed = false;
     const createCore = coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
-      log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+      coreFlag: !!settings.core,
+      log: (level, line) => {
+        if (line.includes(' is there but would not load: ')) loadFailed = true;
+        log(line, level === 'error' ? process.stderr : process.stdout);
+      },
     });
     if (!createCore) {
       // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
       // of its own. Pointing at pearl_core.node there would load a CUDA core on
-      // an AMD rig. The core loader has already said what failed (the file is
-      // missing, it would not load, or PEARL_CORE_PATH didn't load); this says
-      // where it goes.
-      if (wantsAmdCore()) {
-        const file = CORE_FILES[CORE_AMD];
-        // One that is there but would not load has had its reason (usually no
-        // ROCm runtime); only a missing one needs telling where it goes.
-        if (!fs.existsSync(path.join(path.dirname(process.execPath), file))) {
-          log('Fix: put ' + file + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+      // an AMD rig. The core loader has already said what failed; when the file
+      // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
+      // file is tried, so its own line is the whole answer.
+      if (loadFailed) {
+        // Nothing to add.
+      } else if (wantsAmdCore()) {
+        if (!process.env.PEARL_CORE_PATH) {
+          log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
         }
       } else {
         const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
@@ -1121,7 +1131,12 @@ async function run(argv) {
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.
-  if (miner) {
+  // Not on an AMD core: the plan is nvidia-smi's, and on a rig with an NVIDIA
+  // card beside the AMD ones it would lock that idle card's memory clock.
+  if (miner && wantsAmdCore()) {
+    settings.mineMemClockByIndex = {};
+    settings.mineMemClockDefault = false;
+  } else if (miner) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
       cards: cudaCards,

@@ -107,9 +107,9 @@ function findCore(opts, failed) {
 // The CUDA 13 core, from the packaged locations only. Nothing builds it into the
 // dev tree (a local build is one pearl_core.node, for whatever toolkit that box
 // has), and a rig running its own build points PEARL_CORE_PATH at it.
-function findCu13Core(opts) {
+function findCu13Core(opts, failed) {
   const { req, dirs } = loaderContext(opts);
-  return firstLoadable(req, dirs.map((d) => path.join(d, FILES[CU13])));
+  return firstLoadable(req, dirs.map((d) => path.join(d, FILES[CU13])), failed);
 }
 
 // The AMD core (PEARL_CORE_VARIANT=amd only): the packaged locations, then the
@@ -160,8 +160,9 @@ function coreFactory(opts = {}) {
       if (!named) {
         log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
           + ' (PEARL_CORE_PATH; PEARL_CORE_VARIANT=amd, so no CUDA build is tried)'
-          : 'PEARL_CORE_PATH=' + env.PEARL_CORE_PATH
-          + ' did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)'));
+          : 'PEARL_CORE_PATH=' + env.PEARL_CORE_PATH + ' not found ('
+            + (path.isAbsolute(env.PEARL_CORE_PATH) ? '' : 'a relative path counts from the executable\'s folder; ')
+            + 'PEARL_CORE_VARIANT=amd, so no CUDA build is tried)'));
         return null;
       }
       log('info', 'Pearl core: ' + named.file + ' (PEARL_CORE_PATH)');
@@ -173,12 +174,17 @@ function coreFactory(opts = {}) {
       if (failed.length) log('error', 'Pearl core: ' + wouldNotLoad(failed));
       return null;
     }
+    // The named file was there but would not load, and a CUDA build did: say
+    // why, since the AMD core named without PEARL_CORE_VARIANT=amd lands here.
+    if (found.file !== env.PEARL_CORE_PATH && failed.length) log('warn', 'Pearl core: ' + wouldNotLoad(failed));
     log('info', 'Pearl core: ' + found.file
       + (found.file === env.PEARL_CORE_PATH ? ' (PEARL_CORE_PATH)' : ' (PEARL_CORE_PATH did not load)'));
     return wrap(found.addon);
   }
 
   const pick = pickCoreVariant({ env, cards: opts.cards, gpus: opts.gpus });
+  // The CLI's --core sets PEARL_CORE_VARIANT; the log names what was typed.
+  if (opts.coreFlag && pick.reason === 'PEARL_CORE_VARIANT=' + pick.variant) pick.reason = '--core ' + pick.variant;
 
   // Asked for by name, so no fallback to a CUDA build: on an AMD rig there is
   // nothing for one to run on, and on an NVIDIA rig the operator said otherwise.
@@ -186,16 +192,20 @@ function coreFactory(opts = {}) {
     const failed = [];
     const amd = findAmdCore(opts, failed);
     if (!amd) {
+      const where = (opts.platform || process.platform) === 'win32'
+        ? 'the AMD core is built for Linux only'
+        : 'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
+          + ' earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH';
       log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
-        : FILES[AMD] + ' not found (' + pick.reason + '; the Linux release has it beside the CLI'
-          + ' binary, or build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)'));
+        : FILES[AMD] + ' not found (' + pick.reason + '; ' + where + ')'));
       return null;
     }
     say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
     return wrap(amd.addon);
   }
 
-  const cu13 = pick.variant === CU13 ? findCu13Core(opts) : null;
+  const cu13Failed = [];
+  const cu13 = pick.variant === CU13 ? findCu13Core(opts, cu13Failed) : null;
 
   if (!cu13) {
     const failed = [];
@@ -205,7 +215,9 @@ function coreFactory(opts = {}) {
       return null;
     }
     if (found.dev) log('info', 'Pearl core: local build ' + found.file);
-    else say('info', CU12, pick.variant === CU13 ? FILES[CU13] + ' is not installed' : pick.reason);
+    else if (pick.variant !== CU13) say('info', CU12, pick.reason);
+    else if (cu13Failed.length) say('warn', CU12, wouldNotLoad(cu13Failed));
+    else say('info', CU12, FILES[CU13] + ' is not installed');
     return wrap(found.addon);
   }
 
