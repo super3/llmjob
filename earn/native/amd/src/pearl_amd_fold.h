@@ -360,16 +360,19 @@ __device__ __forceinline__ void pearl_amd_bar_wait() {
 
 // PEARL_AMD_PF2=1: global loads two slabs ahead instead of one (two register sets, the slab
 // loop unrolled by two so each set and LDS buffer is fixed), so a load has two slabs of matrix
-// work to arrive in before its LDS store waits on it.
+// work to arrive in before its LDS store waits on it. On by default on RDNA 3, where it was
+// measured: an RX 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against
+// 31.10-31.16 without, and 32.17-32.28 with the DPP readout below as well.
 #ifndef PEARL_AMD_PF2
-#define PEARL_AMD_PF2 0
+#define PEARL_AMD_PF2 PEARL_AMD_WMMA11
 #endif
 
 // PEARL_AMD_DPP=1 (RDNA, wave32): VALU lane moves instead of __shfl_xor's ds_bpermute, which
 // goes through the LDS pipe: lane ^ 1 by a quad permute, ^ 8 by rotating each 16-lane row by 8,
-// ^ 16 by swapping the two rows (v_permlanex16 with the identity selects).
+// ^ 16 by swapping the two rows (v_permlanex16 with the identity selects). On by default on
+// RDNA 3: 31.30-31.41 TH/s against 31.10-31.16 on the same 7800 XT.
 #ifndef PEARL_AMD_DPP
-#define PEARL_AMD_DPP 0
+#define PEARL_AMD_DPP PEARL_AMD_WMMA11
 #endif
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)

@@ -119,9 +119,9 @@ no scratch memory on every target:
 | gfx908, gfx90a | mfma8 | 168 | 128 | 36 KB | 1 |
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
-| gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
-| gfx1102, gfx1150 | wmma11 | 226 | - | 36 KB | 4 |
-| gfx1151 | wmma11 | 226 | - | 36 KB | 6 |
+| gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
+| gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
+| gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1200, gfx1201 | wmma12 | 196 | - | 36 KB | 6 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. `./build-amd.sh
@@ -227,8 +227,12 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
-  barrier, batch widths 64 and 128, and 64-byte slabs (4% slower). Next: DPP or `ds_swizzle`
-  instead of `__shfl_xor` in the readout; `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
+  barrier, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
+  loads two slabs ahead (`PEARL_AMD_PF2`) and does the readout's lane exchanges with DPP and
+  `v_permlanex16` (`PEARL_AMD_DPP`): 31.10-31.16 TH/s to 32.17-32.28 on an RX 7800 XT (PC
+  `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. Both are off on
+  RDNA 4 until measured there, as is `PEARL_AMD_SPLIT` (a split slab barrier on gfx12; on RDNA 3
+  the moved barrier measured no faster). Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
