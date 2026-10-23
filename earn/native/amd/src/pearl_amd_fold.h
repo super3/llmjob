@@ -344,8 +344,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // an exec-mask branch in the staging addresses (wmma11 236 -> 219 VGPRs, wmma12 215 -> 198).
 // On by default on RDNA 4 only. An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
 // the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
-// with PF2 + DPP + PFX + TID. On RDNA 3 PFX + TID changed nothing (RX 7900 XT 67c308d2,
-// 47.13-47.23 against 47.22-47.26), so its default there stays as measured for its rows.
+// with PF2 + DPP + PFX + TID; the old path against all four on other PCs: 9060 XT d324328f
+// 56.27-56.34 against 63.92-63.94, 54b217a9 28.16 against 32.85; 9070 XT 83151dba 81.26-81.33
+// against 89.05-89.81, 77904d36 97.81-97.85 against 110.09-110.49. On RDNA 3 PFX + TID changed
+// nothing (RX 7900 XT 67c308d2, 47.13-47.23 against 47.22-47.26), so it stays off there.
 #ifndef PEARL_AMD_PFX
 #define PEARL_AMD_PFX PEARL_AMD_WMMA12
 #endif

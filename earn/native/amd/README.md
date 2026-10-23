@@ -214,20 +214,18 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
 - The first hardware runs were on Salad (`tuning/salad/amdtest.py`, which builds this folder on a
   Salad AMD PC and runs the steps under "Testing on real hardware"). HIP reaches the GPU there
   through WSL2: `/dev/dxg` and Salad's bridge `/opt/rocm-host/lib/librocdxg.so`, with no `/dev/kfd`.
-  Still open:
-  - Hits a salt came in under the 8 the target gives on three of four PCs (6.92-7.55, against 7.95
-    on the fourth), so on some PCs the card may search less than the rate it reports. Settle it with
-    a hit check of 600 s or more.
-  - SRBMiner on the same PC as this core, to tell the miner's speed from the PC's. Its figures
-    in `benchmark.md` (79-85 TH/s on an RX 9070 XT, 53 on an RX 7900 XTX) are from other PCs.
-  - The RX 9060 XT (gfx1200), RX 7800 XT (gfx1101) and RX 7900 XT haven't run.
+  On 23 October every Radeon class Salad rents ran: RX 9060 XT (gfx1200), RX 9070 XT (gfx1201),
+  RX 7800 XT (gfx1101), RX 7900 XT and RX 7900 XTX (gfx1100). Each 300 s or 600 s hit check gave
+  7.81-8.05 hits a salt with no failed hit, so the low counts of 22 October (6.92-7.55) came from
+  short runs. `amdtest.sh`'s `duel` task runs SRBMiner on the same PC (benchmark.md's method);
+  the rows are in `benchmark.md`.
 - Pause only the LLM's card for a prompt on a rig of several AMD cards (see "Using it in
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
-  barrier, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
+  barrier with one slab of prefetch, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
   loads two slabs ahead (`PEARL_AMD_PF2`) and does the readout's lane exchanges with DPP and
   `v_permlanex16` (`PEARL_AMD_DPP`): 31.10-31.16 TH/s to 32.17-32.28 on an RX 7800 XT (PC
   `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. RDNA 4 does both
