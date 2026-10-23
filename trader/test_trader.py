@@ -6,7 +6,7 @@ spec = importlib.util.spec_from_file_location("trader", os.path.join(os.path.dir
 t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
 t.time.sleep = lambda s: None
-HTTP, LOG = t.http, t.log  # the real ones, before tests swap them
+HTTP, LOG, OUT_IP = t.http, t.log, t.out_ip  # the real ones, before tests swap them
 
 MARKETS = [{"id": "prlusdt", "amount_precision": 2, "price_precision": 4, "min_amount": "0.1"}]
 BOOK = {"bids": [{"price": "1.40", "remaining_volume": "3"}, {"price": "1.38", "remaining_volume": "2"},
@@ -340,6 +340,56 @@ class TestSafety(Base):
         self.saw("run started")
         self.saw("FAILED: run took over 1 s")
 
+    def test_a_run_hung_inside_a_network_call_is_stopped(self):
+        # The real http(), with urlopen never answering. Its `except Exception` used to catch the alarm's Fail, so the
+        # call came back as HTTP 0 and the run went on with no limit: the alarm fires once. The 12 October hang was in
+        # urlopen. out_ip() goes through the proxy too, so the limit covers it as well.
+        def stalls(req, timeout):
+            select.select([], [], [], 5)
+            raise AssertionError("not stopped")
+        real_urlopen, real_out_ip = t.urlopen, t.out_ip
+        t.urlopen, t.MAX_RUN_SECONDS = stalls, 1
+        t.out_ip = OUT_IP
+        started = t.time.time()
+        try:
+            self.assertEqual(self.go(HTTP), 1)
+        finally:
+            t.urlopen, t.out_ip, t.MAX_RUN_SECONDS = real_urlopen, real_out_ip, 300
+        self.assertLess(t.time.time() - started, 3)
+        self.saw("FAILED: run took over 1 s")
+
+    def test_an_answer_of_the_wrong_shape_fails_the_run_in_one_line(self):
+        # A 2xx order with no id, after the order went in: one FAILED line and exit 1, not a traceback.
+        fake = Fake()
+        fake.routes.insert(0, ("POST", r"/market/orders$", (201, {})))
+        self.assertEqual(self.go(fake), 1)
+        self.saw("FAILED: unexpected KeyError: 'id'")
+
+    def test_a_live_run_without_its_key_fails(self):
+        key = t.KEY
+        t.KEY = ""
+        try:
+            self.assertEqual(self.go(Fake()), 1)
+            os.environ["DRY_RUN"] = "1"
+            self.assertEqual(self.go(Fake()), 0)
+        finally:
+            t.KEY = key
+        self.saw("aren't set; nothing to do")
+
+    def test_only_open_orders_are_cancelled(self):
+        fake = Fake(orders=[{"id": 5, "side": "sell", "market": "prlusdt", "state": "wait", "origin_amount": "1",
+                             "filled_amount": "0", "price": "2"},
+                            {"id": 6, "side": "sell", "market": "prlusdt", "state": "done", "origin_amount": "1",
+                             "filled_amount": "1", "price": "2"}])
+        self.go(fake)
+        self.assertEqual([c[1] for c in fake.made("POST", r"/cancel$")], ["/trade/market/orders/5/cancel"])
+
+    def test_open_orders_that_are_not_a_list_fail_the_run(self):
+        fake = Fake()
+        fake.routes.insert(0, ("GET", r"/market/orders$", (200, {"data": []})))
+        self.assertEqual(self.go(fake), 1)
+        self.saw('open orders: expected a list, got {"data": []}')
+
     def test_signature(self):
         # hex HMAC-SHA256(secret, nonce + key), as the Peatio docs give it
         import hashlib, hmac
@@ -404,11 +454,51 @@ class TestProxy(Base):
         self.saw("run started: calls go out from 203.0.113.7 through the proxy at proxy.example:9293")
         self.assertFalse(any("secret" in line for line in self.logs))
 
+    def test_a_password_with_a_hash_shows_nothing_of_the_address(self):
+        # urlsplit ends the address at '#' or '?', so its host is the user name and its port part of the password.
+        for proxy in ("http://user1:ab#c12@proxy.example:9293", "http://user1:ab?c12@proxy.example:9293"):
+            self.logs.clear()
+            t.PROXY = proxy
+            self.assertEqual(self.go(Fake()), 0)
+            self.saw("through the proxy at (an address this log can't show)")
+            self.assertFalse(any("user1" in line or "ab" in line.split("from")[-1] for line in self.logs if "proxy" in line))
+
     def test_a_refused_key_names_the_ip_to_whitelist(self):
         fake = Fake()
         fake.routes.insert(0, ("GET", r"/market/orders$", (403, {"raw": ""})))
         self.assertEqual(self.go(fake), 1)
         self.saw("open orders failed: HTTP 403 {\"raw\": \"\"} (calls go out from 203.0.113.7: is it on the key's IP whitelist?)")
+
+
+class TestNumbers(Base):
+    def test_amounts_round_down_never_up(self):
+        self.assertEqual(t.floor_to(4.12999999999995, 4), 4.1299)
+        self.assertEqual(t.floor_to(4.12, 2), 4.12)
+        self.assertEqual(t.floor_to(2.2027, 4), 2.2027)
+        self.assertEqual(t.floor_to(0.30000000000000004, 1), 0.3)
+
+    def lifetime_with(self, pages):
+        t.http = lambda method, path, params=None, auth=False: (200, pages(params["page"]))
+        return t.lifetime()
+
+    def test_a_history_past_the_pages_read_is_named(self):
+        full = lambda p: [{"id": p * 1000 + i, "side": "sell", "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0}
+                          for i in range(100)]
+        prl, usdt, fees, n, unread = self.lifetime_with(full)
+        self.assertEqual((prl, n), (5000.0, 5000))
+        self.assertEqual(unread, ["trade history past 5000 trades (read 50 pages)"])
+
+    def test_a_history_that_ignores_the_page_is_named(self):
+        same = lambda p: [{"id": i, "side": "sell", "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0}
+                          for i in range(100)]
+        prl, usdt, fees, n, unread = self.lifetime_with(same)
+        self.assertEqual((prl, n), (100.0, 100))
+        self.assertEqual(unread, ["trade history past 100 trades (page 2 repeats page 1)"])
+
+    def test_a_short_history_reads_without_a_note(self):
+        short = lambda p: [{"id": i, "side": "sell", "market": "pearlusdt", "amount": 1, "total": 2, "fee": 0}
+                           for i in range(30)] if p == 1 else []
+        self.assertEqual(self.lifetime_with(short), (30.0, 60.0, 0.0, 30, []))
 
 
 class TestMain(unittest.TestCase):

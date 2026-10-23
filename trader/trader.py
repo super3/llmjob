@@ -6,7 +6,8 @@
 # first. Anything the book can't take now waits for the next run.
 # It trades only when DRY_RUN=0 and it runs in Railway's production environment; anything else just logs
 # what it would do. Standard library only.
-import hashlib, hmac, json, math, os, signal, sys, time, urllib.error, urllib.parse, urllib.request
+import hashlib, hmac, json, math, os, re, signal, sys, time, urllib.error, urllib.parse, urllib.request
+from decimal import Decimal, ROUND_DOWN
 
 # Paths from SafeTrade's REST API page (safe.trade/api/v2): private calls under /trade (balances at
 # /trade/account/balances/spot; orders at /trade/market/orders, /{id} and /{id}/cancel), public data under
@@ -39,6 +40,7 @@ MIN_VOLUME = float(os.environ.get("MIN_VOLUME", "0.5"))        # don't bother wi
 # A run that hangs keeps the cron service busy, and Railway skips every later run until it ends, so a run
 # is stopped after this long.
 MAX_RUN_SECONDS = int(os.environ.get("MAX_RUN_SECONDS", "300"))
+PAGES = 50   # trade history pages read for the lifetime totals, 100 trades each; past that, the ACCOUNT line says so
 # SafeTrade takes the key only from the IPs on its whitelist. SAFETRADE_PROXY (http://user:pass@host:port) sends
 # every call through a proxy with a static IP, so the whitelist needs just that address, whatever IP Railway uses.
 PROXY = os.environ.get("SAFETRADE_PROXY", "")
@@ -57,9 +59,15 @@ def urlopen(req, timeout):
 
 
 def proxy_name():
-    """The proxy's host and port, without its login."""
+    """The proxy's host and port, without its login. A password with '#' or '?' in it makes urlsplit end the address
+    there (urllib's own proxy parsing is fine), so its "host" is the user name and its port part of the password, and
+    the ValueError's text holds that part: then nothing of the address is shown."""
     u = urllib.parse.urlsplit(PROXY)
-    return f"{u.hostname}:{u.port}" if u.port else str(u.hostname)
+    try:
+        port = u.port
+    except ValueError:
+        return "(an address this log can't show)"
+    return f"{u.hostname}:{port}" if port else str(u.hostname)
 
 
 def out_ip():
@@ -113,6 +121,12 @@ class Fail(Exception):
     pass
 
 
+class TooLong(BaseException):
+    """The run went past MAX_RUN_SECONDS. Not an Exception, so http()'s and out_ip()'s `except Exception` can't catch
+    it: the alarm usually fires inside a network call, and a caught one let the run carry on with no limit at all,
+    since the alarm fires once. The 12 October hang, 15 hours with no sale, was inside urlopen."""
+
+
 def need(status, body, what):
     if not 200 <= status < 300:
         hint = f" (calls go out from {OUT_IP}: is it on the key's IP whitelist?)" if status in (401, 403) else ""
@@ -121,8 +135,9 @@ def need(status, body, what):
 
 
 def floor_to(x, places):
-    f = 10 ** places
-    return round(math.floor(x * f + 1e-9) / f, places)   # round(): no 4.1200000001 in the JSON
+    # Decimal from the float's shortest repr: 4.12 stays 4.12 (x * 100 is 411.99999...), and 4.12999999999995 rounds
+    # down to 4.1299, not up to 4.13, which would ask to sell more than the balance.
+    return float(Decimal(repr(float(x))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN))
 
 
 def ceil_to(x, places):
@@ -268,13 +283,18 @@ def lifetime():
     under the pearl markets; whichever id a trade carries, it's counted. Each trade counts once, by its id."""
     ours = {MARKET.lower()} | {c + QUOTE for c in COINS}
     prl = usdt = fees = 0.0
-    n, counted, unread, top = 0, set(), [], None
-    for page in range(1, 51):
+    n, counted, unread, top, full = 0, set(), [], None, False
+    for page in range(1, PAGES + 1):
         s, j = http("GET", PRIV + "/market/trades", {"side": "sell", "page": page, "limit": 100}, auth=True)
         if not 200 <= s < 300:
             unread.append(f"trade history page {page}: HTTP {s}")
             break
-        if not isinstance(j, list) or not j or (page > 1 and j[0].get("id") == top):
+        if page > 1 and isinstance(j, list) and j and j[0].get("id") == top:
+            # A full page then the same page again: SafeTrade ignored `page`, so the rest can't be read this way.
+            if full:
+                unread.append(f"trade history past {100 * (page - 1)} trades (page {page} repeats page {page - 1})")
+            break
+        if not isinstance(j, list) or not j:
             break
         top = j[0].get("id")
         for t in j:
@@ -286,8 +306,11 @@ def lifetime():
             usdt += float(t.get("total") or 0)
             fees += float(t.get("fee") or 0)
             n += 1
-        if len(j) < 100:
+        full = len(j) >= 100
+        if not full:
             break
+    else:
+        unread.append(f"trade history past {100 * PAGES} trades (read {PAGES} pages)")
     return prl, usdt, fees, n, unread
 
 
@@ -313,7 +336,12 @@ def run(live):
     # Last run's unfilled rest: cancel it, so its PRL counts in the balance again.
     s, orders = http("GET", PRIV + "/market/orders", {"market": MARKET, "state": "wait", "side": "sell"}, auth=True)
     need(s, orders, "open orders")
+    if orders is not None and not isinstance(orders, list):
+        raise Fail(f"open orders: expected a list, got {json.dumps(orders)[:200]}")
     for o in orders or []:
+        # Only what is still open: a finished order can't be cancelled, and asking fails the run.
+        if o.get("state", "wait") != "wait":
+            continue
         if o.get("side") == "sell" and str(o.get("market", MARKET)).lower() == MARKET.lower():
             if live:
                 need(*http("POST", f"{PRIV}/market/orders/{o['id']}/cancel", {}, auth=True), f"cancel order {o['id']}")
@@ -368,19 +396,29 @@ def main():
         log(f"DRY_RUN=0 but this is environment {env!r}, not production: dry run only")
     if not KEY or not SECRET:
         log("SAFETRADE_API_KEY and SAFETRADE_API_SECRET aren't set; nothing to do")
-        return 0
-    global OUT_IP
-    OUT_IP = out_ip()
-    log(f"run started: calls go out from {OUT_IP}" + (f" through the proxy at {proxy_name()}" if PROXY else ""))
+        # A live service without its key sells nothing; failing the run makes Railway show it.
+        return 1 if live else 0
 
     def too_long(*_):
-        raise Fail(f"run took over {MAX_RUN_SECONDS} s; stopped so the next hourly run isn't skipped")
+        raise TooLong()
     signal.signal(signal.SIGALRM, too_long)
+    # Before the first call: out_ip() goes through the proxy too, and can hang like any other call.
     signal.alarm(MAX_RUN_SECONDS)
+    global OUT_IP
     try:
+        OUT_IP = out_ip()
+        log(f"run started: calls go out from {OUT_IP}" + (f" through the proxy at {proxy_name()}" if PROXY else ""))
         run(live)
     except Fail as e:
         log(f"FAILED: {e}")
+        return 1
+    except TooLong:
+        log(f"FAILED: run took over {MAX_RUN_SECONDS} s; stopped so the next hourly run isn't skipped")
+        return 1
+    except Exception as e:
+        # An answer of a shape nothing expected (a 2xx order without an id, say). Logged in one line, any login in a
+        # URL masked, instead of a traceback.
+        log(f"FAILED: unexpected {type(e).__name__}: {re.sub(r'//[^/@ ]+@', '//***@', str(e))[:200]}")
         return 1
     finally:
         signal.alarm(0)
