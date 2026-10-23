@@ -19,6 +19,8 @@
 #                   types the folds use).
 #   NODE_ADDON_API  node-addon-api's include folder (default: require('node-addon-api')).
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
+#   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_GROUP=4 to
+#                   build a tuning variant (pearl_amd_fold.h lists the knobs).
 #
 # The portable kernels are pearl_kernel.cu's own: this script copies that file up to the
 # start of the CUDA folds into build/gen/pearl_kernel_portable.cu, and stops if the line it
@@ -113,7 +115,7 @@ case "$mode" in
     # ROCm marks every HIP call [[nodiscard]]. The host ignores the result of the ones that
     # cannot fail on their own, as pearl_host.cu does, and reads hipGetLastError where it
     # matters.
-    flags="-std=c++17 -O3 -fPIC -Wno-unused-result -Wno-unused-value"
+    flags="-std=c++17 -O3 -fPIC -Wno-unused-result -Wno-unused-value ${PEARL_AMD_CFLAGS:-}"
     echo "gpu: kernels and host for $archs"
     $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
     echo "gpu: addon"
@@ -138,7 +140,7 @@ case "$mode" in
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD"
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! $cc -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $inc --cuda-device-only \
+      if ! $cc -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1

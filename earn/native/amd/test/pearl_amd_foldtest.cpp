@@ -1,14 +1,15 @@
 // Fold check: run every AMD fold this build has over random operands and compare each
 // region's 16 transcript words with a plain CPU computation.
 //
-//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1]
+//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold]
 //
 // Built for HIP-CPU (build-amd.sh cpu), it runs all five folds through the emulated matrix
 // instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
 // and is the first thing to run on new hardware: it shows whether the hardware's lane
 // layout is the one the folds were written against, before anything else depends on it.
 // It also times `reps` launches of each fold and prints the rate in TMAC/s. check=0 skips
-// the CPU computation, which takes minutes at sizes big enough to time a GPU with.
+// the CPU computation, which takes minutes at sizes big enough to time a GPU with. `fold`
+// runs only the fold of that name (the reference fold is slow to time at big sizes).
 //
 // Operands are random over all of int8, wider than the miner's int7 operands make, so a
 // sign or byte-order mistake cannot hide. B' has twice `cols` rows and the batch starts at
@@ -68,6 +69,7 @@ int main(int argc, char **argv) {
   g_rng = argc > 3 ? (uint64_t)atoll(argv[3]) | 1u : 1u;
   const int reps = argc > 4 ? atoi(argv[4]) : 1;
   const bool check = argc > 5 ? atoi(argv[5]) != 0 : true;
+  const char *only = argc > 6 ? argv[6] : nullptr;
   const uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = k / rank;
   if (m == 0 || m % PEARL_AMD_BM || cols == 0 || cols % PEARL_AMD_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n", PEARL_AMD_BM, PEARL_AMD_BN);
@@ -136,7 +138,7 @@ int main(int argc, char **argv) {
   int failed = 0, ran = 0;
   std::vector<uint32_t> got(want.size());
   for (const Fold &f : folds) {
-    if (!(caps[0] & f.cap)) continue;
+    if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
     const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);

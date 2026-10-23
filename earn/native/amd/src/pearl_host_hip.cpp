@@ -207,8 +207,12 @@ bool fail(char *err, size_t err_len, const char *msg) {
 uint32_t amd_col_batch(const PearlProfile *profile) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
+  // PEARL_AMD_COL_BATCH in the environment caps it too, for measuring widths on one build.
+  uint32_t limit = PEARL_AMD_COL_BATCH;
+  const char *env = getenv("PEARL_AMD_COL_BATCH");
+  if (env && atoi(env) > 0) limit = (uint32_t)atoi(env);
   if (cb > colsValid) cb = colsValid;
-  if (cb > PEARL_AMD_COL_BATCH) cb = PEARL_AMD_COL_BATCH;
+  if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;
   return cb;
 }

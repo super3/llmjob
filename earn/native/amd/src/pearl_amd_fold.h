@@ -101,10 +101,30 @@
 // bytes, which keeps 16-byte stores aligned and spreads rows over the banks.
 #define PEARL_AMD_BM 128u
 #define PEARL_AMD_BN 256u
+#ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
+#endif
 // The reference fold's tile: one 32x64 block of C, which holds eight whole regions.
 #define PEARL_AMD_REF_BM 32u
 #define PEARL_AMD_REF_BN 64u
+
+// Tuning knobs for the matrix folds, all off by default (lane A's sweep builds with them set;
+// see test/lane-a-sweep.sh). Each changes only speed: every one keeps the fold bit-exact.
+//   PEARL_AMD_GROUP=G  walk the tiles G columns of tiles at a time, every row tile of the
+//                      batch for each group, instead of all the batch's columns for each
+//                      row tile. The B' that row tiles share is G x 512 KB, not all of it.
+//   PEARL_AMD_NT_A=1   read A' with non-temporal loads, so it doesn't push B' out of L2.
+//   PEARL_AMD_LDS_BARRIER=1  the slab barrier fences LDS only, without the L0 invalidate
+//                      (global_inv) a workgroup-scope __syncthreads costs in WGP mode.
+#ifndef PEARL_AMD_GROUP
+#define PEARL_AMD_GROUP 0
+#endif
+#ifndef PEARL_AMD_NT_A
+#define PEARL_AMD_NT_A 0
+#endif
+#ifndef PEARL_AMD_LDS_BARRIER
+#define PEARL_AMD_LDS_BARRIER 0
+#endif
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
@@ -309,6 +329,18 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #endif
 }
 
+// The barrier between slabs. Only LDS needs ordering there: the next slab's global loads are
+// in registers already.
+__device__ __forceinline__ void pearl_amd_slab_barrier() {
+#if PEARL_AMD_LDS_BARRIER && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+  __builtin_amdgcn_s_barrier();
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#else
+  __syncthreads();
+#endif
+}
+
 // XOR across the eight lanes that share a region: lane bits 0, 3 and 4 in every layout here.
 // (Bits 1 and 2 pick the region's column offset; on CDNA bit 5 picks its row offset.)
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
@@ -354,8 +386,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
   const int wr = wave / P::kWC, wc = wave % P::kWC;
-  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
-  const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
+  uint32_t bx = blockIdx.x, by = blockIdx.y;
+#if PEARL_AMD_GROUP > 1
+  // Blocks start in order, x fastest. Number them that way and hand them out a group of G
+  // column tiles at a time, every row tile for each group: a one-to-one remap.
+  if (gridDim.x % (uint32_t)PEARL_AMD_GROUP == 0u) {
+    const uint32_t g = (uint32_t)PEARL_AMD_GROUP, lin = by * gridDim.x + bx, per = g * gridDim.y;
+    bx = (lin / per) * g + (lin % per) % g;
+    by = (lin % per) / g;
+  }
+#endif
+  const uint32_t tileRow = by * (uint32_t)BM;   // first A' row of the tile
+  const uint32_t tileCol = bx * (uint32_t)BN;   // first column, within the batch
   const int8_t *gA = Ap + (size_t)tileRow * k;
   const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
 
@@ -367,7 +409,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const int idx = t + u * T;                                                               \
     const int8_t *src = idx < UA ? gA + (size_t)(idx / QR) * k                               \
                                  : gB + (size_t)((idx - UA) / QR) * k;                       \
-    pre[u] = *reinterpret_cast<const pearl_amd_v4i *>(src + (size_t)(slab) * KS + 16 * (idx % QR)); \
+    const pearl_amd_v4i *p =                                                                 \
+        reinterpret_cast<const pearl_amd_v4i *>(src + (size_t)(slab) * KS + 16 * (idx % QR)); \
+    /* UA is whole multiples of T, so u alone says whether this load is A' */                \
+    if (PEARL_AMD_NT_A && u < UA / T) pre[u] = __builtin_nontemporal_load(p);                \
+    else pre[u] = *p;                                                                        \
   }
 #define PEARL_AMD_STORE(buf)                                                                 \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
@@ -442,7 +488,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
     }
     if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
-    __syncthreads();
+    pearl_amd_slab_barrier();
   }
 
   // Each lane writes words r and r + 8 of its regions.
