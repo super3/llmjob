@@ -63,8 +63,14 @@ picks the fold from the card's `gcnArchName` and checks it against the folds the
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
 with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12`
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
-keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile. All work
-runs in order on one stream; proof reads use a second.
+keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile. Each
+pipeline slot's batches run on a stream of their own, so a batch's hash and the end of its
+fold overlap the next fold; redraws run on a third stream, and events keep the order (a
+batch waits for the last redraw, a redraw for the folds still queued). Proof reads use a
+fourth and are waited for once a hit. `PEARL_AMD_TRACE=1` prints a line on stderr every
+10 s with each batch's GPU time for the fold and the hash, how long the GPU sat idle
+between batches, and the search thread's waits. `PEARL_AMD_WAIT=block|poll|spin` picks how
+the search thread waits for a batch (default `block`, hipEventSynchronize).
 
 ## Checked without a GPU
 

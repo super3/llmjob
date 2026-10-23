@@ -12,7 +12,9 @@
 //     The batch is narrower than the CUDA core's to keep those buffers small
 //     (PEARL_AMD_COL_BATCH).
 //   - A' and B' are row-major (pearl_materialize16), the layout every AMD fold reads.
-//   - Everything runs on the null stream, in order; proof reads use a side stream.
+//   - Each pipeline slot's batches run on a stream of their own, as on NVIDIA, and the
+//     redraws on a third; events keep the order (Ctx::foldStream). Proof reads use a side stream
+//     and are waited for once a hit (HitReads).
 //
 // The same file builds two ways (build-amd.sh): with ROCm's hip-clang for real cards, and
 // as plain C++ against HIP-CPU (__HIP_CPU_RT__), which runs the kernels on the CPU. The
@@ -24,9 +26,11 @@
 #include <string.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pearl_amd_kernels.h"
@@ -34,6 +38,10 @@
 // How many column offsets one batch covers at most. Each pipeline slot keeps a transcript
 // buffer of col_batch x (m / 16) regions x 64 bytes: 128 MiB at 256 and the mainnet m.
 // -DPEARL_AMD_COL_BATCH=N sets another width; the host narrows it further if it has to.
+#ifndef PEARL_AMD_ONE_STREAM
+#define PEARL_AMD_ONE_STREAM 0
+#endif
+
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #endif
@@ -163,14 +171,26 @@ struct Ctx {
   Pending pend[kSlots];
   int pendHead = 0, pendCount = 0;
   hipEvent_t slotDone[kSlots] = {};
+  // Recorded right after each slot's fold: a redraw rewrites A', so it waits for the folds
+  // still queued, but not for their hashes.
+  hipEvent_t foldDone[kSlots] = {};
   uint32_t *hSlotCount = nullptr;  // pinned, [kSlots]
   hipStream_t side = nullptr;
-  // Every kernel and every asynchronous copy runs here, in order. A stream of its own
-  // rather than the null stream: HIP-CPU can run work queued on the null stream while it
-  // is still running earlier null-stream work (its scheduler drains that stream from two
-  // threads), which let a redraw rewrite A' under a fold still reading it. A blocking
-  // stream behaves as the null stream did on a real GPU: the synchronous copies wait for it.
+  // The redraws (set_job, reseed) run here, in order. A stream of its own rather than the
+  // null stream: HIP-CPU can run work queued on the null stream while it is still running
+  // earlier null-stream work (its scheduler drains that stream from two threads), which let
+  // a redraw rewrite A' under a fold still reading it. A blocking stream behaves as the null
+  // stream did on a real GPU: the synchronous copies wait for it.
   hipStream_t work = nullptr;
+  // Each slot's batches run on the slot's own stream (pearl_host.cu's foldStream), so the
+  // next batch's fold starts on the CUs the one before it has left, and a batch's hash runs
+  // beside the next fold instead of between two folds. The order the batches need is kept
+  // with events, not with one stream: a batch waits for the last redraw (drawDone), and a
+  // redraw waits for the folds still queued (foldDone).
+  hipStream_t foldStream[kSlots] = {};
+  hipEvent_t drawDone = nullptr;
+  uint32_t drawGen = 0;                // redraws queued so far
+  uint32_t slotGen[kSlots] = {0, 0};   // the redraw each slot's stream last waited for
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -178,6 +198,18 @@ struct Ctx {
   // waited for once. Allocated on the first hit; null if pinned memory was refused.
   uint8_t *hStage = nullptr;
   size_t hStageBytes = 0;
+
+  // PEARL_AMD_TRACE=1: every ~10 s, one line on stderr with what the GPU and the search
+  // thread spent their time on (trace_line). Timing events exist only then.
+  struct Trace {
+    bool on = false;
+    hipEvent_t f0[kSlots] = {}, f1[kSlots] = {}, h1[kSlots] = {};
+    double t0 = 0, foldMs = 0, hashMs = 0, spanMs = 0, waitMs = 0, drawMs = 0, jobMs = 0, hitMs = 0;
+    double idleMs = 0;
+    uint32_t batches = 0, draws = 0, jobs = 0, hits = 0, lines = 0, gaps = 0;
+  } trace;
+  // How the search thread waits for a batch (PEARL_AMD_WAIT, see wait_event).
+  int waitMode = 0;
 
   bool hostSeeds = false;
   uint32_t jobKeyW[8] = {0};
@@ -202,6 +234,19 @@ const int8_t *operand_chunk(const Ctx *ctx, const int8_t *operand, uint64_t i) {
 bool fail(char *err, size_t err_len, const char *msg) {
   if (err && err_len) snprintf(err, err_len, "%s", msg);
   return false;
+}
+
+double now_ms() {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// hipEventQuery, which HIP-CPU doesn't have: there it waits for the event instead.
+hipError_t event_query(hipEvent_t ev) {
+#if defined(__HIP_CPU_RT__)
+  return hipEventSynchronize(ev);
+#else
+  return hipEventQuery(ev);
+#endif
 }
 
 // The batch width: the profile's col_batch, at most the valid column offsets, at most
@@ -741,10 +786,40 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   HIP_OK(hipMalloc(&ctx->dCaps, 2 * sizeof(uint32_t)), "allocating the fold check");
   HIP_OK(hipHostMalloc(&ctx->hSlotCount, S * sizeof(uint32_t), hipHostMallocDefault),
          "allocating the pinned hit counts");
-  for (int i = 0; i < Ctx::kSlots; i++)
+  for (int i = 0; i < Ctx::kSlots; i++) {
     HIP_OK(hipEventCreateWithFlags(&ctx->slotDone[i], hipEventDisableTiming), "creating the batch events");
+    HIP_OK(hipEventCreateWithFlags(&ctx->foldDone[i], hipEventDisableTiming), "creating the fold events");
+  }
+  HIP_OK(hipEventCreateWithFlags(&ctx->drawDone, hipEventDisableTiming), "creating the redraw event");
   HIP_OK(hipStreamCreateWithFlags(&ctx->side, hipStreamNonBlocking), "creating the proof stream");
   HIP_OK(hipStreamCreateWithFlags(&ctx->work, hipStreamDefault), "creating the search stream");
+  // HIP-CPU runs every stream's work on one thread, so a stream waiting for an event
+  // another stream records later never wakes. There the slots share the redraw stream and
+  // run in order, as they did before the slots had streams of their own; so does a build
+  // with -DPEARL_AMD_ONE_STREAM=1, to measure what the streams are worth on a card.
+  for (int i = 0; i < Ctx::kSlots; i++) {
+#if defined(__HIP_CPU_RT__) || PEARL_AMD_ONE_STREAM
+    ctx->foldStream[i] = ctx->work;
+#else
+    HIP_OK(hipStreamCreateWithFlags(&ctx->foldStream[i], hipStreamDefault), "creating the fold streams");
+#endif
+  }
+  {
+    const char *w = getenv("PEARL_AMD_WAIT");
+    if (w && !strcmp(w, "poll")) ctx->waitMode = 1;
+    else if (w && !strcmp(w, "spin")) ctx->waitMode = 2;
+  }
+  {
+    const char *tr = getenv("PEARL_AMD_TRACE");
+    if (tr && tr[0] && strcmp(tr, "0") != 0) {
+      ctx->trace.on = true;
+      for (int i = 0; i < Ctx::kSlots; i++) {
+        HIP_OK(hipEventCreate(&ctx->trace.f0[i]), "creating the trace events");
+        HIP_OK(hipEventCreate(&ctx->trace.f1[i]), "creating the trace events");
+        HIP_OK(hipEventCreate(&ctx->trace.h1[i]), "creating the trace events");
+      }
+    }
+  }
   for (int i = 0; i < Ctx::kSlots; i++)
     HIP_OK(hipMalloc(&ctx->dTr[i], (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
            "allocating the transcript buffers");
@@ -794,8 +869,15 @@ extern "C" void pearl_host_destroy(void *handle) {
   hipFree(ctx->dHashA); hipFree(ctx->dHashB);
   hipFree(ctx->dHitTranscript); hipFree(ctx->dJobKey);
   hipFree(ctx->dASeed); hipFree(ctx->dBSeed);
-  for (int i = 0; i < Ctx::kSlots; i++)
+  for (int i = 0; i < Ctx::kSlots; i++) {
     if (ctx->slotDone[i]) hipEventDestroy(ctx->slotDone[i]);
+    if (ctx->foldDone[i]) hipEventDestroy(ctx->foldDone[i]);
+    if (ctx->foldStream[i] && ctx->foldStream[i] != ctx->work) hipStreamDestroy(ctx->foldStream[i]);
+    if (ctx->trace.f0[i]) hipEventDestroy(ctx->trace.f0[i]);
+    if (ctx->trace.f1[i]) hipEventDestroy(ctx->trace.f1[i]);
+    if (ctx->trace.h1[i]) hipEventDestroy(ctx->trace.h1[i]);
+  }
+  if (ctx->drawDone) hipEventDestroy(ctx->drawDone);
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
@@ -811,10 +893,15 @@ extern "C" void pearl_host_set_job_salted(void *handle, const uint8_t *header,
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  const double t0 = ctx->trace.on ? now_ms() : 0.0;
   memcpy(ctx->header, header, PEARL_HEADER_BYTES);
   memcpy(ctx->target, target, PEARL_HASH_BYTES);
   ctx->baseDrawn = false;
   pearl_host_reseed(handle, salt);
+  if (ctx->trace.on) {
+    ctx->trace.jobs++;
+    ctx->trace.jobMs += now_ms() - t0;
+  }
 }
 
 extern "C" void pearl_host_set_job(void *handle, const uint8_t *header, const uint8_t *target) {
@@ -986,6 +1073,11 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  const double t0 = ctx->trace.on ? now_ms() : 0.0;
+  // The redraw rewrites A' (and on a new job B'), which the folds still queued read.
+  if (ctx->foldStream[0] != ctx->work)
+    for (int i = 0; i < ctx->pendCount; i++)
+      hipStreamWaitEvent(ctx->work, ctx->foldDone[(ctx->pendHead + i) % Ctx::kSlots], 0);
   ctx->salt = salt;
   const uint64_t aChunks = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   const bool canRestamp = ctx->baseDrawn && aChunks >= 2;
@@ -1011,8 +1103,15 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
       setup_host_seeds(ctx);
     }
   }
+  // Every batch submitted from here on waits for this redraw (pearl_host_submit).
+  hipEventRecord(ctx->drawDone, ctx->work);
+  ctx->drawGen++;
   ctx->baseDrawn = true;
   ctx->haveJob = true;
+  if (ctx->trace.on) {
+    ctx->trace.draws++;
+    ctx->trace.drawMs += now_ms() - t0;
+  }
 }
 
 namespace {
@@ -1051,6 +1150,43 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   reads.to(out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS, PEARL_JACKPOT_BUCKETS * 4);
   run_reads(ctx, &reads);
   out->found = true;
+}
+
+// PEARL_AMD_TRACE: one line on stderr every ~10 s (more often in the first minute) with what
+// the last window's batches cost. "fold" and "hash" are each kernel's own GPU time, "span" a
+// batch's first fold instruction to its hash's end; with batches overlapping, these can add
+// up to more than the wall time between batches. "wait" is the search thread blocked on a
+// batch, "draw" and "job" its time queuing redraws (a job's includes its draw), "hits" its
+// time reading hits back.
+void trace_line(Ctx *ctx, double now) {
+  Ctx::Trace &t = ctx->trace;
+  const double win = now - t.t0;
+  if (t.batches == 0 || win < (t.lines < 6 ? 2000.0 : 10000.0)) return;
+  const double b = (double)t.batches;
+  fprintf(stderr,
+          "[pearl-amd] %.1f s: %u batches, %.2f ms each; GPU fold %.2f ms, hash %.3f ms, span %.2f ms, "
+          "idle %.3f ms a batch (%u seen); wait %.2f ms; %u draws %.2f ms, %u jobs %.1f ms; %u hits %.1f ms\n",
+          win / 1000.0, t.batches, win / b, t.foldMs / b, t.hashMs / b, t.spanMs / b,
+          t.gaps ? t.idleMs / t.gaps : 0.0, t.gaps, t.waitMs / b, t.draws, t.draws ? t.drawMs / t.draws : 0.0,
+          t.jobs, t.jobs ? t.jobMs / t.jobs : 0.0, t.hits, t.hits ? t.hitMs / t.hits : 0.0);
+  t.t0 = now;
+  t.foldMs = t.hashMs = t.spanMs = t.waitMs = t.drawMs = t.jobMs = t.hitMs = t.idleMs = 0;
+  t.batches = t.draws = t.jobs = t.hits = t.gaps = 0;
+  t.lines++;
+}
+
+// Wait for a batch's event. PEARL_AMD_WAIT picks how: "block" (hipEventSynchronize, which
+// may sleep until the driver signals the host), "poll" (ask the event every 50 us and sleep
+// in between) or "spin" (ask it without sleeping, one CPU core busy). Under WSL2 the
+// driver's signal to a sleeping thread goes through Windows, and the next batch can't be
+// queued until the thread is back.
+hipError_t wait_event(Ctx *ctx, hipEvent_t ev) {
+  if (ctx->waitMode == 0) return hipEventSynchronize(ev);
+  for (;;) {
+    const hipError_t e = event_query(ev);
+    if (e != hipErrorNotReady) return e;
+    if (ctx->waitMode == 1) std::this_thread::sleep_for(std::chrono::microseconds(50));
+  }
 }
 }  // namespace
 
@@ -1116,7 +1252,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.index = ctx->dHitIndex + (size_t)slot * PEARL_MAX_HITS;
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES);
   hitList.transcript = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
-  hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), ctx->work);
+  // The slot's own stream (Ctx::foldStream). Its previous batch is done (collected), so the only
+  // order to keep is behind the last redraw, which this stream hasn't waited for yet.
+  hipStream_t st = ctx->foldStream[slot];
+  if (ctx->slotGen[slot] != ctx->drawGen) {
+    if (st != ctx->work) hipStreamWaitEvent(st, ctx->drawDone, 0);
+    ctx->slotGen[slot] = ctx->drawGen;
+  }
+  hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
+  if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
   const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
@@ -1124,25 +1268,28 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   uint32_t *tr = ctx->dTr[slot];
   switch (f.cap) {
     case PEARL_AMD_CAP_MFMA16:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, ctx->work, ap, bp, k, rank, col0, rv, tr);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
     case PEARL_AMD_CAP_MFMA8:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, ctx->work, ap, bp, k, rank, col0, rv, tr);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
     case PEARL_AMD_CAP_WMMA11:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, ctx->work, ap, bp, k, rank, col0, rv, tr);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
     case PEARL_AMD_CAP_WMMA12:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, ctx->work, ap, bp, k, rank, col0, rv, tr);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
     default:
-      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, ctx->work, ap, bp, k, rank, col0, rv, tr);
+      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
   }
+  hipEventRecord(ctx->foldDone[slot], st);
+  if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
   hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
-                     dim3(PEARL_AMD_THREADS), 0, ctx->work, (const uint32_t *)tr, regions, test, hitList);
-  hipMemcpyAsync(ctx->hSlotCount + slot, hitList.count, sizeof(uint32_t), hipMemcpyDeviceToHost, ctx->work);
-  hipEventRecord(ctx->slotDone[slot], ctx->work);
+                     dim3(PEARL_AMD_THREADS), 0, st, (const uint32_t *)tr, regions, test, hitList);
+  if (ctx->trace.on) hipEventRecord(ctx->trace.h1[slot], st);
+  hipMemcpyAsync(ctx->hSlotCount + slot, hitList.count, sizeof(uint32_t), hipMemcpyDeviceToHost, st);
+  hipEventRecord(ctx->slotDone[slot], st);
   const hipError_t e = hipGetLastError();
   if (e != hipSuccess) {
     if (err && err_len) snprintf(err, err_len, "HIP error during search: %s", hipGetErrorString(e));
@@ -1171,7 +1318,8 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
   DeviceScope scope(ctx->device);
   const int slot = ctx->pendHead;
   const Ctx::Pending p = ctx->pend[slot];
-  hipError_t e = hipEventSynchronize(ctx->slotDone[slot]);
+  const double tw = ctx->trace.on ? now_ms() : 0.0;
+  hipError_t e = wait_event(ctx, ctx->slotDone[slot]);
   if (e == hipSuccess) e = hipGetLastError();
   ctx->pendHead = (ctx->pendHead + 1) % Ctx::kSlots;
   ctx->pendCount--;
@@ -1179,11 +1327,39 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
     if (err && err_len) snprintf(err, err_len, "HIP error during search: %s", hipGetErrorString(e));
     return false;
   }
+  if (ctx->trace.on) {
+    Ctx::Trace &t = ctx->trace;
+    const double now = now_ms();
+    if (t.t0 == 0) t.t0 = now;
+    float fold = 0, hash = 0, span = 0;
+    hipEventElapsedTime(&fold, t.f0[slot], t.f1[slot]);
+    hipEventElapsedTime(&hash, t.f1[slot], t.h1[slot]);
+    hipEventElapsedTime(&span, t.f0[slot], t.h1[slot]);
+    t.foldMs += fold;
+    t.hashMs += hash;
+    t.spanMs += span;
+    t.waitMs += now - tw;
+    t.batches++;
+    // The next batch was queued before this one was waited for. If it reached the GPU
+    // only after this one ended, the GPU had nothing to do in between: the search thread
+    // came back from the batch before too late (or a redraw sat between them).
+    if (ctx->pendCount > 0) {
+      const int next = ctx->pendHead;
+      float gap = 0;
+      if (event_query(t.f0[next]) == hipSuccess
+          && hipEventElapsedTime(&gap, t.h1[slot], t.f0[next]) == hipSuccess) {
+        t.gaps++;
+        if (gap > 0) t.idleMs += gap;
+      }
+      (void)hipGetLastError();
+    }
+  }
   const uint32_t hits = ctx->hSlotCount[slot];
   if (attempts) *attempts = p.regions;
   ctx->extraHits.clear();
   ctx->extraNext = 0;
   if (hits > 0) {
+    const double th = ctx->trace.on ? now_ms() : 0.0;
     const uint32_t *dIndex = ctx->dHitIndex + (size_t)slot * PEARL_MAX_HITS;
     const uint32_t n_hits = hits < PEARL_MAX_HITS ? hits : PEARL_MAX_HITS;
     side_copy(ctx, ctx->hHitIndex.data(), dIndex, (size_t)n_hits * sizeof(uint32_t));
@@ -1194,8 +1370,15 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
     fill_hit(ctx, p, slot, order[0], out);
     ctx->extraHits.resize(n_hits - 1);
     for (uint32_t i = 1; i < n_hits; i++) fill_hit(ctx, p, slot, order[i], &ctx->extraHits[i - 1]);
+    if (ctx->trace.on) {
+      const double now = now_ms();
+      ctx->trace.hits += n_hits;
+      ctx->trace.hitMs += now - th;
+      trace_line(ctx, now);
+    }
     return true;
   }
+  if (ctx->trace.on) trace_line(ctx, now_ms());
   out->found = false;
   return false;
 }
