@@ -485,7 +485,8 @@ class TestRule5Profit(Base):
         return self.x.st["bad_pcs"][m]
 
     def test_a_pc_left_for_its_rate_is_kept_by_a_group_that_rate_clears_for(self):
-        # 22 October: a PC left at high was refused at medium where it cleared, 88 of 200 bad-list moves in 48 hours.
+        # 22 October: a PC left at high was refused at a cheaper priority where it cleared, 21 of 681 bad-list moves to
+        # 23 October at PRL's 02:34Z price.
         bad = self.left_at(170)                    # $0.199/hr at medium's $0.19: +4.5%, left
         self.assertEqual(bad["ths"], 170)
         g = self.group(pri="low")                  # $0.15/hr: 170 TH/s is +25%
@@ -870,7 +871,7 @@ class TestSearch(Base):
         self.assertEqual(made, [("biz-rtx4080", "low"), ("biz-rtx2060", "low")])
 
     def test_the_search_trusts_salad_s_count_of_replicas_in_use(self):
-        # 22 October: Salad counted one replica more than we had for hours, so every search sent creates it then
+        # 22 October: Salad counted one replica more than we had at times all day, so every search sent creates it then
         # refused with created_replicas_quota_exceeded. With 1 group and 9 of 10 replicas in use, there's room for 1.
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
@@ -1039,8 +1040,8 @@ class TestSearch(Base):
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
 
     def test_a_class_that_keeps_getting_no_pc_doesnt_take_a_slot_nothing_else_wants(self):
-        # 22 October: such classes went last but still took any free slot, so for 567 of the 573 minutes the
-        # account was full that day a group of one sat waiting, and a class that gets PCs waited for it 84 times.
+        # 22 October: such classes went last but still took any free slot, so for 324 of the 722-723 minutes every
+        # allowed slot was full that day a group of one held a slot, and 3 times a class that gets PCs was refused.
         avail = {"c4080": {"available_gpu_low": 5}}            # only the 4080 has a free GPU
         self.http.on("POST", "/availability/", lambda b: (200, avail.get(b["gpu_classes"][0], {})))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
@@ -1958,7 +1959,7 @@ class TestMonero(Base):
         self.http.on("GET", "coingecko", (200, {"monero": {"usd": price}}))
 
     def test_a_far_off_market_read_is_set_aside_until_it_repeats(self):
-        # 22 October: at least seven reads of HeroMiners' stats gave a hash 10 to 2,300 times too little.
+        # 22 October: at least 15 reads of HeroMiners' stats gave a hash about 8 to 2,200 times too little.
         self.market(620_000_000_000)
         self.x.xmr_market()
         good = dict(self.x.st["xmr_mkt"])
@@ -2306,7 +2307,7 @@ class TestMonero(Base):
         self.assertIn("| 0.000 | 0.000180 |", self.xmr_row("4080"))
 
     def test_buckets_valued_from_a_bad_market_read_are_valued_again(self):
-        # 22 October: 19 buckets held a pay 10 to 2,300 times too low, kept for good since a bucket keeps its first.
+        # 22 October: at least 35 buckets held a pay about 8 to 2,200 times too low, kept since a bucket keeps its first.
         g = self.kx_box()
         start = int(g["created"]) * 1000
         g["kxx_b"] = {str(start + 600_000 * i): [600_000.0, 1e-10] for i in range(1, 13)}

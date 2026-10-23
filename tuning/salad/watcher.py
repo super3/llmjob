@@ -1099,7 +1099,7 @@ class W:
             err(f"Monero market fetch failed {s1} {s2}")
             st["xmr_try"] = now()
             return
-        # HeroMiners' stats sometimes answer far off: on 22 October at least seven reads gave a hash 10 to 2,300
+        # HeroMiners' stats sometimes answer far off: on 22 October at least 15 reads gave a hash about 8 to 2,200
         # times too little, each valuing the Kryptex chart buckets first seen then, and the rules' Monero, at almost
         # nothing.
         # A hash's pay and the price don't move 3 times in minutes, so such a read is set aside and the last one
@@ -1530,7 +1530,7 @@ class W:
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
                 # A PC that another group left lately (slow, capped, not mining) is left again at once, unless it was
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
-                # a PC left at high was refused at medium too, 88 of 200 bad-list moves in 48 hours.
+                # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
@@ -1730,7 +1730,7 @@ class W:
             if ths is not None:
                 entry["ths"] = ths
                 # And it's the PC's rate now (pc_rates), for the 7-day check and the class's rate: a PC left at its
-                # first judgment never had one recorded, so the check missed about half the PCs it was for.
+                # first judgment never had one recorded, so the check missed most of the PCs it was for (60% had none).
                 self.st.setdefault("pc_rates", {}).setdefault(g["class"], {})[g["machine"]] = [ths, now()]
             self.st.setdefault("bad_pcs", {})[g["machine"]] = entry
         if self.paid(g):
@@ -1746,7 +1746,7 @@ class W:
         quota = c.get("container_replicas_quota", 10)
         st["quota"] = quota
         # Salad's own count of replicas in use, when it gives one: on 22 October it counted one more than we had
-        # for hours, so every search sent creates it then refused (created_replicas_quota_exceeded).
+        # at times all day, so every search sent creates it then refused (created_replicas_quota_exceeded).
         used = c.get("container_replicas_used")
         room = min(self.cfg["max_active"] - len(active), quota - (len(active) if used is None else used))
         t = now()
@@ -1791,9 +1791,9 @@ class W:
                 skip.discard(cls)
         cands = []
         for cls in KNOWN:
-            # Until 22 October such a class only went last, and still took any slot nothing else wanted: in the 24 h
-            # before, the account was full for 573 min, in 567 of them with a group waiting from such a class, and
-            # 84 times a class that gets PCs was created only once one of those groups was deleted.
+            # Until 22 October such a class only went last, and still took any slot nothing else wanted: that day
+            # every allowed slot was full for 722-723 min, in 324 of them with such a group holding one, and 3 times
+            # a class that gets PCs was refused while one did.
             if cls not in st["classes"] or cls in skip:
                 continue
             # But a class held only for tries cheaper than the priority it last got a PC at is tried again at that

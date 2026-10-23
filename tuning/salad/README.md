@@ -94,8 +94,9 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    reading a week before. A class whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
    `no_pc_streak` groups never got a PC at all, it isn't tried for `no_pc_hold_min` after the last of them.
    Until 22 October it only went after every other class and still took any slot nothing else wanted: that
-   day the account was full for 573 minutes, in 567 of them with such a group waiting, and 84 times a class
-   that gets PCs was created only once one of those groups was deleted. When a
+   day (UTC), while the watcher ran, every slot it was allowed was full for 722–723 minutes, in 324 of them with
+   such a group holding a slot, and 3 times a class that gets PCs was refused for about 5 minutes while one did
+   (waits while the account was full can't be seen: no search ran then). When a
    class's latest ended group never got a PC, its next group starts at the priority its latest group with a PC
    got it at, not at batch: on 14 October 4080s and 5080s only got PCs at medium or high, and each new group
    spent 30 min climbing from batch first. If that priority no longer clears the margin, it starts at the
@@ -152,8 +153,8 @@ its margin (rule 5) keeps the TH/s it was left at, and a group whose own price a
 at keeps it (a `NOTE ... keeps PC` event) and is judged on its own readings from there. Before, a PC left at
 high was refused at medium too. A PC off the bad list (after 24 h) is still left the same way, uncounted,
 when the rate a group of the class last measured there in `rate_days` fails 10% at this group's price and
-pool: in 14 days of events, 85 of 452 margin moves were off PCs that had failed for their class 1–7 days
-before, each one a counted move. A PC Salad takes back isn't
+pool: in the 12.2 days of events to 23 October, 114 of 558 margin leaves were off PCs a group of the class had
+left for its margin 1–7 days before, each one a counted move or a deletion. A PC Salad takes back isn't
 bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad
@@ -190,14 +191,15 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-  A read 3 times off the last one is set aside until every read agrees on it for 20 minutes (on 22 October at least seven
-  HeroMiners reads gave a hash 10 to 2,300 times too little), a chart bucket valued 3 times off the median of
+  A read 3 times off the last one is set aside until every read agrees on it for 20 minutes (on 22 October at least 15
+  HeroMiners reads gave a hash about 8 to 2,200 times too little), a chart bucket valued 3 times off the median of
   all buckets is valued again at it, and a failed read waits 5 minutes (CoinGecko answers 429 every minute).
 - **The rules count Monero too** (since 22 October): each box's earnings in the keep, leave, climb, search and
   swap rules add what the median Monero box makes, from the boxes the Monero pools saw in the last 15 minutes
   (about $0.002/hr; a box's own figure is a 30-minute average that, on a new PC, still holds the old one). Before,
-  they judged every box on Pearl alone: 56 of the 151 margin moves and deletions in the 48 hours before would
-  have cleared 10% with Monero counted. Monero's speed is the table's kH/s column and what each box has earned is
+  they judged every box on Pearl alone: in the 48 hours to 9 pm EDT on 22 October, 54 of the 124 margin moves
+  and deletions would have cleared 10% with Monero counted, but all 54 also clear at Kryptex's ratio alone; with
+  both, 79 clear, so Monero saves 16 beyond the ratio fix. Monero's speed is the table's kH/s column and what each box has earned is
   its XMR column.
 - **On Kryptex** (`xmr_kx`, since 20 October). The command adds `--xmr-pool xmr-us.kryptex.network:7029`, which
   needs release v0.6.6. A running group is switched by its command alone, as Gemma is: a box that is mining keeps
