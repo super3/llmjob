@@ -155,3 +155,7 @@ earn/xmr-worker/build/
 earn/native/node_modules/
 # compare-miners.sh output
 earn/native/probes/compare-*/
+
+# Salad mining watcher data (ledger, events, report)
+tuning/salad/run/
+__pycache__/

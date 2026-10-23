@@ -11,6 +11,38 @@ losing information, cut it.
 This applies to commit messages, PR titles and descriptions, code comments, and
 what you say in chat.
 
+## Show the result of every change to something I can see
+
+When I ask you to change a table, a report, a page, or any other output I read,
+show me the changed result in your reply, rendered from the real code or data,
+not described. Do this every time, even for a small change and even if the next
+scheduled report would show it anyway.
+
+## Fix what you know is broken
+
+When you run something for me (the Salad watcher, its report, the trader, the
+benchmark tools), its bugs are part of the job, not extra work to ask about.
+
+- **A bug that costs money or makes a number I read wrong: fix it now.** Fix it on
+  the open PR with a test, put it live (restart the watcher), and tell me what you
+  fixed and what it was costing. "Don't grow a PR on your own" doesn't apply to it.
+- **Never post a number you know is wrong.** Fix it before the next report, or
+  leave it out and say why. A note under the report saying it's wrong isn't
+  enough.
+- **Stop a live loss at once.** A box billed with nothing coming out gets moved or
+  deleted; tell me after.
+- **Ask only about choices of strategy:** the margin bar, which cards to rent,
+  spending, what to mine. Ask once, in a message of its own, with what it costs a
+  day and what you'll do if I don't answer ("I'll do X at 9 pm unless you say
+  no"). Never put a question in a report's notes.
+- **Keep every known problem in `tuning/salad/OPEN.md`,** with a number that's never
+  reused, when it was found, what it costs a day, and how it'll be fixed. An item
+  leaves only with a fix commit or my decision. Show me the list when it changes.
+- **Give every problem its cost:** dollars a day, moves, boxes or slot-hours, with
+  the numbers. Never call one harmless or free without them.
+- **Check, don't predict.** When you say what the watcher will do, read the code
+  path or the next round's events, and tell me what happened.
+
 ## Tests
 
 Run the tests before you start work and again when you finish. Use `npm test` in
@@ -51,7 +83,8 @@ started as. If no PR is open, the first thing I ask for opens one and everything
 after it joins that PR. Push to that branch and update the title and description.
 
 Don't grow a PR on your own. If you notice something worth fixing nearby, tell me
-and ask. Once I've asked for it, it goes on the open branch.
+and ask. Once I've asked for it, it goes on the open branch. The exception is a bug
+in something you run for me: see "Fix what you know is broken".
 
 This still applies when the new work is clearly a different topic. Don't decide
 that unrelated things are cleaner as separate PRs — that reasoning keeps giving

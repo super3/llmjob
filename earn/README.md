@@ -195,8 +195,15 @@ A release ships two builds of the mining core side by side, in the installer's
 
 | File | Toolkit | Cards |
 |---|---|---|
-| `pearl_core.node` | CUDA 12.8 | RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, H100 / H200 and B200 (sm_75/80/86/89/90a/100/120) — every rig |
+| `pearl_core.node` | CUDA 12.8 | GTX 10, RTX 20, 30, 40 and 50, A100 / A800 / A30 / CMP 170HX, H100 / H200 and B200 (sm_61/75/80/86/89/90a/100/120) — every rig |
 | `pearl_core_cu13.node` | CUDA 13.3 | sm_89 and sm_120; picked automatically for RTX 50 / Blackwell only (the sm_89 half measured no faster on a 4090) |
+
+**GTX 10 (Pascal) note.** These cards have no tensor cores, so the sm_61 half of
+`pearl_core.node` mines on a fold of its own built on the int8 `dp4a`
+instruction. Its arithmetic is exact, so its hits are the ones any other card
+would find. It has not been run on a GTX 10 card yet; from the instruction
+rate it should be four to five times slower than an RTX 2080 Ti. CUDA 13 cannot
+build Pascal, so these cards always load `pearl_core.node`.
 
 **RTX 30 (Ampere) note.** The sm_86 half of `pearl_core.node` now runs the same
 fold path as an RTX 40 (the persistent, eight-warp, tall fold). Its hits check
@@ -234,7 +241,35 @@ Pearl core: CUDA 12.8 build · GPU 0 is compute 8.6 (the CUDA 13 build has no co
 
 To override it, set `PEARL_CORE_VARIANT=cu12` or `cu13`, which forces that
 build (a forced `cu13` still falls back if it can't start). `PEARL_CORE_PATH=/path/to/core.node`
-beats both and loads exactly that file.
+beats both and loads exactly that file. On the CLI, `--core cu12` or `--core cu13`
+does the same as the variable and wins over it.
+
+### The AMD core (Radeon and Instinct, Linux)
+
+Linux releases from v0.6.8 also carry `pearl_core_hip.node`, a core for AMD cards
+built with ROCm 7.2 (`native/amd`). It is in the AppImage, beside the CLI binary
+and in the HiveOS package. It never loads on its own: `nvidia-smi` lists no AMD
+card, so the app has nothing to choose from. Ask for it with `--core amd` on the
+CLI (or Extra config on HiveOS), or `PEARL_CORE_VARIANT=amd` for either app:
+
+```bash
+./llmjob-earn-cli --address prl1p… --core amd
+```
+
+It has code for RDNA 2, 3 and 4 Radeon cards and CDNA Instinct cards (gfx908,
+gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151, gfx1200,
+gfx1201). On Salad it beat SRBMiner on every Radeon class rented there, the RX
+7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). It has not run on an
+Instinct card. The rig needs ROCm 7's HIP runtime (`libamdhip64.so.7`, from
+`rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on `LD_LIBRARY_PATH`), which the
+release does not carry. Without it the log says the core would not load and
+names the missing library. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
+core refuses to mine until you set `PEARL_AMD_UNTESTED=1`: its folds for those
+cards have run only in emulation, and if one is wrong on the card every share
+is rejected, which a pool can ban the address for. Run the checks in
+`native/amd/README.md` ("Testing on real hardware") first. Card temperatures and VRAM stay empty on AMD, and
+one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
+"Using it in the app").
 
 ## Monero on the CPU (opt-in)
 
@@ -498,6 +533,9 @@ Flight sheet:
   - `--no-report` keeps the rig off the public network board.
   - `--xmr-address 4…` also mines Monero on the CPU (see
     [Monero on the CPU](#monero-on-the-cpu-opt-in)).
+  - `--core amd` mines on AMD cards with the package's `pearl_core_hip.node`
+    (see [The AMD core](#the-amd-core-radeon-and-instinct-linux)). The rig
+    needs ROCm 7's HIP runtime, and this has not been tried on HiveOS yet.
 
   `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
   makes it exit at once. HiveOS then restarts it every few seconds and shows
@@ -521,7 +559,9 @@ each one's hashrate lands on its own row. With every card off it passes
 restarted every few seconds. HiveOS reads the setting when the miner starts, so
 restart the miner after turning a card on or off. A `--gpu-index` in Extra
 config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
-it.
+it. With `--core amd` HiveOS's choice isn't passed on: its numbers are NVIDIA
+cards, and the AMD core would take them for AMD ones. To leave AMD cards out,
+list the ones to mine on with `--gpu-index` in Extra config.
 
 `h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
 plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to
@@ -688,7 +728,8 @@ Node install**. The mining cores and the CPU worker (`llmjob-xmr-worker`, used
 only with `--xmr-address`) are separate files on the same release, and the
 binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
-580 or newer):
+580 or newer; on an AMD rig, add `-O $base/pearl_core_hip.node` and run with
+`--core amd`):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
@@ -707,7 +748,11 @@ the 12.8 core are both downloaded before either is replaced, so a failed
 download leaves the old pair as it was. The old CUDA 13 core is deleted before
 anything is replaced, so a release without one (or a failed download of it)
 leaves the 12.8 core in charge rather than last release's CUDA 13 core paired
-with a newer binary. The CPU worker, `llmjob-xmr-worker`, updates with
+with a newer binary. The AMD core, `pearl_core_hip.node`, updates with them
+on a rig that runs `--core amd` or already has one, and is paired like the
+12.8 core: a failed download of it leaves the old install as it was. A rig that
+runs `--core amd` without one fetches it on its next start. A release without
+an AMD core leaves the old one in place. The CPU worker, `llmjob-xmr-worker`, updates with
 it on a rig that mines Monero (`--xmr-address`) or already has one; a
 Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
 missing, not executable or from another release also fetches this release's
@@ -741,6 +786,9 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
                            0,2, or "none" (default: every GPU)
+      --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime), or
+                           cu12/cu13 to force a CUDA build (default: the CUDA
+                           build that fits the cards; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)

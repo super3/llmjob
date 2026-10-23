@@ -133,7 +133,7 @@ describe('PearlMiner — start', () => {
     expect(m.isRunning()).toBe(false);
     expect(connect).not.toHaveBeenCalled();
     expect(events.log[0].level).toBe('error');
-    expect(events.log[0].line).toMatch(/core is not built/i);
+    expect(events.log[0].line).toMatch(/^No Pearl core loaded — nothing to mine with./);
     expect(events.stopped).toHaveLength(1);
   });
 

@@ -142,6 +142,22 @@ jobs:
           path: earn/vendor/native
           if_no_artifact_found: warn
 
+      # The AMD core (earn/native/amd, ROCm), Linux only: loaded with --core amd or
+      # PEARL_CORE_VARIANT=amd, never on its own. From the same native-core run as the
+      # CUDA cores, for the same reason. Optional and loud like the CUDA 13 core: without
+      # it every NVIDIA rig mines as before, and the verify step and the run summary say
+      # it is missing.
+      - name: Stage the AMD Pearl core (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          workflow: native-core.yml
+          run_id: ${{ steps.pick.outputs.run_id }}
+          name: pearl-core-hip-ubuntu-latest
+          path: earn/vendor/native
+          if_no_artifact_found: warn
+
       - name: Verify the core is really there
         if: runner.os == 'Windows' || runner.os == 'Linux'
         shell: bash
@@ -156,6 +172,15 @@ jobs:
             msg="no pearl_core_cu13.node staged — RTX 50 rigs will mine on the CUDA 12.8 core (about 3% slower on a 5090). Check the native-core run's -cu13 job."
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ "$RUNNER_OS" = Linux ]; then
+            if [ -f vendor/native/pearl_core_hip.node ]; then
+              echo "staged AMD core: $(ls -l vendor/native/pearl_core_hip.node)"
+            else
+              msg="no pearl_core_hip.node staged — this release cannot mine on AMD cards. Check the native-core run's ubuntu-latest-hip job."
+              echo "::warning::$msg"
+              echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
 
       # The Monero CPU miner's worker (earn/xmr-worker): plain C++ against
@@ -262,16 +287,35 @@ jobs:
           # delete any copy an earlier run of this workflow left on the release:
           # that one came from a different native-core run than the 12.8 core
           # just uploaded, and the self-updater would pair them.
+          # An optional file whose upload fails must not stop the binary's: under set -e
+          # it would, and every rig would read the release as asset-missing. Its stale
+          # copy goes too, as when the build has none.
+          optional_failed() {
+            echo "::warning::uploading $1 to v$VERSION failed; publishing without it"
+            gh release delete-asset "v$VERSION" "$1" --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          }
           if [ -f dist/pearl_core_cu13.node ]; then
-            gh release upload "v$VERSION" dist/pearl_core_cu13.node --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "v$VERSION" dist/pearl_core_cu13.node --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_core_cu13.node
           else
             echo "::warning::publishing v$VERSION without pearl_core_cu13.node"
             gh release delete-asset "v$VERSION" pearl_core_cu13.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
+          # The AMD core, the same way. A rig that mines with it keeps its old copy when a
+          # release has none (src/cli/selfUpdater.js), so a stale one left here by an
+          # earlier run is deleted: it would pair with this run's binary.
+          if [ -f dist/pearl_core_hip.node ]; then
+            gh release upload "v$VERSION" dist/pearl_core_hip.node --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_core_hip.node
+          else
+            echo "::warning::publishing v$VERSION without pearl_core_hip.node"
+            gh release delete-asset "v$VERSION" pearl_core_hip.node --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
           # The CPU worker, before the binary for the same reason as the cores.
           # Optional: a release without it keeps each rig's old one.
           if [ -f dist/llmjob-xmr-worker ]; then
-            gh release upload "v$VERSION" dist/llmjob-xmr-worker --clobber --repo "$GITHUB_REPOSITORY"
+            gh release upload "v$VERSION" dist/llmjob-xmr-worker --clobber --repo "$GITHUB_REPOSITORY" \
+              || echo "::warning::uploading llmjob-xmr-worker to v$VERSION failed; rigs keep their old one"
           else
             echo "::warning::publishing v$VERSION without llmjob-xmr-worker"
           fi
@@ -338,6 +382,11 @@ jobs:
       # v0.3.13 shipped with completely blank bodies — so the fallbacks matter
       # more than the happy path: no PR number, an empty PR body, or a failed
       # lookup all still yield the generated list rather than nothing.
+      #
+      # A release PR's body can be long: v0.6.8's carries the full record of its
+      # work for review. Only the part above a line reading exactly
+      # "<!-- end of release notes -->" is published, when the body has one.
+      # Without one, the whole body is, as before.
       - name: Write release notes (Linux, on v* tag or manual publish)
         if: runner.os == 'Linux' && (startsWith(github.ref, 'refs/tags/v') || inputs.publish)
         env:
@@ -365,7 +414,11 @@ jobs:
               if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""' \
                    > "$RUNNER_TEMP/pr-body.md" 2>/dev/null \
                  && [ -n "$(tr -d '[:space:]' < "$RUNNER_TEMP/pr-body.md")" ]; then
-                cat "$RUNNER_TEMP/pr-body.md" >> "$NOTES"
+                # sub(): a body edited on the web has CRLF line ends. awk reads the
+                # file itself: piped, the writer could die of SIGPIPE when awk stops
+                # at the marker, and under pipefail that fails the step.
+                awk '{ sub(/\r$/, "") } $0 == "<!-- end of release notes -->" { exit } { print }' \
+                  "$RUNNER_TEMP/pr-body.md" >> "$NOTES"
                 printf '\n\n---\n\n' >> "$NOTES"
               else
                 echo "PR #$PR had no usable body — generated notes only."

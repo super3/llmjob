@@ -5294,6 +5294,54 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     expect(miner.pauseCards).toHaveBeenCalledWith([0]);
   });
 
+  // An AMD rig: no nvidia-smi, so no cards and no bus ids, and PEARL_GPU_INDEX
+  // names two mining cards.
+  const amdRig = (ctx) => {
+    process.env.PEARL_GPU_INDEX = '0,1';
+    ctx.probe.detectGpusVram.mockResolvedValue([]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({});
+    ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'AMD' }, { index: 1, name: 'AMD' }]);
+  };
+  let gpuIndexBefore;
+  beforeEach(() => { gpuIndexBefore = process.env.PEARL_GPU_INDEX; });
+  afterEach(() => {
+    if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
+    else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
+  });
+
+  it('with no bus ids and several mining cards, a prompt pauses nothing', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdRig(ctx);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+  });
+
+  // The count is read when the LLM starts, with the bus ids. Read when the miner
+  // started, a prompt spanning that start was paused at one end (when the rig
+  // looked like one card) and never resumed at the other, until the 10-minute cap.
+  it('a prompt that spans the miner starting maps to the same card at both ends', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdRig(ctx);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('busy', true);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    const miner = ctx.PearlEngine.instances[0];
+    expect(miner).toBeTruthy();
+    llm.emit('busy', false);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+    expect(lines(ctx).some((l) => /busy for 10 minutes/.test(l))).toBe(false);
+  });
+
   it('says nothing when the prompt runs on a card that is not mining', async () => {
     const ctx = await boot();
     const { miner, llm } = await coRunning(ctx);

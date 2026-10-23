@@ -110,6 +110,8 @@ bool pearl_host_collect(void *ctx, PearlSearchResult *out, uint64_t *attempts, c
 int pearl_host_pending(void *ctx);
 // The collected batch's other hits, one a call, after the one collect returned.
 bool pearl_host_next_hit(void *ctx, PearlSearchResult *out);
+// Which fold this card runs, in words ("unresolved" without a context).
+const char *pearl_host_fold_name(void *ctx);
 }
 
 namespace {
@@ -603,6 +605,9 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   Napi::Object out = Napi::Object::New(env);
   out.Set("index", Napi::Number::New(env, device_index_));
   out.Set("name", Napi::String::New(env, device_name_));
+  // The fold, for logs and probes (verify-hits.js prints it). The host's readDevice
+  // takes only index and name.
+  out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));
   return out;
 }
 

@@ -56,9 +56,10 @@ function parseRelease(json) {
 // Decide whether to update. Returns a plan describing the outcome; `reason` is
 // one of: unsupported-platform, no-release, up-to-date, asset-missing,
 // update-available. Only `update-available` carries a downloadUrl.
-// `up-to-date` carries xmrWorkerUrl when this very release is the latest, so
-// a CLI installed without the CPU worker, or whose worker download failed,
-// can fetch it without waiting for the next release.
+// `up-to-date` carries xmrWorkerUrl and coreHipUrl when this very release is
+// the latest, so a CLI installed without the CPU worker or the AMD core, or
+// whose download of one failed, can fetch it without waiting for the next
+// release.
 function planUpdate(opts) {
   const o = opts || {};
   const currentVersion = normalizeVersion(o.currentVersion);
@@ -71,7 +72,9 @@ function planUpdate(opts) {
   if (!isNewer(currentVersion, rel.version)) {
     const same = compareVersions(currentVersion, rel.version) === 0;
     return Object.assign(base, {
-      reason: 'up-to-date', xmrWorkerUrl: (same && rel.assets['llmjob-xmr-worker']) || null,
+      reason: 'up-to-date',
+      xmrWorkerUrl: (same && rel.assets['llmjob-xmr-worker']) || null,
+      coreHipUrl: (same && rel.assets['pearl_core_hip.node']) || null,
     });
   }
 
@@ -87,6 +90,10 @@ function planUpdate(opts) {
   // in CI -- and the updater then REMOVES any copy beside the binary, because a
   // stale one would be loaded ahead of the fresh 12.8 core on a 5090.
   const coreCu13Url = rel.assets['pearl_core_cu13.node'] || null;
+  // The AMD core (pearl_core_hip.node, Linux releases from v0.6.8). Null on a
+  // release without it; the updater then keeps the copy beside the binary,
+  // since on an AMD rig it is the only core that can mine.
+  const coreHipUrl = rel.assets['pearl_core_hip.node'] || null;
   // The RandomX CPU worker (earn/xmr-worker) rides along too. Null on a
   // release without it, and then the copy beside the binary stays: the worker
   // states its protocol version when it starts, so an old one that no longer
@@ -102,6 +109,7 @@ function planUpdate(opts) {
     downloadUrl,
     coreUrl,
     coreCu13Url,
+    coreHipUrl,
     xmrWorkerUrl,
   };
 }

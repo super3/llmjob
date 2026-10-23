@@ -72,6 +72,7 @@ describe('hiveos package naming', () => {
     // process loads.
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_cu13.node'), 0o644)");
+    expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644)");
   });
 
   // The CPU worker is a program the CLI runs, not a library it loads.
@@ -98,7 +99,8 @@ const tarOk = process.platform === 'linux'
     for (const f of ['h-config.sh', 'h-run.sh', 'h-stats.sh', 'h-manifest.conf']) {
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
-    for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'llmjob-xmr-worker']) {
+    for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
+      'llmjob-xmr-worker']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
@@ -139,6 +141,7 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/llmjob-earn-cli-linux': '-rwxr-xr-x',
       'llmjob-earn/pearl_core.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
+      'llmjob-earn/pearl_core_hip.node': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
     });
 
@@ -165,6 +168,16 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no llmjob-xmr-worker');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('llmjob-xmr-worker');
+  });
+
+  // The AMD core is for --core amd only; without it the rig mines on NVIDIA.
+  test('a missing pearl_core_hip.node still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_core_hip.node'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_core_hip.node');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('pearl_core_hip.node');
   });
 
   test('a missing pearl_core.node builds nothing', () => {

@@ -93,6 +93,16 @@ if (existsSync(cu13)) {
   console.error('warning: no pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core');
 }
 
+// The AMD core, for --core amd in Extra config. Optional like the CUDA 13
+// core: without it the package mines on NVIDIA cards as before.
+const hip = join(dist, 'pearl_core_hip.node');
+if (existsSync(hip)) {
+  copyFileSync(hip, join(pkgDir, 'pearl_core_hip.node'));
+  chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644);
+} else {
+  console.error('warning: no pearl_core_hip.node — this package cannot mine on AMD cards');
+}
+
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the
 // CUDA 13 core: without it the rig mines Pearl as before.
 const xmrWorker = join(dist, 'llmjob-xmr-worker');

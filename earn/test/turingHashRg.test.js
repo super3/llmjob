@@ -1320,12 +1320,13 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
   });
 
   test('PEARL_BD_SWEEP_HASH_RG=0|1 overrides the rule, and the sweep line says which ran', () => {
-    // pearl_bd_sweep_env: unset or empty is not set; a value that is not a number is
-    // ignored.
+    // pearl_bd_sweep_env: unset or empty is not set; a value that is not all digits, or
+    // is over 32 bits, is ignored. Digits by hand, not strtoul, which under glibc 2.38's
+    // headers would tie the addon to glibc 2.38.
     const env = block(HOST_LINES, 'bool pearl_bd_sweep_env(const char *name, uint32_t *out) {');
     expect(env).toContain('if (!v || !*v) return false;');
-    expect(env).toContain('const unsigned long x = strtoul(v, &end, 10);');
-    expect(env).toContain('if (*end != \'\\0\' || x > 0xFFFFFFFFul) {');
+    expect(env).toContain("if (*p < '0' || *p > '9' || (x = x * 10u + (uint64_t)(*p - '0')) > 0xFFFFFFFFull) {");
+    expect(env.join('\n')).not.toMatch(/strto|atoi|scanf/);
     expect(HOST).toContain('//   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);');
     const sw = sweepRg('');
     for (const rule of [false, true]) {
@@ -1376,11 +1377,16 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
     const sites = [...HOST.matchAll(/(cudaFuncSetAttribute|cudaFuncGetAttributes|cudaOccupancyMaxActiveBlocksPerMultiprocessor|cudaOccupancyMaxActiveClusters)\((?:&\w+,\s*)?(reinterpret_cast<const void \*>\(\w+\)|\w+)/g)]
       .map((x) => [x[1], x[2]]);
     const off = sites.filter(([, k]) => k !== 'foldFn');
+    // Two more aren't fold kernels the search picks: Pascal's dp4a fold, which resolve_fold
+    // checks first, and pearl_gen_perm, which create asks whether the core has code for
+    // the card at all.
     expect(off).toEqual([
+      ['cudaFuncGetAttributes', cast('pearl_tile_fold_dp4a')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_tall')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_hopper')],
       ['cudaFuncSetAttribute', cast('pearl_tile_fold_hopper')],
+      ['cudaFuncGetAttributes', cast('pearl_gen_perm')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma_rg')],
       ['cudaOccupancyMaxActiveClusters', 'pearl_tile_fold_hopper'],
     ]);

@@ -47,13 +47,14 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
+const { AMD: CORE_AMD, FILES: CORE_FILES, pickCoreVariant } = require('../shared/coreVariant');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus,
+  describeSkippedGpus, planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
@@ -150,7 +151,7 @@ async function runExplicitUpdate() {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' …');
   try {
-    const exe = await selfUpdater.applyUpdate(plan);
+    const exe = await selfUpdater.applyUpdate(plan, undefined, { amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + ' (' + exe + '). Re-run to use it.');
     return 0;
   } catch (e) {
@@ -172,6 +173,24 @@ async function repairXmrWorker(url) {
   }
 }
 
+// Whether this run asked for the AMD core: --core amd, which run() copies into
+// PEARL_CORE_VARIANT, or that variable itself.
+function wantsAmdCore() {
+  return pickCoreVariant({ env: process.env }).variant === CORE_AMD;
+}
+
+// The AMD core beside the binary, fetched when this run asked for it and there
+// is none, as from an install of the bare binary. Without this the rig would
+// wait for the next release to get it.
+async function repairAmdCore(url) {
+  if (selfUpdater.hasAmdCore()) return;
+  try {
+    log('fetched ' + await selfUpdater.fetchAmdCore(url) + ' (it was missing)');
+  } catch (e) {
+    log('could not fetch ' + CORE_FILES[CORE_AMD] + ': ' + e.message, process.stderr);
+  }
+}
+
 // Best-effort auto-update on start. Returns an exit code when it replaced and
 // re-ran the binary (caller should return it), or null to keep mining.
 async function maybeAutoUpdate(argv, settings) {
@@ -184,6 +203,7 @@ async function maybeAutoUpdate(argv, settings) {
     // Only for a rig that mines Monero: a Pearl-only one gets no coin miner
     // it didn't ask for.
     if (plan.xmrWorkerUrl && settings.xmrAddress && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
+    if (plan.coreHipUrl && wantsAmdCore() && selfUpdater.isPackaged()) await repairAmdCore(plan.coreHipUrl);
     return null;
   }
 
@@ -194,7 +214,7 @@ async function maybeAutoUpdate(argv, settings) {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
   try {
-    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress });
+    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress, amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + '; restarting');
     return selfUpdater.reexec(argv);
   } catch (e) {
@@ -761,6 +781,9 @@ async function run(argv) {
 
   const settings = parsed.settings;
   for (const w of settings.warnings) log('warning: ' + w);
+  // --core beats PEARL_CORE_VARIANT. Set here, before the update, so the
+  // updater and the core loader read the same choice.
+  if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
@@ -832,6 +855,10 @@ async function run(argv) {
     // chose some. Read here, with the rest of the startup probing, because the
     // start site below is inside a callback.
     settings.gpus = await detectMinerGpus(process.env, gpuPick ? gpuPick.indices : null);
+    // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
+    // with an NVIDIA card beside the AMD ones, its list would drop the AMD
+    // cards the indices name. The chosen indices go to the core as they are.
+    if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -931,16 +958,36 @@ async function run(argv) {
     // rig with driver 580+) is decided from one more nvidia-smi query and the
     // card list above; see shared/coreVariant. The factory logs its choice.
     cudaCards = await probe.detectCudaCards();
+    // Set when the loader found a core that would not load. It has said why
+    // (a missing library, too old a glibc), and "not found" would contradict it.
+    let loadFailed = false;
     const createCore = coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
-      log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+      coreFlag: !!settings.core,
+      log: (level, line) => {
+        if (line.includes(' is there but would not load: ')) loadFailed = true;
+        log(line, level === 'error' ? process.stderr : process.stdout);
+      },
     });
     if (!createCore) {
-      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
-      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
-      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
+      // of its own. Pointing at pearl_core.node there would load a CUDA core on
+      // an AMD rig. The core loader has already said what failed; when the file
+      // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
+      // file is tried, so its own line is the whole answer.
+      if (loadFailed) {
+        // Nothing to add.
+      } else if (wantsAmdCore()) {
+        if (!process.env.PEARL_CORE_PATH) {
+          log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+        }
+      } else {
+        const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+        log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+        log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      }
       if (settings.mode === 'mining') return 1;
       log('continuing with the local LLM only.', process.stderr);
     }
@@ -1084,7 +1131,12 @@ async function run(argv) {
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.
-  if (miner) {
+  // Not on an AMD core: the plan is nvidia-smi's, and on a rig with an NVIDIA
+  // card beside the AMD ones it would lock that idle card's memory clock.
+  if (miner && wantsAmdCore()) {
+    settings.mineMemClockByIndex = {};
+    settings.mineMemClockDefault = false;
+  } else if (miner) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
       cards: cudaCards,
@@ -1217,7 +1269,7 @@ async function run(argv) {
       // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();
       const fleet = await launchLlm(settings, coRun, true, true, (e) => {
-        const card = cardForPrompt(e, busIds);
+        const card = cardForPrompt(e, busIds, settings.gpus.length);
         if (card !== undefined) promptPause.setBusy(card, e.busy);
       });
       if (!fleet) return;

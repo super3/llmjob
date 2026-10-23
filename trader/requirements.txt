@@ -1,0 +1,1 @@
+# No dependencies: trader.py uses the standard library. This file tells Railway it's a Python service.

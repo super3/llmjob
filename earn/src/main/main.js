@@ -61,6 +61,7 @@ const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
+  planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
@@ -132,6 +133,11 @@ let llmBusIds = {};
 // And nvidia-smi's cards, read at the same time, to name a card that gives up
 // on its GPU (see rememberGpuLoss).
 let llmCards = [];
+// How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
+// one) has no bus ids, and several cards are left mining. Read with the bus ids
+// when the LLM starts and kept for its life, so a prompt's start and its end map
+// to the same card even when the miner starts in between.
+let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 // `note` is a transient "what is it doing right now" line — "Downloading model…
@@ -1374,6 +1380,7 @@ async function startLlm(reserveMb, epoch) {
   if (stale()) return false;
   llmBusIds = busIds;
   llmCards = cards;
+  llmMiningCards = planMinerGpus(cards, readGpuIndexEnv(process.env).indices).length;
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without
@@ -1556,7 +1563,7 @@ function buildFleet() {
     sendLlmStatus();
   });
   f.on('busy', (e) => {
-    const card = cardForPrompt(e, llmBusIds);
+    const card = cardForPrompt(e, llmBusIds, llmMiningCards);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
   });
   // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
