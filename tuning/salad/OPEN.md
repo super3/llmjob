@@ -25,6 +25,7 @@ notes, and many had dropped off them with no fix or decision.
 | 5 | The rules counted Pearl only, not each box's Monero (about $0.002/hr a box), so boxes that cleared 10% with it were left: 56 of 151 margin moves and deletions in the 48 h before. They now add the median Monero box's rate. Offered at 8:03 pm with a 9 pm default; live since 9:00 pm EDT on 22 Oct. | $0.3–0.7/day | `0453786` |
 | 6 | A class whose last 3 groups got no PC only went last in the search and still took any slot nothing else wanted: on 22 Oct the account was full for 573 min, in 567 of them with such a group waiting, and a class that gets PCs waited for one 84 times. Such a class is now left out for 3 h. Offered at 8:03 pm with a 9 pm default; live since 9:00 pm EDT on 22 Oct. | about $0.15–0.3/day | `45d9ca4` |
 | 12 | A box Salad restarted on the same PC went quiet while it started again, and the 6-minute rule gave the PC up: about 34 of 58 such moves in 14 days came just after box.sh started again there. A restart on a PC the box already mined on now starts the reading and share clocks again, once a PC. Live since 9:00 pm EDT on 22 Oct. | $0.1–0.3/day | `36ce1f2` |
+| 35 | Leave messages rounded the margin, so a box was dropped as "+10%, under 10%". A margin that would round to the bar now shows one decimal, rounded down. Live since 9:01 pm EDT on 22 Oct. | a wrong number in events | `7f1064e` |
 
 ## Open: costs money
 
@@ -57,7 +58,6 @@ notes, and many had dropped off them with no fix or decision.
 | 32 | No view of what we should have earned against what the pools credited, over time. | A daily line in the report or README. |
 | 33 | "Salad credit left" is our own count and drifts (the 167-min outage left about $0.8 uncounted). | Check against the portal; note the gap. |
 | 34 | During a Salad log outage the report shows mining boxes at 0 TH/s with no stale mark. | Mark rows whose last reading is old. |
-| 35 | Leave messages round the margin, so a box is dropped as "+10%, under 10%". | One decimal. |
 | 36 | Other report figures: the Kryptex pool row, the All row's "+100%", credit hours, stale rows. | Each checked and fixed. |
 | 37 | A FIRST SHARE event can report a share from the PC the box was just moved off. | Match the share to the current PC. |
 | 38 | `events.log` lines carry no date. | Add the date. |
