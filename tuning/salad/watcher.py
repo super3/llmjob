@@ -660,6 +660,23 @@ class W:
         else:
             err(f"delete {g['name']} failed {s} {j}")
 
+    def ghost_line(self, g, tm, mach, text):
+        """A log line from a group already deleted. Salad's delete stops the copy it lists, but a first copy it no
+        longer listed (OPEN.md #23) mined on: 16 min for 3060-50 on 21 Oct, and over 10 min for 3060-71 on 23 Oct.
+        Salad then answers 404 for the group and the instance, so nothing here can stop it, and the report no longer
+        shows it. Said once a PC, for mining lines 5 min or more after the delete whose uptime moves (box.sh repeats
+        a dead miner's last line, uptime and all)."""
+        m = re.search(r"\[mining g\d+\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · [0-9,]+ accepted.*?up (\S+ \S+)", text)
+        if not m or not mach or tm - g["ended"] < 5 * MIN or mach in g.setdefault("ghost_said", []):
+            return
+        ups = g.setdefault("ghost_up", {})
+        if ups.get(mach) in (None, m.group(2)):
+            ups[mach] = m.group(2)
+            return
+        g["ghost_said"].append(mach)
+        event(f"WARN {g['name']}: deleted at {past(g['ended'])}, but PC {mach[:8]} still mines for it "
+              f"({float(m.group(1)):g} TH/s, up {m.group(2)}); Salad no longer lists it, so it can't be stopped from here")
+
     def sweep(self, t):
         """Delete groups on Salad that the ledger doesn't count as live. Salad sometimes answers a delete with
         202 and keeps the group, and a create that errors can still make one. Such a group bills while nothing
@@ -1361,10 +1378,15 @@ class W:
 
         # One log query for every group.
         by_name = {g["name"]: g for g in active if not g["ended"]}
+        # Groups deleted in the last 2 hours, for boxes that keep mining after it (see ghost_line).
+        gone = {g["name"]: g for g in st["groups"].values()
+                if g.get("ended") and t - g["ended"] < 2 * 3600 and g["name"] not in by_name}
         if by_name:
             for tm, name, mach, text in self.logs(list(by_name.values())):
                 g = by_name.get(name)
                 if not g or tm < g["created"]:
+                    if name in gone:
+                        self.ghost_line(gone[name], tm, mach, text)
                     continue
                 if re.search(r"\[mining g\d+\] \d\d:\d\d:\d\d\s+paused for a prompt", text):
                     # Mining stopped on the card while its LLM answers a prompt (box.sh says so rather than repeat
@@ -1384,6 +1406,15 @@ class W:
                     same = [r for r in g["readings"] if r[1] == mach]
                     if up and same and len(same[-1]) > 4 and same[-1][4] == up:
                         continue
+                    # Salad can start a second copy of a group on a new PC and list only that one while the first
+                    # keeps mining (OPEN.md #23: 3060-50 on 21 Oct, 3060-71 on 23 Oct, each then deleted on the new
+                    # copy's rate). The first copy's lines still come: a live reading from another PC 5 min or
+                    # more after the group got the listed one. It is counted as mined, but no rule judges it.
+                    if (mach and g.get("machine") and mach != g["machine"] and g.get("has_pc")
+                            and tm - (g.get("pc_since") or tm) >= 5 * MIN and mach not in g.setdefault("ghost_said", [])):
+                        g["ghost_said"].append(mach)
+                        event(f"WARN {name}: PC {mach[:8]} still mines for it ({ths:g} TH/s, up {up}), though Salad "
+                              f"lists it on PC {g['machine'][:8]}: two copies, and only {g['machine'][:8]} is judged")
                     g["readings"].append([tm, mach, ths, acc, up])
                     if g.get("pause_since") and mach == g.get("machine") and tm > (g.get("paused_t") or 0):
                         event(f"RESUMED {name}: mining again on PC {(mach or '')[:8]} after "

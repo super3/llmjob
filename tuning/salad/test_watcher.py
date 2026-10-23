@@ -357,6 +357,78 @@ class TestRestartOnTheSamePC(Base):
                                              "judged"), 1)
         self.assertEqual(g["machine"], "m1")
 
+    def two_pc_round(self, pc_since, rows):
+        """One round with the group listed on m2 since `pc_since`, and these (time, PC, group, line) log lines."""
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 7200, machine="m2", pc_since=pc_since, had_pc=True, has_pc=True, last_share=T0 - 60)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i2", "machine_id": "m2", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": name, "machine_id": m}}}
+            for tm, m, name, txt in rows]}))
+        self.x.round()
+        return g
+
+    # 3060-71 on 23 Oct: Salad listed a new copy on a new PC while the first mined on, on its own PC, unlisted.
+    def test_a_first_copy_still_mining_beside_the_listed_one_is_reported_once(self):
+        rows = [("2027-01-15T07:58:00Z", "m1", "biz-rtx4080", "[mining g0] 07:58:00 199.0 TH/s · 29 accepted · 0 rejected · up 1h 15m"),
+                ("2027-01-15T07:58:10Z", "m2", "biz-rtx4080", "[mining g0] 07:58:10 150.0 TH/s · 2 accepted · 0 rejected · up 08m 01s"),
+                ("2027-01-15T07:59:00Z", "m1", "biz-rtx4080", "[mining g0] 07:59:00 199.0 TH/s · 30 accepted · 0 rejected · up 1h 16m")]
+        g = self.two_pc_round(T0 - 600, rows)
+        self.clock[0] += 60
+        self.x.round()   # the same lines again
+        self.assertEqual(self.events().count("WARN biz-rtx4080: PC m1 still mines for it (199 TH/s, up 1h 15m), though "
+                                             "Salad lists it on PC m2: two copies, and only m2 is judged"), 1)
+        self.assertEqual(g["machine"], "m2")
+
+    # A move's old PC can log for a minute or two while Salad stops it there.
+    def test_the_old_pc_logging_just_after_a_move_is_not_a_second_copy(self):
+        rows = [("2027-01-15T07:58:00Z", "m1", "biz-rtx4080", "[mining g0] 07:58:00 199.0 TH/s · 29 accepted · 0 rejected · up 1h 15m")]
+        self.two_pc_round(T0 - 200, rows)
+        self.assertNotIn("still mines", self.events())
+
+    # 3060-50 on 21 Oct mined 16 min after its delete, and 3060-71 on 23 Oct over 10 min.
+    def test_a_box_mining_after_its_group_was_deleted_is_reported_once(self):
+        self.x.cfg["search"] = False
+        old = self.group()
+        old.update(ended=T0 - 600, end_kind="released", had_pc=True)
+        mining = lambda tm, up: (tm, "m9", "biz-rtx4080", f"[mining g0] {tm[11:19]} 199.0 TH/s · 31 accepted · 0 rejected · up {up}")
+        rows = [mining("2027-01-15T07:52:00Z", "1h 15m"),     # 2 min after the delete: Salad may still be stopping it
+                mining("2027-01-15T07:57:00Z", "1h 20m"),
+                mining("2027-01-15T07:58:00Z", "1h 21m")]
+        # The round reads logs only while some group is live: biz-rtx4080-2, on m2.
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 3600, machine="m2", pc_since=T0 - 3000, had_pc=True, has_pc=True, last_share=T0 - 60)
+        self.http.on("GET", "/containers/biz-rtx4080-2", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i2", "machine_id": "m2", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": name, "machine_id": m}}}
+            for tm, m, name, txt in rows]}))
+        self.x.round()
+        self.clock[0] += 60
+        self.x.round()
+        self.assertEqual(self.events().count("WARN biz-rtx4080: deleted at 07:50Z, but PC m9 still mines for it (199 TH/s, "
+                                             "up 1h 21m); Salad no longer lists it, so it can't be stopped from here"), 1)
+
+    # box.sh repeats a dead miner's last line, uptime and all: that is not a box mining.
+    def test_a_deleted_groups_repeated_last_line_is_not_mining(self):
+        self.x.cfg["search"] = False
+        old = self.group()
+        old.update(ended=T0 - 900, end_kind="released", had_pc=True)
+        line = "[mining g0] 07:44:00 199.0 TH/s · 31 accepted · 0 rejected · up 1h 15m"
+        rows = [("2027-01-15T07:57:00Z", "m9", "biz-rtx4080", line), ("2027-01-15T07:58:00Z", "m9", "biz-rtx4080", line)]
+        g = self.group()
+        g.update(created=T0 - 3600, machine="m2", pc_since=T0 - 3000, had_pc=True, has_pc=True, last_share=T0 - 60)
+        self.http.on("GET", "/containers/biz-rtx4080-2", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i2", "machine_id": "m2", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": name, "machine_id": m}}}
+            for tm, m, name, txt in rows]}))
+        self.x.round()
+        self.assertNotIn("still mines", self.events())
+
     def test_a_return_to_a_pc_mined_on_hours_ago_is_not_a_restart(self):
         self.x.cfg["search"] = False
         g = self.group()
