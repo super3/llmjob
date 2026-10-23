@@ -343,6 +343,20 @@ class TestRestartOnTheSamePC(Base):
         self.assertEqual((g["restart_t"], g["restart_pc"]), (T0 - 180, "m1"))
         self.assertEqual(self.events().count("RESTARTED biz-rtx4080 on PC m1"), 1)
 
+    def test_a_second_running_instance_is_reported_once(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 3600, machine="m1", pc_since=T0 - 3000, had_pc=True, has_pc=True, last_share=T0 - 60)
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        two = [{"id": "i1", "machine_id": "m1", "state": "running"}, {"id": "i2", "machine_id": "m2", "state": "running"}]
+        self.http.on("GET", "/instances", (200, {"instances": two}))
+        for _ in range(2):
+            self.clock[0] += 60
+            self.x.round()
+        self.assertEqual(self.events().count("WARN biz-rtx4080: Salad runs 2 instances of it, on PCs m1, m2; only m1 is "
+                                             "judged"), 1)
+        self.assertEqual(g["machine"], "m1")
+
     def test_a_return_to_a_pc_mined_on_hours_ago_is_not_a_restart(self):
         self.x.cfg["search"] = False
         g = self.group()

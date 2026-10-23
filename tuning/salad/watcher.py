@@ -1326,6 +1326,13 @@ class W:
                 g["_skip"] = True
                 continue
             g["_skip"] = False
+            # A group asks for one replica, so a second running instance is billed with no rule judging it. None
+            # seen up to 23 October, but nothing would have shown one: say so once for each set of PCs.
+            multi = sorted(i["machine_id"][:8] for i in on)
+            if len(multi) > 1 and g.get("multi_said") != multi:
+                g["multi_said"] = multi
+                event(f"WARN {g['name']}: Salad runs {len(multi)} instances of it, on PCs {', '.join(multi)}; only "
+                      f"{on[0]['machine_id'][:8]} is judged")
             g["has_pc"] = bool(on)
             if on:
                 g["instance"] = on[0].get("instance_id") or on[0].get("id")
