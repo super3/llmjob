@@ -801,7 +801,7 @@ class TestRule5Profit(Base):
         self.pools()
         self.x.cfg.update(kryptex_groups=1, max_active=2, max_new_per_hour=5)
         self.http.on("POST", "availability", (200, {f"available_gpu_{p}": 1 for p in w.PRIS}))
-        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [110, self.clock[0]]}}   # batch: +12% Kryptex, +5% HM
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {m: [110, self.clock[0]] for m in ("m1", "m2", "m3")}}   # batch: +12% Kryptex, +5% HM
         self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "batch", kx=True), 0.10)
         self.assertLess(self.x.margin("RTX 4080 (16 GB)", "batch", kx=False), 0.10)
         self.x.search()
@@ -1646,11 +1646,21 @@ class TestMeasuredRates(Base):
         self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
 
     def test_the_first_time_it_fills_from_the_ledger(self):
-        g = self.group(pri="medium")
-        g["readings"] = [[self.clock[0] + 60 * i, "m1", 180.0, 0] for i in range(6)]
-        g["ended"] = self.clock[0]
+        for m in ("m1", "m2", "m3"):
+            g = self.group(pri="medium")
+            g["readings"] = [[self.clock[0] + 60 * i, m, 180.0, 0] for i in range(6)]
+            g["ended"] = self.clock[0]
         self.x.record_rates(self.clock[0] + 600)
         self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 180)
+
+    def test_one_or_two_slow_pcs_don_t_lower_the_benchmark(self):
+        # OPEN.md #62: a 5090 left at 131 TH/s would have set the class's rate to 131 against its 418.
+        self.mined("RTX 4080 (16 GB)", [150], pri="medium")
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+        self.mined("RTX 4080 (16 GB)", [160], pri="medium")
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+        self.mined("RTX 4080 (16 GB)", [170], pri="medium")   # the third PC: now the median rules
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 160)
 
     def test_a_new_group_is_created_at_the_measured_rate(self):
         self.mined("RTX 4080 (16 GB)", [210], pri="medium")
