@@ -234,8 +234,10 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
   too, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
   LDS-only fence, since `__syncthreads()` waited for every outstanding global load there) and
   tells the compiler the thread index is under 256 (`PEARL_AMD_TID`): 52.88 TH/s to 59.99 on an
-  RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster and stay off.
-  `PEARL_AMD_SPLIT` (a split slab barrier on gfx12) is a knob. Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
+  RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster and stay off. A split slab
+  barrier on gfx12 (`s_barrier_signal` after the LDS work, `s_barrier_wait` before the next slab)
+  ran the same as this (59.39 against 59.99 on `ca4f64e4`, 33.20 against 32.85 on `54b217a9`)
+  and was removed. Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
