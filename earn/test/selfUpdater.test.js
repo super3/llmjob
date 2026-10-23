@@ -349,6 +349,114 @@ describe('applyUpdate', () => {
     expect(updater.hasXmrWorker()).toBe(true);
   });
 
+  // On a rig that mines with it, the AMD core is THE core: paired like the 12.8
+  // one, downloaded before anything is replaced, put in before the binary.
+  it('downloads the AMD core with the binary for a rig that asked for it', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+    fs.existsSync.mockReturnValue(false);
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: 'https://host/pearl_core_hip.node' },
+      '/opt/rig/earn', { amd: true });
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+    const hipTmp = hip + '.new-' + process.pid;
+    const order = (from, to) => fs.renameSync.mock.invocationCallOrder[
+      fs.renameSync.mock.calls.findIndex((c) => c[0] === from && c[1] === to)];
+    expect(order(fs.createWriteStream.mock.calls[1][0], hipTmp)).toBeLessThan(order(hipTmp, hip));
+    expect(order(hipTmp, hip)).toBeLessThan(order('/opt/rig/earn.new-' + process.pid, '/opt/rig/earn'));
+  });
+
+  // One already beside the binary is kept in step, whatever this run asked for.
+  it('keeps an AMD core already beside the binary in step', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+    const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+    fs.existsSync.mockImplementation((f) => f === hip);
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: 'https://host/pearl_core_hip.node' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.renameSync).toHaveBeenCalledWith(hip + '.new-' + process.pid, hip);
+  });
+
+  // A failed AMD core download on an AMD rig leaves the old pair, which mines.
+  it('replaces nothing when the AMD core download fails', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+    const hipTmp = hip + '.new-' + process.pid;
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === hipTmp) throw new Error('ENOSPC: no space left on device');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: 'https://host/pearl_core_hip.node' },
+      '/opt/rig/earn', { amd: true });
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).rejects.toThrow('ENOSPC');
+    expect(fs.renameSync).not.toHaveBeenCalledWith('/opt/rig/earn.new-' + process.pid, '/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(hipTmp, { force: true });
+    expect(fs.rmSync).not.toHaveBeenCalledWith(hip, expect.anything());
+  });
+
+  // An NVIDIA rig never downloads it, and a release without one deletes nothing:
+  // on an AMD rig the old copy is the only core that can mine.
+  it('leaves the AMD core alone on an NVIDIA rig and when the release has none', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    fs.createWriteStream.mockReturnValue(fakeWrite());
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+    fs.existsSync.mockReturnValue(false);
+    const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+
+    const p = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: 'https://host/pearl_core_hip.node' },
+      '/opt/rig/earn', { amd: false });
+    fs.createWriteStream.mock.results[0].value.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.createWriteStream).toHaveBeenCalledTimes(1);
+
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res2]);
+    const p2 = updater.applyUpdate({ downloadUrl: 'https://host/bin', coreHipUrl: null }, '/opt/rig/earn', { amd: true });
+    fs.createWriteStream.mock.results[1].value.emit('finish');
+    await expect(p2).resolves.toBe('/opt/rig/earn');
+    expect(fs.createWriteStream).toHaveBeenCalledTimes(2);
+    expect(fs.rmSync).not.toHaveBeenCalledWith(hip, expect.anything());
+  });
+
   it('defaults the exe path to process.execPath', async () => {
     const res = fakeRes({ statusCode: 200 });
     wire([res]);
@@ -360,6 +468,55 @@ describe('applyUpdate', () => {
     const out = fs.createWriteStream.mock.results[0].value;
     out.emit('finish');
     await expect(p).resolves.toBe(process.execPath);
+  });
+});
+
+// A rig asked for the AMD core and has none, as from an install of the bare binary.
+describe('the AMD core beside the binary', () => {
+  const hip = require('path').join('/opt/rig', 'pearl_core_hip.node');
+  const tmp = hip + '.new-' + process.pid;
+
+  it('hasAmdCore looks beside the binary, the running one by default', () => {
+    fs.existsSync.mockImplementation((f) => f === hip);
+    expect(updater.hasAmdCore('/opt/rig/earn')).toBe(true);
+    expect(updater.hasAmdCore()).toBe(false);
+  });
+
+  it('fetchAmdCore downloads it through a temp file', async () => {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    const out = fakeWrite();
+    fs.createWriteStream.mockReturnValue(out);
+    fs.renameSync.mockImplementation(() => {});
+    const p = updater.fetchAmdCore('https://host/pearl_core_hip.node', '/opt/rig/earn');
+    res.emit('data', Buffer.from('x'));
+    out.emit('finish');
+    await expect(p).resolves.toBe(hip);
+    expect(fs.renameSync).toHaveBeenCalledWith(tmp, hip);
+  });
+
+  // One that arrives but will not go in (the file is busy, say).
+  function fetchBusy(execPath) {
+    const res = fakeRes({ statusCode: 200 });
+    wire([res]);
+    const out = fakeWrite();
+    fs.createWriteStream.mockReturnValue(out);
+    fs.renameSync.mockImplementation((from, to) => { if (to.endsWith('pearl_core_hip.node')) throw new Error('ETXTBSY'); });
+    const p = updater.fetchAmdCore('https://host/pearl_core_hip.node', execPath);
+    res.emit('data', Buffer.from('x'));
+    out.emit('finish');
+    return p;
+  }
+
+  it('a fetch that fails removes its temp file and says why', async () => {
+    await expect(fetchBusy('/opt/rig/earn')).rejects.toThrow('ETXTBSY');
+    expect(fs.rmSync).toHaveBeenCalledWith(tmp, { force: true });
+  });
+
+  it('goes beside the running binary by default', async () => {
+    const beside = require('path').join(require('path').dirname(process.execPath), 'pearl_core_hip.node');
+    await expect(fetchBusy()).rejects.toThrow('ETXTBSY');
+    expect(fs.rmSync).toHaveBeenCalledWith(beside + '.new-' + process.pid, { force: true });
   });
 });
 

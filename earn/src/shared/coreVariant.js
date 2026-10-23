@@ -47,9 +47,12 @@
 // gets the 12.8 build too.
 //
 // A third core, for AMD cards, is opt-in only: pearl_core_hip.node, built with
-// ROCm from earn/native/amd (see its README). Nothing here picks it on its
-// own; PEARL_CORE_VARIANT=amd asks for it, and PEARL_CORE_PATH can name it.
-// It is not in a release yet.
+// ROCm 7.2 from earn/native/amd (see its README). Linux releases carry it from
+// v0.6.8 (beside the CLI binary, in the HiveOS package and in the AppImage). It
+// needs the ROCm 7 HIP runtime on the rig, which the release does not carry.
+// Nothing here picks it on its own: nvidia-smi lists no AMD card, so there is
+// nothing to pick from. PEARL_CORE_VARIANT=amd asks for it (the CLI's --core
+// amd sets that), and PEARL_CORE_PATH can name it.
 
 const CU12 = 'cu12';
 const CU13 = 'cu13';

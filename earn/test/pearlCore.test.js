@@ -170,7 +170,7 @@ describe('coreFactory — choosing a build', () => {
       if (v === undefined) files.delete(k); else files.set(k, v);
     }
     const req = jest.fn((p) => {
-      if (!files.has(p)) throw new Error('Cannot find module ' + p);
+      if (!files.has(p)) throw Object.assign(new Error('Cannot find module ' + p), { code: 'MODULE_NOT_FOUND' });
       const v = files.get(p);
       if (v instanceof Error) throw v;
       return v;
@@ -256,6 +256,16 @@ describe('coreFactory — choosing a build', () => {
     expect(factory(r, BLACKWELL)).toBeNull();
     expect(factory(r, ADA)).toBeNull();
     expect(r.lines).toEqual([]);
+  });
+
+  // v0.6.7's Linux cores needed glibc 2.38, and on Ubuntu 22.04 that read as a
+  // missing core. A core that is there but won't load says why.
+  test('a 12.8 core that is there but will not load says why', () => {
+    const r = rig({ [CU12_BESIDE]: new Error("/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found"),
+      [CU13_BESIDE]: undefined });
+    expect(factory(r, ADA)).toBeNull();
+    expect(r.lines).toEqual([['error', 'Pearl core: ' + CU12_BESIDE + " is there but would not load: "
+      + "/lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found"]]);
   });
 
   // The GUI keeps both in resources/native, the packaged CLI beside itself.
@@ -391,7 +401,27 @@ describe('coreFactory — choosing a build', () => {
       expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
-        + '(PEARL_CORE_VARIANT=amd; build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)']]);
+        + '(PEARL_CORE_VARIANT=amd; the Linux release has it beside the CLI binary, or build it with '
+        + 'earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)']]);
+    });
+
+    // The release carries the core but not ROCm. Without the HIP runtime the file is
+    // there and dlopen fails, which must not read as "not found".
+    test('a core that is there but cannot find the HIP runtime says so, and what to install', () => {
+      const dl = Object.assign(new Error('libamdhip64.so.7: cannot open shared object file: No such file or directory'),
+        { code: 'ERR_DLOPEN_FAILED' });
+      const r = rig({ [AMD_BESIDE]: dl });
+      expect(factory(r, AMD_ENV)).toBeNull();
+      expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · ' + AMD_BESIDE + ' is there but would not '
+        + 'load: libamdhip64.so.7: cannot open shared object file: No such file or directory. It needs the ROCm 7 '
+        + 'HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH']]);
+    });
+
+    test('another load failure is named as it is, with no ROCm hint', () => {
+      const r = rig({ [AMD_BESIDE]: new Error('invalid ELF header') });
+      expect(factory(r, AMD_ENV)).toBeNull();
+      expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · ' + AMD_BESIDE
+        + ' is there but would not load: invalid ELF header']]);
     });
 
     test('is never looked for unless asked', () => {
@@ -413,6 +443,16 @@ describe('coreFactory — choosing a build', () => {
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · PEARL_CORE_PATH=/opt/amd/pearl_core_hip.nod '
         + 'did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)']]);
+    });
+
+    test('a PEARL_CORE_PATH that is there but will not load says why', () => {
+      const r = rig({ '/opt/amd/pearl_core_hip.node': new Error('librocprofiler-register.so.0: cannot open shared object file') });
+      const env = { PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.node' };
+      expect(factory(r, { env })).toBeNull();
+      expect(r.lines[0][1]).toBe('Pearl core: AMD build (ROCm) · /opt/amd/pearl_core_hip.node is there but would not load: '
+        + 'librocprofiler-register.so.0: cannot open shared object file. It needs the ROCm 7 HIP runtime (libamdhip64.so.7): '
+        + 'install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH (PEARL_CORE_PATH; '
+        + 'PEARL_CORE_VARIANT=amd, so no CUDA build is tried)');
     });
 
     test('PEARL_CORE_PATH still names the file', () => {
@@ -445,6 +485,13 @@ describe('coreFactory — choosing a build', () => {
     test('is null when nothing loads at all', () => {
       const r = rig({ [CU12_BESIDE]: undefined });
       expect(factory(r, { env: { PEARL_CORE_PATH: '/nope.node' } })).toBeNull();
+      expect(r.lines).toEqual([]);
+    });
+
+    test('says why when the named file is there but will not load', () => {
+      const r = rig({ [CU12_BESIDE]: undefined, '/src/pearl_core.node': new Error("version `GLIBC_2.38' not found") });
+      expect(factory(r, { env: { PEARL_CORE_PATH: '/src/pearl_core.node' } })).toBeNull();
+      expect(r.lines).toEqual([['error', "Pearl core: /src/pearl_core.node is there but would not load: version `GLIBC_2.38' not found"]]);
     });
   });
 

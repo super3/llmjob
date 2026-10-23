@@ -1349,14 +1349,19 @@ PearlBdLaunch pearl_bd_launch_for(uint32_t k, uint64_t l2, uint32_t sms, uint32_
 //   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);
 //                               1 is ignored in a build without the second kernel
 // A value that does not parse or is out of range is ignored. Returns whether any was set.
+//
+// Parsed by hand, not with strtoul. Under glibc 2.38's headers (the ubuntu-latest runner's)
+// strtoul becomes __isoc23_strtoul, so the addon needed glibc 2.38 and would not load on
+// Ubuntu 22.04 or Debian 12: v0.6.7 shipped that way. native-core.yml now checks the floor.
 bool pearl_bd_sweep_env(const char *name, uint32_t *out) {
   const char *v = getenv(name);
   if (!v || !*v) return false;
-  char *end = nullptr;
-  const unsigned long x = strtoul(v, &end, 10);
-  if (*end != '\0' || x > 0xFFFFFFFFul) {
-    fprintf(stderr, "[pearl] %s=%s ignored: not a number\n", name, v);
-    return false;
+  uint64_t x = 0;
+  for (const char *p = v; *p; p++) {
+    if (*p < '0' || *p > '9' || (x = x * 10u + (uint64_t)(*p - '0')) > 0xFFFFFFFFull) {
+      fprintf(stderr, "[pearl] %s=%s ignored: not a number\n", name, v);
+      return false;
+    }
   }
   *out = (uint32_t)x;
   return true;

@@ -1320,12 +1320,13 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
   });
 
   test('PEARL_BD_SWEEP_HASH_RG=0|1 overrides the rule, and the sweep line says which ran', () => {
-    // pearl_bd_sweep_env: unset or empty is not set; a value that is not a number is
-    // ignored.
+    // pearl_bd_sweep_env: unset or empty is not set; a value that is not all digits, or
+    // is over 32 bits, is ignored. Digits by hand, not strtoul, which under glibc 2.38's
+    // headers would tie the addon to glibc 2.38.
     const env = block(HOST_LINES, 'bool pearl_bd_sweep_env(const char *name, uint32_t *out) {');
     expect(env).toContain('if (!v || !*v) return false;');
-    expect(env).toContain('const unsigned long x = strtoul(v, &end, 10);');
-    expect(env).toContain('if (*end != \'\\0\' || x > 0xFFFFFFFFul) {');
+    expect(env).toContain("if (*p < '0' || *p > '9' || (x = x * 10u + (uint64_t)(*p - '0')) > 0xFFFFFFFFull) {");
+    expect(env.join('\n')).not.toMatch(/strto|atoi|scanf/);
     expect(HOST).toContain('//   PEARL_BD_SWEEP_HASH_RG=0|1  the default kernel, or the second one (pearl_bd_rg_for);');
     const sw = sweepRg('');
     for (const rule of [false, true]) {

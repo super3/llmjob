@@ -29,7 +29,8 @@ const {
 // There are two builds of the addon -- see shared/coreVariant for which one a
 // rig gets and why. findCore finds `pearl_core.node` (CUDA 12.8); coreFactory
 // decides whether to try `pearl_core_cu13.node` first. A third, for AMD cards
-// (`pearl_core_hip.node`), loads only when PEARL_CORE_VARIANT=amd asks for it.
+// (`pearl_core_hip.node`), loads only when PEARL_CORE_VARIANT=amd asks for it
+// (the CLI's --core amd sets that).
 
 // What every probe shares: the require to load with, and the directories a
 // packaged install keeps its addons in.
@@ -52,8 +53,9 @@ function loaderContext(opts) {
 }
 
 // The first candidate that loads and looks like our addon, as { addon, file },
-// or null.
-function firstLoadable(req, candidates) {
+// or null. `failed`, when given, collects { file, error } for each candidate
+// that is there but would not load, so the caller can say why.
+function firstLoadable(req, candidates, failed) {
   for (const c of candidates) {
     try {
       const addon = req(c);
@@ -61,16 +63,30 @@ function firstLoadable(req, candidates) {
     } catch (e) {
       // Not at this path — try the next. A genuinely broken addon (present but
       // throwing on load) also lands here and falls through to null, which is
-      // the right outcome: the host reports "not built" and nobody mines on a
-      // core that would not load.
+      // the right outcome: nobody mines on a core that would not load. But its
+      // error is kept: a missing library or a too-old glibc otherwise reads as
+      // a missing file, which is how v0.6.7's core failed on Ubuntu 22.04.
+      if (failed && !(e && e.code === 'MODULE_NOT_FOUND')) failed.push({ file: c, error: e });
     }
   }
   return null;
 }
 
+// What the first file that is there but would not load said, for the log.
+function wouldNotLoad(failed) {
+  const { file, error } = failed[0];
+  const msg = errText(error);
+  // dlopen names the library it could not find. For the AMD core that is
+  // ROCm's HIP runtime, which the release does not carry.
+  const hint = /lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)/.test(msg)
+    ? '. It needs the ROCm 7 HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH'
+    : '';
+  return file + ' is there but would not load: ' + msg + hint;
+}
+
 // The CUDA 12.8 core: PEARL_CORE_PATH, then the packaged locations, then the
 // dev build tree.
-function findCore(opts) {
+function findCore(opts, failed) {
   const { req, env, dirs } = loaderContext(opts);
   const candidates = [];
   // An operator override first: it makes field diagnosis a one-liner, and it
@@ -81,7 +97,7 @@ function findCore(opts) {
     path.join(__dirname, '..', '..', 'native', 'build', 'Release', FILES[CU12]),
     path.join(__dirname, '..', '..', 'native', 'build', 'Debug', FILES[CU12]),
   ];
-  const found = firstLoadable(req, candidates.concat(dev));
+  const found = firstLoadable(req, candidates.concat(dev), failed);
   // A dev-tree build is whatever toolkit that box has -- the 5090 rig builds
   // its own with CUDA 13.3 -- so the log must not call it the 12.8 release.
   if (found && dev.includes(found.file)) found.dev = true;
@@ -98,10 +114,10 @@ function findCu13Core(opts) {
 
 // The AMD core (PEARL_CORE_VARIANT=amd only): the packaged locations, then the
 // dev tree's build folder, earn/native/amd/build, where build-amd.sh writes it.
-function findAmdCore(opts) {
+function findAmdCore(opts, failed) {
   const { req, dirs } = loaderContext(opts);
   const dev = path.join(__dirname, '..', '..', 'native', 'amd', 'build', FILES[AMD]);
-  const found = firstLoadable(req, dirs.map((d) => path.join(d, FILES[AMD])).concat([dev]));
+  const found = firstLoadable(req, dirs.map((d) => path.join(d, FILES[AMD])).concat([dev]), failed);
   if (found && found.file === dev) found.dev = true;
   return found;
 }
@@ -139,17 +155,24 @@ function coreFactory(opts = {}) {
     // then fail on every start. The path counts from the executable's folder
     // when it is relative, not from where the command ran.
     if (pickCoreVariant({ env }).variant === AMD) {
-      const named = firstLoadable(loaderContext(opts).req, [env.PEARL_CORE_PATH]);
+      const failed = [];
+      const named = firstLoadable(loaderContext(opts).req, [env.PEARL_CORE_PATH], failed);
       if (!named) {
-        log('error', 'Pearl core: ' + LABELS[AMD] + ' · PEARL_CORE_PATH=' + env.PEARL_CORE_PATH
-          + ' did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)');
+        log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
+          + ' (PEARL_CORE_PATH; PEARL_CORE_VARIANT=amd, so no CUDA build is tried)'
+          : 'PEARL_CORE_PATH=' + env.PEARL_CORE_PATH
+          + ' did not load (PEARL_CORE_VARIANT=amd, so no CUDA build is tried; use an absolute path)'));
         return null;
       }
       log('info', 'Pearl core: ' + named.file + ' (PEARL_CORE_PATH)');
       return wrap(named.addon);
     }
-    const found = findCore(opts);
-    if (!found) return null;
+    const failed = [];
+    const found = findCore(opts, failed);
+    if (!found) {
+      if (failed.length) log('error', 'Pearl core: ' + wouldNotLoad(failed));
+      return null;
+    }
     log('info', 'Pearl core: ' + found.file
       + (found.file === env.PEARL_CORE_PATH ? ' (PEARL_CORE_PATH)' : ' (PEARL_CORE_PATH did not load)'));
     return wrap(found.addon);
@@ -160,10 +183,12 @@ function coreFactory(opts = {}) {
   // Asked for by name, so no fallback to a CUDA build: on an AMD rig there is
   // nothing for one to run on, and on an NVIDIA rig the operator said otherwise.
   if (pick.variant === AMD) {
-    const amd = findAmdCore(opts);
+    const failed = [];
+    const amd = findAmdCore(opts, failed);
     if (!amd) {
-      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + FILES[AMD] + ' not found ('
-        + pick.reason + '; build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)');
+      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
+        : FILES[AMD] + ' not found (' + pick.reason + '; the Linux release has it beside the CLI'
+          + ' binary, or build it with earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH)'));
       return null;
     }
     say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
@@ -173,8 +198,12 @@ function coreFactory(opts = {}) {
   const cu13 = pick.variant === CU13 ? findCu13Core(opts) : null;
 
   if (!cu13) {
-    const found = findCore(opts);
-    if (!found) return null;
+    const failed = [];
+    const found = findCore(opts, failed);
+    if (!found) {
+      if (failed.length) log('error', 'Pearl core: ' + wouldNotLoad(failed));
+      return null;
+    }
     if (found.dev) log('info', 'Pearl core: local build ' + found.file);
     else say('info', CU12, pick.variant === CU13 ? FILES[CU13] + ' is not installed' : pick.reason);
     return wrap(found.addon);

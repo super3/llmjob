@@ -243,10 +243,14 @@ uint32_t amd_col_batch(const PearlProfile *profile) {
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
   // PEARL_AMD_COL_BATCH in the environment lowers the cap, for measuring widths on one build.
   // It never raises it: the two transcript buffers are sized by the width (128 MiB each at
-  // 256), so 2048 would ask for 1 GiB each.
+  // 256), so 2048 would ask for 1 GiB each. Its leading digits are read by hand: atoi under
+  // glibc 2.38's headers calls __isoc23_strtol, which would tie the addon to glibc 2.38
+  // (pearl_host.cu's pearl_bd_sweep_env says more).
   uint32_t limit = PEARL_AMD_COL_BATCH;
   const char *env = getenv("PEARL_AMD_COL_BATCH");
-  if (env && atoi(env) > 0 && (uint32_t)atoi(env) < limit) limit = (uint32_t)atoi(env);
+  uint32_t want = 0;
+  for (const char *p = env; p && *p >= '0' && *p <= '9' && want < limit; p++) want = want * 10u + (uint32_t)(*p - '0');
+  if (want > 0 && want < limit) limit = want;
   if (cb > colsValid) cb = colsValid;
   if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;

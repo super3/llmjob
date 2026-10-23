@@ -54,6 +54,8 @@ jest.mock('../src/cli/selfUpdater', () => ({
   applyUpdate: jest.fn(),
   hasXmrWorker: jest.fn(),
   syncXmrWorker: jest.fn(),
+  hasAmdCore: jest.fn(),
+  fetchAmdCore: jest.fn(),
   reexec: jest.fn(),
 }));
 jest.mock('../src/shared/selfUpdate', () => ({ planUpdate: jest.fn() }));
@@ -452,6 +454,18 @@ describe('update subcommand', () => {
     });
     await expect(m.run(['update'])).resolves.toBe(0);
     expect(allOut()).toContain('updated to v9.9.9');
+    // `update` takes no flags; PEARL_CORE_VARIANT=amd still says the rig is AMD.
+    expect(m.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { amd: false });
+    await withEnv({ PEARL_CORE_VARIANT: 'amd' }, async () => {
+      const m2 = load();
+      m2.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+      m2.selfUpdater.isPackaged.mockReturnValue(true);
+      m2.selfUpdate.planUpdate.mockReturnValue({
+        updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version, downloadUrl: 'https://dl/x',
+      });
+      await expect(m2.run(['update'])).resolves.toBe(0);
+      expect(m2.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { amd: true });
+    });
   });
 
   test('exits 1 when applying the update fails', async () => {
@@ -556,7 +570,67 @@ describe('auto-update on start', () => {
     await expect(quick(m)).resolves.toBe(42);
     expect(m.selfUpdater.reexec).toHaveBeenCalledWith(argvQuick);
     // A Pearl-only rig: the worker comes along only if one is already there.
-    expect(m.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { xmr: false });
+    // An NVIDIA one: so does the AMD core.
+    expect(m.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { xmr: false, amd: false });
+  });
+
+  // --core amd: the AMD core is this rig's core, so the update pairs it.
+  test('a rig run with --core amd updates its AMD core with the binary', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+      m.selfUpdater.isPackaged.mockReturnValue(true);
+      m.selfUpdater.reexec.mockReturnValue(0);
+      m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: true, latestVersion: '9.9.9', currentVersion: pkg.version });
+      await expect(m.run(argvQuick.concat(['--core', 'amd']))).resolves.toBe(0);
+      expect(m.selfUpdater.applyUpdate).toHaveBeenCalledWith(expect.anything(), undefined, { xmr: false, amd: true });
+      // The flag is what the core loader reads too.
+      expect(process.env.PEARL_CORE_VARIANT).toBe('amd');
+    });
+  });
+
+  // An install of the bare binary has no AMD core; asking for it fetches it.
+  test('up to date, a rig run with --core amd fetches a missing AMD core before it starts', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      m.fs.existsSync.mockReturnValue(false);
+      m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+      m.selfUpdater.isPackaged.mockReturnValue(true);
+      m.selfUpdater.hasAmdCore.mockReturnValue(false);
+      m.selfUpdater.fetchAmdCore.mockResolvedValue('/opt/rig/pearl_core_hip.node');
+      m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', coreHipUrl: 'https://dl/hip' });
+      m.PearlEngine.startError = new Error('core not built');
+      await m.run(argvQuick.concat(['--core', 'amd']));
+      expect(m.selfUpdater.fetchAmdCore).toHaveBeenCalledWith('https://dl/hip');
+      expect(allOut()).toContain('fetched /opt/rig/pearl_core_hip.node (it was missing)');
+    });
+
+    // A failed fetch says why and carries on to the loader, which says what is missing.
+    await withEnv({ PEARL_CORE_VARIANT: 'amd' }, async () => {
+      const m = load();
+      m.fs.existsSync.mockReturnValue(false);
+      m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+      m.selfUpdater.isPackaged.mockReturnValue(true);
+      m.selfUpdater.hasAmdCore.mockReturnValue(false);
+      m.selfUpdater.fetchAmdCore.mockRejectedValue(new Error('HTTP 404'));
+      m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', coreHipUrl: 'https://dl/hip' });
+      await expect(quick(m)).resolves.toBe(1);
+      expect(allErr()).toContain('could not fetch pearl_core_hip.node: HTTP 404');
+    });
+
+    // One already there, an NVIDIA rig, or a run from source: nothing is fetched.
+    for (const [variant, packaged, has] of [['amd', true, true], [undefined, true, false], ['amd', false, false]]) {
+      await withEnv({ PEARL_CORE_VARIANT: variant }, async () => {
+        const m = load();
+        m.fs.existsSync.mockReturnValue(false);
+        m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+        m.selfUpdater.isPackaged.mockReturnValue(packaged);
+        m.selfUpdater.hasAmdCore.mockReturnValue(has);
+        m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date', coreHipUrl: 'https://dl/hip' });
+        await expect(quick(m)).resolves.toBe(1);
+        expect(m.selfUpdater.fetchAmdCore).not.toHaveBeenCalled();
+      });
+    }
   });
 
   test('keeps mining on the old version when the auto-update fails', async () => {
@@ -959,15 +1033,38 @@ describe('mining', () => {
     expect(m.PearlEngine.instances.length).toBe(0);
   });
 
-  // The AMD core is a different file that no release ships. Telling an AMD rig
-  // to fetch pearl_core.node would load a CUDA core on it.
+  // The AMD core is a file of its own. Telling an AMD rig to fetch
+  // pearl_core.node would load a CUDA core on it.
   // The core loader has already said what failed (pearlCore.test.js); the CLI
   // adds where the AMD core goes, once, and never sends an AMD rig to fetch the
   // CUDA one.
-  const AMD_FIX = 'Fix: put pearl_core_hip.node next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.';
+  const AMD_FIX = 'Fix: put pearl_core_hip.node from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.';
+  test('with the AMD core beside the binary but not loading, it adds no "put it there"', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      const beside = require('path').join(require('path').dirname(process.execPath), 'pearl_core_hip.node');
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(m.fs.existsSync).toHaveBeenCalledWith(beside);
+      expect(allErr()).not.toContain('Fix: put');
+    });
+  });
+
+  test('--core amd asks for the AMD core, over PEARL_CORE_VARIANT', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: 'cu12', PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'amd'])).resolves.toBe(1);
+      expect(allErr()).toContain(AMD_FIX);
+      expect(process.env.PEARL_CORE_VARIANT).toBe('amd');
+    });
+  });
+
   test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
     await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();
+      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
       m.pearlCore.coreFactory.mockReturnValue(null);
       await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
       expect(allErr()).toContain(AMD_FIX);
@@ -978,6 +1075,7 @@ describe('mining', () => {
   test('with PEARL_CORE_VARIANT=amd and a PEARL_CORE_PATH that did not load, the same, and auto serves the LLM', async () => {
     await withEnv({ PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/opt/amd/pearl_core_hip.nod' }, async () => {
       const m = load();
+      m.fs.existsSync.mockImplementation((f) => !String(f).endsWith('pearl_core_hip.node'));
       m.pearlCore.coreFactory.mockReturnValue(null);
       const p = m.run(['-a', ADDR, '--mode', 'auto', '--no-update']);
       await settle();

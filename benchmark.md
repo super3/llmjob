@@ -10,7 +10,9 @@ host to host. v0.6.0 adds Monero mining on the CPU and leaves the GPU miner
 as it was in v0.5.14, so these figures hold for it too. v0.6.8 adds a core for
 GTX 10 cards (Pascal, below) and reads a hit's proof with one wait instead of
 about 120; the new kernel code builds only for sm_61, and every other card's
-kernels are as they were, so the figures hold for it as well.
+kernels are as they were, so the figures hold for it as well. v0.6.8 also ships
+a core for AMD cards on Linux (`pearl_core_hip.node`, loaded with `--core amd`);
+its figures are under "AMD Radeon".
 
 ## Summary
 
@@ -54,8 +56,8 @@ because no L40 was for rent other than the New York one.
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon on Salad: SRBMiner 32–92 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
-  mine Pearl on AMD (0), and our release is CUDA only. An unreleased AMD core, run with SRBMiner on the same
-  PCs on 23 October, beats it on every card, two PCs each: 137–148% on the RX 9060 XT, 119–128% on the RX 9070
+  mine Pearl on AMD (0). Our AMD core, which v0.6.8 ships for Linux (`--core amd`), run with SRBMiner on the same
+  PCs on 23 October before the release, beats it on every card, two PCs each: 137–148% on the RX 9060 XT, 119–128% on the RX 9070
   XT, 102–106% on the RX 7900 XTX, 101–103% on the RX 7900 XT and 103% on the RX 7800 XT (the section's notes).
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
@@ -799,10 +801,13 @@ Run on 18 October 2026, 00:04–02:28 UTC. These are the AMD cards Salad rents. 
 computer that runs containers in WSL2), named by the first 8 characters of its Salad machine ID. Each PC ran
 SRBMiner 3.7.1 and then PeakMiner 2.17.6, 5 minutes each after a 60-second unmeasured warm-up, on
 `us.pearl.herominers.com` (`tuning/salad/bench.sh` at `8da98db`, on the `rocm/dev-ubuntu-24.04:7.2` image).
-Our released miner is CUDA only.
+Our releases were CUDA only until v0.6.8, which ships the AMD core below for Linux (`pearl_core_hip.node`,
+loaded with `--core amd`). Its release build is the `ubuntu-latest-hip` job of `.github/workflows/native-core.yml`,
+in the same image and with the same compiler (ROCm 7.2.0) as the boxes' builds below, so the device code is the
+code these rows ran. The host code differs only in two guards and an environment variable's parsing (the notes).
 
 Every row was rerun from 20:24 UTC on 22 October to 00:19 UTC on 23 October, as the founder asked: our
-unreleased AMD core and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second warm-up, the order
+AMD core, before its release, and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second warm-up, the order
 alternating between PCs, after a hit check of the core (10 minutes on the first five PCs, 2 on the last five;
 `tuning/salad/bench.sh` at `f78d37a`, the same image and pool). PeakMiner wasn't run, as asked: it mines nothing
 on AMD (below), so its 0 stands. Two of the ten PCs are the 18 October rows' own; Salad didn't hand out the
@@ -871,7 +876,9 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
     gfx1200 and gfx1201 the same from `d24ffbf` to `fd16a8c` (at most register names differ), and the host
     (`pearl_host_hip.cpp`) and the CLI haven't changed since `9d8c430`, apart from two guards added after the
     run (a profile that isn't whole tiles, and a batch-width override above the cap), neither on the mining path;
-    the device code compiled for all four chips is the same with them.
+    the device code compiled for all four chips is the same with them. For the release, `PEARL_AMD_COL_BATCH` is
+    read with a hand-written digit loop instead of `atoi`, which under glibc 2.38 tied the addon to Ubuntu 24.04;
+    unset, as in every row, it changes nothing.
   - **What changed in the core.** The RX 9060 XT's gap was its cache: the fold read A' and B' row by row, and a
     batch's B' (8 MB) didn't fit the chip's L2, so the fold waited on memory (15.4 TMAC/s at the mainnet batch
     against 49.3 at a quarter of it). Reading them in per-tile order (`a2c3da4`, the default since `d27b281`) took
@@ -933,7 +940,7 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   - The first 7900 XTX PC, `ded998b6`, isn't a row: Salad took it back 30 s into SRBMiner's run. Before that its
     hit check found 8.03 hits a salt (3,230 in 402 salts), ours ran at 50.0 for 5 minutes (49.9–50.4, 1 share
     accepted, 0 rejected), and SRBMiner read 55.0 and 54.7 TH/s at 15 and 30 s.
-- **Our AMD core, not released (22 October).** PR #261's HIP core (`earn/native/amd`), unchanged, at commit
+- **Our AMD core before its release (22 October).** PR #261's HIP core (`earn/native/amd`), unchanged, at commit
   `5aa0069` (`2d540fe` on `51a4b5c2` and `ded998b6`; the core's sources are the same in both). It ran by a
   different method from "How a host is tested" (`tuning/salad/amdtest.py`: built on the box with ROCm 7.2;
   `hashrate.js` for 60 s after a 10 s warm-up; then the CLI from source on `prl-us.kryptex.network:7048`), on

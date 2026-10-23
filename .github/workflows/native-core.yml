@@ -27,10 +27,12 @@ on:
     paths:
       - 'earn/native/**'
       - '.github/workflows/native-core.yml'
+      - '.github/scripts/check-glibc-floor.sh'
   pull_request:
     paths:
       - 'earn/native/**'
       - '.github/workflows/native-core.yml'
+      - '.github/scripts/check-glibc-floor.sh'
   workflow_dispatch:
 
 jobs:
@@ -584,8 +586,106 @@ jobs:
           fi
           echo "built: $(ls -l "build/Release/${{ matrix.file }}")"
 
+      # The oldest Linux the addon loads on. A build on ubuntu-latest (24.04) can pick up a
+      # symbol only glibc 2.38 or newer has, and nothing else here would notice: v0.6.7's
+      # cores needed glibc 2.38 for one strtoul in the RTX 20 launch sweep, so they would not
+      # load on Ubuntu 22.04 or Debian 12, and the app said only that the core was missing.
+      # This fails the job on any symbol newer than Ubuntu 22.04 has (the script says which).
+      - name: Check the oldest glibc the addon needs (Linux)
+        if: runner.os == 'Linux'
+        working-directory: earn/native
+        shell: bash
+        run: bash ../../.github/scripts/check-glibc-floor.sh "build/Release/${{ matrix.file }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: pearl-core${{ matrix.variant }}-${{ matrix.os }}
           path: earn/native/build/Release/${{ matrix.file }}
+          if-no-files-found: error
+
+  # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct
+  # cards on Linux. It ships in the Linux release from v0.6.8 and loads only when a rig asks
+  # for it (--core amd, or PEARL_CORE_VARIANT=amd). Built in the image the Salad tests built
+  # it in (tuning/salad/amdtest.py's IMAGE), pinned by digest, so the release's code is the
+  # compiler output the hardware rows in benchmark.md were measured on: ROCm 7.2.0's
+  # hip-clang, all 14 targets.
+  #
+  # Non-blocking, for the CUDA 13 build's reason: a failure here must not fail the run, or
+  # no installer could be built from this commit. miner-build.yml warns when it finds no AMD
+  # core, and the release then ships without one.
+  amd:
+    name: ubuntu-latest-hip
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # The image has hip-clang and the HIP runtime; these are what the host half and the
+      # checks below need (the Salad boxes install the same, tuning/salad/amdtest.sh's setup).
+      - name: Install the build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends build-essential binutils ca-certificates
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # And check it is the toolchain the image promised: a different ROCm would build a
+      # core nobody has run.
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(cat /opt/rocm/.info/version)
+          echo "ROCm $v"
+          /opt/rocm/lib/llvm/bin/clang++ --version | head -n 1
+          node --version
+          case "$v" in
+            7.2.0*) ;;
+            *) echo "::error::expected ROCm 7.2.0, got $v"; exit 1 ;;
+          esac
+
+      - name: Install node-addon-api
+        working-directory: earn/native/amd
+        run: npm install --no-save --no-audit --no-fund node-addon-api
+
+      # Every fold on every target, with no spill and no scratch memory. A fold that spills
+      # still compiles, links and mines, only slower, and nothing else here would see it.
+      - name: Check the folds for spills and scratch (all 14 targets)
+        working-directory: earn/native/amd
+        shell: bash
+        run: ./build-amd.sh check
+
+      - name: Build the addon (all 14 targets)
+        working-directory: earn/native/amd
+        shell: bash
+        run: ./build-amd.sh gpu
+
+      # It loads in Node and has the core's entry point (loading needs only the HIP runtime,
+      # which the image has; no GPU is touched), it carries code for all 14 targets, and it
+      # loads on Ubuntu 22.04's glibc.
+      - name: Check the addon
+        working-directory: earn/native/amd
+        shell: bash
+        run: |
+          f=build/pearl_core_hip.node
+          echo "built: $(ls -l "$f")"
+          node -e "const a = require('./$f'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          want=$(sed -n 's/^DEFAULT_ARCHS="\(.*\)"$/\1/p' build-amd.sh)
+          have=" $(strings -a "$f" | grep -oE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          bash ../../../.github/scripts/check-glibc-floor.sh "$f"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-hip-ubuntu-latest
+          path: earn/native/amd/build/pearl_core_hip.node
           if-no-files-found: error

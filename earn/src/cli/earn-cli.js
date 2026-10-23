@@ -151,7 +151,7 @@ async function runExplicitUpdate() {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' …');
   try {
-    const exe = await selfUpdater.applyUpdate(plan);
+    const exe = await selfUpdater.applyUpdate(plan, undefined, { amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + ' (' + exe + '). Re-run to use it.');
     return 0;
   } catch (e) {
@@ -173,6 +173,24 @@ async function repairXmrWorker(url) {
   }
 }
 
+// Whether this run asked for the AMD core: --core amd, which run() copies into
+// PEARL_CORE_VARIANT, or that variable itself.
+function wantsAmdCore() {
+  return pickCoreVariant({ env: process.env }).variant === CORE_AMD;
+}
+
+// The AMD core beside the binary, fetched when this run asked for it and there
+// is none, as from an install of the bare binary. Without this the rig would
+// wait for the next release to get it.
+async function repairAmdCore(url) {
+  if (selfUpdater.hasAmdCore()) return;
+  try {
+    log('fetched ' + await selfUpdater.fetchAmdCore(url) + ' (it was missing)');
+  } catch (e) {
+    log('could not fetch ' + CORE_FILES[CORE_AMD] + ': ' + e.message, process.stderr);
+  }
+}
+
 // Best-effort auto-update on start. Returns an exit code when it replaced and
 // re-ran the binary (caller should return it), or null to keep mining.
 async function maybeAutoUpdate(argv, settings) {
@@ -185,6 +203,7 @@ async function maybeAutoUpdate(argv, settings) {
     // Only for a rig that mines Monero: a Pearl-only one gets no coin miner
     // it didn't ask for.
     if (plan.xmrWorkerUrl && settings.xmrAddress && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
+    if (plan.coreHipUrl && wantsAmdCore() && selfUpdater.isPackaged()) await repairAmdCore(plan.coreHipUrl);
     return null;
   }
 
@@ -195,7 +214,7 @@ async function maybeAutoUpdate(argv, settings) {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
   try {
-    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress });
+    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress, amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + '; restarting');
     return selfUpdater.reexec(argv);
   } catch (e) {
@@ -762,6 +781,9 @@ async function run(argv) {
 
   const settings = parsed.settings;
   for (const w of settings.warnings) log('warning: ' + w);
+  // --core beats PEARL_CORE_VARIANT. Set here, before the update, so the
+  // updater and the core loader read the same choice.
+  if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
@@ -939,13 +961,18 @@ async function run(argv) {
       log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
     });
     if (!createCore) {
-      // PEARL_CORE_VARIANT=amd asked for the AMD core, a different file that no
-      // release ships yet. Pointing at pearl_core.node there would load a CUDA
-      // core on an AMD rig. The core loader has already said what failed (the
-      // file is missing, or PEARL_CORE_PATH didn't load); this says where it goes.
-      if (pickCoreVariant({ env: process.env }).variant === CORE_AMD) {
+      // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
+      // of its own. Pointing at pearl_core.node there would load a CUDA core on
+      // an AMD rig. The core loader has already said what failed (the file is
+      // missing, it would not load, or PEARL_CORE_PATH didn't load); this says
+      // where it goes.
+      if (wantsAmdCore()) {
         const file = CORE_FILES[CORE_AMD];
-        log('Fix: put ' + file + ' next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+        // One that is there but would not load has had its reason (usually no
+        // ROCm runtime); only a missing one needs telling where it goes.
+        if (!fs.existsSync(path.join(path.dirname(process.execPath), file))) {
+          log('Fix: put ' + file + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+        }
       } else {
         const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
         log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);

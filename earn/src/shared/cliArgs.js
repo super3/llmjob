@@ -13,6 +13,10 @@ const { parseMemClockMhz } = require('./memClock');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
+const { CU12, CU13, AMD } = require('./coreVariant');
+
+// --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
+const CORES = [CU12, CU13, AMD];
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -32,7 +36,7 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--pool', '--worker',
-  '--gpu', '--gpu-index',
+  '--gpu', '--gpu-index', '--core',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock',
@@ -103,6 +107,12 @@ const USAGE = [
   '                           0,2, or "none" for no GPU (default: every GPU). The',
   '                           local LLM picks its own cards. PEARL_GPU_INDEX takes',
   '                           the same list; the flag wins.',
+  '      --core <build>       Which Pearl core to load: amd for AMD Radeon and',
+  '                           Instinct cards (Linux, needs the ROCm 7 HIP',
+  '                           runtime), or cu12/cu13 to force a CUDA build.',
+  '                           Default: the CUDA build that fits the NVIDIA',
+  '                           cards. PEARL_CORE_VARIANT takes the same values;',
+  '                           the flag wins.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -203,6 +213,16 @@ function buildSettings(opts, errors, report, update, serve) {
     } else {
       gpuIndices = parsed.indices;
     }
+  }
+
+  // Which core loads. Null leaves it to PEARL_CORE_VARIANT and then to
+  // shared/coreVariant's pick. A flag because HiveOS's Extra config takes
+  // flags and no environment variables, and an AMD rig has to ask for its core.
+  let core = null;
+  if (opts['--core'] != null) {
+    const c = String(opts['--core']).trim().toLowerCase();
+    if (CORES.includes(c)) core = c;
+    else errors.push('invalid --core: ' + opts['--core'] + ' (choices: ' + CORES.join(', ') + ')');
   }
 
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
@@ -323,7 +343,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

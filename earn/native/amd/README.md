@@ -3,7 +3,8 @@
 A HIP port of the Pearl core in `../src`, for AMD Instinct and Radeon cards. It builds
 `pearl_core_hip.node`, an addon with exactly the CUDA core's interface: `pearl_core.cc`
 is compiled unchanged against a HIP host. The app loads it only when asked to
-(`PEARL_CORE_VARIANT=amd`, see below).
+(`--core amd` or `PEARL_CORE_VARIANT=amd`, see below). Linux releases carry it from v0.6.8,
+built by `native-core.yml`'s `ubuntu-latest-hip` job.
 
 **Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct).** On 22 October,
 unchanged, it passed steps 1-5 under "Testing on real hardware" on Salad: an RX 9070 XT (gfx1201)
@@ -187,8 +188,12 @@ runs.
 
 ## Using it in the app
 
-`PEARL_CORE_VARIANT=amd` makes the app and `earn-cli` load `pearl_core_hip.node`: beside
-the executable, in the packaged `native/` folder, or in this folder's `build/`. It is
+`PEARL_CORE_VARIANT=amd` makes the app and `earn-cli` load `pearl_core_hip.node` (the CLI's
+`--core amd` sets it): beside the executable, in the packaged `native/` folder, or in this
+folder's `build/`. A release's copy is beside the CLI binary, in the HiveOS package and in
+the AppImage, and the CLI updates it with the binary on a rig that asks for it. The rig needs
+the ROCm 7 HIP runtime (`libamdhip64.so.7`); when it is missing, the log names the library
+the core could not load. It is
 never chosen on its own, and when it is asked for and missing, nothing falls back to a
 CUDA build. `PEARL_CORE_PATH=/path/to/pearl_core_hip.node` works too. Give it an absolute
 path: a relative one counts from the executable's folder. With `PEARL_CORE_VARIANT=amd`,
@@ -244,4 +249,8 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
   Infinity Cache as `learnings.md` describes for NVIDIA.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
-- Windows (the HIP SDK) and a release workflow that builds `pearl_core_hip.node`.
+- Windows (the HIP SDK). Linux releases build `pearl_core_hip.node` from v0.6.8
+  (`native-core.yml`, `ubuntu-latest-hip`: the compile check, the 14-target build, a load
+  check, and a glibc floor of Ubuntu 22.04's 2.35).
+- Pick the AMD core on its own when a rig has AMD cards and no NVIDIA ones (today it has to be
+  asked for, since the app finds cards with nvidia-smi).
