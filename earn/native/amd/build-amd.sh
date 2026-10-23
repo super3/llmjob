@@ -104,7 +104,15 @@ case "$mode" in
     $cxx -shared -o "$OUT/pearl_core_hipcpu.node" "$OUT/cpu/pearl_host_hip.o" "$OUT/cpu/pearl_core.o" $tbb_lib -ltbb -lpthread
     echo "cpu: fold check"
     $cxx $flags $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu" $tbb_lib -ltbb -lpthread
-    echo "built $OUT/pearl_core_hipcpu.node and $OUT/pearl_amd_foldtest_cpu"
+    # The RDNA 3 and RDNA 4 defaults (PF2, and PF2 + PFX + TID) are on only in a real gfx11 or
+    # gfx12 device pass, so the build above runs the one-slab loop. These run their loops too.
+    # The DPP readout can't be emulated: a new card's first check is still the foldtest on it.
+    echo "cpu: fold check with the RDNA 3 and RDNA 4 loops"
+    $cxx $flags -DPEARL_AMD_PF2=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_pf2" \
+      $tbb_lib -ltbb -lpthread
+    $cxx $flags -DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" \
+      -o "$OUT/pearl_amd_foldtest_cpu_pfx" $tbb_lib -ltbb -lpthread
+    echo "built $OUT/pearl_core_hipcpu.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx}"
     ;;
   gpu)
     slice

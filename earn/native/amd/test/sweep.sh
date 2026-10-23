@@ -1,6 +1,8 @@
 #!/bin/bash
 # A tuning sweep of the AMD folds on one PC, so variants are compared on the same card. Run from
-# earn/native/amd by amdtest.sh's `run` task (RUN_GZ_B64 holding "bash test/lane-a-sweep.sh"), after `build`.
+# earn/native/amd by amdtest.sh's `run` task (RUN_GZ_B64 holding "bash test/sweep.sh"), after `build`.
+# When the variants are built it builds the default again, so a task after `run` (verify, duel, mine) runs the
+# shipping code, not the last variant.
 #
 # For each variant in SWEEP it builds the core with those compiler flags (PEARL_AMD_CFLAGS), checks the fold
 # bit-exact against the CPU (pearl_amd_foldtest at 1024 x 1024), and times the fold alone at the mainnet m. Then it
@@ -9,7 +11,6 @@
 #
 # Environment:
 #   SWEEP         "name=flags;name=flags", e.g. "tiled=;rowmajor=-DPEARL_AMD_TILED=0" (default: one build, "base=").
-#                 A name starting with x is timing only (wrong transcripts by design): fold timing, no check or hashrate.
 #   SWEEP_FOLD    m:cols:reps for the fold-only timing, several space-separated (default 131072:4096:10); ""
 #                 skips it
 #   SWEEP_HASH    secs:warm for each hashrate.js run (default 40:10)
@@ -50,15 +51,17 @@ for v in "${VARS[@]}"; do
   cp build/pearl_core_hip.node build/pearl_amd_foldtest /root/var/$name/
   chk=$(timeout 600 /root/var/$name/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" 2>&1 | grep -E "^($FOLD|PASS|FAIL|no fold)" | tr '\n' ' ')
   out "$name built in $(( $(date +%s) - t0 ))s ($flags); check: $chk"
-  # A name starting with x is a timing-only build (one that leaves part of the fold out to see what it costs): its
-  # check fails by design, and it gets no hashrate run.
-  case "$name:$chk" in x*) ;; *PASS*) names+=("$name") ;; *) out "$name not timed: the check failed" ; continue ;; esac
+  case "$chk" in *PASS*) names+=("$name") ;; *) out "$name not timed: the check failed" ; continue ;; esac
   for spec in $SWEEP_FOLD; do
     IFS=: read -r FM FC FR <<< "$spec"
     r=$(timeout 900 /root/var/$name/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
     out "$name fold $FM x $FC: $r"
   done
 done
+
+# Leave build/ holding the default, not the last variant.
+if ./build-amd.sh gpu "$ARCH" > /root/sweep-build-default.log 2>&1; then out "default rebuilt in build/"
+else out "default rebuild FAIL: build/ holds the last variant; run the build task before verify, duel or mine"; fi
 
 hrun() {   # name [col batch]
   local r

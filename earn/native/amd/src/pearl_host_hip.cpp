@@ -241,10 +241,12 @@ hipError_t event_query(hipEvent_t ev) {
 uint32_t amd_col_batch(const PearlProfile *profile) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
-  // PEARL_AMD_COL_BATCH in the environment caps it too, for measuring widths on one build.
+  // PEARL_AMD_COL_BATCH in the environment lowers the cap, for measuring widths on one build.
+  // It never raises it: the two transcript buffers are sized by the width (128 MiB each at
+  // 256), so 2048 would ask for 1 GiB each.
   uint32_t limit = PEARL_AMD_COL_BATCH;
   const char *env = getenv("PEARL_AMD_COL_BATCH");
-  if (env && atoi(env) > 0) limit = (uint32_t)atoi(env);
+  if (env && atoi(env) > 0 && (uint32_t)atoi(env) < limit) limit = (uint32_t)atoi(env);
   if (cb > colsValid) cb = colsValid;
   if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;
@@ -931,7 +933,11 @@ void draw_noise(Ctx *ctx, bool isA) {
   // The matrix folds read the noised operands in per-tile order under PEARL_AMD_TILED (see
   // pearl_amd_fold.h): tiles of the fold's rows (A') or columns (B'), each k / PEARL_AMD_SLAB
   // slabs of [tile rows][slab]. The reference fold reads them row-major.
-  const FoldInfo *tf = PEARL_AMD_TILED && ctx->fold >= 0 && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF
+  // Only for whole tiles: a profile whose rows aren't (m = 64, say) would be written past the
+  // end of the buffer. pearl_host_submit refuses such a profile for the matrix folds anyway,
+  // but the first draw runs before that, in set_job.
+  const FoldInfo *tf = PEARL_AMD_TILED && ctx->fold >= 0 && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF &&
+                               rows % (isA ? kFolds[ctx->fold].bm : kFolds[ctx->fold].bn) == 0u
                            ? &kFolds[ctx->fold] : nullptr;
   if (kPow2 && tf) {
     uint32_t kbLog2 = 0;

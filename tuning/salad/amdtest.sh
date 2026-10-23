@@ -18,7 +18,7 @@
 #                 If it changes this script, the patched script takes over after the patch.
 #   TASKS         comma list, run in order (default "card,hip"). Each is name[@fold][+K=V...][:arg[:arg...]];
 #                 @fold sets PEARL_AMD_FOLD and each +K=V sets K for that task only, so one run can compare
-#                 settings on the same PC (hashrate+PEARL_AMD_WAIT=poll:60:10). V can't hold , : or +.
+#                 settings on the same PC (hashrate+PEARL_AMD_COL_BATCH=128:60:10). V can't hold , : or +.
 #     env                     OS, ROCm, node, compiler, the bridge's files (names only)
 #     card                    /dev/dxg, rocminfo's GPU agents, Salad's amd-smi
 #     hip                     builds and runs amdtest_hip.cpp: devices, runtime libraries loaded, kernels checked

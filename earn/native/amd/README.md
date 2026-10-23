@@ -122,7 +122,7 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 196 | - | 36 KB | 6 |
+| gfx1200, gfx1201 | wmma12 | 198 | - | 36 KB | 6 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. `./build-amd.sh
 gpu` builds all 14 targets into one addon (about 2 minutes) and the fold check binary.
@@ -228,7 +228,10 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
   barrier with one slab of prefetch, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
   loads two slabs ahead (`PEARL_AMD_PF2`) and does the readout's lane exchanges with DPP and
   `v_permlanex16` (`PEARL_AMD_DPP`): 31.10-31.16 TH/s to 32.17-32.28 on an RX 7800 XT (PC
-  `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. RDNA 4 does both
+  `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. That A/B against
+  the old path is one PC per RDNA 3 chip (on gfx1100 each alone on an RX 7900 XTX: PF2 +2.4%, DPP
+  +0.5%); a second PC of each is still to run. The compiler keeps the loads only about one slab
+  ahead, not two (see the comment in `pearl_amd_fold.h`). RDNA 4 does both
   too, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
   LDS-only fence, since `__syncthreads()` waited for every outstanding global load there) and
   tells the compiler the thread index is under 256 (`PEARL_AMD_TID`): 52.88 TH/s to 59.99 on an

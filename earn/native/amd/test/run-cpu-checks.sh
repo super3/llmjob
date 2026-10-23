@@ -5,6 +5,7 @@
 #
 #   1. pearl_amd_foldtest_cpu: each of the five folds, through the emulated matrix
 #      instructions, against a plain CPU computation of every transcript word.
+#      Also built with the RDNA 3 loop (PF2) and the RDNA 4 one (PF2 + PFX + TID).
 #   2. verify-hits-profile.js on pearl_core_hipcpu.node: the whole core -- draws,
 #      restamps, the fold, the hash, the hit list, the share proofs -- with every fold,
 #      both operand fills, and a profile whose salt takes two batches.
@@ -28,6 +29,8 @@ run() {
 
 run "foldtest 256x512" "$B/pearl_amd_foldtest_cpu" 256 512 1
 run "foldtest 512x1024" "$B/pearl_amd_foldtest_cpu" 512 1024 7
+run "foldtest 256x512, RDNA 3 loop (PF2)" "$B/pearl_amd_foldtest_cpu_pf2" 256 512 1
+run "foldtest 256x512, RDNA 4 loop (PF2 + PFX + TID)" "$B/pearl_amd_foldtest_cpu_pfx" 256 512 1
 for f in ref mfma16 mfma8 wmma11 wmma12; do
   run "core $f, constant fill" env PEARL_AMD_FOLD=$f node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu.node" "$SECS" 252 256 512 1
 done

@@ -863,7 +863,9 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   - **Code.** Each row ran the same default code for its chip as the branch head `fd16a8c`. The lanes compared
     the compiled fold, hash and reference kernels: gfx1100 and gfx1101 are the same from `259bf7b` to `fd16a8c`,
     gfx1200 and gfx1201 the same from `d24ffbf` to `fd16a8c` (at most register names differ), and the host
-    (`pearl_host_hip.cpp`) and the CLI haven't changed since `9d8c430`.
+    (`pearl_host_hip.cpp`) and the CLI haven't changed since `9d8c430`, apart from two guards added after the
+    run (a profile that isn't whole tiles, and a batch-width override above the cap), neither on the mining path;
+    the device code compiled for all four chips is the same with them.
   - **What changed in the core.** The RX 9060 XT's gap was its cache: the fold read A' and B' row by row, and a
     batch's B' (8 MB) didn't fit the chip's L2, so the fold waited on memory (15.4 TMAC/s at the mainnet batch
     against 49.3 at a quarter of it). Reading them in per-tile order (`a2c3da4`, the default since `d27b281`) took

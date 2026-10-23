@@ -326,8 +326,14 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 }
 
 // PEARL_AMD_PF2=1: global loads two slabs ahead instead of one (two register sets, the slab
-// loop unrolled by two so each set and LDS buffer is fixed), so a load has two slabs of matrix
-// work to arrive in before its LDS store waits on it. On by default on RDNA 3 and RDNA 4. An RX
+// loop unrolled by two so each set and LDS buffer is fixed), meant to give a load two slabs of
+// matrix work to arrive in before its LDS store waits on it. The compiler doesn't keep it that
+// far ahead (the review of 23 October, in the ROCm 7.2 -O3 ISA): on gfx1201 it moves slab s+2's
+// loads below slab s's matrix instructions, about one slab ahead, and on gfx1100 (no PFX) the
+// LDS store and the barrier still wait for every load. The measured gains are real, but they
+// come mostly from the unrolled loop, the DPP readout and, on RDNA 4, PFX's barrier. Pinning
+// the loads at the top of the step (a sched_barrier after them) is untried. On by default on
+// RDNA 3 and RDNA 4. An RX
 // 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against 31.10-31.16
 // without, and 32.17-32.28 with the DPP readout below as well. RDNA 4: see PFX.
 #ifndef PEARL_AMD_PF2
@@ -341,7 +347,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // stores (vmcnt(0), not 3). So the slab barrier fences LDS only (the loads go to registers;
 // nothing else is shared), and the last two steps load the last slab again instead of skipping
 // (two slabs in 64, from L2). PEARL_AMD_TID=1 tells the compiler threadIdx.x < 256, which drops
-// an exec-mask branch in the staging addresses (wmma11 236 -> 219 VGPRs, wmma12 215 -> 198).
+// an exec-mask branch in the staging addresses (wmma12 215 -> 198 VGPRs; wmma11, where it's off by
+// default, uses 240).
 // On by default on RDNA 4 only. An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
 // the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
 // with PF2 + DPP + PFX + TID; the old path against all four on other PCs: 9060 XT d324328f

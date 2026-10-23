@@ -426,7 +426,7 @@ in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks ar
 `duel` is benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
 CLI) and SRBMiner 3.7.1 run 5 minutes each on HeroMiners; it ends with ours' mean after the first minute and
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
-can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_WAIT=poll:60:10`.
+can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
 
 ```sh
 python3 tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
