@@ -143,7 +143,10 @@ doesn't count toward its 3. (On 12 October one 2080 Ti
 PC that overheated to 66 TH/s was handed to a second group two hours later.) Since 23 October a PC left for
 its margin (rule 5) keeps the TH/s it was left at, and a group whose own price and pool that rate clears 10%
 at keeps it (a `NOTE ... keeps PC` event) and is judged on its own readings from there. Before, a PC left at
-high was refused at medium too. A PC Salad takes back isn't
+high was refused at medium too. A PC off the bad list (after 24 h) is still left the same way, uncounted,
+when the rate a group of the class last measured there in `rate_days` fails 10% at this group's price and
+pool: in 14 days of events, 85 of 452 margin moves were off PCs that had failed for their class 1–7 days
+before, each one a counted move. A PC Salad takes back isn't
 bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad

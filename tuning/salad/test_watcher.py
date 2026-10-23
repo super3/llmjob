@@ -441,6 +441,28 @@ class TestRule5Profit(Base):
         self.step(g, 1, "m1")
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
+    def test_a_pc_whose_measured_rate_fails_is_left_after_its_bad_list_entry_expires(self):
+        # Bad-list entries last 24 h; a PC's measured rate is kept 7 days. 150 TH/s at medium's $0.19 is -8%.
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [150.0, self.clock[0] - 2 * 86400]}}
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("off PC m1 (PC m1 made 150 TH/s 48 h ago, -8% at this group's $0.190/hr, under 10%); "
+                      "not counted toward its 3", self.events())
+        self.assertEqual(g["reallocs"], 0)
+
+    def test_a_pc_whose_measured_rate_clears_for_this_group_is_kept(self):
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [150.0, self.clock[0] - 2 * 86400]}}
+        g = self.group(pri="batch")                # $0.11/hr: 150 TH/s is +37%
+        self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def test_a_measured_rate_older_than_rate_days_is_not_used(self):
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [150.0, self.clock[0] - 8 * 86400]}}
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
     def test_a_box_is_priced_at_the_pool_its_pc_mines_on(self):
         # A Kryptex group whose box was seen mining on HeroMiners at its PC (a command change that landed as Salad
         # handed it the PC: 3060-45 on 19 October) is judged at HeroMiners' ratio there.

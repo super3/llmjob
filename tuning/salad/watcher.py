@@ -1464,6 +1464,18 @@ class W:
                     else:
                         self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
                         return
+                # A bad-list entry lasts bad_pc_hold_h (24 h), but the PC's measured rate is kept rate_days (7): a PC
+                # whose rate there fails the margin at this group's price and pool is left too, the same way.
+                else:
+                    seen = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
+                    if seen and t - seen[1] < 86400 * self.cfg["rate_days"]:
+                        bar = self.cfg["min_margin"]
+                        mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)), g["price"])
+                        if mg < bar:
+                            self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
+                                               f"{mg * 100:+.0f}% at this group's ${g['price']:.3f}/hr, under {bar:.0%}",
+                                            count=False)
+                            return
         else:
             if g["had_pc"]:
                 if g["machine"] is not None:
