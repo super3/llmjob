@@ -296,8 +296,8 @@ class TestMinerStops(Base):
 
 class TestRestartOnTheSamePC(Base):
     def test_a_restart_on_the_same_pc_starts_the_reading_clock_again(self):
-        # 14 days to 22 October: about 34 of 58 "no mining reading for 6 min" moves came just after Salad started
-        # the box again on the same PC, each one a good PC given up while the box was starting.
+        # 12 days to 22 October: 4 of the 39 "no mining reading for 6 min" moves came just after box.sh started
+        # again on the same PC, a good PC given up while the box was starting (3090ti-19, 5060-46, 3060-54).
         g = self.group(pri="medium")
         self.step(g, 1, "m1")
         self.mine(g, "m1", 199, 12)                              # (so the 20-minute share rule runs below)
@@ -342,6 +342,34 @@ class TestRestartOnTheSamePC(Base):
                              ("2027-01-15T07:59:00Z", "[run] release v0.6.6 ready")])
         self.assertEqual((g["restart_t"], g["restart_pc"]), (T0 - 180, "m1"))
         self.assertEqual(self.events().count("RESTARTED biz-rtx4080 on PC m1"), 1)
+
+    def test_a_return_to_a_pc_mined_on_hours_ago_is_not_a_restart(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 30000, machine="m1", pc_since=T0 - 120, had_pc=True, has_pc=True, last_share=None)
+        g["readings"] = [[T0 - 20000 + 60 * i, "m1", 199.0, i, f"up 0h {i}m"] for i in range(5)]   # an earlier stint
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": "[run] release v0.6.6 ready", "time": "2027-01-15T07:59:00Z",
+             "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]}))
+        self.x.round()
+        self.assertIsNone(g.get("restart_t"))
+        self.assertNotIn("RESTARTED", self.events())
+
+    def test_a_pause_s_warm_up_reading_isn_t_kept_as_the_pc_s_rate(self):
+        # 23 October: 3060-70 read 0.1 TH/s on 60b629b5 right after a pause; had the PC gone then, 32 TH/s would
+        # have stood as its rate for 7 days, and the 7-day check would have moved good groups off it.
+        g = self.group(pri="low")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 6)
+        self.x.record_rates(self.clock[0])
+        g["pause_since"] = g["paused_t"] = self.clock[0] + 30
+        self.mine(g, "m1", 0.1, 1)
+        self.x.record_rates(self.clock[0])
+        self.mine(g, "m1", 199, 1)
+        self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.st["pc_rates"]["RTX 4080 (16 GB)"]["m1"][0], 199)
 
     def test_the_first_start_on_a_pc_is_not_a_restart(self):
         g = self.round_with([("2027-01-15T07:57:00Z", "[run] release v0.6.6 ready")], readings=False)
@@ -560,6 +588,46 @@ class TestRule5Profit(Base):
         self.assertIn("earns $0.203/hr at 165 TH/s (Monero $0.010 of it) on PC m1 against its $0.190/hr (+6%, "
                       "under 10%)", self.events())
         self.assertEqual(self.x.st["bad_pcs"]["m1"]["ths"], 165)
+
+    def test_the_report_values_kryptex_monero_at_what_kryptex_pays(self):
+        # 200 TH/s ($0.234) and 100 kH/s on Kryptex at $0.002 a kH/s-hour, 94% of the network's pay against
+        # HeroMiners' 99.1%: $0.190, so $0.424 earned against $0.19 is +$0.23 (+55%); at 99.1% it read +$0.24.
+        self.x.cfg.update(xmr_wallet="88" + "x" * 93, xmr_groups=["*"])
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 300.0, "per_hash": 0, "usd_khs_hr": 0.002}
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 200, 5)
+        g.update(kxx_khs=100.0, kxx_seen=self.clock[0])
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md")) as f:
+            self.assertIn("| 0.19 | +0.23* (+55%*) |", f.read())
+
+    def test_the_median_of_an_even_count_is_the_mean_of_the_middle_two(self):
+        self.monero(1.0, 3.0)
+        self.assertAlmostEqual(self.x.xmr_usd(), 0.010)
+
+    def test_kryptex_monero_is_valued_at_what_kryptex_pays(self):
+        self.monero()
+        o = self.group(cls="RTX 2060 (6 GB)")
+        o.update(has_pc=True, kxx_khs=2.0, kxx_seen=self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(), 2.0 * 0.94 / 0.991 * 0.005)
+
+    def test_a_box_long_on_its_pc_counts_its_own_monero(self):
+        # The median stands in only while the pools' 30-minute averages still hold the old PC: after that a box
+        # whose Monero doesn't reach the pool counts none, and one that mines more counts its own.
+        self.monero(2.0, 2.0, 2.0)
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0])
+        for i in range(8):                           # reads every 5 minutes for 40 minutes, at 0.2 kH/s
+            self.clock[0] += 300
+            g.update(xmr_khs=0.2, xmr_seen=self.clock[0])
+            for o in self.x.st["groups"].values():
+                if o is not g:
+                    o["xmr_seen"] = self.clock[0]
+            self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.2 * 0.005)
+        g.update(machine="m2", pc_since=self.clock[0])   # a new PC: the median again until 30 minutes of its own
+        self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)
 
     def test_monero_counts_only_for_a_box_that_mines_it_and_from_fresh_figures(self):
         self.assertEqual(self.x.xmr_usd(), 0.0)    # Monero off
@@ -927,6 +995,34 @@ class TestSearch(Base):
     def test_the_retry_wait_comes_from_config(self):
         self.x.cfg["retry_after_min"] = 10
         self.assertIn("biz-rtx4080-2", self.searched("released", 11))
+
+    def held_4080(self, tries="low", avail=("medium",), placed="medium"):
+        """A 4080 that last got a PC at `placed`, then three groups with no PC at `tries` (a priority or a list)."""
+        self.http.on("POST", "/availability/", lambda b: (200, {f"available_gpu_{p}": 5 for p in avail}
+                                                          if b["gpu_classes"][0] == "c4080" else {}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, retry_after_min=10)
+        p = self.group(cls="RTX 4080 (16 GB)", pri=placed)
+        p.update(had_pc=True, ended=self.clock[0], end_kind="released")
+        for pri in ([tries] * 3 if isinstance(tries, str) else tries):
+            self.clock[0] += 900
+            g = self.group(cls="RTX 4080 (16 GB)", pri=pri)
+            g["ended"], g["end_kind"] = self.clock[0], "released"
+        self.clock[0] += 900
+        n = len(self.http.made("POST", "/containers$"))
+        self.x.search()
+        return [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")[n:]]
+
+    def test_a_class_held_for_cheaper_tries_is_tried_at_the_priority_it_places_at(self):
+        self.assertEqual(self.held_4080(), [("biz-rtx4080-5", "medium")])
+
+    def test_not_while_that_priority_fails_the_margin(self):
+        self.x.st["classes"] = json.loads(json.dumps(CLASSES))               # a copy: CLASSES is shared
+        self.x.st["classes"]["RTX 4080 (16 GB)"]["prices"]["medium"] = 0.23   # medium no longer clears
+        self.assertEqual(self.held_4080(avail=("medium", "low")), [])
+
+    def test_a_class_with_a_no_pc_try_at_its_priority_stays_held(self):
+        self.assertEqual(self.held_4080(tries=["low", "medium", "low"]), [])
 
     def test_a_class_that_keeps_getting_no_pc_is_left_out(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
@@ -1466,14 +1562,22 @@ class TestBadPcs(Base):
         self.assertIn("not counted toward its 3", self.events())
         self.assertEqual(b["reallocs"], 0)
 
-    def test_the_bad_list_forgets_after_a_day(self):
+    def test_after_a_day_the_rate_a_pc_was_left_at_still_counts(self):
+        # The bad list forgets a PC after 24 h, but the rate it was left at is kept 7 days (pc_rates), even when it
+        # was left at its first judgment: until the 22 October review it was never recorded then.
         a = self.group(pri="medium")
         self.step(a, 1, "m1")
-        self.mine(a, "m1", 120, 6)
+        self.mine(a, "m1", 120, 6)                   # $0.140/hr against $0.19: left at its first judgment
+        self.assertEqual(self.x.st["pc_rates"]["RTX 4080 (16 GB)"]["m1"][0], 120)
         self.clock[0] += 25 * 3600
         b = self.group(pri="medium")
         self.step(b, 1, "m1")
-        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 1)
+        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 2)
+        self.assertIn("(PC m1 made 120 TH/s 25 h ago,", self.events())
+        self.assertEqual(b["reallocs"], 0)
+        c = self.group(pri="batch")                  # at $0.11/hr 120 TH/s is +22%: the PC is kept
+        self.step(c, 1, "m1")
+        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 2)
 
     def test_a_pc_salad_took_back_isnt_bad(self):
         a = self.group(pri="medium")
@@ -1931,6 +2035,15 @@ class TestMonero(Base):
                      (200, {"count": 2, "results": [{"received": "0.1"}, {"received": "0.12"}]}))
         self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/4xyz$",
                      (200, {"results": [{"worker": "a", "avg_hashrate_30m": "1500"}, {"worker": "b", "avg_hashrate_30m": "500"}]}))
+
+    def test_box_rates_on_kryptex_are_read_even_when_the_balance_fails(self):
+        self.kx_api(balance=(503, {}))
+        self.http.on("GET", "kryptex.com/xmr/api/v3/miner/workers/4xyz$",
+                     (200, {"results": [{"worker": "biz-rtx4080-g0", "avg_hashrate_30m": "1500"}]}))
+        g = self.group()
+        self.x.kx_xmr([g], self.clock[0])
+        self.assertEqual((g["kxx_khs"], g["kxx_seen"]), (1.5, self.clock[0]))
+        self.assertNotIn("kxx_tot", self.x.st)
 
     def test_kryptexs_monero_pool_is_read_at_most_every_5_minutes(self):
         self.kx_api()

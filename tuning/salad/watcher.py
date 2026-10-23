@@ -290,18 +290,34 @@ class W:
         return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(), self.st["classes"][cls]["prices"][pri])
 
     def xmr_usd(self, g=None):
-        """What Monero on a box's CPU earns an hour, for the rules: the median of the live boxes the Monero pools
-        saw in the last 15 minutes (a box's own figure is the pool's 30-minute average, which on a new PC still
-        holds the old one). For group g, 0 unless it mines Monero; with no g, for a new group. The rules counted
-        Pearl alone until 22 October, so boxes that cleared 10% with their Monero (about $0.002 a box) were left."""
+        """What Monero on a box's CPU earns an hour, for the rules. For group g (0 unless it mines Monero), its own
+        figure once the pools' 30-minute averages hold only this PC: the mean of its last 3 reads taken 30 minutes
+        or more after it got the PC, restarted or last paused (xmr_own), the latest within 15 minutes. A box whose
+        Monero doesn't reach the pool then counts 0. Before that, and for a new group (no g), the median of the live
+        boxes the pools saw in the last 15 minutes. The rules counted Pearl alone until 22 October, so boxes that
+        cleared 10% with their Monero (about $0.002 a box) were left."""
         if not (g.get("xmr") if g is not None else self.wants_xmr("*")):
             return 0.0
         t, xusd = now(), (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
-        khs = sorted(k for k in (sum(x.get(f, 0.0) for f, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
-                                     if t - (x.get(seen) or 0) < 15 * MIN)
-                                 for x in self.st["groups"].values() if not x["ended"] and x.get("xmr") and x["has_pc"])
-                     if k > 0)
-        return khs[len(khs) // 2] * xusd if khs else 0.0
+        if g is not None and g.get("has_pc") and g.get("pc_since") and g.get("xmr_own"):
+            since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
+            own = [k for seen, k in g["xmr_own"] if seen >= since + 30 * MIN][-3:]
+            if own and t - g["xmr_own"][-1][0] < 15 * MIN:
+                return sum(own) / len(own) * xusd
+        khs = sorted(k for k in (self.box_khs(x, t) for x in self.st["groups"].values()
+                                 if not x["ended"] and x.get("xmr") and x["has_pc"]) if k > 0)
+        n = len(khs)
+        if not n:
+            return 0.0
+        return (khs[n // 2] if n % 2 else (khs[n // 2 - 1] + khs[n // 2]) / 2) * xusd
+
+    def box_khs(self, g, t):
+        """A box's Monero kH/s as HeroMiners' pay values it (xmr_mkt's usd_khs_hr is HeroMiners' net pay): its
+        HeroMiners figure, plus its Kryptex one times what Kryptex pays against that (kryptex_xmr_pay over
+        1 - XMR_FEE, 0.94 against 0.991), each only when the pool saw the box in the 15 minutes before t."""
+        hm = g.get("xmr_khs") or 0.0 if t - (g.get("xmr_seen") or 0) < 15 * MIN else 0.0
+        kx = g.get("kxx_khs") or 0.0 if t - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
+        return hm + kx * self.cfg["kryptex_xmr_pay"] / (1 - XMR_FEE)
 
     def rate(self, cls):
         """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
@@ -332,6 +348,13 @@ class W:
             r = None if g["ended"] else self.pc_rate(g)
             if r is not None:
                 st["pc_rates"].setdefault(g["class"], {})[g["machine"]] = [r, t]
+            # Each new Monero read of the box, for its own figure in xmr_usd.
+            seen = max(g.get("xmr_seen") or 0, g.get("kxx_seen") or 0)
+            if not g["ended"] and g.get("xmr") and g.get("has_pc") and seen:
+                own = g.setdefault("xmr_own", [])
+                if not own or own[-1][0] < seen:
+                    own.append([seen, self.box_khs(g, seen)])
+                    del own[:-6]
         for pcs in st["pc_rates"].values():
             for m in [m for m, (_, seen) in pcs.items() if t - seen >= 86400 * self.cfg["rate_days"]]:
                 del pcs[m]
@@ -1139,9 +1162,19 @@ class W:
         s1, b = http("GET", f"{KXX_API}/v1/miner/balance/{addr}", timeout=30)
         paid = kx_paid(KXX_API, addr)
         s3, ws = http("GET", f"{KXX_API}/v3/miner/workers/{addr}", timeout=30)
+        rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
+        # Each box's rate there, read even when the balance or payouts fail: the rules count each box's Monero
+        # from these (xmr_usd), and they went stale after 15 minutes of balance failures.
+        byw = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
+        for g in groups:
+            x = byw.get(f"{g['name']}-g0")
+            if x:
+                try:
+                    g["kxx_khs"], g["kxx_seen"] = float(x.get("avg_hashrate_30m") or 0) / 1000, t
+                except (TypeError, ValueError):
+                    pass
         if s1 != 200 or not isinstance(b, dict) or paid is None:
             return
-        rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
         try:
             st["kxx_tot"] = {"t": t, "confirmed": float(b.get("confirmed") or 0),
                              "unconfirmed": float(b.get("unconfirmed") or 0), "paid": paid,
@@ -1153,14 +1186,7 @@ class W:
         # read (xmr_market), and is valued again at it; so is a new bucket while the market read is off.
         pays = sorted(ph for x in st["groups"].values() for _, ph in (x.get("kxx_b") or {}).values())
         ref = pays[len(pays) // 2] if len(pays) >= 10 else None
-        ws = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
         for g in groups:
-            x = ws.get(f"{g['name']}-g0")
-            if x:
-                try:
-                    g["kxx_khs"], g["kxx_seen"] = float(x.get("avg_hashrate_30m") or 0) / 1000, t
-                except (TypeError, ValueError):
-                    pass
             if not mk or not ((g.get("xmr_kx") and g.get("had_pc")) or "kxx_b" in g):
                 continue
             s, c = http("GET", f"{KXX_API}/v1/miner/chart/{addr}/{g['name']}-g0?days=2", timeout=30)
@@ -1364,12 +1390,13 @@ class W:
                     event(f"CARD {name} PC {(mach or '')[:8]}: {text.strip()[7:160]}")
                 elif re.match(r"\[run\] (FAIL|g\d miner exited)", text) or text.startswith("[run] release"):
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
-                    # box.sh starting again on a PC the box already mined on: Salad restarted it there (a command
-                    # update, or its own restart). The box is quiet while it starts, so the reading and share rules
-                    # count from here, as on a new PC, once a PC: in 14 days of events about 34 of 58 "no mining
-                    # reading for 6 min" moves came just after such a start, each one a good PC given up.
+                    # box.sh starting again on a PC the box mines on in this stint: Salad restarted it there (a
+                    # command update, or its own restart). The box is quiet while it starts, so the reading and share
+                    # rules count from here, as on a new PC, once a PC. In 12 days of events, 4 of the 39 "no mining
+                    # reading for 6 min" moves came just after such a line (one of them a box that couldn't mine).
+                    # Readings from an earlier stint on the same PC don't count: that is a first start.
                     if (text.startswith("[run] release") and mach and mach == g.get("machine") and g.get("restart_pc") != mach
-                            and any(r[1] == mach and r[0] < tm for r in g["readings"])):
+                            and any(r[1] == mach and (g.get("pc_since") or 0) - 5 * MIN <= r[0] < tm for r in g["readings"])):
                         g["restart_t"], g["restart_pc"] = tm, mach
                         event(f"RESTARTED {name} on PC {mach[:8]}: Salad started the box again there; its readings "
                               "and shares count from now, as on a new PC")
@@ -1665,7 +1692,11 @@ class W:
         if not g.get("has_pc") or not g.get("machine") or not g.get("pc_since"):
             return None
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
-        post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN] if cur else []
+        # The readings in the 2 minutes after a pause for a prompt are a warm-up, as rule 5 treats them: one dip
+        # (0.1 TH/s on 3060-70 at 00:55Z on 23 October) could otherwise stand as the PC's rate for 7 days.
+        pend = self.pause_end(g)
+        back = next((r[0] for r in cur if r[0] > pend), None) if pend else None
+        post = [r for r in cur if r[0] >= cur[0][0] + 2 * MIN and not (back and back <= r[0] < back + 2 * MIN)] if cur else []
         if len(post) < 3:
             return None
         return sum(r[2] for r in post[-3:]) / 3
@@ -1698,6 +1729,9 @@ class W:
             entry = {"t": now(), "group": g["name"], "why": why}
             if ths is not None:
                 entry["ths"] = ths
+                # And it's the PC's rate now (pc_rates), for the 7-day check and the class's rate: a PC left at its
+                # first judgment never had one recorded, so the check missed about half the PCs it was for.
+                self.st.setdefault("pc_rates", {}).setdefault(g["class"], {})[g["machine"]] = [ths, now()]
             self.st.setdefault("bad_pcs", {})[g["machine"]] = entry
         if self.paid(g):
             self.reallocate(g, why)
@@ -1760,15 +1794,25 @@ class W:
             # Until 22 October such a class only went last, and still took any slot nothing else wanted: in the 24 h
             # before, the account was full for 573 min, in 567 of them with a group waiting from such a class, and
             # 84 times a class that gets PCs was created only once one of those groups was deleted.
-            if cls not in st["classes"] or cls in skip or self.unplaced(cls, t):
+            if cls not in st["classes"] or cls in skip:
                 continue
+            # But a class held only for tries cheaper than the priority it last got a PC at is tried again at that
+            # priority or above, once it clears: 4060-32 waited 64 min on 19 October for tries at low.
+            order = None
+            if self.unplaced(cls, t):
+                pl = PRIS.index(self.start_pri(cls))
+                streak = sorted((x for x in st["groups"].values() if x["class"] == cls and x["ended"]),
+                                key=lambda x: x["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
+                if not all(PRIS.index(x["pri"]) < pl for x in streak):
+                    continue
+                order = PRIS[pl:]
             rate = self.rate(cls)
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
             s, a = http("POST", f"{BASE}/availability/sce-gpu-availability", body)
             if s != 200:
                 continue
             start = PRIS.index(self.start_pri(cls))
-            for p in PRIS[start:] + PRIS[:start][::-1]:
+            for p in order or PRIS[start:] + PRIS[:start][::-1]:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * self.usd() + self.xmr_usd() - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
@@ -1886,7 +1930,7 @@ class W:
             # Its rate at each Monero pool that saw it in the last 15 minutes: one, or both just after a switch.
             khs = sum(g.get(k, 0.0) for k, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
                       if g.get("xmr") and g["has_pc"] and t - (g.get(seen) or 0) < 15 * MIN)
-            earn = ths * mk["usd_th_hr"] * yg(g) + khs * xusd
+            earn = ths * mk["usd_th_hr"] * yg(g) + (self.box_khs(g, t) * xusd if g.get("xmr") and g["has_pc"] else 0.0)
             state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
                      else "⏳")
             # A box on a new PC with no reading yet is starting: billed, but left out of the profit total. So is one
