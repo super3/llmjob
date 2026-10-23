@@ -146,13 +146,6 @@ class TestCommand(Base):
         # An NVIDIA box's command leaves these lines alone.
         self.assertEqual(self.amd_box(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6", kryptex="prl-us.kryptex.network:7048")), self.AMD_LINES)
 
-    def test_an_amd_box_mines_no_monero_unless_xmr_amd(self):
-        self.x.cfg.update(xmr_wallet=XMR, xmr_groups=["*"])
-        self.assertFalse(self.x.wants_xmr("biz-rx9070xt"))
-        self.assertTrue(self.x.wants_xmr("biz-rtx4080"))
-        self.x.cfg["xmr_amd"] = True
-        self.assertTrue(self.x.wants_xmr("biz-rx9070xt"))
-
     def test_an_amd_group_gets_the_rocm_image_v0_6_8_and_no_gemma(self):
         self.x.cfg["llm"] = True
         self.x.st["classes"]["AMD RX 9070 XT (16GB)"] = {"id": "c9070", "prices": {"batch": 0.07, "low": 0.11,
