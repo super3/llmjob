@@ -121,6 +121,11 @@
 #ifndef PEARL_AMD_TILED
 #define PEARL_AMD_TILED 1
 #endif
+// PEARL_AMD_PRIO=1: raise the wave's issue priority (s_setprio 1) for its matrix instructions
+// and drop it after, so a SIMD prefers a wave with matrix work over one issuing loads.
+#ifndef PEARL_AMD_PRIO
+#define PEARL_AMD_PRIO 0
+#endif
 // Timing only, for finding where a matrix fold's time goes (lane-a-sweep.sh's "x" variants):
 // each bit leaves a part out, and the transcripts are wrong. 1: the next slab's global loads
 // and LDS stores; 2: the slab barrier; 4: the readout at chunk ends (one readout after the
@@ -327,12 +332,36 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
       }
   __syncthreads();
 #else
+#if PEARL_AMD_PRIO
+  __builtin_amdgcn_s_setprio(1);
+#endif
 #pragma unroll
   for (int mt = 0; mt < P::kMT; mt++)
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) P::mma(acc[mt][nt], a[mt], b[nt]);
+#if PEARL_AMD_PRIO
+  __builtin_amdgcn_s_setprio(0);
+#endif
 #endif
 }
+
+// A pointer every lane of the wave holds the same value of, said so: in scalar registers the
+// compiler addresses a load as that base plus a 32-bit lane offset, and steps it by slab with
+// scalar adds instead of a 64-bit vector add a lane.
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+typedef const __attribute__((address_space(1))) int8_t *pearl_amd_gptr;
+__device__ __forceinline__ pearl_amd_gptr pearl_amd_uniform(const int8_t *p) {
+  const uint64_t v = (uint64_t)(uintptr_t)p;
+  const uint32_t lo = (uint32_t)__builtin_amdgcn_readfirstlane((int)(uint32_t)v);
+  const uint32_t hi = (uint32_t)__builtin_amdgcn_readfirstlane((int)(uint32_t)(v >> 32));
+  return (pearl_amd_gptr)(uintptr_t)(((uint64_t)hi << 32) | lo);
+}
+#define PEARL_AMD_GVEC(p) (*reinterpret_cast<const __attribute__((address_space(1))) pearl_amd_v4i *>(p))
+#else
+typedef const int8_t *pearl_amd_gptr;
+__device__ __forceinline__ pearl_amd_gptr pearl_amd_uniform(const int8_t *p) { return p; }
+#define PEARL_AMD_GVEC(p) (*reinterpret_cast<const pearl_amd_v4i *>(p))
+#endif
 
 // XOR across the eight lanes that share a region: lane bits 0, 3 and 4 in every layout here.
 // (Bits 1 and 2 pick the region's column offset; on CDNA bit 5 picks its row offset.)
@@ -414,7 +443,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles");
-  static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
+  static_assert((UA + UB) % T == 0 && UA % T == 0 && T % QR == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
 
@@ -431,6 +460,24 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
+// Load u of a thread is A' when u * T < UA (UA is whole multiples of T), known at compile time
+// once the loop unrolls. Tiled, a load's address is a block-uniform base (the tile's slab) plus
+// 16 bytes a thread, which the compiler keeps in scalar registers.
+// PEARL_AMD_UNIFORM=1: each staging load is a block-uniform base in scalar registers plus 16
+// bytes a thread, and each LDS store's address is fixed at compile time, which takes most of
+// the per-slab address arithmetic off the vector ALU. Off until measured.
+#ifndef PEARL_AMD_UNIFORM
+#define PEARL_AMD_UNIFORM 0
+#endif
+#if PEARL_AMD_TILED && PEARL_AMD_UNIFORM
+#define PEARL_AMD_LOADR(slab, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    const pearl_amd_gptr base = pearl_amd_uniform(                                           \
+        u * T < UA ? gA + (size_t)(slab) * (BM * KS) + (size_t)(u * T) * 16u                  \
+                   : gB + (size_t)(slab) * (BN * KS) + (size_t)(u * T - UA) * 16u);           \
+    R[u] = PEARL_AMD_GVEC(base + (uint32_t)t * 16u);                                         \
+  }
+#else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
@@ -442,12 +489,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                         : gB + (size_t)((idx - UA) / QR) * k) + (size_t)(slab) * KS + 16 * (idx % QR)); \
     R[u] = *p;                                                                               \
   }
+#endif
+#if PEARL_AMD_UNIFORM
+#define PEARL_AMD_STORER(buf, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    int8_t *dst = (u * T < UA ? sA[buf] + (u * T / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) \
+                  + (t / QR) * S + 16 * (t % QR);                                            \
+    *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
+  }
+#else
 #define PEARL_AMD_STORER(buf, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                        \
   }
+#endif
 #define PEARL_AMD_LOAD(slab) PEARL_AMD_LOADR(slab, pre)
 #define PEARL_AMD_STORE(buf) PEARL_AMD_STORER(buf, pre)
 #if (PEARL_AMD_ABLATE & 32) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
