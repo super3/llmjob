@@ -366,6 +366,25 @@ __device__ __forceinline__ void pearl_amd_bar_wait() {
 #ifndef PEARL_AMD_PF2
 #define PEARL_AMD_PF2 PEARL_AMD_WMMA11
 #endif
+// PEARL_AMD_PFX=1, with PF2: keep the loads two slabs ahead in flight across the barrier. Two
+// things stopped that. __syncthreads() is a workgroup fence for every address space, which in
+// WGP mode waits for every outstanding global load (s_waitcnt vmcnt(0)) and drops L0, so each
+// barrier waited for the loads just issued. And the loads were issued under `if`, so where the
+// two paths met the compiler waited for all of them before the LDS stores (vmcnt(0), not 3).
+// So the slab barrier fences LDS only (the loads go to registers; nothing else is shared), and
+// the last two steps load the last slab again instead of skipping (two slabs in 64, from L2).
+#ifndef PEARL_AMD_PFX
+#define PEARL_AMD_PFX 0
+#endif
+__device__ __forceinline__ void pearl_amd_lds_barrier() {
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+  __builtin_amdgcn_s_barrier();
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#else
+  __syncthreads();
+#endif
+}
 
 // PEARL_AMD_DPP=1 (RDNA, wave32): VALU lane moves instead of __shfl_xor's ds_bpermute, which
 // goes through the LDS pipe: lane ^ 1 by a quad permute, ^ 8 by rotating each 16-lane row by 8,
@@ -518,7 +537,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
   auto slab_step = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
+#if PEARL_AMD_PFX
+    {   // set B's slab s went to LDS last step
+      const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
+      PEARL_AMD_LOADR(n, pre2[B])
+    }
+#else
     if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS last step
+#endif
     const int8_t *aBase = sA[B] + wr * WM * S;
     const int8_t *bBase = sB[B] + wc * WN * S;
 #pragma unroll
@@ -535,7 +561,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+#if PEARL_AMD_PFX
+    pearl_amd_lds_barrier();
+#else
     __syncthreads();
+#endif
   };
   uint32_t s = 0;
   for (; s + 1 < slabs; s += 2) {
