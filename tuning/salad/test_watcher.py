@@ -117,6 +117,58 @@ class TestCommand(Base):
         self.assertEqual(body["container"]["resources"]["gpu_classes"], ["c4080"])
         self.assertEqual((body["restart_policy"], body["autostart_policy"], body["replicas"]), ("always", True, 1))
 
+    # The lines of box.sh (at BOX's commit) that an AMD box's command changes.
+    AMD_LINES = "  nvidia-smi --query-gpu=index,name,driver_version,power.limit,clocks.max.sm,compute_cap --format=csv,noheader | sed 's/^/[card] /'\n  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once\nif [ ! -f $D/tools ]; then\nN=$(nvidia-smi -L | wc -l)\nCC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')\n    release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/ ;;\n  [ $((tick % 5)) = 0 ] && nvidia-smi --query-gpu=index,clocks.sm,clocks.mem,power.draw,power.limit,temperature.gpu,utilization.gpu --format=csv,noheader,nounits |\n"
+
+    def amd_box(self, cmd):
+        import subprocess
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        out = subprocess.run(["sh", "-c", sed], input=self.AMD_LINES, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_slug_and_is_amd(self):
+        self.assertEqual(w.slug("AMD RX 9070 XT (16GB)"), "rx9070xt")
+        self.assertEqual(w.slug("AMD RX 7900 XT (20GB)"), "rx7900xt")
+        self.assertTrue(w.is_amd("biz-rx9070xt-2"))
+        self.assertFalse(w.is_amd("biz-rtx4080"))
+
+    def test_an_amd_box_runs_the_amd_core_and_needs_no_nvidia_smi(self):
+        out = self.amd_box(w.cmd_for("biz-rx9070xt", "prl1abc", "v0.6.8", XMR, 0, "prl-us.kryptex.network:7048", amd=True))
+        self.assertNotIn("nvidia-smi", out)
+        self.assertIn('echo "[card] 0, $(rocminfo 2>/dev/null | grep -m1 -oE "AMD Radeon[ A-Za-z0-9]+")', out)
+        self.assertIn("for f in pearl_core_hip.node llmjob-earn-cli-linux ", out)
+        self.assertIn("release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node ", out)
+        self.assertIn("\nN=1\n", out)
+        self.assertIn("if false; then", out)   # no CUDA build tools
+        self.assertIn("&& true --query-gpu=index,clocks.sm", out)
+        self.assertIn("--core amd", w.cmd_for("biz-rx9070xt", "prl1abc", "v0.6.8", amd=True))
+        # An NVIDIA box's command leaves these lines alone.
+        self.assertEqual(self.amd_box(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6", kryptex="prl-us.kryptex.network:7048")), self.AMD_LINES)
+
+    def test_an_amd_group_gets_the_rocm_image_v0_6_8_and_no_gemma(self):
+        self.x.cfg["llm"] = True
+        self.x.st["classes"]["AMD RX 9070 XT (16GB)"] = {"id": "c9070", "prices": {"batch": 0.07, "low": 0.11,
+                                                                                   "medium": 0.155, "high": 0.196}}
+        self.assertTrue(self.x.create("AMD RX 9070 XT (16GB)", "batch"))
+        body = self.http.made("POST", "/containers$")[-1][2]
+        self.assertEqual(body["name"], "biz-rx9070xt")
+        self.assertEqual(body["container"]["image"], "rocm/dev-ubuntu-24.04:7.2")
+        cmd = body["container"]["command"][2]
+        self.assertIn("--core amd", cmd)
+        self.assertIn("s/^VER=v0.5.13;/VER=v0.6.8;/", cmd)
+        self.assertNotIn("--mode auto", cmd)
+        g = list(self.x.st["groups"].values())[-1]
+        self.assertEqual((g["ver"], g["llm"]), ("v0.6.8", False))
+        # Gemma stays off it: llm_sync doesn't keep trying to turn it on.
+        self.x.llm_sync([g], w.now() + 3600)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rx9070xt")), 0)
+        # An NVIDIA group still gets Gemma and its own image.
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch"))
+        nv = self.http.made("POST", "/containers$")[-1][2]
+        self.assertEqual(nv["container"]["image"], "nvidia/cuda:12.2.2-base-ubuntu22.04")
+        self.assertIn("--mode auto", nv["container"]["command"][2])
+
     def test_a_name_salad_still_holds_is_skipped(self):
         self.http.on("POST", "/containers$", lambda b: (400, {"type": "name_conflict"}) if b["name"] == "biz-rtx4080"
                      else (201, {}))
