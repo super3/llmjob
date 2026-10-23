@@ -18,6 +18,8 @@ notes, and many had dropped off them with no fix or decision.
 | 3 | A box paused for a prompt showed a margin like −3180% and turned the All row negative. | Display | `8e39885` |
 | 4 | The keep, leave, climb and search rules valued every box at HeroMiners' credit ratio (0.93) though every box mines on Kryptex (0.97). 63 of 125 margin moves and deletions in the 48 h before would not have happened. A review before it went live added: the pool a box's PC really mines on, Kryptex's ratio held through API outages, and a second margin check in the search. Live since 8:15 pm EDT on 22 Oct. | $0.2–0.5/day | `310c1f9`, `3874caf` |
 | 8 | `max_active` was held at 7–8 for the AMD benchmark from 4:24 pm on 22 Oct. | about $0.5/day while it ran | back to 10 at 8:25 pm when the run ended |
+| 7 | The search sized its room by our own group count, so with Salad counting a phantom replica every search sent creates it refused, one per class. It now uses Salad's own count of replicas in use and stops at the first refusal. The phantom replica itself is Salad's and still costs a slot: worth asking Salad support. | $0.3–0.5/day while the phantom lasts | `89bf78c` (code part) |
+| 15 | Moves off port-blocked PCs counted toward a group's 3, so 4060-54 was deleted on its fourth PC for a PC's fault. Now they don't, up to 6 a group. | about $0.08/day | `89bf78c` |
 
 ## Open: costs money
 
@@ -25,14 +27,12 @@ notes, and many had dropped off them with no fix or decision.
 |---|---|---|---|
 | 5 | The rules count Pearl only, not each box's Monero (about 2 kH/s, $0.003/hr a box), so boxes that clear 10% with Monero are left. | $0.3–0.7 | Count Monero in the margin the rules use. Changes what "10%" means: decision. |
 | 6 | Classes that never get a PC on this account (4090, 5090, often 4070 Ti and 5070 Ti) keep taking slots: created, wait 10–20 min, deleted, tried again. | up to $1.0 of slot time; about $0.3–0.5 | Hold a class that got no PC for 3 h, not 10 min. |
-| 7 | Salad counts one replica more than we have (since about 1 pm on 22 Oct), and parallel creates hit the quota. | $0.3–0.5 | Use the quota call's own used count and stop at the first refusal (4 lines). Ask Salad about the phantom. |
 | 9 | The bad-PC list keeps no price or rate, so a PC left at high is refused at medium where it clears, and wrong entries (from #4, #5) bar good PCs for 24 h. 88 of 200 bad-list moves in 48 h were off PCs that clear for the group moved. | $0.2–0.3 | Keep the PC's TH/s in the entry and let a group stay when that clears its own price. |
 | 10 | One 10% bar for creating, keeping and climbing, with no buffer, so PCs near the line flip in and out as the price moves. | $0.05–0.1 alone; about $0.5 with #4, #5 | A lower keep bar (or two failed checks) and a higher create bar. Decision. |
 | 11 | Gemma's prompts pause mining on billed PCs, sometimes 4–11 min while the model loads; Gemma's earnings aren't counted anywhere. | about $0.13 billed with no Pearl | CLI: don't pause until the model answers (release). Watcher: show pause minutes and Gemma's earnings. |
 | 12 | A quiet PC, or Salad restarting the box on the same PC, gives the PC up instead of reading on. It led to #1. | $0.1–0.3 | Notice a restart on the same machine and count readings from it, once per PC. |
 | 13 | Bad-list entries expire after 24 h, so known-slow PCs come back and cost a counted move. | $0.1–0.2 | Also leave, uncounted, a PC whose measured rate in the last 7 days fails the bar. |
 | 14 | Release v0.6.7's Linux cores need glibc 2.38; the boxes' image has 2.35, so no box gets its 4.6–6.6% faster RTX 20 mining. | about $0.10 a mining RTX 20 box | Build the Linux cores against an older glibc (release fix in `earn/`). |
-| 15 | Moves off port-blocked PCs count toward a group's 3, and the count never resets, so a good group is deleted for PCs' faults (4060-54 on 22 Oct). | about $0.08 | Don't count a port-block move. |
 | 16 | PCs that keep dropping or restarting our boxes are never held back. | $0.05–0.12 | Bad-list a PC that drops a box 3 times in 30 min. |
 | 17 | One flaky Salad instance read is taken as real: a false LOST PC, a "new PC" on the same machine. | $0.05–0.15 | Need two reads that agree. |
 | 18 | The CLI never resumes mining when a prompt pauses it before its first hashrate. | $0.05–0.1 | CLI fix (release). |
