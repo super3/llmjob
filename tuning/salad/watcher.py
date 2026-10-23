@@ -1062,9 +1062,10 @@ class W:
 
     def xmr_market(self):
         """Monero's price and what one accepted hash earns at the pool (the network's reward per hash, less the
-        pool's fee), at most every 5 minutes."""
+        pool's fee), at most every 5 minutes, and 5 minutes after a failed read (CoinGecko answers 429 when asked
+        every minute)."""
         st = self.st
-        if st.get("xmr_mkt") and now() - st["xmr_mkt"]["t"] < 300:
+        if (st.get("xmr_mkt") and now() - st["xmr_mkt"]["t"] < 300) or now() - st.get("xmr_try", 0) < 300:
             return
         s1, j = http("GET", "https://monero.herominers.com/api/stats", timeout=30)
         s2, p = http("GET", "https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd", timeout=30)
@@ -1073,7 +1074,22 @@ class W:
             price = float(p["monero"]["usd"])
         except (KeyError, TypeError, ValueError, ZeroDivisionError):
             err(f"Monero market fetch failed {s1} {s2}")
+            st["xmr_try"] = now()
             return
+        # HeroMiners' stats sometimes answer far off: on 22 October at least seven reads gave a hash 10 to 2,300
+        # times too little, each valuing the Kryptex chart buckets first seen then, and the rules' Monero, at almost
+        # nothing.
+        # A hash's pay and the price don't move 3 times in minutes, so such a read is set aside and the last one
+        # kept; the same figures twice in a row (the next round) are taken as real.
+        old = st.get("xmr_mkt")
+        if per_hash <= 0 or price <= 0 or (old and not (near(per_hash, old["per_hash"], 3) and near(price, old["price"], 3))):
+            odd = st.get("xmr_odd")
+            if not (odd and near(per_hash, odd["per_hash"], 1.25) and near(price, odd["price"], 1.25)):
+                st["xmr_odd"] = {"per_hash": per_hash, "price": price}
+                err(f"Monero market read set aside: a hash {per_hash:.3g} XMR at ${price}, against "
+                    f"{(old or {}).get('per_hash', 0):.3g} at ${(old or {}).get('price', 0)}")
+                return
+        st.pop("xmr_odd", None)
         st["xmr_mkt"] = {"t": now(), "price": price, "per_hash": per_hash, "usd_khs_hr": per_hash * 1000 * 3600 * price}
 
     def xmr_pool(self, groups, t):
@@ -1131,6 +1147,10 @@ class W:
         except (TypeError, ValueError):
             pass
         mk = st.get("xmr_mkt")
+        # The pay buckets already hold, across every box: a bucket valued 3 times off it was valued from a bad market
+        # read (xmr_market), and is valued again at it; so is a new bucket while the market read is off.
+        pays = sorted(ph for x in st["groups"].values() for _, ph in (x.get("kxx_b") or {}).values())
+        ref = pays[len(pays) // 2] if len(pays) >= 10 else None
         ws = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
         for g in groups:
             x = ws.get(f"{g['name']}-g0")
@@ -1151,6 +1171,11 @@ class W:
                 g["xmr_coins"] = g.get("xmr_hashes", 0.0) * mk["per_hash"]
             b = g.setdefault("kxx_b", {})
             per_hash = mk["per_hash"] / (1 - XMR_FEE)
+            if ref and not near(per_hash, ref, 3):
+                per_hash = ref
+            for v in b.values():
+                if ref and not near(v[1], ref, 3):
+                    v[1] = ref
             for p in c:
                 try:
                     ts, h = str(int(p["timestamp"])), float(p.get("hashrate") or 0) * 600
@@ -1960,6 +1985,11 @@ def with_margin(profit, earn):
     """Profit an hour with its margin in brackets, or alone when there's no margin to show."""
     m = star(pct(profit, earn))
     return f"{profit:+.2f}{EST}" + (f" ({m})" if m != "—" else "")
+
+
+def near(a, b, f):
+    """Whether a and b are both positive and within a factor f of each other."""
+    return a > 0 and b > 0 and 1 / f < a / b < f
 
 
 def margin_of(earn, price):

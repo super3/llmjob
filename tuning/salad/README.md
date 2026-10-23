@@ -189,6 +189,9 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
+  A read 3 times off the last one is set aside until the next round reads it again (on 22 October at least seven
+  HeroMiners reads gave a hash 10 to 2,300 times too little), a chart bucket valued 3 times off the median of
+  all buckets is valued again at it, and a failed read waits 5 minutes (CoinGecko answers 429 every minute).
 - **The rules count Monero too** (since 22 October): each box's earnings in the keep, leave, climb, search and
   swap rules add what the median Monero box makes, from the boxes the Monero pools saw in the last 15 minutes
   (about $0.002/hr; a box's own figure is a 30-minute average that, on a new PC, still holds the old one). Before,

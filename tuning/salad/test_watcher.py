@@ -1833,8 +1833,48 @@ class TestMonero(Base):
         self.http.on("GET", "coingecko", (200, {"monero": {"usd": 500}}))
         self.x.xmr_market()
         mk = self.x.st["xmr_mkt"]
-        self.assertAlmostEqual(mk["per_hash"], 0.6 / 6e11 * 0.991)
-        self.assertAlmostEqual(mk["usd_khs_hr"], 0.6 / 6e11 * 0.991 * 3.6e6 * 500)
+        self.assertAlmostEqual(mk["per_hash"] / (0.6 / 6e11 * 0.991), 1)
+        self.assertAlmostEqual(mk["usd_khs_hr"] / (0.6 / 6e11 * 0.991 * 3.6e6 * 500), 1)
+
+    def test_a_failed_market_read_is_tried_again_5_minutes_later(self):
+        self.http.on("GET", "monero.herominers.com/api/stats$",
+                     (200, {"network": {"difficulty": 600_000_000_000}, "lastblock": {"reward": 600_000_000_000}}))
+        self.http.on("GET", "coingecko", (429, {}))
+        self.x.xmr_market()
+        self.clock[0] += 240
+        self.x.xmr_market()
+        self.assertEqual(len(self.http.made("GET", "coingecko")), 1)
+        self.clock[0] += 61
+        self.x.xmr_market()
+        self.assertEqual(len(self.http.made("GET", "coingecko")), 2)
+
+    def market(self, reward, price=600):
+        self.http.on("GET", "monero.herominers.com/api/stats$",
+                     (200, {"network": {"difficulty": 800_000_000_000}, "lastblock": {"reward": reward}}))
+        self.http.on("GET", "coingecko", (200, {"monero": {"usd": price}}))
+
+    def test_a_far_off_market_read_is_set_aside_until_it_repeats(self):
+        # 22 October: at least seven reads of HeroMiners' stats gave a hash 10 to 2,300 times too little.
+        self.market(620_000_000_000)
+        self.x.xmr_market()
+        good = dict(self.x.st["xmr_mkt"])
+        self.market(12_400_000_000)                  # a reward 50 times too small
+        self.clock[0] += 300
+        self.x.xmr_market()
+        self.assertEqual(self.x.st["xmr_mkt"], good)
+        self.clock[0] += 60
+        self.market(620_000_000_000, price=650)      # the next round reads right again
+        self.x.xmr_market()
+        self.assertAlmostEqual(self.x.st["xmr_mkt"]["price"], 650)
+        self.assertNotIn("xmr_odd", self.x.st)
+        self.clock[0] += 300
+        self.market(62_000_000_000)                  # a real 10-fold fall, read twice in a row, is taken
+        self.x.xmr_market()
+        self.assertAlmostEqual(self.x.st["xmr_mkt"]["price"], 650)
+        self.assertAlmostEqual(self.x.st["xmr_mkt"]["per_hash"] / (0.62 / 8e11 * 0.991), 1)
+        self.clock[0] += 60
+        self.x.xmr_market()
+        self.assertAlmostEqual(self.x.st["xmr_mkt"]["per_hash"] / (0.062 / 8e11 * 0.991), 1)
 
     def test_a_box_paused_for_a_prompt_or_without_a_pearl_reading_has_no_margin(self):
         # 22 October: 3060-70, paused for Gemma's speed test 20 minutes into its PC, showed "-0.05* (-3180%*)"
@@ -2150,6 +2190,18 @@ class TestMonero(Base):
         self.assertIn("| 0.000 | 0.000338 |", self.xmr_row("4080"))
         self.x.cfg["kryptex_xmr_pay"] = 0.5
         self.assertIn("| 0.000 | 0.000180 |", self.xmr_row("4080"))
+
+    def test_buckets_valued_from_a_bad_market_read_are_valued_again(self):
+        # 22 October: 19 buckets held a pay 10 to 2,300 times too low, kept for good since a bucket keeps its first.
+        g = self.kx_box()
+        start = int(g["created"]) * 1000
+        g["kxx_b"] = {str(start + 600_000 * i): [600_000.0, 1e-10] for i in range(1, 13)}
+        g["kxx_b"].update({str(start + 600_000 * i): [600_000.0, 4e-14] for i in (13, 14)})
+        self.x.st["xmr_mkt"]["per_hash"] = 5e-14 * (1 - w.XMR_FEE)   # and the market read is off now
+        self.xmr_chart(g, (600 * 15, 1000.0))
+        self.x.kx_xmr([g], self.clock[0])
+        self.assertEqual({ph for _, ph in g["kxx_b"].values()}, {1e-10})
+        self.assertAlmostEqual(g["kxx_gross"], (14 * 600_000 + 600_000) * 1e-10)
 
     def test_the_first_chart_read_drops_the_estimates_from_the_kryptex_rate(self):
         # 0.0005 XMR so far: HeroMiners' count of its 2 million hashes there, and estimates from its rate on Kryptex.
