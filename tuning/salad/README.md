@@ -43,7 +43,7 @@ Config keys:
 | `search_every_min` | Minutes between searches while a slot is empty (60). |
 | `retry_after_min` | Minutes before a class released for want of a PC is tried again (60). |
 | `retry_failed_h` | Hours before a class whose group failed is tried again (24). |
-| `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC goes last for 180 min. |
+| `no_pc_streak`, `no_pc_hold_min` | A class whose last 3 groups got no PC isn't tried for 180 min. |
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
 | `swap_wait_min` | Minutes a swapped slot is expected to earn nothing while the new group gets a PC and starts (20). Part of a swap's cost. |
@@ -92,7 +92,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    group failed (rules 4 and 5) is tried again `retry_failed_h` later. It used to be barred for good: on
    19 October that had barred 7 of 21 classes, the 4070 and 2070 by a single PC that sent no mining
    reading a week before. A class whose groups only got no PC (released) is tried again `retry_after_min` later, but when its last
-   `no_pc_streak` groups never got a PC at all, it goes after every other class for `no_pc_hold_min`. When a
+   `no_pc_streak` groups never got a PC at all, it isn't tried for `no_pc_hold_min` after the last of them.
+   Until 22 October it only went after every other class and still took any slot nothing else wanted: that
+   day the account was full for 573 minutes, in 567 of them with such a group waiting, and 84 times a class
+   that gets PCs was created only once one of those groups was deleted. When a
    class's latest ended group never got a PC, its next group starts at the priority its latest group with a PC
    got it at, not at batch: on 14 October 4080s and 5080s only got PCs at medium or high, and each new group
    spent 30 min climbing from batch first. If that priority no longer clears the margin, it starts at the

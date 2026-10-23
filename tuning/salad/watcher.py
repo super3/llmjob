@@ -1621,7 +1621,7 @@ class W:
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
-        no_pc_hold_min: the search then tries it after every other class, so it stops taking a slot it can't fill."""
+        no_pc_hold_min: the search then leaves the class out, so it stops taking a slot it can't fill."""
         ended = sorted((g for g in self.st["groups"].values() if g["class"] == cls and g["ended"]),
                        key=lambda g: g["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
         return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
@@ -1678,7 +1678,8 @@ class W:
 
     def candidates(self, active, t):
         """Classes a new group may use, each at its cheapest free priority from start_pri that clears the margin, best first:
-        classes not held for want of PCs, then paid classes, then by expected profit an hour. When no priority from
+        paid classes, then by expected profit an hour. A class whose last no_pc_streak groups got no PC is left out
+        for no_pc_hold_min (unplaced). When no priority from
         start_pri up clears it, the dearest cheaper one that does and has a GPU free: on 19 October 5090s started at
         high, where their last PC came from, which cleared 1% at a lower PRL price, so with 13 free at medium (+18%)
         no 5090 was tried."""
@@ -1699,7 +1700,10 @@ class W:
                 skip.discard(cls)
         cands = []
         for cls in KNOWN:
-            if cls not in st["classes"] or cls in skip:
+            # Until 22 October such a class only went last, and still took any slot nothing else wanted: in the 24 h
+            # before, the account was full for 573 min, in 567 of them with a group waiting from such a class, and
+            # 84 times a class that gets PCs was created only once one of those groups was deleted.
+            if cls not in st["classes"] or cls in skip or self.unplaced(cls, t):
                 continue
             rate = self.rate(cls)
             body = {"cpu": 2, "memory": 4096, "storage_amount": 10737418240, "gpu_classes": [st["classes"][cls]["id"]]}
@@ -1710,7 +1714,7 @@ class W:
             for p in PRIS[start:] + PRIS[:start][::-1]:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * self.usd() - st["classes"][cls]["prices"][p]
-                    cands.append((self.unplaced(cls, t), not self.paid(cls), -profit, cls, p))
+                    cands.append((not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
 
@@ -1751,9 +1755,9 @@ class W:
             if x["had_pc"]:
                 placed[x["class"]] = x["pri"]
         best = None
-        for unplaced, _, _, cls, p in self.candidates(active, t):
+        for _, _, cls, p in self.candidates(active, t):
             # Only a class Salad has placed for us, and not while its latest try got no PC.
-            if unplaced or cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
+            if cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
             price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
             expect = self.rate(cls) * u - price

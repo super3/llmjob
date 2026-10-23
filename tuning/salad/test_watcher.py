@@ -821,7 +821,7 @@ class TestSearch(Base):
         self.x.cfg["retry_after_min"] = 10
         self.assertIn("biz-rtx4080-2", self.searched("released", 11))
 
-    def test_a_class_that_keeps_getting_no_pc_goes_last(self):
+    def test_a_class_that_keeps_getting_no_pc_is_left_out(self):
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
         self.x.cfg.update(max_active=10, max_new_per_hour=1, retry_after_min=10, max_per_class=3)
@@ -832,6 +832,25 @@ class TestSearch(Base):
         self.x.search()
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx2060")  # not the 4080
         self.clock[0] += 181 * 60  # the hold ends
+        self.x.search()
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
+
+    def test_a_class_that_keeps_getting_no_pc_doesnt_take_a_slot_nothing_else_wants(self):
+        # 22 October: such classes went last but still took any free slot, so for 567 of the 573 minutes the
+        # account was full that day a group of one sat waiting, and a class that gets PCs waited for it 84 times.
+        avail = {"c4080": {"available_gpu_low": 5}}            # only the 4080 has a free GPU
+        self.http.on("POST", "/availability/", lambda b: (200, avail.get(b["gpu_classes"][0], {})))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, retry_after_min=10)
+        for _ in range(3):
+            g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+            g["ended"], g["end_kind"] = self.clock[0], "released"   # never had a PC
+            self.clock[0] += 3600
+        n = len(self.http.made("POST", "/containers$"))
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")), n)
+        self.assertIn("SEARCH found nothing to create", self.events())
+        self.clock[0] += 121 * 60                                # 3 h after the last one ended
         self.x.search()
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
 
