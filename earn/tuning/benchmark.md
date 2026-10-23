@@ -2796,6 +2796,9 @@ rotating, round 1 not scored. Not rows: no competitor ran.
   verify-hits 400 of 400 on both (on the 9060 XT with item 6 on), Kryptex 4 of 4 shares on the 9060 XT and 9 of 9 on
   the 9070 XT, none rejected, one connection each.
 - **Cost:** three boxes, about 141 minutes, high priority.
+v0.6.8's release tests (23 October), on two other RX 9070 XT PCs (`8081f47f`, `5e3d4671`): every checked hit verified
+(400 of 3,589 and 400 of 3,703), 105.8 and 110.95 TH/s in `hashrate.js`, and 106.5 and 111.5 TH/s through the CLI with
+`--core amd` for 300 s, 0 rejected. Another method and other PCs, so not rows.
 
 ### Our own builds on Salad, 10 November: NVIDIA ideas on AMD (PR #290 item 23)
 
@@ -4972,6 +4975,10 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - Compare builds on the same PC only. Salad PCs of one card differ by up to 24% on the same code, and some run far
   slower for every miner because something else is using the GPU.
 - Our CLI's 5-minute mean carries about ±1.5–2.4% noise on fast cards, so 1–2 points between PCs mean nothing.
+- Some Salad PCs dip on their own: on 3060 PC `4e084f5e` (23 October) v0.6.8's core and the release core both read
+  49.3 TH/s and 6–31 by turns, at 93 W of 170, so a low reading can be the PC, not the core.
+- v0.6.8's Windows build on rig01's RTX 4090 read 316.2–317.0 TH/s for 5 minutes, 0 rejected, level with v0.6.7's
+  316.2 (23 October). It's the founder's rig, not a tested host, so not a row.
 - On AMD, use 10-minute hit checks: 2-minute checks read low hits a salt for no known reason. Salad's `amd-smi`
   reports no power or clocks.
 - Time a short fold on a Salad AMD PC before a race. On 7 November a 7900 XTX PC (`ec58ea79`) ran `pearl_amd_peak`'s
