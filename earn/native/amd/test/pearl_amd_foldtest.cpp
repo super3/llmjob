@@ -123,6 +123,25 @@ int main(int argc, char **argv) {
   if (!ok(hipMalloc(&dA, A.size()), "hipMalloc A") || !ok(hipMalloc(&dB, B.size()), "hipMalloc B")
       || !ok(hipMalloc(&dTr, want.size() * 4), "hipMalloc tr") || !ok(hipMalloc(&dCaps, 8), "hipMalloc caps"))
     return 2;
+  // The matrix folds read the operands in per-tile order when built with PEARL_AMD_TILED, as
+  // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
+  // row-major, so it gets its own copies.
+  auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br) {
+    std::vector<int8_t> out(src.size());
+    const uint32_t kb = PEARL_AMD_SLAB;
+    for (uint32_t r = 0; r < rows; r++)
+      for (uint32_t kk = 0; kk < k; kk++)
+        out[(size_t)(r / br) * br * k + ((size_t)(kk / kb) * br + r % br) * kb + kk % kb] = src[(size_t)r * k + kk];
+    return out;
+  };
+  int8_t *dAt = dA, *dBt = dB;
+  if (PEARL_AMD_TILED) {
+    if (!ok(hipMalloc(&dAt, A.size()), "hipMalloc A tiled") || !ok(hipMalloc(&dBt, B.size()), "hipMalloc B tiled"))
+      return 2;
+    const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM), Bt = tiled(B, n, PEARL_AMD_BN);
+    hipMemcpy(dAt, At.data(), At.size(), hipMemcpyHostToDevice);
+    hipMemcpy(dBt, Bt.data(), Bt.size(), hipMemcpyHostToDevice);
+  }
   hipMemcpy(dA, A.data(), A.size(), hipMemcpyHostToDevice);
   hipMemcpy(dB, B.data(), B.size(), hipMemcpyHostToDevice);
   hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, 0, dCaps);
@@ -144,13 +163,14 @@ int main(int argc, char **argv) {
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     // One launch to check (and to load the code), then `reps` more to time.
-    launch(f, grid, dA, dB, k, rank, col0, rowsValid, dTr);
+    const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
+    launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
     const int n = reps > 0 ? reps : 1;
     const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < n; i++) launch(f, grid, dA, dB, k, rank, col0, rowsValid, dTr);
+    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     e = hipDeviceSynchronize();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -170,6 +190,8 @@ int main(int argc, char **argv) {
              regions, n, secs, tmacs);
     }
   }
+  if (dAt != dA) hipFree(dAt);
+  if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);
   if (!ran) { printf("no fold ran\n"); return 1; }
   printf("%s\n", failed ? "FAIL" : "PASS");

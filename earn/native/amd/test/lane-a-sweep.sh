@@ -13,7 +13,8 @@
 #                 skips it
 #   SWEEP_HASH    secs:warm for each hashrate.js run (default 40:10)
 #   SWEEP_ROUNDS  rounds of hashrate.js over the variants (default 2)
-#   SWEEP_CB      batch widths to try on the first variant, e.g. "64 128" (default none)
+#   SWEEP_CB      batch widths to try on one variant, e.g. "64 128" (default none)
+#   SWEEP_CBV     the variant SWEEP_CB runs on (default the first)
 #
 # Each result is one "[amdtest] HH:MM:SS sweep ..." line, written straight to the container's log too, so it shows
 # while the sweep runs (the run task prints only the end of its output, when it finishes).
@@ -65,7 +66,7 @@ hrun() {   # name [col batch]
 for ((i = 1; i <= ROUNDS; i++)); do
   for n in "${names[@]}"; do hrun "$n"; done
   if [ -n "${SWEEP_CB:-}" ] && [ ${#names[@]} -gt 0 ]; then
-    for cb in $SWEEP_CB; do hrun "${names[0]}" "$cb"; done
+    for cb in $SWEEP_CB; do hrun "${SWEEP_CBV:-${names[0]}}" "$cb"; done
   fi
 done
 out "done"

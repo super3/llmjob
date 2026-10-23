@@ -116,6 +116,11 @@
 //   PEARL_AMD_NT_A=1   read A' with non-temporal loads, so it doesn't push B' out of L2.
 //   PEARL_AMD_LDS_BARRIER=1  the slab barrier fences LDS only, without the L0 invalidate
 //                      (global_inv) a workgroup-scope __syncthreads costs in WGP mode.
+//   PEARL_AMD_TILED=1  the matrix folds read A' and B' in per-tile order: each 128-row tile of
+//                      A' (256-row tile of B') is k / PEARL_AMD_SLAB slabs of [rows][slab], so
+//                      a slab of a tile is one contiguous run of whole cache lines, not 32
+//                      bytes of every row's line. The host materialises them that way
+//                      (pearl_materialize16_tiled); the reference fold still reads row-major.
 #ifndef PEARL_AMD_GROUP
 #define PEARL_AMD_GROUP 0
 #endif
@@ -124,6 +129,9 @@
 #endif
 #ifndef PEARL_AMD_LDS_BARRIER
 #define PEARL_AMD_LDS_BARRIER 0
+#endif
+#ifndef PEARL_AMD_TILED
+#define PEARL_AMD_TILED 0
 #endif
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
@@ -407,10 +415,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #define PEARL_AMD_LOAD(slab)                                                                 \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
-    const int8_t *src = idx < UA ? gA + (size_t)(idx / QR) * k                               \
-                                 : gB + (size_t)((idx - UA) / QR) * k;                       \
-    const pearl_amd_v4i *p =                                                                 \
-        reinterpret_cast<const pearl_amd_v4i *>(src + (size_t)(slab) * KS + 16 * (idx % QR)); \
+    const pearl_amd_v4i *p = reinterpret_cast<const pearl_amd_v4i *>(                       \
+        PEARL_AMD_TILED                                                                      \
+            ? (idx < UA ? gA + (size_t)(slab) * (BM * KS) + 16 * idx                          \
+                        : gB + (size_t)(slab) * (BN * KS) + 16 * (idx - UA))                  \
+            : (idx < UA ? gA + (size_t)(idx / QR) * k                                         \
+                        : gB + (size_t)((idx - UA) / QR) * k) + (size_t)(slab) * KS + 16 * (idx % QR)); \
     /* UA is whole multiples of T, so u alone says whether this load is A' */                \
     if (PEARL_AMD_NT_A && u < UA / T) pre[u] = __builtin_nontemporal_load(p);                \
     else pre[u] = *p;                                                                        \

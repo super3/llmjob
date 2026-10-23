@@ -793,7 +793,18 @@ void draw_noise(Ctx *ctx, bool isA) {
                      0, ctx->work, seed, label, (const uint32_t *)nullptr, dense, rows, rank);
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
                      label, perm, k, rank);
-  if (kPow2) {
+  // The matrix folds read the noised operands in per-tile order under PEARL_AMD_TILED (see
+  // pearl_amd_fold.h): tiles of the fold's rows (A') or columns (B'), each k / PEARL_AMD_SLAB
+  // slabs of [tile rows][slab]. The reference fold reads them row-major.
+  const FoldInfo *tf = PEARL_AMD_TILED && ctx->fold >= 0 && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF
+                           ? &kFolds[ctx->fold] : nullptr;
+  if (kPow2 && tf) {
+    uint32_t kbLog2 = 0;
+    while ((1u << kbLog2) < PEARL_AMD_SLAB) kbLog2++;
+    hipLaunchKernelGGL(pearl_materialize16_tiled, dim3(draw_blocks(len / 16)), dim3(kDrawThreads), 0, ctx->work,
+                       src, (const int8_t *)dense, (const uint32_t *)perm, dst, rows, kLog2, rank, kbLog2,
+                       isA ? tf->bm : tf->bn, readVecs, fillWord);
+  } else if (kPow2) {
     hipLaunchKernelGGL(pearl_materialize16, dim3(draw_blocks(len / 16)), dim3(kDrawThreads), 0, ctx->work, src,
                        (const int8_t *)dense, (const uint32_t *)perm, dst, rows, kLog2, rank, readVecs,
                        fillWord);
@@ -982,11 +993,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Every fold reads whole PEARL_AMD_SLAB-byte slabs, a chunk at a time, and writes each of
   // the 16 transcript words at most once. The reference fold holds one chunk of a row in
   // LDS, 128 bytes at most.
+  // Under PEARL_AMD_TILED the matrix folds need the per-tile operands, which only the
+  // power-of-two materialise writes.
+  const bool kPow2 = k >= 16u && (k & (k - 1u)) == 0u;
   if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || chunks > PEARL_JACKPOT_BUCKETS
-      || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)) {
+      || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
+      || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold) "
-               "dividing k, and at most %u chunks (got rank %u, k %u)",
+               "dividing k, at most %u chunks, and k a power of two (got rank %u, k %u)",
                (unsigned)PEARL_AMD_SLAB, (unsigned)PEARL_JACKPOT_BUCKETS, rank, k);
     return false;
   }
