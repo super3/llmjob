@@ -1858,21 +1858,22 @@ class TestMonero(Base):
         self.market(620_000_000_000)
         self.x.xmr_market()
         good = dict(self.x.st["xmr_mkt"])
-        self.market(12_400_000_000)                  # a reward 50 times too small
+        self.market(12_400_000_000)                  # a reward 50 times too small, read for 19 minutes
         self.clock[0] += 300
-        self.x.xmr_market()
-        self.assertEqual(self.x.st["xmr_mkt"], good)
-        self.clock[0] += 60
-        self.market(620_000_000_000, price=650)      # the next round reads right again
+        for _ in range(20):
+            self.x.xmr_market()
+            self.assertEqual(self.x.st["xmr_mkt"], good)
+            self.clock[0] += 60
+        self.market(620_000_000_000, price=650)      # then a right read again
         self.x.xmr_market()
         self.assertAlmostEqual(self.x.st["xmr_mkt"]["price"], 650)
         self.assertNotIn("xmr_odd", self.x.st)
         self.clock[0] += 300
-        self.market(62_000_000_000)                  # a real 10-fold fall, read twice in a row, is taken
-        self.x.xmr_market()
-        self.assertAlmostEqual(self.x.st["xmr_mkt"]["price"], 650)
-        self.assertAlmostEqual(self.x.st["xmr_mkt"]["per_hash"] / (0.62 / 8e11 * 0.991), 1)
-        self.clock[0] += 60
+        self.market(62_000_000_000)                  # a real 10-fold fall is taken once it has held 20 minutes
+        for _ in range(20):
+            self.x.xmr_market()
+            self.assertAlmostEqual(self.x.st["xmr_mkt"]["per_hash"] / (0.62 / 8e11 * 0.991), 1)
+            self.clock[0] += 60
         self.x.xmr_market()
         self.assertAlmostEqual(self.x.st["xmr_mkt"]["per_hash"] / (0.062 / 8e11 * 0.991), 1)
 

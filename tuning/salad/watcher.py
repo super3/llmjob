@@ -1080,12 +1080,14 @@ class W:
         # times too little, each valuing the Kryptex chart buckets first seen then, and the rules' Monero, at almost
         # nothing.
         # A hash's pay and the price don't move 3 times in minutes, so such a read is set aside and the last one
-        # kept; the same figures twice in a row (the next round) are taken as real.
+        # kept. Only figures that every read agrees on for 20 minutes are taken as real: a bad answer can last a few
+        # minutes, and at 02:01Z on 23 October one was taken because the next round's read gave the same figures.
         old = st.get("xmr_mkt")
         if per_hash <= 0 or price <= 0 or (old and not (near(per_hash, old["per_hash"], 3) and near(price, old["price"], 3))):
             odd = st.get("xmr_odd")
             if not (odd and near(per_hash, odd["per_hash"], 1.25) and near(price, odd["price"], 1.25)):
-                st["xmr_odd"] = {"per_hash": per_hash, "price": price}
+                odd = st["xmr_odd"] = {"per_hash": per_hash, "price": price, "since": now()}
+            if now() - odd.get("since", now()) < 20 * MIN:
                 err(f"Monero market read set aside: a hash {per_hash:.3g} XMR at ${price}, against "
                     f"{(old or {}).get('per_hash', 0):.3g} at ${(old or {}).get('price', 0)}")
                 return
