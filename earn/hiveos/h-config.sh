@@ -57,7 +57,11 @@ args="--address $address"
 # Anything else in it (GPU UUIDs, MIG ids) did not come from HiveOS, so it is
 # not passed on, and the CLI logs that it ignored it. A --gpu-index in Extra
 # config replaces HiveOS's choice.
-if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=) ]]; then
+# With --core amd it isn't passed on either: those numbers are NVIDIA cards, and
+# the AMD core would take them as AMD card numbers and mine on the wrong cards.
+# To leave AMD cards out, put --gpu-index in Extra config.
+if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=)
+      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)[aA][mM][dD][[:space:]] ]]; then
   if [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*$ ]]; then
     args+=" --gpu-index=none"
   elif [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*$ ]]; then

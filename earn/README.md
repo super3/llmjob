@@ -559,7 +559,9 @@ each one's hashrate lands on its own row. With every card off it passes
 restarted every few seconds. HiveOS reads the setting when the miner starts, so
 restart the miner after turning a card on or off. A `--gpu-index` in Extra
 config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
-it.
+it. With `--core amd` HiveOS's choice isn't passed on: its numbers are NVIDIA
+cards, and the AMD core would take them for AMD ones. To leave AMD cards out,
+list the ones to mine on with `--gpu-index` in Extra config.
 
 `h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
 plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to

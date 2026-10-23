@@ -17,8 +17,8 @@ with no AMD card: correctness was first shown by running the same kernel source 
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
 checking hits against the JS reference the way the pool does.
 
-Nothing here changes the NVIDIA build. The CUDA sources and `native-core.yml` are
-untouched; this folder reads `../src` and writes only to `./build`.
+This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
+NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` job.
 
 ## What is here
 

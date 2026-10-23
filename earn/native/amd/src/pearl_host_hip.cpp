@@ -686,14 +686,16 @@ void resolve_fold(Ctx *ctx) {
   // v_dot4c) have run only through the CPU emulation. If a card's matrix layout differs from
   // the documented one, every hash is wrong yet meets the target, so every share is sent and
   // rejected, and a pool can ban the address for it. They mine only once the owner has run the
-  // checks (README.md, "Testing on real hardware") and set PEARL_AMD_UNTESTED=1.
+  // checks (README.md, "Testing on real hardware") and set PEARL_AMD_UNTESTED=1. A card whose
+  // architecture could not be read (hipGetDeviceProperties failed) gets the reference fold and
+  // could be one of these, so it is held back the same way.
   const char *untested = getenv("PEARL_AMD_UNTESTED");
-  if (!ctx->emulated && (!strncmp(ctx->arch, "gfx9", 4) || !strncmp(ctx->arch, "gfx103", 6))
+  if (!ctx->emulated && (!ctx->arch[0] || !strncmp(ctx->arch, "gfx9", 4) || !strncmp(ctx->arch, "gfx103", 6))
       && !(untested && !strcmp(untested, "1"))) {
     snprintf(err, err_len,
-             "the %s fold has not run on a %s card yet, so every share could be rejected: run the checks in "
+             "the %s fold has not run on %s%s card yet, so every share could be rejected: run the checks in "
              "earn/native/amd/README.md (\"Testing on real hardware\"), then set PEARL_AMD_UNTESTED=1 to mine",
-             kFolds[want].name, ctx->arch);
+             kFolds[want].name, ctx->arch[0] ? "a " : "", ctx->arch[0] ? ctx->arch : "this unidentified");
     return;
   }
   ctx->fold = want;
