@@ -332,10 +332,44 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 
 // XOR across the eight lanes that share a region: lane bits 0, 3 and 4 in every layout here.
 // (Bits 1 and 2 pick the region's column offset; on CDNA bit 5 picks its row offset.)
+// PEARL_AMD_SPLIT=1: one barrier a slab, between a wave's LDS work for the slab (its fragment
+// loads, and its stores of the next slab) and its matrix instructions, so no wave waits on LDS
+// right after a barrier. On RDNA 4 the barrier is split (s_barrier_signal after the LDS work,
+// s_barrier_wait before the next slab's), so a wave only stops if it gets a whole slab ahead.
+#ifndef PEARL_AMD_SPLIT
+#define PEARL_AMD_SPLIT 0
+#endif
+__device__ __forceinline__ void pearl_amd_bar_signal() {
+#if PEARL_AMD_WMMA12
+  __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+  __builtin_amdgcn_s_barrier_signal(-1);
+#else
+  __syncthreads();
+#endif
+}
+__device__ __forceinline__ void pearl_amd_bar_wait() {
+#if PEARL_AMD_WMMA12
+  __builtin_amdgcn_s_barrier_wait(-1);
+  __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#endif
+}
+
+// PEARL_AMD_DPP=1 (RDNA, wave32): VALU lane moves instead of __shfl_xor's ds_bpermute, which
+// goes through the LDS pipe: lane ^ 1 by a quad permute, ^ 8 by rotating each 16-lane row by 8,
+// ^ 16 by swapping the two rows (v_permlanex16 with the identity selects).
+#ifndef PEARL_AMD_DPP
+#define PEARL_AMD_DPP 0
+#endif
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
+#if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+  x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
+  x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
+  x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, false, false);
+#else
   x ^= (uint32_t)__shfl_xor((int)x, 1);
   x ^= (uint32_t)__shfl_xor((int)x, 8);
   x ^= (uint32_t)__shfl_xor((int)x, 16);
+#endif
   return x;
 }
 
@@ -430,6 +464,60 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
   for (int nt = 0; nt < P::kNT; nt++) b0[nt] = P::load_b(sB[0] + wc * WN * S + nt * P::kTN * S, S, lane);
 #endif
+  // The end of chunk c: its transcript word, for every region the wave holds.
+  auto readout = [&](uint32_t c) {
+    const bool mine = (c & 7u) == r, hi = c >= 8u;
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++) {
+        uint32_t x[NRO];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) x[q] = 0u;
+        // The block's tiles: kTM = 32 is one tile down, 16 is two; kTN = 32 is two tiles
+        // across, 16 is four.
+#pragma unroll
+        for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
+#pragma unroll
+          for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
+#pragma unroll
+            for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          const uint32_t v = pearl_amd_group_xor(x[q]);
+          keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
+          keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
+        }
+      }
+  };
+#if PEARL_AMD_SPLIT && !PEARL_AMD_ABLATE
+  if (slabs > 1u) { PEARL_AMD_LOAD(1) }
+  for (uint32_t s = 0; s < slabs; s++) {
+    const int buf = (int)(s & 1u);
+    if (s > 0u) pearl_amd_bar_wait();   // every wave's stores of slab s, and its reads of slab s - 1
+    const int8_t *aBase = sA[buf] + wr * WM * S;
+    const int8_t *bBase = sB[buf] + wc * WN * S;
+    typename P::AFrag a[KS / P::kTK][P::kMT];
+    typename P::BFrag b[KS / P::kTK][P::kNT];
+#pragma unroll
+    for (int kk = 0; kk < KS / P::kTK; kk++) {
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++)
+        a[kk][mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++)
+        b[kk][nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
+    }
+    if (s + 1 < slabs) {
+      PEARL_AMD_STORE(buf ^ 1)          // slab s + 1, into the buffer slab s - 1 was read from
+      pearl_amd_bar_signal();
+    }
+    if (s + 2 < slabs) { PEARL_AMD_LOAD(s + 2) }
+#pragma unroll
+    for (int kk = 0; kk < KS / P::kTK; kk++) pearl_amd_mma_step<P>(acc, a[kk], b[kk]);
+    if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+  }
+#else
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
     if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
@@ -452,36 +540,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_mma_step<P>(acc, a, b);
 #endif
     }
-    if ((PEARL_AMD_ABLATE & 4) ? s + 1 == slabs : (s + 1) % perChunk == 0) {
-      // The end of chunk c: its transcript word, for every region the wave holds.
-      const uint32_t c = (PEARL_AMD_ABLATE & 4) ? 0u : (s + 1) / perChunk - 1;
-      const bool mine = (c & 7u) == r, hi = c >= 8u;
-#pragma unroll
-      for (int rb = 0; rb < RB; rb++)
-#pragma unroll
-        for (int cb = 0; cb < CB; cb++) {
-          uint32_t x[NRO];
-#pragma unroll
-          for (int q = 0; q < NRO; q++) x[q] = 0u;
-          // The block's tiles: kTM = 32 is one tile down, 16 is two; kTN = 32 is two tiles
-          // across, 16 is four.
-#pragma unroll
-          for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
-#pragma unroll
-            for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
-#pragma unroll
-              for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-            const uint32_t v = pearl_amd_group_xor(x[q]);
-            keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
-            keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
-          }
-        }
-    }
+    if ((PEARL_AMD_ABLATE & 4) ? s + 1 == slabs : (s + 1) % perChunk == 0)
+      readout((PEARL_AMD_ABLATE & 4) ? 0u : (s + 1) / perChunk - 1);
     if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
     if (!(PEARL_AMD_ABLATE & 2)) __syncthreads();
   }
+
+#endif
 
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
