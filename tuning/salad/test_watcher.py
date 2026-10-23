@@ -341,6 +341,46 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 170, 5)
         self.assertTrue(self.http.made("POST", "/reallocate"))
 
+    def pools(self, hm=0.90, kx=0.97):
+        """HeroMiners crediting `hm` of its estimate (in 20 blocks) and Kryptex `kx`, from an ended group's PRL."""
+        old = self.group(cls="RTX 2060 (6 GB)")
+        old.update(ended=True, prl=20.0, prl_kx=10.0)
+        self.x.st["pool_tot"] = {"t": self.clock[0], "paid": 10 * hm, "balance": 0.0, "unconfirmed": 0.0,
+                                 "blocks": 20, "hashes": 0, "ths_1h": 0}
+        self.x.st["kx_tot"] = {"t": self.clock[0], "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 10 * kx}
+        self.assertAlmostEqual((self.x.credit_ratio(), self.x.kx_ratio()), (hm, kx))
+
+    def test_each_box_is_judged_at_its_own_pool_s_credit_ratio(self):
+        # 22 October: the rules valued every box at HeroMiners' 0.93 while every box mined on Kryptex at 0.97, so
+        # boxes at a real +10-14% read under 10% and were left: 63 of 125 margin moves and deletions in 48 hours.
+        # 193 TH/s on a $0.19/hr 4080: +13% at Kryptex's 0.97, +6% at HeroMiners' 0.90.
+        self.pools()
+        k, h = self.group(pri="medium"), self.group(pri="medium")
+        k["kx"] = True
+        for g, m in ((k, "mk"), (h, "mh")):
+            self.step(g, 1, m)
+            self.mine(g, m, 193, 10)
+        self.assertFalse(self.http.made("POST", "/instances/inst-mk/reallocate"))   # Kryptex box kept
+        self.assertTrue(self.http.made("POST", "/instances/inst-mh/reallocate"))    # HeroMiners box left
+        self.assertAlmostEqual(self.x.pc_margin(k), 1 - 0.19 / (193 * USD_TH_HR * 0.97))
+
+    def test_a_new_group_and_a_climb_are_priced_at_the_pool_they_mine_on(self):
+        self.pools()
+        rate = 193
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [rate, self.clock[0]]}}
+        self.x.cfg["kryptex_groups"] = 10              # a new group starts on Kryptex
+        self.assertTrue(self.x.new_on_kx())
+        self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "medium"), 0.10)
+        self.assertLess(self.x.margin("RTX 4080 (16 GB)", "medium", kx=False), 0.10)
+        self.x.cfg["kryptex_groups"] = 0               # a new group starts on HeroMiners
+        self.assertLess(self.x.margin("RTX 4080 (16 GB)", "medium"), 0.10)
+        # A Kryptex group with no PC at low for 10 minutes climbs to medium, which clears 10% on Kryptex.
+        g = self.group(pri="low")
+        g.update(kx=True, status="deploying")
+        self.step(g, 11)
+        self.assertEqual(g["pri"], "medium")
+        self.assertFalse(g["ended"])
+
     def test_the_bar_comes_from_config(self):
         self.x.cfg["min_margin"] = 0.0
         g = self.group(pri="medium")

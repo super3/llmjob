@@ -283,9 +283,10 @@ class W:
         else:
             err(f"gpu-classes failed {s} {j}")
 
-    def margin(self, cls, pri, rate=None):
-        """The margin a class should make at a priority, at its measured rate."""
-        return margin_of((rate or self.rate(cls)) * self.usd(), self.st["classes"][cls]["prices"][pri])
+    def margin(self, cls, pri, rate=None, kx=None):
+        """The margin a class should make at a priority, at its measured rate, on Kryptex or not (kx; None: the pool
+        a new group would start on)."""
+        return margin_of((rate or self.rate(cls)) * self.usd(kx), self.st["classes"][cls]["prices"][pri])
 
     def rate(self, cls):
         """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
@@ -355,11 +356,22 @@ class W:
         k = g.get("prl_kx", 0.0)
         return (g.get("prl", 0.0) - k) * hy + k * ky
 
-    def usd(self):
+    def usd(self, kx=None):
         """$ per TH-hr the rules count on: the network's rate times config "yield", a number, or "auto" for the
-        pool's credit ratio."""
+        credit ratio of the pool the box mines on: Kryptex's for kx True, HeroMiners' for False, and for None the
+        pool a new group would start on. Until 22 October "auto" was HeroMiners' ratio for every box, 0.93 against
+        Kryptex's 0.97 while every box mined on Kryptex, so the rules left and deleted boxes that cleared the bar:
+        63 of 125 margin moves and deletions in the 48 hours before."""
         y = self.cfg.get("yield", "auto")
-        return self.st["mkt"]["usd_th_hr"] * (self.credit_ratio() if y == "auto" else float(y))
+        if y != "auto":
+            return self.st["mkt"]["usd_th_hr"] * float(y)
+        if kx is None:
+            kx = self.new_on_kx()
+        return self.st["mkt"]["usd_th_hr"] * (self.kx_ratio() if kx else self.credit_ratio())
+
+    def new_on_kx(self):
+        """Whether a group created now would mine on Kryptex: while fewer groups than config asks are there."""
+        return sum(1 for g in self.st["groups"].values() if not g["ended"] and g.get("kx")) < self.kx_want()
 
     def paid(self, g_or_cls):
         cls = g_or_cls["class"] if isinstance(g_or_cls, dict) else g_or_cls
@@ -651,7 +663,7 @@ class W:
             old = g["pri"]
             g.update(pri=pri, price=self.st["classes"][g["class"]]["prices"][pri], pri_since=now())
             event(f"PRIORITY {g['name']}: no PC at {old} in 10 min, moved to {pri} (${g['price']:.3f}/hr, "
-                  f"{self.margin(g['class'], pri) * 100:+.0f}% margin)")
+                  f"{self.margin(g['class'], pri, kx=bool(g.get('kx'))) * 100:+.0f}% margin)")
             return True
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
         return False
@@ -1136,7 +1148,7 @@ class W:
             name, i = f"{base}-{i}", i + 1
         xmr = self.wants_xmr(name)
         # On Kryptex while fewer groups than config asks are (see kx_sync).
-        kx = sum(1 for g in st["groups"].values() if not g["ended"] and g.get("kx")) < self.kx_want()
+        kx = self.new_on_kx()
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
@@ -1442,7 +1454,8 @@ class W:
             elif g["status"] == "pending":
                 g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:] if self.margin(g["class"], p) >= self.cfg["min_margin"]), None)
+                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
+                            if self.margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
                 if nxt is None:
                     self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
                                                f"{self.cfg['min_margin']:.0%}")
@@ -1506,7 +1519,7 @@ class W:
         back = next((r[0] for r in cur if r[0] > pend), cur[0][0]) if cur else 0
         post = [r for r in cur if r[0] >= back + 2 * MIN] if cur else []
         if len(post) >= 3:
-            usd, bar = self.usd(), self.cfg["min_margin"]
+            usd, bar = self.usd(bool(g.get("kx"))), self.cfg["min_margin"]
             avg = sum(r[2] for r in post[-3:]) / 3
             if margin_of(avg * usd, g["price"]) < bar:
                 self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
@@ -1564,7 +1577,7 @@ class W:
     def pc_margin(self, g):
         """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
         rate = self.pc_rate(g)
-        return None if rate is None else margin_of(rate * self.usd(), g["price"])
+        return None if rate is None else margin_of(rate * self.usd(bool(g.get("kx"))), g["price"])
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
@@ -1672,9 +1685,10 @@ class W:
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
         if self.cfg["upgrade_gain"] is None or st["credits_out"] or this_hour >= self.cfg["max_new_per_hour"]:
             return
-        u = self.usd()
+        u = self.usd()   # for the class a new group would be
         active = [g for g in st["groups"].values() if not g["ended"]]
-        mining = [(self.pc_rate(g) * u - g["price"], g) for g in active if self.pc_rate(g) is not None]
+        mining = [(self.pc_rate(g) * self.usd(bool(g.get("kx"))) - g["price"], g) for g in active
+                  if self.pc_rate(g) is not None]
         if not mining:
             return
         worst, g = min(mining, key=lambda x: x[0])

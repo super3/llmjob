@@ -47,7 +47,7 @@ Config keys:
 | `upgrade_gain` | How much more an hour a class must be expected to make before it takes the weakest group's slot (0.05). `null` turns swaps off. |
 | `upgrade_every_min` | Minutes between swap checks while every slot is taken (15). |
 | `swap_wait_min` | Minutes a swapped slot is expected to earn nothing while the new group gets a PC and starts (20). Part of a swap's cost. |
-| `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the pool's credit ratio (below), or a number. Live: `"auto"` since 19 October (it was `0.9`, under what the pools credit: 92% and 93%). |
+| `yield` | The share of the network-rate estimate the rules count on when they judge a margin: `"auto"` for the credit ratio of the pool each box mines on (below; for a new group, the pool it would start on), or a number for every box. Live: `"auto"` since 19 October (it was `0.9`, under what the pools credit: 92% and 93%). Until 22 October `"auto"` meant HeroMiners' ratio for every box, about 0.93 while every box mined on Kryptex at 0.97, so the rules left and deleted boxes that cleared the bar: 63 of 125 margin moves and deletions in the 48 hours before. |
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
@@ -330,7 +330,7 @@ HeroMiners (since every box went to Kryptex on 20 October, the mark told nothing
   (`prl_kx`), so a switched box's earlier PRL stays with HeroMiners. HeroMiners' ratio is what it
   credited over the PRL mined there; Kryptex's is what it has credited (balance and payouts) over the PRL
   mined there, or `kryptex_pay` (94%) before 1 PRL. Each box's profit counts each part at its pool's ratio.
-  The rules still judge every PC at `yield`.
+  The rules judge each PC at `yield`: with `"auto"`, at the ratio of its own pool (since 22 October).
 - **In the report:** a Kryptex row in the pool table (its hashrate is the sum of our Kryptex workers' now,
   not an hour's average; a box that just switched counts once Kryptex has a row for it), and a line saying what it has credited against its boxes' estimate.
 - **The hourly drift check** compares HeroMiners only with the PRL mined there.
