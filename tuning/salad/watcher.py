@@ -102,6 +102,15 @@ def share_t(row):
         return 0.0
     return ls / 1000 if ls > 1e12 else ls
 def hm(t=None): return time.strftime("%H:%M", time.gmtime(t or now()))
+
+
+def past(t):
+    """A past time for an event, as HH:MMZ, with its day when that wasn't today (UTC): the bad list keeps
+    entries for days, and "left this PC at 15:54Z" in an event at 15:04Z read as a time still to come."""
+    tm = time.gmtime(t)
+    if tm[:3] == time.gmtime(now())[:3]:
+        return time.strftime("%H:%MZ", tm)
+    return f"{tm.tm_mday} {time.strftime('%b %H:%MZ', tm)}"
 def iso(t): return dt.datetime.fromtimestamp(t, dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 # The report's clock is New York time (EDT in summer, EST in winter), where the user is.
 NY = ZoneInfo("America/New_York")
@@ -1558,7 +1567,7 @@ class W:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
                     else:
-                        self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
+                        self.reallocate(g, f"{bad['group']} left this PC at {past(bad['t'])}: {bad['why']}", count=False)
                         return
                 # A bad-list entry lasts bad_pc_hold_h (24 h), but the PC's measured rate is kept rate_days (7): a PC
                 # whose rate there fails the margin at this group's price and pool is left too, the same way.

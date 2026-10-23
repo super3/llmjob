@@ -836,6 +836,17 @@ class TestRule6PortBlocked(Base):
         self.assertIn("(biz-rtx4080 left this PC at 08:02Z: PC blocks outbound port 1200); not counted toward its 3",
                       self.events())
 
+    def test_a_pc_left_on_an_earlier_day_says_which_day(self):
+        # At 15:04Z on 23 Oct an event said a PC was left "at 15:54Z": it was 15:54Z the day before.
+        a = self.group()
+        self.step(a, 1, "m1")
+        a["blocked"].append("m1")
+        self.step(a, 1, "m1")
+        self.x.st["bad_pcs"]["m1"]["t"] = T0 - (16 * 3600 + 6 * 60)   # 15:54Z on 14 Jan; the clock is 15 Jan
+        b = self.group()
+        self.step(b, 1, "m1")
+        self.assertIn("(biz-rtx4080 left this PC at 14 Jan 15:54Z: PC blocks outbound port 1200)", self.events())
+
     def test_old_pc_still_showing_after_a_reallocation_is_not_a_new_pc(self):
         g = self.group()
         self.step(g, 1, "m1")
