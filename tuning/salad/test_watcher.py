@@ -463,6 +463,47 @@ class TestRule5Profit(Base):
         self.step(g, 1, "m1")
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
+    def monero(self, *khs):
+        """Monero on, at $0.005 a kH/s-hour, with a live box the pools saw at each of `khs` kH/s just now."""
+        self.x.cfg.update(xmr_wallet="88" + "x" * 93, xmr_groups=["*"])
+        self.x.st["xmr_mkt"] = {"t": self.clock[0], "price": 300.0, "per_hash": 0, "usd_khs_hr": 0.005}
+        for k in khs:
+            o = self.group(cls="RTX 2060 (6 GB)")
+            o.update(has_pc=True, xmr_khs=k, xmr_seen=self.clock[0])
+
+    def test_the_rules_count_a_box_s_monero(self):
+        # 22 October: the rules counted Pearl only, so boxes that cleared 10% with their Monero were left.
+        # 175 TH/s at medium's $0.19: $0.205 from Pearl is +7%; with $0.010 of Monero, $0.215 is +12%.
+        self.monero(1.0, 2.0, 6.0)                  # the median box: 2 kH/s, $0.010/hr (the mean is 3)
+        self.assertAlmostEqual(self.x.xmr_usd(), 0.010)
+        g = self.group(pri="medium")
+        self.assertTrue(g["xmr"])
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 175, 10)
+        self.assertFalse(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertAlmostEqual(self.x.pc_margin(g), 1 - 0.19 / (175 * USD_TH_HR + 0.010))
+        self.assertAlmostEqual(self.x.margin("RTX 4080 (16 GB)", "medium", rate=175),
+                               1 - 0.19 / (175 * USD_TH_HR + 0.010))
+
+    def test_a_box_under_the_margin_with_its_monero_is_still_left(self):
+        self.monero(2.0)
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 165, 5)                  # $0.193 + $0.010 is +6%
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("earns $0.203/hr at 165 TH/s (Monero $0.010 of it) on PC m1 against its $0.190/hr (+6%, "
+                      "under 10%)", self.events())
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["ths"], 165)
+
+    def test_monero_counts_only_for_a_box_that_mines_it_and_from_fresh_figures(self):
+        self.assertEqual(self.x.xmr_usd(), 0.0)    # Monero off
+        self.monero(2.0)
+        g = self.group()
+        g["xmr"] = False
+        self.assertEqual(self.x.xmr_usd(g), 0.0)
+        self.clock[0] += 16 * 60                    # the pools last saw the Monero box 16 minutes ago
+        self.assertEqual(self.x.xmr_usd(), 0.0)
+
     def test_a_box_is_priced_at_the_pool_its_pc_mines_on(self):
         # A Kryptex group whose box was seen mining on HeroMiners at its PC (a command change that landed as Salad
         # handed it the PC: 3060-45 on 19 October) is judged at HeroMiners' ratio there.

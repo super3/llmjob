@@ -186,9 +186,12 @@ started with until it restarts. It comes back on the new version about 2 minutes
 - **Earnings** come from the pool, by worker (`<group>-g0`). The pool counts every accepted hash, so the XMR a box
   earned is its new hashes times what a hash earns (the last block's reward over the network difficulty, less the
   fee). The price is CoinGecko's. The address's pool balance also counts any other rig that mines to it.
-- **The rules** still judge every box on Pearl alone. Monero's speed is the table's kH/s column, what each box has
-  earned is its XMR column, and its rate counts in Profit/hr and Margin, with a 🪙 row in the pool table, but they
-  don't keep a slow PC or a weak class.
+- **The rules count Monero too** (since 22 October): each box's earnings in the keep, leave, climb, search and
+  swap rules add what the median Monero box makes, from the boxes the Monero pools saw in the last 15 minutes
+  (about $0.002/hr; a box's own figure is a 30-minute average that, on a new PC, still holds the old one). Before,
+  they judged every box on Pearl alone: 56 of the 151 margin moves and deletions in the 48 hours before would
+  have cleared 10% with Monero counted. Monero's speed is the table's kH/s column and what each box has earned is
+  its XMR column.
 - **On Kryptex** (`xmr_kx`, since 20 October). The command adds `--xmr-pool xmr-us.kryptex.network:7029`, which
   needs release v0.6.6. A running group is switched by its command alone, as Gemma is: a box that is mining keeps
   its PC, where Salad usually restarts it with the new command within minutes. The vCPUs and RAM don't change.

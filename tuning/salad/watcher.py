@@ -287,7 +287,21 @@ class W:
     def margin(self, cls, pri, rate=None, kx=None):
         """The margin a class should make at a priority, at its measured rate, on Kryptex or not (kx; None: the pool
         a new group would start on)."""
-        return margin_of((rate or self.rate(cls)) * self.usd(kx), self.st["classes"][cls]["prices"][pri])
+        return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(), self.st["classes"][cls]["prices"][pri])
+
+    def xmr_usd(self, g=None):
+        """What Monero on a box's CPU earns an hour, for the rules: the median of the live boxes the Monero pools
+        saw in the last 15 minutes (a box's own figure is the pool's 30-minute average, which on a new PC still
+        holds the old one). For group g, 0 unless it mines Monero; with no g, for a new group. The rules counted
+        Pearl alone until 22 October, so boxes that cleared 10% with their Monero (about $0.002 a box) were left."""
+        if not (g.get("xmr") if g is not None else self.wants_xmr("*")):
+            return 0.0
+        t, xusd = now(), (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
+        khs = sorted(k for k in (sum(x.get(f, 0.0) for f, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
+                                     if t - (x.get(seen) or 0) < 15 * MIN)
+                                 for x in self.st["groups"].values() if not x["ended"] and x.get("xmr") and x["has_pc"])
+                     if k > 0)
+        return khs[len(khs) // 2] * xusd if khs else 0.0
 
     def rate(self, cls):
         """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
@@ -1458,7 +1472,7 @@ class W:
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
                     ths, bar = self.bad_ths(bad), self.cfg["min_margin"]
-                    if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)), g["price"]) >= bar:
+                    if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
                     else:
@@ -1470,7 +1484,7 @@ class W:
                     seen = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
                     if seen and t - seen[1] < 86400 * self.cfg["rate_days"]:
                         bar = self.cfg["min_margin"]
-                        mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)), g["price"])
+                        mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
                             self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
                                                f"{mg * 100:+.0f}% at this group's ${g['price']:.3f}/hr, under {bar:.0%}",
@@ -1558,16 +1572,18 @@ class W:
         post = [r for r in cur if r[0] >= back + 2 * MIN] if cur else []
         if len(post) >= 3:
             # At the pool the box's PC mines on, which can differ from its command's for a while (see on_kx).
-            usd, bar = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"]
+            # Its Monero counts too (xmr_usd).
+            usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"], self.xmr_usd(g)
             avg = sum(r[2] for r in post[-3:]) / 3
-            if margin_of(avg * usd, g["price"]) < bar:
-                self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
-                              f"${g['price']:.3f}/hr ({margin_of(avg * usd, g['price']) * 100:+.0f}%, under {bar:.0%})",
+            if margin_of(avg * usd + xmr, g["price"]) < bar:
+                self.leave(g, f"earns ${avg * usd + xmr:.3f}/hr at {avg:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")
+                              + f" on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
+                              f"({margin_of(avg * usd + xmr, g['price']) * 100:+.0f}%, under {bar:.0%})",
                            ths=avg)
                 return
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
-            if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd, g["price"]) >= bar:
+            if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd + xmr, g["price"]) >= bar:
                 st["paid_classes"].append(g["class"])
                 event(f"PAID {g['name']}: {g['class']} clears {bar:.0%} here ({avg:.0f} TH/s); it counts as paid now")
 
@@ -1617,7 +1633,8 @@ class W:
     def pc_margin(self, g):
         """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
         rate = self.pc_rate(g)
-        return None if rate is None else margin_of(rate * self.usd(self.on_kx(g, g["machine"], now())), g["price"])
+        return None if rate is None else margin_of(rate * self.usd(self.on_kx(g, g["machine"], now())) + self.xmr_usd(g),
+                                                   g["price"])
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
@@ -1713,7 +1730,7 @@ class W:
             start = PRIS.index(self.start_pri(cls))
             for p in PRIS[start:] + PRIS[:start][::-1]:
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
-                    profit = rate * self.usd() - st["classes"][cls]["prices"][p]
+                    profit = rate * self.usd() + self.xmr_usd() - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
@@ -1743,7 +1760,7 @@ class W:
             return
         u = self.usd()   # for the class a new group would be
         active = [g for g in st["groups"].values() if not g["ended"]]
-        mining = [(self.pc_rate(g) * self.usd(self.on_kx(g, g["machine"], t)) - g["price"], g) for g in active
+        mining = [(self.pc_rate(g) * self.usd(self.on_kx(g, g["machine"], t)) + self.xmr_usd(g) - g["price"], g) for g in active
                   if self.pc_rate(g) is not None]
         if not mining:
             return
@@ -1760,7 +1777,7 @@ class W:
             if cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
             price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
-            expect = self.rate(cls) * u - price
+            expect = self.rate(cls) * u + self.xmr_usd() - price
             switch = max(worst, 0) * self.cfg["swap_wait_min"] / 60 + price * START_MIN / 60
             if best is None or expect - switch > best[0] - best[1]:
                 best = (expect, switch, cls, p)
