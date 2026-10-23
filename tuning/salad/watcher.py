@@ -57,7 +57,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
-               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3, "xmr_amd": False,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", ""),
@@ -776,6 +776,11 @@ class W:
     def wants_xmr(self, name):
         """Whether config asks this group to mine Monero on its CPU too."""
         gs = self.cfg["xmr_groups"]
+        # Not on an AMD box unless config xmr_amd: the first one (rx9070xt, 23 Oct) mined Pearl at 44-46 TH/s with
+        # Monero on 7 threads beside it, against 88-110 on the benchmark PCs without it. Monero earns about $0.004/hr
+        # there, so it stays off until a box shows it costs no Pearl.
+        if is_amd(name) and not self.cfg["xmr_amd"]:
+            return False
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
     def box(self, name, xmr, kx=False):
