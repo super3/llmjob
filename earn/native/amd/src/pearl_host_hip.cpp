@@ -174,6 +174,10 @@ struct Ctx {
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
+  // Pinned landing space for a hit's device reads (HitReads), so they are all queued and
+  // waited for once. Allocated on the first hit; null if pinned memory was refused.
+  uint8_t *hStage = nullptr;
+  size_t hStageBytes = 0;
 
   bool hostSeeds = false;
   uint32_t jobKeyW[8] = {0};
@@ -396,6 +400,73 @@ void side_copy(Ctx *ctx, void *dst, const void *src, size_t n) {
   hipStreamSynchronize(ctx->side);
 }
 
+// The device reads one hit needs (pearl_host.cu's HitReads): its hash and transcript, the
+// proof's leaves and sibling nodes, and the roots, about 120 of them. Each was its own copy
+// and its own wait, and a wait costs far more under WSL2 (every Salad PC) than on Linux.
+// Queued, they cost one wait. A read lands at a fixed address, or at an offset into a
+// vector that may still grow until the reads run.
+struct HitReads {
+  struct Read {
+    std::vector<uint8_t> *vec;
+    uint8_t *ptr;
+    size_t off;
+    const void *src;
+    size_t n;
+  };
+  // Host bytes laid over a read once it has landed: leaf 0's head from a restamp record.
+  struct Patch {
+    std::vector<uint8_t> *vec;
+    size_t off;
+    uint8_t bytes[sizeof(PearlRestampRecord::head)];
+  };
+  std::vector<Read> reads;
+  std::vector<Patch> patches;
+  size_t bytes = 0;
+  void to(void *dst, const void *src, size_t n) {
+    reads.push_back({nullptr, static_cast<uint8_t *>(dst), 0, src, n});
+    bytes += n;
+  }
+  void into(std::vector<uint8_t> *vec, size_t off, const void *src, size_t n) {
+    reads.push_back({vec, nullptr, off, src, n});
+    bytes += n;
+  }
+};
+
+// Run a hit's reads: all queued on the side stream into the pinned stage, one wait, then
+// each copied to where it belongs and the patches laid over them. Without a stage (pinned
+// memory refused) each read is a side_copy, as before.
+void run_reads(Ctx *ctx, HitReads *r) {
+  auto land = [](const HitReads::Read &x) { return x.vec ? x.vec->data() + x.off : x.ptr; };
+  if (r->bytes > ctx->hStageBytes) {
+    if (ctx->hStage) hipHostFree(ctx->hStage);
+    ctx->hStage = nullptr;
+    ctx->hStageBytes = 0;
+    const size_t want = r->bytes > ((size_t)128 << 10) ? r->bytes : ((size_t)128 << 10);
+    if (hipHostMalloc(reinterpret_cast<void **>(&ctx->hStage), want, hipHostMallocDefault) == hipSuccess) {
+      ctx->hStageBytes = want;
+    } else {
+      ctx->hStage = nullptr;
+      (void)hipGetLastError();
+    }
+  }
+  if (ctx->hStage) {
+    size_t off = 0;
+    for (const HitReads::Read &x : r->reads) {
+      hipMemcpyAsync(ctx->hStage + off, x.src, x.n, hipMemcpyDeviceToHost, ctx->side);
+      off += x.n;
+    }
+    hipStreamSynchronize(ctx->side);
+    off = 0;
+    for (const HitReads::Read &x : r->reads) {
+      memcpy(land(x), ctx->hStage + off, x.n);
+      off += x.n;
+    }
+  } else {
+    for (const HitReads::Read &x : r->reads) side_copy(ctx, land(x), x.src, x.n);
+  }
+  for (const HitReads::Patch &p : r->patches) memcpy(p.vec->data() + p.off, p.bytes, sizeof p.bytes);
+}
+
 void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
                         std::vector<uint32_t> *out) {
   std::set<uint32_t> s;
@@ -408,10 +479,12 @@ void leafIndicesForRows(const uint32_t *rows, uint32_t nrows, uint32_t k,
 }
 
 // pearl_host.cu's snapshotProof: one side's proof, with the salt-dependent part of A
-// (leaf 0's head and node 0 of every level) from the hit's own salt's record.
+// (leaf 0's head and node 0 of every level) from the hit's own salt's record. The device
+// reads go into `reads`, which the caller runs once it has queued all of the hit's
+// (run_reads); until then the leaf and sibling bytes are placeholders.
 void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
                    std::vector<uint32_t> *leafIdx, std::vector<uint8_t> *leaves,
-                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec) {
+                   std::vector<uint8_t> *sibs, const PearlRestampRecord *rec, HitReads *reads) {
   if (!isA) rec = nullptr;
   const uint32_t k = ctx->profile.k;
   const int8_t *operand = isA ? ctx->dA : ctx->dB;
@@ -422,8 +495,14 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
   leafIndicesForRows(rows, nrows, k, leafIdx);
   leaves->resize(leafIdx->size() * 1024);
   for (size_t i = 0; i < leafIdx->size(); i++) {
-    side_copy(ctx, leaves->data() + i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
-    if (rec && (*leafIdx)[i] == 0) memcpy(leaves->data() + i * 1024, rec->head, sizeof rec->head);
+    reads->into(leaves, i * 1024, operand_chunk(ctx, operand, (*leafIdx)[i]), 1024);
+    if (rec && (*leafIdx)[i] == 0) {
+      HitReads::Patch patch;
+      patch.vec = leaves;
+      patch.off = i * 1024;
+      memcpy(patch.bytes, rec->head, sizeof patch.bytes);
+      reads->patches.push_back(patch);
+    }
   }
 
   sibs->clear();
@@ -441,12 +520,15 @@ void snapshotProof(Ctx *ctx, bool isA, const uint32_t *rows, uint32_t nrows,
         if (live.count(i + 1) || (uint64_t)i + 1 >= levelLen) continue;
         want = i + 1;
       }
-      uint8_t node[PEARL_HASH_BYTES];
-      if (rec && want == 0)
+      if (rec && want == 0) {
+        uint8_t node[PEARL_HASH_BYTES];
         hb3_bytes(rec->path[level], node);
-      else
-        side_copy(ctx, node, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
-      sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+        sibs->insert(sibs->end(), node, node + PEARL_HASH_BYTES);
+      } else {
+        const size_t at = sibs->size();
+        sibs->resize(at + PEARL_HASH_BYTES);
+        reads->into(sibs, at, tree + (offs[level] + want) * 8, PEARL_HASH_BYTES);
+      }
     }
     std::set<uint32_t> next;
     for (uint32_t i : current) next.insert(i / 2);
@@ -717,6 +799,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
+  if (ctx->hStage) hipHostFree(ctx->hStage);
   (void)hipGetLastError();
   delete ctx;
 }
@@ -937,7 +1020,9 @@ namespace {
 void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearchResult *out) {
   const uint8_t *dHashes = ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES;
   const uint32_t *dTranscripts = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
-  side_copy(ctx, out->jackpot_hash, dHashes + (size_t)i * PEARL_HASH_BYTES, PEARL_HASH_BYTES);
+  // Every device read below is queued here and run once, at the end (HitReads).
+  HitReads reads;
+  reads.to(out->jackpot_hash, dHashes + (size_t)i * PEARL_HASH_BYTES, PEARL_HASH_BYTES);
   memcpy(out->a_seed, p.aSeed, PEARL_HASH_BYTES);
   memcpy(out->b_seed, ctx->bSeed, PEARL_HASH_BYTES);
   out->nonce = p.nonceBase + ctx->hHitIndex[i];
@@ -952,19 +1037,19 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   for (int j = 0; j < PEARL_ROWS_COUNT; j++) rows[j] = rowOff | PEARL_ROWS_PATTERN[j];
   for (int j = 0; j < PEARL_COLS_COUNT; j++) cols[j] = colOff | PEARL_COLS_PATTERN[j];
   snapshotProof(ctx, true, rows, PEARL_ROWS_COUNT, &out->proof_a.leaf_indices, &out->proof_a.leaves,
-                &out->proof_a.siblings, rec);
+                &out->proof_a.siblings, rec, &reads);
   snapshotProof(ctx, false, cols, PEARL_COLS_COUNT, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
-                &out->proof_bt.siblings, nullptr);
+                &out->proof_bt.siblings, nullptr, &reads);
   if (rec)
     hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
   else
-    side_copy(ctx, out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
-  side_copy(ctx, out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+    reads.to(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
+  reads.to(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
   out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
   out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
   out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
-  side_copy(ctx, out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
-            PEARL_JACKPOT_BUCKETS * 4);
+  reads.to(out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS, PEARL_JACKPOT_BUCKETS * 4);
+  run_reads(ctx, &reads);
   out->found = true;
 }
 }  // namespace
