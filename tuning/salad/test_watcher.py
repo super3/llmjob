@@ -294,6 +294,61 @@ class TestMinerStops(Base):
         self.assertIn("no mining reading for 6 min", self.events())
 
 
+class TestRestartOnTheSamePC(Base):
+    def test_a_restart_on_the_same_pc_starts_the_reading_clock_again(self):
+        # 14 days to 22 October: about 34 of 58 "no mining reading for 6 min" moves came just after Salad started
+        # the box again on the same PC, each one a good PC given up while the box was starting.
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 12)                              # (so the 20-minute share rule runs below)
+        g["restart_t"], g["restart_pc"] = self.clock[0], "m1"   # box.sh started again on m1 (see the round test)
+        g["last_share"] = self.clock[0] - 5 * 60                 # and its last share came 5 minutes before that
+        self.step(g, 9, "m1")                                    # 9 quiet minutes: past the 6-minute rule
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 2, "m1")                                    # 11: no reading 10 min after it, as on a new PC
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("no mining reading 11 min after its restart on PC m1", self.events())
+        self.step(g, 1, "m2")                                    # a new PC: its own clock, not the restart's
+        self.step(g, 10, "m2")
+        self.assertIn("no mining reading 10 min after getting PC m2", self.events())
+
+    def test_readings_after_a_restart_are_judged_from_a_fresh_warm_up(self):
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        g["restart_t"], g["restart_pc"] = self.clock[0], "m1"
+        self.mine(g, "m1", 100, 2)                               # warm-up readings after the restart: low, not judged
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 199, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
+    def round_with(self, lines, readings=True):
+        """One round with the group on m1 (mining there before, if `readings`) and these log lines from m1."""
+        self.x.cfg["search"] = False
+        g = self.group()
+        g.update(created=T0 - 3600, machine="m1", pc_since=T0 - 3000, had_pc=True, has_pc=True, last_share=T0 - 60)
+        if readings:
+            g["readings"] = [[T0 - 600 + 60 * i, "m1", 199.0, i, f"up 0h {i}m"] for i in range(5)]
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        return g
+
+    def test_the_round_notices_a_restart_once_a_pc(self):
+        g = self.round_with([("2027-01-15T07:57:00Z", "[run] release v0.6.6 ready"),
+                             ("2027-01-15T07:59:00Z", "[run] release v0.6.6 ready")])
+        self.assertEqual((g["restart_t"], g["restart_pc"]), (T0 - 180, "m1"))
+        self.assertEqual(self.events().count("RESTARTED biz-rtx4080 on PC m1"), 1)
+
+    def test_the_first_start_on_a_pc_is_not_a_restart(self):
+        g = self.round_with([("2027-01-15T07:57:00Z", "[run] release v0.6.6 ready")], readings=False)
+        self.assertIsNone(g.get("restart_t"))
+        self.assertNotIn("RESTARTED", self.events())
+
+
 class TestRepeatedLine(Base):
     def test_a_repeated_line_from_a_dead_miner_is_not_a_reading(self):
         self.x.cfg["search"] = False

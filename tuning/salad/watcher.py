@@ -1337,6 +1337,15 @@ class W:
                     event(f"CARD {name} PC {(mach or '')[:8]}: {text.strip()[7:160]}")
                 elif re.match(r"\[run\] (FAIL|g\d miner exited)", text) or text.startswith("[run] release"):
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
+                    # box.sh starting again on a PC the box already mined on: Salad restarted it there (a command
+                    # update, or its own restart). The box is quiet while it starts, so the reading and share rules
+                    # count from here, as on a new PC, once a PC: in 14 days of events about 34 of 58 "no mining
+                    # reading for 6 min" moves came just after such a start, each one a good PC given up.
+                    if (text.startswith("[run] release") and mach and mach == g.get("machine") and g.get("restart_pc") != mach
+                            and any(r[1] == mach and r[0] < tm for r in g["readings"])):
+                        g["restart_t"], g["restart_pc"] = tm, mach
+                        event(f"RESTARTED {name} on PC {mach[:8]}: Salad started the box again there; its readings "
+                              "and shares count from now, as on a new PC")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
@@ -1459,7 +1468,7 @@ class W:
             if mach != g["machine"]:
                 first = not g["had_pc"]
                 g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True, pause_since=None,
-                         paused_t=None)
+                         paused_t=None, restart_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
                 (g.get("pc_pool") or {}).pop(mach, None)
                 if g.get("sw_from") == mach:
@@ -1549,8 +1558,12 @@ class W:
         cur = [r for r in g["readings"] if r[1] == g["machine"] and r[2] > 0 and r[0] >= g["pc_since"] - 5 * MIN]
         # Time mining stood paused for a prompt doesn't count against a box: these three rules count from its end.
         pend = self.pause_end(g)
-        if not cur and seen_to - max(g["pc_since"], pend) >= 10 * MIN and not sharing:
-            self.leave(g, f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
+        # After a restart on this PC (restart_t) they run as on a new PC from then: earlier readings don't count.
+        rs = g.get("restart_t") or 0
+        cur = [r for r in cur if r[0] > rs]
+        if not cur and seen_to - max(g["pc_since"], pend, rs) >= 10 * MIN and not sharing:
+            self.leave(g, f"no mining reading {(t - rs) / 60:.0f} min after its restart on PC {g['machine'][:8]}" if rs
+                       else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
         # once the newest is 6 min old.
@@ -1561,7 +1574,7 @@ class W:
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0, pend)
+            ref = max(g["pc_since"], g["last_share"] or 0, pend, rs)
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return

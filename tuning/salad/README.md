@@ -114,7 +114,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
-   min of failed reads there's one `WARN` event.
+   min of failed reads there's one `WARN` event. When box.sh starts again on a PC the box already mined on
+   (Salad restarted it there), both clocks and the share clock start again from that line, as on a new PC,
+   once a PC (a `RESTARTED` event), since 22 October: in 14 days of events about 34 of 58 "no mining reading
+   for 6 min" moves came just after such a start.
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
    boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
