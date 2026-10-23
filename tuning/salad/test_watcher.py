@@ -381,6 +381,43 @@ class TestRule5Profit(Base):
         self.assertEqual(g["pri"], "medium")
         self.assertFalse(g["ended"])
 
+    def test_a_box_is_priced_at_the_pool_its_pc_mines_on(self):
+        # A Kryptex group whose box was seen mining on HeroMiners at its PC (a command change that landed as Salad
+        # handed it the PC: 3060-45 on 19 October) is judged at HeroMiners' ratio there.
+        self.pools()
+        g = self.group(pri="medium")
+        g["kx"] = True
+        self.step(g, 1, "mh")
+        g["pc_pool"] = {"mh": False}                   # its shares were seen at HeroMiners on this PC
+        self.mine(g, "mh", 193, 10)
+        self.assertTrue(self.http.made("POST", "/instances/inst-mh/reallocate"))
+
+    def test_kryptex_s_ratio_holds_while_its_api_is_down(self):
+        # The estimate keeps growing while Kryptex's totals can't be read; the ratio stays at its last read.
+        self.pools()
+        self.x.st["kx_tot"]["prl_kx"] = 10.0
+        live = self.group()
+        live["prl_kx"] = 10.0                          # mined since the last read
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+
+    def test_the_search_checks_the_margin_again_after_a_create_fills_kryptex(self):
+        # Two slots, one Kryptex slot left: the second group starts on HeroMiners, so it needs to clear 10% there.
+        self.pools()
+        self.x.cfg.update(kryptex_groups=1, max_active=2, max_new_per_hour=5)
+        self.http.on("POST", "availability", (200, {f"available_gpu_{p}": 1 for p in w.PRIS}))
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [110, self.clock[0]]}}   # batch: +12% Kryptex, +5% HM
+        self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "batch", kx=True), 0.10)
+        self.assertLess(self.x.margin("RTX 4080 (16 GB)", "batch", kx=False), 0.10)
+        self.x.search()
+        live = [g for g in self.x.st["groups"].values() if not g["ended"]]
+        for g in live:
+            self.assertGreaterEqual(self.x.margin(g["class"], g["pri"], kx=bool(g["kx"])), 0.10, g["name"])
+        self.assertTrue(live)
+        # The CREATED line gives the margin at the pool the group was made for.
+        for g in live:
+            line = next(l for l in self.events().splitlines() if f"CREATED {g['name']}:" in l)
+            self.assertIn(f"{self.x.margin(g['class'], g['pri'], kx=bool(g['kx'])) * 100:+.0f}% margin", line)
+
     def test_the_bar_comes_from_config(self):
         self.x.cfg["min_margin"] = 0.0
         g = self.group(pri="medium")

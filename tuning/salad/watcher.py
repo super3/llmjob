@@ -339,7 +339,9 @@ class W:
         each share as it is accepted, so this holds from the first PRL; before that, the 94% of a share's value that it was
         measured to pay on 17 October (its advertised fee is 3%)."""
         kt = self.st.get("kx_tot")
-        prl = sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
+        # The estimate when Kryptex's totals were read: while its API fails the totals stay put but the estimate
+        # grows, which would lower the ratio about 1% an hour.
+        prl = (kt or {}).get("prl_kx") or sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if not kt or prl < 1:
             return self.cfg["kryptex_pay"]
         return min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
@@ -488,7 +490,8 @@ class W:
             return res
         try:
             kt = {"t": t, "total": float(b.get("total") or 0), "confirmed": float(b.get("confirmed") or 0),
-                  "unconfirmed": float(b.get("unconfirmed") or 0), "paid": paid}
+                  "unconfirmed": float(b.get("unconfirmed") or 0), "paid": paid,
+                  "prl_kx": sum(g.get("prl_kx", 0.0) for g in st["groups"].values())}
         except (TypeError, ValueError):
             return res
         st["kx_tot"] = kt
@@ -1168,7 +1171,7 @@ class W:
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
                 "llm": bool(self.cfg["llm"]), "xmr_kx": self.xmr_kx(xmr)}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
-                  f"{self.margin(cls, pri) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
+                  f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
                   + (", Gemma" if self.cfg["llm"] else ""))
@@ -1519,7 +1522,8 @@ class W:
         back = next((r[0] for r in cur if r[0] > pend), cur[0][0]) if cur else 0
         post = [r for r in cur if r[0] >= back + 2 * MIN] if cur else []
         if len(post) >= 3:
-            usd, bar = self.usd(bool(g.get("kx"))), self.cfg["min_margin"]
+            # At the pool the box's PC mines on, which can differ from its command's for a while (see on_kx).
+            usd, bar = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"]
             avg = sum(r[2] for r in post[-3:]) / 3
             if margin_of(avg * usd, g["price"]) < bar:
                 self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
@@ -1577,7 +1581,7 @@ class W:
     def pc_margin(self, g):
         """The margin on this PC's last 3 readings after warm-up, or None while there aren't 3."""
         rate = self.pc_rate(g)
-        return None if rate is None else margin_of(rate * self.usd(bool(g.get("kx"))), g["price"])
+        return None if rate is None else margin_of(rate * self.usd(self.on_kx(g, g["machine"], now())), g["price"])
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
@@ -1619,6 +1623,9 @@ class W:
         for *_, cls, p in self.candidates(active, t):
             if made >= room or st["credits_out"]:
                 break
+            # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
+            if made and self.margin(cls, p) < self.cfg["min_margin"]:
+                continue
             if self.create(cls, p):
                 made += 1
         if not made:
@@ -1687,7 +1694,7 @@ class W:
             return
         u = self.usd()   # for the class a new group would be
         active = [g for g in st["groups"].values() if not g["ended"]]
-        mining = [(self.pc_rate(g) * self.usd(bool(g.get("kx"))) - g["price"], g) for g in active
+        mining = [(self.pc_rate(g) * self.usd(self.on_kx(g, g["machine"], t)) - g["price"], g) for g in active
                   if self.pc_rate(g) is not None]
         if not mining:
             return
