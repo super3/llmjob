@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes. Manages only the groups amdtest-rdna3 and
-amdtest-rdna4 (it refuses any other name, so it can never touch the mining fleet's biz- groups). Each box runs
+amdtest-rdna4, or those with -2 to -99 after them (it refuses any other name, so it can never touch the mining
+fleet's biz- groups). Each box runs
 amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait` read them back.
 
   amdtest.py create NAME CLASS --sha SHA [--tasks LIST] [--env K=V ...] [--patch-from DIR] [--cpu 4 --mem 8192]
@@ -51,8 +52,10 @@ exec sleep infinity"""
 
 
 def check_name(name):
-    if name not in NAMES:
-        sys.exit(f"amdtest.py manages only {', '.join(NAMES)}, not {name!r}")
+    """One of NAMES, or one with a number after it (amdtest-rdna4-2). Salad holds a deleted group's name for
+    hours, so a box deleted once can't be made again under the same name."""
+    if not re.fullmatch(r"amdtest-rdna[34](-[2-9]|-[1-9][0-9])?", name):
+        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} (or -2 to -99 after them), not {name!r}")
     return name
 
 

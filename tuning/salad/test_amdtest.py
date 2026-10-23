@@ -23,7 +23,11 @@ class TestAmdtest(unittest.TestCase):
     def test_only_the_two_test_groups(self):
         self.assertEqual(a.check_name("amdtest-rdna3"), "amdtest-rdna3")
         self.assertEqual(a.check_name("amdtest-rdna4"), "amdtest-rdna4")
-        for bad in ("biz-rtx5060-56", "amdtest-rdna5", "bench-rx9070xt-1", ""):
+        # Salad holds a deleted name for hours, so a numbered one can stand in.
+        self.assertEqual(a.check_name("amdtest-rdna4-2"), "amdtest-rdna4-2")
+        self.assertEqual(a.check_name("amdtest-rdna3-17"), "amdtest-rdna3-17")
+        for bad in ("biz-rtx5060-56", "amdtest-rdna5", "bench-rx9070xt-1", "", "amdtest-rdna4-1", "amdtest-rdna4-0",
+                    "amdtest-rdna4-100", "amdtest-rdna4-2x", "biz-amdtest-rdna4", "amdtest-rdna4-"):
             with self.assertRaises(SystemExit):
                 a.check_name(bad)
 

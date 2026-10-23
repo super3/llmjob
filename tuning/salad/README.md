@@ -415,7 +415,8 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 ## AMD test boxes (amdtest.py)
 
 `amdtest.py` runs test boxes for the AMD (HIP) Pearl core in `earn/native/amd` on Salad's AMD classes. It
-manages only the groups `amdtest-rdna3` and `amdtest-rdna4` and refuses any other name. Each box runs
+manages only the groups `amdtest-rdna3` and `amdtest-rdna4`, or those with `-2` to `-99` after them
+(`amdtest-rdna4-2`), and refuses any other name. Each box runs
 `amdtest.sh` on the `rocm/dev-ubuntu-24.04:7.2` image (high priority, 4 vCPU, 8 GB by default): it installs
 git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
@@ -450,8 +451,9 @@ What it found on 22 October:
   each a new PC that printed `boot` within a minute.
 - Don't `delete` a box to change its class. After amdtest-rdna3 was deleted at 15:57, creating it again
   failed with `name_conflict` every 30 s until at least 16:22, 25 minutes later. Salad holds a deleted
-  name (see "Salad API notes" above), and this tool can use no other name. `delete` only when the box is
-  done for good.
+  name (see "Salad API notes" above). On 23 October `amdtest-rdna4` was still held about 8 hours after its
+  delete, so the tool now also takes a numbered name (`amdtest-rdna4-2`). `delete` only when the box is done
+  for good.
 
 ## AMD benchmark (bench.py)
 
