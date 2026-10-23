@@ -1510,7 +1510,10 @@ class W:
                 g["last_start"] = t
                 s, j = http("POST", f"{CB}/{g['name']}/start")
                 g["pri_since"] = t
-                event(f"START {g['name']}: it was stopped before getting a PC; POST /start -> HTTP {s}")
+                # Salad's reason when it refuses: in the 13 days to 23 October it answered 400 to 345 of 1,314 starts,
+                # and 102 groups needed two or more, but the log never said why.
+                why = "" if s in (200, 202) else f" {str(j)[:200]}"
+                event(f"START {g['name']}: it was stopped before getting a PC; POST /start -> HTTP {s}{why}")
             elif g["had_pc"]:
                 st["credits_out"] = True
                 event(f"ALERT Salad stopped {g['name']} after it had a PC ({g.get('state_desc') or 'no reason given'}). "

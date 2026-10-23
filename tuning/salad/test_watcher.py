@@ -851,6 +851,14 @@ class TestRule7Credit(Base):
         self.step(g, 1, None)
         self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080/start"))
         self.assertFalse(self.x.st["credits_out"])
+        self.assertIn("POST /start -> HTTP 200\n", self.events())
+
+    def test_a_refused_start_logs_salad_s_reason(self):
+        self.http.on("POST", "/start$", (400, {"type": "invalid_state", "detail": "the image is still downloading"}))
+        g = self.group(status="stopped")
+        self.step(g, 1, None)
+        self.assertIn("POST /start -> HTTP 400 {'type': 'invalid_state', 'detail': 'the image is still downloading'}",
+                      self.events())
 
     def test_no_credits_on_create(self):
         self.http.on("POST", "/containers$", (400, {"errors": {"code": ["no_credits_available"]}}))
