@@ -230,9 +230,12 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
   barrier, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
   loads two slabs ahead (`PEARL_AMD_PF2`) and does the readout's lane exchanges with DPP and
   `v_permlanex16` (`PEARL_AMD_DPP`): 31.10-31.16 TH/s to 32.17-32.28 on an RX 7800 XT (PC
-  `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. Both are off on
-  RDNA 4 until measured there, as is `PEARL_AMD_SPLIT` (a split slab barrier on gfx12; on RDNA 3
-  the moved barrier measured no faster). Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
+  `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. RDNA 4 does both
+  too, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
+  LDS-only fence, since `__syncthreads()` waited for every outstanding global load there) and
+  tells the compiler the thread index is under 256 (`PEARL_AMD_TID`): 52.88 TH/s to 59.99 on an
+  RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster and stay off.
+  `PEARL_AMD_SPLIT` (a split slab barrier on gfx12) is a knob. Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and

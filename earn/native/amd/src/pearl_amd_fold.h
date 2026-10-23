@@ -360,24 +360,30 @@ __device__ __forceinline__ void pearl_amd_bar_wait() {
 
 // PEARL_AMD_PF2=1: global loads two slabs ahead instead of one (two register sets, the slab
 // loop unrolled by two so each set and LDS buffer is fixed), so a load has two slabs of matrix
-// work to arrive in before its LDS store waits on it. On by default on RDNA 3, where it was
-// measured: an RX 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against
-// 31.10-31.16 without, and 32.17-32.28 with the DPP readout below as well.
+// work to arrive in before its LDS store waits on it. On by default on RDNA 3 and RDNA 4. An RX
+// 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against 31.10-31.16
+// without, and 32.17-32.28 with the DPP readout below as well. RDNA 4: see PFX.
 #ifndef PEARL_AMD_PF2
-#define PEARL_AMD_PF2 PEARL_AMD_WMMA11
+#define PEARL_AMD_PF2 (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
 #endif
 // PEARL_AMD_PFX=1, with PF2: keep the loads two slabs ahead in flight across the barrier. Two
-// things stopped that. __syncthreads() is a workgroup fence for every address space, which in
-// WGP mode waits for every outstanding global load (s_waitcnt vmcnt(0)) and drops L0, so each
-// barrier waited for the loads just issued. And the loads were issued under `if`, so where the
-// two paths met the compiler waited for all of them before the LDS stores (vmcnt(0), not 3).
-// So the slab barrier fences LDS only (the loads go to registers; nothing else is shared), and
-// the last two steps load the last slab again instead of skipping (two slabs in 64, from L2).
+// things stopped that. __syncthreads() is a workgroup fence for every address space, which
+// waits for every outstanding global load at each slab barrier (vmcnt(0) and an L0 invalidate
+// on gfx11; loadcnt(0) and global_inv scope:SCOPE_SE on gfx12). And the loads were issued
+// under `if`, so where the two paths met the compiler waited for all of them before the LDS
+// stores (vmcnt(0), not 3). So the slab barrier fences LDS only (the loads go to registers;
+// nothing else is shared), and the last two steps load the last slab again instead of skipping
+// (two slabs in 64, from L2). PEARL_AMD_TID=1 tells the compiler threadIdx.x < 256, which drops
+// an exec-mask branch in the staging addresses (wmma11 236 -> 219 VGPRs, wmma12 215 -> 198).
+// On by default on RDNA 4 only. An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
+// the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
+// with PF2 + DPP + PFX + TID. On RDNA 3 PFX + TID changed nothing (RX 7900 XT 67c308d2,
+// 47.13-47.23 against 47.22-47.26), so its default there stays as measured for its rows.
 #ifndef PEARL_AMD_PFX
-#define PEARL_AMD_PFX 0
+#define PEARL_AMD_PFX PEARL_AMD_WMMA12
 #endif
 #ifndef PEARL_AMD_TID
-#define PEARL_AMD_TID 0
+#define PEARL_AMD_TID PEARL_AMD_WMMA12
 #endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
@@ -392,9 +398,10 @@ __device__ __forceinline__ void pearl_amd_lds_barrier() {
 // PEARL_AMD_DPP=1 (RDNA, wave32): VALU lane moves instead of __shfl_xor's ds_bpermute, which
 // goes through the LDS pipe: lane ^ 1 by a quad permute, ^ 8 by rotating each 16-lane row by 8,
 // ^ 16 by swapping the two rows (v_permlanex16 with the identity selects). On by default on
-// RDNA 3: 31.30-31.41 TH/s against 31.10-31.16 on the same 7800 XT.
+// RDNA 3 and RDNA 4: 31.30-31.41 TH/s against 31.10-31.16 on the same 7800 XT, 54.52 against
+// 52.88 on the 9060 XT above.
 #ifndef PEARL_AMD_DPP
-#define PEARL_AMD_DPP PEARL_AMD_WMMA11
+#define PEARL_AMD_DPP (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
 #endif
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
