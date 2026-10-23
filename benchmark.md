@@ -50,10 +50,9 @@ because no L40 was for rent other than the New York one.
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
 - AMD Radeon on Salad: SRBMiner 32–85 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
-  mine Pearl on AMD (0), and our release is CUDA only. An unreleased AMD core ran at 91–94% of SRBMiner on
-  the same PCs on the RX 7900 XTX (45.5–47.9 TH/s) and RX 7900 XT (41.7–44.6). On an RX 9070 XT it was 32%
-  of SRBMiner on one slow PC (15.8 against 49.0, after a slow start), and it mined at 93.8 TH/s on another PC
-  without SRBMiner (the section's notes).
+  mine Pearl on AMD (0), and our release is CUDA only. An unreleased AMD core, run with SRBMiner on the same
+  PCs, is at 91–94% on the RX 7900 XTX, 7900 XT and 7800 XT, 100% on a good RX 9070 XT PC (92.8 TH/s) and 32% on
+  a slow one, and 51–54% on the RX 9060 XT, where our core is the slow part (the section's notes).
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -796,14 +795,12 @@ SRBMiner 3.7.1 and then PeakMiner 2.17.6, 5 minutes each after a 60-second unmea
 `us.pearl.herominers.com` (`tuning/salad/bench.sh` at `8da98db`, on the `rocm/dev-ubuntu-24.04:7.2` image).
 Our released miner is CUDA only.
 
-The RX 7900 XTX and RX 7900 XT rows and one RX 9070 XT row were rerun on 22 October, from 20:24 UTC, as the
-founder asked: our unreleased AMD core and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second
-warm-up, the order alternating between PCs, after a 10-minute hit check of the core (`tuning/salad/bench.sh` at
-`f78d37a`, the same image and pool). PeakMiner wasn't run, as asked: it mines nothing on AMD (below), so its 0
-stands. Two of the five PCs are the 18 October rows' own; Salad didn't hand out the others, so those rows moved to
-new PCs. The other rows aren't rerun yet. Their "Ours" is the core's best figure from other Salad PCs (marked †, see the
-notes), put in the rows as the founder asked; that "% of best" compares across PCs, so read it loosely. Cards
-the core hasn't run on say "not run".
+Every row was rerun from 20:24 UTC on 22 October to 00:19 UTC on 23 October, as the founder asked: our
+unreleased AMD core and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second warm-up, the order
+alternating between PCs, after a hit check of the core (10 minutes on the first five PCs, 2 on the last five;
+`tuning/salad/bench.sh` at `f78d37a`, the same image and pool). PeakMiner wasn't run, as asked: it mines nothing
+on AMD (below), so its 0 stands. Two of the ten PCs are the 18 October rows' own; Salad didn't hand out the
+others, so those rows moved to new PCs, and the 18 October figures are in the notes.
 
 SRBMiner mines Pearl on every one of these cards, through AMD's OpenCL. PeakMiner started on all ten PCs and
 quit within 15 seconds with no hashrate and no shares: its README lists AMD support only for CSD,
@@ -812,15 +809,15 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
 | RX 9070 XT | Salad (16 GB) | 51a4b5c2 | 15.8 | 0 | 49.0 | 32% |
-| RX 9070 XT | Salad (16 GB) | 3d6cb276 | 93.8 † | 0 | 85.1 | 110% |
-| RX 9060 XT | Salad (16 GB) | e235d465 | not run | 0 | 42.2 | — |
-| RX 9060 XT | Salad (16 GB) | 3540c3e2 | not run | 0 | 40.7 | — |
+| RX 9070 XT | Salad (16 GB) | e412934f | 92.8 | 0 | 92.9 | 100% |
+| RX 9060 XT | Salad (16 GB) | 733bb3d9 | 22.0 | 0 | 41.1 | 54% |
+| RX 9060 XT | Salad (16 GB) | 377fd8c1 | 22.2 | 0 | 43.7 | 51% |
 | RX 7900 XTX | Salad (24 GB) | fd4ebc44 | 45.5 | 0 | 50.1 | 91% |
 | RX 7900 XTX | Salad (24 GB) | 44d3716f | 47.9 | 0 | 52.1 | 92% |
 | RX 7900 XT | Salad (20 GB) | 67c308d2 | 44.6 | 0 | 47.3 | 94% |
 | RX 7900 XT | Salad (20 GB) | dc8fcef5 | 41.7 | 0 | 44.4 | 94% |
-| RX 7800 XT | Salad (16 GB) | 56ae1be5 | not run | 0 | 32.4 | — |
-| RX 7800 XT | Salad (16 GB) | b9d70479 | not run | 0 | 32.4 | — |
+| RX 7800 XT | Salad (16 GB) | 3a0284e3 | 29.2 | 0 | 31.3 | 93% |
+| RX 7800 XT | Salad (16 GB) | 75fd6379 | 29.0 | 0 | 31.7 | 91% |
 
 - **SRBMiner's figure** is its own hashrate at the end of the run, read from its API. After the first 30
   seconds every run stayed within about 4% of it, apart from one RX 7800 XT (`56ae1be5`, 28.7–33.0). The pool
@@ -838,8 +835,8 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   "AMD RX 7900 XTX" class once handed out a PC with an NVIDIA RTX 2080 Ti (`4f7066fe`), which was skipped.
 - **The 22 October rerun.** PR #261's HIP core, built on each PC from `f78d37a`, run by the CLI from source.
   "Ours" is the CLI's mean hashrate after the first minute of its 5; SRBMiner's is its own figure at the end, as
-  on 18 October. Each PC first ran the core's hit check (`verify-hits.js`, 600 s, the way the pool checks a
-  hit): every one passed, with 400 hits checked and 0 failed. The clock is the card's top clock as HIP reports
+  on 18 October. Each PC first ran the core's hit check (`verify-hits.js`, the way the pool checks a hit; 600 s on
+  the first five PCs, 120 s on the last five): every one passed, with up to 400 hits checked and 0 failed. The clock is the card's top clock as HIP reports
   it; the copy is device memory read and written.
 
   | Card | PC | Clock | Copy | Hits a salt | First | Ours | SRBMiner | 18 October |
@@ -849,8 +846,18 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   | RX 7900 XT | `67c308d2` | 2175 MHz | 627 GB/s | 7.97 (2,902 in 364) | SRBMiner | 44.6 | 47.3 | SRBMiner 46.8 |
   | RX 7900 XT | `dc8fcef5` | 2075 MHz | 622 GB/s | 7.99 (2,829 in 354) | ours | 41.7 | 44.4 | new PC, in place of `2c7775f7` (SRBMiner 44.6) |
   | RX 9070 XT | `51a4b5c2` | 2400 MHz | 552 GB/s | 7.82 (1,917 in 245) | ours | 15.8 | 49.0 | new PC, in place of `83151dba` (SRBMiner 79.4) |
+  | RX 9070 XT | `e412934f` | 2460 MHz | 558 GB/s | 7.81 (1,219 in 156; 120 s) | SRBMiner | 92.8 | 92.9 | new PC, in place of `3d6cb276` (SRBMiner 85.1) |
+  | RX 9060 XT | `733bb3d9` | 2620 MHz | 268 GB/s | 6.53 (248 in 38; 120 s) | ours | 22.0 | 41.1 | new PC, in place of `e235d465` (SRBMiner 42.2) |
+  | RX 9060 XT | `377fd8c1` | 2780 MHz | 264 GB/s | 6.53 (248 in 38; 120 s) | SRBMiner | 22.2 | 43.7 | new PC, in place of `3540c3e2` (SRBMiner 40.7) |
+  | RX 7800 XT | `3a0284e3` | 2213 MHz | 490 GB/s | 6.94 (340 in 49; 120 s) | ours | 29.2 | 31.3 | new PC, in place of `56ae1be5` (SRBMiner 32.4) |
+  | RX 7800 XT | `75fd6379` | 2213 MHz | 451 GB/s | 6.89 (317 in 46; 120 s) | SRBMiner | 29.0 | 31.7 | new PC, in place of `b9d70479` (SRBMiner 32.4) |
 
-  - On the RDNA 3 cards our core ran at 91–94% of SRBMiner on every PC, whichever miner went first.
+  - **RDNA 3:** our core ran at 91–94% of SRBMiner on all six RX 7900 XTX, 7900 XT and 7800 XT PCs, whichever
+    miner went first.
+  - **RDNA 4 splits by chip.** On the RX 9070 XT `e412934f` ours matched SRBMiner (92.8 against 92.9). On the RX
+    9060 XT ours held 21–24 TH/s all through on both PCs against SRBMiner's 41–44, 51–54%, with no slow start,
+    so the gap is in our core on that chip (gfx1200, which HIP counts as 16 CUs against the 9070 XT's 32), not in
+    the PCs.
   - **The RX 9070 XT on `51a4b5c2` is 32%.** Our core ran at 1.6–3.6 TH/s for the first 3½ minutes of its 5, then
     at 34.4–35.7 to the end; SRBMiner held 48–50 all through. So at its full rate ours was about 71% of SRBMiner
     there, and the PC is slow for both: SRBMiner got 79–85 on the 18 October 9070 XT PCs, and ours 93.8 on
@@ -858,7 +865,8 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
     and its cause isn't known.
   - An RX 9070 XT PC, `470832a4`, isn't a row: neither miner got work from the pool there (0 for 5 minutes each),
     though the core passed its hit check (8.03 hits a salt, 6,104 in 760 salts).
-  - Before the rerun, both 7900 XTX rows had "Ours" 50.4 †, from `ded998b6`.
+  - Before the rerun, the rows' "Ours" was each card's best figure from the morning's tests on other PCs, marked †:
+    93.8 on both 9070 XT rows and 50.4 on both 7900 XTX rows, "not run" on the rest.
   - The first 7900 XTX PC, `ded998b6`, isn't a row: Salad took it back 30 s into SRBMiner's run. Before that its
     hit check found 8.03 hits a salt (3,230 in 402 salts), ours ran at 50.0 for 5 minutes (49.9–50.4, 1 share
     accepted, 0 rejected), and SRBMiner read 55.0 and 54.7 TH/s at 15 and 30 s.
@@ -866,8 +874,8 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   `5aa0069` (`2d540fe` on `51a4b5c2` and `ded998b6`; the core's sources are the same in both). It ran by a
   different method from "How a host is tested" (`tuning/salad/amdtest.py`: built on the box with ROCm 7.2;
   `hashrate.js` for 60 s after a 10 s warm-up; then the CLI from source on `prl-us.kryptex.network:7048`), on
-  PCs other than the rows'. Each card's best figure is in the rows, marked †, as the founder asked on 22 October;
-  by the rules above it would stay out of them until it ran on the row's own PC. Each PC passed the fold check
+  PCs other than the rows'. Each card's best figure was in the rows, marked †, as the founder asked, until the
+  rerun above replaced them. Each PC passed the fold check
   (`pearl_amd_foldtest` at 2048 × 2048: wmma11 on gfx1100, wmma12 on gfx1201) and verified every hit it
   checked:
 
@@ -886,10 +894,10 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
   - **Hits a salt, the one check of work done that doesn't rest on the core's own count.** The target makes 8
     a salt. `f7baf9ac` found 7.95, but the other three PCs found 6.92 (`51a4b5c2`), 7.55 (`ded998b6`) and 7.11
     (`68d7c53e`) in these 2-minute checks. The 10-minute checks of the 22 October rerun found 7.82–8.03 on all
-    seven PCs, `ded998b6` and `51a4b5c2` included, so the card searches at the rate it reports; the low counts came from the short
-    checks. What made them low isn't known.
-  - Against SRBMiner on the rows' PCs: 110% of the best 9070 XT row, but on different PCs, so this doesn't show
-    which miner is faster. The 7900 XTX figure here was replaced by the rerun's.
+    seven PCs that ran one, `ded998b6` and `51a4b5c2` included, so the card searches at the rate it reports; the
+    low counts come from short checks, and the rerun's 2-minute checks on its last five PCs found 6.53–7.81 again
+    (both 9060 XT PCs the same 248 hits in 38 salts). What makes them low isn't known.
+  - These ran on other PCs than SRBMiner's; the rerun above compares the two on the same PCs.
 
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT

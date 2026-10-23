@@ -17,6 +17,7 @@ notes, and many had dropped off them with no fix or decision.
 | 2 | The report summed only page 1 of Kryptex's payouts: margins read about 25 points low for about a day. | Misled every decision read off the report | `b50df9c` |
 | 3 | A box paused for a prompt showed a margin like −3180% and turned the All row negative. | Display | `8e39885` |
 | 4 | The keep, leave, climb and search rules valued every box at HeroMiners' credit ratio (0.93) though every box mines on Kryptex (0.97). 63 of 125 margin moves and deletions in the 48 h before would not have happened. A review before it went live added: the pool a box's PC really mines on, Kryptex's ratio held through API outages, and a second margin check in the search. Live since 8:15 pm EDT on 22 Oct. | $0.2–0.5/day | `310c1f9`, `3874caf` |
+| 8 | `max_active` was held at 7–8 for the AMD benchmark from 4:24 pm on 22 Oct. | about $0.5/day while it ran | back to 10 at 8:25 pm when the run ended |
 
 ## Open: costs money
 
@@ -25,7 +26,6 @@ notes, and many had dropped off them with no fix or decision.
 | 5 | The rules count Pearl only, not each box's Monero (about 2 kH/s, $0.003/hr a box), so boxes that clear 10% with Monero are left. | $0.3–0.7 | Count Monero in the margin the rules use. Changes what "10%" means: decision. |
 | 6 | Classes that never get a PC on this account (4090, 5090, often 4070 Ti and 5070 Ti) keep taking slots: created, wait 10–20 min, deleted, tried again. | up to $1.0 of slot time; about $0.3–0.5 | Hold a class that got no PC for 3 h, not 10 min. |
 | 7 | Salad counts one replica more than we have (since about 1 pm on 22 Oct), and parallel creates hit the quota. | $0.3–0.5 | Use the quota call's own used count and stop at the first refusal (4 lines). Ask Salad about the phantom. |
-| 8 | `max_active` is 7 for the AMD benchmark. | about $0.5 while the run lasts | Back to 10 when the run ends. |
 | 9 | The bad-PC list keeps no price or rate, so a PC left at high is refused at medium where it clears, and wrong entries (from #4, #5) bar good PCs for 24 h. 88 of 200 bad-list moves in 48 h were off PCs that clear for the group moved. | $0.2–0.3 | Keep the PC's TH/s in the entry and let a group stay when that clears its own price. |
 | 10 | One 10% bar for creating, keeping and climbing, with no buffer, so PCs near the line flip in and out as the price moves. | $0.05–0.1 alone; about $0.5 with #4, #5 | A lower keep bar (or two failed checks) and a higher create bar. Decision. |
 | 11 | Gemma's prompts pause mining on billed PCs, sometimes 4–11 min while the model loads; Gemma's earnings aren't counted anywhere. | about $0.13 billed with no Pearl | CLI: don't pause until the model answers (release). Watcher: show pause minutes and Gemma's earnings. |
