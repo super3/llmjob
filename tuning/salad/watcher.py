@@ -16,6 +16,9 @@ PROJECT = os.environ.get("SALAD_PROJECT", "default")
 BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
 IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
+# AMD boxes: the ROCm image the AMD core was built and tested in on Salad (amdtest.py), with its HIP runtime. The AMD
+# core ships from v0.6.8, so an AMD box runs that release or a later one.
+AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
 PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
@@ -44,6 +47,10 @@ KNOWN = {
     "RTX 3070 (8 GB)": (59, False), "RTX 4060 (8 GB)": (55, False), "RTX 4060 Ti (16 GB)": (89, False),
     "RTX 4090 (24 GB)": (315, False), "RTX 5060 (8 GB)": (76, False), "RTX 5060 Ti (16 GB)": (94, False),
     "RTX 5070 Ti (16 GB)": (174, False), "RTX 5090 (32 GB)": (418, False),
+    # AMD, from v0.6.8's AMD core: the mean of its two PCs in benchmark.md (23 October). At Salad's prices then, the
+    # 9070 XT clears 10% at batch and on fast PCs at low, the 9060 XT at batch, the 7900 XT at batch only; the
+    # 7900 XTX and 7800 XT clear it at none, so they aren't here.
+    "AMD RX 9070 XT (16GB)": (99, False), "AMD RX 9060 XT (16GB)": (61, False), "AMD RX 7900 XT (20GB)": (49, False),
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
@@ -191,7 +198,15 @@ def median3(readings):
 
 
 def slug(cls):
+    """A class's part of its groups' names: "RTX 4060 (8 GB)" -> rtx4060, "AMD RX 9070 XT (16GB)" -> rx9070xt."""
+    if cls.startswith("AMD "):
+        return re.sub(r"[^a-z0-9]", "", cls[4:].split("(")[0].lower())
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
+
+
+def is_amd(name):
+    """Whether a group is an AMD box, from its name (slug)."""
+    return name.startswith("biz-rx")
 
 
 def kx_paid(api, addr, most=100):
@@ -224,7 +239,7 @@ def cmd_ver(cmd):
     return m.group(1) if m else "v0.5.13"
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None):
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -252,6 +267,19 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         sed += (" -e 's/ --mode mining -w \\$WORKER-g\\$g --no-serve / --mode auto -w $WORKER-g$g /'"
                 " -e '/^    line=\\$(tr -d/a\\    p=$(grep -aoE \"mining (paused|resumed)\" $D/g$g.log | tail -1); "
                 "[ \"$p\" = \"mining paused\" ] && line=\"paused for a prompt\"'")
+    if amd:
+        # An AMD box (v0.6.8 on): the AMD core beside the CLI, and --core amd. box.sh reads its card with nvidia-smi,
+        # which the ROCm image doesn't have: the card line comes from rocminfo, the box has one card, and the
+        # 5-minute card stats print nothing. Its build tools are CUDA's, so they aren't installed.
+        flags.append("--core amd")
+        sed += (" -e 's#^  nvidia-smi --query-gpu=index,name,driver_version.*$#  echo \"[card] 0, $(rocminfo 2>/dev/null "
+                "| grep -m1 -oE \"AMD Radeon[ A-Za-z0-9]+\"), $(rocminfo 2>/dev/null | grep -m1 -oE \"gfx[0-9a-f]+\")\"#'"
+                " -e 's#^N=.*nvidia-smi -L.*$#N=1#' -e 's#^CC=.*nvidia-smi.*$#CC=0#'"
+                " -e 's#^  declare -A dl; for f in llmjob-earn-cli-linux #  declare -A dl; for f in pearl_core_hip.node "
+                "llmjob-earn-cli-linux #'"
+                " -e 's#release) cp \\$D/rel/pearl_core.node #release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node #'"
+                " -e 's#\\&\\& nvidia-smi --query-gpu=index,clocks.sm#\\&\\& true --query-gpu=index,clocks.sm#'"
+                " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
@@ -751,21 +779,28 @@ class W:
         on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
-        llm = bool(self.cfg["llm"])
+        llm, amd = self.llm_on(name), is_amd(name)
+        if amd and vnum(ver) < vnum(AMD_VER):
+            ver = AMD_VER
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
             ver = self.cfg["kryptex_ver"]
         if llm and vnum(ver) < vnum(self.cfg["llm_ver"]):
             ver = self.cfg["llm_ver"]
         if not xmr:
-            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm)],
+            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm, amd=amd)],
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
         xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
         if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
             ver = self.cfg["xmr_kx_ver"]
-        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool)
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool, amd)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def llm_on(self, name):
+        """Whether a group's box runs Gemma: config "llm", except on an AMD box, where the CLI's local LLM has no
+        build for the card."""
+        return bool(self.cfg["llm"]) and not is_amd(name)
 
     def xmr_kx(self, xmr):
         """Whether a box's command sends its Monero to Kryptex: it mines Monero and config xmr_kx is on."""
@@ -785,7 +820,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, bool(self.cfg["llm"]), self.xmr_kx(want)
+                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, self.llm_on(g["name"]), self.xmr_kx(want)
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
@@ -804,8 +839,8 @@ class W:
         after 6 minutes); one it doesn't restart runs Gemma from its next PC, as a group waiting for a PC does from
         its first. A group still preparing its image is left for a later round (Salad refuses updates then),
         and a refused update is tried again after 10 minutes."""
-        want = bool(self.cfg["llm"])
         for g in active:
+            want = self.llm_on(g["name"])
             if (g["ended"] or bool(g.get("llm")) == want or g.get("status") == "pending"
                     or t - g.get("llm_try", 0) < 600):
                 continue
@@ -837,7 +872,7 @@ class W:
                         ctype="application/merge-patch+json")
             pool = "Kryptex" if want else "HeroMiners"
             if 200 <= s < 300:
-                g["xmr_kx"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
+                g["xmr_kx"], g["ver"], g["llm"] = want, ver, self.llm_on(g["name"])
                 event(f"MONERO ON {pool.upper()} {g['name']}: miner {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -863,7 +898,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["ver"], g["llm"], g["xmr_kx"] = ver, bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+                g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
                 event(f"RELEASE {g['name']}: miner {old} -> {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -1041,7 +1076,7 @@ class W:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
         # The command carries config's Gemma and Monero pool settings too.
-        g["llm"], g["xmr_kx"] = bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+        g["llm"], g["xmr_kx"] = self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
         moving = (not in_place and bool(g["has_pc"] and g.get("instance"))
                   and self.on_kx(g, g.get("machine"), t) != on)
@@ -1264,7 +1299,8 @@ class W:
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
-                "container": {"image": IMAGE, "priority": pri, "resources": res, "command": command}}
+                "container": {"image": AMD_IMAGE if is_amd(name) else IMAGE, "priority": pri, "resources": res,
+                              "command": command}}
         s, j = http("POST", CB, body)
         if 200 <= s < 300:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
@@ -1278,12 +1314,12 @@ class W:
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": bool(self.cfg["llm"]), "xmr_kx": self.xmr_kx(xmr)}
+                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
-                  + (", Gemma" if self.cfg["llm"] else ""))
+                  + (", Gemma" if self.llm_on(name) else ""))
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
