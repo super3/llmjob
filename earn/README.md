@@ -263,7 +263,11 @@ gfx1201). On Salad it beat SRBMiner on every Radeon class rented there, the RX
 Instinct card. The rig needs ROCm 7's HIP runtime (`libamdhip64.so.7`, from
 `rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on `LD_LIBRARY_PATH`), which the
 release does not carry. Without it the log says the core would not load and
-names the missing library. Card temperatures and VRAM stay empty on AMD, and
+names the missing library. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
+core refuses to mine until you set `PEARL_AMD_UNTESTED=1`: its folds for those
+cards have run only in emulation, and if one is wrong on the card every share
+is rejected, which a pool can ban the address for. Run the checks in
+`native/amd/README.md` ("Testing on real hardware") first. Card temperatures and VRAM stay empty on AMD, and
 one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
 "Using it in the app").
 

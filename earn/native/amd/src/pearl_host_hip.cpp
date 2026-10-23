@@ -107,7 +107,7 @@ struct Ctx {
   char arch[64] = {0};      // gcnArchName, e.g. "gfx942:sramecc+:xnack-"
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
-  char foldErr[256] = {0};
+  char foldErr[512] = {0};
   char foldName[320] = {0};
 
   int8_t *dA = nullptr;
@@ -587,6 +587,43 @@ struct DeviceScope {
   }
 };
 
+// The targets this build has code for, from build-amd.sh ("gfx908,gfx90a,...").
+#ifndef PEARL_AMD_TARGETS
+#define PEARL_AMD_TARGETS "the targets build-amd.sh was given"
+#endif
+
+// Whether this build has code for an architecture ("gfx1100" or "gfx942:sramecc+:xnack-").
+bool in_build(const char *arch) {
+  char base[32] = {0};
+  size_t i = 0;
+  for (; arch[i] && arch[i] != ':' && i + 1 < sizeof base; i++) base[i] = arch[i];
+  if (!i) return false;
+  const char *list = PEARL_AMD_TARGETS;
+  for (const char *p = list; (p = strstr(p, base)) != nullptr; p += i) {
+    const bool start = p == list || p[-1] == ',';
+    const bool end = p[i] == ',' || p[i] == '\0';
+    if (start && end) return true;
+  }
+  return false;
+}
+
+// The card count, or why there isn't one. After a GPU fault ROCm refuses every later call in
+// the process, hipGetDeviceCount included, and on Linux by default it never recovers. That
+// must not read as a missing driver.
+bool count_devices(int *devices, char *err, size_t err_len) {
+  const hipError_t e = hipGetDeviceCount(devices);
+  (void)hipGetLastError();
+  if (e == hipSuccess && *devices > 0) return true;
+  if (e == hipSuccess || e == hipErrorNoDevice) {
+    fail(err, err_len, "no AMD GPU found: is the ROCm driver (amdgpu) installed, and can this user open /dev/kfd?");
+  } else if (err && err_len) {
+    snprintf(err, err_len,
+             "HIP stopped working in this process (%s): after a GPU error ROCm refuses every later call; restart "
+             "the miner", hipGetErrorString(e));
+  }
+  return false;
+}
+
 // Which fold this card runs, decided once a context, before the first operand draw.
 //
 // The card's architecture picks the fold (native_fold); PEARL_AMD_FOLD overrides it. Then
@@ -602,9 +639,31 @@ void resolve_fold(Ctx *ctx) {
   hipError_t e = hipGetLastError();
   if (e == hipSuccess) e = hipMemcpy(caps, ctx->dCaps, sizeof caps, hipMemcpyDeviceToHost);
   if (e != hipSuccess) {
-    snprintf(err, err_len, "this core has no code for %s (%s): build it with build-amd.sh for that target",
-             ctx->arch[0] ? ctx->arch : "this card", hipGetErrorString(e));
     (void)hipGetLastError();
+    // HIP loads the code objects for every card in its order and stops at the first card the
+    // build has no code for, so every card after that one gets none either. Name that card.
+    int other = -1;
+    char otherArch[64] = {0};
+#if !defined(__HIP_CPU_RT__)
+    int n = 0;
+    if (hipGetDeviceCount(&n) == hipSuccess) {
+      for (int d = 0; d < n && other < 0; d++) {
+        hipDeviceProp_t prop;
+        if (hipGetDeviceProperties(&prop, d) != hipSuccess || in_build(prop.gcnArchName)) continue;
+        other = d;
+        snprintf(otherArch, sizeof otherArch, "%s", prop.gcnArchName);
+      }
+    }
+    (void)hipGetLastError();
+#endif
+    if (other >= 0 && other != ctx->device)
+      snprintf(err, err_len,
+               "HIP device %d (%s) has no code in this build, and HIP then loads none for the cards after it: hide it "
+               "with HIP_VISIBLE_DEVICES, listing only the cards to mine on (%s)",
+               other, otherArch, hipGetErrorString(e));
+    else
+      snprintf(err, err_len, "this core has no code for %s (%s): this build is for %s",
+               ctx->arch[0] ? ctx->arch : "this card", hipGetErrorString(e), PEARL_AMD_TARGETS);
     return;
   }
   ctx->emulated = (caps[0] & PEARL_AMD_CAP_EMULATED) != 0;
@@ -623,6 +682,20 @@ void resolve_fold(Ctx *ctx) {
              kFolds[want].name, ctx->arch[0] ? ctx->arch : "this card", caps[0]);
     return;
   }
+  // The folds on CDNA (gfx9: mfma8, mfma16) and on RDNA 2 (gfx103x: the reference fold on
+  // v_dot4c) have run only through the CPU emulation. If a card's matrix layout differs from
+  // the documented one, every hash is wrong yet meets the target, so every share is sent and
+  // rejected, and a pool can ban the address for it. They mine only once the owner has run the
+  // checks (README.md, "Testing on real hardware") and set PEARL_AMD_UNTESTED=1.
+  const char *untested = getenv("PEARL_AMD_UNTESTED");
+  if (!ctx->emulated && (!strncmp(ctx->arch, "gfx9", 4) || !strncmp(ctx->arch, "gfx103", 6))
+      && !(untested && !strcmp(untested, "1"))) {
+    snprintf(err, err_len,
+             "the %s fold has not run on a %s card yet, so every share could be rejected: run the checks in "
+             "earn/native/amd/README.md (\"Testing on real hardware\"), then set PEARL_AMD_UNTESTED=1 to mine",
+             kFolds[want].name, ctx->arch);
+    return;
+  }
   ctx->fold = want;
 }
 
@@ -637,11 +710,7 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   if (name && name_len) name[0] = '\0';
   if (!profile) { fail(err, err_len, "no profile supplied"); return -1; }
   int devices = 0;
-  if (hipGetDeviceCount(&devices) != hipSuccess || devices == 0) {
-    (void)hipGetLastError();
-    fail(err, err_len, "no AMD GPU found: is the ROCm driver (amdgpu) installed, and can this user open /dev/kfd?");
-    return -1;
-  }
+  if (!count_devices(&devices, err, err_len)) return -1;
   int chosen = -1;
   if (requested >= 0) {
     if (requested >= devices) {
@@ -692,11 +761,7 @@ extern "C" void pearl_host_destroy(void *handle);
 extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len) {
   if (!profile) { fail(err, err_len, "no profile supplied"); return nullptr; }
   int devices = 0;
-  if (hipGetDeviceCount(&devices) != hipSuccess || devices == 0) {
-    (void)hipGetLastError();
-    fail(err, err_len, "no AMD GPU found: is the ROCm driver (amdgpu) installed, and can this user open /dev/kfd?");
-    return nullptr;
-  }
+  if (!count_devices(&devices, err, err_len)) return nullptr;
   {
     const uint64_t aChunks = (uint64_t)profile->m * profile->k / 1024u;
     const uint64_t bChunks = (uint64_t)profile->n * profile->k / 1024u;
@@ -813,7 +878,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   HIP_OK(hipMalloc(&ctx->dHashA, PEARL_HASH_BYTES), "allocating hash_a");
   HIP_OK(hipMalloc(&ctx->dHashB, PEARL_HASH_BYTES), "allocating hash_b");
 
+  // A card with no fold it may run fails here, once, with the reason, rather than after a
+  // full operand draw at the first search, and again at each restart.
   resolve_fold(ctx);
+  if (ctx->fold < 0) {
+    fail(err, err_len, ctx->foldErr);
+    pearl_host_destroy(ctx);
+    return nullptr;
+  }
   return ctx;
 }
 

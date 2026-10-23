@@ -124,8 +124,10 @@ case "$mode" in
     # cannot fail on their own, as pearl_host.cu does, and reads hipGetLastError where it
     # matters.
     flags="-std=c++17 -O3 -fPIC -Wno-unused-result -Wno-unused-value ${PEARL_AMD_CFLAGS:-}"
+    # The host names the targets in its errors (a card the build has no code for).
+    targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "gpu: kernels and host for $archs"
-    $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
+    $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
     echo "gpu: addon"
     $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
     # --allow-shlib-undefined: libamdhip64 needs the rest of the ROCm runtime, which a build

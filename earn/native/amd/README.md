@@ -6,7 +6,10 @@ is compiled unchanged against a HIP host. The app loads it only when asked to
 (`--core amd` or `PEARL_CORE_VARIANT=amd`, see below). Linux releases carry it from v0.6.8,
 built by `native-core.yml`'s `ubuntu-latest-hip` job.
 
-**Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct).** On 22 October,
+**Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct) or RDNA 2.** On
+those (gfx9 and gfx103x) the core refuses to mine until `PEARL_AMD_UNTESTED=1` is set: run the
+checks under "Testing on real hardware" first, since a fold whose layout differs on the card
+would have every share rejected, and a pool can ban the address for that. On 22 October,
 unchanged, it passed steps 1-5 under "Testing on real hardware" on Salad: an RX 9070 XT (gfx1201)
 at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, every checked hit
 right and every share accepted on Kryptex (`benchmark.md`, "AMD Radeon", notes). It was written
@@ -168,7 +171,9 @@ npm install --no-save node-addon-api
 ./build/pearl_amd_foldtest 2048 2048 3                # bigger; the CPU side takes ~10 s
 ./build/pearl_amd_foldtest 16384 16384 1 20 0         # timed only: each fold's rate in TMAC/s
 
-# 3. The whole core at the mainnet profile, checked as the pool checks it.
+# 3. The whole core at the mainnet profile, checked as the pool checks it. On a gfx9 or
+#    gfx103x card, which hasn't run the core yet, add PEARL_AMD_UNTESTED=1 to steps 3-5
+#    (export it), and to the app once every step here has passed.
 #    Must print PASS with 400 verified. The reference fold is slow, so give it an easier target.
 node ../probes/verify-hits.js build/pearl_core_hip.node 120
 PEARL_AMD_FOLD=ref node ../probes/verify-hits.js build/pearl_core_hip.node 300 236
@@ -200,7 +205,9 @@ path: a relative one counts from the executable's folder. With `PEARL_CORE_VARIA
 a `PEARL_CORE_PATH` that doesn't load is the end of it; the CUDA cores aren't tried.
 
 The app finds cards with nvidia-smi, which lists no AMD card. So one core starts and picks
-the AMD card with the most compute units times clock. On a rig with several, choose them
+the AMD card with the most compute units times clock. If HIP lists a card the release has no
+code for (an RX 5000 card, or an APU's graphics) before the ones it has, HIP loads no code for
+any card after it; the error names that card, and `HIP_VISIBLE_DEVICES` hides it. On a rig with several, choose them
 by index with `--gpu-index 0,1` (or `PEARL_GPU_INDEX`); the app passes indices
 nvidia-smi does not list straight to the core, one core each. Indices are HIP's, which
 follow `rocm-smi` unless `HIP_VISIBLE_DEVICES` says otherwise. Temperatures, VRAM rows on
@@ -211,6 +218,10 @@ LLM co-runs on a rig mining on one AMD card, each prompt pauses that card, which
 the model is on. On several mining AMD cards it pauses none of them, and prompts run
 beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining cards (from
 `rocm-smi`, say).
+
+After a GPU fault (an unstable overclock, say) ROCm refuses every later HIP call in the process,
+on every card, so all the AMD cards stop and the error says to restart the miner. A CUDA fault,
+by contrast, stops only its own card.
 
 ## Gaps and next steps
 
