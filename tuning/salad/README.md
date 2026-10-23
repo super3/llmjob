@@ -51,6 +51,7 @@ Config keys:
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
+| `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
 | `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
@@ -155,7 +156,12 @@ high was refused at medium too. A PC off the bad list (after 24 h) is still left
 when the rate a group of the class last measured there in `rate_days` fails 10% at this group's price and
 pool: in the 12.2 days of events to 23 October, 114 of 558 margin leaves were off PCs a group of the class had
 left for its margin 1–7 days before, each one a counted move or a deletion. A PC Salad takes back isn't
-bad. A class has **paid before** if it paid on the first account, or once a group of it here
+bad, unless it takes it back within `drop_min` (10) minutes of handing it over `drop_count` (3) times in
+`drop_hours` (24): since 23 October that puts it on the bad list for every box, with a `NOTE PC ... goes on the
+bad list` event. In the 14 days to then, 281 stints under 10 minutes ended with Salad taking the PC back,
+billed $4.05 with almost nothing mined; most were a PC's only one, and this rule would have saved $0.28 of it
+(26 stints, 21 of them on 3323a855, which went to 3090 Ti groups 19 times in 38 hours on 17–19 October, and
+6a33a882) while blocking one longer stint. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad
 class, so the class isn't barred from new groups. A move off a PC that blocks the pool port (rule 6) is the

@@ -1587,6 +1587,39 @@ class TestBadPcs(Base):
         self.step(a, 1, None)       # Salad takes the PC back
         self.assertEqual(self.x.st.get("bad_pcs", {}), {})
 
+    def test_a_pc_salad_takes_back_three_times_in_a_day_goes_on_the_bad_list(self):
+        # 17-19 October: 3323a855 was handed to 3090 Ti groups 19 times in 38 hours and taken back within minutes
+        # nearly every time.
+        a = self.group(pri="medium")
+        for i in range(3):
+            self.step(a, 1, "m1")
+            self.step(a, 3, None)    # taken back 3 minutes after it was handed over
+            self.assertEqual("m1" in self.x.st.get("bad_pcs", {}), i == 2)
+        self.assertIn("NOTE PC m1 goes on the bad list: Salad took it back within 10 min of handing it over 3 times "
+                      "in 24 h", self.events())
+        self.assertNotIn("m1", self.x.st["pc_drops"])
+        b = self.group(pri="medium")
+        self.step(b, 1, "m1")        # the next group that gets it moves off at once, uncounted
+        self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 1)
+        self.assertIn("REALLOCATED biz-rtx4080-2 off PC m1 (biz-rtx4080 left this PC at", self.events())
+        self.assertEqual(b["reallocs"], 0)
+
+    def test_only_quick_drops_within_a_day_count(self):
+        a = self.group(pri="medium")
+        self.step(a, 1, "m1")
+        self.step(a, 3, None)                        # a quick drop
+        self.step(a, 1, "m1")
+        self.mine(a, "m1", 200, 12)
+        self.step(a, 1, None)                        # taken back after 13 minutes: not a drop
+        self.assertEqual(len(self.x.st["pc_drops"]["m1"]), 1)
+        self.clock[0] += 25 * 3600                   # the first drop is over a day old
+        b = self.group(pri="medium")
+        for _ in range(2):
+            self.step(b, 1, "m1")
+            self.step(b, 2, None)
+        self.assertEqual(len(self.x.st["pc_drops"]["m1"]), 2)
+        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+
 
 class TestCritic(Base):
     def setUp(self):

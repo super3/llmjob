@@ -51,6 +51,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
                "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
+               "drop_count": 3, "drop_min": 10, "drop_hours": 24,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", ""),
                # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
@@ -1278,6 +1279,9 @@ class W:
         bad = st.setdefault("bad_pcs", {})
         for m in [m for m, b in bad.items() if t - b["t"] >= 3600 * self.cfg["bad_pc_hold_h"]]:
             del bad[m]
+        drops = st.setdefault("pc_drops", {})
+        for m in [m for m, d in drops.items() if t - d[-1] >= 3600 * self.cfg["drop_hours"]]:
+            del drops[m]
         dt_s = min(t - st["last_round"], 1800) if st["last_round"] else 0
         st["last_round"] = t
         active = [g for g in st["groups"].values() if not g["ended"]]
@@ -1557,6 +1561,7 @@ class W:
             if g["had_pc"]:
                 if g["machine"] is not None:
                     event(f"LOST PC {g['name']}: PC {g['machine'][:8]} gone (instance {g.get('inst_state', '-')})")
+                    self.note_drop(g, t)
                     g.update(machine=None, pc_since=None)
                 if g["lost_since"] is None:
                     g["lost_since"] = t
@@ -1714,6 +1719,29 @@ class W:
                        key=lambda g: g["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
         return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
                 and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
+
+    def note_drop(self, g, t):
+        """A PC Salad takes back within drop_min of handing it over is a drop; drop_count of them in drop_hours put
+        it on the bad list for every box (bad_pc_hold_h). On 17-19 October 3323a855 was handed to 3090 Ti groups 19
+        times in 38 hours and taken back within minutes nearly every time, each stint billed with nothing mined. A
+        PC taken back once isn't bad: in 14 days to 23 October such short stints cost $0.29/day, but holding a PC
+        after 3 in a day saved $0.02/day of it and blocked one longer stint."""
+        mach, since = g["machine"], g.get("pc_since")
+        if not since or t - since >= 60 * self.cfg["drop_min"]:
+            return
+        st = self.st
+        drops = [d for d in st.setdefault("pc_drops", {}).get(mach, []) if t - d < 3600 * self.cfg["drop_hours"]] + [t]
+        st["pc_drops"][mach] = drops
+        if len(drops) < self.cfg["drop_count"]:
+            return
+        del st["pc_drops"][mach]
+        bad = st.setdefault("bad_pcs", {})
+        if bad.get(mach) and self.bad_ports(bad[mach]) is None and self.bad_ths(bad[mach]) is None:
+            return   # already bad for every box
+        why = (f"Salad took it back within {self.cfg['drop_min']} min of handing it over {len(drops)} times in "
+               f"{self.cfg['drop_hours']} h")
+        bad[mach] = {"t": t, "group": g["name"], "why": why}
+        event(f"NOTE PC {mach[:8]} goes on the bad list: {why}")
 
     def leave(self, g, why, ths=None):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
