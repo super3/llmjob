@@ -16,8 +16,9 @@
 #   BASE_SHA      commit of super3/llmjob to test (required)
 #   PATCH_GZ_B64  optional: `git diff --binary` against BASE_SHA, gzipped and base64'd; applied with git apply.
 #                 If it changes this script, the patched script takes over after the patch.
-#   TASKS         comma list, run in order (default "card,hip"). Each is name[@fold][:arg[:arg...]]; @fold sets
-#                 PEARL_AMD_FOLD for that task only.
+#   TASKS         comma list, run in order (default "card,hip"). Each is name[@fold][+K=V...][:arg[:arg...]];
+#                 @fold sets PEARL_AMD_FOLD and each +K=V sets K for that task only, so one run can compare
+#                 settings on the same PC (hashrate+PEARL_AMD_WAIT=poll:60:10). V can't hold , : or +.
 #     env                     OS, ROCm, node, compiler, the bridge's files (names only)
 #     card                    /dev/dxg, rocminfo's GPU agents, Salad's amd-smi
 #     hip                     builds and runs amdtest_hip.cpp: devices, runtime libraries loaded, kernels checked
@@ -366,15 +367,19 @@ IFS=, read -ra LIST <<< "$TASKS"
 for item in "${LIST[@]}"; do
   [ -n "$item" ] || continue
   IFS=: read -ra P <<< "$item"
-  name=${P[0]%%@*}; fold=""; [ "$name" != "${P[0]}" ] && fold=${P[0]#*@}
+  IFS=+ read -ra HP <<< "${P[0]}"
+  envs=("${HP[@]:1}")
+  name=${HP[0]%%@*}; fold=""; [ "$name" != "${HP[0]}" ] && fold=${HP[0]#*@}
+  [ -n "$fold" ] && envs+=("PEARL_AMD_FOLD=$fold")
   args=("${P[@]:1}")
   case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|srb|duel|cpuchecks|run) ;;
     sleep) sleep "${args[0]:-60}"; continue ;;
     *) say "$name FAIL unknown task"; failed="$failed $item"; continue ;;
   esac
-  say "$name start${fold:+ fold=$fold}${args:+ ${args[*]}}"
+  say "$name start${envs:+ ${envs[*]}}${args:+ ${args[*]}}"
   t0=$(date +%s)
-  if [ -n "$fold" ]; then PEARL_AMD_FOLD=$fold "t_$name" "${args[@]}"; else "t_$name" "${args[@]}"; fi
+  # A subshell, so a task's own settings end with it.
+  ( for kv in "${envs[@]}"; do export "$kv"; done; "t_$name" "${args[@]}" )
   rc=$?
   say "$name done rc=$rc $(( $(date +%s) - t0 ))s"
   [ $rc -eq 0 ] || failed="$failed $item"
