@@ -140,7 +140,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
 if it hasn't. The PC goes on a shared **bad list** for `bad_pc_hold_h`, and so does a PC that blocks the
 pool port (rule 6): a group that gets a PC another group left is moved off it at once, and that move
 doesn't count toward its 3. (On 12 October one 2080 Ti
-PC that overheated to 66 TH/s was handed to a second group two hours later.) A PC Salad takes back isn't
+PC that overheated to 66 TH/s was handed to a second group two hours later.) Since 23 October a PC left for
+its margin (rule 5) keeps the TH/s it was left at, and a group whose own price and pool that rate clears 10%
+at keeps it (a `NOTE ... keeps PC` event) and is judged on its own readings from there. Before, a PC left at
+high was refused at medium too. A PC Salad takes back isn't
 bad. A class has **paid before** if it paid on the first account, or once a group of it here
 clears the margin over 10 readings with shares at the pool. Reallocations are capped at 3 a group, shared
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad

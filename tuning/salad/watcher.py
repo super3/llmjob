@@ -1023,6 +1023,15 @@ class W:
             return None
         return entry.get("ports") or ([entry["port"]] if "port" in entry else None)
 
+    @staticmethod
+    def bad_ths(entry):
+        """The TH/s a PC was left at for its margin, or None when it was left for another reason. Entries from
+        before 23 October have it only in their reason ("earns $0.056/hr at 42 TH/s on PC ...")."""
+        if entry.get("ths") is not None:
+            return entry["ths"]
+        m = re.match(r"earns \$[\d.]+/hr at ([\d.]+) TH/s", entry.get("why", ""))
+        return float(m.group(1)) if m else None
+
     def kx_failed(self, g, why):
         """A Kryptex box that sends no shares or no readings while no other box's work reaches Kryptex points at
         Kryptex, not at the PC: it goes back to HeroMiners on a new PC, and the PC stays off the bad list. Two of
@@ -1442,12 +1451,19 @@ class W:
                 if g.get("sw_from") == mach:
                     g["sw_from"] = None
                 event(f"{'GOT PC' if first else 'NEW PC'} {g['name']} ({g['class']}, {g['pri']}): PC {mach[:8]}")
-                # A PC that another group left lately (slow, capped, not mining) is left again at once.
+                # A PC that another group left lately (slow, capped, not mining) is left again at once, unless it was
+                # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
+                # a PC left at high was refused at medium too, 88 of 200 bad-list moves in 48 hours.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
-                    self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
-                    return
+                    ths, bar = self.bad_ths(bad), self.cfg["min_margin"]
+                    if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)), g["price"]) >= bar:
+                        event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
+                              f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
+                    else:
+                        self.reallocate(g, f"{bad['group']} left this PC at {hm(bad['t'])}Z: {bad['why']}", count=False)
+                        return
         else:
             if g["had_pc"]:
                 if g["machine"] is not None:
@@ -1534,7 +1550,8 @@ class W:
             avg = sum(r[2] for r in post[-3:]) / 3
             if margin_of(avg * usd, g["price"]) < bar:
                 self.leave(g, f"earns ${avg * usd:.3f}/hr at {avg:.0f} TH/s on PC {g['machine'][:8]} against its "
-                              f"${g['price']:.3f}/hr ({margin_of(avg * usd, g['price']) * 100:+.0f}%, under {bar:.0%})")
+                              f"${g['price']:.3f}/hr ({margin_of(avg * usd, g['price']) * 100:+.0f}%, under {bar:.0%})",
+                           ths=avg)
                 return
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
@@ -1598,9 +1615,10 @@ class W:
         return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
                 and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
 
-    def leave(self, g, why):
+    def leave(self, g, why, ths=None):
         """Stop paying for this PC: another PC if the class has paid before, otherwise delete the group. The PC goes
-        on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h)."""
+        on the bad list, so another group that gets it leaves it at once (for bad_pc_hold_h); with `ths`, the rate
+        it was left at, only a group that rate doesn't clear the margin for."""
         # A Kryptex box that has had Kryptex shares and then stops, stops while other boxes' work reaches Kryptex,
         # or mines on HeroMiners at this PC (pc_pool) has a PC problem: it is left as usual below.
         if (g.get("kx") and why.startswith(("no share", "no mining reading"))
@@ -1608,7 +1626,10 @@ class W:
                 and (g.get("pc_pool") or {}).get(g.get("machine")) is not False and self.kx_failed(g, why)):
             return
         if g.get("machine"):
-            self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": now(), "group": g["name"], "why": why}
+            entry = {"t": now(), "group": g["name"], "why": why}
+            if ths is not None:
+                entry["ths"] = ths
+            self.st.setdefault("bad_pcs", {})[g["machine"]] = entry
         if self.paid(g):
             self.reallocate(g, why)
         else:

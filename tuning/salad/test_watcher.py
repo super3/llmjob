@@ -381,6 +381,66 @@ class TestRule5Profit(Base):
         self.assertEqual(g["pri"], "medium")
         self.assertFalse(g["ended"])
 
+    def left_at(self, ths, pri="medium", kx=False, m="m1"):
+        """A 4080 group that mines at `ths` on `m` and leaves it for its margin; the bad-list entry it leaves."""
+        g = self.group(pri=pri)
+        g["kx"] = kx
+        self.step(g, 1, m)
+        self.mine(g, m, ths, 5)
+        self.assertIn("under 10%", self.x.st["bad_pcs"][m]["why"])
+        return self.x.st["bad_pcs"][m]
+
+    def test_a_pc_left_for_its_rate_is_kept_by_a_group_that_rate_clears_for(self):
+        # 22 October: a PC left at high was refused at medium where it cleared, 88 of 200 bad-list moves in 48 hours.
+        bad = self.left_at(170)                    # $0.199/hr at medium's $0.19: +4.5%, left
+        self.assertEqual(bad["ths"], 170)
+        g = self.group(pri="low")                  # $0.15/hr: 170 TH/s is +25%
+        n = len(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertIn("NOTE biz-rtx4080-2 keeps PC m1: biz-rtx4080 left it at 170 TH/s, which clears 10% at this "
+                      "group's $0.150/hr", self.events())
+        self.mine(g, "m1", 170, 10)               # and its own readings keep it there
+        self.assertEqual(len(self.http.made("POST", "/reallocate")), n)
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_pc_left_for_its_rate_is_still_left_by_a_group_it_doesn_t_clear_for(self):
+        self.left_at(170)
+        g = self.group(pri="medium")               # the same price: still +4.5%
+        n = len(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertEqual(len(self.http.made("POST", "/reallocate")), n + 1)
+        self.assertIn("(biz-rtx4080 left this PC at", self.events())
+        self.assertNotIn("NOTE biz-rtx4080-2 keeps", self.events())
+
+    def test_a_pc_left_on_herominers_is_kept_by_a_kryptex_group_it_clears_for(self):
+        # 193 TH/s on a $0.19/hr 4080: +6.5% at HeroMiners' 0.90, +13% at Kryptex's 0.97.
+        self.pools()
+        self.left_at(193, kx=False)
+        g = self.group(pri="medium")
+        g["kx"] = True
+        n = len(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertEqual(len(self.http.made("POST", "/reallocate")), n)
+        self.assertIn("NOTE biz-rtx4080-2 keeps PC m1", self.events())
+
+    def test_an_entry_from_before_the_rate_was_kept_is_read_from_its_reason(self):
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9", "why": (
+            "earns $0.199/hr at 170 TH/s on PC m1 against its $0.190/hr (+4%, under 10%)")}
+        self.assertEqual(w.W.bad_ths(self.x.st["bad_pcs"]["m1"]), 170.0)
+        self.assertIsNone(w.W.bad_ths({"t": 0, "group": "g", "why": "no mining reading 10 min after getting PC m1"}))
+        self.assertIsNone(w.W.bad_ths({"t": 0, "group": "g", "why": "PC blocks outbound port 1200", "ports": [1200]}))
+        g = self.group(pri="low")
+        self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertIn("NOTE biz-rtx4080 keeps PC m1: biz-rtx4080-9 left it at 170 TH/s", self.events())
+
+    def test_a_pc_left_for_another_reason_is_left_whatever_the_price(self):
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
+                                                     "why": "no mining reading 10 min after getting PC m1"}
+        g = self.group(pri="batch")
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
     def test_a_box_is_priced_at_the_pool_its_pc_mines_on(self):
         # A Kryptex group whose box was seen mining on HeroMiners at its PC (a command change that landed as Salad
         # handed it the PC: 3060-45 on 19 October) is judged at HeroMiners' ratio there.
