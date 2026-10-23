@@ -11,7 +11,8 @@
 //     it, so each pipeline slot has a transcript buffer: 64 bytes a region of the batch.
 //     The batch is narrower than the CUDA core's to keep those buffers small
 //     (PEARL_AMD_COL_BATCH).
-//   - A' and B' are row-major (pearl_materialize16), the layout every AMD fold reads.
+//   - A' and B' are in per-tile order for the matrix folds (pearl_materialize16_tiled, see
+//     PEARL_AMD_TILED in pearl_amd_fold.h) and row-major for the reference fold.
 //   - Each pipeline slot's batches run on a stream of their own, as on NVIDIA, and the
 //     redraws on a third; events keep the order (Ctx::foldStream). Proof reads use a side stream
 //     and are waited for once a hit (HitReads).
@@ -940,8 +941,9 @@ void derive_seeds(Ctx *ctx, bool withB) {
                      64u, reinterpret_cast<uint8_t *>(ctx->dASeed));
 }
 
-// One side's noise, and the noised operand, row-major: the dense factor, the sparse
-// selectors, then pearl_materialize16 (pearl_materialize when k is not a power of two).
+// One side's noise, and the noised operand: the dense factor, the sparse selectors, then
+// pearl_materialize16_tiled for the matrix folds, pearl_materialize16 (row-major) for the
+// reference fold, or pearl_materialize when k is not a power of two.
 void draw_noise(Ctx *ctx, bool isA) {
   const uint32_t rank = ctx->profile.rank;
   const uint32_t k = ctx->profile.k;

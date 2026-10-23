@@ -11,7 +11,7 @@ at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, eve
 right and every share accepted on Kryptex (`benchmark.md`, "AMD Radeon", notes). It was written
 with no AMD card: correctness was first shown by running the same kernel source on the CPU
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
-checking hits against the JS reference the way the pool does. Nothing has been tuned for speed.
+checking hits against the JS reference the way the pool does.
 
 Nothing here changes the NVIDIA build. The CUDA sources and `native-core.yml` are
 untouched; this folder reads `../src` and writes only to `./build`.
@@ -57,6 +57,15 @@ lanes that share a region differ in lane bits 0, 3 and 4, and three XOR shuffles
 it. Lane r of the eight keeps words r and r + 8, so a region's transcript stays in
 registers until the tile ends. The 16x16x16 WMMA on RDNA3 needs A and B duplicated in
 both half-waves; the fold loads them that way.
+
+The matrix folds stage 32 bytes of k at a time through LDS, and read A' and B' in per-tile
+order: each 128-row tile of A' and 256-row tile of B' is stored as k / 32 slabs of [rows][32
+bytes] (`pearl_materialize16_tiled`, the kernel the CUDA tall fold's draw uses), so a block's
+slab is one contiguous run of whole cache lines. Row-major, it was 32 bytes of every row's
+128-byte line, and the next three slabs fetched the same lines again. On an RX 9060 XT (gfx1200,
+4 MB of L2) that took the fold alone from 15.4 to 52.1 TMAC/s at the mainnet batch, and
+hashrate.js from 21.75 to 51.3 TH/s (PC `a777486d`, 23 October). `-DPEARL_AMD_TILED=0` builds
+the row-major layout. The reference fold reads row-major operands.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -110,15 +119,13 @@ no scratch memory on every target:
 
 | Target | Fold | VGPRs | AGPRs | LDS | Waves/SIMD |
 |---|---|---|---|---|---|
-| gfx908 | mfma8 | 170 | 128 | 36 KB | 1 |
-| gfx90a | mfma8 | 172 | 128 | 36 KB | 1 |
-| gfx942 | mfma16 | 172 | 128 | 36 KB | 1 |
-| gfx950 | mfma16 | 172 | 128 | 36 KB | 1 |
+| gfx908, gfx90a | mfma8 | 168 | 128 | 36 KB | 1 |
+| gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
-| gfx1100, gfx1101 | wmma11 | 228 | - | 36 KB | 6 |
-| gfx1102, gfx1150 | wmma11 | 228 | - | 36 KB | 4 |
-| gfx1151 | wmma11 | 228 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 198 | - | 36 KB | 6 |
+| gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
+| gfx1102, gfx1150 | wmma11 | 226 | - | 36 KB | 4 |
+| gfx1151 | wmma11 | 226 | - | 36 KB | 6 |
+| gfx1200, gfx1201 | wmma12 | 196 | - | 36 KB | 6 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. `./build-amd.sh
 gpu` builds all 14 targets into one addon (about 2 minutes) and the fold check binary.
@@ -221,8 +228,10 @@ beside the miner. Pausing only the LLM's card needs AMD bus ids for the mining c
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
-- Speed: nothing is tuned. Obvious first steps: DPP or `ds_swizzle` instead of
-  `__shfl_xor` in the readout; `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
+- Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
+  no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
+  barrier, batch widths 64 and 128, and 64-byte slabs (4% slower). Next: DPP or `ds_swizzle`
+  instead of `__shfl_xor` in the readout; `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and

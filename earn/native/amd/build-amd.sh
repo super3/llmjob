@@ -19,7 +19,7 @@
 #                   types the folds use).
 #   NODE_ADDON_API  node-addon-api's include folder (default: require('node-addon-api')).
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
-#   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_GROUP=4 to
+#   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_TILED=0 to
 #                   build a tuning variant (pearl_amd_fold.h lists the knobs).
 #
 # The portable kernels are pearl_kernel.cu's own: this script copies that file up to the

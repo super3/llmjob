@@ -8,7 +8,7 @@
 # width in SWEEP_CB (PEARL_AMD_COL_BATCH, no rebuild).
 #
 # Environment:
-#   SWEEP         "name=flags;name=flags", e.g. "base=;g4=-DPEARL_AMD_GROUP=4" (default: base only)
+#   SWEEP         "name=flags;name=flags", e.g. "tiled=;rowmajor=-DPEARL_AMD_TILED=0" (default: one build, "base=")
 #   SWEEP_FOLD    m:cols:reps for the fold-only timing, several space-separated (default 131072:4096:10); ""
 #                 skips it
 #   SWEEP_HASH    secs:warm for each hashrate.js run (default 40:10)
