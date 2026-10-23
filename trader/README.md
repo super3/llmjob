@@ -63,7 +63,7 @@ Service `trader` in the `llmjob` project:
 |---|---|
 | Source | `super3/llmjob`, Root Directory `/trader`, Watch Paths `/trader/**` |
 | Networking | SafeTrade calls go through the static proxy in `SAFETRADE_PROXY`; its IP is the only one in SafeTrade's IP whitelist |
-| Start and schedule | From `railway.toml` here: `python3 trader.py` at minute 5 of every hour, no restarts |
+| Start and schedule | `python3 trader.py` hourly, no restarts. `railway.toml` here says so (at minute 5), but Railway reads it only when the service's config path is set to `/trader/railway.toml`: its config file doesn't follow the Root Directory. Until then the service's own settings rule, and the runs in the logs start at minute 0 to 4, not 5. `main.py` starts the trader too, because Railpack, Railway's builder, runs `main.py` when it gets no start command and otherwise stops the build ("No start command detected", 23 October) |
 | Variables | `SAFETRADE_API_KEY`, `SAFETRADE_API_SECRET` (sealed), `SAFETRADE_PROXY` (sealed: `http://user:pass@host:port` from the static proxy provider), `DRY_RUN` (`1` until the dry run looks right, then `0`) |
 
 Optional variables: `MAX_SLIPPAGE` (0.03), `MIN_PRICE` (0), `MIN_VOLUME` (0.5), `MAX_RUN_SECONDS` (300), `MARKET`

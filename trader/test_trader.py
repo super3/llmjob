@@ -411,5 +411,20 @@ class TestProxy(Base):
         self.saw("open orders failed: HTTP 403 {\"raw\": \"\"} (calls go out from 203.0.113.7: is it on the key's IP whitelist?)")
 
 
+class TestMain(unittest.TestCase):
+    # Railpack runs main.py when it finds no start command (trader/main.py says why). It must run the trader and
+    # exit with its code.
+    def test_main_py_runs_the_trader(self):
+        import subprocess, sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SAFETRADE_")}
+        r = subprocess.run([sys.executable, os.path.join(here, "main.py")], cwd=here, env=env,
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("SAFETRADE_API_KEY and SAFETRADE_API_SECRET aren't set; nothing to do", r.stdout)
+        with open(os.path.join(here, "main.py")) as f:
+            self.assertIn("sys.exit(trader.main())", f.read())
+
+
 if __name__ == "__main__":
     unittest.main()
