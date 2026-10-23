@@ -121,15 +121,6 @@
 #ifndef PEARL_AMD_TILED
 #define PEARL_AMD_TILED 1
 #endif
-// Timing only, for finding where a matrix fold's time goes (lane-a-sweep.sh's "x" variants):
-// each bit leaves a part out, and the transcripts are wrong. 1: the next slab's global loads
-// and LDS stores; 2: the slab barrier; 4: the readout at chunk ends (one readout after the
-// loop keeps the sums live); 8: the LDS fragment loads (the first slab's are reused); 16: every
-// block reads tile 0's operands, which stay in L2 (the loads still run); 32: the LDS stores of
-// the next slab (its global loads still run, their data kept live and dropped).
-#ifndef PEARL_AMD_ABLATE
-#define PEARL_AMD_ABLATE 0
-#endif
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
@@ -437,8 +428,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const int wr = wave / P::kWC, wc = wave % P::kWC;
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
-  const int8_t *gA = Ap + ((PEARL_AMD_ABLATE & 16) ? (size_t)0 : (size_t)tileRow * k);
-  const int8_t *gB = Bp + ((PEARL_AMD_ABLATE & 16) ? (size_t)col0 * k : (size_t)(col0 + tileCol) * k);
+  const int8_t *gA = Ap + (size_t)tileRow * k;
+  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
 
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
@@ -462,12 +453,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
 #define PEARL_AMD_LOAD(slab) PEARL_AMD_LOADR(slab, pre)
 #define PEARL_AMD_STORE(buf) PEARL_AMD_STORER(buf, pre)
-#if (PEARL_AMD_ABLATE & 32) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-#define PEARL_AMD_STORE_NEXT(buf)                                                            \
-  _Pragma("unroll") for (int u = 0; u < U; u++) asm volatile("" ::"v"(pre[u]));
-#else
-#define PEARL_AMD_STORE_NEXT(buf) PEARL_AMD_STORE(buf)
-#endif
 
   typename P::Acc acc[P::kMT][P::kNT];
 #pragma unroll
@@ -490,14 +475,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
   __syncthreads();
-#if PEARL_AMD_ABLATE & 8
-  typename P::AFrag a0[P::kMT];
-  typename P::BFrag b0[P::kNT];
-#pragma unroll
-  for (int mt = 0; mt < P::kMT; mt++) a0[mt] = P::load_a(sA[0] + wr * WM * S + mt * P::kTM * S, S, lane);
-#pragma unroll
-  for (int nt = 0; nt < P::kNT; nt++) b0[nt] = P::load_b(sB[0] + wc * WN * S + nt * P::kTN * S, S, lane);
-#endif
   // The end of chunk c: its transcript word, for every region the wave holds.
   auto readout = [&](uint32_t c) {
     const bool mine = (c & 7u) == r, hi = c >= 8u;
@@ -524,7 +501,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
   };
-#if PEARL_AMD_PF2 && !PEARL_AMD_ABLATE
+#if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
@@ -569,15 +546,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
-    if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
+    if (s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
     const int8_t *aBase = sA[buf] + wr * WM * S;
     const int8_t *bBase = sB[buf] + wc * WN * S;
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
-#if PEARL_AMD_ABLATE & 8
-      (void)aBase; (void)bBase;
-      pearl_amd_mma_step<P>(acc, a0, b0);
-#else
       typename P::AFrag a[P::kMT];
       typename P::BFrag b[P::kNT];
 #pragma unroll
@@ -587,12 +560,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int nt = 0; nt < P::kNT; nt++)
         b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
       pearl_amd_mma_step<P>(acc, a, b);
-#endif
     }
-    if ((PEARL_AMD_ABLATE & 4) ? s + 1 == slabs : (s + 1) % perChunk == 0)
-      readout((PEARL_AMD_ABLATE & 4) ? 0u : (s + 1) / perChunk - 1);
-    if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_STORE_NEXT(buf ^ 1) }
-    if (!(PEARL_AMD_ABLATE & 2)) __syncthreads();
+    if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+    if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
+    __syncthreads();
   }
 
 #endif
@@ -616,7 +587,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #undef PEARL_AMD_LOADR
 #undef PEARL_AMD_STORER
 #undef PEARL_AMD_STORE
-#undef PEARL_AMD_STORE_NEXT
 }
 
 __device__ __forceinline__ int32_t pearl_amd_dot4(int32_t a, int32_t b, int32_t c) {
