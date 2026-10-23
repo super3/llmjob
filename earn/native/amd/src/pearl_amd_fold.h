@@ -119,6 +119,13 @@
 #ifndef PEARL_AMD_TILED
 #define PEARL_AMD_TILED 1
 #endif
+// Timing only, for finding where a matrix fold's time goes (lane-a-sweep.sh's "x" variants):
+// each bit leaves a part out, and the transcripts are wrong. 1: the next slab's global loads
+// and LDS stores; 2: the slab barrier; 4: the readout at chunk ends (one readout after the
+// loop keeps the sums live); 8: the LDS fragment loads (the first slab's are reused).
+#ifndef PEARL_AMD_ABLATE
+#define PEARL_AMD_ABLATE 0
+#endif
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
@@ -415,13 +422,25 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
   __syncthreads();
+#if PEARL_AMD_ABLATE & 8
+  typename P::AFrag a0[P::kMT];
+  typename P::BFrag b0[P::kNT];
+#pragma unroll
+  for (int mt = 0; mt < P::kMT; mt++) a0[mt] = P::load_a(sA[0] + wr * WM * S + mt * P::kTM * S, S, lane);
+#pragma unroll
+  for (int nt = 0; nt < P::kNT; nt++) b0[nt] = P::load_b(sB[0] + wc * WN * S + nt * P::kTN * S, S, lane);
+#endif
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
-    if (s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
+    if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
     const int8_t *aBase = sA[buf] + wr * WM * S;
     const int8_t *bBase = sB[buf] + wc * WN * S;
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
+#if PEARL_AMD_ABLATE & 8
+      (void)aBase; (void)bBase;
+      pearl_amd_mma_step<P>(acc, a0, b0);
+#else
       typename P::AFrag a[P::kMT];
       typename P::BFrag b[P::kNT];
 #pragma unroll
@@ -431,10 +450,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int nt = 0; nt < P::kNT; nt++)
         b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
       pearl_amd_mma_step<P>(acc, a, b);
+#endif
     }
-    if ((s + 1) % perChunk == 0) {
+    if ((PEARL_AMD_ABLATE & 4) ? s + 1 == slabs : (s + 1) % perChunk == 0) {
       // The end of chunk c: its transcript word, for every region the wave holds.
-      const uint32_t c = (s + 1) / perChunk - 1;
+      const uint32_t c = (PEARL_AMD_ABLATE & 4) ? 0u : (s + 1) / perChunk - 1;
       const bool mine = (c & 7u) == r, hi = c >= 8u;
 #pragma unroll
       for (int rb = 0; rb < RB; rb++)
@@ -459,8 +479,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           }
         }
     }
-    if (s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
-    __syncthreads();
+    if (!(PEARL_AMD_ABLATE & 1) && s + 1 < slabs) { PEARL_AMD_STORE(buf ^ 1) }
+    if (!(PEARL_AMD_ABLATE & 2)) __syncthreads();
   }
 
   // Each lane writes words r and r + 8 of its regions.
