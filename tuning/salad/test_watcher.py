@@ -4158,5 +4158,29 @@ class TestNodeIdentity(Base):
         self.assertNotIn("biz-rtx4080", self.x.st["node_keys"])
 
 
+class TestFilesAreUtf8(Base):
+    """Python on Windows (before 3.15) opens text in cp1252 unless told otherwise, which has no ⛏️: the watcher's
+    first report there would have crashed it."""
+    def test_every_file_the_watcher_writes_or_reads_is_opened_as_utf8(self):
+        import builtins
+        seen = []
+        def spy(file, mode="r", *a, **kw):
+            seen.append((os.path.basename(str(file)), mode, kw.get("encoding")))
+            return builtins.open(file, mode, *a, **kw)
+        w.open = spy
+        try:
+            w.event("PORT BLOCKED — ⛏️ ×3")
+            w.save(w.STATE, {"note": "⏳"})
+            w.load(w.STATE, None)
+            self.group()
+            self.x.write_report()
+        finally:
+            del w.open
+        self.assertTrue(seen)
+        self.assertEqual([s for s in seen if s[2] != "utf-8"], [])
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn("⏳", f.read())
+
+
 if __name__ == "__main__":
     unittest.main()
