@@ -247,8 +247,32 @@ class TestRule2NoPc(Base):
 
 
 class TestRule3LostPc(Base):
-    def test_deletes_20_min_after_losing_its_pc(self):
+    def test_moves_up_20_min_after_losing_its_pc_then_deletes_when_nothing_higher_clears(self):
+        g = self.group()  # batch; low clears 10% for a 4080, medium too, high doesn't
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)
+        self.step(g, 21, None)
+        self.assertEqual(self.http.made("PATCH", "/containers/biz-rtx4080")[0][2], {"container": {"priority": "low"}})
+        self.assertIsNone(g["ended"])
+        self.step(g, 19, None)  # 20 more minutes at low before the next step
+        self.assertEqual(len(self.http.made("PATCH", "")), 1)
+        self.step(g, 2, None)
+        self.assertEqual(g["pri"], "medium")
+        self.step(g, 21, None)
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("no PC since losing one 20 min ago, moved to low", self.events())
+
+    def test_a_refused_priority_change_waits_for_the_next_round(self):
         g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)
+        self.http.on("PATCH", "/containers/biz-rtx4080", (400, {}))
+        self.step(g, 21, None)
+        self.assertIsNone(g["ended"])
+        self.assertEqual(g["pri"], "batch")
+
+    def test_deletes_20_min_after_losing_its_pc(self):
+        g = self.group(pri="medium")  # high is +2% for a 4080
         self.step(g, 1, "m1")
         self.step(g, 5, None)
         self.step(g, 19, None)
