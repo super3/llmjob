@@ -762,12 +762,17 @@ class W:
         err(f"reallocate {g['name']} failed {s} {j}")
         return False
 
-    def set_priority(self, g, pri):
+    def next_pri(self, g):
+        """The cheapest priority above the group's that still clears the margin, or None."""
+        return next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
+                     if self.margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+
+    def set_priority(self, g, pri, why="no PC at {old} in 10 min"):
         s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"priority": pri}}, ctype="application/merge-patch+json")
         if 200 <= s < 300:
             old = g["pri"]
             g.update(pri=pri, price=self.st["classes"][g["class"]]["prices"][pri], pri_since=now())
-            event(f"PRIORITY {g['name']}: no PC at {old} in 10 min, moved to {pri} (${g['price']:.3f}/hr, "
+            event(f"PRIORITY {g['name']}: {why.format(old=old)}, moved to {pri} (${g['price']:.3f}/hr, "
                   f"{self.margin(g['class'], pri, kx=bool(g.get('kx'))) * 100:+.0f}% margin)")
             return True
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
@@ -1661,12 +1666,19 @@ class W:
                 if g["lost_since"] is None:
                     g["lost_since"] = t
                 if t - g["lost_since"] >= 20 * MIN:
-                    self.delete(g, "released", "lost its PC and got no other in 20 min")
+                    # As a group that never got a PC: a higher priority that still clears the margin first, with 20
+                    # more minutes there. Most of these never had a PC that mined: on 23 October 2070-38, 5060ti-147
+                    # and 148 and the AMD box rx9070xt-3 were each turned off bad-list PCs, then deleted at their
+                    # first priority 20 minutes later.
+                    nxt = self.next_pri(g)
+                    if nxt is None:
+                        self.delete(g, "released", "lost its PC and got no other in 20 min")
+                    elif self.set_priority(g, nxt, "no PC since losing one 20 min ago"):
+                        g["lost_since"] = t
             elif g["status"] == "pending":
                 g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
-                            if self.margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+                nxt = self.next_pri(g)
                 if nxt is None:
                     self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
                                                f"{self.cfg['min_margin']:.0%}")
