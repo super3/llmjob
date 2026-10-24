@@ -1,6 +1,6 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, json, os, re, tempfile, unittest
+import importlib.util, json, os, re, shutil, tempfile, unittest
 
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
@@ -38,6 +38,11 @@ class Fake:
 
     def made(self, method, frag):
         return [c for c in self.calls if c[0] == method and re.search(frag, c[1])]
+
+
+# The box command's sed and shell run on Salad's Linux boxes; a host without sh (Windows) skips the tests that run them.
+HAS_SH = bool(shutil.which("sh")) and os.path.exists("/bin/sh")
+needs_sh = unittest.skipUnless(HAS_SH, "needs sh, as the boxes have")
 
 
 def shown(row):
@@ -121,6 +126,8 @@ class TestCommand(Base):
     AMD_LINES = "  nvidia-smi --query-gpu=index,name,driver_version,power.limit,clocks.max.sm,compute_cap --format=csv,noheader | sed 's/^/[card] /'\n  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once\nif [ ! -f $D/tools ]; then\nN=$(nvidia-smi -L | wc -l)\nCC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')\n    release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/ ;;\n  [ $((tick % 5)) = 0 ] && nvidia-smi --query-gpu=index,clocks.sm,clocks.mem,power.draw,power.limit,temperature.gpu,utilization.gpu --format=csv,noheader,nounits |\n"
 
     def amd_box(self, cmd):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
         out = subprocess.run(["sh", "-c", sed], input=self.AMD_LINES, capture_output=True, text=True)
@@ -2126,6 +2133,7 @@ class TestMonero(Base):
         super().setUp()
         self.x.cfg.update(xmr_wallet=XMR, xmr_groups=["biz-rtx4080"])
 
+    @needs_sh
     def test_the_command_adds_the_worker_and_the_address(self):
         cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
@@ -2736,6 +2744,7 @@ class TestKryptex(Base):
     def commands(self):
         return [c[2]["container"]["command"][2] for c in self.http.made("PATCH", "/containers/")]
 
+    @needs_sh
     def test_the_command_points_the_miner_at_kryptex_with_pool(self):
         cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", kryptex="prl-us.kryptex.network:7048")
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
@@ -2761,6 +2770,8 @@ class TestKryptex(Base):
                   "  [ $ok = 1 ] || { echo \"[run] FAIL: outbound port 1200 blocked\"; sleep infinity; }\n")
 
     def port_check(self, cmd):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
         return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, text=True).stdout
@@ -3851,10 +3862,13 @@ class TestGemma(Base):
            "    echo \"[mining g$g] $(now) $line\"\n")
 
     def sed(self, cmd, text):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
         return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, text=True).stdout
 
+    @needs_sh
     def test_the_command_runs_auto_mode_serving_and_says_when_mining_pauses(self):
         out = self.sed(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.5", XMR, 0, "prl-us.kryptex.network:7048", True), self.BOX)
         self.assertIn("./cli -a $W --mode auto -w $WORKER-g$g --no-update $flags", out)
@@ -4137,7 +4151,7 @@ class TestNodeIdentity(Base):
         cmd = self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2]
         self.assertEqual(self.node(cmd)["nodeId"], self.x.st["node_keys"]["biz-rtx4080"]["nodeId"])
 
-    @unittest.skipUnless(os.path.exists("/bin/sh"), "the boxes run it in sh; this host has none (Windows)")
+    @needs_sh
     def test_the_step_writes_the_cli_s_node_json(self):
         import subprocess, stat
         k = self.x.node_key("biz-rtx4080")
