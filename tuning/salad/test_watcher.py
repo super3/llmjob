@@ -2124,6 +2124,60 @@ class TestSafeTrade(Base):
         self.assertNotIn("SafeTrade", self.report())
 
 
+class TestSaladBalance(Base):
+    def setUp(self):
+        super().setUp()
+        os.environ["SALAD_USER"], os.environ["SALAD_PASS"] = "u@x", "pw"
+        self.addCleanup(os.environ.pop, "SALAD_USER", None)
+        self.addCleanup(os.environ.pop, "SALAD_PASS", None)
+        self.reads, self.answer = [], (200, 22865)
+        real = w.portal_balance
+        w.portal_balance = lambda u, p: self.reads.append((u, p)) or self.answer
+        self.addCleanup(setattr, w, "portal_balance", real)
+        self.x.cfg.update(credit_start=100.0, credit_offset=401.01)
+
+    def head(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            return f.readline()
+
+    def test_salads_own_balance_shows_without_a_star(self):
+        self.x.salad_balance()
+        self.assertEqual(self.reads, [("u@x", "pw")])
+        self.assertIn("Salad $228.65 left", self.head())
+
+    def test_off_without_the_login(self):
+        del os.environ["SALAD_PASS"]
+        self.x.salad_balance()
+        self.assertEqual(self.reads, [])
+        self.assertIn("Salad $501.01* left", self.head())
+
+    def test_read_at_most_every_10_min(self):
+        self.x.salad_balance()
+        self.clock[0] += 300
+        self.x.salad_balance()
+        self.clock[0] += 300
+        self.x.salad_balance()
+        self.assertEqual(len(self.reads), 2)
+
+    def test_a_read_sets_our_count_so_a_stale_read_falls_back_close_to_it(self):
+        self.x.salad_balance()
+        g = self.group()
+        g["spend"] = 0.5
+        self.clock[0] += 3601
+        # No read for over an hour: our count, starred, from Salad's last figure less what was spent since.
+        self.assertIn("Salad $228.15* left", self.head())
+
+    def test_a_failed_read_warns_once_and_keeps_the_last(self):
+        self.x.salad_balance()
+        self.answer = (401, "Unauthorized")
+        for _ in range(3):
+            self.clock[0] += 600
+            self.x.salad_balance()
+        self.assertEqual(self.events().count("WARN can't read Salad's balance from the portal: HTTP 401"), 1)
+        self.assertIn("Salad $228.65 left", self.head())
+
+
 class TestRound(Base):
     def test_logs_and_pool_feed_the_ledger(self):
         self.x.cfg["search"] = False

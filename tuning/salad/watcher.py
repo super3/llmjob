@@ -139,6 +139,35 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
+PORTAL = "https://portal-api.salad.com/api/portal"
+
+
+def portal_balance(user, password):
+    """Salad's credit balance in cents, as the portal shows it: log in (a session cookie), then read it. Returns
+    (HTTP status, cents) or (status, error). Salad's public API has no balance; salad_ledger.py reads the rest."""
+    import http.cookiejar
+    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def call(method, path, body=None):
+        req = urllib.request.Request(PORTAL + path, method=method, data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json", "Accept": "application/json",
+                                              "User-Agent": "llmjob-salad-watcher/1.0"})
+        try:
+            with op.open(req, timeout=30) as r:
+                txt = r.read().decode()
+                return r.status, json.loads(txt) if txt.strip() else None
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(errors="replace")[:200]
+        except Exception as e:
+            return 0, str(e)[:200]
+
+    s, j = call("POST", "/users/login", {"email": user, "password": password})
+    if s != 204:
+        return s, j
+    s, j = call("GET", f"/organizations/{ORG}/billing-profile/credits-balance")
+    return (s, j["amount"]) if s == 200 and isinstance(j, dict) and "amount" in j else (s or 0, j)
+
+
 COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
 
 
@@ -761,6 +790,32 @@ class W:
                 st["trader_status"] = dict(found[0], seen=found[1])
                 st["trader_warned"] = False
                 return
+
+    def credit_count(self):
+        """Our own count of the Salad credit left: what was bought, less each group's price for every minute it had a
+        PC, moved to Salad's figure at its last read (credit_fix). The report shows it, starred, only when Salad's
+        balance hasn't been read for an hour."""
+        spend = sum(g["spend"] for g in self.st["groups"].values())
+        return self.cfg["credit_start"] + self.cfg["credit_offset"] - spend + self.st.get("credit_fix", 0.0)
+
+    def salad_balance(self):
+        """Salad's own credit balance, read from the portal at most every 10 min when $SALAD_USER and $SALAD_PASS are
+        set. Each read also sets our count to it, so the count only drifts while reads fail. A failed read warns
+        once and keeps the last."""
+        user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
+        if not user or not pw or t - st.get("bal_read_t", 0) < 600:
+            return
+        st["bal_read_t"] = t
+        s, cents = portal_balance(user, pw)
+        if s != 200 or not isinstance(cents, (int, float)):
+            if not st.get("bal_warned"):
+                st["bal_warned"] = True
+                event(f"WARN can't read Salad's balance from the portal: HTTP {s} {str(cents)[:150]}")
+            return
+        usd = cents / 100
+        st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
+        st["salad_bal"] = {"t": t, "usd": usd}
+        st["bal_warned"] = False
 
     def safetrade(self):
         """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
@@ -1698,6 +1753,7 @@ class W:
               else {})
         self.trader()
         self.safetrade()
+        self.salad_balance()
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -2308,7 +2364,9 @@ class W:
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | "
                      + " | ".join([prl_cell(groups, bold)] + xmr_cell(groups, bold)) + " |")
-        credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
+        # Salad's own balance when it was read in the last hour (no star), else our count (starred).
+        sb = st.get("salad_bal")
+        credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
@@ -2357,8 +2415,8 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
-                + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
+        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark} left"
+                + (f" ({hours:.0f}{cmark} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
