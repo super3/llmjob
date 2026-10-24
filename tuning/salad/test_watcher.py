@@ -94,7 +94,7 @@ class Base(unittest.TestCase):
 
     def events(self):
         try:
-            with open(os.path.join(TMP, "events.log")) as f:
+            with open(os.path.join(TMP, "events.log"), encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
             return ""
@@ -130,7 +130,7 @@ class TestCommand(Base):
             self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
-        out = subprocess.run(["sh", "-c", sed], input=self.AMD_LINES, capture_output=True, text=True)
+        out = subprocess.run(["sh", "-c", sed], input=self.AMD_LINES, capture_output=True, encoding="utf-8")
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout
 
@@ -769,7 +769,7 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 200, 5)
         g.update(kxx_khs=100.0, kxx_seen=self.clock[0])
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn("| 0.19 | +0.23* (+55%*) |", f.read())
 
     def test_the_median_of_an_even_count_is_the_mean_of_the_middle_two(self):
@@ -1583,7 +1583,7 @@ class TestPoolTotals(Base):
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
                                  "hashes": 0, "ths_1h": 0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # Work worth 8 PRL at the network's rate; in under 10 blocks the pool's credit ratio isn't used yet.
         self.assertIn("| **8.000\\*** |\n", report)  # the All row
@@ -1601,7 +1601,7 @@ class TestCreditRatio(Base):
                                  "hashes": 0, "ths_1h": 0}
         self.x.cfg.update(cfg or {})
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
@@ -1683,7 +1683,7 @@ class TestCreditRatio(Base):
         self.x.cfg["yield"] = 1.0
         self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             # the table still counts on the ratio: 6 PRL, not 8
             self.assertIn("| **6.000\\*** |\n", f.read())
 
@@ -1758,7 +1758,7 @@ class TestStartingBoxes(Base):
         self.mine(a, "m1", 200, 5)
         self.step(b, 0, "m2")
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
@@ -1774,7 +1774,7 @@ class TestStartingBoxes(Base):
             g = self.group()
             g["ended"], g["end_kind"], g["prl"], g["spend"] = self.clock[0], kind, 1.0, 1.0
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # They ended before the pools' counts were kept: 1 PRL each by the ledger's estimate, before 10 blocks.
         self.assertIn(f"| Ended{w.NB}×3 | — | — | — | 3.000* |", report)
@@ -1784,7 +1784,7 @@ class TestStartingBoxes(Base):
         self.step(a, 1, "m1")
         self.mine(a, "m1", 200, 5)
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
@@ -1795,7 +1795,7 @@ class TestStartingBoxes(Base):
         self.step(a, 1, "m1")
         self.clock[0] += 16 * 60
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn("| 0 | 0.19 | -0.19* |", f.read())
 
 
@@ -2007,7 +2007,7 @@ class TestTraderStatus(Base):
         for status, manual in ((dict(self.STATUS), None), (None, {"sold": 5.2564, "received": 7.1, "fees": 0.0142})):
             self.x.st["trader_status"], self.x.cfg["safetrade"] = status, manual
             self.x.write_report()
-            with open(os.path.join(TMP, "report.md")) as f:
+            with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
                 report = f.read()
             # The table counts coins earned (10 PRL of work, before 10 blocks), not dollars: no Profit $ since 20 October.
             self.assertIn("| **10.000\\*** |\n", report)
@@ -2045,7 +2045,7 @@ class TestRound(Base):
         ev = self.events()
         self.assertIn("CARD biz-rtx4080", ev)
         self.assertIn("FIRST SHARE biz-rtx4080", ev)
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
         self.assertIn(" · 1/1 mining · Salad $", report)
@@ -2059,7 +2059,7 @@ class TestRound(Base):
             g["has_pc"], g["machine"] = True, m
             g["readings"] = [[self.clock[0] - 60, m, float(ths), 0]]
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             boxes = [l.split(" | ")[0] for l in f.read().splitlines() if l.startswith("| ⛏") or l.startswith("| ⏳")]
         self.assertEqual([b.split("\u00a0")[1] for b in boxes], ["4080", "2060", "4070"])
 
@@ -2067,7 +2067,7 @@ class TestRound(Base):
         g = self.group(pri="medium")
         g["has_pc"], g["machine"] = True, "abcdef1234"
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med |", f.read())
 
     def test_a_busy_round_reads_more_pages(self):
@@ -2142,7 +2142,7 @@ class TestMonero(Base):
                "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
                "  rm -rf $R && mkdir -p $R && cp $D/rel/cli $R/\n")
         import subprocess
-        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, encoding="utf-8").stdout
         self.assertIn("pearl_core_cu13.node llmjob-xmr-worker; do", out)
         self.assertIn(f"BASE='{{\"core\":\"release\",\"env\":{{}},\"flags\":\"--xmr-address {XMR}\"}}'", out)
         self.assertIn("cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ && chmod +x $R/llmjob-xmr-worker", out)
@@ -2308,7 +2308,7 @@ class TestMonero(Base):
         d["readings"] = [[t - 900, "m1", 40.0, 0]]       # no reading for 15 minutes, not paused: a quiet miner
         ok["readings"] = [[t - 60, "m1", 200.0, 0]]
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}batch | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
@@ -2328,7 +2328,7 @@ class TestMonero(Base):
         g.update(has_pc=True, machine="m1", readings=[[self.clock[0] - 60, "m1", 200.0, 0]],
                  xmr_khs=2.0, xmr_seen=self.clock[0], xmr_coins=0.0001)
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
@@ -2398,7 +2398,7 @@ class TestMonero(Base):
         self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0, "pending": 0.0001, "khs_1h": 1.5}
         self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn("| 🪙 [XMR Kryptex](https://pool.kryptex.com/xmr/miner/stats/4xyz) | 0.0 kH/s "
                       "| 0.000002 | 0.000000 | 0.000000 |", report)
@@ -2595,7 +2595,7 @@ class TestMonero(Base):
 
     def xmr_row(self, name):
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return next(l for l in f.read().splitlines() if name in l)
 
     def test_each_boxs_work_on_kryptex_is_counted_from_its_worker_chart(self):
@@ -2687,7 +2687,7 @@ class TestMonero(Base):
 
         def row():
             self.x.write_report()
-            with open(os.path.join(TMP, "report.md")) as f:
+            with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
                 return next(l for l in f.read().splitlines() if "4080" in l)
         self.assertIn("| 200 | 2.0 |", row())
         g.update(xmr_khs=1.0, xmr_seen=t - 60)   # HeroMiners still sees it just after a switch
@@ -2700,7 +2700,7 @@ class TestMonero(Base):
         self.group()
         self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertNotIn("kH/s", report)
         self.assertNotIn("Monero", report)
@@ -2730,7 +2730,7 @@ class TestKryptex(Base):
 
     def report(self):
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return f.read()
 
     def mining(self, machine, since_min, ths=199.0, pri="medium"):
@@ -2750,12 +2750,12 @@ class TestKryptex(Base):
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
         import subprocess
         base = "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
-        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, encoding="utf-8").stdout
         self.assertEqual(out, "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"--pool prl-us.kryptex.network:7048\"}'\n")
         # With Monero too, both flags go in, and the CPU worker is downloaded as before.
         both = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")
         sed = re.search(r"(sed .*?) > /root/box\.sh", both).group(1)
-        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, encoding="utf-8").stdout
         self.assertIn(f"\"flags\":\"--pool prl-us.kryptex.network:7048 --xmr-address {XMR}\"", out)
         self.assertIn("llmjob-xmr-worker", both)
         # No /etc/hosts redirect or local forward any more (the file is read-only on Salad), and no "; curl".
@@ -2774,7 +2774,7 @@ class TestKryptex(Base):
             self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
-        return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, text=True).stdout
+        return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, encoding="utf-8").stdout
 
     def test_a_kryptex_box_checks_kryptexs_port_and_others_check_1200_as_before(self):
         out = self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048"))
@@ -3866,7 +3866,7 @@ class TestGemma(Base):
             self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
-        return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, text=True).stdout
+        return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, encoding="utf-8").stdout
 
     @needs_sh
     def test_the_command_runs_auto_mode_serving_and_says_when_mining_pauses(self):
@@ -3879,10 +3879,10 @@ class TestGemma(Base):
         with tempfile.TemporaryDirectory() as d:
             log = os.path.join(d, "g0.log")
             def line(text):
-                with open(log, "a") as f:
+                with open(log, "a", encoding="utf-8") as f:
                     f.write(text)
                 return subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
-                                      capture_output=True, text=True).stdout.strip()
+                                      capture_output=True, encoding="utf-8").stdout.strip()
             mine = "121.0 TH/s · 22 accepted · 0 rejected · up 0h 31m"
             self.assertEqual(line("⛏  " + mine + "\n"), "[mining g0] 02:30:00 " + mine)
             self.assertEqual(line("mining paused on GPU 0 while the local LLM answers a prompt\n"),
@@ -4041,7 +4041,7 @@ class TestGemma(Base):
         self.assertEqual((g["pause_since"], g["paused_t"]), (T0 + 360, T0 + 420))
         self.assertEqual(self.events().count("PAUSED biz-rtx4080: mining stopped on PC m1 while Gemma answers a prompt"), 1)
         self.assertTrue(self.x.paused(g, self.clock[0]))
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch |", f.read())
         items.append({"text_log": "[mining g0] 08:09:00 199.0 TH/s · 10 accepted · 0 rejected · up 0h 34m",
                       "time": "2027-01-15T08:09:00Z", "resource": lab})
@@ -4158,7 +4158,7 @@ class TestNodeIdentity(Base):
         home = tempfile.mkdtemp()
         subprocess.run(["/bin/sh", "-c", w.node_step(k)], env={"HOME": home, "PATH": os.environ["PATH"]}, check=True)
         path = os.path.join(home, ".local", "share", "llmjob-earn", "node.json")
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), {"nodeId": k["nodeId"], "publicKey": k["publicKey"], "secretKey": k["secretKey"],
                                             "name": None, "connected": False, "createdAt": k["createdAt"]})
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
