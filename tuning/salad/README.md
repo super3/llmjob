@@ -19,6 +19,7 @@ export PRL_WALLET=prl1...            # payout address
 export SALAD_API_KEY=...             # not needed in a Claude cloud session: its proxy adds the key
 export SALAD_MINE_DIR=/some/dir      # default: tuning/salad/run/ (gitignored)
 export SAFETRADE_API_KEY=... SAFETRADE_API_SECRET=...   # optional: the report's SafeTrade rows
+export SALAD_USER=... SALAD_PASS=...   # optional: the portal login, for Salad's own credit balance
 cp tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
 setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
@@ -716,10 +717,13 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
 
 - **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
   straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: the
-  Salad credit left (Salad's API has no balance or billing, so the watcher adds each
+  Salad credit left only when Salad's own balance hasn't been read for an hour (the watcher then adds each
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
-  (its own share count at its set pay a share), the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+  (its own share count at its set pay a share), the pool's totals and prices. Since 24 October, with `SALAD_USER` and `SALAD_PASS` set, the watcher reads Salad's
+  balance from the portal every 10 minutes (Salad's public API has none) and shows it unstarred; each read also
+  moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure.
+  `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
   each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
   each UTC day, or with `--csv FILE` a ledger of purchases and each day's charge per class with a running balance.
