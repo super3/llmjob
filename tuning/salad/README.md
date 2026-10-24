@@ -18,7 +18,7 @@ directory:
 export PRL_WALLET=prl1...            # payout address
 export SALAD_API_KEY=...             # not needed in a Claude cloud session: its proxy adds the key
 export SALAD_MINE_DIR=/some/dir      # default: tuning/salad/run/ (gitignored)
-export SAFETRADE_API_KEY=... SAFETRADE_API_SECRET=...   # optional: the report's SafeTrade table
+export SAFETRADE_API_KEY=... SAFETRADE_API_SECRET=...   # optional: the report's SafeTrade rows
 cp tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
 setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
@@ -636,10 +636,13 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   pages. The **XMR Kryptex** row (since 20 October) is Kryptex's Monero pool for our Monero address, read every
   5 minutes: its workers' 30-minute hashrate, the coins confirmed (paid out from 0.1 XMR), pending and paid. It
   shows whenever Monero is on, even with no box mining there yet.
-- **The SafeTrade table** (since 24 October) is our SafeTrade account, where the pools pay and the trader sells:
-  each coin's balance, what sits in open orders, what we sold in the last 24 hours and what that brought in USDT
-  after fees, and the last sale's price and time (its date when it wasn't today). PRL, XMR and USDT always show;
-  any other coin we hold shows too. See [SafeTrade](#safetrade-row).
+- **The 💵 SafeTrade rows** (since 24 October) follow each coin's pools in the pool table, since the pools pay
+  there and the trader sells there. Same columns, read for an exchange: Confirmed is the coin SafeTrade holds
+  (unsold), Pending what sits in open orders, and Paid everything we have sold there with the USDT it brought
+  after fees ("185.060 for $331.21"), which sets the pools' Paid against what it really sold for. SafeTrade
+  can't tell which pool a coin came from, so it's a row per coin, not a column. Each new sale is also a `SOLD`
+  event with its USDT. For about 10 minutes on 24 October it was a table of its own, with the last day's sales
+  and the last sale. See [SafeTrade](#safetrade-row).
 - **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counted it),
   what each credited PRL cost to mine and the credit left. The credit left is now in the first line; the other
   two were dropped on 20 October as not helpful (for a few minutes the three were rows under the All row, and
@@ -649,7 +652,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
-  ⬜ empty slot · `*` our own count or estimate,
+  ⬜ empty slot · 💵 SafeTrade (in the pool table) · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, SafeTrade, or the trader's log)
   · (K) mines Pearl on Kryptex, the rest on HeroMiners (shown only while some box is on HeroMiners).
 
@@ -671,12 +674,14 @@ It needs a Railway project token for the production environment, set as `RAILWAY
 cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
 and there's one `WARN` event.
 
-**The SafeTrade table** (since 24 October) reads the account itself, not the trader's log: with
+**The SafeTrade rows** (since 24 October) read the account itself, not the trader's log: with
 `SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, every 5 minutes the watcher asks SafeTrade for the balances
-(`/account/balances/spot`) and our newest 100 fills (`/market/trades`). Both are GET calls, signed with
+(`/account/balances/spot`) and every fill we have (`/market/trades`, 100 a page). These are GET calls, signed with
 HMAC-SHA256 of a millisecond nonce and the key; the watcher never places, cancels or withdraws. A sale is a fill
-of our own sell order (`order_side`; a fill's `side` is the taker's). If a read fails there's one `WARN` event,
-the table keeps the last read, and its heading says when that was once it's 15 minutes old. SafeTrade's Cloudflare
+of our own sell order (`order_side`; a fill's `side` is the taker's), counted at its USDT less SafeTrade's fee.
+Fills newer than the last read make one `SOLD` event an order; the first read only notes the newest, so the
+history isn't announced. If a read fails there's one `WARN` event, the rows keep the last read, and their names
+say when that was once it's 15 minutes old. SafeTrade's Cloudflare
 lets the watcher's own user agent through from rig01; a 403 with an empty body means SafeTrade knows the key and
 refuses it (its settings or IP whitelist, `OPEN.md` #57).
 

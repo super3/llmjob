@@ -139,6 +139,14 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
+COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
+
+
+def coin_name(coin):
+    """A SafeTrade currency as the report names it: PRL for "pearl", else its code in capitals."""
+    return "PRL" if coin == "pearl" else coin.upper()
+
+
 def short_clock(t, ref):
     """A time for a table cell: 2:00 am on ref's New York day, else just its date (Oct 22). The heading has the zone."""
     d, r = dt.datetime.fromtimestamp(t, NY), dt.datetime.fromtimestamp(ref, NY)
@@ -755,10 +763,10 @@ class W:
                 return
 
     def safetrade(self):
-        """Our SafeTrade account, for the report's SafeTrade table: each coin's balance and what sits in open orders,
-        and our sales (fills of our own sell orders) in the last 24 h and the newest, from the newest 100 fills. Read
-        at most every 5 min, with GET calls only, when $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET are set. A failed
-        read keeps the last one, and the table says when that was."""
+        """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
+        held and in open orders, and all we have sold (fills of our own sell orders) with the USDT it brought after
+        fees. Each new sale is a SOLD event. Read at most every 5 min, with GET calls only, when $SAFETRADE_API_KEY
+        and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says when that was."""
         key, sec = os.environ.get("SAFETRADE_API_KEY"), os.environ.get("SAFETRADE_API_SECRET")
         st, t = self.st, now()
         if not key or not sec or t - st.get("st_read_t", 0) < 300:
@@ -779,33 +787,53 @@ class W:
             return j
 
         bal = get("/account/balances/spot")
-        fills = get("/market/trades?limit=100") if bal is not None else None
-        if fills is None:
+        if bal is None:
             return
+        fills = []
+        for page in range(1, 21):   # every fill we have, newest first, 100 a page
+            got = get(f"/market/trades?limit=100&page={page}")
+            if got is None:
+                return
+            fills += got
+            if len(got) < 100:
+                break
         coins = {}
         for b in bal:
             try:
                 coins[str(b["currency"]).lower()] = [float(b.get("balance") or 0), float(b.get("locked") or 0)]
             except (KeyError, TypeError, ValueError):
                 pass
-        sales = {}
+        # The first read only notes the newest fill, so the account's history isn't announced as new sales.
+        sold, new, last = {}, {}, st.get("st_fill_id")
         for f in fills:
             # A fill's "side" is the taker's; "order_side" is our own order's.
             m = str(f.get("market") or "")
             if f.get("order_side") != "sell" or not m.endswith("usdt"):
                 continue
             try:
-                ft, amt, price, got = parse_iso(f["created_at"]), float(f["amount"]), float(f["price"]), float(f["total"])
+                fid, amt, got = int(f["id"]), float(f["amount"]), float(f["total"])
                 fee = float(f.get("fee") or 0) if f.get("fee_currency") == "usdt" else 0.0
-            except (KeyError, TypeError, ValueError, AttributeError):
+            except (KeyError, TypeError, ValueError):
                 continue
-            s = sales.setdefault(m[:-4], {"last_t": 0.0, "last_price": 0.0, "day_amount": 0.0, "day_usdt": 0.0})
-            if ft > s["last_t"]:
-                s["last_t"], s["last_price"] = ft, price
-            if ft > t - 86400:
-                s["day_amount"] += amt
-                s["day_usdt"] += got - fee
-        st["st_acct"] = {"t": t, "coins": coins, "sales": sales}
+            coin = "pearl" if m[:-4] in ("pearl", "prl") else m[:-4]   # SafeTrade's PRL is "pearl" since 20 Oct
+            s = sold.setdefault(coin, [0.0, 0.0])
+            s[0] += amt
+            s[1] += got - fee
+            if last is not None and fid > last:
+                o = new.setdefault(f.get("order_id"), [coin, 0.0, 0.0])
+                o[1] += amt
+                o[2] += got - fee
+        for coin, amt, usd in reversed(list(new.values())):
+            event(f"SOLD {amt:.{COIN_DP.get(coin, 4)}f} {coin_name(coin)} on SafeTrade for ${usd:.2f} USDT after fees "
+                  f"(${usd / amt:.2f} each)")
+        ids = []
+        for f in fills:
+            try:
+                ids.append(int(f["id"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        st["st_fill_id"] = max(ids + [last or 0])
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold}
         st["st_warned"] = False
 
     # ---------- actions ----------
@@ -2290,6 +2318,18 @@ class W:
         pool = []
         # Each pool's name links to that pool's page for our address.
         wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
+        sa = st.get("st_acct")
+
+        def safetrade_row(coin):
+            """Where a coin's payouts go: SafeTrade, with what it holds (Confirmed), what's in open orders (Pending)
+            and all we've sold there with the USDT it brought after fees (Paid). No row without a SafeTrade key."""
+            if not sa or "sold" not in sa:   # a read from before 24 Oct 10:40 am EDT had last-day sales only
+                return []
+            dp, (b, l), (n, usd) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0]), sa["sold"].get(coin, [0.0, 0.0])
+            read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
+            return [f"| 💵 [{coin_name(coin)}{NB}SafeTrade](https://safetrade.com){read} | — | {b:.{dp}f} | {l:.{dp}f} "
+                    f"| {n:.{dp}f}{NB}for{NB}${usd:.2f} |"]
+
         if pt:
             name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
             pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
@@ -2299,6 +2339,7 @@ class W:
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
             pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
                         f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
+        pool += safetrade_row("pearl")
         if xt:
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
@@ -2306,26 +2347,10 @@ class W:
         if kxx:
             pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
+        if xon:
+            pool += safetrade_row("xmr")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
-
-        # Our SafeTrade account, where the pools pay and the trader sells: each coin's balance, what's in open
-        # orders, what we sold in the last 24 h (for USDT after fees) and the last sale. PRL, XMR and USDT always,
-        # any other coin we hold too.
-        sa, sell = st.get("st_acct"), []
-        if sa:
-            name = "[SafeTrade](https://safetrade.com)" + (f"{NB}(read{NB}{short_clock(sa['t'], t)})"
-                                                           if t - sa["t"] >= 15 * MIN else "")
-            sell = ["", f"| {name} | Available | In orders | Sold (24h) | Last sale |", "|---|---|---|---|---|"]
-            for c in ["pearl", "xmr", "usdt"] + sorted(c for c, (b, l) in sa["coins"].items()
-                                                       if (b or l) and c not in ("pearl", "xmr", "usdt")):
-                b, l = sa["coins"].get(c, [0.0, 0.0])
-                dp = {"pearl": 3, "prl": 3, "xmr": 6, "usdt": 2, "usdc": 2}.get(c, 4)
-                s = sa["sales"].get(c)
-                sold = (f"{s['day_amount']:.{dp}f}{NB}for{NB}${s['day_usdt']:.2f}" if s and s["day_amount"] else
-                        "0" if s or c in ("pearl", "xmr") else "—")
-                last = f"${s['last_price']:.2f},{NB}{short_clock(s['last_t'], t)}" if s else "—"
-                sell.append(f"| {'PRL' if c == 'pearl' else c.upper()} | {b:.{dp}f} | {l:.{dp}f} | {sold} | {last} |")
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
         # credit left (with the hours it lasts at the All row's $/hr) ends the line. Until 20 October it was under
@@ -2335,7 +2360,7 @@ class W:
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
                 + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
-        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, *sell]
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
