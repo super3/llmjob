@@ -885,11 +885,14 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
-    def test_class_that_never_paid_is_deleted(self):
+    def test_class_that_never_paid_is_deleted_released_and_the_pc_barred(self):
+        # Left for its rate, the PC was at fault: it's barred, and the class may be tried again on another PC.
         g = self.group(cls="RTX 4070 (12 GB)", pri="low")  # $0.09/hr; 50 TH/s earns $0.059
         self.step(g, 1, "m1")
         self.mine(g, "m1", 50, 5)
-        self.assertEqual(g["end_kind"], "failed")
+        self.assertEqual(g["end_kind"], "released")
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["group"], g["name"])
+        self.assertEqual(self.x.st["pc_rates"]["RTX 4070 (12 GB)"]["m1"][0], 50.0)
 
 
 class TestPaidClasses(Base):
@@ -2066,6 +2069,23 @@ class TestRound(Base):
         self.x.round()
         self.assertAlmostEqual(g["spend"], 0.11 * 600 / 3600)
 
+
+    def test_billing_skips_a_pc_still_downloading_but_the_rules_see_it(self):
+        # Salad bills only a running instance; a downloading one has a PC for the rules (bad list, NEW PC) already.
+        self.x.cfg["search"] = False
+        g = self.group()
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "downloading"}]}))
+        self.x.round()
+        self.clock[0] += 120
+        self.x.round()
+        self.assertTrue(g["has_pc"])
+        self.assertEqual(g["machine"], "m1")
+        self.assertEqual(g["spend"], 0)
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        self.clock[0] += 60
+        self.x.round()
+        self.assertAlmostEqual(g["spend"], 0.11 * 60 / 3600)
 
 XMR = "8" + "a" * 94
 
