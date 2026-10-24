@@ -54,7 +54,7 @@ Config keys:
 | `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
-| `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
+| `safetrade` | Unused since 20 October: a hand-typed snapshot of the trader's 13 October 17:00Z log (46.79 PRL sold, 1.74 held). It is not a ledger. On 24 October it was read as one and made 130.8 PRL look missing; the trader's own STATUS line (178.486 PRL sold by 23 October 02:00Z) accounts for every PRL the pools had paid by then. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 | `kryptex_xmr_pay` | What Kryptex credits for Monero work, as a share of the network's pay for it (0.94, measured 21 October). The report's XMR column values each box's Kryptex work at it (see [Monero](#monero-on-the-cpu)). |
@@ -176,9 +176,11 @@ it mined badly on its first PC before the class had paid (no shares, under cost,
 port never fails a group. Its deletion event carries the box's last log
 lines, so it says why.
 
-**Spend** counts the group's price for every minute it has a PC (instance downloading, creating or
-running). A group waiting for a PC isn't billed. The first account counted only `running` minutes.
-Neither way has been checked against the portal. **PRL mined** adds each `[mining g0]` reading (one a
+**Spend** counts the group's price for every minute its instance is `running`, which is all Salad
+bills. A group waiting for a PC, or one whose instance is still downloading or starting, isn't billed.
+Until 24 October it also counted downloading and creating: against Salad's own running time (its
+system logs, 91 groups on 23 October) that read 2.4% high, about 29 s a PC. Not yet checked against
+the portal's balance. **PRL mined** adds each `[mining g0]` reading (one a
 minute) as TH/s × 1 min × PRL per TH-hr at that moment.
 
 ## Monero on the CPU

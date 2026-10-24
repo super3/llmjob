@@ -1410,6 +1410,9 @@ class W:
                 event(f"WARN {g['name']}: Salad runs {len(multi)} instances of it, on PCs {', '.join(multi)}; only "
                       f"{on[0]['machine_id'][:8]} is judged")
             g["has_pc"] = bool(on)
+            # Salad bills an instance only while it is running ("billed per second only for container instances in
+            # the 'running' state"), not while it downloads or starts: has_pc counts those too, for the rules.
+            g["_run"] = any(i.get("state") == "running" and i.get("machine_id") for i in insts)
             if on:
                 g["instance"] = on[0].get("instance_id") or on[0].get("id")
                 g["_machine"] = on[0]["machine_id"]
@@ -1420,9 +1423,11 @@ class W:
 
         self.sweep(t)
 
-        # Billing: price for every minute a group has a PC.
+        # Billing: price for every minute a group's instance is running. Counting downloading and creating as well
+        # read 2.4% over Salad's own running time (system logs, 91 groups on 23 Oct): about 29 s a PC, $0.22-0.27 a
+        # day, so "Salad $X left" read low (OPEN.md #66).
         for g in active:
-            if g.get("has_pc") and not g["ended"]:
+            if g.get("_run") and not g["ended"]:
                 g["spend"] += g["price"] * dt_s / 3600
                 g["pc_min"] += dt_s / 60
 
@@ -1880,7 +1885,11 @@ class W:
         if self.paid(g):
             self.reallocate(g, why)
         else:
-            self.delete(g, "failed", why)
+            # Left for its rate, the PC was at fault and the lists above bar it (24 h bad list, 7 days in pc_rates),
+            # and rate() drops a class once 3 of its PCs are slow: so the class isn't held 24 h as failed. On 23
+            # October a 9070 XT left at 46 TH/s on PC f6f1e2e2 (others ran 88-111) held the class out for a day
+            # (OPEN.md #67). A group that never mined or shared still fails, and holds its class.
+            self.delete(g, "released" if ths is not None else "failed", why)
 
     def search(self):
         st = self.st
