@@ -720,6 +720,16 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
   (its own share count at its set pay a share), the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+- **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
+  each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
+  each UTC day, or with `--csv FILE` a ledger of purchases and each day's charge per class with a running balance.
+  It logs in to the portal with `SALAD_USER` and `SALAD_PASS` and reads what the portal's billing pages read: the
+  portal API (`portal-api.salad.com/api/portal`) for the balance, and Metronome, Salad's billing service
+  (`graphql.metronome.com`, with the token of a portal dashboard session), for purchases, invoices and daily
+  usage. Read-only; it prints no password or token. A usage metric isn't always named as it's billed ("RTX 5060
+  (16 GB) - Low" is billed as "RTX 5060 Ti (16 GB) - Low", "(Corrected)" twins carry the hours), so each takes
+  the invoice line of its name, its name less "(corrected)", or its hours; the days then add up to the invoice to
+  the cent. On 24 October at 11 am EDT: $500 bought, $271.27 spent, $228.73 left, against the report's $232.09.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
