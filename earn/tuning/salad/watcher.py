@@ -798,14 +798,26 @@ class W:
         spend = sum(g["spend"] for g in self.st["groups"].values())
         return self.cfg["credit_start"] + self.cfg["credit_offset"] - spend + self.st.get("credit_fix", 0.0)
 
+    def report_read_due(self, key, t):
+        """Whether a read for the report is due: one each report period (report_min, the quarter hour), in its first
+        round, which writes that period's report, so the report shows a read from its own minute. A failed read is
+        tried again 5 minutes later. The caller marks a good read with mark_report_read."""
+        st = self.st
+        if st.get(key + "_q") == int(t // (60 * self.cfg["report_min"])) or t - st.get(key + "_try", 0) < 300:
+            return False
+        st[key + "_try"] = t
+        return True
+
+    def mark_report_read(self, key, t):
+        self.st[key + "_q"] = int(t // (60 * self.cfg["report_min"]))
+
     def salad_balance(self):
-        """Salad's own credit balance, read from the portal at most every 10 min when $SALAD_USER and $SALAD_PASS are
-        set. Each read also sets our count to it, so the count only drifts while reads fail. A failed read warns
-        once and keeps the last."""
+        """Salad's own credit balance, read from the portal once a report (report_read_due) when $SALAD_USER and
+        $SALAD_PASS are set. Each read also sets our count to it, so the count only drifts while reads fail. A failed
+        read warns once and keeps the last."""
         user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
-        if not user or not pw or t - st.get("bal_read_t", 0) < 600:
+        if not user or not pw or not self.report_read_due("bal", t):
             return
-        st["bal_read_t"] = t
         s, cents = portal_balance(user, pw)
         if s != 200 or not isinstance(cents, (int, float)):
             if not st.get("bal_warned"):
@@ -816,17 +828,18 @@ class W:
         st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
         st["salad_bal"] = {"t": t, "usd": usd}
         st["bal_warned"] = False
+        self.mark_report_read("bal", t)
 
     def safetrade(self):
         """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
         held and in open orders, and all we have sold (fills of our own sell orders) with the USDT it brought after
-        fees. Each new sale is a SOLD event. Read at most every 5 min, with GET calls only, when $SAFETRADE_API_KEY
-        and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says when that was."""
+        fees. Each new sale is a SOLD event. Read once a report (report_read_due), with GET calls only, when
+        $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says
+        when that was."""
         key, sec = os.environ.get("SAFETRADE_API_KEY"), os.environ.get("SAFETRADE_API_SECRET")
         st, t = self.st, now()
-        if not key or not sec or t - st.get("st_read_t", 0) < 300:
+        if not key or not sec or not self.report_read_due("st", t):
             return
-        st["st_read_t"] = t
 
         def get(path):
             # Signed with HMAC-SHA256 of a millisecond nonce and the key, on the real clock (SafeTrade checks it).
@@ -890,6 +903,7 @@ class W:
         st["st_fill_id"] = max(ids + [last or 0])
         st["st_acct"] = {"t": t, "coins": coins, "sold": sold}
         st["st_warned"] = False
+        self.mark_report_read("st", t)
 
     # ---------- actions ----------
     def delete(self, g, kind, reason):
@@ -2411,12 +2425,12 @@ class W:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
-        # credit left (with the hours it lasts at the All row's $/hr) ends the line. Until 20 October it was under
+        # credit left (with how long it lasts at the All row's $/hr: days, or hours under a day) ends the line. Until 20 October it was under
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark} left"
-                + (f" ({hours:.0f}{cmark} h)" if hours is not None else ""))
+                + (f" ({lasts(hours, cmark)})" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
@@ -2427,6 +2441,15 @@ class W:
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
+
+
+def lasts(hours, mark=""):
+    """How long the credit lasts, as the founder asked on 24 Oct: whole days, or hours when under a day ("363 h"
+    read poorly)."""
+    days = round(hours / 24)
+    if hours < 24 or days < 1:
+        return f"{hours:.0f}{mark} h"
+    return f"{days}{mark} day{'s' if days != 1 else ''}"
 
 
 def bold(text):
