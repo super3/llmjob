@@ -792,6 +792,24 @@ class TestRule5Profit(Base):
         g.update(machine="m2", pc_since=self.clock[0])   # a new PC: the median again until 30 minutes of its own
         self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)
 
+    def test_a_box_the_pools_never_see_counts_no_monero_after_45_minutes(self):
+        self.monero(2.0, 2.0, 2.0)
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0])
+        def others_seen():
+            for o in self.x.st["groups"].values():
+                if o is not g:
+                    o["xmr_seen"] = self.clock[0]
+        self.clock[0] += 44 * 60
+        others_seen()
+        self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)   # still the median: it may not show yet
+        self.clock[0] += 2 * 60
+        others_seen()
+        self.assertEqual(self.x.xmr_usd(g), 0.0)
+        g.update(xmr_khs=0.4, xmr_seen=self.clock[0])                # seen at last, 46 minutes in: its own figure
+        self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.4 * 0.005)
+
     def test_monero_counts_only_for_a_box_that_mines_it_and_from_fresh_figures(self):
         self.assertEqual(self.x.xmr_usd(), 0.0)    # Monero off
         self.monero(2.0)
