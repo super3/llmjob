@@ -176,8 +176,10 @@ def http(method, url, body=None, ctype="application/json", timeout=60, headers=N
         return 0, {"error": str(e)[:300]}
 
 
+# Every file is UTF-8, named: Python on Windows (before 3.15) opens text in the locale's code page, cp1252, which
+# has no ⛏️ or ⏳, so the first report there would have crashed the watcher.
 def event(msg):
-    with open(EV, "a") as f:
+    with open(EV, "a", encoding="utf-8") as f:
         f.write(f"{hm()}Z {msg}\n")
 
 
@@ -187,7 +189,7 @@ def err(msg):
 
 def load(path, default):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default
@@ -195,7 +197,7 @@ def load(path, default):
 
 def save(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
     os.replace(tmp, path)
 
@@ -2253,7 +2255,7 @@ class W:
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
-        with open(REPORT + ".tmp", "w") as f:
+        with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
