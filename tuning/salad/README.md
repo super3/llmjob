@@ -23,7 +23,10 @@ setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
 ```
 
-`SALAD_ORG` and `SALAD_PROJECT` default to `llmjob` and `default`.
+`SALAD_ORG` and `SALAD_PROJECT` default to `llmjob` and `default`. `PRL_WALLET` is only a default: `wallet` in
+`config.json` wins. Python 3.9 or later, with the `cryptography` package for the boxes' node identities (without
+it each PC is a new node again). On Windows also `tzdata` (Python there has no time zone data), `python` in
+place of `python3`, and a keeper of its own if there's no bash; the files are UTF-8 whatever the code page.
 
 Config keys:
 
