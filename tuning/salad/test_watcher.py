@@ -789,8 +789,9 @@ class TestRule5Profit(Base):
                     o["xmr_seen"] = self.clock[0]
             self.x.record_rates(self.clock[0])
         self.assertAlmostEqual(self.x.xmr_usd(g), 0.2 * 0.005)
-        g.update(machine="m2", pc_since=self.clock[0])   # a new PC: the median again until 30 minutes of its own
-        self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)
+        # A new PC: its class's figures again (its own on m1, not the 2060s' median) until 30 minutes of its own.
+        g.update(machine="m2", pc_since=self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.2 * 0.005)
 
     def test_a_box_the_pools_never_see_counts_no_monero_after_45_minutes(self):
         self.monero(2.0, 2.0, 2.0)
@@ -809,6 +810,35 @@ class TestRule5Profit(Base):
         g.update(xmr_khs=0.4, xmr_seen=self.clock[0])                # seen at last, 46 minutes in: its own figure
         self.x.record_rates(self.clock[0])
         self.assertAlmostEqual(self.x.xmr_usd(g), 0.4 * 0.005)
+
+    def test_a_new_box_s_monero_comes_from_its_own_class(self):
+        # 23 October: the fleet median (3060s at 3–5 kH/s) credited a new 4060, whose PCs make 0.5–1.3, with about
+        # twice its Monero, so it kept a PC it left 8 minutes later (OPEN.md #65).
+        self.monero(4.0, 4.0, 4.0)                                  # three 2060s at 4 kH/s: the fleet median
+        t = self.clock[0]
+        self.x.st["xmr_rates"] = {"RTX 4080 (16 GB)": {"m1": [0.5, t], "m2": [1.0, t], "m3": [1.3, t]}}
+        self.assertAlmostEqual(self.x.xmr_usd(cls="RTX 4080 (16 GB)"), 1.0 * 0.005)
+        self.assertAlmostEqual(self.x.xmr_usd(cls="RTX 4070 (12 GB)"), 4.0 * 0.005)   # none stored: the fleet's
+        self.assertAlmostEqual(self.x.xmr_usd(), 4.0 * 0.005)
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m9", pc_since=self.clock[0])   # on a PC, no reads of its own yet
+        self.assertAlmostEqual(self.x.xmr_usd(g), 1.0 * 0.005)
+        self.assertAlmostEqual(self.x.margin("RTX 4080 (16 GB)", "medium", rate=175),
+                               1 - 0.19 / (175 * USD_TH_HR + 0.005))
+
+    def test_a_box_s_own_monero_is_stored_for_its_class_for_rate_days(self):
+        self.monero()
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0])
+        for i in range(8):                           # reads every 5 minutes for 40 minutes, at 0.6 kH/s
+            self.clock[0] += 300
+            g.update(xmr_khs=0.6, xmr_seen=self.clock[0])
+            self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.st["xmr_rates"]["RTX 4080 (16 GB)"]["m1"][0], 0.6)
+        g.update(has_pc=False, machine=None, pc_since=None)
+        self.clock[0] += 7 * 86400
+        self.x.record_rates(self.clock[0])
+        self.assertEqual(self.x.st["xmr_rates"]["RTX 4080 (16 GB)"], {})
 
     def test_monero_counts_only_for_a_box_that_mines_it_and_from_fresh_figures(self):
         self.assertEqual(self.x.xmr_usd(), 0.0)    # Monero off
@@ -1740,7 +1770,7 @@ class TestStartingBoxes(Base):
         with open(os.path.join(TMP, "report.md")) as f:
             report = f.read()
         # They ended before the pools' counts were kept: 1 PRL each by the ledger's estimate, before 10 blocks.
-        self.assertIn(f"| Others{w.NB}×3 | — | — | — | 3.000* |", report)
+        self.assertIn(f"| Ended{w.NB}×3 | — | — | — | 3.000* |", report)
 
     def test_estimates_are_starred_and_api_figures_are_not(self):
         a = self.group(pri="medium")
@@ -2639,7 +2669,7 @@ class TestMonero(Base):
         self.assertAlmostEqual(g["kxx_gross"], 6e-5)
         old = self.group()
         old.update(ended=self.clock[0], xmr_coins=0.0001)   # ended before the charts: its rate over time, starred
-        self.assertIn("| 0.000 | 0.000156* |", self.xmr_row(f"Others{w.NB}×2"))   # 0.0001 + 0.00006 × 94%
+        self.assertIn("| 0.000 | 0.000156* |", self.xmr_row(f"Ended{w.NB}×2"))   # 0.0001 + 0.00006 × 94%
 
     def test_a_boxs_khs_counts_each_monero_pool_that_saw_it_lately(self):
         g = self.group()
@@ -3714,7 +3744,7 @@ class TestKryptex(Base):
         report = self.report()
         self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 0\.940 \|\n")
         self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
-        self.assertIn(f"| Others{w.NB}×2 | — | — | — | 2.500* |\n", report)
+        self.assertIn(f"| Ended{w.NB}×2 | — | — | — | 2.500* |\n", report)
         self.assertIn("| **5.380\\*** |\n", report)
 
     def test_the_report_marks_kryptex_boxes_and_shows_both_pools(self):
@@ -4007,6 +4037,125 @@ class TestGemma(Base):
         self.assertIn("RESUMED biz-rtx4080: mining again on PC m1 after 3 min paused for Gemma", self.events())
         self.assertEqual(g["paused_t"], T0 + 420)               # its end still gives the next readings their warm-up
         self.assertFalse(self.x.paused(g, self.clock[0]))
+
+
+class TestPickMargin(Base):
+    """The search, and a waiting group moving up a priority, price a class at a slower-than-median PC (OPEN.md #69)."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg["yield"] = 1.0
+        t = self.clock[0]
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {f"m{i}": [r, t] for i, r in enumerate((150, 170, 185, 190, 200))}}
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+
+    def test_the_rate_at_a_share_of_the_stored_pcs(self):
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 185)                       # the median
+        self.assertAlmostEqual(self.x.rate("RTX 4080 (16 GB)", 0.35), 176)            # 170 + 0.4 of the way to 185
+        self.assertAlmostEqual(self.x.pick_margin("RTX 4080 (16 GB)", "medium"), 1 - 0.19 / (176 * USD_TH_HR))
+
+    def test_the_search_skips_a_price_only_the_median_pc_clears(self):
+        # At medium the median PC (185 TH/s) makes +12%, but one at 176 makes +8%: 2 of the 5 stored PCs fail.
+        self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "medium"), 0.10)
+        avail = {"c4080": {"available_gpu_medium": 5}}
+        self.http.on("POST", "/availability/", lambda b: (200, avail.get(b["gpu_classes"][0], {})))
+        self.x.cfg["max_active"] = 2
+        self.x.search()
+        self.assertFalse(self.http.made("POST", "/containers$"))
+        self.assertIn("SEARCH found nothing to create", self.events())
+        avail["c4080"]["available_gpu_low"] = 5                                     # low clears at 176: +27%
+        self.x.search()
+        made = [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")]
+        self.assertEqual(made, [("biz-rtx4080", "low")])
+
+    def test_a_waiting_group_moves_up_only_to_a_price_a_slower_pc_clears(self):
+        g = self.group(pri="low")
+        self.step(g, 10, None)
+        self.assertFalse(self.http.made("PATCH", ""))
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("no PC at low and no higher priority clears 10%", self.events())
+
+
+class TestMoveCountReset(Base):
+    """A group's count of moves starts again after 2 h above the bar on one PC (OPEN.md #68)."""
+    def test_the_count_starts_again_after_2_h_on_a_pc(self):
+        g = self.group(pri="medium")
+        g["reallocs"] = 2
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 119)                 # 119 min on the PC
+        self.assertEqual(g["reallocs"], 2)
+        self.mine(g, "m1", 199, 1)
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("MOVES biz-rtx4080: 2 h above 10% on PC m1, so its count of moves starts again (it had used 2 "
+                      "of 3)", self.events())
+
+    def test_a_restart_on_the_pc_starts_the_2_h_again(self):
+        g = self.group(pri="medium")
+        g["reallocs"] = 1
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 60)
+        g["restart_t"] = self.clock[0]               # Salad restarted the box here an hour in
+        self.mine(g, "m1", 199, 70)
+        self.assertEqual(g["reallocs"], 1)
+        self.mine(g, "m1", 199, 50)
+        self.assertEqual(g["reallocs"], 0)
+
+
+class TestNodeIdentity(Base):
+    """A Gemma box keeps one LLMJob node identity across its PCs, so the server's speed test (and its pause in
+    mining) comes once a day a group, not once a PC (OPEN.md #11)."""
+    def node(self, cmd):
+        m = re.search(r"printf '%s' '(\{.*?\})' > \$d/node.json", cmd)
+        return json.loads(m.group(1)) if m else None
+
+    def test_a_gemma_box_keeps_one_identity_across_commands(self):
+        self.x.cfg["llm"] = True
+        a = self.node(self.x.box("biz-rtx4080", False)[1][2])
+        b = self.node(self.x.box("biz-rtx4080", True)[1][2])
+        self.assertEqual(a, b)
+        self.assertEqual(set(a), {"nodeId", "publicKey", "secretKey", "name", "connected", "createdAt"})
+        self.assertIsNone(a["name"])
+        self.assertFalse(a["connected"])
+        # The CLI's form: tweetnacl's 64-byte secret key (seed, then public key) and the id the server computes.
+        pub, sec = w.base64.b64decode(a["publicKey"]), w.base64.b64decode(a["secretKey"])
+        self.assertEqual((len(pub), len(sec), sec[32:]), (32, 64, pub))
+        self.assertEqual(a["nodeId"], w.hashlib.sha256(a["publicKey"].encode()).hexdigest()[:16])
+        sk = w.Ed25519PrivateKey.from_private_bytes(sec[:32])
+        sk.public_key().verify(sk.sign(b"id:123"), b"id:123")
+        self.assertEqual(sk.public_key().public_bytes(w.serialization.Encoding.Raw, w.serialization.PublicFormat.Raw),
+                         pub)
+        self.assertNotEqual(self.node(self.x.box("biz-rtx4080-2", False)[1][2]), a)   # another group, another node
+
+    def test_no_identity_without_gemma_or_on_an_amd_box(self):
+        self.assertNotIn("node.json", self.x.box("biz-rtx4080", False)[1][2])
+        self.x.cfg["llm"] = True
+        self.assertNotIn("node.json", self.x.box("biz-rx9070xt", False)[1][2])
+        self.assertNotIn("biz-rx9070xt", self.x.st.get("node_keys", {}))
+
+    def test_create_sends_the_group_s_identity(self):
+        self.x.cfg["llm"] = True
+        self.group()
+        cmd = self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2]
+        self.assertEqual(self.node(cmd)["nodeId"], self.x.st["node_keys"]["biz-rtx4080"]["nodeId"])
+
+    def test_the_step_writes_the_cli_s_node_json(self):
+        import subprocess, stat
+        k = self.x.node_key("biz-rtx4080")
+        home = tempfile.mkdtemp()
+        subprocess.run(["/bin/sh", "-c", w.node_step(k)], env={"HOME": home, "PATH": os.environ["PATH"]}, check=True)
+        path = os.path.join(home, ".local", "share", "llmjob-earn", "node.json")
+        with open(path) as f:
+            self.assertEqual(json.load(f), {"nodeId": k["nodeId"], "publicKey": k["publicKey"], "secretKey": k["secretKey"],
+                                            "name": None, "connected": False, "createdAt": k["createdAt"]})
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_an_identity_no_live_group_uses_goes_after_rate_days(self):
+        self.x.node_key("biz-rtx4080")
+        self.clock[0] += 7 * 86400 - 60
+        self.x.record_rates(self.clock[0])
+        self.assertIn("biz-rtx4080", self.x.st["node_keys"])
+        self.clock[0] += 60
+        self.x.record_rates(self.clock[0])
+        self.assertNotIn("biz-rtx4080", self.x.st["node_keys"])
 
 
 if __name__ == "__main__":

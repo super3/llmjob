@@ -51,6 +51,7 @@ Config keys:
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
+| `search_pct` | The search and a waiting group's priority moves need a class to clear 10% at the rate this share of its PCs are slower than (0.35), not its median. |
 | `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
@@ -74,7 +75,10 @@ each PC on its own readings.
 
 **A class's rate** is the median TH/s of the PCs it has mined on here in the last `rate_days`, each PC
 at the median of its last 3 readings after warm-up, capped and slow PCs included. Before a class has mined, it's the
-benchmark in `KNOWN`. The search, priority moves and swaps all use it. On 12 October the 3070 measured
+benchmark in `KNOWN`. Swaps use it. The search and a waiting group's priority moves (rules 1–3) need a class
+to clear 10% at a slower PC since 24 October: the rate `search_pct` (35%) of its PCs are slower than. At the
+median about a third of the PCs Salad handed out failed: 4060s at medium (median 59.7 TH/s, +12–13%; 57 or less
+fails) used 7 counted moves on 23–24 October and one was deleted. On 12 October the 3070 measured
 77 TH/s against a 59 benchmark. With `yield` 0.9 the benchmark cleared 10% only at batch, so a second
 3070 was released for want of a batch PC although 3070s clear low easily; the 2080 measured 64 against 72.
 
@@ -105,10 +109,12 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    PRL fell), while 13 were free at medium (+18%). Besides the classes
    measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
    rule 5 judges each of their PCs on its own readings.
-2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
+2. **No PC at a priority within 10 min:** move to the next priority that still clears 10% (at the slower rate
+   above). If none is
    left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).
-3. **Had a PC, lost it, no other within 20 min:** delete.
+3. **Had a PC, lost it, no other within 20 min:** move up a priority as in rule 2, with 20 more minutes there;
+   delete when no higher priority clears 10% (since 23 October; before, it was deleted at once).
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
 5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
    the median of the last 3 readings (one a minute) must clear the margin at the PC's price. The first
@@ -169,6 +175,9 @@ clears the margin over 10 readings with shares at the pool. Reallocations are ca
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad
 class, so the class isn't barred from new groups. A move off a PC that blocks the pool port (rule 6) is the
 PC's fault and doesn't count, up to 6 a group, since 22 October (4060-54 was deleted on its fourth PC for one).
+A group 2 h on one PC (rule 5 clears it there every round) starts its count again, with a `MOVES` event, since
+24 October: before, 3060-72 mined at +17–20% for hours and was deleted on its first slow PC, its 3 moves used on
+earlier days.
 The search also sizes its room by Salad's own count of replicas in use, and stops at the first create Salad
 refuses for its quota.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
@@ -206,8 +215,11 @@ started with until it restarts. It comes back on the new version about 2 minutes
   HeroMiners reads gave a hash about 8 to 2,200 times too little), a chart bucket valued 3 times off the median of
   all buckets is valued again at it, and a failed read waits 5 minutes (CoinGecko answers 429 every minute).
 - **The rules count Monero too** (since 22 October): each box's earnings in the keep, leave, climb, search and
-  swap rules add what the median Monero box makes, from the boxes the Monero pools saw in the last 15 minutes
-  (about $0.002/hr; a box's own figure is a 30-minute average that, on a new PC, still holds the old one). Before,
+  swap rules add its Monero (about $0.002/hr). A box 30 minutes on its PC counts its own figure (before that the
+  pools' 30-minute average still holds the old PC). A new box, or one too new on its PC, counts the median of its
+  class's own figures in the last `rate_days`, since 24 October: a PC's CPU goes with its owner's card, and 3060
+  boxes made 3–5 kH/s while 4060s made 0.5–1.3. With none stored for the class it counts the median of the boxes
+  the Monero pools saw in the last 15 minutes, as every new box did before. Before,
   they judged every box on Pearl alone: in the 48 hours to 9 pm EDT on 22 October, 54 of the 124 margin moves
   and deletions would have cleared 10% with Monero counted, but all 54 also clear at Kryptex's ratio alone; with
   both, 79 clear, so Monero saves 16 beyond the ratio fix. Monero's speed is the table's kH/s column and what each box has earned is
@@ -248,7 +260,12 @@ command (`GEMMA ON` events), and no box was moved.
   for a PC starts that way.
 - **Mining pauses for a prompt.** While the LLM answers a prompt the CLI stops mining on that card, and starts
   again 10 seconds after the last one ends (10 minutes at most). The server's speed test is such a prompt: once
-  when a node first shows up, then at most once a day, and each Salad box is a new node on each PC. The CLI prints
+  when a node first shows up, then at most once a day. Until 24 October each Salad box was a new node on each PC
+  (a fresh container makes a new `node.json`), so 304 of 327 pauses on 20–24 October were that test. Now the
+  watcher gives each Gemma group one node identity, an Ed25519 key it makes once and keeps by group name in
+  `state.json`, and the box command writes it to the CLI's `~/.local/share/llmjob-earn/node.json` before box.sh
+  starts. The key is an unclaimed node's, tied to no account, and it is in the group's command on Salad. A group
+  made before then keeps a new node per PC until its command changes. The CLI prints
   no hashrate meanwhile, and box.sh used to repeat the miner's last line, which the watcher reads as a dead miner
   (left after 6 minutes). Now box.sh says `paused for a prompt` from the CLI's own pause lines, and the watcher:
   - shows the box as 🧠 in the report, and logs `PAUSED` when a pause starts and `RESUMED` with its length;
@@ -555,7 +572,7 @@ The report is **one table** with seven columns (five without a Monero address), 
 | ⛏️ 3070-53 med | 78 | 4.8 | 0.08 | +0.02* (+20%*) | 0.569* | 0.000067* |
 | ⛏️ 3060-46 low (K) | 47 | 0.0 | 0.05 | +0.01* (+14%*) | 0.141 | 0.000021* |
 | ⏳ 5070-29 med (K) | — | — | — | — | 0.651 | 0.000052* |
-| Others ×781 | — | — | — | — | 155.386* | 0.009229* |
+| Ended ×781 | — | — | — | — | 155.386* | 0.009229* |
 | **All** | **410** | **20.8** | **0.44** | **+0.09\* (+17%\*)** | **157.402\*** | **0.009489\*** |
 
 | Pool | Hashrate (1h) | Confirmed | Pending | Paid |
@@ -580,8 +597,8 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 - Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
-- **Others** is one row for every group that has ended, with its count and what they earned; the events say which
-  were released and which failed.
+- **Ended** is one row for every group that has ended, with its count and what they earned; the events say which
+  were released and which failed. These are our own old boxes (it was called "Others" until 24 October).
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
   by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
   events, not the table.
