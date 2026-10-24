@@ -17,11 +17,14 @@
 #     and so does a library it lacks, other than ROCm's for the AMD core (README: the rig
 #     installs ROCm itself)
 #   - writes the argument line with h-config.sh from a sample flight sheet, starts h-run.sh, and
-#     waits for the CUDA 12.8 core to load and the Monero worker to pass its self-test
-#   - reads the stats file through h-stats.sh, as the HiveOS agent does
-#   - stops the miner with Ctrl+C, as `miner stop` does, and checks its shutdown line is logged
-#   - loads the CUDA 13 core with --core cu13, and checks that --core amd says ROCm is missing
-#     (the container has none)
+#     waits for the CUDA 12.8 core to load and ask for a GPU. There is none, so the miner then
+#     stops, as it does on a rig without an NVIDIA driver
+#   - does the same with --core cu13 for the CUDA 13 core, and checks that --core amd says ROCm
+#     is missing (the container has none)
+#   - with every GPU turned off in HiveOS (CUDA_VISIBLE_DEVICES=" "), mines Monero on the CPU,
+#     waits for the worker's self-test, reads the stats file through h-stats.sh as the HiveOS
+#     agent does, and stops the miner with Ctrl+C, as `miner stop` does, checking its shutdown
+#     line is logged
 #
 # With "refuses" (Ubuntu 20.04, HiveOS's older focal image) it checks the opposite: the cores
 # don't load there, and the miner says why rather than mining nothing in silence.
@@ -117,9 +120,11 @@ done
 
 # ── The flight sheet, h-config.sh and h-run.sh ───────────────────────────────────────────
 # h-config.sh as HiveOS's wrapper runs it: in a subshell, with the flight sheet's fields set.
+# $2, when given, is CUDA_VISIBLE_DEVICES, which `miner start` sets when cards are turned off.
 configure() {
   (
     export CUSTOM_TEMPLATE="$address.smoke" WORKER_NAME=hive-smoke CUSTOM_USER_CONFIG="$1"
+    [ $# -lt 2 ] || export CUDA_VISIBLE_DEVICES="$2"
     bash ./h-config.sh
   ) || fail "h-config.sh failed"
   echo "argument line: $(< llmjob-earn.conf)"
@@ -173,23 +178,62 @@ if [ "$expect" = refuses ]; then
     || fail "the miner didn't say why its core won't load"
   grep -qE "version .(GLIBC|GLIBCXX|CXXABI)_[0-9.]+' not found" <<< "$(run_log)" \
     || fail "the miner's reason doesn't name the version its core needs"
+  echo "the miner's log:"
+  run_log | sed 's/^/  /'
   echo "ok: on $image the cores don't load, and the miner says why"
   exit 0
 fi
 
-# 1. Mining with the CUDA 12.8 core, the default, and the Monero worker.
-extra="--region us"
-[ -f llmjob-xmr-worker ] && extra+=" --xmr-address $xmr --cpu-threads 1"
-configure "$extra"
+# Logged when a core loaded and asked CUDA for a GPU. Here there is none.
+no_gpu="no CUDA device found"
+
+# 1. The CUDA 12.8 core, the one every NVIDIA rig gets unless it has only RTX 50 cards.
+configure "--region us"
 conf=" $(< llmjob-earn.conf) "
 for want in "--address $address" --worker=smoke "--mode mining" --no-update "--stats-file $stats_file"; do
   [[ $conf == *" $want "* ]] || fail "the argument line has no \"$want\":$conf"
 done
-rm -f "$stats_file"
 start
 wait_for "LLMJob Earn CLI v$version" 30
 wait_for "Pearl core: CUDA 12.8 build" 60
-[ -f llmjob-xmr-worker ] && wait_for "RandomX self-test passed" 60
+wait_for "$no_gpu" 60
+wait_exit 60
+
+# 2. The CUDA 13 core, which a rig gets on its own only with RTX 50 cards and driver 580+.
+if [ -f pearl_core_cu13.node ]; then
+  configure "--region us --core cu13"
+  start
+  wait_for "Pearl core: CUDA 13 build" 60
+  wait_for "$no_gpu" 60
+  wait_exit 60
+fi
+
+# 3. The AMD core. Without ROCm it can't load, so the miner exits, and the log must say ROCm
+#    is what's missing, not something about the system.
+if [ -f pearl_core_hip.node ]; then
+  configure "--region us --core amd"
+  start
+  wait_exit 60
+  grep -qF 'pearl_core_hip.node is there but would not load: ' <<< "$(run_log)" \
+    || fail "with --core amd the miner didn't say why the AMD core won't load"
+  grep -qF 'It needs the ROCm 7 HIP runtime' <<< "$(run_log)" \
+    || fail "with --core amd the miner's reason isn't that ROCm is missing"
+fi
+
+# 4. Every GPU turned off in HiveOS, mining Monero on the CPU. The miner keeps running, so this
+#    is the run that writes the stats file and is stopped with Ctrl+C.
+extra="--region us"
+[ -f llmjob-xmr-worker ] && extra+=" --xmr-address $xmr --cpu-threads 1"
+configure "$extra" " "
+[[ " $(< llmjob-earn.conf) " == *" --gpu-index=none "* ]] \
+  || fail "with every GPU turned off the argument line has no --gpu-index=none: $(< llmjob-earn.conf)"
+rm -f "$stats_file"
+start
+if [ -f llmjob-xmr-worker ]; then
+  wait_for "RandomX self-test passed" 60
+else
+  wait_for "waiting until stopped" 60
+fi
 
 for ((i = 0; i < 15; i++)); do [ -f "$stats_file" ] && break; sleep 1; done
 [ -f "$stats_file" ] || fail "no $stats_file, so h-stats.sh has nothing to read"
@@ -207,24 +251,6 @@ if [ -f llmjob-xmr-worker ]; then
 fi
 stop
 
-# 2. The CUDA 13 core, which a rig gets on its own only with RTX 50 cards and driver 580+.
-if [ -f pearl_core_cu13.node ]; then
-  configure "--region us --core cu13"
-  start
-  wait_for "Pearl core: CUDA 13 build" 60
-  stop
-fi
-
-# 3. The AMD core. Without ROCm it can't load, so the miner exits, and the log must say ROCm
-#    is what's missing, not something about the system.
-if [ -f pearl_core_hip.node ]; then
-  configure "--region us --core amd"
-  start
-  wait_exit 60
-  grep -qF 'pearl_core_hip.node is there but would not load: ' <<< "$(run_log)" \
-    || fail "with --core amd the miner didn't say why the AMD core won't load"
-  grep -qF 'It needs the ROCm 7 HIP runtime' <<< "$(run_log)" \
-    || fail "with --core amd the miner's reason isn't that ROCm is missing"
-fi
-
+echo "the miner's log, every run:"
+sed 's/^/  /' "$log"
 echo "ok: the HiveOS package installs, loads its cores and reports to h-stats.sh on $image"
