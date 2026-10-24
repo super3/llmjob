@@ -336,17 +336,22 @@ class W:
         """What Monero on a box's CPU earns an hour, for the rules. For group g (0 unless it mines Monero), its own
         figure once the pools' 30-minute averages hold only this PC: the mean of its last 3 reads taken 30 minutes
         or more after it got the PC, restarted or last paused (xmr_own), the latest within 15 minutes. A box whose
-        Monero doesn't reach the pool then counts 0. Before that, and for a new group (no g), the median of the live
+        Monero doesn't reach the pool then counts 0, and so does one the pools haven't seen at all 45 minutes in. Before that, and for a new group (no g), the median of the live
         boxes the pools saw in the last 15 minutes. The rules counted Pearl alone until 22 October, so boxes that
         cleared 10% with their Monero (about $0.002 a box) were left."""
         if not (g.get("xmr") if g is not None else self.wants_xmr("*")):
             return 0.0
         t, xusd = now(), (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
-        if g is not None and g.get("has_pc") and g.get("pc_since") and g.get("xmr_own"):
+        if g is not None and g.get("has_pc") and g.get("pc_since"):
             since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
-            own = [k for seen, k in g["xmr_own"] if seen >= since + 30 * MIN][-3:]
+            own = [k for seen, k in g.get("xmr_own") or [] if seen >= since + 30 * MIN][-3:]
             if own and t - g["xmr_own"][-1][0] < 15 * MIN:
                 return sum(own) / len(own) * xusd
+            # A box the pools never saw here has no reads at all, and took the median for as long as it stayed: 4060-60
+            # on 23 October, an hour on its PC with no Monero at either pool, was judged +14% against its +10%. A new
+            # box shows at the pools within 30 minutes (3060-75 that evening), so after 45 with none it counts 0.
+            if t - since >= 45 * MIN and not any(seen >= since for seen, _ in g.get("xmr_own") or []):
+                return 0.0
         khs = sorted(k for k in (self.box_khs(x, t) for x in self.st["groups"].values()
                                  if not x["ended"] and x.get("xmr") and x["has_pc"]) if k > 0)
         n = len(khs)
