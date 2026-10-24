@@ -9,7 +9,7 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
-    paths: [ 'earn/**', '.github/workflows/miner-build.yml', '.github/scripts/pick-core-run.sh' ]
+    paths: [ 'earn/**', '.github/workflows/miner-build.yml', '.github/scripts/pick-core-run.sh', '.github/scripts/hiveos-smoke.sh' ]
   workflow_dispatch:
     inputs:
       publish:
@@ -461,3 +461,44 @@ jobs:
             earn/dist/llmjob-earn-[0-9]*.tar.gz
             earn/dist/llmjob-earn-hiveos.tar.gz
           if-no-files-found: error
+
+  # The HiveOS package from the build above, run the way a HiveOS rig runs it: unpacked where
+  # HiveOS puts it, started through its hook scripts, read back through h-stats.sh. In a plain
+  # Ubuntu container with no GPU and no network, so it checks everything up to mining itself:
+  # the files, that each core loads on that system, the scripts, and the stats HiveOS reads.
+  # .github/scripts/hiveos-smoke.sh has the steps.
+  #
+  # v0.6.7 is why: its cores needed glibc 2.38, every test passed, and HiveOS rigs mined
+  # nothing. Ubuntu 22.04 is what HiveOS's current image is built on. 24.04 stands in for
+  # newer Linux rigs. 20.04 is HiveOS's older image, where the cores don't load: there the
+  # check is that the miner says why.
+  #
+  # On a release tag this runs after the build has published, so it can't hold a release back.
+  # The release PR's own run is the one that has to pass.
+  hiveos:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            expect: mines
+          - image: ubuntu:24.04
+            expect: mines
+          - image: ubuntu:20.04
+            expect: refuses
+    name: HiveOS package (${{ matrix.image }})
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: llmjob-earn-cli-linux
+          path: hiveos-pkg
+
+      - name: Install and run the package
+        run: |
+          bash .github/scripts/hiveos-smoke.sh "${{ matrix.image }}" "${{ matrix.expect }}" hiveos-pkg \
+            "$(node -p "require('./earn/package.json').version")"

@@ -486,6 +486,11 @@ packed by `scripts/build-hiveos.mjs` (`npm run dist:hiveos`). CI packs it from
 the same binary and cores it publishes on the release. Releases v0.5.0 to
 v0.5.12 have no package; use a later one.
 
+CI then installs each build's package the way HiveOS does and starts it, in
+Ubuntu 22.04, 24.04 and 20.04 containers (`.github/scripts/hiveos-smoke.sh`).
+They have no GPU, so this checks everything short of mining: the files, that
+each core loads, the hook scripts, and the stats HiveOS reads.
+
 **It needs the HiveOS 0.6 jammy image (Ubuntu 22.04).** The mining cores need
 glibc 2.34 and libstdc++ with `GLIBCXX_3.4.29` (read with `objdump -T` from the
 v0.5.12 release files). Jammy has glibc 2.35. The older focal image (Ubuntu
