@@ -428,6 +428,14 @@ couldn't be rented, so those rows are on new hosts.
   both of those showed another workload on the card. Portugal's
   start-of-run samples are lost, so that can't be ruled out there, but its
   per-clock rates match the Japan 3080 Ti's.
+- **RTX 3060, a PC whose readings dip (23 October):** v0.6.8's CUDA core
+  (`af4fbca`, built on the box) verified 311 of 311 hits (46 salts in 90 s)
+  on Salad PC `4e084f5e`, then mined through the v0.6.6 CLI. Its
+  once-a-minute readings alternated between 49.3–49.4 TH/s and 6–31, and on
+  a low one the card drew 93 W of its 170 and ran 8 °C cooler. The release
+  core on the same PC did the same (49.3, 27.5, 49.3, 7.0, 49.4), and later
+  that day a fleet box on v0.6.6 left that PC at a median of 31 TH/s. So
+  the PC dips, not the core; the high readings match the 3060 rows.
 
 ## RTX 40-series
 
@@ -480,6 +488,12 @@ moved to new hosts.
 - **RTX 4060, Australia:** the host runs the card either locked at 1995 MHz
   or power-capped near 2600 MHz. In this run it held 1995 MHz for all three
   miners.
+- **v0.6.8's desktop build on rig01 (23 October):** the Windows installer of
+  `ec256f5`, on rig01's RTX 4090 (Windows 11, driver 610.88, 449 W), with
+  its own settings and Gemma beside it, for 5 min 15 s: 316.2–317.0 TH/s
+  in the app, 9 shares accepted, 0 rejected. v0.6.7 reads 316.2 on that
+  card. Not a row: it's the founder's rig, run by the pearl2 session, not
+  by "How a host is tested".
 
 ## RTX 50-series
 
@@ -968,6 +982,19 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
     low counts come from short checks, and the rerun's 2-minute checks on its last five PCs found 6.53–7.81 again
     (both 9060 XT PCs the same 248 hits in 38 salts). What makes them low isn't known.
   - These ran on other PCs than SRBMiner's; the rerun above compares the two on the same PCs.
+- **v0.6.8's AMD core, the release tests (23 October).** The release PR's AMD core, built on the box, by the
+  method of the 22 October checks above (`tuning/salad/amdtest.py`; `hashrate.js` for 120 s; then the CLI with
+  `--core amd` on `prl-us.kryptex.network:7048` for 300 s), on PCs other than the rows'. Both passed the fold check
+  and verified every hit they checked:
+
+  | Card | PC | Commit | Hit check | Ours | CLI, 300 s |
+  |---|---|---|---|---|---|
+  | RX 9070 XT | `8081f47f` | `af4fbca` | 400 of 3,589 hits, 0 failed; 448 salts in 300 s | 105.8 | 106.5 TH/s, 7 accepted, 0 rejected |
+  | RX 9070 XT | `5e3d4671` | `7aca719` | 400 of 3,703, 0 failed; 463 salts in 300 s | 110.95 | 111.5 TH/s, 1 accepted, 0 rejected |
+
+  `7aca719` has the release review's host changes (`dd2dced`: the untested-card gate and its error messages);
+  v0.6.8 adds one more (`ec256f5`: a card whose architecture can't be read is held back too). The GPU code is the
+  same in all three. The rows' PCs ran 109.9 and 88.6 on the same chip.
 
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT

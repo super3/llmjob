@@ -4,18 +4,28 @@
 # (the table) and events.log (one line per action) into the data directory: $SALAD_MINE_DIR, or
 # run/ next to this file. config.json there is re-read every round, so limits change without a restart.
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
-# cloud session the network proxy adds it instead.
-import json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+# cloud session the network proxy adds it instead. With $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET set,
+# the report also shows our SafeTrade account (read-only calls).
+import base64, hashlib, hmac, json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
+try:
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+except ImportError:   # then a box has no node identity of its own: each PC is a new node, as before 24 October
+    Ed25519PrivateKey = None
 
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
 ORG = os.environ.get("SALAD_ORG", "llmjob")
 RAILWAY = "https://backboard.railway.com/graphql/v2"
+SAFETRADE = "https://safetrade.com/api/v2/trade"
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
 BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
 IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
+# AMD boxes: the ROCm image the AMD core was built and tested in on Salad (amdtest.py), with its HIP runtime. The AMD
+# core ships from v0.6.8, so an AMD box runs that release or a later one.
+AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
 PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
@@ -44,13 +54,20 @@ KNOWN = {
     "RTX 3070 (8 GB)": (59, False), "RTX 4060 (8 GB)": (55, False), "RTX 4060 Ti (16 GB)": (89, False),
     "RTX 4090 (24 GB)": (315, False), "RTX 5060 (8 GB)": (76, False), "RTX 5060 Ti (16 GB)": (94, False),
     "RTX 5070 Ti (16 GB)": (174, False), "RTX 5090 (32 GB)": (418, False),
+    # AMD, from v0.6.8's AMD core: the mean of its two PCs in benchmark.md (23 October). At Salad's prices then, the
+    # 9070 XT clears 10% at batch and on fast PCs at low, the 9060 XT at batch, the 7900 XT at batch only; the
+    # 7900 XTX and 7800 XT clear it at none, so they aren't here.
+    "AMD RX 9070 XT (16GB)": (99, False), "AMD RX 9060 XT (16GB)": (61, False), "AMD RX 7900 XT (20GB)": (49, False),
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
                "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
-               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7,
+               "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3,
+               # The search, and a group waiting for a PC when it moves up a priority, price a class at this share of
+               # its stored PCs (0.35: 35% of them are slower), not the median (see pick_margin).
+               "search_pct": 0.35,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
                "trader": None, "safetrade": None,
                "wallet": os.environ.get("PRL_WALLET", ""),
@@ -122,6 +139,51 @@ def clock(t):
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
 
 
+PORTAL = "https://portal-api.salad.com/api/portal"
+
+
+def portal_balance(user, password):
+    """Salad's credit balance in cents, as the portal shows it: log in (a session cookie), then read it. Returns
+    (HTTP status, cents) or (status, error). Salad's public API has no balance; salad_ledger.py reads the rest."""
+    import http.cookiejar
+    op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+
+    def call(method, path, body=None):
+        req = urllib.request.Request(PORTAL + path, method=method, data=json.dumps(body).encode() if body else None,
+                                     headers={"Content-Type": "application/json", "Accept": "application/json",
+                                              "User-Agent": "llmjob-salad-watcher/1.0"})
+        try:
+            with op.open(req, timeout=30) as r:
+                txt = r.read().decode()
+                return r.status, json.loads(txt) if txt.strip() else None
+        except urllib.error.HTTPError as e:
+            return e.code, e.read().decode(errors="replace")[:200]
+        except Exception as e:
+            return 0, str(e)[:200]
+
+    s, j = call("POST", "/users/login", {"email": user, "password": password})
+    if s != 204:
+        return s, j
+    s, j = call("GET", f"/organizations/{ORG}/billing-profile/credits-balance")
+    return (s, j["amount"]) if s == 200 and isinstance(j, dict) and "amount" in j else (s or 0, j)
+
+
+COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
+
+
+def coin_name(coin):
+    """A SafeTrade currency as the report names it: PRL for "pearl", else its code in capitals."""
+    return "PRL" if coin == "pearl" else coin.upper()
+
+
+def short_clock(t, ref):
+    """A time for a table cell: 2:00 am on ref's New York day, else just its date (Oct 22). The heading has the zone."""
+    d, r = dt.datetime.fromtimestamp(t, NY), dt.datetime.fromtimestamp(ref, NY)
+    if d.date() == r.date():
+        return f"{d.hour % 12 or 12}:{d:%M}{NB}{'am' if d.hour < 12 else 'pm'}"
+    return f"{d:%b}{NB}{d.day}"
+
+
 def stamp(t):
     """The report's time and date in US style, as the user asked: 8:09 pm EDT, Mon, Oct 19."""
     d = dt.datetime.fromtimestamp(t, NY)
@@ -161,8 +223,10 @@ def http(method, url, body=None, ctype="application/json", timeout=60, headers=N
         return 0, {"error": str(e)[:300]}
 
 
+# Every file is UTF-8, named: Python on Windows (before 3.15) opens text in the locale's code page, cp1252, which
+# has no ⛏️ or ⏳, so the first report there would have crashed the watcher.
 def event(msg):
-    with open(EV, "a") as f:
+    with open(EV, "a", encoding="utf-8") as f:
         f.write(f"{hm()}Z {msg}\n")
 
 
@@ -172,7 +236,7 @@ def err(msg):
 
 def load(path, default):
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return default
@@ -180,7 +244,7 @@ def load(path, default):
 
 def save(path, obj):
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
     os.replace(tmp, path)
 
@@ -191,7 +255,15 @@ def median3(readings):
 
 
 def slug(cls):
+    """A class's part of its groups' names: "RTX 4060 (8 GB)" -> rtx4060, "AMD RX 9070 XT (16GB)" -> rx9070xt."""
+    if cls.startswith("AMD "):
+        return re.sub(r"[^a-z0-9]", "", cls[4:].split("(")[0].lower())
     return "rtx" + re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("rtx", ""))
+
+
+def is_amd(name):
+    """Whether a group is an AMD box, from its name (slug)."""
+    return name.startswith("biz-rx")
 
 
 def kx_paid(api, addr, most=100):
@@ -224,7 +296,18 @@ def cmd_ver(cmd):
     return m.group(1) if m else "v0.5.13"
 
 
-def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None):
+def node_step(node):
+    """Shell that writes a box's LLMJob node identity where the CLI keeps it (~/.local/share/llmjob-earn/node.json),
+    before box.sh starts the CLI. Each PC is a fresh container, so every PC was a new node, and the server's speed
+    test (1,024 tokens, once a day a node) paused mining there for 2–10 min: 304 of 327 pauses on 20–24 October,
+    $0.21–0.26 a day of Pearl (OPEN.md #11). With one identity a group, the test comes once a day a group."""
+    js = json.dumps({"nodeId": node["nodeId"], "publicKey": node["publicKey"], "secretKey": node["secretKey"],
+                     "name": None, "connected": False, "createdAt": node["createdAt"]}, separators=(",", ":"))
+    return (f"d=${{HOME:-/root}}/.local/share/llmjob-earn; mkdir -p $d && printf '%s' '{js}' > $d/node.json "
+            f"&& chmod 600 $d/node.json; ")
+
+
+def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, xmr_pool=None, amd=False, node=None):
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
@@ -252,10 +335,24 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         sed += (" -e 's/ --mode mining -w \\$WORKER-g\\$g --no-serve / --mode auto -w $WORKER-g$g /'"
                 " -e '/^    line=\\$(tr -d/a\\    p=$(grep -aoE \"mining (paused|resumed)\" $D/g$g.log | tail -1); "
                 "[ \"$p\" = \"mining paused\" ] && line=\"paused for a prompt\"'")
+    if amd:
+        # An AMD box (v0.6.8 on): the AMD core beside the CLI, and --core amd. box.sh reads its card with nvidia-smi,
+        # which the ROCm image doesn't have: the card line comes from rocminfo, the box has one card, and the
+        # 5-minute card stats print nothing. Its build tools are CUDA's, so they aren't installed.
+        flags.append("--core amd")
+        sed += (" -e 's#^  nvidia-smi --query-gpu=index,name,driver_version.*$#  echo \"[card] 0, $(rocminfo 2>/dev/null "
+                "| grep -m1 -oE \"AMD Radeon[ A-Za-z0-9]+\"), $(rocminfo 2>/dev/null | grep -m1 -oE \"gfx[0-9a-f]+\")\"#'"
+                " -e 's#^N=.*nvidia-smi -L.*$#N=1#' -e 's#^CC=.*nvidia-smi.*$#CC=0#'"
+                " -e 's#^  declare -A dl; for f in llmjob-earn-cli-linux #  declare -A dl; for f in pearl_core_hip.node "
+                "llmjob-earn-cli-linux #'"
+                " -e 's#release) cp \\$D/rel/pearl_core.node #release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node #'"
+                " -e 's#\\&\\& nvidia-smi --query-gpu=index,clocks.sm#\\&\\& true --query-gpu=index,clocks.sm#'"
+                " -e 's#^if \\[ ! -f \\$D/tools \\]; then#if false; then#'")
     if flags:
         # Both go in box.sh's default flags (a control file for the box would override them; the biz- boxes have none).
         sed += f" -e 's|\"flags\":\"\"}}|\"flags\":\"{' '.join(flags)}\"}}|'"
-    return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
+    return (f"{node_step(node) if node else ''}"
+            f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
             f"curl -fsSL {BOX} | {sed} > /root/box.sh; bash /root/box.sh 2>&1 | tee -a /root/box.log")
 
 
@@ -302,29 +399,59 @@ class W:
     def margin(self, cls, pri, rate=None, kx=None):
         """The margin a class should make at a priority, at its measured rate, on Kryptex or not (kx; None: the pool
         a new group would start on)."""
-        return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(), self.st["classes"][cls]["prices"][pri])
+        return margin_of((rate or self.rate(cls)) * self.usd(kx) + self.xmr_usd(cls=cls),
+                         self.st["classes"][cls]["prices"][pri])
 
-    def xmr_usd(self, g=None):
+    def pick_margin(self, cls, pri, kx=None):
+        """The margin a class must clear at a priority before the search picks it there, or a waiting group moves up
+        to it: at a PC slower than search_pct of its stored PCs, not its median one. At the median about a third of
+        the PCs Salad handed out failed: RTX 4060s at medium (median 59.7 TH/s, +12–13%; 57 or less fails) used 7
+        counted moves on 23–24 October and one was deleted (OPEN.md #69)."""
+        return self.margin(cls, pri, self.rate(cls, self.cfg["search_pct"]), kx)
+
+    def xmr_usd(self, g=None, cls=None):
         """What Monero on a box's CPU earns an hour, for the rules. For group g (0 unless it mines Monero), its own
-        figure once the pools' 30-minute averages hold only this PC: the mean of its last 3 reads taken 30 minutes
-        or more after it got the PC, restarted or last paused (xmr_own), the latest within 15 minutes. A box whose
-        Monero doesn't reach the pool then counts 0. Before that, and for a new group (no g), the median of the live
-        boxes the pools saw in the last 15 minutes. The rules counted Pearl alone until 22 October, so boxes that
-        cleared 10% with their Monero (about $0.002 a box) were left."""
+        figure once the pools' 30-minute averages hold only this PC (own_khs). A box whose Monero doesn't reach the
+        pool then counts 0, and so does one the pools haven't seen at all 45 minutes in. Before that, and for a new
+        group of class cls, the median of the own figures of that class's PCs in the last rate_days (xmr_rates), or
+        with none stored, the median of the live boxes the pools saw in the last 15 minutes. The rules counted Pearl
+        alone until 22 October, so boxes that cleared 10% with their Monero (about $0.002 a box) were left."""
         if not (g.get("xmr") if g is not None else self.wants_xmr("*")):
             return 0.0
         t, xusd = now(), (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
-        if g is not None and g.get("has_pc") and g.get("pc_since") and g.get("xmr_own"):
+        if g is not None and g.get("has_pc") and g.get("pc_since"):
+            own = self.own_khs(g, t)
+            if own is not None:
+                return own * xusd
             since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
-            own = [k for seen, k in g["xmr_own"] if seen >= since + 30 * MIN][-3:]
-            if own and t - g["xmr_own"][-1][0] < 15 * MIN:
-                return sum(own) / len(own) * xusd
+            # A box the pools never saw here has no reads at all, and took the median for as long as it stayed: 4060-60
+            # on 23 October, an hour on its PC with no Monero at either pool, was judged +14% against its +10%. A new
+            # box shows at the pools within 30 minutes (3060-75 that evening), so after 45 with none it counts 0.
+            if t - since >= 45 * MIN and not any(seen >= since for seen, _ in g.get("xmr_own") or []):
+                return 0.0
+        # By class: a PC's CPU goes with its owner's card. The fleet median, which the 3060s' 3–5 kH/s pulled up while
+        # 4060s made 0.5–1.3, credited a new 4060 about $0.0038/hr against its $0.002, so on 23 October 4060-60 kept a
+        # PC another 4060 had left at 58 TH/s and left it 8 minutes later at +9% (OPEN.md #65).
+        mine = sorted(k for k, _ in self.st.get("xmr_rates", {}).get(g["class"] if g is not None else cls, {}).values())
+        if mine:
+            n = len(mine)
+            return (mine[n // 2] if n % 2 else (mine[n // 2 - 1] + mine[n // 2]) / 2) * xusd
         khs = sorted(k for k in (self.box_khs(x, t) for x in self.st["groups"].values()
                                  if not x["ended"] and x.get("xmr") and x["has_pc"]) if k > 0)
         n = len(khs)
         if not n:
             return 0.0
         return (khs[n // 2] if n % 2 else (khs[n // 2 - 1] + khs[n // 2]) / 2) * xusd
+
+    def own_khs(self, g, t):
+        """A box's own Monero kH/s on its PC, once the pools' 30-minute averages hold only this PC: the mean of its
+        last 3 reads taken 30 minutes or more after it got the PC, restarted or last paused (xmr_own), the latest
+        within 15 minutes. None before that."""
+        since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
+        own = [k for seen, k in g.get("xmr_own") or [] if seen >= since + 30 * MIN][-3:]
+        if own and t - g["xmr_own"][-1][0] < 15 * MIN:
+            return sum(own) / len(own)
+        return None
 
     def box_khs(self, g, t):
         """A box's Monero kH/s as HeroMiners' pay values it (xmr_mkt's usd_khs_hr is HeroMiners' net pay): its
@@ -334,15 +461,22 @@ class W:
         kx = g.get("kxx_khs") or 0.0 if t - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
         return hm + kx * self.cfg["kryptex_xmr_pay"] / (1 - XMR_FEE)
 
-    def rate(self, cls):
+    def rate(self, cls, q=0.5):
         """The TH/s a new group of this class should make: the median of the PCs it has mined on here in the
         last rate_days (each PC's rate on its last 3 readings after warm-up, capped and slow PCs included), or
-        the benchmark in KNOWN before any has."""
+        the benchmark in KNOWN before any has. With q, the rate that share of them are slower than (between
+        neighbours), for pick_margin."""
         pcs = sorted(r for r, _ in self.st.get("pc_rates", {}).get(cls, {}).values())
         if not pcs:
             return KNOWN[cls][0]
         n = len(pcs)
-        return pcs[n // 2] if n % 2 else (pcs[n // 2 - 1] + pcs[n // 2]) / 2
+        i, f = divmod(q * (n - 1), 1)
+        i = int(i)
+        med = pcs[i] * (1 - f) + pcs[i + 1] * f if f else pcs[i]
+        # A PC a group left for its margin is stored at its slow rate, so with few PCs a class's rate can be one bad
+        # PC's: one RTX 5090 left at 131 TH/s would make the search expect 131 for every 5090, not 418, and never
+        # create one (OPEN.md #62). Until min_rate_pcs PCs, a slower median doesn't lower the benchmark.
+        return med if n >= self.cfg["min_rate_pcs"] else max(med, KNOWN[cls][0])
 
     def record_rates(self, t):
         """Keep each PC's latest rate, by class, for rate(). The first time, fill it from the readings in the
@@ -370,9 +504,17 @@ class W:
                 if not own or own[-1][0] < seen:
                     own.append([seen, self.box_khs(g, seen)])
                     del own[:-6]
-        for pcs in st["pc_rates"].values():
+                # Its own figure on this PC, by class, for a new box's estimate (xmr_usd).
+                k = self.own_khs(g, t) if g.get("pc_since") and g.get("machine") else None
+                if k is not None:
+                    st.setdefault("xmr_rates", {}).setdefault(g["class"], {})[g["machine"]] = [k, t]
+        for pcs in list(st["pc_rates"].values()) + list(st.get("xmr_rates", {}).values()):
             for m in [m for m, (_, seen) in pcs.items() if t - seen >= 86400 * self.cfg["rate_days"]]:
                 del pcs[m]
+        # A name no live group has used for rate_days lets its node identity go.
+        keys = st.get("node_keys", {})
+        for n in [n for n, k in keys.items() if t - k.get("used", 0) >= 86400 * self.cfg["rate_days"]]:
+            del keys[n]
 
     def credit_ratio(self):
         """The share of our estimated PRL that the pool has credited (paid, unlocked and unconfirmed), once it has
@@ -649,6 +791,106 @@ class W:
                 st["trader_warned"] = False
                 return
 
+    def credit_count(self):
+        """Our own count of the Salad credit left: what was bought, less each group's price for every minute it had a
+        PC, moved to Salad's figure at its last read (credit_fix). The report shows it, starred, only when Salad's
+        balance hasn't been read for an hour."""
+        spend = sum(g["spend"] for g in self.st["groups"].values())
+        return self.cfg["credit_start"] + self.cfg["credit_offset"] - spend + self.st.get("credit_fix", 0.0)
+
+    def salad_balance(self):
+        """Salad's own credit balance, read from the portal at most every 10 min when $SALAD_USER and $SALAD_PASS are
+        set. Each read also sets our count to it, so the count only drifts while reads fail. A failed read warns
+        once and keeps the last."""
+        user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
+        if not user or not pw or t - st.get("bal_read_t", 0) < 600:
+            return
+        st["bal_read_t"] = t
+        s, cents = portal_balance(user, pw)
+        if s != 200 or not isinstance(cents, (int, float)):
+            if not st.get("bal_warned"):
+                st["bal_warned"] = True
+                event(f"WARN can't read Salad's balance from the portal: HTTP {s} {str(cents)[:150]}")
+            return
+        usd = cents / 100
+        st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
+        st["salad_bal"] = {"t": t, "usd": usd}
+        st["bal_warned"] = False
+
+    def safetrade(self):
+        """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
+        held and in open orders, and all we have sold (fills of our own sell orders) with the USDT it brought after
+        fees. Each new sale is a SOLD event. Read at most every 5 min, with GET calls only, when $SAFETRADE_API_KEY
+        and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says when that was."""
+        key, sec = os.environ.get("SAFETRADE_API_KEY"), os.environ.get("SAFETRADE_API_SECRET")
+        st, t = self.st, now()
+        if not key or not sec or t - st.get("st_read_t", 0) < 300:
+            return
+        st["st_read_t"] = t
+
+        def get(path):
+            # Signed with HMAC-SHA256 of a millisecond nonce and the key, on the real clock (SafeTrade checks it).
+            n = str(int(time.time() * 1000))
+            sig = hmac.new(sec.encode(), (n + key).encode(), hashlib.sha256).hexdigest()
+            s, j = http("GET", SAFETRADE + path, timeout=30,
+                        headers={"X-Auth-Apikey": key, "X-Auth-Nonce": n, "X-Auth-Signature": sig})
+            if s != 200 or not isinstance(j, list):
+                if not st.get("st_warned"):
+                    st["st_warned"] = True
+                    event(f"WARN can't read SafeTrade {path.split('?')[0]}: HTTP {s} {str(j)[:150]}")
+                return None
+            return j
+
+        bal = get("/account/balances/spot")
+        if bal is None:
+            return
+        fills = []
+        for page in range(1, 21):   # every fill we have, newest first, 100 a page
+            got = get(f"/market/trades?limit=100&page={page}")
+            if got is None:
+                return
+            fills += got
+            if len(got) < 100:
+                break
+        coins = {}
+        for b in bal:
+            try:
+                coins[str(b["currency"]).lower()] = [float(b.get("balance") or 0), float(b.get("locked") or 0)]
+            except (KeyError, TypeError, ValueError):
+                pass
+        # The first read only notes the newest fill, so the account's history isn't announced as new sales.
+        sold, new, last = {}, {}, st.get("st_fill_id")
+        for f in fills:
+            # A fill's "side" is the taker's; "order_side" is our own order's.
+            m = str(f.get("market") or "")
+            if f.get("order_side") != "sell" or not m.endswith("usdt"):
+                continue
+            try:
+                fid, amt, got = int(f["id"]), float(f["amount"]), float(f["total"])
+                fee = float(f.get("fee") or 0) if f.get("fee_currency") == "usdt" else 0.0
+            except (KeyError, TypeError, ValueError):
+                continue
+            coin = "pearl" if m[:-4] in ("pearl", "prl") else m[:-4]   # SafeTrade's PRL is "pearl" since 20 Oct
+            s = sold.setdefault(coin, [0.0, 0.0])
+            s[0] += amt
+            s[1] += got - fee
+            if last is not None and fid > last:
+                o = new.setdefault(f.get("order_id"), [coin, 0.0, 0.0])
+                o[1] += amt
+                o[2] += got - fee
+        for coin, amt, usd in reversed(list(new.values())):
+            event(f"SOLD {amt:.{COIN_DP.get(coin, 4)}f} {coin_name(coin)} on SafeTrade for ${usd:.2f} USDT after fees "
+                  f"(${usd / amt:.2f} each)")
+        ids = []
+        for f in fills:
+            try:
+                ids.append(int(f["id"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        st["st_fill_id"] = max(ids + [last or 0])
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold}
+        st["st_warned"] = False
+
     # ---------- actions ----------
     def delete(self, g, kind, reason):
         why = self.last_lines(g) if g["had_pc"] else []
@@ -730,12 +972,17 @@ class W:
         err(f"reallocate {g['name']} failed {s} {j}")
         return False
 
-    def set_priority(self, g, pri):
+    def next_pri(self, g):
+        """The cheapest priority above the group's that still clears the margin (pick_margin), or None."""
+        return next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
+                     if self.pick_margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+
+    def set_priority(self, g, pri, why="no PC at {old} in 10 min"):
         s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"priority": pri}}, ctype="application/merge-patch+json")
         if 200 <= s < 300:
             old = g["pri"]
             g.update(pri=pri, price=self.st["classes"][g["class"]]["prices"][pri], pri_since=now())
-            event(f"PRIORITY {g['name']}: no PC at {old} in 10 min, moved to {pri} (${g['price']:.3f}/hr, "
+            event(f"PRIORITY {g['name']}: {why.format(old=old)}, moved to {pri} (${g['price']:.3f}/hr, "
                   f"{self.margin(g['class'], pri, kx=bool(g.get('kx'))) * 100:+.0f}% margin)")
             return True
         err(f"patch {g['name']} -> {pri} refused {s} {str(j)[:200]}")
@@ -751,21 +998,51 @@ class W:
         on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
         ver = self.cfg["ver_override"].get(name, self.cfg["box_ver"])
         host = self.cfg["kryptex_host"] if kx else None
-        llm = bool(self.cfg["llm"])
+        llm, amd = self.llm_on(name), is_amd(name)
+        node = self.node_key(name) if llm else None
+        if amd and vnum(ver) < vnum(AMD_VER):
+            ver = AMD_VER
         if kx and vnum(ver) < vnum(self.cfg["kryptex_ver"]):
             ver = self.cfg["kryptex_ver"]
         if llm and vnum(ver) < vnum(self.cfg["llm_ver"]):
             ver = self.cfg["llm_ver"]
         if not xmr:
-            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm)],
+            return (ver, ["/bin/sh", "-c", cmd_for(name, self.cfg["wallet"], ver, kryptex=host, llm=llm, amd=amd,
+                                                   node=node)],
                     {"cpu": 2, "memory": 4096})
         if vnum(ver) < vnum(self.cfg["xmr_ver"]):
             ver = self.cfg["xmr_ver"]
         xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
         if xpool and vnum(ver) < vnum(self.cfg["xmr_kx_ver"]):
             ver = self.cfg["xmr_kx_ver"]
-        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool)
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"], self.cfg["xmr_threads"], host, llm, xpool, amd,
+                      node)
         return ver, ["/bin/sh", "-c", cmd], {"cpu": self.cfg["xmr_cpu"], "memory": self.cfg["xmr_memory"]}
+
+    def node_key(self, name):
+        """The LLMJob node identity for a group's box (node_step): an Ed25519 key in the CLI's form (tweetnacl's
+        64-byte secret key, the id the first 16 hex of the public key's sha256), made the first time and kept by
+        group name, so a group keeps it across its PCs and restarts. None without the cryptography module."""
+        keys = self.st.setdefault("node_keys", {})
+        k = keys.get(name)
+        if k is None:
+            if Ed25519PrivateKey is None:
+                return None
+            sk = Ed25519PrivateKey.generate()
+            seed = sk.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                                    serialization.NoEncryption())
+            pub = sk.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+            pk = base64.b64encode(pub).decode()
+            k = keys[name] = {"nodeId": hashlib.sha256(pk.encode()).hexdigest()[:16], "publicKey": pk,
+                              "secretKey": base64.b64encode(seed + pub).decode(),
+                              "createdAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now()))}
+        k["used"] = now()
+        return k
+
+    def llm_on(self, name):
+        """Whether a group's box runs Gemma: config "llm", except on an AMD box, where the CLI's local LLM has no
+        build for the card."""
+        return bool(self.cfg["llm"]) and not is_amd(name)
 
     def xmr_kx(self, xmr):
         """Whether a box's command sends its Monero to Kryptex: it mines Monero and config xmr_kx is on."""
@@ -785,7 +1062,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, bool(self.cfg["llm"]), self.xmr_kx(want)
+                g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, self.llm_on(g["name"]), self.xmr_kx(want)
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
                     rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
@@ -804,8 +1081,8 @@ class W:
         after 6 minutes); one it doesn't restart runs Gemma from its next PC, as a group waiting for a PC does from
         its first. A group still preparing its image is left for a later round (Salad refuses updates then),
         and a refused update is tried again after 10 minutes."""
-        want = bool(self.cfg["llm"])
         for g in active:
+            want = self.llm_on(g["name"])
             if (g["ended"] or bool(g.get("llm")) == want or g.get("status") == "pending"
                     or t - g.get("llm_try", 0) < 600):
                 continue
@@ -837,7 +1114,7 @@ class W:
                         ctype="application/merge-patch+json")
             pool = "Kryptex" if want else "HeroMiners"
             if 200 <= s < 300:
-                g["xmr_kx"], g["ver"], g["llm"] = want, ver, bool(self.cfg["llm"])
+                g["xmr_kx"], g["ver"], g["llm"] = want, ver, self.llm_on(g["name"])
                 event(f"MONERO ON {pool.upper()} {g['name']}: miner {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -863,7 +1140,7 @@ class W:
             s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
-                g["ver"], g["llm"], g["xmr_kx"] = ver, bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+                g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
                 event(f"RELEASE {g['name']}: miner {old} -> {ver}; "
                       + ("it keeps this PC, where Salad usually restarts it that way within minutes" if g["has_pc"]
                          else "it starts that way on its next PC"))
@@ -1041,7 +1318,7 @@ class W:
             event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']} refused: HTTP {s} {str(j)[:150]}")
             return False
         # The command carries config's Gemma and Monero pool settings too.
-        g["llm"], g["xmr_kx"] = bool(self.cfg["llm"]), self.xmr_kx(g.get("xmr"))
+        g["llm"], g["xmr_kx"] = self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
         # A box seen mining on the target pool already (pc_pool) stays on its PC.
         moving = (not in_place and bool(g["has_pc"] and g.get("instance"))
                   and self.on_kx(g, g.get("machine"), t) != on)
@@ -1264,7 +1541,8 @@ class W:
         ver, command, res = self.box(name, xmr, kx)
         res.update(storage_amount=10737418240, gpu_classes=[st["classes"][cls]["id"]])
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
-                "container": {"image": IMAGE, "priority": pri, "resources": res, "command": command}}
+                "container": {"image": AMD_IMAGE if is_amd(name) else IMAGE, "priority": pri, "resources": res,
+                              "command": command}}
         s, j = http("POST", CB, body)
         if 200 <= s < 300:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
@@ -1278,12 +1556,12 @@ class W:
                 "acc": {}, "last_share": None, "profit_fail": 0, "last_check": 0, "status": "pending",
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
-                "llm": bool(self.cfg["llm"]), "xmr_kx": self.xmr_kx(xmr)}
+                "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
             event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
-                  + (", Gemma" if self.cfg["llm"] else ""))
+                  + (", Gemma" if self.llm_on(name) else ""))
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
@@ -1360,6 +1638,9 @@ class W:
                 event(f"WARN {g['name']}: Salad runs {len(multi)} instances of it, on PCs {', '.join(multi)}; only "
                       f"{on[0]['machine_id'][:8]} is judged")
             g["has_pc"] = bool(on)
+            # Salad bills an instance only while it is running ("billed per second only for container instances in
+            # the 'running' state"), not while it downloads or starts: has_pc counts those too, for the rules.
+            g["_run"] = any(i.get("state") == "running" and i.get("machine_id") for i in insts)
             if on:
                 g["instance"] = on[0].get("instance_id") or on[0].get("id")
                 g["_machine"] = on[0]["machine_id"]
@@ -1370,9 +1651,11 @@ class W:
 
         self.sweep(t)
 
-        # Billing: price for every minute a group has a PC.
+        # Billing: price for every minute a group's instance is running. Counting downloading and creating as well
+        # read 2.4% over Salad's own running time (system logs, 91 groups on 23 Oct): about 29 s a PC, $0.22-0.27 a
+        # day, so "Salad $X left" read low (OPEN.md #66).
         for g in active:
-            if g.get("has_pc") and not g["ended"]:
+            if g.get("_run") and not g["ended"]:
                 g["spend"] += g["price"] * dt_s / 3600
                 g["pc_min"] += dt_s / 60
 
@@ -1469,6 +1752,8 @@ class W:
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()
+        self.safetrade()
+        self.salad_balance()
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -1621,12 +1906,19 @@ class W:
                 if g["lost_since"] is None:
                     g["lost_since"] = t
                 if t - g["lost_since"] >= 20 * MIN:
-                    self.delete(g, "released", "lost its PC and got no other in 20 min")
+                    # As a group that never got a PC: a higher priority that still clears the margin first, with 20
+                    # more minutes there. Most of these never had a PC that mined: on 23 October 2070-38, 5060ti-147
+                    # and 148 and the AMD box rx9070xt-3 were each turned off bad-list PCs, then deleted at their
+                    # first priority 20 minutes later.
+                    nxt = self.next_pri(g)
+                    if nxt is None:
+                        self.delete(g, "released", "lost its PC and got no other in 20 min")
+                    elif self.set_priority(g, nxt, "no PC since losing one 20 min ago"):
+                        g["lost_since"] = t
             elif g["status"] == "pending":
                 g["pri_since"] = t  # preparing the image: not looking for a PC yet, and a priority change is refused
             elif t - g["pri_since"] >= 10 * MIN:
-                nxt = next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
-                            if self.margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+                nxt = self.next_pri(g)
                 if nxt is None:
                     self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
                                                f"{self.cfg['min_margin']:.0%}")
@@ -1711,6 +2003,14 @@ class W:
                               f"({under(margin_of(ths * usd + xmr, g['price']), bar)}, under {bar:.0%})",
                            ths=ths)
                 return
+            # A group still on its PC has cleared the bar every round since its warm-up there (the first round it
+            # doesn't, it leaves), so after 2 h on it its count of moves starts again. The count never reset until
+            # 24 October: 3060-72 mined at +17–20% for hours and was deleted on the first slow PC it got, its 3 moves
+            # used on earlier days (OPEN.md #68).
+            if g["reallocs"] and t - max(g["pc_since"], rs) >= 2 * 3600:
+                event(f"MOVES {g['name']}: 2 h above {bar:.0%} on PC {g['machine'][:8]}, so its count of moves starts "
+                      f"again (it had used {g['reallocs']} of 3)")
+                g["reallocs"] = 0
             ten = post[-10:]
             shared = (g["last_share"] or 0) >= g["pc_since"]   # the pool accepts its work, not just the miner's figure
             if not self.paid(g) and shared and len(ten) == 10 and margin_of(sum(r[2] for r in ten) / 10 * usd + xmr, g["price"]) >= bar:
@@ -1823,7 +2123,11 @@ class W:
         if self.paid(g):
             self.reallocate(g, why)
         else:
-            self.delete(g, "failed", why)
+            # Left for its rate, the PC was at fault and the lists above bar it (24 h bad list, 7 days in pc_rates),
+            # and rate() drops a class once 3 of its PCs are slow: so the class isn't held 24 h as failed. On 23
+            # October a 9070 XT left at 46 TH/s on PC f6f1e2e2 (others ran 88-111) held the class out for a day
+            # (OPEN.md #67). A group that never mined or shared still fails, and holds its class.
+            self.delete(g, "released" if ths is not None else "failed", why)
 
     def search(self):
         st = self.st
@@ -1847,7 +2151,7 @@ class W:
             if made >= room or st["credits_out"] or self.quota_full:
                 break
             # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
-            if made and self.margin(cls, p) < self.cfg["min_margin"]:
+            if made and self.pick_margin(cls, p) < self.cfg["min_margin"]:
                 continue
             if self.create(cls, p):
                 made += 1
@@ -1900,8 +2204,8 @@ class W:
                 continue
             start = PRIS.index(self.start_pri(cls))
             for p in order or PRIS[start:] + PRIS[:start][::-1]:
-                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.margin(cls, p) >= self.cfg["min_margin"]:
-                    profit = rate * self.usd() + self.xmr_usd() - st["classes"][cls]["prices"][p]
+                if (a.get(f"available_gpu_{p}") or 0) > 0 and self.pick_margin(cls, p) >= self.cfg["min_margin"]:
+                    profit = rate * self.usd() + self.xmr_usd(cls=cls) - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
                     break
         return sorted(cands)
@@ -1948,7 +2252,7 @@ class W:
             if cls == g["class"] or cls not in placed or (latest[cls]["ended"] and not latest[cls]["had_pc"]):
                 continue
             price = st["classes"][cls]["prices"][PRIS[max(PRIS.index(p), PRIS.index(placed[cls]), 1)]]
-            expect = self.rate(cls) * u + self.xmr_usd() - price
+            expect = self.rate(cls) * u + self.xmr_usd(cls=cls) - price
             switch = max(worst, 0) * self.cfg["swap_wait_min"] / 60 + price * START_MIN / 60
             if best is None or expect - switch > best[0] - best[1]:
                 best = (expect, switch, cls, p)
@@ -2053,14 +2357,16 @@ class W:
         ended = [g for g in groups if g["ended"]]
         if ended:
             # Groups that have ended, as one row with their count and what they earned; the events say which were
-            # released or failed.
-            lines.append(f"| Others{NB}×{len(ended)} |" + " — |" * (4 if xon else 3)
+            # released or failed. Called "Others" until 24 October, which read like other people's miners (OPEN.md #71).
+            lines.append(f"| Ended{NB}×{len(ended)} |" + " — |" * (4 if xon else 3)
                          + " " + " | ".join([prl_cell(ended)] + xmr_cell(ended)) + " |")
         hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | "
                      + " | ".join([prl_cell(groups, bold)] + xmr_cell(groups, bold)) + " |")
-        credit = self.cfg["credit_start"] + self.cfg["credit_offset"] - spend
+        # Salad's own balance when it was read in the last hour (no star), else our count (starred).
+        sb = st.get("salad_bal")
+        credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
@@ -2070,6 +2376,18 @@ class W:
         pool = []
         # Each pool's name links to that pool's page for our address.
         wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
+        sa = st.get("st_acct")
+
+        def safetrade_row(coin):
+            """Where a coin's payouts go: SafeTrade, with what it holds (Confirmed), what's in open orders (Pending)
+            and all we've sold there with the USDT it brought after fees (Paid). No row without a SafeTrade key."""
+            if not sa or "sold" not in sa:   # a read from before 24 Oct 10:40 am EDT had last-day sales only
+                return []
+            dp, (b, l), (n, usd) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0]), sa["sold"].get(coin, [0.0, 0.0])
+            read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
+            return [f"| 💵 [{coin_name(coin)}{NB}SafeTrade](https://safetrade.com){read} | — | {b:.{dp}f} | {l:.{dp}f} "
+                    f"| {n:.{dp}f}{NB}for{NB}${usd:.2f} |"]
+
         if pt:
             name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
             pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
@@ -2079,6 +2397,7 @@ class W:
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
             pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
                         f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
+        pool += safetrade_row("pearl")
         if xt:
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
@@ -2086,6 +2405,8 @@ class W:
         if kxx:
             pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
+        if xon:
+            pool += safetrade_row("xmr")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
@@ -2094,13 +2415,13 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
-                + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
+        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark} left"
+                + (f" ({hours:.0f}{cmark} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
-        with open(REPORT + ".tmp", "w") as f:
+        with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
         if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:

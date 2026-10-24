@@ -9,9 +9,13 @@ spec = importlib.util.spec_from_file_location("amdtest", os.path.join(HERE, "amd
 a = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(a)
 
+# amdtest.sh and the boot command run on Salad's Linux boxes; a host without sh (Windows) skips the tests that run them.
+HAS_SH = bool(shutil.which("sh")) and os.path.exists("/bin/sh")
+needs_sh = unittest.skipUnless(HAS_SH, "needs sh, as the boxes have")
+
 
 def read(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
@@ -72,11 +76,13 @@ class TestAmdtest(unittest.TestCase):
         self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh", c["command"][2])
         self.assertEqual(c["environment_variables"]["TASKS"], "card,hip")
 
+    @needs_sh
     def test_boot_command_is_valid_sh(self):
         sh = shutil.which("dash") or shutil.which("sh")
         r = subprocess.run([sh, "-n", "-c", a.BOOT], capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
 
+    @needs_sh
     def test_boot_without_a_sha_idles(self):
         sh = shutil.which("dash") or shutil.which("sh")
         boot = a.BOOT.replace("exec sleep infinity", "exit 0")
@@ -151,6 +157,7 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(read(os.path.join(e, "f.txt")), "two\n")
         self.assertEqual(read(os.path.join(e, "new.txt")), "new\n")
 
+    @needs_sh
     def test_box_script_syntax_and_line_shape(self):
         sh = os.path.join(HERE, "amdtest.sh")
         r = subprocess.run(["bash", "-n", sh], capture_output=True, text=True)
@@ -168,6 +175,7 @@ class TestAmdtest(unittest.TestCase):
         self.assertTrue(lines[2].split(" | ", 1)[1].startswith("+x"))
         self.assertEqual(sum(l.split(" | ", 1)[1].lstrip("+").count("x") for l in lines[1:]), 1000)
 
+    @needs_sh
     def test_lib_stage_only_defines_the_functions(self):
         # bench.sh sources it this way for setup, fetch, the build, the hit check and the CLI: nothing may run.
         sh = os.path.join(HERE, "amdtest.sh")
