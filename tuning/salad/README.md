@@ -676,7 +676,8 @@ cloud session's network proxy for `backboard.railway.com`. Without one, Railway 
 and there's one `WARN` event.
 
 **The SafeTrade rows** (since 24 October) read the account itself, not the trader's log: with
-`SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, every 5 minutes the watcher asks SafeTrade for the balances
+`SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, once a report (in the first round of each quarter hour, so
+the quarter's report shows that minute's read; a failed read is tried again 5 minutes later) the watcher asks SafeTrade for the balances
 (`/account/balances/spot`) and every fill we have (`/market/trades`, 100 a page). These are GET calls, signed with
 HMAC-SHA256 of a millisecond nonce and the key; the watcher never places, cancels or withdraws. A sale is a fill
 of our own sell order (`order_side`; a fill's `side` is the taker's), counted at its USDT less SafeTrade's fee.
@@ -721,7 +722,7 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
   (its own share count at its set pay a share), the pool's totals and prices. Since 24 October, with `SALAD_USER` and `SALAD_PASS` set, the watcher reads Salad's
-  balance from the portal every 10 minutes (Salad's public API has none) and shows it unstarred; each read also
+  balance from the portal once a report, as SafeTrade (Salad's public API has none) and shows it unstarred; each read also
   moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure.
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
