@@ -4,8 +4,9 @@
 # (the table) and events.log (one line per action) into the data directory: $SALAD_MINE_DIR, or
 # run/ next to this file. config.json there is re-read every round, so limits change without a restart.
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
-# cloud session the network proxy adds it instead.
-import base64, hashlib, json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+# cloud session the network proxy adds it instead. With $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET set,
+# the report also shows our SafeTrade account (read-only calls).
+import base64, hashlib, hmac, json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
 try:
     from cryptography.hazmat.primitives import serialization
@@ -17,6 +18,7 @@ D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abs
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
 ORG = os.environ.get("SALAD_ORG", "llmjob")
 RAILWAY = "https://backboard.railway.com/graphql/v2"
+SAFETRADE = "https://safetrade.com/api/v2/trade"
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
 BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
@@ -135,6 +137,14 @@ def clock(t):
     """New York time on the 12-hour clock, which the user reads more easily than 24-hour time: 8:05 pm EDT."""
     d = dt.datetime.fromtimestamp(t, NY)
     return f"{d.hour % 12 or 12}:{d:%M} {'am' if d.hour < 12 else 'pm'} {d:%Z}"
+
+
+def short_clock(t, ref):
+    """A time for a table cell: 2:00 am on ref's New York day, else just its date (Oct 22). The heading has the zone."""
+    d, r = dt.datetime.fromtimestamp(t, NY), dt.datetime.fromtimestamp(ref, NY)
+    if d.date() == r.date():
+        return f"{d.hour % 12 or 12}:{d:%M}{NB}{'am' if d.hour < 12 else 'pm'}"
+    return f"{d:%b}{NB}{d.day}"
 
 
 def stamp(t):
@@ -743,6 +753,60 @@ class W:
                 st["trader_status"] = dict(found[0], seen=found[1])
                 st["trader_warned"] = False
                 return
+
+    def safetrade(self):
+        """Our SafeTrade account, for the report's SafeTrade table: each coin's balance and what sits in open orders,
+        and our sales (fills of our own sell orders) in the last 24 h and the newest, from the newest 100 fills. Read
+        at most every 5 min, with GET calls only, when $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET are set. A failed
+        read keeps the last one, and the table says when that was."""
+        key, sec = os.environ.get("SAFETRADE_API_KEY"), os.environ.get("SAFETRADE_API_SECRET")
+        st, t = self.st, now()
+        if not key or not sec or t - st.get("st_read_t", 0) < 300:
+            return
+        st["st_read_t"] = t
+
+        def get(path):
+            # Signed with HMAC-SHA256 of a millisecond nonce and the key, on the real clock (SafeTrade checks it).
+            n = str(int(time.time() * 1000))
+            sig = hmac.new(sec.encode(), (n + key).encode(), hashlib.sha256).hexdigest()
+            s, j = http("GET", SAFETRADE + path, timeout=30,
+                        headers={"X-Auth-Apikey": key, "X-Auth-Nonce": n, "X-Auth-Signature": sig})
+            if s != 200 or not isinstance(j, list):
+                if not st.get("st_warned"):
+                    st["st_warned"] = True
+                    event(f"WARN can't read SafeTrade {path.split('?')[0]}: HTTP {s} {str(j)[:150]}")
+                return None
+            return j
+
+        bal = get("/account/balances/spot")
+        fills = get("/market/trades?limit=100") if bal is not None else None
+        if fills is None:
+            return
+        coins = {}
+        for b in bal:
+            try:
+                coins[str(b["currency"]).lower()] = [float(b.get("balance") or 0), float(b.get("locked") or 0)]
+            except (KeyError, TypeError, ValueError):
+                pass
+        sales = {}
+        for f in fills:
+            # A fill's "side" is the taker's; "order_side" is our own order's.
+            m = str(f.get("market") or "")
+            if f.get("order_side") != "sell" or not m.endswith("usdt"):
+                continue
+            try:
+                ft, amt, price, got = parse_iso(f["created_at"]), float(f["amount"]), float(f["price"]), float(f["total"])
+                fee = float(f.get("fee") or 0) if f.get("fee_currency") == "usdt" else 0.0
+            except (KeyError, TypeError, ValueError, AttributeError):
+                continue
+            s = sales.setdefault(m[:-4], {"last_t": 0.0, "last_price": 0.0, "day_amount": 0.0, "day_usdt": 0.0})
+            if ft > s["last_t"]:
+                s["last_t"], s["last_price"] = ft, price
+            if ft > t - 86400:
+                s["day_amount"] += amt
+                s["day_usdt"] += got - fee
+        st["st_acct"] = {"t": t, "coins": coins, "sales": sales}
+        st["st_warned"] = False
 
     # ---------- actions ----------
     def delete(self, g, kind, reason):
@@ -1605,6 +1669,7 @@ class W:
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
         self.trader()
+        self.safetrade()
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -2244,6 +2309,24 @@ class W:
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
+        # Our SafeTrade account, where the pools pay and the trader sells: each coin's balance, what's in open
+        # orders, what we sold in the last 24 h (for USDT after fees) and the last sale. PRL, XMR and USDT always,
+        # any other coin we hold too.
+        sa, sell = st.get("st_acct"), []
+        if sa:
+            name = "[SafeTrade](https://safetrade.com)" + (f"{NB}(read{NB}{short_clock(sa['t'], t)})"
+                                                           if t - sa["t"] >= 15 * MIN else "")
+            sell = ["", f"| {name} | Available | In orders | Sold (24h) | Last sale |", "|---|---|---|---|---|"]
+            for c in ["pearl", "xmr", "usdt"] + sorted(c for c, (b, l) in sa["coins"].items()
+                                                       if (b or l) and c not in ("pearl", "xmr", "usdt")):
+                b, l = sa["coins"].get(c, [0.0, 0.0])
+                dp = {"pearl": 3, "prl": 3, "xmr": 6, "usdt": 2, "usdc": 2}.get(c, 4)
+                s = sa["sales"].get(c)
+                sold = (f"{s['day_amount']:.{dp}f}{NB}for{NB}${s['day_usdt']:.2f}" if s and s["day_amount"] else
+                        "0" if s or c in ("pearl", "xmr") else "—")
+                last = f"${s['last_price']:.2f},{NB}{short_clock(s['last_t'], t)}" if s else "—"
+                sell.append(f"| {'PRL' if c == 'pearl' else c.upper()} | {b:.{dp}f} | {l:.{dp}f} | {sold} | {last} |")
+
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
         # credit left (with the hours it lasts at the All row's $/hr) ends the line. Until 20 October it was under
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
@@ -2252,7 +2335,7 @@ class W:
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{EST} left"
                 + (f" ({hours:.0f}{EST} h)" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
-        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool, *sell]
         if st["credits_out"]:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         with open(REPORT + ".tmp", "w", encoding="utf-8") as f:

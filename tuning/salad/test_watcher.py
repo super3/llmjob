@@ -2015,6 +2015,95 @@ class TestTraderStatus(Base):
                 self.assertNotIn(gone, report)
 
 
+class TestSafeTrade(Base):
+    BAL = [{"currency": "pearl", "balance": "1.1461474", "locked": "0.5"},
+           {"currency": "usdt", "balance": "9.0505421", "locked": "0"},
+           {"currency": "xmr", "balance": "0.000008", "locked": "0"},
+           {"currency": "usdc", "balance": "0", "locked": "0"},
+           {"currency": "btc", "balance": "0.0001", "locked": "0"}]
+
+    def fill(self, ago_h, market="pearlusdt", amount=2.0, price=1.9, order_side="sell", side="buy"):
+        return {"market": market, "price": str(price), "amount": str(amount), "total": str(amount * price),
+                "side": side, "order_side": order_side, "fee_currency": "usdt", "fee": str(amount * price / 1000),
+                "created_at": w.iso(self.clock[0] - ago_h * 3600)}
+
+    def setUp(self):
+        super().setUp()
+        os.environ["SAFETRADE_API_KEY"], os.environ["SAFETRADE_API_SECRET"] = "k" * 16, "s" * 32
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_KEY", None)
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_SECRET", None)
+        self.fills = [self.fill(1), self.fill(3, amount=1.0, price=2.0), self.fill(30, price=1.5),
+                      self.fill(2, market="xmrusdt", amount=0.01, price=620.1),
+                      self.fill(1, market="usdcusdt", amount=10.0, price=0.999, order_side="buy", side="sell")]
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/balances/spot$", (200, self.BAL))
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/market/trades\?", lambda _: (200, self.fills))
+
+    def row(self, coin):
+        return next(l for l in self.report().splitlines() if l.startswith(f"| {coin} |"))
+
+    def report(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_off_without_keys(self):
+        del os.environ["SAFETRADE_API_KEY"]
+        self.x.safetrade()
+        self.assertFalse(self.http.made("GET", "safetrade"))
+        self.assertNotIn("SafeTrade", self.report())
+
+    def test_balances_open_orders_and_the_last_days_sales(self):
+        self.x.safetrade()
+        rep = self.report()
+        self.assertIn("| [SafeTrade](https://safetrade.com) | Available | In orders | Sold (24h) | Last sale |", rep)
+        # 2.0 at 1.9 and 1.0 at 2.0 in the last day, less 0.1% fees: 5.8 - 0.0058; the sale 30 h ago is left out.
+        # The newest sale was an hour before 3:00 am EST.
+        self.assertEqual(self.row("PRL"), f"| PRL | 1.146 | 0.500 | 3.000{w.NB}for{w.NB}$5.79 | $1.90,{w.NB}2:00{w.NB}am |")
+        self.assertEqual(self.row("XMR"), f"| XMR | 0.000008 | 0.000000 | 0.010000{w.NB}for{w.NB}$6.19 | $620.10,{w.NB}1:00{w.NB}am |")
+        self.assertEqual(self.row("USDT"), "| USDT | 9.05 | 0.00 | — | — |")
+        # Any other coin we hold shows too; an empty one doesn't.
+        self.assertEqual(self.row("BTC"), "| BTC | 0.0001 | 0.0000 | — | — |")
+        self.assertNotIn("| USDC |", rep)
+
+    def test_only_our_own_sell_orders_count(self):
+        # A fill whose taker sold into our buy order is a buy of ours.
+        self.fills = [self.fill(1, order_side="buy", side="sell")]
+        self.x.safetrade()
+        self.assertEqual(self.row("PRL"), "| PRL | 1.146 | 0.500 | 0 | — |")
+
+    def test_a_last_sale_before_today_shows_its_date(self):
+        self.fills = [self.fill(30, price=1.5)]   # 9:00 pm EST on Jan 13, 30 h before 3:00 am on Jan 15
+        self.x.safetrade()
+        self.assertEqual(self.row("PRL"), f"| PRL | 1.146 | 0.500 | 0 | $1.50,{w.NB}Jan{w.NB}13 |")
+
+    def test_requests_are_signed(self):
+        self.x.safetrade()
+        h = self.http.headers
+        self.assertEqual(h["X-Auth-Apikey"], "k" * 16)
+        want = w.hmac.new(b"s" * 32, (h["X-Auth-Nonce"] + "k" * 16).encode(), w.hashlib.sha256).hexdigest()
+        self.assertEqual(h["X-Auth-Signature"], want)
+        self.assertFalse([c for c in self.http.calls if c[0] != "GET"])
+
+    def test_read_at_most_every_5_min(self):
+        self.x.safetrade()
+        self.clock[0] += 120
+        self.x.safetrade()
+        self.assertEqual(len(self.http.made("GET", "safetrade")), 2)   # balances and fills
+        self.clock[0] += 300
+        self.x.safetrade()
+        self.assertEqual(len(self.http.made("GET", "safetrade")), 4)
+
+    def test_a_refused_read_warns_once_keeps_the_last_and_says_when_it_was(self):
+        self.x.safetrade()
+        self.http.on("GET", r"safetrade\.com", (403, {"raw": ""}))
+        for _ in range(4):
+            self.clock[0] += 300
+            self.x.safetrade()
+        self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
+        self.assertIn(f"| [SafeTrade](https://safetrade.com){w.NB}(read{w.NB}3:00{w.NB}am) |", self.report())
+        self.assertTrue(self.row("PRL").startswith("| PRL | 1.146 |"))
+
+
 class TestRound(Base):
     def test_logs_and_pool_feed_the_ledger(self):
         self.x.cfg["search"] = False
