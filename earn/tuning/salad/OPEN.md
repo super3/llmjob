@@ -81,7 +81,7 @@ notes, and many had dropped off them with no fix or decision.
 
 | # | Problem | Fix |
 |---|---|---|
-| 31 | The hourly drift check covers HeroMiners only, so it has said nothing since every box moved to Kryptex; it would have caught #2. | Check Kryptex's hashrate and credit too. |
+| 31 | The hourly drift check covers HeroMiners only, so it checks nothing on Kryptex, where every box mines; it would have caught #2. And its ledger check raises a false alarm every hour: it values the pool's count of our HeroMiners work at today's PRL per TH-hr, while the ledger booked each minute at that minute's rate, and the rate has fallen since the boxes left HeroMiners. At 13:00Z on 24 Oct it said the work was worth 135.5 PRL against the ledger's 163.4 (−17%), as it had every hour on 23–24 Oct (26 times), though HeroMiners credited 152.4 PRL, 93% of the ledger, its usual ratio. No rule acts on it and it isn't in the report; $0 a day (seen 24 Oct). | Check Kryptex's hashrate and credit too, and value the pool's work at the rates it was done at (or skip a pool with no work in the last hour). |
 | 32 | No view of what we should have earned against what the pools credited, over time. | A daily line in the report or README. |
 | 33 | "Salad credit left" is our own count and drifts (the 167-min outage left about $0.8 uncounted). | Check against the portal; note the gap. |
 | 34 | During a Salad log outage the report shows mining boxes at 0 TH/s with no stale mark. | Mark rows whose last reading is old. |
