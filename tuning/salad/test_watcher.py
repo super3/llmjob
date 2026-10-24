@@ -4137,6 +4137,7 @@ class TestNodeIdentity(Base):
         cmd = self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2]
         self.assertEqual(self.node(cmd)["nodeId"], self.x.st["node_keys"]["biz-rtx4080"]["nodeId"])
 
+    @unittest.skipUnless(os.path.exists("/bin/sh"), "the boxes run it in sh; this host has none (Windows)")
     def test_the_step_writes_the_cli_s_node_json(self):
         import subprocess, stat
         k = self.x.node_key("biz-rtx4080")
