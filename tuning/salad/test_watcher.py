@@ -1648,9 +1648,12 @@ class TestCreditRatio(Base):
                      "spent", "Cost per", "Credit left", "costs us"):
             self.assertNotIn(gone, report)
 
-    def test_the_heading_says_how_many_hours_the_credit_lasts(self):
-        self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit
-        self.assertIn(" · Salad $94.00* left (627* h)\n", self.report(cfg={"max_active": 2}))
+    def test_the_heading_says_how_many_days_the_credit_lasts(self):
+        self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit: 627 h
+        self.assertIn(" · Salad $94.00* left (26* days)\n", self.report(cfg={"max_active": 2}))
+
+    def test_under_a_day_of_credit_shows_in_hours(self):
+        self.assertEqual([w.lasts(h) for h in (627, 36, 24, 23.6, 5)], ["26 days", "2 days", "1 day", "24 h", "5 h"])
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -1788,7 +1791,7 @@ class TestStartingBoxes(Base):
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
-        self.assertRegex(report, r" · Salad \$[\d.]+\* left \(\d+\* h\)\n")
+        self.assertRegex(report, r" · Salad \$[\d.]+\* left \(\d+\* (h|days?)\)\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
         a = self.group(pri="medium")
@@ -2086,7 +2089,7 @@ class TestSafeTrade(Base):
         # One order filled twice, then a newer order: one event each, oldest first.
         self.fills = [self.fill(8, amount=0.5, price=2.0, order=200), self.fill(7, amount=1.0, price=2.1, order=100),
                       self.fill(6, amount=1.0, price=1.9, order=100)] + self.fills
-        self.clock[0] += 300
+        self.clock[0] += 60 * self.x.cfg["report_min"]   # the next report's read
         self.x.safetrade()
         sold = [l for l in self.events().splitlines() if " SOLD " in l]
         self.assertEqual(len(sold), 2)
@@ -2101,14 +2104,26 @@ class TestSafeTrade(Base):
         self.assertEqual(h["X-Auth-Signature"], want)
         self.assertFalse([c for c in self.http.calls if c[0] != "GET"])
 
-    def test_read_at_most_every_5_min(self):
+    def test_read_once_a_report_in_its_first_round(self):
+        self.x.cfg["report_min"] = 15
+        reads = lambda: len(self.http.made("GET", "safetrade")) // 2   # balances and one page of fills
         self.x.safetrade()
-        self.clock[0] += 120
+        for _ in range(14):   # the rest of the quarter hour
+            self.clock[0] += 60
+            self.x.safetrade()
+        self.assertEqual(reads(), 1)
+        self.clock[0] += 60   # T0 + 15 min: the next report's first round
         self.x.safetrade()
-        self.assertEqual(len(self.http.made("GET", "safetrade")), 2)   # balances and one page of fills
-        self.clock[0] += 300
+        self.assertEqual(reads(), 2)
+
+    def test_a_failed_read_is_tried_again_5_minutes_later(self):
+        self.x.cfg["report_min"] = 15
+        self.http.on("GET", r"safetrade\.com", (500, {}))
         self.x.safetrade()
-        self.assertEqual(len(self.http.made("GET", "safetrade")), 4)
+        for _ in range(5):
+            self.clock[0] += 60
+            self.x.safetrade()
+        self.assertEqual(len(self.http.made("GET", "balances")), 2)   # T0 and T0 + 5 min
 
     def test_a_refused_read_warns_once_keeps_the_last_and_says_when_it_was(self):
         self.x.safetrade()
@@ -2152,13 +2167,12 @@ class TestSaladBalance(Base):
         self.assertEqual(self.reads, [])
         self.assertIn("Salad $501.01* left", self.head())
 
-    def test_read_at_most_every_10_min(self):
-        self.x.salad_balance()
-        self.clock[0] += 300
-        self.x.salad_balance()
-        self.clock[0] += 300
-        self.x.salad_balance()
-        self.assertEqual(len(self.reads), 2)
+    def test_read_once_a_report_in_its_first_round(self):
+        self.x.cfg["report_min"] = 15
+        for _ in range(16):   # T0 to T0 + 15 min, a round a minute
+            self.x.salad_balance()
+            self.clock[0] += 60
+        self.assertEqual(len(self.reads), 2)   # at T0 and at T0 + 15 min
 
     def test_a_read_sets_our_count_so_a_stale_read_falls_back_close_to_it(self):
         self.x.salad_balance()
