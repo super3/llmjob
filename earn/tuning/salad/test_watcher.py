@@ -2018,28 +2018,35 @@ class TestTraderStatus(Base):
 class TestSafeTrade(Base):
     BAL = [{"currency": "pearl", "balance": "1.1461474", "locked": "0.5"},
            {"currency": "usdt", "balance": "9.0505421", "locked": "0"},
-           {"currency": "xmr", "balance": "0.000008", "locked": "0"},
-           {"currency": "usdc", "balance": "0", "locked": "0"},
-           {"currency": "btc", "balance": "0.0001", "locked": "0"}]
+           {"currency": "xmr", "balance": "0.000008", "locked": "0"}]
 
-    def fill(self, ago_h, market="pearlusdt", amount=2.0, price=1.9, order_side="sell", side="buy"):
-        return {"market": market, "price": str(price), "amount": str(amount), "total": str(amount * price),
-                "side": side, "order_side": order_side, "fee_currency": "usdt", "fee": str(amount * price / 1000),
-                "created_at": w.iso(self.clock[0] - ago_h * 3600)}
+    def fill(self, fid, market="pearlusdt", amount=2.0, price=1.9, order_side="sell", side="buy", order=None):
+        return {"id": fid, "order_id": order or fid * 10, "market": market, "price": str(price), "amount": str(amount),
+                "total": str(amount * price), "side": side, "order_side": order_side, "fee_currency": "usdt",
+                "fee": str(amount * price / 1000), "created_at": w.iso(self.clock[0] - 3600)}
 
     def setUp(self):
         super().setUp()
         os.environ["SAFETRADE_API_KEY"], os.environ["SAFETRADE_API_SECRET"] = "k" * 16, "s" * 32
         self.addCleanup(os.environ.pop, "SAFETRADE_API_KEY", None)
         self.addCleanup(os.environ.pop, "SAFETRADE_API_SECRET", None)
-        self.fills = [self.fill(1), self.fill(3, amount=1.0, price=2.0), self.fill(30, price=1.5),
+        self.x.cfg.update(xmr_wallet="4" + "a" * 94)
+        # Newest first, as SafeTrade lists them. The buy of USDC isn't a sale.
+        self.fills = [self.fill(5), self.fill(4, amount=1.0, price=2.0), self.fill(3, price=1.5),
                       self.fill(2, market="xmrusdt", amount=0.01, price=620.1),
                       self.fill(1, market="usdcusdt", amount=10.0, price=0.999, order_side="buy", side="sell")]
         self.http.on("GET", r"safetrade\.com/api/v2/trade/account/balances/spot$", (200, self.BAL))
-        self.http.on("GET", r"safetrade\.com/api/v2/trade/market/trades\?", lambda _: (200, self.fills))
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/market/trades\?", self.page)
+        st = self.x.st
+        st["pool_tot"] = {"t": T0, "ths_1h": 0, "balance": 0.744, "unconfirmed": 0.0, "paid": 151.622, "blocks": 0}
+        st["xmr_tot"] = {"khs_1h": 5.1, "balance": 0.000949, "pending": 0.000094, "paid": 0.010368}
+
+    def page(self, _):
+        n = int(re.search(r"page=(\d+)", self.http.calls[-1][1]).group(1))
+        return 200, self.fills[(n - 1) * 100:n * 100]
 
     def row(self, coin):
-        return next(l for l in self.report().splitlines() if l.startswith(f"| {coin} |"))
+        return next(shown(l) for l in self.report().splitlines() if f"{coin}{w.NB}SafeTrade" in l)
 
     def report(self):
         self.x.write_report()
@@ -2052,29 +2059,39 @@ class TestSafeTrade(Base):
         self.assertFalse(self.http.made("GET", "safetrade"))
         self.assertNotIn("SafeTrade", self.report())
 
-    def test_balances_open_orders_and_the_last_days_sales(self):
+    def test_each_coins_row_follows_its_pools_with_what_it_sold_for(self):
         self.x.safetrade()
-        rep = self.report()
-        self.assertIn("| [SafeTrade](https://safetrade.com) | Available | In orders | Sold (24h) | Last sale |", rep)
-        # 2.0 at 1.9 and 1.0 at 2.0 in the last day, less 0.1% fees: 5.8 - 0.0058; the sale 30 h ago is left out.
-        # The newest sale was an hour before 3:00 am EST.
-        self.assertEqual(self.row("PRL"), f"| PRL | 1.146 | 0.500 | 3.000{w.NB}for{w.NB}$5.79 | $1.90,{w.NB}2:00{w.NB}am |")
-        self.assertEqual(self.row("XMR"), f"| XMR | 0.000008 | 0.000000 | 0.010000{w.NB}for{w.NB}$6.19 | $620.10,{w.NB}1:00{w.NB}am |")
-        self.assertEqual(self.row("USDT"), "| USDT | 9.05 | 0.00 | — | — |")
-        # Any other coin we hold shows too; an empty one doesn't.
-        self.assertEqual(self.row("BTC"), "| BTC | 0.0001 | 0.0000 | — | — |")
-        self.assertNotIn("| USDC |", rep)
+        rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
+        names = [r.split(" | ")[0] for r in rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:]]
+        self.assertEqual(names, ["| ⛏️ PRL", f"| 💵 PRL{w.NB}SafeTrade", "| 🪙 XMR HeroMiners", f"| 💵 XMR{w.NB}SafeTrade"])
+        # Held, in open orders, and every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, less 0.1% fees.
+        self.assertEqual(self.row("PRL"), f"| 💵 PRL{w.NB}SafeTrade | — | 1.146 | 0.500 | 5.000{w.NB}for{w.NB}$8.79 |")
+        self.assertEqual(self.row("XMR"), f"| 💵 XMR{w.NB}SafeTrade | — | 0.000008 | 0.000000 | 0.010000{w.NB}for{w.NB}$6.19 |")
 
     def test_only_our_own_sell_orders_count(self):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), "| PRL | 1.146 | 0.500 | 0 | — |")
+        self.assertEqual(self.row("PRL"), f"| 💵 PRL{w.NB}SafeTrade | — | 1.146 | 0.500 | 0.000{w.NB}for{w.NB}$0.00 |")
 
-    def test_a_last_sale_before_today_shows_its_date(self):
-        self.fills = [self.fill(30, price=1.5)]   # 9:00 pm EST on Jan 13, 30 h before 3:00 am on Jan 15
+    def test_every_page_of_fills_counts(self):
+        self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), f"| PRL | 1.146 | 0.500 | 0 | $1.50,{w.NB}Jan{w.NB}13 |")
+        self.assertEqual(len(self.http.made("GET", "market/trades")), 3)
+        self.assertIn(f"250.000{w.NB}for{w.NB}$499.50", self.row("PRL"))
+
+    def test_a_new_sale_is_an_event_with_its_usdt_and_old_ones_are_not(self):
+        self.x.safetrade()
+        self.assertNotIn("SOLD", self.events())
+        # One order filled twice, then a newer order: one event each, oldest first.
+        self.fills = [self.fill(8, amount=0.5, price=2.0, order=200), self.fill(7, amount=1.0, price=2.1, order=100),
+                      self.fill(6, amount=1.0, price=1.9, order=100)] + self.fills
+        self.clock[0] += 300
+        self.x.safetrade()
+        sold = [l for l in self.events().splitlines() if " SOLD " in l]
+        self.assertEqual(len(sold), 2)
+        self.assertIn("SOLD 2.000 PRL on SafeTrade for $4.00 USDT after fees ($2.00 each)", sold[0])
+        self.assertIn("SOLD 0.500 PRL on SafeTrade for $1.00 USDT after fees ($2.00 each)", sold[1])
 
     def test_requests_are_signed(self):
         self.x.safetrade()
@@ -2088,7 +2105,7 @@ class TestSafeTrade(Base):
         self.x.safetrade()
         self.clock[0] += 120
         self.x.safetrade()
-        self.assertEqual(len(self.http.made("GET", "safetrade")), 2)   # balances and fills
+        self.assertEqual(len(self.http.made("GET", "safetrade")), 2)   # balances and one page of fills
         self.clock[0] += 300
         self.x.safetrade()
         self.assertEqual(len(self.http.made("GET", "safetrade")), 4)
@@ -2100,8 +2117,11 @@ class TestSafeTrade(Base):
             self.clock[0] += 300
             self.x.safetrade()
         self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
-        self.assertIn(f"| [SafeTrade](https://safetrade.com){w.NB}(read{w.NB}3:00{w.NB}am) |", self.report())
-        self.assertTrue(self.row("PRL").startswith("| PRL | 1.146 |"))
+        self.assertTrue(self.row("PRL").startswith(f"| 💵 PRL{w.NB}SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | — | 1.146 |"))
+
+    def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
+        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {}, "sales": {}}
+        self.assertNotIn("SafeTrade", self.report())
 
 
 class TestRound(Base):
