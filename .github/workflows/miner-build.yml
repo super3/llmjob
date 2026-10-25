@@ -399,7 +399,7 @@ jobs:
           existing=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // ""')
           if [ -n "$(printf '%s' "$existing" | tr -d '[:space:]')" ]; then
             echo "$TAG already has a release body — leaving it alone, fixing the title only."
-            gh release edit "$TAG" --title "LLMJob Earn $VERSION" --repo "$GITHUB_REPOSITORY"
+            gh release edit "$TAG" --title "LLMJob Earn $TAG" --repo "$GITHUB_REPOSITORY"
           else
             NOTES="$RUNNER_TEMP/notes.md"
             : > "$NOTES"
@@ -430,7 +430,7 @@ jobs:
             gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" \
               -f tag_name="$TAG" --jq '.body' >> "$NOTES"
 
-            gh release edit "$TAG" --title "LLMJob Earn $VERSION" \
+            gh release edit "$TAG" --title "LLMJob Earn $TAG" \
               --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
           fi
 
