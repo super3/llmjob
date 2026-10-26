@@ -637,13 +637,16 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   pages. The **XMR Kryptex** row (since 20 October) is Kryptex's Monero pool for our Monero address, read every
   5 minutes: its workers' 30-minute hashrate, the coins confirmed (paid out from 0.1 XMR), pending and paid. It
   shows whenever Monero is on, even with no box mining there yet.
-- **The 💵 SafeTrade table** (since 26 October) comes after the pool table and answers how much USDT we actually
-  got: a row a coin, its columns in the order a coin moves. **Pools paid** is both pools' Paid, **Received** what
-  reached SafeTrade (every deposit), **Waiting** what it holds to sell (held plus in open orders), **Sold**
-  everything sold there and **Got (USDT)** what that brought after fees, with a Total row. Pools paid and Received
-  should match: on 26 October both were 196.743 PRL. Each new sale is also a `SOLD` event with its USDT. From 24
-  to 26 October these were a 💵 row under each coin's pools, Paid reading "185.060 for $331.21" (and for about 10
-  minutes on 24 October a table of the last day's sales). See [SafeTrade](#safetrade-row).
+- **The 💵 SafeTrade table** (since 26 October) comes after the pool table and follows the money to what's left,
+  one line a row. A row a coin, its columns in the order a coin moves: **Paid** is both pools' Paid, **Received**
+  what reached SafeTrade (every deposit), **Waiting** what it holds to sell (held plus in open orders), **Sold**
+  everything sold there, **Fees** the trading fees, and **USDT** what the sales brought after them. Then a row
+  for each currency withdrawn (**USDC out**, **USDT out**), its fees (network, and for USDC the trade from USDT)
+  and the USDT it took. **Left** closes it: every fee paid, and the USDT the account holds. So the USDT column
+  is a ledger: on 26 October +$357.11 + $6.42 − $110.27 − $209.28 = $43.98, the balance. Paid and Received
+  should match: both were 196.743 PRL. Each new sale is also a `SOLD` event with its USDT. From 24 to 26 October
+  these were a 💵 row under each coin's pools, Paid reading "185.060 for $331.21" (and for about 10 minutes on
+  24 October a table of the last day's sales). See [SafeTrade](#safetrade-row).
 - **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counted it),
   what each credited PRL cost to mine and the credit left. The credit left is now in the first line; the other
   two were dropped on 20 October as not helpful (for a few minutes the three were rows under the All row, and
@@ -678,8 +681,10 @@ and there's one `WARN` event.
 **The SafeTrade table** (since 24 October, as rows until 26 October) reads the account itself, not the trader's
 log: with `SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, once a report (in the first round of each quarter
 hour, so the quarter's report shows that minute's read; a failed read is tried again 5 minutes later) the watcher
-asks SafeTrade for the balances (`/account/balances/spot`), every fill we have (`/market/trades`, 100 a page) and
-every PRL and XMR deposit (`/account/deposits`, 100 a page; rejected or failed ones don't count). These are GET calls, signed with
+asks SafeTrade for the balances (`/account/balances/spot`), every fill we have (`/market/trades`, 100 a page),
+every PRL and XMR deposit (`/account/deposits`, 100 a page; rejected or failed ones don't count) and every
+withdrawal that went through (`/account/withdraws`). A buy of a stablecoin (USDC) with USDT is a change before
+a withdrawal, not a sale. These are GET calls, signed with
 HMAC-SHA256 of a millisecond nonce and the key; the watcher never places, cancels or withdraws. A sale is a fill
 of our own sell order (`order_side`; a fill's `side` is the taker's), counted at its USDT less SafeTrade's fee.
 Fills newer than the last read make one `SOLD` event an order; the first read only notes the newest, so the
