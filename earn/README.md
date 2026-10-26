@@ -254,10 +254,11 @@ Releases also carry `pearl_core_hip.node`, a core for AMD cards (`native/amd`):
   `LD_LIBRARY_PATH`), which the release does not carry, and which AMD's normal
   `amdgpu` driver doesn't include. Without it the log says the core would not
   load and names the missing library.
-- **Windows**: built with AMD's HIP SDK for the Radeon cards, in the installer.
-  Its runtime, `amdhip64_6.dll`, comes with AMD's graphics driver, so nothing
-  else needs installing. No Windows Radeon has run it yet, and the SDK's
-  compiler is not ROCm 7.2's, so its speed there is unmeasured.
+- **Windows**: built with AMD's HIP SDK 7.2 (the same ROCm release) for the
+  Radeon cards, in the installer. Its runtime, `amdhip64_7.dll`, comes with a
+  current Adrenalin driver, so nothing else needs installing. A driver too old to
+  have it can't load the core, and the log says to update the driver. No Windows
+  Radeon has run it yet.
 
 When `nvidia-smi` lists no NVIDIA card, the app and the CLI try the AMD core
 first. If it isn't installed, won't load, or can't start on its card, they load

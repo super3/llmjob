@@ -537,7 +537,7 @@ describe('coreFactory — choosing a build', () => {
           .toEqual({ build: 'cu12' });
         expect(r.lines).toEqual([['warn', 'Pearl core: CUDA 12.8 build · nvidia-smi lists no NVIDIA card, and '
           + AMD_RES + ' is there but would not load: The specified module could not be found. \\\\?\\' + AMD_RES
-          + '. It needs amdhip64_6.dll, which AMD\'s graphics driver installs: install or update the driver']]);
+          + '. It needs amdhip64_7.dll, which AMD\'s graphics driver installs: install or update the driver']]);
       });
 
       test('a CUDA core that will not load on Windows gets no AMD hint', () => {

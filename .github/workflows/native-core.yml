@@ -721,14 +721,16 @@ jobs:
           path: earn/native/amd/build/pearl_core_hip.node
           if-no-files-found: error
 
-  # The AMD core for Windows: the same source, built with AMD's HIP SDK for Windows for the
-  # Radeon targets (build-amd.sh winlib, WINDOWS_ARCHS), and linked by node-gyp with MSVC as
-  # the CUDA core is. Its runtime, amdhip64_6.dll, comes with AMD's graphics driver, so a
-  # Windows rig needs nothing else. The installer carries it; the app tries it first when
-  # nvidia-smi lists no NVIDIA card (src/shared/coreVariant.js).
+  # The AMD core for Windows: the same source, built with AMD's HIP SDK 7.2 for Windows (the
+  # ROCm release the Linux core is built with) for the Radeon targets (build-amd.sh winlib,
+  # WINDOWS_ARCHS), and linked by node-gyp with MSVC as the CUDA core is. Its runtime,
+  # amdhip64_7.dll, comes with AMD's graphics driver, so a Windows rig needs nothing else;
+  # AMD's deployment guide says applications don't ship it, and Blender relies on the
+  # driver's copy too. Adrenalin 26.5.1 dropped the ROCm 6 runtime (amdhip64_6.dll), which
+  # is why this is not built with an older SDK. The installer carries the core; the app
+  # tries it first when nvidia-smi lists no NVIDIA card (src/shared/coreVariant.js).
   #
-  # The SDK's compiler is not ROCm 7.2's, so this core's code is not the code the Salad rows
-  # in benchmark.md measured. No Windows Radeon has run it.
+  # No Windows Radeon has run it.
   #
   # Non-blocking, like the Linux AMD job, and for the same reason.
   amd-windows:
@@ -736,12 +738,12 @@ jobs:
     runs-on: windows-2022
     continue-on-error: true
     # Under pick-core-run.sh's 25 minutes, as for the Linux AMD job. A cached SDK takes
-    # about a minute to restore; installing it takes longer.
+    # under a minute to restore; llama.cpp's job that installed one took about 8 minutes.
     timeout-minutes: 20
     env:
-      # AMD names the SDK's installer by driver quarter. It installs ROCm 6.4.2's HIP SDK.
-      HIPSDK_INSTALLER_VERSION: '25.Q3'
-      HIPSDK_VERSION: '6.4'
+      # AMD names the SDK's installer by driver quarter: 26.Q3 is HIP SDK 7.2.
+      HIPSDK_INSTALLER_VERSION: '26.Q3'
+      HIPSDK_VERSION: '7.2'
     steps:
       - uses: actions/checkout@v4
 
@@ -765,7 +767,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = "$env:RUNNER_TEMP\hipsdk-install.exe"
-          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-$env:HIPSDK_INSTALLER_VERSION-WinSvr2022-For-HIP.exe" -OutFile $exe
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-$env:HIPSDK_INSTALLER_VERSION-Win11-For-HIP.exe" -OutFile $exe
           $p = Start-Process $exe -ArgumentList '-install' -NoNewWindow -PassThru
           if (-not $p.WaitForExit(900000)) { $p.Kill(); throw 'the HIP SDK installer did not finish in 15 minutes' }
           if ($p.ExitCode -ne 0) { throw "the HIP SDK installer exited with $($p.ExitCode)" }
@@ -823,7 +825,7 @@ jobs:
 
       # It loads in Node with the SDK's runtime on PATH (no GPU is touched) and has the core's
       # entry point; it carries code for every Windows target; and the only DLL it needs that
-      # Windows doesn't have is the driver's amdhip64_6.dll. A dependency on anything else in
+      # Windows doesn't have is the driver's amdhip64_7.dll. A dependency on anything else in
       # the SDK would load here and fail on every rig.
       - name: Check the addon
         working-directory: earn/native
@@ -846,14 +848,14 @@ jobs:
           echo "needs: $(echo $deps)"
           for d in $deps; do
             case "$d" in
-              amdhip64_6.dll|kernel32.dll|node.exe) ;;
+              amdhip64_7.dll|kernel32.dll|node.exe) ;;
               api-ms-win-*|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll) ;;
               *) echo "::error::$f needs $d, which a rig with only AMD's driver may not have"; exit 1 ;;
             esac
           done
           case " $(echo $deps) " in
-            *" amdhip64_6.dll "*) ;;
-            *) echo "::error::$f does not link amdhip64_6.dll: check the SDK's amdhip64.lib"; exit 1 ;;
+            *" amdhip64_7.dll "*) ;;
+            *) echo "::error::$f does not link amdhip64_7.dll: check the SDK's amdhip64.lib"; exit 1 ;;
           esac
 
       - uses: actions/upload-artifact@v4

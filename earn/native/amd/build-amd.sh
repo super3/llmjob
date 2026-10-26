@@ -22,7 +22,7 @@
 #
 # Environment:
 #   ROCM_PATH       ROCm install with hip-clang (default /opt/rocm). gpu and check.
-#   HIP_PATH        Windows: the HIP SDK's folder, e.g. C:\Program Files\AMD\ROCm\6.4\.
+#   HIP_PATH        Windows: the HIP SDK's folder, e.g. C:\Program Files\AMD\ROCm\7.2\.
 #   HIP_CPU_PATH    a checkout of github.com/ROCm/HIP-CPU (its include/ is used). cpu.
 #   TBB_ROOT        prefix holding include/tbb and lib/libtbb.so (default: the system's). cpu.
 #   CPU_CXX         C++ compiler for the cpu build (default clang++; g++ ignores the vector

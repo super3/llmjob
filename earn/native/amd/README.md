@@ -159,7 +159,7 @@ The addon links `libamdhip64.so.7`, so the machine it runs on needs the ROCm 7 r
 
 ### Windows
 
-You need AMD's HIP SDK for Windows (its installer sets `HIP_PATH`), Visual Studio's C++
+You need AMD's HIP SDK 7.2 for Windows (its installer sets `HIP_PATH`), Visual Studio's C++
 tools, Node 22 and Git Bash. Start Git Bash from the "x64 Native Tools Command Prompt", so
 MSVC is on PATH, then:
 
@@ -174,7 +174,7 @@ cp build/Release/pearl_core.node amd/build/pearl_core_hip.node
 
 `winlib` compiles the kernels and host with the SDK's clang into `build/win/pearl_hip.lib`,
 and node-gyp links it with `pearl_core.cc` (`binding.gyp`, `PEARL_BACKEND=hip`), as it links
-the CUDA core. Both halves use the static C runtime. The addon links `amdhip64_6.dll`, which
+the CUDA core. Both halves use the static C runtime. The addon links `amdhip64_7.dll`, which
 AMD's graphics driver installs in System32, so a PC with the driver needs nothing else. There
 are no Instinct targets: AMD's Windows runtime is for Radeon cards. `check` works on Windows
 too, and `winlib` also builds `build/pearl_amd_foldtest.exe`, the layout check below; CI
@@ -229,7 +229,7 @@ The app and `earn-cli` load `pearl_core_hip.node` from beside the executable, th
 in the HiveOS package and in the AppImage, and the CLI updates it with the binary on a rig
 that uses it. The Windows installer's is in `resources\native`. A Linux rig needs the ROCm 7
 HIP runtime (`libamdhip64.so.7`); when it is missing, the log names the library the core
-could not load. A Windows PC needs AMD's graphics driver, for `amdhip64_6.dll`.
+could not load. A Windows PC needs AMD's graphics driver, for `amdhip64_7.dll`.
 
 When nvidia-smi lists no NVIDIA card, the app tries it first (`shared/coreVariant.js`). If
 it isn't installed, won't load, or can't start on its first card, the CUDA 12.8 core takes
@@ -297,6 +297,6 @@ by contrast, stops only its own card.
   Infinity Cache as `learnings.md` describes for NVIDIA.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
-  against the Linux core's on the same card, since the HIP SDK's compiler is not ROCm 7.2's.
+  against the Linux core's on the same card.
 - On Windows a Ryzen's built-in graphics may be listed before the Radeon card. The core then
   stops with an error naming it, which `HIP_VISIBLE_DEVICES` fixes but the app can't set.

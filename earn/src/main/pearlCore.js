@@ -35,7 +35,7 @@ const {
 
 // The HIP runtime the Windows AMD core links (native-core.yml checks it), which
 // AMD's graphics driver puts in System32.
-const WIN_HIP_DLL = 'amdhip64_6.dll';
+const WIN_HIP_DLL = 'amdhip64_7.dll';
 
 // What every probe shares: the require to load with, and the directories a
 // packaged install keeps its addons in.
