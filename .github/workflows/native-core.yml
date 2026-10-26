@@ -264,7 +264,14 @@ jobs:
           v=$(nvcc --version)
           echo "$v"
           node --version
-          if [ "$RUNNER_OS" = Linux ]; then g++ --version | head -n 1; ldd --version | head -n 1; fi
+          # The host compiler and glibc the Linux addon is built against. Captured
+          # for the same SIGPIPE reason: `| head -n 1` stops reading early.
+          if [ "$RUNNER_OS" = Linux ]; then
+            g=$(g++ --version)
+            l=$(ldd --version)
+            echo "${g%%$'\n'*}"
+            echo "${l%%$'\n'*}"
+          fi
           case "$v" in
             *"release ${{ matrix.release }},"*) ;;
             *) echo "::error::expected CUDA ${{ matrix.release }}, got the nvcc above"; exit 1 ;;
