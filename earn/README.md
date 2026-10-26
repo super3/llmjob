@@ -491,62 +491,83 @@ Ubuntu 22.04, 24.04 and 20.04 containers (`.github/scripts/hiveos-smoke.sh`).
 They have no GPU, so this checks everything short of mining: the files, that
 each core loads, the hook scripts, and the stats HiveOS reads.
 
-**It needs the HiveOS 0.6 jammy image (Ubuntu 22.04).** The mining cores need
-glibc 2.34 and libstdc++ with `GLIBCXX_3.4.29` (read with `objdump -T` from the
-v0.5.12 release files). Jammy has glibc 2.35. The older focal image (Ubuntu
-20.04) has glibc 2.31, so the cores don't load there and the rig mines nothing.
-RTX 50-series and RTX PRO Blackwell cards also need a newer NVIDIA driver than
-the stable image's 550: run `nvidia-driver-update` from Hive Shell.
+**It needs a HiveOS image on Ubuntu 20.04 or newer.** The CUDA cores are built
+on Rocky Linux 8, so they need only glibc 2.28 and the libstdc++ of GCC 8
+(`.github/workflows/native-core.yml`). The AMD core also needs ROCm 7, which
+supports Ubuntu 22.04 and newer. RTX 50-series and RTX PRO Blackwell cards need
+a newer NVIDIA driver than the stable image's 550: run `nvidia-driver-update`
+from Hive Shell.
 
-Flight sheet:
+Flight sheet: choose **Custom** as the miner, then Setup Miner Config. Four
+fields, and the rest stays blank:
 
-- **Miner** → Custom. **Miner name** → `llmjob-earn`.
+- **Miner name** → `llmjob-earn`.
 - **Installation URL** →
-  `https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz`,
-  with `<version>` from the [latest release](https://github.com/super3/llmjob/releases/latest).
-  To update a rig, change the URL to the new version. HiveOS reinstalls only
-  when the URL changes, and then reuses any archive of the same file name it
-  already downloaded. So an unchanging file name never updates: the
-  unversioned `llmjob-earn-hiveos.tar.gz` that each release also carries (at
-  `releases/latest/download/`) is good for a first install only. The part of
-  the file name before the version must stay `llmjob-earn`. HiveOS takes the
-  miner name from it and refuses to install when it differs from Miner name.
-  A PR build from CI has the same file name as its version's release, so to
-  install a different build of a version a rig already has, delete
-  `/hive/miners/custom/downloads/llmjob-earn-<version>.tar.gz` before changing
-  the URL. Or, after changing it, run
-  `/hive/miners/custom/custom-get <url> -f` from Hive Shell, then
-  `miner restart`.
-- **Hash algorithm** → `pearlhash`.
-- **Wallet and worker template** → `%WAL%`, with your `prl1p…` address as the
-  wallet. `%WAL%.%WORKER_NAME%` also works: everything after the first `.` is
-  the worker name. Otherwise the worker is the rig's HiveOS name. An old
-  `prl1p…+mdl1p…` wallet still mines, but merge mining is retired.
-- **Pool URL** → any `host:port`, e.g. `us.pearl.herominers.com:1200`. HiveOS
-  won't save the flight sheet without one (`The url field is required`), but
-  the miner doesn't read it: it mines on HeroMiners and picks the region with
-  the lowest latency when it starts. **Pass** → leave blank.
-- **Extra config arguments** → optional CLI flags; leave it empty for the
-  defaults. The ones that make sense on a rig:
-  - `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
-    `fr`, `tr`, `sg`, `hk`, `kr` or `au`. An old AlphaPool id from an older
-    flight sheet (`us1`, `eu1`, `eu2`, `ru1`, `sg1`, `hk1`, `in1`) maps to the
-    nearest of these, and the miner log says which (`region eu1 is now de`).
-  - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
-    the RTX 5090 default (see below).
-  - `--mode auto` also serves a local LLM (next paragraph).
-  - `--no-report` keeps the rig off the public network board.
-  - `--xmr-address 4…` also mines Monero on the CPU (see
-    [Monero on the CPU](#monero-on-the-cpu-opt-in)).
-  - `--core amd` mines on AMD cards with the package's `pearl_core_hip.node`
-    (see [The AMD core](#the-amd-core-radeon-and-instinct-linux)). The rig
-    needs ROCm 7's HIP runtime, and this has not been tried on HiveOS yet.
+  `https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz`.
+  The same URL for every version: the miner updates itself (below).
+- **Wallet and worker template** → your `prl1p…` address. The worker is then
+  the rig's HiveOS name. `prl1p….rig1` names it yourself: everything after the
+  first `.` is the worker name. `%WAL%` and `%WAL%.%WORKER_NAME%` work too, with
+  the address as the flight sheet's wallet. An old `prl1p…+mdl1p…` wallet still
+  mines, but merge mining is retired.
+- **Pool URL** → `us.pearl.herominers.com:1200`. HiveOS won't save the flight
+  sheet without one (`The url field is required`), but the miner doesn't read
+  it: it mines on HeroMiners and picks the region with the lowest latency when
+  it starts.
 
-  `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
-  makes it exit at once. HiveOS then restarts it every few seconds and shows
-  "Miner starting error", and `miner log` names the flag. Old examples such as
-  `--difficulty` no longer exist. A region the CLI doesn't know stops it the
-  same way.
+If HiveOS asks for a **Hash algorithm**, use `pearlhash`. **Pass** stays blank.
+**Extra config arguments** are optional CLI flags; leave it empty for the
+defaults. The ones that make sense on a rig:
+
+- `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
+  `fr`, `tr`, `sg`, `hk`, `kr` or `au`. An old AlphaPool id from an older
+  flight sheet (`us1`, `eu1`, `eu2`, `ru1`, `sg1`, `hk1`, `in1`) maps to the
+  nearest of these, and the miner log says which (`region eu1 is now de`).
+- `--no-update` keeps the rig on the version it has.
+- `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
+  the RTX 5090 default (see below).
+- `--mode auto` also serves a local LLM (below).
+- `--no-report` keeps the rig off the public network board.
+- `--xmr-address 4…` also mines Monero on the CPU (see
+  [Monero on the CPU](#monero-on-the-cpu-opt-in)).
+- `--core amd` mines on AMD cards with the package's `pearl_core_hip.node`
+  (see [The AMD core](#the-amd-core-radeon-and-instinct-linux)). The rig
+  needs ROCm 7's HIP runtime, and this has not been tried on HiveOS yet.
+
+`llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
+makes it exit at once, HiveOS restarts it every few seconds, and the rig's page
+in HiveOS names the flag. Old examples such as `--difficulty` no longer exist.
+
+**The miner updates itself.** HiveOS installs a custom miner only when its
+Installation URL changes, and then reuses any archive of the same file name it
+already downloaded. So the miner does it: `h-run.sh` tells the CLI it runs under
+HiveOS (`LLMJOB_HIVEOS=1`), and the CLI checks for a new release when it starts
+and every 6 hours. When there is one, it downloads that release's
+`llmjob-earn-<version>.tar.gz`, unpacks it beside
+`/hive/miners/custom/llmjob-earn`, checks the new CLI runs, swaps the two
+folders and exits. HiveOS's miner loop starts the new `h-run.sh` 3 s later. Its
+installer leaves the new folder alone: the downloaded archive and the folder are
+both there, so it says "Already installed" (`src/cli/hiveos.js`).
+
+The new version is on trial until it hashes, and the old one waits in
+`llmjob-earn.prev`. If the new one exits with an error before then, or hasn't
+hashed in 10 minutes, `h-run.sh` puts the old folder back and the old version
+skips the new one for a day. A run that mines nothing on purpose (every GPU off,
+or `--mode llm`) passes its trial after 2 minutes. The HiveOS dashboard says
+when a rig updates or goes back.
+
+A rig installed from a versioned URL (`llmjob-earn-0.6.8.tar.gz` and earlier)
+doesn't update itself: its `h-config.sh` turned updates off. Change its
+Installation URL once to the one above. A rig that already had that URL keeps
+its archive: run
+`/hive/miners/custom/custom-get https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz -f`
+from Hive Shell, then `miner restart`.
+
+**Problems show on the rig's page in HiveOS**, through HiveOS's own `message`
+command, so nobody has to open the miner log to find them: an address that
+isn't a Pearl address, a flag the CLI doesn't know, a core that won't load (an
+image too old for it, say), and RTX 50 or other Blackwell cards on a driver
+older than 570. The same message goes out at most once an hour.
 
 **The rig mines only.** The package adds `--mode mining` unless Extra config
 has a `--mode`. The CLI's own default, `auto`, also serves a local LLM. It
@@ -573,18 +594,6 @@ plus the rig total, shares, uptime and version. HiveOS uses the bus numbers to
 put each hashrate on its GPU's row, so an iGPU or a server's BMC display in the
 GPU list doesn't shift them. It reads all this from the file the CLI writes
 every 10 s (`--stats-file`), and a file older than 2 minutes reports 0.
-
-Self-update is off under HiveOS (`--no-update`): the agent owns the miner, and
-a new version arrives with a new Installation URL. To move a single rig without
-touching its flight sheet, run the CLI's update from Hive Shell. It replaces the
-binary in place but leaves the hook scripts and the `CUSTOM_VERSION` the
-dashboard shows as they were:
-
-```
-miner stop
-/hive/miners/custom/llmjob-earn/llmjob-earn-cli-linux update
-miner start
-```
 
 ## Headless CLI (Linux)
 

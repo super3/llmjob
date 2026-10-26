@@ -7,6 +7,8 @@
 // (HTTPS, filesystem, re-exec) lives in the shell (src/cli/selfUpdater.js) so
 // this stays pure and fully unit-tested.
 
+const { packageAssetName } = require('./hiveos');
+
 const REPO = 'super3/llmjob';
 const LATEST_RELEASE_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
 
@@ -99,6 +101,10 @@ function planUpdate(opts) {
   // states its protocol version when it starts, so an old one that no longer
   // fits is refused there, not run.
   const xmrWorkerUrl = rel.assets['llmjob-xmr-worker'] || null;
+  // The HiveOS package, which the CLI updates whole under HiveOS: binary, cores
+  // and hook scripts (shared/hiveos). Null until the release has it; the
+  // package goes up after the binary.
+  const packageUrl = rel.assets[packageAssetName(rel.version)] || null;
 
   return {
     updateAvailable: true,
@@ -111,6 +117,7 @@ function planUpdate(opts) {
     coreCu13Url,
     coreHipUrl,
     xmrWorkerUrl,
+    packageUrl,
   };
 }
 

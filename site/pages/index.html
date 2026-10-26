@@ -249,6 +249,11 @@
   .hive-file { display: inline-block; max-width: 100%; } /* the file name goes to the next line whole, unless it's wider than the box */
   .hive-copy { flex: none; min-width: 64px; font-family: inherit; font-size: 13px; font-weight: 600; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px; cursor: pointer; transition: border-color .15s ease; }
   .hive-copy:hover { border-color: var(--muted-3); }
+  .hive-v .hive-url:last-child { margin-bottom: 0; }
+  .hive-addr { display: block; width: 100%; margin-bottom: 8px; border: 1px solid var(--field-line); background: #fff; border-radius: 9px; padding: 10px 14px; font-family: "IBM Plex Mono", monospace; font-size: 13px; color: var(--ink-strong); }
+  .hive-addr:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  /* The wallet template reads as a prompt until an address fills it in. */
+  #hive-wallet:not(.hive-filled) { color: var(--muted); font-style: italic; }
   .hive-notes { list-style: none; margin-top: 28px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px 48px; }
   .hive-notes li { font-size: 14.5px; line-height: 1.55; color: var(--muted); }
   .hive-notes b { color: var(--ink-strong); font-weight: 700; }
@@ -499,37 +504,56 @@
 
 <!-- HIVEOS
      Matches the HiveOS section of earn/README.md and earn/hiveos/h-manifest.conf.
-     The Installation URL takes its version from appVersion in site/config.json,
-     like the download buttons, so the release that bumps it updates this too. -->
+     The Installation URL is the latest release's unversioned package. It never
+     changes, because the miner updates itself after HiveOS installs it once. -->
 <section class="wrap hive-sec" id="hiveos">
   <div class="calc-head">
     <h2>Running a HiveOS rig?</h2>
-    <p>Add LLMJob Earn to a flight sheet as a custom miner. Fill in these fields and apply it to your rigs.</p>
+    <p>Add LLMJob Earn to a flight sheet as a custom miner. Fill in four fields, leave the rest blank, and apply it to your rigs. The miner keeps itself up to date after that.</p>
   </div>
   <div class="hive-card">
-    <div class="hive-row"><span class="hive-k">Miner</span><span class="hive-v"><code>Custom</code></span></div>
-    <div class="hive-row"><span class="hive-k">Miner name</span><span class="hive-v"><code>llmjob-earn</code></span></div>
+    <div class="hive-row">
+      <label class="hive-k" for="hive-addr">Your Pearl address</label>
+      <div class="hive-v"><input class="hive-addr" id="hive-addr" type="text" placeholder="prl1p…" autocomplete="off" autocapitalize="off" spellcheck="false"> Paste it here to fill in the wallet template below.</div>
+    </div>
+    <div class="hive-row"><span class="hive-k">Miner</span><span class="hive-v">Choose <code>Custom</code>, then Setup Miner Config.</span></div>
+    <div class="hive-row">
+      <span class="hive-k">Miner name</span>
+      <div class="hive-v"><div class="hive-url"><code id="hive-name">llmjob-earn</code><button class="hive-copy" type="button" data-copy="hive-name">Copy</button></div></div>
+    </div>
     <div class="hive-row">
       <span class="hive-k">Installation URL</span>
       <div class="hive-v">
-        <div class="hive-url"><code id="hive-url">https://<wbr>github.com/<wbr>super3/<wbr>llmjob/<wbr>releases/<wbr>download/<wbr>v{{!appVersion}}/<wbr><span class="hive-file">llmjob-earn-{{!appVersion}}.tar.gz</span></code><button class="hive-copy" type="button" data-copy="hive-url" data-umami-event="download" data-umami-event-os="hiveos" data-umami-event-place="flight-sheet">Copy</button></div>
-        To update a rig, put in the new version's URL. HiveOS keeps the old build while the file name stays the same.
+        <div class="hive-url"><code id="hive-url">https://<wbr>github.com/<wbr>super3/<wbr>llmjob/<wbr>releases/<wbr>latest/<wbr>download/<wbr><span class="hive-file">llmjob-earn-hiveos.tar.gz</span></code><button class="hive-copy" type="button" data-copy="hive-url" data-umami-event="download" data-umami-event-os="hiveos" data-umami-event-place="flight-sheet">Copy</button></div>
+        The same URL for every version.
       </div>
     </div>
-    <div class="hive-row"><span class="hive-k">Hash algorithm</span><span class="hive-v"><code>pearlhash</code></span></div>
-    <div class="hive-row"><span class="hive-k">Wallet and worker template</span><span class="hive-v"><code>%WAL%</code>, with your <code>prl1p…</code> address as the wallet. The worker is then the rig's HiveOS name. <code>%WAL%.%WORKER_NAME%</code> also works: everything after the first dot is the worker name.</span></div>
-    <div class="hive-row"><span class="hive-k">Pool URL</span><span class="hive-v"><code class="hive-long">us.pearl.<wbr>herominers.com:1200</code>, or any other <code>host:port</code>. HiveOS won't save the flight sheet without one, but the miner doesn't use it. It picks the HeroMiners region with the lowest latency itself.</span></div>
-    <div class="hive-row"><span class="hive-k">Pass</span><span class="hive-v">Leave blank.</span></div>
-    <div class="hive-row"><span class="hive-k">Extra config arguments</span><span class="hive-v">Optional. Leave it empty for the defaults. For example, <code>--region de</code> pins the pool region, and <code>--mode auto</code> also serves a local LLM. A flag the miner doesn't know stops it from starting, and <code>miner log</code> names the flag.</span></div>
+    <div class="hive-row">
+      <span class="hive-k">Wallet and worker template</span>
+      <div class="hive-v">
+        <div class="hive-url"><code id="hive-wallet" data-empty="your prl1p… address">your prl1p… address</code><button class="hive-copy" type="button" data-copy="hive-wallet" data-needs="hive-addr">Copy</button></div>
+        The worker is the rig's HiveOS name. To pick your own, add a dot and the name: <code>prl1p….rig1</code>.
+      </div>
+    </div>
+    <div class="hive-row">
+      <span class="hive-k">Pool URL</span>
+      <div class="hive-v">
+        <div class="hive-url"><code id="hive-pool">us.pearl.herominers.com:1200</code><button class="hive-copy" type="button" data-copy="hive-pool">Copy</button></div>
+        HiveOS needs one, but the miner picks the closest HeroMiners region itself.
+      </div>
+    </div>
+    <div class="hive-row"><span class="hive-k">Everything else</span><span class="hive-v">Leave blank. If HiveOS asks for a hash algorithm, use <code>pearlhash</code>. Extra config arguments are optional: <code>--region de</code> pins the pool region, <code>--no-update</code> keeps a rig on its version, and <code>--mode auto</code> also serves a local LLM.</span></div>
   </div>
   <ul class="hive-notes">
-    <li><b>Ubuntu 22.04 image.</b> It needs the HiveOS 0.6 jammy image (Ubuntu 22.04). On the older 20.04 image the mining cores don't load and the rig mines nothing. RTX 50-series and RTX PRO Blackwell cards also need a newer driver: run <code>nvidia-driver-update</code> from Hive Shell.</li>
+    <li><b>Updates itself.</b> The miner checks for a new version every 6 hours and restarts into it. If a new version doesn't hash within 10 minutes, the rig goes back to the one before.</li>
+    <li><b>Problems show in HiveOS.</b> A wrong address, a flag the miner doesn't know, an image too old or a driver too old for RTX 50 cards appears as a message on the rig's page in HiveOS.</li>
+    <li><b>Ubuntu 20.04 or newer.</b> It runs on HiveOS images based on Ubuntu 20.04 or later. RTX 50-series and RTX PRO Blackwell cards also need a newer driver: run <code>nvidia-driver-update</code> from Hive Shell.</li>
     <li><b>Mining only.</b> The rig mines and serves no LLM unless Extra config sets a mode. <code>--mode auto</code> also serves a local LLM, which downloads a <span class="hive-nw">5–18 GB</span> model once.</li>
     <!-- Needs h-config.sh to pass HiveOS's CUDA_VISIBLE_DEVICES on as --gpu-index. -->
     <li><b>Turned-off cards.</b> A card you turn off in HiveOS doesn't mine. HiveOS reads this when the miner starts, so restart the miner after turning a card on or off. The local LLM from <code>--mode auto</code> doesn't follow it.</li>
     <li><b>Stats.</b> HiveOS shows each card's hashrate, the shares and the uptime, as it does for any miner. The rig also shows on the <a href="/network">network board</a>.</li>
   </ul>
-  <p class="hive-more">The <a href="https://github.com/super3/llmjob/tree/main/earn#hiveos-flight-sheet" target="_blank" rel="noopener">README</a> has the details, including how to update one rig from Hive Shell.</p>
+  <p class="hive-more">The <a href="https://github.com/super3/llmjob/tree/main/earn#hiveos-flight-sheet" target="_blank" rel="noopener">README</a> has the details.</p>
 </section>
 
 <!-- CLOSING CTA -->
@@ -649,10 +673,26 @@
     });
   })();
 
-  /* ---- HiveOS: copy the Installation URL ---- */
+  /* ---- HiveOS: the address box fills in the wallet template ---- */
+  (function () {
+    const input = document.getElementById('hive-addr');
+    const out = document.getElementById('hive-wallet');
+    if (!input || !out) return;
+    function fill() {
+      const v = input.value.replace(/\s+/g, '');
+      out.textContent = v || out.getAttribute('data-empty');
+      out.classList.toggle('hive-filled', !!v);
+    }
+    input.addEventListener('input', fill);
+    fill();
+  })();
+
+  /* ---- HiveOS: copy a flight sheet field ---- */
   document.querySelectorAll('[data-copy]').forEach(function (btn) {
     const el = document.getElementById(btn.getAttribute('data-copy'));
     if (!el) return;
+    // The wallet template has nothing to copy until the address box is filled.
+    const needs = document.getElementById(btn.getAttribute('data-needs') || '');
     function show(msg) {
       btn.textContent = msg;
       setTimeout(function () { btn.textContent = 'Copy'; }, 1500);
@@ -668,6 +708,7 @@
       show('Selected');
     }
     btn.addEventListener('click', function () {
+      if (needs && !needs.value.trim()) { needs.focus(); show('Paste above'); return; }
       if (!navigator.clipboard || !navigator.clipboard.writeText) { select(); return; }
       navigator.clipboard.writeText(el.textContent.trim()).then(function () { show('Copied'); }, select);
     });

@@ -86,13 +86,15 @@ function config(vars) {
 }
 
 suite('h-config.sh: wallet template', () => {
-  test('%WAL% alone: the address, with WORKER_NAME as the worker', () => {
+  // The address straight in the template, or %WAL% with it as the wallet: the
+  // same to this script, which sees what HiveOS filled in.
+  test('the address alone: with WORKER_NAME as the worker, and updates on', () => {
     const r = config({ CUSTOM_TEMPLATE: ADDR, WORKER_NAME: 'rig7' });
     expect(r.status).toBe(0);
-    expect(r.line).toBe('--address ' + ADDR + ' --worker=rig7 --mode mining --no-update --stats-file ' + STATS_PATH);
+    expect(r.line).toBe('--address ' + ADDR + ' --worker=rig7 --mode mining --stats-file ' + STATS_PATH);
     expect(r.parsed.errors).toEqual([]);
     expect(r.parsed.settings).toMatchObject({
-      address: ADDR, mdlAddress: null, worker: 'rig7', mode: 'mining', update: false, statsFile: STATS_PATH,
+      address: ADDR, mdlAddress: null, worker: 'rig7', mode: 'mining', update: true, statsFile: STATS_PATH,
     });
   });
 
@@ -219,7 +221,7 @@ suite('h-config.sh: cards turned off in HiveOS', () => {
 
   test('the cards still on become --gpu-index', () => {
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0' })).toEqual({
-      line: '--address ' + ADDR + ' --mode mining --gpu-index=0 --no-update --stats-file ' + STATS_PATH,
+      line: '--address ' + ADDR + ' --mode mining --gpu-index=0 --stats-file ' + STATS_PATH,
       gpuIndices: [0],
     });
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2' }).gpuIndices).toEqual([0, 2]);
@@ -572,5 +574,121 @@ suite('h-run.sh', () => {
     expect(r.status).toBe(1);
     expect(r.stdout).toContain('Run miner restart');
     expect(logText()).toBe('');
+  });
+});
+
+// ── h-run.sh: updates ───────────────────────────────────────────────────────
+// The CLI swaps a new package in and exits; HiveOS's loop then runs the new
+// h-run.sh. A new version is on trial (.update-trial) with the old one waiting
+// in llmjob-earn.prev, and h-run.sh puts the old one back when the new one ends
+// with an error.
+
+// A stand-in CLI that says whether it was told it runs under HiveOS, then exits
+// with `code`.
+function exitingCli(code) {
+  fs.writeFileSync(path.join(pkg, 'llmjob-earn-cli-linux'),
+    '#!/usr/bin/env bash\necho "hiveos=$LLMJOB_HIVEOS args=$*"\nexit ' + code + '\n', { mode: 0o755 });
+}
+
+suite('h-run.sh: updates', () => {
+  const messagesFile = () => path.join(tmp, 'messages');
+  const messages = () => (fs.existsSync(messagesFile()) ? fs.readFileSync(messagesFile(), 'utf8') : '');
+  const runOnce = () => spawnSync('bash', [path.join(pkg, 'h-run.sh')], Object.assign({ env: env({}) }, SYNC));
+  // The version before the update, marked so the tests can tell the two apart.
+  const previous = () => {
+    fs.cpSync(pkg, pkg + '.prev', { recursive: true });
+    fs.writeFileSync(path.join(pkg + '.prev', 'old-version'), '0.6.9');
+  };
+  const onTrial = () => fs.writeFileSync(path.join(pkg, '.update-trial'), 'UPDATE_FROM=0.6.9\nUPDATE_TO=0.7.0\nUPDATE_AT=1\n');
+  const rolledBack = () => fs.existsSync(path.join(pkg, 'old-version'));
+
+  beforeEach(() => {
+    fs.writeFileSync(path.join(tmp, 'llmjob-earn.conf'), '--address ' + ADDR + '\n');
+    // HiveOS's message command, which posts to the dashboard.
+    fs.writeFileSync(path.join(bin, 'message'), '#!/bin/sh\necho "$@" >> "' + messagesFile() + '"\n', { mode: 0o755 });
+  });
+
+  test('tells the CLI it runs under HiveOS, and exits with its exit code', () => {
+    exitingCli(3);
+    const r = runOnce();
+    expect(r.status).toBe(3);
+    expect(logText()).toBe('hiveos=1 args=--address ' + ADDR + '\n');
+    expect(messages()).toBe('');
+  });
+
+  test('a version on trial that exits with an error is rolled back, and skipped for a day', () => {
+    exitingCli(75);
+    previous();
+    onTrial();
+    const before = Math.floor(Date.now() / 1000);
+    const r = runOnce();
+    expect(r.status).toBe(75);
+    expect(rolledBack()).toBe(true);
+    expect(fs.existsSync(path.join(pkg, '.update-trial'))).toBe(false);
+    expect(fs.existsSync(pkg + '.prev')).toBe(false);
+    expect(fs.existsSync(pkg + '.failed')).toBe(false);
+
+    const skip = fs.readFileSync(path.join(pkg, '.update-skip'), 'utf8');
+    const m = /^SKIP_VERSION=0\.7\.0\nSKIP_UNTIL=(\d+)\n$/.exec(skip);
+    expect(m).not.toBeNull();
+    expect(Number(m[1]) - before).toBeGreaterThanOrEqual(86400);
+    expect(Number(m[1]) - before).toBeLessThan(86400 + 30);
+    // What the old CLI reads to stay off this version.
+    expect(require('../src/shared/hiveos').isSkipped(skip, '0.7.0', Date.now())).toBe(true);
+
+    const text = 'LLMJob Earn v0.7.0 stopped with an error (exit code 75), so this rig went back to v0.6.9. '
+      + 'It tries v0.7.0 again in a day.';
+    expect(logText()).toContain(text + '\n');
+    expect(messages()).toBe('warning ' + text + '\n');
+  });
+
+  test('the argument line HiveOS wrote while the new version ran goes back with the old one', () => {
+    // The real manifest keeps the argument line inside the package.
+    const inside = path.join(pkg, 'llmjob-earn.conf');
+    const manifest = fs.readFileSync(path.join(pkg, 'h-manifest.conf'), 'utf8')
+      .replace(/^CUSTOM_CONFIG_FILENAME=.*$/m, 'CUSTOM_CONFIG_FILENAME=' + inside);
+    fs.writeFileSync(path.join(pkg, 'h-manifest.conf'), manifest);
+    fs.writeFileSync(inside, '--address ' + ADDR + ' --worker=before\n');
+    exitingCli(1);
+    previous();
+    fs.writeFileSync(inside, '--address ' + ADDR + ' --worker=after\n');
+    onTrial();
+    expect(runOnce().status).toBe(1);
+    expect(rolledBack()).toBe(true);
+    expect(fs.readFileSync(inside, 'utf8')).toBe('--address ' + ADDR + ' --worker=after\n');
+  });
+
+  test('a clean exit on trial is not rolled back', () => {
+    exitingCli(0);
+    previous();
+    onTrial();
+    expect(runOnce().status).toBe(0);
+    expect(rolledBack()).toBe(false);
+    expect(fs.existsSync(pkg + '.prev')).toBe(true);
+    expect(messages()).toBe('');
+  });
+
+  test('an error with no trial, or no old version to go back to, is not rolled back', () => {
+    exitingCli(1);
+    previous();
+    expect(runOnce().status).toBe(1);
+    expect(rolledBack()).toBe(false);
+
+    fs.rmSync(pkg + '.prev', { recursive: true });
+    onTrial();
+    expect(runOnce().status).toBe(1);
+    expect(fs.existsSync(path.join(pkg, '.update-trial'))).toBe(true);
+    expect(messages()).toBe('');
+  });
+
+  test('a rollback without HiveOS\'s message command still rolls back', () => {
+    fs.rmSync(path.join(bin, 'message'));
+    exitingCli(1);
+    previous();
+    onTrial();
+    const r = spawnSync('bash', [path.join(pkg, 'h-run.sh')],
+      Object.assign({ env: env({ PATH: bin + path.delimiter + '/usr/bin:/bin' }) }, SYNC));
+    expect(r.status).toBe(1);
+    expect(rolledBack()).toBe(true);
   });
 });

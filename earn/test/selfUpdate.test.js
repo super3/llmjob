@@ -103,11 +103,15 @@ describe('planUpdate', () => {
         'pearl_core_cu13.node': 'https://x/core13',
         'pearl_core_hip.node': 'https://x/corehip',
         'llmjob-xmr-worker': 'https://x/xmr',
+        'llmjob-earn-0.1.12.tar.gz': 'https://x/hiveos',
+        'llmjob-earn-hiveos.tar.gz': 'https://x/hiveos-unversioned',
       },
     };
     const p = planUpdate({ currentVersion: '0.1.11', release, platform: 'linux' });
     expect(p).toMatchObject({
       coreUrl: 'https://x/core', coreCu13Url: 'https://x/core13', coreHipUrl: 'https://x/corehip', xmrWorkerUrl: 'https://x/xmr',
+      // The versioned HiveOS package, which a CLI under HiveOS updates from.
+      packageUrl: 'https://x/hiveos',
     });
   });
 
@@ -118,6 +122,7 @@ describe('planUpdate', () => {
     expect(p.coreCu13Url).toBeNull();
     expect(p.coreHipUrl).toBeNull();
     expect(p.xmrWorkerUrl).toBeNull();
+    expect(p.packageUrl).toBeNull();
   });
 
   test('unsupported platform', () => {

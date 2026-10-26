@@ -243,9 +243,9 @@ jobs:
       #
       # Allowed to fail on a publish run only: there, a packaging problem must
       # not stop the publish step below from uploading the CLI binary, which
-      # every self-updating rig needs, and that step warns when the package is
-      # missing. On a PR or a push to main nothing would warn, so a break fails
-      # the job and is caught before a release.
+      # every self-updating rig needs, and that step fails when the package is
+      # missing. On a PR or a push to main a break fails the job here, and is
+      # caught before a release.
       - name: Package HiveOS custom miner (Linux)
         id: hiveos
         if: runner.os == 'Linux'
@@ -321,35 +321,37 @@ jobs:
           fi
           gh release upload "v$VERSION" dist/llmjob-earn-cli-linux --clobber --repo "$GITHUB_REPOSITORY"
 
-          # The HiveOS package goes last, and a problem with it is a warning, not
-          # a failure: nothing installs it until a flight sheet names this
-          # version, and the binary above must go up regardless. Both names.
-          # Flight sheets should use the versioned one: HiveOS keeps its cached
-          # build while the file name stays the same. The unversioned copy keeps
-          # releases/latest/download/llmjob-earn-hiveos.tar.gz working for a
-          # first install.
-          hive_warn() {
-            echo "::warning::$1"
-            echo "**Warning:** $1" >> "$GITHUB_STEP_SUMMARY"
+          # The HiveOS package goes last, after the binary every other
+          # self-updating rig needs. Both names: HiveOS rigs update themselves
+          # from the versioned one (src/cli/hiveos.js), and flight sheets install
+          # from the unversioned one, releases/latest/download/llmjob-earn-hiveos.tar.gz.
+          # So a release without them fails this step, once everything else is up:
+          # new HiveOS installs would get a 404, and no rig could update to it.
+          hive_failed=0
+          hive_fail() {
+            echo "::error::$1"
+            echo "**Error:** $1" >> "$GITHUB_STEP_SUMMARY"
+            hive_failed=1
           }
           if [ "$HIVEOS_OUTCOME" = success ] && [ -f "dist/llmjob-earn-$VERSION.tar.gz" ] \
              && [ -f dist/llmjob-earn-hiveos.tar.gz ]; then
             gh release upload "v$VERSION" "dist/llmjob-earn-$VERSION.tar.gz" dist/llmjob-earn-hiveos.tar.gz \
                 --clobber --repo "$GITHUB_REPOSITORY" \
-              || hive_warn "uploading the HiveOS package to v$VERSION failed"
+              || hive_fail "uploading the HiveOS package to v$VERSION failed"
           else
             # A re-run or manual publish over this version can find the tarballs
             # an earlier run uploaded. They stay: deleting them would break new
-            # installs from a flight sheet that already names this URL. But they
-            # hold that run's binary and cores, so the warning says so.
+            # installs. But they hold that run's binary and cores, so the error
+            # says so.
             assets=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" --json assets \
               --jq '.assets[].name' 2>/dev/null || true)
             if grep -qxF -- "llmjob-earn-$VERSION.tar.gz" <<< "$assets"; then
-              hive_warn "no HiveOS package was built this run. The llmjob-earn-$VERSION.tar.gz already on v$VERSION is from an earlier run and holds that run's binary and cores, not the ones just uploaded. See the 'Package HiveOS custom miner' step."
+              hive_fail "no HiveOS package was built this run. The llmjob-earn-$VERSION.tar.gz already on v$VERSION is from an earlier run and holds that run's binary and cores, not the ones just uploaded. See the 'Package HiveOS custom miner' step."
             else
-              hive_warn "no HiveOS package was built, so v$VERSION ships without llmjob-earn-$VERSION.tar.gz. See the 'Package HiveOS custom miner' step."
+              hive_fail "no HiveOS package was built, so v$VERSION ships without llmjob-earn-$VERSION.tar.gz. See the 'Package HiveOS custom miner' step."
             fi
           fi
+          [ "$hive_failed" = 0 ] || exit 1
 
       # electron-builder publishes the release with a BLANK body and a bare
       # "<version>" title, and nothing downstream ever wrote one — every release
@@ -469,9 +471,9 @@ jobs:
   # .github/scripts/hiveos-smoke.sh has the steps.
   #
   # v0.6.7 is why: its cores needed glibc 2.38, every test passed, and HiveOS rigs mined
-  # nothing. Ubuntu 22.04 is what HiveOS's current image is built on. 24.04 stands in for
-  # newer Linux rigs. 20.04 is HiveOS's older image, where the cores don't load: there the
-  # check is that the miner says why.
+  # nothing. Ubuntu 22.04 is what HiveOS's current image is built on, and 20.04 its older
+  # one, which the CUDA cores load on since they are built on Rocky Linux 8 (native-core.yml).
+  # 24.04 stands in for newer Linux rigs.
   #
   # On a release tag this runs after the build has published, so it can't hold a release back.
   # The release PR's own run is the one that has to pass.
@@ -482,13 +484,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - image: ubuntu:22.04
-            expect: mines
-          - image: ubuntu:24.04
-            expect: mines
-          - image: ubuntu:20.04
-            expect: refuses
+        image: [ 'ubuntu:22.04', 'ubuntu:24.04', 'ubuntu:20.04' ]
     name: HiveOS package (${{ matrix.image }})
     steps:
       - uses: actions/checkout@v4
@@ -500,5 +496,5 @@ jobs:
 
       - name: Install and run the package
         run: |
-          bash .github/scripts/hiveos-smoke.sh "${{ matrix.image }}" "${{ matrix.expect }}" hiveos-pkg \
+          bash .github/scripts/hiveos-smoke.sh "${{ matrix.image }}" hiveos-pkg \
             "$(node -p "require('./earn/package.json').version")"
