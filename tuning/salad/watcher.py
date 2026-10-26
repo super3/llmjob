@@ -19,6 +19,7 @@ STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.jso
 ORG = os.environ.get("SALAD_ORG", "llmjob")
 RAILWAY = "https://backboard.railway.com/graphql/v2"
 SAFETRADE = "https://safetrade.com/api/v2/trade"
+STABLE = ("usdc", "dai", "fdusd")   # coins worth a dollar that the USDT from sales may be changed into before withdrawal
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
 BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
@@ -872,21 +873,32 @@ class W:
             except (KeyError, TypeError, ValueError):
                 pass
         # The first read only notes the newest fill, so the account's history isn't announced as new sales.
-        sold, new, last = {}, {}, st.get("st_fill_id")
+        # sold: coin -> [amount, USDT after fees, the fees]. bought: a stablecoin bought with USDT (the founder changed
+        # 110.27 USDT to USDC on 14 October and withdrew it) -> [USDT spent, its trading fee].
+        sold, bought, new, last = {}, {}, {}, st.get("st_fill_id")
         for f in fills:
             # A fill's "side" is the taker's; "order_side" is our own order's.
             m = str(f.get("market") or "")
-            if f.get("order_side") != "sell" or not m.endswith("usdt"):
+            if not m.endswith("usdt"):
                 continue
             try:
                 fid, amt, got = int(f["id"]), float(f["amount"]), float(f["total"])
-                fee = float(f.get("fee") or 0) if f.get("fee_currency") == "usdt" else 0.0
+                fee = float(f.get("fee") or 0)
             except (KeyError, TypeError, ValueError):
                 continue
+            if f.get("order_side") == "buy" and m[:-4] in STABLE:
+                b = bought.setdefault(m[:-4], [0.0, 0.0])
+                b[0] += got
+                b[1] += fee   # in the coin bought, about a dollar each
+                continue
+            if f.get("order_side") != "sell":
+                continue
+            fee = fee if f.get("fee_currency") == "usdt" else 0.0
             coin = "pearl" if m[:-4] in ("pearl", "prl") else m[:-4]   # SafeTrade's PRL is "pearl" since 20 Oct
-            s = sold.setdefault(coin, [0.0, 0.0])
+            s = sold.setdefault(coin, [0.0, 0.0, 0.0])
             s[0] += amt
             s[1] += got - fee
+            s[2] += fee
             if last is not None and fid > last:
                 o = new.setdefault(f.get("order_id"), [coin, 0.0, 0.0])
                 o[1] += amt
@@ -912,6 +924,25 @@ class W:
                 if len(got) < 100:
                     break
             recv[coin] = total
+        # What left: every withdrawal that went through, by currency -> [amount, network fee]. On 26 October, 103.26
+        # USDC (fee 7) on 14 October and 206.28 USDT (fee 3) on 22 October, both on Ethereum.
+        out = {}
+        for page in range(1, 21):
+            got = get(f"/account/withdraws?limit=100&page={page}")
+            if got is None:
+                return
+            for x in got:
+                if str(x.get("status") or x.get("state") or "").lower() not in ("succeed", "success", "done", "accepted",
+                                                                                "processing", "confirming", "collected"):
+                    continue
+                try:
+                    o = out.setdefault(str(x.get("currency_id") or x.get("currency")).lower(), [0.0, 0.0])
+                    o[0] += float(x.get("amount") or 0)
+                    o[1] += float(x.get("fee") or 0)
+                except (TypeError, ValueError):
+                    pass
+            if len(got) < 100:
+                break
         ids = []
         for f in fills:
             try:
@@ -919,7 +950,7 @@ class W:
             except (KeyError, TypeError, ValueError):
                 pass
         st["st_fill_id"] = max(ids + [last or 0])
-        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv}
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv, "bought": bought, "out": out}
         st["st_warned"] = False
         self.mark_report_read("st", t)
 
@@ -2428,27 +2459,41 @@ class W:
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
-        # Where the payouts go and what they became, a coin a row in the order they happen: what the pools paid, what
-        # reached SafeTrade, what waits there to sell (Waiting: held and in open orders), what sold and the USDT it brought
-        # after fees, totalled. Until 26 October these were a 💵 row under each coin's pools, with the sales in Paid,
-        # which didn't show what we actually got. No table without a SafeTrade key, or with a read from before
-        # 24 Oct 10:40 am EDT (last-day sales only).
+        # SafeTrade in one table, a row a line. A coin a row in the order a coin moves: what the pools paid (Paid), what
+        # reached SafeTrade, what waits there to sell (held and in open orders), what sold, its trading fees and the USDT
+        # it brought after them. Then a row for each currency withdrawn, with its fees (for a stablecoin bought with USDT
+        # first, that trade's fee too) and the USDT it took. Last, Left: the USDT still there and every fee paid. So the
+        # USDT column is a ledger: on 26 October +$357.11 + $6.42 − $110.27 − $209.28 = $43.98, the account's balance.
+        # Until 26 October the coins were a 💵 row under each coin's pools, with the sales in Paid. No table without a
+        # SafeTrade key, or with a read from before 24 Oct 10:40 am EDT (last-day sales only).
         if sa and "sold" in sa:
             read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
             # Both pools' paid, Kryptex's even with no box on it now (its row is hidden then, its payouts aren't).
             kxp = st.get("kx_tot")
             paid = {"pearl": (pt["paid"] if pt else 0.0) + (kxp["paid"] if kxp else 0.0),
                     "xmr": (xt["paid"] if xt else 0.0) + (kxx["paid"] if kxx else 0.0)}
-            rows, got = [], 0.0
+            rows, fees = [], 0.0
             for coin in ["pearl"] + (["xmr"] if xon else []):
-                dp, (b, l), (n, usd) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0]), sa["sold"].get(coin, [0.0, 0.0])
+                dp, (b, l) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
+                n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
                 r = (sa.get("recv") or {}).get(coin)
                 rows.append(f"| {coin_name(coin)} | {paid[coin]:.{dp}f} | " + ("—" if r is None else f"{r:.{dp}f}")
-                            + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${usd:.2f} |")
-                got += usd
-            pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Pools paid | Received | Waiting "
-                         "| Sold | Got (USDT) |", "|---|---|---|---|---|---|", *rows,
-                     f"| **Total** | | | | | {bold(f'${got:.2f}')} |"]
+                            + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
+                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+            for cur, (amt, wfee) in sorted((sa.get("out") or {}).items(), key=lambda kv: kv[0] != "usdc"):
+                if cur == "usdt":
+                    spent, fee = amt + wfee, wfee
+                elif cur in (sa.get("bought") or {}):
+                    spent, tfee = sa["bought"][cur]
+                    fee = tfee + wfee
+                else:
+                    continue   # a coin withdrawn as itself never became USDT
+                rows.append(f"| {cur.upper()} out | | | | | ${fee:.2f} | −${spent:.2f} |")
+                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+            left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
+            pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Paid | Received | Waiting | Sold | Fees | USDT |",
+                     "|---|---|---|---|---|---|---|", *rows,
+                     f"| **Left** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
         # credit left (with how long it lasts at the All row's $/hr: days, or hours under a day) ends the line. Until 20 October it was under

@@ -2045,6 +2045,11 @@ class TestSafeTrade(Base):
                                    {"amount": "9.0", "status": "rejected"}],
                          "xmr": [{"amount": "0.010368", "status": "collected"}]}
         self.http.on("GET", r"safetrade\.com/api/v2/trade/account/deposits\?", self.deposit_page)
+        # The USDC bought (fill 1) withdrawn, some USDT withdrawn, and a failed withdrawal that doesn't count.
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "2.0", "fee": "1", "status": "succeed"},
+            {"currency_id": "usdt", "amount": "50.0", "fee": "1", "status": "failed"},
+            {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
         st = self.x.st
         st["pool_tot"] = {"t": T0, "ths_1h": 0, "balance": 0.744, "unconfirmed": 0.0, "paid": 151.622, "blocks": 0}
         st["xmr_tot"] = {"khs_1h": 5.1, "balance": 0.000949, "pending": 0.000094, "paid": 0.010368}
@@ -2072,31 +2077,34 @@ class TestSafeTrade(Base):
         self.assertFalse(self.http.made("GET", "safetrade"))
         self.assertNotIn("SafeTrade", self.report())
 
-    def test_its_own_table_lines_up_pools_paid_received_waiting_sold_and_usdt(self):
+    def test_one_table_from_pools_paid_to_the_usdt_left(self):
         self.x.st["kx_tot"] = {"confirmed": 0.0, "unconfirmed": 2.6, "paid": 45.121}
         self.x.safetrade()
         rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
-        pools = rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:]
-        pools = pools[:pools.index("| 💵 SafeTrade | Pools paid | Received | Waiting | Sold | Got (USDT) |")]
+        head = "| 💵 SafeTrade | Paid | Received | Waiting | Sold | Fees | USDT |"
+        pools = rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:rows.index(head)]
         self.assertFalse([r for r in pools if "💵" in r])   # no SafeTrade rows among the pools any more
         # Paid is both pools'; Received the deposits less the rejected one; Waiting held plus in open orders; Sold every
-        # sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, less 0.1% fees.
-        self.assertEqual(self.row("PRL"), "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $8.79 |")
-        self.assertEqual(self.row("XMR"), "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $6.19 |")
-        self.assertEqual(self.row("**Total**"), "| Total | | | | | $14.99 |")   # $8.7912 + $6.1938, shown unbolded
+        # sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.
+        self.assertEqual(rows[rows.index(head) + 1:], [
+            "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |",
+            "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+            "| USDC out | | | | | $0.91 | −$9.99 |",    # the 9.99 USDT changed to USDC: its trade fee and the network's
+            "| USDT out | | | | | $1.00 | −$3.00 |",    # 2 USDT and its fee; the failed one doesn't count
+            "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
     def test_only_our_own_sell_orders_count(self):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 0.000 | $0.00 |")
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 0.000 | $0.00 | +$0.00 |")
 
     def test_every_page_of_fills_counts(self):
         self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
         self.x.safetrade()
         self.assertEqual(len(self.http.made("GET", "market/trades")), 3)
-        self.assertIn("| 250.000 | $499.50 |", self.row("PRL"))
+        self.assertIn("| 250.000 | $0.50 | +$499.50 |", self.row("PRL"))
 
     def test_a_new_sale_is_an_event_with_its_usdt_and_old_ones_are_not(self):
         self.x.safetrade()
@@ -2147,12 +2155,14 @@ class TestSafeTrade(Base):
             self.clock[0] += 300
             self.x.safetrade()
         self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
-        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | Pools paid |", shown(self.report()))
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 5.000 | $8.79 |")
+        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | Paid |", shown(self.report()))
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |")
 
-    def test_a_read_from_before_deposits_were_read_shows_a_dash(self):
-        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0]}, "sold": {"pearl": [2.0, 3.8]}}
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | — | 1.000 | 2.000 | $3.80 |")
+    def test_a_read_from_before_deposits_and_withdrawals_were_read_shows_what_it_has(self):
+        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0], "usdt": [3.8, 0.0]},
+                                "sold": {"pearl": [2.0, 3.8]}}
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | — | 1.000 | 2.000 | $0.00 | +$3.80 |")
+        self.assertEqual(self.row("**Left**"), "| Left | | | | | $0.00 | $3.80 |")
 
     def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {}, "sales": {}}
