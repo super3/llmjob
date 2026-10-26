@@ -297,6 +297,7 @@ by contrast, stops only its own card.
   Infinity Cache as `learnings.md` describes for NVIDIA.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
-  against the Linux core's on the same card.
+  against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's
+  on Linux is AMD clang 22, so the two cores' code differs.
 - On Windows a Ryzen's built-in graphics may be listed before the Radeon card. The core then
   stops with an error naming it, which `HIP_VISIBLE_DEVICES` fixes but the app can't set.

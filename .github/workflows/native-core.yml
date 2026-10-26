@@ -730,7 +730,9 @@ jobs:
   # is why this is not built with an older SDK. The installer carries the core; the app
   # tries it first when nvidia-smi lists no NVIDIA card (src/shared/coreVariant.js).
   #
-  # No Windows Radeon has run it.
+  # The SDK's compiler is not the Linux image's: SDK 7.2 ships clang 21.0.0git, where
+  # ROCm 7.2.0 on Linux has AMD clang 22.0.0git. So this core's code is not the code the
+  # Salad rows in benchmark.md measured, and no Windows Radeon has run it.
   #
   # Non-blocking, like the Linux AMD job, and for the same reason.
   amd-windows:
@@ -794,9 +796,11 @@ jobs:
           v=$("$(cygpath -u "$HIP_PATH")bin/clang++.exe" --version)
           echo "$v"
           node --version
+          # SDK 7.2's clang calls itself plain "clang version 21.0.0git"; where it is installed
+          # is what says which SDK it is.
           case "$v" in
-            *"AMD clang version"*) ;;
-            *) echo "::error::expected the HIP SDK's AMD clang, got the clang above"; exit 1 ;;
+            *"ROCm\\$HIPSDK_VERSION\\bin"*) ;;
+            *) echo "::error::expected HIP SDK $HIPSDK_VERSION's clang, got the clang above"; exit 1 ;;
           esac
 
       # --prefix .: earn/native has no package.json, and without it npm installs the whole
