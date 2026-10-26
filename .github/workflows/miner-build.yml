@@ -142,19 +142,19 @@ jobs:
           path: earn/vendor/native
           if_no_artifact_found: warn
 
-      # The AMD core (earn/native/amd, ROCm), Linux only: loaded with --core amd or
-      # PEARL_CORE_VARIANT=amd, never on its own. From the same native-core run as the
-      # CUDA cores, for the same reason. Optional and loud like the CUDA 13 core: without
-      # it every NVIDIA rig mines as before, and the verify step and the run summary say
-      # it is missing.
-      - name: Stage the AMD Pearl core (Linux)
-        if: runner.os == 'Linux'
+      # The AMD core (earn/native/amd): built with ROCm for Linux and with AMD's HIP SDK for
+      # Windows. Tried first when nvidia-smi lists no NVIDIA card, and loaded with --core amd
+      # or PEARL_CORE_VARIANT=amd. From the same native-core run as the CUDA cores, for the
+      # same reason. Optional and loud like the CUDA 13 core: without it every NVIDIA rig
+      # mines as before, and the verify step and the run summary say it is missing.
+      - name: Stage the AMD Pearl core
+        if: runner.os == 'Windows' || runner.os == 'Linux'
         continue-on-error: true
         uses: dawidd6/action-download-artifact@v6
         with:
           workflow: native-core.yml
           run_id: ${{ steps.pick.outputs.run_id }}
-          name: pearl-core-hip-ubuntu-latest
+          name: pearl-core-hip-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}
           path: earn/vendor/native
           if_no_artifact_found: warn
 
@@ -173,14 +173,14 @@ jobs:
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
-          if [ "$RUNNER_OS" = Linux ]; then
-            if [ -f vendor/native/pearl_core_hip.node ]; then
-              echo "staged AMD core: $(ls -l vendor/native/pearl_core_hip.node)"
-            else
-              msg="no pearl_core_hip.node staged — this release cannot mine on AMD cards. Check the native-core run's ubuntu-latest-hip job."
-              echo "::warning::$msg"
-              echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
-            fi
+          if [ -f vendor/native/pearl_core_hip.node ]; then
+            echo "staged AMD core: $(ls -l vendor/native/pearl_core_hip.node)"
+          else
+            job=ubuntu-latest-hip
+            [ "$RUNNER_OS" = Windows ] && job=windows-2022-hip
+            msg="no pearl_core_hip.node staged — this $RUNNER_OS build cannot mine on AMD cards. Check the native-core run's $job job."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       # The Monero CPU miner's worker (earn/xmr-worker): plain C++ against

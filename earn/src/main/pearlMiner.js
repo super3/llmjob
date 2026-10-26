@@ -183,8 +183,8 @@ class PearlMiner extends EventEmitter {
         level: 'error',
         // The loader has logged which file it looked for, or why one that is
         // there would not load, so this only says what follows from it.
-        line: 'No Pearl core loaded — nothing to mine with. A release carries pearl_core.node, and on '
-          + 'Linux pearl_core_hip.node for AMD cards; the line before this one says what went wrong.',
+        line: 'No Pearl core loaded — nothing to mine with. A release carries pearl_core.node, and '
+          + 'pearl_core_hip.node for AMD cards; the line before this one says what went wrong.',
       });
       this.running = false;
       this.emit('stopped', {});

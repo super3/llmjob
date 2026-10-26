@@ -2,9 +2,11 @@
 
 A HIP port of the Pearl core in `../src`, for AMD Instinct and Radeon cards. It builds
 `pearl_core_hip.node`, an addon with exactly the CUDA core's interface: `pearl_core.cc`
-is compiled unchanged against a HIP host. The app loads it only when asked to
-(`--core amd` or `PEARL_CORE_VARIANT=amd`, see below). Linux releases carry it from v0.6.8,
-built by `native-core.yml`'s `ubuntu-latest-hip` job.
+is compiled unchanged against a HIP host. The app tries it first when nvidia-smi lists no
+NVIDIA card, and loads it with no fallback when asked to (`--core amd` or
+`PEARL_CORE_VARIANT=amd`, see below). Linux releases carry it from v0.6.8, built by
+`native-core.yml`'s `ubuntu-latest-hip` job. The Windows installer carries one built with
+AMD's HIP SDK by its `windows-2022-hip` job, which no Windows Radeon has run yet.
 
 **Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct) or RDNA 2.** On
 those (gfx9 and gfx103x) the core refuses to mine until `PEARL_AMD_UNTESTED=1` is set: run the
@@ -18,7 +20,8 @@ through HIP-CPU, with the matrix instructions emulated from AMD's documented lan
 checking hits against the JS reference the way the pool does.
 
 This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
-NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` job.
+NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` and
+`windows-2022-hip` jobs.
 
 ## What is here
 
@@ -133,7 +136,7 @@ gpu` builds all 14 targets into one addon (about 2 minutes) and the fold check b
 
 ## Building
 
-Linux only for now. You need ROCm 7.x with hip-clang (`rocm-llvm`, `hip-dev`,
+On Linux you need ROCm 7.x with hip-clang (`rocm-llvm`, `hip-dev`,
 `rocm-device-libs`; for running, `rocm-hip-runtime`), Node 22 and node-addon-api:
 
 ```sh
@@ -153,6 +156,29 @@ HIP_CPU_PATH=/tmp/hip-cpu ./build-amd.sh cpu
 ```
 
 The addon links `libamdhip64.so.7`, so the machine it runs on needs the ROCm 7 runtime.
+
+### Windows
+
+You need AMD's HIP SDK for Windows (its installer sets `HIP_PATH`), Visual Studio's C++
+tools, Node 22 and Git Bash. Start Git Bash from the "x64 Native Tools Command Prompt", so
+MSVC is on PATH, then:
+
+```sh
+cd earn/native
+npm install --prefix . --no-save node-addon-api node-gyp
+amd/build-amd.sh winlib               # the 10 Radeon targets
+amd/build-amd.sh winlib gfx1100       # or just your card's, which is faster
+PEARL_BACKEND=hip npx node-gyp rebuild
+cp build/Release/pearl_core.node amd/build/pearl_core_hip.node
+```
+
+`winlib` compiles the kernels and host with the SDK's clang into `build/win/pearl_hip.lib`,
+and node-gyp links it with `pearl_core.cc` (`binding.gyp`, `PEARL_BACKEND=hip`), as it links
+the CUDA core. Both halves use the static C runtime. The addon links `amdhip64_6.dll`, which
+AMD's graphics driver installs in System32, so a PC with the driver needs nothing else. There
+are no Instinct targets: AMD's Windows runtime is for Radeon cards. `check` works on Windows
+too, and `winlib` also builds `build/pearl_amd_foldtest.exe`, the layout check below; CI
+uploads it as `pearl-amd-foldtest-windows-2022`.
 
 ## Testing on real hardware
 
@@ -186,6 +212,11 @@ cd ../..
 PEARL_CORE_VARIANT=amd node src/cli/earn-cli.js --address <prl1p...> --mode mining
 ```
 
+On Windows, take `pearl_core_hip.node` and `pearl_amd_foldtest.exe` from a native-core run's
+`pearl-core-hip-windows-2022` and `pearl-amd-foldtest-windows-2022` artifacts (or build them,
+above), and run steps 2-4 with those paths. The card's target is in the foldtest's first
+line. Step 5 is the installed app: with no NVIDIA card it picks the AMD core itself.
+
 If step 2 fails for a fold, its layout differs from the documented one: send the output
 line, which names the first wrong region and word. If step 3 fails, send its JSON line.
 For a speed report, send the output of steps 2 (timed), 4, and `rocm-smi` while step 4
@@ -193,13 +224,18 @@ runs.
 
 ## Using it in the app
 
-`PEARL_CORE_VARIANT=amd` makes the app and `earn-cli` load `pearl_core_hip.node` (the CLI's
-`--core amd` sets it): beside the executable, in the packaged `native/` folder, or in this
-folder's `build/`. A release's copy is beside the CLI binary, in the HiveOS package and in
-the AppImage, and the CLI updates it with the binary on a rig that asks for it. The rig needs
-the ROCm 7 HIP runtime (`libamdhip64.so.7`); when it is missing, the log names the library
-the core could not load. It is
-never chosen on its own, and when it is asked for and missing, nothing falls back to a
+The app and `earn-cli` load `pearl_core_hip.node` from beside the executable, the packaged
+`native/` folder, or this folder's `build/`. A Linux release's copy is beside the CLI binary,
+in the HiveOS package and in the AppImage, and the CLI updates it with the binary on a rig
+that uses it. The Windows installer's is in `resources\native`. A Linux rig needs the ROCm 7
+HIP runtime (`libamdhip64.so.7`); when it is missing, the log names the library the core
+could not load. A Windows PC needs AMD's graphics driver, for `amdhip64_6.dll`.
+
+When nvidia-smi lists no NVIDIA card, the app tries it first (`shared/coreVariant.js`). If
+it isn't installed, won't load, or can't start on its first card, the CUDA 12.8 core takes
+over, and the log says why. That keeps an NVIDIA rig whose nvidia-smi failed mining.
+`PEARL_CORE_VARIANT=amd` (the CLI's `--core amd` sets it) asks for the AMD core on any rig,
+and then nothing falls back to a
 CUDA build. `PEARL_CORE_PATH=/path/to/pearl_core_hip.node` works too. Give it an absolute
 path: a relative one counts from the executable's folder. With `PEARL_CORE_VARIANT=amd`,
 a `PEARL_CORE_PATH` that doesn't load is the end of it; the CUDA cores aren't tried.
@@ -260,8 +296,7 @@ by contrast, stops only its own card.
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
   Infinity Cache as `learnings.md` describes for NVIDIA.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
-- Windows (the HIP SDK). Linux releases build `pearl_core_hip.node` from v0.6.8
-  (`native-core.yml`, `ubuntu-latest-hip`: the compile check, the 14-target build, a load
-  check, and a glibc floor of Ubuntu 22.04's 2.35).
-- Pick the AMD core on its own when a rig has AMD cards and no NVIDIA ones (today it has to be
-  asked for, since the app finds cards with nvidia-smi).
+- Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
+  against the Linux core's on the same card, since the HIP SDK's compiler is not ROCm 7.2's.
+- On Windows a Ryzen's built-in graphics may be listed before the Radeon card. The core then
+  stops with an error naming it, which `HIP_VISIBLE_DEVICES` fixes but the app can't set.

@@ -244,26 +244,43 @@ build (a forced `cu13` still falls back if it can't start). `PEARL_CORE_PATH=/pa
 beats both and loads exactly that file. On the CLI, `--core cu12` or `--core cu13`
 does the same as the variable and wins over it.
 
-### The AMD core (Radeon and Instinct, Linux)
+### The AMD core (Radeon and Instinct)
 
-Linux releases from v0.6.8 also carry `pearl_core_hip.node`, a core for AMD cards
-built with ROCm 7.2 (`native/amd`). It is in the AppImage, beside the CLI binary
-and in the HiveOS package. It never loads on its own: `nvidia-smi` lists no AMD
-card, so the app has nothing to choose from. Ask for it with `--core amd` on the
-CLI (or Extra config on HiveOS), or `PEARL_CORE_VARIANT=amd` for either app:
+Releases also carry `pearl_core_hip.node`, a core for AMD cards (`native/amd`):
+
+- **Linux**, from v0.6.8: built with ROCm 7.2, in the AppImage, beside the CLI
+  binary and in the HiveOS package. The rig needs ROCm 7's HIP runtime
+  (`libamdhip64.so.7`, from `rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on
+  `LD_LIBRARY_PATH`), which the release does not carry, and which AMD's normal
+  `amdgpu` driver doesn't include. Without it the log says the core would not
+  load and names the missing library.
+- **Windows**: built with AMD's HIP SDK for the Radeon cards, in the installer.
+  Its runtime, `amdhip64_6.dll`, comes with AMD's graphics driver, so nothing
+  else needs installing. No Windows Radeon has run it yet, and the SDK's
+  compiler is not ROCm 7.2's, so its speed there is unmeasured.
+
+When `nvidia-smi` lists no NVIDIA card, the app and the CLI try the AMD core
+first. If it isn't installed, won't load, or can't start on its card, they load
+`pearl_core.node` instead and log why:
+
+```
+Pearl core: AMD build (ROCm) · nvidia-smi lists no NVIDIA card
+Pearl core: CUDA 12.8 build · the AMD build could not start (this core has no code for gfx1036 …)
+```
+
+On a rig with NVIDIA cards, ask for it with `--core amd` on the CLI (or Extra
+config on HiveOS), or `PEARL_CORE_VARIANT=amd` for either app. Asked for, it
+has no fallback:
 
 ```bash
 ./llmjob-earn-cli --address prl1p… --core amd
 ```
 
-It has code for RDNA 2, 3 and 4 Radeon cards and CDNA Instinct cards (gfx908,
-gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151, gfx1200,
-gfx1201). On Salad it beat SRBMiner on every Radeon class rented there, the RX
-7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). It has not run on an
-Instinct card. The rig needs ROCm 7's HIP runtime (`libamdhip64.so.7`, from
-`rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on `LD_LIBRARY_PATH`), which the
-release does not carry. Without it the log says the core would not load and
-names the missing library. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
+It has code for RDNA 2, 3 and 4 Radeon cards and, on Linux, CDNA Instinct cards
+(gfx908, gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151,
+gfx1200, gfx1201). On Salad it beat SRBMiner on every Radeon class rented there,
+the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). It has not run
+on an Instinct card. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
 core refuses to mine until you set `PEARL_AMD_UNTESTED=1`: its folds for those
 cards have run only in emulation, and if one is wrong on the card every share
 is rejected, which a pool can ban the address for. Run the checks in
@@ -531,8 +548,9 @@ defaults. The ones that make sense on a rig:
 - `--no-report` keeps the rig off the public network board.
 - `--xmr-address 4…` also mines Monero on the CPU (see
   [Monero on the CPU](#monero-on-the-cpu-opt-in)).
-- `--core amd` mines on AMD cards with the package's `pearl_core_hip.node`
-  (see [The AMD core](#the-amd-core-radeon-and-instinct-linux)). The rig
+- On an AMD rig the package's `pearl_core_hip.node` mines once nvidia-smi
+  lists no NVIDIA card, and `--core amd` asks for it on a rig that has NVIDIA
+  cards too (see [The AMD core](#the-amd-core-radeon-and-instinct)). The rig
   needs ROCm 7's HIP runtime, and this has not been tried on HiveOS yet.
 
 `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
@@ -743,8 +761,8 @@ Node install**. The mining cores and the CPU worker (`llmjob-xmr-worker`, used
 only with `--xmr-address`) are separate files on the same release, and the
 binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
-580 or newer; on an AMD rig, add `-O $base/pearl_core_hip.node` and run with
-`--core amd`):
+580 or newer; on an AMD rig, add `-O $base/pearl_core_hip.node`, which loads
+when nvidia-smi lists no NVIDIA card):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
@@ -803,7 +821,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            0,2, or "none" (default: every GPU)
       --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime), or
                            cu12/cu13 to force a CUDA build (default: the CUDA
-                           build that fits the cards; see above)
+                           build that fits the cards, or the AMD core first when
+                           nvidia-smi lists none; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)

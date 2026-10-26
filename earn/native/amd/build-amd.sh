@@ -10,9 +10,19 @@
 #   ./build-amd.sh check [gfx...]   Compile the device code for each target and print each
 #                                   fold's registers, scratch and LDS. Fails if a fold
 #                                   spills or uses scratch memory.
+#   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
+#                                   for the listed targets (default: $WINDOWS_ARCHS below),
+#                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
+#                                   PEARL_BACKEND=hip npx node-gyp rebuild links the addon
+#                                   (binding.gyp), as the CUDA core is linked.
+#
+# On Windows this runs in Git Bash with MSVC's environment (vcvars64, or the
+# ilammy/msvc-dev-cmd action), and the compiler is the one in AMD's HIP SDK, found
+# through HIP_PATH, which its installer sets. check works there too.
 #
 # Environment:
 #   ROCM_PATH       ROCm install with hip-clang (default /opt/rocm). gpu and check.
+#   HIP_PATH        Windows: the HIP SDK's folder, e.g. C:\Program Files\AMD\ROCm\6.4\.
 #   HIP_CPU_PATH    a checkout of github.com/ROCm/HIP-CPU (its include/ is used). cpu.
 #   TBB_ROOT        prefix holding include/tbb and lib/libtbb.so (default: the system's). cpu.
 #   CPU_CXX         C++ compiler for the cpu build (default clang++; g++ ignores the vector
@@ -27,16 +37,24 @@
 # cuts at is gone.
 set -euo pipefail
 
+windows() {
+  case "$(uname -s)" in MINGW* | MSYS* | CYGWIN*) return 0 ;; *) return 1 ;; esac
+}
+
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The compiler is a Windows program: give it C:/... paths, which Git Bash takes too.
+if windows; then HERE="$(cygpath -m "$HERE")"; fi
 SRC="$HERE/../src"
 OUT="$HERE/build"
 GEN="$OUT/gen"
 DEFAULT_ARCHS="gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
+# The Radeon targets only: AMD's Windows runtime has no Instinct (gfx9) cards.
+WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 MARKER='^// A 16-byte global->shared copy that does not pass through registers'
 
 mode="${1:-}"
 shift || true
-archs="${*:-$DEFAULT_ARCHS}"
+if windows; then archs="${*:-$WINDOWS_ARCHS}"; else archs="${*:-$DEFAULT_ARCHS}"; fi
 
 slice() {
   mkdir -p "$GEN"
@@ -66,11 +84,25 @@ node_includes() {
   echo "-I$api -I$inc"
 }
 
+rocm_root() {
+  if windows; then
+    if [ -z "${HIP_PATH:-}" ]; then
+      echo "build-amd.sh: HIP_PATH is not set: install AMD's HIP SDK, or set HIP_PATH to its folder." >&2
+      exit 1
+    fi
+    cygpath -m "${HIP_PATH%\\}"
+  else
+    echo "${ROCM_PATH:-/opt/rocm}"
+  fi
+}
+
 hip_clang() {
-  local rocm="${ROCM_PATH:-/opt/rocm}"
-  local cc="$rocm/lib/llvm/bin/clang++"
+  local rocm cc
+  rocm="$(rocm_root)"
+  # The HIP SDK keeps clang in bin\; ROCm on Linux in lib/llvm/bin.
+  if windows; then cc="$rocm/bin/clang++.exe"; else cc="$rocm/lib/llvm/bin/clang++"; fi
   if [ ! -x "$cc" ]; then
-    echo "build-amd.sh: no hip-clang at $cc: set ROCM_PATH to a ROCm install." >&2
+    echo "build-amd.sh: no hip-clang at $cc: set ROCM_PATH (HIP_PATH on Windows) to a ROCm install." >&2
     exit 1
   fi
   echo "$cc"
@@ -140,17 +172,45 @@ case "$mode" in
       -L"$rocm/lib" -lamdhip64 -Wl,-rpath,/opt/rocm/lib -Wl,--allow-shlib-undefined
     echo "built $OUT/pearl_core_hip.node and $OUT/pearl_amd_foldtest for: $archs"
     ;;
+  winlib)
+    if ! windows; then
+      echo "build-amd.sh: winlib is the Windows build; on Linux use gpu." >&2
+      exit 2
+    fi
+    slice
+    cc="$(hip_clang)"
+    rocm="$(rocm_root)"
+    mkdir -p "$OUT/win"
+    inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
+    # The gpu build's flags, less -fPIC, and with the static C runtime: node-gyp builds the
+    # rest of the addon with /MT, and both halves must use the same one. MSVC's headers warn
+    # about getenv and friends unless told not to.
+    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value ${PEARL_AMD_CFLAGS:-}"
+    targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
+    echo "winlib: kernels and host for $archs"
+    "$cc" -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" \
+      -o "$OUT/win/pearl_host_hip.obj"
+    # MSVC's librarian, since MSVC's linker is the one that reads it (node-gyp).
+    lib -nologo -out:"$OUT/win/pearl_hip.lib" "$OUT/win/pearl_host_hip.obj"
+    echo "winlib: fold check"
+    "$cc" -x hip $(offload_flags) --rocm-path="$rocm" $flags $inc -c "$HERE/test/pearl_amd_foldtest.cpp" \
+      -o "$OUT/win/pearl_amd_foldtest.obj"
+    "$cc" -fms-runtime-lib=static -o "$OUT/pearl_amd_foldtest.exe" "$OUT/win/pearl_amd_foldtest.obj" \
+      -L"$rocm/lib" -lamdhip64
+    echo "built $OUT/win/pearl_hip.lib and $OUT/pearl_amd_foldtest.exe for: $archs"
+    echo "next, in earn/native: PEARL_BACKEND=hip npx node-gyp rebuild"
+    ;;
   check)
     slice
     cc="$(hip_clang)"
-    rocm="${ROCM_PATH:-/opt/rocm}"
+    rocm="$(rocm_root)"
     mkdir -p "$OUT/check"
     inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
     bad=0
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD"
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! $cc -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1
@@ -183,7 +243,7 @@ case "$mode" in
     echo "check: every fold compiled for $archs with no spills and no scratch"
     ;;
   *)
-    sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,/^# The portable kernels/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
     exit 2
     ;;
 esac

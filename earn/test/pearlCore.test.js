@@ -398,7 +398,7 @@ describe('coreFactory — choosing a build', () => {
 
     test('is null, with the reason, when it is not built; the CUDA build does not stand in', () => {
       const r = rig();
-      // platform: the message differs on Windows, which has no AMD core (next test).
+      // platform: the message differs on Windows (next test).
       expect(factory(r, Object.assign({ platform: 'linux' }, AMD_ENV, BLACKWELL))).toBeNull();
       expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
       expect(r.req).not.toHaveBeenCalledWith(CU13_BESIDE);
@@ -408,12 +408,12 @@ describe('coreFactory — choosing a build', () => {
     });
 
     // The CLI's --core sets PEARL_CORE_VARIANT, so the log names the flag; and
-    // Windows has no AMD core at all.
-    test('names --core when the CLI asked with it, and says the AMD core is Linux only on Windows', () => {
+    // on Windows the installer is where the core comes from.
+    test('names --core when the CLI asked with it, and where the Windows installer keeps the core', () => {
       const r = rig();
       expect(factory(r, Object.assign({ coreFlag: true, platform: 'win32' }, AMD_ENV))).toBeNull();
       expect(r.lines).toEqual([['error', 'Pearl core: AMD build (ROCm) · pearl_core_hip.node not found '
-        + '(--core amd; the AMD core is built for Linux only)']]);
+        + '(--core amd; the Windows installer has it in resources\\native, or set PEARL_CORE_PATH)']]);
       const amd = { createCore: jest.fn(() => ({ build: 'amd' })) };
       const r2 = rig({ [AMD_BESIDE]: amd });
       factory(r2, Object.assign({ coreFlag: true }, AMD_ENV));
@@ -491,6 +491,133 @@ describe('coreFactory — choosing a build', () => {
       const env = { PEARL_CORE_VARIANT: 'amd', PEARL_CORE_PATH: '/src/pearl_core_hip.node' };
       expect(factory(r, { env })({})).toEqual({ build: 'mine' });
       expect(r.lines).toEqual([['info', 'Pearl core: /src/pearl_core_hip.node (PEARL_CORE_PATH)']]);
+    });
+
+    // nvidia-smi listed no NVIDIA card (cards: []), so the AMD core is tried first,
+    // with the 12.8 build behind it.
+    describe('when nvidia-smi lists no NVIDIA card', () => {
+      const NONE = { cards: [], gpus: [] };
+      const amdRig = (amd) => rig({ [AMD_BESIDE]: amd });
+      const amdCore = (impl) => ({ createCore: jest.fn(impl || (() => ({ build: 'amd' }))) });
+
+      test('mines on the AMD core, and never loads a CUDA build', () => {
+        const amd = amdCore();
+        const r = amdRig(amd);
+        const f = factory(r, NONE);
+        expect(f({ rank: 128 }, { deviceIndex: 0 })).toEqual({ build: 'amd' });
+        expect(f({ rank: 128 })).toEqual({ build: 'amd' });
+        expect(amd.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 0 });
+        expect(amd.createCore).toHaveBeenLastCalledWith({ rank: 128 }, {});
+        expect(r.req).not.toHaveBeenCalledWith(CU12_BESIDE);
+        expect(r.lines).toEqual([['info', 'Pearl core: AMD build (ROCm) · nvidia-smi lists no NVIDIA card']]);
+      });
+
+      test('uses the 12.8 build when the AMD core is not installed', () => {
+        const r = rig();
+        expect(factory(r, NONE)({})).toEqual({ build: 'cu12' });
+        expect(r.lines).toEqual([['info', 'Pearl core: CUDA 12.8 build · nvidia-smi lists no NVIDIA card, '
+          + 'and pearl_core_hip.node is not installed']]);
+      });
+
+      test('uses the 12.8 build when the AMD core will not load, and warns why', () => {
+        const r = amdRig(new Error('libamdhip64.so.7: cannot open shared object file'));
+        expect(factory(r, NONE)({})).toEqual({ build: 'cu12' });
+        expect(r.lines).toEqual([['warn', 'Pearl core: CUDA 12.8 build · nvidia-smi lists no NVIDIA card, and '
+          + AMD_BESIDE + ' is there but would not load: libamdhip64.so.7: cannot open shared object file. It needs '
+          + 'the ROCm 7 HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on '
+          + 'LD_LIBRARY_PATH']]);
+      });
+
+      // Windows names no library when one is missing. On a PC without AMD's driver
+      // (an NVIDIA one whose nvidia-smi failed, say) this is what it says.
+      test('on Windows, a core that will not load says which driver DLL it needs', () => {
+        const AMD_RES = path.join('C:', 'LLMJob Earn', 'resources', 'native', 'pearl_core_hip.node');
+        const r = rig({ [AMD_RES]: new Error('The specified module could not be found.\r\n\\\\?\\' + AMD_RES) });
+        expect(factory(r, Object.assign({ resourcesPath: path.join('C:', 'LLMJob Earn', 'resources') }, NONE))({}))
+          .toEqual({ build: 'cu12' });
+        expect(r.lines).toEqual([['warn', 'Pearl core: CUDA 12.8 build · nvidia-smi lists no NVIDIA card, and '
+          + AMD_RES + ' is there but would not load: The specified module could not be found. \\\\?\\' + AMD_RES
+          + '. It needs amdhip64_6.dll, which AMD\'s graphics driver installs: install or update the driver']]);
+      });
+
+      test('a CUDA core that will not load on Windows gets no AMD hint', () => {
+        const r = rig({ [CU12_BESIDE]: new Error('The specified module could not be found.') });
+        expect(factory(r, TURING)).toBeNull();
+        expect(r.lines).toEqual([['error', 'Pearl core: ' + CU12_BESIDE
+          + ' is there but would not load: The specified module could not be found.']]);
+      });
+
+      test('is null when neither loads', () => {
+        const r = rig({ [CU12_BESIDE]: undefined });
+        expect(factory(r, NONE)).toBeNull();
+      });
+
+      // An NVIDIA rig whose nvidia-smi failed, beside AMD's driver for a Ryzen's
+      // built-in graphics: the AMD core loads, and can't start.
+      test('hands over to the 12.8 build when the AMD core cannot start on its first card', () => {
+        const amd = amdCore(() => { throw new Error('this core has no code for gfx1036 (AMD Radeon(TM) Graphics)'); });
+        const r = amdRig(amd);
+        const f = factory(r, NONE);
+        expect(f({ rank: 128 }, { deviceIndex: 0 })).toEqual({ build: 'cu12' });
+        expect(r.cu12.createCore).toHaveBeenCalledWith({ rank: 128 }, { deviceIndex: 0 });
+        expect(r.lines[1]).toEqual(['warn', 'Pearl core: CUDA 12.8 build · the AMD build could not start '
+          + '(this core has no code for gfx1036 (AMD Radeon(TM) Graphics))']);
+        // And stays there: one fallback, said once.
+        expect(f({ rank: 128 }, { deviceIndex: 1 })).toEqual({ build: 'cu12' });
+        expect(amd.createCore).toHaveBeenCalledTimes(1);
+        expect(r.lines).toHaveLength(2);
+      });
+
+      test('once the AMD core has started, a later card\'s error is that card\'s own', () => {
+        let n = 0;
+        const amd = amdCore(() => {
+          n += 1;
+          if (n > 1) throw new Error('out of memory');
+          return { build: 'amd' };
+        });
+        const r = amdRig(amd);
+        const f = factory(r, NONE);
+        expect(f({})).toEqual({ build: 'amd' });
+        expect(() => f({})).toThrow('out of memory');
+        expect(r.cu12.createCore).not.toHaveBeenCalled();
+      });
+
+      // With no NVIDIA card the AMD core's reason is the useful one: an RX 6000 card
+      // it holds back, say. The CUDA build's "no CUDA device found" would hide it.
+      test('when neither can start, throws the AMD core\'s reason', () => {
+        const held = new Error('the wmma11 fold has not run on a gfx1030 card: set PEARL_AMD_UNTESTED=1 to mine');
+        const r = amdRig(amdCore(() => { throw held; }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+        const f = factory(r, NONE);
+        expect(() => f({})).toThrow(held);
+        // Nothing settled, so the next start tries the AMD core again.
+        expect(() => f({})).toThrow(held);
+      });
+
+      // Unless the AMD core found no AMD card: then the CUDA reason is as good.
+      test('throws the CUDA reason when the AMD core found no AMD card', () => {
+        const r = amdRig(amdCore(() => { throw new Error('no AMD GPU found: is AMD\'s graphics driver installed?'); }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
+        expect(() => factory(r, NONE)({})).toThrow('no CUDA device found');
+      });
+
+      test('a CUDA error that is not about the runtime is thrown as it is', () => {
+        const r = amdRig(amdCore(() => { throw new Error('no code for gfx1030'); }));
+        r.cu12.createCore.mockImplementation(() => { throw new Error('out of memory'); });
+        expect(() => factory(r, NONE)({})).toThrow('out of memory');
+      });
+
+      test('with no 12.8 build behind it, the AMD error is thrown', () => {
+        const r = rig({ [CU12_BESIDE]: undefined, [AMD_BESIDE]: amdCore(() => { throw new Error('no code for gfx1036'); }) });
+        expect(() => factory(r, NONE)({})).toThrow('no code for gfx1036');
+      });
+
+      test('PEARL_CORE_VARIANT=cu12 still keeps it on the 12.8 build', () => {
+        const amd = amdCore();
+        const r = amdRig(amd);
+        expect(factory(r, Object.assign({ env: { PEARL_CORE_VARIANT: 'cu12' } }, NONE))({})).toEqual({ build: 'cu12' });
+        expect(r.req).not.toHaveBeenCalledWith(AMD_BESIDE);
+      });
     });
   });
 

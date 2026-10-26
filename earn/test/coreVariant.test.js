@@ -314,13 +314,19 @@ describe('pickCoreVariant', () => {
     });
   });
 
-  test('nothing known about the cards keeps the 12.8 build', () => {
-    expect(pickCoreVariant({ env: {}, cards: [] })).toEqual({
-      variant: CU12, reason: 'GPU compute capability unknown',
-    });
+  test('no card list at all keeps the 12.8 build', () => {
     // The shape a caller that predates the choice produces.
     expect(pickCoreVariant()).toEqual({ variant: CU12, reason: 'GPU compute capability unknown' });
     expect(pickCoreVariant({ cards: 'junk' }).variant).toBe(CU12);
+  });
+
+  // nvidia-smi listed no NVIDIA card: most likely an AMD rig. The AMD build is
+  // only a first try (auto), which the loader falls back from.
+  test('an empty list from nvidia-smi tries the AMD build first', () => {
+    expect(pickCoreVariant({ env: {}, cards: [] })).toEqual({
+      variant: AMD, auto: true, reason: 'nvidia-smi lists no NVIDIA card',
+    });
+    expect(pickCoreVariant({ env: {}, cards: [], gpus: [{ index: 0 }] }).variant).toBe(AMD);
   });
 
   test('an unreadable driver version keeps the 12.8 build', () => {
@@ -340,17 +346,15 @@ describe('pickCoreVariant', () => {
         .toEqual({ variant: CU12, reason: 'PEARL_CORE_VARIANT=cu12' });
     });
 
-    // The AMD core is never chosen on its own, only asked for. With nvidia-smi
-    // saying nothing (an AMD rig) it is what the operator gets; with NVIDIA cards
-    // listed, the operator's word still stands.
+    // Asked for, the AMD core has no fallback (no auto), whatever nvidia-smi said.
     test('amd asks for the AMD build, whatever nvidia-smi said', () => {
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'AMD' }, cards: [] }))
         .toEqual({ variant: AMD, reason: 'PEARL_CORE_VARIANT=amd' });
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'amd' }, cards: [RTX5090(0)] }).variant).toBe(AMD);
     });
 
-    test('nothing picks the AMD build without being asked', () => {
-      for (const cards of [[], [RTX5090(0)], [RTX4090(0)], [RTX2080TI(0)], [card(0, '12.0', null)]]) {
+    test('a rig with an NVIDIA card never gets the AMD build without asking', () => {
+      for (const cards of [[RTX5090(0)], [RTX4090(0)], [RTX2080TI(0)], [card(0, '12.0', null)]]) {
         expect(pickCoreVariant({ env: {}, cards }).variant).not.toBe(AMD);
       }
     });
@@ -366,6 +370,8 @@ describe('pickCoreVariant', () => {
         reason: 'PEARL_CORE_VARIANT=13 ignored (use cu12, cu13 or amd); driver 610, mining card is compute 12.0',
       });
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'x' }, cards: [] }).reason)
+        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13 or amd); nvidia-smi lists no NVIDIA card');
+      expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'x' } }).reason)
         .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13 or amd); GPU compute capability unknown');
     });
   });

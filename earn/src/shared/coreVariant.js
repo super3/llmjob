@@ -46,13 +46,21 @@
 // A mixed rig (a 4090 beside a 5090) loads one addon for all its cards, so it
 // gets the 12.8 build too.
 //
-// A third core, for AMD cards, is opt-in only: pearl_core_hip.node, built with
-// ROCm 7.2 from earn/native/amd (see its README). Linux releases carry it from
-// v0.6.8 (beside the CLI binary, in the HiveOS package and in the AppImage). It
-// needs the ROCm 7 HIP runtime on the rig, which the release does not carry.
-// Nothing here picks it on its own: nvidia-smi lists no AMD card, so there is
-// nothing to pick from. PEARL_CORE_VARIANT=amd asks for it (the CLI's --core
-// amd sets that), and PEARL_CORE_PATH can name it.
+// A third core, for AMD cards: pearl_core_hip.node, built from earn/native/amd
+// (see its README). Linux releases carry it from v0.6.8 (beside the CLI binary,
+// in the HiveOS package and in the AppImage), built with ROCm 7.2; it needs the
+// ROCm 7 HIP runtime on the rig, which the release does not carry. The Windows
+// installer carries one built with AMD's HIP SDK, whose runtime comes with
+// AMD's graphics driver.
+//
+// nvidia-smi lists no AMD card, so there is nothing to choose between: when it
+// lists no NVIDIA card either, the rig is most likely an AMD one, and the AMD
+// core is tried first. The loader falls back to the 12.8 build when the AMD
+// core isn't installed, won't load, or can't start on its first card
+// (main/pearlCore.coreFactory), so a rig whose nvidia-smi failed for some other
+// reason still mines on NVIDIA. PEARL_CORE_VARIANT=amd asks for the AMD core
+// with no fallback (the CLI's --core amd sets that), and PEARL_CORE_PATH can
+// name it.
 
 const CU12 = 'cu12';
 const CU13 = 'cu13';
@@ -125,12 +133,18 @@ function readForced(env) {
 // Decide the build. `cards` is parseCudaCards' list; `gpus` is the mining list
 // (shared/gpu.planMinerGpus) -- empty when the shell starts one core and lets it
 // choose, in which case every card has to qualify, since any of them may be
-// the one it picks. Returns { variant, reason }, the reason written for the log.
+// the one it picks. Returns { variant, reason }, the reason written for the log,
+// and `auto: true` when the AMD core is only a first try (see the header).
 function pickCoreVariant({ env, cards, gpus } = {}) {
   const { forced, note } = readForced(env || {});
   if (forced) return { variant: forced, reason: 'PEARL_CORE_VARIANT=' + forced };
   const cu12 = (why) => ({ variant: CU12, reason: note + why });
 
+  // An empty list is nvidia-smi's answer; no list at all is a caller that
+  // didn't ask, which keeps the 12.8 build.
+  if (Array.isArray(cards) && !cards.length) {
+    return { variant: AMD, auto: true, reason: note + 'nvidia-smi lists no NVIDIA card' };
+  }
   const known = Array.isArray(cards) ? cards : [];
   if (!known.length) return cu12('GPU compute capability unknown');
 
