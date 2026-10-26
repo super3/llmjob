@@ -2175,7 +2175,7 @@ class TestSaladBalance(Base):
         os.environ["SALAD_USER"], os.environ["SALAD_PASS"] = "u@x", "pw"
         self.addCleanup(os.environ.pop, "SALAD_USER", None)
         self.addCleanup(os.environ.pop, "SALAD_PASS", None)
-        self.reads, self.answer = [], (200, 22865)
+        self.reads, self.answer = [], (200, 22865, None)
         real = w.portal_balance
         w.portal_balance = lambda u, p: self.reads.append((u, p)) or self.answer
         self.addCleanup(setattr, w, "portal_balance", real)
@@ -2190,6 +2190,15 @@ class TestSaladBalance(Base):
         self.x.salad_balance()
         self.assertEqual(self.reads, [("u@x", "pw")])
         self.assertIn("Salad $228.65 left", self.head())
+
+    def test_shows_it_out_of_all_the_credit_bought(self):
+        self.answer = (200, 20237, 500.0)
+        self.x.salad_balance()
+        self.assertIn("Salad $202.37/$500 left", self.head())
+        self.answer = (200, 20137, None)   # the invoices didn't read: keep the last total
+        self.clock[0] += 900
+        self.x.salad_balance()
+        self.assertIn("Salad $201.37/$500 left", self.head())
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]
@@ -2214,7 +2223,7 @@ class TestSaladBalance(Base):
 
     def test_a_failed_read_warns_once_and_keeps_the_last(self):
         self.x.salad_balance()
-        self.answer = (401, "Unauthorized")
+        self.answer = (401, "Unauthorized", None)
         for _ in range(3):
             self.clock[0] += 600
             self.x.salad_balance()

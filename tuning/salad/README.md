@@ -593,7 +593,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
   24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents, how many boxes are
-  mining out of the slots (`max_active`, or Salad's quota if lower), and the Salad credit left with how many hours it
+  mining out of the slots (`max_active`, or Salad's quota if lower), and the Salad credit left (out of all bought) with how many hours it
   lasts at the All row's $/hr (no hours while nothing bills). Profit an hour, the margin and the profit so far are in
   the **All** row.
 - **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
@@ -729,7 +729,9 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
   (its own share count at its set pay a share), the pool's totals and prices. Since 24 October, with `SALAD_USER` and `SALAD_PASS` set, the watcher reads Salad's
   balance from the portal once a report, as SafeTrade (Salad's public API has none) and shows it unstarred; each read also
-  moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure.
+  moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure. Since
+  26 October the same read also totals the credit purchases in Metronome (voided ones left out), and the heading
+  shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays.
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
   each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
