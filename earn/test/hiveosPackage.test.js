@@ -190,13 +190,15 @@ const tarOk = process.platform === 'linux'
 });
 
 describe('hiveos flight sheet docs', () => {
-  test('the Installation URL is versioned, not releases/latest', () => {
-    // HiveOS keeps the old build while the file name stays the same, and
-    // releases/latest/download/llmjob-earn-hiveos.tar.gz returned 404 for every
-    // release from v0.5.0 to v0.5.12.
+  test('the Installation URL is the one that never changes', () => {
+    // HiveOS keeps the old build while the file name stays the same, so the
+    // CLI updates the package itself (src/cli/hiveos.js) and a flight sheet
+    // installs once from the latest release's unversioned copy. That URL
+    // returned 404 for v0.5.0 to v0.5.12, which had no package; a release
+    // without one now fails its publish step (miner-build.yml).
     expect(manifestSrc).toContain(
-      'https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz');
-    expect(manifestSrc).not.toContain('releases/latest');
+      'https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz');
+    expect(manifestSrc).not.toContain('<version>');
   });
 
   test('the Extra config example is flags the CLI takes', () => {

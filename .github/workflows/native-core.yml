@@ -68,6 +68,10 @@ jobs:
           - os: ubuntu-latest
             variant: ''
             file: pearl_core.node
+            # Built in NVIDIA's CUDA image on Rocky Linux 8 (glibc 2.28), not on the
+            # runner's Ubuntu 24.04, so the core loads on Ubuntu 20.04 and HiveOS's
+            # focal image. See the setup step below. The same toolkit, 12.8.1.
+            container: nvidia/cuda:12.8.1-devel-rockylinux8
             # 12.8 is the first toolkit that knows sm_120 (Blackwell), and needs
             # action v0.2.36+ — older tags carry a version table that predates it
             # and answer "Version not available".
@@ -144,6 +148,7 @@ jobs:
           - os: ubuntu-latest
             variant: '-cu13'
             file: pearl_core_cu13.node
+            container: nvidia/cuda:13.3.1-devel-rockylinux8
             cuda: '13.3.1'
             release: '13.3'
             # The same list as 12.8: apt pulls nvcc's split-out pieces (crt,
@@ -195,8 +200,24 @@ jobs:
     # succeeds, the 12.8 core ships, and miner-build warns that the CUDA 13 one
     # is missing.
     continue-on-error: ${{ matrix.os == 'windows-2022' || matrix.variant != '' }}
+    # The Linux entries' image. The Windows entries name none, and an empty
+    # container runs the job on the runner itself.
+    container: ${{ matrix.container }}
 
     steps:
+      # NVIDIA's image has the toolkit (nvcc, cuobjdump) but not the rest of the
+      # build. GCC 13 from gcc-toolset-13 links what it needs from a newer
+      # libstdc++ into the addon statically, so the addon needs no newer
+      # libstdc++ than Rocky 8's own (GCC 8). The first build needed glibc 2.17
+      # and GLIBCXX_3.4.22. node-gyp needs Python 3.8 or newer, and Rocky 8's
+      # own python3 is 3.6.
+      - name: Install the build tools (Linux container)
+        if: matrix.container != ''
+        run: |
+          dnf install -y --setopt=install_weak_deps=False             gcc-toolset-13-gcc-c++ gcc-toolset-13-binutils make python3.11             git tar gzip xz which findutils gawk
+          echo /opt/rh/gcc-toolset-13/root/usr/bin >> "$GITHUB_PATH"
+          ln -sf /usr/bin/python3.11 /usr/local/bin/python3
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -214,6 +235,7 @@ jobs:
       # installer rejects the argument list and exits non-zero before installing
       # anything. Hence a list per matrix entry rather than one shared list.
       - name: Install the CUDA toolkit
+        if: matrix.container == ''
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: ${{ matrix.cuda }}
@@ -243,6 +265,14 @@ jobs:
           v=$(nvcc --version)
           echo "$v"
           node --version
+          # The host compiler and glibc the Linux addon is built against. Captured
+          # for the same SIGPIPE reason: `| head -n 1` stops reading early.
+          if [ "$RUNNER_OS" = Linux ]; then
+            g=$(g++ --version)
+            l=$(ldd --version)
+            echo "${g%%$'\n'*}"
+            echo "${l%%$'\n'*}"
+          fi
           case "$v" in
             *"release ${{ matrix.release }},"*) ;;
             *) echo "::error::expected CUDA ${{ matrix.release }}, got the nvcc above"; exit 1 ;;
@@ -586,16 +616,16 @@ jobs:
           fi
           echo "built: $(ls -l "build/Release/${{ matrix.file }}")"
 
-      # The oldest Linux the addon loads on. A build on ubuntu-latest (24.04) can pick up a
-      # symbol only glibc 2.38 or newer has, and nothing else here would notice: v0.6.7's
-      # cores needed glibc 2.38 for one strtoul in the RTX 20 launch sweep, so they would not
-      # load on Ubuntu 22.04 or Debian 12, and the app said only that the core was missing.
-      # This fails the job on any symbol newer than Ubuntu 22.04 has (the script says which).
+      # The oldest Linux the addon loads on. v0.6.7's cores needed glibc 2.38 for one strtoul
+      # in the RTX 20 launch sweep, so they would not load on Ubuntu 22.04 or Debian 12, and
+      # the app said only that the core was missing; the cores before it needed 2.34, which
+      # HiveOS's Ubuntu 20.04 image does not have. Built on Rocky Linux 8 they need 2.17, and
+      # this fails the job on any symbol newer than Ubuntu 20.04 has (the script says which).
       - name: Check the oldest glibc the addon needs (Linux)
         if: runner.os == 'Linux'
         working-directory: earn/native
         shell: bash
-        run: bash ../../.github/scripts/check-glibc-floor.sh "build/Release/${{ matrix.file }}"
+        run: bash ../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 "build/Release/${{ matrix.file }}"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -690,3 +720,158 @@ jobs:
           name: pearl-core-hip-ubuntu-latest
           path: earn/native/amd/build/pearl_core_hip.node
           if-no-files-found: error
+
+  # The AMD core for Windows: the same source, built with AMD's HIP SDK 7.2 for Windows (the
+  # ROCm release the Linux core is built with) for the Radeon targets (build-amd.sh winlib,
+  # WINDOWS_ARCHS), and linked by node-gyp with MSVC as the CUDA core is. Its runtime,
+  # amdhip64_7.dll, comes with AMD's graphics driver, so a Windows rig needs nothing else;
+  # AMD's deployment guide says applications don't ship it, and Blender relies on the
+  # driver's copy too. Adrenalin 26.5.1 dropped the ROCm 6 runtime (amdhip64_6.dll), which
+  # is why this is not built with an older SDK. The installer carries the core; the app
+  # tries it first when nvidia-smi lists no NVIDIA card (src/shared/coreVariant.js).
+  #
+  # The SDK's compiler is not the Linux image's: SDK 7.2 ships clang 21.0.0git, where
+  # ROCm 7.2.0 on Linux has AMD clang 22.0.0git. So this core's code is not the code the
+  # Salad rows in benchmark.md measured, and no Windows Radeon has run it.
+  #
+  # Non-blocking, like the Linux AMD job, and for the same reason.
+  amd-windows:
+    name: windows-2022-hip
+    runs-on: windows-2022
+    continue-on-error: true
+    # Under pick-core-run.sh's 25 minutes, as for the Linux AMD job. A cached SDK takes
+    # under a minute to restore; llama.cpp's job that installed one took about 8 minutes.
+    timeout-minutes: 20
+    env:
+      # AMD names the SDK's installer by driver quarter: 26.Q3 is HIP SDK 7.2.
+      HIPSDK_INSTALLER_VERSION: '26.Q3'
+      HIPSDK_VERSION: '7.2'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore the HIP SDK
+        id: hipsdk
+        uses: actions/cache@v4
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: hipsdk-${{ env.HIPSDK_INSTALLER_VERSION }}-windows-2022
+
+      # AMD's installer, as llama.cpp's Windows HIP job runs it. -install is its unattended
+      # mode. It is bounded, since an installer that hangs would otherwise hold the job until
+      # its timeout.
+      - name: Install the HIP SDK
+        if: steps.hipsdk.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "$env:RUNNER_TEMP\hipsdk-install.exe"
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-$env:HIPSDK_INSTALLER_VERSION-Win11-For-HIP.exe" -OutFile $exe
+          $p = Start-Process $exe -ArgumentList '-install' -NoNewWindow -PassThru
+          if (-not $p.WaitForExit(900000)) { $p.Kill(); throw 'the HIP SDK installer did not finish in 15 minutes' }
+          if ($p.ExitCode -ne 0) { throw "the HIP SDK installer exited with $($p.ExitCode)" }
+
+      # The installer sets HIP_PATH machine-wide, which later steps don't see; a restored
+      # cache sets nothing. So find the SDK and say where it is.
+      - name: Find the HIP SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = "C:\Program Files\AMD\ROCm\$env:HIPSDK_VERSION"
+          if (-not (Test-Path "$root\bin\clang++.exe")) {
+            Get-ChildItem 'C:\Program Files\AMD\ROCm' -ErrorAction SilentlyContinue
+            throw "no HIP SDK $env:HIPSDK_VERSION at $root"
+          }
+          "HIP_PATH=$root\" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$("$(cygpath -u "$HIP_PATH")bin/clang++.exe" --version)
+          echo "$v"
+          node --version
+          # SDK 7.2's clang calls itself plain "clang version 21.0.0git"; where it is installed
+          # is what says which SDK it is.
+          case "$v" in
+            *"ROCm\\$HIPSDK_VERSION\\bin"*) ;;
+            *) echo "::error::expected HIP SDK $HIPSDK_VERSION's clang, got the clang above"; exit 1 ;;
+          esac
+
+      # --prefix .: earn/native has no package.json, and without it npm installs the whole
+      # app into earn/.
+      - name: Install node-addon-api
+        working-directory: earn/native
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api node-gyp
+
+      # The same check as the Linux job, with this compiler: a fold that spills still mines,
+      # only slower, and nothing else would see it.
+      - name: Check the folds for spills and scratch (Windows targets)
+        working-directory: earn/native/amd
+        shell: bash
+        run: ./build-amd.sh check
+
+      - name: Compile the kernels and host (Windows targets)
+        working-directory: earn/native/amd
+        shell: bash
+        run: ./build-amd.sh winlib
+
+      - name: Build the N-API addon
+        working-directory: earn/native
+        env:
+          PEARL_BACKEND: hip
+        run: npx node-gyp rebuild
+
+      # It loads in Node with the SDK's runtime on PATH (no GPU is touched) and has the core's
+      # entry point; it carries code for every Windows target; and the only DLL it needs that
+      # Windows doesn't have is the driver's amdhip64_7.dll. A dependency on anything else in
+      # the SDK would load here and fail on every rig.
+      - name: Check the addon
+        working-directory: earn/native
+        shell: bash
+        run: |
+          f=build/Release/pearl_core_hip.node
+          cp build/Release/pearl_core.node "$f"
+          echo "built: $(ls -l "$f")"
+          PATH="$(cygpath -u "$HIP_PATH")bin:$PATH" node -e "const a = require('./$f'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          want=$(sed -n 's/^WINDOWS_ARCHS="\(.*\)"$/\1/p' amd/build-amd.sh)
+          have=" $(grep -aoE 'amdgcn-amd-amdhsa--gfx[0-9a-f]+' "$f" | sed 's/.*--//' | sort -u | tr '\n' ' ')"
+          echo "targets: $have"
+          for a in $want; do
+            case "$have" in
+              *" $a "*) ;;
+              *) echo "::error::$f has no code for $a"; exit 1 ;;
+            esac
+          done
+          deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+          echo "needs: $(echo $deps)"
+          for d in $deps; do
+            case "$d" in
+              amdhip64_7.dll|kernel32.dll|node.exe) ;;
+              api-ms-win-*|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll) ;;
+              *) echo "::error::$f needs $d, which a rig with only AMD's driver may not have"; exit 1 ;;
+            esac
+          done
+          case " $(echo $deps) " in
+            *" amdhip64_7.dll "*) ;;
+            *) echo "::error::$f does not link amdhip64_7.dll: check the SDK's amdhip64.lib"; exit 1 ;;
+          esac
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-hip-windows-2022
+          path: earn/native/build/Release/pearl_core_hip.node
+          if-no-files-found: error
+
+      # Not shipped: the layout check a tester with a Radeon runs first (amd/README.md,
+      # "Testing on real hardware").
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-amd-foldtest-windows-2022
+          path: earn/native/amd/build/pearl_amd_foldtest.exe
+          if-no-files-found: warn

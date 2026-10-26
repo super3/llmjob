@@ -29,8 +29,13 @@ const {
 // There are two builds of the addon -- see shared/coreVariant for which one a
 // rig gets and why. findCore finds `pearl_core.node` (CUDA 12.8); coreFactory
 // decides whether to try `pearl_core_cu13.node` first. A third, for AMD cards
-// (`pearl_core_hip.node`), loads only when PEARL_CORE_VARIANT=amd asks for it
-// (the CLI's --core amd sets that).
+// (`pearl_core_hip.node`), is tried first when nvidia-smi lists no NVIDIA card,
+// and loads with no fallback when PEARL_CORE_VARIANT=amd asks for it (the CLI's
+// --core amd sets that).
+
+// The HIP runtime the Windows AMD core links (native-core.yml checks it), which
+// AMD's graphics driver puts in System32.
+const WIN_HIP_DLL = 'amdhip64_7.dll';
 
 // What every probe shares: the require to load with, and the directories a
 // packaged install keeps its addons in.
@@ -78,10 +83,15 @@ function wouldNotLoad(failed) {
   const msg = errText(error);
   // dlopen names the library it could not find. For the AMD core that is
   // ROCm's HIP runtime, which the release does not carry.
-  const hint = /lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)/.test(msg)
-    ? '. It needs the ROCm 7 HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH'
-    : '';
-  return file + ' is there but would not load: ' + msg + hint;
+  let hint = '';
+  if (/lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)/.test(msg)) {
+    hint = '. It needs the ROCm 7 HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH';
+  } else if (path.basename(file) === FILES[AMD] && /specified module could not be found/i.test(msg)) {
+    // Windows names no library. The one the AMD core needs comes with AMD's driver.
+    hint = '. It needs ' + WIN_HIP_DLL + ', which AMD\'s graphics driver installs: install or update the driver';
+  }
+  // Windows puts the file's path on a second line; one log line reads better.
+  return file + ' is there but would not load: ' + msg.replace(/\s*\r?\n\s*/g, ' ').trim() + hint;
 }
 
 // The CUDA 12.8 core: PEARL_CORE_PATH, then the packaged locations, then the
@@ -188,20 +198,23 @@ function coreFactory(opts = {}) {
 
   // Asked for by name, so no fallback to a CUDA build: on an AMD rig there is
   // nothing for one to run on, and on an NVIDIA rig the operator said otherwise.
+  // Picked because nvidia-smi listed no NVIDIA card, it is only a first try.
+  const amdFailed = [];
   if (pick.variant === AMD) {
-    const failed = [];
-    const amd = findAmdCore(opts, failed);
-    if (!amd) {
+    const amd = findAmdCore(opts, amdFailed);
+    if (amd) {
+      say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
+      return pick.auto ? amdFirst(amd.addon, opts, say) : wrap(amd.addon);
+    }
+    if (!pick.auto) {
       const where = (opts.platform || process.platform) === 'win32'
-        ? 'the AMD core is built for Linux only'
-        : 'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
+        ? 'the Windows installer has it in resources\\native, or set PEARL_CORE_PATH'
+        :'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
           + ' earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH';
-      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
+      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (amdFailed.length ? wouldNotLoad(amdFailed)
         : FILES[AMD] + ' not found (' + pick.reason + '; ' + where + ')'));
       return null;
     }
-    say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
-    return wrap(amd.addon);
   }
 
   const cu13Failed = [];
@@ -215,7 +228,10 @@ function coreFactory(opts = {}) {
       return null;
     }
     if (found.dev) log('info', 'Pearl core: local build ' + found.file);
-    else if (pick.variant !== CU13) say('info', CU12, pick.reason);
+    else if (pick.variant === AMD) {
+      say(amdFailed.length ? 'warn' : 'info', CU12, pick.reason + ', and '
+        + (amdFailed.length ? wouldNotLoad(amdFailed) : FILES[AMD] + ' is not installed'));
+    } else if (pick.variant !== CU13) say('info', CU12, pick.reason);
     else if (cu13Failed.length) say('warn', CU12, wouldNotLoad(cu13Failed));
     else say('info', CU12, FILES[CU13] + ' is not installed');
     return wrap(found.addon);
@@ -247,6 +263,41 @@ function coreFactory(opts = {}) {
       addon = cu12.addon;
       settled = true;
       return addon.createCore(profile, o);
+    }
+  };
+}
+
+// The AMD core picked because nvidia-smi listed no NVIDIA card. Its first card
+// decides, as the CUDA 13 build's does: when the AMD core can't start there (no
+// AMD card, a card it has no code for, a card it holds back), the 12.8 build
+// takes over for every card. That covers an NVIDIA rig whose nvidia-smi failed
+// beside AMD's driver for a Ryzen's built-in graphics. When the 12.8 build can't
+// start either, the AMD core's reason is the one thrown, since on a rig with no
+// NVIDIA card it is the one that says what to fix; unless that reason is that
+// there is no AMD card, which makes the CUDA one just as likely.
+function amdFirst(amdAddon, opts, say) {
+  let addon = amdAddon;
+  let settled = false;
+  return (profile, coreOpts) => {
+    const o = coreOpts || {};
+    if (settled) return addon.createCore(profile, o);
+    try {
+      const core = addon.createCore(profile, o);
+      settled = true;
+      return core;
+    } catch (e) {
+      const cu12 = findCore(opts);
+      if (!cu12) throw e;
+      let core;
+      try {
+        core = cu12.addon.createCore(profile, o);
+      } catch (e2) {
+        throw isRuntimeError(e2) && !/no AMD GPU found/i.test(errText(e)) ? e : e2;
+      }
+      say('warn', CU12, 'the AMD build could not start (' + errText(e) + ')');
+      addon = cu12.addon;
+      settled = true;
+      return core;
     }
   };
 }

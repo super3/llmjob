@@ -615,7 +615,11 @@ bool count_devices(int *devices, char *err, size_t err_len) {
   (void)hipGetLastError();
   if (e == hipSuccess && *devices > 0) return true;
   if (e == hipSuccess || e == hipErrorNoDevice) {
+#ifdef _WIN32
+    fail(err, err_len, "no AMD GPU found: is AMD's graphics driver installed?");
+#else
     fail(err, err_len, "no AMD GPU found: is the ROCm driver (amdgpu) installed, and can this user open /dev/kfd?");
+#endif
   } else if (err && err_len) {
     snprintf(err, err_len,
              "HIP stopped working in this process (%s): after a GPU error ROCm refuses every later call; restart "

@@ -16,6 +16,10 @@ const fs = require('fs');
 const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
+const hiveos = require('./hiveos');
+const {
+  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage,
+} = require('../shared/hiveos');
 const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
@@ -212,6 +216,10 @@ async function maybeAutoUpdate(argv, settings) {
     return null;
   }
 
+  // Exit 0 after the swap: HiveOS's miner loop starts the new h-run.sh, and the
+  // new CLI with it, three seconds later.
+  if (hiveos.isHiveos(process.env)) return (await updateHivePackage(plan)) ? 0 : null;
+
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
   try {
     await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress, amd: wantsAmdCore() });
@@ -221,6 +229,41 @@ async function maybeAutoUpdate(argv, settings) {
     log('auto-update failed (' + e.message + '); continuing on v' + pkg.version, process.stderr);
     return null;
   }
+}
+
+// Under HiveOS the CLI replaces its whole package folder -- binary, cores and
+// hook scripts -- because HiveOS installs from the flight sheet's URL only once.
+// True when the new package is in place and this CLI should exit. See
+// shared/hiveos for the trial the new version then runs on.
+async function updateHivePackage(plan) {
+  const dir = hiveos.packageDir();
+  if (hiveos.isSkipped(dir, plan.latestVersion, Date.now())) {
+    log('v' + plan.latestVersion + ' is out, but it failed on this rig in the last day; staying on v' + pkg.version);
+    return false;
+  }
+  if (!plan.packageUrl) {
+    log('v' + plan.latestVersion + ' is out, but its HiveOS package is not up yet; staying on v' + pkg.version);
+    return false;
+  }
+  log('updating the HiveOS package ' + plan.currentVersion + ' → ' + plan.latestVersion + '…');
+  try {
+    await hiveos.updatePackage(plan);
+  } catch (e) {
+    log('update failed: ' + e.message + '; staying on v' + pkg.version, process.stderr);
+    return false;
+  }
+  log('updated to v' + plan.latestVersion + '; HiveOS starts it in a few seconds');
+  return true;
+}
+
+// The check a HiveOS rig makes every few hours while it runs: nothing else
+// restarts the CLI for weeks at a time. True when it swapped in a new package.
+async function checkHiveUpdate() {
+  const release = await selfUpdater.fetchLatestRelease();
+  if (!release) return false;
+  const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
+  if (!plan.updateAvailable || !selfUpdater.isPackaged()) return false;
+  return updateHivePackage(plan);
 }
 
 // Where the CLI caches the local-LLM binary + model (mirrors the engine dir).
@@ -773,9 +816,14 @@ async function run(argv) {
   if (parsed.help) { process.stdout.write(USAGE + '\n'); return 0; }
   if (parsed.version) { process.stdout.write(pkg.version + '\n'); return 0; }
 
+  // Under HiveOS (h-run.sh sets LLMJOB_HIVEOS=1) problems also go to the
+  // dashboard, where they are seen without opening the miner log.
+  const hive = hiveos.isHiveos(process.env);
+
   if (parsed.errors.length) {
     for (const e of parsed.errors) log('error: ' + e, process.stderr);
     log('run with --help for usage', process.stderr);
+    if (hive) hiveos.postMessage('danger', startupMessage(parsed.errors));
     return 1;
   }
 
@@ -794,6 +842,14 @@ async function run(argv) {
   // HiveOS passes none when every GPU is turned off there, and an exit would
   // only be restarted every few seconds.
   const noGpus = !!(gpuPick && !gpuPick.indices.length);
+
+  // An update killed half way leaves its staging folder; and a package swapped
+  // in by one is on trial until it hashes (shared/hiveos).
+  let trial = null;
+  if (hive) {
+    hiveos.cleanStaging(hiveos.packageDir());
+    trial = hiveos.readTrial(hiveos.packageDir());
+  }
 
   if (settings.update) {
     const code = await maybeAutoUpdate(argv, settings);
@@ -926,6 +982,11 @@ async function run(argv) {
   let reportNow = null;
   let llm = null;
   let stopping = false;
+  // The exit code a deliberate shutdown ends with: 0, unless it is a failed
+  // trial (shared/hiveos), which HiveOS's h-run.sh rolls back on.
+  let stopCode = 0;
+  // Whether the miner has reported a hashrate yet, for the trial.
+  let hashed = false;
   // Co-running only: mining stops on a card while the LLM beside it answers a
   // prompt, and starts again a little after (shared/promptPause). Demand mode
   // has the whole card stop mining for as long as it serves, and LLM-only has no
@@ -960,18 +1021,28 @@ async function run(argv) {
     cudaCards = await probe.detectCudaCards();
     // Set when the loader found a core that would not load. It has said why
     // (a missing library, too old a glibc), and "not found" would contradict it.
-    let loadFailed = false;
+    let loadFailed = null;
     const createCore = coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
       coreFlag: !!settings.core,
       log: (level, line) => {
-        if (line.includes(' is there but would not load: ')) loadFailed = true;
+        if (line.includes(' is there but would not load: ')) loadFailed = line;
         log(line, level === 'error' ? process.stderr : process.stdout);
       },
     });
+    // A rig whose Blackwell cards the driver is too old for mines on the rest,
+    // or on none, and the dashboard should say why. Not awaited.
+    if (hive) {
+      hiveos.checkDriver().then((msg) => {
+        if (!msg) return;
+        log(msg, process.stderr);
+        hiveos.postMessage('warning', msg);
+      });
+    }
     if (!createCore) {
+      if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
       // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
       // of its own. Pointing at pearl_core.node there would load a CUDA core on
       // an AMD rig. The core loader has already said what failed; when the file
@@ -1020,6 +1091,7 @@ async function run(argv) {
     const meter = createRateMeter();
     miner.on('event', (evt) => {
       applyEvent(stats, evt, Date.now());
+      if (evt.type === 'status' && evt.hashrate > 0) hashed = true;
       if (evt.type === 'status') {
         const now = Date.now();
         meterSample(meter, snapshot(stats, now).total, now);
@@ -1189,6 +1261,8 @@ async function run(argv) {
       if (demandWorker) { demandWorker.stop(); demandWorker = null; }
       if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
       if (idle) { clearInterval(idle); idle = null; }
+      if (updateTimer) { clearInterval(updateTimer); updateTimer = null; }
+      if (trialTimer) { clearInterval(trialTimer); trialTimer = null; }
       if (xmr) xmr.engine.stop();
       resolve(code);
     };
@@ -1202,10 +1276,16 @@ async function run(argv) {
     // A run with nothing to do on purpose has nothing else holding the process
     // open, so it would exit at once. This timer keeps it waiting for a signal.
     let idle = idleByChoice ? setInterval(() => {}, 60 * 60 * 1000) : null;
+    // HiveOS only: the update check every few hours, and a new version's trial.
+    let updateTimer = null;
+    let trialTimer = null;
 
-    const shutdown = () => {
+    // `code` is the exit code once everything has stopped. A signal handler is
+    // passed the signal's name, which is not one.
+    const shutdown = (code) => {
       if (stopping) return;
       stopping = true;
+      if (Number.isInteger(code)) stopCode = code;
       log('shutting down…');
       promptPause.stop();
       if (reporter) clearInterval(reporter);
@@ -1223,7 +1303,7 @@ async function run(argv) {
       // shutdown and its worker kept claiming jobs it would never finish. A
       // self-update is a restart, so the rollout mechanism hit this every time.
       if (miner && miner.isRunning()) miner.stop();
-      else finish(0); // nothing running that will resolve us with a 'stopped'
+      else finish(stopCode); // nothing running that will resolve us with a 'stopped'
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -1467,6 +1547,51 @@ async function run(argv) {
       statsWriter.unref();
     }
 
+    // HiveOS: check for a new release every few hours and restart into it.
+    // Nothing else restarts a rig's CLI for weeks at a time.
+    if (hive && settings.update && selfUpdater.isPackaged()) {
+      let checking = false;
+      updateTimer = setInterval(() => {
+        if (checking || stopping) return;
+        checking = true;
+        checkHiveUpdate().then((swapped) => {
+          checking = false;
+          if (swapped) shutdown(0);
+        }, (e) => {
+          checking = false;
+          log('update check failed: ' + e.message, process.stderr);
+        });
+      }, NETWORK.updateCheckIntervalMs);
+      updateTimer.unref();
+    }
+
+    // A version an update swapped in is on trial until it hashes. If a run that
+    // should mine hasn't within ten minutes, it exits with an error, and
+    // h-run.sh puts the old version back (shared/hiveos).
+    if (trial) {
+      const trialStart = Date.now();
+      const from = trial.from ? ' from v' + trial.from : '';
+      trialTimer = setInterval(() => {
+        if (stopping) return;
+        const verdict = trialVerdict({ elapsedMs: Date.now() - trialStart, hashing: hashed, mines: !!miner });
+        if (verdict === 'wait') return;
+        clearInterval(trialTimer);
+        trialTimer = null;
+        if (verdict === 'pass') {
+          try {
+            hiveos.confirmTrial(hiveos.packageDir());
+          } catch (e) { /* the trial runs again on the next start */ }
+          log('the update' + from + ' to v' + pkg.version + ' is done');
+          hiveos.postMessage('success', 'LLMJob Earn updated to v' + pkg.version + from + '.');
+          return;
+        }
+        log('v' + pkg.version + ' has not hashed in ' + (TRIAL_FAIL_MS / 60000) + ' minutes since the update'
+          + from + '; exiting so HiveOS puts the old version back', process.stderr);
+        shutdown(TRIAL_FAILED_EXIT);
+      }, TRIAL_CHECK_MS);
+      trialTimer.unref();
+    }
+
     // The CPU miner runs beside whatever else runs. It ends the run only when it
     // is all there is and it gave up.
     if (xmr) {
@@ -1511,7 +1636,7 @@ async function run(argv) {
         stopServe();
         if (llm) llm.stop();
         log('engine exited (code ' + code + ')');
-        finish(stopping ? 0 : (code || 0));
+        finish(stopping ? stopCode : (code || 0));
       });
       try {
         // A false return is a fatal start failure, not a hiccup: the core did not

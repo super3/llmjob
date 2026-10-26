@@ -111,8 +111,9 @@ const USAGE = [
   '                           Instinct cards (Linux, needs the ROCm 7 HIP',
   '                           runtime), or cu12/cu13 to force a CUDA build.',
   '                           Default: the CUDA build that fits the NVIDIA',
-  '                           cards. PEARL_CORE_VARIANT takes the same values;',
-  '                           the flag wins.',
+  '                           cards, or the AMD core first when nvidia-smi',
+  '                           lists none. PEARL_CORE_VARIANT takes the same',
+  '                           values; the flag wins.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',

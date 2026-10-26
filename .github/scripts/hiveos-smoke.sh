@@ -1,40 +1,40 @@
 #!/usr/bin/env bash
 # Runs a build's HiveOS package the way a HiveOS rig runs it, in a plain Ubuntu container.
 #
-#   hiveos-smoke.sh <image> <mines|refuses> <dir> <version>
+#   hiveos-smoke.sh <image> <dir> <version>
 #
 # <dir> holds llmjob-earn-<version>.tar.gz, as the build's llmjob-earn-cli-linux artifact does.
 #
 # The unit tests run the hook scripts against a fake CLI. This runs the real package: the
-# binary, the cores and the scripts, on the system HiveOS is built on. v0.6.7 passed every test
+# binary, the cores and the scripts, on the systems HiveOS is built on. v0.6.7 passed every test
 # and still mined nothing on HiveOS, because its cores needed a newer glibc than Ubuntu 22.04
-# has. Here that is a core that won't load, and the run fails.
+# has, and the cores before it needed one newer than Ubuntu 20.04 has. Here that is a core that
+# won't load, and the run fails.
 #
 # In order, it:
 #   - unpacks the package where HiveOS's custom-get puts it, /hive/miners/custom/llmjob-earn
 #   - checks the files, their modes and the version
 #   - lists each core's libraries with ldd. A glibc or libstdc++ version the system lacks fails,
 #     and so does a library it lacks, other than ROCm's for the AMD core (README: the rig
-#     installs ROCm itself)
+#     installs ROCm itself). The AMD core is held to Ubuntu 22.04 and newer, which ROCm 7 needs
+#   - with a wallet that isn't a Pearl address, checks the CLI posts that to the HiveOS
+#     dashboard through HiveOS's `message` command (a stand-in here)
 #   - writes the argument line with h-config.sh from a sample flight sheet, starts h-run.sh, and
 #     waits for the CUDA 12.8 core to load and ask for a GPU. There is none, so the miner then
 #     stops, as it does on a rig without an NVIDIA driver
-#   - does the same with --core cu13 for the CUDA 13 core, and checks that --core amd says ROCm
-#     is missing (the container has none)
+#   - does the same with --core cu13 for the CUDA 13 core, and checks that --core amd says why
+#     the AMD core won't load: ROCm is missing (the container has none), or on 20.04 the system
 #   - with every GPU turned off in HiveOS (CUDA_VISIBLE_DEVICES=" "), mines Monero on the CPU,
 #     waits for the worker's self-test, reads the stats file through h-stats.sh as the HiveOS
 #     agent does, and stops the miner with Ctrl+C, as `miner stop` does, checking its shutdown
 #     line is logged
-#
-# With "refuses" (Ubuntu 20.04, HiveOS's older focal image) it checks the opposite: the cores
-# don't load there, and the miner says why rather than mining nothing in silence.
 #
 # There is no GPU, so nothing is mined. The container's network is cut before the miner starts:
 # it must not reach a real pool or put a row on the network board.
 set -euo pipefail
 
 if [ "${1:-}" != --inside ]; then
-  image=$1 expect=$2 dir=$3 version=$4
+  image=$1 dir=$2 version=$3
   tarball="$dir/llmjob-earn-$version.tar.gz"
   [ -f "$tarball" ] || { echo "::error::$tarball is not in the build's artifact"; exit 1; }
   name="hiveos-smoke-$$"
@@ -47,11 +47,11 @@ if [ "${1:-}" != --inside ]; then
   docker cp "$tarball" "$name:/tmp/"
   docker cp "${BASH_SOURCE[0]}" "$name:/tmp/hiveos-smoke.sh"
   docker network disconnect bridge "$name"
-  docker exec "$name" bash /tmp/hiveos-smoke.sh --inside "$image" "$expect" "$version"
+  docker exec "$name" bash /tmp/hiveos-smoke.sh --inside "$image" "$version"
   exit 0
 fi
 
-image=$2 expect=$3 version=$4
+image=$2 version=$3
 d=/hive/miners/custom/llmjob-earn
 log=/var/log/miner/custom/llmjob-earn/llmjob-earn.log
 stats_file=/run/hive/llmjob-earn-stats.json
@@ -72,6 +72,18 @@ fail() {
 if timeout 5 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
   fail "the container can still reach the internet, so the miner isn't started: it could reach a real pool"
 fi
+
+# ROCm 7, which the AMD core needs, runs on Ubuntu 22.04 and newer, so that core is built for
+# them. The CUDA cores are held to 20.04.
+. /etc/os-release
+amd_system=no
+[ "$(printf '%s\n%s\n' 22.04 "$VERSION_ID" | sort -V | head -n 1)" = 22.04 ] && amd_system=yes
+
+# HiveOS's message command, which posts to the rig's dashboard. This one writes it down.
+messages=/tmp/hive-messages
+mkdir -p /hive/bin
+printf '#!/bin/sh\necho "$*" >> %s\n' "$messages" > /hive/bin/message
+chmod 755 /hive/bin/message
 
 # ── Install, as custom-get does ──────────────────────────────────────────────────────────
 mkdir -p /hive/miners/custom /run/hive "$(dirname "$log")"
@@ -110,20 +122,22 @@ for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
   if [ "$core" = pearl_core_hip.node ]; then
     missing=$(grep -vE '^lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)\.' <<< "$missing" || true)
   fi
-  if [ "$expect" = mines ]; then
-    [ -z "$versions" ] || fail "$core needs versions this system doesn't have: $versions"
-    [ -z "$missing" ] || fail "$core needs libraries this system doesn't have: $missing"
-  elif [ "$core" = pearl_core.node ] && [ -z "$versions" ]; then
-    fail "pearl_core.node has every version it needs here. h-manifest.conf and the README say the cores need Ubuntu 22.04; if they now run on $image, say so there and make this a 'mines' run."
+  if [ "$core" = pearl_core_hip.node ] && [ "$amd_system" = no ]; then
+    echo "  (not checked: ROCm 7 needs Ubuntu 22.04 or newer, and this is $VERSION_ID)"
+    continue
   fi
+  [ -z "$versions" ] || fail "$core needs versions this system doesn't have: $versions"
+  [ -z "$missing" ] || fail "$core needs libraries this system doesn't have: $missing"
 done
 
 # ── The flight sheet, h-config.sh and h-run.sh ───────────────────────────────────────────
 # h-config.sh as HiveOS's wrapper runs it: in a subshell, with the flight sheet's fields set.
 # $2, when given, is CUDA_VISIBLE_DEVICES, which `miner start` sets when cards are turned off.
+# $wallet is the wallet template's address.
+wallet=$address
 configure() {
   (
-    export CUSTOM_TEMPLATE="$address.smoke" WORKER_NAME=hive-smoke CUSTOM_USER_CONFIG="$1"
+    export CUSTOM_TEMPLATE="$wallet.smoke" WORKER_NAME=hive-smoke CUSTOM_USER_CONFIG="$1"
     [ $# -lt 2 ] || export CUDA_VISIBLE_DEVICES="$2"
     bash ./h-config.sh
   ) || fail "h-config.sh failed"
@@ -163,6 +177,17 @@ wait_exit() {
   fail "the miner was still running after $1 s"
 }
 
+# Waits up to 10 seconds for a dashboard message containing $1. The CLI posts in the background,
+# so it can land just after the CLI exits.
+wait_message() {
+  local i
+  for ((i = 0; i < 10; i++)); do
+    grep -qF -- "$1" "$messages" 2>/dev/null && return 0
+    sleep 1
+  done
+  fail "nothing with \"$1\" went to the HiveOS dashboard. It got: $(cat "$messages" 2>/dev/null)"
+}
+
 # Ctrl+C, as `miner stop` sends it.
 stop() {
   kill -INT -- "-$run" 2>/dev/null || true
@@ -170,19 +195,16 @@ stop() {
   grep -qF 'shutting down' <<< "$(run_log)" || fail "after Ctrl+C the log has no \"shutting down\" line"
 }
 
-if [ "$expect" = refuses ]; then
-  configure "--region us"
-  start
-  wait_exit 60
-  grep -qF 'pearl_core.node is there but would not load: ' <<< "$(run_log)" \
-    || fail "the miner didn't say why its core won't load"
-  grep -qE "version .(GLIBC|GLIBCXX|CXXABI)_[0-9.]+' not found" <<< "$(run_log)" \
-    || fail "the miner's reason doesn't name the version its core needs"
-  echo "the miner's log:"
-  run_log | sed 's/^/  /'
-  echo "ok: on $image the cores don't load, and the miner says why"
-  exit 0
-fi
+# 0. A wallet that isn't a Pearl address, as when a Kryptex account id goes in the template. The
+#    CLI stops, and the rig's dashboard says why.
+wallet=krx1smoketest
+configure "--region us"
+start
+wait_exit 60
+grep -qF 'error: invalid Pearl address: krx1smoketest' <<< "$(run_log)" \
+  || fail "with a wallet that isn't a Pearl address the miner didn't say so"
+wait_message "danger LLMJob Earn can't start: krx1smoketest is not a Pearl address"
+wallet=$address
 
 # Logged when a core loaded and asked CUDA for a GPU. Here there is none.
 no_gpu="no CUDA device found"
@@ -190,11 +212,13 @@ no_gpu="no CUDA device found"
 # 1. The CUDA 12.8 core, the one every NVIDIA rig gets unless it has only RTX 50 cards.
 configure "--region us"
 conf=" $(< llmjob-earn.conf) "
-for want in "--address $address" --worker=smoke "--mode mining" --no-update "--stats-file $stats_file"; do
+for want in "--address $address" --worker=smoke "--mode mining" "--stats-file $stats_file"; do
   [[ $conf == *" $want "* ]] || fail "the argument line has no \"$want\":$conf"
 done
+# The miner updates itself under HiveOS, so the line must not turn that off.
+[[ $conf != *" --no-update "* ]] || fail "the argument line turns updates off:$conf"
 start
-wait_for "LLMJob Earn CLI v$version" 30
+wait_for "LLMJob Earn CLI v$version" 60
 wait_for "Pearl core: CUDA 12.8 build" 60
 wait_for "$no_gpu" 60
 wait_exit 60
@@ -208,16 +232,20 @@ if [ -f pearl_core_cu13.node ]; then
   wait_exit 60
 fi
 
-# 3. The AMD core. Without ROCm it can't load, so the miner exits, and the log must say ROCm
-#    is what's missing, not something about the system.
+# 3. The AMD core. Without ROCm it can't load, so the miner exits, says why, and the dashboard
+#    says it can't mine. On 22.04 and newer the reason must be ROCm, not something about the
+#    system. 20.04 can't have ROCm 7, so there either is.
 if [ -f pearl_core_hip.node ]; then
   configure "--region us --core amd"
   start
   wait_exit 60
   grep -qF 'pearl_core_hip.node is there but would not load: ' <<< "$(run_log)" \
     || fail "with --core amd the miner didn't say why the AMD core won't load"
-  grep -qF 'It needs the ROCm 7 HIP runtime' <<< "$(run_log)" \
-    || fail "with --core amd the miner's reason isn't that ROCm is missing"
+  if [ "$amd_system" = yes ]; then
+    grep -qF 'It needs the ROCm 7 HIP runtime' <<< "$(run_log)" \
+      || fail "with --core amd the miner's reason isn't that ROCm is missing"
+  fi
+  wait_message "danger LLMJob Earn can't mine: "
 fi
 
 # 4. Every GPU turned off in HiveOS, mining Monero on the CPU. The miner keeps running, so this
@@ -253,4 +281,6 @@ stop
 
 echo "the miner's log, every run:"
 sed 's/^/  /' "$log"
+echo "posted to the HiveOS dashboard:"
+sed 's/^/  /' "$messages"
 echo "ok: the HiveOS package installs, loads its cores and reports to h-stats.sh on $image"

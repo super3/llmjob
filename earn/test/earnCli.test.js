@@ -59,6 +59,19 @@ jest.mock('../src/cli/selfUpdater', () => ({
   reexec: jest.fn(),
 }));
 jest.mock('../src/shared/selfUpdate', () => ({ planUpdate: jest.fn() }));
+// The HiveOS IO (folder swap, trial files, dashboard posts). Its rules in
+// shared/hiveos run for real.
+jest.mock('../src/cli/hiveos', () => ({
+  isHiveos: jest.fn(),
+  packageDir: jest.fn(),
+  postMessage: jest.fn(),
+  readTrial: jest.fn(),
+  isSkipped: jest.fn(),
+  confirmTrial: jest.fn(),
+  cleanStaging: jest.fn(),
+  updatePackage: jest.fn(),
+  checkDriver: jest.fn(),
+}));
 // One engine now: our own core, in-process. There is nothing to download and
 // nothing to spawn, so the CLI's engine mocks are just this.
 jest.mock('../src/main/pearlEngine', () => {
@@ -254,6 +267,13 @@ function applyDefaults(m) {
   m.selfUpdater.syncXmrWorker.mockResolvedValue(false);
   m.selfUpdater.hasXmrWorker.mockReturnValue(true);
   m.selfUpdate.planUpdate.mockReturnValue({ updateAvailable: false, reason: 'up-to-date' });
+  m.hive.isHiveos.mockReturnValue(false);
+  m.hive.packageDir.mockReturnValue('/hive/miners/custom/llmjob-earn');
+  m.hive.postMessage.mockReturnValue(true);
+  m.hive.readTrial.mockReturnValue(null);
+  m.hive.isSkipped.mockReturnValue(false);
+  m.hive.updatePackage.mockResolvedValue(undefined);
+  m.hive.checkDriver.mockResolvedValue(null);
   m.PearlEngine.startReturns = undefined;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
   m.xmrWorker.findWorker.mockReturnValue('/opt/llmjob-xmr-worker');
@@ -271,6 +291,7 @@ function load() {
     m.nodeStore = require('../src/main/nodeStore');
     m.selfUpdater = require('../src/cli/selfUpdater');
     m.selfUpdate = require('../src/shared/selfUpdate');
+    m.hive = require('../src/cli/hiveos');
     m.net = require('net');
     m.PearlEngine = require('../src/main/pearlEngine').PearlEngine;
     m.XmrEngine = require('../src/main/xmrEngine').XmrEngine;
@@ -3759,5 +3780,259 @@ describe('shutdown and startup edges the gate introduced', () => {
     expect(m.LlmManager.instances.length).toBeGreaterThan(0);   // it serves
     m.LlmManager.instances[0].emit('stopped', 0);
     await expect(p).resolves.toBe(1);
+  });
+});
+
+// ── HiveOS ───────────────────────────────────────────────────────────────────
+// h-run.sh sets LLMJOB_HIVEOS=1. The CLI then updates its whole package folder,
+// runs a new version on trial, and posts problems to the dashboard.
+describe('under HiveOS', () => {
+  const { TRIAL_CHECK_MS } = require('../src/shared/hiveos');
+  const DIR = '/hive/miners/custom/llmjob-earn';
+  const UPDATE = {
+    updateAvailable: true,
+    reason: 'update-available',
+    currentVersion: pkg.version,
+    latestVersion: '9.9.9',
+    packageUrl: 'https://dl/llmjob-earn-9.9.9.tar.gz',
+  };
+  function hiveLoad() {
+    const m = load();
+    m.hive.isHiveos.mockReturnValue(true);
+    return m;
+  }
+  let now;
+  function clock() {
+    now = 1e12;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+  }
+
+  test('an argument error goes to the dashboard as well as the log', async () => {
+    const m = hiveLoad();
+    await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid Pearl address: krx123');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t start: krx123 is not a Pearl '
+      + 'address. Put your prl1p… address in the flight sheet\'s wallet template.');
+  });
+
+  test('off HiveOS none of it happens', async () => {
+    const m = load();
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    await expect(m.run(['--address', 'krx123'])).resolves.toBe(1);
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+
+    const m2 = load();
+    m2.selfUpdater.isPackaged.mockReturnValue(true);
+    const p = m2.run(['--address', ADDR, '--mode', 'mining']);
+    await settle();
+    expect(m2.hive.cleanStaging).not.toHaveBeenCalled();
+    expect(m2.hive.readTrial).not.toHaveBeenCalled();
+    expect(m2.hive.checkDriver).not.toHaveBeenCalled();
+    expect(intervalFor(NETWORK.updateCheckIntervalMs)).toBeUndefined();
+    expect(intervalFor(TRIAL_CHECK_MS)).toBeUndefined();
+    m2.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a new release replaces the whole package, and the CLI exits 0 for HiveOS to start it', async () => {
+    const m = hiveLoad();
+    m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    m.selfUpdate.planUpdate.mockReturnValue(UPDATE);
+    await expect(m.run(['--address', ADDR, '--mode', 'mining'])).resolves.toBe(0);
+    expect(m.hive.cleanStaging).toHaveBeenCalledWith(DIR);
+    expect(m.hive.isSkipped).toHaveBeenCalledWith(DIR, '9.9.9', expect.any(Number));
+    expect(m.hive.updatePackage).toHaveBeenCalledWith(UPDATE);
+    expect(m.selfUpdater.applyUpdate).not.toHaveBeenCalled();
+    expect(m.selfUpdater.reexec).not.toHaveBeenCalled();
+    expect(m.PearlEngine.instances).toHaveLength(0);
+    expect(allOut()).toContain('updating the HiveOS package ' + pkg.version + ' → 9.9.9…');
+    expect(allOut()).toContain('updated to v9.9.9; HiveOS starts it in a few seconds');
+  });
+
+  test('a release that failed here lately, has no package yet, or will not install: mining carries on', async () => {
+    const cases = [
+      [(m) => m.hive.isSkipped.mockReturnValue(true),
+        'v9.9.9 is out, but it failed on this rig in the last day; staying on v' + pkg.version],
+      [(m) => m.selfUpdate.planUpdate.mockReturnValue(Object.assign({}, UPDATE, { packageUrl: null })),
+        'v9.9.9 is out, but its HiveOS package is not up yet; staying on v' + pkg.version],
+      [(m) => m.hive.updatePackage.mockRejectedValue(new Error('HTTP 404')),
+        'update failed: HTTP 404; staying on v' + pkg.version],
+    ];
+    for (const [setup, said] of cases) {
+      out = [];
+      err = [];
+      const m = hiveLoad();
+      m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+      m.selfUpdater.isPackaged.mockReturnValue(true);
+      m.selfUpdate.planUpdate.mockReturnValue(UPDATE);
+      setup(m);
+      m.PearlEngine.startError = new Error('core not built');
+      await expect(m.run(['--address', ADDR, '--mode', 'mining'])).resolves.toBe(1);
+      expect(allOut() + allErr()).toContain(said);
+      expect(m.PearlEngine.instances).toHaveLength(1);
+    }
+  });
+
+  test('a core that will not load is posted; a missing one is only logged', async () => {
+    const m = hiveLoad();
+    m.pearlCore.coreFactory.mockImplementation((opts) => {
+      opts.log('error', 'Pearl core: /x/pearl_core.node is there but would not load: /lib/libc.so.6: '
+        + "version `GLIBC_2.34' not found (required by /x/pearl_core.node)");
+      return null;
+    });
+    await expect(m.run(['--address', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('danger', 'LLMJob Earn can\'t mine: this HiveOS image is too '
+      + 'old (the mining core needs GLIBC_2.34). Update the rig to the latest HiveOS image.');
+
+    const m2 = hiveLoad();
+    m2.pearlCore.coreFactory.mockReturnValue(null);
+    await expect(m2.run(['--address', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+    expect(m2.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('Blackwell cards on an old driver are logged and posted', async () => {
+    const msg = 'LLMJob Earn: the RTX 50 or other Blackwell card at 02:00.0 needs NVIDIA driver 570 or newer, '
+      + 'and this rig has 550. Run nvidia-driver-update in Hive Shell.';
+    const m = hiveLoad();
+    m.hive.checkDriver.mockResolvedValue(msg);
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    expect(allErr()).toContain(msg);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', msg);
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('checks for a release every few hours, and restarts into one', async () => {
+    const m = hiveLoad();
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    const p = m.run(['--address', ADDR, '--mode', 'mining']);
+    await settle();
+    const timer = intervalFor(NETWORK.updateCheckIntervalMs);
+    expect(timer.unref).toHaveBeenCalled();
+    const miner = m.PearlEngine.instances[0];
+
+    // Offline, up to date, a failed check, and from source: mining carries on.
+    timer.fn();
+    await settle();
+    m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: pkg.version });
+    timer.fn();
+    await settle();
+    m.selfUpdater.fetchLatestRelease.mockRejectedValue(new Error('socket hang up'));
+    timer.fn();
+    await settle();
+    expect(allErr()).toContain('update check failed: socket hang up');
+    m.selfUpdater.fetchLatestRelease.mockResolvedValue({ version: '9.9.9' });
+    m.selfUpdate.planUpdate.mockReturnValue(UPDATE);
+    m.selfUpdater.isPackaged.mockReturnValue(false);
+    timer.fn();
+    await settle();
+    expect(m.hive.updatePackage).not.toHaveBeenCalled();
+    expect(miner.stop).not.toHaveBeenCalled();
+
+    // A new release: swap it in, then shut down cleanly, exit code 0.
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    timer.fn();
+    timer.fn(); // still checking: nothing
+    await settle();
+    expect(m.hive.updatePackage).toHaveBeenCalledTimes(1);
+    expect(allOut()).toContain('shutting down…');
+    expect(miner.stop).toHaveBeenCalled();
+    timer.fn(); // stopping: nothing
+    await settle();
+    expect(m.hive.updatePackage).toHaveBeenCalledTimes(1);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--no-update keeps a rig on its version', async () => {
+    const m = hiveLoad();
+    m.selfUpdater.isPackaged.mockReturnValue(true);
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    expect(m.selfUpdater.fetchLatestRelease).not.toHaveBeenCalled();
+    expect(intervalFor(NETWORK.updateCheckIntervalMs)).toBeUndefined();
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a version on trial passes once it hashes, and says so', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.6.9', to: pkg.version });
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    expect(m.hive.readTrial).toHaveBeenCalledWith(DIR);
+    const trial = intervalFor(TRIAL_CHECK_MS);
+    expect(trial.unref).toHaveBeenCalled();
+    const miner = m.PearlEngine.instances[0];
+    trial.fn();
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 0, accepted: 0, rejected: 0 });
+    trial.fn();
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    miner.emit('event', { type: 'status', gpuIndex: 0, hashrate: 120, accepted: 0, rejected: 0 });
+    trial.fn();
+    expect(m.hive.confirmTrial).toHaveBeenCalledWith(DIR);
+    expect(clearInterval).toHaveBeenCalledWith(trial);
+    expect(allOut()).toContain('the update from v0.6.9 to v' + pkg.version + ' is done');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('success', 'LLMJob Earn updated to v' + pkg.version + ' from v0.6.9.');
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a version on trial that has not hashed in ten minutes exits 75, for h-run.sh to roll back', async () => {
+    clock();
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.6.9', to: pkg.version });
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const trial = intervalFor(TRIAL_CHECK_MS);
+    now += 10 * 60 * 1000 - 1;
+    trial.fn();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.stop).not.toHaveBeenCalled();
+    now += 1;
+    trial.fn();
+    expect(allErr()).toContain('v' + pkg.version + ' has not hashed in 10 minutes since the update from v0.6.9; '
+      + 'exiting so HiveOS puts the old version back');
+    expect(miner.stop).toHaveBeenCalled();
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(75);
+  });
+
+  // `miner stop` on a version still on trial: the trial is neither passed nor
+  // failed, and runs again on the next start.
+  test('a stop during a trial ends it undecided, with exit code 0', async () => {
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: '0.6.9', to: pkg.version });
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update']);
+    await settle();
+    const trial = intervalFor(TRIAL_CHECK_MS);
+    fire('SIGINT');
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    expect(clearInterval).toHaveBeenCalledWith(trial);
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+  });
+
+  test('with every GPU off a trial passes after two minutes; a confirm that fails is retried next start', async () => {
+    clock();
+    const m = hiveLoad();
+    m.hive.readTrial.mockReturnValue({ from: null, to: pkg.version });
+    m.hive.confirmTrial.mockImplementation(() => { throw new Error('EBUSY'); });
+    const p = m.run(['--address', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', 'none']);
+    await settle();
+    const trial = intervalFor(TRIAL_CHECK_MS);
+    trial.fn();
+    expect(m.hive.confirmTrial).not.toHaveBeenCalled();
+    now += 2 * 60 * 1000;
+    trial.fn();
+    expect(m.hive.confirmTrial).toHaveBeenCalled();
+    expect(allOut()).toContain('the update to v' + pkg.version + ' is done');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('success', 'LLMJob Earn updated to v' + pkg.version + '.');
+    fire('SIGINT');
+    trial.fn(); // stopping: nothing
+    await expect(p).resolves.toBe(0);
   });
 });
