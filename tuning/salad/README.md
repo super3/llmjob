@@ -641,9 +641,12 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   one line a row. A row a coin, its columns in the order a coin moves: **Paid** is both pools' Paid, **Received**
   what reached SafeTrade (every deposit), **Waiting** what it holds to sell (held plus in open orders), **Sold**
   everything sold there, **Fees** the trading fees, and **USDT** what the sales brought after them. Then a row
-  for each currency withdrawn (**USDC out**, **USDT out**), its fees (network, and for USDC the trade from USDT)
-  and the USDT it took. **Left** closes it: every fee paid, and the USDT the account holds. So the USDT column
-  is a ledger: on 26 October +$357.11 + $6.42 − $110.27 − $209.28 = $43.98, the balance. Paid and Received
+  for each currency withdrawn (**USDC out**, **USDT out**): the amount that reached the bank, and its fees (the
+  network's, taken on top, and for USDC the trade from USDT). **Total out** adds them up: $309.54 sent to the
+  bank on 26 October, after $10.11 of fees. **Left** closes it: every fee paid, and the USDT the account holds.
+  Sales less what went out and its fees is what's left: $367.34 − $309.54 − $10.11 = $47.69, within about $0.10
+  of the $47.79 balance (the USDT-to-USDC trade got slightly more USDC than the USDT it cost). Until 26 October
+  the out rows showed the USDT each withdrawal took, fees included. Paid and Received
   should match: both were 196.743 PRL. Each new sale is also a `SOLD` event with its USDT. From 24 to 26 October
   these were a 💵 row under each coin's pools, Paid reading "185.060 for $331.21" (and for about 10 minutes on
   24 October a table of the last day's sales). See [SafeTrade](#safetrade-row).

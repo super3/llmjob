@@ -2506,16 +2506,22 @@ class W:
                 rows.append(f"| {coin_name(coin)} | {paid[coin]:.{dp}f} | " + ("—" if r is None else f"{r:.{dp}f}")
                             + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
                 fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+            # Each withdrawal shows what reached the bank: the amount sent, with the network's fee (taken on top)
+            # and, for a stablecoin bought with USDT, that trade's fee in Fees. Total out adds them up.
+            sent, out_fees = 0.0, 0.0
             for cur, (amt, wfee) in sorted((sa.get("out") or {}).items(), key=lambda kv: kv[0] != "usdc"):
                 if cur == "usdt":
-                    spent, fee = amt + wfee, wfee
+                    fee = wfee
                 elif cur in (sa.get("bought") or {}):
-                    spent, tfee = sa["bought"][cur]
-                    fee = tfee + wfee
+                    fee = sa["bought"][cur][1] + wfee
                 else:
                     continue   # a coin withdrawn as itself never became USDT
-                rows.append(f"| {cur.upper()} out | | | | | ${fee:.2f} | −${spent:.2f} |")
-                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+                rows.append(f"| {cur.upper()} out | | | | | ${fee:.2f} | −${amt:.2f} |")
+                sent += round(amt, 2)       # the shown cents, so the column adds up on screen
+                out_fees += round(fee, 2)
+            if sent:
+                rows.append(f"| **Total out** | | | | | {bold(f'${out_fees:.2f}')} | {bold(f'−${sent:.2f}')} |")
+            fees += out_fees
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
             pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Paid | Received | Waiting | Sold | Fees | USDT |",
                      "|---|---|---|---|---|---|---|", *rows,
