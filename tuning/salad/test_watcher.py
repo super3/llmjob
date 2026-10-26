@@ -2040,6 +2040,11 @@ class TestSafeTrade(Base):
                       self.fill(1, market="usdcusdt", amount=10.0, price=0.999, order_side="buy", side="sell")]
         self.http.on("GET", r"safetrade\.com/api/v2/trade/account/balances/spot$", (200, self.BAL))
         self.http.on("GET", r"safetrade\.com/api/v2/trade/market/trades\?", self.page)
+        # Deposits by coin: two pages of PRL (one rejected), one of XMR.
+        self.deposits = {"pearl": [{"amount": "1.5", "status": "collected"}] * 100 + [{"amount": "2.0", "status": "collected"},
+                                   {"amount": "9.0", "status": "rejected"}],
+                         "xmr": [{"amount": "0.010368", "status": "collected"}]}
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/deposits\?", self.deposit_page)
         st = self.x.st
         st["pool_tot"] = {"t": T0, "ths_1h": 0, "balance": 0.744, "unconfirmed": 0.0, "paid": 151.622, "blocks": 0}
         st["xmr_tot"] = {"khs_1h": 5.1, "balance": 0.000949, "pending": 0.000094, "paid": 0.010368}
@@ -2048,8 +2053,13 @@ class TestSafeTrade(Base):
         n = int(re.search(r"page=(\d+)", self.http.calls[-1][1]).group(1))
         return 200, self.fills[(n - 1) * 100:n * 100]
 
+    def deposit_page(self, _):
+        url = self.http.calls[-1][1]
+        coin, n = re.search(r"currency=(\w+)", url).group(1), int(re.search(r"page=(\d+)", url).group(1))
+        return 200, self.deposits.get(coin, [])[(n - 1) * 100:n * 100]
+
     def row(self, coin):
-        return next(shown(l) for l in self.report().splitlines() if f"{coin}{w.NB}SafeTrade" in l)
+        return next(shown(l) for l in self.report().splitlines() if l.startswith(f"| {coin} |"))
 
     def report(self):
         self.x.write_report()
@@ -2062,26 +2072,31 @@ class TestSafeTrade(Base):
         self.assertFalse(self.http.made("GET", "safetrade"))
         self.assertNotIn("SafeTrade", self.report())
 
-    def test_each_coins_row_follows_its_pools_with_what_it_sold_for(self):
+    def test_its_own_table_lines_up_pools_paid_received_waiting_sold_and_usdt(self):
+        self.x.st["kx_tot"] = {"confirmed": 0.0, "unconfirmed": 2.6, "paid": 45.121}
         self.x.safetrade()
         rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
-        names = [r.split(" | ")[0] for r in rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:]]
-        self.assertEqual(names, ["| ⛏️ PRL", f"| 💵 PRL{w.NB}SafeTrade", "| 🪙 XMR HeroMiners", f"| 💵 XMR{w.NB}SafeTrade"])
-        # Held, in open orders, and every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, less 0.1% fees.
-        self.assertEqual(self.row("PRL"), f"| 💵 PRL{w.NB}SafeTrade | — | 1.146 | 0.500 | 5.000{w.NB}for{w.NB}$8.79 |")
-        self.assertEqual(self.row("XMR"), f"| 💵 XMR{w.NB}SafeTrade | — | 0.000008 | 0.000000 | 0.010000{w.NB}for{w.NB}$6.19 |")
+        pools = rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:]
+        pools = pools[:pools.index("| 💵 SafeTrade | Pools paid | Received | Waiting | Sold | Got (USDT) |")]
+        self.assertFalse([r for r in pools if "💵" in r])   # no SafeTrade rows among the pools any more
+        # Paid is both pools'; Received the deposits less the rejected one; Waiting held plus in open orders; Sold every
+        # sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, less 0.1% fees.
+        self.assertEqual(self.row("PRL"), "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $8.79 |")
+        self.assertEqual(self.row("XMR"), "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $6.19 |")
+        self.assertEqual(self.row("**Total**"), "| Total | | | | | $14.99 |")   # $8.7912 + $6.1938, shown unbolded
+        self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
     def test_only_our_own_sell_orders_count(self):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), f"| 💵 PRL{w.NB}SafeTrade | — | 1.146 | 0.500 | 0.000{w.NB}for{w.NB}$0.00 |")
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 0.000 | $0.00 |")
 
     def test_every_page_of_fills_counts(self):
         self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
         self.x.safetrade()
         self.assertEqual(len(self.http.made("GET", "market/trades")), 3)
-        self.assertIn(f"250.000{w.NB}for{w.NB}$499.50", self.row("PRL"))
+        self.assertIn("| 250.000 | $499.50 |", self.row("PRL"))
 
     def test_a_new_sale_is_an_event_with_its_usdt_and_old_ones_are_not(self):
         self.x.safetrade()
@@ -2106,7 +2121,7 @@ class TestSafeTrade(Base):
 
     def test_read_once_a_report_in_its_first_round(self):
         self.x.cfg["report_min"] = 15
-        reads = lambda: len(self.http.made("GET", "safetrade")) // 2   # balances and one page of fills
+        reads = lambda: len(self.http.made("GET", "balances"))
         self.x.safetrade()
         for _ in range(14):   # the rest of the quarter hour
             self.clock[0] += 60
@@ -2132,7 +2147,12 @@ class TestSafeTrade(Base):
             self.clock[0] += 300
             self.x.safetrade()
         self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
-        self.assertTrue(self.row("PRL").startswith(f"| 💵 PRL{w.NB}SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | — | 1.146 |"))
+        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | Pools paid |", shown(self.report()))
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 5.000 | $8.79 |")
+
+    def test_a_read_from_before_deposits_were_read_shows_a_dash(self):
+        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0]}, "sold": {"pearl": [2.0, 3.8]}}
+        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | — | 1.000 | 2.000 | $3.80 |")
 
     def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {}, "sales": {}}
