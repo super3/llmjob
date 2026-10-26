@@ -6,7 +6,7 @@
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
 # cloud session the network proxy adds it instead. With $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET set,
 # the report also shows our SafeTrade account (read-only calls).
-import base64, hashlib, hmac, json, math, os, re, sys, time, urllib.request, urllib.error, datetime as dt, traceback
+import base64, hashlib, hmac, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
 try:
     from cryptography.hazmat.primitives import serialization
@@ -145,7 +145,8 @@ PORTAL = "https://portal-api.salad.com/api/portal"
 
 def portal_balance(user, password):
     """Salad's credit balance in cents, as the portal shows it: log in (a session cookie), then read it. Returns
-    (HTTP status, cents) or (status, error). Salad's public API has no balance; salad_ledger.py reads the rest."""
+    (HTTP status, cents, dollars bought) or (status, error, None). Salad's public API has no balance or billing;
+    salad_ledger.py reads the rest."""
     import http.cookiejar
     op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
@@ -164,9 +165,29 @@ def portal_balance(user, password):
 
     s, j = call("POST", "/users/login", {"email": user, "password": password})
     if s != 204:
-        return s, j
+        return s, j, None
     s, j = call("GET", f"/organizations/{ORG}/billing-profile/credits-balance")
-    return (s, j["amount"]) if s == 200 and isinstance(j, dict) and "amount" in j else (s or 0, j)
+    if not (s == 200 and isinstance(j, dict) and "amount" in j):
+        return s or 0, j, None
+    return s, j["amount"], bought(call)
+
+
+def bought(call):
+    """All the credit ever bought, in dollars: the total of the credit purchase invoices in Metronome (Salad's billing
+    service), less voided ones, read as the portal's invoice page reads them. None if the read fails."""
+    try:
+        s, j = call("POST", f"/organizations/{ORG}/dashboard-sessions/invoice")
+        tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
+        q = ("query { Customer { mri_invoices(limit: 50) { invoices { __typename status total } } } }")
+        req = urllib.request.Request("https://graphql.metronome.com/v1/graphql", method="POST",
+                                     data=json.dumps({"query": q}).encode(),
+                                     headers={"Content-Type": "application/json", "Accept": "application/json",
+                                              "authorization": f"Bearer {tok}", "User-Agent": "llmjob-salad-watcher/1.0"})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            inv = json.loads(r.read().decode())["data"]["Customer"][0]["mri_invoices"]["invoices"]
+        return sum(float(i["total"]) for i in inv if i["__typename"] == "CreditPurchaseInvoice" and i["status"] != "VOID") / 100
+    except Exception:
+        return None
 
 
 COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
@@ -819,7 +840,7 @@ class W:
         user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
         if not user or not pw or not self.report_read_due("bal", t):
             return
-        s, cents = portal_balance(user, pw)
+        s, cents, paid = portal_balance(user, pw)
         if s != 200 or not isinstance(cents, (int, float)):
             if not st.get("bal_warned"):
                 st["bal_warned"] = True
@@ -828,6 +849,8 @@ class W:
         usd = cents / 100
         st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
         st["salad_bal"] = {"t": t, "usd": usd}
+        if paid:
+            st["salad_bought"] = paid
         st["bal_warned"] = False
         self.mark_report_read("bal", t)
 
@@ -2431,6 +2454,9 @@ class W:
         sb = st.get("salad_bal")
         credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
+        # Out of all the credit bought, when the portal's invoices have been read: $202.37/$500.
+        b = st.get("salad_bought")
+        of_bought = "" if not b else f"/${b:.0f}" if b == round(b) else f"/${b:.2f}"
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
         # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined
@@ -2500,7 +2526,7 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark} left"
+        head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark}{of_bought} left"
                 + (f" ({lasts(hours, cmark)})" if hours is not None else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
