@@ -108,11 +108,20 @@ describe('coreLoadMessage', () => {
     expect(H.coreLoadMessage("x: version 'GLIBCXX_3.4.29' not found")).toContain('needs GLIBCXX_3.4.29');
   });
 
-  test('anything else is passed on, cut to a length the dashboard shows', () => {
-    expect(H.coreLoadMessage('pearl_core_hip.node is there but would not load: libamdhip64.so.7: cannot open'))
-      .toBe('LLMJob Earn can\'t mine: pearl_core_hip.node is there but would not load: libamdhip64.so.7: cannot open');
-    const long = H.coreLoadMessage('x'.repeat(400));
-    expect(long).toBe('LLMJob Earn can\'t mine: ' + 'x'.repeat(297) + '…');
+  // What the CI container run on Ubuntu 20.04 logged for --core amd.
+  test('a ROCm library the AMD core cannot find means ROCm is not installed', () => {
+    const line = 'Pearl core: AMD build (ROCm) · /hive/miners/custom/llmjob-earn/pearl_core_hip.node is there but '
+      + 'would not load: libamdhip64.so.7: cannot open shared object file: No such file or directory. It needs the '
+      + 'ROCm 7 HIP runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH';
+    expect(H.coreLoadMessage(line)).toBe('LLMJob Earn can\'t mine: the AMD core needs ROCm 7\'s HIP runtime '
+      + '(libamdhip64.so.7), and this rig doesn\'t have it. Install rocm-hip-runtime 7.x.');
+  });
+
+  test('anything else is passed on without the log prefix and folder, cut to a length the dashboard shows', () => {
+    expect(H.coreLoadMessage('Pearl core: /hive/miners/custom/llmjob-earn/pearl_core.node is there but would not '
+      + 'load: undefined symbol: napi_foo'))
+      .toBe('LLMJob Earn can\'t mine: pearl_core.node would not load: undefined symbol: napi_foo');
+    expect(H.coreLoadMessage('x'.repeat(400))).toBe('LLMJob Earn can\'t mine: ' + 'x'.repeat(279) + '…');
     expect(H.coreLoadMessage(null)).toBe('LLMJob Earn can\'t mine: ');
   });
 });

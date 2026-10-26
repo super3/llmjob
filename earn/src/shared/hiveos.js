@@ -123,8 +123,9 @@ function startupMessage(errors) {
 }
 
 // The dashboard message for a core that is there but would not load. A glibc
-// or libstdc++ version it lacks means the HiveOS image is too old; anything
-// else is passed on as the loader said it.
+// or libstdc++ version it lacks means the HiveOS image is too old, and a ROCm
+// library the AMD core can't find means ROCm isn't installed. Anything else is
+// passed on as the loader said it, without its log prefix and folder.
 function coreLoadMessage(line) {
   const text = String(line == null ? '' : line);
   const ver = /version [`'](GLIBC|GLIBCXX|CXXABI)_([0-9.]+)' not found/.exec(text);
@@ -132,7 +133,13 @@ function coreLoadMessage(line) {
     return 'LLMJob Earn can\'t mine: this HiveOS image is too old (the mining core needs '
       + ver[1] + '_' + ver[2] + '). Update the rig to the latest HiveOS image.';
   }
-  return 'LLMJob Earn can\'t mine: ' + (text.length > 300 ? text.slice(0, 297) + '…' : text);
+  if (/lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)\./.test(text)) {
+    return 'LLMJob Earn can\'t mine: the AMD core needs ROCm 7\'s HIP runtime (libamdhip64.so.7), '
+      + 'and this rig doesn\'t have it. Install rocm-hip-runtime 7.x.';
+  }
+  const m = /([^\s/]+\.node) is there but would not load: (.*)$/.exec(text);
+  const said = m ? m[1] + ' would not load: ' + m[2] : text;
+  return 'LLMJob Earn can\'t mine: ' + (said.length > 280 ? said.slice(0, 279) + '…' : said);
 }
 
 // The NVIDIA cards in `lspci -n` output that are Blackwell or newer, as their

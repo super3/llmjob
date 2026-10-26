@@ -491,10 +491,11 @@ Ubuntu 22.04, 24.04 and 20.04 containers (`.github/scripts/hiveos-smoke.sh`).
 They have no GPU, so this checks everything short of mining: the files, that
 each core loads, the hook scripts, and the stats HiveOS reads.
 
-**It needs a HiveOS image on Ubuntu 20.04 or newer.** The CUDA cores are built
-on Rocky Linux 8, so they need only glibc 2.28 and the libstdc++ of GCC 8
-(`.github/workflows/native-core.yml`). The AMD core also needs ROCm 7, which
-supports Ubuntu 22.04 and newer. RTX 50-series and RTX PRO Blackwell cards need
+**It needs a HiveOS image on Ubuntu 20.04 or newer.** The CLI is built on Node
+22, which needs glibc 2.28. The CUDA cores need less: they are built on Rocky
+Linux 8 (`.github/workflows/native-core.yml`) and need glibc 2.17 and
+`GLIBCXX_3.4.22`. The AMD core also needs ROCm 7, which supports Ubuntu 22.04
+and newer. RTX 50-series and RTX PRO Blackwell cards need
 a newer NVIDIA driver than the stable image's 550: run `nvidia-driver-update`
 from Hive Shell.
 

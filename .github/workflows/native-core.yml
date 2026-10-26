@@ -207,9 +207,10 @@ jobs:
     steps:
       # NVIDIA's image has the toolkit (nvcc, cuobjdump) but not the rest of the
       # build. GCC 13 from gcc-toolset-13 links what it needs from a newer
-      # libstdc++ into the addon statically, so the addon still needs only
-      # Rocky 8's own libstdc++ (GCC 8) and glibc 2.28. node-gyp needs Python
-      # 3.8 or newer, and Rocky 8's own python3 is 3.6.
+      # libstdc++ into the addon statically, so the addon needs no newer
+      # libstdc++ than Rocky 8's own (GCC 8). The first build needed glibc 2.17
+      # and GLIBCXX_3.4.22. node-gyp needs Python 3.8 or newer, and Rocky 8's
+      # own python3 is 3.6.
       - name: Install the build tools (Linux container)
         if: matrix.container != ''
         run: |
@@ -618,7 +619,7 @@ jobs:
       # The oldest Linux the addon loads on. v0.6.7's cores needed glibc 2.38 for one strtoul
       # in the RTX 20 launch sweep, so they would not load on Ubuntu 22.04 or Debian 12, and
       # the app said only that the core was missing; the cores before it needed 2.34, which
-      # HiveOS's Ubuntu 20.04 image does not have. Built on Rocky Linux 8 they need 2.28, and
+      # HiveOS's Ubuntu 20.04 image does not have. Built on Rocky Linux 8 they need 2.17, and
       # this fails the job on any symbol newer than Ubuntu 20.04 has (the script says which).
       - name: Check the oldest glibc the addon needs (Linux)
         if: runner.os == 'Linux'
