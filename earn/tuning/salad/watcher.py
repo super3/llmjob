@@ -894,6 +894,24 @@ class W:
         for coin, amt, usd in reversed(list(new.values())):
             event(f"SOLD {amt:.{COIN_DP.get(coin, 4)}f} {coin_name(coin)} on SafeTrade for ${usd:.2f} USDT after fees "
                   f"(${usd / amt:.2f} each)")
+        # What reached the account: every deposit of each coin, so the table can set it beside what the pools say they
+        # paid. On 26 October the 124 PRL deposits came to 196.743, the pools' paid to the thousandth.
+        recv = {}
+        for coin in ("pearl", "xmr"):
+            total = 0.0
+            for page in range(1, 21):
+                got = get(f"/account/deposits?currency={coin}&limit=100&page={page}")
+                if got is None:
+                    return
+                for d in got:
+                    if str(d.get("status") or "").lower() not in ("rejected", "failed", "canceled", "cancelled", "errored"):
+                        try:
+                            total += float(d.get("amount") or 0)
+                        except (TypeError, ValueError):
+                            pass
+                if len(got) < 100:
+                    break
+            recv[coin] = total
         ids = []
         for f in fills:
             try:
@@ -901,7 +919,7 @@ class W:
             except (KeyError, TypeError, ValueError):
                 pass
         st["st_fill_id"] = max(ids + [last or 0])
-        st["st_acct"] = {"t": t, "coins": coins, "sold": sold}
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv}
         st["st_warned"] = False
         self.mark_report_read("st", t)
 
@@ -2392,16 +2410,6 @@ class W:
         wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
         sa = st.get("st_acct")
 
-        def safetrade_row(coin):
-            """Where a coin's payouts go: SafeTrade, with what it holds (Confirmed), what's in open orders (Pending)
-            and all we've sold there with the USDT it brought after fees (Paid). No row without a SafeTrade key."""
-            if not sa or "sold" not in sa:   # a read from before 24 Oct 10:40 am EDT had last-day sales only
-                return []
-            dp, (b, l), (n, usd) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0]), sa["sold"].get(coin, [0.0, 0.0])
-            read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
-            return [f"| 💵 [{coin_name(coin)}{NB}SafeTrade](https://safetrade.com){read} | — | {b:.{dp}f} | {l:.{dp}f} "
-                    f"| {n:.{dp}f}{NB}for{NB}${usd:.2f} |"]
-
         if pt:
             name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
             pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
@@ -2411,7 +2419,6 @@ class W:
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
             pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
                         f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
-        pool += safetrade_row("pearl")
         if xt:
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
@@ -2419,10 +2426,29 @@ class W:
         if kxx:
             pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
-        if xon:
-            pool += safetrade_row("xmr")
         if pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
+        # Where the payouts go and what they became, a coin a row in the order they happen: what the pools paid, what
+        # reached SafeTrade, what waits there to sell (Waiting: held and in open orders), what sold and the USDT it brought
+        # after fees, totalled. Until 26 October these were a 💵 row under each coin's pools, with the sales in Paid,
+        # which didn't show what we actually got. No table without a SafeTrade key, or with a read from before
+        # 24 Oct 10:40 am EDT (last-day sales only).
+        if sa and "sold" in sa:
+            read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
+            # Both pools' paid, Kryptex's even with no box on it now (its row is hidden then, its payouts aren't).
+            kxp = st.get("kx_tot")
+            paid = {"pearl": (pt["paid"] if pt else 0.0) + (kxp["paid"] if kxp else 0.0),
+                    "xmr": (xt["paid"] if xt else 0.0) + (kxx["paid"] if kxx else 0.0)}
+            rows, got = [], 0.0
+            for coin in ["pearl"] + (["xmr"] if xon else []):
+                dp, (b, l), (n, usd) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0]), sa["sold"].get(coin, [0.0, 0.0])
+                r = (sa.get("recv") or {}).get(coin)
+                rows.append(f"| {coin_name(coin)} | {paid[coin]:.{dp}f} | " + ("—" if r is None else f"{r:.{dp}f}")
+                            + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${usd:.2f} |")
+                got += usd
+            pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Pools paid | Received | Waiting "
+                         "| Sold | Got (USDT) |", "|---|---|---|---|---|---|", *rows,
+                     f"| **Total** | | | | | {bold(f'${got:.2f}')} |"]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
         # credit left (with how long it lasts at the All row's $/hr: days, or hours under a day) ends the line. Until 20 October it was under
