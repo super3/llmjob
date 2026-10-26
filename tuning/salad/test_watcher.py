@@ -2089,8 +2089,9 @@ class TestSafeTrade(Base):
         self.assertEqual(rows[rows.index(head) + 1:], [
             "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |",
             "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
-            "| USDC out | | | | | $0.91 | −$9.99 |",    # the 9.99 USDT changed to USDC: its trade fee and the network's
-            "| USDT out | | | | | $1.00 | −$3.00 |",    # 2 USDT and its fee; the failed one doesn't count
+            "| USDC out | | | | | $0.91 | −$9.00 |",    # the 9 USDC that arrived: its trade fee and the network's
+            "| USDT out | | | | | $1.00 | −$2.00 |",    # 2 USDT arrived, its fee on top; the failed one doesn't count
+            "| Total out | | | | | $1.91 | −$11.00 |",  # what reached the bank
             "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
