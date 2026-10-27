@@ -404,6 +404,8 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   endpoints, GPU classes, webhooks, logs and availability. The credit balance is only in the portal, so
   the ledger counts down from the top-up and takes corrections.
 - `GET /gpu-classes`: a price for each priority (batch, low, medium, high), CPU and RAM included.
+  The watcher reads it once an hour. Since 27 October each running group takes the new price when it changes,
+  with a `PRICE` event, since Salad bills running instances at today's price (its 1 November 2026 rise did).
 - `POST /availability/sce-gpu-availability` with the container's resources gives
   `available_gpu_<priority>` counts. They aren't reliable for busy cards.
 - `GET /quotas`: a new org gets 10 replicas. Stopped groups count against it: with 10 stopped groups,
