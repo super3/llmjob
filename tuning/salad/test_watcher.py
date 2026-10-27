@@ -2170,6 +2170,25 @@ class TestSafeTrade(Base):
         self.assertNotIn("SafeTrade", self.report())
 
 
+class TestClassPrices(Base):
+    def test_a_running_group_takes_a_new_price(self):
+        g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old["ended"] = True
+        items = [{"name": n, "id": c["id"], "prices": [{"priority": p, "price": v} for p, v in c["prices"].items()]}
+                 for n, c in CLASSES.items()]
+        items[0]["prices"][1]["price"] = 0.163   # 4080 at low: 0.15 → 0.163
+        self.http.on("GET", "/gpu-classes$", (200, {"items": items}))
+        self.x.st["classes_t"] = 0
+        self.x.classes()
+        self.assertEqual(g["price"], 0.163)
+        self.assertEqual(old["price"], 0.15)          # an ended group keeps what it cost
+        self.assertEqual(self.events().count("PRICE"), 1)
+        self.assertIn("now $0.163/hr (was $0.150)", self.events())
+        self.x.classes()                              # within the hour: no read, no second event
+        self.assertEqual(self.events().count("PRICE"), 1)
+
+
 class TestSaladBalance(Base):
     def setUp(self):
         super().setUp()

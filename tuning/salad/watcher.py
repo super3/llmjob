@@ -415,6 +415,13 @@ class W:
             st["classes"] = {c["name"]: {"id": c["id"], "prices": {p["priority"]: float(p["price"]) for p in c["prices"]}}
                              for c in j["items"]}
             st["classes_t"] = now()
+            # Salad bills a running group at today's price, not the one it was created at (its 1 November 2026 rise
+            # applied to running instances), so each group takes a new price here, for spend and its margin.
+            for name, g in st["groups"].items():
+                new = st["classes"].get(g["class"], {}).get("prices", {}).get(g["pri"])
+                if not g["ended"] and new is not None and abs(new - g["price"]) > 1e-9:
+                    event(f"PRICE {name}: {g['class']} at {g['pri']} now ${new:.3f}/hr (was ${g['price']:.3f})")
+                    g["price"] = new
         else:
             err(f"gpu-classes failed {s} {j}")
 
