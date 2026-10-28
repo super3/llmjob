@@ -746,8 +746,10 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays. It read the
   credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
   With config `salad_orgs` (since 28 October `["llmjob", "llmjob2"]`) the balance and the total are added up over
-  those orgs, as the founder asked once llmjob2 got $10 of its own. Days left still divides by the fleet's $/hr,
-  which counts only the boxes here (all in llmjob).
+  those orgs, as the founder asked once llmjob2 got $10 of its own. How long it lasts is then given for each org
+  that spends, since Salad stops an org's boxes when that org runs out whatever the others hold: llmjob at the
+  fleet's $/hr, another org at what its balance fell by over the last 1-3 h of reads (less any top-up), e.g.
+  `(llmjob 9 days · llmjob2 17 h)`. An org spending nothing isn't listed, and the under-12-hours `ALERT` is per org.
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
   each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
@@ -759,6 +761,9 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   (16 GB) - Low" is billed as "RTX 5060 Ti (16 GB) - Low", "(Corrected)" twins carry the hours), so each takes
   the invoice line of its name, its name less "(corrected)", or its hours; the days then add up to the invoice to
   the cent. On 24 October at 11 am EDT: $500 bought, $271.27 spent, $228.73 left, against the report's $232.09.
+  Since 28 October purchases are Metronome's credit grants (a crypto top-up makes one and no purchase invoice),
+  and `--org NAME` picks the org (more than once for several, each with its own report and CSV file, then the
+  total); the default is `$SALAD_ORGS` (comma-separated), else `$SALAD_ORG`, else llmjob.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
