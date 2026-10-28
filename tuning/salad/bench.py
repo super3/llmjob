@@ -326,7 +326,8 @@ class Bench:
             return
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
             w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
-        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}"[:60]
+        bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
+        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
         cpu, mem = (4, 8192) if SET == "amd" else (2, 4096)
@@ -337,11 +338,27 @@ class Bench:
                                             "storage_amount": 10737418240},
                               "command": ["/bin/sh", "-c", self.command(ours, order)]}}
         s, j = w.http("POST", w.CB, body)
+        t = w.now()
+        if s == 400 and "name_conflict" in str(j):
+            # A create that errored can still have made the group: on 28 October Salad's gateway answered one with
+            # a 504 and made it. One we can see is ours, so it's watched rather than left billing. One Salad holds
+            # under the name but can't show or delete (404) is passed over with the next name; that one also held a
+            # replica of the quota, which only Salad can give back.
+            g, _ = w.http("GET", f"{w.CB}/{name}")
+            if 200 <= g < 300:
+                self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120,
+                               lines=[], order=order)
+                self.waiting(False)
+                log(f"ADOPTED {name} ({cls}): a create that errored had made it")
+                return
+            self.st["bump"] = bump + 1
+            self.note(f"{name}: Salad has a group by that name that it can't show or delete (HTTP {g}); "
+                      "the next box takes another name")
+            return
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
             self.waiting(quota_refused(s, j))
             return
-        t = w.now()
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
         self.waiting(False)

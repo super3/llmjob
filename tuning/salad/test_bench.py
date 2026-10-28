@@ -340,6 +340,22 @@ class TestBenchRTX(unittest.TestCase):
         x.st.update(cls=0, tries=0, group=None, results={}, seen=[], waiting=False, yielded=None)
         return x, calls
 
+    def test_a_name_salad_already_has_is_adopted_if_visible_and_passed_over_if_not(self):
+        conflict = (400, {"type": "name_conflict", "status": 400})
+        x, calls = self.lane_with(self.l20, [conflict])
+        x.tick()                     # the stub's GET of the group answers 201, as for a group Salad shows
+        self.assertEqual(x.st["group"], "bench-20-rtx2080ti-1")
+        self.assertEqual(sum(1 for c in calls if c[0] == "POST"), 1)
+        y, calls = self.lane_with(self.l20, [conflict])
+        old = self.l20.w.http
+        self.l20.w.http = lambda m, u, b=None, timeout=None: (404, None) if m == "GET" and u.endswith("-1") else old(m, u, b, timeout)
+        y.tick()                     # hidden: passed over
+        self.assertIsNone(y.st["group"])
+        self.assertIn("can't show or delete", y.st["notes"][-1])
+        self.l20.w.http = old
+        y.tick()
+        self.assertEqual(y.st["group"], "bench-20-rtx2080ti-1r1")
+
     def test_a_stale_flag_holds_no_lane_back(self):
         x20, _ = self.lane_with(self.l20, [(400, {"type": "created_replicas_quota_exceeded"})], now=50_000)
         x20.tick()
