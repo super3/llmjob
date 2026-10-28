@@ -59,8 +59,9 @@ Config keys:
 | `search_pct` | The search and a waiting group's priority moves need a class to clear 10% at the rate this share of its PCs are slower than (0.35), not its median. |
 | `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
-| `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
-| `safetrade` | Unused since 20 October: a hand-typed snapshot of the trader's 13 October 17:00Z log (46.79 PRL sold, 1.74 held). It is not a ledger. On 24 October it was read as one and made 130.8 PRL look missing; the trader's own STATUS line (178.486 PRL sold by 23 October 02:00Z) accounts for every PRL the pools had paid by then. |
+| `sell` | The PRL seller (see [SafeTrade](#safetrade-row)): `{"live": true, "minute": 5}` sells once an hour from minute 5; without `"live": true` it only says what it would do; unset, it's off. Also `max_slippage` (0.03), `min_price` (0), `min_volume` (0.5). |
+| `salad_orgs` | Salad orgs whose credit the heading adds up, each with its own runway (`["llmjob", "llmjob2"]` on rig01); unset, just the org the boxes run in. |
+| `salad_wallet` | The Solana wallet that tops up Salad's credit; SafeTrade withdrawals to it show as **USDT to Salad**, not bank. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 | `kryptex_xmr_pay` | What Kryptex credits for Monero work, as a share of the network's pay for it (0.94, measured 21 October). The report's XMR column values each box's Kryptex work at it (see [Monero](#monero-on-the-cpu)). |
@@ -669,7 +670,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
   ⬜ empty slot · 💵 SafeTrade (its own table) · `*` our own count or estimate,
-  or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, SafeTrade, or the trader's log)
+  or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, SafeTrade)
   · (K) mines Pearl on Kryptex, the rest on HeroMiners (shown only while some box is on HeroMiners).
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
@@ -681,23 +682,18 @@ All row's margin below zero. A box with no Pearl reading shows its profit an hou
 
 ## SafeTrade row
 
-When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes. The report used it for Profit $ (sold PRL at what it sold for), with
-sales entered by hand in config `safetrade` standing in, until Profit $ went on 20 October; it listed the sales
-under the table until then too. Nothing in the report uses it now.
+Until 28 October PRL was sold by a separate Railway cron service, `trader/`, and the watcher read its `STATUS`
+log line through a Railway token. Its builds kept crashing, so the selling moved into the watcher (below), and the
+service and `trader/` were removed that day.
 
-It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
-cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
-and there's one `WARN` event.
-
-**The SafeTrade table** (since 24 October, as rows until 26 October) reads the account itself, not the trader's
-log: with `SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, once a report (in the first round of each quarter
+**The SafeTrade table** (since 24 October, as rows until 26 October) reads the account itself: with
+`SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, once a report (in the first round of each quarter
 hour, so the quarter's report shows that minute's read; a failed read is tried again 5 minutes later) the watcher
 asks SafeTrade for the balances (`/account/balances/spot`), every fill we have (`/market/trades`, 100 a page),
 every PRL and XMR deposit (`/account/deposits`, 100 a page; rejected or failed ones don't count) and every
 withdrawal that went through (`/account/withdraws`). A buy of a stablecoin (USDC) with USDT is a change before
 a withdrawal, not a sale. These are GET calls, signed with
-HMAC-SHA256 of a millisecond nonce and the key; the watcher never places, cancels or withdraws. A sale is a fill
+HMAC-SHA256 of a millisecond nonce and the key; only the seller below places or cancels orders. A sale is a fill
 of our own sell order (`order_side`; a fill's `side` is the taker's), counted at its USDT less SafeTrade's fee.
 Fills newer than the last read make one `SOLD` event an order; the first read only notes the newest, so the
 history isn't announced. If a read fails there's one `WARN` event, the table keeps the last read, and its first
@@ -705,18 +701,19 @@ heading says when that was once it's 15 minutes old. SafeTrade's Cloudflare
 lets the watcher's own user agent through from rig01; a 403 with an empty body means SafeTrade knows the key and
 refuses it (its settings or IP whitelist, `OPEN.md` #57).
 
-**Selling PRL** (since 28 October, dry run first). The autoseller is moving into the watcher, at the founder's
-request: the Railway `trader` service's builds kept crashing, and the watcher already reads SafeTrade. With config
-`sell` set (`{}` or `{"minute": 3}`: a dry run) and the SafeTrade keys, once an hour from `minute` (default 5) it
-does what `trader/trader.py` does: finds the enabled PRL/USDT market (`pearlusdt`, else the retired `prlusdt`),
+**Selling PRL** (since 28 October; live from 1:05 pm EDT that day). The autoseller moved into the watcher at the
+founder's request: the Railway `trader` service's builds kept crashing, and the watcher already reads SafeTrade.
+With config `sell` set (`{"live": true, "minute": 5}` on rig01; without `"live": true` a dry run) and the SafeTrade
+keys, once an hour from `minute` (default 5) it does what the trader did: finds the enabled PRL/USDT market
+(`pearlusdt`, else the retired `prlusdt`; Cloudflare in front of SafeTrade rewrites "prl" in a URL to "PEARL"),
 cancels our open sell orders there (the last run's unfilled rest), reads the free PRL and the bids, and places one
 limit sell at a floor `max_slippage` (0.03) under the best bid, never under `min_price` (0), for as much as the bids
 at or above it take. Less than `min_volume` (0.5) or the market's own minimum isn't sold. Each run is a `SELL` event
 (`SELL DRY RUN` until `"live": true`): what it cancelled or would cancel, and what it sold or would sell, or why
 nothing; a failure is one `WARN SELL` event. The fills come back as `SOLD` events from the next read above. Only
-one seller may run: the trader cancels the watcher's open orders and the watcher the trader's, so the plan is a dry
-run beside the trader (at :03, before its :05, on the same balance), then the founder stops the trader's cron and
-sets `"live": true`, then `trader/` goes.
+one seller may run, since each cancels the open sell orders it finds. It ran dry beside the trader for an hour
+(12:12 pm EDT: 1.318 PRL, under the market's 2 PRL minimum, as the trader left it); the founder then deleted the
+trader's service, and it went live.
 
 ## Safety net
 
@@ -742,13 +739,13 @@ PRL_WALLET=prl1... python3 -I tuning/salad/guard.py
 It isn't running on a schedule yet. Two tries with a Claude Routine failed: a fresh session without
 the repo had to download the script, which its permission check blocks, and a Routine bound to a
 session with the repo fired into a new empty session instead. The Routine is paused. The better home
-is a Railway cron service next to the trader: Root Directory `/tuning/salad`, start command
+is a Railway cron service: Root Directory `/tuning/salad`, start command
 `python3 guard.py`, hourly, with `SALAD_API_KEY` and `PRL_WALLET` set.
 
 ## Money
 
 - **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
-  straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: the
+  straight from an API (Salad, the pool, prlscan, CoinGecko, SafeTrade). Starred: the
   Salad credit left only when Salad's own balance hasn't been read for an hour (the watcher then adds each
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex

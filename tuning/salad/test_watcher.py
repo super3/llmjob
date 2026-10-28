@@ -1976,86 +1976,6 @@ class TestCritic(Base):
         self.assertNotIn("DRIFT", self.events())
 
 
-class TestTraderStatus(Base):
-    CFG = {"project": "p1", "service": "s1", "environment": "e1"}
-    STATUS = {"t": 1800003900, "market": "prlusdt", "prl": 0.0, "prl_locked": 0.0, "usdt": 7.08, "usdt_locked": 0.0,
-              "sold": 5.2564, "received": 7.1, "fees": 0.0142, "trades": 2,
-              "last": {"order": 77, "sold": 5.2564, "average": 1.3507}}
-
-    def railway(self, deployments=("d2", "d1"), logs=None, status=200):
-        logs = logs if logs is not None else {"d2": ["starting", "STATUS " + json.dumps(self.STATUS)]}
-        def answer(body):
-            q = body["query"]
-            if "deployments(" in q:
-                return status, {"data": {"deployments": {"edges": [{"node": {"id": d}} for d in deployments]}}}
-            return status, {"data": {"deploymentLogs": [{"message": m, "timestamp": "2027-01-15T08:05:01Z"}
-                                                        for m in logs.get(body["variables"]["id"], [])]}}
-        self.http.on("POST", "backboard.railway.com", answer)
-
-    def test_the_newest_status_line_is_read(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        self.x.trader()
-        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
-        q = self.http.made("POST", "backboard")[0][2]
-        self.assertEqual(q["variables"]["i"], {"projectId": "p1", "serviceId": "s1", "environmentId": "e1"})
-
-    def test_an_older_deployment_is_read_when_the_newest_has_no_status(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway(logs={"d2": ["building"], "d1": ["STATUS " + json.dumps(self.STATUS)]})
-        self.x.trader()
-        self.assertEqual(self.x.st["trader_status"]["sold"], 5.2564)
-
-    def test_read_at_most_every_5_min(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        self.x.trader()
-        self.clock[0] += 120
-        self.x.trader()
-        self.assertEqual(len(self.http.made("POST", "backboard")), 2)   # deployments + one deployment's logs
-        self.clock[0] += 300
-        self.x.trader()
-        self.assertEqual(len(self.http.made("POST", "backboard")), 4)
-
-    def test_the_token_is_sent_as_a_project_token(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        os.environ["RAILWAY_TOKEN"] = "tok"
-        try:
-            self.x.trader()
-        finally:
-            del os.environ["RAILWAY_TOKEN"]
-        self.assertEqual(self.http.headers, {"Project-Access-Token": "tok"})
-
-    def test_off_without_config(self):
-        self.railway()
-        self.x.trader()
-        self.assertFalse(self.http.made("POST", "backboard"))
-
-    def test_a_refused_read_warns_once_and_keeps_the_last_status(self):
-        self.x.cfg["trader"] = self.CFG
-        self.x.st["trader_status"] = dict(self.STATUS)
-        self.http.on("POST", "backboard.railway.com", (200, {"errors": [{"message": "Not Authorized"}]}))
-        self.x.trader()
-        self.clock[0] += 600
-        self.x.trader()
-        self.assertEqual(self.events().count("WARN can't read the trader's Railway logs"), 1)
-        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
-
-    def test_sales_dont_change_the_report(self):
-        g = self.group()
-        g.update(prl=10.0, spend=8.0, hm_units=1.0, hm_gross=10.0)
-        for status, manual in ((dict(self.STATUS), None), (None, {"sold": 5.2564, "received": 7.1, "fees": 0.0142})):
-            self.x.st["trader_status"], self.x.cfg["safetrade"] = status, manual
-            self.x.write_report()
-            with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
-                report = f.read()
-            # The table counts coins earned (10 PRL of work, before 10 blocks), not dollars: no Profit $ since 20 October.
-            self.assertIn("| **10.000\\*** |\n", report)
-            for gone in ("SafeTrade", "Profit $", "Locked"):
-                self.assertNotIn(gone, report)
-
-
 class TestSafeTrade(Base):
     BAL = [{"currency": "pearl", "balance": "1.1461474", "locked": "0.5"},
            {"currency": "usdt", "balance": "9.0505421", "locked": "0"},
@@ -2244,7 +2164,7 @@ class TestClassPrices(Base):
 
 
 class TestSell(Base):
-    """The PRL autoseller moved in from trader/trader.py; the book and numbers are its tests'."""
+    """The PRL autoseller, moved in from the Railway trader service (removed); the book and numbers are its tests'."""
     BOOK = {"bids": [{"price": "1.40", "remaining_volume": "3"}, {"price": "1.38", "remaining_volume": "2"},
                      {"price": "1.30", "remaining_volume": "50"}], "asks": []}
     MKT = {"id": "pearlusdt", "base_unit": "pearl", "state": "enabled", "amount_precision": 2, "price_precision": 4,
