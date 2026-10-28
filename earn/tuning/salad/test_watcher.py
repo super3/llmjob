@@ -332,6 +332,44 @@ class TestNotMining(Base):
         self.step(g, 1, "m1")
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
+    def test_the_reading_clock_starts_when_the_container_runs(self):
+        # 28 October: rx9060xt was left 10 minutes after getting a PC that was still downloading the 1.16 GB AMD image,
+        # with no container output at all, and its class barred for a day as failed.
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")       # a class that never paid: leaving deletes it
+        g["_run"] = False                                       # Salad shows the PC, downloading the image
+        self.step(g, 1, "m1")
+        self.step(g, 14, "m1")
+        self.assertIsNone(g["ended"])
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        g["_run"] = True                                        # running from minute 15
+        self.step(g, 1, "m1")
+        self.step(g, 9, "m1")
+        self.assertIsNone(g["ended"])
+        self.step(g, 1, "m1")                                   # 10 min after it started: judged as usual
+        self.assertEqual(g["end_kind"], "failed")
+        self.assertIn("no mining reading 10 min after it started on PC m1 (15 min loading first)", self.events())
+
+    def test_a_pc_that_never_starts_the_container_is_left_after_30_min(self):
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")
+        g["_run"] = False
+        self.step(g, 1, "m1")
+        self.step(g, 29, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIsNone(g["ended"])                           # the PC's fault: not deleted, class not barred
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("not running 30 min after getting PC m1 (image still loading)", self.x.st["bad_pcs"]["m1"]["why"])
+
+    def test_a_group_on_its_pc_before_the_run_clock_keeps_its_clock(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        del g["run_since"]                                      # as saved by the watcher before this rule
+        self.step(g, 9, "m1")
+        self.assertEqual(g["run_since"], g["pc_since"])
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
 
 class TestPCsLeftBefore(Base):
     def test_the_pc_just_left_is_skipped_for_10_minutes_only(self):

@@ -452,7 +452,7 @@ class W:
             own = self.own_khs(g, t)
             if own is not None:
                 return own * xusd
-            since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
+            since = max(g["pc_since"], g.get("run_since") or 0, g.get("restart_t") or 0, self.pause_end(g))
             # A box the pools never saw here has no reads at all, and took the median for as long as it stayed: 4060-60
             # on 23 October, an hour on its PC with no Monero at either pool, was judged +14% against its +10%. A new
             # box shows at the pools within 30 minutes (3060-75 that evening), so after 45 with none it counts 0.
@@ -476,7 +476,7 @@ class W:
         """A box's own Monero kH/s on its PC, once the pools' 30-minute averages hold only this PC: the mean of its
         last 3 reads taken 30 minutes or more after it got the PC, restarted or last paused (xmr_own), the latest
         within 15 minutes. None before that."""
-        since = max(g["pc_since"], g.get("restart_t") or 0, self.pause_end(g))
+        since = max(g["pc_since"], g.get("run_since") or 0, g.get("restart_t") or 0, self.pause_end(g))
         own = [k for seen, k in g.get("xmr_own") or [] if seen >= since + 30 * MIN][-3:]
         if own and t - g["xmr_own"][-1][0] < 15 * MIN:
             return sum(own) / len(own)
@@ -1060,7 +1060,7 @@ class W:
             g["left_t"] = now()
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
                   + (f"reallocation {g['reallocs']} of 3" if count else "not counted toward its 3"))
-            g.update(machine=None, pc_since=None, lost_since=now(), profit_fail=0, has_pc=False)
+            g.update(machine=None, pc_since=None, run_since=None, lost_since=now(), profit_fail=0, has_pc=False)
             return True
         err(f"reallocate {g['name']} failed {s} {j}")
         return False
@@ -1958,8 +1958,8 @@ class W:
         if g["has_pc"]:
             if mach != g["machine"]:
                 first = not g["had_pc"]
-                g.update(machine=mach, pc_since=t, lost_since=None, profit_fail=0, had_pc=True, pause_since=None,
-                         paused_t=None, restart_t=None)
+                g.update(machine=mach, pc_since=t, run_since=None, lost_since=None, profit_fail=0, had_pc=True,
+                         pause_since=None, paused_t=None, restart_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
                 (g.get("pc_pool") or {}).pop(mach, None)
                 if g.get("sw_from") == mach:
@@ -1995,7 +1995,7 @@ class W:
                 if g["machine"] is not None:
                     event(f"LOST PC {g['name']}: PC {g['machine'][:8]} gone (instance {g.get('inst_state', '-')})")
                     self.note_drop(g, t)
-                    g.update(machine=None, pc_since=None)
+                    g.update(machine=None, pc_since=None, run_since=None)
                 if g["lost_since"] is None:
                     g["lost_since"] = t
                 if t - g["lost_since"] >= 20 * MIN:
@@ -2019,7 +2019,22 @@ class W:
                     self.set_priority(g, nxt)
             return
 
-        on = t - g["pc_since"]
+        # The clocks below start when the container runs on the PC, not when Salad hands the PC over: Salad first
+        # downloads the image there (has_pc counts downloading and creating), and bills nothing until it runs. The
+        # AMD image is 1.16 GB against 31 MB for the NVIDIA one: on 28 October rx9060xt was left 10 minutes after
+        # getting PC e9687de9 with no container output at all, and its class barred for a day as failed.
+        if g.get("_run", True):
+            if not g.get("run_since"):
+                # A group already on its PC before this rule came in has no run_since at all: its clock stays.
+                g["run_since"] = g["pc_since"] if "run_since" not in g else t
+        else:
+            if t - g["pc_since"] >= 30 * MIN:
+                why = f"not running {(t - g['pc_since']) / 60:.0f} min after getting PC {g['machine'][:8]} (image still loading)"
+                self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": why}
+                self.reallocate(g, why, count=False)   # the PC's line, not the class's fault
+            return
+        start = max(g["pc_since"], g["run_since"])
+        on = t - start
         # Rule 6: the PC blocks the pool port. It goes on the bad list like any PC a group leaves: Salad hands the
         # same PCs out again. On 18–19 October one blocked PC cost six groups a move each, and two groups were
         # deleted on a PC another group had already found blocked.
@@ -2060,9 +2075,11 @@ class W:
         # After a restart on this PC (restart_t) they run as on a new PC from then: earlier readings don't count.
         rs = g.get("restart_t") or 0
         cur = [r for r in cur if r[0] > rs]
-        if not cur and seen_to - max(g["pc_since"], pend, rs) >= 10 * MIN and not sharing:
+        if not cur and seen_to - max(start, pend, rs) >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {(t - rs) / 60:.0f} min after its restart on PC {g['machine'][:8]}" if rs
-                       else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}")
+                       else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}" if start == g["pc_since"]
+                       else f"no mining reading {on / 60:.0f} min after it started on PC {g['machine'][:8]} "
+                            f"({(start - g['pc_since']) / 60:.0f} min loading first)")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
         # once the newest is 6 min old.
@@ -2073,7 +2090,7 @@ class W:
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(g["pc_since"], g["last_share"] or 0, pend, rs)
+            ref = max(start, g["last_share"] or 0, pend, rs)
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
