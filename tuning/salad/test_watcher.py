@@ -1128,6 +1128,15 @@ class TestRule7Credit(Base):
         self.step(g, 1, None)
         self.assertIn("POST /start -> HTTP 400 {'type': 'invalid_state', 'detail': 'the image is still downloading'}",
                       self.events())
+        self.assertIsNone(g["ended"])                       # tried again in 5 minutes
+
+    def test_a_start_refused_for_the_replica_quota_deletes_the_group(self):
+        # 28 October: 3080-83 sat stopped, refused every 5 minutes, holding a replica while the account was full.
+        self.http.on("POST", "/start$", (400, {"type": "replicas_quota_exceeded", "title": "Bad Request"}))
+        g = self.group(status="stopped")
+        self.step(g, 1, None)
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("Salad's replica quota is full, so it can't start", self.events())
 
     def test_no_credits_on_create(self):
         self.http.on("POST", "/containers$", (400, {"errors": {"code": ["no_credits_available"]}}))
@@ -1149,13 +1158,19 @@ class TestSearch(Base):
 
     def test_the_search_trusts_salad_s_count_of_replicas_in_use(self):
         # 22 October: Salad counted one replica more than we had at times all day, so every search sent creates it then
-        # refused with created_replicas_quota_exceeded. With 1 group and 9 of 10 replicas in use, there's room for 1.
+        # refused with created_replicas_quota_exceeded. And Salad won't start a group once its count, which takes in
+        # stopped groups and other sessions', is at the quota (28 October), so at most 9 of 10 run: with 1 group of
+        # ours and 8 of 10 replicas in use there's room for 1, and with 9 in use none.
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
-                                                                         "container_replicas_used": 9}}))
+                                                                         "container_replicas_used": 8}}))
         self.group(cls="RTX 4070 (12 GB)", pri="low")
         n = len(self.http.made("POST", "/containers$"))
         self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")) - n, 1)
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                         "container_replicas_used": 9}}))
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")) - n, 1)
 
