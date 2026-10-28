@@ -1502,6 +1502,42 @@ class TestOrgs(Base):
         self.assertEqual(self.x.logs([g]), [])
         self.assertEqual(self.x.st["last_log_end"], end)   # not moved on: next round reads this minute again
 
+    def test_a_waiting_group_never_moves_above_another_of_its_class_on_a_pc(self):
+        # 13 October: 4080-35 at medium got 4080-33's PC at low, twice. With groups in two orgs it's likelier.
+        a = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        a["has_pc"] = True
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        b = list(self.x.st["groups"].values())[-1]
+        b["status"] = "running"
+        self.assertEqual(self.x.next_pri(b), "low")        # up to a's priority, not past it
+        b["pri"] = "low"
+        self.assertIsNone(self.x.next_pri(b))
+        self.step(b, 11, None)
+        self.assertEqual(b["end_kind"], "released")
+        self.assertIn("no PC at low and a higher priority could take the PC of another group of its class",
+                      self.events())
+
+    def test_the_search_doesnt_make_a_group_above_another_of_its_class_on_a_pc(self):
+        self.x.cfg["max_per_class"] = 2
+        self.x.pc_margin = lambda g: 0.5                   # the 4080 on its PC clears the margin, so a second may come
+        a = self.group(cls="RTX 4080 (16 GB)", pri="batch")
+        a["has_pc"] = True
+        made = lambda: [(c, p) for *_, c, p in self.x.candidates([a], self.clock[0]) if c == "RTX 4080 (16 GB)"]
+        self.assertEqual(made(), [])                       # GPUs free only at low, above a's batch
+        a["pri"] = "low"
+        self.assertEqual(made(), [("RTX 4080 (16 GB)", "low")])
+
+    def test_another_session_s_group_on_a_pc_caps_its_class_too(self):
+        def other(name, gpu, counts):
+            return {"name": name, "priority": "batch", "container": {"resources": {"gpu_classes": [gpu]}},
+                    "current_state": {"instance_status_counts": counts}}
+        self.http.on("GET", "/llmjob2/projects/default/containers$", (200, {"items": [
+            other("bench-30-rtx4080-1", "c4080", {"running_count": 1}),
+            other("bench-30-rtx2060-1", "c2060", {"allocating_count": 1})]}))
+        self.x.sweep(self.clock[0])
+        self.assertEqual(self.x.pri_cap("RTX 4080 (16 GB)"), 0)   # on a PC at batch: ours stay at batch
+        self.assertEqual(self.x.pri_cap("RTX 2060 (6 GB)"), 3)    # still waiting for a PC: no cap
+
 
 class TestUpgrade(Base):
     def full_with_a_2060(self, avail, placed=True):
