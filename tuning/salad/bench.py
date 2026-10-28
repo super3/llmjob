@@ -37,6 +37,12 @@ VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
 # Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
 AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
+# Lanes share whatever Salad quota the watcher leaves. With room for one more box only, the lane that frees a
+# replica took it back within the minute and the other waited: on 28 October the RTX 20 lane waited 55 minutes
+# while the 30 lane ran three PCs. So a lane the quota turns away flags it in its own bench-<set>-<lane>.waiting.json,
+# and another lane about to start a new box leaves the freed replica to it. A flag counts for TURN_MIN minutes after
+# its lane's last try, so a lane that stopped holds no one back.
+TURN_MIN = 3
 HOSTS = 2               # PCs per card, as in benchmark.md
 MAX_TRIES = 10          # boxes per class before moving on (the 1070/1080/1080 Ti class may not show all three)
 NO_PC_MIN = 30          # minutes to wait for a PC before moving on
@@ -192,6 +198,12 @@ def figure(m, mean_after=None):
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
 
 
+def quota_refused(s, j):
+    """Salad's answer when the organization's container replicas are all in use ("created_replicas_quota_exceeded"
+    on a create, "replicas_quota_exceeded" on a start)."""
+    return s == 400 and "quota_exceeded" in str((j or {}).get("type", "") if isinstance(j, dict) else j)
+
+
 def cell(v, why):
     return f"{v:.1f}" if v is not None else why
 
@@ -327,11 +339,36 @@ class Bench:
         s, j = w.http("POST", w.CB, body)
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
+            self.waiting(quota_refused(s, j))
             return
         t = w.now()
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
+        self.waiting(False)
         log(f"CREATED {name} ({cls}, high)")
+
+    def wait_file(self, lane):
+        return os.path.join(w.D, f"bench-{SET}-{lane}.waiting.json")
+
+    def waiting(self, on):
+        """Flag (or clear) that Salad's quota turned this lane away, for the set's other lanes (TURN_MIN)."""
+        self.st["waiting"] = bool(on)
+        if not LANE:
+            return
+        p = self.wait_file(LANE)
+        if on:
+            w.save(p, {"since": (w.load(p, None) or {}).get("since") or w.now(), "last": w.now()})
+        elif os.path.exists(p):
+            os.remove(p)
+
+    def other_waiting(self):
+        """Another lane of the set that the quota turned away in the last TURN_MIN minutes, or None."""
+        t = w.now()
+        for lane in sorted(LANES):
+            v = w.load(self.wait_file(lane), None) if lane != LANE else None
+            if v and t - v.get("last", 0) <= TURN_MIN * MIN:
+                return lane
+        return None
 
     def note(self, msg):
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
@@ -435,6 +472,14 @@ class Bench:
             self.next_class()
             return True
         if not self.st["group"]:
+            other = None if self.st.get("waiting") else self.other_waiting()
+            if other:
+                # A lane that is waiting itself takes its chance; one that isn't leaves the replica to the other.
+                if self.st.get("yielded") != other:
+                    log(f"YIELD to lane {other}: the quota turned it away, so it gets the next free replica")
+                self.st["yielded"] = other
+                return True
+            self.st["yielded"] = None
             self.create()
             return True
         t = w.now()
@@ -442,6 +487,8 @@ class Bench:
         insts = (j or {}).get("instances") or (j or {}).get("items") or [] if s == 200 else []
         on = [i for i in insts if i.get("machine_id") and i.get("state") in ("downloading", "creating", "running")]
         if on:
+            if self.st.get("waiting"):
+                self.waiting(False)
             m = on[0]["machine_id"]
             if m != self.st.get("machine"):
                 # A new PC, by our move or by Salad's own, which shows only as a new machine_id (README, "Salad API
@@ -454,11 +501,18 @@ class Bench:
                 if m in self.st["seen"]:
                     self.move_on(f"PC {m[:8]} was benchmarked already")
                     return True
-        elif not self.st.get("pc_t") and t - self.st.get("start_t", 0) >= 5 * MIN and self.stopped():
-            # Salad sometimes stops a new group before it gets a PC, as the watcher sees too. Start it again.
-            s, _ = w.http("POST", f"{w.CB}/{self.st['group']}/start")
+        elif not self.st.get("pc_t") and t - self.st.get("start_t", 0) >= MIN and self.stopped():
+            # Salad sometimes stops a new group before it gets a PC, as the watcher sees too. Start it again, every
+            # minute: until 28 October every 5, and a start the quota refused cost 5 minutes each time.
+            s, j = w.http("POST", f"{w.CB}/{self.st['group']}/start")
             self.st["start_t"] = t
             log(f"STARTED {self.st['group']} again: it was stopped with no PC (HTTP {s})")
+            if quota_refused(s, j):
+                # Held back by the quota, not by the class having no PC: that wait doesn't count to NO_PC_MIN.
+                self.st["created"] = t
+                self.waiting(True)
+            elif self.st.get("waiting"):
+                self.waiting(False)
         elif not self.st.get("pc_t") and t - self.st["created"] >= NO_PC_MIN * MIN:
             self.note(f"{cls}: no PC at high in {NO_PC_MIN} min")
             self.next_class()
@@ -524,7 +578,9 @@ class Bench:
             return "All classes done." + (f" Waiting for Salad to remove {', '.join(left)}." if left else "")
         g = self.st.get("group")
         if not g:
-            return f"Next: {p[0]}."
+            if self.st.get("yielded"):
+                return f"Next: {p[0]}, once lane {self.st['yielded']} has its box (it was waiting for a replica)."
+            return f"Next: {p[0]}." + (" Salad's quota is full; trying every minute." if self.st.get("waiting") else "")
         if not self.st.get("machine"):
             return f"Now: {g} ({p[0]}, high) waiting for a PC since {time.strftime('%H:%M', time.gmtime(self.st['created']))}Z."
         return (f"Now: {g} on PC {self.st['machine'][:8]}" + (f" ({self.st.get('card')})" if self.st.get("card") else "")

@@ -110,7 +110,7 @@ class TestBench(unittest.TestCase):
         st["results"]["GTX 1660 Ti"][0]["power"] = "[N/A]"
         self.assertIn("| GTX 1660 Ti | Salad (— W, 6 GB) | 741f9c56 |", b.render(st))
 
-    def test_a_group_stopped_before_a_pc_is_started_again_every_5_minutes(self):
+    def test_a_group_stopped_before_a_pc_is_started_again_every_minute(self):
         calls, now = [], [10_000]
         def http(method, url, body=None, timeout=None):
             calls.append((method, url))
@@ -126,10 +126,10 @@ class TestBench(unittest.TestCase):
             bench.st.update(cls=0, group="bench-x-1", created=now[0], pc_t=None, machine=None)
             bench.tick()
             self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
-            calls.clear(); now[0] += 60
+            calls.clear(); now[0] += 30
             bench.tick()
             self.assertNotIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
-            calls.clear(); now[0] += 5 * 60
+            calls.clear(); now[0] += 30
             bench.tick()
             self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
         finally:
@@ -283,6 +283,85 @@ class TestBenchRTX(unittest.TestCase):
         self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | 96% |", text)
         self.assertNotIn("RTX 2070 Super", text)          # not waited for: no empty rows for it
         self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |", text)
+
+    def lane_with(self, m, answers, now=50_000):
+        """A lane whose Salad answers POSTs from `answers` (a list of (status, body)), and a clock at `now`. Its and
+        every lane's waiting flags are cleared before and after."""
+        calls = []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url, body))
+            if method == "POST" and answers:
+                return answers.pop(0)
+            return salad([], classes=["RTX 2080 Ti (11 GB)", "RTX 3090 Ti (24 GB)"])(method, url, body, timeout)
+        old = (m.w.http, m.w.now)
+        m.w.http, m.w.now = http, (lambda: now)
+        def clear():
+            m.w.http, m.w.now = old
+            for lane in m.LANES:
+                p = os.path.join(m.w.D, f"bench-rtx-{lane}.waiting.json")
+                if os.path.exists(p):
+                    os.remove(p)
+        clear()
+        m.w.http, m.w.now = http, (lambda: now)
+        self.addCleanup(clear)
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None, results={}, seen=[], waiting=False, yielded=None)
+        return x, calls
+
+    def test_a_lane_the_quota_turns_away_gets_the_next_replica_before_the_other_lane(self):
+        full = (400, {"type": "created_replicas_quota_exceeded", "status": 400})
+        x20, _ = self.lane_with(self.l20, [full])
+        x20.tick()                                          # turned away: it says so
+        self.assertIsNone(x20.st["group"])
+        self.assertTrue(os.path.exists(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")))
+        x30, calls30 = self.lane_with_shared(self.l30)
+        x30.tick()                                          # lane 30 just freed a replica: it leaves it to lane 20
+        self.assertFalse([c for c in calls30 if c[0] == "POST"])
+        self.assertEqual(x30.st["yielded"], "20")
+        self.assertIn("once lane 20 has its box", x30.now_line())
+        x20.tick()                                          # lane 20 gets its box and clears its flag
+        self.assertEqual(x20.st["group"], "bench-20-rtx2080ti-1")
+        self.assertFalse(os.path.exists(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")))
+        x30.tick()                                          # and lane 30 goes next
+        self.assertTrue(x30.st["group"].startswith("bench-30-"))
+
+    def lane_with_shared(self, m):
+        """Lane m with Salad answering creates, sharing the waiting flags lane_with left in place."""
+        calls = []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url, body))
+            return salad([], classes=["RTX 3090 Ti (24 GB)"])(method, url, body, timeout)
+        old = (m.w.http, m.w.now)
+        m.w.http, m.w.now = http, (lambda: 50_030)
+        self.addCleanup(lambda: (setattr(m.w, "http", old[0]), setattr(m.w, "now", old[1])))
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None, results={}, seen=[], waiting=False, yielded=None)
+        return x, calls
+
+    def test_a_stale_flag_holds_no_lane_back(self):
+        x20, _ = self.lane_with(self.l20, [(400, {"type": "created_replicas_quota_exceeded"})], now=50_000)
+        x20.tick()
+        x30, _ = self.lane_with_shared(self.l30)
+        self.l30.w.now = lambda: 50_000 + self.l30.TURN_MIN * 60 + 1     # lane 20 stopped trying
+        x30.tick()
+        self.assertTrue(x30.st["group"].startswith("bench-30-"))
+
+    def test_a_stopped_box_the_quota_holds_back_is_tried_every_minute_and_keeps_its_class(self):
+        full = (400, {"type": "replicas_quota_exceeded", "status": 400})
+        x, calls = self.lane_with(self.l20, [full], now=60_000)
+        x.st.update(group="bench-20-rtx2080ti-1", created=60_000 - 29 * 60, start_t=60_000 - 61, pc_t=None)
+        x.stopped = lambda: True
+        x.tick()
+        self.assertEqual([c[1].rsplit("/", 1)[1] for c in calls if c[0] == "POST"], ["start"])
+        self.assertEqual(x.st["created"], 60_000)          # the quota's wait isn't the class having no PC
+        self.assertEqual(x.st["cls"], 0)
+        self.assertTrue(x.st["waiting"])
+        x.st["start_t"] = 60_000 - 30
+        calls.clear()
+        x.tick()                                           # not again within the minute
+        self.assertFalse([c for c in calls if c[0] == "POST"])
 
     def test_table_puts_the_two_lanes_together(self):
         d = tempfile.mkdtemp()
