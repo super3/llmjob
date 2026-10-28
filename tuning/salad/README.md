@@ -705,6 +705,19 @@ heading says when that was once it's 15 minutes old. SafeTrade's Cloudflare
 lets the watcher's own user agent through from rig01; a 403 with an empty body means SafeTrade knows the key and
 refuses it (its settings or IP whitelist, `OPEN.md` #57).
 
+**Selling PRL** (since 28 October, dry run first). The autoseller is moving into the watcher, at the founder's
+request: the Railway `trader` service's builds kept crashing, and the watcher already reads SafeTrade. With config
+`sell` set (`{}` or `{"minute": 3}`: a dry run) and the SafeTrade keys, once an hour from `minute` (default 5) it
+does what `trader/trader.py` does: finds the enabled PRL/USDT market (`pearlusdt`, else the retired `prlusdt`),
+cancels our open sell orders there (the last run's unfilled rest), reads the free PRL and the bids, and places one
+limit sell at a floor `max_slippage` (0.03) under the best bid, never under `min_price` (0), for as much as the bids
+at or above it take. Less than `min_volume` (0.5) or the market's own minimum isn't sold. Each run is a `SELL` event
+(`SELL DRY RUN` until `"live": true`): what it cancelled or would cancel, and what it sold or would sell, or why
+nothing; a failure is one `WARN SELL` event. The fills come back as `SOLD` events from the next read above. Only
+one seller may run: the trader cancels the watcher's open orders and the watcher the trader's, so the plan is a dry
+run beside the trader (at :03, before its :05, on the same balance), then the founder stops the trader's cron and
+sets `"live": true`, then `trader/` goes.
+
 ## Safety net
 
 **Strays.** Salad sometimes answers a delete with 202 and keeps the group, and a create that errors can
