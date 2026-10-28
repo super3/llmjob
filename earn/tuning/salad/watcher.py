@@ -1167,7 +1167,9 @@ class W:
         202 and keeps the group, and a create that errors can still make one. Such a group bills while nothing
         watches it and takes a replica from the quota, so new groups can't start. A stray is deleted once it
         has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-", in each
-        org groups run in; a stray outside ORG is kept as "org/name"."""
+        org groups run in; a stray outside ORG is kept as "org/name". The same list keeps the other groups there
+        (another session's test boxes, strays) in "others": their GPU classes, priority and whether one is on a PC,
+        so ours don't ask a higher priority for their class and take their PC (pri_cap)."""
         st = self.st
         if t - st.get("sweep_t", 0) < 5 * MIN:
             return
@@ -1179,7 +1181,14 @@ class W:
                 continue
             pre = "" if org == ORG else org + "/"
             live = {g["name"] for g in st["groups"].values() if not g["ended"] and (g.get("org") or ORG) == org}
-            names = {c.get("name") for c in (j or {}).get("items") or []}
+            items = (j or {}).get("items") or []
+            names = {c.get("name") for c in items}
+            st["others"] = [o for o in st.get("others", []) if o["org"] != org] + [
+                {"org": org, "name": c.get("name"), "pri": c.get("priority"),
+                 "gpus": ((c.get("container") or {}).get("resources") or {}).get("gpu_classes") or [],
+                 "on": any(((c.get("current_state") or {}).get("instance_status_counts") or {}).get(k)
+                           for k in ("creating_count", "running_count"))}
+                for c in items if c.get("name") not in live]
             for key in [k for k in stray if (k.startswith(pre) if pre else "/" not in k)]:
                 if key[len(pre):] not in names or key[len(pre):] in live:
                     del stray[key]
@@ -1218,10 +1227,31 @@ class W:
         err(f"reallocate {g['name']} failed {s} {j}")
         return False
 
+    def pri_cap(self, cls, g=None):
+        """The index of the highest priority a group of `cls` waiting for a PC may ask at: that of the lowest-priority
+        group of the class on a PC in our orgs, ours (other than `g`) or another session's (read by the sweep), or high
+        if there's none. Salad gives a PC to the higher priority first and can take one from a lower priority for it,
+        so a group above another of its class could take that one's PC and pay more for the same box: 4080-35 at
+        medium got 4080-33's PC at low twice on 13 October, and with groups in two orgs since 28 October it's likelier."""
+        st = self.st
+        held = [x["pri"] for x in st["groups"].values()
+                if not x["ended"] and x is not g and x["class"] == cls and x["has_pc"]]
+        cid = (st["classes"].get(cls) or {}).get("id")
+        held += [o["pri"] for o in st.get("others", []) if o["on"] and cid in o["gpus"] and o["pri"] in PRIS]
+        return min((PRIS.index(p) for p in held), default=len(PRIS) - 1)
+
     def next_pri(self, g):
-        """The cheapest priority above the group's that still clears the margin (pick_margin), or None."""
-        return next((p for p in PRIS[PRIS.index(g["pri"]) + 1:]
+        """The cheapest priority above the group's that still clears the margin (pick_margin) and isn't above another
+        group of its class on a PC (pri_cap), or None."""
+        return next((p for p in PRIS[PRIS.index(g["pri"]) + 1:self.pri_cap(g["class"], g) + 1]
                      if self.pick_margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
+
+    def stuck(self, g):
+        """Why a group can't move up a priority: none clears the margin, or the next would be above another group of
+        its class on a PC (pri_cap)."""
+        if PRIS.index(g["pri"]) >= self.pri_cap(g["class"], g):
+            return "a higher priority could take the PC of another group of its class"
+        return f"no higher priority clears {self.cfg['min_margin']:.0%}"
 
     def set_priority(self, g, pri, why="no PC at {old} in 10 min"):
         s, j = http("PATCH", gurl(g), {"container": {"priority": pri}}, ctype="application/merge-patch+json")
@@ -2167,7 +2197,7 @@ class W:
                     # first priority 20 minutes later.
                     nxt = self.next_pri(g)
                     if nxt is None:
-                        self.delete(g, "released", "lost its PC and got no other in 20 min")
+                        self.delete(g, "released", f"lost its PC and got no other in 20 min, and {self.stuck(g)}")
                     elif self.set_priority(g, nxt, "no PC since losing one 20 min ago"):
                         g["lost_since"] = t
             elif g["status"] == "pending":
@@ -2175,8 +2205,7 @@ class W:
             elif t - g["pri_since"] >= 10 * MIN:
                 nxt = self.next_pri(g)
                 if nxt is None:
-                    self.delete(g, "released", f"no PC at {g['pri']} and no higher priority clears "
-                                               f"{self.cfg['min_margin']:.0%}")
+                    self.delete(g, "released", f"no PC at {g['pri']} and {self.stuck(g)}")
                 else:
                     self.set_priority(g, nxt)
             return
@@ -2489,7 +2518,10 @@ class W:
             if s != 200:
                 continue
             start = PRIS.index(self.start_pri(cls))
+            cap = self.pri_cap(cls)   # not above another group of the class on a PC, whose PC it could take
             for p in order or PRIS[start:] + PRIS[:start][::-1]:
+                if PRIS.index(p) > cap:
+                    continue
                 if (a.get(f"available_gpu_{p}") or 0) > 0 and self.pick_margin(cls, p) >= self.cfg["min_margin"]:
                     profit = rate * self.usd() + self.xmr_usd(cls=cls) - st["classes"][cls]["prices"][p]
                     cands.append((not self.paid(cls), -profit, cls, p))
