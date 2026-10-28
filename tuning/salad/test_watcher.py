@@ -1417,6 +1417,92 @@ class TestSearch(Base):
         self.assertEqual(len(self.http.made("POST", "/containers$")), n)
 
 
+class TestOrgs(Base):
+    """28 October: groups in a second org (llmjob2), which has its own replica quota and credit (config org_slots)."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg.update(max_active=3, org_slots={w.ORG: 1, "llmjob2": 2})
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                         "container_replicas_used": 0}}))
+
+    def orgs_made(self):
+        return [c[1].split("/organizations/")[1].split("/")[0] for c in self.http.made("POST", "/containers$")]
+
+    def test_a_group_in_another_org_is_made_and_run_there(self):
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        g = list(self.x.st["groups"].values())[-1]
+        self.assertEqual(g["org"], "llmjob2")
+        self.assertIn("CREATED biz-rtx4080 in llmjob2: ", self.events())
+        g.update(machine="m1", instance="inst-m1", had_pc=True)
+        self.x.set_priority(g, "low")
+        self.x.reallocate(g, "slow")
+        self.x.delete(g, "released", "done")              # reads its last log lines first
+        urls = [c[1] for c in self.http.calls]
+        self.assertEqual(len(urls), 5)
+        self.assertTrue(all("/organizations/llmjob2/" in u for u in urls), urls)
+
+    def test_the_search_fills_each_org_in_order_up_to_its_slots(self):
+        self.x.search()
+        self.assertEqual(self.orgs_made(), [w.ORG, "llmjob2", "llmjob2"])
+        self.assertEqual(self.x.st["quota"], 20)
+        self.assertEqual(self.x.slots(), 3)
+
+    def test_each_org_s_room_is_against_its_own_quota(self):
+        self.http.on("GET", "/llmjob2/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                                 "container_replicas_used": 9}}))
+        self.x.search()
+        self.assertEqual(self.orgs_made(), [w.ORG])        # the pearl2dev session's boxes fill llmjob2's quota
+
+    def test_a_quota_refusal_stops_only_that_org(self):
+        self.http.on("POST", "/llmjob2/projects/default/containers$", (400, {"type": "created_replicas_quota_exceeded"}))
+        self.x.cfg["org_slots"] = {"llmjob2": 2, w.ORG: 1}
+        self.x.search()
+        self.assertEqual(self.orgs_made(), ["llmjob2", w.ORG])
+
+    def test_credit_out_in_one_org_leaves_the_other_running(self):
+        self.http.on("POST", "/llmjob2/projects/default/containers$", (400, {"errors": {"code": ["no_credits_available"]}}))
+        self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        self.assertEqual(self.x.st["credits_out"], ["llmjob2"])
+        self.assertIn("ALERT Salad says no credits are available in llmjob2", self.events())
+        g = self.group(status="stopped")                   # in llmjob, which still has credit: started as usual
+        self.step(g, 1, None)
+        self.assertTrue(self.http.made("POST", f"/organizations/{w.ORG}/projects/default/containers/biz-rtx4080/start"))
+        g["ended"] = self.clock[0]
+        n = len(self.orgs_made())
+        self.x.search()
+        self.assertEqual(self.orgs_made()[n:], [w.ORG])    # llmjob2 isn't tried until a top-up
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn("⚠️ Credit ran out in llmjob2: Salad stopped the groups there.", f.read())
+
+    def test_a_state_from_before_orgs_keeps_its_credit_flag(self):
+        for old, new in ((True, [w.ORG]), (False, [])):
+            w.save(w.STATE, {"groups": {}, "credits_out": old})
+            self.assertEqual(w.W().st["credits_out"], new)
+
+    def test_strays_are_swept_in_each_org(self):
+        self.http.on("GET", "/llmjob2/projects/default/containers$", (200, {"items": [{"name": "biz-rtx4080-9"},
+                                                                                   {"name": "bench-30-rtx3080-1"}]}))
+        self.x.sweep(self.clock[0])
+        self.clock[0] += 11 * 60
+        self.x.sweep(self.clock[0])
+        self.assertTrue(self.http.made("DELETE", "/llmjob2/projects/default/containers/biz-rtx4080-9$"))
+        self.assertFalse(self.http.made("DELETE", "bench"))
+        self.assertIn("SWEPT llmjob2/biz-rtx4080-9: ", self.events())
+
+    def test_logs_are_read_in_each_org_and_a_failure_in_one_is_read_again(self):
+        g = self.group()
+        self.x.logs([g])
+        self.assertEqual([c[1].split("/organizations/")[1] for c in self.http.made("POST", "/log-entries")],
+                         [f"{w.ORG}/log-entries", "llmjob2/log-entries"])
+        end = self.x.st["last_log_end"]
+        self.clock[0] += 60
+        self.http.on("POST", "/llmjob2/log-entries", (408, {}))
+        self.assertEqual(self.x.logs([g]), [])
+        self.assertEqual(self.x.st["last_log_end"], end)   # not moved on: next round reads this minute again
+
+
 class TestUpgrade(Base):
     def full_with_a_2060(self, avail, placed=True):
         """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr,
@@ -2407,6 +2493,20 @@ class TestSaladBalance(Base):
         self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
         self.head()
         self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
+
+    def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
+        # 28 October: llmjob2 got 2 of the slots (config org_slots); each org lasts at its own boxes' $/hr.
+        self.x.cfg["org_slots"] = {"llmjob": 8, "llmjob2": 2}
+        g = self.group()                                    # a 4080 at $0.11/hr in llmjob
+        self.step(g, 1, "m1")
+        self.assertTrue(self.x.create("RTX 2060 (6 GB)", "batch", org="llmjob2"))   # $0.02/hr in llmjob2
+        g2 = list(self.x.st["groups"].values())[-1]
+        g2["status"] = "running"
+        self.step(g2, 1, "m2")
+        self.two_orgs([(11.0, 1.0, 10.0)] * 9)
+        self.assertIn("(llmjob 4 days · llmjob2 2 days)", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn(f"2060{w.NB}batch{w.NB}llmjob2 |", f.read())   # the box says which org it's in
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]

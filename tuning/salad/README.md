@@ -61,6 +61,7 @@ Config keys:
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `sell` | The PRL seller (see [SafeTrade](#safetrade-row)): `{"live": true, "minute": 5}` sells once an hour from minute 5; without `"live": true` it only says what it would do; unset, it's off. Also `max_slippage` (0.03), `min_price` (0), `min_volume` (0.5). |
 | `salad_orgs` | Salad orgs whose credit the heading adds up, each with its own runway (`["llmjob", "llmjob2"]` on rig01); unset, just the org the boxes run in. |
+| `org_slots` | The Salad orgs groups run in and how many each may run, filled in that order (`{"llmjob": 8, "llmjob2": 2}` on rig01 since 28 October, with `max_active` 10); unset, just `$SALAD_ORG`, up to `max_active`. See [Two orgs](#two-orgs). |
 | `salad_wallet` | The Solana wallet that tops up Salad's credit; SafeTrade withdrawals to it show as **USDT to Salad**, not bank. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
@@ -205,6 +206,18 @@ Until 24 October it also counted downloading and creating: against Salad's own r
 system logs, 91 groups on 23 October) that read 2.4% high, about 29 s a PC. Not yet checked against
 the portal's balance. **PRL mined** adds each `[mining g0]` reading (one a
 minute) as TH/s × 1 min × PRL per TH-hr at that moment.
+
+## Two orgs
+
+The quota is an org's, so a second org has 10 replicas of its own. Since 28 October the watcher can run groups in
+more than one (config `org_slots`): on rig01 8 in llmjob, where the pearl2dev session's test boxes also count, and 2
+in llmjob2. The search fills the orgs in that order, each up to its slots and inside its own quota (at most 9 of
+its 10, as in [Rules](#rules)), and a create refused for the quota stops only that org. The same API key works in every org the user is
+in. Each group keeps the org it was made in (`org` in the ledger; one made before has none and is in llmjob), and
+every call about it goes there. The log query and the stray sweep run in each org. Names stay unique across orgs,
+since a box's pool worker is named after its group. Credit runs out by org: Salad says `no_credits_available` or
+stops the boxes in that org only, so only that org's groups are left alone and only it stops getting new ones
+until a top-up and `restart_token`. A box outside llmjob says its org in the table (`5060-90 batch llmjob2`).
 
 ## Monero on the CPU
 
@@ -762,8 +775,8 @@ is a Railway cron service: Root Directory `/tuning/salad`, start command
   credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
   With config `salad_orgs` (since 28 October `["llmjob", "llmjob2"]`) the balance and the total are added up over
   those orgs, as the founder asked once llmjob2 got $10 of its own. How long it lasts is then given for each org
-  that spends, since Salad stops an org's boxes when that org runs out whatever the others hold: llmjob at the
-  fleet's $/hr, another org at what its balance fell by over the last 1-3 h of reads (less any top-up), e.g.
+  that spends, since Salad stops an org's boxes when that org runs out whatever the others hold: an org our boxes
+  run in at their $/hr, another org at what its balance fell by over the last 1-3 h of reads (less any top-up), e.g.
   `(llmjob 9 days · llmjob2 17 h)`. An org spending nothing isn't listed, and the under-12-hours `ALERT` is per org.
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
