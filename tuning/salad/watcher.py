@@ -71,6 +71,8 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "search_pct": 0.35,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
                "trader": None, "safetrade": None,
+               # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
+               "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
                "wallet": os.environ.get("PRL_WALLET", ""),
                # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
                # mine it to xmr_wallet. Salad bills a GPU group the same for any vCPU and RAM, so they ask for
@@ -173,19 +175,21 @@ def portal_balance(user, password):
 
 
 def bought(call):
-    """All the credit ever bought, in dollars: the total of the credit purchase invoices in Metronome (Salad's billing
-    service), less voided ones, read as the portal's invoice page reads them. None if the read fails."""
+    """All the credit ever added, in dollars: the total of the credit grants in Metronome (Salad's billing service),
+    less voided ones, read as the portal's credits page reads them. None if the read fails. Until 28 October it
+    added up the credit purchase invoices, but a crypto top-up makes a grant and no invoice: the $5 bought with USDT
+    that day left the heading at "/$500" (grants: $400 + $100 + $5, and a voided $400)."""
     try:
-        s, j = call("POST", f"/organizations/{ORG}/dashboard-sessions/invoice")
+        s, j = call("POST", f"/organizations/{ORG}/dashboard-sessions/credits")
         tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
-        q = ("query { Customer { mri_invoices(limit: 50) { invoices { __typename status total } } } }")
+        q = "query { Customer { CreditGrants { amount_granted voided_at } } }"
         req = urllib.request.Request("https://graphql.metronome.com/v1/graphql", method="POST",
                                      data=json.dumps({"query": q}).encode(),
                                      headers={"Content-Type": "application/json", "Accept": "application/json",
                                               "authorization": f"Bearer {tok}", "User-Agent": "llmjob-salad-watcher/1.0"})
         with urllib.request.urlopen(req, timeout=30) as r:
-            inv = json.loads(r.read().decode())["data"]["Customer"][0]["mri_invoices"]["invoices"]
-        return sum(float(i["total"]) for i in inv if i["__typename"] == "CreditPurchaseInvoice" and i["status"] != "VOID") / 100
+            grants = json.loads(r.read().decode())["data"]["Customer"][0]["CreditGrants"]
+        return sum(float(g["amount_granted"]) for g in grants if not g.get("voided_at")) / 100
     except Exception:
         return None
 
@@ -955,8 +959,9 @@ class W:
                     break
             recv[coin] = total
         # What left: every withdrawal that went through, by currency -> [amount, network fee]. On 26 October, 103.26
-        # USDC (fee 7) on 14 October and 206.28 USDT (fee 3) on 22 October, both on Ethereum.
-        out = {}
+        # USDC (fee 7) on 14 October and 206.28 USDT (fee 3) on 22 October, both on Ethereum. One to the Salad
+        # top-up wallet (salad_wallet) is keyed "<currency>>salad": it paid for credit and never reached the bank.
+        out, topup = {}, self.cfg.get("salad_wallet")
         for page in range(1, 21):
             got = get(f"/account/withdraws?limit=100&page={page}")
             if got is None:
@@ -966,7 +971,8 @@ class W:
                                                                                 "processing", "confirming", "collected"):
                     continue
                 try:
-                    o = out.setdefault(str(x.get("currency_id") or x.get("currency")).lower(), [0.0, 0.0])
+                    cur = str(x.get("currency_id") or x.get("currency")).lower()
+                    o = out.setdefault(cur + (">salad" if topup and x.get("rid") == topup else ""), [0.0, 0.0])
                     o[0] += float(x.get("amount") or 0)
                     o[1] += float(x.get("fee") or 0)
                 except (TypeError, ValueError):
@@ -2533,7 +2539,10 @@ class W:
             # Each withdrawal shows what reached the bank: the amount sent, with the network's fee (taken on top)
             # and, for a stablecoin bought with USDT, that trade's fee in Fees. Total out adds them up.
             sent, out_fees = 0.0, 0.0
-            for cur, (amt, wfee) in sorted((sa.get("out") or {}).items(), key=lambda kv: kv[0] != "usdc"):
+            outs = sa.get("out") or {}
+            for cur, (amt, wfee) in sorted(outs.items(), key=lambda kv: kv[0] != "usdc"):
+                if cur.endswith(">salad"):
+                    continue    # below, after the bank's total
                 if cur == "usdt":
                     fee = wfee
                 elif cur in (sa.get("bought") or {}):
@@ -2546,6 +2555,11 @@ class W:
             if sent:
                 rows.append(f"| **Total out** | | | | | {bold(f'${out_fees:.2f}')} | {bold(f'−${sent:.2f}')} |")
             fees += out_fees
+            # Withdrawals to the Salad top-up wallet, which paid for credit: a row of their own, out of Total out.
+            for cur, (amt, wfee) in sorted(outs.items()):
+                if cur.endswith(">salad"):
+                    rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")
+                    fees += round(wfee, 2)
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
             pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Paid | Received | Waiting | Sold | Fees | USDT |",
                      "|---|---|---|---|---|---|---|", *rows,
