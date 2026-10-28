@@ -20,8 +20,19 @@ ORG = os.environ.get("SALAD_ORG", "llmjob")
 SAFETRADE = "https://safetrade.com/api/v2/trade"
 STABLE = ("usdc", "dai", "fdusd")   # coins worth a dollar that the USDT from sales may be changed into before withdrawal
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
-BASE = f"https://api.salad.com/api/public/organizations/{ORG}"
+API = "https://api.salad.com/api/public/organizations"
+BASE = f"{API}/{ORG}"
 CB = f"{BASE}/projects/{PROJECT}/containers"
+
+
+def cb(org=None):
+    """An org's containers URL: ORG's by default. Groups can run in more than one org (config org_slots)."""
+    return f"{API}/{org or ORG}/projects/{PROJECT}/containers"
+
+
+def gurl(g, tail=""):
+    """A group's URL, in the org it was made in (a group from before 28 October has no "org": ORG)."""
+    return f"{cb(g.get('org'))}/{g['name']}{tail}"
 IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
 # AMD boxes: the ROCm image the AMD core was built and tested in on Salad (amdtest.py), with its HIP runtime. The AMD
 # core ships from v0.6.8, so an AMD box runs that release or a later one.
@@ -73,6 +84,10 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
                "salad_orgs": [],
+               # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
+               # "llmjob2": 2}; none: ORG, up to max_active. Each org has its own replica quota and credit. max_active
+               # still caps the total.
+               "org_slots": {},
                "wallet": os.environ.get("PRL_WALLET", ""),
                # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
                # mine it to xmr_wallet. Salad bills a GPU group the same for any vCPU and RAM, so they ask for
@@ -287,7 +302,7 @@ def http(method, url, body=None, ctype="application/json", timeout=60, headers=N
     req.add_header("Accept", "application/json")
     # Cloudflare in front of api.salad.com refuses Python's default user agent (error 1010).
     req.add_header("User-Agent", "llmjob-salad-watcher/1.0")
-    if url.startswith(BASE) and os.environ.get("SALAD_API_KEY"):
+    if url.startswith(API + "/") and os.environ.get("SALAD_API_KEY"):   # one key for every org the user is in
         req.add_header("Salad-Api-Key", os.environ["SALAD_API_KEY"])
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -438,13 +453,28 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
 
 class W:
     def __init__(self):
-        self.st = load(STATE, None) or {"groups": {}, "created": now(), "credits_out": False, "seen": {},
+        self.st = load(STATE, None) or {"groups": {}, "created": now(), "credits_out": [], "seen": {},
                                         "search_hour": None, "search_token": 0, "restart_token": 0,
                                         "last_round": None, "last_log_end": None, "last_report_q": None,
                                         "last_credit_alert": 0, "classes": {}, "classes_t": 0, "mkt": None, "mkt_t": 0,
                                         "pool": {}, "api_fail": 0}
+        # The orgs Salad has run out of credit in. Until 28 October there was one org, and this was True or False.
+        if not isinstance(self.st["credits_out"], list):
+            self.st["credits_out"] = [ORG] if self.st["credits_out"] else []
         self.cfg = DEFAULT_CFG
-        self.quota_full = False   # set when Salad refuses a create for its replica quota; the search stops on it
+        self.quota_full = set()   # orgs whose replica quota refused a create; the search stops using them
+
+    def orgs(self):
+        """The orgs groups run in and how many each may run, in the order they're filled (config org_slots)."""
+        return self.cfg.get("org_slots") or {ORG: self.cfg["max_active"]}
+
+    def slots(self):
+        """How many groups may run in all: max_active, the orgs' slots and Salad's quotas."""
+        return min(self.cfg["max_active"], sum(self.orgs().values()), self.st.get("quota") or self.cfg["max_active"])
+
+    def out(self, org=None):
+        """Whether Salad has run out of credit in `org` (ORG by default): its groups are left alone until a top-up."""
+        return (org or ORG) in self.st["credits_out"]
 
     # ---------- data ----------
     def market(self):
@@ -665,19 +695,19 @@ class W:
         """The box's last log lines, so a deletion says why. Only when a group is deleted."""
         t = now()
         items = self.read_logs(t - 2400, t, f'resource.type = "container" AND '
-                                             f'resource.labels.container_group_name = "{g["name"]}"')
+                                             f'resource.labels.container_group_name = "{g["name"]}"', org=g.get("org"))
         if items is None:
             return ["(log query failed)"]
         items.sort(key=lambda it: it.get("time") or "")
         lines = [(it.get("text_log") or "").strip()[:160] for it in items]
         return [l for l in lines if l][-n:] or ["(no container output)"]
 
-    def read_logs(self, start, end, query, depth=0):
-        """Every log line in [start, end]. Salad returns at most 100 a call, and when more match, which 100
-        it returns isn't reliably the newest or the oldest, whatever sort_order says. So a window that comes
-        back full is split in half and each half read again. None if a call fails."""
+    def read_logs(self, start, end, query, depth=0, org=None):
+        """Every log line in [start, end] in `org` (ORG by default). Salad returns at most 100 a call, and when more
+        match, which 100 it returns isn't reliably the newest or the oldest, whatever sort_order says. So a window
+        that comes back full is split in half and each half read again. None if a call fails."""
         body = {"start_time": iso(start), "end_time": iso(end), "query": query, "page_size": 100, "sort_order": "asc"}
-        s, j = http("POST", f"{BASE}/log-entries", body, timeout=90)
+        s, j = http("POST", f"{API}/{org or ORG}/log-entries", body, timeout=90)
         if s != 200:
             err(f"log-entries failed {s} {str(j)[:200]}")
             return None
@@ -688,17 +718,24 @@ class W:
             err(f"log-entries: {iso(start)}..{iso(end)} still has 100+ lines after {depth} splits; some may be missed")
             return items
         mid = start + (end - start) / 2
-        a = self.read_logs(start, mid, query, depth + 1)
-        b = self.read_logs(mid, end, query, depth + 1) if a is not None else None
+        a = self.read_logs(start, mid, query, depth + 1, org)
+        b = self.read_logs(mid, end, query, depth + 1, org) if a is not None else None
         return None if b is None else a + b
 
     def logs(self, active):
-        """One query for every group: all container lines since the last successful read (2 min overlap).
+        """One query an org for every group: all container lines since the last successful read (2 min overlap).
         A busy window is split (see read_logs); a failed read is tried again next round, up to 30 min back."""
         st = self.st
         t = now()
         start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 120, t - 1800)
-        items = self.read_logs(start, t, 'resource.type = "container"')
+        # Every org groups run in, and any a live group is in: a box deleted there can mine on (see ghost_line).
+        items = []
+        for org in dict.fromkeys(list(self.orgs()) + [g.get("org") or ORG for g in active]):
+            got = self.read_logs(start, t, 'resource.type = "container"', org=org)
+            if got is None:
+                items = None
+                break
+            items += got
         if items is None:
             ok = st.get("last_log_ok") or t
             if t - ok >= 10 * MIN and not st.get("log_warned"):
@@ -1100,7 +1137,7 @@ class W:
     # ---------- actions ----------
     def delete(self, g, kind, reason):
         why = self.last_lines(g) if g["had_pc"] else []
-        s, j = http("DELETE", f"{CB}/{g['name']}")
+        s, j = http("DELETE", gurl(g))
         if 200 <= s < 300 or s == 404:
             g.update(ended=now(), end_kind=kind, end_reason=reason, has_pc=False)
             event(f"DELETED {g['name']} ({g['class']}, {g['pri']}): {reason} [{'released' if kind == 'released' else 'failed'}]"
@@ -1129,31 +1166,34 @@ class W:
         """Delete groups on Salad that the ledger doesn't count as live. Salad sometimes answers a delete with
         202 and keeps the group, and a create that errors can still make one. Such a group bills while nothing
         watches it and takes a replica from the quota, so new groups can't start. A stray is deleted once it
-        has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-"."""
+        has been seen for 10 min, which gives a normal delete time to finish. Only names starting "biz-", in each
+        org groups run in; a stray outside ORG is kept as "org/name"."""
         st = self.st
         if t - st.get("sweep_t", 0) < 5 * MIN:
             return
         st["sweep_t"] = t
-        s, j = http("GET", CB)
-        if s != 200:
-            return
-        live = {g["name"] for g in st["groups"].values() if not g["ended"]}
-        names = {c.get("name") for c in (j or {}).get("items") or []}
         stray = st.setdefault("stray", {})
-        for name in list(stray):
-            if name not in names or name in live:
-                del stray[name]
-        for name in sorted(n for n in names if n and n.startswith("biz-") and n not in live):
-            first = stray.setdefault(name, {"t": t, "said": False})
-            if t - first["t"] < 10 * MIN:
+        for org in self.orgs():
+            s, j = http("GET", cb(org))
+            if s != 200:
                 continue
-            s, j = http("DELETE", f"{CB}/{name}")
-            if not first["said"]:
-                first["said"] = True
-                event(f"SWEPT {name}: on Salad for {(t - first['t']) / MIN:.0f} min but not live in the ledger "
-                      f"(a delete that didn't take, or a create that errored); deleted, HTTP {s}")
-            elif not (200 <= s < 300 or s == 404):
-                err(f"sweep delete {name} failed {s} {j}")
+            pre = "" if org == ORG else org + "/"
+            live = {g["name"] for g in st["groups"].values() if not g["ended"] and (g.get("org") or ORG) == org}
+            names = {c.get("name") for c in (j or {}).get("items") or []}
+            for key in [k for k in stray if (k.startswith(pre) if pre else "/" not in k)]:
+                if key[len(pre):] not in names or key[len(pre):] in live:
+                    del stray[key]
+            for name in sorted(n for n in names if n and n.startswith("biz-") and n not in live):
+                first = stray.setdefault(pre + name, {"t": t, "said": False})
+                if t - first["t"] < 10 * MIN:
+                    continue
+                s, j = http("DELETE", f"{cb(org)}/{name}")
+                if not first["said"]:
+                    first["said"] = True
+                    event(f"SWEPT {pre}{name}: on Salad for {(t - first['t']) / MIN:.0f} min but not live in the ledger "
+                          f"(a delete that didn't take, or a create that errored); deleted, HTTP {s}")
+                elif not (200 <= s < 300 or s == 404):
+                    err(f"sweep delete {pre}{name} failed {s} {j}")
 
     def reallocate(self, g, reason, count=True, gone_ok=False):
         """Ask Salad for another PC. count=False for a PC another group already left: that move isn't the
@@ -1166,7 +1206,7 @@ class W:
             return
         if not g.get("instance"):
             return False
-        s, j = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/reallocate")
+        s, j = http("POST", gurl(g, f"/instances/{g['instance']}/reallocate"))
         if 200 <= s < 300 or (gone_ok and s == 404):
             g["reallocs"] += 1 if count else 0
             g.setdefault("left", []).append(g["machine"])
@@ -1184,7 +1224,7 @@ class W:
                      if self.pick_margin(g["class"], p, kx=bool(g.get("kx"))) >= self.cfg["min_margin"]), None)
 
     def set_priority(self, g, pri, why="no PC at {old} in 10 min"):
-        s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"priority": pri}}, ctype="application/merge-patch+json")
+        s, j = http("PATCH", gurl(g), {"container": {"priority": pri}}, ctype="application/merge-patch+json")
         if 200 <= s < 300:
             old = g["pri"]
             g.update(pri=pri, price=self.st["classes"][g["class"]]["prices"][pri], pri_since=now())
@@ -1265,13 +1305,13 @@ class W:
                 continue
             g["xmr_try"] = t
             ver, command, res = self.box(g["name"], want, g.get("kx"))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command, "resources": res}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command, "resources": res}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
                 g["xmr"], g["ver"], g["llm"], g["xmr_kx"] = want, ver, self.llm_on(g["name"]), self.xmr_kx(want)
                 rs = None
                 if g.get("has_pc") and g.get("instance"):
-                    rs, _ = http("POST", f"{CB}/{g['name']}/instances/{g['instance']}/restart")
+                    rs, _ = http("POST", gurl(g, f"/instances/{g['instance']}/restart"))
                 event(f"MONERO {'ON' if want else 'OFF'} {g['name']}: miner {ver} on {res['cpu']} vCPUs and "
                       f"{res['memory'] // 1024} GB; " + ("box restarted" if rs and 200 <= rs < 300 else
                                                          "Salad dropped its instance (the PC can't take the new size); it starts "
@@ -1294,7 +1334,7 @@ class W:
                 continue
             g["llm_try"] = t
             ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
                 g["llm"], g["ver"], g["xmr_kx"] = want, ver, self.xmr_kx(g.get("xmr"))
@@ -1316,7 +1356,7 @@ class W:
                 continue
             g["xmr_kx_try"] = t
             ver, command, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             pool = "Kryptex" if want else "HeroMiners"
             if 200 <= s < 300:
@@ -1343,7 +1383,7 @@ class W:
             if vnum(ver) == vnum(old) or (vnum(ver) < vnum(old) and g["name"] not in self.cfg["ver_override"]):
                 continue
             g["ver_try"] = t
-            s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+            s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                         ctype="application/merge-patch+json")
             if 200 <= s < 300:
                 g["ver"], g["llm"], g["xmr_kx"] = ver, self.llm_on(g["name"]), self.xmr_kx(g.get("xmr"))
@@ -1517,7 +1557,7 @@ class W:
         3, and the PC it leaves doesn't go on the bad list. In place (kx_in_place), the command alone: Salad restarts
         the box on its PC with it a few minutes later."""
         ver, command, _ = self.box(g["name"], bool(g.get("xmr")), on)
-        s, j = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": command}},
+        s, j = http("PATCH", gurl(g), {"container": {"command": command}},
                     ctype="application/merge-patch+json")
         if not 200 <= s < 300:
             g["kx_try"] = t   # tried again in 15 minutes
@@ -1533,7 +1573,7 @@ class W:
             # in 15 minutes.
             g["kx_try"] = t
             _, back, _ = self.box(g["name"], bool(g.get("xmr")), bool(g.get("kx")))
-            sb, _ = http("PATCH", f"{CB}/{g['name']}", {"container": {"command": back}},
+            sb, _ = http("PATCH", gurl(g), {"container": {"command": back}},
                          ctype="application/merge-patch+json")
             if 200 <= sb < 300:
                 event(f"WARN Kryptex {'on' if on else 'off'} for {g['name']}: Salad refused to move it to a new PC; "
@@ -1730,12 +1770,15 @@ class W:
                     b[ts] = [h, b[ts][1] if ts in b else per_hash]
             g["kxx_gross"] = sum(h * ph for h, ph in b.values())
 
-    def create(self, cls, pri, taken=(), tries=0):
-        """Create a group of `cls` at `pri`. Salad keeps a deleted group's name for a while (name_conflict),
-        so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name in the
-        ledger, live or deleted, is skipped without asking and doesn't count toward the 20: a deleted group's
-        name is often still held, and after 20 deleted 4080 groups the retries ran out before a free name."""
+    def create(self, cls, pri, taken=(), tries=0, org=None):
+        """Create a group of `cls` at `pri` in `org` (ORG by default). Salad keeps a deleted group's name for a while
+        (name_conflict), so a name it refuses is skipped and the next suffix tried, up to 20 refused names. Every name
+        in the ledger, live or deleted, is skipped without asking and doesn't count toward the 20: a deleted group's
+        name is often still held, and after 20 deleted 4080 groups the retries ran out before a free name. Names are
+        unique across orgs too, since a box's pool worker is named after its group."""
         st = self.st
+        org = org or ORG
+        where = "" if org == ORG else f" in {org}"
         taken = {g["name"] for g in st["groups"].values()} | set(taken)
         base = "biz-" + slug(cls)
         name, i = base, 2
@@ -1749,13 +1792,13 @@ class W:
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "always", "autostart_policy": True,
                 "container": {"image": AMD_IMAGE if is_amd(name) else IMAGE, "priority": pri, "resources": res,
                               "command": command}}
-        s, j = http("POST", CB, body)
+        s, j = http("POST", cb(org), body)
         if 200 <= s < 300:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
             t = now()
             key = f"{name}@{int(t)}"
             st["groups"][key] = {
-                "key": key, "name": name, "class": cls, "rate": rate, "paid": paid, "pri": pri,
+                "key": key, "name": name, "org": org, "class": cls, "rate": rate, "paid": paid, "pri": pri,
                 "price": st["classes"][cls]["prices"][pri], "created": t, "pri_since": t, "ver": ver,
                 "had_pc": False, "has_pc": False, "pc_since": None, "machine": None, "instance": None, "lost_since": None,
                 "reallocs": 0, "spend": 0.0, "prl": 0.0, "pc_min": 0.0, "mined_min": 0, "readings": [],
@@ -1763,7 +1806,7 @@ class W:
                 "ended": None, "end_kind": None, "end_reason": None, "blocked": [], "cards": [], "pool_ths": None,
                 "last_start": 0, "first_share_said": False, "xmr": xmr, "kx": kx, "kx_since": t if kx else None,
                 "llm": self.llm_on(name), "xmr_kx": self.xmr_kx(xmr)}
-            event(f"CREATED {name}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
+            event(f"CREATED {name}{where}: {cls} at {pri} (${st['classes'][cls]['prices'][pri]:.3f}/hr, "
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
@@ -1771,16 +1814,16 @@ class W:
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
-            return self.create(cls, pri, taken | {name}, tries + 1)
+            return self.create(cls, pri, taken | {name}, tries + 1, org)
         if "quota_exceeded" in text:
-            self.quota_full = True   # the search stops here: every other create this round would be refused too
+            self.quota_full.add(org)   # the search stops using it: every other create there would be refused too
         if "no_credits_available" in text:
-            if not st["credits_out"]:
-                event("ALERT Salad says no credits are available; not creating groups until a top-up")
-            st["credits_out"] = True
+            if not self.out(org):
+                event(f"ALERT Salad says no credits are available{where}; not creating groups there until a top-up")
+                st["credits_out"].append(org)
         else:
-            err(f"create {name} failed {s} {text[:300]}")
-            event(f"CREATE FAILED {name} ({cls}, {pri}): HTTP {s} {text[:200]}")
+            err(f"create {name}{where} failed {s} {text[:300]}")
+            event(f"CREATE FAILED {name}{where} ({cls}, {pri}): HTTP {s} {text[:200]}")
         return False
 
     # ---------- the round ----------
@@ -1804,15 +1847,15 @@ class W:
         # Restart groups that Salad stopped for lack of credit, once asked to.
         if self.cfg["restart_token"] != st["restart_token"]:
             st["restart_token"] = self.cfg["restart_token"]
-            st["credits_out"] = False
+            st["credits_out"] = []
             for g in active:
                 if g["status"] == "stopped":
-                    s, j = http("POST", f"{CB}/{g['name']}/start")
+                    s, j = http("POST", gurl(g, "/start"))
                     event(f"RESTART {g['name']}: HTTP {s}")
 
         # Group and instance state.
         for g in active:
-            s, j = http("GET", f"{CB}/{g['name']}")
+            s, j = http("GET", gurl(g))
             if s == 404:
                 g.update(ended=t, end_kind="released", end_reason="group no longer exists on Salad", has_pc=False)
                 event(f"GONE {g['name']}: the group no longer exists on Salad")
@@ -1828,7 +1871,7 @@ class W:
             cs = j.get("current_state") or {}
             g["status"] = cs.get("status", "?")
             g["state_desc"] = cs.get("description")
-            si, ji = http("GET", f"{CB}/{g['name']}/instances")
+            si, ji = http("GET", gurl(g, "/instances"))
             insts = (ji or {}).get("instances") or (ji or {}).get("items") or [] if si == 200 else []
             on = [i for i in insts if i.get("state") in ("downloading", "creating", "running") and i.get("machine_id")]
             g["inst_state"] = ",".join(i.get("state", "?") for i in insts) or "-"
@@ -2022,10 +2065,10 @@ class W:
         hour = time.strftime("%Y-%m-%dT%H", tm)
         asked = self.cfg["search_token"] != st["search_token"]
         # Also every search_every_min while a slot is empty: waiting for a PC costs nothing.
-        slots = min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"])
-        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < slots
+        empty = sum(1 for g in st["groups"].values() if not g["ended"]) < self.slots()
         often = empty and t - st.get("last_search", 0) >= 60 * self.cfg["search_every_min"]
-        if self.cfg["search"] and not st["credits_out"] and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
+        credit = any(not self.out(o) for o in self.orgs())   # some org can still make groups
+        if self.cfg["search"] and credit and (asked or often or (tm.tm_min >= 1 and st["search_hour"] != hour)):
             st["search_hour"], st["search_token"], st["last_search"] = hour, self.cfg["search_token"], t
             self.search()
         # With every slot taken, every upgrade_every_min, see whether a better class should take the weakest one's.
@@ -2042,11 +2085,12 @@ class W:
     def rules(self, g, t):
         st = self.st
         if g["status"] == "stopped":
-            if st["credits_out"]:
+            org = g.get("org") or ORG
+            if self.out(org):
                 return
             if not g["had_pc"] and t - g["last_start"] > 300:
                 g["last_start"] = t
-                s, j = http("POST", f"{CB}/{g['name']}/start")
+                s, j = http("POST", gurl(g, "/start"))
                 g["pri_since"] = t
                 # Salad's reason when it refuses: in the 13 days to 23 October it answered 400 to 345 of 1,314 starts,
                 # and 102 groups needed two or more, but the log never said why.
@@ -2057,9 +2101,10 @@ class W:
                 if s == 400 and "replicas_quota_exceeded" in str(j):
                     self.delete(g, "released", "Salad's replica quota is full, so it can't start")
             elif g["had_pc"]:
-                st["credits_out"] = True
-                event(f"ALERT Salad stopped {g['name']} after it had a PC ({g.get('state_desc') or 'no reason given'}). "
-                      "Credit may have run out; leaving stopped groups alone until a top-up.")
+                st["credits_out"].append(org)
+                where = "" if org == ORG else f" in {org}"
+                event(f"ALERT Salad stopped {g['name']}{where} after it had a PC ({g.get('state_desc') or 'no reason given'}). "
+                      f"Credit may have run out{where}; leaving stopped groups{where} alone until a top-up.")
             return
         if g["status"] == "failed" and not g.get("failed_said"):
             g["failed_said"] = True
@@ -2359,33 +2404,43 @@ class W:
     def search(self):
         st = self.st
         active = [g for g in st["groups"].values() if not g["ended"]]
-        s, q = http("GET", f"{BASE}/quotas")
-        c = (q or {}).get("container_groups_quotas", {}) if s == 200 else {}
-        quota = c.get("container_replicas_quota", 10)
-        st["quota"] = quota
-        # Salad's own count of replicas in use, when it gives one: on 22 October it counted one more than we had
-        # at times all day, so every search sent creates it then refused (created_replicas_quota_exceeded). It counts
-        # the whole account (another session's groups too) and stopped groups, and won't start a group once that
-        # count is at the quota: on 28 October, with 8 groups of ours and the pearl2dev session's 2, 3080-83 was made
-        # in the 10th replica and every start was refused (replicas_quota_exceeded). So at most quota - 1 run, and a
-        # new group needs the count under quota - 1 before it's made.
-        used = c.get("container_replicas_used")
-        room = min(self.cfg["max_active"] - len(active), quota - 1 - (len(active) if used is None else used))
+        # The room in each org groups run in (config org_slots), against its own replica quota. Salad's own count
+        # of replicas in use, when it gives one: on 22 October it counted one more than we had at times all day, so
+        # every search sent creates it then refused (created_replicas_quota_exceeded). It counts the whole org
+        # (another session's groups too) and stopped groups, and won't start a group once that count is at the
+        # quota: on 28 October, with 8 groups of ours and the pearl2dev session's 2, 3080-83 was made in the 10th
+        # replica and every start was refused (replicas_quota_exceeded). So at most quota - 1 run in an org, and a
+        # new group needs its count under quota - 1 before it's made.
+        rooms, quotas = {}, 0
+        for org, n in self.orgs().items():
+            s, q = http("GET", f"{API}/{org}/quotas")
+            c = (q or {}).get("container_groups_quotas", {}) if s == 200 else {}
+            quota = c.get("container_replicas_quota", 10)
+            quotas += quota
+            used = c.get("container_replicas_used")
+            mine = sum(1 for g in active if (g.get("org") or ORG) == org)
+            if not self.out(org):
+                rooms[org] = min(n - mine, quota - 1 - (mine if used is None else used))
+        st["quota"] = quotas
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
-        room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
+        room = min(self.cfg["max_active"] - len(active), sum(max(r, 0) for r in rooms.values()),
+                   self.cfg["max_new_per_hour"] - this_hour)   # however the search was started
         if room <= 0:
             return
         made = 0
-        self.quota_full = False
+        self.quota_full = set()
         for *_, cls, p in self.candidates(active, t):
-            if made >= room or st["credits_out"] or self.quota_full:
+            # The first org, in config order, with room, credit and a quota that hasn't refused a create.
+            org = next((o for o, r in rooms.items() if r > 0 and o not in self.quota_full and not self.out(o)), None)
+            if made >= room or org is None:
                 break
             # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
             if made and self.pick_margin(cls, p) < self.cfg["min_margin"]:
                 continue
-            if self.create(cls, p):
+            if self.create(cls, p, org=org):
                 made += 1
+                rooms[org] -= 1
         if not made:
             event(f"SEARCH found nothing to create (room {room})")
 
@@ -2462,12 +2517,13 @@ class W:
         st = self.st
         st["last_upgrade"] = t
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
-        if self.cfg["upgrade_gain"] is None or st["credits_out"] or this_hour >= self.cfg["max_new_per_hour"]:
+        if self.cfg["upgrade_gain"] is None or this_hour >= self.cfg["max_new_per_hour"]:
             return
         u = self.usd()   # for the class a new group would be
         active = [g for g in st["groups"].values() if not g["ended"]]
+        # The new group goes in the old one's org, so only a group in an org with credit is swapped.
         mining = [(self.pc_rate(g) * self.usd(self.on_kx(g, g["machine"], t)) + self.xmr_usd(g) - g["price"], g) for g in active
-                  if self.pc_rate(g) is not None]
+                  if self.pc_rate(g) is not None and not self.out(g.get("org"))]
         if not mining:
             return
         worst, g = min(mining, key=lambda x: x[0])
@@ -2494,7 +2550,7 @@ class W:
               f"(switching costs about ${switch:.3f})")
         self.delete(g, "released", f"swapped for a {cls}, expected to make ${expect - worst:.3f}/hr more")
         if g["ended"]:
-            self.create(cls, p)
+            self.create(cls, p, org=g.get("org"))
 
     # ---------- report ----------
     def write_report(self):
@@ -2541,6 +2597,7 @@ class W:
 
         rows = []
         all_ths = all_cost = all_earn = run_cost = all_khs = 0.0
+        org_cost = {}   # each org's share of the $/hr, for how long its credit lasts
         mining = 0
         live = sorted((g for g in groups if not g["ended"]), key=lambda g: g["created"])
         # (K) tells Kryptex boxes from HeroMiners ones, so it shows only while some box is on HeroMiners.
@@ -2564,9 +2621,13 @@ class W:
                 mining += 1
             all_ths += ths; all_cost += cost; all_earn += earn; all_khs += khs
             run_cost += 0.0 if start else cost
-            # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces.
+            org = g.get("org") or ORG
+            org_cost[org] = org_cost.get(org, 0.0) + cost
+            # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces, and
+            # its org when that isn't ORG.
             pri = "med" if g["pri"] == "medium" else g["pri"]
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else []))
+            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
+                          + ([org] if org != ORG else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []
@@ -2582,7 +2643,7 @@ class W:
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
         # A row for every slot, so a slot the search couldn't fill shows as empty instead of vanishing.
-        slots = max(len(live), min(self.cfg["max_active"], st.get("quota") or self.cfg["max_active"]))
+        slots = max(len(live), self.slots())
         empty = slots - len(live)
         lines += [f"| ⬜{NB}empty |" + " — |" * (6 if xon else 4)] * empty
         ended = [g for g in groups if g["ended"]]
@@ -2600,13 +2661,13 @@ class W:
         credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
         # With more than one org read (salad_orgs), each lasts on its own: Salad stops an org's boxes when that org's
-        # credit runs out, whatever the others hold. Ours (ORG) at the fleet's $/hr, another at its measured spend
-        # (org_burn); an org spending nothing isn't shown. [(org, hours)], or None with one org or no fresh read.
+        # credit runs out, whatever the others hold. An org our boxes run in at their $/hr, another at its measured
+        # spend (org_burn); an org spending nothing isn't shown. [(org, hours)], or None with one org or no fresh read.
         runway = None
         if not cmark and len(sb.get("orgs") or {}) > 1:
             runway = []
             for o, bal in sb["orgs"].items():
-                rate = all_cost if o == ORG else self.org_burn(o, t)
+                rate = org_cost.get(o) or self.org_burn(o, t)
                 if rate:
                     runway.append((o, bal / rate))
         # Out of all the credit bought, when the portal's invoices have been read: $202.37/$500.
@@ -2701,8 +2762,11 @@ class W:
                 + (f" ({last})" if last else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
-        if st["credits_out"]:
+        if st["credits_out"] == [ORG] and len(self.orgs()) == 1:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
+        elif st["credits_out"]:
+            lines += ["", f"⚠️ Credit ran out in {' and '.join(st['credits_out'])}: Salad stopped the groups there. "
+                          "They restart after a top-up."]
         with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
