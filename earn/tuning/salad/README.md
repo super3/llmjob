@@ -132,7 +132,11 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
-   min of failed reads there's one `WARN` event. When box.sh starts again on a PC the box mines on in this
+   min of failed reads there's one `WARN` event. A PC's lines can also reach the log service minutes late, so
+   each read starts `log_overlap_min` (10) before the last one ended, and a line read twice counts once.
+   Until 28 October that overlap was 2 min, and 5070-97's lines came 2.5 to 4 min late: the ledger had no
+   reading of it for 30 min and the table showed it at 0 TH/s at a loss, while the log service had a line a
+   minute at 132 TH/s (only its pool shares kept it on its PC). When box.sh starts again on a PC the box mines on in this
    stint (Salad restarted it there), both clocks and the share clock start again from that line, as on a new
    PC, once a PC (a `RESTARTED` event), since 22 October. In 12 days of events, 4 of the 39 "no mining reading
    for 6 min" moves came just after such a line (one of them a box that couldn't mine); 4 more came after a
