@@ -210,11 +210,23 @@ minute) as TH/s × 1 min × PRL per TH-hr at that moment.
 ## Two orgs
 
 The quota is an org's, so a second org has 10 replicas of its own. Since 28 October the watcher can run groups in
-more than one (config `org_slots`): on rig01 8 in llmjob, where the pearl2dev session's test boxes also count, and 2
-in llmjob2. The search fills the orgs in that order, each up to its slots and inside its own quota (at most 9 of
-its 10, as in [Rules](#rules)), and a create refused for the quota stops only that org. The same API key works in every org the user is
-in. Each group keeps the org it was made in (`org` in the ledger; one made before has none and is in llmjob), and
-every call about it goes there. The log query and the stray sweep run in each org. Names stay unique across orgs,
+more than one (config `org_slots`): on rig01 8 in llmjob, where the pearl2dev session's test boxes also count, and
+9 in llmjob2 (2 from 4:36 pm EDT, 9 from the evening; `max_active` 17). The search fills the orgs in that order,
+each up to its slots and inside its own quota (at most 9 of its 10, as in [Rules](#rules)), and a create refused for
+the quota stops only that org.
+
+**Our boxes don't outbid each other.** Salad gives a PC to the higher priority first and can take one from a lower
+priority for it, whichever org either is in, so a group of ours waiting for a PC above another group of its class on
+a PC could take that one's PC and pay more for the same box. In 19 days to 28 October a PC went from one of our
+groups to another within 10 minutes 18 times; 16 were at the same priority (a PC coming back and given to whichever
+was waiting), and twice 4080-35 at medium got 4080-33's PC at low (13 October). So a group waiting for a PC never
+asks above the lowest priority of a group of its class on a PC (`pri_cap`): the search doesn't create one higher,
+and a waiting group doesn't move up past it; when that's the only way up it's deleted as released ("a higher
+priority could take the PC of another group of its class"). It counts the other groups in our orgs too, from the
+sweep's list (the pearl2dev session's test boxes, at high on 28 October).
+
+The same API key works in every org the user is in. Each group keeps the org it was made in (`org` in the ledger;
+one made before has none and is in llmjob), and every call about it goes there. The log query and the stray sweep run in each org. Names stay unique across orgs,
 since a box's pool worker is named after its group. Credit runs out by org: Salad says `no_credits_available` or
 stops the boxes in that org only, so only that org's groups are left alone and only it stops getting new ones
 until a top-up and `restart_token`. A box outside llmjob says its org in the table (`5060-90 batch llmjob2`).
@@ -321,7 +333,8 @@ watcher reads the 30-minute one. Their `valid` count includes the last finished 
 it isn't used.
 
 **Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October, and every
-slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October.** A box mining on HeroMiners
+slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October, and 17 with llmjob2's slots
+from 28 October.** A box mining on HeroMiners
 then kept its PC and would move to Kryptex when it next got one. At 10:35 pm, as asked, the last four were
 switched with `kx_in_place`, by updating their commands. Salad restarted three (3070-53, -55, -56) on the same
 PC within 2 minutes, and they mine on Kryptex. It didn't restart 3060-45, even after two calls to its restart
