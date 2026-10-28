@@ -818,8 +818,8 @@ our core and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second war
 alternating between PCs, after a 5- or 10-minute hit check of the core (`tuning/salad/amdtest.sh`'s `duel` task,
 the same method and pool as on 22 October). PeakMiner wasn't run; its 0 stands. Salad handed out the 22 October
 rows' own PC only once (RX 7900 XT `67c308d2`), so the other rows moved to new PCs, and the 22 October figures are
-in the notes. Ours is now the best miner on every row, so "% of best" is 100% on all ten; the notes give ours
-against SRBMiner.
+in the notes. Ours is now the best miner on every row, so "% of best" is ours divided by SRBMiner's rate, since
+PeakMiner mines nothing on these cards.
 
 SRBMiner mines Pearl on every one of these cards, through AMD's OpenCL. PeakMiner started on all ten PCs and
 quit within 15 seconds with no hashrate and no shares: its README lists AMD support only for CSD,
@@ -827,16 +827,16 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RX 9070 XT | Salad (16 GB) | 83151dba | 88.6 | 0 | 69.3 | 100% |
-| RX 9070 XT | Salad (16 GB) | 77904d36 | 109.9 | 0 | 92.4 | 100% |
-| RX 9060 XT | Salad (16 GB) | d324328f | 63.9 | 0 | 43.2 | 100% |
-| RX 9060 XT | Salad (16 GB) | 0a4940aa | 59.3 | 0 | 43.2 | 100% |
-| RX 7900 XTX | Salad (24 GB) | bd6ca862 | 46.9 | 0 | 45.8 | 100% |
-| RX 7900 XTX | Salad (24 GB) | 2c8dc7f3 | 44.2 | 0 | 41.9 | 100% |
-| RX 7900 XT | Salad (20 GB) | 67c308d2 | 47.2 | 0 | 46.9 | 100% |
-| RX 7900 XT | Salad (20 GB) | cc2f03b6 | 51.7 | 0 | 50.1 | 100% |
-| RX 7800 XT | Salad (16 GB) | d0dbba63 | 32.8 | 0 | 31.8 | 100% |
-| RX 7800 XT | Salad (16 GB) | 56ae1be5 | 33.4 | 0 | 32.4 | 100% |
+| RX 9070 XT | Salad (16 GB) | 83151dba | 88.6 | 0 | 69.3 | 128% |
+| RX 9070 XT | Salad (16 GB) | 77904d36 | 109.9 | 0 | 92.4 | 119% |
+| RX 9060 XT | Salad (16 GB) | d324328f | 63.9 | 0 | 43.2 | 148% |
+| RX 9060 XT | Salad (16 GB) | 0a4940aa | 59.3 | 0 | 43.2 | 137% |
+| RX 7900 XTX | Salad (24 GB) | bd6ca862 | 46.9 | 0 | 45.8 | 102% |
+| RX 7900 XTX | Salad (24 GB) | 2c8dc7f3 | 44.2 | 0 | 41.9 | 106% |
+| RX 7900 XT | Salad (20 GB) | 67c308d2 | 47.2 | 0 | 46.9 | 101% |
+| RX 7900 XT | Salad (20 GB) | cc2f03b6 | 51.7 | 0 | 50.1 | 103% |
+| RX 7800 XT | Salad (16 GB) | d0dbba63 | 32.8 | 0 | 31.8 | 103% |
+| RX 7800 XT | Salad (16 GB) | 56ae1be5 | 33.4 | 0 | 32.4 | 103% |
 
 - **SRBMiner's figure** is its own hashrate at the end of the run, read from its API. After the first 30
   seconds every run stayed within about 4% of it, apart from one RX 7800 XT (`56ae1be5`, 28.7–33.0). The pool
