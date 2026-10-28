@@ -73,6 +73,8 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "trader": None, "safetrade": None,
                # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
+               # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
+               "salad_orgs": [],
                "wallet": os.environ.get("PRL_WALLET", ""),
                # Monero on the box's CPU (release v0.6.0 on): the groups named in xmr_groups ("*" for every group)
                # mine it to xmr_wallet. Salad bills a GPU group the same for any vCPU and RAM, so they ask for
@@ -145,10 +147,8 @@ def clock(t):
 PORTAL = "https://portal-api.salad.com/api/portal"
 
 
-def portal_balance(user, password):
-    """Salad's credit balance in cents, as the portal shows it: log in (a session cookie), then read it. Returns
-    (HTTP status, cents, dollars bought) or (status, error, None). Salad's public API has no balance or billing;
-    salad_ledger.py reads the rest."""
+def portal_session():
+    """A call(method, path, body) on Salad's portal API that keeps the session cookie a login sets."""
     import http.cookiejar
     op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
 
@@ -164,23 +164,36 @@ def portal_balance(user, password):
             return e.code, e.read().decode(errors="replace")[:200]
         except Exception as e:
             return 0, str(e)[:200]
+    return call
 
+
+def portal_balance(user, password, orgs=None, call=None):
+    """Salad's credit balance in cents, as the portal shows it, added up over `orgs` (config salad_orgs, or just ORG):
+    log in (a session cookie), then read each. Returns (HTTP status, cents, dollars bought) or (status, error, None);
+    dollars bought is None if any org's read of it fails. Salad's public API has no balance or billing;
+    salad_ledger.py reads the rest. Both orgs since 28 October, when llmjob2 got its first $10."""
+    call = call or portal_session()
     s, j = call("POST", "/users/login", {"email": user, "password": password})
     if s != 204:
         return s, j, None
-    s, j = call("GET", f"/organizations/{ORG}/billing-profile/credits-balance")
-    if not (s == 200 and isinstance(j, dict) and "amount" in j):
-        return s or 0, j, None
-    return s, j["amount"], bought(call)
+    cents, paid = 0, 0.0
+    for org in orgs or [ORG]:
+        s, j = call("GET", f"/organizations/{org}/billing-profile/credits-balance")
+        if not (s == 200 and isinstance(j, dict) and "amount" in j):
+            return s or 0, j, None
+        cents += j["amount"]
+        b = bought(call, org) if paid is not None else None
+        paid = None if b is None else paid + b
+    return 200, cents, paid
 
 
-def bought(call):
+def bought(call, org=None):
     """All the credit ever added, in dollars: the total of the credit grants in Metronome (Salad's billing service),
     less voided ones, read as the portal's credits page reads them. None if the read fails. Until 28 October it
     added up the credit purchase invoices, but a crypto top-up makes a grant and no invoice: the $5 bought with USDT
     that day left the heading at "/$500" (grants: $400 + $100 + $5, and a voided $400)."""
     try:
-        s, j = call("POST", f"/organizations/{ORG}/dashboard-sessions/credits")
+        s, j = call("POST", f"/organizations/{org or ORG}/dashboard-sessions/credits")
         tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
         q = "query { Customer { CreditGrants { amount_granted voided_at } } }"
         req = urllib.request.Request("https://graphql.metronome.com/v1/graphql", method="POST",
@@ -851,7 +864,7 @@ class W:
         user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
         if not user or not pw or not self.report_read_due("bal", t):
             return
-        s, cents, paid = portal_balance(user, pw)
+        s, cents, paid = portal_balance(user, pw, self.cfg.get("salad_orgs") or [ORG])
         if s != 200 or not isinstance(cents, (int, float)):
             if not st.get("bal_warned"):
                 st["bal_warned"] = True

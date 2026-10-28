@@ -745,6 +745,9 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   26 October the same read also totals the credit added in Metronome (voided grants left out), and the heading
   shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays. It read the
   credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
+  With config `salad_orgs` (since 28 October `["llmjob", "llmjob2"]`) the balance and the total are added up over
+  those orgs, as the founder asked once llmjob2 got $10 of its own. Days left still divides by the fleet's $/hr,
+  which counts only the boxes here (all in llmjob).
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
   each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
