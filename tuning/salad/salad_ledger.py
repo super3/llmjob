@@ -8,11 +8,15 @@
 #   python salad_ledger.py                 balance, purchases, this period's charges by class
 #   python salad_ledger.py --daily         and the cost of each UTC day
 #   python salad_ledger.py --csv out.csv   a ledger: purchases and each day's charge per class, with the balance
+#   python salad_ledger.py --org llmjob2   another org; --org more than once for several, with a total
+# Purchases are Metronome's credit grants (voided ones left out): a crypto top-up makes a grant and no purchase
+# invoice, so until 28 October the $5 bought in USDT that day was missing.
 import argparse, csv, datetime as dt, http.cookiejar, json, os, sys, urllib.error, urllib.parse, urllib.request
 
 PORTAL = "https://portal-api.salad.com/api/portal"
 GQL = "https://graphql.metronome.com/v1/graphql"
-ORG = os.environ.get("SALAD_ORG", "llmjob")
+ORGS = [o for o in os.environ.get("SALAD_ORGS", os.environ.get("SALAD_ORG", "llmjob")).split(",") if o]
+GRANTS = "query { Customer { CreditGrants { id name amount_granted created_at voided_at } } }"
 
 # Metronome checks a query's shape strictly: a line item's fields must sit in "... on MRI_LineItem", as the
 # portal's own invoice dashboard asks for them, or it answers "GraphQL Validation Failed".
@@ -44,15 +48,15 @@ class Salad:
         except urllib.error.HTTPError as e:
             return e.code, e.read().decode(errors="replace")[:300]
 
-    def balance_cents(self):
-        s, j = self.call(f"{PORTAL}/organizations/{ORG}/billing-profile/credits-balance")
+    def balance_cents(self, org):
+        s, j = self.call(f"{PORTAL}/organizations/{org}/billing-profile/credits-balance")
         if s != 200:
-            sys.exit(f"Salad balance read failed: HTTP {s} {str(j)[:200]}")
+            sys.exit(f"Salad balance read failed for {org}: HTTP {s} {str(j)[:200]}")
         return j["amount"]
 
-    def query(self, dashboard, q, variables):
-        """A Metronome query, with the token of a fresh portal session for that billing dashboard."""
-        s, j = self.call(f"{PORTAL}/organizations/{ORG}/dashboard-sessions/{dashboard}", "POST")
+    def query(self, org, dashboard, q, variables):
+        """A Metronome query, with the token of a fresh portal session for that org's billing dashboard."""
+        s, j = self.call(f"{PORTAL}/organizations/{org}/dashboard-sessions/{dashboard}", "POST")
         if s not in (200, 201):
             sys.exit(f"Salad {dashboard} dashboard session failed: HTTP {s} {str(j)[:200]}")
         tok = urllib.parse.parse_qs(urllib.parse.urlsplit(j["embed_url"]).query)["token"][0]
@@ -112,19 +116,39 @@ def daily_costs(charged, use):
     return daily, rates, missed
 
 
+def purchases_of(grants):
+    """The credit added, oldest first, as {"issued_at", "total"} (cents): every credit grant not voided."""
+    return sorted(({"issued_at": g["created_at"], "total": g["amount_granted"]} for g in grants if not g.get("voided_at")),
+                  key=lambda i: i["issued_at"])
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--daily", action="store_true", help="also print the cost of each UTC day")
     ap.add_argument("--csv", metavar="FILE", help="write a ledger: purchases and each day's charge per class")
+    ap.add_argument("--org", action="append", help="a Salad org (more than once for several); default $SALAD_ORGS or llmjob")
     a = ap.parse_args()
     if not os.environ.get("SALAD_USER") or not os.environ.get("SALAD_PASS"):
         sys.exit("Set SALAD_USER and SALAD_PASS (the Salad portal login).")
     sa = Salad(os.environ["SALAD_USER"], os.environ["SALAD_PASS"])
+    orgs = a.org or ORGS
+    total_bal = total_bought = 0
+    for n, org in enumerate(orgs):
+        csv_file = a.csv if len(orgs) == 1 else (f"{os.path.splitext(a.csv)[0]}-{org}{os.path.splitext(a.csv)[1] or '.csv'}"
+                                                  if a.csv else None)
+        bal, bought = ledger(sa, org, a.daily, csv_file, header=len(orgs) > 1)
+        total_bal, total_bought = total_bal + bal, total_bought + bought
+    if len(orgs) > 1:
+        print(f"\nAll {len(orgs)} orgs: balance {usd(total_bal)}, credit added {usd(total_bought)}")
 
-    bal = sa.balance_cents()
-    invoices = sa.query("invoice", INVOICES, {"limit": 50})["recentInvoices"]["invoices"]
-    purchases = sorted((i for i in invoices if i["__typename"] == "CreditPurchaseInvoice" and i["status"] != "VOID"),
-                       key=lambda i: i["issued_at"])
+
+def ledger(sa, org, daily_too, csv_file, header=False):
+    """One org's report; returns its balance and credit added, in cents."""
+    if header:
+        print(f"\n=== {org} ===")
+    bal = sa.balance_cents(org)
+    invoices = sa.query(org, "invoice", INVOICES, {"limit": 50})["recentInvoices"]["invoices"]
+    purchases = purchases_of(sa.query(org, "credits", GRANTS, {})["CreditGrants"])
     periods = sorted((i for i in invoices if i["__typename"] == "ArrearsInvoice"), key=lambda i: i["inclusive_start_date"])
 
     # Each class and priority's hours and price an hour (cents), by billing period, from the invoices' line items.
@@ -148,30 +172,31 @@ def main():
             print(f"  {name:42} {q:9.2f} h x {rate:5.1f}c  {usd(total):>9}")
         print(f"  {'total':42} {'':21} {usd(sum(x[3] for x in lines)):>9}")
 
-    if a.daily or a.csv:
+    if (daily_too or csv_file) and (purchases or periods):
         start = min([day(i["issued_at"]) for i in purchases] + [day(p["inclusive_start_date"]) for p in periods])
         end = (dt.datetime.now(dt.timezone.utc).date() + dt.timedelta(days=1)).isoformat()
-        use = sa.query("usage", USAGE, {"start_date": start + "T00:00:00Z", "end_date": end + "T00:00:00Z"})["current_usage"]
+        use = sa.query(org, "usage", USAGE, {"start_date": start + "T00:00:00Z", "end_date": end + "T00:00:00Z"})["current_usage"]
         daily, rates, missed = daily_costs(charged, use)
         for name, d, h in missed:
             print(f"  (no invoice line for {name}: {h:.2f} h on {d} left out)")
-        if a.daily:
+        if daily_too:
             print("\nCost by UTC day:")
             for d in sorted(daily):
                 print(f"  {d}  {usd(sum(c for _, c in daily[d].values())):>9}")
             print(f"  {'total':10}  {usd(sum(c for v in daily.values() for _, c in v.values())):>9}"
                   "  (the invoices' total above should match)")
-        if a.csv:
+        if csv_file:
             rows = [(day(i["issued_at"]), "purchase", "credit", "", "", float(i["total"])) for i in purchases]
             rows += [(d, "charge", n, f"{h:.4f}", f"{rates[n]:g}", -c) for d, v in daily.items() for n, (h, c) in v.items()]
             run = 0.0
-            with open(a.csv, "w", newline="", encoding="utf-8") as f:
+            with open(csv_file, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 w.writerow(["date_utc", "type", "item", "hours", "cents_per_hour", "amount_usd", "balance_usd"])
                 for r in sorted(rows, key=lambda r: (r[0], r[1] != "purchase", r[2])):
                     run += r[5]
                     w.writerow([*r[:5], f"{r[5] / 100:.4f}", f"{run / 100:.4f}"])
-            print(f"\nWrote {len(rows)} rows to {a.csv}; it ends at {usd(run)} against the balance of {usd(bal)}.")
+            print(f"\nWrote {len(rows)} rows to {csv_file}; it ends at {usd(run)} against the balance of {usd(bal)}.")
+    return bal, sum(float(i["total"]) for i in purchases)
 
 
 if __name__ == "__main__":
