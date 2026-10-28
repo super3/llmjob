@@ -2318,13 +2318,45 @@ class TestSaladBalance(Base):
         real = w.bought
         w.bought = lambda c, org=None: grants[org]
         self.addCleanup(setattr, w, "bought", real)
-        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call), (200, 18533, 515.0))
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call),
+                         (200, 18533, 515.0, {"llmjob": (17533, 505.0), "llmjob2": (1000, 10.0)}))
         grants["llmjob2"] = None                               # one org's grants didn't read: no total
-        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call), (200, 18533, None))
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call)[:3], (200, 18533, None))
         bal.pop("llmjob2")                                     # one org's balance didn't read: no balance at all
         self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], lambda m, p, b=None:
                                            (204, None) if p == "/users/login" else
                                            (200, {"amount": 1}) if "/llmjob/" in p else (500, "down"))[:2], (500, "down"))
+
+    def two_orgs(self, steps):
+        """Reads of llmjob and llmjob2, a quarter-hour apart: steps is [(llmjob $, llmjob2 $, llmjob2 bought $)]."""
+        self.x.cfg["salad_orgs"] = ["llmjob", "llmjob2"]
+        for i, (a, b, paid2) in enumerate(steps):
+            if i:
+                self.clock[0] += 900
+            self.answer = (200, round((a + b) * 100), 505.0 + paid2,
+                           {"llmjob": (round(a * 100), 505.0), "llmjob2": (round(b * 100), paid2)})
+            self.x.salad_balance()
+
+    def test_each_org_lasts_on_its_own_and_one_not_spending_isnt_shown(self):
+        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet.
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.two_orgs([(175.0, 10.0, 10.0)] * 9)
+        head = self.head()
+        self.assertIn("Salad $185.00/$515 left (llmjob ", head)
+        self.assertNotIn("llmjob2", head)
+
+    def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
+        # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
+        steps = [(175.0, 10.0 - 0.25 * i + (10.0 if i >= 8 else 0.0), 10.0 + (10.0 if i >= 8 else 0.0)) for i in range(12)]
+        self.two_orgs(steps)
+        self.assertAlmostEqual(self.x.org_burn("llmjob2", self.clock[0]), 1.0)
+        self.assertIn("(llmjob2 17 h)", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
+        # And it warns once it's under 12 h, for that org.
+        self.x.st["org_bal"] = {}
+        self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
+        self.head()
+        self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]

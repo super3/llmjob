@@ -175,16 +175,17 @@ def portal_balance(user, password, orgs=None, call=None):
     call = call or portal_session()
     s, j = call("POST", "/users/login", {"email": user, "password": password})
     if s != 204:
-        return s, j, None
-    cents, paid = 0, 0.0
+        return s, j, None, {}
+    cents, paid, each = 0, 0.0, {}
     for org in orgs or [ORG]:
         s, j = call("GET", f"/organizations/{org}/billing-profile/credits-balance")
         if not (s == 200 and isinstance(j, dict) and "amount" in j):
-            return s or 0, j, None
+            return s or 0, j, None, {}
         cents += j["amount"]
-        b = bought(call, org) if paid is not None else None
-        paid = None if b is None else paid + b
-    return 200, cents, paid
+        b = bought(call, org)
+        each[org] = (j["amount"], b)
+        paid = None if b is None or paid is None else paid + b
+    return 200, cents, paid, each
 
 
 def bought(call, org=None):
@@ -854,6 +855,18 @@ class W:
         st[key + "_try"] = t
         return True
 
+    def org_burn(self, org, t):
+        """What an org's credit is spent at, $/hr, from its portal reads: the fall in its balance since the oldest read
+        1-3 h back, plus any credit added in between (a top-up isn't negative spend). None with no read that old."""
+        hist = self.st.get("org_bal", {}).get(org) or []
+        old = [e for e in hist if 3600 <= t - e[0] <= 3 * 3600]
+        if not old or not hist:
+            return None
+        t0, u0, b0 = old[0]
+        t1, u1, b1 = hist[-1]
+        added = (b1 - b0) if b0 is not None and b1 is not None else 0.0
+        return max(0.0, (u0 - u1 + added) / ((t1 - t0) / 3600)) if t1 > t0 else None
+
     def mark_report_read(self, key, t):
         self.st[key + "_q"] = int(t // (60 * self.cfg["report_min"]))
 
@@ -864,7 +877,7 @@ class W:
         user, pw, st, t = os.environ.get("SALAD_USER"), os.environ.get("SALAD_PASS"), self.st, now()
         if not user or not pw or not self.report_read_due("bal", t):
             return
-        s, cents, paid = portal_balance(user, pw, self.cfg.get("salad_orgs") or [ORG])
+        s, cents, paid, *more = portal_balance(user, pw, self.cfg.get("salad_orgs") or [ORG])
         if s != 200 or not isinstance(cents, (int, float)):
             if not st.get("bal_warned"):
                 st["bal_warned"] = True
@@ -872,7 +885,13 @@ class W:
             return
         usd = cents / 100
         st["credit_fix"] = st.get("credit_fix", 0.0) + usd - self.credit_count()
-        st["salad_bal"] = {"t": t, "usd": usd}
+        each = (more or [{}])[0]
+        st["salad_bal"] = {"t": t, "usd": usd, "orgs": {o: c / 100 for o, (c, _) in each.items()}}
+        # Each org's balance and credit added over the last 6 h, so an org the watcher runs no boxes in (llmjob2) has a
+        # spend rate: what its balance fell by, less any top-up in between (org_burn).
+        hist = st.setdefault("org_bal", {})
+        for o, (c, b) in each.items():
+            hist[o] = [e for e in hist.get(o, []) if t - e[0] <= 6 * 3600] + [[t, c / 100, b]]
         if paid:
             st["salad_bought"] = paid
         st["bal_warned"] = False
@@ -2497,6 +2516,16 @@ class W:
         sb = st.get("salad_bal")
         credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
         hours = credit / all_cost if all_cost > 0 else None
+        # With more than one org read (salad_orgs), each lasts on its own: Salad stops an org's boxes when that org's
+        # credit runs out, whatever the others hold. Ours (ORG) at the fleet's $/hr, another at its measured spend
+        # (org_burn); an org spending nothing isn't shown. [(org, hours)], or None with one org or no fresh read.
+        runway = None
+        if not cmark and len(sb.get("orgs") or {}) > 1:
+            runway = []
+            for o, bal in sb["orgs"].items():
+                rate = all_cost if o == ORG else self.org_burn(o, t)
+                if rate:
+                    runway.append((o, bal / rate))
         # Out of all the credit bought, when the portal's invoices have been read: $202.37/$500.
         b = st.get("salad_bought")
         of_bought = "" if not b else f"/${b:.0f}" if b == round(b) else f"/${b:.2f}"
@@ -2583,8 +2612,10 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
+        last = (" · ".join(f"{o} {lasts(h)}" for o, h in runway) if runway is not None
+                else lasts(hours, cmark) if hours is not None else "")
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark}{of_bought} left"
-                + (f" ({lasts(hours, cmark)})" if hours is not None else ""))
+                + (f" ({last})" if last else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"]:
@@ -2592,7 +2623,13 @@ class W:
         with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
-        if hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
+        if runway is not None:
+            for o, h in runway:
+                if h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
+                    st["org_credit_alert"][o] = t
+                    event(f"ALERT {o}'s credit ${sb['orgs'][o]:.2f} lasts about {h:.1f} h at "
+                          f"${sb['orgs'][o] / h:.3f}/hr")
+        elif hours is not None and hours < 12 and t - st["last_credit_alert"] > 3600:
             st["last_credit_alert"] = t
             event(f"ALERT credit ${credit:.2f} lasts about {hours:.1f} h at ${all_cost:.3f}/hr")
 
