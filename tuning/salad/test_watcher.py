@@ -1,6 +1,6 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, json, os, re, shutil, tempfile, unittest
+import importlib.util, io, json, os, re, shutil, tempfile, unittest
 
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
@@ -2133,6 +2133,22 @@ class TestSafeTrade(Base):
             "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
+    def test_usdt_sent_to_the_salad_wallet_is_its_own_row_not_the_banks(self):
+        # 28 October: 5 USDT to the top-up wallet (1 of the 6 asked went in fees) paid for $5 of Salad credit; it was
+        # counted in USDT out, the money that reached the bank.
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "2.0", "fee": "1", "status": "succeed", "rid": "0xbank"},
+            {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "rid": self.x.cfg["salad_wallet"]},
+            {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
+        self.x.safetrade()
+        rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
+        self.assertEqual(rows[-5:], [
+            "| USDC out | | | | | $0.91 | −$9.00 |",
+            "| USDT out | | | | | $1.00 | −$2.00 |",
+            "| Total out | | | | | $1.91 | −$11.00 |",   # still only what reached the bank
+            "| USDT to Salad | | | | | $1.00 | −$5.00 |",
+            "| Left | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
+
     def test_only_our_own_sell_orders_count(self):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
@@ -2257,6 +2273,28 @@ class TestSaladBalance(Base):
         self.clock[0] += 900
         self.x.salad_balance()
         self.assertIn("Salad $201.37/$500 left", self.head())
+
+    def test_credit_bought_is_every_grant_not_voided(self):
+        # A crypto top-up makes a Metronome credit grant and no purchase invoice (28 October: $5 in USDT).
+        grants = [{"amount_granted": "40000", "voided_at": None}, {"amount_granted": "40000", "voided_at": "2026-10-14"},
+                  {"amount_granted": "10000", "voided_at": None}, {"amount_granted": "500", "voided_at": None}]
+        asked = []
+
+        class R(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = w.urllib.request.urlopen
+        w.urllib.request.urlopen = lambda req, timeout=None: asked.append(json.loads(req.data)["query"]) or \
+            R(json.dumps({"data": {"Customer": [{"CreditGrants": grants}]}}).encode())
+        self.addCleanup(setattr, w.urllib.request, "urlopen", real)
+        call = lambda m, p, b=None: (200, {"embed_url": "https://x/embed?token=t1"}) if p.endswith("/dashboard-sessions/credits") else (404, None)
+        self.assertEqual(w.bought(call), 505.0)
+        self.assertIn("CreditGrants", asked[0])
+        self.assertIsNone(w.bought(lambda m, p, b=None: (500, "down")))
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]

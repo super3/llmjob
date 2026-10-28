@@ -652,7 +652,9 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   network's, taken on top, and for USDC the trade from USDT). **Total out** adds them up: $309.54 sent to the
   bank on 26 October, after $10.11 of fees. **Left** closes it: every fee paid, and the USDT the account holds.
   Sales less what went out and its fees is what's left: $367.34 − $309.54 − $10.11 = $47.69, within about $0.10
-  of the $47.79 balance (the USDT-to-USDC trade got slightly more USDC than the USDT it cost). Until 26 October
+  of the $47.79 balance (the USDT-to-USDC trade got slightly more USDC than the USDT it cost). Since 28 October a
+  withdrawal to the Salad top-up wallet (`salad_wallet`) has its own row after Total out, **USDT to Salad**: it
+  bought Salad credit and never reached the bank (the first, 5 USDT, fee 1, that day). Until 26 October
   the out rows showed the USDT each withdrawal took, fees included. Paid and Received
   should match: both were 196.743 PRL. Each new sale is also a `SOLD` event with its USDT. From 24 to 26 October
   these were a 💵 row under each coin's pools, Paid reading "185.060 for $331.21" (and for about 10 minutes on
@@ -740,8 +742,9 @@ is a Railway cron service next to the trader: Root Directory `/tuning/salad`, st
   (its own share count at its set pay a share), the pool's totals and prices. Since 24 October, with `SALAD_USER` and `SALAD_PASS` set, the watcher reads Salad's
   balance from the portal once a report, as SafeTrade (Salad's public API has none) and shows it unstarred; each read also
   moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure. Since
-  26 October the same read also totals the credit purchases in Metronome (voided ones left out), and the heading
-  shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays.
+  26 October the same read also totals the credit added in Metronome (voided grants left out), and the heading
+  shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays. It read the
+  credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
   `credit_offset` is still added; set it only if there's no login.
 - **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
   each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
