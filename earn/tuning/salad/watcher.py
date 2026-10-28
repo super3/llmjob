@@ -17,7 +17,6 @@ except ImportError:   # then a box has no node identity of its own: each PC is a
 D = os.environ.get("SALAD_MINE_DIR") or os.path.join(os.path.dirname(os.path.abspath(__file__)), "run")
 STATE, CFG, EV, REPORT = (os.path.join(D, f) for f in ("state.json", "config.json", "events.log", "report.md"))
 ORG = os.environ.get("SALAD_ORG", "llmjob")
-RAILWAY = "https://backboard.railway.com/graphql/v2"
 SAFETRADE = "https://safetrade.com/api/v2/trade"
 STABLE = ("usdc", "dai", "fdusd")   # coins worth a dollar that the USDT from sales may be changed into before withdrawal
 PROJECT = os.environ.get("SALAD_PROJECT", "default")
@@ -70,7 +69,6 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # its stored PCs (0.35: 35% of them are slower), not the median (see pick_margin).
                "search_pct": 0.35,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
-               "trader": None, "safetrade": None,
                # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
@@ -835,51 +833,6 @@ class W:
             g["kx_shares"] = sum(v for v, _ in b.values())
             g["kx_gross"] = sum(v * ps for v, ps in b.values())
 
-    def trader(self):
-        """The SafeTrade autoseller's newest STATUS line (trader/trader.py), read from its Railway logs at most every
-        5 min. Needs config "trader": {"project", "service", "environment"} (Railway ids) and a Railway token: in
-        $RAILWAY_TOKEN, or added by the network proxy. A failed read keeps the last status."""
-        cfg, st, t = self.cfg.get("trader"), self.st, now()
-        if not cfg or t - st.get("trader_t", 0) < 300:
-            return
-        st["trader_t"] = t
-        tok = os.environ.get("RAILWAY_TOKEN")
-        # A project token goes in Project-Access-Token; an account or team token is a bearer token.
-        hdrs = ({"Project-Access-Token": tok} if cfg.get("token_kind", "project") == "project" else
-                {"Authorization": f"Bearer {tok}"}) if tok else {}
-
-        def gql(query, variables):
-            s, j = http("POST", RAILWAY, {"query": query, "variables": variables}, timeout=30, headers=hdrs)
-            if s != 200 or not isinstance(j, dict) or j.get("errors"):
-                if not st.get("trader_warned"):
-                    st["trader_warned"] = True
-                    event(f"WARN can't read the trader's Railway logs: HTTP {s} {str((j or {}).get('errors') or j)[:150]}")
-                return None
-            return j.get("data")
-
-        d = gql("query($i: DeploymentListInput!) { deployments(input: $i, first: 5) "
-                "{ edges { node { id status createdAt } } } }",
-                {"i": {"projectId": cfg["project"], "serviceId": cfg["service"], "environmentId": cfg["environment"]}})
-        if d is None:
-            return
-        for edge in (d.get("deployments") or {}).get("edges") or []:
-            logs = gql("query($id: String!) { deploymentLogs(deploymentId: $id, limit: 1000) { message timestamp } }",
-                       {"id": edge["node"]["id"]})
-            if logs is None:
-                return
-            found = None
-            for line in logs.get("deploymentLogs") or []:
-                msg = (line.get("message") or "").strip()
-                if msg.startswith("STATUS "):
-                    try:
-                        found = (json.loads(msg[7:]), line.get("timestamp"))
-                    except ValueError:
-                        pass
-            if found:
-                st["trader_status"] = dict(found[0], seen=found[1])
-                st["trader_warned"] = False
-                return
-
     def credit_count(self):
         """Our own count of the Salad credit left: what was bought, less each group's price for every minute it had a
         PC, moved to Salad's figure at its last read (credit_fix). The report shows it, starred, only when Salad's
@@ -951,8 +904,8 @@ class W:
         return http(method, SAFETRADE + path, body, timeout=30, headers=hdrs)
 
     def sell(self, t):
-        """The PRL autoseller, moved here from its own Railway service (trader/trader.py) at the founder's request on
-        28 October: that service's builds kept crashing, and this watcher already reads SafeTrade. Once an hour, from
+        """The PRL autoseller, moved here from its own Railway cron service (trader/, removed) at the founder's request
+        on 28 October: that service's builds kept crashing, and this watcher already reads SafeTrade. Once an hour, from
         config sell's `minute`: cancel our open PRL sell orders (the last run's unfilled rest), read the PRL balance and
         the bids, and place one limit sell at a floor max_slippage (3%) under the best bid, never under min_price, for
         as much as the bids at or above it take. Less than min_volume (0.5), or the market's minimum, isn't sold. A
@@ -969,7 +922,8 @@ class W:
         live = cfg.get("live") is True
         tag = "SELL" if live else "SELL DRY RUN"
         try:
-            # The market: SafeTrade's PRL became PEARL on 18 October (pearlusdt; prlusdt disabled), see trader/README.md.
+            # The market: SafeTrade's PRL became PEARL on 18 October 2026, with its own pearlusdt market; prlusdt is
+            # disabled. Cloudflare in front of SafeTrade rewrites "prl" to "PEARL" anywhere in a URL.
             mkt = None
             for mid in cfg.get("markets", ["pearlusdt", "prlusdt"]):
                 s, m = self.st_call("GET", f"/public/markets/{mid}", signed=False)
@@ -1019,7 +973,7 @@ class W:
             event(f"WARN {tag} failed: {str(e)[:200]}")
 
     def safetrade(self):
-        """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
+        """Our SafeTrade account, where the pools pay and sell() sells, for its rows in the pool table: each coin
         held and in open orders, and all we have sold (fills of our own sell orders) with the USDT it brought after
         fees. Each new sale is a SOLD event. Read once a report (report_read_due), with GET calls only, when
         $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET are set. A failed read keeps the last one, and the table says
@@ -2003,7 +1957,6 @@ class W:
                       or (g["has_pc"] and self.on_kx(g, g.get("machine"), t)) for g in by_name.values())
         kw = (self.kx_pool(workers=live_kx) if live_kx or any(g.get("prl_kx") for g in st["groups"].values())
               else {})
-        self.trader()
         self.safetrade()
         self.sell(now())
         self.salad_balance()
