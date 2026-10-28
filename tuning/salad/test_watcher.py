@@ -2250,8 +2250,9 @@ class TestSaladBalance(Base):
         self.addCleanup(os.environ.pop, "SALAD_USER", None)
         self.addCleanup(os.environ.pop, "SALAD_PASS", None)
         self.reads, self.answer = [], (200, 22865, None)
-        real = w.portal_balance
-        w.portal_balance = lambda u, p: self.reads.append((u, p)) or self.answer
+        self.real_balance = real = w.portal_balance
+        w.portal_balance = lambda u, p, orgs=None: self.reads.append((u, p)) or self.orgs.append(orgs) or self.answer
+        self.orgs = []
         self.addCleanup(setattr, w, "portal_balance", real)
         self.x.cfg.update(credit_start=100.0, credit_offset=401.01)
 
@@ -2295,6 +2296,35 @@ class TestSaladBalance(Base):
         self.assertEqual(w.bought(call), 505.0)
         self.assertIn("CreditGrants", asked[0])
         self.assertIsNone(w.bought(lambda m, p, b=None: (500, "down")))
+
+    def test_every_org_in_salad_orgs_adds_up(self):
+        # 28 October: llmjob mines, llmjob2 got $10 of its own; the heading is both.
+        self.x.salad_balance()
+        self.assertEqual(self.orgs, [[w.ORG]])                 # none set: just the org the boxes run in
+        self.x.cfg["salad_orgs"] = ["llmjob", "llmjob2"]
+        self.clock[0] += 900
+        self.x.salad_balance()
+        self.assertEqual(self.orgs[-1], ["llmjob", "llmjob2"])
+        bal = {"llmjob": 17533, "llmjob2": 1000}
+        grants = {"llmjob": 505.0, "llmjob2": 10.0}
+
+        def call(method, path, body=None):
+            if path == "/users/login":
+                return 204, None
+            org = path.split("/")[2]
+            if path.endswith("/credits-balance"):
+                return 200, {"amount": bal[org]}
+            return 404, None
+        real = w.bought
+        w.bought = lambda c, org=None: grants[org]
+        self.addCleanup(setattr, w, "bought", real)
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call), (200, 18533, 515.0))
+        grants["llmjob2"] = None                               # one org's grants didn't read: no total
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call), (200, 18533, None))
+        bal.pop("llmjob2")                                     # one org's balance didn't read: no balance at all
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], lambda m, p, b=None:
+                                           (204, None) if p == "/users/login" else
+                                           (200, {"amount": 1}) if "/llmjob/" in p else (500, "down"))[:2], (500, "down"))
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]
