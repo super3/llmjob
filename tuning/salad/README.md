@@ -135,6 +135,11 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    PC, once a PC (a `RESTARTED` event), since 22 October. In 12 days of events, 4 of the 39 "no mining reading
    for 6 min" moves came just after such a line (one of them a box that couldn't mine); 4 more came after a
    restart on the same PC with no line before the rule fired, and the other 31 had no restart (OPEN.md #55).
+   Since 28 October these clocks start when Salad runs the container on the PC, not when it hands the PC
+   over: before that it downloads the image there, unbilled. The AMD image is 1.16 GB against 31 MB for
+   the NVIDIA one, and rx9060xt was deleted as failed 10 minutes after getting a PC it never started on.
+   A PC that hasn't started the container 30 min after we got it is left and bad-listed, without using one
+   of the group's 3 moves.
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
    boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
