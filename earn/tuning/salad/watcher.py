@@ -211,6 +211,48 @@ def bought(call, org=None):
 COIN_DP = {"pearl": 3, "xmr": 6}   # decimals a coin shows in the report
 
 
+def floor_to(x, places):
+    """x rounded down to `places` decimals, from the float's shortest repr: 4.12 stays 4.12 (x * 100 is 411.99999...),
+    and 4.12999999999995 goes to 4.1299, not up to 4.13, which would ask to sell more than the balance."""
+    from decimal import Decimal, ROUND_DOWN
+    return float(Decimal(repr(float(x))).quantize(Decimal(1).scaleb(-places), rounding=ROUND_DOWN))
+
+
+def ceil_to(x, places):
+    f = 10 ** places
+    return round(math.ceil(x * f - 1e-9) / f, places)
+
+
+def book_levels(side):
+    """Order book levels as (price, volume): SafeTrade gives orders with price and remaining_volume, Peatio
+    sometimes [price, volume] pairs."""
+    out = []
+    for o in side or []:
+        p, v = (o.get("price"), o.get("remaining_volume", o.get("volume"))) if isinstance(o, dict) else (o[0], o[1])
+        out.append((float(p), float(v)))
+    return out
+
+
+def sell_plan(balance, bids, mkt, cfg):
+    """What to sell, as the trader worked it out: ((volume, price), None), or (None, why). The price is a floor
+    max_slippage under the best bid (never under min_price), rounded up to the market's price precision; the volume
+    what the bids at or above it take, rounded down to its amount precision, if at least min_volume and the
+    market's minimum."""
+    if not bids:
+        return None, "no bids"
+    best = max(p for p, _ in bids)
+    price = ceil_to(max(best * (1 - cfg.get("max_slippage", 0.03)), cfg.get("min_price", 0.0)),
+                    int(mkt.get("price_precision", 6)))
+    if price > best:
+        return None, f"best bid {best} is under the floor {price}"
+    room = sum(v for p, v in bids if p >= price)
+    vol = floor_to(min(balance, room), int(mkt.get("amount_precision", 4)))
+    least = max(cfg.get("min_volume", 0.5), float(mkt.get("min_amount") or mkt.get("min_volume") or 0))
+    if vol < least:
+        return None, f"only {vol:g} PRL to sell (balance {balance:g}, bids down to {price} take {room:.4f})"
+    return (vol, price), None
+
+
 def coin_name(coin):
     """A SafeTrade currency as the report names it: PRL for "pearl", else its code in capitals."""
     return "PRL" if coin == "pearl" else coin.upper()
@@ -896,6 +938,85 @@ class W:
             st["salad_bought"] = paid
         st["bal_warned"] = False
         self.mark_report_read("bal", t)
+
+    def st_call(self, method, path, body=None, signed=True):
+        """A SafeTrade call under /api/v2/trade, signed with $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET: HMAC-SHA256
+        of a millisecond nonce and the key, on the real clock (SafeTrade checks it). (status, JSON)."""
+        hdrs = {}
+        if signed:
+            key, sec = os.environ.get("SAFETRADE_API_KEY", ""), os.environ.get("SAFETRADE_API_SECRET", "")
+            n = str(int(time.time() * 1000))
+            hdrs = {"X-Auth-Apikey": key, "X-Auth-Nonce": n,
+                    "X-Auth-Signature": hmac.new(sec.encode(), (n + key).encode(), hashlib.sha256).hexdigest()}
+        return http(method, SAFETRADE + path, body, timeout=30, headers=hdrs)
+
+    def sell(self, t):
+        """The PRL autoseller, moved here from its own Railway service (trader/trader.py) at the founder's request on
+        28 October: that service's builds kept crashing, and this watcher already reads SafeTrade. Once an hour, from
+        config sell's `minute`: cancel our open PRL sell orders (the last run's unfilled rest), read the PRL balance and
+        the bids, and place one limit sell at a floor max_slippage (3%) under the best bid, never under min_price, for
+        as much as the bids at or above it take. Less than min_volume (0.5), or the market's minimum, isn't sold. A
+        `SELL` event says what it did; the fills come back as SOLD events from the next SafeTrade read. With config sell
+        {"live": true} it trades; otherwise it only says what it would do. Off without config sell or the keys."""
+        cfg = self.cfg.get("sell")
+        if cfg is None or not os.environ.get("SAFETRADE_API_KEY") or not os.environ.get("SAFETRADE_API_SECRET"):
+            return
+        st, tm = self.st, time.gmtime(t)
+        hour = time.strftime("%Y-%m-%dT%H", tm)
+        if tm.tm_min < cfg.get("minute", 5) or st.get("sell_hour") == hour:
+            return
+        st["sell_hour"] = hour
+        live = cfg.get("live") is True
+        tag = "SELL" if live else "SELL DRY RUN"
+        try:
+            # The market: SafeTrade's PRL became PEARL on 18 October (pearlusdt; prlusdt disabled), see trader/README.md.
+            mkt = None
+            for mid in cfg.get("markets", ["pearlusdt", "prlusdt"]):
+                s, m = self.st_call("GET", f"/public/markets/{mid}", signed=False)
+                if 200 <= s < 300 and isinstance(m, dict) and m.get("id") and str(m.get("state") or "enabled").lower() == "enabled":
+                    mkt = m
+                    break
+            if not mkt:
+                raise ValueError("no enabled PRL/USDT market")
+            mid, coin = str(mkt["id"]), str(mkt.get("base_unit") or mkt.get("base_currency") or "pearl").lower()
+            s, orders = self.st_call("GET", f"/market/orders?market={mid}&state=wait&side=sell")
+            if not (200 <= s < 300 and isinstance(orders, list)):
+                raise ValueError(f"open orders: HTTP {s} {str(orders)[:150]}")
+            for o in orders:
+                if o.get("state", "wait") != "wait" or o.get("side") != "sell" or str(o.get("market", mid)).lower() != mid:
+                    continue
+                if live:
+                    s, j = self.st_call("POST", f"/market/orders/{o['id']}/cancel", {})
+                    if not 200 <= s < 300:
+                        raise ValueError(f"cancel order {o['id']}: HTTP {s} {str(j)[:150]}")
+                rest = float(o.get("origin_amount") or 0) - float(o.get("filled_amount") or 0)
+                event(f"{tag}: {'cancelled' if live else 'would cancel'} open sell {o['id']}, {rest:g} PRL at {o.get('price')}")
+            if orders and live:
+                time.sleep(2)   # so the cancelled PRL counts in the balance again
+            s, bal = self.st_call("GET", "/account/balances/spot")
+            if not (200 <= s < 300 and isinstance(bal, list)):
+                raise ValueError(f"balances: HTTP {s} {str(bal)[:150]}")
+            balance = next((float(b.get("balance") or 0) for b in bal if str(b.get("currency")).lower() == coin), 0.0)
+            s, book = self.st_call("GET", f"/public/markets/{mid}/depth?limit=50", signed=False)
+            if not (200 <= s < 300 and isinstance(book, dict) and "bids" in book):
+                raise ValueError(f"order book: HTTP {s} {str(book)[:150]}")
+            bids = book_levels(book["bids"])
+            what, why = sell_plan(balance, bids, mkt, cfg)
+            if what is None:
+                event(f"{tag}: nothing to sell ({why})")
+                return
+            vol, price = what
+            best = max(p for p, _ in bids)
+            if not live:
+                event(f"{tag}: would sell {vol} PRL with a limit at {price} (best bid {best}, balance {balance:g})")
+                return
+            # A price makes it a limit order (no type field); it fills against every bid at or above it, best first.
+            s, o = self.st_call("POST", "/market/orders", {"market": mid, "side": "sell", "amount": vol, "price": price})
+            if not (200 <= s < 300 and isinstance(o, dict)):
+                raise ValueError(f"sell order: HTTP {s} {str(o)[:150]}")
+            event(f"{tag}: order {o.get('id')} for {vol} PRL with a limit at {price} (best bid {best}, balance {balance:g})")
+        except Exception as e:
+            event(f"WARN {tag} failed: {str(e)[:200]}")
 
     def safetrade(self):
         """Our SafeTrade account, where the pools pay and the trader sells, for its rows in the pool table: each coin
@@ -1884,6 +2005,7 @@ class W:
               else {})
         self.trader()
         self.safetrade()
+        self.sell(now())
         self.salad_balance()
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():

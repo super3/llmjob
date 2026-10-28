@@ -2243,6 +2243,121 @@ class TestClassPrices(Base):
         self.assertEqual(self.events().count("PRICE"), 1)
 
 
+class TestSell(Base):
+    """The PRL autoseller moved in from trader/trader.py; the book and numbers are its tests'."""
+    BOOK = {"bids": [{"price": "1.40", "remaining_volume": "3"}, {"price": "1.38", "remaining_volume": "2"},
+                     {"price": "1.30", "remaining_volume": "50"}], "asks": []}
+    MKT = {"id": "pearlusdt", "base_unit": "pearl", "state": "enabled", "amount_precision": 2, "price_precision": 4,
+           "min_amount": "0.1"}
+
+    def setUp(self):
+        super().setUp()
+        os.environ["SAFETRADE_API_KEY"], os.environ["SAFETRADE_API_SECRET"] = "k" * 16, "s" * 32
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_KEY", None)
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_SECRET", None)
+        w.time.sleep, real_sleep = (lambda s: None), w.time.sleep
+        self.addCleanup(setattr, w.time, "sleep", real_sleep)
+        self.x.cfg["sell"] = {"live": True}
+        self.book(self.BOOK)
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, self.MKT))
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$", (200, []))
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "usdt", "balance": "9"},
+                                                               {"currency": "pearl", "balance": "4.123"}]))
+        self.http.on("POST", r"/market/orders$", (201, {"id": 77, "state": "wait"}))
+        self.http.on("POST", r"/cancel$", (200, {}))
+        self.clock[0] = T0 - T0 % 3600 + 5 * 60          # :05 past the hour
+
+    def book(self, b):
+        self.http.on("GET", r"/public/markets/pearlusdt/depth\?limit=50$", (200, b))
+
+    def orders(self):
+        return [c[2] for c in self.http.made("POST", r"/market/orders$")]
+
+    def test_sells_what_the_book_takes_within_slippage(self):
+        self.x.sell(self.clock[0])
+        # 3% under the best bid of 1.40 is 1.358: the bids at 1.40 and 1.38 (5 PRL) qualify; we have 4.123
+        self.assertEqual(self.orders(), [{"market": "pearlusdt", "side": "sell", "amount": 4.12, "price": 1.358}])
+        self.assertIn("SELL: order 77 for 4.12 PRL with a limit at 1.358 (best bid 1.4, balance 4.123)", self.events())
+        self.assertTrue(self.http.headers["X-Auth-Apikey"])
+
+    def test_sells_only_what_the_bids_above_the_floor_take(self):
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "pearl", "balance": "20"}]))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders()[0]["amount"], 5.0)
+
+    def test_never_under_min_price(self):
+        self.x.cfg["sell"]["min_price"] = 1.45
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("nothing to sell (best bid 1.4 is under the floor 1.45)", self.events())
+
+    def test_dust_and_the_markets_minimum_are_left(self):
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "pearl", "balance": "0.3"}]))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("nothing to sell (only 0.3 PRL", self.events())
+        self.assertEqual(w.sell_plan(1.5, [(1.4, 10)], dict(self.MKT, min_amount="2"), {}),
+                         (None, "only 1.5 PRL to sell (balance 1.5, bids down to 1.358 take 10.0000)"))
+
+    def test_last_runs_open_sell_is_cancelled_first(self):
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$",
+                     (200, [{"id": 5, "side": "sell", "state": "wait", "origin_amount": "2", "filled_amount": "1", "price": "1.5"},
+                            {"id": 6, "side": "sell", "state": "done"}]))
+        self.x.sell(self.clock[0])
+        posts = [c[1].split("/api/v2/trade")[1] for c in self.http.calls if c[0] == "POST"]
+        self.assertEqual(posts, ["/market/orders/5/cancel", "/market/orders"])   # only what's open, then the sale
+        self.assertIn("SELL: cancelled open sell 5, 1 PRL at 1.5", self.events())
+
+    def test_book_as_price_volume_pairs(self):
+        self.book({"bids": [["1.40", "10"]], "asks": []})
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders()[0]["amount"], 4.12)
+
+    def test_amounts_round_down_never_up(self):
+        self.assertEqual(w.floor_to(4.12999999999995, 4), 4.1299)
+        self.assertEqual(w.floor_to(4.12, 2), 4.12)
+        self.assertEqual(w.floor_to(0.30000000000000004, 1), 0.3)
+
+    def test_a_dry_run_places_and_cancels_nothing(self):
+        self.x.cfg["sell"] = {}                              # live isn't set
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$",
+                     (200, [{"id": 5, "side": "sell", "state": "wait", "origin_amount": "1", "price": "1.5"}]))
+        self.x.sell(self.clock[0])
+        self.assertFalse([c for c in self.http.calls if c[0] == "POST"])
+        self.assertIn("SELL DRY RUN: would cancel open sell 5, 1 PRL at 1.5", self.events())
+        self.assertIn("SELL DRY RUN: would sell 4.12 PRL with a limit at 1.358 (best bid 1.4, balance 4.123)", self.events())
+
+    def test_once_an_hour_from_its_minute(self):
+        self.x.cfg["sell"]["minute"] = 10
+        self.x.sell(self.clock[0])                           # :05, before :10
+        self.assertEqual(self.orders(), [])
+        self.clock[0] += 5 * 60
+        self.x.sell(self.clock[0])
+        self.x.sell(self.clock[0] + 600)                     # same hour: no second run
+        self.assertEqual(len(self.orders()), 1)
+        self.x.sell(self.clock[0] + 3600)
+        self.assertEqual(len(self.orders()), 2)
+
+    def test_off_without_its_config_or_the_keys(self):
+        del self.x.cfg["sell"]
+        self.x.sell(self.clock[0])
+        self.x.cfg["sell"] = {"live": True}
+        del os.environ["SAFETRADE_API_SECRET"]
+        self.x.sell(self.clock[0])
+        self.assertFalse(self.http.calls)
+
+    def test_the_retired_prl_market_is_passed_over_and_errors_are_one_warning(self):
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, dict(self.MKT, state="disabled")))
+        self.http.on("GET", r"/public/markets/prlusdt$", (404, {}))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("WARN SELL failed: no enabled PRL/USDT market", self.events())
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, self.MKT))
+        self.http.on("POST", r"/market/orders$", (422, {"errors": ["market.order.insufficient_funds"]}))
+        self.x.sell(self.clock[0] + 3600)
+        self.assertIn("WARN SELL failed: sell order: HTTP 422", self.events())
+
+
 class TestSaladBalance(Base):
     def setUp(self):
         super().setUp()
