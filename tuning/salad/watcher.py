@@ -2052,6 +2052,10 @@ class W:
                 # and 102 groups needed two or more, but the log never said why.
                 why = "" if s in (200, 202) else f" {str(j)[:200]}"
                 event(f"START {g['name']}: it was stopped before getting a PC; POST /start -> HTTP {s}{why}")
+                # The account's replicas are all taken (another session's groups count too): a stopped group still
+                # holds one, so waiting keeps the account full for everyone. It never had a PC, so it goes.
+                if s == 400 and "replicas_quota_exceeded" in str(j):
+                    self.delete(g, "released", "Salad's replica quota is full, so it can't start")
             elif g["had_pc"]:
                 st["credits_out"] = True
                 event(f"ALERT Salad stopped {g['name']} after it had a PC ({g.get('state_desc') or 'no reason given'}). "
@@ -2360,9 +2364,13 @@ class W:
         quota = c.get("container_replicas_quota", 10)
         st["quota"] = quota
         # Salad's own count of replicas in use, when it gives one: on 22 October it counted one more than we had
-        # at times all day, so every search sent creates it then refused (created_replicas_quota_exceeded).
+        # at times all day, so every search sent creates it then refused (created_replicas_quota_exceeded). It counts
+        # the whole account (another session's groups too) and stopped groups, and won't start a group once that
+        # count is at the quota: on 28 October, with 8 groups of ours and the pearl2dev session's 2, 3080-83 was made
+        # in the 10th replica and every start was refused (replicas_quota_exceeded). So at most quota - 1 run, and a
+        # new group needs the count under quota - 1 before it's made.
         used = c.get("container_replicas_used")
-        room = min(self.cfg["max_active"] - len(active), quota - (len(active) if used is None else used))
+        room = min(self.cfg["max_active"] - len(active), quota - 1 - (len(active) if used is None else used))
         t = now()
         this_hour = sum(1 for g in st["groups"].values() if g["created"] >= t - t % 3600)
         room = min(room, self.cfg["max_new_per_hour"] - this_hour)   # however the search was started

@@ -190,7 +190,10 @@ A group 2 h on one PC (rule 5 clears it there every round) starts its count agai
 24 October: before, 3060-72 mined at +17–20% for hours and was deleted on its first slow PC, its 3 moves used on
 earlier days.
 The search also sizes its room by Salad's own count of replicas in use, and stops at the first create Salad
-refuses for its quota.
+refuses for its quota. Since 28 October it keeps that count under the quota less one: Salad counts the whole
+account (another session's groups too) and stopped groups, and won't start a group once the count is at the quota
+(`replicas_quota_exceeded`), so at most 9 of 10 can run. A group whose start is refused that way is deleted
+(released) rather than tried every 5 minutes, since even stopped it holds one of the 10.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly on its first PC before the class had paid (no shares, under cost, never mined); a blocked
 port never fails a group. Its deletion event carries the box's last log
@@ -417,7 +420,9 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
 - `GET /quotas`: a new org gets 10 replicas. Stopped groups count against it: with 10 stopped groups,
   creating one failed with `created_replicas_quota_exceeded`, although `container_replicas_used`
   read 0 once Salad had stopped them for lack of credit. A raise goes through "Request Increase" in
-  the portal, usually answered within 2 business days.
+  the portal, usually answered within 2 business days. A stopped group can't start while
+  `container_replicas_used` (which counts it) is at the quota: on 28 October 3080-83, made as the 10th, got
+  `replicas_quota_exceeded` on every start, though only 9 groups ran.
 - Create errors are HTTP 400 with a type: `container_group_update_exception` (the `; curl` command),
   `created_replicas_quota_exceeded`, `cannot_start_container_group_with_current_status` (start while
   pending) and `no_credits_available` ("Entitlement check failed"). A 408 is `connection_timeout`.
