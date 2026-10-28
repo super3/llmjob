@@ -80,6 +80,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # its stored PCs (0.35: 35% of them are slower), not the median (see pick_margin).
                "search_pct": 0.35,
                "drop_count": 3, "drop_min": 10, "drop_hours": 24,
+               # How far back each log read starts before the last one ended: a PC's lines can reach Salad minutes
+               # late (see logs). Lines read twice count once.
+               "log_overlap_min": 10,
                # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
@@ -723,11 +726,16 @@ class W:
         return None if b is None else a + b
 
     def logs(self, active):
-        """One query an org for every group: all container lines since the last successful read (2 min overlap).
-        A busy window is split (see read_logs); a failed read is tried again next round, up to 30 min back."""
+        """One query an org for every group: all container lines since the last successful read, and log_overlap_min
+        before it, since a PC's lines can reach Salad minutes late. Until 28 October the overlap was 2 min, and
+        5070-97's lines came 2.5 to 4 min late: the ledger got one reading in 5 min and then none for 30, so it
+        showed 0 TH/s at a loss while Salad's log had a line a minute at 132 TH/s (its pool shares kept it on its PC).
+        Lines read twice count once (seen). A busy window is split (see read_logs); a failed read is tried again next
+        round, up to 30 min back."""
         st = self.st
         t = now()
-        start = max(min(g["created"] for g in active) - 60, (st["last_log_end"] or 0) - 120, t - 1800)
+        start = max(min(g["created"] for g in active) - 60,
+                    (st["last_log_end"] or 0) - 60 * self.cfg.get("log_overlap_min", 10), t - 1800)
         # Every org groups run in, and any a live group is in: a box deleted there can mine on (see ghost_line).
         items = []
         for org in dict.fromkeys(list(self.orgs()) + [g.get("org") or ORG for g in active]):

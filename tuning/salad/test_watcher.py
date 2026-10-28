@@ -2645,6 +2645,22 @@ class TestRound(Base):
         self.assertLess(len(self.http.made("POST", "/log-entries")), 10)
         self.assertEqual(self.x.st["last_log_end"], self.clock[0])
 
+    def test_a_line_that_reaches_salad_late_is_still_read(self):
+        # 28 October: 5070-97's lines reached Salad 2.5-4 min late, behind a 2 min overlap, and were never read.
+        g = self.group()
+        g["created"] = T0 - 3600
+        line = lambda tm, n: {"text_log": f"[mining g0] 08:00:00 132.0 TH/s · {n} accepted · 0 rejected · up 1h {n}m",
+                              "time": w.iso(tm), "resource": {"labels": {"container_group_name": "biz-rtx4080",
+                                                                         "machine_id": "m1"}}}
+        lines = [line(T0 - 30, 1)]
+        self.http.on("POST", "/log-entries", lambda b: (200, {"items": [
+            x for x in lines if w.parse_iso(b["start_time"]) <= w.parse_iso(x["time"]) <= w.parse_iso(b["end_time"])]}))
+        self.assertEqual(len(self.x.logs([g])), 1)
+        self.clock[0] += 60
+        lines.append(line(T0 - 240, 2))                    # stamped 4 min before the last read, arriving only now
+        got = self.x.logs([g])
+        self.assertEqual([x[0] for x in got], [T0 - 240])  # read now, and the line read before isn't counted again
+
     def test_a_failed_read_is_tried_again_next_round(self):
         g = self.group()
         self.x.st["last_log_end"] = self.clock[0] - 120
