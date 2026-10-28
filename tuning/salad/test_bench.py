@@ -320,11 +320,32 @@ class TestBenchRTX(unittest.TestCase):
         self.assertFalse([c for c in calls30 if c[0] == "POST"])
         self.assertEqual(x30.st["yielded"], "20")
         self.assertIn("once lane 20 has its box", x30.now_line())
-        x20.tick()                                          # lane 20 gets its box and clears its flag
+        x20.tick()                                          # lane 20's create goes through
         self.assertEqual(x20.st["group"], "bench-20-rtx2080ti-1")
-        self.assertFalse(os.path.exists(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")))
+        flag = os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")
+        self.assertTrue(os.path.exists(flag))               # but a box can still find no replica to start on
+        x30.tick()
+        self.assertIsNone(x30.st["group"])                  # so lane 30 still waits
+        old = self.l20.w.http                               # until lane 20's box gets a PC
+        self.l20.w.http = lambda m, u, b=None, timeout=None: (
+            (200, {"instances": [{"machine_id": "abcdef0123", "state": "running", "instance_id": "i1"}]})
+            if u.endswith("/instances") else (200, {"items": []}) if u.endswith("/log-entries") else old(m, u, b, timeout))
+        x20.tick()
+        self.l20.w.http = old
+        self.assertEqual(x20.st["machine"], "abcdef0123")
+        self.assertFalse(os.path.exists(flag))
         x30.tick()                                          # and lane 30 goes next
         self.assertTrue(x30.st["group"].startswith("bench-30-"))
+
+    def test_the_lane_that_has_waited_longest_goes_first(self):
+        x20, _ = self.lane_with(self.l20, [])
+        x30, _ = self.lane_with_shared(self.l30)
+        with open(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json"), "w") as f:
+            json.dump({"since": 49_000, "last": 50_000}, f)
+        with open(os.path.join(self.l30.w.D, "bench-rtx-30.waiting.json"), "w") as f:
+            json.dump({"since": 49_500, "last": 50_000}, f)
+        self.assertIsNone(x20.ahead())                      # lane 20 has waited longer: it goes
+        self.assertEqual(x30.ahead(), "20")                 # and lane 30, waiting too, still leaves it to 20
 
     def lane_with_shared(self, m):
         """Lane m with Salad answering creates, sharing the waiting flags lane_with left in place."""

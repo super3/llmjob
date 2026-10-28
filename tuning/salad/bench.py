@@ -39,9 +39,10 @@ AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
 # Lanes share whatever Salad quota the watcher leaves. With room for one more box only, the lane that frees a
 # replica took it back within the minute and the other waited: on 28 October the RTX 20 lane waited 55 minutes
-# while the 30 lane ran three PCs. So a lane the quota turns away flags it in its own bench-<set>-<lane>.waiting.json,
-# and another lane about to start a new box leaves the freed replica to it. A flag counts for TURN_MIN minutes after
-# its lane's last try, so a lane that stopped holds no one back.
+# while the 30 lane ran three PCs. So a lane the quota turns away flags it in its own bench-<set>-<lane>.waiting.json
+# until its box gets a PC, and a lane about to start a new box leaves the freed replica to the lane that has waited
+# longest. A flag counts for TURN_MIN minutes after its lane's last refused try, so a lane that stopped holds no one
+# back.
 TURN_MIN = 3
 HOSTS = 2               # PCs per card, as in benchmark.md
 MAX_TRIES = 10          # boxes per class before moving on (the 1070/1080/1080 Ti class may not show all three)
@@ -348,7 +349,6 @@ class Bench:
             if 200 <= g < 300:
                 self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120,
                                lines=[], order=order)
-                self.waiting(False)
                 log(f"ADOPTED {name} ({cls}): a create that errored had made it")
                 return
             self.st["bump"] = bump + 1
@@ -359,9 +359,10 @@ class Bench:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
             self.waiting(quota_refused(s, j))
             return
+        # A lane's waiting flag stays until its box gets a PC: at 21:26 on 28 October the RTX 20 lane's create went
+        # through, Salad then stopped the box for want of a replica, and the RTX 30 lane, seeing no flag, took it.
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
-        self.waiting(False)
         log(f"CREATED {name} ({cls}, high)")
 
     def wait_file(self, lane):
@@ -378,14 +379,17 @@ class Bench:
         elif os.path.exists(p):
             os.remove(p)
 
-    def other_waiting(self):
-        """Another lane of the set that the quota turned away in the last TURN_MIN minutes, or None."""
+    def ahead(self):
+        """The lane to leave a free replica to, or None: of the lanes the quota turned away in the last TURN_MIN
+        minutes, the one that has waited longest, unless that's this lane."""
         t = w.now()
-        for lane in sorted(LANES):
-            v = w.load(self.wait_file(lane), None) if lane != LANE else None
+        fresh = {}
+        for lane in LANES:
+            v = w.load(self.wait_file(lane), None)
             if v and t - v.get("last", 0) <= TURN_MIN * MIN:
-                return lane
-        return None
+                fresh[lane] = v
+        first = min(fresh, key=lambda lane: (fresh[lane].get("since", 0), lane), default=None)
+        return None if first == LANE else first
 
     def note(self, msg):
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
@@ -489,9 +493,9 @@ class Bench:
             self.next_class()
             return True
         if not self.st["group"]:
-            other = None if self.st.get("waiting") else self.other_waiting()
+            other = self.ahead()
             if other:
-                # A lane that is waiting itself takes its chance; one that isn't leaves the replica to the other.
+                # The lane that has waited longest goes first; the others leave the freed replica to it.
                 if self.st.get("yielded") != other:
                     log(f"YIELD to lane {other}: the quota turned it away, so it gets the next free replica")
                 self.st["yielded"] = other
@@ -528,8 +532,6 @@ class Bench:
                 # Held back by the quota, not by the class having no PC: that wait doesn't count to NO_PC_MIN.
                 self.st["created"] = t
                 self.waiting(True)
-            elif self.st.get("waiting"):
-                self.waiting(False)
         elif not self.st.get("pc_t") and t - self.st["created"] >= NO_PC_MIN * MIN:
             self.note(f"{cls}: no PC at high in {NO_PC_MIN} min")
             self.next_class()
