@@ -216,6 +216,86 @@ def salad(calls, instances=None, classes=None, logs=None):
     return http
 
 
+class TestBenchRTX(unittest.TestCase):
+    """The RTX 20- and 30-series rerun (BENCH_SET=rtx): its lanes, classes, box, miner order and table."""
+    @classmethod
+    def setUpClass(cls):
+        cls.r = load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee")
+        cls.l20 = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee")
+        cls.l30 = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee")
+
+    def bench(self, m, calls=None, classes=None, **st):
+        old = m.w.http
+        m.w.http = salad(calls if calls is not None else [], classes=classes)
+        self.addCleanup(lambda: setattr(m.w, "http", old))
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(**st)
+        return x
+
+    def test_each_lane_takes_one_series_with_its_own_files(self):
+        self.assertEqual([os.path.basename(f) for f in (self.l20.STATE, self.l30.STATE)],
+                         ["bench-rtx-20.json", "bench-rtx-30.json"])
+        self.assertEqual([p[0] for p in self.l20.PLAN],
+                         ["RTX 2080 Ti (11 GB)", "RTX 2080 (8 GB)", "RTX 2070 (8 GB)", "RTX 2060 (6 GB)"])
+        self.assertEqual([p[0] for p in self.l30.PLAN][0], "RTX 3090 Ti (24 GB)")
+        self.assertEqual(len(self.l30.PLAN), 8)
+        self.assertEqual({p[2] for p in self.r.PLAN}, {300})
+        # Each lane writes its own series only, and every class is in exactly one lane.
+        self.assertEqual([t for t, _ in self.l20.SECTIONS], ["RTX 20-series (on Salad)"])
+        self.assertEqual([t for t, _ in self.l30.SECTIONS], ["RTX 30-series (on Salad)"])
+        self.assertEqual(len(self.l20.PLAN) + len(self.l30.PLAN), len(self.r.PLAN))
+
+    def test_a_lane_from_another_set_is_refused(self):
+        for env in ({"BENCH_SET": "rtx", "BENCH_LANE": "a"}, {"BENCH_LANE": "20"}):
+            m = load_bench(BENCH_COMMIT="c0ffee", **env)
+            with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
+                m.Bench().run()
+            self.assertIn("BENCH_LANE", str(e.exception))
+
+    def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
+        calls = []
+        self.bench(self.l20, calls, classes=["RTX 2080 Ti (11 GB)"], cls=0, tries=0, group=None).create()
+        body = next(c[2] for c in calls if c[0] == "POST")
+        self.assertEqual(body["name"], "bench-20-rtx2080ti-1")      # not "biz-": the watcher leaves it alone
+        self.assertEqual(body["container"]["image"], self.l20.w.IMAGE)
+        self.assertEqual(body["container"]["priority"], "high")
+        cmd = body["container"]["command"][2]
+        self.assertIn("ORDER=ours,peak,srb OURS_SECS=300 bash /root/bench.sh", cmd)
+        self.assertNotIn("amdtest.sh", cmd)
+
+    def test_the_two_pcs_of_a_class_take_turns_going_first_each_in_a_group_of_its_own(self):
+        res = {"machine": "m1" * 8, "card": "NVIDIA GeForce RTX 2080 Ti", "power": "250.00 W", "ours": (90.0, None),
+               "peak": (92.0, None), "srb": (91.0, None)}
+        x = self.bench(self.l20, cls=0, tries=0, group="bench-20-rtx2080ti-1")
+        self.assertEqual(x.order(), "ours,peak,srb")
+        x.st["results"] = {"RTX 2080 Ti": [res]}
+        self.assertEqual(x.order(), "srb,peak,ours")
+        x.move_on("done")                       # a moved PC would keep the first group's order
+        self.assertIsNone(x.st["group"])
+
+    def test_a_super_card_from_a_class_gets_a_row_of_its_own(self):
+        self.assertEqual(self.r.row_for("NVIDIA GeForce RTX 2070 SUPER",
+                                        ["RTX 2070"] + self.r.EXTRA["RTX 2070 (8 GB)"]), "RTX 2070 Super")
+        st = {"results": {"RTX 2070": [{"machine": "abcdef1234", "power": "175.00 W", "ours": (50.0, None),
+                                         "peak": (52.0, None), "srb": (51.0, None)}]}}
+        text = self.l20.render(st)
+        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | 96% |", text)
+        self.assertNotIn("RTX 2070 Super", text)          # not waited for: no empty rows for it
+        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |", text)
+
+    def test_table_puts_the_two_lanes_together(self):
+        d = tempfile.mkdtemp()
+        for lane, row in (("20", "RTX 2080"), ("30", "RTX 3070")):
+            with open(f"{d}/{lane}.json", "w") as f:
+                json.dump({"results": {row: [{"machine": "0123456789", "power": "200.00 W", "ours": (70.0, None),
+                                              "peak": (69.0, None), "srb": (71.5, None)}]}}, f)
+        text = self.r.table([f"{d}/20.json", f"{d}/30.json"])
+        self.assertLess(text.index("## RTX 20-series"), text.index("## RTX 30-series"))
+        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+
+
 class TestBenchAMD(unittest.TestCase):
     """The Radeon set (BENCH_SET=amd): its plan, files, lanes, box command, lines, results and table."""
     @classmethod
@@ -760,10 +840,10 @@ class TestBenchShDryRun(unittest.TestCase):
 
     def test_an_nvidia_box_runs_the_three_miners_as_before(self):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
-        rel = "https://github.com/super3/llmjob/releases/download/v0.6.0"
+        rel = "https://github.com/super3/llmjob/releases/download/v0.6.9"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.17.6/peakminer-2.17.6-linux-x86_64 -> peak",
-            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz"
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.3/peakminer-2.20.3-linux-x86_64 -> peak",
+            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.0/SRBMiner-Multi-3-8-0-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
@@ -776,7 +856,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.17.6, SRBMiner 3.7.1, ours v0.6.0", lines[1])
+        self.assertIn("ready PeakMiner 2.20.3, SRBMiner 3.8.0, ours v0.6.9", lines[1])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start peak 60s", "start peak 300s", "start srb 300s", "start ours 300s"])
         r = b.parse(lines)
@@ -804,7 +884,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("card AMD Radeon RX 9070 XT, ?, , , ? MiB, gfx1201", bodies)
         self.assertIn("copy 564 GB/s", bodies)
         self.assertIn("hitcheck PASS secs=600 hits=2202 verified=400 failed=0 salts=277", bodies)
-        self.assertIn("ready SRBMiner 3.7.1, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.0, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ")],
                          ["start build gfx1201", "start hitcheck 600s", "start ours 60s", "start ours 300s",
                           "start srb 300s"])
@@ -826,7 +906,7 @@ class TestBenchShDryRun(unittest.TestCase):
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
         self.assertIn("hitcheck FAIL secs=600 hits=2202 verified=400 failed=1 salts=277 why=seed chain mismatch", bodies)
         self.assertIn("skip ours: hit check failed", bodies)
-        self.assertIn("ready SRBMiner 3.7.1", bodies)
+        self.assertIn("ready SRBMiner 3.8.0", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start srb")], ["start srb 60s", "start srb 300s"])
         self.assertEqual(bodies[-1], "all done")
         r = self.parse_amd(self.bench_lines(out))

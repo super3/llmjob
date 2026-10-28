@@ -511,6 +511,24 @@ python3 tuning/salad/bench.py table      # every lane's rows, in benchmark.md's 
 Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a
 salt (hits / salts; the check's target makes 8).
 
+## RTX 20 and 30 rerun (bench.py)
+
+`BENCH_SET=rtx` reruns benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
+our release v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.0 (`bench.sh` pins all three, by commit). Lane `20` takes
+the 2080 Ti, 2080, 2070 and 2060 classes, lane `30` the eight RTX 30 classes from the 3090 Ti to the 3060 (12 GB),
+one Salad slot each. Two PCs per class, each in a group of its own (`bench-20-rtx2080ti-1`, ...), the first with
+ours first and the second with SRBMiner first, as "How a host is tested" alternates them; PeakMiner always runs
+second. A warm-up of the first miner, then each for 5 minutes. Salad has no 2060 Super or 2070 Super class, so
+those rows fill only if the 2060 or 2070 class hands one out. There's no hit check: the release's cores are run as
+users get them, and the pool's accepted and rejected shares are in each box's lines. A PC takes about 25 minutes.
+
+```sh
+export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=rtx BENCH_COMMIT=$(git rev-parse HEAD)
+BENCH_LANE=20 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-20.out 2>&1 &
+BENCH_LANE=30 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-30.out 2>&1 &
+python3 tuning/salad/bench.py table      # both lanes' rows
+```
+
 ## The container
 
 - Image `nvidia/cuda:12.2.2-base-ubuntu22.04`. The 12.8.1 image sat in "preparing" for 45+ min. The

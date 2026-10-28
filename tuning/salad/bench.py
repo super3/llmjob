@@ -6,6 +6,7 @@
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
 # BENCH_SET=amd runs the Radeon cards instead (our HIP core against SRBMiner), in one run or two lanes.
+# BENCH_SET=rtx reruns the RTX 20- and 30-series rows on Salad PCs, one lane a series.
 # `bench.py table [STATE...]` prints the set's whole table from its lanes' state files.
 import json, os, re, sys, time, importlib.util
 
@@ -14,14 +15,17 @@ _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "wa
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
 
-# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon cards). Each set has its own
-# state, status and log files, so the two runs never share a place in a plan.
+# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series), "amd" (the Radeon cards) or "rtx" (the RTX 20- and
+# 30-series). Each set has its own state, status and log files, so two runs never share a place in a plan.
 SET = os.environ.get("BENCH_SET", "gtx")
-# BENCH_LANE ("a", "b" or "c", AMD set only) splits the set into runs that go at the same time, one Salad slot each.
-# Each lane has its own files and group names and takes its own classes. No lane: the whole set in one run.
-# The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
+# BENCH_LANE (AMD: "a", "b" or "c"; RTX: "20" or "30") splits the set into runs that go at the same time, one Salad
+# slot each. Each lane has its own files and group names and takes its own classes. No lane: the whole set in one
+# run. The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
 LANE = os.environ.get("BENCH_LANE", "")
-LANES = {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]}
+LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
+         "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
+                 "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
+                        "RTX 3060"]}}.get(SET, {})
 NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
@@ -74,10 +78,25 @@ if SET == "amd":
     # between them. 16-19 min plus the check in all; 40 plus the check leaves 20 min for the image to download.
     # 50 with the default 10-minute check.
     RUN_MIN = 40 + -(-VERIFY_SECS // 60)
+if SET == "rtx":
+    # benchmark.md's RTX 20- and 30-series rows, rerun on Salad PCs with all three miners at their newest (bench.sh).
+    # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
+    # a 12 GB RTX 3060 class is run, as benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
+    PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
+            ("RTX 2070 (8 GB)", ["RTX 2070"], 300), ("RTX 2060 (6 GB)", ["RTX 2060"], 300),
+            ("RTX 3090 Ti (24 GB)", ["RTX 3090 Ti"], 300), ("RTX 3090 (24 GB)", ["RTX 3090"], 300),
+            ("RTX 3080 Ti (12 GB)", ["RTX 3080 Ti"], 300), ("RTX 3080 (10 GB)", ["RTX 3080"], 300),
+            ("RTX 3070 Ti (8 GB)", ["RTX 3070 Ti"], 300), ("RTX 3070 (8 GB)", ["RTX 3070"], 300),
+            ("RTX 3060 Ti (8 GB)", ["RTX 3060 Ti"], 300), ("RTX 3060 (12 GB)", ["RTX 3060"], 300)]
+    EXTRA = {"RTX 2070 (8 GB)": ["RTX 2070 Super"], "RTX 2060 (6 GB)": ["RTX 2060 Super"]}
+    SECTIONS = [("RTX 20-series (on Salad)", LANES["20"]), ("RTX 30-series (on Salad)", LANES["30"])]
+    MEM = {"RTX 2060": "6 GB", "RTX 3060": "12 GB"}
 ALL_SECTIONS = SECTIONS          # every row of the set, for `table`
-if SET == "amd" and LANE in LANES:
+if LANE in LANES:
     PLAN = [p for p in PLAN if p[1][0] in LANES[LANE]]
-    SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS]
+    # A section none of the lane's rows are in (RTX: the other series) isn't written at all.
+    SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS
+                if any(r in LANES[LANE] for r in rows)]
 
 
 def log(msg):
@@ -262,11 +281,14 @@ class Bench:
         return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
 
     def order(self):
-        """Which miner goes first, and so gets the warm-up. GTX: by box. AMD: by how many PCs of the class are
-        recorded, so its two PCs take turns (each gets a group of its own, see move_on)."""
+        """Which miner goes first, and so gets the warm-up. GTX: by box. AMD and RTX: by how many PCs of the class
+        are recorded, so its two PCs take turns (each gets a group of its own, see move_on). RTX alternates ours
+        first and SRBMiner first, as benchmark.md's "How a host is tested" does."""
+        n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
         if SET == "amd":
-            n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
             return "ours,srb" if n % 2 == 0 else "srb,ours"
+        if SET == "rtx":
+            return "ours,peak,srb" if n % 2 == 0 else "srb,peak,ours"
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
@@ -291,7 +313,7 @@ class Bench:
             self.next_class()
             return
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
-            w.slug(cls).replace("rtx", "gtx")
+            w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
         name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}"[:60]
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
@@ -364,7 +386,7 @@ class Bench:
                 self.note(f"{cls}: stopped after {self.st['tries']} boxes with rows still empty")
             self.next_class()
             return
-        if SET == "amd" and why == "done":
+        if SET in ("amd", "rtx") and why == "done":
             # A moved instance keeps its group's command, so the next PC gets a new group: the other order.
             log(f"NEW GROUP for the next PC of {cls}, so the other miner goes first")
             self.delete()
@@ -524,8 +546,8 @@ class Bench:
         self.wallet = os.environ.get("PRL_WALLET") or w.load(w.CFG, {}).get("wallet", "")
         if not self.wallet.startswith("prl1") or not COMMIT:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
-        if LANE and (SET != "amd" or LANE not in LANES):
-            sys.exit(f"BENCH_LANE is one of {', '.join(LANES)}, and only with BENCH_SET=amd")
+        if LANE and LANE not in LANES:
+            sys.exit("BENCH_LANE is a, b or c with BENCH_SET=amd, or 20 or 30 with BENCH_SET=rtx")
         if SET == "amd" and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
@@ -547,8 +569,8 @@ class Bench:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["table"]:
-        # Default: the set's lane files on AMD (bench-amd-a.json, bench-amd-b.json), else its own.
-        print(table(sys.argv[2:] or ([os.path.join(w.D, f"bench-{SET}-{x}.json") for x in LANES] if SET == "amd"
+        # Default: the set's lane files where it has lanes (bench-amd-a.json, bench-rtx-20.json, ...), else its own.
+        print(table(sys.argv[2:] or ([os.path.join(w.D, f"bench-{SET}-{x}.json") for x in LANES] if LANES
                                      else [STATE])))
     else:
         Bench().run()

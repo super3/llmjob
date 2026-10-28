@@ -17,7 +17,13 @@
 # doesn't build or the hit check fails, our miner is left out and SRBMiner still runs. LD_LIBRARY_PATH is never
 # set: Salad puts its ROCm-to-WSL bridge first on it.
 export DEBIAN_FRONTEND=noninteractive
-POOL_HOST=us.pearl.herominers.com; POOL_PORT=1200; SECS=300; WARM=60; VER=v0.6.0
+POOL_HOST=us.pearl.herominers.com; POOL_PORT=1200; SECS=300; WARM=60
+# The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
+# this file by commit, so a run keeps the versions it started with. Until 28 October: v0.6.0, PeakMiner 2.17.6
+# and SRBMiner 3.7.1 (the GTX and AMD tables).
+VER=v0.6.9
+PEAK_VER=2.20.3; PEAK_SHA256=345a4446acaa9213e6cd4622460b002a966dad4a8ec127f965d3a8878375fc2a
+SRB_VER=3.8.0; SRB_MD5=01cdd7ffdca43f3b6968fbaacea449b5
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
@@ -95,14 +101,16 @@ fi
 mkdir -p /opt/b && cd /opt/b || fail "no /opt/b"
 # The two miners from their official releases, checked against the published checksums.
 if [ -z "$AMD" ]; then
-  curl -fsSL --retry 3 -o peak https://github.com/peakminer/peakminer/releases/download/v2.17.6/peakminer-2.17.6-linux-x86_64 \
+  curl -fsSL --retry 3 -o peak \
+    "https://github.com/peakminer/peakminer/releases/download/v$PEAK_VER/peakminer-$PEAK_VER-linux-x86_64" \
     || fail "download PeakMiner"
-  echo "573c3412ddac99fe2c0eca790dabebf9a029cbe38a2811784e93c4eddc2ff65c  peak" | sha256sum -c --quiet || fail "PeakMiner checksum"
+  echo "$PEAK_SHA256  peak" | sha256sum -c --quiet || fail "PeakMiner checksum"
   chmod +x peak
 fi
-curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz \
+curl -fsSL --retry 3 -o srb.tgz \
+  "https://github.com/doktor83/SRBMiner-Multi/releases/download/$SRB_VER/SRBMiner-Multi-${SRB_VER//./-}-Linux.tar.gz" \
   || fail "download SRBMiner"
-echo "112223a663506023e31d7f9dbce3dfe2  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
+echo "$SRB_MD5  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
 # Our miner: the published release, as a user gets it; on AMD, the HIP core built here.
 case ",${ORDER:-peak,srb,ours}," in *,ours,*)
@@ -116,9 +124,9 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
   fi ;;
 esac
 if [ -z "$AMD" ]; then
-  say "ready PeakMiner 2.17.6, SRBMiner 3.7.1, ours $VER"
+  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER, ours $VER"
 else
-  r="SRBMiner 3.7.1"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
+  r="SRBMiner $SRB_VER"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
   say "ready $r"
   say "srb devices $(cd "$(dirname "$SRB")" && timeout 60 "$SRB" --list-devices $SRB_EXTRA 2>&1 | tr -s '\r\n ' ' ' | tail -c 400)"
 fi
