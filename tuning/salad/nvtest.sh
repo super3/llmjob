@@ -38,10 +38,12 @@ cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|d
 export DEBIAN_FRONTEND=noninteractive
 
 say() { echo "[nvtest] $(date -u +%T) $*"; }
-# emit: every non-empty stdin line as a say line, in pieces of at most 400 characters.
+# emit: every non-empty stdin line as a say line, in pieces of at most 400 characters. Read straight from stdin
+# (no tr in front, which holds a pipe's lines until 4 KB or the end), so each line goes out as it comes.
 emit() {
   local line
-  tr '\r' '\n' | while IFS= read -r line || [ -n "$line" ]; do
+  while IFS= read -r line || [ -n "$line" ]; do
+    line=${line//$'\r'/ }
     [ -z "${line//[[:space:]]/}" ] && continue
     while [ ${#line} -gt 400 ]; do say "${line:0:400}"; line="+${line:400}"; done
     say "$line"
