@@ -2223,12 +2223,21 @@ class W:
         # AMD image is 1.16 GB against 31 MB for the NVIDIA one: on 28 October rx9060xt was left 10 minutes after
         # getting PC e9687de9 with no container output at all, and its class barred for a day as failed.
         if g.get("_run", True):
+            g["run_seen"] = t
             if not g.get("run_since"):
                 # A group already on its PC before this rule came in has no run_since at all: its clock stays.
                 g["run_since"] = g["pc_since"] if "run_since" not in g else t
         else:
-            if t - g["pc_since"] >= 30 * MIN:
-                why = f"not running {(t - g['pc_since']) / 60:.0f} min after getting PC {g['machine'][:8]} (image still loading)"
+            # A container that has run here counts its 30 minutes from the last round it ran, not from getting the
+            # PC: on 29 October 2070-88 had mined 1 h 53 m on a889b452 when one round read it not running, and this
+            # rule left the PC and bad-listed it as if the image had never loaded.
+            if g.get("run_since"):
+                since = g.setdefault("run_seen", t)   # ran here before run_seen came in: count from now
+                why = f"not running for {(t - since) / 60:.0f} min on PC {g['machine'][:8]}, after running there"
+            else:
+                since = g["pc_since"]
+                why = f"not running {(t - since) / 60:.0f} min after getting PC {g['machine'][:8]} (image still loading)"
+            if t - since >= 30 * MIN:
                 self.st.setdefault("bad_pcs", {})[g["machine"]] = {"t": t, "group": g["name"], "why": why}
                 self.reallocate(g, why, count=False)   # the PC's line, not the class's fault
             return
