@@ -119,7 +119,7 @@ static int hitlist(void *h, const PearlProfile &prof, const uint8_t *header, uin
 int main(int argc, char **argv) {
   double seconds = argc > 1 ? atof(argv[1]) : 20.0;
   PearlProfile prof{};
-  prof.k = 2048; prof.rank = 128; prof.mma_type = 0;
+  prof.k = PEARL_FOLD_K; prof.rank = 128; prof.mma_type = 0;
   prof.m = 131072; prof.n = 131072;
   prof.seed_derivation = PEARL_SEED_SALTED;
   prof.col_batch = 2048; prof.hash_big_endian = 0;
@@ -200,7 +200,7 @@ int main(int argc, char **argv) {
   pearl_tall_cyc_take(cyc);
   if (cyc[1])
     printf("  cycles a tile %.0f over %llu tiles  ->  %.2f%% of the tensor peak a clock\n",
-           (double)cyc[0] / (double)cyc[1], cyc[1], 100.0 * 98304.0 * (double)cyc[1] / (double)cyc[0]);
+           (double)cyc[0] / (double)cyc[1], cyc[1], 100.0 * 48.0 * (double)PEARL_FOLD_K * (double)cyc[1] / (double)cyc[0]);
 #endif
   pearl_host_destroy(h);
   return 0;

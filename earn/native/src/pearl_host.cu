@@ -2970,7 +2970,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // The fold writes each transcript slot exactly once only when every chunk
   // has its own bucket. A geometry with more chunks than buckets would fold
   // into whatever the buffer already held; refuse it rather than mine garbage.
-  if (chunks > PEARL_JACKPOT_BUCKETS) {
+  // Except the cp.async tall fold built for k past 2048 (PEARL_FOLD_K): its shared-XOR
+  // readout folds chunk c into word c % 16, pre-rotated as the reference's rotl13 needs.
+  if (chunks > PEARL_JACKPOT_BUCKETS
+      && !(ctx->foldTall && !ctx->foldTma && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+           && chunks % PEARL_JACKPOT_BUCKETS == 0u)) {
     if (err && err_len)
       snprintf(err, err_len, "%u chunks exceed %u transcript buckets", chunks,
                (unsigned)PEARL_JACKPOT_BUCKETS);

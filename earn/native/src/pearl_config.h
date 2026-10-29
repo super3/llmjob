@@ -445,7 +445,24 @@ typedef struct {
 // these as constants needs 120 and schedules better. The host refuses any other
 // rank or k rather than silently folding the wrong shape.
 #define PEARL_FOLD_RANK 128u
+// -DPEARL_FOLD_K=4096 or 8192 (bench only, the tall fold on Ada and Ampere): a larger k
+// spreads each tile's hash and hand-off over more MACs. Chunks past 16 fold into the 16
+// transcript words as the reference does (chunk c into word c % 16, rotl 13 first).
+// RTX 4090 (sm_89, CUDA 12.6), bench.exe at m = n = 131072, 4 rounds of 20 s each, with
+// col_batch scaled so a launch's B' stays 64 MB (2048, 1024 and 512):
+//   k      cycles per 2048 of k  % of peak a clock  ncu IMMA busy  DRAM B/IMMA  MHz   TH/s
+//   2048   102,658               95.76              95.75          0.24         2502  313.1
+//   4096   101,764 (-0.87%)      96.60              96.58          0.53         2491  313.6 (+0.1%)
+//   8192   101,220 (-1.40%)      97.12              97.10          1.58         2472  310.6 (-0.8%)
+// The tile's hash and hand-off spread over more MACs; the per-chunk readout does not. But a
+// tile's A' and B' panels grow with k, so the L2 holds fewer of them: DRAM traffic rises
+// even on a 72 MB L2, and the clock it costs at the power limit takes the gain back. On
+// RTX 30 it is worse: the band's A' (depth x 192 x k) must fit a 2-4 MB persisting slice,
+// so DRAM bytes a MAC grow about as k does. Not a lever with operands streamed from DRAM.
+// verify-hits passed 400/400 at k = 4096 and 8192 (the JS reference folds chunks the same way).
+#ifndef PEARL_FOLD_K
 #define PEARL_FOLD_K 2048u
+#endif
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
 
 // Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in

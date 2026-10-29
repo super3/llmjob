@@ -3119,8 +3119,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   static_assert(STAGE % 128u == 0u, "stage buffers keep rows 64-byte aligned (lane bases)");
   static_assert(PEARL_ROWS_MASK == 0x1Bu && PEARL_COLS_MASK == 0x39u,
                 "the readout folds the regions the m16n8k32 accumulators hold");
-  static_assert(chunks <= PEARL_JACKPOT_BUCKETS && PEARL_JACKPOT_BUCKETS == 16u,
-                "one transcript word a chunk, one 64-byte block a region");
+  static_assert((chunks <= PEARL_JACKPOT_BUCKETS
+                 || (PEARL_TALL_RED_ON && !PEARL_TALL_PREGUARD_ON
+                     && chunks % PEARL_JACKPOT_BUCKETS == 0u))
+                    && PEARL_JACKPOT_BUCKETS == 16u,
+                "one transcript word a chunk, one 64-byte block a region (past 16 chunks, "
+                "the shared-XOR readout folds chunk c into word c % 16)");
 #if PEARL_TALL_TMA_BODY
   static_assert(PEARL_TALL_SMEM_TMA <= 101376u, "Ada gives a block 99 KB of shared");
 #if PEARL_TALL_TMA_ROLES
@@ -3418,6 +3422,17 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #pragma unroll
     for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
 #if PEARL_TALL_RED_ON
+#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+    // k past 2048 (PEARL_FOLD_K): word c % 16 is rotl13(word) ^ chunk c's XOR in the
+    // reference, once a chunk. The rotation distributes over XOR, so chunk c's part goes in
+    // already rotated once for every later chunk of its word, and the words still start at
+    // zero and take XORs only.
+    {
+      const uint32_t later = PEARL_FOLD_CHUNKS / PEARL_JACKPOT_BUCKETS - 1u - (c >> 4);
+      x = __funnelshift_l(x, x, (13u * later) & 31u);
+      c &= PEARL_JACKPOT_BUCKETS - 1u;
+    }
+#endif
     // Every lane XORs its part in. The predicate is always true (lane is never 99), but
     // inside the asm: without one, or with any predicate ptxas can see, it spills 220 bytes.
     asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
