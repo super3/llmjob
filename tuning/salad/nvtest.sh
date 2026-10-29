@@ -118,13 +118,20 @@ fetch
 export GC=${GC:-$(card_gc)} FOLD=${FOLD:-pearl_tile_fold_tall}
 [ -n "$GC" ] || fail "no compute capability from nvidia-smi; set GC"
 export VARIANTS_SPEC=${VARIANTS_SPEC:-base|} STAGES=${STAGES:-setup build bench hashrate verify complete}
+# run TAG SCRIPT: the script's TAG lines as they come; its whole output in /root/TAG.log, and if it fails, the
+# last other lines (a shell error never has the tag).
+run() {
+  local tag=$1 rc t0; t0=$(date +%s)
+  shift
+  "$@" 2>&1 | tee "/root/$tag.log" | grep --line-buffered -a "^\[$tag\]" | emit
+  rc=${PIPESTATUS[0]}
+  say "$tag done rc=$rc in $(( ($(date +%s) - t0) / 60 )) min"
+  [ "$rc" = 0 ] || grep -av "^\[$tag\]" "/root/$tag.log" | tail -n 8 | emit
+}
 say "compilers start: $GC, fold $FOLD"
-t0=$(date +%s)
-SRC=$R OUT=$OUT CUDA_HOME=$CUDA bash "$R/earn/native/probes/turing/compilers.sh" 2>&1 | grep -a '^\[compilers\]' | emit
-say "compilers done $(( ($(date +%s) - t0) / 60 )) min"
+run compilers env SRC="$R" OUT="$OUT" CUDA_HOME="$CUDA" bash "$R/earn/native/probes/turing/compilers.sh"
 if [ -n "${WALLET:-}" ] && [ -n "${POOL_SECS:-}" ]; then
-  SECS=$POOL_SECS SRC=$R OUT=$OUT/pool CUDA_HOME=$CUDA bash "$R/earn/native/probes/turing/pool.sh" 2>&1 \
-    | grep -a '^\[pool\]' | emit
+  run pool env SECS="$POOL_SECS" SRC="$R" OUT="$OUT/pool" CUDA_HOME="$CUDA" bash "$R/earn/native/probes/turing/pool.sh"
 fi
 say "all done"
 idle "until the next set-env"

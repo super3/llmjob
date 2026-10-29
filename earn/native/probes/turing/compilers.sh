@@ -231,7 +231,7 @@ build_variant() {   # name flags expect [patch list]
   nvcc -O3 -std=c++17 -cudart static $GC -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
-  local st h rst rg runs
+  local st h rst rg="" runs
   st=$(awk "/Compiling entry function .$FOLD. for .sm_$SM./{f=1;next} f&&/Compiling entry/{f=0} f" "$K/ptxas.txt" | tr '\n' ' ')
   # The second sm_75 kernel, which the host runs on cards with 4 MB of L2 or more
   # (PEARL_BD_RG_KERNEL): its code hash, registers and spill, or rg=none in a build
