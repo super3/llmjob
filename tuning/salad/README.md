@@ -476,6 +476,29 @@ What it found on 22 October:
   delete, so the tool now also takes a numbered name (`amdtest-rdna4-2`). `delete` only when the box is done
   for good.
 
+## NVIDIA test boxes (nvtest)
+
+`amdtest.py` also runs `nvtest-rtx3060` to `nvtest-rtx3090ti` boxes (or `-2` to `-99` after them), to race our
+own builds of the NVIDIA core on Salad's RTX 30 PCs, where Vast isn't available. Each runs `nvtest.sh` on the
+fleet's image (`nvidia/cuda:12.2.2-base-ubuntu22.04`, high priority, 4 vCPU, 8 GB): it installs CUDA 12.8.1's
+compiler from NVIDIA's archives (nvcc V12.8.93, as CI builds with; the SHA-256s are pinned), fetches the repo at
+`BASE_SHA`, and runs `earn/native/probes/turing/compilers.sh` for the card's compute capability and the tall fold.
+The builds are `VARIANTS_SPEC` (`name|flags;...`, one named `base`), the stages `STAGES` (default setup, build,
+bench, hashrate, verify, complete), and every compilers.sh setting passes through. Each bench and hashrate round
+also reads the memory controller's use, the memory in use and the memory clock. Lines read `[nvtest] HH:MM:SS
+[compilers] ...`.
+
+```sh
+python3 tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \
+  --env "VARIANTS_SPEC=base|;ctr|-DPEARL_TALL_CTR=1" ROUNDS=4 BENCH_SECS=45 HR_BEST=ctr
+python3 tuning/salad/amdtest.py wait nvtest-rtx3090 --until 'all done|FAIL' --since 30m
+python3 tuning/salad/amdtest.py logs nvtest-rtx3090 --since 2h
+python3 tuning/salad/amdtest.py delete nvtest-rtx3090
+```
+
+A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
+quota.
+
 ## AMD benchmark (bench.py)
 
 `BENCH_SET=amd` fills benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same

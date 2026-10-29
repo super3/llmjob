@@ -900,7 +900,8 @@ esac''',
     "clang++": r'''while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
 printf '#!/bin/bash\necho "devices 1 (no error)"\necho "copy: 564 GB/s (read + write)"\necho PASS\n' > "$out"; chmod +x "$out"''',
     "ldd": 'echo "libamdhip64.so.7 => /opt/rocm/lib/libamdhip64.so.7 (0x0)"',
-    "nvidia-smi": 'case "$*" in *power.draw*) echo "100.5, 1800, 60" ;; '
+    "nvidia-smi": 'case "$*" in *power.draw*memory.used*) echo "100.5, 1800, 60, 9501, 100, 21, 1366" ;; '
+                  '*power.draw*) echo "100.5, 1800, 60" ;; '
                   '*) echo "NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5" ;; esac',
 }
 VERIFY_PASS = {"file": "build", "hits": 2202, "verified": 400, "failed": 0, "salts": 277, "fails": [], "PASS": True}
@@ -983,6 +984,10 @@ class TestBenchShDryRun(unittest.TestCase):
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
         self.assertIn("ready PeakMiner 2.20.3, SRBMiner 3.8.0, ours v0.6.9", lines[1])
+        # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
+        samples = [l for l in lines if " sample " in l]
+        self.assertTrue(samples)
+        self.assertTrue(all(l.endswith(" gpu=100.5,1800,60,9501,100,21,1366") for l in samples), samples[:2])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start peak 60s", "start peak 300s", "start srb 300s", "start ours 300s"])
         r = b.parse(lines)

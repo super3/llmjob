@@ -140,7 +140,8 @@ ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-u
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
-# One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature.
+# One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature,
+# then (NVIDIA) its memory clock, GPU use, memory-controller use and memory in use (MiB), in gpu=.
 sample() {
   local name=$1 t=$2 hs="" acc="" rej=""
   case $name in
@@ -154,7 +155,7 @@ sample() {
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
   esac
   local g
-  if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory --format=csv,noheader,nounits | head -1 | tr -d ' ')
+  if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory,memory.used --format=csv,noheader,nounits | head -1 | tr -d ' ')
   else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }
