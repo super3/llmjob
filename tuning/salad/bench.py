@@ -30,6 +30,8 @@ NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
+# NVIDIA: every miner mines through sharetap.py, and each run ends with its shares decoded (bench.sh, TAP=1).
+TAP = os.environ.get("BENCH_TAP", "") == "1"
 # AMD set: the commit whose HIP core the boxes build (our miner there; the full SHA, which git fetch needs), and
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
@@ -320,9 +322,10 @@ class Bench:
                     f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
                     f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+        tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
-                f"curl -fsSL {url} -o /root/bench.sh && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra} "
-                f"bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
+                f"{' TAP=1' if TAP else ''} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
 
     def create(self):
         cls, rows, ours = self.plan()

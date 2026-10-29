@@ -31,7 +31,7 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "SALAD_MINE_DIR")
+            "BENCH_TAP", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -420,6 +420,16 @@ class TestBenchRTX(unittest.TestCase):
         self.assertLess(text.index("## RTX 20-series"), text.index("## RTX 30-series"))
         self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
         self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+
+    def test_a_tap_run_fetches_sharetap_and_sets_tap_and_a_plain_run_does_not(self):
+        t = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_TAP="1")
+        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/tuning/salad"
+        cmd = self.bench(t).command(300, "ours,peak,srb")
+        self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/sharetap.py -o "
+                      "/root/sharetap.py && W=prl1x ORDER=ours,peak,srb OURS_SECS=300 TAP=1 bash /root/bench.sh", cmd)
+        plain = self.bench(self.l30).command(300, "ours,peak,srb")
+        self.assertNotIn("sharetap", plain)
+        self.assertNotIn("TAP=1", plain)
 
 
 class TestBenchAMD(unittest.TestCase):

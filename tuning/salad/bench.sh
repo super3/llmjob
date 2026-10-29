@@ -16,6 +16,11 @@
 # prints the PC's device copy rate and runs the hit check (verify-hits.js) for VERIFY_SECS (600). If the core
 # doesn't build or the hit check fails, our miner is left out and SRBMiner still runs. LD_LIBRARY_PATH is never
 # set: Salad puts its ROCm-to-WSL bridge first on it.
+#
+# TAP=1 (bench.py's BENCH_TAP=1, NVIDIA only): every miner mines through sharetap.py, a relay beside this script that
+# records each stratum line, and each measured run ends with that miner's shares decoded ("share ..." lines): m, n,
+# k and rank, the tile's rows, and the operand bytes the proof carries. bench.py's command fetches sharetap.py at
+# the same commit.
 export DEBIAN_FRONTEND=noninteractive
 POOL_HOST=us.pearl.herominers.com; POOL_PORT=1200; SECS=300; WARM=60
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
@@ -77,7 +82,7 @@ amd_ours() {
 }
 
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
-  ${AMD:+clinfo} >/dev/null 2>&1 || fail "apt-get install"
+  ${AMD:+clinfo} ${TAP:+python3} >/dev/null 2>&1 || fail "apt-get install"
 if [ -z "$AMD" ]; then
   say "card $(nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit,memory.total,compute_cap --format=csv,noheader | head -1)"
 else
@@ -123,6 +128,15 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
     amd_ours
   fi ;;
 esac
+# TAP=1: the miners connect to the relay, which passes everything on to the pool and records it.
+if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
+  [ -f /root/sharetap.py ] || fail "no sharetap.py beside bench.sh"
+  python3 /root/sharetap.py tap 3333 "$POOL_HOST" "$POOL_PORT" /opt/b/tap.jsonl > /opt/b/tap.log 2>&1 &
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q listening /opt/b/tap.log && break; sleep 1; done
+  grep -q listening /opt/b/tap.log || fail "sharetap: $(tail -c 200 /opt/b/tap.log)"
+  say "$(cat /opt/b/tap.log)"
+  POOL_HOST=127.0.0.1; POOL_PORT=3333
+fi
 if [ -z "$AMD" ]; then
   say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER, ours $VER"
 else
@@ -135,7 +149,8 @@ peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
-ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update; }
+ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
+           ${TAP:+--pool $POOL_HOST:$POOL_PORT}; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
@@ -173,6 +188,9 @@ run() {
   done
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -v '^\s*$' | tail -2 | tr '\n' ' ' | tail -c 300)"
   kill $pid 2>/dev/null; stop_all
+  if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
+    python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
+  fi
 }
 
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
