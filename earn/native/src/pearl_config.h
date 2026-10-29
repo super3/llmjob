@@ -2295,7 +2295,17 @@ typedef struct {
 // band walk, which spread its L2 working set and cost 7% (PEARL_BD_PERSIST above). On
 // RTX 30 nvidia-smi reads 18-25% memory-controller use under our fold where PeakMiner
 // and SRBMiner read 0-1% (Salad, 29 October), and at the power limit those DRAM watts
-// come out of the SM clock (PEARL_AMPERE_BAND_L2_SHARE). Not measured yet; 0 ships.
+// come out of the SM clock (PEARL_AMPERE_BAND_L2_SHARE).
+//
+// Measured on Salad (nvtest boxes, CUDA 12.8.1, 29 October), against the same build
+// without it, interleaved: correct (verify-hits 400/400, every hit list matches base's on
+// all four COMPLETE_SHAPES), but no faster, and the memory use barely moves:
+//   RTX 3090 (4701244f, band 8)    bench 4 rounds -0.58%, hashrate 3 rounds -0.27%,
+//                                  behind in every round; memory 17% -> 17%
+//   RTX 3060 Ti (87d15c2c, band 4) bench +0.01%, hashrate +0.08% (+0.0 +0.1 +0.1);
+//                                  memory 33% -> 31%
+// So the blocks don't drift apart enough on Ampere to matter, and the DRAM traffic is
+// the operands themselves (see PEARL_ABLATE_DRAM in the fold). 0 ships.
 //
 // Thread PEARL_TALL_CTR_THREAD (lane 0 of warp 4, which never hashes) takes the next
 // tile from the counter in chunk PEARL_TALL_CTR_CHUNK and writes it to shared before

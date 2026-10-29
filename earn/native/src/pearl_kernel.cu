@@ -3217,6 +3217,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     // in any RTX 30 card's L2, so DRAM serves next to nothing. The same copies and mma,
     // two more instructions a tile. Prices the fold's DRAM traffic (its watts, at the
     // power limit); the output is meaningless. The hash still names the real regions.
+    // Measured on Salad (29 October, bench 4 rounds of 45 s, interleaved with base):
+    //   RTX 3090, GDDR6X    memory 17% -> 0%, 1605 -> 1665 MHz, 126.9 -> 131.3 TH/s (+3.3%)
+    //   RTX 3060 Ti, GDDR6  memory 34% -> 0%, 1778 -> 1845 MHz,  65.4 ->  68.1 TH/s (+4.1%)
+    // at the same power, with work per clock unchanged (TH/s per GHz -0.2% and +0.4%;
+    // PEARL_TALL_CYC 102,923 -> 102,896 cycles a tile on the 3060 Ti). So the DRAM traffic
+    // costs RTX 30 about 3-4% of clock, and nothing per clock: the ceiling for a fold that
+    // keeps its operands on chip, as PeakMiner's and SRBMiner's 0-1% memory use suggests
+    // theirs now do.
     rbg_ &= 1u;
     cbg_ &= 1u;
     const uint32_t coff = 0u;
