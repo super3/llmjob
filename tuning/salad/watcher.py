@@ -2857,9 +2857,11 @@ def bold(text):
 
 
 def with_margin(profit, earn):
-    """Profit an hour with its margin in brackets, or alone when there's no margin to show."""
+    """Profit an hour with its margin in brackets, or alone when there's no margin to show. A no-break space between
+    them: on a narrow screen the cell broke there, so a box with a margin took two lines and one without took one,
+    which the founder found hard to read on 29 October."""
     m = star(pct(profit, earn))
-    return f"{profit:+.2f}{EST}" + (f" ({m})" if m != "—" else "")
+    return f"{profit:+.2f}{EST}" + (f"{NB}({m})" if m != "—" else "")
 
 
 def near(a, b, f):

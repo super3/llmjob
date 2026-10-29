@@ -656,8 +656,9 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 - **Ended** is one row for every group that has ended, with its count and what they earned; the events say which
   were released and which failed. These are our own old boxes (it was called "Others" until 24 October).
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
-  by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
-  events, not the table.
+  by no-break spaces so it doesn't wrap. Profit an hour and its margin are joined the same way (since 29 October:
+  on the founder's screen the cell broke there, so a box with a margin took two lines and one without took one).
+  Boxes are sorted by profit an hour, best first. The PC id is in the events, not the table.
 - **PRL** is what the box has earned by its pools' own counts (since 20 October; it replaced Profit $, a dollar
   estimate the user found didn't help):
   - **On Kryptex**, its accepted shares from its worker's chart there (10-minute buckets, read every 5 minutes),
