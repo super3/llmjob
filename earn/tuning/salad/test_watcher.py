@@ -824,7 +824,7 @@ class TestRule5Profit(Base):
         g.update(kxx_khs=100.0, kxx_seen=self.clock[0])
         self.x.write_report()
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
-            self.assertIn("| 0.19 | +0.23* (+55%*) |", f.read())
+            self.assertIn(f"| 0.19 | +0.23*{w.NB}(+55%*) |", f.read())
 
     def test_the_median_of_an_even_count_is_the_mean_of_the_middle_two(self):
         self.monero(1.0, 3.0)
@@ -1984,7 +1984,7 @@ class TestStartingBoxes(Base):
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
-        self.assertIn("| **All** | **200** | **0.22** | **+0.04\\* (+19%\\*)** |", report)
+        self.assertIn(f"| **All** | **200** | **0.22** | **+0.04\\*{w.NB}(+19%\\*)** |", report)
         self.assertIn(" · 1/2 mining · Salad $", report)  # the starting box counts as not mining yet
 
     def test_stars_inside_bold_are_escaped(self):
@@ -2009,7 +2009,7 @@ class TestStartingBoxes(Base):
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04*{w.NB}(+19%*) |", report)
         self.assertRegex(report, r" · Salad \$[\d.]+\* left \(\d+\* (h|days?)\)\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
@@ -2938,7 +2938,7 @@ class TestMonero(Base):
         earn = 200 * self.x.st["mkt"]["usd_th_hr"] * self.x.credit_ratio() + 3 * 0.002
         hr = earn - ok["price"] - d["price"]
         self.assertIn(f"| **All** | **200** | **3.0** | **{p['price'] + d['price'] + ok['price']:.2f}** | "
-                      f"**{hr:+.2f}\\* ({hr / earn * 100:+.0f}%\\*)** |", report)
+                      f"**{hr:+.2f}\\*{w.NB}({hr / earn * 100:+.0f}%\\*)** |", report)
 
     def test_the_table_shows_monero(self):
         g = self.group()
@@ -2953,7 +2953,7 @@ class TestMonero(Base):
         self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
         # 0.0001 XMR from HeroMiners' count of its Monero work, starred.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | 0.000 | 0.000100* |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13*{w.NB}(+54%*) | 0.000 | 0.000100* |", report)
         self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
