@@ -3501,6 +3501,16 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
   __syncthreads();
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_NOGEN) && !PEARL_TALL_TMA_BODY
+  // The data path without the draw still needs real-looking operands in the ring: an
+  // all-zero A' toggles nothing in the tensor pipe, and on a 3090 ran 150 MHz faster at
+  // less power than the same fold on drawn values (29 October). So the ring's three slabs
+  // are drawn once, here, by the draw itself.
+#pragma unroll 1
+  for (uint32_t g = 0; g < 3u; g++)
+#pragma unroll 1
+    for (uint32_t j = 0; j < PEARL_E4_WORDS; j++) pearl_e4_draw(j, g, lane, warp);
+#endif
 #if PEARL_TALL_CLUSTER_BODY
   // And across the pair: the peer's barriers exist before this CTA arrives on them or
   // multicasts into its shared memory. Both CTAs take the same early returns below
