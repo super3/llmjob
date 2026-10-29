@@ -145,7 +145,9 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    over: before that it downloads the image there, unbilled. The AMD image is 1.16 GB against 31 MB for
    the NVIDIA one, and rx9060xt was deleted as failed 10 minutes after getting a PC it never started on.
    A PC that hasn't started the container 30 min after we got it is left and bad-listed, without using one
-   of the group's 3 moves.
+   of the group's 3 moves. One whose container ran and then stops running counts its 30 min from the last
+   round it ran: on 29 October one round read 2070-88 not running after 1 h 53 m mining, and the PC was
+   left and bad-listed as if its image had never loaded.
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
    boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a

@@ -361,6 +361,22 @@ class TestNotMining(Base):
         self.assertEqual(g["reallocs"], 0)
         self.assertIn("not running 30 min after getting PC m1 (image still loading)", self.x.st["bad_pcs"]["m1"]["why"])
 
+    def test_a_container_that_ran_counts_its_30_min_from_when_it_stopped(self):
+        # 29 October: 2070-88 had mined 1 h 53 m on a889b452 when one round read its instance not running, and the
+        # loading rule left the PC and bad-listed it as if the image had never loaded.
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 60)                             # mining an hour
+        self.assertIsNone(g["ended"])
+        g["_run"] = False                                       # Salad stops showing it running
+        self.step(g, 1, "m1")
+        self.step(g, 28, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+        self.step(g, 1, "m1")                                   # 30 min since it last ran
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("not running for 30 min on PC m1, after running there", self.x.st["bad_pcs"]["m1"]["why"])
+
     def test_a_group_on_its_pc_before_the_run_clock_keeps_its_clock(self):
         g = self.group()
         self.step(g, 1, "m1")
