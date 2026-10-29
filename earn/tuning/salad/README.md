@@ -201,6 +201,10 @@ refuses for its quota. Since 28 October it keeps that count under the quota less
 account (another session's groups too) and stopped groups, and won't start a group once the count is at the quota
 (`replicas_quota_exceeded`), so at most 9 of 10 can run. A group whose start is refused that way is deleted
 (released) rather than tried every 5 minutes, since even stopped it holds one of the 10.
+A create that gets no clear answer (a 504 from Salad's gateway, or no answer at all) asks Salad whether the group
+is there and keeps it if it is, and the search stops for that round. On 29 October Salad's gateway timed out on
+creates it had carried out: 4 of 6 such groups sat outside the ledger until the sweep deleted them, and one search
+sent 10 creates and waited 30 s on each.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly on its first PC before the class had paid (no shares, under cost, never mined); a blocked
 port never fails a group. Its deletion event carries the box's last log
