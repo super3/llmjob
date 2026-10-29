@@ -2358,6 +2358,28 @@ typedef struct {
 // the hasher there). -DPEARL_E4_FLAGS adds the ring's flag operations: a release a warp after
 // its last word of a chunk, an acquire a warp before a chunk's copies (without the wait).
 // PEARL_E4_C: 8 is n = 2048 (a 3090's 6 MB L2), 4 is 1024, 2 is 512 (3 MB cards).
+//
+// Measured on Salad, RTX 3090 252c56db (350 W, CUDA 12.8.1), 29 October, bench rounds of
+// 45 s interleaved with base, two sessions (4 rounds, then 3), every build with
+// -DPEARL_TALL_CYC:
+//   base                          119.8-120.0 TH/s  1530 MHz  memory 16%  103,778 cycles a tile
+//   DRAM ablation                 +2.9%, +3.1%      1568      0%          103,724
+//   E4 data path, no draw, C=8    +2.3%             1575      0%          104,565
+//   E4 draw, C=8 (2 B an IMMA)    -2.4%, -2.3%      1545      0%          107,806
+//   E4 draw, C=2 (8 B an IMMA)    -27.4%            1590      0%          147,115
+//   + PEARL_E4_HASH, FLAGS, C=8   -10.0%            1575      0%          118,914
+// So E4 is a no-go here: its best case, n = 2048 on a 6 MB L2, drawing 2 bytes an IMMA, was
+// behind base in all 7 rounds. The draw costs 4.5% against its own data path (+3.1% cycles
+// and 25 MHz) and far more at 8 bytes (+41% cycles): the words sit in the MMA warps'
+// instruction stream, which runs at 254 registers and has no room for producer warps.
+// (The flags' acquire, waited on in line once a chunk, is most of FLAGS+HASH's cost.)
+// The first no-draw run read an all-zero ring: 134.4 TH/s at 1725 MHz and 338 W, +12%, so
+// operand values alone moved the clock 150 MHz at the power limit.
+// The large-k half of the competitors' design, with -DPEARL_FOLD_K and the ablation's
+// operands in the L2 (no draw): 94.77% of the tensor peak a clock at k = 2048, 96.00% at
+// 8192 and 96.25% at 16384 (cycles a tile), at 1560 MHz against 1568: +0.6% and +0.8%
+// net. At the power limit most of the per-clock gain comes back as power. (bench's TH/s
+// line reads 2048 / k of that at these k; the cycles and the clock are the measure.)
 #ifndef PEARL_E4_C
 #define PEARL_E4_C 8
 #endif
