@@ -3219,7 +3219,15 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 
 // A bench build with the tall fold's DRAM ablation says so in the fold's name, so its
 // reading is never taken for a real fold's (compilers.sh builds both passes with it).
-#ifdef PEARL_ABLATE_DRAM
+#if defined(PEARL_ABLATE_DRAM) && defined(PEARL_E4_GENLOAD)
+#define PEARL_E4_STR2(x) #x
+#define PEARL_E4_STR(x) PEARL_E4_STR2(x)
+#ifdef PEARL_E4_NOGEN
+static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 path C=" PEARL_E4_STR(PEARL_E4_C) " (no draw)";
+#else
+static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw C=" PEARL_E4_STR(PEARL_E4_C);
+#endif
+#elif defined(PEARL_ABLATE_DRAM)
 static const char kAblateDramTag[] = ", ABLATE_DRAM";
 #else
 static const char kAblateDramTag[] = "";

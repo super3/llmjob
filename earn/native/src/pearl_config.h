@@ -2326,6 +2326,20 @@ typedef struct {
 #else
 #define PEARL_TALL_CTR_ON 0
 #endif
+// E4's generation load (bench only, -DPEARL_E4_GENLOAD on top of -DPEARL_ABLATE_DRAM, the
+// cp.async tall fold; wrong answers). The DRAM ablation showed what RTX 30 gets back with no
+// DRAM traffic: +3.3% on a 3090 and +4.1% on a 3060 Ti, all of it clock. E4 would get there
+// for real by never storing A': B' (n columns, n = 256 PEARL_E4_C) stays in the L2, the
+// PEARL_E4_C blocks of a row group each draw 1/PEARL_E4_C of every chunk of its A' two chunks
+// ahead into a three-slab ring in the L2, and the team's copies read the ring. This build
+// does that work in the fold (pearl_e4_draw) with values that only look like the real ones,
+// so the bench prices it: whatever the draw costs comes out of the ablation's gain. Left out,
+// so it is E4's best case: the dense rows' BLAKE3 (a fixed table) and the ring's ready flags.
+// -DPEARL_E4_NOGEN keeps the data path (ring and B over n columns) without the draw.
+// PEARL_E4_C: 8 is n = 2048 (a 3090's 6 MB L2), 4 is 1024, 2 is 512 (3 MB cards).
+#ifndef PEARL_E4_C
+#define PEARL_E4_C 8
+#endif
 // What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
 // the peer's too in the cluster build.
 #define PEARL_TALL_TMA_EMPTY_ARRIVALS \
