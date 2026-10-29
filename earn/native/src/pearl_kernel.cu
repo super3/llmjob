@@ -3055,6 +3055,7 @@ static_assert(PEARL_E4_C == 2u || PEARL_E4_C == 4u || PEARL_E4_C == 8u,
 __device__ __align__(128) int8_t pearl_e4_ring[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u * PEARL_E4_SLAB];
 __device__ __align__(128) uint32_t pearl_e4_dense[PEARL_E4_MAX_BLOCKS * PEARL_E4_RROWS * 32u];
 __device__ __align__(16) uint4 pearl_e4_perm[16u * 32u];
+__device__ uint32_t pearl_e4_flag[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u];
 __device__ __forceinline__ uint32_t pearl_e4_mix(uint32_t x) {
   x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
   return x;
@@ -3918,6 +3919,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #ifndef PEARL_ABLATE_RING
               pearl_mbar_wait(ib + STAGE + 8u, epar);
 #endif
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_FLAGS)
+              // E4's acquire of the ring slab these copies read (PEARL_E4_FLAGS): the load
+              // and its ordering, without the wait (the values are not the real ones).
+              if (s == 0u) {
+                if (lane == 0u) {
+                  uint32_t f;
+                  asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(f)
+                               : "l"(pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + sg0 / SPC) : "memory");
+                  asm volatile("" ::"r"(f));
+                }
+                __syncwarp();
+              }
+#endif
 #pragma unroll
               for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, sg, p)
             }
@@ -3933,6 +3947,16 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #pragma unroll
               for (uint32_t j = 0; j < PEARL_E4_WORDS; j++)
                 if (j * 4u / PEARL_E4_WORDS == s * KS + t) pearl_e4_draw(j, chunk + 2u, lane, warp);
+#ifdef PEARL_E4_FLAGS
+              // After this warp's last word of the chunk: its release on the slab's flag.
+              if ((PEARL_E4_WORDS - 1u) * 4u / PEARL_E4_WORDS == s * KS + t) {
+                __syncwarp();
+                if (lane == 0u)
+                  asm volatile("red.release.gpu.global.add.u32 [%0], 1;" ::"l"(
+                                   pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + (chunk + 2u) % 3u)
+                               : "memory");
+              }
+#endif
             }
 #endif
           }
@@ -4134,6 +4158,26 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       }
 #endif
     }
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_HASH)
+    else {
+      // E4's dense rows (PEARL_E4_HASH): the block's PEARL_E4_RROWS rows of a later row
+      // group, rank / 32 = 4 BLAKE3 a row, hashed by the 128 lanes of the warps that do not
+      // hash transcripts, while they would otherwise wait for the hasher. Their accumulators
+      // are dead here, as the hasher's are.
+      for (uint32_t hi = (warp - 4u) * 32u + lane; hi < PEARL_E4_RROWS * 4u; hi += 128u) {
+        uint8_t lab[32];
+#pragma unroll
+        for (int i = 0; i < 32; i++) lab[i] = 0;
+        uint8_t d[32];
+        pearl_random_hash(test.key, lab, v * (PEARL_E4_RROWS * 4u) + hi, 0, d);
+        uint32_t *const dst = pearl_e4_dense + (blockIdx.x * PEARL_E4_RROWS + (hi >> 2)) * 32u + (hi & 3u) * 8u;
+#pragma unroll
+        for (int i = 0; i < 8; i++)
+          dst[i] = ((uint32_t)d[4 * i] | ((uint32_t)d[4 * i + 1] << 8) | ((uint32_t)d[4 * i + 2] << 16)
+                    | ((uint32_t)d[4 * i + 3] << 24)) & 0x3F3F3F3Fu;
+      }
+    }
+#endif
 #endif  // PEARL_TALL_UNFUSED_ON
   }
 #if PEARL_TALL_CLUSTER_BODY

@@ -2336,6 +2336,10 @@ typedef struct {
 // so the bench prices it: whatever the draw costs comes out of the ablation's gain. Left out,
 // so it is E4's best case: the dense rows' BLAKE3 (a fixed table) and the ring's ready flags.
 // -DPEARL_E4_NOGEN keeps the data path (ring and B over n columns) without the draw.
+// -DPEARL_E4_HASH adds what the cheap side leaves out first: the dense rows' BLAKE3, 4 a row,
+// hashed at the tile hand-off by the warps that do not hash transcripts (they would wait for
+// the hasher there). -DPEARL_E4_FLAGS adds the ring's flag operations: a release a warp after
+// its last word of a chunk, an acquire a warp before a chunk's copies (without the wait).
 // PEARL_E4_C: 8 is n = 2048 (a 3090's 6 MB L2), 4 is 1024, 2 is 512 (3 MB cards).
 #ifndef PEARL_E4_C
 #define PEARL_E4_C 8
