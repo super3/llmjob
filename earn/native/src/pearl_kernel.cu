@@ -3885,6 +3885,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #ifdef PEARL_E4_GENLOAD
       // From the ring: chunk c's slab is slot c % 3.
       uint32_t sg0 = ((last ? 0u : chunk + 1u) % 3u) * SPC;
+#elif defined(PEARL_ABLATE_DRAM) && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+      // The ablation past 2048 of k (PEARL_FOLD_K): the copies wrap every 16 chunks, so the
+      // operands they read stay 2048 deep, 1.75 MB, in the L2 at any k. That is what a fold
+      // that draws its operands on chip reads (nothing from DRAM), at the large k PeakMiner
+      // and SRBMiner mine with (32768 and 65536; their shares, 29 October).
+      uint32_t sg0 = ((last ? 0u : chunk + 1u) & 15u) * SPC;
 #else
       uint32_t sg0 = (last ? 0u : chunk + 1u) * SPC;
 #endif
