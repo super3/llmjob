@@ -328,6 +328,12 @@ class TestCompilersMemoryReadings(unittest.TestCase):
         self.assertIn("77.450 TH/s/GHz mem 1% 1300 MiB vs base: raw +4.12%", out[1])
         with open(os.path.join(d, "best")) as f:
             self.assertEqual(f.read(), "dram")
+        with open(t, "a") as f:           # a -DPEARL_TALL_CYC build's cycles a tile, in column 12
+            f.write("1\tcyc\t124.0\t1620\t350\t70\t76.5\t1620\t22\t1366\t9501\t102655\n"
+                    "2\tcyc\t124.1\t1620\t350\t70\t76.6\t1620\t22\t1366\t9501\t102661\n")
+        out = self.run_py(s, t, "bench-sum", os.path.join(d, "best")).splitlines()
+        self.assertIn("76.550 TH/s/GHz mem 22% 1366 MiB cyc 102658 (95.76%) vs base", out[2])
+        self.assertNotIn("cyc", out[0])
         with open(t, "w") as f:           # a table from before: no memory columns, and no "mem" in the line
             f.write("1\tbase\t124.9\t1620\t350\t70\t77.1\n1\tx\t125.9\t1620\t350\t70\t77.7\n")
         out = self.run_py(s, t, "hashrate-sum", os.path.join(d, "best2"))

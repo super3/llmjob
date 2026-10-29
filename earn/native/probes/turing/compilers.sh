@@ -228,7 +228,9 @@ build_variant() {   # name flags expect [patch list]
   (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) ||
     { say "build $name FAIL: node-gyp: $(grep -m2 -iE 'error' "$K/gyp.log" | tr '\n' ' ')"; return 1; }
-  nvcc -O3 -std=c++17 -cudart static $GC -I"$K/src" "$NATIVE/probes/bench.cu" \
+  # bench.cu with the build's flags too: -DPEARL_TALL_CYC has it print the fold's cycles a tile.
+  # shellcheck disable=SC2086
+  nvcc -O3 -std=c++17 -cudart static $GC $flags -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
   local st h rst rg="" runs
@@ -334,9 +336,11 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
       th=$(python3 -c "print(round($att * 256 * 2048 / $secs / 1e12, 3))")
       read -r n mhz w c mean mc mu mclk < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" "$mc" "$mu" "$mclk" >> "$OUT/bench.tsv"
+      # A -DPEARL_TALL_CYC build's cycles a tile (bench.cu prints them), or "-".
+      cyc=$(grep -oE 'cycles a tile [0-9]+' "$K/bench.r$r" | tail -1 | grep -oE '[0-9]+$')
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" "$mc" "$mu" "$mclk" "${cyc:--}" >> "$OUT/bench.tsv"
       [ "$r" = 1 ] && say "bench $name runs $(grep -oE 'fold: [^|]*' "$K/bench.r$r" | head -1)"
-      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz (n=$n)"
+      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz${cyc:+ cyc $cyc} (n=$n)"
     done
   done
   # Per build: medians over rounds, and against base in the same round. The mean clock
@@ -344,7 +348,8 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
   # hashrate.tsv's clock, which hashrate.js already averages. A round with no clock
   # reading writes 0, which the mean leaves out: one such round would pull it far down.
   # Columns 9 to 11, where there are any, are the memory readings: the medians of the
-  # rounds' memory-controller use and memory in use ("-" where a round had none).
+  # rounds' memory-controller use and memory in use ("-" where a round had none). Column
+  # 12, a -DPEARL_TALL_CYC build's cycles a tile: their median.
   cat > "$OUT/sum.py" <<'EOF'
 import statistics as st, sys
 rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[1]) if l.strip()]
@@ -360,16 +365,21 @@ def num(x):
         return float(x)
     except ValueError:
         return None
-mem = {}
+mem, cyc = {}, {}
 for r in rows:
     if len(r) > 9:
         mem.setdefault(r[1], []).append((num(r[8]), num(r[9])))
+    if len(r) > 11 and num(r[11]):
+        cyc.setdefault(r[1], []).append(num(r[11]))
 def memtxt(name):
     ms = mem.get(name) or []
     mc = [m[0] for m in ms if m[0] is not None]; mu = [m[1] for m in ms if m[1] is not None]
-    if not mc and not mu:
-        return ""
-    return (f" mem {st.median(mc):.0f}%" if mc else " mem -%") + (f" {st.median(mu):.0f} MiB" if mu else "")
+    t = ""
+    if mc or mu:
+        t = (f" mem {st.median(mc):.0f}%" if mc else " mem -%") + (f" {st.median(mu):.0f} MiB" if mu else "")
+    if cyc.get(name):
+        t += f" cyc {st.median(cyc[name]):.0f} ({98304 / st.median(cyc[name]) * 100:.2f}%)"
+    return t
 for name, d in by.items():
     th = [v[0] for v in d.values()]; mhz = [v[1] for v in d.values()]; w = [v[2] for v in d.values()]
     pg = [v[3] for v in d.values()]; clk = [v[4] for v in d.values() if v[4]] or [0]
