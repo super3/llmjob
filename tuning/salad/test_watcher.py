@@ -1159,6 +1159,21 @@ class TestRule7Credit(Base):
         self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch"))
         self.assertTrue(self.x.st["credits_out"])
 
+    def test_a_create_that_times_out_but_was_made_is_kept(self):
+        # 29 October: Salad's gateway answered 504 to creates it had carried out; the groups sat outside the ledger.
+        self.http.on("POST", "/containers$", (504, {"title": "Error 504: Gateway time-out"}))
+        self.http.on("GET", "/containers/biz-rtx4080$", (200, {"name": "biz-rtx4080"}))
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch"))
+        self.assertEqual([g["name"] for g in self.x.st["groups"].values()], ["biz-rtx4080"])
+        self.assertIn("(Salad answered HTTP 504 but made it)", self.events())
+
+    def test_a_create_that_times_out_and_wasnt_made_fails(self):
+        self.http.on("POST", "/containers$", (0, {"error": "The read operation timed out"}))
+        self.http.on("GET", "/containers/biz-rtx4080$", (404, {}))
+        self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch"))
+        self.assertEqual(self.x.st["groups"], {})
+        self.assertIn("CREATE FAILED biz-rtx4080", self.events())
+
 
 class TestSearch(Base):
     def test_picks_the_paid_class_at_its_cheapest_free_priority(self):
@@ -1198,6 +1213,19 @@ class TestSearch(Base):
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")), 1)   # not one refused create per class
         self.assertEqual(self.events().count("CREATE FAILED"), 1)
+        self.http.on("POST", "/containers$", (201, {}))
+        self.x.search()                                                    # the next search tries again
+        self.assertGreater(len(self.http.made("POST", "/containers$")), 2)
+
+    def test_the_search_stops_when_a_create_gets_no_answer(self):
+        # 29 October: with Salad's gateway timing out, one search sent 10 creates and waited 30 s on each.
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.http.on("POST", "/containers$", (504, {"title": "Error 504: Gateway time-out"}))
+        self.http.on("GET", "/containers/biz-", (404, {}))
+        self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")), 1)
         self.http.on("POST", "/containers$", (201, {}))
         self.x.search()                                                    # the next search tries again
         self.assertGreater(len(self.http.made("POST", "/containers$")), 2)

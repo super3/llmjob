@@ -466,6 +466,7 @@ class W:
             self.st["credits_out"] = [ORG] if self.st["credits_out"] else []
         self.cfg = DEFAULT_CFG
         self.quota_full = set()   # orgs whose replica quota refused a create; the search stops using them
+        self.api_slow = False     # a create got no clear answer from Salad (see create); the search stops
 
     def orgs(self):
         """The orgs groups run in and how many each may run, in the order they're filled (config org_slots)."""
@@ -1831,7 +1832,16 @@ class W:
                 "container": {"image": AMD_IMAGE if is_amd(name) else IMAGE, "priority": pri, "resources": res,
                               "command": command}}
         s, j = http("POST", cb(org), body)
-        if 200 <= s < 300:
+        made, how = 200 <= s < 300, ""
+        # Salad's gateway can time out (504, or no answer at all) after it has made the group: on 29 October 2 of 4
+        # such creates in llmjob made groups the ledger didn't hold, which sat in the quota until the sweep took them,
+        # and 10 more each waited 30 s in one search. So a create with no clear answer asks whether the group is
+        # there and keeps it if it is, and the search stops (api_slow): the next create would wait as long.
+        if not made and (s == 0 or s >= 500):
+            self.api_slow = True
+            made = http("GET", f"{cb(org)}/{name}")[0] == 200
+            how = f" (Salad answered HTTP {s} but made it)" if made else ""
+        if made:
             rate, paid = round(self.rate(cls)), KNOWN[cls][1]
             t = now()
             key = f"{name}@{int(t)}"
@@ -1848,7 +1858,7 @@ class W:
                   f"{self.margin(cls, pri, kx=kx) * 100:+.0f}% margin at {rate} TH/s), miner {ver}"
                   + (f", Monero on {res['cpu']} vCPUs" + (" to Kryptex" if self.xmr_kx(xmr) else "") if xmr else "")
                   + (", Pearl on Kryptex" if kx else "")
-                  + (", Gemma" if self.llm_on(name) else ""))
+                  + (", Gemma" if self.llm_on(name) else "") + how)
             return True
         text = json.dumps(j)
         if "name_conflict" in text and tries < 20:
@@ -2475,11 +2485,11 @@ class W:
         if room <= 0:
             return
         made = 0
-        self.quota_full = set()
+        self.quota_full, self.api_slow = set(), False
         for *_, cls, p in self.candidates(active, t):
             # The first org, in config order, with room, credit and a quota that hasn't refused a create.
             org = next((o for o, r in rooms.items() if r > 0 and o not in self.quota_full and not self.out(o)), None)
-            if made >= room or org is None:
+            if made >= room or org is None or self.api_slow:
                 break
             # Priced at the pool a new group starts on; a create can fill the last Kryptex slot, so check again.
             if made and self.pick_margin(cls, p) < self.cfg["min_margin"]:
