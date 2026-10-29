@@ -2683,10 +2683,11 @@ class W:
             org = g.get("org") or ORG
             org_cost[org] = org_cost.get(org, 0.0) + cost
             # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces, and
-            # its org when that isn't ORG.
+            # its org when that isn't ORG, short as the founder asked on 29 October: llmjob2 is "(2)".
             pri = "med" if g["pri"] == "medium" else g["pri"]
+            tag = f"({org[len(ORG):] if org.startswith(ORG) and org != ORG else org})"
             box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
-                          + ([org] if org != ORG else []))
+                          + ([tag] if org != ORG else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []

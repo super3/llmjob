@@ -2586,7 +2586,7 @@ class TestSaladBalance(Base):
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
         self.assertIn("(llmjob 4 days · llmjob2 2 days)", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
-            self.assertIn(f"2060{w.NB}batch{w.NB}llmjob2 |", f.read())   # the box says which org it's in
+            self.assertIn(f"2060{w.NB}batch{w.NB}(2) |", f.read())       # the box says which org it's in, short
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]

@@ -239,7 +239,9 @@ The same API key works in every org the user is in. Each group keeps the org it 
 one made before has none and is in llmjob), and every call about it goes there. The log query and the stray sweep run in each org. Names stay unique across orgs,
 since a box's pool worker is named after its group. Credit runs out by org: Salad says `no_credits_available` or
 stops the boxes in that org only, so only that org's groups are left alone and only it stops getting new ones
-until a top-up and `restart_token`. A box outside llmjob says its org in the table (`5060-90 batch llmjob2`).
+until a top-up and `restart_token`. A box outside llmjob says its org in the table, by what its name adds to
+llmjob (`5060-90 batch (2)` for llmjob2, since 29 October; it said `llmjob2` before). An org named otherwise shows
+whole, as `(otherorg)`.
 
 ## Monero on the CPU
 
