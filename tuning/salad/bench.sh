@@ -154,7 +154,7 @@ sample() {
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
   esac
   local g
-  if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu --format=csv,noheader,nounits | head -1 | tr -d ' ')
+  if [ -z "$AMD" ]; then g=$(nvidia-smi --query-gpu=power.draw,clocks.sm,temperature.gpu,clocks.mem,utilization.gpu,utilization.memory --format=csv,noheader,nounits | head -1 | tr -d ' ')
   else g=$(timeout 5 $SMI monitor -p -t -u --csv 2>/dev/null | tail -1 | tr -d ' '); fi
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }

@@ -30,7 +30,8 @@ def read(path):
 def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
-    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "SALAD_MINE_DIR")
+    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
+            "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -252,6 +253,15 @@ class TestBenchRTX(unittest.TestCase):
             with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
                 m.Bench().run()
             self.assertIn("BENCH_LANE", str(e.exception))
+
+    def test_a_probe_runs_only_the_classes_asked_for_with_the_pcs_asked_for(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_CLASSES="RTX 3080 (10 GB); RTX 3090 (24 GB)",
+                       BENCH_HOSTS="1")
+        self.assertEqual([p[0] for p in m.PLAN], ["RTX 3090 (24 GB)", "RTX 3080 (10 GB)"])   # the set's own order
+        self.assertEqual(m.HOSTS, 1)
+        self.assertEqual(load_bench(BENCH_SET="rtx").HOSTS, 2)
+        gtx = load_bench(BENCH_CLASSES="GTX 1070, 1080, 1080Ti (8 GB)")   # a name with commas in it
+        self.assertEqual([p[0] for p in gtx.PLAN], ["GTX 1070, 1080, 1080Ti (8 GB)"])
 
     def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
         calls = []

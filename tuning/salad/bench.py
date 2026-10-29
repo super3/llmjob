@@ -104,6 +104,12 @@ if LANE in LANES:
     # A section none of the lane's rows are in (RTX: the other series) isn't written at all.
     SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS
                 if any(r in LANES[LANE] for r in rows)]
+# A probe rather than a table: BENCH_CLASSES (Salad class names, ";" between them, as some names hold commas) runs
+# only those classes of the set, and BENCH_HOSTS how many PCs per card (benchmark.md's 2 by default).
+ONLY = [c.strip() for c in os.environ.get("BENCH_CLASSES", "").split(";") if c.strip()]
+if ONLY:
+    PLAN = [p for p in PLAN if p[0] in ONLY]
+HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
 
 
 def log(msg):
