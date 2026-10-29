@@ -245,7 +245,26 @@ class TestBenchRTX(unittest.TestCase):
         # Each lane writes its own series only, and every class is in exactly one lane.
         self.assertEqual([t for t, _ in self.l20.SECTIONS], ["RTX 20-series (on Salad)"])
         self.assertEqual([t for t, _ in self.l30.SECTIONS], ["RTX 30-series (on Salad)"])
-        self.assertEqual(len(self.l20.PLAN) + len(self.l30.PLAN), len(self.r.PLAN))
+        lanes = [load_bench(BENCH_SET="rtx", BENCH_LANE=x, BENCH_COMMIT="c0ffee") for x in ("20", "30", "40", "50")]
+        self.assertEqual(sum(len(m.PLAN) for m in lanes), len(self.r.PLAN))
+
+    def test_the_40_and_50_lanes_run_the_salad_classes_of_benchmark_md_s_rows(self):
+        l40 = load_bench(BENCH_SET="rtx", BENCH_LANE="40", BENCH_COMMIT="c0ffee")
+        l50 = load_bench(BENCH_SET="rtx", BENCH_LANE="50", BENCH_COMMIT="c0ffee")
+        self.assertEqual([p[0] for p in l40.PLAN],
+                         ["RTX 4090 (24 GB)", "RTX 4080 (16 GB)", "RTX 4070 Ti Super (16 GB)", "RTX 4070 Ti (12 GB)",
+                          "RTX 4070 (12 GB)", "RTX 4060 Ti (16 GB)", "RTX 4060 (8 GB)"])
+        self.assertEqual([p[0] for p in l50.PLAN],
+                         ["RTX 5090 (32 GB)", "RTX 5080 (16 GB)", "RTX 5070 Ti (16 GB)", "RTX 5070 (12 GB)",
+                          "RTX 5060 Ti (16 GB)", "RTX 5060 (8 GB)"])
+        self.assertEqual([t for t, _ in l40.SECTIONS], ["RTX 40-series (on Salad)"])
+        self.assertEqual(os.path.basename(l50.STATE), "bench-rtx-50.json")
+        # nvidia-smi's "RTX 4090 D" is the 4090D row, and a Super from the 4080 class gets its own.
+        self.assertEqual(l40.row_for("NVIDIA GeForce RTX 4090 D", ["RTX 4090"] + l40.EXTRA["RTX 4090 (24 GB)"]),
+                         "RTX 4090D")
+        self.assertEqual(l40.row_for("NVIDIA GeForce RTX 4080 SUPER", ["RTX 4080"] + l40.EXTRA["RTX 4080 (16 GB)"]),
+                         "RTX 4080 Super")
+        self.assertIn("| RTX 4060 Ti | Salad (— W, 16 GB) |", l40.render({"results": {}}))
 
     def test_a_lane_from_another_set_is_refused(self):
         for env in ({"BENCH_SET": "rtx", "BENCH_LANE": "a"}, {"BENCH_LANE": "20"}):
