@@ -12,7 +12,10 @@ GTX 10 cards (Pascal, below) and reads a hit's proof with one wait instead of
 about 120; the new kernel code builds only for sm_61, and every other card's
 kernels are as they were, so the figures hold for it as well. v0.6.8 also ships
 a core for AMD cards on Linux (`pearl_core_hip.node`, loaded with `--core amd`);
-its figures are under "AMD Radeon".
+its figures are under "AMD Radeon". On 2026-10-28 the RTX 20- and 30-series were
+run again on Salad PCs with v0.6.9 against the newest competitors, PeakMiner
+2.20.3 and SRBMiner 3.8.0. Those tables are under "On Salad, 28 October" in
+their sections and leave the Vast rows alone.
 
 ## Summary
 
@@ -24,9 +27,14 @@ because no L40 was for rent other than the New York one.
 - RTX 20-series: 92–99%. Our clock is never more than 30 MHz below the
   faster competitor's, so the gap is work per clock: we do 5–7.5% less.
   SRBMiner 3.7.5 also mines Monero on the CPU alongside, and so does ours
-  from v0.6.0; PeakMiner doesn't (see the section).
+  from v0.6.0; PeakMiner doesn't (see the section). On Salad on 28 October,
+  v0.6.9 read 97–103% (median 98%) against PeakMiner 2.20.3 and SRBMiner
+  3.8.0: our RTX 20 work since v0.5.14 closed the gap.
 - RTX 30-series: 97–101%. The two 3070s trail most, at 97%. SRBMiner didn't
-  start on the Oman 3090 Ti, so that row compares with PeakMiner.
+  start on the Oman 3090 Ti, so that row compares with PeakMiner. On Salad on
+  28 October, v0.6.9 read 91–97% (median 92.5%) against PeakMiner 2.20.3 and
+  SRBMiner 3.8.0, on every card: both competitors got faster here, and this is
+  now our weakest series.
 - RTX 40-series: 98–102%, and 99.5% or better on 15 of the 18 hosts. The
   lowest are the 225 W British Columbia 4080 and the Australia 4060, both at
   98%.
@@ -301,6 +309,55 @@ against SRBMiner 3.7.4.
   Super, 2070 Super, 2070, 2080 and 2080 Ti rows here, and the T4. Details
   are in earn/native/probes/README.md.
 
+### On Salad, 28 October, against the newest miners
+
+Run from 17:04 UTC on 2026-10-28 to 00:12 UTC on the 29th, as the founder asked, on Salad PCs (home computers
+that run containers under WSL2), each named by the first 8 characters of its Salad machine ID. Our release v0.6.9
+ran against PeakMiner 2.20.3 and SRBMiner 3.8.0, the newest of each, all three checked against their published
+checksums. Each PC ran them one after another, 5 minutes each after a 60-second warm-up of the first, on
+`us.pearl.herominers.com`. A card's first PC ran ours first and its second SRBMiner first, with PeakMiner second
+both times (`tuning/salad/bench.py`, `BENCH_SET=rtx`, `bench.sh` at `461026a`). There was no hit check: the
+release's cores ran as users get them, and the pool rejected none of our shares. These are different PCs, tested
+by a different method, so they leave the rows above alone ("Keeping this file current"): compare "% of best", not
+TH/s. Salad's 2070 and 2060 classes also handed out 2070 Supers and 2060 Supers, which got rows of their own. It
+has no 12 GB 2060 class.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti | Salad (280 W) | ec9e6c87 | 96.5 | 89.0 | 94.4 | 102% |
+| RTX 2080 Ti | Salad (260 W) | ef08a260 | 94.9 | 94.7 | 86.4 | 100% |
+| RTX 2080 | Salad (245 W) | 83f7bc7e | 65.6 | 67.6 | 65.5 | 97% |
+| RTX 2080 | Salad (129 W) | f765012b | 54.8 | 54.5 | 53.8 | 100% |
+| RTX 2070 Super | Salad (215 W) | 2d10f218 | 61.6 | 62.7 | 62.4 | 98% |
+| RTX 2070 Super | Salad (215 W) | ffd709c4 | 62.6 | 63.9 | 63.1 | 98% |
+| RTX 2070 | Salad (175 W) | 2aaa0e3e | 48.0 | 49.3 | 47.4 | 97% |
+| RTX 2070 | Salad (184 W) | 0416482b | 51.1 | 49.5 | 49.3 | 103% |
+| RTX 2060 Super | Salad (200 W) | 413b2e3d | 48.1 | 49.5 | 48.2 | 97% |
+| RTX 2060 Super | Salad (184 W) | ab1e6b0e | 46.9 | 47.5 | 47.3 | 99% |
+| RTX 2060 | Salad (168 W, 6 GB) | 81031a48 | 46.1 | 47.3 | 45.4 | 98% |
+| RTX 2060 | Salad (160 W, 6 GB) | a1fd5f37 | 47.4 | 48.9 | 46.7 | 97% |
+
+- **Within 3% of the best on every PC.** The median is 98% (97–103%), up from 94% on the Vast rows. The gain is
+  our core after v0.6.6 (the notes above): against SRBMiner 3.8.0, which looks unchanged on these cards since
+  3.7.5, ours moved from about 95% to about 101%. PeakMiner 2.20.3 gained about 3% and is now the faster
+  competitor on 11 of the 12 PCs. At the same clock it still does 1.2–3.3% more per MHz than ours on the 2080,
+  2070, 2070 Super, 2060 Super and 2060.
+- **The rows above 100% are each one unusual PC.**
+  - ec9e6c87 (2080 Ti) swung between 207 and 266 W and 1515–1725 MHz for every miner, so all three rates are
+    noisy. It reads 104.5% on all three miners' means.
+  - f765012b (2080) is capped at 129 W of its 215 W default. It reads 99.2% against PeakMiner's mean.
+  - 0416482b (2070) ran ours at 1575 MHz and the competitors at 1635–1650 MHz, at the same 179 W, and ours still
+    hashed 3% more. The lines don't say why.
+- **Held by heat:** 83f7bc7e, 2d10f218, 413b2e3d and ab1e6b0e sat at 85–88 °C below their power limits. All three
+  miners ran at the same clocks there, so their ratios hold.
+- **Our 2080 Ti readout is coarse.** On ef08a260, with power, clock and temperature flat and PeakMiner steady
+  within ±0.2, our 15-second rate stepped between 86.7, 94.3 and 102.2 TH/s. The 5-minute mean is sound; a single
+  reading is about ±8% off.
+- **Shares:** ours 27 accepted, PeakMiner 18 and SRBMiner 19, against about 21.5 each expected from their rates.
+  No rejects from ours or SRBMiner. PeakMiner's reject count isn't read: `bench.sh` finds no reject field in its
+  API reply.
+- **Skipped before running:** a 2080 Super (0dcce2f8), and three 2070 Supers once that row had its two PCs.
+
 ### Monero on the CPU
 
 SRBMiner 3.7.5 mines Monero (RandomX) on the CPU and Pearl on the GPU in one
@@ -428,6 +485,61 @@ couldn't be rented, so those rows are on new hosts.
   both of those showed another workload on the card. Portugal's
   start-of-run samples are lost, so that can't be ruled out there, but its
   per-clock rates match the Japan 3080 Ti's.
+
+### On Salad, 28 October, against the newest miners
+
+Run from 17:08 UTC on 2026-10-28 to 00:39 UTC on the 29th, by the same method as the RTX 20-series' Salad run:
+v0.6.9 against PeakMiner 2.20.3 and SRBMiner 3.8.0, on Salad PCs, 5 minutes each after a warm-up, a card's first
+PC with ours first and its second with SRBMiner first. These are different PCs and leave the rows above alone.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX 3090 Ti | Salad (336 W) | b687d663 | 126.0 | 149.7 | 152.7 | 83% |
+| RTX 3090 Ti | Salad (450 W) | ef44d3cd | 148.3 | 160.5 | 161.3 | 92% |
+| RTX 3090 | Salad (350 W) | 66666c27 | 113.7 | 121.3 | 120.3 | 94% |
+| RTX 3080 Ti | Salad (298 W) | 344adcb0 | 121.5 | 133.2 | 132.8 | 91% |
+| RTX 3080 Ti | Salad (350 W) | 4ec4131f | 126.9 | 137.4 | 136.4 | 92% |
+| RTX 3080 | Salad (285 W) | 93c805c0 | 105.8 | 114.3 | 113.4 | 93% |
+| RTX 3080 | Salad (340 W) | 9fbd405b | 111.8 | 115.0 | 115.0 | 97% |
+| RTX 3070 Ti | Salad (310 W) | b7d4d9a2 | 88.3 | 93.6 | 93.1 | 94% |
+| RTX 3070 Ti | Salad (310 W) | cdc3c2a9 | 89.9 | 94.8 | 94.6 | 95% |
+| RTX 3070 | Salad (270 W) | 46aae7db | 83.4 | 89.6 | 89.4 | 93% |
+| RTX 3070 | Salad (216 W) | 22bd1d8a | 77.4 | 83.6 | 83.8 | 92% |
+| RTX 3060 Ti | Salad (225 W) | abef70e6 | 65.9 | 71.2 | 70.6 | 93% |
+| RTX 3060 Ti | Salad (210 W) | 3a481d90 | 66.4 | 72.5 | 71.8 | 92% |
+| RTX 3060 | Salad (170 W, 12 GB) | 0771915f | 48.4 | 50.5 | 50.3 | 96% |
+| RTX 3060 | Salad (170 W, 12 GB) | 85c1c681 | 50.1 | 54.3 | 54.3 | 92% |
+
+- **91–97% on every healthy PC, median 92.5%,** down from 97–101% on the Vast rows. It fell on all eight cards
+  and against both competitors, which are within about 1% of each other on every PC. Where a power limit matches
+  a Vast row, the competitors are 5–7% faster than there and ours is flat to 3% slower:
+  - 3090 Ti at 450 W: ours −1.4%, PeakMiner +7.5%, SRBMiner +4.8%.
+  - 3080 Ti at 350 W: ours −0.9%, both competitors +7.4%.
+
+  So most of the drop is their gain, though on different PCs.
+- **The gap has two parts.**
+  - **Per clock:** ours does 94.9–96.7% of the best competitor's work on all 15 PCs, 95.8% on average.
+  - **Clock at the power limit:** ours runs a lower clock than they do at the same power, usually 1.6–4.6% lower,
+    and 14% lower on the 336 W 3090 Ti.
+
+  On the two PCs where something other than power set the clock (9fbd405b, 0771915f), the clock gap disappears
+  and ours reaches 96–97%.
+- **b687d663 (3090 Ti):** the host caps it at 336 W, 70% of its 480 W default. Ours ran at 1560 MHz against
+  1800–1815 MHz at the same 335 W. Its rate per clock matches the 450 W 3090 Ti's (80.8 against 81.0 TH/s per
+  GHz), so the cap explains the low row, not another workload.
+- **66666c27 (3090):** not limited by power. All three miners drew 280–313 W of 350 W and stopped at 1455–1470
+  MHz, so the host caps the clock. Ours drew 22 W more, ran 3–4 °C hotter and settled at 1410 MHz.
+- **9fbd405b (3080):** the competitors stopped at 297 W of 340 W, at 1680–1695 MHz. Ours reached the limit at
+  1710 MHz, our best row at 97%. PeakMiner reported no accepted share there at a normal rate, where about 4 were
+  expected.
+- **0771915f (3060):** ran at 84–86 °C with all three miners at the same clock and power, so only the per-clock
+  gap shows (96%).
+- **Heat-limited PC, dropped:** be39e9c4 (3090, 420 W) sat at 92–93 °C, 630–930 MHz and about 210 W, with
+  unsteady rates. It read ours 53.7, PeakMiner 71.1 and SRBMiner 68.5 (75%). A third 3090 wasn't run.
+- **No pool work, not recorded:** on d5b5d769 (3060 Ti) PeakMiner logged "authorize failed … Connection timed out"
+  and SRBMiner sat idle at 11 W. 3a481d90 took its place.
+- **Shares:** ours 45 accepted, against about 53 expected at the competitors' rate. No rejects from ours or
+  SRBMiner.
 
 ## RTX 40-series
 
