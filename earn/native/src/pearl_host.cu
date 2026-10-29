@@ -3077,8 +3077,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const PearlTranscriptTest test = pearl_slot_test(ctx);
   const PearlHitList hitList = pearl_slot_hits(ctx, slot);
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
-  // Turing's persistent B-direct fold takes its tiles from this slot's counter.
-  if (ctx->foldBDirect && PEARL_BD_PERSIST)
+  // Turing's persistent B-direct fold takes its tiles from this slot's counter, and so
+  // does the cp.async tall fold with PEARL_TALL_CTR (the TMA builds leave it alone).
+  if ((ctx->foldBDirect && PEARL_BD_PERSIST) || (ctx->foldTall && PEARL_TALL_CTR))
     cudaMemsetAsync(hitList.count + PEARL_BD_CTR_SLOTS, 0, sizeof(uint32_t), st);
 #if PEARL_HOPPER_WGMMA
   if (ctx->foldHopper) {
@@ -3216,6 +3217,14 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
   return pearl_host_collect(handle, out, attempts, err, err_len);
 }
 
+// A bench build with the tall fold's DRAM ablation says so in the fold's name, so its
+// reading is never taken for a real fold's (compilers.sh builds both passes with it).
+#ifdef PEARL_ABLATE_DRAM
+static const char kAblateDramTag[] = ", ABLATE_DRAM";
+#else
+static const char kAblateDramTag[] = "";
+#endif
+
 // Which fold this context's card runs, as resolve_fold read it off the loaded
 // binaries, for the bench probe to print: host-pass macros describe the host compile,
 // not the cubin that runs, and would credit a reading to the wrong fold.
@@ -3246,9 +3255,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   }
   if (ctx->foldAmpere) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u%s",
+             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u%s%s%s",
              ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand,
-             ctx->foldUnfused ? ", hash in its own kernel" : "");
+             ctx->foldUnfused ? ", hash in its own kernel" : "",
+             PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);
     return ctx->foldName;
   }
   // sm_100 runs sm_120's TMA fold; its name says so, so a B200 reading is not taken for a

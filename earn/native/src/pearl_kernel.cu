@@ -3187,11 +3187,23 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   auto tile_srcs = [&](uint32_t v, uint32_t &bsrc_, uint32_t &asrc_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
+#ifdef PEARL_ABLATE_DRAM
+    // Diagnostic only when defined: every tile copies from row groups 0 and 1 of A' and
+    // the first two column groups of B' (768 KB and 1 MB at the mainnet k), which stay
+    // in any RTX 30 card's L2, so DRAM serves next to nothing. The same copies and mma,
+    // two more instructions a tile. Prices the fold's DRAM traffic (its watts, at the
+    // power limit); the output is meaningless. The hash still names the real regions.
+    rbg_ &= 1u;
+    cbg_ &= 1u;
+    const uint32_t coff = 0u;
+#else
+    const uint32_t coff = col_off;
+#endif
 #if PEARL_TALL_TILE_ORDER
-    bsrc_ = (col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
+    bsrc_ = (coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
     asrc_ = rbg_ * BM * k + arow * SK + aq * 16u;
 #else
-    bsrc_ = ((col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
+    bsrc_ = ((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
     asrc_ = (rbg_ * BM + arow) * SK + aq * 16u;
 #endif
   };
@@ -3417,10 +3429,26 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
   uint32_t pA = 0u, pB = 0u, pC = 0u;
 #endif
+#if PEARL_TALL_CTR_ON
+  // Tiles from the slot's counter (PEARL_TALL_CTR): the next tile is the word below,
+  // written in chunk PEARL_TALL_CTR_CHUNK and read from the last chunk on.
+  static_assert(PEARL_TALL_CTR_CHUNK >= 1u && PEARL_TALL_CTR_CHUNK + 1u < chunks,
+                "written after the tile's first chunk, and read in a later one");
+  static_assert(PEARL_TALL_CTR_THREAD / 32u >= 4u && PEARL_TALL_CTR_THREAD < PEARL_TALL_THREADS,
+                "the counter is read by a warp that does not hash (wr 1)");
+  __shared__ uint32_t sTallNext;
+  volatile uint32_t *const nextTile = &sTallNext;
+  (void)tile_stride;
+#define PEARL_TALL_NEXT (*nextTile)
+#else
+#define PEARL_TALL_NEXT (v + tile_stride)
+#endif
   // (In the cluster build v, tile_stride, has_next and so every stage_next and cn below
   // are cluster-level, never from blockIdx.x: the pair must agree on all of them.)
-  for (uint32_t v = tile_first; v < tiles; v += tile_stride) {
+  for (uint32_t v = tile_first; v < tiles; v = PEARL_TALL_NEXT) {
+#if !PEARL_TALL_CTR_ON
     const bool has_next = v + tile_stride < tiles;
+#endif
 #if PEARL_TALL_TMA_BODY
     // The next tile's boxes, for the last chunk's fills (its first two stages). Worked
     // out here rather than in that chunk: two registers across the chunk loop, where
@@ -3438,7 +3466,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     for (uint32_t chunk = 0; chunk < chunks; chunk++) {
       // The last chunk stages the next tile's chunk 0, from the next tile's sources.
       const bool last = chunk + 1u == chunks;
+#if PEARL_TALL_CTR_ON
+      // The counter's word, read in the last chunk only (see PEARL_TALL_CTR).
+      const bool stage_next = !last || PEARL_TALL_NEXT < tiles;
+#else
       const bool stage_next = !last || has_next;
+#endif
 #if PEARL_TALL_TMA_BODY
       if (last) {
         boxB = nextB;
@@ -3691,8 +3724,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         pearl_mbar_wait(barEmpty + 8u * (fb == 2u ? 0u : fb + 1u), fb == 2u ? fpar : fpar ^ 1u);
 #endif
 #else
+#if PEARL_TALL_CTR_ON
+      if (last && stage_next) {
+#else
       if (last && has_next) {
-        tile_srcs(v + tile_stride, bsrc0, asrc0);
+#endif
+        tile_srcs(PEARL_TALL_NEXT, bsrc0, asrc0);
         aP = Aprime + asrc0;
         bP = Bprime + bsrc0 + BMID;
       }
@@ -3755,6 +3792,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
             }
           }
         }
+#if PEARL_TALL_CTR_ON
+        // The next tile, before this stage's release, which every thread acquires at the
+        // stage-1 refill (PEARL_TALL_CTR).
+        if (s == 0u && chunk == PEARL_TALL_CTR_CHUNK && threadIdx.x == PEARL_TALL_CTR_THREAD)
+          *nextTile = gridDim.x + atomicAdd(hits.count + PEARL_BD_CTR_SLOTS, 1u);
+#endif
         // This thread is done reading the stage: a release (see the ring above).
         pearl_mbar_arrive(so + STAGE + 8u);
       }
@@ -3943,6 +3986,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #endif
 #undef PEARL_TALL_ISSUE_A
 #undef PEARL_TALL_ISSUE_B
+#undef PEARL_TALL_NEXT
 #else
   (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;
   (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)test; (void)hits;

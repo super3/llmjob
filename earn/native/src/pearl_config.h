@@ -2268,6 +2268,38 @@ typedef struct {
 #else
 #define PEARL_TALL_CLUSTER_BODY 0
 #endif
+
+// The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
+// default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b
+// and takes each later tile from a counter, as Turing's B-direct fold does
+// (PEARL_BD_PERSIST): the slot's word PEARL_BD_CTR_SLOTS past its hit counter, which
+// the host zeroes before the launch.
+//
+// Why try it on Ampere: on RTX 20 the static stride let blocks drift apart through the
+// band walk, which spread its L2 working set and cost 7% (PEARL_BD_PERSIST above). On
+// RTX 30 nvidia-smi reads 18-25% memory-controller use under our fold where PeakMiner
+// and SRBMiner read 0-1% (Salad, 29 October), and at the power limit those DRAM watts
+// come out of the SM clock (PEARL_AMPERE_BAND_L2_SHARE). Not measured yet; 0 ships.
+//
+// Thread PEARL_TALL_CTR_THREAD (lane 0 of warp 4, which never hashes) takes the next
+// tile from the counter in chunk PEARL_TALL_CTR_CHUNK and writes it to shared before
+// its arrival on that chunk's stage-0 EMPTY barrier. Every thread waits on that phase
+// at the chunk's stage-1 refill, so all of them see the word by the last chunk, which
+// reads it (the next tile's chunk 0, and whether there is one) and so does the loop
+// once the tile is hashed. The next write is a tile later, in that tile's chunk
+// PEARL_TALL_CTR_CHUNK, and the writer gets there only after every thread has issued
+// that tile's chunk PEARL_TALL_CTR_CHUNK - 1 copies, so after every read of the word.
+// Both passes read it: the host zeroes the counter.
+#ifndef PEARL_TALL_CTR
+#define PEARL_TALL_CTR 0
+#endif
+#define PEARL_TALL_CTR_THREAD 128u
+#define PEARL_TALL_CTR_CHUNK 8u
+#if PEARL_TALL_CTR && !PEARL_TALL_TMA_BODY
+#define PEARL_TALL_CTR_ON 1
+#else
+#define PEARL_TALL_CTR_ON 0
+#endif
 // What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
 // the peer's too in the cluster build.
 #define PEARL_TALL_TMA_EMPTY_ARRIVALS \
