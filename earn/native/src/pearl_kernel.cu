@@ -3007,6 +3007,30 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
   return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
 }
 #endif
+#ifdef PEARL_TALL_CYC
+// Cycles a tile (bench only, -DPEARL_TALL_CYC, the cp.async ring): thread 0 reads clock64
+// at the top of each of its block's tiles. From its second tile's top to its last tile's
+// top is whole tiles in steady state, without the first tile's exposed chunk 0 or the
+// last one's hash. Each block adds those cycles and that many tiles here, and
+// pearl_tall_cyc_take reads and zeroes them. The second tile's time waits in buffer 0's
+// barrier pad (bytes 16-23 of the 112 the ring leaves unused), not in a register (the
+// fold is at 255) or a global word the other slot's launch could overwrite. The ideal at
+// 1024 MAC a clock an SM is 192 x 256 x 2048 / 1024 = 98,304 cycles. It needs no
+// performance counters, so it works where Nsight Compute cannot (Salad, Vast).
+// RTX 4090 (sm_89, CUDA 12.6), bench.exe, 3 rounds of 20 s, every round within 120:
+//   the fold as it is                        102,658   95.76% of the tensor peak a clock
+//   -DPEARL_ABLATE_RING (no ring waits)      102,190   -468
+//   -DPEARL_ABLATE_RING -DPEARL_ABLATE_ARRIVE 102,187  (the EMPTY arrives and their MEMBAR: ~0)
+//   -DPEARL_ABLATE_TRANSCRIPT_HASH           101,363   -1,295
+//   -DPEARL_ABLATE_READOUT (last chunk only) 101,048   -1,610
+//   all three                                 99,782   -2,876, 98.52%
+// Nsight Compute, one launch at its locked ~2.2 GHz, MAC a clock against the peak: 95.54%,
+// 95.95%, 96.95%, 97.03% and 98.26%. The readout's red.shared.xor are most of the fold's
+// shared bank conflicts (0.257 a mma with it, 0.037 without).
+// The same build measured 102,655 on an RTX 3060 Ti (sm_86) and 102,714 on an RTX 4060.
+// The counter changes no result: hit lists over 40 batches match the build without it.
+__device__ unsigned long long pearl_tall_cyc[2];
+#endif
 extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold_tall(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
@@ -3436,6 +3460,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
                 "written after the tile's first chunk, and read in a later one");
   static_assert(PEARL_TALL_CTR_THREAD / 32u >= 4u && PEARL_TALL_CTR_THREAD < PEARL_TALL_THREADS,
                 "the counter is read by a warp that does not hash (wr 1)");
+#ifdef PEARL_TALL_CYC
+#error "PEARL_TALL_CYC counts the grid stride's tiles: build it without PEARL_TALL_CTR"
+#endif
   __shared__ uint32_t sTallNext;
   volatile uint32_t *const nextTile = &sTallNext;
   (void)tile_stride;
@@ -3448,7 +3475,21 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   for (uint32_t v = tile_first; v < tiles; v = PEARL_TALL_NEXT) {
 #if !PEARL_TALL_CTR_ON
     const bool has_next = v + tile_stride < tiles;
+#if defined(PEARL_TALL_CYC) && !PEARL_TALL_TMA_BODY
+    if (threadIdx.x == 0u) {
+      const long long c = clock64();
+      const uint32_t t1 = sbase + STAGE + 16u;
+      if (v == tile_first + tile_stride) {
+        asm volatile("st.shared.u64 [%0], %1;" ::"r"(t1), "l"(c) : "memory");
+      } else if (!has_next && v > tile_first + tile_stride) {
+        long long c1;
+        asm volatile("ld.shared.u64 %0, [%1];" : "=l"(c1) : "r"(t1) : "memory");
+        atomicAdd(&pearl_tall_cyc[0], (unsigned long long)(c - c1));
+        atomicAdd(&pearl_tall_cyc[1], (unsigned long long)((v - tile_first) / tile_stride - 1u));
+      }
+    }
 #endif
+#endif  // !PEARL_TALL_CTR_ON
 #if PEARL_TALL_TMA_BODY
     // The next tile's boxes, for the last chunk's fills (its first two stages). Worked
     // out here rather than in that chunk: two registers across the chunk loop, where
@@ -3798,8 +3839,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         if (s == 0u && chunk == PEARL_TALL_CTR_CHUNK && threadIdx.x == PEARL_TALL_CTR_THREAD)
           *nextTile = gridDim.x + atomicAdd(hits.count + PEARL_BD_CTR_SLOTS, 1u);
 #endif
+#if defined(PEARL_ABLATE_RING) && defined(PEARL_ABLATE_ARRIVE)
+        // Diagnostic only: with the ring's waits gone, its EMPTY arrivals (a MEMBAR.ALL.CTA
+        // and an arrive a stage) go too. Prices them; the output is meaningless.
+#else
         // This thread is done reading the stage: a release (see the ring above).
         pearl_mbar_arrive(so + STAGE + 8u);
+#endif
       }
       // The next chunk starts on C: the roles rotate, and A and B have each been used once.
       {
@@ -3818,6 +3864,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       for (uint32_t rl = 0; rl < RPL; rl++)
         asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
                      ::"r"(trBase + rl * 128u + chunk * 4u), "r"(xg[rl]), "r"(lane) : "memory");
+#elif defined(PEARL_ABLATE_READOUT)
+      // Diagnostic only: the readout at the tile's last chunk alone, so the accumulators
+      // stay live (ptxas deletes mma whose results nothing reads). Prices the per-chunk
+      // readout. Output is meaningless.
+      if (chunk + 1u == chunks) {
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
+      }
 #else
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
@@ -3993,6 +4047,17 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   (void)tmA; (void)tmB;
 #endif
 }
+
+#ifdef PEARL_TALL_CYC
+// The tall fold's cycles and tiles since the last call (see pearl_tall_cyc), then zeroes
+// them. Waits for the device first, so every launch made before it is counted.
+extern "C" void pearl_tall_cyc_take(unsigned long long out[2]) {
+  cudaDeviceSynchronize();
+  cudaMemcpyFromSymbol(out, pearl_tall_cyc, 2u * sizeof(unsigned long long));
+  const unsigned long long z[2] = {0ull, 0ull};
+  cudaMemcpyToSymbol(pearl_tall_cyc, z, sizeof z);
+}
+#endif
 
 // The transcript hash after a fold that stores every transcript: GA100's unfused fold
 // (PEARL_TALL_UNFUSED) and Hopper's wgmma fold (PEARL_HOPPER_WGMMA, sm_90a). One thread a

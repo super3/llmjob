@@ -2068,6 +2068,22 @@ typedef struct {
 // all back in clock at the power cap). With the hash in its own kernel (PEARL_TALL_UNFUSED)
 // A at 3 does better: A100 PCIe, hashrate.js, 3 rounds, 400/400 hits, unfused: A at 2, B at
 // 6 209.45 TH/s, 3 and 6 211.98, 3 and 7 210.49; CMP 170HX 3 and 6 164.24, 3 and 7 162.80.
+// Tried on the cp.async ring and dropped, cycles a tile (PEARL_TALL_CYC), RTX 4090, 3 rounds
+// each (1 for the last two), against 102,658:
+//   a __nanosleep of 20 or 64 ns between failed tests in pearl_mbar_wait  102,888-103,019
+//   one EMPTY arrival a warp, after a __syncwarp (the TMA build's way)      107,877, and 8
+//     bytes of spill on sm_89
+//   the hasher's adds as IMAD, as PEARL_TALL_HASH80_IMAD on GA100           106,704. The hash
+//     is ptxas's already: 168 IADD3 and 158 IMAD.IADD in a column slot's hash.
+//   m16 tiles 4 and 5's readout moved into the next chunk's first k-step, after its mma
+//     of tiles 0-3 or 0-1                                                   102,923 / 102,951
+//   chunk 0's stage-1 refill after the stage's last mma, so the hasher's partner runs two
+//     stages, not one and a quarter, before it waits at the hand-off       103,471 (every
+//     chunk's: 105,139)
+//   Blackwell's streamed stage body (PEARL_TALL_FRAG_PIPE) on this ring, copy points in
+//     columns: A at 6 and B at 12 (245 registers), 7/12, 6/11, 6/13, 7/13, 6/14 build
+//     without spill and measure 106,221-108,053; 5/10, 4/9 and 3/8 spill 160-336 bytes.
+// Each was an A/B switch; none is kept.
 #ifndef PEARL_TALL_BPT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
 #define PEARL_TALL_BPT 6u
