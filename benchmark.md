@@ -17,7 +17,9 @@ run again on Salad PCs with v0.6.9 against the newest competitors, PeakMiner
 2.20.3 and SRBMiner 3.8.0. Those tables are under "On Salad, 28 October" in
 their sections and leave the Vast rows alone. On 29–30 October the RTX 40- and
 50-series were run the same way (under "On Salad, 29–30 October"), and the AMD
-rows were rerun with the v0.6.9 release against SRBMiner 3.8.0.
+rows were rerun with the v0.6.9 release against SRBMiner 3.8.0. On 30 October
+the RTX 20- and 50-series were run once more against SRBMiner 3.8.2 (under "On
+Salad, 30 October, against SRBMiner 3.8.2").
 
 ## Summary
 
@@ -31,7 +33,9 @@ because no L40 was for rent other than the New York one.
   SRBMiner 3.7.5 also mines Monero on the CPU alongside, and so does ours
   from v0.6.0; PeakMiner doesn't (see the section). On Salad on 28 October,
   v0.6.9 read 97–103% (median 98%) against PeakMiner 2.20.3 and SRBMiner
-  3.8.0: our RTX 20 work since v0.5.14 closed the gap.
+  3.8.0: our RTX 20 work since v0.5.14 closed the gap. Against SRBMiner 3.8.2
+  on 30 October it read 95.7–99.7% (median 97.4%), with PeakMiner fastest on
+  every PC.
 - RTX 30-series: 97–101%. The two 3070s trail most, at 97%. SRBMiner didn't
   start on the Oman 3090 Ti, so that row compares with PeakMiner. On Salad on
   28 October, v0.6.9 read 91–97% (median 92.5%) against PeakMiner 2.20.3 and
@@ -48,7 +52,8 @@ because no L40 was for rent other than the New York one.
   two different hosts, so this doesn't prove the core is the cause. On Salad
   on 29–30 October, v0.6.9 read 94.6–96.4% on 10 of the 12 PCs against
   PeakMiner 2.20.3 and SRBMiner 3.8.0. The 450 W 5090 read 89% and one 5060
-  101%.
+  101%. Against SRBMiner 3.8.2 on 30 October: 87.6–103.2%, median 95.2%. The
+  437 W 5090 read 87.6%, and a 145 W 5060 beat both competitors (103.2%).
 - A100-class: 97–111%. The A100s are at 97–98% and the CMP 170HX at 99%. The
   A30's 111% is too high: its host lowered the power limit during
   PeakMiner's and SRBMiner's runs. Against PeakMiner at the full limit it's
@@ -365,6 +370,40 @@ has no 12 GB 2060 class.
   No rejects from ours or SRBMiner. PeakMiner's reject count isn't read: `bench.sh` finds no reject field in its
   API reply.
 - **Skipped before running:** a 2080 Super (0dcce2f8), and three 2070 Supers once that row had its two PCs.
+
+### On Salad, 30 October, against SRBMiner 3.8.2
+
+Run from 13:56 to 18:10 UTC on 2026-10-30, by the same method as the 28 October run above, after SRBMiner 3.8.1 and
+3.8.2 (28 and 29 October) listed small pearlhash gains on RTX 20 to 50: v0.6.9 against PeakMiner 2.20.3 and
+SRBMiner 3.8.2, on `us.pearl.herominers.com` (`tuning/salad/bench.sh` at `d2de3f9`). Different PCs, except two;
+they leave the rows above alone.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti | Salad (260 W) | ef08a260 | 94.8 | 95.0 | 93.6 | 99.7% |
+| RTX 2080 Ti | Salad (260 W) | 671bb26b | 78.3 | 79.1 | 75.5 | 99.1% |
+| RTX 2080 | Salad (245 W) | 83f7bc7e | 66.9 | 68.8 | 68.0 | 97.4% |
+| RTX 2080 | Salad (260 W) | b2de4b63 | 78.2 | 79.0 | 78.0 | 99.0% |
+| RTX 2070 Super | Salad (255 W) | 32c563bc | 62.1 | 63.2 | 62.4 | 98.2% |
+| RTX 2070 | Salad (185 W) | 46bfd62d | 55.9 | 57.6 | 56.4 | 97.0% |
+| RTX 2070 | Salad (225 W) | 1e19bb79 | 61.3 | 63.8 | 62.5 | 96.1% |
+| RTX 2060 | Salad (6 GB) | 4af24fcc | 35.7 | 37.3 | 35.1 | 95.7% |
+| RTX 2060 | Salad (167 W, 6 GB) | 0338617b | 46.9 | 48.3 | 45.8 | 97.3% |
+
+- **95.7–99.7% on every PC, median 97.4%,** against 97–103% (median 98%) on 28 October against SRBMiner 3.8.0.
+  PeakMiner 2.20.3 was fastest on every PC; SRBMiner 3.8.2 was ahead of us on four of nine, by 2% at most.
+- **Two PCs were the 28 October rows' own:**
+  - ef08a260 (2080 Ti): ours 94.9 → 94.8, PeakMiner 94.7 → 95.0, SRBMiner 86.4 → 93.6 (+8.3%). The row went from
+    100% to 99.7%, now against PeakMiner.
+  - 83f7bc7e (2080): all three read 2-4% more than on 28 October, and the row stayed at 97%.
+- **Our figure is noisier than theirs.** Ours is the mean of the CLI's readings after the first minute; theirs is
+  each miner's own figure at the end. On fast cards our readings step by whole launches, which leaves about
+  ±1.5-2.4% of noise on ours alone (research notes, 30 October), so 1-2 points between PCs are within noise.
+- **4af24fcc (2060):** nvidia-smi gave no power limit, and all three miners ran slow (35-37 TH/s against 46-48 on
+  the other 2060), so the PC itself was slow; the ratio is still a fair comparison.
+- **Not recorded:** a 2080 box was moved off 2c215597 after 45 minutes without a result; 15ad9655 turned out to be
+  a 2080 Super, which has no row; on 9f287c81 (2070 Super) no miner got work from the pool. Salad's 2070 class also
+  handed out the 2070 Super 32c563bc, which got a row of its own.
 
 ### Monero on the CPU
 
@@ -714,6 +753,39 @@ driver 591 or newer, so all ran the CUDA 13 core. These are different PCs and le
 - **RTX 5060 `0db26521`:** the one PC in either series where ours beat both competitors (101%). The other 5060,
   at the same 145 W, read 95%.
 - **Boxes restarted:** three waited out Salad's 30 minutes with no PC and were started again; none ran long.
+
+### On Salad, 30 October, against SRBMiner 3.8.2
+
+Run from 18:10 to 22:21 UTC on 2026-10-30 by the same method, against PeakMiner 2.20.3 and SRBMiner 3.8.2. The
+founder retired HeroMiners during the run: boxes started from 20:30 UTC mined on Kryptex
+(`prl-us.kryptex.network:7048`, `bench.sh` at `cce2aaf`), the earlier ones on `us.pearl.herominers.com` (`d2de3f9`).
+All three miners of a row share its pool. Different PCs, except one; they leave the rows above alone.
+
+| Card | Host | Machine ID | Pool | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|---|
+| RTX 5090 | Salad (575 W) | 541c8dda | HeroMiners | 411.6 | 418.2 | 430.4 | 95.6% |
+| RTX 5090 | Salad (437 W) | 83be133f | HeroMiners | 330.9 | 366.4 | 377.8 | 87.6% |
+| RTX 5080 | Salad (360 W) | b57ed5de | HeroMiners | 213.2 | 223.7 | 229.0 | 93.1% |
+| RTX 5080 | Salad (360 W) | f6e3944e | HeroMiners | 228.6 | 237.0 | 239.3 | 95.5% |
+| RTX 5070 Ti | Salad (300 W) | afe54169 | HeroMiners | 186.1 | 195.9 | 196.3 | 94.8% |
+| RTX 5070 Ti | Salad (300 W) | ca7ddba0 | HeroMiners | 190.5 | 200.6 | 201.3 | 94.7% |
+| RTX 5070 | Salad (250 W) | cbdb57ce | HeroMiners | 127.9 | 132.8 | 133.8 | 95.6% |
+| RTX 5070 | Salad (250 W) | 5599f5d3 | Kryptex | 128.3 | 133.4 | 134.0 | 95.8% |
+| RTX 5060 Ti | Salad (150 W, 16 GB) | f1e711c2 | Kryptex | 92.1 | 97.9 | 86.9 | 94.1% |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | 3926805c | Kryptex | 96.7 | 101.0 | 101.3 | 95.5% |
+| RTX 5060 | Salad (145 W) | 960ed7a7 | Kryptex | 78.6 | 76.1 | 71.8 | 103.2% |
+| RTX 5060 | Salad (123 W) | dd173265 | Kryptex | 74.9 | 79.7 | 80.7 | 92.8% |
+
+- **87.6–103.2%, median 95.2%.** SRBMiner 3.8.2 was the faster competitor on 10 of the 12 PCs, PeakMiner on two.
+- **f6e3944e (5080) was the 29–30 October row's own PC:** ours 228.5 → 228.6, PeakMiner 237.0 → 237.0, SRBMiner
+  237.4 → 239.3 (+0.8%). The row went from 96.3% to 95.5%.
+- **RTX 5090 at 437 W: 87.6%,** our lowest NVIDIA row. At 575 W it read 95.6%.
+- **RTX 5060 960ed7a7: 103.2%,** ours ahead of both. With 0db26521 (101%) on 29–30 October, that's two 145 W 5060
+  PCs past 100%, while 616220a5 at the same 145 W read 95% and dd173265 at 123 W 92.8%. What separates them isn't
+  known yet.
+- **The pools agree:** the two 5070 rows, one on each pool, read 95.6% and 95.8%.
+- **Not recorded:** on bf32527c (5070 Ti) no miner got work from the pool.
+- Drivers 596-621. The same noise caveat as the RTX 20 run applies to ours.
 
 ## A100-class (sm_80)
 
