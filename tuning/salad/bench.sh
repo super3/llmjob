@@ -28,7 +28,7 @@ POOL_HOST=us.pearl.herominers.com; POOL_PORT=1200; SECS=300; WARM=60
 # and SRBMiner 3.7.1 (the GTX and AMD tables).
 VER=v0.6.9
 PEAK_VER=2.20.3; PEAK_SHA256=345a4446acaa9213e6cd4622460b002a966dad4a8ec127f965d3a8878375fc2a
-SRB_VER=3.8.0; SRB_MD5=01cdd7ffdca43f3b6968fbaacea449b5
+SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
