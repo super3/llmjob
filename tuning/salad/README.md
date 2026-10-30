@@ -433,7 +433,7 @@ git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
 `amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, srb, duel, cpuchecks, run).
 `duel` is benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
-CLI) and SRBMiner 3.7.1 run 5 minutes each on HeroMiners; it ends with ours' mean after the first minute and
+CLI) and SRBMiner 3.8.2 run 5 minutes each on HeroMiners; it ends with ours' mean after the first minute and
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
 can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
 
