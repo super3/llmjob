@@ -2312,6 +2312,18 @@ class W:
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return
+        # Rule 5b: a PC that sends no log lines has no reading for rule 5, and its shares keep it past the reading
+        # rules above, so nothing judged it: on 30 October 5090-47 mined 4¾ h on such a PC at about $0.28/hr against
+        # its $0.33. With no reading here it's judged on what Kryptex credited it over the last full hour instead.
+        if not cur:
+            rate = self.credit_rate(g, max(start, pend, rs), t)
+            if rate is not None:
+                earn, bar = rate * st["mkt"]["price"] + self.xmr_usd(g), self.cfg["min_margin"]
+                if margin_of(earn, g["price"]) < bar:
+                    self.leave(g, f"earns ${earn:.3f}/hr by Kryptex's count of its shares over the last hour (its PC "
+                                  f"sends no log lines) on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
+                                  f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})")
+                    return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last
         # 3 readings must clear min_margin at the PC's price, every round; the first time it doesn't, the PC is left.
         # The median, not the mean: in the 12.6 days to 23 October, 24 of 277 margin leaves whose readings were kept
@@ -2377,6 +2389,19 @@ class W:
         if work >= 1 and cred / work < 1 - max(bar, luck):
             event(f"DRIFT credit: the pool has credited {cred:.3f} PRL for work worth {work:.3f} "
                   f"({pct(cred - work, work)}, more than luck explains over {pt['blocks']} blocks)")
+
+    def credit_rate(self, g, since, t):
+        """PRL an hour a Kryptex box earned by Kryptex's count: its 10-minute buckets over the hour ending 25 min ago,
+        at what Kryptex pays. The chart runs behind: on 30 October its newest bucket had started 23 min before, so a
+        later one may still be filling. None for a box not on Kryptex, before it has mined that whole hour since
+        `since`, or without a chart read in the last 15 min. A bucket with no shares isn't in the chart: it counts 0."""
+        if not g.get("kx") or t - self.st.get("kx_count_t", 0) > 15 * MIN:
+            return None
+        end = (t - 25 * MIN) // 600 * 600
+        if end - 3600 < since:
+            return None
+        return sum(v * ps for ts, (v, ps) in (g.get("kx_b") or {}).items()
+                   if end - 3600 <= int(ts) / 1000 < end) * self.cfg["kryptex_pay"]
 
     def pc_rate(self, g):
         """The median TH/s of the miner's last 3 readings on this PC after warm-up, as rule 5 judges it, or None while

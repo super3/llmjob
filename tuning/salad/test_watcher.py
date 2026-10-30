@@ -1758,6 +1758,50 @@ class TestLogOutage(Base):
         self.assertEqual(self.events().count("WARN Salad log reads have failed for 11 min"), 1)
 
 
+class TestNoLogPc(Base):
+    """30 October: 5090-47's PC sent no log lines for 4¾ h while Kryptex credited its shares at about $0.28/hr against
+    its $0.33/hr, and no rule judged it. Such a box is judged on its last full hour of Kryptex credit."""
+    def run_on(self, per_bucket, minutes):
+        g = self.group()
+        g["kx"] = True
+        share = USD_TH_HR / PRICE * 2 ** 32 / 3.6e15 * 2 ** 21                          # PRL the network pays a share
+        self.step(g, 1, "m1")
+        for _ in range(minutes):
+            self.clock[0] += 60
+            t = self.clock[0]
+            g["last_share"] = t                                                          # Kryptex gets its shares...
+            g["kx_b"] = {str(s * 1000): [per_bucket, share]
+                         for s in range(int(g["pc_since"]) // 600 * 600, int(t), 600)}
+            self.x.st["kx_count_t"] = t
+            g["has_pc"], g["_machine"], g["instance"] = True, "m1", "inst-m1"            # ...but no reading comes
+            self.x.rules(g, t)
+            if g["ended"] or g["machine"] is None:
+                break
+        return g
+
+    def test_a_pc_whose_credit_doesnt_clear_the_bar_is_left(self):
+        self.run_on(5, 100)                      # 30 shares an hour: about $0.08 against $0.11
+        self.assertIn("by Kryptex's count of its shares over the last hour (its PC sends no log lines) on PC m1",
+                      self.events())
+
+    def test_one_whose_credit_clears_it_stays(self):
+        g = self.run_on(10, 100)                 # 60 shares an hour: about $0.17
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertFalse(g["ended"])
+        self.assertEqual(g["machine"], "m1")
+
+    def test_it_waits_for_a_full_hour_of_credit(self):
+        g = self.run_on(5, 80)                   # the hour ending 25 min ago doesn't start after it got the PC yet
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertFalse(g["ended"])
+
+    def test_a_stale_chart_read_judges_nothing(self):
+        g = self.group()
+        g["kx"], g["kx_b"] = True, {}
+        self.x.st["kx_count_t"] = self.clock[0] - 20 * 60
+        self.assertIsNone(self.x.credit_rate(g, self.clock[0] - 3 * 3600, self.clock[0]))
+
+
 class TestPoolTotals(Base):
     POOL = {"stats": {"paid": "156064257", "balance": "20000000", "hashes": "8875147264", "hashrate_1h": 264765.8},
             "unconfirmed": [{"reward": "102092647"}, {"reward": "50000000"}],
