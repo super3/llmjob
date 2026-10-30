@@ -1,6 +1,7 @@
 #!/bin/bash
 # Benchmarks PeakMiner, SRBMiner and our miner on one Salad GPU, one after another, the way benchmark.md's
-# "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes on HeroMiners.
+# "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes on Kryptex
+# (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it).
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.
 #
 # Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,ours"), OURS_SECS (300, or 90 on a card
@@ -22,7 +23,7 @@
 # k and rank, the tile's rows, and the operand bytes the proof carries. bench.py's command fetches sharetap.py at
 # the same commit.
 export DEBIAN_FRONTEND=noninteractive
-POOL_HOST=us.pearl.herominers.com; POOL_PORT=1200; SECS=300; WARM=60
+POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=300; WARM=60
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
 # this file by commit, so a run keeps the versions it started with. Until 28 October: v0.6.0, PeakMiner 2.17.6
 # and SRBMiner 3.7.1 (the GTX and AMD tables).
@@ -149,8 +150,10 @@ peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
+# Our CLI picks Kryptex's "wallet/worker" login from the host name, so behind the TAP relay (127.0.0.1) Kryptex
+# credits the same wallet but names the worker "worker" rather than bench-ours.
 ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
-           ${TAP:+--pool $POOL_HOST:$POOL_PORT}; }
+           --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }

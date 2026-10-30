@@ -37,7 +37,7 @@
 #     sleep:secs              wait
 #   ARCH          gfx target to build for (default: rocminfo's first GPU agent)
 #   POOL, WORKER, WALLET      for mine (default prl-us.kryptex.network:7048, amdtest, the user's wallet)
-#   DUEL_POOL     for srb and duel, both miners (default us.pearl.herominers.com:1200, the table's pool)
+#   DUEL_POOL     for srb and duel, both miners (default prl-us.kryptex.network:7048, bench.sh's pool)
 #
 # Salad's PCs run the container in WSL2: the GPU is behind /dev/dxg, and Salad puts its ROCm-to-WSL bridge
 # (/opt/rocm-wsl) first on PATH and LD_LIBRARY_PATH. This script only appends to PATH and never sets
@@ -257,7 +257,7 @@ srb_get() {
   tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
 }
 # Both miners mine on DUEL_POOL in srb and duel, as benchmark.md's AMD table did (bench.sh's pool).
-DUEL_POOL=${DUEL_POOL:-us.pearl.herominers.com:1200}
+DUEL_POOL=${DUEL_POOL:-prl-us.kryptex.network:7048}
 srb_cli() {
   cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
     --worker "$WORKER-srb" --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel

@@ -1004,11 +1004,11 @@ class TestBenchShDryRun(unittest.TestCase):
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
             f"curl {rel}/pearl_core_cu13.node -> pearl_core_cu13.node",
-            "peak -o stratum+tcp://us.pearl.herominers.com:1200 -u prl1test.bench-peak -p x -c pearl",
-            "peak -o stratum+tcp://us.pearl.herominers.com:1200 -u prl1test.bench-peak -p x -c pearl",
-            "srbminer --algorithm-gpu pearlhash --pool us.pearl.herominers.com:1200 --wallet prl1test --worker "
+            "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
+            "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
+            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test --worker "
             "bench-srb --disable-cpu --api-enable --api-port 21550",
-            "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update"])
+            "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update --pool prl-us.kryptex.network:7048"])
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
@@ -1032,10 +1032,10 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertFalse([l for l in calls.splitlines() if l.startswith("peak ")])
         self.assertIn("git fetch -q --depth 1 origin 0123456789abcdef", calls)
         self.assertIn("node ../probes/verify-hits.js build/pearl_core_hip.node 600", calls)
-        self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool us.pearl.herominers.com:1200 "
+        self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool prl-us.kryptex.network:7048 "
                       "-w bench-ours --no-report --no-serve --no-update | PEARL_CORE_VARIANT=amd PEARL_CORE_PATH="
                       "<T>/llmjob/earn/native/amd/build/pearl_core_hip.node NODE_PATH=<T>/nm/node_modules", calls)
-        self.assertIn("srbminer --algorithm-gpu pearlhash --pool us.pearl.herominers.com:1200 --wallet prl1test "
+        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test "
                       "--worker bench-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia "
                       "--disable-gpu-intel", calls)
         self.assertIn("pkill -f src/cli/earn-cli\\.js", calls)
