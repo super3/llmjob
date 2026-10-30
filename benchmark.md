@@ -15,7 +15,9 @@ a core for AMD cards on Linux (`pearl_core_hip.node`, loaded with `--core amd`);
 its figures are under "AMD Radeon". On 2026-10-28 the RTX 20- and 30-series were
 run again on Salad PCs with v0.6.9 against the newest competitors, PeakMiner
 2.20.3 and SRBMiner 3.8.0. Those tables are under "On Salad, 28 October" in
-their sections and leave the Vast rows alone.
+their sections and leave the Vast rows alone. On 29–30 October the RTX 40- and
+50-series were run the same way (under "On Salad, 29–30 October"), and the AMD
+rows were rerun with the v0.6.9 release against SRBMiner 3.8.0.
 
 ## Summary
 
@@ -37,11 +39,16 @@ because no L40 was for rent other than the New York one.
   now our weakest series.
 - RTX 40-series: 98–102%, and 99.5% or better on 15 of the 18 hosts. The
   lowest are the 225 W British Columbia 4080 and the Australia 4060, both at
-  98%.
+  98%. On Salad on 29–30 October, v0.6.9 read 93.5–95.8% (median 94.5%)
+  against PeakMiner 2.20.3 and SRBMiner 3.8.0, on every card: as on the RTX
+  30, the competitors got faster and ours didn't.
 - RTX 50-series: 96–101%. The India 5090 (96%) has driver 570, so it runs
   the CUDA 12.8 core. Per clock it does 3.4% less than SRBMiner there,
   against 0.6% less on the South Korea 5090 on the CUDA 13 core. Those are
-  two different hosts, so this doesn't prove the core is the cause.
+  two different hosts, so this doesn't prove the core is the cause. On Salad
+  on 29–30 October, v0.6.9 read 94.6–96.4% on 10 of the 12 PCs against
+  PeakMiner 2.20.3 and SRBMiner 3.8.0. The 450 W 5090 read 89% and one 5060
+  101%.
 - A100-class: 97–111%. The A100s are at 97–98% and the CMP 170HX at 99%. The
   A30's 111% is too high: its host lowered the power limit during
   PeakMiner's and SRBMiner's runs. Against PeakMiner at the full limit it's
@@ -63,10 +70,11 @@ because no L40 was for rent other than the New York one.
   these cards yet.
 - GTX 16-series: 0.7–1.3 TH/s for all three miners (96–104%). The cards have no tensor cores, and
   every miner's tensor instructions run on a slow shared unit. Not worth mining on Salad.
-- AMD Radeon on Salad: SRBMiner 32–92 TH/s, from the RX 7800 XT to the RX 9070 XT. PeakMiner doesn't
-  mine Pearl on AMD (0). Our AMD core, which v0.6.8 ships for Linux (`--core amd`), run with SRBMiner on the same
-  PCs on 23 October before the release, beats it on every card, two PCs each: 137–148% on the RX 9060 XT, 119–128% on the RX 9070
-  XT, 102–106% on the RX 7900 XTX, 101–103% on the RX 7900 XT and 103% on the RX 7800 XT (the section's notes).
+- AMD Radeon on Salad: v0.6.9's AMD core (`--core amd`) against SRBMiner 3.8.0 on the same PCs on 30 October,
+  two PCs a card: 109–110% on the RX 9060 XT, 100–103% on the RX 9070 XT, 99–103% on the RX 7900 XT, 97–101% on
+  the RX 7800 XT and 92–99% on the RX 7900 XTX. On 23 October, against SRBMiner 3.7.1, ours led on every card
+  (102–148%). SRBMiner 3.8.0 is much faster on RDNA 4 and about the same on RDNA 3 (the section's notes).
+  PeakMiner doesn't mine Pearl on AMD (0).
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -593,6 +601,44 @@ moved to new hosts.
   or power-capped near 2600 MHz. In this run it held 1995 MHz for all three
   miners.
 
+### On Salad, 29–30 October, against the newest miners
+
+Run from 22:45 UTC on 2026-10-29 to 03:30 UTC on the 30th, by the same method as the RTX 20- and 30-series' Salad
+runs: v0.6.9 against PeakMiner 2.20.3 and SRBMiner 3.8.0, on Salad PCs, 5 minutes each after a warm-up, a card's
+first PC with ours first and its second with SRBMiner first (`tuning/salad/bench.py` at `f60a455`). These are
+different PCs and leave the rows above alone. Salad's 4090 class can hand out a 4090D, its 4080 class a 4080
+Super and its 4070 class a 4070 Super, but none did.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX 4090 | Salad (450 W) | adbabd35 | 321.8 | 342.6 | 344.0 | 94% |
+| RTX 4090 | Salad (450 W) | 2982dea7 | 313.3 | 331.7 | 329.3 | 94% |
+| RTX 4080 | Salad (320 W) | 2ffd8ac3 | 197.9 | 209.3 | 209.3 | 95% |
+| RTX 4080 | Salad (320 W) | 9850190a | 190.9 | 202.4 | 203.0 | 94% |
+| RTX 4070 Ti Super | Salad (254 W) | 8445b495 | 165.0 | 175.8 | 175.4 | 94% |
+| RTX 4070 Ti Super | Salad (228 W) | 42d4fae9 | 169.7 | 181.2 | 179.8 | 94% |
+| RTX 4070 Ti | Salad (242 W) | cf64ae47 | 153.6 | 163.7 | 163.4 | 94% |
+| RTX 4070 Ti | Salad (285 W) | 2a9e8d3d | 160.2 | 168.7 | 168.1 | 95% |
+| RTX 4070 | Salad (200 W) | 24656adc | 114.2 | 121.2 | 121.1 | 94% |
+| RTX 4070 | Salad (200 W) | 8e6114f1 | 122.5 | 128.6 | 128.5 | 95% |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | 4138e3e4 | 91.1 | 96.0 | 95.8 | 95% |
+| RTX 4060 Ti | Salad (165 W, 16 GB) | 7e70e38b | 88.3 | 93.4 | 93.1 | 95% |
+| RTX 4060 | Salad (115 W) | 4e31b49a | 59.4 | 62.0 | 61.8 | 96% |
+| RTX 4060 | Salad (115 W) | 59d34bc2 | 59.7 | 62.8 | 62.6 | 95% |
+
+- **93.5–95.8% on every PC, median 94.5%,** down from 98–102% on the Vast rows. PeakMiner and SRBMiner are within
+  about 1% of each other on every PC. Where a power limit matches a Vast row, the competitors are 4–7% faster than
+  there and ours is flat to 3% slower, on different PCs:
+  - 4090 at 450 W: ours +0.3%, best competitor +6.9% (means of both PCs against both Vast rows).
+  - 4080 at 320 W: ours −2.7%, best competitor +3.6% (against Japan).
+  - 4070 at 200 W: ours −0.7%, best competitor +4.3%.
+  - 4060 at 115 W: ours −1.4%, best competitor +3.8% (against New Zealand).
+- **Power limits** are the host's, read from `nvidia-smi`; two were 253.65 W and 242.25 W, rounded in the table.
+  Drivers were 610–617.
+- **Box moved:** the first 4070 Ti Super box was given PC `8123f436`, then moved to `8445b495` before it ran.
+  Six boxes waited out Salad's 30 minutes with no PC and were started again; none ran long.
+- These boxes don't record clocks, so the gap can't be split into per-clock work and clock, as on the RTX 30.
+
 ## RTX 50-series
 
 Run on 2026-10-10, 16:02–17:48 UTC. Every row ran on the CUDA 13 core except
@@ -637,6 +683,35 @@ their own machine; five moved to new hosts.
 - **RTX 5070 Ti:** both hosts lock the SM clock at 1342 MHz, even at idle,
   so all three miners ran at 86–98 W of 250 W. The comparison is fair, but
   the card runs far below a stock 5070 Ti.
+
+### On Salad, 29–30 October, against the newest miners
+
+Run from 03:30 to 07:29 UTC on 2026-10-30, by the same method as the RTX 40-series' Salad run above. Every PC had
+driver 591 or newer, so all ran the CUDA 13 core. These are different PCs and leave the rows above alone.
+
+| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
+|---|---|---|---|---|---|---|
+| RTX 5090 | Salad (575 W) | 3fda699b | 404.5 | 438.4 | 440.1 | 92% |
+| RTX 5090 | Salad (450 W) | 01bdc2fc | 354.8 | 394.2 | 398.9 | 89% |
+| RTX 5080 | Salad (360 W) | cc442fff | 225.8 | 232.9 | 234.3 | 96% |
+| RTX 5080 | Salad (360 W) | f6e3944e | 228.5 | 237.0 | 237.4 | 96% |
+| RTX 5070 Ti | Salad (300 W) | ebdd97df | 186.5 | 194.7 | 195.2 | 96% |
+| RTX 5070 Ti | Salad (300 W) | 770088cd | 185.8 | 195.1 | 195.5 | 95% |
+| RTX 5070 | Salad (250 W) | 71aa43da | 134.2 | 141.3 | 141.3 | 95% |
+| RTX 5070 | Salad (225 W) | a163e4f3 | 130.0 | 137.0 | 137.3 | 95% |
+| RTX 5060 Ti | Salad (180 W, 16 GB) | 6c52b860 | 94.1 | 98.6 | 97.1 | 95% |
+| RTX 5060 Ti | Salad (153 W, 16 GB) | 78d368bf | 92.7 | 97.7 | 97.5 | 95% |
+| RTX 5060 | Salad (145 W) | 616220a5 | 74.0 | 77.7 | 78.1 | 95% |
+| RTX 5060 | Salad (145 W) | 0db26521 | 78.5 | 77.4 | 77.7 | 101% |
+
+- **94.6–96.4% on 10 of the 12 PCs,** down from 96–101% on the Vast rows. Where a power limit matches a Vast row,
+  the competitors are 2–7% faster than there and ours is −1% to +2%, on different PCs:
+  - 5080 at 360 W: ours −1.1%, best competitor +2.4% (means of both PCs against Poland).
+  - 5070 at 250 W: ours +2.2%, best competitor +6.6% (against the mean of Colombia and Texas).
+- **RTX 5090 trails most:** 92% at 575 W and 89% at 450 W. On Vast at 500 W it was 99% on the CUDA 13 core.
+- **RTX 5060 `0db26521`:** the one PC in either series where ours beat both competitors (101%). The other 5060,
+  at the same 145 W, read 95%.
+- **Boxes restarted:** three waited out Salad's 30 minutes with no PC and were started again; none ran long.
 
 ## A100-class (sm_80)
 
@@ -930,8 +1005,14 @@ our core and SRBMiner 3.7.1 on the same PC, 5 minutes each after a 60-second war
 alternating between PCs, after a 5- or 10-minute hit check of the core (`tuning/salad/amdtest.sh`'s `duel` task,
 the same method and pool as on 22 October). PeakMiner wasn't run; its 0 stands. Salad handed out the 22 October
 rows' own PC only once (RX 7900 XT `67c308d2`), so the other rows moved to new PCs, and the 22 October figures are
-in the notes. Ours is now the best miner on every row, so "% of best" is ours divided by SRBMiner's rate, since
-PeakMiner mines nothing on these cards.
+in the notes. "% of best" is ours divided by SRBMiner's rate, since PeakMiner mines nothing on these cards.
+
+Every row was run again from 07:29 to 11:36 UTC on 30 October, with the v0.6.9 release's AMD core against SRBMiner
+3.8.0, the newest: the core built on each PC from the v0.6.9 commit (`d28faf2`) with ROCm 7.2 and run by the CLI
+from source, after a 2-minute hit check, then both miners 5 minutes each after a 60-second warm-up, the order
+alternating between PCs (`tuning/salad/bench.py` and `bench.sh` at `f60a455`, the same image and pool). PeakMiner
+wasn't run; its 0 stands. Three rows are on the 23 October rows' own PCs (`67c308d2`, `cc2f03b6`, `d0dbba63`); the
+others moved to new PCs, and the 23 October figures are in the notes.
 
 SRBMiner mines Pearl on every one of these cards, through AMD's OpenCL. PeakMiner started on all ten PCs and
 quit within 15 seconds with no hashrate and no shares: its README lists AMD support only for CSD,
@@ -939,16 +1020,41 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
-| RX 9070 XT | Salad (16 GB) | 83151dba | 88.6 | 0 | 69.3 | 128% |
-| RX 9070 XT | Salad (16 GB) | 77904d36 | 109.9 | 0 | 92.4 | 119% |
-| RX 9060 XT | Salad (16 GB) | d324328f | 63.9 | 0 | 43.2 | 148% |
-| RX 9060 XT | Salad (16 GB) | 0a4940aa | 59.3 | 0 | 43.2 | 137% |
-| RX 7900 XTX | Salad (24 GB) | bd6ca862 | 46.9 | 0 | 45.8 | 102% |
-| RX 7900 XTX | Salad (24 GB) | 2c8dc7f3 | 44.2 | 0 | 41.9 | 106% |
-| RX 7900 XT | Salad (20 GB) | 67c308d2 | 47.2 | 0 | 46.9 | 101% |
-| RX 7900 XT | Salad (20 GB) | cc2f03b6 | 51.7 | 0 | 50.1 | 103% |
-| RX 7800 XT | Salad (16 GB) | d0dbba63 | 32.8 | 0 | 31.8 | 103% |
-| RX 7800 XT | Salad (16 GB) | 56ae1be5 | 33.4 | 0 | 32.4 | 103% |
+| RX 9070 XT | Salad (16 GB) | a68b3382 | 114.4 | 0 | 111.3 | 103% |
+| RX 9070 XT | Salad (16 GB) | 21001ac3 | 117.4 | 0 | 117.4 | 99.9% |
+| RX 9060 XT | Salad (16 GB) | f9b8be8b | 61.2 | 0 | 56.1 | 109% |
+| RX 9060 XT | Salad (16 GB) | cff5c764 | 61.7 | 0 | 56.2 | 110% |
+| RX 7900 XTX | Salad (24 GB) | 9a57035a | 48.8 | 0 | 53.0 | 92% |
+| RX 7900 XTX | Salad (24 GB) | 45c94e40 | 53.1 | 0 | 53.9 | 99% |
+| RX 7900 XT | Salad (20 GB) | cc2f03b6 | 53.1 | 0 | 51.4 | 103% |
+| RX 7900 XT | Salad (20 GB) | 67c308d2 | 47.2 | 0 | 47.8 | 99% |
+| RX 7800 XT | Salad (16 GB) | d0dbba63 | 30.2 | 0 | 31.2 | 97% |
+| RX 7800 XT | Salad (16 GB) | 53c8eb50 | 31.2 | 0 | 30.9 | 101% |
+
+- **The 30 October rerun, on the v0.6.9 release.** "Ours" is the CLI's mean hashrate after the first minute of
+  its 5; SRBMiner 3.8.0's is its own figure at the end. Every PC passed the 2-minute hit check, 0 failed.
+
+  | Card | PC | Copy | Hits a salt | First | Ours | SRBMiner | Ours ÷ SRBMiner | 23 October (ours / SRBMiner 3.7.1) |
+  |---|---|---|---|---|---|---|---|---|
+  | RX 9070 XT | `a68b3382` | 559 GB/s | 7.89 (1,538 in 195 salts) | ours | 114.45 | 111.35 | 102.8% | new PC, in place of `83151dba` (88.64 / 69.27) |
+  | RX 9070 XT | `21001ac3` | 480 GB/s | 7.82 (1,564 in 200) | SRBMiner | 117.35 | 117.43 | 99.9% | new PC, in place of `77904d36` (109.88 / 92.43) |
+  | RX 9060 XT | `f9b8be8b` | 260 GB/s | 7.64 (764 in 100) | ours | 61.22 | 56.10 | 109.1% | new PC, in place of `d324328f` (63.86 / 43.24) |
+  | RX 9060 XT | `cff5c764` | 267 GB/s | 7.72 (811 in 105) | SRBMiner | 61.74 | 56.19 | 109.9% | new PC, in place of `0a4940aa` (59.28 / 43.22) |
+  | RX 7900 XTX | `9a57035a` | 647 GB/s | 7.51 (668 in 89) | ours | 48.78 | 52.99 | 92.1% | new PC, in place of `bd6ca862` (46.92 / 45.78) |
+  | RX 7900 XTX | `45c94e40` | 747 GB/s | 7.54 (686 in 91) | SRBMiner | 53.14 | 53.87 | 98.7% | new PC, in place of `2c8dc7f3` (44.24 / 41.87) |
+  | RX 7900 XT | `cc2f03b6` | 672 GB/s | 7.57 (689 in 91) | ours | 53.11 | 51.42 | 103.3% | the same PC: 51.65 / 50.09 |
+  | RX 7900 XT | `67c308d2` | 622 GB/s | 7.41 (600 in 81) | SRBMiner | 47.21 | 47.85 | 98.7% | the same PC: 47.20 / 46.88 |
+  | RX 7800 XT | `d0dbba63` | 492 GB/s | 6.94 (361 in 52) | ours | 30.22 | 31.21 | 96.8% | the same PC: 32.84 / 31.80 |
+  | RX 7800 XT | `53c8eb50` | 494 GB/s | 6.94 (368 in 53) | SRBMiner | 31.16 | 30.87 | 100.9% | new PC, in place of `56ae1be5` (33.39 / 32.38) |
+
+  - **SRBMiner 3.8.0 closed most of our lead on RDNA 4.** It read 111–117 on the 9070 XT PCs (69–92 on 23
+    October) and 56 on both 9060 XT PCs (43), on different PCs. Ours read 114–117 and 61–62 there, in line with
+    the 23 October code. On RDNA 3, on the three PCs both runs used, SRBMiner moved −2% to +3% and ours −8% to
+    +3%; the 7000 cards are now within a few percent either way.
+  - **Hidden group name:** Salad holds a group named `bench-rx9070xt-1` from an earlier run that it can't show or
+    delete (HTTP 404), so the first box took `bench-rx9070xt-1r1`.
+  - **Slow PC, moved:** the second 9060 XT box got `d324328f` (a 23 October row's PC) and hadn't finished 42
+    minutes later, so it moved to a new PC. That PC isn't a row.
 
 - **SRBMiner's figure** is its own hashrate at the end of the run, read from its API. After the first 30
   seconds every run stayed within about 4% of it, apart from one RX 7800 XT (`56ae1be5`, 28.7–33.0). The pool
