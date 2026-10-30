@@ -28,11 +28,23 @@
 # fold runs one block an SM at any register count above 128.
 #
 # Steps: bench.cu for every build in ROUNDS interleaved rounds (the order reverses each
-# round), hashrate.js on the fastest and on base in HR_ROUNDS interleaved rounds,
+# round), hashrate.js on the fastest (or HR_BEST) and on base in HR_ROUNDS interleaved rounds,
 # verify-hits.js (400 hits) on every build but base, every build's hit list against
 # base's (complete, below), then the driver probe: the
 # base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and from
 # ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
+#
+# Another architecture: GC (nvcc's -gencode flags, sm_75's by default) and FOLD (the
+# kernel that fold= hashes and the build line's regs= and spill= read,
+# pearl_tile_fold_wmma by default) race another card's fold with the same stages, as
+# tuning/salad/nvtest.sh does on RTX 30: GC="-gencode arch=compute_86,code=sm_86"
+# FOLD=pearl_tile_fold_tall, with VARIANTS_SPEC naming the builds. The second kernel
+# (rg=), the patch lists and the driver probe are sm_75's alone; on any other GC the
+# build line says rg=none and the probe stage is skipped.
+#
+# Every bench and hashrate round also reads the memory controller's use, the memory in
+# use and the memory clock (nvidia-smi's utilization.memory, memory.used, clocks.mem):
+# on Ampere the fold's DRAM traffic costs SM clock at the power limit.
 set -u
 : "${SRC:?set SRC to the repo checkout}" "${OUT:?set OUT to a scratch directory}"
 STAGES=" ${STAGES:-setup build bench hashrate verify complete probe} "
@@ -84,7 +96,9 @@ if [ -n "${ONLY:-}" ]; then
   for v in "${VARIANTS[@]}"; do case " $ONLY " in *" ${v%%|*} "*) keep+=("$v") ;; esac; done
   VARIANTS=("${keep[@]}")
 fi
-GC="-gencode arch=compute_75,code=sm_75"
+GC=${GC:-"-gencode arch=compute_75,code=sm_75"}
+SM=$(printf '%s' "$GC" | grep -oE 'sm_[0-9]+' | tail -1 | cut -d_ -f2)
+FOLD=${FOLD:-pearl_tile_fold_wmma}
 COMMON="-O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC"
 
 # Hash each kernel's machine code in the cubins given: "<kernel> <md5[:12]>".
@@ -102,14 +116,14 @@ for p in sys.argv[1:]:
             print(n[6:], hashlib.md5(b[h[4]:h[4] + h[5]]).hexdigest()[:12])
 EOF
 
-fold_hash() {   # $1 = an object, .node or cubin; prints the sm_75 fold's code hash
+fold_hash() {   # $1 = an object, .node or cubin; prints the fold's (FOLD's) code hash
   local d; d=$(mktemp -d "$OUT/x.XXXX")
   case "$1" in
     *.cubin) cp "$1" "$d/" ;;
     *) (cd "$d" && cuobjdump -xelf all "$1" > /dev/null 2>&1) ;;
   esac
-  # Every sm_75 image (the addon also carries pearl_host.cu's); the fold is in one.
-  python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk '$1 == "pearl_tile_fold_wmma" {print $2; exit}'
+  # Every image (the addon also carries pearl_host.cu's); the fold is in one.
+  python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk -v f="$FOLD" '$1 == f {print $2; exit}'
   rm -rf "$d"
 }
 rg_hash() {   # $1 = an object or .node; the second sm_75 kernel's code hash (PEARL_BD_RG_KERNEL)
@@ -149,7 +163,7 @@ say "start $(date -u +%FT%TZ) commit $(git -C "$SRC" rev-parse --short HEAD 2>/d
 [ "$nv" = V12.8.93 ] || say "WARN: nvcc $nv is not CI's 12.8.93; the expected fold hashes will not match"
 if command -v nvidia-smi > /dev/null && nvidia-smi -i 0 > /dev/null 2>&1; then
   say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,power.default_limit,clocks.max.sm,clocks.max.mem,memory.total --format=csv,noheader)"
-  q=clocks.sm,clocks.mem,power.draw,temperature.gpu,pstate,utilization.gpu
+  q=clocks.sm,clocks.mem,power.draw,temperature.gpu,pstate,utilization.gpu,utilization.memory,memory.used
   say "card now $(nvidia-smi -i 0 --query-gpu=$q,clocks_event_reasons.active --format=csv,noheader 2> /dev/null ||
     nvidia-smi -i 0 --query-gpu=$q --format=csv,noheader) gpus=$(nvidia-smi -L | wc -l)"
   DRIVER=$(nvidia-smi -i 0 --query-gpu=driver_version --format=csv,noheader | tr -d ' ')
@@ -214,16 +228,18 @@ build_variant() {   # name flags expect [patch list]
   (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) ||
     { say "build $name FAIL: node-gyp: $(grep -m2 -iE 'error' "$K/gyp.log" | tr '\n' ' ')"; return 1; }
-  nvcc -O3 -std=c++17 -cudart static $GC -I"$K/src" "$NATIVE/probes/bench.cu" \
+  # bench.cu with the build's flags too: -DPEARL_TALL_CYC has it print the fold's cycles a tile.
+  # shellcheck disable=SC2086
+  nvcc -O3 -std=c++17 -cudart static $GC $flags -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
-  local st h rst rg runs
-  st=$(awk '/Compiling entry function .pearl_tile_fold_wmma. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
+  local st h rst rg="" runs
+  st=$(awk "/Compiling entry function .$FOLD. for .sm_$SM./{f=1;next} f&&/Compiling entry/{f=0} f" "$K/ptxas.txt" | tr '\n' ' ')
   # The second sm_75 kernel, which the host runs on cards with 4 MB of L2 or more
   # (PEARL_BD_RG_KERNEL): its code hash, registers and spill, or rg=none in a build
   # without it. The patch, the expect check and fold.hash stay on the first.
   rst=$(awk '/Compiling entry function .pearl_tile_fold_wmma_rg. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
-  rg=$(rg_hash "$K/build/Release/pearl_core.node")
+  [ "$SM" = 75 ] && rg=$(rg_hash "$K/build/Release/pearl_core.node")
   if [ -n "$rg" ]; then
     rg="rg=$rg rg_regs=$(echo "$rst" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') rg_spill=$(echo "$rst" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$rst" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+')"
   else
@@ -264,11 +280,13 @@ done
 
 # Median SM clock, power and temperature of the samples taken while the timed part ran,
 # and the mean SM clock: these cards clock in 15 MHz steps, so the median of a round's
-# 18 samples moves a whole step at a time, and the mean resolves finer.
+# 18 samples moves a whole step at a time, and the mean resolves finer. Then the medians
+# of the memory controller's use (%), the memory in use (MiB) and the memory clock, or
+# "-" where the card gave none.
 cat > "$OUT/med.py" <<'EOF'
 import statistics, sys
 f, t0, t1 = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-rows = []
+rows, mem = [], []
 for line in open(f):
     p = [x.strip() for x in line.split(",")]
     try:
@@ -277,14 +295,24 @@ for line in open(f):
         continue
     if t0 <= t <= t1:
         rows.append(v)
+        m = []
+        for x in p[4:7]:
+            try:
+                m.append(float(x))
+            except Exception:
+                m.append(None)
+        mem.append(m + [None] * (3 - len(m)))
 if not rows:
-    print("0 0 0 0 0"); sys.exit()
+    print("0 0 0 0 0 - - -"); sys.exit()
+def mm(i):
+    xs = [m[i] for m in mem if m[i] is not None]
+    return round(statistics.median(xs)) if xs else "-"
 print(len(rows), *[round(statistics.median(r[i] for r in rows), 1) for i in range(3)],
-      round(statistics.mean(r[0] for r in rows), 1))
+      round(statistics.mean(r[0] for r in rows), 1), mm(0), mm(1), mm(2))
 EOF
 sampler() {   # $1 = file; one sample a second until killed
   while :; do
-    printf '%s,%s\n' "$(date +%s.%N)" "$(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv,noheader,nounits)" >> "$1"
+    printf '%s,%s\n' "$(date +%s.%N)" "$(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem --format=csv,noheader,nounits)" >> "$1"
     sleep 1
   done
 }
@@ -306,17 +334,22 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
         say "bench r$r $name FAIL: $(tail -2 "$K/bench.r$r" | tr '\n' ' ')"; continue
       fi
       th=$(python3 -c "print(round($att * 256 * 2048 / $secs / 1e12, 3))")
-      read -r n mhz w c mean < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
+      read -r n mhz w c mean mc mu mclk < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" >> "$OUT/bench.tsv"
+      # A -DPEARL_TALL_CYC build's cycles a tile (bench.cu prints them), or "-".
+      cyc=$(grep -oE 'cycles a tile [0-9]+' "$K/bench.r$r" | tail -1 | grep -oE '[0-9]+$')
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" "$mc" "$mu" "$mclk" "${cyc:--}" >> "$OUT/bench.tsv"
       [ "$r" = 1 ] && say "bench $name runs $(grep -oE 'fold: [^|]*' "$K/bench.r$r" | head -1)"
-      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz (n=$n)"
+      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz${cyc:+ cyc $cyc} (n=$n)"
     done
   done
   # Per build: medians over rounds, and against base in the same round. The mean clock
   # beside the median is the mean of the rounds' mean clocks: bench.tsv's 8th column, or
   # hashrate.tsv's clock, which hashrate.js already averages. A round with no clock
   # reading writes 0, which the mean leaves out: one such round would pull it far down.
+  # Columns 9 to 11, where there are any, are the memory readings: the medians of the
+  # rounds' memory-controller use and memory in use ("-" where a round had none). Column
+  # 12, a -DPEARL_TALL_CYC build's cycles a tile: their median.
   cat > "$OUT/sum.py" <<'EOF'
 import statistics as st, sys
 rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[1]) if l.strip()]
@@ -327,6 +360,26 @@ for r in rows:
                                          float(r[7]) if len(r) > 7 else float(r[3]))
 base = by.get("base", {})
 best, bestv = None, None
+def num(x):
+    try:
+        return float(x)
+    except ValueError:
+        return None
+mem, cyc = {}, {}
+for r in rows:
+    if len(r) > 9:
+        mem.setdefault(r[1], []).append((num(r[8]), num(r[9])))
+    if len(r) > 11 and num(r[11]):
+        cyc.setdefault(r[1], []).append(num(r[11]))
+def memtxt(name):
+    ms = mem.get(name) or []
+    mc = [m[0] for m in ms if m[0] is not None]; mu = [m[1] for m in ms if m[1] is not None]
+    t = ""
+    if mc or mu:
+        t = (f" mem {st.median(mc):.0f}%" if mc else " mem -%") + (f" {st.median(mu):.0f} MiB" if mu else "")
+    if cyc.get(name):
+        t += f" cyc {st.median(cyc[name]):.0f} ({98304 / st.median(cyc[name]) * 100:.2f}%)"
+    return t
 for name, d in by.items():
     th = [v[0] for v in d.values()]; mhz = [v[1] for v in d.values()]; w = [v[2] for v in d.values()]
     pg = [v[3] for v in d.values()]; clk = [v[4] for v in d.values() if v[4]] or [0]
@@ -340,15 +393,17 @@ for name, d in by.items():
             best, bestv = name, st.median(raw)
     print(f"[compilers] {tag} {name} n={len(th)} {st.median(th):.3f} TH/s ({min(th):.2f}-{max(th):.2f}) "
           f"{st.median(mhz):.0f} MHz (mean {st.mean(clk):.0f}) {st.median(w):.0f} W "
-          f"{st.median(pg):.3f} TH/s/GHz{vs}"[:490])
+          f"{st.median(pg):.3f} TH/s/GHz{memtxt(name)}{vs}"[:490])
 if best:
     open(sys.argv[3], "w").write(best)
 EOF
   python3 "$OUT/sum.py" "$OUT/bench.tsv" bench-sum "$OUT/best"
 fi
 
-if has hashrate && [ -f "$OUT/best" ] && [ -f "$OUT/v/base/ok" ]; then
-  best=$(cat "$OUT/best")
+# HR_BEST names the build to race against base instead (when the fastest in the bench
+# is an ablation, whose rate means nothing to the miner).
+if has hashrate && { [ -n "${HR_BEST:-}" ] || [ -f "$OUT/best" ]; } && [ -f "$OUT/v/base/ok" ]; then
+  best=${HR_BEST:-$(cat "$OUT/best")}
   say "hashrate: base against $best, $HR_ROUNDS rounds of ${HR_SECS} s"
   : > "$OUT/hashrate.tsv"
   for r in $(seq 1 "$HR_ROUNDS"); do
@@ -359,11 +414,16 @@ if has hashrate && [ -f "$OUT/best" ] && [ -f "$OUT/v/base/ok" ]; then
       mhz=$(echo "$j" | grep -oE '"mhz":[0-9.]+' | cut -d: -f2)
       w=$(echo "$j" | grep -oE '"watts":[0-9.]+' | cut -d: -f2)
       c=$(echo "$j" | grep -oE '"tempC":[0-9.]+' | cut -d: -f2)
+      mc=$(echo "$j" | grep -oE '"memUtil":[0-9.]+' | cut -d: -f2)
+      mu=$(echo "$j" | grep -oE '"memUsedMb":[0-9.]+' | cut -d: -f2)
+      mclk=$(echo "$j" | grep -oE '"memMhz":[0-9.]+' | cut -d: -f2)
       mhz=${mhz:-0}
       if [ -z "$th" ]; then say "hashrate r$r $name FAIL: $j"; continue; fi
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if '$mhz' and $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" >> "$OUT/hashrate.tsv"
-      say "hashrate r$r $name $th TH/s sd=$(echo "$j" | grep -oE '"sd":[0-9.]+' | cut -d: -f2) ${mhz} MHz ${w} W ${c} C $pg TH/s/GHz"
+      # The 8th column is the clock again (hashrate.js's is already a mean), so the memory
+      # readings sit where bench.tsv's do.
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mhz" "${mc:--}" "${mu:--}" "${mclk:--}" >> "$OUT/hashrate.tsv"
+      say "hashrate r$r $name $th TH/s sd=$(echo "$j" | grep -oE '"sd":[0-9.]+' | cut -d: -f2) ${mhz} MHz ${w} W ${c} C $pg TH/s/GHz mem ${mc:--}% ${mu:--} MiB ${mclk:--} MHz"
     done
   done
   python3 "$OUT/sum.py" "$OUT/hashrate.tsv" hashrate-sum "$OUT/best-hr"
@@ -416,7 +476,7 @@ fi
 # Driver probe: does this driver load an sm_75 cubin from a newer ptxas inside the 12.8
 # core? 13.x cubins use a new ELF format (OS ABI 0x41, ABI version 8, the architecture
 # moved within e_flags); 12.9's keep the old one. The fold's code is the same either way.
-if has probe && [ -f "$OUT/v/base/ok" ]; then
+if has probe && [ -f "$OUT/v/base/ok" ] && [ "$SM" = 75 ]; then
   P=$OUT/probe; mkdir -p "$P/keep"
   R=https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-x86_64
   nvcc $COMMON --keep --keep-dir "$P/keep" -c "$NATIVE/src/pearl_kernel.cu" -o "$P/pearl_kernel.o" > "$P/log" 2>&1 &&

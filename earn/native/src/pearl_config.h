@@ -445,7 +445,24 @@ typedef struct {
 // these as constants needs 120 and schedules better. The host refuses any other
 // rank or k rather than silently folding the wrong shape.
 #define PEARL_FOLD_RANK 128u
+// -DPEARL_FOLD_K=4096 or 8192 (bench only, the tall fold on Ada and Ampere): a larger k
+// spreads each tile's hash and hand-off over more MACs. Chunks past 16 fold into the 16
+// transcript words as the reference does (chunk c into word c % 16, rotl 13 first).
+// RTX 4090 (sm_89, CUDA 12.6), bench.exe at m = n = 131072, 4 rounds of 20 s each, with
+// col_batch scaled so a launch's B' stays 64 MB (2048, 1024 and 512):
+//   k      cycles per 2048 of k  % of peak a clock  ncu IMMA busy  DRAM B/IMMA  MHz   TH/s
+//   2048   102,658               95.76              95.75          0.24         2502  313.1
+//   4096   101,764 (-0.87%)      96.60              96.58          0.53         2491  313.6 (+0.1%)
+//   8192   101,220 (-1.40%)      97.12              97.10          1.58         2472  310.6 (-0.8%)
+// The tile's hash and hand-off spread over more MACs; the per-chunk readout does not. But a
+// tile's A' and B' panels grow with k, so the L2 holds fewer of them: DRAM traffic rises
+// even on a 72 MB L2, and the clock it costs at the power limit takes the gain back. On
+// RTX 30 it is worse: the band's A' (depth x 192 x k) must fit a 2-4 MB persisting slice,
+// so DRAM bytes a MAC grow about as k does. Not a lever with operands streamed from DRAM.
+// verify-hits passed 400/400 at k = 4096 and 8192 (the JS reference folds chunks the same way).
+#ifndef PEARL_FOLD_K
 #define PEARL_FOLD_K 2048u
+#endif
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
 
 // Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in
@@ -2068,6 +2085,22 @@ typedef struct {
 // all back in clock at the power cap). With the hash in its own kernel (PEARL_TALL_UNFUSED)
 // A at 3 does better: A100 PCIe, hashrate.js, 3 rounds, 400/400 hits, unfused: A at 2, B at
 // 6 209.45 TH/s, 3 and 6 211.98, 3 and 7 210.49; CMP 170HX 3 and 6 164.24, 3 and 7 162.80.
+// Tried on the cp.async ring and dropped, cycles a tile (PEARL_TALL_CYC), RTX 4090, 3 rounds
+// each (1 for the last two), against 102,658:
+//   a __nanosleep of 20 or 64 ns between failed tests in pearl_mbar_wait  102,888-103,019
+//   one EMPTY arrival a warp, after a __syncwarp (the TMA build's way)      107,877, and 8
+//     bytes of spill on sm_89
+//   the hasher's adds as IMAD, as PEARL_TALL_HASH80_IMAD on GA100           106,704. The hash
+//     is ptxas's already: 168 IADD3 and 158 IMAD.IADD in a column slot's hash.
+//   m16 tiles 4 and 5's readout moved into the next chunk's first k-step, after its mma
+//     of tiles 0-3 or 0-1                                                   102,923 / 102,951
+//   chunk 0's stage-1 refill after the stage's last mma, so the hasher's partner runs two
+//     stages, not one and a quarter, before it waits at the hand-off       103,471 (every
+//     chunk's: 105,139)
+//   Blackwell's streamed stage body (PEARL_TALL_FRAG_PIPE) on this ring, copy points in
+//     columns: A at 6 and B at 12 (245 registers), 7/12, 6/11, 6/13, 7/13, 6/14 build
+//     without spill and measure 106,221-108,053; 5/10, 4/9 and 3/8 spill 160-336 bytes.
+// Each was an A/B switch; none is kept.
 #ifndef PEARL_TALL_BPT
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ == 800
 #define PEARL_TALL_BPT 6u
@@ -2267,6 +2300,88 @@ typedef struct {
 #define PEARL_TALL_CLUSTER_BODY 1
 #else
 #define PEARL_TALL_CLUSTER_BODY 0
+#endif
+
+// The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
+// default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b
+// and takes each later tile from a counter, as Turing's B-direct fold does
+// (PEARL_BD_PERSIST): the slot's word PEARL_BD_CTR_SLOTS past its hit counter, which
+// the host zeroes before the launch.
+//
+// Why try it on Ampere: on RTX 20 the static stride let blocks drift apart through the
+// band walk, which spread its L2 working set and cost 7% (PEARL_BD_PERSIST above). On
+// RTX 30 nvidia-smi reads 18-25% memory-controller use under our fold where PeakMiner
+// and SRBMiner read 0-1% (Salad, 29 October), and at the power limit those DRAM watts
+// come out of the SM clock (PEARL_AMPERE_BAND_L2_SHARE).
+//
+// Measured on Salad (nvtest boxes, CUDA 12.8.1, 29 October), against the same build
+// without it, interleaved: correct (verify-hits 400/400, every hit list matches base's on
+// all four COMPLETE_SHAPES), but no faster, and the memory use barely moves:
+//   RTX 3090 (4701244f, band 8)    bench 4 rounds -0.58%, hashrate 3 rounds -0.27%,
+//                                  behind in every round; memory 17% -> 17%
+//   RTX 3060 Ti (87d15c2c, band 4) bench +0.01%, hashrate +0.08% (+0.0 +0.1 +0.1);
+//                                  memory 33% -> 31%
+// So the blocks don't drift apart enough on Ampere to matter, and the DRAM traffic is
+// the operands themselves (see PEARL_ABLATE_DRAM in the fold). 0 ships.
+//
+// Thread PEARL_TALL_CTR_THREAD (lane 0 of warp 4, which never hashes) takes the next
+// tile from the counter in chunk PEARL_TALL_CTR_CHUNK and writes it to shared before
+// its arrival on that chunk's stage-0 EMPTY barrier. Every thread waits on that phase
+// at the chunk's stage-1 refill, so all of them see the word by the last chunk, which
+// reads it (the next tile's chunk 0, and whether there is one) and so does the loop
+// once the tile is hashed. The next write is a tile later, in that tile's chunk
+// PEARL_TALL_CTR_CHUNK, and the writer gets there only after every thread has issued
+// that tile's chunk PEARL_TALL_CTR_CHUNK - 1 copies, so after every read of the word.
+// Both passes read it: the host zeroes the counter.
+#ifndef PEARL_TALL_CTR
+#define PEARL_TALL_CTR 0
+#endif
+#define PEARL_TALL_CTR_THREAD 128u
+#define PEARL_TALL_CTR_CHUNK 8u
+#if PEARL_TALL_CTR && !PEARL_TALL_TMA_BODY
+#define PEARL_TALL_CTR_ON 1
+#else
+#define PEARL_TALL_CTR_ON 0
+#endif
+// E4's generation load (bench only, -DPEARL_E4_GENLOAD on top of -DPEARL_ABLATE_DRAM, the
+// cp.async tall fold; wrong answers). The DRAM ablation showed what RTX 30 gets back with no
+// DRAM traffic: +3.3% on a 3090 and +4.1% on a 3060 Ti, all of it clock. E4 would get there
+// for real by never storing A': B' (n columns, n = 256 PEARL_E4_C) stays in the L2, the
+// PEARL_E4_C blocks of a row group each draw 1/PEARL_E4_C of every chunk of its A' two chunks
+// ahead into a three-slab ring in the L2, and the team's copies read the ring. This build
+// does that work in the fold (pearl_e4_draw) with values that only look like the real ones,
+// so the bench prices it: whatever the draw costs comes out of the ablation's gain. Left out,
+// so it is E4's best case: the dense rows' BLAKE3 (a fixed table) and the ring's ready flags.
+// -DPEARL_E4_NOGEN keeps the data path (ring and B over n columns) without the draw.
+// -DPEARL_E4_HASH adds what the cheap side leaves out first: the dense rows' BLAKE3, 4 a row,
+// hashed at the tile hand-off by the warps that do not hash transcripts (they would wait for
+// the hasher there). -DPEARL_E4_FLAGS adds the ring's flag operations: a release a warp after
+// its last word of a chunk, an acquire a warp before a chunk's copies (without the wait).
+// PEARL_E4_C: 8 is n = 2048 (a 3090's 6 MB L2), 4 is 1024, 2 is 512 (3 MB cards).
+//
+// Measured on Salad, RTX 3090 252c56db (350 W, CUDA 12.8.1), 29 October, bench rounds of
+// 45 s interleaved with base, two sessions (4 rounds, then 3), every build with
+// -DPEARL_TALL_CYC:
+//   base                          119.8-120.0 TH/s  1530 MHz  memory 16%  103,778 cycles a tile
+//   DRAM ablation                 +2.9%, +3.1%      1568      0%          103,724
+//   E4 data path, no draw, C=8    +2.3%             1575      0%          104,565
+//   E4 draw, C=8 (2 B an IMMA)    -2.4%, -2.3%      1545      0%          107,806
+//   E4 draw, C=2 (8 B an IMMA)    -27.4%            1590      0%          147,115
+//   + PEARL_E4_HASH, FLAGS, C=8   -10.0%            1575      0%          118,914
+// So E4 is a no-go here: its best case, n = 2048 on a 6 MB L2, drawing 2 bytes an IMMA, was
+// behind base in all 7 rounds. The draw costs 4.5% against its own data path (+3.1% cycles
+// and 25 MHz) and far more at 8 bytes (+41% cycles): the words sit in the MMA warps'
+// instruction stream, which runs at 254 registers and has no room for producer warps.
+// (The flags' acquire, waited on in line once a chunk, is most of FLAGS+HASH's cost.)
+// The first no-draw run read an all-zero ring: 134.4 TH/s at 1725 MHz and 338 W, +12%, so
+// operand values alone moved the clock 150 MHz at the power limit.
+// The large-k half of the competitors' design, with -DPEARL_FOLD_K and the ablation's
+// operands in the L2 (no draw): 94.77% of the tensor peak a clock at k = 2048, 96.00% at
+// 8192 and 96.25% at 16384 (cycles a tile), at 1560 MHz against 1568: +0.6% and +0.8%
+// net. At the power limit most of the per-clock gain comes back as power. (bench's TH/s
+// line reads 2048 / k of that at these k; the cycles and the clock are the measure.)
+#ifndef PEARL_E4_C
+#define PEARL_E4_C 8
 #endif
 // What EMPTY expects a phase: the CTA's own arrivals (PEARL_TALL_TMA_EMPTY_COUNT), and
 // the peer's too in the cluster build.

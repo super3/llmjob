@@ -30,7 +30,8 @@ def read(path):
 def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
-    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "SALAD_MINE_DIR")
+    keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
+            "BENCH_TAP", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -110,7 +111,7 @@ class TestBench(unittest.TestCase):
         st["results"]["GTX 1660 Ti"][0]["power"] = "[N/A]"
         self.assertIn("| GTX 1660 Ti | Salad (— W, 6 GB) | 741f9c56 |", b.render(st))
 
-    def test_a_group_stopped_before_a_pc_is_started_again_every_5_minutes(self):
+    def test_a_group_stopped_before_a_pc_is_started_again_every_minute(self):
         calls, now = [], [10_000]
         def http(method, url, body=None, timeout=None):
             calls.append((method, url))
@@ -126,10 +127,10 @@ class TestBench(unittest.TestCase):
             bench.st.update(cls=0, group="bench-x-1", created=now[0], pc_t=None, machine=None)
             bench.tick()
             self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
-            calls.clear(); now[0] += 60
+            calls.clear(); now[0] += 30
             bench.tick()
             self.assertNotIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
-            calls.clear(); now[0] += 5 * 60
+            calls.clear(); now[0] += 30
             bench.tick()
             self.assertIn(("POST", f"{b.w.CB}/bench-x-1/start"), calls)
         finally:
@@ -214,6 +215,240 @@ def salad(calls, instances=None, classes=None, logs=None):
                                    for i, (mach, line) in enumerate(logs or [])]}
         return 201, {}
     return http
+
+
+class TestBenchRTX(unittest.TestCase):
+    """The RTX 20- and 30-series rerun (BENCH_SET=rtx): its lanes, classes, box, miner order and table."""
+    @classmethod
+    def setUpClass(cls):
+        cls.r = load_bench(BENCH_SET="rtx", BENCH_COMMIT="c0ffee")
+        cls.l20 = load_bench(BENCH_SET="rtx", BENCH_LANE="20", BENCH_COMMIT="c0ffee")
+        cls.l30 = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee")
+
+    def bench(self, m, calls=None, classes=None, **st):
+        old = m.w.http
+        m.w.http = salad(calls if calls is not None else [], classes=classes)
+        self.addCleanup(lambda: setattr(m.w, "http", old))
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(**st)
+        return x
+
+    def test_each_lane_takes_one_series_with_its_own_files(self):
+        self.assertEqual([os.path.basename(f) for f in (self.l20.STATE, self.l30.STATE)],
+                         ["bench-rtx-20.json", "bench-rtx-30.json"])
+        self.assertEqual([p[0] for p in self.l20.PLAN],
+                         ["RTX 2080 Ti (11 GB)", "RTX 2080 (8 GB)", "RTX 2070 (8 GB)", "RTX 2060 (6 GB)"])
+        self.assertEqual([p[0] for p in self.l30.PLAN][0], "RTX 3090 Ti (24 GB)")
+        self.assertEqual(len(self.l30.PLAN), 8)
+        self.assertEqual({p[2] for p in self.r.PLAN}, {300})
+        # Each lane writes its own series only, and every class is in exactly one lane.
+        self.assertEqual([t for t, _ in self.l20.SECTIONS], ["RTX 20-series (on Salad)"])
+        self.assertEqual([t for t, _ in self.l30.SECTIONS], ["RTX 30-series (on Salad)"])
+        lanes = [load_bench(BENCH_SET="rtx", BENCH_LANE=x, BENCH_COMMIT="c0ffee") for x in ("20", "30", "40", "50")]
+        self.assertEqual(sum(len(m.PLAN) for m in lanes), len(self.r.PLAN))
+
+    def test_the_40_and_50_lanes_run_the_salad_classes_of_benchmark_md_s_rows(self):
+        l40 = load_bench(BENCH_SET="rtx", BENCH_LANE="40", BENCH_COMMIT="c0ffee")
+        l50 = load_bench(BENCH_SET="rtx", BENCH_LANE="50", BENCH_COMMIT="c0ffee")
+        self.assertEqual([p[0] for p in l40.PLAN],
+                         ["RTX 4090 (24 GB)", "RTX 4080 (16 GB)", "RTX 4070 Ti Super (16 GB)", "RTX 4070 Ti (12 GB)",
+                          "RTX 4070 (12 GB)", "RTX 4060 Ti (16 GB)", "RTX 4060 (8 GB)"])
+        self.assertEqual([p[0] for p in l50.PLAN],
+                         ["RTX 5090 (32 GB)", "RTX 5080 (16 GB)", "RTX 5070 Ti (16 GB)", "RTX 5070 (12 GB)",
+                          "RTX 5060 Ti (16 GB)", "RTX 5060 (8 GB)"])
+        self.assertEqual([t for t, _ in l40.SECTIONS], ["RTX 40-series (on Salad)"])
+        self.assertEqual(os.path.basename(l50.STATE), "bench-rtx-50.json")
+        # nvidia-smi's "RTX 4090 D" is the 4090D row, and a Super from the 4080 class gets its own.
+        self.assertEqual(l40.row_for("NVIDIA GeForce RTX 4090 D", ["RTX 4090"] + l40.EXTRA["RTX 4090 (24 GB)"]),
+                         "RTX 4090D")
+        self.assertEqual(l40.row_for("NVIDIA GeForce RTX 4080 SUPER", ["RTX 4080"] + l40.EXTRA["RTX 4080 (16 GB)"]),
+                         "RTX 4080 Super")
+        self.assertIn("| RTX 4060 Ti | Salad (— W, 16 GB) |", l40.render({"results": {}}))
+
+    def test_a_lane_from_another_set_is_refused(self):
+        for env in ({"BENCH_SET": "rtx", "BENCH_LANE": "a"}, {"BENCH_LANE": "20"}):
+            m = load_bench(BENCH_COMMIT="c0ffee", **env)
+            with mock.patch.dict(os.environ, {"PRL_WALLET": "prl1x"}), self.assertRaises(SystemExit) as e:
+                m.Bench().run()
+            self.assertIn("BENCH_LANE", str(e.exception))
+
+    def test_a_probe_runs_only_the_classes_asked_for_with_the_pcs_asked_for(self):
+        m = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_CLASSES="RTX 3080 (10 GB); RTX 3090 (24 GB)",
+                       BENCH_HOSTS="1")
+        self.assertEqual([p[0] for p in m.PLAN], ["RTX 3090 (24 GB)", "RTX 3080 (10 GB)"])   # the set's own order
+        self.assertEqual(m.HOSTS, 1)
+        self.assertEqual(load_bench(BENCH_SET="rtx").HOSTS, 2)
+        gtx = load_bench(BENCH_CLASSES="GTX 1070, 1080, 1080Ti (8 GB)")   # a name with commas in it
+        self.assertEqual([p[0] for p in gtx.PLAN], ["GTX 1070, 1080, 1080Ti (8 GB)"])
+
+    def test_a_box_runs_the_release_on_salad_s_cuda_image(self):
+        calls = []
+        self.bench(self.l20, calls, classes=["RTX 2080 Ti (11 GB)"], cls=0, tries=0, group=None).create()
+        body = next(c[2] for c in calls if c[0] == "POST")
+        self.assertEqual(body["name"], "bench-20-rtx2080ti-1")      # not "biz-": the watcher leaves it alone
+        self.assertEqual(body["container"]["image"], self.l20.w.IMAGE)
+        self.assertEqual(body["container"]["priority"], "high")
+        cmd = body["container"]["command"][2]
+        self.assertIn("ORDER=ours,peak,srb OURS_SECS=300 bash /root/bench.sh", cmd)
+        self.assertNotIn("amdtest.sh", cmd)
+
+    def test_the_two_pcs_of_a_class_take_turns_going_first_each_in_a_group_of_its_own(self):
+        res = {"machine": "m1" * 8, "card": "NVIDIA GeForce RTX 2080 Ti", "power": "250.00 W", "ours": (90.0, None),
+               "peak": (92.0, None), "srb": (91.0, None)}
+        x = self.bench(self.l20, cls=0, tries=0, group="bench-20-rtx2080ti-1")
+        self.assertEqual(x.order(), "ours,peak,srb")
+        x.st["results"] = {"RTX 2080 Ti": [res]}
+        self.assertEqual(x.order(), "srb,peak,ours")
+        x.move_on("done")                       # a moved PC would keep the first group's order
+        self.assertIsNone(x.st["group"])
+
+    def test_a_super_card_from_a_class_gets_a_row_of_its_own(self):
+        self.assertEqual(self.r.row_for("NVIDIA GeForce RTX 2070 SUPER",
+                                        ["RTX 2070"] + self.r.EXTRA["RTX 2070 (8 GB)"]), "RTX 2070 Super")
+        st = {"results": {"RTX 2070": [{"machine": "abcdef1234", "power": "175.00 W", "ours": (50.0, None),
+                                         "peak": (52.0, None), "srb": (51.0, None)}]}}
+        text = self.l20.render(st)
+        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | 96% |", text)
+        self.assertNotIn("RTX 2070 Super", text)          # not waited for: no empty rows for it
+        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |", text)
+
+    def lane_with(self, m, answers, now=50_000):
+        """A lane whose Salad answers POSTs from `answers` (a list of (status, body)), and a clock at `now`. Its and
+        every lane's waiting flags are cleared before and after."""
+        calls = []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url, body))
+            if method == "POST" and answers:
+                return answers.pop(0)
+            return salad([], classes=["RTX 2080 Ti (11 GB)", "RTX 3090 Ti (24 GB)"])(method, url, body, timeout)
+        old = (m.w.http, m.w.now)
+        m.w.http, m.w.now = http, (lambda: now)
+        def clear():
+            m.w.http, m.w.now = old
+            for lane in m.LANES:
+                p = os.path.join(m.w.D, f"bench-rtx-{lane}.waiting.json")
+                if os.path.exists(p):
+                    os.remove(p)
+        clear()
+        m.w.http, m.w.now = http, (lambda: now)
+        self.addCleanup(clear)
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None, results={}, seen=[], waiting=False, yielded=None)
+        return x, calls
+
+    def test_a_lane_the_quota_turns_away_gets_the_next_replica_before_the_other_lane(self):
+        full = (400, {"type": "created_replicas_quota_exceeded", "status": 400})
+        x20, _ = self.lane_with(self.l20, [full])
+        x20.tick()                                          # turned away: it says so
+        self.assertIsNone(x20.st["group"])
+        self.assertTrue(os.path.exists(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")))
+        x30, calls30 = self.lane_with_shared(self.l30)
+        x30.tick()                                          # lane 30 just freed a replica: it leaves it to lane 20
+        self.assertFalse([c for c in calls30 if c[0] == "POST"])
+        self.assertEqual(x30.st["yielded"], "20")
+        self.assertIn("once lane 20 has its box", x30.now_line())
+        x20.tick()                                          # lane 20's create goes through
+        self.assertEqual(x20.st["group"], "bench-20-rtx2080ti-1")
+        flag = os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json")
+        self.assertTrue(os.path.exists(flag))               # but a box can still find no replica to start on
+        x30.tick()
+        self.assertIsNone(x30.st["group"])                  # so lane 30 still waits
+        old = self.l20.w.http                               # until lane 20's box gets a PC
+        self.l20.w.http = lambda m, u, b=None, timeout=None: (
+            (200, {"instances": [{"machine_id": "abcdef0123", "state": "running", "instance_id": "i1"}]})
+            if u.endswith("/instances") else (200, {"items": []}) if u.endswith("/log-entries") else old(m, u, b, timeout))
+        x20.tick()
+        self.l20.w.http = old
+        self.assertEqual(x20.st["machine"], "abcdef0123")
+        self.assertFalse(os.path.exists(flag))
+        x30.tick()                                          # and lane 30 goes next
+        self.assertTrue(x30.st["group"].startswith("bench-30-"))
+
+    def test_the_lane_that_has_waited_longest_goes_first(self):
+        x20, _ = self.lane_with(self.l20, [])
+        x30, _ = self.lane_with_shared(self.l30)
+        with open(os.path.join(self.l20.w.D, "bench-rtx-20.waiting.json"), "w") as f:
+            json.dump({"since": 49_000, "last": 50_000}, f)
+        with open(os.path.join(self.l30.w.D, "bench-rtx-30.waiting.json"), "w") as f:
+            json.dump({"since": 49_500, "last": 50_000}, f)
+        self.assertIsNone(x20.ahead())                      # lane 20 has waited longer: it goes
+        self.assertEqual(x30.ahead(), "20")                 # and lane 30, waiting too, still leaves it to 20
+
+    def lane_with_shared(self, m):
+        """Lane m with Salad answering creates, sharing the waiting flags lane_with left in place."""
+        calls = []
+        def http(method, url, body=None, timeout=None):
+            calls.append((method, url, body))
+            return salad([], classes=["RTX 3090 Ti (24 GB)"])(method, url, body, timeout)
+        old = (m.w.http, m.w.now)
+        m.w.http, m.w.now = http, (lambda: 50_030)
+        self.addCleanup(lambda: (setattr(m.w, "http", old[0]), setattr(m.w, "now", old[1])))
+        x = m.Bench()
+        x.wallet = "prl1x"
+        x.st.update(cls=0, tries=0, group=None, results={}, seen=[], waiting=False, yielded=None)
+        return x, calls
+
+    def test_a_name_salad_already_has_is_adopted_if_visible_and_passed_over_if_not(self):
+        conflict = (400, {"type": "name_conflict", "status": 400})
+        x, calls = self.lane_with(self.l20, [conflict])
+        x.tick()                     # the stub's GET of the group answers 201, as for a group Salad shows
+        self.assertEqual(x.st["group"], "bench-20-rtx2080ti-1")
+        self.assertEqual(sum(1 for c in calls if c[0] == "POST"), 1)
+        y, calls = self.lane_with(self.l20, [conflict])
+        old = self.l20.w.http
+        self.l20.w.http = lambda m, u, b=None, timeout=None: (404, None) if m == "GET" and u.endswith("-1") else old(m, u, b, timeout)
+        y.tick()                     # hidden: passed over
+        self.assertIsNone(y.st["group"])
+        self.assertIn("can't show or delete", y.st["notes"][-1])
+        self.l20.w.http = old
+        y.tick()
+        self.assertEqual(y.st["group"], "bench-20-rtx2080ti-1r1")
+
+    def test_a_stale_flag_holds_no_lane_back(self):
+        x20, _ = self.lane_with(self.l20, [(400, {"type": "created_replicas_quota_exceeded"})], now=50_000)
+        x20.tick()
+        x30, _ = self.lane_with_shared(self.l30)
+        self.l30.w.now = lambda: 50_000 + self.l30.TURN_MIN * 60 + 1     # lane 20 stopped trying
+        x30.tick()
+        self.assertTrue(x30.st["group"].startswith("bench-30-"))
+
+    def test_a_stopped_box_the_quota_holds_back_is_tried_every_minute_and_keeps_its_class(self):
+        full = (400, {"type": "replicas_quota_exceeded", "status": 400})
+        x, calls = self.lane_with(self.l20, [full], now=60_000)
+        x.st.update(group="bench-20-rtx2080ti-1", created=60_000 - 29 * 60, start_t=60_000 - 61, pc_t=None)
+        x.stopped = lambda: True
+        x.tick()
+        self.assertEqual([c[1].rsplit("/", 1)[1] for c in calls if c[0] == "POST"], ["start"])
+        self.assertEqual(x.st["created"], 60_000)          # the quota's wait isn't the class having no PC
+        self.assertEqual(x.st["cls"], 0)
+        self.assertTrue(x.st["waiting"])
+        x.st["start_t"] = 60_000 - 30
+        calls.clear()
+        x.tick()                                           # not again within the minute
+        self.assertFalse([c for c in calls if c[0] == "POST"])
+
+    def test_table_puts_the_two_lanes_together(self):
+        d = tempfile.mkdtemp()
+        for lane, row in (("20", "RTX 2080"), ("30", "RTX 3070")):
+            with open(f"{d}/{lane}.json", "w") as f:
+                json.dump({"results": {row: [{"machine": "0123456789", "power": "200.00 W", "ours": (70.0, None),
+                                              "peak": (69.0, None), "srb": (71.5, None)}]}}, f)
+        text = self.r.table([f"{d}/20.json", f"{d}/30.json"])
+        self.assertLess(text.index("## RTX 20-series"), text.index("## RTX 30-series"))
+        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+
+    def test_a_tap_run_fetches_sharetap_and_sets_tap_and_a_plain_run_does_not(self):
+        t = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_TAP="1")
+        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/tuning/salad"
+        cmd = self.bench(t).command(300, "ours,peak,srb")
+        self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/sharetap.py -o "
+                      "/root/sharetap.py && W=prl1x ORDER=ours,peak,srb OURS_SECS=300 TAP=1 bash /root/bench.sh", cmd)
+        plain = self.bench(self.l30).command(300, "ours,peak,srb")
+        self.assertNotIn("sharetap", plain)
+        self.assertNotIn("TAP=1", plain)
 
 
 class TestBenchAMD(unittest.TestCase):
@@ -694,7 +929,8 @@ esac''',
     "clang++": r'''while [ $# -gt 0 ]; do [ "$1" = -o ] && out=$2; shift; done
 printf '#!/bin/bash\necho "devices 1 (no error)"\necho "copy: 564 GB/s (read + write)"\necho PASS\n' > "$out"; chmod +x "$out"''',
     "ldd": 'echo "libamdhip64.so.7 => /opt/rocm/lib/libamdhip64.so.7 (0x0)"',
-    "nvidia-smi": 'case "$*" in *power.draw*) echo "100.5, 1800, 60" ;; '
+    "nvidia-smi": 'case "$*" in *power.draw*memory.used*) echo "100.5, 1800, 60, 9501, 100, 21, 1366" ;; '
+                  '*power.draw*) echo "100.5, 1800, 60" ;; '
                   '*) echo "NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5" ;; esac',
 }
 VERIFY_PASS = {"file": "build", "hits": 2202, "verified": 400, "failed": 0, "salts": 277, "fails": [], "PASS": True}
@@ -760,23 +996,27 @@ class TestBenchShDryRun(unittest.TestCase):
 
     def test_an_nvidia_box_runs_the_three_miners_as_before(self):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
-        rel = "https://github.com/super3/llmjob/releases/download/v0.6.0"
+        rel = "https://github.com/super3/llmjob/releases/download/v0.6.9"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.17.6/peakminer-2.17.6-linux-x86_64 -> peak",
-            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz"
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.3/peakminer-2.20.3-linux-x86_64 -> peak",
+            "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.2/SRBMiner-Multi-3-8-2-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
             f"curl {rel}/pearl_core.node -> pearl_core.node",
             f"curl {rel}/pearl_core_cu13.node -> pearl_core_cu13.node",
-            "peak -o stratum+tcp://us.pearl.herominers.com:1200 -u prl1test.bench-peak -p x -c pearl",
-            "peak -o stratum+tcp://us.pearl.herominers.com:1200 -u prl1test.bench-peak -p x -c pearl",
-            "srbminer --algorithm-gpu pearlhash --pool us.pearl.herominers.com:1200 --wallet prl1test --worker "
+            "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
+            "peak -o stratum+tcp://prl-us.kryptex.network:7048 -u prl1test.bench-peak -p x -c pearl",
+            "srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test --worker "
             "bench-srb --disable-cpu --api-enable --api-port 21550",
-            "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update"])
+            "cli -a prl1test --mode mining -w bench-ours --no-report --no-serve --no-update --pool prl-us.kryptex.network:7048"])
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.17.6, SRBMiner 3.7.1, ours v0.6.0", lines[1])
+        self.assertIn("ready PeakMiner 2.20.3, SRBMiner 3.8.2, ours v0.6.9", lines[1])
+        # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
+        samples = [l for l in lines if " sample " in l]
+        self.assertTrue(samples)
+        self.assertTrue(all(l.endswith(" gpu=100.5,1800,60,9501,100,21,1366") for l in samples), samples[:2])
         self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
                          ["start peak 60s", "start peak 300s", "start srb 300s", "start ours 300s"])
         r = b.parse(lines)
@@ -792,10 +1032,10 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertFalse([l for l in calls.splitlines() if l.startswith("peak ")])
         self.assertIn("git fetch -q --depth 1 origin 0123456789abcdef", calls)
         self.assertIn("node ../probes/verify-hits.js build/pearl_core_hip.node 600", calls)
-        self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool us.pearl.herominers.com:1200 "
+        self.assertIn("node src/cli/earn-cli.js --address prl1test --mode mining --pool prl-us.kryptex.network:7048 "
                       "-w bench-ours --no-report --no-serve --no-update | PEARL_CORE_VARIANT=amd PEARL_CORE_PATH="
                       "<T>/llmjob/earn/native/amd/build/pearl_core_hip.node NODE_PATH=<T>/nm/node_modules", calls)
-        self.assertIn("srbminer --algorithm-gpu pearlhash --pool us.pearl.herominers.com:1200 --wallet prl1test "
+        self.assertIn("srbminer --algorithm-gpu pearlhash --pool prl-us.kryptex.network:7048 --wallet prl1test "
                       "--worker bench-srb --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia "
                       "--disable-gpu-intel", calls)
         self.assertIn("pkill -f src/cli/earn-cli\\.js", calls)
@@ -804,7 +1044,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertIn("card AMD Radeon RX 9070 XT, ?, , , ? MiB, gfx1201", bodies)
         self.assertIn("copy 564 GB/s", bodies)
         self.assertIn("hitcheck PASS secs=600 hits=2202 verified=400 failed=0 salts=277", bodies)
-        self.assertIn("ready SRBMiner 3.7.1, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertIn("ready SRBMiner 3.8.2, ours HIP core 0123456789ab for gfx1201", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start ")],
                          ["start build gfx1201", "start hitcheck 600s", "start ours 60s", "start ours 300s",
                           "start srb 300s"])
@@ -826,7 +1066,7 @@ class TestBenchShDryRun(unittest.TestCase):
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
         self.assertIn("hitcheck FAIL secs=600 hits=2202 verified=400 failed=1 salts=277 why=seed chain mismatch", bodies)
         self.assertIn("skip ours: hit check failed", bodies)
-        self.assertIn("ready SRBMiner 3.7.1", bodies)
+        self.assertIn("ready SRBMiner 3.8.2", bodies)
         self.assertEqual([x for x in bodies if x.startswith("start srb")], ["start srb 60s", "start srb 300s"])
         self.assertEqual(bodies[-1], "all done")
         r = self.parse_amd(self.bench_lines(out))

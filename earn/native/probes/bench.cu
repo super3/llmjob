@@ -39,6 +39,10 @@ extern "C" bool pearl_host_search(void *, uint64_t, uint32_t, PearlSearchResult 
 extern "C" bool pearl_host_next_hit(void *, PearlSearchResult *);
 extern "C" void pearl_host_reseed(void *, uint64_t);
 extern "C" const char *pearl_host_fold_name(void *);
+#ifdef PEARL_TALL_CYC
+// Built with -DPEARL_TALL_CYC (the kernel too): the tall fold's cycles a tile.
+extern "C" void pearl_tall_cyc_take(unsigned long long out[2]);
+#endif
 
 static void fnv(uint64_t &d, const void *p, size_t n) {
   const uint8_t *q = static_cast<const uint8_t *>(p);
@@ -115,7 +119,7 @@ static int hitlist(void *h, const PearlProfile &prof, const uint8_t *header, uin
 int main(int argc, char **argv) {
   double seconds = argc > 1 ? atof(argv[1]) : 20.0;
   PearlProfile prof{};
-  prof.k = 2048; prof.rank = 128; prof.mma_type = 0;
+  prof.k = PEARL_FOLD_K; prof.rank = 128; prof.mma_type = 0;
   prof.m = 131072; prof.n = 131072;
   prof.seed_derivation = PEARL_SEED_SALTED;
   prof.col_batch = 2048; prof.hash_big_endian = 0;
@@ -161,6 +165,10 @@ int main(int argc, char **argv) {
     return rc;
   }
 
+#ifdef PEARL_TALL_CYC
+  unsigned long long cyc[2];
+  pearl_tall_cyc_take(cyc);   // drop the warm-up's
+#endif
   cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
   cudaEventRecord(e0);
   double elapsed = 0; int iters = 0;
@@ -188,6 +196,12 @@ int main(int argc, char **argv) {
   double thps = (double)total * DAF / (elapsed * 1e-3) / 1e12;
   printf("  attempts=%llu  batches=%d  %.3f s  ->  %.1f TH/s\n",
          (unsigned long long)total, iters, elapsed / 1000.0, thps);
+#ifdef PEARL_TALL_CYC
+  pearl_tall_cyc_take(cyc);
+  if (cyc[1])
+    printf("  cycles a tile %.0f over %llu tiles  ->  %.2f%% of the tensor peak a clock\n",
+           (double)cyc[0] / (double)cyc[1], cyc[1], 100.0 * 48.0 * (double)PEARL_FOLD_K * (double)cyc[1] / (double)cyc[0]);
+#endif
   pearl_host_destroy(h);
   return 0;
 }

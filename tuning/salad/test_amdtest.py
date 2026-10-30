@@ -1,7 +1,7 @@
 # Tests for amdtest.py's pure parts: names, classes, the create and update bodies, time parsing, log lines and
 # the patch it sends, with no Salad calls. Also checks amdtest.sh's syntax and the task line parsing.
 # Run: python3 -m unittest discover -s tuning/salad
-import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, tempfile, unittest
+import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, sys, tempfile, unittest
 
 os.environ["SALAD_MINE_DIR"] = tempfile.mkdtemp()     # never an exported folder, where live files may be
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -178,12 +178,177 @@ class TestAmdtest(unittest.TestCase):
                                                  "mine_cli"])
         self.assertEqual(r.stderr, "")
 
+    def test_nvtest_names_and_classes(self):
+        for good in ("nvtest-rtx3090", "nvtest-rtx3090ti", "nvtest-rtx3060ti-2", "nvtest-rtx3070-17"):
+            self.assertEqual(a.check_name(good), good)
+        for bad in ("nvtest-rtx2080ti", "nvtest-rtx3050", "nvtest-rtx3090-1", "nvtest-3090", "nvtest-rtx3090tix",
+                    "biz-nvtest-rtx3090", "nvtest-rtx3090-100"):
+            with self.assertRaises(SystemExit):
+                a.check_name(bad)
+        self.assertEqual(a.class_name("3090", nv=True), "RTX 3090 (24 GB)")
+        self.assertEqual(a.class_name("3090ti", nv=True), "RTX 3090 Ti (24 GB)")
+        self.assertEqual(a.class_name("RTX 3060 Ti", nv=True), "RTX 3060 Ti (8 GB)")
+        self.assertEqual(a.class_name("RTX 3080 (10 GB)", nv=True), "RTX 3080 (10 GB)")   # Salad's own name
+        self.assertEqual(a.class_name("7900xt"), "AMD RX 7900 XT (20GB)")                 # AMD's unchanged
+
+    def test_nvtest_create_body_runs_nvtest_sh_on_the_fleet_image(self):
+        c = a.body("nvtest-rtx3090", "cid", {"BASE_SHA": "abc"})["container"]
+        self.assertEqual(c["image"], a.w.IMAGE)
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/nvtest.sh", c["command"][2])
+        self.assertNotIn("amdtest", c["command"][2])
+        self.assertEqual(c["resources"]["gpu_classes"], ["cid"])
+        self.assertEqual(a.body("amdtest-rdna3", "cid", {})["container"]["image"], a.IMAGE)
+
+    def test_nvtest_create_asks_for_the_rtx_class(self):
+        calls = []
+
+        def http(method, url, body=None, **k):
+            calls.append((method, url, body))
+            if url.endswith("/gpu-classes"):
+                return 200, {"items": [{"name": "RTX 3090 (24 GB)", "id": "c3090"},
+                                       {"name": "RTX 3090 Ti (24 GB)", "id": "c3090ti"}]}
+            return (201, {}) if method == "POST" else (200, {"current_state": {"status": "running"}})
+        old, old_sleep = a.w.http, a.time.sleep
+        a.w.http, a.time.sleep = http, lambda s: None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                a.main(["create", "nvtest-rtx3090", "3090", "--sha", "f" * 40, "--env", "VARIANTS_SPEC=base|;x|-DX"])
+        finally:
+            a.w.http, a.time.sleep = old, old_sleep
+        posts = [b for m, u, b in calls if m == "POST" and u == a.w.CB]
+        self.assertEqual(len(posts), 1)
+        c = posts[0]["container"]
+        self.assertEqual(c["resources"]["gpu_classes"], ["c3090"])
+        self.assertEqual(c["environment_variables"], {"VARIANTS_SPEC": "base|;x|-DX", "WORKER": "nvtest-rtx3090",
+                                                      "BASE_SHA": "f" * 40})
+
+    def test_nvtest_boot_is_valid_sh_and_idles_without_a_sha(self):
+        sh = shutil.which("dash") or shutil.which("sh")
+        r = subprocess.run([sh, "-n", "-c", a.NV_BOOT], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = subprocess.run([sh, "-c", a.NV_BOOT.replace("exec sleep infinity", "exit 0")], capture_output=True,
+                           text=True, env={"PATH": os.environ["PATH"]})
+        self.assertRegex(r.stdout, r"\[nvtest\] \d\d:\d\d:\d\d boot no BASE_SHA; idle")
+
+    def test_nvtest_lines_are_read_by_their_tag(self):
+        items = [item("2026-10-29T05:01:00Z", "[nvtest] 05:00:58 boot sha abc"),
+                 item("2026-10-29T05:02:00Z", "[amdtest] 05:01:58 hip | PASS"),
+                 item("2026-10-29T05:03:00Z", "x [nvtest] 05:02:58 [compilers] bench r1 base 124.9 TH/s")]
+        self.assertEqual([t for _, _, t in a.pick_lines(items, tag=a.tag("nvtest-rtx3090"))],
+                         ["[nvtest] 05:00:58 boot sha abc", "[nvtest] 05:02:58 [compilers] bench r1 base 124.9 TH/s"])
+        self.assertEqual(len(a.pick_lines(items, tag=a.tag("amdtest-rdna3"))), 1)
+
+    def test_nvtest_sh_syntax_functions_and_line_shape(self):
+        sh = os.path.join(HERE, "nvtest.sh")
+        r = subprocess.run(["bash", "-n", sh], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "nvidia-smi"), "w") as f:
+            f.write("#!/bin/bash\necho '8.6'\n")
+        os.chmod(os.path.join(d, "nvidia-smi"), 0o755)
+        long = "x" * 1000
+        # The script's path as an argument, not in the command: a Windows path's backslashes would be escapes there.
+        r = subprocess.run(["bash", "-c", 'NVTEST_STAGE=lib . "$0"; echo "rc=$?"; declare -F setup cuda fetch card_gc; '
+                            f'card_gc; printf "short\\n\\n{long}\\n" | emit', sh],
+                           capture_output=True, text=True, env={"PATH": d + os.pathsep + os.environ["PATH"]})
+        lines = r.stdout.splitlines()
+        self.assertEqual(lines[:6], ["rc=0", "setup", "cuda", "fetch", "card_gc",
+                                     "-gencode arch=compute_86,code=sm_86"])
+        self.assertRegex(lines[6], r"^\[nvtest\] \d\d:\d\d:\d\d short$")
+        rest = [l.split(" ", 2)[2] for l in lines[7:]]
+        self.assertEqual(len(rest), 3)
+        self.assertTrue(all(len(t) <= 401 for t in rest) and rest[1].startswith("+x"))
+        self.assertEqual(sum(t.lstrip("+").count("x") for t in rest), 1000)
+        self.assertEqual(r.stderr, "")
+
+    def test_nvtest_sh_pins_cuda_12_8_1(self):
+        src = read(os.path.join(HERE, "nvtest.sh"))
+        for part in ("cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz|9961b3484b6b",
+                     "cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz|8d566b5fe745",
+                     "cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f",
+                     "cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7"):
+            self.assertIn(part, src)
+        self.assertIn('echo "$sha  $f" | sha256sum -c --quiet -', src)
+        self.assertIn('[ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE \'V[0-9.]+\' | tail -1)" != V12.8.93 ]',
+                      src)
+        self.assertIn("export GC=${GC:-$(card_gc)} FOLD=${FOLD:-pearl_tile_fold_tall}", src)
+
+
     def test_mine_runs_the_cli_through_mine_cli(self):
         src = read(os.path.join(HERE, "amdtest.sh"))
         body = src[src.index("mine_cli() {"):src.index("\n}\n", src.index("mine_cli() {"))]
         self.assertIn("PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$A/build/pearl_core_hip.node NODE_PATH=$NM/node_modules", body)
         self.assertIn('--address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER"', body)
         self.assertIn("(mine_cli) > /root/mine.log 2>&1 &", src)
+
+
+class TestCompilersMemoryReadings(unittest.TestCase):
+    """compilers.sh (earn/native/probes/turing), which nvtest.sh runs: med.py's and sum.py's memory columns."""
+    SRC = None
+
+    @classmethod
+    def setUpClass(cls):
+        cls.SRC = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "turing", "compilers.sh"))
+
+    def script(self, name):
+        start = self.SRC.index(f'cat > "$OUT/{name}" <<\'EOF\'\n') + len(f'cat > "$OUT/{name}" <<\'EOF\'\n')
+        body = self.SRC[start:self.SRC.index("\nEOF\n", start)]
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, name)
+        with open(p, "w") as f:
+            f.write(body + "\n")
+        return p, d
+
+    def run_py(self, *args):
+        return subprocess.run([sys.executable, "-I", *args], capture_output=True, text=True, check=True).stdout
+
+    def test_the_sampler_asks_for_the_memory_fields_med_py_reads(self):
+        self.assertIn("--query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem", self.SRC)
+        med, d = self.script("med.py")
+        smi = os.path.join(d, "smi")
+        with open(smi, "w") as f:
+            f.write("100.0,1620,350.1,70,22,1366,9501\n101.0,1635,349.9,70,20,1366,9501\n"
+                    "102.0,1620,350.0,71,[N/A],1366,9501\n103,1600,349,70\n")
+        self.assertEqual(self.run_py(med, smi, "100", "103").split(), "4 1620.0 349.9 70.0 1618.8 21 1366 9501".split())
+        with open(smi, "w") as f:
+            f.write("100.0,1620,350.1,70\n")      # a card that gives no memory readings
+        self.assertEqual(self.run_py(med, smi, "100", "101").split(), "1 1620.0 350.1 70.0 1620.0 - - -".split())
+        self.assertEqual(self.run_py(med, smi, "200", "201").split(), "0 0 0 0 0 - - -".split())
+
+    def test_sum_py_shows_memory_where_rounds_have_it(self):
+        s, d = self.script("sum.py")
+        t = os.path.join(d, "b.tsv")
+        with open(t, "w") as f:
+            f.write("1\tbase\t124.9\t1620\t350\t70\t77.1\t1622\t22\t1366\t9501\n"
+                    "1\tdram\t130.0\t1680\t350\t70\t77.4\t1681\t1\t1300\t9501\n"
+                    "2\tdram\t130.2\t1680\t350\t70\t77.5\t1680\t1\t1300\t9501\n"
+                    "2\tbase\t125.0\t1620\t350\t70\t77.2\t1621\t20\t1366\t9501\n")
+        out = self.run_py(s, t, "bench-sum", os.path.join(d, "best")).splitlines()
+        self.assertIn("77.150 TH/s/GHz mem 21% 1366 MiB", out[0])
+        self.assertIn("77.450 TH/s/GHz mem 1% 1300 MiB vs base: raw +4.12%", out[1])
+        with open(os.path.join(d, "best")) as f:
+            self.assertEqual(f.read(), "dram")
+        with open(t, "a") as f:           # a -DPEARL_TALL_CYC build's cycles a tile, in column 12
+            f.write("1\tcyc\t124.0\t1620\t350\t70\t76.5\t1620\t22\t1366\t9501\t102655\n"
+                    "2\tcyc\t124.1\t1620\t350\t70\t76.6\t1620\t22\t1366\t9501\t102661\n")
+        out = self.run_py(s, t, "bench-sum", os.path.join(d, "best")).splitlines()
+        self.assertIn("76.550 TH/s/GHz mem 22% 1366 MiB cyc 102658 (95.76%) vs base", out[2])
+        self.assertNotIn("cyc", out[0])
+        with open(t, "w") as f:           # a table from before: no memory columns, and no "mem" in the line
+            f.write("1\tbase\t124.9\t1620\t350\t70\t77.1\n1\tx\t125.9\t1620\t350\t70\t77.7\n")
+        out = self.run_py(s, t, "hashrate-sum", os.path.join(d, "best2"))
+        self.assertNotIn(" mem ", out)
+        self.assertIn("x n=1 125.900 TH/s", out)
+
+    def test_gc_and_fold_default_to_sm_75_and_its_fold(self):
+        self.assertIn('GC=${GC:-"-gencode arch=compute_75,code=sm_75"}', self.SRC)
+        self.assertIn("FOLD=${FOLD:-pearl_tile_fold_wmma}", self.SRC)
+        self.assertIn('[ "$SM" = 75 ] && rg=$(rg_hash "$K/build/Release/pearl_core.node")', self.SRC)
+        self.assertIn('if has probe && [ -f "$OUT/v/base/ok" ] && [ "$SM" = 75 ]; then', self.SRC)
+        r = subprocess.run(["bash", "-c", "GC='-gencode arch=compute_86,code=sm_86'; "
+                            + self.SRC[self.SRC.index("SM=$("):self.SRC.index("\n", self.SRC.index("SM=$("))]
+                            + '; echo "$SM"'], capture_output=True, text=True)
+        self.assertEqual(r.stdout.strip(), "86")
 
 
 if __name__ == "__main__":

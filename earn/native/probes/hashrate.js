@@ -18,7 +18,9 @@ core.setJob({ header: Buffer.alloc(76, 0xA5), target: 0n, jobId: 'bench' });
 const poll = setInterval(() => {
   if (Date.now() - t0 < warm * 1000) return;
   try {
-    const o = execSync('nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv,noheader,nounits').toString().trim().split(',').map(Number);
+    // The memory controller's use, the memory in use and the memory clock too: on Ampere
+    // the fold's DRAM traffic costs SM clock at the power limit (probes/turing/compilers.sh).
+    const o = execSync('nvidia-smi --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem --format=csv,noheader,nounits').toString().trim().split('\n')[0].split(',').map(Number);
     gpu.push(o);
   } catch (e) {}
 }, 2000);
@@ -26,7 +28,10 @@ setTimeout(() => {
   clearInterval(poll); core.stop();
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
   const sd = Math.sqrt(samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length);
-  const avg = (i) => gpu.length ? (gpu.reduce((a, g) => a + g[i], 0) / gpu.length).toFixed(0) : '?';
-  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2) }));
+  const avg = (i) => {
+    const xs = gpu.map((g) => g[i]).filter(Number.isFinite);   // a field the card reads as [N/A] is NaN
+    return xs.length ? (xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(0) : '?';
+  };
+  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
   process.exit(0);
 }, (secs + warm) * 1000);

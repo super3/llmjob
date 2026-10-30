@@ -29,7 +29,7 @@
 #     profile[@fold][:secs:bits:m:n:fill] node test/verify-hits-profile.js build/pearl_core_hip.node ...
 #     hashrate[@fold][:secs:warm]         node ../probes/hashrate.js build/pearl_core_hip.node [60 10]
 #     mine[@fold][:secs]      the app's CLI with PEARL_CORE_VARIANT=amd on POOL; secs 0 = until stopped [600]
-#     srb[:secs:warm]         SRBMiner 3.7.1 on DUEL_POOL for secs [300] after a warm-up of its own [60]
+#     srb[:secs:warm]         SRBMiner 3.8.2 on DUEL_POOL for secs [300] after a warm-up of its own [60]
 #     duel[:first:secs:warm]  benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
 #                             warm [60], then each runs secs [300]; ends with "duel <name> result ..." for each
 #     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB)
@@ -37,7 +37,7 @@
 #     sleep:secs              wait
 #   ARCH          gfx target to build for (default: rocminfo's first GPU agent)
 #   POOL, WORKER, WALLET      for mine (default prl-us.kryptex.network:7048, amdtest, the user's wallet)
-#   DUEL_POOL     for srb and duel, both miners (default us.pearl.herominers.com:1200, the table's pool)
+#   DUEL_POOL     for srb and duel, both miners (default prl-us.kryptex.network:7048, bench.sh's pool)
 #
 # Salad's PCs run the container in WSL2: the GPU is behind /dev/dxg, and Salad puts its ROCm-to-WSL bridge
 # (/opt/rocm-wsl) first on PATH and LD_LIBRARY_PATH. This script only appends to PATH and never sets
@@ -246,18 +246,18 @@ t_mine() {
   return 0
 }
 
-# SRBMiner 3.7.1 from its official release, checked against the published MD5 (bench.sh downloads the same file).
+# SRBMiner 3.8.2 from its official release, checked against the published MD5 (bench.sh downloads the same file).
 SRB_DIR=/opt/srb
 srb_get() {
   [ -x $SRB_DIR/SRBMiner-MULTI ] && return 0
   mkdir -p $SRB_DIR && cd $SRB_DIR || return 1
-  curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz \
+  curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.2/SRBMiner-Multi-3-8-2-Linux.tar.gz \
     || { say "srb FAIL download"; return 1; }
-  echo "112223a663506023e31d7f9dbce3dfe2  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
+  echo "9f64784a9894067b7bc3811b4912dd81  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
   tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
 }
 # Both miners mine on DUEL_POOL in srb and duel, as benchmark.md's AMD table did (bench.sh's pool).
-DUEL_POOL=${DUEL_POOL:-us.pearl.herominers.com:1200}
+DUEL_POOL=${DUEL_POOL:-prl-us.kryptex.network:7048}
 srb_cli() {
   cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
     --worker "$WORKER-srb" --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel

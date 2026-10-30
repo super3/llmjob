@@ -319,7 +319,9 @@ describe('RTX 20 fold patches (probes/turing/sm75)', () => {
     expect(PATCHER).toContain("SECTION = b'.text.pearl_tile_fold_wmma'");
     expect(COMPILERS).toContain('if n.startswith(".text."):');
     expect(COMPILERS).toContain('print(n[6:], hashlib.md5(b[h[4]:h[4] + h[5]]).hexdigest()[:12])');
-    expect(COMPILERS).toContain('awk \'$1 == "pearl_tile_fold_wmma" {print $2; exit}\'');
+    // fold_hash's kernel is FOLD, which is the fold the patches are for unless a run sets it.
+    expect(COMPILERS).toContain('awk -v f="$FOLD" \'$1 == f {print $2; exit}\'');
+    expect(COMPILERS).toContain('FOLD=${FOLD:-pearl_tile_fold_wmma}');
     expect(PATCHER).toContain("shoff = struct.unpack_from('<Q', b, 0x28)[0]");
     expect(PATCHER).toContain("ent, num, stri = struct.unpack_from('<HHH', b, 0x3A)");
     expect(PATCHER).toContain("struct.unpack_from('<IIQQQQIIQQ', b, shoff + i * ent)");

@@ -955,6 +955,14 @@ out of the fold.
   compute the same hashes print the same lines. It catches what `verify-hits.js` cannot:
   a build that drops hits. `turing/compilers.sh` runs it on every build against base
   (stage `complete`).
+- `bench.exe <secs>` built with `-DPEARL_TALL_CYC` (bench.cu and the kernel both) -- also
+  the tall fold's cycles a tile in steady state and its share of the tensor peak a clock
+  (ideal 98,304), from `clock64` in the fold. It needs no performance counters, so it
+  prices a change per clock on Salad and Vast, where the clock moves with power. The cp.async
+  ring only (sm_86 and sm_89); see `pearl_tall_cyc` for the RTX 4090's readings.
+  Built on Windows: `nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 -I ../src
+  -DPEARL_TALL_CYC bench.cu ../src/pearl_kernel.cu ../src/pearl_host.cu -o bench.exe`
+  from an MSVC (vcvars64) shell.
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no

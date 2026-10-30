@@ -3007,6 +3007,82 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
   return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
 }
 #endif
+#ifdef PEARL_TALL_CYC
+// Cycles a tile (bench only, -DPEARL_TALL_CYC, the cp.async ring): thread 0 reads clock64
+// at the top of each of its block's tiles. From its second tile's top to its last tile's
+// top is whole tiles in steady state, without the first tile's exposed chunk 0 or the
+// last one's hash. Each block adds those cycles and that many tiles here, and
+// pearl_tall_cyc_take reads and zeroes them. The second tile's time waits in buffer 0's
+// barrier pad (bytes 16-23 of the 112 the ring leaves unused), not in a register (the
+// fold is at 255) or a global word the other slot's launch could overwrite. The ideal at
+// 1024 MAC a clock an SM is 192 x 256 x 2048 / 1024 = 98,304 cycles. It needs no
+// performance counters, so it works where Nsight Compute cannot (Salad, Vast).
+// RTX 4090 (sm_89, CUDA 12.6), bench.exe, 3 rounds of 20 s, every round within 120:
+//   the fold as it is                        102,658   95.76% of the tensor peak a clock
+//   -DPEARL_ABLATE_RING (no ring waits)      102,190   -468
+//   -DPEARL_ABLATE_RING -DPEARL_ABLATE_ARRIVE 102,187  (the EMPTY arrives and their MEMBAR: ~0)
+//   -DPEARL_ABLATE_TRANSCRIPT_HASH           101,363   -1,295
+//   -DPEARL_ABLATE_READOUT (last chunk only) 101,048   -1,610
+//   all three                                 99,782   -2,876, 98.52%
+// Nsight Compute, one launch at its locked ~2.2 GHz, MAC a clock against the peak: 95.54%,
+// 95.95%, 96.95%, 97.03% and 98.26%. The readout's red.shared.xor are most of the fold's
+// shared bank conflicts (0.257 a mma with it, 0.037 without).
+// The same build measured 102,655 on an RTX 3060 Ti (sm_86) and 102,714 on an RTX 4060.
+// The counter changes no result: hit lists over 40 batches match the build without it.
+__device__ unsigned long long pearl_tall_cyc[2];
+#endif
+#ifdef PEARL_E4_GENLOAD
+// The cost of drawing A' inside the fold (bench only, -DPEARL_E4_GENLOAD, on top of
+// PEARL_ABLATE_DRAM; see PEARL_E4_GENLOAD in pearl_config.h). The E4 design keeps B' (n
+// columns) in the L2 and never stores A': PEARL_E4_C = n / 256 blocks share a row group, and
+// each draws its 1/C of every chunk of the row group's A' two chunks ahead into a ring of three
+// chunk slabs in global memory, which the whole team's copies read. Drawing a byte is two
+// lookups into its row's 128-byte dense noise and the fill: the row sits in a register a lane
+// (lane L holds bytes 4L .. 4L + 3), so a lookup is a shuffle, and a byte select. The perm
+// slices are pre-encoded for that: each word's eight source lanes and its PRMT selectors.
+// What this leaves out, so it is the cheap side of E4: the dense rows' BLAKE3 (a fixed table
+// here) and the ring's ready flags. The values are not the real ones; the work and the
+// memory pattern are.
+#ifndef PEARL_ABLATE_DRAM
+#error "PEARL_E4_GENLOAD measures on top of PEARL_ABLATE_DRAM"
+#endif
+#define PEARL_E4_RROWS (PEARL_TALL_BM / PEARL_E4_C)                    // rows a block draws
+#define PEARL_E4_WORDS (PEARL_E4_RROWS * 32u / PEARL_TALL_THREADS)     // words a thread a chunk
+#define PEARL_E4_SLAB (PEARL_TALL_BM * 2u * PEARL_TALL_STAGE_K)         // a chunk of a row group
+#define PEARL_E4_MAX_BLOCKS 128u
+static_assert(PEARL_E4_C == 2u || PEARL_E4_C == 4u || PEARL_E4_C == 8u,
+              "PEARL_E4_C: 2, 4 or 8 blocks a row group (n = 512, 1024 or 2048)");
+__device__ __align__(128) int8_t pearl_e4_ring[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u * PEARL_E4_SLAB];
+__device__ __align__(128) uint32_t pearl_e4_dense[PEARL_E4_MAX_BLOCKS * PEARL_E4_RROWS * 32u];
+__device__ __align__(16) uint4 pearl_e4_perm[16u * 32u];
+__device__ uint32_t pearl_e4_flag[PEARL_E4_MAX_BLOCKS / PEARL_E4_C * 3u];
+__device__ __forceinline__ uint32_t pearl_e4_mix(uint32_t x) {
+  x ^= x >> 16; x *= 0x7feb352du; x ^= x >> 15; x *= 0x846ca68bu; x ^= x >> 16;
+  return x;
+}
+// Word j of this thread's share of chunk g: row j * 8 + warp of the block's rows, bytes 4 lane
+// .. 4 lane + 3 of the chunk's 128. A' = fill + d0 - d1 a byte, with the dense values stored
+// biased (0 .. 63): (d0 + 0xB0 - d1) ^ 0x80 is 48 + d0 - d1 in two's complement, no carries.
+__device__ __forceinline__ void pearl_e4_draw(uint32_t j, uint32_t g, uint32_t lane, uint32_t warp) {
+  const uint32_t r = j * 8u + warp;
+  const uint32_t dw = pearl_e4_dense[(blockIdx.x * PEARL_E4_RROWS + r) * 32u + lane];
+  const uint4 e = pearl_e4_perm[(g & 15u) * 32u + lane];
+  const uint32_t x0 = __shfl_sync(0xffffffffu, dw, e.x), x1 = __shfl_sync(0xffffffffu, dw, e.x >> 8);
+  const uint32_t x2 = __shfl_sync(0xffffffffu, dw, e.x >> 16), x3 = __shfl_sync(0xffffffffu, dw, e.x >> 24);
+  const uint32_t d0 = __byte_perm(__byte_perm(x0, x1, e.z), __byte_perm(x2, x3, e.z >> 16), 0x7610u);
+  const uint32_t y0 = __shfl_sync(0xffffffffu, dw, e.y), y1 = __shfl_sync(0xffffffffu, dw, e.y >> 8);
+  const uint32_t y2 = __shfl_sync(0xffffffffu, dw, e.y >> 16), y3 = __shfl_sync(0xffffffffu, dw, e.y >> 24);
+  const uint32_t d1 = __byte_perm(__byte_perm(y0, y1, e.w), __byte_perm(y2, y3, e.w >> 16), 0x7610u);
+  int8_t *const dst = pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB
+                      + (g % 3u) * PEARL_E4_SLAB + (lane >> 4) * (PEARL_TALL_BM * PEARL_TALL_STAGE_K)
+                      + ((blockIdx.x % PEARL_E4_C) * PEARL_E4_RROWS + r) * PEARL_TALL_STAGE_K
+                      + (lane & 15u) * 4u;
+  *reinterpret_cast<uint32_t *>(dst) = (d0 + 0xB0B0B0B0u - d1) ^ 0x80808080u;
+}
+#define PEARL_E4_ABASE (pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB)
+#else
+#define PEARL_E4_ABASE Aprime
+#endif
 extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold_tall(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime,
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
@@ -3043,8 +3119,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   static_assert(STAGE % 128u == 0u, "stage buffers keep rows 64-byte aligned (lane bases)");
   static_assert(PEARL_ROWS_MASK == 0x1Bu && PEARL_COLS_MASK == 0x39u,
                 "the readout folds the regions the m16n8k32 accumulators hold");
-  static_assert(chunks <= PEARL_JACKPOT_BUCKETS && PEARL_JACKPOT_BUCKETS == 16u,
-                "one transcript word a chunk, one 64-byte block a region");
+  static_assert((chunks <= PEARL_JACKPOT_BUCKETS
+                 || (PEARL_TALL_RED_ON && !PEARL_TALL_PREGUARD_ON
+                     && chunks % PEARL_JACKPOT_BUCKETS == 0u))
+                    && PEARL_JACKPOT_BUCKETS == 16u,
+                "one transcript word a chunk, one 64-byte block a region (past 16 chunks, "
+                "the shared-XOR readout folds chunk c into word c % 16)");
 #if PEARL_TALL_TMA_BODY
   static_assert(PEARL_TALL_SMEM_TMA <= 101376u, "Ada gives a block 99 KB of shared");
 #if PEARL_TALL_TMA_ROLES
@@ -3187,11 +3267,38 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   auto tile_srcs = [&](uint32_t v, uint32_t &bsrc_, uint32_t &asrc_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
+#ifdef PEARL_ABLATE_DRAM
+    // Diagnostic only when defined: every tile copies from row groups 0 and 1 of A' and
+    // the first two column groups of B' (768 KB and 1 MB at the mainnet k), which stay
+    // in any RTX 30 card's L2, so DRAM serves next to nothing. The same copies and mma,
+    // two more instructions a tile. Prices the fold's DRAM traffic (its watts, at the
+    // power limit); the output is meaningless. The hash still names the real regions.
+    // Measured on Salad (29 October, bench 4 rounds of 45 s, interleaved with base):
+    //   RTX 3090, GDDR6X    memory 17% -> 0%, 1605 -> 1665 MHz, 126.9 -> 131.3 TH/s (+3.3%)
+    //   RTX 3060 Ti, GDDR6  memory 34% -> 0%, 1778 -> 1845 MHz,  65.4 ->  68.1 TH/s (+4.1%)
+    // at the same power, with work per clock unchanged (TH/s per GHz -0.2% and +0.4%;
+    // PEARL_TALL_CYC 102,923 -> 102,896 cycles a tile on the 3060 Ti). So the DRAM traffic
+    // costs RTX 30 about 3-4% of clock, and nothing per clock: the ceiling for a fold that
+    // keeps its operands on chip, as PeakMiner's and SRBMiner's 0-1% memory use suggests
+    // theirs now do.
+#ifdef PEARL_E4_GENLOAD
+    // E4's data path: A from the team's ring (row group 0 of it, the ring's base), B from the
+    // n = 256 PEARL_E4_C columns E4 keeps in the L2.
+    rbg_ = 0u;
+    cbg_ &= PEARL_E4_C - 1u;
+#else
+    rbg_ &= 1u;
+    cbg_ &= 1u;
+#endif
+    const uint32_t coff = 0u;
+#else
+    const uint32_t coff = col_off;
+#endif
 #if PEARL_TALL_TILE_ORDER
-    bsrc_ = (col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
+    bsrc_ = (coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
     asrc_ = rbg_ * BM * k + arow * SK + aq * 16u;
 #else
-    bsrc_ = ((col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
+    bsrc_ = ((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
     asrc_ = (rbg_ * BM + arow) * SK + aq * 16u;
 #endif
   };
@@ -3315,6 +3422,17 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #pragma unroll
     for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
 #if PEARL_TALL_RED_ON
+#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+    // k past 2048 (PEARL_FOLD_K): word c % 16 is rotl13(word) ^ chunk c's XOR in the
+    // reference, once a chunk. The rotation distributes over XOR, so chunk c's part goes in
+    // already rotated once for every later chunk of its word, and the words still start at
+    // zero and take XORs only.
+    {
+      const uint32_t later = PEARL_FOLD_CHUNKS / PEARL_JACKPOT_BUCKETS - 1u - (c >> 4);
+      x = __funnelshift_l(x, x, (13u * later) & 31u);
+      c &= PEARL_JACKPOT_BUCKETS - 1u;
+    }
+#endif
     // Every lane XORs its part in. The predicate is always true (lane is never 99), but
     // inside the asm: without one, or with any predicate ptxas can see, it spills 220 bytes.
     asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
@@ -3356,9 +3474,43 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   for (uint32_t o = threadIdx.x * 16u; o < BM * BN / 4u; o += PEARL_TALL_THREADS * 16u)
     asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sTr + o), "r"(0u) : "memory");
 #endif
+#if defined(PEARL_E4_GENLOAD) && !PEARL_TALL_TMA_BODY
+  // E4's draw tables (see pearl_e4_draw): this block's dense rows, biased to 0 .. 63, and the
+  // sixteen perm slices every block draws with (each block writes the same values). A cheap
+  // hash: the lookups only have to land where random pairs would.
+  if (gridDim.x > PEARL_E4_MAX_BLOCKS) __trap();
+  for (uint32_t i = threadIdx.x; i < PEARL_E4_RROWS * 32u; i += PEARL_TALL_THREADS)
+    pearl_e4_dense[blockIdx.x * PEARL_E4_RROWS * 32u + i] =
+        pearl_e4_mix(blockIdx.x * 0x10000u + i) & 0x3F3F3F3Fu;
+  for (uint32_t i = threadIdx.x; i < 16u * 32u; i += PEARL_TALL_THREADS) {
+    uint32_t lx = 0u, ly = 0u, sx = 0u, sy = 0u;
+#pragma unroll
+    for (uint32_t jj = 0; jj < 4u; jj++) {
+      const uint32_t h = pearl_e4_mix(0x9E3779B9u + i * 4u + jj);
+      const uint32_t p0 = h & 127u, p1 = p0 ^ (1u + ((h >> 8) & 126u));
+      // Selector nibbles: bytes 0, 1 of the first PRMT (low half), 2, 3 of the second (high).
+      const uint32_t sh = jj < 2u ? 4u * jj : 16u + 4u * jj, hi = (jj & 1u) ? 4u : 0u;
+      lx |= (p0 >> 2) << (8u * jj);
+      ly |= (p1 >> 2) << (8u * jj);
+      sx |= (hi + (p0 & 3u)) << sh;
+      sy |= (hi + (p1 & 3u)) << sh;
+    }
+    pearl_e4_perm[i] = make_uint4(lx, ly, sx, sy);
+  }
+#endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
   __syncthreads();
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_NOGEN) && !PEARL_TALL_TMA_BODY
+  // The data path without the draw still needs real-looking operands in the ring: an
+  // all-zero A' toggles nothing in the tensor pipe, and on a 3090 ran 150 MHz faster at
+  // less power than the same fold on drawn values (29 October). So the ring's three slabs
+  // are drawn once, here, by the draw itself.
+#pragma unroll 1
+  for (uint32_t g = 0; g < 3u; g++)
+#pragma unroll 1
+    for (uint32_t j = 0; j < PEARL_E4_WORDS; j++) pearl_e4_draw(j, g, lane, warp);
+#endif
 #if PEARL_TALL_CLUSTER_BODY
   // And across the pair: the peer's barriers exist before this CTA arrives on them or
   // multicasts into its shared memory. Both CTAs take the same early returns below
@@ -3399,7 +3551,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #else
   uint32_t bsrc0, asrc0;
   tile_srcs(tile_first, bsrc0, asrc0);
-  const int8_t *aP = Aprime + asrc0, *bP = Bprime + bsrc0 + BMID;
+  const int8_t *aP = PEARL_E4_ABASE + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.
 #pragma unroll
   for (uint32_t s = 0; s < SPC; s++) {
@@ -3417,10 +3569,43 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
   uint32_t pA = 0u, pB = 0u, pC = 0u;
 #endif
+#if PEARL_TALL_CTR_ON
+  // Tiles from the slot's counter (PEARL_TALL_CTR): the next tile is the word below,
+  // written in chunk PEARL_TALL_CTR_CHUNK and read from the last chunk on.
+  static_assert(PEARL_TALL_CTR_CHUNK >= 1u && PEARL_TALL_CTR_CHUNK + 1u < chunks,
+                "written after the tile's first chunk, and read in a later one");
+  static_assert(PEARL_TALL_CTR_THREAD / 32u >= 4u && PEARL_TALL_CTR_THREAD < PEARL_TALL_THREADS,
+                "the counter is read by a warp that does not hash (wr 1)");
+#ifdef PEARL_TALL_CYC
+#error "PEARL_TALL_CYC counts the grid stride's tiles: build it without PEARL_TALL_CTR"
+#endif
+  __shared__ uint32_t sTallNext;
+  volatile uint32_t *const nextTile = &sTallNext;
+  (void)tile_stride;
+#define PEARL_TALL_NEXT (*nextTile)
+#else
+#define PEARL_TALL_NEXT (v + tile_stride)
+#endif
   // (In the cluster build v, tile_stride, has_next and so every stage_next and cn below
   // are cluster-level, never from blockIdx.x: the pair must agree on all of them.)
-  for (uint32_t v = tile_first; v < tiles; v += tile_stride) {
+  for (uint32_t v = tile_first; v < tiles; v = PEARL_TALL_NEXT) {
+#if !PEARL_TALL_CTR_ON
     const bool has_next = v + tile_stride < tiles;
+#if defined(PEARL_TALL_CYC) && !PEARL_TALL_TMA_BODY
+    if (threadIdx.x == 0u) {
+      const long long c = clock64();
+      const uint32_t t1 = sbase + STAGE + 16u;
+      if (v == tile_first + tile_stride) {
+        asm volatile("st.shared.u64 [%0], %1;" ::"r"(t1), "l"(c) : "memory");
+      } else if (!has_next && v > tile_first + tile_stride) {
+        long long c1;
+        asm volatile("ld.shared.u64 %0, [%1];" : "=l"(c1) : "r"(t1) : "memory");
+        atomicAdd(&pearl_tall_cyc[0], (unsigned long long)(c - c1));
+        atomicAdd(&pearl_tall_cyc[1], (unsigned long long)((v - tile_first) / tile_stride - 1u));
+      }
+    }
+#endif
+#endif  // !PEARL_TALL_CTR_ON
 #if PEARL_TALL_TMA_BODY
     // The next tile's boxes, for the last chunk's fills (its first two stages). Worked
     // out here rather than in that chunk: two registers across the chunk loop, where
@@ -3438,7 +3623,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
     for (uint32_t chunk = 0; chunk < chunks; chunk++) {
       // The last chunk stages the next tile's chunk 0, from the next tile's sources.
       const bool last = chunk + 1u == chunks;
+#if PEARL_TALL_CTR_ON
+      // The counter's word, read in the last chunk only (see PEARL_TALL_CTR).
+      const bool stage_next = !last || PEARL_TALL_NEXT < tiles;
+#else
       const bool stage_next = !last || has_next;
+#endif
 #if PEARL_TALL_TMA_BODY
       if (last) {
         boxB = nextB;
@@ -3691,14 +3881,29 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
         pearl_mbar_wait(barEmpty + 8u * (fb == 2u ? 0u : fb + 1u), fb == 2u ? fpar : fpar ^ 1u);
 #endif
 #else
+#if PEARL_TALL_CTR_ON
+      if (last && stage_next) {
+#else
       if (last && has_next) {
-        tile_srcs(v + tile_stride, bsrc0, asrc0);
-        aP = Aprime + asrc0;
+#endif
+        tile_srcs(PEARL_TALL_NEXT, bsrc0, asrc0);
+        aP = PEARL_E4_ABASE + asrc0;
         bP = Bprime + bsrc0 + BMID;
       }
       // The first stage the chunk's refills carry, within its tile. Opaque, so it is made
       // once here rather than again in every copy group (0.35% in the bench).
+#ifdef PEARL_E4_GENLOAD
+      // From the ring: chunk c's slab is slot c % 3.
+      uint32_t sg0 = ((last ? 0u : chunk + 1u) % 3u) * SPC;
+#elif defined(PEARL_ABLATE_DRAM) && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+      // The ablation past 2048 of k (PEARL_FOLD_K): the copies wrap every 16 chunks, so the
+      // operands they read stay 2048 deep, 1.75 MB, in the L2 at any k. That is what a fold
+      // that draws its operands on chip reads (nothing from DRAM), at the large k PeakMiner
+      // and SRBMiner mine with (32768 and 65536; their shares, 29 October).
+      uint32_t sg0 = ((last ? 0u : chunk + 1u) & 15u) * SPC;
+#else
       uint32_t sg0 = (last ? 0u : chunk + 1u) * SPC;
+#endif
       asm volatile("" : "+r"(sg0));
 #pragma unroll
       for (uint32_t s = 0; s < SPC; s++) {
@@ -3745,6 +3950,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #ifndef PEARL_ABLATE_RING
               pearl_mbar_wait(ib + STAGE + 8u, epar);
 #endif
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_FLAGS)
+              // E4's acquire of the ring slab these copies read (PEARL_E4_FLAGS): the load
+              // and its ordering, without the wait (the values are not the real ones).
+              if (s == 0u) {
+                if (lane == 0u) {
+                  uint32_t f;
+                  asm volatile("ld.acquire.gpu.global.u32 %0, [%1];" : "=r"(f)
+                               : "l"(pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + sg0 / SPC) : "memory");
+                  asm volatile("" ::"r"(f));
+                }
+                __syncwarp();
+              }
+#endif
 #pragma unroll
               for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, sg, p)
             }
@@ -3753,10 +3971,40 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
               for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, sg, p)
               pearl_mbar_arrive_copies(ib + STAGE);
             }
+#if defined(PEARL_E4_GENLOAD) && !defined(PEARL_E4_NOGEN)
+            // E4's draw, two chunks ahead: this thread's words of the chunk spread over the
+            // chunk's four k-step ends, where the step's B fragments are dead.
+            if (mb + 1u == MT) {
+#pragma unroll
+              for (uint32_t j = 0; j < PEARL_E4_WORDS; j++)
+                if (j * 4u / PEARL_E4_WORDS == s * KS + t) pearl_e4_draw(j, chunk + 2u, lane, warp);
+#ifdef PEARL_E4_FLAGS
+              // After this warp's last word of the chunk: its release on the slab's flag.
+              if ((PEARL_E4_WORDS - 1u) * 4u / PEARL_E4_WORDS == s * KS + t) {
+                __syncwarp();
+                if (lane == 0u)
+                  asm volatile("red.release.gpu.global.add.u32 [%0], 1;" ::"l"(
+                                   pearl_e4_flag + (blockIdx.x / PEARL_E4_C) * 3u + (chunk + 2u) % 3u)
+                               : "memory");
+              }
+#endif
+            }
+#endif
           }
         }
+#if PEARL_TALL_CTR_ON
+        // The next tile, before this stage's release, which every thread acquires at the
+        // stage-1 refill (PEARL_TALL_CTR).
+        if (s == 0u && chunk == PEARL_TALL_CTR_CHUNK && threadIdx.x == PEARL_TALL_CTR_THREAD)
+          *nextTile = gridDim.x + atomicAdd(hits.count + PEARL_BD_CTR_SLOTS, 1u);
+#endif
+#if defined(PEARL_ABLATE_RING) && defined(PEARL_ABLATE_ARRIVE)
+        // Diagnostic only: with the ring's waits gone, its EMPTY arrivals (a MEMBAR.ALL.CTA
+        // and an arrive a stage) go too. Prices them; the output is meaningless.
+#else
         // This thread is done reading the stage: a release (see the ring above).
         pearl_mbar_arrive(so + STAGE + 8u);
+#endif
       }
       // The next chunk starts on C: the roles rotate, and A and B have each been used once.
       {
@@ -3775,6 +4023,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       for (uint32_t rl = 0; rl < RPL; rl++)
         asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
                      ::"r"(trBase + rl * 128u + chunk * 4u), "r"(xg[rl]), "r"(lane) : "memory");
+#elif defined(PEARL_ABLATE_READOUT)
+      // Diagnostic only: the readout at the tile's last chunk alone, so the accumulators
+      // stay live (ptxas deletes mma whose results nothing reads). Prices the per-chunk
+      // readout. Output is meaningless.
+      if (chunk + 1u == chunks) {
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
+      }
 #else
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
@@ -3933,6 +4189,26 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
       }
 #endif
     }
+#if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_HASH)
+    else {
+      // E4's dense rows (PEARL_E4_HASH): the block's PEARL_E4_RROWS rows of a later row
+      // group, rank / 32 = 4 BLAKE3 a row, hashed by the 128 lanes of the warps that do not
+      // hash transcripts, while they would otherwise wait for the hasher. Their accumulators
+      // are dead here, as the hasher's are.
+      for (uint32_t hi = (warp - 4u) * 32u + lane; hi < PEARL_E4_RROWS * 4u; hi += 128u) {
+        uint8_t lab[32];
+#pragma unroll
+        for (int i = 0; i < 32; i++) lab[i] = 0;
+        uint8_t d[32];
+        pearl_random_hash(test.key, lab, v * (PEARL_E4_RROWS * 4u) + hi, 0, d);
+        uint32_t *const dst = pearl_e4_dense + (blockIdx.x * PEARL_E4_RROWS + (hi >> 2)) * 32u + (hi & 3u) * 8u;
+#pragma unroll
+        for (int i = 0; i < 8; i++)
+          dst[i] = ((uint32_t)d[4 * i] | ((uint32_t)d[4 * i + 1] << 8) | ((uint32_t)d[4 * i + 2] << 16)
+                    | ((uint32_t)d[4 * i + 3] << 24)) & 0x3F3F3F3Fu;
+      }
+    }
+#endif
 #endif  // PEARL_TALL_UNFUSED_ON
   }
 #if PEARL_TALL_CLUSTER_BODY
@@ -3943,12 +4219,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #endif
 #undef PEARL_TALL_ISSUE_A
 #undef PEARL_TALL_ISSUE_B
+#undef PEARL_TALL_NEXT
 #else
   (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;
   (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)test; (void)hits;
   (void)tmA; (void)tmB;
 #endif
 }
+
+#ifdef PEARL_TALL_CYC
+// The tall fold's cycles and tiles since the last call (see pearl_tall_cyc), then zeroes
+// them. Waits for the device first, so every launch made before it is counted.
+extern "C" void pearl_tall_cyc_take(unsigned long long out[2]) {
+  cudaDeviceSynchronize();
+  cudaMemcpyFromSymbol(out, pearl_tall_cyc, 2u * sizeof(unsigned long long));
+  const unsigned long long z[2] = {0ull, 0ull};
+  cudaMemcpyToSymbol(pearl_tall_cyc, z, sizeof z);
+}
+#endif
 
 // The transcript hash after a fold that stores every transcript: GA100's unfused fold
 // (PEARL_TALL_UNFUSED) and Hopper's wgmma fold (PEARL_HOPPER_WGMMA, sm_90a). One thread a

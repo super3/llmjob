@@ -11,6 +11,16 @@ losing information, cut it.
 This applies to commit messages, PR titles and descriptions, code comments, and
 what you say in chat.
 
+## Estimates
+
+Estimate in your own time, not a human engineer's. Work that would take a person
+days or weeks to code usually takes you an hour or two. Never write "3-5 days" or
+"1-2 weeks" for work you'll do yourself, and the same goes for subagents' plans.
+
+Only waiting time stays the same: a Salad box starting, benchmark rounds, CI, a
+release build. Give that as its own number ("about 1 h of coding, then 40 min of
+Salad runs"), so I can see which part is fixed.
+
 ## Show the result of every change to something I can see
 
 When I ask you to change a table, a report, a page, or any other output I read,

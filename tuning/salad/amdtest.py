@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes. Manages only the groups amdtest-rdna3 and
-amdtest-rdna4, or those with -2 to -99 after them (it refuses any other name, so it can never touch the mining
-fleet's biz- groups). Each box runs
-amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait` read them back.
+"""Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
+classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx3060 to nvtest-rtx3090ti, or those
+with -2 to -99 after them (it refuses any other name, so it can never touch the mining fleet's biz- groups). An
+amdtest box runs amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; an nvtest box runs nvtest.sh
+(compilers.sh's builds and races on the card), which prints "[nvtest] HH:MM:SS ..." lines. `logs` and `wait`
+read them back.
 
   amdtest.py create NAME CLASS --sha SHA [--tasks LIST] [--env K=V ...] [--patch-from DIR] [--cpu 4 --mem 8192]
                                 [--retry SECS]
@@ -14,7 +16,8 @@ amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; `logs` and `wait`
   amdtest.py patch DIR [--sha SHA]     size of the patch --patch-from would send
   amdtest.py start|stop|realloc|delete NAME
 
-CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt.
+CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt, and
+for nvtest boxes 3090ti, 3090, 3080ti, 3080, 3070ti, 3070, 3060ti, 3060.
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
 how a new run starts. It updates the environment and then restarts the instance (--no-restart leaves that to
 Salad). See "AMD test boxes" in README.md for how long that took. --patch-from DIR sends DIR's uncommitted and
@@ -37,6 +40,13 @@ IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 CLASSES = {"7900xtx": "AMD RX 7900 XTX (24GB)", "7900xt": "AMD RX 7900 XT (20GB)", "7800xt": "AMD RX 7800 XT (16GB)",
            "9070xt": "AMD RX 9070 XT (16GB)", "9060xt": "AMD RX 9060 XT (16GB)"}
 TAG = "[amdtest]"
+# nvtest boxes: the fleet's image, which Salad has ready at once (the CUDA 12.8.1 one sat in "preparing" for 45+
+# minutes); nvtest.sh installs CUDA 12.8.1's compiler itself.
+NV_IMAGE = w.IMAGE
+NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080ti": "RTX 3080 Ti (12 GB)",
+              "3080": "RTX 3080 (10 GB)", "3070ti": "RTX 3070 Ti (8 GB)", "3070": "RTX 3070 (8 GB)",
+              "3060ti": "RTX 3060 Ti (8 GB)", "3060": "RTX 3060 (12 GB)"}
+NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
 BOOT = r"""say() { echo "[amdtest] $(date -u +%T) $*"; }
@@ -49,19 +59,34 @@ until curl -fsSL "$u" -o /root/amdtest.sh; do n=$((n+1)); if [ $n -ge 5 ]; then 
 bash /root/amdtest.sh 2>&1 | tee -a /root/amdtest.log
 say "boot amdtest.sh exited"
 exec sleep infinity"""
+# An nvtest box's: the same, for nvtest.sh and its tag.
+NV_BOOT = BOOT.replace("amdtest", "nvtest")
+
+
+def is_nv(name):
+    return name.startswith("nvtest-")
+
+
+def tag(name):
+    return NV_TAG if is_nv(name) else TAG
 
 
 def check_name(name):
-    """One of NAMES, or one with a number after it (amdtest-rdna4-2). Salad holds a deleted group's name for
-    hours, so a box deleted once can't be made again under the same name."""
-    if not re.fullmatch(r"amdtest-rdna[34](-[2-9]|-[1-9][0-9])?", name):
-        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} (or -2 to -99 after them), not {name!r}")
+    """One of NAMES or nvtest-rtx<card> (nvtest-rtx3090ti), or one with a number after it (amdtest-rdna4-2).
+    Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
+    name."""
+    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx30[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
+        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx3060 to nvtest-rtx3090ti (or -2 to -99 "
+                 f"after them), not {name!r}")
     return name
 
 
-def class_name(arg):
-    """A class name from Salad's name or a short one (7900xtx). Exact short names only, so 7900xt is never
-    read as 7900xtx."""
+def class_name(arg, nv=False):
+    """A class name from Salad's name or a short one (7900xtx, 3090ti). Exact short names only, so 7900xt is
+    never read as 7900xtx, nor 3090 as 3090ti."""
+    if nv:
+        key = re.sub(r"[^a-z0-9]", "", arg.lower().replace("nvidia", "").replace("geforce", "").replace("rtx", ""))
+        return NV_CLASSES.get(key, arg)
     key = re.sub(r"[^a-z0-9]", "", arg.lower().replace("amd", "").replace("rx", ""))
     return CLASSES.get(key, arg)
 
@@ -79,12 +104,14 @@ def parse_kv(items):
 
 
 def body(name, class_id, env, cpu=4, mem=8192, storage_gb=10, priority="high"):
-    """The create request: one replica, high priority, the ROCm image, BOOT as the command."""
+    """The create request: one replica, high priority, the ROCm image and BOOT as the command, or NV_IMAGE and
+    NV_BOOT for an nvtest box."""
+    nv = is_nv(name)
     return {"name": name, "display_name": name, "replicas": 1, "restart_policy": "never", "autostart_policy": True,
-            "container": {"image": IMAGE, "priority": priority,
+            "container": {"image": NV_IMAGE if nv else IMAGE, "priority": priority,
                           "resources": {"cpu": cpu, "memory": mem, "gpu_classes": [class_id],
                                         "storage_amount": storage_gb * 1024 ** 3},
-                          "command": ["/bin/sh", "-c", BOOT], "environment_variables": env}}
+                          "command": ["/bin/sh", "-c", NV_BOOT if nv else BOOT], "environment_variables": env}}
 
 
 def env_patch(current, sets, unsets):
@@ -110,16 +137,16 @@ def since_t(s, now):
     return w.parse_iso(s)
 
 
-def pick_lines(items, machine=None, grep=None):
-    """Salad log items into (time, machine, text) for amdtest lines, oldest first, without repeats. machine: only
-    that PC's lines (None: every PC)."""
+def pick_lines(items, machine=None, grep=None, tag=TAG):
+    """Salad log items into (time, machine, text) for amdtest lines (or the tag given), oldest first, without
+    repeats. machine: only that PC's lines (None: every PC)."""
     out, seen = [], set()
     for it in sorted(items, key=lambda it: it.get("time") or ""):
         text = (it.get("text_log") or "").strip()
         mach = ((it.get("resource") or {}).get("labels") or {}).get("machine_id") or ""
-        if TAG not in text or (machine and mach != machine):
+        if tag not in text or (machine and mach != machine):
             continue
-        text = text[text.index(TAG):]
+        text = text[text.index(tag):]
         if grep and not re.search(grep, text):
             continue
         key = (it.get("time"), mach, text)
@@ -212,7 +239,7 @@ def env_summary(env):
 
 def cmd_create(a):
     name = check_name(a.name)
-    cls = class_name(a.cls)
+    cls = class_name(a.cls, is_nv(name))
     env = parse_kv(a.env)
     env.setdefault("WORKER", name)
     if a.sha:
@@ -304,11 +331,11 @@ def cmd_logs(a):
     if not a.any_machine:
         inst = current(name)
         mach = inst.get("machine_id") if inst else None
-    lines = pick_lines(read_logs(name, since_t(a.since, t), t), mach, a.grep)
+    lines = pick_lines(read_logs(name, since_t(a.since, t), t), mach, a.grep, tag(name))
     for ln in lines:
         print(fmt_line(*ln))
     if not lines:
-        print(f"(no {TAG} lines since {a.since}" + (f" from machine {mach[:8]}" if mach else "") + ")")
+        print(f"(no {tag(name)} lines since {a.since}" + (f" from machine {mach[:8]}" if mach else "") + ")")
 
 
 def cmd_wait(a):
@@ -319,7 +346,7 @@ def cmd_wait(a):
     shown = set()
     while True:
         t = time.time()
-        for ln in pick_lines(read_logs(name, start, t)):
+        for ln in pick_lines(read_logs(name, start, t), tag=tag(name)):
             if ln in shown:
                 continue
             shown.add(ln)

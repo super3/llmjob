@@ -433,7 +433,7 @@ git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
 `amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, srb, duel, cpuchecks, run).
 `duel` is benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
-CLI) and SRBMiner 3.7.1 run 5 minutes each on HeroMiners; it ends with ours' mean after the first minute and
+CLI) and SRBMiner 3.8.2 run 5 minutes each on Kryptex; it ends with ours' mean after the first minute and
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
 can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
 
@@ -476,6 +476,29 @@ What it found on 22 October:
   delete, so the tool now also takes a numbered name (`amdtest-rdna4-2`). `delete` only when the box is done
   for good.
 
+## NVIDIA test boxes (nvtest)
+
+`amdtest.py` also runs `nvtest-rtx3060` to `nvtest-rtx3090ti` boxes (or `-2` to `-99` after them), to race our
+own builds of the NVIDIA core on Salad's RTX 30 PCs, where Vast isn't available. Each runs `nvtest.sh` on the
+fleet's image (`nvidia/cuda:12.2.2-base-ubuntu22.04`, high priority, 4 vCPU, 8 GB): it installs CUDA 12.8.1's
+compiler from NVIDIA's archives (nvcc V12.8.93, as CI builds with; the SHA-256s are pinned), fetches the repo at
+`BASE_SHA`, and runs `earn/native/probes/turing/compilers.sh` for the card's compute capability and the tall fold.
+The builds are `VARIANTS_SPEC` (`name|flags;...`, one named `base`), the stages `STAGES` (default setup, build,
+bench, hashrate, verify, complete), and every compilers.sh setting passes through. Each bench and hashrate round
+also reads the memory controller's use, the memory in use and the memory clock. Lines read `[nvtest] HH:MM:SS
+[compilers] ...`.
+
+```sh
+python3 tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \
+  --env "VARIANTS_SPEC=base|;ctr|-DPEARL_TALL_CTR=1" ROUNDS=4 BENCH_SECS=45 HR_BEST=ctr
+python3 tuning/salad/amdtest.py wait nvtest-rtx3090 --until 'all done|FAIL' --since 30m
+python3 tuning/salad/amdtest.py logs nvtest-rtx3090 --since 2h
+python3 tuning/salad/amdtest.py delete nvtest-rtx3090
+```
+
+A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
+quota.
+
 ## AMD benchmark (bench.py)
 
 `BENCH_SET=amd` fills benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
@@ -510,6 +533,24 @@ python3 tuning/salad/bench.py table      # every lane's rows, in benchmark.md's 
 
 Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a
 salt (hits / salts; the check's target makes 8).
+
+## RTX 20 and 30 rerun (bench.py)
+
+`BENCH_SET=rtx` reruns benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
+our release v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.0 (`bench.sh` pins all three, by commit). Lane `20` takes
+the 2080 Ti, 2080, 2070 and 2060 classes, lane `30` the eight RTX 30 classes from the 3090 Ti to the 3060 (12 GB),
+one Salad slot each. Two PCs per class, each in a group of its own (`bench-20-rtx2080ti-1`, ...), the first with
+ours first and the second with SRBMiner first, as "How a host is tested" alternates them; PeakMiner always runs
+second. A warm-up of the first miner, then each for 5 minutes. Salad has no 2060 Super or 2070 Super class, so
+those rows fill only if the 2060 or 2070 class hands one out. There's no hit check: the release's cores are run as
+users get them, and the pool's accepted and rejected shares are in each box's lines. A PC takes about 25 minutes.
+
+```sh
+export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=rtx BENCH_COMMIT=$(git rev-parse HEAD)
+BENCH_LANE=20 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-20.out 2>&1 &
+BENCH_LANE=30 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-30.out 2>&1 &
+python3 tuning/salad/bench.py table      # both lanes' rows
+```
 
 ## The container
 
