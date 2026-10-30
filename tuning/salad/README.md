@@ -136,7 +136,11 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    each read starts `log_overlap_min` (10) before the last one ended, and a line read twice counts once.
    Until 28 October that overlap was 2 min, and 5070-97's lines came 2.5 to 4 min late: the ledger had no
    reading of it for 30 min and the table showed it at 0 TH/s at a loss, while the log service had a line a
-   minute at 132 TH/s (only its pool shares kept it on its PC). When box.sh starts again on a PC the box mines on in this
+   minute at 132 TH/s (only its pool shares kept it on its PC). A PC that sends no log lines at all has no
+   reading for this rule while its shares keep it on the PC, so since 30 October such a Kryptex box is judged on
+   what Kryptex credited it over the last full hour (its chart's 10-minute buckets, the hour ending 25 min ago,
+   since the chart runs behind), against the same 10%. Before, nothing judged it: 5090-47 mined 4¾ h on such a
+   PC at about $0.28/hr against its $0.33/hr. When box.sh starts again on a PC the box mines on in this
    stint (Salad restarted it there), both clocks and the share clock start again from that line, as on a new
    PC, once a PC (a `RESTARTED` event), since 22 October. In 12 days of events, 4 of the 39 "no mining reading
    for 6 min" moves came just after such a line (one of them a box that couldn't mine); 4 more came after a
