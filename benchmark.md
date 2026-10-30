@@ -601,13 +601,15 @@ moved to new hosts.
   or power-capped near 2600 MHz. In this run it held 1995 MHz for all three
   miners.
 
-### On Salad, 29–30 October, against the newest miners
+### On Salad, 29–30 October, against PeakMiner 2.20.3 and SRBMiner 3.8.0
 
 Run from 22:45 UTC on 2026-10-29 to 03:30 UTC on the 30th, by the same method as the RTX 20- and 30-series' Salad
 runs: v0.6.9 against PeakMiner 2.20.3 and SRBMiner 3.8.0, on Salad PCs, 5 minutes each after a warm-up, a card's
 first PC with ours first and its second with SRBMiner first (`tuning/salad/bench.py` at `f60a455`). These are
 different PCs and leave the rows above alone. Salad's 4090 class can hand out a 4090D, its 4080 class a 4080
-Super and its 4070 class a 4070 Super, but none did.
+Super and its 4070 class a 4070 Super, but none did. SRBMiner 3.8.1 (28 October, 20:00 UTC) and 3.8.2
+(29 October, 13:48 UTC) were already out when this run started. Their notes list a minor pearlhash gain on RTX 20
+to 50, so SRBMiner's figures here and in the RTX 50 run may be a little below its newest.
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
 |---|---|---|---|---|---|---|
@@ -684,7 +686,7 @@ their own machine; five moved to new hosts.
   so all three miners ran at 86–98 W of 250 W. The comparison is fair, but
   the card runs far below a stock 5070 Ti.
 
-### On Salad, 29–30 October, against the newest miners
+### On Salad, 29–30 October, against PeakMiner 2.20.3 and SRBMiner 3.8.0
 
 Run from 03:30 to 07:29 UTC on 2026-10-30, by the same method as the RTX 40-series' Salad run above. Every PC had
 driver 591 or newer, so all ran the CUDA 13 core. These are different PCs and leave the rows above alone.
@@ -1008,7 +1010,7 @@ rows' own PC only once (RX 7900 XT `67c308d2`), so the other rows moved to new P
 in the notes. "% of best" is ours divided by SRBMiner's rate, since PeakMiner mines nothing on these cards.
 
 Every row was run again from 07:29 to 11:36 UTC on 30 October, with the v0.6.9 release's AMD core against SRBMiner
-3.8.0, the newest: the core built on each PC from the v0.6.9 commit (`d28faf2`) with ROCm 7.2 and run by the CLI
+3.8.0 (3.8.1 and 3.8.2 list no change for pearlhash on AMD): the core built on each PC from the v0.6.9 commit (`d28faf2`) with ROCm 7.2 and run by the CLI
 from source, after a 2-minute hit check, then both miners 5 minutes each after a 60-second warm-up, the order
 alternating between PCs (`tuning/salad/bench.py` and `bench.sh` at `f60a455`, the same image and pool). PeakMiner
 wasn't run; its 0 stands. Three rows are on the 23 October rows' own PCs (`67c308d2`, `cc2f03b6`, `d0dbba63`); the
