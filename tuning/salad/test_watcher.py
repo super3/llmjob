@@ -887,6 +887,15 @@ class TestRule5Profit(Base):
         self.assertAlmostEqual(self.x.margin("RTX 4080 (16 GB)", "medium", rate=175),
                                1 - 0.19 / (175 * USD_TH_HR + 0.005))
 
+    def test_a_box_on_a_pc_its_class_has_measured_counts_that_pc_s_monero(self):
+        # 31 October: the class median kept a new 3070 on a PC whose CPU made less, which the 10% rule then left.
+        self.monero(4.0, 4.0, 4.0)
+        t = self.clock[0]
+        self.x.st["xmr_rates"] = {"RTX 4080 (16 GB)": {"m1": [0.5, t], "m2": [1.0, t], "m3": [1.3, t]}}
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=t)               # no reads of its own yet; m1 made 0.5
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.5 * 0.005)
+
     def test_a_box_s_own_monero_is_stored_for_its_class_for_rate_days(self):
         self.monero()
         g = self.group(pri="medium")

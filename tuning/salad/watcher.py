@@ -550,6 +550,11 @@ class W:
             # box shows at the pools within 30 minutes (3060-75 that evening), so after 45 with none it counts 0.
             if t - since >= 45 * MIN and not any(seen >= since for seen, _ in g.get("xmr_own") or []):
                 return 0.0
+            # A PC this class has measured counts that PC's own figure, not the class median: on 31 October 3070-122
+            # kept 7255b917 on the median's $0.0038/hr, where 3070-119 had just left it at +9% on the PC's $0.0015.
+            pc = self.st.get("xmr_rates", {}).get(g["class"], {}).get(g.get("machine"))
+            if pc:
+                return pc[0] * xusd
         # By class: a PC's CPU goes with its owner's card. The fleet median, which the 3060s' 3–5 kH/s pulled up while
         # 4060s made 0.5–1.3, credited a new 4060 about $0.0038/hr against its $0.002, so on 23 October 4060-60 kept a
         # PC another 4060 had left at 58 TH/s and left it 8 minutes later at +9% (OPEN.md #65).
