@@ -2857,7 +2857,9 @@ class W:
         os.replace(REPORT + ".tmp", REPORT)
         if runway is not None:
             for o, h in runway:
-                if h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
+                # An org at $0 has run out, not run short: Salad stopped it and credits_out says so. Its 0 h left the
+                # $/hr below dividing by zero: on 30 October that ended a round once an hour after llmjob2 hit $0.
+                if 0 < h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
                     st["org_credit_alert"][o] = t
                     event(f"ALERT {o}'s credit ${sb['orgs'][o]:.2f} lasts about {h:.1f} h at "
                           f"${sb['orgs'][o] / h:.3f}/hr")

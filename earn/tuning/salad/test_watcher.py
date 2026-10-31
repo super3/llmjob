@@ -2618,6 +2618,12 @@ class TestSaladBalance(Base):
         self.head()
         self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
 
+    def test_an_org_at_no_credit_gets_no_runway_alert(self):
+        # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
+        self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
+        self.assertIn("(llmjob2 0 h)", self.head())
+        self.assertNotIn("ALERT llmjob2", self.events())
+
     def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
         # 28 October: llmjob2 got 2 of the slots (config org_slots); each org lasts at its own boxes' $/hr.
         self.x.cfg["org_slots"] = {"llmjob": 8, "llmjob2": 2}
