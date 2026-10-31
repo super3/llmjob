@@ -1879,6 +1879,19 @@ class W:
             event(f"CREATE FAILED {name}{where} ({cls}, {pri}): HTTP {s} {text[:200]}")
         return False
 
+    def restart_stopped(self, active, t):
+        """Start the groups Salad stopped for lack of credit, after a top-up. Their 20 minutes to find a PC (and 10
+        at a priority) start now: on 31 October 3060-122 was restarted at 9:34 am and deleted at 9:35 for having
+        had no PC in 20 minutes, counted from 10:39 pm, when it lost its PC and credit ran out."""
+        self.st["credits_out"] = []
+        for g in active:
+            if g["status"] == "stopped":
+                s, j = http("POST", gurl(g, "/start"))
+                g["pri_since"] = t
+                if g["had_pc"]:
+                    g["lost_since"] = t
+                event(f"RESTART {g['name']}: HTTP {s}")
+
     # ---------- the round ----------
     def round(self):
         st, t = self.st, now()
@@ -1900,11 +1913,7 @@ class W:
         # Restart groups that Salad stopped for lack of credit, once asked to.
         if self.cfg["restart_token"] != st["restart_token"]:
             st["restart_token"] = self.cfg["restart_token"]
-            st["credits_out"] = []
-            for g in active:
-                if g["status"] == "stopped":
-                    s, j = http("POST", gurl(g, "/start"))
-                    event(f"RESTART {g['name']}: HTTP {s}")
+            self.restart_stopped(active, t)
 
         # Group and instance state.
         for g in active:

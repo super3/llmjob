@@ -253,6 +253,25 @@ class TestRule2NoPc(Base):
         self.assertEqual(g["end_kind"], "released")
 
 
+class TestRestartAfterTopUp(Base):
+    def test_a_restarted_group_gets_20_fresh_minutes_to_find_a_pc(self):
+        g = self.group(pri="medium")  # high is +2% for a 4080: 20 minutes with no PC deletes it
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)          # lost its PC; credit runs out and Salad stops it
+        g["status"] = "stopped"
+        self.x.st["credits_out"].append(w.ORG)
+        self.step(g, 600, None)        # 10 hours stopped
+        self.assertIsNone(g["ended"])
+        self.x.restart_stopped([g], self.clock[0])
+        self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080/start"))
+        self.assertEqual(self.x.st["credits_out"], [])
+        g["status"] = "running"
+        self.step(g, 1, None)
+        self.assertIsNone(g["ended"])  # until 31 October this deleted it at once
+        self.step(g, 20, None)
+        self.assertEqual(g["end_kind"], "released")
+
+
 class TestRule3LostPc(Base):
     def test_moves_up_20_min_after_losing_its_pc_then_deletes_when_nothing_higher_clears(self):
         g = self.group()  # batch; low clears 10% for a 4080, medium too, high doesn't
