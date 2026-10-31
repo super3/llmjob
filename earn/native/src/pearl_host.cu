@@ -291,9 +291,15 @@ struct Ctx {
   // picked.
   bool foldAmpere = false;
   // Whether that build's A copies carry the evict_last hint the persisting slice is for
-  // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
+  // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's), or its B copies with
+  // PEARL_AMPERE_PERSIST_B.
   bool foldPersistA = false;
   uint32_t tallBand = 0;
+  // The card's L2 and largest persisting slice, the slice this context asked for (0 for
+  // none) and the limit the driver then reported: pearl_host_l2_audit prints them, and
+  // pearl_host_race_enter sets the slice again.
+  int l2Bytes = 0, l2MaxSlice = 0;
+  size_t l2Slice = 0, l2Granted = 0;
   // Whether it is Ada's cp.async build (binaryVersion 89), whose batch width the host
   // picks from the L2 (pearl_ada_col_batch).
   bool foldAda = false;
@@ -1901,22 +1907,35 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
                        cudaMemcpyHostToDevice),
             "setting the tall fold's band depth");
-#if PEARL_AMPERE_PERSIST_A
-    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A). Without one the
-    // fold still runs, only slower, so a refusal is dropped.
+    ctx->l2Bytes = l2;
     int maxp = 0;
-    if (!ctx->foldPersistA) {
-      // Hopper: its A copies carry no hint, so a slice would only take L2 from the rest.
-    } else if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
-                   == cudaSuccess && maxp > 0) {
-      size_t slice = (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
+    if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
+        != cudaSuccess) {
+      (void)cudaGetLastError();
+      maxp = 0;
+    }
+    ctx->l2MaxSlice = maxp;
+#if PEARL_AMPERE_PERSIST_A || PEARL_AMPERE_PERSIST_B
+    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A), or for the batch's
+    // B' (PEARL_AMPERE_PERSIST_B). Without one the fold still runs, only slower, so a
+    // refusal is dropped. Hopper's copies carry no hint, so a slice would only take L2
+    // from the rest.
+    if (ctx->foldPersistA && maxp > 0) {
+      size_t slice = PEARL_AMPERE_PERSIST_B
+                         ? (size_t)ctx->colBatch * PEARL_COLS_COUNT * profile->k
+                         : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
       if (slice > (size_t)maxp) slice = (size_t)maxp;
+      ctx->l2Slice = slice;
       if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)
         (void)cudaGetLastError();
-    } else {
-      (void)cudaGetLastError();
     }
 #endif
+    size_t granted = 0;
+    if (maxp > 0 && cudaDeviceGetLimit(&granted, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
+      (void)cudaGetLastError();
+      granted = 0;
+    }
+    ctx->l2Granted = granted;
   }
   // GA100's unfused fold (PEARL_TALL_UNFUSED) and Hopper's wgmma fold (PEARL_HOPPER_WGMMA):
   // a transcript buffer a slot, 64 bytes a region of the batch. The batch width is final
@@ -2010,6 +2029,37 @@ extern "C" void pearl_host_bind_thread(void *handle) {
   Ctx *ctx = (Ctx *)handle;
   if (!ctx) return;
   cudaSetDevice(ctx->device);
+}
+
+// For probes/race.cu, which runs two or more builds in one process, on one card, taking
+// turns; nothing in the app calls these.
+//
+// The L2 audit: the fold, the batch width and band, the card's L2 and largest persisting
+// slice, the slice this context asked for and the limit the driver reported after.
+// A refused limit used to be dropped without a word (research round 3, item 2).
+extern "C" void pearl_host_l2_audit(void *handle, char *buf, size_t len) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!buf || !len) return;
+  if (!ctx) {
+    snprintf(buf, len, "no context");
+    return;
+  }
+  snprintf(buf, len, "col_batch=%u band=%u l2=%d max_slice=%d slice=%zu granted=%zu", ctx->colBatch,
+           ctx->tallBand, ctx->l2Bytes, ctx->l2MaxSlice, ctx->l2Slice, ctx->l2Granted);
+}
+
+// Called by the race before a build's turn, with the card idle. The persisting slice is
+// the CUDA context's, and every build in the process shares that context, so the slice
+// the last build set would hold for all of them: set this one's again (0 if it takes
+// none), and send the lines the previous build pinned back to normal.
+extern "C" void pearl_host_race_enter(void *handle) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx) return;
+  cudaSetDevice(ctx->device);
+  if (ctx->l2MaxSlice <= 0) return;
+  if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, ctx->l2Slice) != cudaSuccess)
+    (void)cudaGetLastError();
+  if (cudaCtxResetPersistingL2Cache() != cudaSuccess) (void)cudaGetLastError();
 }
 
 extern "C" void pearl_host_destroy(void *handle) {

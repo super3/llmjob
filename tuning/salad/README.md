@@ -488,6 +488,11 @@ bench, hashrate, verify, complete), and every compilers.sh setting passes throug
 also reads the memory controller's use, the memory in use and the memory clock. Lines read `[nvtest] HH:MM:SS
 [compilers] ...`.
 
+`STAGES="setup build race verify complete"` races the builds in one process instead of separate rounds
+(`probes/race.cu`): turns of `RACE_LEG` seconds (4) for `RACE_SECS` (600), with a copy of base (`aa`) whose figure
+is the race's own noise. Its `RACE` lines give each build's change against base, a 95% interval, and how many
+rounds it led.
+
 ```sh
 python3 tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \
   --env "VARIANTS_SPEC=base|;ctr|-DPEARL_TALL_CTR=1" ROUNDS=4 BENCH_SECS=45 HR_BEST=ctr

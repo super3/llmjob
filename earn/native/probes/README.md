@@ -963,6 +963,14 @@ out of the fold.
   Built on Windows: `nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 -I ../src
   -DPEARL_TALL_CYC bench.cu ../src/pearl_kernel.cu ../src/pearl_host.cu -o bench.exe`
   from an MSVC (vcvars64) shell.
+- `race <secs> <leg secs> <warm secs> base=libA.so name=libB.so ...` (built from
+  `race.cu`, Linux only) -- two or more builds in one process, on one card, taking turns
+  of a few seconds, each scored against base's turn in the same round. Separate runs
+  wander 1.5-2.4% between rounds; here the builds share the clock, heat and power, so a
+  0.3-1% change can be told from noise. Each library is a build's `pearl_kernel.o` and
+  `pearl_host.o` linked `-shared -cudart static -Xlinker -Bsymbolic`;
+  `turing/compilers.sh` makes them and runs it (stage `race`), with a copy of base as an
+  A/A control.
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no

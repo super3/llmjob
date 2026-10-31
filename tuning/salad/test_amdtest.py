@@ -351,5 +351,60 @@ class TestCompilersMemoryReadings(unittest.TestCase):
         self.assertEqual(r.stdout.strip(), "86")
 
 
+class TestCompilersRace(unittest.TestCase):
+    """compilers.sh's race stage: every build as a library, raced in one process by probes/race.cu."""
+    SRC = RACE = None
+
+    @classmethod
+    def setUpClass(cls):
+        native = os.path.join(HERE, "..", "..", "earn", "native")
+        cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
+        cls.RACE = read(os.path.join(native, "probes", "race.cu"))
+
+    def test_race_is_not_a_default_stage(self):
+        self.assertIn('STAGES=" ${STAGES:-setup build bench hashrate verify complete probe} "', self.SRC)
+        self.assertIn("RACE_SECS=${RACE_SECS:-600}; RACE_LEG=${RACE_LEG:-4}; RACE_WARM=${RACE_WARM:-1}; RACE_AA=${RACE_AA:-1}",
+                      self.SRC)
+
+    def test_every_build_is_also_a_library_that_keeps_its_own_symbols(self):
+        self.assertIn('nvcc -shared -cudart static -Xlinker -Bsymbolic -o "$K/libpearl.so" "$K/cuda-build/pearl_kernel.o"',
+                      self.SRC)
+        # A build without one still races in the other stages: a warning, not a failure.
+        self.assertIn('say "build $name WARN: libpearl.so:', self.SRC)
+
+    def test_the_race_takes_base_then_its_copy_then_the_rest(self):
+        start = self.SRC.index("if has race && ")
+        block = self.SRC[start:self.SRC.index("\nfi\n", start) + 4]
+        out = tempfile.mkdtemp()
+        for name in ("base", "flip", "noso"):
+            os.makedirs(os.path.join(out, "v", name))
+        for name in ("base", "flip"):
+            open(os.path.join(out, "v", name, "libpearl.so"), "w").close()
+        # Stubs: nvcc writes a race that prints its arguments, and timeout runs what it is given.
+        stubs = ('say() { echo "$*"; }; has() { [ "$1" = race ]; }; '
+                 'nvcc() { printf "#!/bin/sh\\necho \\"ARGS \\$*\\"\\n" > "$OUT/race"; chmod +x "$OUT/race"; }; '
+                 'timeout() { shift 3; "$@"; }; ')
+        # BUILT is the list of builds that built, as the script sets it before this stage.
+        r = subprocess.run(["bash", "-c", stubs + "BUILT=(base flip noso); " + block],
+                           env={**os.environ, "OUT": out.replace("\\", "/"), "NATIVE": "/n", "RACE_SECS": "120",
+                                "RACE_LEG": "4", "RACE_WARM": "1", "RACE_AA": "1"},
+                           capture_output=True, text=True)
+        lines = r.stdout.splitlines()
+        self.assertIn("race: noso has no libpearl.so, left out", lines)
+        o = out.replace("\\", "/")
+        self.assertIn(f"race ARGS 120 4 1 base={o}/v/base/libpearl.so aa={o}/v/base/libpearl-aa.so "
+                      f"flip={o}/v/flip/libpearl.so", lines)
+        self.assertTrue(os.path.exists(os.path.join(out, "v", "base", "libpearl-aa.so")))
+        with open(os.path.join(out, "race.log")) as f:
+            self.assertIn("ARGS 120 4 1 base=", f.read())
+
+    def test_race_cu_prints_the_lines_it_documents(self):
+        for line in ("START builds=", "AUDIT %s fold=[%s]", "LEG round=%d %s th=%.3f", "RACE %s vs %s rounds=%zu d=%+.3f%%",
+                     "RACE %s reference rounds=", "FAIL %s"):
+            self.assertIn(line, self.RACE)
+        # The same path twice would load once, and race the build against itself unseen.
+        self.assertIn("the same library as", self.RACE)
+
+
 if __name__ == "__main__":
     unittest.main()

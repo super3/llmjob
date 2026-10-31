@@ -1690,6 +1690,24 @@ typedef struct {
 // compute-sanitizer put it on the A copy), and ptxas 12.6 to 13.3 all build it the same
 // way. So Hopper copies A without the hint, and the host sets no slice for it.
 #define PEARL_AMPERE_PERSIST_ARCH(a) (PEARL_AMPERE_ARCH(a) && !PEARL_HOPPER_ARCH(a))
+// Ampere, the other way round (off by default; research round 3, item 2): keep the batch's
+// B' in the persisting slice and stream A' through the rest of the L2. With a band of one
+// row group and a batch narrow enough that its B' fits the slice (-DPEARL_AMPERE_BAND=1
+// -DPEARL_AMPERE_COL_BATCH=128 on a 6 MB card: 128 x 16 columns x k = 4 MiB), each byte of
+// A' comes from DRAM once a batch and B' about never. The model says 31-36% fewer DRAM
+// bytes than band 8 with A' held. The B copies take an evict_last policy over this fraction
+// of their lines (PEARL_AMPERE_PERSIST_B_FRAC: below 1.0 where B' is larger than the slice,
+// as on a 3080 10 GB); the host sets the slice to the batch's B' (at most the card's
+// maximum). Takes PEARL_AMPERE_PERSIST_A=0: one slice holds one operand. Not measured yet.
+#ifndef PEARL_AMPERE_PERSIST_B
+#define PEARL_AMPERE_PERSIST_B 0
+#endif
+#ifndef PEARL_AMPERE_PERSIST_B_FRAC
+#define PEARL_AMPERE_PERSIST_B_FRAC 1.0
+#endif
+#if PEARL_AMPERE_PERSIST_A && PEARL_AMPERE_PERSIST_B
+#error "PEARL_AMPERE_PERSIST_B takes PEARL_AMPERE_PERSIST_A=0: the slice holds one operand"
+#endif
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
 #if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND_RT 1

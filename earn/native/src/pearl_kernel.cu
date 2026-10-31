@@ -3325,9 +3325,23 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
 #define PEARL_TALL_ISSUE_A(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + adst0 + (p) * aStep * SK, aP + (sg) * aKB + (p) * aStep * SK);
 #endif
+#if PEARL_AMPERE_PERSIST_B && defined(__CUDA_ARCH__) && PEARL_AMPERE_PERSIST_ARCH(__CUDA_ARCH__)
+  // B's copies evict_last instead, over PEARL_AMPERE_PERSIST_B_FRAC of their lines, for
+  // the slice the host set aside for the batch's B' (PEARL_AMPERE_PERSIST_B).
+#define PEARL_TALL_STR2(x) #x
+#define PEARL_TALL_STR(x) PEARL_TALL_STR2(x)
+  uint64_t polB;
+  asm volatile("createpolicy.fractional.L2::evict_last.b64 %0, "
+               PEARL_TALL_STR(PEARL_AMPERE_PERSIST_B_FRAC) ";" : "=l"(polB));
+#define PEARL_TALL_ISSUE_B(ib, sg, p)                                                  \
+  asm volatile("cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"          \
+               ::"r"((ib) + bdst0 + (p) * bStep * SK),                                  \
+               "l"(bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID), "l"(polB));
+#else
 #define PEARL_TALL_ISSUE_B(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + bdst0 + (p) * bStep * SK,                                    \
                    bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID);
+#endif
 #else
   // TMA staging (PEARL_TALL_TMA). The producer is lane 0 of warp 4: row slot 1, so it
   // never hashes, and the next tile's third stage does not wait for a hash.

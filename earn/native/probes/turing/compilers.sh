@@ -45,11 +45,18 @@
 # Every bench and hashrate round also reads the memory controller's use, the memory in
 # use and the memory clock (nvidia-smi's utilization.memory, memory.used, clocks.mem):
 # on Ampere the fold's DRAM traffic costs SM clock at the power limit.
+#
+# Race (stage "race", not in the default list): every build in one process, on this
+# card, taking turns of RACE_LEG seconds for RACE_SECS, with base as the reference
+# (probes/race.cu). Separate rounds wander 1.5-2.4% between runs; a race compares builds
+# seconds apart on the same clock, heat and power. RACE_AA=1 (the default) adds "aa", a
+# copy of base, whose figure is the race's own noise. Each build takes about 1.4 GB.
 set -u
 : "${SRC:?set SRC to the repo checkout}" "${OUT:?set OUT to a scratch directory}"
 STAGES=" ${STAGES:-setup build bench hashrate verify complete probe} "
 ROUNDS=${ROUNDS:-5}; BENCH_SECS=${BENCH_SECS:-20}
 HR_ROUNDS=${HR_ROUNDS:-3}; HR_SECS=${HR_SECS:-60}; VERIFY_SECS=${VERIFY_SECS:-90}
+RACE_SECS=${RACE_SECS:-600}; RACE_LEG=${RACE_LEG:-4}; RACE_WARM=${RACE_WARM:-1}; RACE_AA=${RACE_AA:-1}
 COMPLETE_SHAPES=${COMPLETE_SHAPES:-131072 2048 40;8192 32 300;8192 16 300;4096 16 300}
 COMPLETE_SECS=${COMPLETE_SECS:-600}
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
@@ -233,6 +240,11 @@ build_variant() {   # name flags expect [patch list]
   nvcc -O3 -std=c++17 -cudart static $GC $flags -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
+  # The same two objects as a library for the race stage. -Bsymbolic: its calls stay
+  # inside it when other builds with the same symbols are loaded beside it.
+  nvcc -shared -cudart static -Xlinker -Bsymbolic -o "$K/libpearl.so" "$K/cuda-build/pearl_kernel.o" \
+    "$K/cuda-build/pearl_host.o" > "$K/so-build.txt" 2>&1 ||
+    { rm -f "$K/libpearl.so"; say "build $name WARN: libpearl.so: $(grep -m1 -i error "$K/so-build.txt")"; }
   local st h rst rg="" runs
   st=$(awk "/Compiling entry function .$FOLD. for .sm_$SM./{f=1;next} f&&/Compiling entry/{f=0} f" "$K/ptxas.txt" | tr '\n' ' ')
   # The second sm_75 kernel, which the host runs on cards with 4 MB of L2 or more
@@ -277,6 +289,27 @@ for v in "${VARIANTS[@]}"; do
   IFS='|' read -r name _ _ <<< "$v"
   [ -f "$OUT/v/$name/ok" ] && BUILT+=("$name")
 done
+
+# The race (see "Race" at the top): base first, then aa (a copy of base's library under
+# another path, which dlopen loads again), then the other builds.
+if has race && [ -f "$OUT/v/base/libpearl.so" ]; then
+  if ! nvcc -O2 -std=c++17 -I"$NATIVE/src" "$NATIVE/probes/race.cu" -o "$OUT/race" -ldl -lpthread > "$OUT/race-build.txt" 2>&1; then
+    say "race FAIL: build: $(grep -m1 -i error "$OUT/race-build.txt")"
+  else
+    arms=("base=$OUT/v/base/libpearl.so")
+    if [ "$RACE_AA" = 1 ]; then
+      cp "$OUT/v/base/libpearl.so" "$OUT/v/base/libpearl-aa.so" && arms+=("aa=$OUT/v/base/libpearl-aa.so")
+    fi
+    for name in "${BUILT[@]}"; do
+      [ "$name" = base ] && continue
+      if [ -f "$OUT/v/$name/libpearl.so" ]; then arms+=("$name=$OUT/v/$name/libpearl.so")
+      else say "race: $name has no libpearl.so, left out"; fi
+    done
+    say "race: ${#arms[@]} builds, ${RACE_SECS} s, turns of ${RACE_LEG} s after ${RACE_WARM} s warm"
+    timeout -k 10 $((RACE_SECS + 600)) "$OUT/race" "$RACE_SECS" "$RACE_LEG" "$RACE_WARM" "${arms[@]}" 2>&1 |
+      tee "$OUT/race.log" | while IFS= read -r l; do say "race $l"; done
+  fi
+fi
 
 # Median SM clock, power and temperature of the samples taken while the timed part ran,
 # and the mean SM clock: these cards clock in 15 MHz steps, so the median of a round's
