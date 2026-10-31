@@ -3181,6 +3181,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void pearl_tile_fold
   constexpr uint32_t band_depth = PEARL_TALL_BAND;
 #endif
   auto tile_coords = [&](uint32_t v, uint32_t &rbg_, uint32_t &cbg_) {
+#if PEARL_AMPERE_COL_BAND && !PEARL_TALL_CLUSTER_BODY
+    // The strip walk (PEARL_AMPERE_COL_BAND): the batch's column groups in strips of
+    // PEARL_AMPERE_COL_BAND, each strip down every row group with the strip's column
+    // groups fastest, and odd strips back up, so the A' rows one strip ends on start the
+    // next. A strip's B' is what the slice holds (PEARL_AMPERE_PERSIST_B). A batch the
+    // strip does not divide takes the band walk below.
+    constexpr uint32_t DC = PEARL_AMPERE_COL_BAND;
+    static_assert((DC & (DC - 1u)) == 0u, "PEARL_AMPERE_COL_BAND: a power of two");
+    if (col_block_groups % DC == 0u) {
+      const uint32_t strip_tiles = walk_rows * DC;
+      const uint32_t strip = v / strip_tiles;
+      const uint32_t in_strip = v - strip * strip_tiles;
+      rbg_ = in_strip / DC;
+      cbg_ = strip * DC + in_strip % DC;
+      if (strip & 1u) rbg_ = walk_rows - 1u - rbg_;
+      return;
+    }
+#endif
     const uint32_t band_blocks = band_depth * col_block_groups;
     uint32_t band, in_band;
     if ((col_block_groups & (col_block_groups - 1u)) == 0u) {

@@ -1921,8 +1921,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     // refusal is dropped. Hopper's copies carry no hint, so a slice would only take L2
     // from the rest.
     if (ctx->foldPersistA && maxp > 0) {
+      // B' of a strip (PEARL_AMPERE_COL_BAND) when the batch walks in strips, else of the
+      // batch.
+      const uint32_t cols = PEARL_AMPERE_COL_BAND != 0u
+                                    && (ctx->colBatch / PEARL_TALL_COL_OFFSETS) % PEARL_AMPERE_COL_BAND == 0u
+                                ? (uint32_t)PEARL_AMPERE_COL_BAND * PEARL_TALL_COL_OFFSETS
+                                : ctx->colBatch;
       size_t slice = PEARL_AMPERE_PERSIST_B
-                         ? (size_t)ctx->colBatch * PEARL_COLS_COUNT * profile->k
+                         ? (size_t)cols * PEARL_COLS_COUNT * profile->k
                          : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
       if (slice > (size_t)maxp) slice = (size_t)maxp;
       ctx->l2Slice = slice;

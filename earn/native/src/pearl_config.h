@@ -1698,7 +1698,7 @@ typedef struct {
 // bytes than band 8 with A' held. The B copies take an evict_last policy over this fraction
 // of their lines (PEARL_AMPERE_PERSIST_B_FRAC: below 1.0 where B' is larger than the slice,
 // as on a 3080 10 GB); the host sets the slice to the batch's B' (at most the card's
-// maximum). Takes PEARL_AMPERE_PERSIST_A=0: one slice holds one operand. Not measured yet.
+// maximum). Takes PEARL_AMPERE_PERSIST_A=0: one slice holds one operand. Measured below.
 #ifndef PEARL_AMPERE_PERSIST_B
 #define PEARL_AMPERE_PERSIST_B 0
 #endif
@@ -1707,6 +1707,18 @@ typedef struct {
 #endif
 #if PEARL_AMPERE_PERSIST_A && PEARL_AMPERE_PERSIST_B
 #error "PEARL_AMPERE_PERSIST_B takes PEARL_AMPERE_PERSIST_A=0: the slice holds one operand"
+#endif
+// The flip at a full batch width (off by default). Measured on Salad on 31 October in race
+// mode (probes/race.cu), the flip above at 128 and 64 offsets cut memory use by a third
+// (RTX 3090 15% -> 10%, 3060 Ti 34% -> 19.5%) and raised the clock 13-20 MHz, but did
+// 0.7-1.2% less work a clock, and came out level (+0.11% and -0.05%). The narrow batch is
+// the suspect: 4 to 8 times the launches. This keeps the batch at its width and walks it
+// in strips of PEARL_AMPERE_COL_BAND column groups (16 offsets each), a strip at a time
+// down the row groups, so a strip's B' (PEARL_AMPERE_COL_BAND x 256 columns x k: 4 MiB at
+// 8) is what the slice holds and A' streams once a strip. The host sizes the slice to the
+// strip. A power of two; 0 keeps the band walk.
+#ifndef PEARL_AMPERE_COL_BAND
+#define PEARL_AMPERE_COL_BAND 0
 #endif
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
 #if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)

@@ -482,6 +482,10 @@ fi
 # block has one, two or a few on any RTX 20 card (30 to 72 blocks): a persistent
 # block's first and last hand-offs. Each build's lines must match base's, batch for
 # batch; an ablation build (output meaningless) fails. A run stops after COMPLETE_SECS.
+# The lines only line up between builds that search the same batch width: on RTX 30 a
+# shape's col_batch at or below every build's PEARL_AMPERE_COL_BATCH (the narrower
+# wins), such as "131072 128 160" for builds at 128 and 512. A wider shape fails a
+# narrower build that finds the same hits (31 October, RTX 3090).
 if has complete && [ -f "$OUT/v/base/ok" ]; then
   IFS=';' read -r -a shapes <<< "$COMPLETE_SHAPES"
   order=(base)
