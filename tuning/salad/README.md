@@ -18,12 +18,17 @@ directory:
 export PRL_WALLET=prl1...            # payout address
 export SALAD_API_KEY=...             # not needed in a Claude cloud session: its proxy adds the key
 export SALAD_MINE_DIR=/some/dir      # default: tuning/salad/run/ (gitignored)
+export SAFETRADE_API_KEY=... SAFETRADE_API_SECRET=...   # optional: the report's SafeTrade rows
+export SALAD_USER=... SALAD_PASS=...   # optional: the portal login, for Salad's own credit balance
 cp tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
 setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
 ```
 
-`SALAD_ORG` and `SALAD_PROJECT` default to `llmjob` and `default`.
+`SALAD_ORG` and `SALAD_PROJECT` default to `llmjob` and `default`. `PRL_WALLET` is only a default: `wallet` in
+`config.json` wins. Python 3.9 or later, with the `cryptography` package for the boxes' node identities (without
+it each PC is a new node again). On Windows also `tzdata` (Python there has no time zone data), `python` in
+place of `python3`, and a keeper of its own if there's no bash; the files are UTF-8 whatever the code page.
 
 Config keys:
 
@@ -51,10 +56,13 @@ Config keys:
 | `yield_min_blocks`, `yield_floor` | The credit ratio is used once the pool has credited us in 10 blocks, and never below 0.5. |
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
+| `search_pct` | The search and a waiting group's priority moves need a class to clear 10% at the rate this share of its PCs are slower than (0.35), not its median. |
 | `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
-| `trader` | Railway ids of the SafeTrade autoseller: `{"project", "service", "environment"}`. Unset: no SafeTrade line. |
-| `safetrade` | SafeTrade sales entered by hand (`sold`, `received`, `fees`, `usdt`, `prl`), used until the trader's logs can be read. |
+| `sell` | The PRL seller (see [SafeTrade](#safetrade-row)): `{"live": true, "minute": 5}` sells once an hour from minute 5; without `"live": true` it only says what it would do; unset, it's off. Also `max_slippage` (0.03), `min_price` (0), `min_volume` (0.5). |
+| `salad_orgs` | Salad orgs whose credit the heading adds up, each with its own runway (`["llmjob", "llmjob2"]` on rig01); unset, just the org the boxes run in. |
+| `org_slots` | The Salad orgs groups run in and how many each may run, filled in that order (`{"llmjob": 8, "llmjob2": 2}` on rig01 since 28 October, with `max_active` 10); unset, just `$SALAD_ORG`, up to `max_active`. See [Two orgs](#two-orgs). |
+| `salad_wallet` | The Solana wallet that tops up Salad's credit; SafeTrade withdrawals to it show as **USDT to Salad**, not bank. |
 | `xmr_wallet`, `xmr_groups` | Monero on the box's CPU (see [Monero](#monero-on-the-cpu)): the address, and the groups that mine it (`["*"]` for every group). Unset: no Monero, and the table is as before. |
 | `xmr_ver`, `xmr_cpu`, `xmr_memory`, `xmr_threads` | A Monero box runs release `v0.6.0` or later on 8 vCPUs and 8192 MB. `xmr_threads` 0 lets the CLI choose (it keeps one CPU free for Pearl). |
 | `kryptex_xmr_pay` | What Kryptex credits for Monero work, as a share of the network's pay for it (0.94, measured 21 October). The report's XMR column values each box's Kryptex work at it (see [Monero](#monero-on-the-cpu)). |
@@ -74,7 +82,10 @@ each PC on its own readings.
 
 **A class's rate** is the median TH/s of the PCs it has mined on here in the last `rate_days`, each PC
 at the median of its last 3 readings after warm-up, capped and slow PCs included. Before a class has mined, it's the
-benchmark in `KNOWN`. The search, priority moves and swaps all use it. On 12 October the 3070 measured
+benchmark in `KNOWN`. Swaps use it. The search and a waiting group's priority moves (rules 1–3) need a class
+to clear 10% at a slower PC since 24 October: the rate `search_pct` (35%) of its PCs are slower than. At the
+median about a third of the PCs Salad handed out failed: 4060s at medium (median 59.7 TH/s, +12–13%; 57 or less
+fails) used 7 counted moves on 23–24 October and one was deleted. On 12 October the 3070 measured
 77 TH/s against a 59 benchmark. With `yield` 0.9 the benchmark cleared 10% only at batch, so a second
 3070 was released for want of a batch PC although 3070s clear low easily; the 2080 measured 64 against 72.
 
@@ -105,10 +116,12 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    PRL fell), while 13 were free at medium (+18%). Besides the classes
    measured on Salad, the search knows benchmark rates for cards not tried there yet (see `KNOWN`);
    rule 5 judges each of their PCs on its own readings.
-2. **No PC at a priority within 10 min:** move to the next priority that still clears 10%. If none is
+2. **No PC at a priority within 10 min:** move to the next priority that still clears 10% (at the slower rate
+   above). If none is
    left, delete the group. The 10 minutes start once the image is ready: while the group is `pending`
    it isn't looking for a PC, and Salad refuses a priority change (`pending_update_in_progress`).
-3. **Had a PC, lost it, no other within 20 min:** delete.
+3. **Had a PC, lost it, no other within 20 min:** move up a priority as in rule 2, with 20 more minutes there;
+   delete when no higher priority clears 10% (since 23 October; before, it was deleted at once).
 4. **No share for max(10 min, 8 expected share gaps) after 20 min on a PC:** leave the PC.
 5. **Only PCs that clear 10%.** Skip the miner's first 2 minutes (warm-up). From then on, every round,
    the median of the last 3 readings (one a minute) must clear the margin at the PC's price. The first
@@ -119,11 +132,26 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
-   min of failed reads there's one `WARN` event. When box.sh starts again on a PC the box mines on in this
+   min of failed reads there's one `WARN` event. A PC's lines can also reach the log service minutes late, so
+   each read starts `log_overlap_min` (10) before the last one ended, and a line read twice counts once.
+   Until 28 October that overlap was 2 min, and 5070-97's lines came 2.5 to 4 min late: the ledger had no
+   reading of it for 30 min and the table showed it at 0 TH/s at a loss, while the log service had a line a
+   minute at 132 TH/s (only its pool shares kept it on its PC). A PC that sends no log lines at all has no
+   reading for this rule while its shares keep it on the PC, so since 30 October such a Kryptex box is judged on
+   what Kryptex credited it over the last full hour (its chart's 10-minute buckets, the hour ending 25 min ago,
+   since the chart runs behind), against the same 10%. Before, nothing judged it: 5090-47 mined 4¾ h on such a
+   PC at about $0.28/hr against its $0.33/hr. When box.sh starts again on a PC the box mines on in this
    stint (Salad restarted it there), both clocks and the share clock start again from that line, as on a new
    PC, once a PC (a `RESTARTED` event), since 22 October. In 12 days of events, 4 of the 39 "no mining reading
    for 6 min" moves came just after such a line (one of them a box that couldn't mine); 4 more came after a
    restart on the same PC with no line before the rule fired, and the other 31 had no restart (OPEN.md #55).
+   Since 28 October these clocks start when Salad runs the container on the PC, not when it hands the PC
+   over: before that it downloads the image there, unbilled. The AMD image is 1.16 GB against 31 MB for
+   the NVIDIA one, and rx9060xt was deleted as failed 10 minutes after getting a PC it never started on.
+   A PC that hasn't started the container 30 min after we got it is left and bad-listed, without using one
+   of the group's 3 moves. One whose container ran and then stops running counts its 30 min from the last
+   round it ran: on 29 October one round read 2070-88 not running after 1 h 53 m mining, and the PC was
+   left and bad-listed as if its image had never loaded.
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
    boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
@@ -169,17 +197,55 @@ clears the margin over 10 readings with shares at the pool. Reallocations are ca
 by rules 4 and 5; the next one deletes it, as released: running out of moves means bad PCs, not a bad
 class, so the class isn't barred from new groups. A move off a PC that blocks the pool port (rule 6) is the
 PC's fault and doesn't count, up to 6 a group, since 22 October (4060-54 was deleted on its fourth PC for one).
+A group 2 h on one PC (rule 5 clears it there every round) starts its count again, with a `MOVES` event, since
+24 October: before, 3060-72 mined at +17–20% for hours and was deleted on its first slow PC, its 3 moves used on
+earlier days.
 The search also sizes its room by Salad's own count of replicas in use, and stops at the first create Salad
-refuses for its quota.
+refuses for its quota. Since 28 October it keeps that count under the quota less one: Salad counts the whole
+account (another session's groups too) and stopped groups, and won't start a group once the count is at the quota
+(`replicas_quota_exceeded`), so at most 9 of 10 can run. A group whose start is refused that way is deleted
+(released) rather than tried every 5 minutes, since even stopped it holds one of the 10.
+A create that gets no clear answer (a 504 from Salad's gateway, or no answer at all) asks Salad whether the group
+is there and keeps it if it is, and the search stops for that round. On 29 October Salad's gateway timed out on
+creates it had carried out: 4 of 6 such groups sat outside the ledger until the sweep deleted them, and one search
+sent 10 creates and waited 30 s on each.
 A deleted group counts as **released** when it never got going (no PC, or lost it) and **failed** when
 it mined badly on its first PC before the class had paid (no shares, under cost, never mined); a blocked
 port never fails a group. Its deletion event carries the box's last log
 lines, so it says why.
 
-**Spend** counts the group's price for every minute it has a PC (instance downloading, creating or
-running). A group waiting for a PC isn't billed. The first account counted only `running` minutes.
-Neither way has been checked against the portal. **PRL mined** adds each `[mining g0]` reading (one a
+**Spend** counts the group's price for every minute its instance is `running`, which is all Salad
+bills. A group waiting for a PC, or one whose instance is still downloading or starting, isn't billed.
+Until 24 October it also counted downloading and creating: against Salad's own running time (its
+system logs, 91 groups on 23 October) that read 2.4% high, about 29 s a PC. Not yet checked against
+the portal's balance. **PRL mined** adds each `[mining g0]` reading (one a
 minute) as TH/s × 1 min × PRL per TH-hr at that moment.
+
+## Two orgs
+
+The quota is an org's, so a second org has 10 replicas of its own. Since 28 October the watcher can run groups in
+more than one (config `org_slots`): on rig01 8 in llmjob, where the pearl2dev session's test boxes also count, and
+9 in llmjob2 (2 from 4:36 pm EDT, 9 from the evening; `max_active` 17). The search fills the orgs in that order,
+each up to its slots and inside its own quota (at most 9 of its 10, as in [Rules](#rules)), and a create refused for
+the quota stops only that org.
+
+**Our boxes don't outbid each other.** Salad gives a PC to the higher priority first and can take one from a lower
+priority for it, whichever org either is in, so a group of ours waiting for a PC above another group of its class on
+a PC could take that one's PC and pay more for the same box. In 19 days to 28 October a PC went from one of our
+groups to another within 10 minutes 18 times; 16 were at the same priority (a PC coming back and given to whichever
+was waiting), and twice 4080-35 at medium got 4080-33's PC at low (13 October). So a group waiting for a PC never
+asks above the lowest priority of a group of its class on a PC (`pri_cap`): the search doesn't create one higher,
+and a waiting group doesn't move up past it; when that's the only way up it's deleted as released ("a higher
+priority could take the PC of another group of its class"). It counts the other groups in our orgs too, from the
+sweep's list (the pearl2dev session's test boxes, at high on 28 October).
+
+The same API key works in every org the user is in. Each group keeps the org it was made in (`org` in the ledger;
+one made before has none and is in llmjob), and every call about it goes there. The log query and the stray sweep run in each org. Names stay unique across orgs,
+since a box's pool worker is named after its group. Credit runs out by org: Salad says `no_credits_available` or
+stops the boxes in that org only, so only that org's groups are left alone and only it stops getting new ones
+until a top-up and `restart_token`. A box outside llmjob says its org in the table, by what its name adds to
+llmjob (`5060-90 batch (2)` for llmjob2, since 29 October; it said `llmjob2` before). An org named otherwise shows
+whole, as `(otherorg)`.
 
 ## Monero on the CPU
 
@@ -204,8 +270,11 @@ started with until it restarts. It comes back on the new version about 2 minutes
   HeroMiners reads gave a hash about 8 to 2,200 times too little), a chart bucket valued 3 times off the median of
   all buckets is valued again at it, and a failed read waits 5 minutes (CoinGecko answers 429 every minute).
 - **The rules count Monero too** (since 22 October): each box's earnings in the keep, leave, climb, search and
-  swap rules add what the median Monero box makes, from the boxes the Monero pools saw in the last 15 minutes
-  (about $0.002/hr; a box's own figure is a 30-minute average that, on a new PC, still holds the old one). Before,
+  swap rules add its Monero (about $0.002/hr). A box 30 minutes on its PC counts its own figure (before that the
+  pools' 30-minute average still holds the old PC). A new box, or one too new on its PC, counts the median of its
+  class's own figures in the last `rate_days`, since 24 October: a PC's CPU goes with its owner's card, and 3060
+  boxes made 3–5 kH/s while 4060s made 0.5–1.3. With none stored for the class it counts the median of the boxes
+  the Monero pools saw in the last 15 minutes, as every new box did before. Before,
   they judged every box on Pearl alone: in the 48 hours to 9 pm EDT on 22 October, 54 of the 124 margin moves
   and deletions would have cleared 10% with Monero counted, but all 54 also clear at Kryptex's ratio alone; with
   both, 79 clear, so Monero saves 16 beyond the ratio fix. Monero's speed is the table's kH/s column and what each box has earned is
@@ -246,7 +315,12 @@ command (`GEMMA ON` events), and no box was moved.
   for a PC starts that way.
 - **Mining pauses for a prompt.** While the LLM answers a prompt the CLI stops mining on that card, and starts
   again 10 seconds after the last one ends (10 minutes at most). The server's speed test is such a prompt: once
-  when a node first shows up, then at most once a day, and each Salad box is a new node on each PC. The CLI prints
+  when a node first shows up, then at most once a day. Until 24 October each Salad box was a new node on each PC
+  (a fresh container makes a new `node.json`), so 304 of 327 pauses on 20–24 October were that test. Now the
+  watcher gives each Gemma group one node identity, an Ed25519 key it makes once and keeps by group name in
+  `state.json`, and the box command writes it to the CLI's `~/.local/share/llmjob-earn/node.json` before box.sh
+  starts. The key is an unclaimed node's, tied to no account, and it is in the group's command on Salad. A group
+  made before then keeps a new node per PC until its command changes. The CLI prints
   no hashrate meanwhile, and box.sh used to repeat the miner's last line, which the watcher reads as a dead miner
   (left after 6 minutes). Now box.sh says `paused for a prompt` from the CLI's own pause lines, and the watcher:
   - shows the box as 🧠 in the report, and logs `PAUSED` when a pause starts and `RESUMED` with its length;
@@ -275,7 +349,8 @@ watcher reads the 30-minute one. Their `valid` count includes the last finished 
 it isn't used.
 
 **Status: on from 17 October with release v0.6.1: one group, then 5 (`kryptex_groups` 5) from 18 October, and every
-slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October.** A box mining on HeroMiners
+slot (`kryptex_groups` 10, the same as `max_active`) from 10:02 pm EDT on 19 October, and 17 with llmjob2's slots
+from 28 October.** A box mining on HeroMiners
 then kept its PC and would move to Kryptex when it next got one. At 10:35 pm, as asked, the last four were
 switched with `kx_in_place`, by updating their commands. Salad restarted three (3070-53, -55, -56) on the same
 PC within 2 minutes, and they mine on Kryptex. It didn't restart 3060-45, even after two calls to its restart
@@ -380,12 +455,16 @@ Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-A
   endpoints, GPU classes, webhooks, logs and availability. The credit balance is only in the portal, so
   the ledger counts down from the top-up and takes corrections.
 - `GET /gpu-classes`: a price for each priority (batch, low, medium, high), CPU and RAM included.
+  The watcher reads it once an hour. Since 27 October each running group takes the new price when it changes,
+  with a `PRICE` event, since Salad bills running instances at today's price (its 1 November 2026 rise did).
 - `POST /availability/sce-gpu-availability` with the container's resources gives
   `available_gpu_<priority>` counts. They aren't reliable for busy cards.
 - `GET /quotas`: a new org gets 10 replicas. Stopped groups count against it: with 10 stopped groups,
   creating one failed with `created_replicas_quota_exceeded`, although `container_replicas_used`
   read 0 once Salad had stopped them for lack of credit. A raise goes through "Request Increase" in
-  the portal, usually answered within 2 business days.
+  the portal, usually answered within 2 business days. A stopped group can't start while
+  `container_replicas_used` (which counts it) is at the quota: on 28 October 3080-83, made as the 10th, got
+  `replicas_quota_exceeded` on every start, though only 9 groups ran.
 - Create errors are HTTP 400 with a type: `container_group_update_exception` (the `; curl` command),
   `created_replicas_quota_exceeded`, `cannot_start_container_group_with_current_status` (start while
   pending) and `no_credits_available` ("Entitlement check failed"). A 408 is `connection_timeout`.
@@ -553,7 +632,7 @@ The report is **one table** with seven columns (five without a Monero address), 
 | ⛏️ 3070-53 med | 78 | 4.8 | 0.08 | +0.02* (+20%*) | 0.569* | 0.000067* |
 | ⛏️ 3060-46 low (K) | 47 | 0.0 | 0.05 | +0.01* (+14%*) | 0.141 | 0.000021* |
 | ⏳ 5070-29 med (K) | — | — | — | — | 0.651 | 0.000052* |
-| Others ×781 | — | — | — | — | 155.386* | 0.009229* |
+| Ended ×781 | — | — | — | — | 155.386* | 0.009229* |
 | **All** | **410** | **20.8** | **0.44** | **+0.09\* (+17%\*)** | **157.402\*** | **0.009489\*** |
 
 | Pool | Hashrate (1h) | Confirmed | Pending | Paid |
@@ -569,7 +648,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 
 - **The first line** gives only what the table doesn't: the time (New York, on the 12-hour clock: EDT or EST; it was
   24-hour time until 20 October), the date in US style ("Mon, Oct 19"), the PRL price in cents, how many boxes are
-  mining out of the slots (`max_active`, or Salad's quota if lower), and the Salad credit left with how many hours it
+  mining out of the slots (`max_active`, or Salad's quota if lower), and the Salad credit left (out of all bought) with how many hours it
   lasts at the All row's $/hr (no hours while nothing bills). Profit an hour, the margin and the profit so far are in
   the **All** row.
 - **Every slot has a row.** A slot with no group (the search found no class it could use yet) shows as `⬜ empty`, so the table
@@ -578,11 +657,12 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
 - Inside bold text the estimate stars are written `\*`, or Markdown reads them as emphasis and the bold breaks.
 - **TH/s and kH/s** are each box's speed on both coins: Pearl on the GPU (the miner's 10-minute average) and
   Monero on the CPU (as the Monero pool measures it; — for a box that doesn't mine it).
-- **Others** is one row for every group that has ended, with its count and what they earned; the events say which
-  were released and which failed.
+- **Ended** is one row for every group that has ended, with its count and what they earned; the events say which
+  were released and which failed. These are our own old boxes (it was called "Others" until 24 October).
 - **A box row** holds its state, its group name without `biz-rtx` and its priority (`med` for medium), joined
-  by no-break spaces so it doesn't wrap. Boxes are sorted by profit an hour, best first. The PC id is in the
-  events, not the table.
+  by no-break spaces so it doesn't wrap. Profit an hour and its margin are joined the same way (since 29 October:
+  on the founder's screen the cell broke there, so a box with a margin took two lines and one without took one).
+  Boxes are sorted by profit an hour, best first. The PC id is in the events, not the table.
 - **PRL** is what the box has earned by its pools' own counts (since 20 October; it replaced Profit $, a dollar
   estimate the user found didn't help):
   - **On Kryptex**, its accepted shares from its worker's chart there (10-minute buckets, read every 5 minutes),
@@ -613,6 +693,21 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   pages. The **XMR Kryptex** row (since 20 October) is Kryptex's Monero pool for our Monero address, read every
   5 minutes: its workers' 30-minute hashrate, the coins confirmed (paid out from 0.1 XMR), pending and paid. It
   shows whenever Monero is on, even with no box mining there yet.
+- **The 💵 SafeTrade table** (since 26 October) comes after the pool table and follows the money to what's left,
+  one line a row. A row a coin, its columns in the order a coin moves: **Paid** is both pools' Paid, **Received**
+  what reached SafeTrade (every deposit), **Waiting** what it holds to sell (held plus in open orders), **Sold**
+  everything sold there, **Fees** the trading fees, and **USDT** what the sales brought after them. Then a row
+  for each currency withdrawn (**USDC out**, **USDT out**): the amount that reached the bank, and its fees (the
+  network's, taken on top, and for USDC the trade from USDT). **Total out** adds them up: $309.54 sent to the
+  bank on 26 October, after $10.11 of fees. **Left** closes it: every fee paid, and the USDT the account holds.
+  Sales less what went out and its fees is what's left: $367.34 − $309.54 − $10.11 = $47.69, within about $0.10
+  of the $47.79 balance (the USDT-to-USDC trade got slightly more USDC than the USDT it cost). Since 28 October a
+  withdrawal to the Salad top-up wallet (`salad_wallet`) has its own row after Total out, **USDT to Salad**: it
+  bought Salad credit and never reached the bank (the first, 5 USDT, fee 1, that day). Until 26 October
+  the out rows showed the USDT each withdrawal took, fees included. Paid and Received
+  should match: both were 196.743 PRL. Each new sale is also a `SOLD` event with its USDT. From 24 to 26 October
+  these were a 💵 row under each coin's pools, Paid reading "185.060 for $331.21" (and for about 10 minutes on
+  24 October a table of the last day's sales). See [SafeTrade](#safetrade-row).
 - **Nothing under the tables.** Until 20 October a line there gave what Salad had cost (Profit $ counted it),
   what each credited PRL cost to mine and the credit left. The credit left is now in the first line; the other
   two were dropped on 20 October as not helpful (for a few minutes the three were rows under the All row, and
@@ -622,8 +717,8 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
   20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
-  ⬜ empty slot · `*` our own count or estimate,
-  or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, or the trader's log)
+  ⬜ empty slot · 💵 SafeTrade (its own table) · `*` our own count or estimate,
+  or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, SafeTrade)
   · (K) mines Pearl on Kryptex, the rest on HeroMiners (shown only while some box is on HeroMiners).
 
 A box on a new PC with no reading yet (under 15 minutes) is **starting**: it shows — for Profit/hr and
@@ -635,14 +730,38 @@ All row's margin below zero. A box with no Pearl reading shows its profit an hou
 
 ## SafeTrade row
 
-When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
-Railway logs, at most every 5 minutes. The report used it for Profit $ (sold PRL at what it sold for), with
-sales entered by hand in config `safetrade` standing in, until Profit $ went on 20 October; it listed the sales
-under the table until then too. Nothing in the report uses it now.
+Until 28 October PRL was sold by a separate Railway cron service, `trader/`, and the watcher read its `STATUS`
+log line through a Railway token. Its builds kept crashing, so the selling moved into the watcher (below), and the
+service and `trader/` were removed that day.
 
-It needs a Railway project token for the production environment, set as `RAILWAY_TOKEN` or added by the
-cloud session's network proxy for `backboard.railway.com`. Without one, Railway answers "Not Authorized"
-and there's one `WARN` event.
+**The SafeTrade table** (since 24 October, as rows until 26 October) reads the account itself: with
+`SAFETRADE_API_KEY` and `SAFETRADE_API_SECRET` set, once a report (in the first round of each quarter
+hour, so the quarter's report shows that minute's read; a failed read is tried again 5 minutes later) the watcher
+asks SafeTrade for the balances (`/account/balances/spot`), every fill we have (`/market/trades`, 100 a page),
+every PRL and XMR deposit (`/account/deposits`, 100 a page; rejected or failed ones don't count) and every
+withdrawal that went through (`/account/withdraws`). A buy of a stablecoin (USDC) with USDT is a change before
+a withdrawal, not a sale. These are GET calls, signed with
+HMAC-SHA256 of a millisecond nonce and the key; only the seller below places or cancels orders. A sale is a fill
+of our own sell order (`order_side`; a fill's `side` is the taker's), counted at its USDT less SafeTrade's fee.
+Fills newer than the last read make one `SOLD` event an order; the first read only notes the newest, so the
+history isn't announced. If a read fails there's one `WARN` event, the table keeps the last read, and its first
+heading says when that was once it's 15 minutes old. SafeTrade's Cloudflare
+lets the watcher's own user agent through from rig01; a 403 with an empty body means SafeTrade knows the key and
+refuses it (its settings or IP whitelist, `OPEN.md` #57).
+
+**Selling PRL** (since 28 October; live from 1:05 pm EDT that day). The autoseller moved into the watcher at the
+founder's request: the Railway `trader` service's builds kept crashing, and the watcher already reads SafeTrade.
+With config `sell` set (`{"live": true, "minute": 5}` on rig01; without `"live": true` a dry run) and the SafeTrade
+keys, once an hour from `minute` (default 5) it does what the trader did: finds the enabled PRL/USDT market
+(`pearlusdt`, else the retired `prlusdt`; Cloudflare in front of SafeTrade rewrites "prl" in a URL to "PEARL"),
+cancels our open sell orders there (the last run's unfilled rest), reads the free PRL and the bids, and places one
+limit sell at a floor `max_slippage` (0.03) under the best bid, never under `min_price` (0), for as much as the bids
+at or above it take. Less than `min_volume` (0.5) or the market's own minimum isn't sold. Each run is a `SELL` event
+(`SELL DRY RUN` until `"live": true`): what it cancelled or would cancel, and what it sold or would sell, or why
+nothing; a failure is one `WARN SELL` event. The fills come back as `SOLD` events from the next read above. Only
+one seller may run, since each cancels the open sell orders it finds. It ran dry beside the trader for an hour
+(12:12 pm EDT: 1.318 PRL, under the market's 2 PRL minimum, as the trader left it); the founder then deleted the
+trader's service, and it went live.
 
 ## Safety net
 
@@ -668,17 +787,41 @@ PRL_WALLET=prl1... python3 -I tuning/salad/guard.py
 It isn't running on a schedule yet. Two tries with a Claude Routine failed: a fresh session without
 the repo had to download the script, which its permission check blocks, and a Routine bound to a
 session with the repo fired into a new empty session instead. The Routine is paused. The better home
-is a Railway cron service next to the trader: Root Directory `/tuning/salad`, start command
+is a Railway cron service: Root Directory `/tuning/salad`, start command
 `python3 guard.py`, hourly, with `SALAD_API_KEY` and `PRL_WALLET` set.
 
 ## Money
 
 - **Every figure we count or estimate ourselves has a `*`** in `report.md`; a number without one comes
-  straight from an API (Salad, the pool, prlscan, CoinGecko) or from the trader's log. Starred: the
-  Salad credit left (Salad's API has no balance or billing, so the watcher adds each
+  straight from an API (Salad, the pool, prlscan, CoinGecko, SafeTrade). Starred: the
+  Salad credit left only when Salad's own balance hasn't been read for an hour (the watcher then adds each
   group's price for every minute it has a PC; on 14 October it was $1.01 high over $100), PRL earned on HeroMiners
   and before 20 October, XMR earned, and profit and margin. Not starred: TH/s, kH/s, $/hr, PRL earned on Kryptex
-  (its own share count at its set pay a share), the pool's totals and prices. Set `credit_offset` from the portal now and then so the credit count stays right.
+  (its own share count at its set pay a share), the pool's totals and prices. Since 24 October, with `SALAD_USER` and `SALAD_PASS` set, the watcher reads Salad's
+  balance from the portal once a report, as SafeTrade (Salad's public API has none) and shows it unstarred; each read also
+  moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure. Since
+  26 October the same read also totals the credit added in Metronome (voided grants left out), and the heading
+  shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays. It read the
+  credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
+  With config `salad_orgs` (since 28 October `["llmjob", "llmjob2"]`) the balance and the total are added up over
+  those orgs, as the founder asked once llmjob2 got $10 of its own. How long it lasts is then given for each org
+  that spends, since Salad stops an org's boxes when that org runs out whatever the others hold: an org our boxes
+  run in at their $/hr, another org at what its balance fell by over the last 1-3 h of reads (less any top-up), e.g.
+  `(llmjob 9 days · llmjob2 17 h)`. An org spending nothing isn't listed, and the under-12-hours `ALERT` is per org.
+  `credit_offset` is still added; set it only if there's no login.
+- **`salad_ledger.py`** (since 24 October) reads Salad's own figures: the exact balance, every credit purchase,
+  each billing period's charges by GPU class and priority (hours × price an hour), and with `--daily` the cost of
+  each UTC day, or with `--csv FILE` a ledger of purchases and each day's charge per class with a running balance.
+  It logs in to the portal with `SALAD_USER` and `SALAD_PASS` and reads what the portal's billing pages read: the
+  portal API (`portal-api.salad.com/api/portal`) for the balance, and Metronome, Salad's billing service
+  (`graphql.metronome.com`, with the token of a portal dashboard session), for purchases, invoices and daily
+  usage. Read-only; it prints no password or token. A usage metric isn't always named as it's billed ("RTX 5060
+  (16 GB) - Low" is billed as "RTX 5060 Ti (16 GB) - Low", "(Corrected)" twins carry the hours), so each takes
+  the invoice line of its name, its name less "(corrected)", or its hours; the days then add up to the invoice to
+  the cent. On 24 October at 11 am EDT: $500 bought, $271.27 spent, $228.73 left, against the report's $232.09.
+  Since 28 October purchases are Metronome's credit grants (a crypto top-up makes one and no purchase invoice),
+  and `--org NAME` picks the org (more than once for several, each with its own report and CSV file, then the
+  total); the default is `$SALAD_ORGS` (comma-separated), else `$SALAD_ORG`, else llmjob.
 - $/TH-hr = 1e12 × 3600 / (difficulty × 2^48) × reward_grains / 1e8 × PRL price, from
   `api.prlscan.com/v1/blocks?limit=1` and `/v1/market/prl`.
 - One pool unit/s = 419/93644 TH/s (a 5090's 24-hour pool average against its miner's 419 TH/s); one
