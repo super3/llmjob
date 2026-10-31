@@ -2320,13 +2320,18 @@ class W:
         # Rule 5b: a PC that sends no log lines has no reading for rule 5, and its shares keep it past the reading
         # rules above, so nothing judged it: on 30 October 5090-47 mined 4¾ h on such a PC at about $0.28/hr against
         # its $0.33. With no reading here it's judged on what Kryptex credited it over the last full hour instead.
-        if not cur:
+        # So is a PC whose log lines stopped: rule 5 would judge it on its last readings for as long as shares came,
+        # as 5070-127's on 69461ace stopped 5 minutes in on 31 October while Kryptex kept crediting it.
+        quiet = not cur or seen_to - cur[-1][0] >= 6 * MIN
+        if quiet:
             rate = self.credit_rate(g, max(start, pend, rs), t)
             if rate is not None:
                 earn, bar = rate * st["mkt"]["price"] + self.xmr_usd(g), self.cfg["min_margin"]
                 if margin_of(earn, g["price"]) < bar:
-                    self.leave(g, f"earns ${earn:.3f}/hr by Kryptex's count of its shares over the last hour (its PC "
-                                  f"sends no log lines) on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
+                    logs = "its PC sends no log lines" if not cur else \
+                        f"no reading from its PC for {(seen_to - cur[-1][0]) / 60:.0f} min"
+                    self.leave(g, f"earns ${earn:.3f}/hr by Kryptex's count of its shares over the last hour ({logs}) "
+                                  f"on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
                                   f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})")
                     return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last

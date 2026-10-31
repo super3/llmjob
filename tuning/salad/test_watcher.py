@@ -1770,11 +1770,12 @@ class TestLogOutage(Base):
 class TestNoLogPc(Base):
     """30 October: 5090-47's PC sent no log lines for 4¾ h while Kryptex credited its shares at about $0.28/hr against
     its $0.33/hr, and no rule judged it. Such a box is judged on its last full hour of Kryptex credit."""
-    def run_on(self, per_bucket, minutes):
+    def run_on(self, per_bucket, minutes, read=0):
         g = self.group()
         g["kx"] = True
         share = USD_TH_HR / PRICE * 2 ** 32 / 3.6e15 * 2 ** 21                          # PRL the network pays a share
         self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, read)            # readings for its first `read` minutes, then none
         for _ in range(minutes):
             self.clock[0] += 60
             t = self.clock[0]
@@ -1803,6 +1804,17 @@ class TestNoLogPc(Base):
         g = self.run_on(5, 80)                   # the hour ending 25 min ago doesn't start after it got the PC yet
         self.assertFalse(self.http.made("POST", "/reallocate"))
         self.assertFalse(g["ended"])
+
+    def test_a_pc_whose_logs_stop_is_judged_on_its_credit_too(self):
+        # 31 October: 5070-127's readings on 69461ace stopped 5 minutes in while its shares kept coming.
+        g = self.run_on(5, 100, read=5)          # 199 TH/s clears the bar, but Kryptex credits about $0.08
+        self.assertIn("by Kryptex's count of its shares over the last hour (no reading from its PC for", self.events())
+        self.assertIsNone(g["machine"])
+
+    def test_one_whose_logs_stop_and_whose_credit_clears_stays(self):
+        g = self.run_on(10, 100, read=5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["machine"], "m1")
 
     def test_a_stale_chart_read_judges_nothing(self):
         g = self.group()
