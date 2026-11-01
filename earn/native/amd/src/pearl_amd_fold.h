@@ -9,11 +9,6 @@
 // most cards; storing first is what GA100 and Hopper do, and it is the simplest thing that
 // is correct on every AMD target.
 //
-// Which regions: every fold here reads out pearl_config.h's 16x16 regions, except the RDNA 4
-// fold built with PEARL_AMD_TWOLANE=1, which reads out 32x8 regions (rows {0-7, 16-23, 32-39,
-// 48-55}, columns {0, 1, 16, 17, 32, 33, 48, 49}; pearl_amd_pattern.h). That build is
-// fold-test only for now: the host refuses to mine with it.
-//
 // Five folds:
 //   pearl_amd_fold_ref     plain dot products from LDS. Any AMD GPU (sdot4/sudot4 where
 //                          the card has them), and the fold for RDNA2 (gfx103x).
@@ -42,7 +37,6 @@
 #include <type_traits>
 
 #include "pearl_config.h"
-#include "pearl_amd_pattern.h"
 
 #if defined(__HIP_CPU_RT__)
 #define PEARL_AMD_EMU 1
@@ -102,7 +96,6 @@
 #define PEARL_AMD_CAP_WMMA12 16u
 #define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, emulated
 #define PEARL_AMD_CAP_DROP 0x200u      // a PEARL_AMD_READOUT_DROP build: timing only, never mines
-#define PEARL_AMD_CAP_TWOLANE 0x400u   // wmma12 here reads out 32x8 regions (PEARL_AMD_TWOLANE)
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -188,7 +181,6 @@ struct PearlAmdMfma16 {
   // A lane's rows are one region's: which one is lane bit 5, not the register.
   static constexpr bool kRoByLane = true;
   static __device__ __forceinline__ int ro_of(int) { return 0; }
-  static constexpr bool kTwoLane = false;   // 16x16 regions (pearl_amd_pattern.h)
 };
 
 // CDNA1 and CDNA2: v_mfma_i32_32x32x8_i8. The same as above with 4 bytes of k a lane:
@@ -225,7 +217,6 @@ struct PearlAmdMfma8 {
   }
   static constexpr bool kRoByLane = true;
   static __device__ __forceinline__ int ro_of(int) { return 0; }
-  static constexpr bool kTwoLane = false;
 };
 
 // RDNA3: v_wmma_i32_16x16x16_iu8 in wave32. Lanes l and l + 16 both hold A row l % 16, all
@@ -264,9 +255,6 @@ struct PearlAmdWmma11 {
   // {2, 3, 6, 7} rows 4-7 and 12-15 (offset 4).
   static constexpr bool kRoByLane = false;
   static __device__ __forceinline__ int ro_of(int g) { return (g >> 1) & 1; }
-  // 16x16 regions. Two-lane regions would need four lanes and a half swap here, for about 0.1%:
-  // not built.
-  static constexpr bool kTwoLane = false;
 };
 
 // RDNA4: v_wmma_i32_16x16x16_iu8 in wave32, gfx12's layout. Lane l holds A row l % 16 at k
@@ -303,9 +291,6 @@ struct PearlAmdWmma12 {
   // Registers 0-3 hold rows 0-3 or 8-11 of a 16-row tile (row offset 0), 4-7 the others.
   static constexpr bool kRoByLane = false;
   static __device__ __forceinline__ int ro_of(int g) { return g >> 2; }
-  // PEARL_AMD_TWOLANE: 32x8 regions instead, each held by lanes l and l ^ 1 (pearl_amd_pattern.h,
-  // and the fold body's two-lane readout).
-  static constexpr bool kTwoLane = PEARL_AMD_TWOLANE != 0;
 };
 
 // One k-step of a wave: every tile of the wave's kMT x kNT, from the wave's A and B
@@ -410,18 +395,6 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
   return x;
 }
 
-// XOR with lane ^ 1, for two-lane regions (PEARL_AMD_TWOLANE), where lanes l and l ^ 1 hold one
-// region between them: the first step of pearl_amd_group_xor alone, a quad permute [1, 0, 3, 2]
-// on RDNA 4. The CPU build has no DPP and uses __shfl_xor, so it checks the lane and region
-// mapping, and the fold test on a card checks the DPP.
-__device__ __forceinline__ uint32_t pearl_amd_pair_xor(uint32_t x) {
-#if PEARL_AMD_DPP && PEARL_AMD_WMMA12
-  return x ^ (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
-#else
-  return x ^ (uint32_t)__shfl_xor((int)x, 1);
-#endif
-}
-
 // PEARL_AMD_READOUT_DROP=1: a build for timing only, whose transcripts are wrong. In the RDNA 4
 // fold (wmma12) only, each chunk's readout skips its cross-lane steps: no pearl_amd_group_xor
 // (three lane moves and their XORs), no compare and no selects. Each lane XORs its own part of
@@ -437,9 +410,6 @@ __device__ __forceinline__ uint32_t pearl_amd_pair_xor(uint32_t x) {
 #ifndef PEARL_AMD_READOUT_DROP
 #define PEARL_AMD_READOUT_DROP 0
 #endif
-#if PEARL_AMD_READOUT_DROP && PEARL_AMD_TWOLANE
-#error "PEARL_AMD_READOUT_DROP times the 16x16 readout, which PEARL_AMD_TWOLANE replaces: set one of them"
-#endif
 
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
 // col0 + blockIdx.x * 256 (the batch's columns start at col0). Every region of the tile gets
@@ -452,13 +422,6 @@ __device__ __forceinline__ uint32_t pearl_amd_pair_xor(uint32_t x) {
 // that share the region combine theirs, and lane r of those eight keeps transcript words r
 // and r + 8. So all 16 words of a region end up in registers, two a lane, with no shared
 // memory and no rotate (16 chunks: each word is written once, onto zero).
-//
-// Two-lane regions (P::kTwoLane: the RDNA 4 fold with PEARL_AMD_TWOLANE) are 32x8 instead
-// (pearl_amd_pattern.h). Lane l holds rows 16 * mt + 8 * h + g (h = lane bit 4) and columns
-// 16 * nt + 2 * j + (l & 1) (j = lane bits 1-3) of its wave's 64x64 tile: half of one region,
-// whose other half is lane l ^ 1's. So at every chunk end a lane XORs all 128 of its
-// accumulators, adds lane l ^ 1's word with one quad permute, and the even lane keeps words
-// 0-7, the odd lane words 8-15. A wave's tile is 16 regions either way.
 template <class P>
 __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ Ap,
                                                     const int8_t *__restrict__ Bp, uint32_t k,
@@ -475,17 +438,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
-  // Two-lane 32x8 regions (above), and their second form, a store each chunk.
-  constexpr bool kTwo = P::kTwoLane, kTwoStore = kTwo && PEARL_AMD_TWOLANE_STORE;
   static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
-  static_assert(!kTwo || (std::is_same<P, PearlAmdWmma12>::value && WM == 64 && WN == 64 && P::kMT == 4 &&
-                          P::kNT == 4 && P::kRegs == 8 && PEARL_JACKPOT_BUCKETS == 16),
-                "two-lane regions are gfx12's layout: a 64x64 wave tile, lane bit 4 the row half, "
-                "lane bits 1-3 the column pair, and 16 words a region");
 
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
@@ -541,26 +498,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
   const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
-  // Two-lane regions (kTwo) use none of the above but acc. Their own state follows; with kTwo
-  // off none of it is read, so none of it is in the code.
-  //   region2  the lane pair's 32x8 region as a batch-local number: the rule the 16x16 store at
-  //            the end uses, with 32x8's offsets (two row offsets and eight column offsets a
-  //            64x64 span; pearl_amd_pattern.h).
-  //   trByte   the store form's offset of that region's words in `tr`, set once a tile, so a
-  //            chunk moves only the scalar base (tr + c) and the store needs no address math.
-  //            A batch's transcripts are far under 4 GB (64 bytes a region). Not const: the
-  //            readout hides it from the compiler each chunk (see there).
-  //   keep     the register form's words: 0-7 on the even lane, 8-15 on the odd one.
-  [[maybe_unused]] const bool odd = (lane & 1) != 0;
-  [[maybe_unused]] uint32_t region2 = 0u;
-  if constexpr (kTwo) {
-    const uint32_t h = (uint32_t)((lane >> 4) & 1), j = (uint32_t)((lane & 15) >> 1);
-    const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM)) / 64u) + h;
-    const uint32_t colIdx = 8u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + j;
-    region2 = colIdx * rows_valid + rowIdx;
-  }
-  [[maybe_unused]] uint32_t trByte = region2 * (uint32_t)(PEARL_JACKPOT_BUCKETS * 4);
-  [[maybe_unused]] pearl_amd_v8i keep = {0, 0, 0, 0, 0, 0, 0, 0};
 
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
   PEARL_AMD_LOAD(0)
@@ -568,71 +505,33 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   __syncthreads();
   // The end of chunk c: its transcript word, for every region the wave holds.
   auto readout = [&](uint32_t c) {
-    if constexpr (kTwo) {
-      // The lane's 128 accumulators are half of one region. Four partial words, one a row of
-      // tiles, so the XOR tree is four chains of 16 v_xor3 and not one of 64, which would sit
-      // in front of the barrier at a few cycles a step. The empty asm keeps them apart: left
-      // alone, the compiler rewrites an XOR of single-use XORs as one chain. It emits nothing.
-      uint32_t p[P::kMT];
+    const bool mine = (c & 7u) == r, hi = c >= 8u;
 #pragma unroll
-      for (int mt = 0; mt < P::kMT; mt++) {
-        p[mt] = 0u;
+    for (int rb = 0; rb < RB; rb++)
 #pragma unroll
-        for (int nt = 0; nt < P::kNT; nt++)
+      for (int cb = 0; cb < CB; cb++) {
+        uint32_t x[NRO];
 #pragma unroll
-          for (int g = 0; g < P::kRegs; g++) p[mt] ^= (uint32_t)acc[mt][nt][g];
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-        asm("" : "+v"(p[mt]));
-#endif
-      }
-      uint32_t x = p[0];
+        for (int q = 0; q < NRO; q++) x[q] = 0u;
+        // The block's tiles: kTM = 32 is one tile down, 16 is two; kTN = 32 is two tiles
+        // across, 16 is four.
 #pragma unroll
-      for (int mt = 1; mt < P::kMT; mt++) x ^= p[mt];
-      x = pearl_amd_pair_xor(x);   // the region's word c, in both lanes of the pair
-      if constexpr (kTwoStore) {
-        // The empty asm gives trByte a new value each chunk. Left alone, the compiler sees that
-        // tr + trByte is the same every chunk and moves it out of the slab loop as a per-lane
-        // 64-bit pointer: the store then loses its scalar base and spends two VALU a chunk
-        // adding 4 * c back on. Only the new value is used after it, so the asm needs no
-        // register copy, and it emits nothing.
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-        asm("" : "+v"(trByte));
-#endif
-        if (!odd) *reinterpret_cast<uint32_t *>(reinterpret_cast<char *>(tr + c) + trByte) = x;
-      } else {
-        // (lane & 1) == (c >> 3): the even lane keeps words 0-7, the odd lane 8-15. c is the
-        // same in every lane, so the index is too, and the write should be one v_movreld.
-        if (odd == (c >= 8u)) keep[c & 7u] = (int32_t)x;
-      }
-    } else {
-      const bool mine = (c & 7u) == r, hi = c >= 8u;
+        for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
 #pragma unroll
-      for (int rb = 0; rb < RB; rb++)
+          for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
 #pragma unroll
-        for (int cb = 0; cb < CB; cb++) {
-          uint32_t x[NRO];
+            for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
 #pragma unroll
-          for (int q = 0; q < NRO; q++) x[q] = 0u;
-          // The block's tiles: kTM = 32 is one tile down, 16 is two; kTN = 32 is two tiles
-          // across, 16 is four.
-#pragma unroll
-          for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
-#pragma unroll
-            for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
-#pragma unroll
-              for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
-#pragma unroll
-          for (int q = 0; q < NRO; q++) {
-            if constexpr (kDrop) {
-              keepLo[rb][cb][q] ^= x[q];   // timing only: the transcript is wrong
-            } else {
-              const uint32_t v = pearl_amd_group_xor(x[q]);
-              keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
-              keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
-            }
+        for (int q = 0; q < NRO; q++) {
+          if constexpr (kDrop) {
+            keepLo[rb][cb][q] ^= x[q];   // timing only: the transcript is wrong
+          } else {
+            const uint32_t v = pearl_amd_group_xor(x[q]);
+            keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
+            keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
           }
         }
-    }
+      }
   };
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
@@ -701,35 +600,21 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
 #endif
 
-  if constexpr (kTwoStore) {
-    // Every word the chunks reached is stored. A k of fewer than 16 chunks leaves the rest,
-    // which are zero, as the other folds leave them.
-    for (uint32_t c = slabs / perChunk; c < (uint32_t)PEARL_JACKPOT_BUCKETS; c++)
-      if (!odd) *reinterpret_cast<uint32_t *>(reinterpret_cast<char *>(tr + c) + trByte) = 0u;
-  } else if constexpr (kTwo) {
-    // The even lane writes words 0-7 of the pair's region, the odd lane words 8-15: two
-    // 16-byte stores a lane.
-    pearl_amd_v4i *w = reinterpret_cast<pearl_amd_v4i *>(
-        tr + (size_t)region2 * PEARL_JACKPOT_BUCKETS + 8u * (uint32_t)(lane & 1));
-    w[0] = keep.lo;
-    w[1] = keep.hi;
-  } else {
-    // Each lane writes words r and r + 8 of its regions.
-    const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
+  // Each lane writes words r and r + 8 of its regions.
+  const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
 #pragma unroll
-    for (int rb = 0; rb < RB; rb++)
+  for (int rb = 0; rb < RB; rb++)
 #pragma unroll
-      for (int cb = 0; cb < CB; cb++)
+    for (int cb = 0; cb < CB; cb++)
 #pragma unroll
-        for (int q = 0; q < NRO; q++) {
-          const uint32_t roIdx = P::kRoByLane ? (uint32_t)(lane >> 5) : (uint32_t)q;
-          const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + roIdx;
-          const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
-          uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
-          w[r] = keepLo[rb][cb][q];
-          w[r + 8] = keepHi[rb][cb][q];
-        }
-  }
+      for (int q = 0; q < NRO; q++) {
+        const uint32_t roIdx = P::kRoByLane ? (uint32_t)(lane >> 5) : (uint32_t)q;
+        const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + roIdx;
+        const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
+        uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+        w[r] = keepLo[rb][cb][q];
+        w[r + 8] = keepHi[rb][cb][q];
+      }
 #undef PEARL_AMD_LOAD
 #undef PEARL_AMD_LOADR
 #undef PEARL_AMD_STORER
@@ -907,8 +792,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 
 // Which folds this code object has bodies for, and its wave size: out[0] and out[1]. A
 // PEARL_AMD_READOUT_DROP build says so on every target, the ones its drop leaves alone too, so
-// the host refuses to mine with it on any card. PEARL_AMD_CAP_TWOLANE says the wmma12 body here
-// reads out 32x8 regions, so it is set only where there is one.
+// the host refuses to mine with it on any card.
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -921,6 +805,5 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
            | (PEARL_AMD_WMMA12 ? PEARL_AMD_CAP_WMMA12 : 0u);
 #endif
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
-  if (PEARL_AMD_TWOLANE && (PEARL_AMD_EMU || PEARL_AMD_WMMA12)) out[0] |= PEARL_AMD_CAP_TWOLANE;
   out[1] = (uint32_t)warpSize;
 }

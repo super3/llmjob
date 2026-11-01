@@ -14,10 +14,6 @@
 // Operands are random over all of int8, wider than the miner's int7 operands make, so a
 // sign or byte-order mistake cannot hide. B' has twice `cols` rows and the batch starts at
 // row `cols`, so a fold that ignores its column start fails too.
-//
-// Each fold is checked against its own region pattern (pearl_amd_pattern.h): 16x16, or 32x8
-// for wmma12 in a build with PEARL_AMD_TWOLANE. On a card that is the two-lane fold's
-// correctness gate: a word that differs means the lanes don't hold what the policy says.
 #include <hip/hip_runtime.h>
 
 #include <chrono>
@@ -33,15 +29,7 @@ namespace {
 struct Fold {
   const char *name;
   uint32_t cap;
-  bool tall;              // a 128x256 tile (the matrix folds) rather than 32x64 (the reference)
-  const AmdPattern *pat;  // the regions it reads out
-};
-
-// One pattern's reference: its region counts in the batch, and every region's 16 words.
-struct Want {
-  const AmdPattern *pat;
-  uint32_t rowsValid, colsValid;
-  std::vector<uint32_t> words;
+  bool tall;  // a 128x256 tile (the matrix folds) rather than 32x64 (the reference)
 };
 
 uint64_t g_rng = 1;
@@ -88,23 +76,8 @@ int main(int argc, char **argv) {
     return 2;
   }
   const uint32_t n = 2 * cols, col0 = cols;
-  const Fold folds[] = {{"ref", PEARL_AMD_CAP_REF, false, &kAmdPattern16x16},
-                        {"mfma16", PEARL_AMD_CAP_MFMA16, true, &kAmdPattern16x16},
-                        {"mfma8", PEARL_AMD_CAP_MFMA8, true, &kAmdPattern16x16},
-                        {"wmma11", PEARL_AMD_CAP_WMMA11, true, &kAmdPattern16x16},
-                        {"wmma12", PEARL_AMD_CAP_WMMA12, true,
-                         PEARL_AMD_TWOLANE ? &kAmdPattern32x8 : &kAmdPattern16x16}};
-  // The patterns of the folds asked for, each with its region counts. Every pattern is 256
-  // cells and m and cols are whole spans of each, so a batch has m * cols / 256 regions,
-  // 16 words each, whichever it is.
-  std::vector<Want> wants;
-  for (const Fold &f : folds) {
-    if (only && strcmp(only, f.name) != 0) continue;
-    bool seen = false;
-    for (const Want &w : wants) seen = seen || w.pat == f.pat;
-    if (!seen) wants.push_back(Want{f.pat, m / f.pat->h, cols / f.pat->w, {}});
-  }
-  const size_t words = (size_t)m * cols / 256u * 16u;
+  const uint32_t rowsValid = m / PEARL_ROWS_COUNT, colIdx = cols / PEARL_COLS_COUNT;
+  const uint32_t regions = rowsValid * colIdx;
 
   hipDeviceProp_t prop;
   if (!ok(hipGetDeviceProperties(&prop, 0), "no device")) return 2;
@@ -118,10 +91,9 @@ int main(int argc, char **argv) {
   for (auto &v : A) v = (int8_t)next_rand();
   for (auto &v : B) v = (int8_t)next_rand();
 
-  // The reference: every element of the batch's C, after every chunk, folded per region of
-  // each pattern.
+  // The reference: every element of the batch's C, after every chunk, folded per region.
+  std::vector<uint32_t> want((size_t)regions * 16, 0u);
   if (check) {
-    for (Want &w : wants) w.words.assign(words, 0u);
     std::vector<int32_t> run((size_t)m * cols, 0);
     for (uint32_t c = 0; c < chunks; c++) {
       for (uint32_t r = 0; r < m; r++)
@@ -132,27 +104,24 @@ int main(int argc, char **argv) {
           for (uint32_t q = 0; q < rank; q++) s += (int32_t)a[q] * (int32_t)b[q];
           run[(size_t)r * cols + j] += s;
         }
-      for (Want &w : wants) {
-        const AmdPattern &p = *w.pat;
-        for (uint32_t ci = 0; ci < w.colsValid; ci++)
-          for (uint32_t ri = 0; ri < w.rowsValid; ri++) {
-            const uint32_t ro = pearl_expand_offset(ri, p.rowsMask);
-            const uint32_t co = pearl_expand_offset(ci, p.colsMask);
-            uint32_t x = 0u;
-            for (uint32_t a = 0; a < p.h; a++)
-              for (uint32_t b = 0; b < p.w; b++)
-                x ^= (uint32_t)run[(size_t)(ro | p.rows[a]) * cols + (co | p.cols[b])];
-            uint32_t &wd = w.words[((size_t)ci * w.rowsValid + ri) * 16 + (c % 16)];
-            wd = pearl_rotl13(wd) ^ x;
-          }
-      }
+      for (uint32_t ci = 0; ci < colIdx; ci++)
+        for (uint32_t ri = 0; ri < rowsValid; ri++) {
+          const uint32_t ro = pearl_expand_offset(ri, PEARL_ROWS_MASK);
+          const uint32_t co = pearl_expand_offset(ci, PEARL_COLS_MASK);
+          uint32_t x = 0u;
+          for (uint32_t a = 0; a < PEARL_ROWS_COUNT; a++)
+            for (uint32_t b = 0; b < PEARL_COLS_COUNT; b++)
+              x ^= (uint32_t)run[(size_t)(ro | PEARL_ROWS_PATTERN[a]) * cols + (co | PEARL_COLS_PATTERN[b])];
+          uint32_t &w = want[((size_t)ci * rowsValid + ri) * 16 + (c % 16)];
+          w = pearl_rotl13(w) ^ x;
+        }
     }
   }
 
   int8_t *dA = nullptr, *dB = nullptr;
   uint32_t *dTr = nullptr, *dCaps = nullptr;
   if (!ok(hipMalloc(&dA, A.size()), "hipMalloc A") || !ok(hipMalloc(&dB, B.size()), "hipMalloc B")
-      || !ok(hipMalloc(&dTr, words * 4), "hipMalloc tr") || !ok(hipMalloc(&dCaps, 8), "hipMalloc caps"))
+      || !ok(hipMalloc(&dTr, want.size() * 4), "hipMalloc tr") || !ok(hipMalloc(&dCaps, 8), "hipMalloc caps"))
     return 2;
   // The matrix folds read the operands in per-tile order when built with PEARL_AMD_TILED, as
   // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
@@ -180,18 +149,19 @@ int main(int argc, char **argv) {
   if (!ok(hipMemcpy(caps, dCaps, 8, hipMemcpyDeviceToHost), "caps")) return 2;
   printf("folds in this build for this device: 0x%x, wave %u\n", caps[0], caps[1]);
 
+  const Fold folds[] = {{"ref", PEARL_AMD_CAP_REF, false},
+                        {"mfma16", PEARL_AMD_CAP_MFMA16, true},
+                        {"mfma8", PEARL_AMD_CAP_MFMA8, true},
+                        {"wmma11", PEARL_AMD_CAP_WMMA11, true},
+                        {"wmma12", PEARL_AMD_CAP_WMMA12, true}};
   int failed = 0, ran = 0;
-  std::vector<uint32_t> got(words);
+  std::vector<uint32_t> got(want.size());
   for (const Fold &f : folds) {
     if (!(caps[0] & f.cap) || (only && strcmp(only, f.name) != 0)) continue;
     ran++;
-    const Want *want = nullptr;
-    for (const Want &w : wants)
-      if (w.pat == f.pat) want = &w;
-    const uint32_t rowsValid = want->rowsValid, regions = want->rowsValid * want->colsValid;
     const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
-    hipMemset(dTr, 0xA5, words * 4);  // a word the fold forgets cannot read as zero
+    hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
     // One launch to check (and to load the code), then `reps` more to time.
     const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
@@ -207,17 +177,17 @@ int main(int argc, char **argv) {
     const double tmacs = (double)m * cols * k * n / secs / 1e12;
     size_t bad = 0, first = 0;
     for (size_t i = 0; check && i < got.size(); i++)
-      if (got[i] != want->words[i] && bad++ == 0) first = i;
+      if (got[i] != want[i] && bad++ == 0) first = i;
     if (!check) {
-      printf("%-7s timed only: %u regions of %s, %d launches, %.4f s, %.3f TMAC/s\n", f.name, regions,
-             f.pat->name, n, secs, tmacs);
+      printf("%-7s timed only: %u regions, %d launches, %.4f s, %.3f TMAC/s\n", f.name, regions, n,
+             secs, tmacs);
     } else if (bad) {
       failed++;
-      printf("%-7s FAIL: %zu of %zu words differ (%s regions); first: region %zu word %zu, got %08x want %08x\n",
-             f.name, bad, got.size(), f.pat->name, first / 16, first % 16, got[first], want->words[first]);
+      printf("%-7s FAIL: %zu of %zu words differ; first: region %zu word %zu, got %08x want %08x\n",
+             f.name, bad, got.size(), first / 16, first % 16, got[first], want[first]);
     } else {
-      printf("%-7s ok: %u regions of %s, all 16 words match; %d launches, %.4f s, %.3f TMAC/s\n", f.name,
-             regions, f.pat->name, n, secs, tmacs);
+      printf("%-7s ok: %u regions, all 16 words match; %d launches, %.4f s, %.3f TMAC/s\n", f.name,
+             regions, n, secs, tmacs);
     }
   }
   if (dAt != dA) hipFree(dAt);

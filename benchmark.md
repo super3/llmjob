@@ -1336,6 +1336,24 @@ first round is not scored. Not rows: no competitor ran.
   Salad moved the box to `f9b8be8b`, where the two timed 59.2 and 58.1. That PC wasn't used.
 - **Cost:** two high-priority boxes for about 15 minutes each, about $0.08.
 
+**Then the real thing, and why it was dropped.** Two-lane regions in the fold itself (`911d2ab`, Stage A: fold test
+only), at 03:00 UTC on 1 November, on `amdtest-rdna4-10` (9070 XT) and `amdtest-rdna4-11` (9060 XT): both forms
+checked bit for bit against a 32x8 reference on the card, then fold-only timing, 4 rounds of 20 launches at 131072 x
+4096, the builds taking turns:
+
+| Card | Register form, by round | Store form |
+|---|---|---|
+| RX 9070 XT | −0.23%, +0.32%, +0.21%, about level | −32 to −33% |
+| RX 9060 XT | +0.12%, −0.02%, −0.73%, about level | −0.65 to −1.26% |
+
+- CI's census on ROCm 7.2.0 shows the fold built as designed: 20 fewer VALU a readout copy in the slab loop
+  (257 to 217), DPP ops 24 to 3, `v_permlanex16` 12 to 0, a 1-instruction keep step, no scratch, 212 VGPRs and
+  still 6 waves a SIMD. The VALU it saved don't turn into time, where the probe that removed the same steps gained
+  2-3% of fold time. What the probe removed beyond the VALU is every cross-lane dependency in the chunk loop, which
+  no correct readout can.
+- Under the decision's rule (median under +0.5% on both cards) the item stops: `911d2ab` is reverted, and the
+  probe stays as the gate for the next readout idea.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
