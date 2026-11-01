@@ -3006,6 +3006,54 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
   }
   return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
 }
+#if PEARL_TALL_STUB_SPIN
+// The tall fold's spin stand-in for the paired hash (PEARL_TALL_STUB_SPIN, timing only):
+// the hasher waits on clock64 until that many cycles after t0, read at the hand-off, and
+// does no other work. The phase (3000) and the partner's window (1700) are counted from
+// the hand-off too; the tile's coordinates between the two take about 150-300 cycles.
+__device__ __forceinline__ void pearl_tall_stub_spin(long long t0) {
+  while (clock64() - t0 < (long long)PEARL_TALL_STUB_SPIN) {
+  }
+}
+#endif
+#if PEARL_TALL_STUB_ALU
+// The tall fold's ALU stand-in for the paired hash (PEARL_TALL_STUB_ALU, timing only):
+// about the hash's issue count in a 0.8 KB loop instead of 18 KB of straight code. Each
+// pass is four independent chains of g's twelve steps (adds of two or three registers,
+// XORs, rotates), so the same ILP of 4 as the hash's column and diagonal steps, and its
+// mix of instructions. No shuffles. Every word of both transcripts and the key feeds the
+// start, so it waits for all 8 loads, as the hash does. Its word is not the hash's. Two
+// words a chain, not g's four: with sixteen words of state ptxas rescheduled the chunk
+// loop (44 of its 540 instructions, sm_89); with eight it leaves it as it is.
+// CUDA 12.6: a pass is 51 instructions, 816 bytes. The hasher's path from the hand-off
+// to the zeroing runs 1,169 instructions a tile with it on sm_89 (1,172 on sm_86),
+// against 1,164 with the hash (1,167).
+__device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
+                                                        const uint32_t tp[16]) {
+  uint32_t a[4], d[4];
+#pragma unroll
+  for (int c = 0; c < 4; c++) {
+    a[c] = key[c] ^ tm[c] ^ tp[c] ^ tm[4 + c] ^ tp[4 + c];
+    d[c] = key[4 + c] ^ tm[8 + c] ^ tp[8 + c] ^ tm[12 + c] ^ tp[12 + c];
+  }
+  const uint32_t mx = tm[0], my = tp[1];
+#pragma unroll 1
+  for (int r = 0; r < 21; r++) {
+#pragma unroll
+    for (int c = 0; c < 4; c++) {
+      a[c] = a[c] + d[c] + mx;
+      d[c] = rotr32(d[c] ^ a[c], 16);
+      a[c] = a[c] + d[c];
+      d[c] = rotr32(d[c] ^ a[c], 12);
+      a[c] = a[c] + d[c] + my;
+      d[c] = rotr32(d[c] ^ a[c], 8);
+      a[c] = a[c] + d[c];
+      d[c] = rotr32(d[c] ^ a[c], 7);
+    }
+  }
+  return a[0] ^ a[1] ^ a[2] ^ a[3] ^ d[0] ^ d[1] ^ d[2] ^ d[3];
+}
+#endif
 #endif
 #ifdef PEARL_TALL_CYC
 // Cycles a tile (bench only, -DPEARL_TALL_CYC, the cp.async ring): thread 0 reads clock64

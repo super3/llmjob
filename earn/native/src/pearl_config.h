@@ -1814,6 +1814,58 @@ typedef struct {
 #else
 #define PEARL_TALL_HASH_PAIRS_ON 0
 #endif
+// PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU (0 by default): round 4's tile-hash timing
+// stubs (RTX 40 rank 1). After the hand-off one warp a scheduler hashes its column slot's
+// 48 regions, about 3,000 cycles, while its partner runs on alone for about 1,700 before it
+// waits for the hasher's release of stage 0. Skipping the hash saves 1,295 cycles a tile
+// (PEARL_ABLATE_TRANSCRIPT_HASH, 4090), and nothing yet says whether that cost is the
+// phase outlasting the partner's window, issue and register-port contention while it runs,
+// or instruction fetch (the hot hash is 18.5 KB of straight-line code). Each switch puts
+// a stand-in where the hash was and keeps the rest of the hasher: the transcripts zeroed
+// for the next tile, and the hit test with its record code, whose test never passes here:
+// - STUB_SPIN=N: the hasher spins on clock64 until N cycles after the hand-off and does
+//   nothing else, not even the transcript loads (N = 3000, the phase; 1700, the window;
+//   1, no hash at all).
+// - STUB_ALU=1: both transcripts loaded, then an ALU burst of about the hash's issue
+//   count and mix in a 0.8 KB loop (pearl_tall_stub_alu). No shuffles.
+// Read against base and no hash: the spin at 3000 level with base and at 1700 level with
+// no hash says the window binds; the burst level with no hash says fetch or the hash's
+// own latency; the burst level with base says issue or port contention.
+// CUDA 12.6, sm_86 (both kernels) and sm_89: every arm keeps base's registers (254 and
+// 255) with no spill, and the chunk loop's code byte for byte. With the spin, all code
+// before the hand-off is base's; with the burst, the prologue's one-time zeroing loop is
+// 4 instructions shorter, so the same loop sits 64 bytes earlier. The ablation instead
+// changes the chunk loop (12 of its 540 instructions on sm_89, 22 of 542 on sm_86), so
+// STUB_SPIN=1 is the like-for-like "no hash".
+// Timing only: no hit is ever reported, so the host refuses any target but zero
+// (pearl_host_submit), the one hashrate.js, probes/race.cu and bench set, and names the
+// stub in the fold's name. The cp.async ring's paired hash only: sm_86 and sm_89 builds.
+// At 0 every kernel is byte for byte what it was. earn/test/tallHashStub.test.js.
+#ifndef PEARL_TALL_STUB_SPIN
+#define PEARL_TALL_STUB_SPIN 0
+#endif
+#ifndef PEARL_TALL_STUB_ALU
+#define PEARL_TALL_STUB_ALU 0
+#endif
+#if PEARL_TALL_STUB_SPIN < 0 || PEARL_TALL_STUB_SPIN > 100000
+#error "PEARL_TALL_STUB_SPIN is a spin in cycles: 0 (off) to 100000"
+#endif
+#if PEARL_TALL_STUB_ALU != 0 && PEARL_TALL_STUB_ALU != 1
+#error "PEARL_TALL_STUB_ALU is 0 or 1"
+#endif
+#if PEARL_TALL_STUB_SPIN && PEARL_TALL_STUB_ALU
+#error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the same hash: build one or the other"
+#endif
+#if (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU) && defined(PEARL_ABLATE_TRANSCRIPT_HASH)
+#error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the hash PEARL_ABLATE_TRANSCRIPT_HASH skips: build one or the other"
+#endif
+#if (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU) && !PEARL_TALL_HASH_PAIRS
+#error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the paired hash: build them without PEARL_TALL_HASH_PAIRS=0"
+#endif
+#if (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 860 \
+    && __CUDA_ARCH__ != 890
+#error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the cp.async ring's paired hash: build them for sm_86 or sm_89 alone"
+#endif
 // Blackwell's tall fold makes its readout's XOR folds before the chunk-0 hand-off guard,
 // where only the three shared XORs that write the transcripts need to wait for the hasher.
 // The readout's ~100 integer ops then run while the hasher's partner would otherwise sit

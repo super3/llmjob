@@ -1009,6 +1009,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // sit inside it, and behind a plain wr == 0 branch ptxas fences every ring wait of the
     // tile loop with convergence barriers to reach them (-1.2% a tile, g40-042).
     if (__any_sync(0xffffffffu, wr == 0u)) {
+#if PEARL_TALL_STUB_SPIN
+      // The spin stub's clock starts here, at the hand-off, where the phase and the
+      // partner's window are counted from, not after the tile's coordinates below.
+      const long long stub_t0 = clock64();
+#endif
 #else
     if (wr == 0u) {
 #endif
@@ -1076,14 +1081,29 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
                      : "=r"(tm[4 * q]), "=r"(tm[4 * q + 1]), "=r"(tm[4 * q + 2]), "=r"(tm[4 * q + 3])
                      : "r"(ra + 16u * q)
                      : "memory");
-      const uint32_t w1 = pearl_hp_msw(test.key, tm, test.hash_big_endian);
+      const uint32_t h1 = pearl_hp_msw(test.key, tm, test.hash_big_endian);
 #pragma unroll
       for (uint32_t q = 0; q < 4; q++)
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(tp[4 * q]), "=r"(tp[4 * q + 1]), "=r"(tp[4 * q + 2]), "=r"(tp[4 * q + 3])
                      : "r"(rp + 16u * q)
                      : "memory");
-      const uint32_t w2 = pearl_hp_msw_pair(test.key, tp, hh, test.hash_big_endian);
+      const uint32_t h2 = pearl_hp_msw_pair(test.key, tp, hh, test.hash_big_endian);
+      // The top words the hit test reads: the hash's, h1 and h2. With a timing stub
+      // (PEARL_TALL_STUB_SPIN, _ALU) nothing reads h1 or h2, so ptxas drops the hash, and
+      // the stand-in runs where it was. Its words keep the hit test: ~0u passes only a
+      // target whose top word is all ones, which the host refuses, and a region that
+      // passes is still hashed in full before it is reported. Kept, the record code leaves
+      // ptxas's tile and chunk loops as they are without the switch (they move when it
+      // goes, as in the ablation's build).
+#if PEARL_TALL_STUB_SPIN
+      pearl_tall_stub_spin(stub_t0);
+      const uint32_t w1 = ~0u, w2 = ~0u;
+#elif PEARL_TALL_STUB_ALU
+      const uint32_t w1 = pearl_tall_stub_alu(test.key, tm, tp), w2 = ~0u;
+#else
+      const uint32_t w1 = h1, w2 = h2;
+#endif
       auto record = [&](uint32_t Lc) {
         const uint32_t owr = Lc / WARP_REGIONS, rem = Lc % WARP_REGIONS;
         const uint32_t ocb = rem / (2u * RPL);

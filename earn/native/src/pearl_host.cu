@@ -2879,6 +2879,23 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (regions_out) *regions_out = 0;
   if (!ctx || !ctx->haveJob) return false;
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+  // A PEARL_TALL_STUB_SPIN or _ALU build (pearl_config.h) puts a stand-in where the tall
+  // fold's hash was and reports no hit. It runs only at target zero, the hardest, which
+  // hashrate.js, probes/race.cu and bench set: it times the fold and finds nothing. Any
+  // other target is a job it must not mine. Every card, not only RTX 30 and 40.
+  {
+    bool zero = true;
+    for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
+    if (!zero) {
+      if (err && err_len)
+        snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "
+                 "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "
+                 "and PEARL_TALL_STUB_ALU to mine");
+      return false;
+    }
+  }
+#endif
   if (ctx->pendCount >= Ctx::kSlots) {
     if (err && err_len) snprintf(err, err_len, "search pipeline full: collect a batch first");
     return false;
@@ -3339,6 +3356,15 @@ static const char kAblateDramTag[] = ", ABLATE_DRAM";
 #else
 static const char kAblateDramTag[] = "";
 #endif
+// A tall-fold timing stub (PEARL_TALL_STUB_SPIN or _ALU) says so too, so race.cu's AUDIT
+// line and bench's fold line never credit its reading to the fold.
+#if PEARL_TALL_STUB_SPIN
+#define PEARL_TALL_STUB_STR2(x) #x
+#define PEARL_TALL_STUB_STR(x) PEARL_TALL_STUB_STR2(x)
+static const char kTallStubTag[] = ", STUB_SPIN=" PEARL_TALL_STUB_STR(PEARL_TALL_STUB_SPIN);
+#elif PEARL_TALL_STUB_ALU
+static const char kTallStubTag[] = ", STUB_ALU";
+#endif
 
 // Which fold this context's card runs, as resolve_fold read it off the loaded
 // binaries, for the bench probe to print: host-pass macros describe the host compile,
@@ -3375,6 +3401,13 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              ctx->foldPinB ? ", B' held" : "",
              ctx->foldUnfused ? ", hash in its own kernel" : "",
              PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+    {
+      Ctx *c = const_cast<Ctx *>(ctx);
+      const size_t n = strlen(c->foldName);
+      snprintf(c->foldName + n, sizeof c->foldName - n, "%s", kTallStubTag);
+    }
+#endif
     return ctx->foldName;
   }
   // sm_100 runs sm_120's TMA fold; its name says so, so a B200 reading is not taken for a
@@ -3382,6 +3415,15 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldTall && ctx->foldTma && PEARL_SM100_ARCH(ctx->tallArch * 10))
     return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, sm_100 build of "
            "sm_120's fold";
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+  // Ada's cp.async ring with a timing stub: its name below, then the stub's.
+  if (ctx->foldTall && !ctx->foldTma) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "tall 192x256, 8 warps of 96x64, cp.async ring%s%s",
+             ctx->foldTiled ? ", per-tile operands" : "", kTallStubTag);
+    return ctx->foldName;
+  }
+#endif
   if (ctx->foldTall)
     return ctx->foldTma ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands"
                         : (ctx->foldTiled ? "tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands"
