@@ -1528,8 +1528,9 @@ Against today's release on the same PC, `test/sweep.sh` and `hashrate.js` 60 s a
 - **One PC's hang-ups, traced:** on `733bb3d9` Kryptex closed the 9060 XT's connection 8 times in 90 minutes, each
   time with a k 4096 share waiting, so 8 of 36 shares got no reply (27 accepted, 1 stale). All 36 pass the spec's
   verifier. A k 2048 control on another 9060 XT PC (`f029e99c`) got 34 of 34 on one connection, and k 4096 on a third
-  (`a4e51ee5`) got 21 of 21 on one connection, so the hang-ups belonged to that PC, not to k 4096. The miner's k
-  fallback only counts hang-ups before the first accepted share, and wouldn't have caught it.
+  (`a4e51ee5`) got 21 of 21 on one connection, as did the 9070 XT on both pools, so the hang-ups point to that PC,
+  not to k 4096 (k 2048 never ran on it). The miner's k fallback only counts hang-ups before the first accepted
+  share, and wouldn't have caught it.
 - **Salad:** three restarts went silent and needed a new PC (`realloc`), and two extra boxes created by a script
   mistake were deleted within a minute, before they mined.
 - **Cost:** about 3 hours of a 9070 XT and 5 hours of a 9060 XT, high priority, about $1.20.
