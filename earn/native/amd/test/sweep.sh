@@ -17,6 +17,10 @@
 #   SWEEP_ROUNDS  rounds of hashrate.js over the variants (default 2)
 #   SWEEP_CB      batch widths to try on one variant, e.g. "64 128" (default none)
 #   SWEEP_CBV     the variant SWEEP_CB runs on (default the first)
+#   SWEEP_TIMEONLY  variants to time although their check finds wrong words, space-separated, e.g. "drop" for
+#                 a -DPEARL_AMD_READOUT_DROP=1 build, whose transcripts are wrong on purpose (pearl_amd_fold.h).
+#                 One whose check passes is not timed: its flags did not change the fold. Nor is one whose
+#                 fold did not run to the end.
 #
 # Each result is one "[amdtest] HH:MM:SS sweep ..." line, written straight to the container's log too, so it shows
 # while the sweep runs (the run task prints only the end of its output, when it finishes).
@@ -34,7 +38,7 @@ SWEEP=${SWEEP:-base=}
 SWEEP_FOLD=${SWEEP_FOLD-131072:4096:10}
 IFS=: read -r HSECS HWARM <<< "${SWEEP_HASH:-40:10}"
 ROUNDS=${SWEEP_ROUNDS:-2}
-out "start $ARCH fold $FOLD; variants: $SWEEP; fold timing ${SWEEP_FOLD:-none}; hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
+out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}; hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
 
 names=()
 IFS=';' read -ra VARS <<< "$SWEEP"
@@ -44,14 +48,21 @@ for v in "${VARS[@]}"; do
   t0=$(date +%s)
   if ! PEARL_AMD_CFLAGS="$flags" ./build-amd.sh gpu "$ARCH" > /root/sweep-build-$name.log 2>&1; then
     out "$name build FAIL ($flags)"
-    grep -E 'error' /root/sweep-build-$name.log | head -5 | while IFS= read -r l; do out "$name | ${l:0:300}"; done
+    grep -E 'error|build-amd' /root/sweep-build-$name.log | head -5 | while IFS= read -r l; do out "$name | ${l:0:300}"; done
     continue
   fi
   mkdir -p /root/var/$name
   cp build/pearl_core_hip.node build/pearl_amd_foldtest /root/var/$name/
   chk=$(timeout 600 /root/var/$name/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" 2>&1 | grep -E "^($FOLD|PASS|FAIL|no fold)" | tr '\n' ' ')
   out "$name built in $(( $(date +%s) - t0 ))s ($flags); check: $chk"
-  case "$chk" in *PASS*) names+=("$name") ;; *) out "$name not timed: the check failed" ; continue ;; esac
+  case " ${SWEEP_TIMEONLY:-} " in *" $name "*) timeonly=1 ;; *) timeonly=0 ;; esac
+  case "$timeonly:$chk" in
+    0:*PASS*) names+=("$name") ;;
+    1:*PASS*) out "$name not timed: it is timing-only, yet the check passed, so its flags did not change the fold"
+              continue ;;
+    1:*"words differ"*) out "$name check FAIL (expected: timing only)"; names+=("$name") ;;
+    *) out "$name not timed: the check failed" ; continue ;;
+  esac
   for spec in $SWEEP_FOLD; do
     IFS=: read -r FM FC FR <<< "$spec"
     r=$(timeout 900 /root/var/$name/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')

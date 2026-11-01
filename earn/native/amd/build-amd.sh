@@ -30,7 +30,8 @@
 #   NODE_ADDON_API  node-addon-api's include folder (default: require('node-addon-api')).
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
 #   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_TILED=0 to
-#                   build a tuning variant (pearl_amd_fold.h lists the knobs).
+#                   build a tuning variant (pearl_amd_fold.h lists the knobs). Refused with
+#                   PEARL_AMD_READOUT_DROP in winlib, and in gpu under CI: it is timing-only.
 #
 # The portable kernels are pearl_kernel.cu's own: this script copies that file up to the
 # start of the CUDA folds into build/gen/pearl_kernel_portable.cu, and stops if the line it
@@ -55,6 +56,20 @@ MARKER='^// A 16-byte global->shared copy that does not pass through registers'
 mode="${1:-}"
 shift || true
 if windows; then archs="${*:-$WINDOWS_ARCHS}"; else archs="${*:-$DEFAULT_ARCHS}"; fi
+
+# PEARL_AMD_READOUT_DROP (pearl_amd_fold.h) builds a core with wrong transcripts, to time the
+# RDNA 4 readout. It never goes in a build that can ship: winlib is the Windows package's, and a
+# gpu build in CI is the Linux release's (native-core.yml). Its place is a gpu build on a test
+# box, from test/sweep.sh.
+case "${PEARL_AMD_CFLAGS:-}" in
+  *PEARL_AMD_READOUT_DROP*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: readout-drop build is timing-only: PEARL_AMD_READOUT_DROP is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 slice() {
   mkdir -p "$GEN"

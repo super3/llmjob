@@ -107,6 +107,7 @@ struct Ctx {
   char arch[64] = {0};      // gcnArchName, e.g. "gfx942:sramecc+:xnack-"
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
+  bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   char foldErr[512] = {0};
   char foldName[320] = {0};
 
@@ -671,6 +672,7 @@ void resolve_fold(Ctx *ctx) {
     return;
   }
   ctx->emulated = (caps[0] & PEARL_AMD_CAP_EMULATED) != 0;
+  ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
   int want = ctx->emulated ? fold_by_name("mfma16") : native_fold(ctx->arch);
   const char *forced = getenv("PEARL_AMD_FOLD");
   if (forced && forced[0]) {
@@ -1238,6 +1240,20 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   if (ctx->fold < 0) {
     if (err && err_len) snprintf(err, err_len, "%s", ctx->foldErr);
     return false;
+  }
+  // A PEARL_AMD_READOUT_DROP build (pearl_amd_fold.h) computes wrong transcripts, so a hit it
+  // reported would not be a real one. It runs only at target zero, the hardest, which is what
+  // hashrate.js sets: it times the fold and finds nothing. Any other target is a job it must
+  // not mine.
+  if (ctx->readoutDrop) {
+    bool zero = true;
+    for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
+    if (!zero) {
+      if (err && err_len)
+        snprintf(err, err_len, "readout-drop build is timing-only: it runs only at target 0 (hashrate.js), "
+                 "never on a job; build without PEARL_AMD_READOUT_DROP to mine");
+      return false;
+    }
   }
   const FoldInfo &f = kFolds[ctx->fold];
   const uint32_t k = ctx->profile.k, rank = ctx->profile.rank;

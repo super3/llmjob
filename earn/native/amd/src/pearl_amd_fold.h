@@ -95,6 +95,7 @@
 #define PEARL_AMD_CAP_WMMA11 8u
 #define PEARL_AMD_CAP_WMMA12 16u
 #define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, emulated
+#define PEARL_AMD_CAP_DROP 0x200u      // a PEARL_AMD_READOUT_DROP build: timing only, never mines
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -394,6 +395,22 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
   return x;
 }
 
+// PEARL_AMD_READOUT_DROP=1: a build for timing only, whose transcripts are wrong. In the RDNA 4
+// fold (wmma12) only, each chunk's readout skips its cross-lane steps: no pearl_amd_group_xor
+// (three lane moves and their XORs), no compare and no selects. Each lane XORs its own part of
+// each word into keepLo instead, and keepHi stays zero. The matrix work, the loads and the
+// barriers are unchanged, so a hashrate.js race against the default build times the VALU those
+// steps cost. About 68 VALU a chunk a wave are left, close to the 68-70 of two-lane 32x8
+// regions (round 4 item 2), which would remove the same steps for real. This build is that
+// item's gate: two-lane goes ahead only if dropping the steps is worth at least +1.0% in 3 of 3
+// scored rounds on both an RX 9070 XT and an RX 9060 XT.
+// It must never mine or ship. Every code object built with it reports PEARL_AMD_CAP_DROP, and
+// the host then refuses any target but zero, the one hashrate.js sets. build-amd.sh refuses it in
+// the builds that ship, and test/sweep.sh times it only when SWEEP_TIMEONLY names it.
+#ifndef PEARL_AMD_READOUT_DROP
+#define PEARL_AMD_READOUT_DROP 0
+#endif
+
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
 // col0 + blockIdx.x * 256 (the batch's columns start at col0). Every region of the tile gets
 // its 16 transcript words in `tr`, at its batch-local number: column offset index within
@@ -419,6 +436,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
   constexpr int RB = WM / 32, CB = WN / 64;            // 32x64 blocks a wave
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
+  // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
+  constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
   static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
@@ -504,9 +523,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
 #pragma unroll
         for (int q = 0; q < NRO; q++) {
-          const uint32_t v = pearl_amd_group_xor(x[q]);
-          keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
-          keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
+          if constexpr (kDrop) {
+            keepLo[rb][cb][q] ^= x[q];   // timing only: the transcript is wrong
+          } else {
+            const uint32_t v = pearl_amd_group_xor(x[q]);
+            keepLo[rb][cb][q] = (mine && !hi) ? v : keepLo[rb][cb][q];
+            keepHi[rb][cb][q] = (mine && hi) ? v : keepHi[rb][cb][q];
+          }
         }
       }
   };
@@ -767,7 +790,9 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
   for (int j = 0; j < 16; j++) hits.transcript[slot * 16u + j] = tm[j];
 }
 
-// Which folds this code object has bodies for, and its wave size: out[0] and out[1].
+// Which folds this code object has bodies for, and its wave size: out[0] and out[1]. A
+// PEARL_AMD_READOUT_DROP build says so on every target, the ones its drop leaves alone too, so
+// the host refuses to mine with it on any card.
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -779,5 +804,6 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
            | (PEARL_AMD_WMMA11 ? PEARL_AMD_CAP_WMMA11 : 0u)
            | (PEARL_AMD_WMMA12 ? PEARL_AMD_CAP_WMMA12 : 0u);
 #endif
+  if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   out[1] = (uint32_t)warpSize;
 }
