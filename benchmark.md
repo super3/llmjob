@@ -952,6 +952,34 @@ competitor ran.
   cp.async fold), and at k 2048 on the 5090's PREGUARD-off and batch-1024 builds.
 - **Cost:** two high-priority boxes for 15 minutes each, about $0.15.
 
+### Our own builds raced on Salad, 1 November: what moving the operands costs a stock 5090
+
+Research item 16 (the RTX 50 fold rewrite), step 1, raced at 21:19 UTC on 2026-11-01 at `933a79a`, built with CUDA
+13.3.1, on `nvtest-rtx5090-11`: a stock RTX 5090 (PC `cbd4eba1`, driver 621.01, power limit 600 W, its default). The
+rewrite only pays if, at the power cap, moving fewer operand bytes lets the clock rise. `PEARL_TALL_AB_SKIP` (timing
+only; the host refuses to mine with it) stops the TMA producer loading A' (1), B' (2) or both (3) after each block's
+first tile, so the warps fold the same MMAs, readout and hash on what is already in shared memory, with about 99.8% of
+the operand bytes gone. Race mode, 6 s turns after 2 s warm-up for 1,200 s, clock and power logged each turn. Not
+rows: no competitor ran.
+
+| Arm | vs release | ±95% | Rounds ahead | Clock | Per clock | Power |
+|---|---|---|---|---|---|---|
+| release | 432.46 TH/s | | | 2613 MHz | | 600.0 W in every turn |
+| copy of the release | +0.02% | 0.02 | 20/40 | +0.00% | +0.01% | 600.0 W |
+| skip A' (12 KB a stage) | +4.19% | 0.02 | 40/40 | +4.28% | −0.08% | 600.0 W |
+| skip B' (16 KB a stage) | +5.20% | 0.03 | 40/40 | +5.32% | −0.12% | 600.0 W |
+| skip both | +8.33% | 0.03 | 40/40 | +8.16% | +0.15% | 600.0 W |
+
+- **Moving the operands costs a stock 5090 about 8% of its clock.** The card sits at its 600 W limit in every turn, and
+  without the operand traffic the same work runs 214 MHz faster; work per clock moves +0.15%, inside the 0.3% noise.
+  So it is energy, about 0.3% of clock for each KB a stage moves, and almost none of it is waiting. The bytes come
+  from L2, not DRAM (memory busy 2.0% against 0.0%): this is the cost of L2-to-SM traffic and shared-memory fills.
+- **The rewrite passes its step-1 gate** (2% at the cap): a fold that makes its operands on the SM instead of moving
+  them could win back part of the 8%. How much depends on what generating them costs, which step 2 prices.
+- The build stage's register and spill lines didn't reach the box's log. A spill would slow a skip arm, not speed it,
+  so it could only understate the result.
+- **Cost:** one high-priority box for about 22 minutes, about $0.15.
+
 ## A100-class (sm_80)
 
 Run on 2026-10-10, 16:06–16:46 UTC. Four rows are on their own machine; one
