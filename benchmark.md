@@ -1317,6 +1317,25 @@ Alphanumeric and Quantus, not Pearl, so it's 0.
     (both 9060 XT PCs the same 248 hits in 38 salts). What makes them low isn't known.
   - These ran on other PCs than SRBMiner's; the rerun above compares the two on the same PCs.
 
+### Our own builds on Salad, 1 November: the readout probe for two-lane regions
+
+Run from 01:16 to 01:35 UTC on 2026-11-01 on `amdtest` boxes, at `86ac8f6`: the default core against
+`PEARL_AMD_READOUT_DROP`, a timing-only build whose RDNA 4 fold skips the readout's cross-lane steps (its hits are
+wrong, and it refuses to mine). It times the most that two-lane 32x8 hash regions (research item 2) could gain,
+before anyone builds them. `test/sweep.sh`, `hashrate.js` 60 s after 20 s, the builds taking turns, 4 rounds; the
+first round is not scored. Not rows: no competitor ran.
+
+| Card | PC | Release (TH/s) | Probe | Scored rounds | Fold alone |
+|---|---|---|---|---|---|
+| RX 9070 XT | `d36593f1` | 110.8–111.6 | 112.6–113.1 | +1.48%, +1.50%, +1.62% | +3.0% |
+| RX 9060 XT | `f9b8be8b` | 61.4–61.5 | 62.4 | +1.61%, +1.61%, +1.64% | +2.0% |
+
+- **The gate passed:** at least +1.0% in all three scored rounds on both cards, so two-lane regions get built. The
+  design review had put the gain at +0.8–0.9%; the readout costs more than it estimated.
+- **The 9060 XT's first PC** timed the probe's fold at 11.7 TMAC/s against 59.6 for the default, once, before
+  Salad moved the box to `f9b8be8b`, where the two timed 59.2 and 58.1. That PC wasn't used.
+- **Cost:** two high-priority boxes for about 15 minutes each, about $0.08.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
