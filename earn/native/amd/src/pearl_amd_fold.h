@@ -411,42 +411,6 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #define PEARL_AMD_READOUT_DROP 0
 #endif
 
-// PEARL_AMD_READOUT_V2=1 or 2 (round 4 item 4; off by default): the RDNA folds (wmma11, wmma12)
-// read out with no cross-lane step. The XOR tree is today's. Then each lane XORs its two words
-// of a block straight into LDS with a non-returning atomic, and the eight lanes that share a
-// region combine there: 1 is one ds_xor_b64 a block, 2 is two ds_xor_b32. So no work in the
-// chunk loop waits on another lane: no pearl_amd_group_xor, no compare, no selects, no
-// keepLo/keepHi. At the end of the tile each lane reads its wave's words back and stores four
-// words of two regions, 16 bytes each. The 8 KB of words sit in the 16 bytes of padding at the
-// end of each sB row, which no staging store or fragment load touches, so LDS stays 36 KB and
-// the double buffer is unchanged.
-// Why: the drop probe above gained +1.5-1.6% on RDNA 4 by removing the cross-lane steps (with
-// wrong transcripts). Two-lane 32x8 regions removed the same VALU but kept one lane swap a
-// chunk, and timed level. v2 tests whether that cross-lane dependency was the cost. It gives
-// the same 16x16 transcripts as today, so a build that passes the fold test can mine.
-#ifndef PEARL_AMD_READOUT_V2
-#define PEARL_AMD_READOUT_V2 0
-#endif
-#if PEARL_AMD_READOUT_V2 != 0 && PEARL_AMD_READOUT_V2 != 1 && PEARL_AMD_READOUT_V2 != 2
-#error "PEARL_AMD_READOUT_V2 is 0 (off), 1 (ds_xor_b64) or 2 (ds_xor_b32)"
-#endif
-#if PEARL_AMD_READOUT_V2 && PEARL_AMD_READOUT_DROP
-#error "PEARL_AMD_READOUT_V2 and PEARL_AMD_READOUT_DROP are two different readouts: build one"
-#endif
-
-// Readout v2's combine: XOR v into the LDS word at p and drop the old value, so the compiler
-// can pick the non-returning ds_xor. Relaxed, at workgroup scope: XOR is commutative and
-// associative, so the order of the eight lanes' XORs can't change the word, and the slab
-// barrier orders them before the read-back. HIP-CPU runs it as a plain atomic.
-template <class U>
-__device__ __forceinline__ void pearl_amd_lds_xor(U *p, U v) {
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  __hip_atomic_fetch_xor(p, v, __ATOMIC_RELAXED, __HIP_MEMORY_SCOPE_WORKGROUP);
-#else
-  __atomic_fetch_xor(p, v, __ATOMIC_RELAXED);
-#endif
-}
-
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
 // col0 + blockIdx.x * 256 (the batch's columns start at col0). Every region of the tile gets
 // its 16 transcript words in `tr`, at its batch-local number: column offset index within
@@ -457,8 +421,7 @@ __device__ __forceinline__ void pearl_amd_lds_xor(U *p, U v) {
 // XORs the accumulators it holds of each region in the block (32 values), the eight lanes
 // that share the region combine theirs, and lane r of those eight keeps transcript words r
 // and r + 8. So all 16 words of a region end up in registers, two a lane, with no shared
-// memory and no rotate (16 chunks: each word is written once, onto zero). Readout v2 (above)
-// combines the eight lanes' parts in LDS instead.
+// memory and no rotate (16 chunks: each word is written once, onto zero).
 template <class P>
 __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ Ap,
                                                     const int8_t *__restrict__ Bp, uint32_t k,
@@ -475,23 +438,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int NRO = P::kRoByLane ? 1 : 2;            // regions a lane holds in a block
   // PEARL_AMD_READOUT_DROP (above): the RDNA 4 fold only, for timing.
   constexpr bool kDrop = PEARL_AMD_READOUT_DROP && std::is_same<P, PearlAmdWmma12>::value;
-  // PEARL_AMD_READOUT_V2 (above): the RDNA folds only. CDNA runs VALU alongside its matrix
-  // instructions, and there is no CDNA card to test on.
-  constexpr bool kV2 = PEARL_AMD_READOUT_V2 != 0 &&
-                       (std::is_same<P, PearlAmdWmma12>::value || std::is_same<P, PearlAmdWmma11>::value);
-  constexpr bool kV2Wide = kV2 && PEARL_AMD_READOUT_V2 == 1;   // one ds_xor_b64, not two ds_xor_b32
   static_assert(T == (int)PEARL_AMD_THREADS && BM == (int)PEARL_AMD_BM && BN == (int)PEARL_AMD_BN,
                 "the host launches every matrix fold as 256 threads over 128x256 tiles");
   static_assert((UA + UB) % T == 0 && UA % T == 0, "the staging must split evenly");
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
-  // v2's words fill sB's row padding exactly: 8 waves of 32 lanes as 2 x 4, each wave's 64 B'
-  // rows its own, two 32x64 blocks a wave with two row offsets a lane, 16 bytes of padding a
-  // row, and at most 16 chunks (the host refuses more).
-  static_assert(!kV2 || (W == 32 && T / W == 8 && P::kWC == 4 && WN == 64 && RB == 2 && CB == 1 &&
-                         NRO == 2 && S - KS == 16 && QR * 16 == KS && PEARL_JACKPOT_BUCKETS == 16 &&
-                         PEARL_FOLD_CHUNKS <= PEARL_JACKPOT_BUCKETS),
-                "readout v2's layout needs RDNA's 2 x 4 waves of 64x64 and 16 bytes of padding a row");
 
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
@@ -547,24 +498,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
       for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] = keepHi[rb][cb][q] = 0u;
   const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
-  // Readout v2's words: this wave's 64 rows of sB[wr] (the B' rows of its own columns), in the
-  // 16 bytes after each row's slab. Word c of the region at block rb, column offset co and row
-  // offset q is at row 32 * rb + 2 * c + (co >> 1), byte KS + 8 * (co & 1) + 4 * q. So a lane's
-  // two row offsets are one 8-byte pair, and the four column offsets of one instruction are in
-  // four different banks. Only this wave reads or writes these rows' padding.
-  [[maybe_unused]] int8_t *const v2Wave = sB[wr] + wc * WN * S + KS;
-  [[maybe_unused]] int8_t *const v2Lane = v2Wave + ((lane >> 2) & 1) * S + 8 * ((lane >> 1) & 1);
 
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
-  if constexpr (kV2) {
-    // LDS holds whatever the last block on this CU left there, so each wave zeroes its own
-    // words first: lane l clears rows l and l + 32. The first XOR comes several barriers later.
-    const pearl_amd_v4i zero = {0, 0, 0, 0};
-    *reinterpret_cast<pearl_amd_v4i *>(v2Wave + lane * S) = zero;
-    *reinterpret_cast<pearl_amd_v4i *>(v2Wave + (lane + 32) * S) = zero;
-  }
   __syncthreads();
   // The end of chunk c: its transcript word, for every region the wave holds.
   auto readout = [&](uint32_t c) {
@@ -584,18 +521,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
 #pragma unroll
             for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
-        if constexpr (kV2) {
-          // v2: word c of the lane's two regions in this block, XORed into LDS. Nothing waits
-          // for it: the slab barrier's fence does, along with the staging stores.
-          int8_t *const p = v2Lane + (2 * S) * c + (32 * S) * rb;
-          if constexpr (kV2Wide) {
-            pearl_amd_lds_xor(reinterpret_cast<uint64_t *>(p), (uint64_t)x[0] | (uint64_t)x[1] << 32);
-          } else {
-            pearl_amd_lds_xor(reinterpret_cast<uint32_t *>(p), x[0]);
-            pearl_amd_lds_xor(reinterpret_cast<uint32_t *>(p + 4), x[1]);
-          }
-          continue;
-        }
 #pragma unroll
         for (int q = 0; q < NRO; q++) {
           if constexpr (kDrop) {
@@ -675,27 +600,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
 #endif
 
-  if constexpr (kV2) {
-    // v2: every XOR came before the last slab barrier, so the words are final. Lane l reads
-    // chunks 4 * cq to 4 * cq + 3 of block rb, column offset co (one 8-byte pair a chunk, both
-    // row offsets), and stores each region's four words as 16 bytes. So four lanes write a
-    // region's 64 bytes, in today's order in tr.
-    const int rb = lane >> 4, co = (lane >> 2) & 3, cq = lane & 3;
-    const int8_t *const src = v2Wave + (32 * rb + 8 * cq + (co >> 1)) * S + 8 * (co & 1);
-    pearl_amd_v4i w0, w1;
-#pragma unroll
-    for (int i = 0; i < 4; i++) {
-      const uint64_t v = *reinterpret_cast<const uint64_t *>(src + 2 * S * i);
-      w0[i] = (int32_t)(uint32_t)v;
-      w1[i] = (int32_t)(uint32_t)(v >> 32);
-    }
-    const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u);
-    const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN)) / 64u) + (uint32_t)co;
-    uint32_t *const w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS + 4u * (uint32_t)cq;
-    *reinterpret_cast<pearl_amd_v4i *>(w) = w0;                           // row offset 0
-    *reinterpret_cast<pearl_amd_v4i *>(w + PEARL_JACKPOT_BUCKETS) = w1;   // row offset 1, the next region
-    return;
-  }
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
 #pragma unroll

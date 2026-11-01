@@ -3,9 +3,8 @@
 # only to ./build.
 #
 #   ./build-amd.sh cpu              HIP-CPU: build/pearl_core_hipcpu.node and
-#                                   build/pearl_amd_foldtest_cpu (and variants), which run the
-#                                   AMD kernels on the CPU. For checking without a GPU; never
-#                                   shipped.
+#                                   build/pearl_amd_foldtest_cpu, which run the AMD kernels
+#                                   on the CPU. For checking without a GPU; never shipped.
 #   ./build-amd.sh gpu [gfx...]     ROCm: build/pearl_core_hip.node and build/pearl_amd_foldtest
 #                                   for the listed targets (default: $DEFAULT_ARCHS below).
 #   ./build-amd.sh check [gfx...]   Compile the device code for each target and print each
@@ -30,7 +29,7 @@
 #                   types the folds use).
 #   NODE_ADDON_API  node-addon-api's include folder (default: require('node-addon-api')).
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
-#   PEARL_AMD_CFLAGS  extra compiler flags for gpu, check and cpu, e.g. -DPEARL_AMD_TILED=0 to
+#   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_TILED=0 to
 #                   build a tuning variant (pearl_amd_fold.h lists the knobs). Refused with
 #                   PEARL_AMD_READOUT_DROP in winlib, and in gpu under CI: it is timing-only.
 #
@@ -144,7 +143,7 @@ case "$mode" in
     fi
     mkdir -p "$OUT/cpu"
     inc="-I$HERE/compat/cpu -I$HERE/src -I$SRC -I$GEN -I$HIP_CPU_PATH/include $tbb_inc"
-    flags="-std=c++17 -O2 -fPIC -DNDEBUG ${PEARL_AMD_CFLAGS:-}"
+    flags="-std=c++17 -O2 -fPIC -DNDEBUG"
     echo "cpu: kernels and host"
     $cxx $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip.o"
     echo "cpu: addon"
@@ -160,22 +159,7 @@ case "$mode" in
       $tbb_lib -ltbb -lpthread
     $cxx $flags -DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" \
       -o "$OUT/pearl_amd_foldtest_cpu_pfx" $tbb_lib -ltbb -lpthread
-    # Readout v2 (PEARL_AMD_READOUT_V2) in wmma11 and wmma12, whatever PEARL_AMD_CFLAGS says about
-    # the readout (-U first): form 1 on the one-slab, RDNA 3 and RDNA 4 loops, form 2 on RDNA 4's.
-    # The emulation runs v2's zeroing, LDS XORs and read-back as the card does.
-    echo "cpu: fold check with readout v2"
-    v2="-UPEARL_AMD_READOUT_DROP -UPEARL_AMD_READOUT_V2 -DPEARL_AMD_READOUT_V2=1"
-    v2w="-UPEARL_AMD_READOUT_DROP -UPEARL_AMD_READOUT_V2 -DPEARL_AMD_READOUT_V2=2"
-    rdna4="-DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1"
-    $cxx $flags $v2 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_v2" $tbb_lib -ltbb -lpthread
-    $cxx $flags $v2 -DPEARL_AMD_PF2=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_v2_pf2" \
-      $tbb_lib -ltbb -lpthread
-    $cxx $flags $v2 $rdna4 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_v2_pfx" \
-      $tbb_lib -ltbb -lpthread
-    $cxx $flags $v2w $rdna4 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_v2w_pfx" \
-      $tbb_lib -ltbb -lpthread
-    echo "built $OUT/pearl_core_hipcpu.node, $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx}" \
-      "and $OUT/pearl_amd_foldtest_cpu_v2{,_pf2,_pfx} and _v2w_pfx"
+    echo "built $OUT/pearl_core_hipcpu.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx}"
     ;;
   gpu)
     slice

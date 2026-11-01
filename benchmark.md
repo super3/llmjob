@@ -1392,6 +1392,24 @@ checked bit for bit against a 32x8 reference on the card, then fold-only timing,
 - Under the decision's rule (median under +0.5% on both cards) the item stops: `911d2ab` is reverted, and the
   probe stays as the gate for the next readout idea.
 
+**Readout v2, the next readout idea, and why it was dropped too.** Each lane XORs its words into the spare bytes of
+the B staging rows with non-returning `ds_xor`, and the 8 lanes of a region combine there (`74f02de`, research item
+4): no cross-lane VALU in the chunk loop at all. Raced at 04:38 UTC on 1 November on `amdtest-rdna4-12` (9070 XT,
+PC `c1940c4c`) and `amdtest-rdna4-13` (9060 XT, `54b217a9`): every build checked bit for bit at 2048 x 4096 first
+(256 blocks, so later blocks reuse shared memory; v2 and its 32-bit-atomic variant v2w passed), then fold-only
+timing, 4 rounds of 100 launches, the probe in the same rounds as the ceiling:
+
+| Card | v2 | v2w | probe |
+|---|---|---|---|
+| RX 9070 XT | −0.86%, −0.60%, −0.48% | about −2.2% | +1.49%, +1.40%, +1.45% |
+| RX 9060 XT | −0.62%, −0.37%, −0.87% | about −2.1% | +1.24%, +1.81%, +1.54% |
+
+- Both correct readouts lose a little to today's on both cards, while the probe reproduces its gain on new PCs.
+  So combining the 8 lanes' words costs at least what today's cross-lane steps cost, however it is done; the
+  probe's gain comes only from not combining, which a miner can't skip. The boxes were stopped before the hashrate
+  rounds, which a fold-time loss can't turn into +1%. `74f02de` is reverted.
+- **Cost:** two high-priority boxes for about 8 minutes each, about $0.05.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
