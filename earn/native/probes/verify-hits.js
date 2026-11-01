@@ -12,10 +12,21 @@
 // (TH/s, the core's own windows of about half a second; a best far above the last
 // means the time goes between batches, not in them), and the second each salt was
 // first seen in a hit. None of it changes what passes.
+//
+// PEARL_PROFILE_K=4096 runs and checks the core at that k instead of the mainnet profile's 2048, for a
+// bench build made for it (the AMD core with -DPEARL_FOLD_K=4096). Everything here then uses that k: the
+// job key's config, the proofs, the noise and the fold, which puts chunk c into word c % 16 as a pool does.
 'use strict';
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
-const { PROFILE, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage } = require(R + 'pearlhash');
+const { PROFILE: MAINNET, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage } = require(R + 'pearlhash');
+const kEnv = process.env.PEARL_PROFILE_K;
+const PROFILE = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
+// The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
+if (kEnv && !(Number.isInteger(PROFILE.k) && PROFILE.k >= 16 * PROFILE.rank && (PROFILE.k & (PROFILE.k - 1)) === 0)) {
+  console.log(JSON.stringify({ error: `PEARL_PROFILE_K must be a power of two of at least ${16 * PROFILE.rank}, not ${kEnv}` }));
+  process.exit(2);
+}
 const { hash, keyedHash } = require(R + 'blake3');
 const { buildShareProof } = require(R + 'shareProof');
 const { foldTranscript, transcriptBytes } = require(R + 'reference');
@@ -76,4 +87,4 @@ core.on('hashrate', (th) => {
 });
 t0 = Date.now();
 core.setJob({ header, target, jobId: 'verify' });
-setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);
+setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), ...(kEnv ? { k } : {}), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);

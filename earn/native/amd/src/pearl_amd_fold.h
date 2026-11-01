@@ -411,6 +411,27 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #define PEARL_AMD_READOUT_DROP 0
 #endif
 
+// PEARL_AMD_KWRAP: a k 4096 build, for timing (round 4 item 5). -DPEARL_FOLD_K=4096 (pearl_config.h,
+// 2048 by default) turns it on and makes the fold test fold and check k 4096. The folds take k at run
+// time, but past 16 chunks the default readout is wrong: it writes each word once, onto zero, where
+// chunk c must go into word c % 16 after that word's rotl 13 (the reference's rule, reference.js). With
+// this on, every fold does that, and the host takes up to PEARL_FOLD_CHUNKS chunks. At k 4096 a hash
+// covers twice the MACs, so hashes and readouts per MAC halve; credit per MAC is the same at rank 128.
+// Such a core still mines k 2048 correctly, but no release is built with it.
+// -DPEARL_AMD_KWRAP=1 alone builds this readout at k 2048, to time what the readout change costs.
+#ifndef PEARL_AMD_KWRAP
+#define PEARL_AMD_KWRAP (PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS)
+#endif
+#if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1
+#error "PEARL_AMD_KWRAP is 0 or 1"
+#endif
+#if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+#error "PEARL_FOLD_K past 16 chunks needs PEARL_AMD_KWRAP: the default readout writes each word once"
+#endif
+#if PEARL_AMD_KWRAP && PEARL_AMD_READOUT_DROP
+#error "PEARL_AMD_KWRAP and PEARL_AMD_READOUT_DROP don't go together: build one or the other"
+#endif
+
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
 // col0 + blockIdx.x * 256 (the batch's columns start at col0). Every region of the tile gets
 // its 16 transcript words in `tr`, at its batch-local number: column offset index within
@@ -504,6 +525,61 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   PEARL_AMD_STORE(0)
   __syncthreads();
   // The end of chunk c: its transcript word, for every region the wave holds.
+#if PEARL_AMD_KWRAP
+  // PEARL_AMD_KWRAP: chunk c goes into word c % 16 after that word's rotl 13. Each word is written once
+  // in every 16 chunks, so rotating them all when a pass starts (c % 16 == 0; at c = 0 they are still
+  // zero) is the same as rotating each just before its write, and costs 8 VALU per 16 chunks. A chunk
+  // then costs one select and one XOR a region, into the keep its word is in, where the default costs
+  // two selects: c & 8 is the same in every lane, so choosing the keep is a branch, not a select. The
+  // host takes past 16 only a multiple of 16 chunks, the whole passes this is right for.
+  static_assert(!kDrop, "the readout-drop probe has no wrap form");
+  auto readout = [&](uint32_t c) {
+    if ((c & 15u) == 0u) {
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            keepLo[rb][cb][q] = pearl_rotl13(keepLo[rb][cb][q]);
+            keepHi[rb][cb][q] = pearl_rotl13(keepHi[rb][cb][q]);
+          }
+    }
+    const bool mine = (c & 7u) == r;
+    uint32_t v[RB][CB][NRO];
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++) {
+        uint32_t x[NRO];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) x[q] = 0u;
+#pragma unroll
+        for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
+#pragma unroll
+          for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
+#pragma unroll
+            for (int g = 0; g < P::kRegs; g++) x[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) v[rb][cb][q] = pearl_amd_group_xor(x[q]);
+      }
+    if (c & 8u) {
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) keepHi[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;
+    } else {
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;
+    }
+  };
+#else
   auto readout = [&](uint32_t c) {
     const bool mine = (c & 7u) == r, hi = c >= 8u;
 #pragma unroll
@@ -533,6 +609,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
       }
   };
+#endif
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
@@ -728,7 +805,11 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_r
     x ^= (uint32_t)__shfl_xor((int)x, 4);
     x ^= (uint32_t)__shfl_xor((int)x, 8);
     x ^= (uint32_t)__shfl_xor((int)x, 16);
+#if PEARL_AMD_KWRAP
+    keep = p == (c & 15u) ? pearl_rotl13(keep) ^ x : keep;   // chunk c into word c % 16 (PEARL_AMD_KWRAP)
+#else
     keep = p == c ? x : keep;
+#endif
   }
   if (p < PEARL_JACKPOT_BUCKETS) {
     const uint32_t rowIdx = 2u * blockIdx.y + (q >> 2);

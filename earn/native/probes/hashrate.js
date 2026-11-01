@@ -2,12 +2,21 @@
 // Loads the addon, runs one core on a synthetic job with the HARDEST target
 // (no hits), and averages the core's own hashrate samples after warmup. This is
 // exactly the number the app shows: SearchLoop times fold + finalize + reseed.
+// PEARL_PROFILE_K=4096 runs the core at that k instead of the mainnet profile's 2048, for a bench
+// build made for it (the AMD core with -DPEARL_FOLD_K=4096). The rate is MACs a second at any k.
 'use strict';
 const path = require('path');
 const { execSync } = require('child_process');
 const file = path.resolve(process.argv[2]);
 const secs = Number(process.argv[3] || 60), warm = Number(process.argv[4] || 10);
-const { PROFILE } = require(path.join(__dirname, '..', '..', 'src', 'shared', 'miner', 'pearlhash'));
+const { PROFILE: MAINNET } = require(path.join(__dirname, '..', '..', 'src', 'shared', 'miner', 'pearlhash'));
+const kEnv = process.env.PEARL_PROFILE_K;
+const PROFILE = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
+// The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
+if (kEnv && !(Number.isInteger(PROFILE.k) && PROFILE.k >= 16 * PROFILE.rank && (PROFILE.k & (PROFILE.k - 1)) === 0)) {
+  console.error(`PEARL_PROFILE_K must be a power of two of at least ${16 * PROFILE.rank}, not ${kEnv}`);
+  process.exit(2);
+}
 const addon = require(file);
 const core = addon.createCore(PROFILE, {});
 const t0 = Date.now(); const samples = []; const gpu = [];
@@ -32,6 +41,6 @@ setTimeout(() => {
     const xs = gpu.map((g) => g[i]).filter(Number.isFinite);   // a field the card reads as [N/A] is NaN
     return xs.length ? (xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(0) : '?';
   };
-  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
+  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), ...(kEnv ? { k: PROFILE.k } : {}), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
   process.exit(0);
 }, (secs + warm) * 1000);

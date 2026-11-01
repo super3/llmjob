@@ -1264,13 +1264,19 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Under PEARL_AMD_TILED the matrix folds need the per-tile operands, which only the
   // power-of-two materialise writes.
   const bool kPow2 = k >= 16u && (k & (k - 1u)) == 0u;
-  if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || chunks > PEARL_JACKPOT_BUCKETS
+  // A PEARL_AMD_KWRAP build (pearl_amd_fold.h) folds chunks past 16 into the 16 words, up to the
+  // PEARL_FOLD_CHUNKS it was built for. It rotates every word at the start of each 16 chunks, which is
+  // the reference's rule only for whole passes, so past 16 the count must be a multiple of 16.
+  const uint32_t maxChunks = PEARL_AMD_KWRAP ? PEARL_FOLD_CHUNKS : PEARL_JACKPOT_BUCKETS;
+  const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
+  if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold) "
-               "dividing k, at most %u chunks, and k a power of two (got rank %u, k %u)",
-               (unsigned)PEARL_AMD_SLAB, (unsigned)PEARL_JACKPOT_BUCKETS, rank, k);
+               "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
+               (unsigned)PEARL_AMD_SLAB, (unsigned)maxChunks,
+               PEARL_AMD_KWRAP ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
   const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;

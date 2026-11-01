@@ -85,6 +85,15 @@ once. `PEARL_AMD_TRACE=1` prints a line on stderr every 10 s with each batch's G
 the fold and the hash, how long the GPU sat idle between batches, and the search thread's
 waits.
 
+**A k 4096 build, for timing only.** The app mines k 2048. At k 4096 a hash covers twice the
+MACs, so there are half the hashes and readouts per MAC, and credit per MAC is the same at rank
+128. `PEARL_AMD_CFLAGS=-DPEARL_FOLD_K=4096` builds a core whose folds put chunk c into word
+c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`), whose host takes 32 chunks,
+and whose fold test checks k 4096. Run it with `PEARL_PROFILE_K=4096` on `hashrate.js` and
+`verify-hits.js`; `test/sweep.sh` does that for a variant whose flags set `PEARL_FOLD_K`, and
+times its fold over the same MACs as a k 2048 build. `-DPEARL_AMD_KWRAP=1` alone builds the new
+readout at k 2048, to time what it costs there. No release is built with either.
+
 ## Checked without a GPU
 
 HIP-CPU (github.com/ROCm/HIP-CPU) runs HIP kernels as C++ on the CPU. The same
