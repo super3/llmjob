@@ -644,6 +644,24 @@ holding a band of A' and reading B' again every band.
   and 0 rejected.
 - **Cost:** nine high-priority boxes for 15–75 minutes each, about $0.60 at Salad's list prices.
 
+### Our own builds raced on Salad, 1 November: copy groups and a readout fence
+
+Research item 10, raced at 03:07 UTC on 2026-11-01 at `db1c5fd`, in race mode as above (600 s, turns of 4 s), on
+`nvtest` boxes: `PEARL_TALL_COPY_RUN` (the cp.async copies' addresses from running pointers, and the next A tile
+loaded above the copy group: IMMAs a chunk with no cover, 6 to 2) and `PEARL_TALL_RO_FENCE` (the per-chunk readout
+spread between `pmevent.mask 0` fences), 2x2 against the release build. Not rows: no competitor ran.
+
+| Card | Machine ID | copy | fence | both | A/A copy |
+|---|---|---|---|---|---|
+| RTX 3060 Ti (200 W, the flip on) | 3da34f5f | +0.10% ±0.04 (29/35 ahead) | −2.37% (0/35) | −2.39% (0/35) | not run |
+| RTX 4070 Super (220 W) | 271b82b6 | +0.01% ±0.15 (16/28) | −2.57% (0/28) | −2.69% (0/28) | +0.00% ±0.15 |
+
+- **Dropped:** the pass rule was at least +0.3% with the interval clear of 0 on both cards. The copy arm's six-to-two
+  cut in uncovered IMMAs buys at most 0.1%: the other warp on the scheduler already covers those waits. The fences
+  cost 2.4-2.7% on both: they stop ptxas interleaving the readout's LOP3 with anything, so it costs more than the clump
+  it replaced. The code is reverted; the verify stage was not run.
+- **Cost:** two high-priority boxes for about 15 minutes each, about $0.06.
+
 ## RTX 40-series
 
 Run on 2026-10-10, 16:04–19:46 UTC. Ten rows are on their own machine; eight
