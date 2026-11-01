@@ -295,6 +295,18 @@ by contrast, stops only its own card.
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
   Infinity Cache as `learnings.md` describes for NVIDIA.
+- Readout v2 (`PEARL_AMD_READOUT_V2`, off by default; round 4 item 4): the RDNA folds combine a
+  region's eight lane parts in LDS with non-returning `ds_xor` instead of DPP lane moves and
+  selects, in the 16 bytes of padding at the end of each `sB` row (8 KB, so LDS stays 36 KB). It
+  keeps the 16x16 regions and gives the same transcripts, so a build that passes the fold test
+  can mine. It tests why the drop probe gained +1.5-1.6% on RDNA 4 while two-lane regions, which
+  removed the same VALU but kept one lane swap a chunk, timed level (benchmark.md, AMD, 1
+  November). Not yet run on a card. `build-amd.sh cpu` builds its fold tests and
+  `test/run-cpu-checks.sh` runs them; `test/readout-census.sh` counts its instructions against
+  today's readout and the probe (CI runs it, report only). On a card: `test/sweep.sh` with
+  `SWEEP_CHECK=2048:4096`. That is 256 blocks, more than any RDNA card holds at once (3 a WGP: 96 on
+  an RX 9070 XT, 144 on an RX 7900 XTX), so later blocks start on LDS that earlier ones used, which
+  checks that each block zeroes its words. 1024:4096 (128 blocks) misses this on a 7900 XTX.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's
