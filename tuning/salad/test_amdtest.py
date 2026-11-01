@@ -122,6 +122,10 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(a.env_summary({"PATCH_GZ_B64": "x" * 50, "BASE_SHA": "abc"}),
                          "BASE_SHA=abc PATCH_GZ_B64=<50 chars>")
 
+    def test_env_summary_never_prints_a_wallet_key_or_token(self):
+        s = a.env_summary({"WALLET": "prl1secretish", "SALAD_API_KEY": "k", "BOT_TOKEN": "t", "POOL_SECS": "600"})
+        self.assertEqual(s, "BOT_TOKEN=<set> POOL_SECS=600 SALAD_API_KEY=<set> WALLET=<set>")
+
     def test_make_patch_carries_changed_and_new_files_and_applies(self):
         d = tempfile.mkdtemp()
         g = lambda *x: subprocess.run(["git", "-C", d, *x], check=True, capture_output=True)

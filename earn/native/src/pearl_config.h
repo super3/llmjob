@@ -1690,36 +1690,37 @@ typedef struct {
 // compute-sanitizer put it on the A copy), and ptxas 12.6 to 13.3 all build it the same
 // way. So Hopper copies A without the hint, and the host sets no slice for it.
 #define PEARL_AMPERE_PERSIST_ARCH(a) (PEARL_AMPERE_ARCH(a) && !PEARL_HOPPER_ARCH(a))
-// Ampere, the other way round (off by default; research round 3, item 2): keep the batch's
-// B' in the persisting slice and stream A' through the rest of the L2. With a band of one
-// row group and a batch narrow enough that its B' fits the slice (-DPEARL_AMPERE_BAND=1
-// -DPEARL_AMPERE_COL_BATCH=128 on a 6 MB card: 128 x 16 columns x k = 4 MiB), each byte of
-// A' comes from DRAM once a batch and B' about never. The model says 31-36% fewer DRAM
-// bytes than band 8 with A' held. The B copies take an evict_last policy over this fraction
-// of their lines (PEARL_AMPERE_PERSIST_B_FRAC: below 1.0 where B' is larger than the slice,
-// as on a 3080 10 GB); the host sets the slice to the batch's B' (at most the card's
-// maximum). Takes PEARL_AMPERE_PERSIST_A=0: one slice holds one operand. Measured below.
-#ifndef PEARL_AMPERE_PERSIST_B
-#define PEARL_AMPERE_PERSIST_B 0
+// Ampere's flip (research round 3, item 2): on a card whose largest persisting slice holds
+// the B' of a narrow batch, hold that instead of a band's A', and stream A'. The batch is
+// the widest power-of-two number of 16-offset tiles whose B' (offsets x 16 columns x k: 4
+// MiB at 128) fits the slice, a band is one row group, and pearl_tile_fold_tall_pinb's B
+// copies take the evict_last policy in place of A's. A' then comes from DRAM once a batch
+// and B' about never, where the band walk reads B' once a band. The host takes it when that
+// model reads at most PEARL_AMPERE_FLIP_SHARE percent of the band walk's DRAM bytes a column
+// offset (pearl_ampere_flip_for): the RTX 3060 Ti (3 MB L2, batch 64) and the 6 MB cards
+// (3080 12 GB, 3080 Ti, 3090, 3090 Ti; batch 128), not the 3060, 3070, 3070 Ti or 3080 10
+// GB, where the batch it allows is too narrow (126-137% of the band walk's bytes).
+// Measured on Salad on 31 October in race mode (probes/race.cu: every build in one process
+// on one card, 4 s turns for 600 s, against the band walk's turn in the same round), every
+// arm verify-hits 400/400 and, at the same width, the band walk's exact hits:
+//   RTX 3060 Ti, 200 W, batch 64    +1.92% (+-0.09, ahead 35/35)  memory 37% -> 21%
+//                                   hashrate.js alone, 4 rounds: +1.5 to +1.7% once warm
+//   RTX 3090, 350 W, batch 128      +0.66% (+-0.04, 35/35; +0.68 and +0.66 in two more)
+//                                   memory 15% -> 10%
+//   RTX 3080 10 GB, batch 64        +0.03% (level)     RTX 3060, batch 32   -0.63%
+// Tried and dropped: tiles from a counter (PEARL_TALL_CTR) on top, -0.5% (3090) to -2.5%
+// (3060 Ti); half a 256-offset batch's B' held, -1.9 to -2.2%; a 256 to 2048-offset batch
+// walked in strips whose B' the slice holds, below the narrow batch on both cards (3060 Ti
+// +1.48 to +1.79%, 3090 -0.31 to +0.52%). 0 turns it off.
+#ifndef PEARL_AMPERE_FLIP
+#define PEARL_AMPERE_FLIP 1
 #endif
-#ifndef PEARL_AMPERE_PERSIST_B_FRAC
-#define PEARL_AMPERE_PERSIST_B_FRAC 1.0
+#ifndef PEARL_AMPERE_FLIP_SHARE
+#define PEARL_AMPERE_FLIP_SHARE 80u
 #endif
-#if PEARL_AMPERE_PERSIST_A && PEARL_AMPERE_PERSIST_B
-#error "PEARL_AMPERE_PERSIST_B takes PEARL_AMPERE_PERSIST_A=0: the slice holds one operand"
-#endif
-// The flip at a full batch width (off by default). Measured on Salad on 31 October in race
-// mode (probes/race.cu), the flip above at 128 and 64 offsets cut memory use by a third
-// (RTX 3090 15% -> 10%, 3060 Ti 34% -> 19.5%) and raised the clock 13-20 MHz, but did
-// 0.7-1.2% less work a clock, and came out level (+0.11% and -0.05%). The narrow batch is
-// the suspect: 4 to 8 times the launches. This keeps the batch at its width and walks it
-// in strips of PEARL_AMPERE_COL_BAND column groups (16 offsets each), a strip at a time
-// down the row groups, so a strip's B' (PEARL_AMPERE_COL_BAND x 256 columns x k: 4 MiB at
-// 8) is what the slice holds and A' streams once a strip. The host sizes the slice to the
-// strip. A power of two; 0 keeps the band walk.
-#ifndef PEARL_AMPERE_COL_BAND
-#define PEARL_AMPERE_COL_BAND 0
-#endif
+// The builds with pearl_tile_fold_tall_pinb's body, by __CUDA_ARCH__: sm_86 alone. GA100's
+// 40 MB L2 holds a band of 32, and Hopper's copies take no hint (PEARL_AMPERE_PERSIST_ARCH).
+#define PEARL_TALL_PIN_B_ARCH(a) ((a) == 860)
 // Device side: whether THIS compile's tall fold reads its band depth at run time.
 #if defined(__CUDA_ARCH__) && PEARL_AMPERE_ARCH(__CUDA_ARCH__)
 #define PEARL_TALL_BAND_RT 1

@@ -178,6 +178,8 @@ describe('native target test', () => {
   const KERNEL = fs.readFileSync(path.join(SRC, 'pearl_kernel.cu'), 'utf8');
   const HOST = fs.readFileSync(path.join(SRC, 'pearl_host.cu'), 'utf8');
   const FOLD_BD = fs.readFileSync(path.join(SRC, 'pearl_fold_bd.cuh'), 'utf8');
+  // The tall fold, which pearl_kernel.cu includes twice (pearl_tile_fold_tall and _pinb).
+  const FOLD_TALL = fs.readFileSync(path.join(SRC, 'pearl_fold_tall.cuh'), 'utf8');
   const NL = String.fromCharCode(10);
 
   // A function's source, from its signature to the brace that closes it at the
@@ -228,14 +230,15 @@ describe('native target test', () => {
       ['void pearl_tall_hash80(', 'test.hash_big_endian ? pearl_bswap32(v[0] ^ v[8]) : (v[7] ^ v[15])'],
     ];
     for (const [signature, choice] of sites) expect(body(KERNEL, signature)).toContain(choice);
-    expect(KERNEL).toContain('hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]');
+    expect(FOLD_TALL).toContain('hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]');
     // These and pearl_hash_word_msf's are the only places that pick the word.
     // A new one has to be added above.
     expect(count(KERNEL, '? pearl_bswap32(')).toBe(sites.length + 1);
     expect(count(FOLD_BD, 'pearl_bswap32(')).toBe(0);
+    expect(count(FOLD_TALL, 'pearl_bswap32(')).toBe(0);
     // And each test passes a tie on to the full compare: it rejects only a top
     // word greater than the target's.
-    for (const src of [KERNEL, FOLD_BD]) {
+    for (const src of [KERNEL, FOLD_BD, FOLD_TALL]) {
       const uses = count(src, 'test.target_w[0]');
       expect(uses).toBeGreaterThan(0);
       expect(count(src, '> test.target_w[0]) return;') + count(src, '<= test.target_w[0]) record('))

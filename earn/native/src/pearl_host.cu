@@ -153,6 +153,14 @@ extern "C" __global__ void pearl_tile_fold_tall(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits,
     const PearlTensorMap tmA, const PearlTensorMap tmB);
+// The same fold with B' held in the persisting L2 slice instead of A' (PEARL_AMPERE_FLIP; a
+// body only in an sm_86 build).
+extern "C" __global__ void pearl_tile_fold_tall_pinb(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits,
+    const PearlTensorMap tmA, const PearlTensorMap tmB);
 // Pascal's dp4a fold (PEARL_DP4A_ARCH; a body only in an sm_61 build).
 extern "C" __global__ void pearl_tile_fold_dp4a(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
@@ -291,10 +299,12 @@ struct Ctx {
   // picked.
   bool foldAmpere = false;
   // Whether that build's A copies carry the evict_last hint the persisting slice is for
-  // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's), or its B copies with
-  // PEARL_AMPERE_PERSIST_B.
+  // (PEARL_AMPERE_PERSIST_ARCH: Ampere's, not Hopper's).
   bool foldPersistA = false;
   uint32_t tallBand = 0;
+  // Whether this card runs Ampere's flip (PEARL_AMPERE_FLIP): pearl_tile_fold_tall_pinb, a
+  // band of one row group, and a batch whose B' the slice holds.
+  bool foldPinB = false;
   // The card's L2 and largest persisting slice, the slice this context asked for (0 for
   // none) and the limit the driver then reported: pearl_host_l2_audit prints them, and
   // pearl_host_race_enter sets the slice again.
@@ -1474,6 +1484,28 @@ uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 #endif
 }
 
+// Ampere's flip (see PEARL_AMPERE_FLIP): the batch width, in column offsets, whose B' the
+// card's largest persisting slice holds -- 16 offsets a tile, doubled while the next width's
+// B' (offsets x 16 columns x k) still fits, narrower than the band walk's batch and dividing
+// the valid offsets -- if the model says it reads at most PEARL_AMPERE_FLIP_SHARE percent of
+// the band walk's DRAM bytes a column offset; else 0. The band walk holds a band of A' and
+// reads B' again every band, and A' once a batch; the flip holds B' and reads A' once a
+// batch. RTX 3090 (4.1 MiB slice, band 8): 128 offsets, 2.1 MB against 3.3 MB, so 63%.
+// RTX 3080 10 GB (3.4 MiB, band 8): 64 offsets, 4.2 MB against 3.3 MB, so not taken.
+uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, uint32_t colBatch,
+                               uint32_t colsValid, uint64_t maxSlice) {
+  if (!PEARL_AMPERE_FLIP || band == 0u || maxSlice == 0u) return 0u;
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  uint32_t width = 0u;
+  for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
+    if (colsValid % c == 0u) width = c;
+  if (width == 0u) return 0u;
+  const uint64_t aBytes = (uint64_t)rowGroups * PEARL_TALL_BM * k;
+  const uint64_t bandWalk = (uint64_t)((rowGroups + band - 1u) / band) * colBytes + aBytes / colBatch;
+  const uint64_t flip = aBytes / width;
+  return flip * 100u <= bandWalk * (uint64_t)PEARL_AMPERE_FLIP_SHARE ? width : 0u;
+}
+
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
 // while a band's A' -- depth x 192 rows x k bytes -- is more than
 // PEARL_AMPERE_BAND_L2_SHARE percent of the L2, never below 4. GA100's unfused fold
@@ -1902,11 +1934,6 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     // of PEARL_HOPPER_WG3), unless that is 0. It reaches the fold as a kernel argument.
     if (ctx->foldHopper && PEARL_HOPPER_BAND != 0u) ctx->tallBand = PEARL_HOPPER_BAND;
 #endif
-    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
-    const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
-    CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
-                       cudaMemcpyHostToDevice),
-            "setting the tall fold's band depth");
     ctx->l2Bytes = l2;
     int maxp = 0;
     if (cudaDeviceGetAttribute(&maxp, cudaDevAttrMaxPersistingL2CacheSize, ctx->device)
@@ -1915,27 +1942,35 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       maxp = 0;
     }
     ctx->l2MaxSlice = maxp;
-#if PEARL_AMPERE_PERSIST_A || PEARL_AMPERE_PERSIST_B
-    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A), or for the batch's
-    // B' (PEARL_AMPERE_PERSIST_B). Without one the fold still runs, only slower, so a
-    // refusal is dropped. Hopper's copies carry no hint, so a slice would only take L2
-    // from the rest.
-    if (ctx->foldPersistA && maxp > 0) {
-      // B' of a strip (PEARL_AMPERE_COL_BAND) when the batch walks in strips, else of the
-      // batch.
-      const uint32_t cols = PEARL_AMPERE_COL_BAND != 0u
-                                    && (ctx->colBatch / PEARL_TALL_COL_OFFSETS) % PEARL_AMPERE_COL_BAND == 0u
-                                ? (uint32_t)PEARL_AMPERE_COL_BAND * PEARL_TALL_COL_OFFSETS
-                                : ctx->colBatch;
-      size_t slice = PEARL_AMPERE_PERSIST_B
-                         ? (size_t)cols * PEARL_COLS_COUNT * profile->k
-                         : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
+    // Ampere's flip (PEARL_AMPERE_FLIP): sm_86's build alone has the pinb kernel's body.
+    if (ctx->foldPersistA && ctx->tallArch == 86 && !ctx->foldUnfused) {
+      const uint32_t rowGroups =
+          (ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
+      const uint32_t w = pearl_ampere_flip_for(profile->k, rowGroups, ctx->tallBand, ctx->colBatch,
+                                               ctx->colsValid, maxp > 0 ? (uint64_t)maxp : 0u);
+      if (w != 0u) {
+        ctx->foldPinB = true;
+        ctx->colBatch = w;
+        ctx->batch = ctx->colBatch * ctx->rowsValid;
+        ctx->tallBand = 1u;
+      }
+    }
+    // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
+    const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
+    CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
+                       cudaMemcpyHostToDevice),
+            "setting the tall fold's band depth");
+    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A), or the flip's batch
+    // of B'. Without one the fold still runs, only slower, so a refusal is dropped. Hopper's
+    // copies carry no hint, so a slice would only take L2 from the rest.
+    if (ctx->foldPersistA && maxp > 0 && (PEARL_AMPERE_PERSIST_A || ctx->foldPinB)) {
+      size_t slice = ctx->foldPinB ? (size_t)ctx->colBatch * PEARL_COLS_COUNT * profile->k
+                                   : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
       if (slice > (size_t)maxp) slice = (size_t)maxp;
       ctx->l2Slice = slice;
       if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)
         (void)cudaGetLastError();
     }
-#endif
     size_t granted = 0;
     if (maxp > 0 && cudaDeviceGetLimit(&granted, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
       (void)cudaGetLastError();
@@ -2907,6 +2942,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       ctx->foldTuring && PEARL_TURING_WIDE ? PEARL_TURING_WIDE_STAGE_BUFS : PEARL_STAGE_BUFS;
   const void *foldFn = ctx->foldTall ? reinterpret_cast<const void *>(pearl_tile_fold_tall)
                                      : pearl_wmma_fold_fn(ctx);
+  if (ctx->foldPinB) foldFn = reinterpret_cast<const void *>(pearl_tile_fold_tall_pinb);
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
@@ -3174,7 +3210,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, trm, ctx->tmB);
     pearl_tall_hash80<<<(regions + 255u) / 256u, 256, 0, st>>>(ctx->dTrG[slot], regions, test,
                                                                hitList, 1u);
-  } else if (ctx->foldTall)
+  } else if (ctx->foldTall && ctx->foldPinB)
+    pearl_tile_fold_tall_pinb<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+  else if (ctx->foldTall)
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
@@ -3323,8 +3363,9 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   }
   if (ctx->foldAmpere) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u%s%s%s",
+             "tall 192x256, 8 warps of 96x64, cp.async ring, %s operands, band %u%s%s%s%s",
              ctx->foldTiled ? "per-tile" : "k-blocked", ctx->tallBand,
+             ctx->foldPinB ? ", B' held" : "",
              ctx->foldUnfused ? ", hash in its own kernel" : "",
              PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);
     return ctx->foldName;

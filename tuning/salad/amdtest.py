@@ -229,11 +229,17 @@ def read_logs(name, start, end, depth=0):
 
 
 def env_summary(env):
-    """Variables as K=V, with a patch or script shown by its size only."""
+    """Variables as K=V, with a patch or script shown by its size only, and a wallet, key or token only as set:
+    these lines land in logs and transcripts."""
     out = []
     for k in sorted(env or {}):
         v = env[k]
-        out.append(f"{k}=<{len(v)} chars>" if k.endswith("_GZ_B64") else f"{k}={v}")
+        if k.endswith("_GZ_B64"):
+            out.append(f"{k}=<{len(v)} chars>")
+        elif "WALLET" in k or k.endswith(("_KEY", "_TOKEN")):
+            out.append(f"{k}=<set>")
+        else:
+            out.append(f"{k}={v}")
     return " ".join(out)
 
 
