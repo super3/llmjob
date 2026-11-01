@@ -2149,6 +2149,32 @@ typedef struct {
 #endif
 #endif
 
+// Two A/B switches on the cp.async ring (every tall build but the TMA one), both 0, for
+// race mode; at 0 the fold is what it was, byte for byte. Neither is measured.
+//
+// PEARL_TALL_COPY_RUN: the copy groups take their sources from held pointers (two for A,
+// one for B), each stepped a stage after its group, so a group computes no address. Today
+// ptxas builds each group's 64-bit addresses from sg0 in the next m16 tile's A fragment
+// registers, so that tile's ldmatrix waits for the copies to read them, and its first
+// mma has no cover: 4 of the 6 such mma a chunk loop (CUDA 12.6, sm_86 and sm_89; the
+// other 2 are the stages' first). The switch also loads that tile's A fragment before
+// the group, in source.
+//
+// PEARL_TALL_RO_FENCE: chunk c's readout moves into chunk c + 1's first k-step (stage 0,
+// k-step 0). Before each m16 tile's mma there, its 32 accumulators, still chunk c's, are
+// XORed into its region's word (16 lop3), and after each tile pair the word goes to the
+// transcript, between two pmevent.mask 0 (pearl_pm_fence), which ptxas 12.6 moved no mma
+// or lop3 across in a probe. That k-step's A fragments are loaded inside the fences, a
+// tile ahead (the one after A's copy group only with PEARL_TALL_COPY_RUN). The last chunk
+// keeps the readout at its end, so every word is in shared before the hand-off. Chunk 0
+// XORs the zeroed accumulators and writes nothing.
+#ifndef PEARL_TALL_COPY_RUN
+#define PEARL_TALL_COPY_RUN 0
+#endif
+#ifndef PEARL_TALL_RO_FENCE
+#define PEARL_TALL_RO_FENCE 0
+#endif
+
 // The order Ada's tall fold (the cp.async ring) reads its noised operands in: 1 for
 // per-tile blocks, 0 for the k-blocked order Blackwell's TMA reads.
 //

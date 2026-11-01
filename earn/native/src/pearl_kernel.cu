@@ -1556,6 +1556,29 @@ __device__ __forceinline__ uint32_t pearl_xor3(uint32_t a, uint32_t b, uint32_t 
   return d;
 }
 
+// The tall fold's readout fence (PEARL_TALL_RO_FENCE). pmevent.mask 0 triggers no
+// performance-monitor event; ptxas 12.6 moved no IMMA or lop3 across it on sm_86 or
+// sm_89 in a probe kernel.
+__device__ __forceinline__ void pearl_pm_fence() { asm volatile("pmevent.mask 0;"); }
+// x ^= the sixteen accumulators a[0..3][0..3], in eight lop3, two chains of four.
+// Volatile, unlike pearl_xor3, so NVVM keeps it between the fences.
+__device__ __forceinline__ void pearl_xor16_into(uint32_t &x, const int32_t (*a)[4]) {
+  asm volatile(
+      "{\n\t.reg .b32 q;\n\t"
+      "lop3.b32 q, %1, %2, %3, 0x96;\n\t"
+      "lop3.b32 %0, %0, %4, %5, 0x96;\n\t"
+      "lop3.b32 q, q, %6, %7, 0x96;\n\t"
+      "lop3.b32 %0, %0, %8, %9, 0x96;\n\t"
+      "lop3.b32 q, q, %10, %11, 0x96;\n\t"
+      "lop3.b32 %0, %0, %12, %13, 0x96;\n\t"
+      "lop3.b32 q, q, %14, %15, 0x96;\n\t"
+      "lop3.b32 %0, %0, q, %16, 0x96;\n\t}"
+      : "+r"(x)
+      : "r"(a[0][0]), "r"(a[0][1]), "r"(a[0][2]), "r"(a[0][3]), "r"(a[1][0]), "r"(a[1][1]),
+        "r"(a[1][2]), "r"(a[1][3]), "r"(a[2][0]), "r"(a[2][1]), "r"(a[2][2]), "r"(a[2][3]),
+        "r"(a[3][0]), "r"(a[3][1]), "r"(a[3][2]), "r"(a[3][3]));
+}
+
 // Where a thread's staging slots go out, with PEARL_FOLD_GROUP_STAGE. A
 // schedule is written per ISSUE POINT: point i is the end of B pair i % 4 of
 // k-step i / 4, and nibble i of the schedule is how many slots go out there, B
