@@ -588,6 +588,46 @@ PC with ours first and its second with SRBMiner first. These are different PCs a
 - **Shares:** ours 45 accepted, against about 53 expected at the competitors' rate. No rejects from ours or
   SRBMiner.
 
+### Our own builds raced on Salad, 31 October: holding B' in the L2
+
+Run from 22:47 UTC on 2026-10-31 to 00:00 on 1 November, on `nvtest` boxes (`tuning/salad`), in race mode
+(`earn/native/probes/race.cu`): every build in one process on one card, taking turns of 4 s (1 s of warm-up, then
+whole salts) for 600 s, each scored against the release build's turn in the same round. These are builds of our own
+core against each other, not rows: no competitor ran. They decided research item 1, the Ampere flip, which ships in
+`f421841` (`PEARL_AMPERE_FLIP`): hold the B' of a narrow batch in the persisting L2 slice and stream A', instead of
+holding a band of A' and reading B' again every band.
+
+| Card | Machine ID | Batch | vs release | ±95% | Rounds ahead | Memory busy | Clock |
+|---|---|---|---|---|---|---|---|
+| RTX 3060 Ti (200 W) | 997ccdd4 | 64 | +1.92% | 0.09 | 35/35 | 37% → 21% | 1730 → 1762 MHz |
+| RTX 3090 (350 W) | db36e38b | 128 | +0.66% | 0.04 | 35/35 | 15% → 10% | 1622 → 1632 MHz |
+| RTX 3080 10 GB (320 W) | cd2691f0 | 64 | +0.03% | 0.05 | 19/34 | 22% → 21% | 1696 → 1700 MHz |
+| RTX 3060 (153 W) | 21b77e7f | 32 | −0.63% | 0.11 | 0/34 | 33% → 37% | 1754 → 1748 MHz |
+
+- **Why only some cards:** the batch is as wide as the card's largest persisting slice allows (2 MiB of B' at 64
+  offsets, 4 MiB at 128). The 3060 Ti and the 6 MB cards fit a batch wide enough that A' read once a batch costs
+  less than B' read once a band; the 3080 10 GB and the 3060 do not. The shipped rule (`pearl_ampere_flip_for`)
+  takes the flip where its modelled DRAM bytes are at most 80% of the band walk's: the 3060 Ti and the 3080 12 GB,
+  3080 Ti, 3090 and 3090 Ti.
+- **The race's own noise:** a copy of the release raced against it read −0.05% to +0.07% in all nine races (±0.05
+  to ±0.10 at 95%). The old 2048-offset batch, known to lose 0.2–0.9% to 512, read −0.84% and trailed in all 28
+  rounds.
+- **The old method agrees, with its bias:** on the same 3060 Ti, `hashrate.js` in separate 60 s runs gave the flip
+  −0.6% in the first round (the release ran first on a cold card, 58 °C and 1775 MHz) and +1.5 to +1.7% in the
+  three rounds after.
+- **3090, repeated:** +0.68% and +0.66% in two more races at 128 offsets.
+- **Tried and dropped,** in the same races:
+  - tiles from a counter (`PEARL_TALL_CTR`) with the flip: 3090 +0.14% against +0.68% without; 3060 Ti −1.22%;
+  - 64 offsets on the 3090: −0.29%;
+  - half of a 256-offset batch's B' held: −1.9 to −2.2%, memory 27–33%;
+  - a 256 to 2048-offset batch walked in strips whose B' the slice holds: 3060 Ti +1.79% (256), +1.48% (512),
+    +0.41% (2048); 3090 +0.52%, +0.45%, −0.31%. Below the narrow batch on both cards;
+  - narrower strips on the 3080 10 GB (32 offsets) −1.31%, and on the 3060 (16 offsets) −2.95%.
+- **Correctness:** every flip build verified 400 of 400 hits (`verify-hits.js`), and at the same batch width found
+  exactly the release's hits (2,640 on the 3090, 620 on the 3060 Ti). Builds at different widths can't be compared
+  batch by batch; `compilers.sh` says so now.
+- **Cost:** five high-priority boxes for 15–75 minutes each, about $0.40 at Salad's list prices.
+
 ## RTX 40-series
 
 Run on 2026-10-10, 16:04–19:46 UTC. Ten rows are on their own machine; eight
