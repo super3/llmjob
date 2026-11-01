@@ -2888,19 +2888,26 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (regions_out) *regions_out = 0;
   if (!ctx || !ctx->haveJob) return false;
-#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP
   // A PEARL_TALL_STUB_SPIN or _ALU build (pearl_config.h) puts a stand-in where the tall
-  // fold's hash was and reports no hit. It runs only at target zero, the hardest, which
+  // fold's hash was and reports no hit. A PEARL_TALL_AB_SKIP build folds stale operands, so
+  // its transcripts are wrong. Each runs only at target zero, the hardest, which
   // hashrate.js, probes/race.cu and bench set: it times the fold and finds nothing. Any
-  // other target is a job it must not mine. Every card, not only RTX 30 and 40.
+  // other target is a job it must not mine. Every card, not only the ones the switch is for.
   {
     bool zero = true;
     for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
     if (!zero) {
       if (err && err_len)
+#if PEARL_TALL_AB_SKIP
+        snprintf(err, err_len, "tall-fold operand-skip build is timing-only: it runs only at "
+                 "target 0 (hashrate.js, race.cu), never on a job; build without "
+                 "PEARL_TALL_AB_SKIP to mine");
+#else
         snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "
                  "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "
                  "and PEARL_TALL_STUB_ALU to mine");
+#endif
       return false;
     }
   }
@@ -3423,6 +3430,20 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
 #endif
     return ctx->foldName;
   }
+#if PEARL_TALL_AB_SKIP
+  // A TMA fold that skips operand boxes (PEARL_TALL_AB_SKIP) says which, so race.cu's AUDIT
+  // line never credits its reading to the fold. (The cluster build refuses the switch, and
+  // no other fold is built with it.)
+  if (ctx->foldTall && ctx->foldTma) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands%s, AB_SKIP=%d: %s "
+             "skipped after each block's first tile (timing only)",
+             PEARL_SM100_ARCH(ctx->tallArch * 10) ? ", sm_100 build of sm_120's fold" : "",
+             (int)PEARL_TALL_AB_SKIP,
+             PEARL_TALL_AB_SKIP == 3 ? "A' and B'" : (PEARL_TALL_AB_SKIP == 1 ? "A'" : "B'"));
+    return ctx->foldName;
+  }
+#endif
   // sm_100 runs sm_120's TMA fold; its name says so, so a B200 reading is not taken for a
   // fold of its own.
   if (ctx->foldTall && ctx->foldTma && PEARL_SM100_ARCH(ctx->tallArch * 10))

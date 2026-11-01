@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { keyedHash } = require('../src/shared/miner/blake3');
+const { preprocess: resolve } = require('./helpers/amdSwitches');
 
 // The tall fold's tile-hash timing stubs (pearl_config.h, both off by default), round 4's
 // RTX 40 rank 1. On the cp.async ring's paired hash (sm_86, sm_89) they put a stand-in
@@ -473,25 +474,32 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
 
   test('the host refuses to mine with a stub, and names it in the fold\'s name', () => {
     const submit = code(body(HOST, 'extern "C" bool pearl_host_submit('));
+    // (The same refusal serves the TMA fold's operand skip, PEARL_TALL_AB_SKIP, with its own
+    // message: tallAbSkip.test.js.)
+    const GUARD = '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP';
     inOrder(submit,
       'if (!ctx || !ctx->haveJob) return false;',
-      '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU',
+      GUARD,
       'for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;',
       'if (!zero) {',
       '"tall-fold stub build is timing-only: it runs only at target 0 "',
       'if (ctx->pendCount >= Ctx::kSlots) {',
       'DeviceScope scope(ctx->device);');
     // Nothing is queued or launched before it.
-    const guard = submit.indexOf('#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU');
+    const guard = submit.indexOf(GUARD);
     expect(submit.slice(0, guard)).not.toMatch(/<<<|cudaLaunch|pendCount\+\+/);
-    expect(submit.slice(guard, submit.indexOf('#endif', guard))).toContain(lines(
-      '    if (!zero) {',
-      '      if (err && err_len)',
-      '        snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "',
-      '                 "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "',
-      '                 "and PEARL_TALL_STUB_ALU to mine");',
-      '      return false;',
-      '    }'));
+    // Each stub's build (the skip off) refuses with the stub's message.
+    for (const stub of [{ PEARL_TALL_STUB_SPIN: 3000, PEARL_TALL_STUB_ALU: 0 },
+      { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 1 }]) {
+      expect([stub, resolve(submit, { ...stub, PEARL_TALL_AB_SKIP: 0 }).includes(lines(
+        '    if (!zero) {',
+        '      if (err && err_len)',
+        '        snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "',
+        '                 "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "',
+        '                 "and PEARL_TALL_STUB_ALU to mine");',
+        '      return false;',
+        '    }'))]).toEqual([stub, true]);
+    }
     // The target it checks is the job's, and every way to search goes through it.
     expect(code(body(HOST, 'extern "C" void pearl_host_set_job_salted('))).toContain(
       'memcpy(ctx->target, target, PEARL_HASH_BYTES);');

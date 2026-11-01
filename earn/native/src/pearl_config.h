@@ -2392,6 +2392,59 @@ typedef struct {
 #define PEARL_TALL_CLUSTER_BODY 0
 #endif
 
+// PEARL_TALL_AB_SKIP (0 by default): a timing-only switch for the TMA tall fold (sm_120,
+// and sm_100 on the same code). Research round 3's #11, step 1: does the operand traffic
+// cost a stock RTX 5090 clock at its power cap? The fills made in each block's first tile
+// load as usual, so each of the ring's three buffers holds real operands. After it, every
+// fill skips the boxes the mask names, and the warps fold whatever that buffer last held:
+//   1  skips A' (12 KB of a stage's 28 KB)
+//   2  skips B' (16 KB)
+//   3  skips both: no operand bytes from the L2 or DRAM after the first tile
+// Everything else is the fold's own work: the producer's EMPTY wait, the FULL barrier (it
+// expects only the bytes of the boxes still issued, and with both skipped the producer's
+// arrival alone completes it), every ldmatrix and mma, the readout and the hash. The mma
+// still read the buffers through ldmatrix and feed the transcripts, so ptxas keeps them.
+// Stale operands, not zeros: an all-zero A' toggles nothing in the tensor pipe, and on a
+// 3090 it ran 150 MHz faster at less power (PEARL_E4_NOGEN). Each launch starts again with
+// a first tile. But a launch is col_batch column offsets by every row (the host ignores the
+// caller's batch), so at mainnet a block folds about 514 tiles a launch on a 5090 (col_batch
+// 2048, 170 blocks) and about 520 on a 5080 (1024, 84 blocks): about 0.2% of the skipped
+// bytes are left. Nearly all of them come from the L2, not DRAM: a 5090's L2 holds a
+// launch's B', and the blocks fold neighbouring tiles at once, which share a row group's
+// A'. So 3 reads what the L2-to-SM traffic and the shared-memory fills cost.
+// Unmeasured: ptxas 13.3 has not built it for sm_120 here. The fold sits at the register
+// limit, and an sm_90 build of it under ptxas 12.6 spilled 140 bytes when the skip tested
+// both the chunk and the tile, and none in any arm with the tile alone. Check the build
+// line's spill= for every arm before reading a race.
+// Not PEARL_ABLATE_DRAM: that keeps every copy and moves its source into the L2, so it
+// takes away the DRAM bytes only, and only on the cp.async ring. This takes away the copies.
+// How to read it: race it against base on one card (probes/race.cu) with the power draw at
+// the power limit. With 3, a clock 2% or more above base says energy work pays on that card;
+// within 0.5% says judge the card on work per clock alone. But the skip can also raise the
+// work done a clock (no FULL wait left exposed, no TMA writes beside the warps' ldmatrix),
+// and that extra work spends some of the freed watts. So when work a clock moves past the
+// race's noise, the clock change is the least the bytes cost and the TH/s change the most:
+// it pays only if the clock rose 2% or more, it is per clock alone only if TH/s is within
+// 0.5% too, and anything else is undecided. 1 and 2 split the cost between the operands.
+// Timing only: the transcripts are wrong, so the host refuses any target but zero
+// (pearl_host_submit) and names the arm in the fold's name. 0 compiles none of it.
+// earn/test/tallAbSkip.test.js.
+#ifndef PEARL_TALL_AB_SKIP
+#define PEARL_TALL_AB_SKIP 0
+#endif
+#if PEARL_TALL_AB_SKIP < 0 || PEARL_TALL_AB_SKIP > 3
+#error "PEARL_TALL_AB_SKIP is a mask: 1 skips A', 2 skips B', 3 both (0, off, is what ships)"
+#endif
+#if PEARL_TALL_AB_SKIP && PEARL_TALL_CLUSTER
+#error "PEARL_TALL_AB_SKIP times the one-CTA TMA ring: build it without PEARL_TALL_CLUSTER"
+#endif
+#if PEARL_TALL_AB_SKIP && (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU)
+#error "PEARL_TALL_AB_SKIP and the hash stubs time different folds: build one or the other"
+#endif
+#if PEARL_TALL_AB_SKIP && defined(__CUDA_ARCH__) && !PEARL_TALL_TMA_BODY
+#error "PEARL_TALL_AB_SKIP skips the TMA ring's boxes: build it for sm_120 or sm_100 alone, with PEARL_TALL_TMA on"
+#endif
+
 // The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
 // default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b
 // and takes each later tile from a counter, as Turing's B-direct fold does

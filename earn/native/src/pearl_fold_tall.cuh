@@ -289,6 +289,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // k-block kofs / SK, whole (the host blocks A' and B' by exactly one stage). Both
   // boxes count their full size toward FULL's transaction, the rows past m that TMA
   // zero-fills included.
+#if PEARL_TALL_AB_SKIP
+  // Timing only (PEARL_TALL_AB_SKIP): whether this fill issues every box. The prologue's
+  // fills do; each refill sets it just before its fill (PEARL_TALL_REFILL_LOAD).
+  bool ab_load = true;
+#endif
 #if PEARL_TALL_TMA_ROLES
   // (Here bi is the buffer's shared address, a ring role, and FULL sits behind it.)
   auto tma_fill = [&](uint32_t bi, uint32_t kofs) {
@@ -296,6 +301,22 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #else
   auto tma_fill = [&](uint32_t bi, uint32_t kofs) {
     const uint32_t full = barFull + 8u * bi, dst = sbase + bi * STAGE;
+#endif
+#if PEARL_TALL_AB_SKIP
+    if (!ab_load) {
+      // The skipped boxes are not issued, so the buffer keeps the operands it last held.
+      // FULL expects only the bytes of the box still issued; with both skipped, the
+      // producer's arrival alone completes the phase. The warps wait on it as before.
+      constexpr bool skipA = (PEARL_TALL_AB_SKIP & 1) != 0, skipB = (PEARL_TALL_AB_SKIP & 2) != 0;
+      if (skipA && skipB) {
+        pearl_mbar_arrive(full);
+      } else {
+        pearl_mbar_expect_tx(full, (skipB ? 0u : BN * SK) + (skipA ? 0u : BM * SK));
+        if (!skipB) pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
+        if (!skipA) pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
+      }
+      return;
+    }
 #endif
     pearl_mbar_expect_tx(full, STAGE);
 #if PEARL_TALL_CLUSTER_BODY
@@ -615,9 +636,21 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #else
 #define PEARL_TALL_REFILL_WAIT
 #endif
+#if PEARL_TALL_AB_SKIP
+        // Timing only (PEARL_TALL_AB_SKIP): only the fills made in the block's first tile
+        // load every box (its stages and the next tile's first chunk), so every buffer has
+        // held real operands before the first skip. It is the only tile with v below
+        // tile_stride: v starts at blockIdx.x and steps by the grid.
+        // (Its first chunk alone would do, but a test of chunk and v together spilled 140
+        // bytes in an sm_90 build of this fold under ptxas 12.6; v alone did not.)
+#define PEARL_TALL_REFILL_LOAD ab_load = v < tile_stride;
+#else
+#define PEARL_TALL_REFILL_LOAD
+#endif
 #define PEARL_TALL_REFILL(prod)                                                        \
   if (threadIdx.x == (prod) && stage_next) {                                           \
     PEARL_TALL_REFILL_WAIT                                                             \
+    PEARL_TALL_REFILL_LOAD                                                             \
     tma_fill(bi, cn * rank + s * SK);                                                  \
   }
 #if PEARL_TALL_TMA_PRODUCER2
@@ -760,6 +793,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
 #undef PEARL_TALL_EMPTY_ARRIVE
 #undef PEARL_TALL_REFILL_WAIT
+#undef PEARL_TALL_REFILL_LOAD
 #undef PEARL_TALL_REFILL
 #undef PEARL_TALL_PRODUCER_S
 #if PEARL_TALL_TMA_ROLES
