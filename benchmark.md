@@ -1432,6 +1432,24 @@ timing, 4 rounds of 100 launches, the probe in the same rounds as the ceiling:
   rounds, which a fold-time loss can't turn into +1%. `74f02de` is reverted.
 - **Cost:** two high-priority boxes for about 8 minutes each, about $0.05.
 
+**k 4096, which passed.** Research item 5, step 1 (`5567f0e`): a k 4096 build of the fold (its readout rotates the
+kept words every 16 chunks, as the spec's `mine.rs` does) against today's k 2048 core, each with its own profile k,
+at 05:33 UTC on 1 November on `amdtest-rdna4-14` (9070 XT, PC `5ecd7586`) and `amdtest-rdna4-15` (9060 XT,
+`f9b8be8b`). At rank 128 credit per MAC is the same at any k, so the MAC rate is the fair figure. Every build
+checked bit for bit at its own k first; `hashrate.js` 60 s after 20 s, the builds taking turns, round 1 not scored:
+
+| Card | Release (TH/s) | k 4096 (TH/s) | Scored rounds | Fold alone | New readout alone, k 2048 |
+|---|---|---|---|---|---|
+| RX 9070 XT | 112.4-112.7 | 113.64-113.68 | +1.11%, +1.03%, +1.05% | −5.0 to −5.5% | −0.36 to −0.41% |
+| RX 9060 XT | 61.4 | 62.14-62.18 | +1.22%, +1.14%, +1.24% | level (−0.09 to +0.22%) | −0.37 to −0.40% |
+
+- **It passed the gate** (+0.5% in all 3 scored rounds on both cards). The fold alone is level on the 9060 XT and 5%
+  slower on the 9070 XT, but the separate hash kernel's work halves, and in the miner's own loop that wins on both.
+- **Checks at k 4096:** `verify-hits` re-verified 400 of 400 hits with the k 4096 profile, as a pool would (145 and
+  77 salts), and the reference fold matched. Registers unchanged (198 VGPRs, no spills, 6 waves a SIMD).
+- **Next:** step 2, a per-card mining profile in the app so RDNA 4 cards mine at k 4096, then pool runs.
+- **Cost:** two high-priority boxes for about 21 minutes each, about $0.12.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
