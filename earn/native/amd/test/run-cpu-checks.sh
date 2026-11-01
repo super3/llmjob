@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # Every check the AMD core can pass without a GPU, on the HIP-CPU build (build-amd.sh cpu
 # first). Prints one line a check and exits non-zero if any fails. About seven minutes on
-# four cores.
+# four cores before the two-lane checks; those add a few more (not yet timed).
 #
 #   1. pearl_amd_foldtest_cpu: each of the five folds, through the emulated matrix
 #      instructions, against a plain CPU computation of every transcript word.
-#      Also built with the RDNA 3 loop (PF2) and the RDNA 4 one (PF2 + PFX + TID).
+#      Also built with the RDNA 3 loop (PF2) and the RDNA 4 one (PF2 + PFX + TID), and with
+#      two-lane 32x8 regions in wmma12 (PEARL_AMD_TWOLANE), both forms, on each loop.
 #   2. verify-hits-profile.js on pearl_core_hipcpu.node: the whole core -- draws,
 #      restamps, the fold, the hash, the hit list, the share proofs -- with every fold,
 #      both operand fills, and a profile whose salt takes two batches.
@@ -31,6 +32,15 @@ run "foldtest 256x512" "$B/pearl_amd_foldtest_cpu" 256 512 1
 run "foldtest 512x1024" "$B/pearl_amd_foldtest_cpu" 512 1024 7
 run "foldtest 256x512, RDNA 3 loop (PF2)" "$B/pearl_amd_foldtest_cpu_pf2" 256 512 1
 run "foldtest 256x512, RDNA 4 loop (PF2 + PFX + TID)" "$B/pearl_amd_foldtest_cpu_pfx" 256 512 1
+# Two-lane 32x8 regions: wmma12 against the 32x8 reference. The first runs every fold, so the
+# 16x16 ones show they're unchanged in that build.
+run "foldtest 256x512, two-lane" "$B/pearl_amd_foldtest_cpu_twolane" 256 512 1
+run "foldtest 512x512, two-lane, wmma12" "$B/pearl_amd_foldtest_cpu_twolane" 512 512 7 1 1 wmma12
+run "foldtest 256x512, two-lane, PF2 loop, wmma12" "$B/pearl_amd_foldtest_cpu_twolane_pf2" 256 512 1 1 1 wmma12
+run "foldtest 256x512, two-lane, RDNA 4 loop, wmma12" "$B/pearl_amd_foldtest_cpu_twolane_pfx" 256 512 1 1 1 wmma12
+run "foldtest 256x512, two-lane store form, wmma12" "$B/pearl_amd_foldtest_cpu_twolane_store" 256 512 1 1 1 wmma12
+run "foldtest 256x512, two-lane store form, PF2 loop, wmma12" "$B/pearl_amd_foldtest_cpu_twolane_store_pf2" 256 512 1 1 1 wmma12
+run "foldtest 256x512, two-lane store form, RDNA 4 loop, wmma12" "$B/pearl_amd_foldtest_cpu_twolane_store_pfx" 256 512 1 1 1 wmma12
 for f in ref mfma16 mfma8 wmma11 wmma12; do
   run "core $f, constant fill" env PEARL_AMD_FOLD=$f node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu.node" "$SECS" 252 256 512 1
 done

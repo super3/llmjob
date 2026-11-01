@@ -688,6 +688,16 @@ void resolve_fold(Ctx *ctx) {
              kFolds[want].name, ctx->arch[0] ? ctx->arch : "this card", caps[0]);
     return;
   }
+  // Two-lane 32x8 regions (PEARL_AMD_TWOLANE, pearl_amd_pattern.h) give a wmma12 hit other rows
+  // and columns, and this host still describes every hit as 16x16, so each share would fail to
+  // verify. Until the host and the JS learn the pattern (Stage B of round 4 item 2), only
+  // pearl_amd_foldtest runs that fold. The other folds are 16x16 in that build too, so they run.
+  if (kFolds[want].cap == PEARL_AMD_CAP_WMMA12 && (PEARL_AMD_TWOLANE || (caps[0] & PEARL_AMD_CAP_TWOLANE))) {
+    snprintf(err, err_len,
+             "two-lane folds are fold-test only in this build: the wmma12 fold reads out 32x8 regions "
+             "(PEARL_AMD_TWOLANE), which this host can't describe yet; build without it to mine");
+    return;
+  }
   // The folds on CDNA (gfx9: mfma8, mfma16) and on RDNA 2 (gfx103x: the reference fold on
   // v_dot4c) have run only through the CPU emulation. If a card's matrix layout differs from
   // the documented one, every hash is wrong yet meets the target, so every share is sent and
