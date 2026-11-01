@@ -1639,6 +1639,29 @@ Fold alone on the miner's operands, 600 launches a round, scored from round 2; t
   could win.
 - **Cost:** two high-priority boxes for about 15 minutes each, plus a 5-minute check, about $0.12.
 
+**Item 14, built and dropped.** `PEARL_AMD_SKEW` (`a7fb599`) delayed each block of a launch's first wave once, by
+its place on its WGP (a per-WGP counter; gfx12 takes the engine from `s_sendmsg_rtn`, its HW_ID1 has none), so the
+three blocks a WGP holds would reach their slab barriers out of step. Its gate, clock stamps showing the blocks run
+in step, couldn't be read (the stamps don't fit the registers), so the skew itself was raced, at 19:30 UTC on
+1 November. The waits are percents of a slab, set at run time; `ctl` waits the same at every place, the same delay
+with no skew.
+
+- **It ran as designed:** on a 7900 XTX (`28a12f15`) the skew build was 236 VGPRs at 6 waves and its probe put 144
+  blocks on 48 WGPs, three each, in places 0, 1 and 2; on a 9070 XT (`aa09f97d`) 209 VGPRs against 198, still 6
+  waves (raced with that noted), 96 blocks on 32 WGPs as designed. Bit-exact at 1024 x 1024 and 2048 x 4096.
+- **It helps one generation of blocks, then fades.** The fold alone, scored rounds 2-4, against the release:
+
+| Card | One generation, best against `ctl` | Eight generations (`ctl`) | The mined launch |
+|---|---|---|---|
+| RX 7900 XTX | +1.09 points (0:8:17), +0.99 (0:14:38) | −0.15 to −0.46% (−0.23%) | −0.28 to −0.50% (one −6.6% clock dip) |
+| RX 9070 XT, k 4096 | +5 to +10 points, rounds noisy | −0.84 to −1.80% (−1.28%) | −0.63 to −0.93% (rounds 2-3) |
+
+- **Dropped:** by eight generations every wait reads the same as `ctl`, and at the launch the miner runs (about 114
+  generations on the XTX) every wait is slower. The barriers pull the blocks back into step. On the 9070 XT the
+  build itself is about 1% slower even as `ctl`, from its different schedule. The boxes were stopped before the
+  hashrate rounds, and the code is reverted.
+- **Cost:** two high-priority boxes for about 8 and 5 minutes, plus a 1-minute first run on the 9070 XT, about $0.05.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.

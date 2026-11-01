@@ -28,11 +28,6 @@
 // matrix fold store clock stamps, and the last launch's go to the file: a header of 16 words (see
 // write_stamps), then PEARL_AMD_STAMP_WORDS words for each wave of each block. test/stamp-summary.js reads it;
 // sweep.sh's SWEEP_STAMP runs both. With miner operands it reads the clock the miner runs at.
-//
-// A -DPEARL_AMD_SKEW build (pearl_amd_fold.h) gets the start skew's counters and waits as the miner's host sets
-// them, PEARL_AMD_SKEW_WAIT included, so every launch of an RDNA fold here, the check's too, waits as a miner's
-// does. A "skew:" line says what it set. Then a "skew probe:" line: one launch of a launch's first blocks, which
-// take places as the fold's do, and whether every WGP's counter got three blocks with places 0, 1 and 2.
 #include <hip/hip_runtime.h>
 
 #include <chrono>
@@ -42,29 +37,6 @@
 #include <vector>
 
 #include "pearl_amd_kernels.h"
-
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-// PEARL_AMD_SKEW's probe: a launch's first blocks as the fold has them, 256 threads and the fold's LDS (the launch
-// asks for it), so three a WGP. Wave 0 of each takes a place as the fold's do (pearl_amd_skew_place), lane 0
-// writes its counter and place to out[block] (counter << 8 | place, or ~0 for no place), and the wave then holds
-// its WGP for `hold` sleeps of about 8,000 clocks, so every block is there at once.
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_skew_probe(uint32_t *out, uint32_t hold) {
-#if PEARL_AMD_SKEW_THREE
-  const uint32_t wave = threadIdx.x / 32u;
-  const uint32_t place = pearl_amd_skew_place(wave);
-  if (wave != 0u) return;
-  const uint32_t hw = pearl_amd_hw_id1();
-  const uint32_t at = pearl_amd_skew_wgp(hw, pearl_amd_skew_se(hw));
-  if (threadIdx.x == 0u) out[blockIdx.x] = place < PEARL_AMD_SKEW_WAYS ? (at << 8) | place : ~0u;
-  for (uint32_t i = 0; i < hold; i++) __builtin_amdgcn_s_sleep(127);
-#else
-  (void)hold;
-  if (threadIdx.x == 0u) out[blockIdx.x] = ~0u;
-#endif
-}
-#endif
-#endif
 
 namespace {
 
@@ -107,58 +79,6 @@ bool ok(hipError_t e, const char *what) {
   fprintf(stderr, "%s: %s\n", what, hipGetErrorString(e));
   return false;
 }
-
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-// The probe's words summed up: s[0] the blocks that took a place, s[1] the counters they used, s[2] and s[3] the
-// fewest and most blocks a counter, s[4] the counters whose blocks took places 0, 1 and 2 once each.
-void skew_probe_sum(const uint32_t *out, uint32_t blocks, uint32_t s[5]) {
-  uint32_t n[PEARL_AMD_SKEW_WGPS] = {0u}, seen[PEARL_AMD_SKEW_WGPS] = {0u};
-  s[0] = s[1] = s[3] = s[4] = 0u;
-  s[2] = ~0u;
-  for (uint32_t b = 0u; b < blocks; b++) {
-    if (out[b] == ~0u) continue;
-    const uint32_t c = (out[b] >> 8) % PEARL_AMD_SKEW_WGPS, p = out[b] & 0xFFu;
-    s[0]++;
-    n[c]++;
-    if (p < PEARL_AMD_SKEW_WAYS) seen[c] |= 1u << p;
-  }
-  for (uint32_t c = 0u; c < PEARL_AMD_SKEW_WGPS; c++) {
-    if (n[c] == 0u) continue;
-    s[1]++;
-    if (n[c] < s[2]) s[2] = n[c];
-    if (n[c] > s[3]) s[3] = n[c];
-    if (n[c] == PEARL_AMD_SKEW_WAYS && seen[c] == 7u) s[4]++;
-  }
-}
-
-// One launch of the probe (pearl_amd_skew_probe) with `first` blocks, and its line. As designed, every block took a
-// place and every counter it used got three blocks, places 0, 1 and 2: the counters tell WGPs apart, and HIP's
-// multiprocessors are WGPs. False if the launch failed.
-bool skew_probe(uint32_t first) {
-  const uint32_t hold = 64u;   // about 0.2 ms
-  const uint32_t lds = 2u * (PEARL_AMD_BM + PEARL_AMD_BN) * (PEARL_AMD_SLAB + 16u);   // sA and sB: 36864 bytes
-  uint32_t *dOut = nullptr;
-  if (!ok(hipMalloc(&dOut, first * 4u), "hipMalloc skew probe")) return false;
-  hipLaunchKernelGGL(pearl_amd_skew_probe, dim3(first), dim3(PEARL_AMD_THREADS), lds, 0, dOut, hold);
-  std::vector<uint32_t> out(first);
-  const bool good = ok(hipDeviceSynchronize(), "skew probe") && ok(hipGetLastError(), "skew probe")
-                    && ok(hipMemcpy(out.data(), dOut, first * 4u, hipMemcpyDeviceToHost), "skew probe");
-  hipFree(dOut);
-  if (!good) return false;
-  uint32_t s[5];
-  skew_probe_sum(out.data(), first, s);
-  if (s[0] == 0u) {
-    printf("skew probe: %u blocks, none took a place: this target has no skew\n", first);
-  } else {
-    const bool designed = s[0] == first && s[4] == s[1];
-    printf("skew probe: %u blocks, %u took a place, on %u counters of %u to %u blocks, %u with places 0, 1 and 2: "
-           "%s\n", first, s[0], s[1], s[2], s[3], s[4], designed ? "as designed" : "not as designed");
-  }
-  return true;
-}
-#endif
-#endif
 
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
             uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr) {
@@ -246,33 +166,6 @@ int main(int argc, char **argv) {
          wrap ? ", wrap readout" : "");
 #endif
   if (miner) printf("operands: the miner's, fill %d plus the noise\n", (int)PEARL_OPERAND_FILL);
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-  // PEARL_AMD_SKEW (pearl_amd_fold.h): the RDNA folds' counters, zeroed once, the blocks a launch starts at once
-  // and each place's wait, as the host sets them (pearl_host_create), PEARL_AMD_SKEW_WAIT included. Every launch
-  // here waits as the miner's do, the check's too. Then the probe.
-  uint32_t *dSkew = nullptr;
-  if (caps[0] & (PEARL_AMD_CAP_WMMA11 | PEARL_AMD_CAP_WMMA12)) {
-    const bool wmma11 = (caps[0] & PEARL_AMD_CAP_WMMA11) != 0u;
-    const uint32_t first = PEARL_AMD_SKEW_WAYS * (uint32_t)prop.multiProcessorCount;
-    uint32_t pct[PEARL_AMD_SKEW_WAYS], sleeps[PEARL_AMD_SKEW_WAYS];
-    const bool fromEnv = pearl_amd_skew_waits(getenv("PEARL_AMD_SKEW_WAIT"), wmma11, pct, sleeps);
-    if (!ok(hipMalloc(&dSkew, PEARL_AMD_SKEW_WGPS * 4), "hipMalloc skew")
-        || !ok(hipMemset(dSkew, 0, PEARL_AMD_SKEW_WGPS * 4), "skew counters")
-        || !ok(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_sleeps), sleeps, sizeof sleeps), "skew waits")
-        || !ok(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_first), &first, sizeof first), "skew first blocks")
-        || !ok(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_ctr), &dSkew, sizeof dSkew), "skew counters"))
-      return 2;
-    printf("skew: PEARL_AMD_SKEW=%d on %s; first %u blocks; waits %u:%u:%u%% of a %u-clock slab (%u:%u:%u sleeps), "
-           "%s\n", (int)PEARL_AMD_SKEW, wmma11 ? "wmma11" : "wmma12", first, pct[0], pct[1], pct[2],
-           wmma11 ? PEARL_AMD_SKEW_SLAB11 : PEARL_AMD_SKEW_SLAB12, sleeps[0], sleeps[1], sleeps[2],
-           fromEnv ? "from PEARL_AMD_SKEW_WAIT" : "the build's");
-    if (!skew_probe(first)) return 2;
-  } else {
-    printf("skew: PEARL_AMD_SKEW=%d, but this card has no RDNA fold\n", (int)PEARL_AMD_SKEW);
-  }
-#endif
-#endif
 
   std::vector<int8_t> A((size_t)m * k), B((size_t)n * k);
   if (miner) {
@@ -418,15 +311,6 @@ int main(int argc, char **argv) {
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);
 #if PEARL_AMD_STAMP
   if (dStamps) hipFree(dStamps);
-#endif
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-  if (dSkew) {
-    uint32_t *none = nullptr;
-    hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_ctr), &none, sizeof none);
-    hipFree(dSkew);
-  }
-#endif
 #endif
   if (!ran) { printf("no fold ran\n"); return 1; }
   printf("%s\n", failed ? "FAIL" : "PASS");

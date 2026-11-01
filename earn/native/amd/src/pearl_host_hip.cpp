@@ -126,11 +126,6 @@ struct Ctx {
   bool stamp = false;           // a PEARL_AMD_CAP_STAMP build: the folds store clock stamps (pearl_amd_fold.h)
   uint32_t *dStamps = nullptr;  // where they go: PEARL_AMD_STAMP_WORDS words for each wave of a batch
 #endif
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-  uint32_t *dSkew = nullptr;    // PEARL_AMD_SKEW: the RDNA folds' counters, one a WGP (pearl_amd_fold.h)
-#endif
-#endif
   char foldErr[512] = {0};
   char foldName[320] = {0};
 
@@ -1006,34 +1001,6 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
            "pointing the folds at the clock stamps");
   }
 #endif
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-  // PEARL_AMD_SKEW: the RDNA folds' start skew needs a counter for each WGP, zeroed once; how many blocks a launch
-  // starts at once, three a WGP; and each place's wait (pearl_amd_skew_waits: PEARL_AMD_SKEW_WAIT or the build's).
-  // HIP counts an RDNA card's WGPs as its multiprocessors: a 9060 XT's 32 CUs as 16 (benchmark.md), a 9070 XT as
-  // 32. A launch's first blocks take three tickets from each counter, so the counters end each launch where they
-  // began. The host sets nothing per launch. Targets whose WGP holds two blocks of the fold (gfx1102, gfx1150) have
-  // no skew in their code objects and ignore all of it.
-  {
-    const uint32_t cap = kFolds[ctx->fold].cap;
-    hipDeviceProp_t prop;
-    if ((cap == PEARL_AMD_CAP_WMMA11 || cap == PEARL_AMD_CAP_WMMA12)
-        && hipGetDeviceProperties(&prop, ctx->device) == hipSuccess && prop.multiProcessorCount > 0) {
-      const uint32_t first = PEARL_AMD_SKEW_WAYS * (uint32_t)prop.multiProcessorCount;
-      uint32_t pct[PEARL_AMD_SKEW_WAYS], sleeps[PEARL_AMD_SKEW_WAYS];
-      pearl_amd_skew_waits(getenv("PEARL_AMD_SKEW_WAIT"), cap == PEARL_AMD_CAP_WMMA11, pct, sleeps);
-      HIP_OK(hipMalloc(&ctx->dSkew, PEARL_AMD_SKEW_WGPS * sizeof(uint32_t)), "allocating the skew counters");
-      HIP_OK(hipMemset(ctx->dSkew, 0, PEARL_AMD_SKEW_WGPS * sizeof(uint32_t)), "zeroing the skew counters");
-      HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_sleeps), sleeps, sizeof sleeps), "setting the skew's waits");
-      HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_first), &first, sizeof first),
-             "setting the skew's first blocks");
-      HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_ctr), &ctx->dSkew, sizeof ctx->dSkew),
-             "pointing the folds at the skew counters");
-    }
-    (void)hipGetLastError();
-  }
-#endif
-#endif
   return ctx;
 }
 
@@ -1063,15 +1030,6 @@ extern "C" void pearl_host_destroy(void *handle) {
     hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);
     hipFree(ctx->dStamps);
   }
-#endif
-#if PEARL_AMD_SKEW
-#if !PEARL_AMD_EMU
-  if (ctx->dSkew) {   // no fold may take a ticket from it once it is freed
-    uint32_t *none = nullptr;
-    hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_skew_ctr), &none, sizeof none);
-    hipFree(ctx->dSkew);
-  }
-#endif
 #endif
   hipFree(ctx->dTreeA); hipFree(ctx->dTreeB);
   hipFree(ctx->dCvs); hipFree(ctx->dSeedBuf); hipFree(ctx->dSeedInput);
