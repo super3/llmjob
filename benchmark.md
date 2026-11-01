@@ -1499,6 +1499,28 @@ checked bit for bit at its own k first; `hashrate.js` 60 s after 20 s, the build
 - **Next:** step 2, a per-card mining profile in the app so RDNA 4 cards mine at k 4096, then pool runs.
 - **Cost:** two high-priority boxes for about 21 minutes each, about $0.12.
 
+**RDNA 3: k 4096, batch width and the hash's share (research item 13, step 0).** No code change: at 11:36 UTC on
+1 November, at `d9c70e8`, on two RX 7900 XTX boxes, `amdtest-rdna3-5` (PC `45c94e40`) and `amdtest-rdna3-6`
+(`ded998b6`; its first PC, `57cc1801`, took 15 minutes over a 13-second fold timing and was replaced). `test/sweep.sh`:
+the fold alone 3 rounds of 600 launches, then `hashrate.js` 4 rounds of 60 s after 20 s, the builds taking turns;
+batch 128 ran last in each round, at run time (`PEARL_AMD_COL_BATCH`). Against the release in the same round:
+
+| Arm | `45c94e40` (53.2-53.3 TH/s) | `ded998b6` (55.5-55.6 TH/s) |
+|---|---|---|
+| k 4096 | +0.45, +0.19, +0.47, +0.24% | −0.02, +0.29, +0.11, +0.20% |
+| Batch 128 | +0.64, +0.58, +0.60, +0.47% | +1.44, +1.84, +1.46, +1.60% |
+| Batch 512 | −0.24, −0.49, −0.13, −0.34% | −1.02, −0.83, −0.88, −0.79% |
+| k 4096's readout at k 2048 | (built at k 4096 by mistake) | −0.23, −0.25, −0.18, −0.07% |
+
+- **k 4096 is not for RDNA 3:** +0.34% and +0.15% on average, under the +0.3% it needed in every round on both PCs.
+  Its fold alone at the same MACs read +0.08 to +0.25% on one PC and −0.74 to −0.96% on the other, against −0.14 to
+  −0.54% for its readout alone at k 2048: no tile seam to win on RDNA 3.
+- **Batch 128 won every round on both PCs** (+0.57% and +1.58% on average). Checked next as a build, with
+  `verify-hits` at that width and on an RX 7800 XT, before it becomes RDNA 3's default.
+- **The hash kernel's share** (`PEARL_AMD_TRACE`, 45c94e40): 0.15-0.17 ms of a 20.6 ms batch, about 0.8%, under the 1%
+  that a fused fold and hash would need on RDNA 3.
+- **Cost:** two high-priority boxes for about 35 and 50 minutes, about $0.25.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
