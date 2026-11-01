@@ -979,6 +979,14 @@ rows: no competitor ran.
 - The build stage's register and spill lines didn't reach the box's log. A spill would slow a skip arm, not speed it,
   so it could only understate the result.
 - **Cost:** one high-priority box for about 22 minutes, about $0.15.
+- **The cluster build hangs on a 5090.** `PEARL_TALL_CLUSTER=1` (two CTAs sharing B' by TMA multicast; compiled by CI,
+  never run on a card) went into a race at 21:44 UTC the same day, at `933a79a`, on another stock 5090 (PC
+  `6509e943`, 575 W of a default 575 W), against the release and the B' skip. The race wrote its audit lines and then
+  no turn at all for 21 minutes, while the card sat at 250-255 W and 2910 MHz: a kernel spinning, not folding (the
+  fold draws the full 575 W). A refused cluster launch would have returned an error, so the clusters were granted
+  and something in the multicast or the cluster-wide EMPTY barrier never completes on sm_120. Which build hung isn't
+  known; the release runs fine in every other race. Before any multicast work on RTX 50 (item 16's step 2), a
+  standalone feed probe has to show multicast works and what it saves. The box was stopped; about $0.12.
 
 ## A100-class (sm_80)
 
