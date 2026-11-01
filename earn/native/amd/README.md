@@ -90,7 +90,10 @@ and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 
 9060 XT that was +1.0 to +1.2% (`benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
 about 0.4% at k 2048, so only the gfx12 code objects have it; every other target keeps today's
-readout and mines k 2048. One build holds both, since only a gfx12 device pass defines
+readout and mines k 2048. The Windows core has it on no target, so RDNA 4 mines k 2048 there:
+with it, the HIP SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory, where ROCm's
+clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRAP_OS` in
+`build-amd.sh`). One build holds both, since only a gfx12 device pass defines
 `__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
 (`PEARL_AMD_CAP_KWRAP`) and picks k 4096 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
@@ -101,7 +104,7 @@ says why. If a pool turns down 3 shares at k 4096 and takes none, the miner mine
 card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
 
 `build-amd.sh check` fails a release build (no `PEARL_AMD_CFLAGS`) in which a gfx12 target lacks
-the wrap readout or any other target has it. The fold test folds the card's own k by default (k
+the wrap readout or any other target has it, or, on Windows, in which any target has it. The fold test folds the card's own k by default (k
 4096 on RDNA 4) and names it on its device line; a 7th argument picks another.
 `-DPEARL_AMD_KWRAP=0` builds today's release, k 2048 everywhere, to race against;
 `-DPEARL_FOLD_K=4096` puts the wrap readout on every target. `PEARL_PROFILE_K=K` on

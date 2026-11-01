@@ -290,8 +290,10 @@ is rejected, which a pool can ban the address for. Run the checks in
 one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
 "Using it in the app").
 
-RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a share
-declares, where every other card mines k 2048. Their fold measured about 1% faster per MAC
+On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a
+share declares, where every other card mines k 2048. On Windows every card mines k 2048 for
+now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
+no Windows Radeon has tested it. Their fold measured about 1% faster per MAC
 there (`benchmark.md`), and a MAC earns the same at either k. The log names it:
 `mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
 a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too

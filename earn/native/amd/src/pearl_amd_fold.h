@@ -418,9 +418,11 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 // does that. At k 4096 a hash covers twice the MACs, so hashes and readouts per MAC halve, and credit
 // per MAC is the same at rank 128.
 //
-// RDNA 4 mines k 4096 (pearl_host_card_k), so its code objects always have this readout: +1.0 to +1.2%
-// on an RX 9070 XT and an RX 9060 XT (benchmark.md). Every other target keeps today's readout and k
-// 2048: the wrap readout at k 2048 costs about 0.4%. Only a gfx12 device pass defines __GFX12__, so one
+// RDNA 4 mines k 4096 (pearl_host_card_k), so its Linux code objects always have this readout: +1.0 to
+// +1.2% on an RX 9070 XT and an RX 9060 XT (benchmark.md). Every other target keeps today's readout and
+// k 2048: the wrap readout at k 2048 costs about 0.4%. The Windows core (build-amd.sh winlib) builds
+// with -DPEARL_AMD_KWRAP=0, so RDNA 4 mines k 2048 there: its compiler put part of the gfx12 fold in
+// scratch memory with this readout, and no Windows Radeon has run it. Only a gfx12 device pass defines __GFX12__, so one
 // build holds both, and the host learns which a card has from its caps (PEARL_AMD_CAP_KWRAP), never from
 // this macro. -DPEARL_FOLD_K=4096 turns it on for every target, as before; -DPEARL_AMD_KWRAP=0 or 1 sets
 // it for every target (=0 builds today's release, to race against). A readout-drop build leaves it off.

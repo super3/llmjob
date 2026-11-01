@@ -14,6 +14,7 @@
 #                                   spills or uses scratch memory, or, with no
 #                                   PEARL_AMD_CFLAGS, if a gfx12 target lacks the wrap
 #                                   readout (PEARL_AMD_KWRAP) or any other target has it.
+#                                   On Windows no target has it (KWRAP_OS below).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -56,6 +57,13 @@ DEFAULT_ARCHS="gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1031 gfx1032 gfx1100 gfx11
 # The Radeon targets only: AMD's Windows runtime has no Instinct (gfx9) cards.
 WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 MARKER='^// A 16-byte global->shared copy that does not pass through registers'
+# The Windows core keeps today's readout on every target, so RDNA 4 mines k 2048 there. With the wrap
+# readout the SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory (native-core.yml's
+# windows-2022-hip, 1 November), and no Windows Radeon has run either readout: the +1.1% at k 4096
+# was measured on Linux, built with ROCm's clang 22. It goes before PEARL_AMD_CFLAGS, which can still
+# set the readout either way.
+KWRAP_OS=
+if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 
 mode="${1:-}"
 shift || true
@@ -213,7 +221,7 @@ case "$mode" in
     # The gpu build's flags, less -fPIC, and with the static C runtime: node-gyp builds the
     # rest of the addon with /MT, and both halves must use the same one. MSVC's headers warn
     # about getenv and friends unless told not to.
-    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value ${PEARL_AMD_CFLAGS:-}"
+    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS ${PEARL_AMD_CFLAGS:-}"
     targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "winlib: kernels and host for $archs"
     "$cc" -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" \
@@ -235,10 +243,12 @@ case "$mode" in
     mkdir -p "$OUT/check"
     inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
     bad=0 wrapbad=0
+    where="on exactly the gfx12 targets"
+    [ -n "$KWRAP_OS" ] && where="on no target (the Windows core mines k 2048)"
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1
@@ -246,16 +256,22 @@ case "$mode" in
       fi
       # The wrap readout (PEARL_AMD_KWRAP), as this target's device pass sets it: on in every gfx12
       # code object, since RDNA 4 mines k 4096, and in no other, which mine k 2048 with today's
-      # readout. The release builds with no PEARL_AMD_CFLAGS, and then a target that differs fails
-      # the check. A tuning build may set it either way, so there it is only shown. tr: clang on
-      # Windows can end the lines with CR LF, and "1\r" is not 1.
-      kw=$("$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      # readout; on Windows in none (KWRAP_OS). The release builds with no PEARL_AMD_CFLAGS, and
+      # then a target that differs fails the check. A tuning build may set it either way, so there
+      # it is only shown. tr: clang on Windows can end the lines with CR LF, and "1\r" is not 1.
+      kw=$("$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 $KWRAP_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -E -dM "$HERE/src/pearl_host_hip.cpp" 2>> "$log" | tr -d '\r' | sed -n 's/^#define PEARL_AMD_KWRAP //p' \
           | head -n 1 || true)
       case "$a" in gfx12*) want=1 ;; *) want=0 ;; esac
+      [ -n "$KWRAP_OS" ] && want=0
       if [ -z "${PEARL_AMD_CFLAGS:-}" ] && [ "$kw" != "$want" ]; then
-        echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not $want: RDNA 4 (gfx12) has it" \
-          "and mines k 4096, every other target mines k 2048 without it" >&2
+        if [ -n "$KWRAP_OS" ]; then
+          echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not 0: the Windows core" \
+            "mines k 2048 on every card" >&2
+        else
+          echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not $want: RDNA 4 (gfx12)" \
+            "has it and mines k 4096, every other target mines k 2048 without it" >&2
+        fi
         wrapbad=1
       fi
       # One row a kernel: the fold kernels with a body on this target, the hash and the
@@ -280,11 +296,11 @@ case "$mode" in
     done
     if [ "$bad" -ne 0 ] || [ "$wrapbad" -ne 0 ]; then
       [ "$bad" -ne 0 ] && echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
-      [ "$wrapbad" -ne 0 ] && echo "check: the wrap readout is not on exactly the gfx12 targets" >&2
+      [ "$wrapbad" -ne 0 ] && echo "check: the wrap readout should be $where" >&2
       exit 1
     fi
     echo "check: every fold compiled for $archs with no spills and no scratch$([ -z "${PEARL_AMD_CFLAGS:-}" ] \
-      && echo ", and the wrap readout on exactly the gfx12 targets")"
+      && echo ", and the wrap readout $where")"
     ;;
   *)
     sed -n '2,/^# The portable kernels/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'

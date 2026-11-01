@@ -145,11 +145,11 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
 
   it('folds chunk c into word c % 16 after a rotl 13, in the lane that keeps that word', () => {
     // The rules, out of the source.
-    const rotate = toJs(grab(wrap, /\n    if \((\(c & 15u\) == 0u)\) \{\n/));
+    const rotate = toJs(grab(wrap, /\n {4}if \((\(c & 15u\) == 0u)\) \{\n/));
     expect(wrap).toContain('            keepLo[rb][cb][q] = pearl_rotl13(keepLo[rb][cb][q]);\n'
       + '            keepHi[rb][cb][q] = pearl_rotl13(keepHi[rb][cb][q]);\n');
-    const mine = toJs(grab(wrap, /\n    const bool mine = (.*);\n/));
-    const hi = toJs(grab(wrap, /\n    if \((c & 8u)\) \{\n/));
+    const mine = toJs(grab(wrap, /\n {4}const bool mine = (.*);\n/));
+    const hi = toJs(grab(wrap, /\n {4}if \((c & 8u)\) \{\n/));
     expect(wrap).toContain('for (int q = 0; q < NRO; q++) keepHi[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;\n    } else {');
     expect(wrap).toContain('for (int q = 0; q < NRO; q++) keepLo[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;\n    }\n  };');
     expect(wrap).toContain('for (int q = 0; q < NRO; q++) v[rb][cb][q] = pearl_amd_group_xor(x[q]);');
@@ -180,7 +180,7 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
   });
 
   it('folds chunks past 16 the same way in the reference fold', () => {
-    const keep = toJs(grab(FOLD, /#if PEARL_AMD_KWRAP\n    keep = (.*);   \/\/ chunk c into word/));
+    const keep = toJs(grab(FOLD, /#if PEARL_AMD_KWRAP\n {4}keep = (.*); {3}\/\/ chunk c into word/));
     const run = new Function('rotl13', 'xors',
       `const out = [];
        for (let p = 0; p < 32; p++) { let keep = 0; xors.forEach((x, c) => { keep = (${keep}) >>> 0; }); out.push(keep); }

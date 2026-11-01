@@ -214,15 +214,21 @@ describe('build-amd.sh', () => {
     expect(BUILD).toContain('-o "$OUT/pearl_amd_foldtest_cpu_kwrap"');
   });
 
+  it('builds the Windows library without the wrap readout, before any tuning flags', () => {
+    expect(BUILD).toContain('if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi');
+    expect(BUILD).toContain('-D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS ${PEARL_AMD_CFLAGS:-}"');
+  });
+
   // A stand-in for hip-clang: -E -dM gives the device pass's PEARL_AMD_KWRAP (1 on gfx12, unless FLIP names the
-  // target), with CR LF line ends when CRLF is set (as clang on Windows may write them), and -c gives one fold's
-  // resource remarks, clean.
+  // target; the last -DPEARL_AMD_KWRAP=N sets it, as in clang), with CR LF line ends when CRLF is set (as clang on
+  // Windows may write them), and -c gives one fold's resource remarks, clean.
   const CC = [
     '#!/bin/bash',
-    'arch=; e=0',
-    'for a in "$@"; do case $a in --offload-arch=*) arch=${a#*=} ;; -E) e=1 ;; esac; done',
+    'arch=; e=0; set=',
+    'for a in "$@"; do case $a in --offload-arch=*) arch=${a#*=} ;; -E) e=1 ;; -DPEARL_AMD_KWRAP=*) set=${a#*=} ;; esac; done',
     'if [ $e = 1 ]; then',
     '  case $arch in gfx12*) kw=1 ;; *) kw=0 ;; esac',
+    '  [ -n "$set" ] && kw=$set',
     '  [ "${FLIP:-}" = "$arch" ] && kw=$((1 - kw))',
     '  cr=; [ -n "${CRLF:-}" ] && cr=$\'\\r\'',
     '  printf "#define PEARL_AMD_TARGETS x%s\\n#define PEARL_AMD_KWRAP %s%s\\n" "$cr" "$kw" "$cr"; exit 0',
@@ -244,14 +250,22 @@ describe('build-amd.sh', () => {
       fs.mkdirSync(path.join(tmp, 'rocm', ...p.slice(0, -1)), { recursive: true });
       fs.writeFileSync(path.join(tmp, 'rocm', ...p), CC, { mode: 0o755 });
     }
+    // uname says which system build-amd.sh is on (Linux, or Git Bash on Windows), so both run on any host;
+    // cygpath -m only has to hand the path back.
+    fs.mkdirSync(path.join(tmp, 'bin'));
+    fs.writeFileSync(path.join(tmp, 'bin', 'uname'), '#!/bin/bash\necho "$FAKE_UNAME"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(tmp, 'bin', 'cygpath'), '#!/bin/bash\nfor a; do p=$a; done; echo "$p"\n', { mode: 0o755 });
   });
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
-  function check(env = {}) {
+  const WINDOWS = 'MINGW64_NT-10.0-22631';
+  function check(env = {}, uname = 'Linux') {
     const rocm = path.join(tmp, 'rocm').replace(/\\/g, '/');
-    const e = { ...process.env, ROCM_PATH: rocm, HIP_PATH: rocm, ...env };
+    const e = { ...process.env, ROCM_PATH: rocm, HIP_PATH: rocm, FAKE_BIN: path.join(tmp, 'bin'), FAKE_UNAME: uname, ...env };
     if (!('PEARL_AMD_CFLAGS' in env)) delete e.PEARL_AMD_CFLAGS;
-    const r = spawnSync('bash', ['build-amd.sh', 'check', 'gfx1100', 'gfx1201'], { cwd: path.join(tmp, 'amd'), encoding: 'utf8', env: e });
+    // The real cygpath (Git Bash) turns the folder into a PATH entry; Linux has none and needs none.
+    const run = 'PATH="$(cygpath -u "$FAKE_BIN" 2>/dev/null || echo "$FAKE_BIN"):$PATH" exec bash build-amd.sh check gfx1100 gfx1201';
+    const r = spawnSync('bash', ['-c', run], { cwd: path.join(tmp, 'amd'), encoding: 'utf8', env: e });
     return { status: r.status, out: r.stdout, err: r.stderr };
   }
 
@@ -268,22 +282,41 @@ describe('build-amd.sh', () => {
 
   bashIt('fails one where a gfx12 target lacks it, or another target has it', () => {
     for (const [flip, line] of [
-      ['gfx1201', 'gfx1201: the wrap readout (PEARL_AMD_KWRAP) is 0, not 1'],
-      ['gfx1100', 'gfx1100: the wrap readout (PEARL_AMD_KWRAP) is 1, not 0'],
+      ['gfx1201', 'gfx1201: the wrap readout (PEARL_AMD_KWRAP) is 0, not 1: RDNA 4 (gfx12) has it'],
+      ['gfx1100', 'gfx1100: the wrap readout (PEARL_AMD_KWRAP) is 1, not 0: RDNA 4 (gfx12) has it'],
     ]) {
       const r = check({ FLIP: flip });
       expect(r.status).toBe(1);
       expect(r.err).toContain(line);
-      expect(r.err).toContain('check: the wrap readout is not on exactly the gfx12 targets');
+      expect(r.err).toContain('check: the wrap readout should be on exactly the gfx12 targets');
       expect(r.err).not.toContain('spills');
     }
   }, 30000);
 
+  bashIt('passes a Windows build only with the wrap readout on no target, gfx12 included', () => {
+    // The Windows core mines k 2048 on every card: build-amd.sh sets -DPEARL_AMD_KWRAP=0 there, which the
+    // stand-in honours, so gfx1201 shows 0.
+    for (const env of [{}, { CRLF: '1' }]) {
+      const r = check(env, WINDOWS);
+      expect([env, r.status, r.err]).toEqual([env, 0, '']);
+      expect(r.out).toMatch(/gfx1100 +pearl_amd_fold_ref +64 +0 +0 +0 +1024 +8 +0\n/);
+      expect(r.out).toMatch(/gfx1201 +pearl_amd_fold_ref +64 +0 +0 +0 +1024 +8 +0\n/);
+      expect(r.out).toContain('and the wrap readout on no target (the Windows core mines k 2048)');
+    }
+    // A Windows build where a target still has it fails.
+    const r = check({ FLIP: 'gfx1201' }, WINDOWS);
+    expect(r.status).toBe(1);
+    expect(r.err).toContain('gfx1201: the wrap readout (PEARL_AMD_KWRAP) is 1, not 0: the Windows core mines k 2048 on every card');
+    expect(r.err).toContain('check: the wrap readout should be on no target (the Windows core mines k 2048)');
+  }, 30000);
+
   bashIt('only shows it for a tuning build, which may set it either way', () => {
-    const r = check({ FLIP: 'gfx1201', PEARL_AMD_CFLAGS: '-DPEARL_AMD_KWRAP=0' });
-    expect(r.status).toBe(0);
-    expect(r.out).toMatch(/gfx1201 +pearl_amd_fold_ref +64 +0 +0 +0 +1024 +8 +0\n/);
-    expect(r.out).not.toContain('wrap readout on exactly');
+    for (const [uname, cflags, kw] of [['Linux', '-DPEARL_AMD_KWRAP=0', 0], [WINDOWS, '-DPEARL_AMD_KWRAP=1', 1]]) {
+      const r = check({ PEARL_AMD_CFLAGS: cflags }, uname);
+      expect([uname, r.status, r.err]).toEqual([uname, 0, '']);
+      expect(r.out).toMatch(new RegExp(`gfx1201 +pearl_amd_fold_ref +64 +0 +0 +0 +1024 +8 +${kw}\n`));
+      expect(r.out).not.toContain('and the wrap readout');
+    }
   }, 30000);
 
   bashIt('every changed script parses', () => {
