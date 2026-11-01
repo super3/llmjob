@@ -2879,6 +2879,22 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (regions_out) *regions_out = 0;
   if (!ctx || !ctx->haveJob) return false;
+#if PEARL_BD_STUB_HASH
+  // A PEARL_BD_STUB_HASH build (pearl_config.h) filters with a word that is not the
+  // hash's, so it would miss nearly every hit. It runs only at target zero, the hardest,
+  // which hashrate.js, probes/race.cu and bench set: it times the fold and finds nothing.
+  // Any other target is a job it must not mine. Every card, not only RTX 20.
+  {
+    bool zero = true;
+    for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
+    if (!zero) {
+      if (err && err_len)
+        snprintf(err, err_len, "stub-hash build is timing-only: it runs only at target 0 "
+                 "(hashrate.js, race.cu), never on a job; build without PEARL_BD_STUB_HASH to mine");
+      return false;
+    }
+  }
+#endif
   if (ctx->pendCount >= Ctx::kSlots) {
     if (err && err_len) snprintf(err, err_len, "search pipeline full: collect a batch first");
     return false;
@@ -3425,6 +3441,17 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
       // With nothing on (the second kernel built but not running), no ", with".
       if (strlen(c->foldName) == named + strlen(", with")) c->foldName[named] = 0;
+    }
+#endif
+#if PEARL_BD_STUB_HASH || PEARL_BD_ROLLED_HASH
+    // The filter's stand-in or its rolled form (pearl_fold_bd.cuh), so race.cu's AUDIT
+    // line and bench's "runs fold:" line show which: at the end of the list above, or
+    // as a list of its own.
+    {
+      Ctx *c = const_cast<Ctx *>(ctx);
+      const size_t n = strlen(c->foldName);
+      snprintf(c->foldName + n, sizeof c->foldName - n, "%s%s", strstr(c->foldName, ", with") ? "" : ", with",
+               PEARL_BD_STUB_HASH ? " STUB_HASH" : " ROLLED_HASH");
     }
 #endif
     return ctx->foldName;

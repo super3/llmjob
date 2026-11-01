@@ -1303,6 +1303,43 @@ typedef struct {
 #error "PEARL_BD_HASH_SPLIT does not fit with PEARL_BD_RED, _TADDR, _SNAKE or PEARL_BD_GATE=1, and needs PEARL_BD_GROUPS=2"
 #endif
 #define PEARL_BD_SPLIT_SMEM (PEARL_BD_HASH_SPLIT ? 4u * 32u * 16u * 4u : 0u)
+// PEARL_BD_STUB_HASH and PEARL_BD_ROLLED_HASH (0 by default), round 4's RTX 20
+// instruction-cache item. Turing's L0 instruction cache is 16 KiB a scheduler. After the
+// hand-off one warp on it runs the transcript hash, 10.9 KiB of straight-line code
+// (pearl_transcript_msw), while the other runs the tile head and the 10.3 KiB chunk
+// loop, so each can evict the other's code. Both switches replace only the filter's
+// compression in hash_tile (pearl_fold_bd.cuh); a hit is still checked with the full
+// hash (pearl_transcript_hash_again).
+// - STUB_HASH is timing only: a stand-in of about the hash's work in a 0.8 KiB loop. Its
+//   top word is not the hash's, so it misses nearly every hit. It shows the most any
+//   smaller hash could gain. The host refuses any target but zero (pearl_host_submit),
+//   the one hashrate.js and probes/race.cu set, so it can never mine.
+// - ROLLED_HASH is the candidate: the same compression with rounds 0-5 in a loop, the
+//   same top word bit for bit, 4.5 KiB.
+// CUDA 12.6, sm_75, both kernels: 243 registers, no spill, and the code before the hash
+// byte for byte the default's. The hash is 700 instructions a region by default, 693
+// with the stub and 881 rolled. The race decides: below +0.5% for the stub on a 2080 Ti
+// and a 2070, the item stops. earn/test/turingL0Hash.test.js checks the rolled word
+// against BLAKE3. Device and host: the host refuses to mine with the stub, and names
+// both in the fold's name.
+#ifndef PEARL_BD_STUB_HASH
+#define PEARL_BD_STUB_HASH 0
+#endif
+#ifndef PEARL_BD_ROLLED_HASH
+#define PEARL_BD_ROLLED_HASH 0
+#endif
+#if PEARL_BD_STUB_HASH != 0 && PEARL_BD_STUB_HASH != 1
+#error "PEARL_BD_STUB_HASH is 0 or 1"
+#endif
+#if PEARL_BD_ROLLED_HASH != 0 && PEARL_BD_ROLLED_HASH != 1
+#error "PEARL_BD_ROLLED_HASH is 0 or 1"
+#endif
+#if PEARL_BD_STUB_HASH && PEARL_BD_ROLLED_HASH
+#error "PEARL_BD_STUB_HASH and PEARL_BD_ROLLED_HASH replace the same compression: build one or the other"
+#endif
+#if (PEARL_BD_STUB_HASH || PEARL_BD_ROLLED_HASH) && (!PEARL_TURING_BDIRECT || PEARL_BD_HASH_SPLIT)
+#error "PEARL_BD_STUB_HASH and PEARL_BD_ROLLED_HASH change the B-direct fold's hash_tile: build them with PEARL_TURING_BDIRECT and without the split hash"
+#endif
 // A block size forced from the command line skips Turing's block below, so
 // sm_75 builds the generic fold at that size: with 256 threads, the 128x128
 // tile in two 32 KB stages. The host still takes the card for Turing's. With

@@ -108,6 +108,9 @@
 #if PEARL_BD_HASH_SPLIT && defined(PEARL_ABLATE_TRANSCRIPT_HASH)
 #error "PEARL_ABLATE_TRANSCRIPT_HASH prices the hash after the hand-off, which PEARL_BD_HASH_SPLIT moves: build one or the other"
 #endif
+#if (PEARL_BD_STUB_HASH || PEARL_BD_ROLLED_HASH) && defined(PEARL_ABLATE_TRANSCRIPT_HASH)
+#error "PEARL_ABLATE_TRANSCRIPT_HASH skips the hash that PEARL_BD_STUB_HASH and PEARL_BD_ROLLED_HASH replace: build one or the other"
+#endif
 
 #if PEARL_BD_GROUPS == 2
 #define PEARL_BD_BAR() pearl_bar_sync(1u + wr, 128u)
@@ -190,6 +193,80 @@ __device__ __forceinline__ void pearl_bd_half_rounds(uint32_t s[16], const uint3
       m[12] = p12; m[13] = p13; m[14] = p14; m[15] = p15;
     }
   }
+}
+#endif
+
+#if PEARL_BD_STUB_HASH
+// PEARL_BD_STUB_HASH (pearl_config.h), timing only: a stand-in for the filter's
+// compression, a 0.8 KiB loop in place of 10.9 KiB of straight-line code. Twelve column
+// steps (four chains of twelve g) on the compression's starting state with transcript
+// words 8-15 xored in, then every state word xored into the top word, so all 16 loads
+// and all four chains stay live: 693 instructions a region against the hash's 700. Its
+// top word is not the hash's, so it misses nearly every hit.
+__device__ __forceinline__ uint32_t pearl_bd_stub_msw(const uint32_t key[8], const uint32_t m[16],
+                                                      int hash_big_endian) {
+  uint32_t s[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i] ^ m[8 + i];
+  s[8] = BLAKE3_IV[0]; s[9] = BLAKE3_IV[1]; s[10] = BLAKE3_IV[2]; s[11] = BLAKE3_IV[3];
+  s[12] = 0u; s[13] = 0u; s[14] = 64u; s[15] = PEARL_TRANSCRIPT_FLAGS;
+#pragma unroll 1
+  for (int h = 0; h < 12; h++) {
+    g(s, 0, 4, 8, 12, m[0], m[1]);
+    g(s, 1, 5, 9, 13, m[2], m[3]);
+    g(s, 2, 6, 10, 14, m[4], m[5]);
+    g(s, 3, 7, 11, 15, m[6], m[7]);
+  }
+  uint32_t x = 0u;
+#pragma unroll
+  for (int i = 0; i < 16; i++) x ^= s[i];
+  // Taken as the hash's top word is, byte-reversed under hash_big_endian.
+  const uint32_t out[8] = {x, 0u, 0u, 0u, 0u, 0u, 0u, x};
+  return pearl_hash_word_msf(out, 0, hash_big_endian);
+}
+#endif
+
+#if PEARL_BD_ROLLED_HASH
+// PEARL_BD_ROLLED_HASH (pearl_config.h): pearl_transcript_msw with rounds 0-5 in a loop,
+// 4.5 KiB of code in place of 10.9. Each pass is one round and the message permutation,
+// as blake3_compress has them; the permutation stays 16 register moves with literal
+// indices, so nothing spills. Round 6 follows the loop, unrolled, so ptxas keeps only
+// what feeds the top word. The same word, bit for bit.
+__device__ __forceinline__ uint32_t pearl_bd_rolled_msw(const uint32_t key[8], const uint32_t m0[16],
+                                                        int hash_big_endian) {
+  uint32_t s[16], m[16];
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = m0[i];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i];
+  s[8] = BLAKE3_IV[0]; s[9] = BLAKE3_IV[1]; s[10] = BLAKE3_IV[2]; s[11] = BLAKE3_IV[3];
+  s[12] = 0u; s[13] = 0u; s[14] = 64u; s[15] = PEARL_TRANSCRIPT_FLAGS;
+  auto one_round = [&]() {
+    g(s, 0, 4, 8, 12, m[0], m[1]);
+    g(s, 1, 5, 9, 13, m[2], m[3]);
+    g(s, 2, 6, 10, 14, m[4], m[5]);
+    g(s, 3, 7, 11, 15, m[6], m[7]);
+    g(s, 0, 5, 10, 15, m[8], m[9]);
+    g(s, 1, 6, 11, 12, m[10], m[11]);
+    g(s, 2, 7, 8, 13, m[12], m[13]);
+    g(s, 3, 4, 9, 14, m[14], m[15]);
+  };
+#pragma unroll 1
+  for (int r = 0; r < 6; r++) {
+    one_round();
+    const uint32_t p0 = m[2], p1 = m[6], p2 = m[3], p3 = m[10];
+    const uint32_t p4 = m[7], p5 = m[0], p6 = m[4], p7 = m[13];
+    const uint32_t p8 = m[1], p9 = m[11], p10 = m[12], p11 = m[5];
+    const uint32_t p12 = m[9], p13 = m[14], p14 = m[15], p15 = m[8];
+    m[0] = p0; m[1] = p1; m[2] = p2; m[3] = p3;
+    m[4] = p4; m[5] = p5; m[6] = p6; m[7] = p7;
+    m[8] = p8; m[9] = p9; m[10] = p10; m[11] = p11;
+    m[12] = p12; m[13] = p13; m[14] = p14; m[15] = p15;
+  }
+  one_round();
+  // Output words 0 and 7, the two the top word can be.
+  const uint32_t out[8] = {s[0] ^ s[8], 0u, 0u, 0u, 0u, 0u, 0u, s[7] ^ s[15]};
+  return pearl_hash_word_msf(out, 0, hash_big_endian);
 }
 #endif
 
@@ -576,7 +653,14 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         // No hit is ever reported -- never ship this.
         return;
 #endif
+        // The filter: the top word of the region's hash against the target's.
+#if PEARL_BD_STUB_HASH
+        if (pearl_bd_stub_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+#elif PEARL_BD_ROLLED_HASH
+        if (pearl_bd_rolled_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+#else
         if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+#endif
         uint32_t h[8];
         pearl_transcript_hash_again(test.key, tm, h);
         if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
