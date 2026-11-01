@@ -1590,6 +1590,29 @@ after 20 s, the builds taking turns, against the release's 256 in the same round
 - Operands held in L2 still gain about 2.7% over PFX+TID alone, so PFX doesn't hide RDNA 3's memory latency.
 - **Cost:** three high-priority boxes for 25 to 35 minutes each, about $0.25.
 
+**Item 15's gate, and the clock stamps (item 13, step 1b).** At 15:03 UTC on 1 November, at `3f67113`. Bit 8 now
+keeps one real LDS fragment read a slab, so the compiler keeps the stores and loads that feed it. Each run first
+reads every variant's registers and counts its fold's LDS stores, global loads and LDS loads in the assembly, and
+drops any variant that differs from the release where it shouldn't.
+
+| Card | Build | VGPRs | Waves | LDS | LDS stores, global loads, LDS loads | Kept |
+|---|---|---|---|---|---|---|
+| RX 9070 XT (`d7f2cec4`) | release | 198 | 6 | 36864 | 9, 12, 24 | yes |
+| | bit 8 | 188 | 6 | 36864 | 9, 12, 3 | yes |
+| | stamps | 218 | 6 | 36864 | 9, 13, 24 | no: VGPRs |
+| RX 7900 XTX (`06139310`) | release | 240 | 6 | 36864 | 9, 12, 48 | yes |
+| | stamps | 245 | 5 | 36864 | 9, 13, 48 | no: a wave less |
+
+- **Item 15 passes its gate on RDNA 4:** with LDS fragment loads cut from 24 a slab to 3, the 9070 XT's fold at k 4096
+  ran +11.88%, +5.99% and +8.10% faster (scored rounds of 600 launches, miner operands), against a 3% kill line. It's
+  an upper bound: fragments that stop changing may let the card clock up, and this PC's release wandered from 103.4
+  to 106.8 TMAC/s.
+- **The stamps don't fit yet:** 20 more VGPRs on RDNA 4 and 5 on RDNA 3, where that costs a wave a SIMD. Every
+  stamped build was dropped, so neither item 14's lockstep gate nor item 15 in cycles was read. They need to live in
+  SGPRs.
+- The XTX's PC folded at 25.3 TMAC/s, less than half the 58.5 of `ded998b6`, and its box was stopped.
+- **Cost:** two high-priority boxes for about 8 minutes each, about $0.05.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
