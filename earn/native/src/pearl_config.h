@@ -1707,10 +1707,14 @@ typedef struct {
 //   RTX 3090, 350 W, batch 128      +0.66% (+-0.04, 35/35; +0.68 and +0.66 in two more)
 //                                   memory 15% -> 10%; verify-hits 400/400, and at batch
 //                                   128 the band walk's exact 2,640 hits
-//   RTX 3090, 297.5 W, this build   +1.52% (+-0.37, 49/49), verify-hits 400/400
-// The 3080 10 GB and the 3060 ran a 512-offset batch walked in strips of the width the flip
-// would take there (64 and 32 offsets): +0.03% and -0.63%. On the 3060 Ti the same strips
-// read +1.48% against the narrow batch's +1.92%.
+//   RTX 3090, 297.5 W, this build   +1.52% (+-0.37, 49/49), verify-hits 400/400, Kryptex
+//                                   10 min: 3 shares accepted, 0 rejected
+//   RTX 3060 Ti, 156 W, this build  +3.62% (+-0.91, 41/42), verify-hits 400/400, Kryptex
+//                                   10 min: 8 accepted, 0 rejected
+//   RTX 3080 10 GB, forced on at 64 -0.71% (+-0.07, 0/44)
+// The 3060 ran a 512-offset batch walked in strips of the width the flip would take there
+// (32 offsets): -0.63%. On the 3060 Ti the same strips read +1.48% against the narrow batch's
+// +1.92%.
 // Tried and dropped: tiles from a counter (PEARL_TALL_CTR) on top, -0.5% on the 3090 and
 // -2.5% on the 3060 Ti's strip walk; half a 256-offset batch's B' held, -1.9 to -2.2%; a
 // 256 to 2048-offset batch walked in strips whose B' the slice holds, below the narrow batch
