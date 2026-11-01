@@ -183,7 +183,8 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(r.stderr, "")
 
     def test_nvtest_names_and_classes(self):
-        for good in ("nvtest-rtx3090", "nvtest-rtx3090ti", "nvtest-rtx3060ti-2", "nvtest-rtx3070-17"):
+        for good in ("nvtest-rtx3090", "nvtest-rtx3090ti", "nvtest-rtx3060ti-2", "nvtest-rtx3070-17", "nvtest-rtx4070",
+                     "nvtest-rtx4060ti-3"):
             self.assertEqual(a.check_name(good), good)
         for bad in ("nvtest-rtx2080ti", "nvtest-rtx3050", "nvtest-rtx3090-1", "nvtest-3090", "nvtest-rtx3090tix",
                     "biz-nvtest-rtx3090", "nvtest-rtx3090-100"):
@@ -191,6 +192,8 @@ class TestAmdtest(unittest.TestCase):
                 a.check_name(bad)
         self.assertEqual(a.class_name("3090", nv=True), "RTX 3090 (24 GB)")
         self.assertEqual(a.class_name("3090ti", nv=True), "RTX 3090 Ti (24 GB)")
+        self.assertEqual(a.class_name("4070", nv=True), "RTX 4070 (12 GB)")
+        self.assertEqual(a.class_name("4060ti", nv=True), "RTX 4060 Ti (16 GB)")
         self.assertEqual(a.class_name("RTX 3060 Ti", nv=True), "RTX 3060 Ti (8 GB)")
         self.assertEqual(a.class_name("RTX 3080 (10 GB)", nv=True), "RTX 3080 (10 GB)")   # Salad's own name
         self.assertEqual(a.class_name("7900xt"), "AMD RX 7900 XT (20GB)")                 # AMD's unchanged
