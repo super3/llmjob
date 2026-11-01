@@ -17,15 +17,14 @@
 #
 # A variant is kept with no scratch and no spills, LDS 36864 bytes and 6 waves a SIMD (the release's on RDNA 3 and
 # RDNA 4), the base's LDS stores and global loads (so the compiler kept all of the operand staging), and its twin's
-# VGPRs. If the base's code can't be read, the counts aren't compared, and a line says so. On gfx12 a
-# PEARL_AMD_LDS_AHEAD build is kept only with no LDS load between its last WMMA and a barrier: the release fence
-# before the barrier waits for every LDS load, so a load there puts its wait back on the barrier.
+# VGPRs. If the base's code can't be read, the counts aren't compared, and a line says so. The LDS loads between the
+# last WMMA and a barrier are counted, not held against a variant: the release fence before the barrier waits for
+# every LDS load, so a load there puts its wait on the barrier.
 #
 # The WMMAs after a barrier are counted up to the first s_wait_dscnt (gfx12) or lgkmcnt wait (gfx11) after it; "16+"
 # means 16 and no LDS wait before the next barrier or the end. The release waits for its fragments right after each
-# slab barrier (0); PEARL_AMD_LDS_AHEAD's slab barrier is followed by the last k-step's 16 WMMAs. After the slab
-# loop's first barrier the ops up to that wait are listed too (G global load, S LDS store, D LDS load, W WMMA), to
-# show whether the LDS loads come among the WMMAs.
+# slab barrier (0). After the slab loop's first barrier the ops up to that wait are listed too (G global load, S LDS
+# store, D LDS load, W WMMA), to show whether the LDS loads come among the WMMAs.
 #
 # Each result is one "[amdtest] HH:MM:SS check ..." line, written straight to the container's log too.
 set -u
@@ -141,8 +140,6 @@ for n in "${names[@]}"; do
     why="its code couldn't be read, so its LDS stores and global loads can't be held to $base's"
   elif [ -n "${N[$base]:-}" ] && [ "${N[$n]% *}" != "${N[$base]% *}" ]; then
     why="LDS stores and global loads ${N[$n]% *}, not $base's ${N[$base]% *}"
-  elif [ "$F" = wmma12 ] && [[ $flags == *-DPEARL_AMD_LDS_AHEAD=[12]* ]] && [ "${late:-?}" != 0 ]; then
-    why="${late:-?} LDS loads between the last WMMA and a barrier, whose release fence waits for them"
   fi
   o=${NOTE[$n]:-}
   if [ -n "$o" ] && [ -n "${V[$n]}" ] && [ "${V[$n]}" != "${V[$o]:-}" ]; then

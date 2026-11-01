@@ -1613,6 +1613,32 @@ drops any variant that differs from the release where it shouldn't.
 - The XTX's PC folded at 25.3 TMAC/s, less than half the 58.5 of `ded998b6`, and its box was stopped.
 - **Cost:** two high-priority boxes for about 8 minutes each, about $0.05.
 
+**Item 15, built and dropped.** `PEARL_AMD_LDS_AHEAD` (`d6cb96c`) moved the next slab's LDS store and barrier one
+k-step earlier, after k-step 0's WMMAs, so the next slab's fragments load from LDS while k-step 1 runs: form 1 loads
+k-step 0's fragments early, form 2 both. The stamps moved to SGPRs in the same commit. Raced at 17:09 UTC on
+1 November against the release on the same PC, at k 4096. First, every build's registers and assembly
+(`test/variant-check.sh`):
+
+- **Both forms fit:** 207 and 221 VGPRs against the release's 198, at 6 waves, no spills, LDS 36864, the release's
+  LDS stores and global loads. 16 WMMAs ran after each slab barrier before an LDS wait, against the release's 0.
+- **Both are bit-exact** against the CPU at k 4096 on both cards.
+- On a 7900 XTX both forms compiled to the release (gfx11 is left alone).
+- **The SGPR stamps still don't fit:** 221 VGPRs on gfx1201 against 198, and 244 at 5 waves on gfx1100.
+
+Fold alone on the miner's operands, 600 launches a round, scored from round 2; then `hashrate.js` 60 s after 20 s:
+
+| Card | PC | Form 1, fold | Form 2, fold | Form 1, hashrate | Form 2, hashrate |
+|---|---|---|---|---|---|
+| RX 9070 XT | `4c48f1b8` | −2.80, −2.74, −2.84% | −3.99, −3.98, −4.14% | not run | not run |
+| RX 9060 XT | `b3e43d09` | −1.91, −1.69, −1.79% | −3.77, −3.35, −3.32% | −1.81, −0.41% | −2.33% |
+
+- **Dropped:** slower on both cards in every round, so the boxes were stopped early and the code is reverted.
+  Loading the fragments early is not what costs time. Moving the barrier and the next slab's store one k-step earlier
+  gives the global loads that feed it less time to arrive (about 1.5 slabs instead of 2), and the barrier waits on
+  them. The fragment-load ablation's +6 to +12% stays as a reading of what LDS waits cost, not of what this ordering
+  could win.
+- **Cost:** two high-priority boxes for about 15 minutes each, plus a 5-minute check, about $0.12.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.

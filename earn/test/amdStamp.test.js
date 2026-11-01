@@ -40,8 +40,7 @@ function grab(text, re) {
   return m[1];
 }
 // The C as a build with these switches leaves it (the others as a release has them).
-const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0, PEARL_AMD_LDS_AHEAD: 0,
-  PEARL_AMD_AHEAD_HERE: 0 }, sw));
+const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 }, sw));
 const code = (t) => t.split('\n').filter((l) => !/^\s*\/\//.test(l));
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
 const stampBarrier = (t) => slice(t, 'auto stamp_barrier = [&]() {', '\n  };\n');
@@ -244,7 +243,7 @@ describe('the stamps in the fold', () => {
       const since = sinceJs(w11), step = run(bits);
       // A block whose counter starts near the top, 128 slabs of 9000 cycles with 120 at the release fence and
       // 300 at the barrier: more than 2^20 cycles in all, so gfx11's counter wraps on the way. The loop ends 40
-      // cycles after its last barrier (half a slab after it with PEARL_AMD_LDS_AHEAD).
+      // cycles after its last barrier.
       const t0 = mask - 70000, pro = 4000, P = 9000, mem = 120, wait = 300, slabs = 128, tail = 40, epi = 2500;
       let st = { stMem: 0, stBar: 0, stLoop: 0, stX16: 0, stX19: 0, stSeen: 0, stLast: cyc(t0 + pro) };
       const stPro = since(cyc(t0), st.stLast);
@@ -292,20 +291,14 @@ describe('the stamps in the fold', () => {
   it('stores one record a wave, from its lane 0, in the order stamp-summary.js reads', () => {
     const b = body(pass(gfx11));
     const v = items(grab(b, /const uint32_t v\[PEARL_AMD_STAMP_WORDS\] = \{([\s\S]*?)\};/));
-    expect(v).toEqual(['0x53540002u', 'stWave | kAhead | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16)',
-      'stHw', 'hw', 'stCyc0', 'stRt0', 'cyc', 'rt', 'stPro', 'stLoop', 'pearl_amd_cycles_since(stLast, cyc)', 'stBar',
-      'stX16', 'stX19', 'slabs', 'stMem']);
+    expect(v).toEqual(['0x53540002u', 'stWave | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16)', 'stHw',
+      'hw', 'stCyc0', 'stRt0', 'cyc', 'rt', 'stPro', 'stLoop', 'pearl_amd_cycles_since(stLast, cyc)', 'stBar', 'stX16',
+      'stX19', 'slabs', 'stMem']);
     expect(FOLD).toContain('#define PEARL_AMD_STAMP_WORDS 16u');
     expect(b).toContain('    if (out && lane == 0) {\n      const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;');
     expect(b).toContain('uint32_t *o = out + ((size_t)block * (uint32_t)(T / W) + stWave) * PEARL_AMD_STAMP_WORDS;');
-    // Bit 7: PEARL_AMD_LDS_AHEAD's layout, in the fold it applies to only.
-    const kAhead = grab(b, /\n {6}constexpr uint32_t kAhead = (.*);\n/);
-    expect(kAhead).toBe('PEARL_AMD_AHEAD_HERE && std::is_same<P, PearlAmdWmma12>::value ? 0x80u : 0u');
-    const layout = new Function('PEARL_AMD_AHEAD_HERE', 'wmma12', 'return ' + kAhead
-      .replace('std::is_same<P, PearlAmdWmma12>::value', 'wmma12').replace(/(0x[0-9A-Fa-f]+|\d+)u\b/g, '$1') + ';');
-    expect([[0, false], [0, true], [1, false], [1, true]].map(([h, w]) => layout(h, w))).toEqual([0, 0, 0, 0x80]);
-    // Word 1's fields fit their bits: 8 waves of a block, the layout bit, 20 or 32 bits, 2 crossing flags.
-    expect([8 < 2 ** 7, 32 < 2 ** 6, 3 < 2 ** 2]).toEqual([true, true, true]);
+    // Word 1's fields fit their bits: 8 waves of a block, 20 or 32 bits, 2 crossing flags.
+    expect([8 < 2 ** 8, 32 < 2 ** 6, 3 < 2 ** 2]).toEqual([true, true, true]);
     // The summary reads those words as those fields; word 1's top half is the block's low 16 bits.
     const words = Array.from({ length: 16 }, (_, i) => 1000 + i);
     words[0] = 0x53540002;
@@ -314,11 +307,8 @@ describe('the stamps in the fold', () => {
     const f = file([], { blocks: block + 1, waves: 8 });
     words.forEach((w, i) => f.writeUInt32LE(w >>> 0, 4 * (16 + (block * 8 + 3) * 16 + i)));
     const r = summary.load(f).waves[0];
-    expect(r).toEqual({ wave: 3, ahead: 0, bits: 32, seen: 2, block, hw0: 1002, hw1: 1003, cyc0: 1004, rt0: 1005,
-      cyc1: 1006, rt1: 1007, pro: 1008, loop: 1009, epi: 1010, bar: 1011, x16: 1012, x19: 1013, slabs: 1014, mem: 1015 });
-    // With bit 7 set: the same wave, in PEARL_AMD_LDS_AHEAD's layout.
-    f.writeUInt32LE((words[1] | 0x80) >>> 0, 4 * (16 + (block * 8 + 3) * 16 + 1));
-    expect(summary.load(f).waves[0]).toEqual(Object.assign({}, r, { ahead: 1 }));
+    expect(r).toEqual({ wave: 3, bits: 32, seen: 2, block, hw0: 1002, hw1: 1003, cyc0: 1004, rt0: 1005, cyc1: 1006,
+      rt1: 1007, pro: 1008, loop: 1009, epi: 1010, bar: 1011, x16: 1012, x19: 1013, slabs: 1014, mem: 1015 });
     // The fold test's file header, as the summary reads it.
     const head = items(grab(FOLDTEST, /const uint32_t head\[16\] = \{([\s\S]*?)\};/));
     expect(head).toEqual(['0x31545350u', 'PEARL_AMD_STAMP_WORDS', 'PEARL_AMD_THREADS / 32u', '(uint32_t)stampBlocks',
@@ -517,8 +507,8 @@ function file(waves, head) {
   const put = (i, v) => buf.writeUInt32LE(v >>> 0, 4 * i);
   [0x31545350, 16, h.waves, h.blocks, h.gridX, h.wallKhz, h.k, h.launches, h.m, h.cols].forEach((v, i) => put(i, v));
   for (const w of waves) {
-    [0x53540002, w.wave | (w.ahead ? 0x80 : 0) | (w.bits << 8) | (w.seen << 14) | ((w.block & 0xffff) << 16), w.hw0,
-      w.hw1, w.cyc0, w.rt0, w.cyc1, w.rt1, w.pro, w.loop, w.epi, w.bar, w.x16, w.x19, w.slabs, w.mem || 0]
+    [0x53540002, w.wave | (w.bits << 8) | (w.seen << 14) | ((w.block & 0xffff) << 16), w.hw0, w.hw1, w.cyc0, w.rt0,
+      w.cyc1, w.rt1, w.pro, w.loop, w.epi, w.bar, w.x16, w.x19, w.slabs, w.mem || 0]
       .forEach((v, i) => put(16 + (w.block * h.waves + w.wave) * 16 + i, v));
   }
   return buf;
@@ -535,7 +525,7 @@ function wave(o) {
   const cyc0 = (o.cyc0 || 0) % 2 ** bits;
   const hw0 = hwId(o.se || 0, o.sa || 0, o.wgp || 0, o.simd === undefined ? w % 4 : o.simd, w);
   return {
-    block: o.block, wave: w, ahead: o.ahead || 0, bits, seen: o.seen || 0, hw0, hw1: o.hw1 === undefined ? hw0 : o.hw1, cyc0,
+    block: o.block, wave: w, bits, seen: o.seen || 0, hw0, hw1: o.hw1 === undefined ? hw0 : o.hw1, cyc0,
     rt0: o.start >>> 0, cyc1: (cyc0 + cycles) % 2 ** bits, rt1: (o.start + o.ticks) >>> 0, pro, loop: cycles - pro - epi,
     epi, bar: o.bar || 0, x16: o.x16 || 0, x19: o.x19 || 0, slabs: o.slabs || 128, mem: o.mem || 0,
   };
@@ -636,14 +626,6 @@ describe('stamp-summary.js', () => {
     expect(s.counter.other.med).toBeGreaterThan(100000);
     expect(summary.format(s)[3]).toBe('counter: waves of a block at the loop\'s end, just after their last barrier, '
       + 'one SIMD 4 cycles apart (p90 4, 4 pairs), different SIMDs 300000 (p90 448576, 24)');
-    // PEARL_AMD_LDS_AHEAD's layout: the last k-step comes after the last barrier, so the waves reach the loop's end
-    // apart and the line has no reading. The rest of the summary reads those blocks as any other.
-    const ahead = summarize(ws.map((w) => Object.assign({}, w, { ahead: 1 })));
-    expect([ahead.blocks, ahead.counter.ahead, ahead.counter.one.n, ahead.counter.other.n]).toEqual([1, 1, 0, 0]);
-    expect(summary.format(ahead)[3]).toBe('counter: no reading: 1 blocks in PEARL_AMD_LDS_AHEAD\'s layout, where the '
-      + 'last barrier comes a k-step before the loop\'s end');
-    expect(summary.load(file(ws.map((w) => Object.assign({}, w, { ahead: 1 })))).waves.map((w) => [w.wave, w.ahead]))
-      .toEqual(ws.map((w) => [w.wave, 1]));
     // Distances either way round, across a wrap.
     expect(summary.apart(2 ** 20 - 10, 15, 20)).toBe(25);
     expect(summary.apart(15, 2 ** 20 - 10, 20)).toBe(25);

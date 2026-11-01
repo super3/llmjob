@@ -82,8 +82,9 @@ function asm(gfx, ops) {
 // followed by the next slab's fragment loads and a wait before any WMMA.
 const RELEASE = ['G3', 'S3', 'B', 'G3', 'L', 'G3', 'D8', 'w', 'W32', 'S3', 'B', 'G3', 'D8', 'w', 'W32', 'S3', 'B', 'L',
   'D8', 'w', 'W32', 'B'];
-// PEARL_AMD_LDS_AHEAD's: the same stores and global loads, and 16 WMMAs after each slab barrier before the wait.
-const AHEAD = ['G3', 'S3', 'B', 'G3', 'D8', 'L', 'G3', 'w', 'W16', 'S3', 'B', 'D8', 'W16', 'G3', 'w', 'W16', 'S3', 'B',
+// A made-up schedule: the same stores and global loads, 8 more LDS loads, and 16 WMMAs after each slab barrier before
+// the wait.
+const MOVED = ['G3', 'S3', 'B', 'G3', 'D8', 'L', 'G3', 'w', 'W16', 'S3', 'B', 'D8', 'W16', 'G3', 'w', 'W16', 'S3', 'B',
   'D8', 'W16', 'L', 'w', 'W16', 'B', 'D8', 'W16'];
 
 describe('variant-check.sh', () => {
@@ -138,9 +139,9 @@ describe('variant-check.sh', () => {
       ['abl8', '-DPEARL_AMD_ABLATE=8', '188 0 0 36864 6 70', RELEASE],
       ['abl8s', '-DPEARL_AMD_ABLATE=8 -DPEARL_AMD_STAMP=1', '205 0 0 36864 6 81', RELEASE],
       ['abl2s', '-DPEARL_AMD_ABLATE=2 -DPEARL_AMD_STAMP=1', '218 0 0 36864 6 81', RELEASE],
-      ['ahead1', '-DPEARL_AMD_LDS_AHEAD=1', '204 0 0 36864 6 72', AHEAD],
-      ['wave5', '-DPEARL_AMD_LDS_AHEAD=2', '245 0 0 36864 5 72', AHEAD],
-      ['spills', '-DSPILLS', '240 0 3 36864 6 72', AHEAD],
+      ['moved', '-DMOVED', '204 0 0 36864 6 72', MOVED],
+      ['wave5', '-DWAVE5', '245 0 0 36864 5 72', MOVED],
+      ['spills', '-DSPILLS', '240 0 3 36864 6 72', MOVED],
       ['lds0', '-DLDS0', '170 0 0 0 8 60', RELEASE],
       ['stores', '-DSTORES', '198 0 0 36864 6 70', RELEASE.slice(0, -4).concat(['S2', 'B'])],
       ['noasm', '-DNOASM', '198 0 0 36864 6 70', null],
@@ -149,7 +150,7 @@ describe('variant-check.sh', () => {
     expect(status).toBe(0);
     expect(lines[0]).toBe('start gfx1201 fold wmma12; variants: base=;stamp=-DPEARL_AMD_STAMP=1;abl8=-DPEARL_AMD_ABLATE=8;'
       + 'abl8s=-DPEARL_AMD_ABLATE=8 -DPEARL_AMD_STAMP=1;abl2s=-DPEARL_AMD_ABLATE=2 -DPEARL_AMD_STAMP=1;'
-      + 'ahead1=-DPEARL_AMD_LDS_AHEAD=1;wave5=-DPEARL_AMD_LDS_AHEAD=2;spills=-DSPILLS;lds0=-DLDS0;stores=-DSTORES;'
+      + 'moved=-DMOVED;wave5=-DWAVE5;spills=-DSPILLS;lds0=-DLDS0;stores=-DSTORES;'
       + 'noasm=-DNOASM;norow=-DNOROW; twins: stamp=base abl8s=abl8 abl2s~stamp');
     const row = (v, l, w) => `gfx1201   pearl_amd_fold_wmma12     ${v}      -        0       0    ${l}          ${w}     1`;
     expect(lines).toContain(`base (release): ${row(198, 36864, 6)}; SGPRs 70; fold code 9 12 24 (LDS stores, global loads, `
@@ -163,7 +164,7 @@ describe('variant-check.sh', () => {
       + 'global loads, LDS loads); WMMAs after each barrier before an LDS wait: 0 0 0 0+ '
       + '(after the loop\'s first: GGGDDDDDDDD); LDS loads between the last WMMA and a barrier: 0; the same code '
       + 'as base');
-    expect(lines).toContain(`ahead1 (-DPEARL_AMD_LDS_AHEAD=1): ${row(204, 36864, 6)}; SGPRs 72; fold code 9 12 32 (LDS stores, `
+    expect(lines).toContain(`moved (-DMOVED): ${row(204, 36864, 6)}; SGPRs 72; fold code 9 12 32 (LDS stores, `
       + 'global loads, LDS loads); WMMAs after each barrier before an LDS wait: 0 16 16 16+ '
       + '(after the loop\'s first: DDDDDDDDWWWWWWWWWWWWWWWWGGG); LDS loads between the last WMMA and a barrier: 0; '
       + 'code differs from base');
@@ -177,14 +178,14 @@ describe('variant-check.sh', () => {
       'stores dropped: LDS stores and global loads 11 12, not base\'s 9 12',
       'noasm dropped: its code couldn\'t be read, so its LDS stores and global loads can\'t be held to base\'s',
       'norow dropped: not LDS 36864 and 6 waves with no scratch and no spills',
-      'kept: base stamp abl8 abl2s ahead1',
+      'kept: base stamp abl8 abl2s moved',
     ]);
     expect(lines).toContain('norow (-DNOROW): no row; SGPRs ?; fold code 9 12 24 (LDS stores, global loads, LDS loads); '
       + 'WMMAs after each barrier before an LDS wait: 0 0 0 0+ '
       + '(after the loop\'s first: GGGDDDDDDDD); LDS loads between the last WMMA and a barrier: 0; the same code '
       + 'as base');
     expect(keep).toBe('base=\nstamp=-DPEARL_AMD_STAMP=1\nabl8=-DPEARL_AMD_ABLATE=8\n'
-      + 'abl2s=-DPEARL_AMD_ABLATE=2 -DPEARL_AMD_STAMP=1\nahead1=-DPEARL_AMD_LDS_AHEAD=1\n');
+      + 'abl2s=-DPEARL_AMD_ABLATE=2 -DPEARL_AMD_STAMP=1\nmoved=-DMOVED\n');
     // The assembly is compiled as build-amd.sh check compiles the device code, with -S.
     const first = args.split('\n')[0];
     expect(first).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -Icompat/gpu -Isrc -I../src '
@@ -197,52 +198,48 @@ describe('variant-check.sh', () => {
   bashIt('reads gfx11\'s waits and barriers, and finds a variant whose code is the base\'s', () => {
     const { status, lines, keep } = run([
       ['base', '', '240 0 0 36864 6 90', RELEASE],
-      ['ahead1', '-DPEARL_AMD_LDS_AHEAD=1', '240 0 0 36864 6 90', RELEASE],
+      ['same', '-DSAME', '240 0 0 36864 6 90', RELEASE],
       ['stamp', '-DPEARL_AMD_STAMP=1', '245 0 0 36864 5 101', RELEASE],
     ], { TWINS: 'stamp=base' }, 11);
     expect(status).toBe(0);
     expect(lines[0]).toMatch(/^start gfx1100 fold wmma11; /);
-    expect(lines).toContain('ahead1 (-DPEARL_AMD_LDS_AHEAD=1): gfx1100   pearl_amd_fold_wmma11     240      -        0       0    '
+    expect(lines).toContain('same (-DSAME): gfx1100   pearl_amd_fold_wmma11     240      -        0       0    '
       + '36864          6     0; SGPRs 90; fold code 9 12 24 (LDS stores, global loads, LDS loads); WMMAs after each barrier '
       + 'before an LDS wait: 0 0 0 0+ (after the loop\'s first: GGGDDDDDDDD); LDS loads between the last WMMA and a '
       + 'barrier: 0; the same code as base');
     expect(lines).toContain('stamp dropped: not LDS 36864 and 6 waves with no scratch and no spills');
-    expect(keep).toBe('base=\nahead1=-DPEARL_AMD_LDS_AHEAD=1\n');
+    expect(keep).toBe('base=\nsame=-DSAME\n');
   }, 60000);
 
   bashIt('keeps variants on their row alone when the base\'s code can\'t be read', () => {
     const { lines } = run([
       ['base', '', '198 0 0 36864 6 70', null],
-      ['ahead1', '-DPEARL_AMD_LDS_AHEAD=1', '204 0 0 36864 6 72', AHEAD.concat(['S5'])],
+      ['moved', '-DMOVED', '204 0 0 36864 6 72', MOVED.concat(['S5'])],
     ]);
     expect(lines).toContain('base: the fold\'s code couldn\'t be read, so the variants are kept on their row alone');
-    expect(lines[lines.length - 1]).toBe('kept: base ahead1');
-    expect(lines.find((l) => l.startsWith('ahead1 ('))).toMatch(/fold code 14 12 32 .*: 0 16 16 16\+ \(after the loop's first: D{8}W{16}G{3}\); .*: 0$/);
+    expect(lines[lines.length - 1]).toBe('kept: base moved');
+    expect(lines.find((l) => l.startsWith('moved ('))).toMatch(/fold code 14 12 32 .*: 0 16 16 16\+ \(after the loop's first: D{8}W{16}G{3}\); .*: 0$/);
   }, 60000);
 
-  bashIt('drops an RDNA 4 ahead build with an LDS load between its last WMMA and a barrier', () => {
+  bashIt('counts the LDS loads between the last WMMA and a barrier, and keeps the build for them', () => {
     // The step's top loads sunk below its first k-step's WMMAs: 4 before the second barrier, 4 before the third.
-    const late = AHEAD.slice();
+    const late = MOVED.slice();
     late.splice(late.indexOf('S3'), 0, 'D4');
     late.splice(late.lastIndexOf('S3'), 0, 'D4');
     const vs = [
       ['base', '', '198 0 0 36864 6 70', RELEASE],
-      ['ahead1', '-DPEARL_AMD_LDS_AHEAD=1', '198 0 0 36864 6 72', late],
-      ['ahead2s', '-DPEARL_AMD_LDS_AHEAD=2 -DPEARL_AMD_STAMP=1', '214 0 0 36864 6 84', late],
+      ['late', '-DLATE', '198 0 0 36864 6 72', late],
       ['abl8', '-DPEARL_AMD_ABLATE=8', '188 0 0 36864 6 70', late],
     ];
     const r = run(vs);
-    expect(r.lines.find((l) => l.startsWith('ahead1 ('))).toMatch(/; LDS loads between the last WMMA and a barrier: 8; /);
-    expect(r.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual([
-      'ahead1 dropped: 8 LDS loads between the last WMMA and a barrier, whose release fence waits for them',
-      'ahead2s dropped: 8 LDS loads between the last WMMA and a barrier, whose release fence waits for them',
-      'kept: base abl8',
-    ]);
-    // On gfx11 the ahead builds are the release's code, and the count holds nothing back.
-    const r11 = run(vs, {}, 11);
-    expect(r11.lines[r11.lines.length - 1]).toBe('kept: base ahead1 ahead2s abl8');
+    expect(r.lines.find((l) => l.startsWith('late ('))).toMatch(/; LDS loads between the last WMMA and a barrier: 8; /);
+    expect(r.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual(['kept: base late abl8']);
     // The compiler was CHECK_CC's: the run sets CC to a file that doesn't exist.
-    expect(r.args.split('\n').filter(Boolean)).toHaveLength(4);
+    expect(r.args.split('\n').filter(Boolean)).toHaveLength(3);
+    // The same on gfx11.
+    const r11 = run(vs, {}, 11);
+    expect(r11.lines.find((l) => l.startsWith('late ('))).toMatch(/; LDS loads between the last WMMA and a barrier: 8; /);
+    expect(r11.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual(['kept: base late abl8']);
   }, 60000);
 
   bashIt('refuses a card it has no fold for, and a twin it can\'t read', () => {

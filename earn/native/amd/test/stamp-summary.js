@@ -16,8 +16,7 @@
 //   counter  how far apart the waves of one block read the counter at the slab loop's end, which comes right
 //            after their last barrier, which they leave together: waves on one SIMD, and on different SIMDs. The
 //            ISA says the counter isn't synchronised across SIMDs, so the phases below compare waves on one SIMD
-//            only. No reading for a PEARL_AMD_LDS_AHEAD build (word 1's bit 7): its last barrier comes a k-step
-//            before the loop's end, so the waves reach the end apart.
+//            only.
 //   counter across blocks  the premise those phases rest on, checked between blocks: for each wave that
 //            started on a SIMD after another wave there ended, the counter's gap less REALTIME's gap in
 //            cycles. One free-running counter a SIMD gives tens of cycles; a counter of each wave, or one reset
@@ -64,11 +63,10 @@ function load(buf) {
     for (let w = 0; w < head.waves; w++) {
       const o = HEAD + (b * head.waves + w) * head.words;
       if (u(o) !== WAVE_MAGIC) { missing++; continue; }
-      // Word 1: the wave (bits 6:0), PEARL_AMD_LDS_AHEAD's layout (bit 7), the counter's bits (13:8), the
-      // crossings seen (15:14), the block's low 16.
+      // Word 1: the wave (bits 7:0), the counter's bits (13:8), the crossings seen (15:14), the block's low 16.
       const w1 = u(o + 1);
       const r = {
-        wave: w1 & 0x7f, ahead: (w1 >>> 7) & 1, bits: (w1 >>> 8) & 63, seen: (w1 >>> 14) & 3, block: b,
+        wave: w1 & 0xff, bits: (w1 >>> 8) & 63, seen: (w1 >>> 14) & 3, block: b,
         hw0: u(o + 2), hw1: u(o + 3), cyc0: u(o + 4), rt0: u(o + 5), cyc1: u(o + 6), rt1: u(o + 7),
         pro: u(o + 8), loop: u(o + 9), epi: u(o + 10), bar: u(o + 11), x16: u(o + 12), x19: u(o + 13),
         slabs: u(o + 14), mem: u(o + 15),
@@ -237,14 +235,9 @@ function summarize(data) {
   s.rest = position(blocks.filter((b) => b.lead.start >= firstEnd));
 
   // The waves of a block leave their last barrier together, and the loop ends right after it: where each one's
-  // counter stood at the loop's end. Not in PEARL_AMD_LDS_AHEAD's layout, where the last k-step comes between.
+  // counter stood at the loop's end.
   const one = [], other = [];
-  let ahead = 0;
   for (const b of blocks) {
-    if (b.lead.ahead) {
-      ahead++;
-      continue;
-    }
     const last = b.waves.map((w) => [simdOf(w.hw0), since(0, w.cyc0 + w.pro + w.loop, w.bits), w.bits]);
     for (let i = 0; i < last.length; i++) {
       for (let j = i + 1; j < last.length; j++) {
@@ -252,7 +245,7 @@ function summarize(data) {
       }
     }
   }
-  s.counter = { one: spread(one), other: spread(other), across: across(waves), ahead };
+  s.counter = { one: spread(one), other: spread(other), across: across(waves) };
 
   // Blocks that shared a WGP at the same time.
   const byWgp = new Map();
@@ -311,9 +304,7 @@ function format(s) {
       + r0(p.memSlab.med) + ' a slab; prologue ' + pct(p.pro) + ', epilogue ' + pct(p.epi));
   }
   const c = s.counter;
-  lines.push(c.ahead ? 'counter: no reading: ' + c.ahead + ' blocks in PEARL_AMD_LDS_AHEAD\'s layout, where the last'
-    + ' barrier comes a k-step before the loop\'s end'
-    : 'counter: waves of a block at the loop\'s end, just after their last barrier, one SIMD ' + r0(c.one.med)
+  lines.push('counter: waves of a block at the loop\'s end, just after their last barrier, one SIMD ' + r0(c.one.med)
     + ' cycles apart (p90 ' + r0(c.one.p90) + ', ' + c.one.n + ' pairs), different SIMDs ' + r0(c.other.med) + ' (p90 '
     + r0(c.other.p90) + ', ' + c.other.n + ')');
   lines.push('counter across blocks: ' + c.across.n + ' waves that started on a SIMD after another wave there ended;'
