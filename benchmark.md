@@ -925,6 +925,33 @@ All three miners of a row share its pool. Different PCs, except one; they leave 
 - **Not recorded:** on bf32527c (5070 Ti) no miner got work from the pool.
 - Drivers 596-621. The same noise caveat as the RTX 20 run applies to ours.
 
+### Our own builds raced on Salad, 1 November: would k 4096 pay on RTX 50 and RTX 40?
+
+Research item 8, raced at 10:51 UTC on 2026-11-01 at `aa63e33`, in race mode (`name=lib.so:K` gives a build its own
+k and profile, so every rate is MACs a second), built with CUDA 13.3.1 as the CUDA 13 core is. A share may declare
+k 4096: the tall fold's tile hash, hand-off and seam then cover twice the MACs, but a tile's operand panels double,
+so the batch narrows to keep B' in the L2 and A' is read twice as often. RTX 50's TMA fold reaches k 4096 only with
+`PEARL_TALL_PREGUARD=0` (its readout before the hand-off guard has no wrap), so that build is raced too. Not rows: no
+competitor ran.
+
+| Card | Machine ID | Arm | vs release | Rounds ahead | Memory busy | Clock |
+|---|---|---|---|---|---|---|
+| RTX 5090 (480 W) | 43dc224b | k 4096, PREGUARD off, batch 1024 | −0.78% ±0.35 | 3/30 | 4.9% → 9.5% | 2266 → 2226 MHz |
+| RTX 5090 (480 W) | 43dc224b | k 2048, PREGUARD off | −0.05% ±0.24 | 17/30 | 4.9% → 4.5% | 2266 → 2268 MHz |
+| RTX 5090 (480 W) | 43dc224b | k 2048, batch 1024 | +0.04% ±0.25 | 12/30 | 4.9% → 4.0% | 2266 MHz |
+| RTX 4090 (400 W) | 08d26781 | k 4096, batch 512 | −0.29% ±0.05 | 2/50 | 2.9% → 5.4% | 2484 → 2467 MHz |
+
+- **Dropped at the power limit:** k 4096 does more work a clock, about +1.0% on the 5090 and +0.4% on the 4090 (rate
+  over clock), but its DRAM traffic doubles, and at the cap those watts come out of the SM clock. The narrower batch
+  alone costs nothing (the 5090's batch-1024 arm), so it is k's own A' traffic. The copy of the release read
+  +0.06% ±0.15 on the 5090 and −0.02% ±0.03 on the 4090. The 4090's −0.29% fits bench.exe's +0.1% at k 4096 in
+  `pearl_config.h` on a different PC.
+- **Left open:** a card held at a fixed clock below its power limit keeps the per-clock gain, at more watts. Salad
+  cannot hold a clock, so that needs a rig run.
+- **Correctness:** `verify-hits.js` 400 of 400 at k 4096 on both cards (the 5090's PREGUARD-off TMA fold, the 4090's
+  cp.async fold), and at k 2048 on the 5090's PREGUARD-off and batch-1024 builds.
+- **Cost:** two high-priority boxes for 15 minutes each, about $0.15.
+
 ## A100-class (sm_80)
 
 Run on 2026-10-10, 16:06–16:46 UTC. Four rows are on their own machine; one
