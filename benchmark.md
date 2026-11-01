@@ -405,6 +405,26 @@ they leave the rows above alone.
   a 2080 Super, which has no row; on 9f287c81 (2070 Super) no miner got work from the pool. Salad's 2070 class also
   handed out the 2070 Super 32c563bc, which got a row of its own.
 
+### Our own builds raced on Salad, 1 November: the transcript hash and the L0 instruction cache
+
+Research item 11, raced at 04:23 UTC on 2026-11-01 at `59ed665`, in race mode (`earn/native/probes/race.cu`: every
+build in one process on one card, 4 s turns for 600 s, against the release build's turn in the same round), on
+`nvtest` boxes. The idea: Turing's L0 instruction cache holds 16 KiB a scheduler, and while one warp streams the
+B-direct fold's 10.9 KiB of straight-line transcript hash its partner runs the 10.3 KiB chunk loop, so both may
+refetch from L1. `PEARL_BD_STUB_HASH` (timing only; a 2.1 KiB loop doing the same work, the most any smaller hash
+could gain) and `PEARL_BD_ROLLED_HASH` (BLAKE3's rounds as a loop, 4.5 KiB, the same word, but 881 instructions a
+region against 700). Not rows: no competitor ran.
+
+| Card | Machine ID | stub | rolled | A/A copy |
+|---|---|---|---|---|
+| RTX 2080 Ti (260 W) | 6317ad20 | +0.10% ±0.07 (25/34 ahead) | −0.42% (1/34) | +0.02% ±0.05 |
+| RTX 2070 (225 W) | 1e19bb79 | −0.01% ±0.02 (13/34) | −0.39% (0/34) | −0.01% ±0.02 |
+
+- **Dropped:** the stub had to gain at least +0.5% on both cards. Shrinking the hash's code to a fifth buys at most
+  0.1%, so instruction fetch is not what limits the RTX 20 fold, and the rolled hash only pays for its extra
+  instructions. The code is reverted.
+- **Cost:** two high-priority boxes for about 13 minutes each, about $0.04.
+
 ### Monero on the CPU
 
 SRBMiner 3.7.5 mines Monero (RandomX) on the CPU and Pearl on the GPU in one
