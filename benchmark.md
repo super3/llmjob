@@ -987,6 +987,22 @@ rows: no competitor ran.
   and something in the multicast or the cluster-wide EMPTY barrier never completes on sm_120. Which build hung isn't
   known; the release runs fine in every other race. Before any multicast work on RTX 50 (item 16's step 2), a
   standalone feed probe has to show multicast works and what it saves. The box was stopped; about $0.12.
+- **The mid cards gain less: they hit their top clock first.** The same skip arms raced at 22:09 UTC at `9e6d18b`,
+  900 s each, all three cards at their stock limits:
+
+| Card | PC | Release | Skip B' | Skip both | Clock, release to skip both | Power, skip both |
+|---|---|---|---|---|---|---|
+| RTX 5090 (600 W) | `cbd4eba1` | 432.46 TH/s | +5.20% | +8.33% | 2613 → 2827 MHz | 600 W, the limit |
+| RTX 5080 (360 W) | `973fc20d` | 231.18 TH/s | +2.70% ±0.03 | +3.29% ±0.04 | 2820 → 2910 MHz | 331.5 W |
+| RTX 5070 Ti (300 W) | `2a6a0ba5` | 192.23 TH/s | +1.70% ±0.05 | +1.95% ±0.05 | 2812 → 2865 MHz | 262.6 W |
+| RTX 5060 (145 W) | `b90400a2` | 78.34 TH/s | +2.54% ±0.07 | +2.84% ±0.07 | 2687 → 2760 MHz | 128.6 W |
+
+  - Each ran 37 rounds, ahead in every one. The release's copy read +0.008%, +0.005% and +0.12%.
+  - The 5080, 5070 Ti and 5060 run the release within 2-3% of their top clock. With the operand traffic gone they
+    reach it, below their power limits, so an energy saving can win them at most 2-3.3%.
+  - Only the 5090 stays power-limited all the way, with the full 8%. For item 16 that means the prize is mostly the
+    5090's (and any card held to a lower limit), and a rewrite that costs work per clock would lose on the mid cards.
+  - Three high-priority boxes for about 18 minutes each, about $0.30.
 
 ## A100-class (sm_80)
 
