@@ -466,8 +466,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //     SIMD: two blocks sharing a WGP that cross the same boundary differ there by their true phase, how
 //     far apart their barriers are. Bit 16 comes round about every 10 slabs, so its crossing is near a
 //     block's start; bit 19 about every 70, so it lands anywhere in a block.
-//   - HW_ID1 at the start and the end: the wave's SIMD, WGP, shader array and engine. A context switch
-//     can change it; test/stamp-summary.js drops such waves.
+//   - HW_ID1 at the start and the end: the wave's SIMD, WGP, shader array and, on gfx11 only, engine (gfx12's
+//     HW_ID1 has none). A context switch can change it; test/stamp-summary.js drops such waves.
 // REALTIME is a message whose answer the wave waits for (lgkmcnt on gfx11, which counts LDS loads too;
 // kmcnt on gfx12), so only the prologue and epilogue read it. Nothing is stored in the slab loop.
 // Every stamp is the same in all lanes of a wave, so all of them belong in SGPRs, and the stamps must not
@@ -490,6 +490,52 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_STAMP && PEARL_AMD_EMU
 #error "PEARL_AMD_STAMP reads a GPU's clocks: build it for a card (build-amd.sh gpu), not HIP-CPU"
 #endif
+
+// PEARL_AMD_SKEW: a start skew for the RDNA folds, against lockstep (research item 14). On the targets whose
+// WGP holds three blocks of the fold (128 KB of LDS at 36864 bytes a block, and 6 waves a SIMD: gfx1100,
+// gfx1101, gfx1151, gfx1200 and gfx1201), a launch's first three blocks on a WGP start within about a
+// microsecond of each other. Unless something pulls them apart, their slab barriers, readouts and tile seams
+// can come at the same time, slab after slab, with no other block's work to issue meanwhile. With this on,
+// each of a launch's first blocks waits once, before its first slab, by its place in the order its WGP's
+// blocks arrived in, so the three run their slabs out of phase. A block that takes the room of one that ends
+// starts when that one ended, so it keeps that phase unless something pulls it back.
+// Each place's wait is in percent of a slab, and the host sets the three at run time, so one build can race
+// several (test/skew-race.sh). PEARL_AMD_SKEW_WAIT=a:b:c in the environment sets places 0, 1 and 2's;
+// otherwise the value picks them:
+//   1   0, 33 and 67: a third of a slab a place
+//   2   0, 67 and 133: two thirds
+//   3   0, 17 and 33: a sixth
+// A wait is time, not work. While places 1 and 2 wait, the blocks already running share the WGP with fewer
+// and run faster, so their leads in work come out larger than the waits. With waits of a third of a slab a
+// place, place 0 can land back in step with place 2. The race measures how much faster they run and aims some
+// waits at leads in work.
+// The place: wave 0 of each of a launch's first pearl_amd_skew_first blocks (three a WGP, set by the host)
+// takes a ticket from its WGP's counter with atomicInc(.., 2), which counts 0, 1, 2, 0, ... The counter is
+// the WGP's: HW_ID1's WGP and shader array, and its shader engine, which gfx11's HW_ID1 holds and gfx12's
+// doesn't (pearl_amd_skew_se). A launch's first blocks fill every WGP with three, so a counter takes three
+// tickets a launch and ends where it began: it is never reset. Any three tickets in a row are 0, 1 and 2 in
+// some order anyway. blockIdx alone can't give the place: AMD doesn't document which WGP its dispatcher
+// picks. It hands blocks out in order, but spread over the shader engines (6 on a 7900 XTX, 4 on a 9070 XT)
+// and then to a WGP with room, so the three blocks on a WGP could all have the same number mod 3 (6 is a
+// multiple of 3). The ticket is one atomic for each block of a launch's first wave (144 of 16384 blocks on a
+// 7900 XTX), in the prologue.
+// The wait: wave 0 runs s_sleep(1), about 64 clocks, as many times as its place's wait, before it loads its
+// part of slab 0. The other waves wait for it at the barrier after slab 0's staging, so the whole block
+// starts its slabs that late. SKEW 1's waits come to under 0.02% of a miner's launch on a WGP.
+// The ticket's atomic takes a few VGPRs in the prologue, free again before slab 0's load. The place, the
+// count and the sleeps are scalar, and the slab loop is the release's. The run scripts check that the fold
+// keeps the release's VGPRs and waves (test/variant-check.sh). It only delays, so the transcripts are the
+// release's, and it could ship: no caps bit, no refusal. The host sets the counters, the count and the waits
+// once a context; while the counters are unset (null), no block waits. gfx1102 and gfx1150 have two thirds
+// of the VGPRs, so the fold runs 4 waves a SIMD there, two blocks a WGP: their code objects have no skew.
+// Nor have the reference fold, CDNA and HIP-CPU.
+#ifndef PEARL_AMD_SKEW
+#define PEARL_AMD_SKEW 0
+#endif
+#if PEARL_AMD_SKEW < 0 || PEARL_AMD_SKEW > 3
+#error "PEARL_AMD_SKEW is 0, 1, 2 or 3"
+#endif
+
 #if PEARL_AMD_STAMP
 // The words a wave stores, and its counter's width (0 where the fold has no stamps). The record's layout is
 // the one test/stamp-summary.js reads (version 2).
@@ -501,9 +547,11 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 // constant memory, so the fold reads it with a scalar load into an SGPR pair.
 __constant__ uint32_t *pearl_amd_stamps = nullptr;
 namespace {
-// A stamp value, in an SGPR. It is the same in every lane, and readfirstlane says so: the compiler then keeps
-// it in an SGPR, and a value it had put in a VGPR costs one v_readfirstlane here, not a VGPR across the loop.
-// On a value in an SGPR already it is a copy.
+#endif
+#if PEARL_AMD_STAMP || PEARL_AMD_SKEW
+// A value the same in every lane (a stamp, the skew's ticket), in an SGPR. readfirstlane says so: the compiler
+// then keeps it in an SGPR, and a value it had put in a VGPR costs one v_readfirstlane here, not a VGPR across
+// the loop. On a value in an SGPR already it is a copy.
 __device__ __forceinline__ uint32_t pearl_amd_sgpr(uint32_t x) {
 #if PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12
   return (uint32_t)__builtin_amdgcn_readfirstlane((int)x);
@@ -511,6 +559,8 @@ __device__ __forceinline__ uint32_t pearl_amd_sgpr(uint32_t x) {
   return x;
 #endif
 }
+#endif
+#if PEARL_AMD_STAMP
 // SHADER_CYCLES: gfx11's 20 bits (hwreg 29, SHADER_CYCLES); gfx12's low 32 (hwreg 29, SHADER_CYCLES_LO).
 __device__ __forceinline__ uint32_t pearl_amd_cycles() {
 #if PEARL_AMD_WMMA11
@@ -533,7 +583,10 @@ __device__ __forceinline__ uint32_t pearl_amd_realtime() {
   return 0u;
 #endif
 }
-// HW_ID1 (hwreg 23 on gfx11 and gfx12): WAVE_ID 4:0, SIMD_ID 9:8, WGP_ID 13:10, SA_ID 16, SE_ID 20:18.
+#endif
+#if PEARL_AMD_STAMP || PEARL_AMD_SKEW
+// HW_ID1 (hwreg 23 on gfx11 and gfx12): WAVE_ID 4:0, SIMD_ID 9:8, WGP_ID 13:10, SA_ID 16, and on gfx11 SE_ID
+// 20:18. gfx12's has no shader engine (RDNA 4 ISA guide, 3.4.9): its bits 20:18 are not one.
 __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #if PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12
   return (uint32_t)__builtin_amdgcn_s_getreg(0xF817);
@@ -541,6 +594,104 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
   return 0u;
 #endif
 }
+#endif
+#if PEARL_AMD_SKEW
+#if !PEARL_AMD_EMU
+// PEARL_AMD_SKEW (above). The places a block can take: the fold's blocks a WGP holds at once.
+#define PEARL_AMD_SKEW_WAYS 3u
+// The counters, one a WGP: the shader engine (3 bits), SA (1) and WGP (4) as one number (pearl_amd_skew_wgp).
+#define PEARL_AMD_SKEW_WGPS 256u
+// A slab's length in clocks with three blocks a WGP, for the waits in percent of one. gfx11: about 7,000,
+// measured on a 7900 XTX. gfx12: not measured, so scaled from the fold's rate. A 9070 XT's WGP does about 2.5
+// times the MACs a clock of an XTX's: 105 TMAC/s on 32 WGPs at about 2.9 GHz, against 58.5 on 48 at the 2.7 GHz
+// that 7,000 clocks a slab implies.
+#define PEARL_AMD_SKEW_SLAB11 7000u
+#define PEARL_AMD_SKEW_SLAB12 2800u
+// The longest wait PEARL_AMD_SKEW_WAIT may set, in percent of a slab: four slabs.
+#define PEARL_AMD_SKEW_PCT_MAX 400u
+// A wait of pct percent of a slab of `slab` clocks, in s_sleep(1) counts of 64 clocks, to the nearest.
+#define PEARL_AMD_SKEW_COUNT(pct, slab) (((pct) * (slab) + 3200u) / 6400u)
+}  // namespace
+// The counters, how many blocks a launch starts at once (three a WGP), and each place's wait in s_sleep(1)
+// counts. The host sets them once a context (hipMemcpyToSymbol); with the counters null no block waits. In
+// constant memory, so the fold reads them with scalar loads.
+__constant__ uint32_t *pearl_amd_skew_ctr = nullptr;
+__constant__ uint32_t pearl_amd_skew_first = 0u;
+__constant__ uint32_t pearl_amd_skew_sleeps[PEARL_AMD_SKEW_WAYS] = {0u, 0u, 0u};
+// Each value's waits for places 0, 1 and 2, in percent of a slab (above).
+constexpr uint32_t kPearlAmdSkewPct[4][PEARL_AMD_SKEW_WAYS] = {
+    {0u, 0u, 0u}, {0u, 33u, 67u}, {0u, 67u, 133u}, {0u, 17u, 33u}};
+// The host's part, for pearl_host_create and the fold test: each place's wait for a fold, in percent of a slab
+// (pct) and in s_sleep(1) counts of its slab (sleeps; wmma11 picks gfx11's slab, else gfx12's). env is
+// PEARL_AMD_SKEW_WAIT: three whole numbers joined by ':', each at most PEARL_AMD_SKEW_PCT_MAX, for places 0, 1
+// and 2. Unset, empty or anything else, the waits are PEARL_AMD_SKEW's. True when env set them. Read by hand, as
+// amd_col_batch reads its own: no atoi.
+inline bool pearl_amd_skew_waits(const char *env, bool wmma11, uint32_t pct[3], uint32_t sleeps[3]) {
+  uint32_t v[3] = {0u, 0u, 0u}, i = 0u, digits = 0u;
+  bool good = env != nullptr && env[0] != '\0';
+  for (uint32_t p = 0u; good && env[p] != '\0'; p++) {
+    if (env[p] >= '0' && env[p] <= '9' && digits < 3u) {
+      v[i] = v[i] * 10u + (uint32_t)(env[p] - '0');
+      digits++;
+    } else if (env[p] == ':' && digits > 0u && i < 2u) {
+      i++;
+      digits = 0u;
+    } else {
+      good = false;
+    }
+  }
+  good = good && i == 2u && digits > 0u && v[0] <= PEARL_AMD_SKEW_PCT_MAX && v[1] <= PEARL_AMD_SKEW_PCT_MAX
+         && v[2] <= PEARL_AMD_SKEW_PCT_MAX;
+  for (i = 0u; i < 3u; i++) {
+    pct[i] = good ? v[i] : kPearlAmdSkewPct[PEARL_AMD_SKEW][i];
+    sleeps[i] = PEARL_AMD_SKEW_COUNT(pct[i], wmma11 ? PEARL_AMD_SKEW_SLAB11 : PEARL_AMD_SKEW_SLAB12);
+  }
+  return good;
+}
+namespace {
+#endif
+// The targets with the skew (above): gfx12, and the gfx11 chips whose WGP holds three blocks of the fold.
+#if (PEARL_AMD_WMMA11 && (defined(__gfx1100__) || defined(__gfx1101__) || defined(__gfx1151__))) || PEARL_AMD_WMMA12
+#define PEARL_AMD_SKEW_THREE 1
+#else
+#define PEARL_AMD_SKEW_THREE 0
+#endif
+#if PEARL_AMD_SKEW_THREE
+// The shader engine a wave runs on. gfx11: HW_ID1's SE_ID, bits 20:18. gfx12's HW_ID1 has none, so the wave asks
+// with s_sendmsg_rtn_b32 RTN_GET_SE_HW_ID (0x87; RDNA 4 ISA guide, 5.4), which returns the engine in bits 3:0.
+__device__ __forceinline__ uint32_t pearl_amd_skew_se(uint32_t hw) {
+#if PEARL_AMD_WMMA12
+  (void)hw;
+  return (uint32_t)__builtin_amdgcn_s_sendmsg_rtn(0x87);
+#else
+  return hw >> 18;
+#endif
+}
+// The counter of a wave's WGP: HW_ID1's WGP_ID (13:10) to bits 3:0, its SA_ID (16) to bit 4, and the engine's low
+// three bits to 7:5. These cards have at most 6 engines, of 2 arrays of at most 16 WGPs.
+__device__ __forceinline__ uint32_t pearl_amd_skew_wgp(uint32_t hw, uint32_t se) {
+  return ((hw >> 10) & 0xFu) | ((hw >> 12) & 0x10u) | ((se & 7u) << 5);
+}
+// Wave 0 of a launch's first blocks: its WGP's next ticket, as a place: 0, 1 or 2. Lane 0 takes the ticket, and
+// readfirstlane gives every lane lane 0's. Every other wave and block, and every block while the host hasn't set
+// the counters, gets PEARL_AMD_SKEW_WAYS: no place.
+__device__ __forceinline__ uint32_t pearl_amd_skew_place(uint32_t wave) {
+  uint32_t *const ctr = pearl_amd_skew_ctr;
+  const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;
+  if (pearl_amd_sgpr(wave) != 0u || !ctr || block >= pearl_amd_skew_first) return PEARL_AMD_SKEW_WAYS;
+  const uint32_t hw = pearl_amd_hw_id1();
+  const uint32_t at = pearl_amd_sgpr(pearl_amd_skew_wgp(hw, pearl_amd_skew_se(hw)));
+  uint32_t ticket = 0u;
+  if (threadIdx.x == 0u) ticket = atomicInc(ctr + at, PEARL_AMD_SKEW_WAYS - 1u);
+  return pearl_amd_sgpr(ticket) % PEARL_AMD_SKEW_WAYS;   // 0, 1 or 2, whatever the counter held
+}
+// The wait: s_sleep(1), about 64 clocks, as many times as the host set for the place. None without a place.
+__device__ __forceinline__ void pearl_amd_skew_wait(uint32_t wave) {
+  const uint32_t place = pearl_amd_skew_place(wave);
+  const uint32_t n = place < PEARL_AMD_SKEW_WAYS ? pearl_amd_skew_sleeps[place] : 0u;
+  for (uint32_t i = 0; i < n; i++) __builtin_amdgcn_s_sleep(1);
+}
+#endif
 #endif
 
 // PEARL_AMD_KWRAP: the readout for k past 2048 (round 4 item 5). The folds take k at run time, but past
@@ -686,6 +837,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
 
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
+#if PEARL_AMD_SKEW
+#if PEARL_AMD_SKEW_THREE
+  // PEARL_AMD_SKEW (above): wave 0 of a launch's first blocks waits here, before it loads slab 0. There are
+  // three places because the fold's LDS lets a WGP's 128 KB hold three blocks and not four; on these targets
+  // its VGPRs let a SIMD hold all their waves.
+  static_assert(PEARL_AMD_SKEW_WAYS * (sizeof sA + sizeof sB) <= 131072u
+                && (PEARL_AMD_SKEW_WAYS + 1u) * (sizeof sA + sizeof sB) > 131072u,
+                "PEARL_AMD_SKEW's places are for three blocks a WGP");
+  pearl_amd_skew_wait((uint32_t)wave);
+#endif
+#endif
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
   __syncthreads();

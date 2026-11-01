@@ -8,8 +8,10 @@
 # Environment:
 #   VARIANTS    "name=flags;name=flags", as sweep.sh's SWEEP (default "base="). The first is the base the others are
 #               held to.
-#   TWINS       "name=twin other~twin ...". With =, name is dropped unless it has twin's VGPRs (a stamp build and
-#               its unstamped twin); with ~, the two are only compared, in a note. A twin comes before its variant.
+#   TWINS       "name=twin other<twin more~twin ...". With =, name is dropped unless it has twin's VGPRs (a stamp
+#               build and its unstamped twin); with <, unless it has twin's or fewer (a build that must fit in the
+#               release's, as the start skew); with ~, the two are only compared, in a note. A twin comes before its
+#               variant.
 #   ARCH        the target (default: the card's, from rocminfo). gfx11 checks the wmma11 fold, gfx12 the wmma12.
 #   KEEP_TO     a file for the kept variants, one "name=flags" a line, in VARIANTS's order
 #   CHECK_ROOT  where the assembly goes (default /root/variant-check)
@@ -17,9 +19,9 @@
 #
 # A variant is kept with no scratch and no spills, LDS 36864 bytes and 6 waves a SIMD (the release's on RDNA 3 and
 # RDNA 4), the base's LDS stores and global loads (so the compiler kept all of the operand staging), and its twin's
-# VGPRs. If the base's code can't be read, the counts aren't compared, and a line says so. The LDS loads between the
-# last WMMA and a barrier are counted, not held against a variant: the release fence before the barrier waits for
-# every LDS load, so a load there puts its wait on the barrier.
+# VGPRs (with <, its twin's or fewer). If the base's code can't be read, the counts aren't compared, and a line says
+# so. The LDS loads between the last WMMA and a barrier are counted, not held against a variant: the release fence
+# before the barrier waits for every LDS load, so a load there puts its wait on the barrier.
 #
 # The WMMAs after a barrier are counted up to the first s_wait_dscnt (gfx12) or lgkmcnt wait (gfx11) after it; "16+"
 # means 16 and no LDS wait before the next barrier or the end. The release waits for its fragments right after each
@@ -43,7 +45,7 @@ case "$ARCH" in
   *) say "no RDNA 3 or RDNA 4 target here (${ARCH:-none}): nothing to check"; exit 2 ;;
 esac
 mkdir -p "$OUTD" || exit 2
-declare -A FL=() V=() N=() H=() TWIN=() NOTE=()
+declare -A FL=() V=() N=() H=() TWIN=() MOST=() NOTE=()
 names=()
 IFS=';' read -ra VARS <<< "${VARIANTS:-base=}"
 for v in "${VARS[@]}"; do
@@ -56,8 +58,9 @@ base=${names[0]}
 for p in ${TWINS:-}; do
   case "$p" in
     *=*) TWIN[${p%%=*}]=${p#*=} ;;
+    *'<'*) MOST[${p%%<*}]=${p#*<} ;;
     *~*) NOTE[${p%%~*}]=${p#*~} ;;
-    *) say "TWINS takes name=twin or name~twin, not $p"; exit 2 ;;
+    *) say "TWINS takes name=twin, name<twin or name~twin, not $p"; exit 2 ;;
   esac
 done
 [ -z "${KEEP_TO:-}" ] || : > "$KEEP_TO" || exit 2
@@ -131,11 +134,15 @@ for n in "${names[@]}"; do
   set -- $row   # target kernel VGPRs AGPRs scratch spills LDS waves wrap
   V[$n]=${3:-}
   why=''
-  t=${TWIN[$n]:-}
+  t=${TWIN[$n]:-} m=${MOST[$n]:-}
   if ! { [ "${5:-x}" = 0 ] && [ "${6:-x}" = 0 ] && [ "${7:-x}" = 36864 ] && [ "${8:-x}" = 6 ]; }; then
     why='not LDS 36864 and 6 waves with no scratch and no spills'
   elif [ -n "$t" ] && [ "${V[$n]}" != "${V[$t]:-}" ]; then
     why="${V[$n]} VGPRs, not $t's ${V[$t]:-?}"
+  elif [ -n "$m" ] && ! [[ "${V[$m]:-}" =~ ^[0-9]+$ ]]; then
+    why="its VGPRs can't be held to $m's, which weren't read"
+  elif [ -n "$m" ] && [ "${V[$n]}" -gt "${V[$m]}" ]; then
+    why="${V[$n]} VGPRs, more than $m's ${V[$m]}"
   elif [ -n "${N[$base]:-}" ] && [ "${N[$n]:-}" = '' ]; then
     why="its code couldn't be read, so its LDS stores and global loads can't be held to $base's"
   elif [ -n "${N[$base]:-}" ] && [ "${N[$n]% *}" != "${N[$base]% *}" ]; then

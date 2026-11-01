@@ -242,10 +242,38 @@ describe('variant-check.sh', () => {
     expect(r11.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual(['kept: base late abl8']);
   }, 60000);
 
+  bashIt('keeps a < variant with its twin\'s VGPRs or fewer, and drops one with more', () => {
+    // The start skew's builds must fit in the release's registers: fewer is fine, as the waves are the same.
+    const { status, lines, keep } = run([
+      ['base', '', '198 0 0 36864 6 70', RELEASE],
+      ['fewer', '-DFEWER', '190 0 0 36864 6 74', RELEASE],
+      ['same', '-DSAME', '198 0 0 36864 6 74', RELEASE],
+      ['more', '-DMORE', '206 0 0 36864 6 74', RELEASE],
+      ['orphan', '-DORPHAN', '190 0 0 36864 6 74', RELEASE],
+    ], { TWINS: 'fewer<base same<base more<base orphan<gone' });
+    expect(status).toBe(0);
+    expect(lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual([
+      'more dropped: 206 VGPRs, more than base\'s 198',
+      'orphan dropped: its VGPRs can\'t be held to gone\'s, which weren\'t read',
+      'kept: base fewer same',
+    ]);
+    expect(keep).toBe('base=\nfewer=-DFEWER\nsame=-DSAME\n');
+    // On gfx11 the release's 240 is the most for 6 waves; one more VGPR is a wave less, which the row check drops first.
+    const r11 = run([
+      ['base', '', '240 0 0 36864 6 90', RELEASE],
+      ['skew1', '-DPEARL_AMD_SKEW=1', '240 0 0 36864 6 94', RELEASE],
+      ['skew2', '-DPEARL_AMD_SKEW=2', '245 0 0 36864 5 94', RELEASE],
+    ], { TWINS: 'skew1<base skew2<base' }, 11);
+    expect(r11.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual([
+      'skew2 dropped: not LDS 36864 and 6 waves with no scratch and no spills',
+      'kept: base skew1',
+    ]);
+  }, 60000);
+
   bashIt('refuses a card it has no fold for, and a twin it can\'t read', () => {
     const bad = run([['base', '', '198 0 0 36864 6 70', RELEASE]], { ARCH: 'gfx942' });
     expect([bad.status, bad.lines]).toEqual([2, ['no RDNA 3 or RDNA 4 target here (gfx942): nothing to check']]);
     const twins = run([['base', '', '198 0 0 36864 6 70', RELEASE]], { TWINS: 'stamp' });
-    expect([twins.status, twins.lines]).toEqual([2, ['TWINS takes name=twin or name~twin, not stamp']]);
+    expect([twins.status, twins.lines]).toEqual([2, ['TWINS takes name=twin, name<twin or name~twin, not stamp']]);
   }, 60000);
 });

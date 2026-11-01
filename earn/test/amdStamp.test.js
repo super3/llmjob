@@ -40,7 +40,7 @@ function grab(text, re) {
   return m[1];
 }
 // The C as a build with these switches leaves it (the others as a release has them).
-const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 }, sw));
+const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0, PEARL_AMD_SKEW: 0 }, sw));
 const code = (t) => t.split('\n').filter((l) => !/^\s*\/\//.test(l));
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
 const stampBarrier = (t) => slice(t, 'auto stamp_barrier = [&]() {', '\n  };\n');
