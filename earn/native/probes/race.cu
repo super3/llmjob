@@ -1,6 +1,6 @@
 // race -- two or more builds of the core in one process, on one card, taking turns.
 //
-//   race <seconds> <leg seconds> <warm seconds> base=libA.so name=libB.so [name=lib.so ...]
+//   race <seconds> <leg seconds> <warm seconds> base=libA.so name=libB.so[:K] [name=lib.so[:K] ...]
 //
 // Why. Separate runs of two builds (bench, hashrate.js) see different clocks, heat and
 // power, and on Salad often a different PC: rounds read +-1.5-2.4% apart, and the first
@@ -16,6 +16,14 @@
 // The first build is the reference. A copy of a file under another name is an A/A
 // control (the same path twice would load once).
 //
+// k. A build mines at k 2048, the mainnet profile's, unless its argument ends in :K. A
+// -DPEARL_FOLD_K=4096 build mines only k 4096 (pearl_host_submit refuses any other), so it
+// is named name=lib.so:4096. Each build gets its own profile and its own DAF (256 x k), so
+// every rate is MACs a second and builds at different k compare fairly. The salt's regions
+// (span) do not depend on k, so every build shares them. A salt at k 4096 is twice the
+// work, and turns end only on whole salts: on a slow card (RTX 20, where such a salt takes
+// 3 s or more) give turns of 8-10 s, so each still counts several.
+//
 // A round gives every build one turn, in an order that reverses each round. A turn first
 // sets the build's own persisting L2 slice again (pearl_host_race_enter: the slice is the
 // context's, so the last build to set it would hold for all), then runs the miner's own
@@ -30,8 +38,8 @@
 // Output, one line each: START, AUDIT a build (pearl_host_l2_audit: the batch width, band
 // and persisting slice it got), LEG a turn, then RACE a build: its mean ratio to the
 // reference's turn in the same round, as a change in percent, the standard deviation of
-// those ratios, a 95% interval of the mean, and in how many rounds it was ahead. FAIL
-// and exit 1 on any error.
+// those ratios, a 95% interval of the mean, and in how many rounds it was ahead. AUDIT and
+// RACE lines end with the build's k. FAIL and exit 1 on any error.
 #include <dlfcn.h>
 #include <algorithm>
 #include <atomic>
@@ -73,6 +81,8 @@ struct Leg { int round; double th, secs; uint64_t salts; double mhz, watts, temp
 
 struct Build {
   std::string name, path;
+  PearlProfile prof{};   // the mainnet profile at this build's k
+  double daf = 0;        // PEARL_DAF(prof): MACs a region
   void *lib = nullptr, *ctx = nullptr;
   CreateFn create = nullptr; SetJobFn setJob = nullptr; ReseedFn reseed = nullptr;
   SubmitFn submit = nullptr; CollectFn collect = nullptr; NextHitFn nextHit = nullptr;
@@ -145,7 +155,7 @@ static double secs(Clock::time_point a, Clock::time_point b) {
 
 // One turn of build b. span is a salt's regions, stride the salts between this build's.
 static Leg run_leg(Build &b, int round, double legSecs, double warmSecs, uint64_t span,
-                   uint64_t stride, double daf) {
+                   uint64_t stride) {
   if (b.enter) b.enter(b.ctx);
   const size_t DEPTH = 2;
   struct Queued { uint64_t regions; bool endsSalt; };
@@ -211,7 +221,7 @@ static Leg run_leg(Build &b, int round, double legSecs, double warmSecs, uint64_
   Leg leg{round, 0, 0, salts, NAN, NAN, NAN, NAN};
   leg.secs = secs(tm0, tEnd);
   if (salts == 0 || leg.secs <= 0) fail(b.name + ": a turn counted no salt");
-  leg.th = (double)workAtEnd * daf / leg.secs / 1e12;
+  leg.th = (double)workAtEnd * b.daf / leg.secs / 1e12;
   std::lock_guard<std::mutex> l(g_mu);
   if (g_n) {
     leg.mhz = g_sum[0] / g_n; leg.watts = g_sum[1] / g_n; leg.tempC = g_sum[2] / g_n; leg.mem = g_sum[3] / g_n;
@@ -234,25 +244,46 @@ static double t95(size_t df) {
   return df < sizeof t / sizeof t[0] ? t[df] : (df < 40 ? 2.04 : 1.98);
 }
 
+// One argument, name=lib.so or name=lib.so:K, into b: its name, its library, and the
+// mainnet profile at its k. K must be a k the protocol allows at the mainnet rank, a power
+// of two of at least 16 x rank (2048), as hashrate.js's PEARL_PROFILE_K. Without :K, the
+// mainnet profile as it is.
+static void parse_build(const char *arg, Build &b) {
+  const char *eq = strchr(arg, '=');
+  if (!eq || eq == arg) fail(std::string("not name=lib.so[:K]: ") + arg);
+  b.name.assign(arg, eq - arg);
+  b.path = eq + 1;
+  b.prof = PEARL_MAINNET_PROFILE;
+  const size_t colon = b.path.rfind(':');
+  if (colon != std::string::npos) {
+    const std::string ks = b.path.substr(colon + 1);
+    const bool digits = !ks.empty() && ks.size() <= 9 && ks.find_first_not_of("0123456789") == std::string::npos;
+    const unsigned long k = digits ? strtoul(ks.c_str(), nullptr, 10) : 0;
+    if (k < 16ul * b.prof.rank || (k & (k - 1)))
+      fail(b.name + ": k must be a power of two of at least " + std::to_string(16 * b.prof.rank) + ", not " + ks);
+    b.prof.k = (uint32_t)k;
+    b.path.erase(colon);
+  }
+  if (b.path.empty()) fail(std::string("not name=lib.so[:K]: ") + arg);
+  b.daf = PEARL_DAF(b.prof);
+}
+
 int main(int argc, char **argv) {
   if (argc < 6) {
-    fprintf(stderr, "usage: race <seconds> <leg seconds> <warm seconds> base=lib.so name=lib.so ...\n");
+    fprintf(stderr, "usage: race <seconds> <leg seconds> <warm seconds> base=lib.so name=lib.so[:K] ...\n");
     return 2;
   }
   const double total = atof(argv[1]), legSecs = atof(argv[2]), warmSecs = atof(argv[3]);
   if (!(total > 0) || !(legSecs > 0) || !(warmSecs >= 0)) fail("bad seconds");
   std::vector<Build> builds;
   for (int i = 4; i < argc; i++) {
-    const char *eq = strchr(argv[i], '=');
-    if (!eq || eq == argv[i]) fail(std::string("not name=lib.so: ") + argv[i]);
     Build b;
-    b.name.assign(argv[i], eq - argv[i]);
-    b.path = eq + 1;
+    parse_build(argv[i], b);
     builds.push_back(b);
   }
+  // A salt's regions: every build's m and n are the mainnet profile's, whatever its k.
   const PearlProfile prof = PEARL_MAINNET_PROFILE;
   const uint64_t span = (uint64_t)(prof.m / PEARL_ROWS_COUNT) * (prof.n / PEARL_COLS_COUNT);
-  const double daf = PEARL_DAF(prof);
   const uint64_t stride = builds.size();
   uint8_t header[PEARL_HEADER_BYTES], target[PEARL_HASH_BYTES];
   memset(header, 0xA5, sizeof header);
@@ -274,7 +305,7 @@ int main(int argc, char **argv) {
     sym(b, b.audit, "pearl_host_l2_audit", false);
     sym(b, b.enter, "pearl_host_race_enter", false);
     char err[512] = {0};
-    b.ctx = b.create(&prof, err, sizeof err);
+    b.ctx = b.create(&b.prof, err, sizeof err);
     if (!b.ctx) fail(b.name + ": create: " + err);
     b.salt = i;
     b.setJob(b.ctx, header, target, b.salt);
@@ -286,13 +317,13 @@ int main(int argc, char **argv) {
   for (Build &b : builds) {
     char a[256] = "-";
     if (b.audit) b.audit(b.ctx, a, sizeof a);
-    printf("AUDIT %s fold=[%s] %s%s\n", b.name.c_str(), b.foldName(b.ctx), a,
+    printf("AUDIT %s fold=[%s] %s k=%u%s\n", b.name.c_str(), b.foldName(b.ctx), a, b.prof.k,
            b.enter ? "" : " no race_enter: its L2 slice is not set again before its turns");
   }
   fflush(stdout);
 
   // One untimed turn each: the first launches load the modules and settle the clocks.
-  for (Build &b : builds) run_leg(b, -1, 1.0, 0.5, span, stride, daf);
+  for (Build &b : builds) run_leg(b, -1, 1.0, 0.5, span, stride);
   const Clock::time_point start = Clock::now();
   int round = 0;
   while (round < 2 || secs(start, Clock::now()) < total) {
@@ -300,7 +331,7 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < order.size(); i++) order[i] = round % 2 ? order.size() - 1 - i : i;
     for (size_t i : order) {
       Build &b = builds[i];
-      const Leg l = run_leg(b, round, legSecs, warmSecs, span, stride, daf);
+      const Leg l = run_leg(b, round, legSecs, warmSecs, span, stride);
       b.legs.push_back(l);
       printf("LEG round=%d %s th=%.3f salts=%llu secs=%.2f mhz=%.0f w=%.1f c=%.0f mem=%.1f\n", round,
              b.name.c_str(), l.th, (unsigned long long)l.salts, l.secs, l.mhz, l.watts, l.tempC, l.mem);
@@ -331,13 +362,13 @@ int main(int argc, char **argv) {
     sd = ratio.size() > 1 ? sqrt(sd / (ratio.size() - 1)) : 0;
     const double ci = ratio.size() > 1 ? t95(ratio.size() - 1) * sd / sqrt((double)ratio.size()) : 0;
     if (&b == &ref)
-      printf("RACE %s reference rounds=%zu th=%.3f mhz=%.0f w=%.1f mem=%.1f\n", b.name.c_str(),
-             b.legs.size(), median(th), median(mhz), median(w), median(mem));
+      printf("RACE %s reference rounds=%zu th=%.3f mhz=%.0f w=%.1f mem=%.1f k=%u\n", b.name.c_str(),
+             b.legs.size(), median(th), median(mhz), median(w), median(mem), b.prof.k);
     else
       printf("RACE %s vs %s rounds=%zu d=%+.3f%% sd=%.3f%% ci95=%.3f%% ahead=%zu/%zu th=%.3f mhz=%.0f "
-             "w=%.1f mem=%.1f\n",
+             "w=%.1f mem=%.1f k=%u\n",
              b.name.c_str(), ref.name.c_str(), ratio.size(), (mean - 1) * 100, sd * 100, ci * 100, wins,
-             ratio.size(), median(th), median(mhz), median(w), median(mem));
+             ratio.size(), median(th), median(mhz), median(w), median(mem), b.prof.k);
   }
   fflush(stdout);
   for (Build &b : builds) {

@@ -21,6 +21,15 @@
 #include <cuda_runtime.h>
 #include "pearl_config.h"
 
+// compilers.sh scores a build at the k it reads from the flags (-DPEARL_FOLD_K=K, 2048
+// without one) and passes it here as PEARL_BENCH_K. Another spelling of the flag, such as
+// "-D PEARL_FOLD_K=K" or a second -DPEARL_FOLD_K, would have it score the build at the
+// wrong k, so the build stops here instead.
+#ifdef PEARL_BENCH_K
+static_assert(PEARL_FOLD_K == PEARL_BENCH_K,
+              "this build's PEARL_FOLD_K is not the k compilers.sh read from its flags: write -DPEARL_FOLD_K=K once");
+#endif
+
 // Must match pearl_host.cu's layout exactly: the host writes these through the
 // pointer, and the old {leaves, path, root} version was 48 bytes short of it.
 struct PearlProofSide {

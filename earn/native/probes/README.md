@@ -970,7 +970,9 @@ out of the fold.
   0.3-1% change can be told from noise. Each library is a build's `pearl_kernel.o` and
   `pearl_host.o` linked `-shared -cudart static -Xlinker -Bsymbolic`;
   `turing/compilers.sh` makes them and runs it (stage `race`), with a copy of base as an
-  A/A control.
+  A/A control. `name=lib.so:4096` races a `-DPEARL_FOLD_K=4096` build at its own k, with
+  its own profile and DAF, so its rate is still MACs a second; without `:K` a build runs
+  at k 2048.
 - `hashrate.js` and `verify-hits.js` open the core as the app does, with `cardK`: a core may
   mine a larger k on its card than the mainnet profile's (an RDNA 4 card mines k 4096), and
   both report and use the k it mines (`core.k`). `PEARL_PROFILE_K=K` pins the core to k K

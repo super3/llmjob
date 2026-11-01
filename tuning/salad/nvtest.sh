@@ -11,6 +11,12 @@
 # container"), and the devel one is larger still. The fleet's base image is ready at once, and the four
 # archives are 82 MB.
 #
+# CUDA_VER=13.3 installs CUDA 13.3.1's compiler (nvcc V13.3.73) instead: the toolkit pearl_core_cu13.node is built
+# with, which RTX 50 rigs on driver 580 or newer run (earn/src/shared/coreVariant.js), so a race there measures
+# the code they mine with. 13.x moved nvcc's host headers (cuda_crt) and its back end, cicc (libnvvm), out of the
+# nvcc archive and renamed cuda_cccl to cccl, so it takes six archives, 84 MB. A CUDA 13 runtime needs driver 580
+# or newer, so the box checks the driver first.
+#
 # Every line is "[nvtest] HH:MM:SS <text>", with at most 400 characters of text: longer ones are cut into
 # pieces, "+" starting each continuation, so Salad's log service keeps each one. compilers.sh's and pool.sh's
 # lines keep their own "[compilers]" and "[pool]" starts after the time. Nothing here prints environment
@@ -24,17 +30,36 @@
 #   ROUNDS, BENCH_SECS, HR_ROUNDS, HR_SECS, HR_BEST, VERIFY_SECS, COMPLETE_SHAPES, COMPLETE_SECS, ONLY
 #                   passed to compilers.sh as they are (see its header)
 #   GC, FOLD        default: this card's compute capability, and the tall fold (pearl_tile_fold_tall)
+#   CUDA_VER        the toolkit: 12.8 (the default) or 13.3 (see above)
+#   SMI_EVERY       seconds between the SM clock and power lines compilers.sh prints during the race and
+#                   hashrate stages (default 5; 0 for none)
 #   WALLET, POOL, POOL_SECS   pool.sh after the race, when WALLET and POOL_SECS are both set
 set -u
 R=${NVTEST_ROOT:-/opt/llmjob}
 OUT=${NVTEST_OUT:-/root/out}
 CUDA=${NVTEST_CUDA:-/opt/cuda}
 RD=https://developer.download.nvidia.com/compute/cuda/redist
-# From redistrib_12.8.1.json: path|sha256.
-CUDA_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz|9961b3484b6b71314063709a4f9529654f96782ad39e72bf1e00f070db8210d3
+CUDA_VER=${CUDA_VER:-12.8}
+case "$CUDA_VER" in
+  12.8)
+    NVCC_VER=V12.8.93
+    # From redistrib_12.8.1.json: path|sha256.
+    CUDA_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz|9961b3484b6b71314063709a4f9529654f96782ad39e72bf1e00f070db8210d3
 cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz|8d566b5fe745c46842dc16945cf36686227536decd2302c372be86da37faca68
 cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz|0740e9e01e4f15e17c5ab8d68bba4f8ec0eb6b84edccba4ac45112d2d2174e4b
-cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f"
+cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7a8aa491c1839a6c6ff8df02cdb6c6eefd66360543616c1b4980f" ;;
+  13.3)
+    NVCC_VER=V13.3.73
+    # From redistrib_13.3.1.json (fetched 1 November 2026; every archive's SHA-256 checked against it): path|sha256.
+    # nvcc.profile finds cicc in nvvm/bin and the CCCL headers in include/cccl, where these unpack.
+    CUDA_PARTS="cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-13.3.73-archive.tar.xz|2ff9f9954060794a1c5134a933ccb45bec723d866b2629dadfe4a1a313f21068
+cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.3.73-archive.tar.xz|1251aa9d668c607a103489cd2250773701e83a313e355578044622cf36713a9d
+libnvvm/linux-x86_64/libnvvm-linux-x86_64-13.3.73-archive.tar.xz|206b1ab4979c09b5c32f8bf907c42bc9e16cd7454cf6036f524c45a58d060f93
+cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.3.29-archive.tar.xz|1e59c4888267d27ba1a9bd0f3669a6439db1334a96e754cd9013c7c73e18dc9d
+cccl/linux-x86_64/cccl-linux-x86_64-13.3.3.4.1-archive.tar.xz|26957cede74f9341174ecaf0372f3f886e7c46ceccb98d6dc775fe2b68d19268
+cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-13.3.73-archive.tar.xz|2f3cd496b9183ca2de9e17dbcd7f992eac3cd4475052b151605d9e8445736b94" ;;
+  *) NVCC_VER="" CUDA_PARTS="" ;;
+esac
 export DEBIAN_FRONTEND=noninteractive
 
 say() { echo "[nvtest] $(date -u +%T) $*"; }
@@ -62,11 +87,11 @@ setup() {
   say "setup ok in $(( $(date +%s) - t0 ))s"
 }
 
-# CUDA 12.8.1's compiler, runtime headers and static runtime in $CUDA, laid out as a toolkit: nvcc.profile
-# looks in targets/x86_64-linux, and binding.gyp in lib64.
+# CUDA_VER's compiler, runtime headers and static runtime in $CUDA, laid out as a toolkit: nvcc.profile
+# looks in targets/x86_64-linux, and binding.gyp in lib64. Installed again when $CUDA holds another version.
 cuda() {
   local t0 part rel sha f; t0=$(date +%s)
-  if [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != V12.8.93 ]; then
+  if [ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE 'V[0-9.]+' | tail -1)" != "$NVCC_VER" ]; then
     rm -rf "$CUDA" && mkdir -p "$CUDA" /root/dl || fail "no $CUDA"
     while IFS='|' read -r rel sha; do
       f=/root/dl/${rel##*/}
@@ -107,6 +132,16 @@ card_gc() {
   [ -n "$cc" ] && echo "-gencode arch=compute_$cc,code=sm_$cc"
 }
 
+# Whether this card's driver runs what CUDA_VER builds: a CUDA 13 runtime needs driver 580 or newer, the rule the
+# app's choice of the cu13 core follows (coreVariant.js). 12.8 runs on every driver the fleet has.
+driver_ok() {
+  local major
+  [ "$CUDA_VER" = 13.3 ] || return 0
+  major=$(nvidia-smi -i 0 --query-gpu=driver_version --format=csv,noheader 2> /dev/null | head -1 | cut -d. -f1 | tr -d ' ')
+  case "$major" in '' | *[!0-9]*) return 1 ;; esac
+  [ "$major" -ge 580 ]
+}
+
 # NVTEST_STAGE=lib: sourced for its functions only (the tests do this), so stop here.
 [ "${NVTEST_STAGE:-}" = lib ] && return 0
 
@@ -114,6 +149,8 @@ patch=${PATCH_GZ_B64:-}
 say "boot sha ${BASE_SHA:-none}, builds ${VARIANTS_SPEC:-base|}, stages ${STAGES:-default}, patch ${#patch} chars"
 [ -n "${BASE_SHA:-}" ] || idle "no BASE_SHA"
 say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,memory.total --format=csv,noheader 2>&1 | head -1)"
+[ -n "$NVCC_VER" ] || fail "CUDA_VER must be 12.8 or 13.3, not $CUDA_VER"
+driver_ok || fail "CUDA_VER=$CUDA_VER needs driver 580 or newer, and this card's is older"
 setup
 cuda
 fetch
@@ -131,7 +168,8 @@ run() {
   [ "$rc" = 0 ] || grep -av "^\[$tag\]" "/root/$tag.log" | tail -n 8 | emit
 }
 say "compilers start: $GC, fold $FOLD"
-run compilers env SRC="$R" OUT="$OUT" CUDA_HOME="$CUDA" bash "$R/earn/native/probes/turing/compilers.sh"
+run compilers env SRC="$R" OUT="$OUT" CUDA_HOME="$CUDA" NVCC_VER="$NVCC_VER" SMI_EVERY="${SMI_EVERY:-5}" \
+  bash "$R/earn/native/probes/turing/compilers.sh"
 if [ -n "${WALLET:-}" ] && [ -n "${POOL_SECS:-}" ]; then
   run pool env SECS="$POOL_SECS" SRC="$R" OUT="$OUT/pool" CUDA_HOME="$CUDA" bash "$R/earn/native/probes/turing/pool.sh"
 fi

@@ -478,8 +478,8 @@ What it found on 22 October:
 
 ## NVIDIA test boxes (nvtest)
 
-`amdtest.py` also runs `nvtest-rtx3060` to `nvtest-rtx3090ti` boxes (or `-2` to `-99` after them), to race our
-own builds of the NVIDIA core on Salad's RTX 30 PCs, where Vast isn't available. Each runs `nvtest.sh` on the
+`amdtest.py` also runs `nvtest-rtx2060` to `nvtest-rtx5090` boxes (or `-2` to `-99` after them), to race our
+own builds of the NVIDIA core on Salad's RTX 20 to 50 PCs, where Vast isn't available. Each runs `nvtest.sh` on the
 fleet's image (`nvidia/cuda:12.2.2-base-ubuntu22.04`, high priority, 4 vCPU, 8 GB): it installs CUDA 12.8.1's
 compiler from NVIDIA's archives (nvcc V12.8.93, as CI builds with; the SHA-256s are pinned), fetches the repo at
 `BASE_SHA`, and runs `earn/native/probes/turing/compilers.sh` for the card's compute capability and the tall fold.
@@ -492,6 +492,13 @@ also reads the memory controller's use, the memory in use and the memory clock. 
 (`probes/race.cu`): turns of `RACE_LEG` seconds (4) for `RACE_SECS` (600), with a copy of base (`aa`) whose figure
 is the race's own noise. Its `RACE` lines give each build's change against base, a 95% interval, and how many
 rounds it led.
+
+A build with `-DPEARL_FOLD_K=4096` in its flags runs at k 4096 in every stage (race, hashrate, verify, bench);
+rates stay MACs a second, so it races base fairly. Write the flag just so: a build that mines another k than the
+one read from it (`-D PEARL_FOLD_K=4096`, say) fails at build. Hit lists are compared only between builds of the
+same k. On slow cards give such races `RACE_LEG=8` to `10`. `CUDA_VER=13.3` builds with CUDA 13.3.1, the toolkit
+RTX 50 rigs' cu13 core ships with (it needs driver 580 or newer). During the race and hashrate stages the box logs
+the SM clock, power draw and power limit every 5 s (`SMI_EVERY`), to tell clock-held cards from power-capped ones.
 
 ```sh
 python3 tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \

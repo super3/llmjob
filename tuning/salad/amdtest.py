@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
-classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx4090, or those
+classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx5090, or those
 with -2 to -99 after them (it refuses any other name, so it can never touch the mining fleet's biz- groups). An
 amdtest box runs amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; an nvtest box runs nvtest.sh
 (compilers.sh's builds and races on the card), which prints "[nvtest] HH:MM:SS ..." lines. `logs` and `wait`
@@ -19,7 +19,8 @@ read them back.
 CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt, and
 for nvtest boxes 3090ti, 3090, 3080ti, 3080, 3070ti, 3070, 3060ti, 3060, and 4090, 4080, 4070ti, 4070, 4060ti,
 4060 (RTX 40, the other cp.async card a tall-fold change has to be raced on), and 2080ti, 2080, 2070, 2060 (RTX 20,
-for the B-direct fold).
+for the B-direct fold), and 5090, 5080, 5070ti, 5070, 5060ti, 5060 (RTX 50, for the TMA tall fold; CUDA_VER=13.3
+builds with the toolkit their cu13 core ships with).
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
 how a new run starts. It updates the environment and then restarts the instance (--no-restart leaves that to
 Salad). See "AMD test boxes" in README.md for how long that took. --patch-from DIR sends DIR's uncommitted and
@@ -43,7 +44,7 @@ CLASSES = {"7900xtx": "AMD RX 7900 XTX (24GB)", "7900xt": "AMD RX 7900 XT (20GB)
            "9070xt": "AMD RX 9070 XT (16GB)", "9060xt": "AMD RX 9060 XT (16GB)"}
 TAG = "[amdtest]"
 # nvtest boxes: the fleet's image, which Salad has ready at once (the CUDA 12.8.1 one sat in "preparing" for 45+
-# minutes); nvtest.sh installs CUDA 12.8.1's compiler itself.
+# minutes); nvtest.sh installs CUDA 12.8.1's compiler itself (13.3.1's with CUDA_VER=13.3).
 NV_IMAGE = w.IMAGE
 NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080ti": "RTX 3080 Ti (12 GB)",
               "3080": "RTX 3080 (10 GB)", "3070ti": "RTX 3070 Ti (8 GB)", "3070": "RTX 3070 (8 GB)",
@@ -51,7 +52,9 @@ NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080
               "4090": "RTX 4090 (24 GB)", "4080": "RTX 4080 (16 GB)", "4070ti": "RTX 4070 Ti (12 GB)",
               "4070": "RTX 4070 (12 GB)", "4060ti": "RTX 4060 Ti (16 GB)", "4060": "RTX 4060 (8 GB)",
               "2080ti": "RTX 2080 Ti (11 GB)", "2080": "RTX 2080 (8 GB)", "2070": "RTX 2070 (8 GB)",
-              "2060": "RTX 2060 (6 GB)"}
+              "2060": "RTX 2060 (6 GB)",
+              "5090": "RTX 5090 (32 GB)", "5080": "RTX 5080 (16 GB)", "5070ti": "RTX 5070 Ti (16 GB)",
+              "5070": "RTX 5070 (12 GB)", "5060ti": "RTX 5060 Ti (16 GB)", "5060": "RTX 5060 (8 GB)"}
 NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
@@ -78,12 +81,12 @@ def tag(name):
 
 
 def check_name(name):
-    """One of NAMES or nvtest-rtx<card> (nvtest-rtx3090ti, nvtest-rtx4070), or one with a number after it
-    (amdtest-rdna4-2).
+    """One of NAMES or nvtest-rtx<card> (nvtest-rtx3090ti, nvtest-rtx4070, nvtest-rtx5090), or one with a number
+    after it (amdtest-rdna4-2).
     Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
     name."""
-    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40)[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
-        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx2060 to nvtest-rtx4090 (or -2 to -99 "
+    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40|50)[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
+        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx2060 to nvtest-rtx5090 (or -2 to -99 "
                  f"after them), not {name!r}")
     return name
 
@@ -217,7 +220,8 @@ def current(name):
 
 def read_logs(name, start, end, depth=0):
     """Every log line of the group in [start, end]. Salad returns at most 100 a call, so a full window is split
-    in half and read again (as watcher.py does)."""
+    in half and read again (as watcher.py does), up to 9 times: 512 windows, about 35 s each over 5 hours. An
+    nvtest race with its clock lines logs a line about every 2.4 s. A window still full after that says so."""
     q = f'resource.type = "container" AND resource.labels.container_group_name = "{name}"'
     b = {"start_time": w.iso(start), "end_time": w.iso(end), "query": q, "page_size": 100, "sort_order": "asc"}
     for attempt in range(3):   # the log service times out now and then (HTTP 408)
@@ -229,7 +233,11 @@ def read_logs(name, start, end, depth=0):
     else:
         return []
     items = (j or {}).get("items") or []
-    if len(items) < 100 or depth >= 6 or end - start < 2:
+    if len(items) < 100:
+        return items
+    if depth >= 9 or end - start < 2:
+        sys.stderr.write(f"log-entries: {w.iso(start)}..{w.iso(end)} still has 100+ lines after {depth} splits; "
+                         "some may be missed\n")
         return items
     mid = start + (end - start) / 2
     return read_logs(name, start, mid, depth + 1) + read_logs(name, mid, end, depth + 1)

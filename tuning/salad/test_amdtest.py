@@ -1,7 +1,7 @@
 # Tests for amdtest.py's pure parts: names, classes, the create and update bodies, time parsing, log lines and
 # the patch it sends, with no Salad calls. Also checks amdtest.sh's syntax and the task line parsing.
 # Run: python3 -m unittest discover -s tuning/salad
-import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, sys, tempfile, unittest
+import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, sys, tempfile, time, unittest
 
 os.environ["SALAD_MINE_DIR"] = tempfile.mkdtemp()     # never an exported folder, where live files may be
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -118,6 +118,30 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(len(a.pick_lines(items, grep=r"card")), 1)
         self.assertEqual(a.fmt_line(*got[0]), "m1234567 [amdtest] 13:00:58 boot container started")
 
+    def test_read_logs_splits_until_no_window_is_full(self):
+        """Salad gives at most 100 lines a call. 5 hours at a line every 2.4 s (an nvtest race with its clock lines)
+        all come back. At 6 splits, as before, each 281 s window held about 117, and 1100 lines were lost."""
+        t0 = a.w.parse_iso("2026-11-01T00:00:00Z")
+        times = [t0 + 2.4 * i for i in range(7500)]
+
+        def http(method, url, body=None, **k):
+            s, e = a.w.parse_iso(body["start_time"]), a.w.parse_iso(body["end_time"])
+            return 200, {"items": [{"time": t} for t in times if s <= t < e][:100]}
+        old = a.w.http
+        a.w.http = http
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                got = a.read_logs("nvtest-rtx5090", t0, t0 + 5 * 3600)
+                self.assertEqual(err.getvalue(), "")
+                self.assertEqual([x["time"] for x in got], times)
+                # 300 lines in one second cannot be split: 100 of them, and a warning.
+                times = [t0 + i / 300 for i in range(300)]
+                self.assertEqual(len(a.read_logs("nvtest-rtx5090", t0, t0 + 1)), 100)
+        finally:
+            a.w.http = old
+        self.assertIn("still has 100+ lines after 0 splits; some may be missed", err.getvalue())
+
     def test_env_summary_hides_payloads(self):
         self.assertEqual(a.env_summary({"PATCH_GZ_B64": "x" * 50, "BASE_SHA": "abc"}),
                          "BASE_SHA=abc PATCH_GZ_B64=<50 chars>")
@@ -184,10 +208,11 @@ class TestAmdtest(unittest.TestCase):
 
     def test_nvtest_names_and_classes(self):
         for good in ("nvtest-rtx3090", "nvtest-rtx3090ti", "nvtest-rtx3060ti-2", "nvtest-rtx3070-17", "nvtest-rtx4070",
-                     "nvtest-rtx4060ti-3", "nvtest-rtx2080ti", "nvtest-rtx2070-2"):
+                     "nvtest-rtx4060ti-3", "nvtest-rtx2080ti", "nvtest-rtx2070-2", "nvtest-rtx5090", "nvtest-rtx5070ti-2",
+                     "nvtest-rtx5060"):
             self.assertEqual(a.check_name(good), good)
         for bad in ("nvtest-rtx1080ti", "nvtest-rtx3050", "nvtest-rtx3090-1", "nvtest-3090", "nvtest-rtx3090tix",
-                    "biz-nvtest-rtx3090", "nvtest-rtx3090-100"):
+                    "biz-nvtest-rtx3090", "nvtest-rtx3090-100", "nvtest-rtx5050", "nvtest-rtx6090"):
             with self.assertRaises(SystemExit):
                 a.check_name(bad)
         self.assertEqual(a.class_name("3090", nv=True), "RTX 3090 (24 GB)")
@@ -195,6 +220,15 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(a.class_name("4070", nv=True), "RTX 4070 (12 GB)")
         self.assertEqual(a.class_name("4060ti", nv=True), "RTX 4060 Ti (16 GB)")
         self.assertEqual(a.class_name("2080ti", nv=True), "RTX 2080 Ti (11 GB)")
+        self.assertEqual(a.class_name("5090", nv=True), "RTX 5090 (32 GB)")
+        self.assertEqual(a.class_name("5070ti", nv=True), "RTX 5070 Ti (16 GB)")
+        self.assertEqual(a.class_name("RTX 5060 Ti", nv=True), "RTX 5060 Ti (16 GB)")
+        # Every RTX 50 class by Salad's own name, as the watcher knows it.
+        rtx50 = {k: v for k, v in a.NV_CLASSES.items() if k.startswith("50")}
+        self.assertEqual(rtx50, {"5090": "RTX 5090 (32 GB)", "5080": "RTX 5080 (16 GB)", "5070ti": "RTX 5070 Ti (16 GB)",
+                                 "5070": "RTX 5070 (12 GB)", "5060ti": "RTX 5060 Ti (16 GB)", "5060": "RTX 5060 (8 GB)"})
+        for name in rtx50.values():
+            self.assertIn(name, a.w.KNOWN)
         self.assertEqual(a.class_name("RTX 3060 Ti", nv=True), "RTX 3060 Ti (8 GB)")
         self.assertEqual(a.class_name("RTX 3080 (10 GB)", nv=True), "RTX 3080 (10 GB)")   # Salad's own name
         self.assertEqual(a.class_name("7900xt"), "AMD RX 7900 XT (20GB)")                 # AMD's unchanged
@@ -277,9 +311,61 @@ class TestAmdtest(unittest.TestCase):
                      "cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz|dbf41355a0f7"):
             self.assertIn(part, src)
         self.assertIn('echo "$sha  $f" | sha256sum -c --quiet -', src)
-        self.assertIn('[ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE \'V[0-9.]+\' | tail -1)" != V12.8.93 ]',
+        self.assertIn('[ "$("$CUDA/bin/nvcc" --version 2> /dev/null | grep -oE \'V[0-9.]+\' | tail -1)" != "$NVCC_VER" ]',
                       src)
         self.assertIn("export GC=${GC:-$(card_gc)} FOLD=${FOLD:-pearl_tile_fold_tall}", src)
+
+    def nvtest_lib(self, script, env=None, driver=None):
+        """Source nvtest.sh as a library, then run `script`. nvidia-smi answers `driver` (none: it prints nothing)."""
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "nvidia-smi"), "w") as f:
+            f.write("#!/bin/bash\n" + (f"echo '{driver}'\n" if driver else ""))
+        os.chmod(os.path.join(d, "nvidia-smi"), 0o755)
+        return subprocess.run(["bash", "-c", 'NVTEST_STAGE=lib . "$0"; ' + script, os.path.join(HERE, "nvtest.sh")],
+                              capture_output=True, text=True,
+                              env={"PATH": d + os.pathsep + os.environ["PATH"], **(env or {})})
+
+    def test_nvtest_sh_cuda_13_3_is_an_option(self):
+        show = 'echo "$CUDA_VER $NVCC_VER"; printf "%s\\n" "$CUDA_PARTS"'
+        # The default is 12.8.1, as before.
+        out = self.nvtest_lib(show).stdout.splitlines()
+        self.assertEqual(out[0], "12.8 V12.8.93")
+        self.assertEqual([l.split("|")[0].rsplit("/", 1)[1] for l in out[1:]],
+                         ["cuda_nvcc-linux-x86_64-12.8.93-archive.tar.xz", "cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz",
+                          "cuda_cccl-linux-x86_64-12.8.90-archive.tar.xz",
+                          "cuda_cuobjdump-linux-x86_64-12.8.90-archive.tar.xz"])
+        # 13.3.1: nvcc, and the crt headers and nvvm (cicc) 13.x moved out of it, from redistrib_13.3.1.json.
+        out = self.nvtest_lib(show, {"CUDA_VER": "13.3"}).stdout.splitlines()
+        self.assertEqual(out[0], "13.3 V13.3.73")
+        self.assertEqual(out[1:], [
+            "cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-13.3.73-archive.tar.xz|"
+            "2ff9f9954060794a1c5134a933ccb45bec723d866b2629dadfe4a1a313f21068",
+            "cuda_crt/linux-x86_64/cuda_crt-linux-x86_64-13.3.73-archive.tar.xz|"
+            "1251aa9d668c607a103489cd2250773701e83a313e355578044622cf36713a9d",
+            "libnvvm/linux-x86_64/libnvvm-linux-x86_64-13.3.73-archive.tar.xz|"
+            "206b1ab4979c09b5c32f8bf907c42bc9e16cd7454cf6036f524c45a58d060f93",
+            "cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-13.3.29-archive.tar.xz|"
+            "1e59c4888267d27ba1a9bd0f3669a6439db1334a96e754cd9013c7c73e18dc9d",
+            "cccl/linux-x86_64/cccl-linux-x86_64-13.3.3.4.1-archive.tar.xz|"
+            "26957cede74f9341174ecaf0372f3f886e7c46ceccb98d6dc775fe2b68d19268",
+            "cuda_cuobjdump/linux-x86_64/cuda_cuobjdump-linux-x86_64-13.3.73-archive.tar.xz|"
+            "2f3cd496b9183ca2de9e17dbcd7f992eac3cd4475052b151605d9e8445736b94"])
+        # Any other version leaves nothing to install, and the box stops on it before setup.
+        self.assertEqual(self.nvtest_lib(show, {"CUDA_VER": "12.9"}).stdout.splitlines(), ["12.9 ", ""])
+        src = read(os.path.join(HERE, "nvtest.sh"))
+        self.assertIn('[ -n "$NVCC_VER" ] || fail "CUDA_VER must be 12.8 or 13.3, not $CUDA_VER"\n'
+                      'driver_ok || fail "CUDA_VER=$CUDA_VER needs driver 580 or newer, and this card\'s is older"\n'
+                      "setup\ncuda\n", src)
+        # compilers.sh checks nvcc against the toolkit asked for, and logs the clocks every 5 s by default.
+        self.assertIn('run compilers env SRC="$R" OUT="$OUT" CUDA_HOME="$CUDA" NVCC_VER="$NVCC_VER" SMI_EVERY="${SMI_EVERY:-5}"',
+                      src)
+
+    def test_nvtest_sh_needs_driver_580_for_cuda_13(self):
+        ok = 'driver_ok && echo ok || echo old'
+        for ver, driver, want in (("13.3", "580.82.07", "ok"), ("13.3", "590.44.01", "ok"), ("13.3", "575.64.05", "old"),
+                                  ("13.3", None, "old"), ("13.3", "[N/A]", "old"), ("12.8", "535.183.01", "ok"),
+                                  ("12.8", None, "ok")):
+            self.assertEqual(self.nvtest_lib(ok, {"CUDA_VER": ver}, driver).stdout.strip(), want, (ver, driver))
 
 
     def test_mine_runs_the_cli_through_mine_cli(self):
@@ -449,11 +535,18 @@ class TestCompilersRace(unittest.TestCase):
         stubs = ('say() { echo "$*"; }; has() { [ "$1" = race ]; }; '
                  'nvcc() { printf "#!/bin/sh\\necho \\"ARGS \\$*\\"\\n" > "$OUT/race"; chmod +x "$OUT/race"; }; '
                  'timeout() { shift 3; "$@"; }; ')
-        # BUILT is the list of builds that built, as the script sets it before this stage.
-        r = subprocess.run(["bash", "-c", stubs + "BUILT=(base flip noso); " + block],
+        # BUILT is the list of builds that built, as the script sets it before this stage. Each build's k (kof,
+        # kset) and the clock lines (smi_start, off) as the script defines them; every build here is at k 2048.
+        defs = ""
+        for first, last in (("declare -A KOF=()", "kset() {"), ("smi_start() {", "smi_stop() {")):
+            i = self.SRC.rindex("\n", 0, self.SRC.index(first)) + 1
+            defs += self.SRC[i:self.SRC.index("\n", self.SRC.index(last, i)) + 1]
+        r = subprocess.run(["bash", "-c", stubs + 'VARIANTS=("base|" "flip|-DX" "noso|"); BUILT=(base flip noso)\n'
+                            + defs + block],
                            env={**os.environ, "OUT": out.replace("\\", "/"), "NATIVE": "/n", "RACE_SECS": "120",
-                                "RACE_LEG": "4", "RACE_WARM": "1", "RACE_AA": "1"},
+                                "RACE_LEG": "4", "RACE_WARM": "1", "RACE_AA": "1", "SMI_EVERY": "0"},
                            capture_output=True, text=True)
+        self.assertEqual(r.stderr, "")
         lines = r.stdout.splitlines()
         self.assertIn("race: noso has no libpearl.so, left out", lines)
         o = out.replace("\\", "/")
@@ -469,6 +562,242 @@ class TestCompilersRace(unittest.TestCase):
             self.assertIn(line, self.RACE)
         # The same path twice would load once, and race the build against itself unseen.
         self.assertIn("the same library as", self.RACE)
+        # Each build's k, at the end of its AUDIT and RACE lines (name=lib.so:K; 2048 without one).
+        self.assertIn("race <seconds> <leg seconds> <warm seconds> base=libA.so name=libB.so[:K]", self.RACE)
+        self.assertIn('"AUDIT %s fold=[%s] %s k=%u%s\\n"', self.RACE)
+        self.assertEqual(self.RACE.count(' k=%u\\n"'), 2)
+
+
+class TestCompilersK(unittest.TestCase):
+    """compilers.sh with a build past k 2048 (-DPEARL_FOLD_K=K): each stage runs it at its own k, and a k 2048 build's
+    commands stay as they were. Also the SM clock and power lines (SMI_EVERY) and the nvcc check (NVCC_VER)."""
+    SRC = None
+
+    @classmethod
+    def setUpClass(cls):
+        native = os.path.join(HERE, "..", "..", "earn", "native")
+        cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
+        cls.SWEEP = read(os.path.join(native, "amd", "test", "sweep.sh"))
+
+    def part(self, start, end):
+        """The script's text from the line holding `start` to the end of the line holding `end`."""
+        i = self.SRC.rindex("\n", 0, self.SRC.index(start)) + 1
+        return self.SRC[i:self.SRC.index("\n", self.SRC.index(end, i)) + 1]
+
+    def stage(self, head):
+        start = self.SRC.index(head)
+        return self.SRC[start:self.SRC.index("\nfi\n", start) + 4]
+
+    def kof(self):
+        return self.part("declare -A KOF=()", "kset() {")
+
+    def smi(self):
+        return self.part("smi_start() {", "smi_stop() {")
+
+    def tools(self):
+        """A directory with python3 (this Python) and a node that logs its k and arguments to $OUT/node.log and prints
+        a result line."""
+        d = tempfile.mkdtemp()
+        py = sys.executable.replace("\\", "/")
+        with open(os.path.join(d, "python3"), "w", newline="\n") as f:
+            f.write(f'#!/bin/sh\nexec "{py}" "$@"\n')
+        with open(os.path.join(d, "node"), "w", newline="\n") as f:
+            f.write('#!/bin/sh\necho "${PEARL_PROFILE_K:--}|$*" >> "$OUT/node.log"\n'
+                    'echo \'{"th":100.5,"sd":0.1,"mhz":1500,"watts":300,"tempC":60,"hits":400,"verified":400,'
+                    '"failed":0,"salts":3,"PASS":true}\'\n')
+        for n in ("python3", "node"):
+            os.chmod(os.path.join(d, n), 0o755)
+        return d
+
+    def bash(self, script, **env):
+        return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                              env={**os.environ, "SMI_EVERY": "0", **env})
+
+    def test_a_builds_k_comes_from_its_flags_as_sweep_sh_reads_it(self):
+        rule = '[[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]'
+        self.assertIn(rule, self.SRC)
+        self.assertIn(rule, self.SWEEP)
+        r = self.bash('VARIANTS=("base|" "k4|-DPEARL_FOLD_K=4096" "k8|-DPEARL_TALL_PREGUARD=0 -DPEARL_FOLD_K=8192u -DX=1" '
+                      '"k2|-DPEARL_FOLD_K=2048u" "kx|-DPEARL_FOLD_KX=4096" "tail|-DA -DPEARL_FOLD_K=4096|abc123")\n'
+                      + self.kof() + 'for n in base k4 k8 k2 kx tail none; do echo "$n $(kof $n) [$(kset $n)]"; done')
+        self.assertEqual(r.stdout.splitlines(), ["base 2048 []", "k4 4096 [4096]", "k8 8192 [8192]", "k2 2048 []",
+                                                 "kx 2048 []", "tail 4096 [4096]", "none 2048 []"])
+        # After ONLY, so it reads the builds that run, and before any stage.
+        self.assertLess(self.SRC.index('VARIANTS=("${keep[@]}")'), self.SRC.index("declare -A KOF=()"))
+        self.assertLess(self.SRC.index("declare -A KOF=()"), self.SRC.index("if has setup; then"))
+
+    def test_a_build_whose_k_is_not_the_one_read_from_its_flags_fails(self):
+        """bench.cu is built with the k kof read as PEARL_BENCH_K, and does not compile if the build mines another k:
+        -D PEARL_FOLD_K=4096 (read as 2048) or a second -DPEARL_FOLD_K. nvcc 12.6 refused both (1 November)."""
+        bench = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "bench.cu"))
+        self.assertIn("#ifdef PEARL_BENCH_K\nstatic_assert(PEARL_FOLD_K == PEARL_BENCH_K,", bench)
+        cmd = self.part('nvcc -O3 -std=c++17 -cudart static $GC $flags -DPEARL_BENCH_K=', 'say "build $name FAIL: bench:')
+        out = tempfile.mkdtemp().replace("\\", "/")
+        r = self.bash('say() { echo "$*"; }; nvcc() { echo "$*" >> "$OUT/nvcc.log"; }; GC=-gc; NATIVE=/n\n'
+                      'VARIANTS=("base|" "k4|-DPEARL_FOLD_K=4096" "sp|-D PEARL_FOLD_K=4096")\n' + self.kof()
+                      + 'for v in "${VARIANTS[@]}"; do\nIFS="|" read -r name flags _ <<< "$v"; K=$OUT\n' + cmd + 'done',
+                      OUT=out)
+        self.assertEqual((r.stdout, r.stderr), ("", ""))
+        with open(os.path.join(out, "nvcc.log")) as f:
+            calls = [l.split(" -I")[0] for l in f.read().replace(out, "O").splitlines()]
+        self.assertEqual(calls, ["-O3 -std=c++17 -cudart static -gc -DPEARL_BENCH_K=2048",
+                                 "-O3 -std=c++17 -cudart static -gc -DPEARL_FOLD_K=4096 -DPEARL_BENCH_K=4096",
+                                 "-O3 -std=c++17 -cudart static -gc -D PEARL_FOLD_K=4096 -DPEARL_BENCH_K=2048"])
+
+    def race_args(self, variants, built):
+        out = tempfile.mkdtemp()
+        for name in built:
+            os.makedirs(os.path.join(out, "v", name))
+            open(os.path.join(out, "v", name, "libpearl.so"), "w").close()
+        stubs = ('say() { echo "$*"; }; has() { [ "$1" = race ]; }; '
+                 'nvcc() { printf "#!/bin/sh\\necho \\"ARGS \\$*\\"\\n" > "$OUT/race"; chmod +x "$OUT/race"; }; '
+                 'timeout() { shift 3; "$@"; }; ')
+        r = self.bash(stubs + f"VARIANTS=({variants}); BUILT=({' '.join(built)})\n" + self.kof() + self.smi()
+                      + self.stage("if has race && "),
+                      OUT=out.replace("\\", "/"), NATIVE="/n", RACE_SECS="120", RACE_LEG="8", RACE_WARM="1", RACE_AA="1")
+        self.assertEqual(r.stderr, "")
+        o = out.replace("\\", "/")
+        return [l.replace(o, "O") for l in r.stdout.splitlines() if l.startswith("race ARGS")]
+
+    def test_the_race_names_a_build_past_k_2048_with_its_k(self):
+        self.assertEqual(self.race_args('"base|" "k4|-DPEARL_FOLD_K=4096 -DPEARL_TALL_PREGUARD=0" "k2|-DPEARL_FOLD_K=2048u"',
+                                        ["base", "k4", "k2"]),
+                         ["race ARGS 120 8 1 base=O/v/base/libpearl.so aa=O/v/base/libpearl-aa.so "
+                          "k4=O/v/k4/libpearl.so:4096 k2=O/v/k2/libpearl.so"])
+        # A base past k 2048 takes its copy with it.
+        self.assertEqual(self.race_args('"base|-DPEARL_FOLD_K=4096" "x|"', ["base", "x"]),
+                         ["race ARGS 120 8 1 base=O/v/base/libpearl.so:4096 aa=O/v/base/libpearl-aa.so:4096 "
+                          "x=O/v/x/libpearl.so"])
+
+    def test_bench_counts_256_x_k_macs_a_region_and_tags_rows_past_k_2048(self):
+        th = self.part('th=$(python3 -c "print(round($att * 256 * $(kof "$name")', "th=$(")
+        row = self.part('kcol="" k=$(kset "$name")', 'printf \'%s\\t%s\\t')
+        out = tempfile.mkdtemp().replace("\\", "/")
+        r = self.bash('VARIANTS=("base|" "k4|-DPEARL_FOLD_K=4096")\n' + self.kof()
+                      + 'att=1000000000 secs=2 r=1 mhz=1500 w=300 c=60 pg=0 mean=1500 mc=20 mu=9000 mclk=10501 cyc=\n'
+                      + 'for name in base k4; do\n' + th + 'echo "$name $th"\n' + row + 'done',
+                      PATH=self.tools() + os.pathsep + os.environ["PATH"], OUT=out)
+        # The rate as before at k 2048 (2048 written into the formula), and twice the MACs a region at k 4096.
+        self.assertEqual(r.stdout.splitlines(), ["base 262.144", "k4 524.288"], r.stderr)
+        self.assertEqual(r.stderr, "")
+        with open(os.path.join(out, "bench.tsv")) as f:
+            rows = [l.rstrip("\n").split("\t") for l in f]
+        self.assertEqual([len(x) for x in rows], [12, 13])
+        self.assertEqual(rows[0][:3] + rows[0][11:], ["1", "base", "262.144", "-"])
+        self.assertEqual(rows[1][:3] + rows[1][11:], ["1", "k4", "524.288", "-", "4096"])
+
+    def test_sum_py_scales_the_share_of_the_peak_by_k(self):
+        start = self.SRC.index("cat > \"$OUT/sum.py\" <<'EOF'\n") + len("cat > \"$OUT/sum.py\" <<'EOF'\n")
+        d = tempfile.mkdtemp()
+        s, t = os.path.join(d, "sum.py"), os.path.join(d, "b.tsv")
+        with open(s, "w") as f:
+            f.write(self.SRC[start:self.SRC.index("\nEOF\n", start)] + "\n")
+        with open(t, "w") as f:   # 48 x k cycles a tile at the peak: 98304 at k 2048, 196608 at k 4096
+            f.write("1\tbase\t124.0\t1620\t350\t70\t76.5\t1620\t22\t1366\t9501\t102658\n"
+                    "1\tk4\t125.0\t1620\t350\t70\t77.2\t1620\t22\t2400\t9501\t205316\t4096\n")
+        out = subprocess.run([sys.executable, "-I", s, t, "bench-sum", os.path.join(d, "best")], capture_output=True,
+                             text=True, check=True).stdout.splitlines()
+        self.assertIn("cyc 102658 (95.76%)", out[0])
+        self.assertIn("cyc 205316 (95.76%) vs base", out[1])
+
+    def test_hashrate_and_verify_run_a_build_past_k_2048_at_its_k(self):
+        out = tempfile.mkdtemp().replace("\\", "/")
+        src = tempfile.mkdtemp().replace("\\", "/")
+        os.makedirs(os.path.join(src, "earn"))
+        for name in ("base", "k4"):
+            os.makedirs(os.path.join(out, "v", name))
+        open(os.path.join(out, "v", "base", "ok"), "w").close()
+        start = self.SRC.index("cat > \"$OUT/sum.py\" <<'EOF'\n") + len("cat > \"$OUT/sum.py\" <<'EOF'\n")
+        with open(os.path.join(out, "sum.py"), "w") as f:
+            f.write(self.SRC[start:self.SRC.index("\nEOF\n", start)] + "\n")
+        stubs = ('say() { echo "$*"; }; has() { [ "$1" = hashrate ] || [ "$1" = verify ]; }; '
+                 'timeout() { shift 3; "$@"; }; ')
+        r = self.bash(stubs + 'VARIANTS=("base|" "k4|-DPEARL_FOLD_K=4096"); BUILT=(base k4)\n' + self.kof() + self.smi()
+                      + self.stage("if has hashrate && ") + self.stage("if has verify; then"),
+                      PATH=self.tools() + os.pathsep + os.environ["PATH"], OUT=out, SRC=src, HR_BEST="k4",
+                      HR_ROUNDS="1", HR_SECS="1", VERIFY_SECS="1")
+        with open(os.path.join(out, "node.log")) as f:
+            calls = [l.strip().replace(out, "O") for l in f]
+        # Base as before (no PEARL_PROFILE_K: the core opens with cardK); k4 pinned to k 4096.
+        self.assertEqual(calls, ["-|native/probes/hashrate.js O/v/base/build/Release/pearl_core.node 1 10",
+                                 "4096|native/probes/hashrate.js O/v/k4/build/Release/pearl_core.node 1 10",
+                                 "4096|native/probes/verify-hits.js O/v/k4/build/Release/pearl_core.node 1"], r.stderr)
+        lines = r.stdout.splitlines()
+        self.assertTrue(any(l.startswith("hashrate r1 base 100.5 TH/s") and l.endswith(" MHz") for l in lines), lines)
+        self.assertTrue(any(l.startswith("hashrate r1 k4 100.5 TH/s") and l.endswith(" MHz k 4096") for l in lines), lines)
+        self.assertTrue(any(l.startswith("verify k4 k 4096 ") and '"PASS":true' in l for l in lines), lines)
+        self.assertEqual(r.stderr, "")
+
+    def test_complete_compares_hit_lists_only_within_a_k(self):
+        out = tempfile.mkdtemp()
+        hl = {"base": "aaa bbb", "same": "aaa bbb", "bad": "aaa zzz", "k4": "ccc ddd", "k4same": "ccc ddd",
+              "k4diff": "ccc eee"}
+        for name, h in hl.items():
+            os.makedirs(os.path.join(out, "v", name))
+            with open(os.path.join(out, "v", name, "bench"), "w", newline="\n") as f:
+                f.write("#!/bin/sh\n" + "".join(f"echo 'HL {i} {x}'\n" for i, x in enumerate(h.split()))
+                        + "echo 'hitlist bits=8 regions=64 batches=2 hits=2 full=0 salts=1 digest=0123'\n")
+            os.chmod(os.path.join(out, "v", name, "bench"), 0o755)
+        open(os.path.join(out, "v", "base", "ok"), "w").close()
+        stubs = 'say() { echo "$*"; }; has() { [ "$1" = complete ]; }; timeout() { shift 3; "$@"; }; '
+        r = self.bash(stubs + 'VARIANTS=("base|" "same|-DY" "k4|-DPEARL_FOLD_K=4096" "k4same|-DPEARL_FOLD_K=4096 -DZ" '
+                      '"k4diff|-DPEARL_FOLD_K=4096u -DW" "bad|-DV"); BUILT=(base same k4 k4same k4diff bad)\n'
+                      + self.kof() + self.stage("if has complete && "),
+                      OUT=out.replace("\\", "/"), COMPLETE_SHAPES="8192 16 2", COMPLETE_SECS="5")
+        s = "bits=8 regions=64 batches=2 hits=2 full=0 salts=1 digest=0123"
+        self.assertEqual(r.stdout.splitlines(), [
+            f"complete m8192-cb16 base {s}",
+            f"complete m8192-cb16 same PASS {s}",
+            f"complete m8192-cb16 k4 {s} (the reference for k 4096)",
+            f"complete m8192-cb16 k4same PASS against k4 {s}",
+            f"complete m8192-cb16 k4diff FAIL against k4 {s}, first difference: < HL 1 ddd > HL 1 eee ",
+            f"complete m8192-cb16 bad FAIL {s}, first difference: < HL 1 bbb > HL 1 zzz "], r.stderr)
+        self.assertEqual(r.stderr, "")
+
+    def test_smi_lines_come_every_smi_every_seconds_while_a_stage_runs(self):
+        d = tempfile.mkdtemp()
+        log = os.path.join(d, "args").replace("\\", "/")
+        with open(os.path.join(d, "nvidia-smi"), "w", newline="\n") as f:
+            f.write(f'#!/bin/sh\necho "$*" >> "{log}"\necho "1845, 349.12, 350.00"\n')
+        os.chmod(os.path.join(d, "nvidia-smi"), 0o755)
+        say = self.part("say() {", "say() {")
+        script = say + self.smi() + "smi_start race; sleep 1; smi_stop; echo stopped; sleep 0.6; echo end"
+        env = {"PATH": d + os.pathsep + os.environ["PATH"], "OUT": d.replace("\\", "/")}
+        lines = self.bash(script, SMI_EVERY="0.25", **env).stdout.splitlines()
+        cut = lines.index("stopped")
+        self.assertGreaterEqual(cut, 2, lines)
+        self.assertEqual(set(lines[:cut]), {"[compilers] smi race 1845 MHz 349.12/350.00 W"})
+        self.assertEqual(lines[cut:], ["stopped", "end"])
+        with open(log) as f:
+            self.assertIn("-i 0 --query-gpu=clocks.sm,power.draw,power.limit --format=csv,noheader,nounits", f.read())
+        # Off at 0, as compilers.sh is unless nvtest.sh sets it.
+        self.assertEqual(self.bash(script, SMI_EVERY="0", **env).stdout.splitlines(), ["stopped", "end"])
+        # A query that hangs, and ignores TERM as a stuck driver call can, does not hold up the stop.
+        with open(os.path.join(d, "nvidia-smi"), "w", newline="\n") as f:
+            f.write("#!/bin/sh\ntrap '' TERM\nsleep 8\n")
+        t = time.time()
+        r = self.bash(say + self.smi() + "smi_start race; sleep 0.5; smi_stop; echo stopped", SMI_EVERY="0.25", **env)
+        self.assertLess(time.time() - t, 4)
+        self.assertEqual((r.stdout, r.stderr), ("stopped\n", ""))
+        self.assertIn("SMI_EVERY=${SMI_EVERY:-0}", self.SRC)
+        # Around the race and the hashrate rounds.
+        race, hr = self.stage("if has race && "), self.stage("if has hashrate && ")
+        self.assertLess(race.index("smi_start race"), race.index('timeout -k 10 $((RACE_SECS + 600)) "$OUT/race"'))
+        self.assertLess(race.index("tee \"$OUT/race.log\""), race.index("smi_stop"))
+        self.assertLess(hr.index("smi_start hashrate"), hr.index('for r in $(seq 1 "$HR_ROUNDS"); do'))
+        self.assertLess(hr.index("smi_stop"), hr.index('python3 "$OUT/sum.py" "$OUT/hashrate.tsv"'))
+
+    def test_the_nvcc_check_follows_the_toolkit_asked_for(self):
+        start = self.SRC.index('if [ "$NVCC_VER" = V12.8.93 ]; then')
+        check = self.SRC[start:self.SRC.index("\nfi\n", start) + 4]
+        self.assertIn("NVCC_VER=${NVCC_VER:-V12.8.93}", self.SRC)
+        for want, nv, line in (("V12.8.93", "V12.8.93", ""),
+                               ("V12.8.93", "V12.6.85",
+                                "WARN: nvcc V12.6.85 is not CI's 12.8.93; the expected fold hashes will not match"),
+                               ("V13.3.73", "V13.3.73", ""),
+                               ("V13.3.73", "V12.8.93", "WARN: nvcc V12.8.93 is not the V13.3.73 asked for (NVCC_VER)")):
+            r = self.bash('say() { echo "$*"; }\n' + check, NVCC_VER=want, nv=nv)
+            self.assertEqual(r.stdout.strip(), line, (want, nv, r.stderr))
 
 
 if __name__ == "__main__":
