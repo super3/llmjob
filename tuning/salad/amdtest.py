@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
-classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx3060 to nvtest-rtx4090, or those
+classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx4090, or those
 with -2 to -99 after them (it refuses any other name, so it can never touch the mining fleet's biz- groups). An
 amdtest box runs amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; an nvtest box runs nvtest.sh
 (compilers.sh's builds and races on the card), which prints "[nvtest] HH:MM:SS ..." lines. `logs` and `wait`
@@ -18,7 +18,8 @@ read them back.
 
 CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt, 7800xt, 9070xt, 9060xt, and
 for nvtest boxes 3090ti, 3090, 3080ti, 3080, 3070ti, 3070, 3060ti, 3060, and 4090, 4080, 4070ti, 4070, 4060ti,
-4060 (RTX 40, the other cp.async card a tall-fold change has to be raced on).
+4060 (RTX 40, the other cp.async card a tall-fold change has to be raced on), and 2080ti, 2080, 2070, 2060 (RTX 20,
+for the B-direct fold).
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
 how a new run starts. It updates the environment and then restarts the instance (--no-restart leaves that to
 Salad). See "AMD test boxes" in README.md for how long that took. --patch-from DIR sends DIR's uncommitted and
@@ -48,7 +49,9 @@ NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080
               "3080": "RTX 3080 (10 GB)", "3070ti": "RTX 3070 Ti (8 GB)", "3070": "RTX 3070 (8 GB)",
               "3060ti": "RTX 3060 Ti (8 GB)", "3060": "RTX 3060 (12 GB)",
               "4090": "RTX 4090 (24 GB)", "4080": "RTX 4080 (16 GB)", "4070ti": "RTX 4070 Ti (12 GB)",
-              "4070": "RTX 4070 (12 GB)", "4060ti": "RTX 4060 Ti (16 GB)", "4060": "RTX 4060 (8 GB)"}
+              "4070": "RTX 4070 (12 GB)", "4060ti": "RTX 4060 Ti (16 GB)", "4060": "RTX 4060 (8 GB)",
+              "2080ti": "RTX 2080 Ti (11 GB)", "2080": "RTX 2080 (8 GB)", "2070": "RTX 2070 (8 GB)",
+              "2060": "RTX 2060 (6 GB)"}
 NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
@@ -79,8 +82,8 @@ def check_name(name):
     (amdtest-rdna4-2).
     Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
     name."""
-    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(30|40)[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
-        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx3060 to nvtest-rtx4090 (or -2 to -99 "
+    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40)[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
+        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx2060 to nvtest-rtx4090 (or -2 to -99 "
                  f"after them), not {name!r}")
     return name
 
