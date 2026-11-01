@@ -1499,6 +1499,41 @@ checked bit for bit at its own k first; `hashrate.js` 60 s after 20 s, the build
 - **Next:** step 2, a per-card mining profile in the app so RDNA 4 cards mine at k 4096, then pool runs.
 - **Cost:** two high-priority boxes for about 21 minutes each, about $0.12.
 
+**k 4096 in the app (item 5, step 2).** RDNA 4 cards mine k 4096 on Linux (`c3ec3a5`, `7accd79`), checked on 1
+November on `amdtest-rdna4-16` (RX 9070 XT) and `amdtest-rdna4-19` (RX 9060 XT), at `7accd79`. Shares went to the
+pools through `sharetap.py`, and every one was then checked by the spec's own `verify_plain_proof` (`refverify.rs`).
+
+| Check | RX 9070 XT | RX 9060 XT |
+|---|---|---|
+| Fold test at k 4096 and k 2048 | pass (`d36593f1`) | pass (`733bb3d9`) |
+| `verify-hits` through the app's path, k 4096 | 400 of 400, 88 salts | 400 of 400, 50 salts |
+| Stand-in pool, both k on one connection | 215/215 and 200/200 | 137/137 and 101/101 |
+| Our CLI against the stand-in | 417/417 compressed, 178/178 raw (180 KB) | not run |
+| Kryptex, k 4096 | 1 h: 33 accepted, 0 rejected, 1 connection | 1 h on `a4e51ee5`: 21/21, 1 connection |
+| HeroMiners, k 4096 (`a68b3382`) | 30 min: 26 accepted, 0 rejected, 1 connection | not run |
+| Kryptex, both k on one connection (`a68b3382`) | 30 min: 12/12 and 9/9, 0 unanswered | not run |
+| The spec's verifier on every captured share | 33/33, 26/26, 400/400 | 36/36, 21/21, 400/400 |
+
+Against today's release on the same PC, `test/sweep.sh` and `hashrate.js` 60 s after 10 s, the builds taking turns:
+
+| Card | PC | One job | A job every 60 s | A job every 35 s | Fold alone |
+|---|---|---|---|---|---|
+| RX 9070 XT | `a68b3382` | +0.47, +0.70, +0.75%; again +0.72, +0.76, +0.75% | +0.76, +0.75, +0.75% | +0.75, +0.76, +0.74% | +0.7 to −0.5% |
+| RX 9060 XT | `a4e51ee5` | +1.28, +1.31, +1.30% | +1.28, +1.31, +1.28% | not run | +0.12 to −0.15% |
+
+- **Job switching costs nothing measurable:** a k 4096 job's operands and trees are twice as large, but with a new job
+  every 35 or 60 s (HeroMiners' and Kryptex's median gaps here) the gain is the same as on one job.
+- **The 9070 XT gains less than in step 1** (+0.75% here against +1.03 to +1.11% on `5ecd7586`); the 9060 XT matches
+  it. Both are above the +0.5% gate.
+- **One PC's hang-ups, traced:** on `733bb3d9` Kryptex closed the 9060 XT's connection 8 times in 90 minutes, each
+  time with a k 4096 share waiting, so 8 of 36 shares got no reply (27 accepted, 1 stale). All 36 pass the spec's
+  verifier. A k 2048 control on another 9060 XT PC (`f029e99c`) got 34 of 34 on one connection, and k 4096 on a third
+  (`a4e51ee5`) got 21 of 21 on one connection, so the hang-ups belonged to that PC, not to k 4096. The miner's k
+  fallback only counts hang-ups before the first accepted share, and wouldn't have caught it.
+- **Salad:** three restarts went silent and needed a new PC (`realloc`), and two extra boxes created by a script
+  mistake were deleted within a minute, before they mined.
+- **Cost:** about 3 hours of a 9070 XT and 5 hours of a 9060 XT, high priority, about $1.20.
+
 **RDNA 3: k 4096, batch width and the hash's share (research item 13, step 0).** No code change: at 11:36 UTC on
 1 November, at `d9c70e8`, on two RX 7900 XTX boxes, `amdtest-rdna3-5` (PC `45c94e40`) and `amdtest-rdna3-6`
 (`ded998b6`; its first PC, `57cc1801`, took 15 minutes over a 13-second fold timing and was replaced). `test/sweep.sh`:
