@@ -425,6 +425,28 @@ region against 700). Not rows: no competitor ran.
   instructions. The code is reverted.
 - **Cost:** two high-priority boxes for about 13 minutes each, about $0.04.
 
+### Our own builds raced on Salad, 1 November: would k 4096 pay on RTX 20?
+
+Research item 9, raced at 09:41 UTC on 2026-11-01 at `7accd79`, in race mode, on `nvtest` boxes. A share may declare
+k 4096, which halves the hashes and tile seams a MAC (on RDNA 4 it gained about 1%, in the AMD section). The B-direct
+fold holds a band of B' in the L2 and streams A' past it, and the band rule (`pearl_bd_band_for`) halves the band
+when k doubles, so A' bytes a MAC double. That cost needs no k 4096 fold to price: each arm here is today's k 2048
+fold built with `-DPEARL_BD_BAND` at the band k 4096 would take, so it reads at least what k 4096 would lose to
+DRAM. Not rows: no competitor ran.
+
+| Card | Machine ID | Band today | Arm | vs release | Rounds ahead | Memory busy | Clock |
+|---|---|---|---|---|---|---|---|
+| RTX 2080 Ti (250 W) | dbcb4344 | 8 | band 4 (k 4096's) | −1.24% ±0.07 | 0/48 | 11% → 19% | 1360 → 1346 MHz |
+| RTX 2070 Super (172 W) | bc68007a | 5 | band 2 (k 4096's) | −2.76% ±0.02 | 0/45 | 16% → 35.5% | 1676 → 1640 MHz |
+| RTX 2070 Super (172 W) | bc68007a | 5 | band 3 (a better rule) | −1.65% ±0.07 | 0/45 | 16% → 25% | 1676 → 1649 MHz |
+
+- **Dropped:** k 4096 could win back at most about 0.9% (half of the 1–2 points the tile hash and hand-off cost in
+  the fold's static model), and it had to clear +0.5%. The DRAM cost alone is 1.2% on the 5.5 MB L2 and 1.7–2.8% on
+  the 4 MB one, so no RTX 20 card gains. The 2080 Ti's copy of the release read −0.01% ±0.05. The 3 MB RTX 2060 was
+  not raced: the hashrate runs under `PEARL_BD_WALK` in `pearl_config.h` already put its band 2 1.1% behind band 4.
+  No code was written for it.
+- **Cost:** two high-priority boxes for 12 and 16 minutes, about $0.04.
+
 ### Monero on the CPU
 
 SRBMiner 3.7.5 mines Monero (RandomX) on the CPU and Pearl on the GPU in one
