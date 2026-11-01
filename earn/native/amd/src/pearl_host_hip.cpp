@@ -40,8 +40,13 @@
 // How many column offsets one batch covers at most. Each pipeline slot keeps a transcript
 // buffer of col_batch x (m / 16) regions x 64 bytes: 128 MiB at 256 and the mainnet m.
 // -DPEARL_AMD_COL_BATCH=N sets another width; the host narrows it further if it has to.
+// Without it the host also picks a narrower width for the cards measured faster there
+// (amd_col_batch); a build that sets it gets exactly that cap, so a sweep can still race 256.
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
+#define PEARL_AMD_COL_BATCH_BY_ARCH 1
+#else
+#define PEARL_AMD_COL_BATCH_BY_ARCH 0
 #endif
 
 // The most chunks (k / rank) a card with the wrap readout takes: 32, k 4096 at rank 128, the k RDNA 4
@@ -248,7 +253,14 @@ hipError_t event_query(hipEvent_t ev) {
 // PEARL_AMD_COL_BATCH, halved until it divides the valid offsets. A batch must be whole
 // tiles of every fold (16 column offsets, the matrix folds' 256 columns), so a width
 // under 16 is refused when the search starts.
-uint32_t amd_col_batch(const PearlProfile *profile) {
+//
+// arch is the card's gcnArchName ("gfx1100" or "gfx1100:xnack-"). On gfx1100 (RX 7900 XTX,
+// 7900 XT, 7900 GRE) and gfx1101 (RX 7800 XT, 7700 XT) the cap is 128: in the miner's own loop
+// 128 read +0.47 to +0.64% and +1.44 to +1.84% a round on two 7900 XTX PCs and +0.12 to +0.37%
+// on a 7800 XT, ahead in every round, and 64 was slower on both chips (benchmark.md, AMD, item
+// 13). RDNA 4 was level at 128 (a 9060 XT, README.md; a 9070 XT, benchmark.md), and the other
+// targets weren't measured, so they keep 256.
+uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
   uint32_t cb = profile->col_batch ? profile->col_batch : 1u;
   // PEARL_AMD_COL_BATCH in the environment lowers the cap, for measuring widths on one build.
@@ -257,6 +269,11 @@ uint32_t amd_col_batch(const PearlProfile *profile) {
   // glibc 2.38's headers calls __isoc23_strtol, which would tie the addon to glibc 2.38
   // (pearl_host.cu's pearl_bd_sweep_env says more).
   uint32_t limit = PEARL_AMD_COL_BATCH;
+#if PEARL_AMD_COL_BATCH_BY_ARCH
+  if (arch && (strncmp(arch, "gfx1100", 7) == 0 || strncmp(arch, "gfx1101", 7) == 0)
+      && (arch[7] == '\0' || arch[7] == ':'))
+    limit = 128u;
+#endif
   const char *env = getenv("PEARL_AMD_COL_BATCH");
   uint32_t want = 0;
   for (const char *p = env; p && *p >= '0' && *p <= '9' && want < limit; p++) want = want * 10u + (uint32_t)(*p - '0');
@@ -285,7 +302,9 @@ size_t needed_bytes(const PearlProfile *profile) {
   const size_t aLeaves = aBytes / 1024, bLeaves = bBytes / 1024;
   const size_t treeBytes = 2 * (aLeaves + bLeaves) * 32
                            + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
-  const size_t trBytes = (size_t)Ctx::kSlots * amd_col_batch(profile)
+  // The width before any per-card cap (nullptr): the most a card can need, so the check never
+  // passes a card that then runs short.
+  const size_t trBytes = (size_t)Ctx::kSlots * amd_col_batch(profile, nullptr)
                          * (profile->m / PEARL_ROWS_COUNT) * PEARL_JACKPOT_BUCKETS * 4u;
   return aStored + bStored + primeBytes + noiseBytes + batchBytes + treeBytes + trBytes
          + (1u << 20);
@@ -907,7 +926,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
 
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
-  ctx->colBatch = amd_col_batch(profile);
+  ctx->colBatch = amd_col_batch(profile, ctx->arch);
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   const size_t S = Ctx::kSlots;

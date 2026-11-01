@@ -79,7 +79,11 @@ picks the fold from the card's `gcnArchName` and checks it against the folds the
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
 with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12`
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
-keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile. All work
+keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile, and 128 on
+gfx1100 and gfx1101 (RX 7900 and RX 7800/7700 cards), which were faster there in the
+miner's own loop (+0.1 to +1.8% a round, `benchmark.md`). A build that sets `PEARL_AMD_COL_BATCH`
+gets that cap on every card; the variable of that name in the environment can only lower it,
+to measure widths on one build. All work
 runs in order on one stream; proof reads use a second, and a hit's reads are waited for
 once. `PEARL_AMD_TRACE=1` prints a line on stderr every 10 s with each batch's GPU time for
 the fold and the hash, how long the GPU sat idle between batches, and the search thread's

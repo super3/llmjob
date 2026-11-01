@@ -1521,6 +1521,39 @@ batch 128 ran last in each round, at run time (`PEARL_AMD_COL_BATCH`). Against t
   that a fused fold and hash would need on RDNA 3.
 - **Cost:** two high-priority boxes for about 35 and 50 minutes, about $0.25.
 
+**Batch 128 as a build, and the ablations (item 13, step 1a).** At 12:36 UTC on 1 November, at `2cc4403`, on
+`amdtest-rdna3-6` (RX 7900 XTX, the same PC `ded998b6`), `amdtest-rdna3-10` (RX 7800 XT, `16f1685c`) and
+`amdtest-rdna4-16` (RX 9070 XT, `26b0a4ff`). Batch widths as builds (`-DPEARL_AMD_COL_BATCH`), `hashrate.js` 60 s
+after 20 s, the builds taking turns, against the release's 256 in the same round:
+
+| Card | Batch 128 | Batch 64 |
+|---|---|---|
+| RX 7900 XTX (55.5-55.6 TH/s) | +1.44, +1.67, +1.84, +1.62% | −0.77, −0.20, −0.16, −0.74% |
+| RX 7800 XT (32.3-32.5 TH/s) | +0.12, +0.37, +0.25, +0.22% | −0.22, −0.12, −0.12, −0.12% |
+| RX 9070 XT, k 4096 (107.3-107.4 TH/s) | −0.10, −0.04, −0.01% | not run |
+
+- **Batch 128 becomes the default on gfx1100 and gfx1101** (`amd_col_batch`): ahead in every round on three PCs of
+  two chips, and 64 slower on both. `verify-hits` at 128 checked 400 of 400 hits on the XTX (97 salts) and 387 of
+  387 on the 7800 XT. RDNA 4 is level, as a 9060 XT was before, and keeps 256; gfx1102, gfx1150 and gfx1151 weren't
+  measured and keep 256 too.
+- **The ablations** (`PEARL_AMD_ABLATE`, timing only: their transcripts are wrong on purpose), the fold alone on the
+  miner's operands (`SWEEP_OPERANDS=miner`), 4 rounds of 600 launches, scored from round 2, against the release:
+
+| Card | No slab barrier (2) | No LDS fragment loads (8) | Operands in L2 (16) | PFX+TID | PFX+TID in L2 |
+|---|---|---|---|---|---|
+| RX 7900 XTX | +1.50, +1.92, +1.32% | +6.53, +6.76, +6.42% | +2.48, +2.86, +2.45% | −0.41, +0.07, −0.72% | +2.04, +2.73, +2.24% |
+| RX 9070 XT, k 4096 | +5.77, +5.86, +5.80% | not valid (below) | | | |
+
+- Every XTX build kept 6 waves a SIMD with no spills (240 VGPRs; 203 with bit 8, 219 with PFX+TID).
+- **Item 14 (start skew on RDNA 3) passes its cheap gate:** the barrier is 1.3-1.9% of fold time, above the 0.5% it
+  needed. Its real gate, whether the blocks on a WGP run in step, needs the clock stamps. The barrier costs RDNA 4
+  three times as much.
+- **Bit 8 on RDNA 4 is not a reading:** with no fragment loaded from LDS, the compiler dropped the LDS stores too
+  (LDS 0 bytes, 8 waves against the release's 6, 170 VGPRs), so its +26 to +29% is no operand staging at a higher
+  occupancy. It needs a real LDS read kept per slab before it can gate item 15.
+- Operands held in L2 still gain about 2.7% over PFX+TID alone, so PFX doesn't hide RDNA 3's memory latency.
+- **Cost:** three high-priority boxes for 25 to 35 minutes each, about $0.25.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.
