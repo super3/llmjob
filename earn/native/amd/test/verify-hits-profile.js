@@ -11,10 +11,20 @@
 //
 // m must be a power of two and a multiple of 128 (the AMD matrix folds' tile), n a power
 // of two and a multiple of 256. PEARL_AMD_FOLD picks the fold, as it does in the app.
+//
+// PEARL_CARD_K=1 opens the core as the app does (cardK): the core may pick a larger k for the
+// card (k 4096 where its code object has the wrap readout), and everything here then uses the k
+// it reports (core.k). The JSON line names the k checked. PEARL_SHARE_DUMP=file writes each hit
+// that passes as a share, one JSON object a line ({ header, target, plain_proof, k }), for the
+// reference verifier (probes/refverify.rs); the target is the pool's, before the k scaling.
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const R = path.join(__dirname, '..', '..', '..', 'src', 'shared', 'miner') + path.sep;
-const { PROFILE, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage } = require(R + 'pearlhash');
+const {
+  PROFILE, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage, profileForK,
+  penalizedAdjustmentFactor,
+} = require(R + 'pearlhash');
 const { hash, keyedHash } = require(R + 'blake3');
 const { buildShareProof } = require(R + 'shareProof');
 const { foldTranscript, transcriptBytes } = require(R + 'reference');
@@ -24,19 +34,30 @@ const file = path.resolve(process.argv[2]);
 const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 252);
 const fill = Number(process.argv[7] === undefined ? 1 : process.argv[7]);
-const profile = {
+const asked = {
   ...PROFILE,
   m: Number(process.argv[5] || 256),
   n: Number(process.argv[6] || 512),
   operandFill: fill ? 'constant' : 'hashed',
   operandFillCode: fill ? 1 : 0,
 };
-const { k, rank, m, n } = profile;
+const cardK = process.env.PEARL_CARD_K === '1';
+const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-const core = addon.createCore(profile, {});
+const core = addon.createCore(asked, cardK ? { cardK: true } : {});
+// The k the core mines: the one asked, unless cardK let it pick another.
+const profile = cardK && core.k !== undefined ? profileForK(asked, core.k) : asked;
+if (!profile) {
+  core.stop();
+  console.log(JSON.stringify({ error: 'the core chose k ' + core.k + ', which a share can\'t carry' }));
+  process.exit(2);
+}
+const { k, rank, m, n } = profile;
 const header = Buffer.alloc(76, 0x5A);
 const jobKey = hash(Buffer.concat([header, buildConfig52(profile)]));
 const target = 2n ** bits;
+// The pool's target for this bound: a pool scales its target by tile x (k / rank) x 128 (shareBound).
+const poolTarget = target / BigInt(penalizedAdjustmentFactor(profile));
 let hits = 0, ok = 0, bad = 0;
 const salts = new Set();
 const fails = [];
@@ -57,8 +78,10 @@ function rowsFromLeaves(side, want) {
   });
 }
 
+let share = null;
 function check(hit) {
-  if (!buildShareProof(hit, jobKey, profile)) return 'buildShareProof rejected (Merkle / leaf indices)';
+  share = buildShareProof(hit, jobKey, profile);
+  if (!share) return 'buildShareProof rejected (Merkle / leaf indices)';
   const rootA = Buffer.from(hit.proofA.root), rootB = Buffer.from(hit.proofBt.root);
   const boundA = keyedHash(SEED_SALT_A, bindMessage(rootA, m)), boundB = keyedHash(SEED_SALT_B, bindMessage(rootB, n));
   const bSeed = hash(Buffer.concat([jobKey, boundB])), aSeed = hash(Buffer.concat([bSeed, boundA]));
@@ -90,6 +113,11 @@ core.on('hit', (hit) => {
     if (fails.length < 5) fails.push({ nonce: hit.nonce, salt: hit.salt, why });
   } else {
     ok++;
+    if (dumpTo) {
+      fs.appendFileSync(dumpTo, JSON.stringify({
+        header: header.toString('hex'), target: poolTarget.toString(16).padStart(64, '0'), plain_proof: share, k,
+      }) + '\n');
+    }
   }
 });
 core.on('error', (e) => { console.log(JSON.stringify({ error: String(e) })); process.exit(2); });
@@ -99,7 +127,7 @@ core.setJob({ header, target, jobId: 'verify' });
 setTimeout(() => {
   core.stop();
   const res = {
-    file: path.basename(file), fold: process.env.PEARL_AMD_FOLD || 'default', m, n, fill: profile.operandFill,
+    file: path.basename(file), fold: process.env.PEARL_AMD_FOLD || 'default', k, m, n, fill: profile.operandFill,
     hits, verified: ok, failed: bad, salts: salts.size, thPerSec: rate, fails,
     PASS: bad === 0 && ok >= 20 && salts.size >= 3,
   };

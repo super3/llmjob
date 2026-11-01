@@ -9,9 +9,13 @@
 # runs hashrate.js on every variant, SWEEP_ROUNDS rounds in turn, and on the first variant once for each batch
 # width in SWEEP_CB (PEARL_AMD_COL_BATCH, no rebuild).
 #
-# A variant whose flags set -DPEARL_FOLD_K=K (a k 4096 build, pearl_amd_fold.h) is checked and timed at that k:
-# its fold test folds k K, its fold timing runs launches x 2048 / K launches (the same MACs as a k 2048 build),
-# and hashrate.js runs it with PEARL_PROFILE_K=K. The core reports MACs a second at any k, so the rates compare.
+# Each variant is checked and timed at the k it mines. Built as a release is, that is k 4096 on RDNA 4 (gfx12's code
+# objects have the wrap readout, pearl_amd_fold.h) and k 2048 elsewhere: the fold test folds that k by default and
+# names it, and hashrate.js opens the core as the app does (cardK) and reports it. -DPEARL_AMD_KWRAP=0 builds
+# today's release, k 2048 everywhere, to race against. A variant whose flags set -DPEARL_FOLD_K=K is pinned to K
+# instead: its fold test folds K and hashrate.js runs with PEARL_PROFILE_K=K. Either way its fold timing runs
+# launches x 2048 / k launches (the same MACs as a k 2048 build). The core reports MACs a second at any k, so the
+# rates compare.
 #
 # Environment:
 #   SWEEP         "name=flags;name=flags", e.g. "tiled=;rowmajor=-DPEARL_AMD_TILED=0" (default: one build, "base=").
@@ -52,8 +56,9 @@ ROOT=${SWEEP_ROOT:-/root}
 case "$FOLD_ROUNDS" in '' | *[!0-9]*) out "SWEEP_FOLD_ROUNDS must be a whole number, not $FOLD_ROUNDS"; exit 2 ;; esac
 out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}$([ "$FOLD_ROUNDS" -gt 0 ] && echo " x $FOLD_ROUNDS rounds in turn"); hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
 
-# Each variant's k, from -DPEARL_FOLD_K=K in its flags; unset for a k 2048 build (pearl_config.h's default).
-declare -A KOF=()
+# PIN: a variant's k from -DPEARL_FOLD_K=K in its flags, unset otherwise. KOF: the k it is checked and timed at, PIN
+# or the k its fold test named (the k the core mines); unset when neither says, for k 2048.
+declare -A PIN=() KOF=()
 # Launches for variant $1 given $2 at k 2048: the same MACs at its own k, and at least one.
 launches() {
   local k=${KOF[$1]:-} n
@@ -64,7 +69,8 @@ launches() {
 }
 # The fold alone, timed: the foldtest's line for variant $1 at m $2, cols $3, launches $4 (at k 2048), spaces squeezed.
 fold_rate() {
-  timeout 900 $ROOT/var/$1/pearl_amd_foldtest "$2" "$3" 1 "$(launches "$1" "$4")" 0 "$FOLD" 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g'
+  timeout 900 $ROOT/var/$1/pearl_amd_foldtest "$2" "$3" 1 "$(launches "$1" "$4")" 0 "$FOLD" ${PIN[$1]:+"${PIN[$1]}"} 2>&1 \
+    | grep -E "^$FOLD" | sed 's/  */ /g'
 }
 
 # SWEEP_FOLD_ROUNDS: every variant in turn, each round, so a round compares them on the card as it is then.
@@ -96,7 +102,7 @@ IFS=';' read -ra VARS <<< "$SWEEP"
 for v in "${VARS[@]}"; do
   [ -n "$v" ] || continue
   name=${v%%=*}; flags=${v#*=}
-  if [[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]; then KOF[$name]=${BASH_REMATCH[1]}; fi
+  if [[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]; then PIN[$name]=${BASH_REMATCH[1]}; fi
   t0=$(date +%s)
   if ! PEARL_AMD_CFLAGS="$flags" ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-$name.log 2>&1; then
     out "$name build FAIL ($flags)"
@@ -105,7 +111,9 @@ for v in "${VARS[@]}"; do
   fi
   mkdir -p $ROOT/var/$name
   cp build/pearl_core_hip.node build/pearl_amd_foldtest $ROOT/var/$name/
-  chk=$(timeout 600 $ROOT/var/$name/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" 2>&1 | grep -E "^($FOLD|PASS|FAIL|no fold)" | tr '\n' ' ')
+  cout=$(timeout 600 $ROOT/var/$name/pearl_amd_foldtest 1024 1024 7 1 1 "$FOLD" ${PIN[$name]:+"${PIN[$name]}"} 2>&1)
+  chk=$(printf '%s\n' "$cout" | grep -E "^($FOLD|PASS|FAIL|no fold)" | tr '\n' ' ')
+  KOF[$name]=${PIN[$name]:-$(printf '%s\n' "$cout" | sed -nE 's/^device: .*; k ([0-9]+).*/\1/p' | head -n 1)}
   out "$name built in $(( $(date +%s) - t0 ))s ($flags)${KOF[$name]:+, k ${KOF[$name]}}; check: $chk"
   case " ${SWEEP_TIMEONLY:-} " in *" $name "*) timeonly=1 ;; *) timeonly=0 ;; esac
   case "$timeonly:$chk" in
@@ -128,7 +136,7 @@ if ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-default.log 2>&1; then out "de
 else out "default rebuild FAIL: build/ holds the last variant; run the build task before verify, duel or mine"; fi
 
 hrun() {   # name [col batch]
-  local r k=${KOF[$1]:-}
+  local r k=${PIN[$1]:-}
   r=$(cd $A && PEARL_AMD_COL_BATCH=${2:-} timeout 600 env ${k:+PEARL_PROFILE_K=$k} node ../probes/hashrate.js \
       $ROOT/var/$1/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi | grep -E '"th"|error' | tail -1)
   out "$1${2:+ cb=$2}${k:+ k=$k} hashrate: ${r:0:300}"

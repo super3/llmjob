@@ -4,12 +4,16 @@
 #
 #   ./build-amd.sh cpu              HIP-CPU: build/pearl_core_hipcpu.node and
 #                                   build/pearl_amd_foldtest_cpu, which run the AMD kernels
-#                                   on the CPU. For checking without a GPU; never shipped.
+#                                   on the CPU, and their _kwrap twins with the wrap readout
+#                                   (RDNA 4's, which mines k 4096). For checking without a
+#                                   GPU; never shipped.
 #   ./build-amd.sh gpu [gfx...]     ROCm: build/pearl_core_hip.node and build/pearl_amd_foldtest
 #                                   for the listed targets (default: $DEFAULT_ARCHS below).
 #   ./build-amd.sh check [gfx...]   Compile the device code for each target and print each
 #                                   fold's registers, scratch and LDS. Fails if a fold
-#                                   spills or uses scratch memory.
+#                                   spills or uses scratch memory, or, with no
+#                                   PEARL_AMD_CFLAGS, if a gfx12 target lacks the wrap
+#                                   readout (PEARL_AMD_KWRAP) or any other target has it.
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -159,7 +163,16 @@ case "$mode" in
       $tbb_lib -ltbb -lpthread
     $cxx $flags -DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" \
       -o "$OUT/pearl_amd_foldtest_cpu_pfx" $tbb_lib -ltbb -lpthread
-    echo "built $OUT/pearl_core_hipcpu.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx}"
+    # The wrap readout is on only in a real gfx12 device pass (RDNA 4 mines k 4096), so the builds above
+    # have today's. These have it, so the k 4096 path runs without a GPU: the core picks k 4096 when the
+    # miner lets it (cardK), as it does on an RDNA 4 card.
+    echo "cpu: kernels, host, addon and fold check with the wrap readout"
+    $cxx $flags -DPEARL_AMD_KWRAP=1 $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip_kwrap.o"
+    $cxx -shared -o "$OUT/pearl_core_hipcpu_kwrap.node" "$OUT/cpu/pearl_host_hip_kwrap.o" "$OUT/cpu/pearl_core.o" \
+      $tbb_lib -ltbb -lpthread
+    $cxx $flags -DPEARL_AMD_KWRAP=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_kwrap" \
+      $tbb_lib -ltbb -lpthread
+    echo "built $OUT/pearl_core_hipcpu{,_kwrap}.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx,_kwrap}"
     ;;
   gpu)
     slice
@@ -221,8 +234,8 @@ case "$mode" in
     rocm="$(rocm_root)"
     mkdir -p "$OUT/check"
     inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
-    bad=0
-    printf '%-9s %-22s %6s %6s %8s %7s %8s %10s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD"
+    bad=0 wrapbad=0
+    printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
     for a in $archs; do
       log="$OUT/check/$a.txt"
       if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
@@ -231,9 +244,23 @@ case "$mode" in
         bad=1
         continue
       fi
+      # The wrap readout (PEARL_AMD_KWRAP), as this target's device pass sets it: on in every gfx12
+      # code object, since RDNA 4 mines k 4096, and in no other, which mine k 2048 with today's
+      # readout. The release builds with no PEARL_AMD_CFLAGS, and then a target that differs fails
+      # the check. A tuning build may set it either way, so there it is only shown. tr: clang on
+      # Windows can end the lines with CR LF, and "1\r" is not 1.
+      kw=$("$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+          -E -dM "$HERE/src/pearl_host_hip.cpp" 2>> "$log" | tr -d '\r' | sed -n 's/^#define PEARL_AMD_KWRAP //p' \
+          | head -n 1 || true)
+      case "$a" in gfx12*) want=1 ;; *) want=0 ;; esac
+      if [ -z "${PEARL_AMD_CFLAGS:-}" ] && [ "$kw" != "$want" ]; then
+        echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not $want: RDNA 4 (gfx12) has it" \
+          "and mines k 4096, every other target mines k 2048 without it" >&2
+        wrapbad=1
+      fi
       # One row a kernel: the fold kernels with a body on this target, the hash and the
       # reference fold. A fold without a body here shows 0 VGPRs and is left out.
-      awk -v arch="$a" '
+      awk -v arch="$a" -v kw="${kw:-?}" '
         /remark: Function Name: / { name = $(NF-1) }
         /remark:     VGPRs: / { v[name] = $(NF-1) }
         /remark:     AGPRs: / { g[name] = $(NF-1) }
@@ -245,17 +272,19 @@ case "$mode" in
         END {
           for (n in v) {
             if (n !~ /^pearl_amd_(fold|hash)/ || v[n] == 0) continue
-            printf "%-9s %-22s %6s %6s %8s %7s %8s %10s\n", arch, n, v[n], (n in g ? g[n] : "-"), s[n], sp[n] + ss[n], l[n], o[n]
+            printf "%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n", arch, n, v[n], (n in g ? g[n] : "-"), s[n], sp[n] + ss[n], l[n], o[n], kw
             if (s[n] + 0 > 0 || sp[n] + ss[n] > 0) bad = 1
           }
           exit bad
         }' "$log" | sort || bad=1
     done
-    if [ "$bad" -ne 0 ]; then
-      echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
+    if [ "$bad" -ne 0 ] || [ "$wrapbad" -ne 0 ]; then
+      [ "$bad" -ne 0 ] && echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
+      [ "$wrapbad" -ne 0 ] && echo "check: the wrap readout is not on exactly the gfx12 targets" >&2
       exit 1
     fi
-    echo "check: every fold compiled for $archs with no spills and no scratch"
+    echo "check: every fold compiled for $archs with no spills and no scratch$([ -z "${PEARL_AMD_CFLAGS:-}" ] \
+      && echo ", and the wrap readout on exactly the gfx12 targets")"
     ;;
   *)
     sed -n '2,/^# The portable kernels/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'

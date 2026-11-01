@@ -123,9 +123,49 @@ function gzipSizes(field) {
   return { plain: zlib.gunzipSync(sent).length, sent: sent.length };
 }
 
+// The `plain_proof` field read back: the inverse of encodePlainProof, giving
+// the object serializePlainProof takes. For the probes and tests that check a
+// share the way a pool does (probes/verify-pool.js), not for mining. `gzip` is
+// whether the field was sent compressed. Throws on anything that is not one
+// whole dense proof, the way the pool's parser refuses it. A legacy V1 blob,
+// with no trailing Option tag, reads too.
+function decodePlainProof(field, { gzip = false } = {}) {
+  const raw = Buffer.from(String(field), 'base64');
+  const b = gzip ? zlib.gunzipSync(raw) : raw;
+  let o = 0;
+  const take = (n) => {
+    if (o + n > b.length) throw new Error('not a valid PlainProof: it ends early');
+    const v = b.subarray(o, o + n);
+    o += n;
+    return v;
+  };
+  const u64 = () => Number(take(8).readBigUInt64LE(0));
+  // A count can't ask for more items than there are bytes left: each is at least one.
+  const count = () => {
+    const n = u64();
+    if (n > b.length - o) throw new Error('not a valid PlainProof: it ends early');
+    return n;
+  };
+  const many = (one) => Array.from({ length: count() }, one);
+  const merkle = () => {
+    const leafData = many(() => Buffer.from(take(u64())));
+    const leafIndices = many(u64);
+    const totalLeaves = u64();
+    const root = Buffer.from(take(32));
+    const siblings = many(() => Buffer.from(take(32)));
+    return { proof: { leafData, leafIndices, totalLeaves, root, siblings }, rowIndices: many(u64) };
+  };
+  const pp = { m: u64(), n: u64(), k: u64(), noiseRank: u64(), a: merkle(), bt: merkle() };
+  if (o < b.length && take(1)[0] !== BINCODE_OPTION_NONE) {
+    throw new Error('not a dense PlainProof: it carries MoE fields');
+  }
+  if (o !== b.length) throw new Error('not a valid PlainProof: ' + (b.length - o) + ' bytes left over');
+  return pp;
+}
+
 module.exports = {
   BINCODE_OPTION_NONE,
   u64le, seqOfU64, seqOfByteVecs, seqOfDigests,
   serializeMerkleProof, serializeMatrixMerkleProof,
-  serializePlainProof, encodePlainProof, gzipSizes,
+  serializePlainProof, encodePlainProof, gzipSizes, decodePlainProof,
 };

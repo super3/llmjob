@@ -971,6 +971,22 @@ out of the fold.
   `pearl_host.o` linked `-shared -cudart static -Xlinker -Bsymbolic`;
   `turing/compilers.sh` makes them and runs it (stage `race`), with a copy of base as an
   A/A control.
+- `hashrate.js` and `verify-hits.js` open the core as the app does, with `cardK`: a core may
+  mine a larger k on its card than the mainnet profile's (an RDNA 4 card mines k 4096), and
+  both report and use the k it mines (`core.k`). `PEARL_PROFILE_K=K` pins the core to k K
+  instead. `PEARL_JOB_EVERY=secs` on `hashrate.js` gives the core a new job every secs
+  seconds, so the rate pays for job switches, which cost more at a larger k.
+  `PEARL_SHARE_DUMP=file` on `verify-hits.js` writes each hit that passes as a share, for
+  `refverify.rs`.
+- `node verify-pool.js serve PORT SECS` -- a stand-in pool for the app's CLI that checks every
+  share the way the spec's `verify_plain_proof` does, in JS. `node verify-pool.js mixed
+  <core.node> SECS [bits | pool]` runs PearlMiner with two cores on one card, one with
+  `cardK` and one without, so an RDNA 4 card sends k 4096 and k 2048 shares over one pool
+  connection, to the stand-in or to the live pool in `POOL`.
+- `refverify.rs` -- the spec's own share check, `verify_plain_proof` from zk-pow, over shares
+  our miner made. Everything else that checks a share before a pool does is our JS, so a
+  mistake the device and the JS reference share would pass it; this can't. amdtest.sh's
+  `refverify` task builds it against the spec at a pinned commit and runs it.
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no

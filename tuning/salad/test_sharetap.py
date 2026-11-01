@@ -95,5 +95,54 @@ class TestDecode(unittest.TestCase):
         self.assertTrue(all(len(l) <= 440 for l in st.decode(p)))
 
 
+def notify(t, c, job, header="aa" * 76, target="00" * 31 + "01"):
+    return line(t, c, "down", {"id": None, "method": "mining.notify",
+                               "params": {"job_id": job, "header": header, "target": target, "height": 5}})
+
+
+class TestJobsAndShares(unittest.TestCase):
+    def test_jobs_gives_the_gaps_between_one_connections_notifies(self):
+        p = tap_log([
+            {"t": 0, "c": 1, "d": "open"},
+            notify(10, 1, "a"), notify(14, 1, "b"), notify(30, 1, "c"),
+            {"t": 40, "c": 2, "d": "open"},
+            notify(41, 2, "d"), notify(43, 2, "e"),
+            line(44, 2, "down", {"id": 9, "result": True, "error": None}),
+        ])
+        # Gaps 4, 16 and 2: the gap from connection 1's last job to connection 2's first is not one.
+        self.assertEqual(st.jobs(p), "jobs n=5 conns=2 gaps=3 gap_s median=4.0 p10=2.0 min=2.0 mean=7.3 max=16.0")
+        self.assertEqual(st.jobs(p, since=35), "jobs n=2 conns=1 gaps=1 gap_s median=2.0 p10=2.0 min=2.0 mean=2.0 max=2.0")
+        self.assertEqual(st.jobs(tap_log([{"t": 0, "c": 1, "d": "open"}, notify(1, 1, "a")])),
+                         "jobs n=1 conns=1: too few for a gap")
+
+    def test_shares_pairs_each_share_with_its_job_and_unzips_it_but_never_names_the_wallet(self):
+        p = tap_log([
+            {"t": 0, "c": 1, "d": "open"},
+            line(0, 1, "up", {"id": 1, "method": "mining.authorize",
+                              "params": {"wallet": "prl1secretwallet/k4096", "worker": "k4096"}}),
+            notify(1, 1, "j1", header="11" * 76, target="00" * 30 + "ffff"),
+            notify(2, 1, "j2", header="22" * 76),
+            line(3, 1, "up", {"id": 100, "method": "mining.submit",
+                              "params": {"job_id": "j1", "plain_proof": proof(64, 64, 4096, [0], [0]), "hs": 1}}),
+            line(3, 1, "up", {"id": 101, "method": "mining.submit",
+                              "params": {"job_id": "j2", "plain_proof": proof(64, 64, 2048, [0], [0], gz=False)}}),
+            line(3, 1, "up", {"id": 102, "method": "mining.submit",
+                              "params": {"job_id": "gone", "plain_proof": proof(64, 64, 2048, [0], [0])}}),
+            line(4, 1, "down", {"id": 100, "result": True, "error": None}),
+            line(4, 1, "down", {"id": 101, "result": None, "error": [23, "bad"]}),
+        ])
+        out = st.shares(p)
+        self.assertNotIn("prl1secretwallet", "\n".join(out))
+        recs = [json.loads(l) for l in out]
+        self.assertEqual(recs[-1], {"shares": 2, "without_job": 1})
+        a, b = recs[0], recs[1]
+        self.assertEqual((a["header"], a["target"], a["k"], a["worker"], a["verdict"]),
+                         ("11" * 76, "00" * 30 + "ffff", 4096, "k4096", "ok"))
+        self.assertEqual((b["header"], b["k"], b["verdict"]), ("22" * 76, 2048, "rej"))
+        # Unzipped: the bincode itself, which starts with m.
+        self.assertEqual(base64.b64decode(a["plain_proof"])[:8], u64(64))
+        self.assertEqual(base64.b64decode(b["plain_proof"]), base64.b64decode(proof(64, 64, 2048, [0], [0], gz=False)))
+
+
 if __name__ == "__main__":
     unittest.main()

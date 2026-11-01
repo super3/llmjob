@@ -2,8 +2,15 @@
 // Loads the addon, runs one core on a synthetic job with the HARDEST target
 // (no hits), and averages the core's own hashrate samples after warmup. This is
 // exactly the number the app shows: SearchLoop times fold + finalize + reseed.
-// PEARL_PROFILE_K=4096 runs the core at that k instead of the mainnet profile's 2048, for a bench
-// build made for it (the AMD core with -DPEARL_FOLD_K=4096). The rate is MACs a second at any k.
+//
+// The core is opened as the app opens it (cardK): it may mine a larger k on its card than the
+// mainnet profile's 2048 (an RDNA 4 card mines k 4096), and the JSON names the k it mined (core.k).
+// PEARL_PROFILE_K=4096 pins the core to that k instead, without cardK, for a bench build made for it
+// (the AMD core with -DPEARL_FOLD_K=4096). The rate is MACs a second at any k.
+//
+// PEARL_JOB_EVERY=secs gives the core a new job (another header) every secs seconds, as a pool does,
+// so the rate includes what a job switch costs: the queued batches drained and the operands drawn
+// again, both larger at a larger k. The JSON counts the jobs. Unset, the core keeps one job.
 'use strict';
 const path = require('path');
 const { execSync } = require('child_process');
@@ -17,13 +24,27 @@ if (kEnv && !(Number.isInteger(PROFILE.k) && PROFILE.k >= 16 * PROFILE.rank && (
   console.error(`PEARL_PROFILE_K must be a power of two of at least ${16 * PROFILE.rank}, not ${kEnv}`);
   process.exit(2);
 }
+const every = Number(process.env.PEARL_JOB_EVERY || 0);
+if (!(every >= 0)) {
+  console.error(`PEARL_JOB_EVERY must be a number of seconds, not ${process.env.PEARL_JOB_EVERY}`);
+  process.exit(2);
+}
 const addon = require(file);
-const core = addon.createCore(PROFILE, {});
+const core = addon.createCore(PROFILE, kEnv ? {} : { cardK: true });
+// The k the core mines: its own report, or the profile's from a core that has none.
+const k = core.k === undefined ? PROFILE.k : core.k;
 const t0 = Date.now(); const samples = []; const gpu = [];
 core.on('hashrate', (th) => { if (Date.now() - t0 > warm * 1000) samples.push(th); });
 core.on('error', (e) => { console.error('core error', e); process.exit(2); });
 core.on('hit', () => {});
-core.setJob({ header: Buffer.alloc(76, 0xA5), target: 0n, jobId: 'bench' });
+let jobs = 0;
+const job = () => {
+  const header = Buffer.alloc(76, 0xA5);
+  header.writeUInt32LE(jobs, 0);   // each job a different header, so a different job_key
+  core.setJob({ header, target: 0n, jobId: 'bench-' + jobs++ });
+};
+job();
+const switcher = every > 0 ? setInterval(job, every * 1000) : null;
 const poll = setInterval(() => {
   if (Date.now() - t0 < warm * 1000) return;
   try {
@@ -34,13 +55,13 @@ const poll = setInterval(() => {
   } catch (e) {}
 }, 2000);
 setTimeout(() => {
-  clearInterval(poll); core.stop();
+  clearInterval(poll); if (switcher) clearInterval(switcher); core.stop();
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
   const sd = Math.sqrt(samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length);
   const avg = (i) => {
     const xs = gpu.map((g) => g[i]).filter(Number.isFinite);   // a field the card reads as [N/A] is NaN
     return xs.length ? (xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(0) : '?';
   };
-  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), ...(kEnv ? { k: PROFILE.k } : {}), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
+  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), k, ...(every > 0 ? { jobEvery: every, jobs } : {}), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
   process.exit(0);
 }, (secs + warm) * 1000);

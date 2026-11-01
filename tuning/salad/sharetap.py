@@ -6,6 +6,11 @@ when TAP=1: every miner then mines through the relay, so the run shows what each
   python3 sharetap.py decode OUT.jsonl [--worker W] [--since EPOCH] [--max 3]
                                                            three lines for each of the first shares, then a summary
                                                            per worker; --since keeps connections opened after EPOCH
+  python3 sharetap.py jobs OUT.jsonl [--since EPOCH]       how often the pool sent a new job: the seconds between
+                                                           one connection's mining.notify lines
+  python3 sharetap.py shares OUT.jsonl [--since EPOCH]     every share as JSON lines for the reference verifier
+                                                           (earn/native/probes/refverify.rs): the job's header and
+                                                           target as the pool sent them, the proof unzipped
 
 The relay changes nothing: bytes go through as they come, and each newline-ended line is also written to
 OUT.jsonl with its connection and direction. The decoder reads a share's plain_proof, the public PlainProof
@@ -206,13 +211,81 @@ def decode(path, want=None, most=3, since=0.0):
     return out
 
 
+def records(path, since=0.0):
+    """The log's records with a parsed line, from connections opened at or after `since`, as (record, message)."""
+    with open(path, encoding="utf-8") as f:
+        recs = [json.loads(l) for l in f if l.strip()]
+    opened = {e["c"]: e["t"] for e in recs if e.get("d") == "open"}
+    out = []
+    for e in recs:
+        if "line" not in e or opened.get(e.get("c"), 0) < since:
+            continue
+        try:
+            out.append((e, json.loads(e["line"])))
+        except ValueError:
+            continue
+    return out
+
+
+def jobs(path, since=0.0):
+    """How often a new job came: mining.notify lines per connection and the gaps between them, in seconds. A job
+    switch costs the miner a drain and a redraw, more at a larger k, so this is what a hashrate race has to match."""
+    times = collections.defaultdict(list)
+    for e, m in records(path, since):
+        if e["d"] == "down" and m.get("method") == "mining.notify":
+            times[e["c"]].append(e["t"])
+    gaps = sorted(b - a for t in times.values() for a, b in zip(t, t[1:]))
+    n = sum(len(t) for t in times.values())
+    if not gaps:
+        return f"jobs n={n} conns={len(times)}: too few for a gap"
+    at = lambda q: gaps[min(len(gaps) - 1, int(q * len(gaps)))]
+    return (f"jobs n={n} conns={len(times)} gaps={len(gaps)} gap_s median={at(0.5):.1f} p10={at(0.1):.1f} "
+            f"min={gaps[0]:.1f} mean={sum(gaps) / len(gaps):.1f} max={gaps[-1]:.1f}")
+
+
+def shares(path, since=0.0):
+    """Every share as one JSON object, for the reference verifier: the header and target of the job it names, as
+    the pool sent them on that connection, the proof as base64 bincode (unzipped), its k, the worker and the pool's
+    verdict. A share whose job never came on its connection is left out and counted in the last line."""
+    worker, notified, replies, subs = {}, {}, {}, []
+    for e, m in records(path, since):
+        p = m.get("params")
+        if e["d"] == "up" and m.get("method") in ("mining.authorize", "login", "mining.login"):
+            worker[e["c"]] = worker_of(p)
+        elif e["d"] == "down" and m.get("method") == "mining.notify" and isinstance(p, dict):
+            notified[(e["c"], str(p.get("job_id")))] = (p.get("header"), p.get("target"))
+        elif e["d"] == "up" and m.get("method") == "mining.submit" and isinstance(p, dict):
+            subs.append((e, m, notified.get((e["c"], str(p.get("job_id"))))))
+        elif e["d"] == "down" and m.get("id") is not None and "method" not in m:
+            replies[(e["c"], m["id"])] = "ok" if m.get("result") not in (None, False) and not m.get("error") else "rej"
+    out, orphans = [], 0
+    for e, m, job in subs:
+        if not job:
+            orphans += 1
+            continue
+        raw = base64.b64decode(m["params"].get("plain_proof") or "")
+        if raw[:2] == b"\x1f\x8b":
+            raw = gzip.decompress(raw)
+        k = struct.unpack_from("<Q", raw, 16)[0] if len(raw) >= 24 else None
+        out.append(json.dumps({"header": job[0], "target": job[1], "plain_proof": base64.b64encode(raw).decode(),
+                               "k": k, "worker": worker.get(e["c"], "?"),
+                               "verdict": replies.get((e["c"], m.get("id")), "noreply")}))
+    out.append(json.dumps({"shares": len(out), "without_job": orphans}))
+    return out
+
+
 if __name__ == "__main__":
+    opt = dict(zip(sys.argv[3::2], sys.argv[4::2]))
     if len(sys.argv) >= 6 and sys.argv[1] == "tap":
         tap(int(sys.argv[2]), sys.argv[3], int(sys.argv[4]), sys.argv[5])
     elif len(sys.argv) >= 3 and sys.argv[1] == "decode":
-        opt = dict(zip(sys.argv[3::2], sys.argv[4::2]))
         for line in decode(sys.argv[2], opt.get("--worker"), int(opt.get("--max", 3)),
                            float(opt.get("--since", 0))):
             print(line[:440], flush=True)
+    elif len(sys.argv) >= 3 and sys.argv[1] == "jobs":
+        print(jobs(sys.argv[2], float(opt.get("--since", 0))), flush=True)
+    elif len(sys.argv) >= 3 and sys.argv[1] == "shares":
+        for line in shares(sys.argv[2], float(opt.get("--since", 0))):
+            print(line, flush=True)
     else:
         sys.exit(__doc__)

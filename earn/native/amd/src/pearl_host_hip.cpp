@@ -7,6 +7,9 @@
 //   - Which fold runs is read off the card's gfx architecture (resolve_fold), and checked
 //     against the folds the loaded code object has bodies for (pearl_amd_caps).
 //     PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12 picks one by hand.
+//   - A card whose code object has the wrap readout (RDNA 4) mines k 4096 when the miner lets the
+//     core choose (pearl_host_card_k); every other card mines the profile's k. PEARL_AMD_K=2048
+//     keeps every card at k 2048.
 //   - Every fold stores every region's transcript, and pearl_amd_hash hashes them after
 //     it, so each pipeline slot has a transcript buffer: 64 bytes a region of the batch.
 //     The batch is narrower than the CUDA core's to keep those buffers small
@@ -40,6 +43,10 @@
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #endif
+
+// The most chunks (k / rank) a card with the wrap readout takes: 32, k 4096 at rank 128, the k RDNA 4
+// mines; more in a build made for a larger PEARL_FOLD_K. Without that readout a card takes 16.
+#define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 32u ? PEARL_FOLD_CHUNKS : 32u)
 
 // Mirrors the struct pearl_core.cc declares, as pearl_host.cu does.
 struct PearlProofSide {
@@ -108,6 +115,7 @@ struct Ctx {
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
+  bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
   char foldErr[512] = {0};
   char foldName[320] = {0};
 
@@ -629,6 +637,17 @@ bool count_devices(int *devices, char *err, size_t err_len) {
   return false;
 }
 
+// What the code object loaded for the current card says of itself (pearl_amd_caps): its folds
+// and flags in caps[0], its wave size in caps[1]. dCaps is two words of device memory. It waits
+// for the launch before the copy: HIP-CPU can run a copy beside earlier work on the same stream.
+hipError_t read_caps(hipStream_t stream, uint32_t *dCaps, uint32_t caps[2]) {
+  hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, stream, dCaps);
+  hipError_t e = hipGetLastError();
+  if (e == hipSuccess) e = hipStreamSynchronize(stream);
+  if (e == hipSuccess) e = hipMemcpy(caps, dCaps, 2 * sizeof(uint32_t), hipMemcpyDeviceToHost);
+  return e;
+}
+
 // Which fold this card runs, decided once a context, before the first operand draw.
 //
 // The card's architecture picks the fold (native_fold); PEARL_AMD_FOLD overrides it. Then
@@ -639,10 +658,8 @@ void resolve_fold(Ctx *ctx) {
   char *err = ctx->foldErr;
   const size_t err_len = sizeof ctx->foldErr;
   err[0] = 0;
-  hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, ctx->work, ctx->dCaps);
   uint32_t caps[2] = {0, 0};
-  hipError_t e = hipGetLastError();
-  if (e == hipSuccess) e = hipMemcpy(caps, ctx->dCaps, sizeof caps, hipMemcpyDeviceToHost);
+  const hipError_t e = read_caps(ctx->work, ctx->dCaps, caps);
   if (e != hipSuccess) {
     (void)hipGetLastError();
     // HIP loads the code objects for every card in its order and stops at the first card the
@@ -673,6 +690,15 @@ void resolve_fold(Ctx *ctx) {
   }
   ctx->emulated = (caps[0] & PEARL_AMD_CAP_EMULATED) != 0;
   ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
+  ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
+  // Past 16 chunks only the wrap readout is right. Said here, at create, rather than at the first
+  // batch: a k 4096 asked of an RDNA 3 card (PEARL_PROFILE_K) fails at once with the reason.
+  const uint32_t rank = ctx->profile.rank;
+  if (!ctx->kwrap && rank && ctx->profile.k / rank > PEARL_JACKPOT_BUCKETS) {
+    snprintf(err, err_len, "k %u needs the wrap readout, and this build's code for %s has none (a release has it "
+             "only for RDNA 4)", ctx->profile.k, ctx->arch[0] ? ctx->arch : "this card");
+    return;
+  }
   int want = ctx->emulated ? fold_by_name("mfma16") : native_fold(ctx->arch);
   const char *forced = getenv("PEARL_AMD_FOLD");
   if (forced && forced[0]) {
@@ -751,6 +777,45 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   if (name && name_len && hipGetDeviceProperties(&prop, chosen) == hipSuccess)
     snprintf(name, name_len, "%s", prop.name);
   return chosen;
+}
+
+// The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): 4096 where the
+// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), whose fold is about 1%
+// faster a MAC at k 4096, and the profile's k everywhere else. A share says its own k and a MAC
+// earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k moves: 2048
+// at rank 128. The card stays at it with PEARL_AMD_K=2048, or without the free VRAM k 4096 needs,
+// so it still mines; `note` then says why, for the log. A HIP error leaves the profile's k too,
+// and pearl_host_create reports the error.
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
+  if (note && note_len) note[0] = '\0';
+  if (!profile) return 0;
+  const uint32_t k = profile->k;
+  if (k != 2048u || profile->rank != 128u) return k;
+  DeviceScope scope(device);
+  uint32_t *dCaps = nullptr;
+  uint32_t caps[2] = {0, 0};
+  hipError_t e = hipMalloc(&dCaps, 2 * sizeof(uint32_t));
+  if (e == hipSuccess) e = read_caps(nullptr, dCaps, caps);
+  if (dCaps) hipFree(dCaps);
+  (void)hipGetLastError();
+  if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;
+  const char *pin = getenv("PEARL_AMD_K");
+  if (pin && !strcmp(pin, "2048")) {
+    if (note && note_len) snprintf(note, note_len, "k 2048 (PEARL_AMD_K=2048)");
+    return k;
+  }
+  PearlProfile wide = *profile;
+  wide.k = 4096u;
+  const size_t need = needed_bytes(&wide);
+  size_t freeMem = 0, totalMem = 0;
+  const bool known = hipMemGetInfo(&freeMem, &totalMem) == hipSuccess;
+  (void)hipGetLastError();
+  if (known && freeMem < need) {
+    if (note && note_len)
+      snprintf(note, note_len, "k 2048: k 4096 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);
+    return k;
+  }
+  return 4096u;
 }
 
 extern "C" void pearl_host_destroy(void *handle);
@@ -1264,10 +1329,12 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Under PEARL_AMD_TILED the matrix folds need the per-tile operands, which only the
   // power-of-two materialise writes.
   const bool kPow2 = k >= 16u && (k & (k - 1u)) == 0u;
-  // A PEARL_AMD_KWRAP build (pearl_amd_fold.h) folds chunks past 16 into the 16 words, up to the
-  // PEARL_FOLD_CHUNKS it was built for. It rotates every word at the start of each 16 chunks, which is
-  // the reference's rule only for whole passes, so past 16 the count must be a multiple of 16.
-  const uint32_t maxChunks = PEARL_AMD_KWRAP ? PEARL_FOLD_CHUNKS : PEARL_JACKPOT_BUCKETS;
+  // A code object with the wrap readout (PEARL_AMD_KWRAP in pearl_amd_fold.h: RDNA 4's) folds chunks
+  // past 16 into the 16 words, up to PEARL_AMD_KWRAP_CHUNKS. It rotates every word at the start of each
+  // 16 chunks, which is the reference's rule only for whole passes, so past 16 the count must be a
+  // multiple of 16. The card's caps say whether it has it (ctx->kwrap): this host pass never sees
+  // __GFX12__, so the macro here would say nothing about the card.
+  const uint32_t maxChunks = ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS;
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
   if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
@@ -1276,7 +1343,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold) "
                "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
                (unsigned)PEARL_AMD_SLAB, (unsigned)maxChunks,
-               PEARL_AMD_KWRAP ? " (a multiple of 16 past 16)" : "", rank, k);
+               ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
   const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;
@@ -1455,9 +1522,9 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 extern "C" const char *pearl_host_fold_name(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || ctx->fold < 0) return "unresolved";
-  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, batch %u column offsets%s%s%s",
-           kFolds[ctx->fold].text, ctx->colBatch, ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "",
-           ctx->arch[0] ? ", " : "", ctx->arch);
+  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, batch %u column offsets, k %u%s%s%s%s",
+           kFolds[ctx->fold].text, ctx->colBatch, ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
+           ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
 }
 

@@ -290,6 +290,15 @@ is rejected, which a pool can ban the address for. Run the checks in
 one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
 "Using it in the app").
 
+RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a share
+declares, where every other card mines k 2048. Their fold measured about 1% faster per MAC
+there (`benchmark.md`), and a MAC earns the same at either k. The log names it:
+`mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
+a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too
+little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why, and
+`PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
+none, the miner mines k 2048 for the rest of the run.
+
 ## Monero on the CPU (opt-in)
 
 The app can also mine Monero (**XMR**) on the CPU while the GPU mines Pearl.

@@ -14,6 +14,12 @@ const {
 //   core.on('hit', hit)                      // a candidate at/under target
 //   core.on('hashrate', thPerSec)            // periodic throughput
 //   core.on('error', err)
+//   core.device, core.k, core.kNote          // the card it opened, the k it mines
+//
+// With `cardK` in its options a core may mine a larger k than the profile's on
+// its card (an RDNA 4 card mines k 4096), and says so in core.k; PearlMiner
+// builds that card's job_key, bound and proofs from it. Every wrapper below
+// passes the options through as they are, so cardK reaches the addon.
 //
 // Returns null when the addon is not present. That is the EXPECTED state on any
 // machine without a CUDA build of the core (including this dev box and, until the

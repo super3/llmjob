@@ -96,6 +96,7 @@
 #define PEARL_AMD_CAP_WMMA12 16u
 #define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, emulated
 #define PEARL_AMD_CAP_DROP 0x200u      // a PEARL_AMD_READOUT_DROP build: timing only, never mines
+#define PEARL_AMD_CAP_KWRAP 0x400u     // the wrap readout (PEARL_AMD_KWRAP): k past 2048, the k RDNA 4 mines
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -411,16 +412,26 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #define PEARL_AMD_READOUT_DROP 0
 #endif
 
-// PEARL_AMD_KWRAP: a k 4096 build, for timing (round 4 item 5). -DPEARL_FOLD_K=4096 (pearl_config.h,
-// 2048 by default) turns it on and makes the fold test fold and check k 4096. The folds take k at run
-// time, but past 16 chunks the default readout is wrong: it writes each word once, onto zero, where
-// chunk c must go into word c % 16 after that word's rotl 13 (the reference's rule, reference.js). With
-// this on, every fold does that, and the host takes up to PEARL_FOLD_CHUNKS chunks. At k 4096 a hash
-// covers twice the MACs, so hashes and readouts per MAC halve; credit per MAC is the same at rank 128.
-// Such a core still mines k 2048 correctly, but no release is built with it.
-// -DPEARL_AMD_KWRAP=1 alone builds this readout at k 2048, to time what the readout change costs.
+// PEARL_AMD_KWRAP: the readout for k past 2048 (round 4 item 5). The folds take k at run time, but past
+// 16 chunks today's readout is wrong: it writes each word once, onto zero, where chunk c must go into
+// word c % 16 after that word's rotl 13 (the reference's rule, reference.js). With this on, every fold
+// does that. At k 4096 a hash covers twice the MACs, so hashes and readouts per MAC halve, and credit
+// per MAC is the same at rank 128.
+//
+// RDNA 4 mines k 4096 (pearl_host_card_k), so its code objects always have this readout: +1.0 to +1.2%
+// on an RX 9070 XT and an RX 9060 XT (benchmark.md). Every other target keeps today's readout and k
+// 2048: the wrap readout at k 2048 costs about 0.4%. Only a gfx12 device pass defines __GFX12__, so one
+// build holds both, and the host learns which a card has from its caps (PEARL_AMD_CAP_KWRAP), never from
+// this macro. -DPEARL_FOLD_K=4096 turns it on for every target, as before; -DPEARL_AMD_KWRAP=0 or 1 sets
+// it for every target (=0 builds today's release, to race against). A readout-drop build leaves it off.
 #ifndef PEARL_AMD_KWRAP
-#define PEARL_AMD_KWRAP (PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS)
+#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+#define PEARL_AMD_KWRAP 1
+#elif !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) && defined(__GFX12__) && !PEARL_AMD_READOUT_DROP
+#define PEARL_AMD_KWRAP 1
+#else
+#define PEARL_AMD_KWRAP 0
+#endif
 #endif
 #if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1
 #error "PEARL_AMD_KWRAP is 0 or 1"
@@ -873,7 +884,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 
 // Which folds this code object has bodies for, and its wave size: out[0] and out[1]. A
 // PEARL_AMD_READOUT_DROP build says so on every target, the ones its drop leaves alone too, so
-// the host refuses to mine with it on any card.
+// the host refuses to mine with it on any card. A code object with the wrap readout says so too:
+// it is how the host knows a card can mine k 4096 (pearl_host_card_k).
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -886,5 +898,6 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
            | (PEARL_AMD_WMMA12 ? PEARL_AMD_CAP_WMMA12 : 0u);
 #endif
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
+  if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
   out[1] = (uint32_t)warpSize;
 }

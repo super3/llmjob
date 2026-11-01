@@ -1,15 +1,21 @@
 // N-API binding: exposes the CUDA core to the JS host as
 //
-//   createCore(profile, { deviceIndex, saltBase, saltStride }) -> {
+//   createCore(profile, { deviceIndex, saltBase, saltStride, cardK }) -> {
 //     setJob({ header: Buffer(76), target: BigInt, jobId: string }),
 //     stop(),
 //     on('hit'|'hashrate'|'error', cb),
-//     device: { index, name }        // the card it actually opened
+//     device: { index, name },       // the card it actually opened
+//     k, kNote                       // the k it mines, and why not a larger one
 //   }
 //
 // `deviceIndex` pins a card; omit it and the core ranks the cards and picks one.
 // Either way `device` reports what it took, because the host has no other way to
 // know — and when it assumed, it was wrong.
+//
+// `cardK` lets the host mine a larger k on this card than the profile asks: one
+// its fold is faster at (pearl_host_card_k; on AMD, RDNA 4 mines k 4096). A share
+// says its own k, so the pool needs nothing from us. `k` is what the card mines,
+// and the host builds that card's job_key, share bound and proofs from it.
 //
 // `saltBase`/`saltStride` are this core's slice of the search space. A rig mines
 // with one core per card, and without a slice each of them would search the same
@@ -77,6 +83,10 @@ extern "C" {
 // pearl_host_create, which allocates on whatever device is current.
 int pearl_host_select_device(const PearlProfile *profile, int requested, char *name,
                             size_t name_len, char *err, size_t err_len);
+// The k to mine on `device` (the one select_device chose) when the host lets the
+// core choose: the profile's, or a larger one the card's fold is faster at. When
+// the card could mine a larger k and won't, `note` says why, for the log.
+uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len);
 // Point the calling thread at the card a context lives on — the current device
 // is per-thread, and the search runs on its own.
 void pearl_host_bind_thread(void *ctx);
@@ -127,6 +137,8 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value Stop(const Napi::CallbackInfo &info);
   Napi::Value On(const Napi::CallbackInfo &info);
   Napi::Value GetDevice(const Napi::CallbackInfo &info);
+  Napi::Value GetK(const Napi::CallbackInfo &info);
+  Napi::Value GetKNote(const Napi::CallbackInfo &info);
 
   void SearchLoop();
   void EmitHit(const PearlSearchResult &r, const std::string &job_id);
@@ -144,6 +156,9 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   // two were different on a multi-card rig, which is the whole of issue #226.
   int device_index_ = -1;
   std::string device_name_;
+  // Why this card mines the profile's k when it could mine a larger one (cardK):
+  // empty unless there is something to say. JS reads it as core.kNote.
+  std::string k_note_;
   // This core's slice of the search space, for a rig mining on several cards at
   // once: it searches salts salt_base_, salt_base_ + salt_stride_, and so on.
   // One card per core, so the host gives card i base i and stride N. Defaults
@@ -210,18 +225,19 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     profile.operand_fill = u32("operandFillCode", profile.operand_fill);
   }
 
-  profile_ = profile;
-
   // Which card to mine on. An explicit index (PEARL_GPU_INDEX, passed down by
   // main/pearlCore.js) pins it; otherwise the core ranks the cards itself. This
   // has to happen BEFORE pearl_host_create, which allocates on whatever device
   // is current — and until now nothing set that at all, so it was the runtime's
   // device 0, a card nobody had chosen and the UI did not name.
   int requested = -1;
+  bool card_k = false;
   if (info.Length() > 1 && info[1].IsObject()) {
     Napi::Object o = info[1].As<Napi::Object>();
     Napi::Value v = o.Get("deviceIndex");
     if (v.IsNumber()) requested = v.As<Napi::Number>().Int32Value();
+    Napi::Value ck = o.Get("cardK");
+    card_k = ck.IsBoolean() && ck.As<Napi::Boolean>().Value();
     Napi::Value b = o.Get("saltBase");
     if (b.IsNumber()) salt_base_ = (uint64_t)b.As<Napi::Number>().Int64Value();
     Napi::Value st = o.Get("saltStride");
@@ -243,6 +259,19 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     return;
   }
   device_name_ = device_name;
+
+  // When the miner lets it (cardK), the host may mine a larger k on this card than
+  // the profile asks: one its fold is faster at. A share says its own k, so the
+  // pool needs nothing from us. Decided before the allocations, which grow with k,
+  // and before profile_ is set: the hashrate counts PEARL_DAF(profile_) MACs an
+  // attempt, so profile_ must hold the k the card really mines.
+  if (card_k) {
+    char note[192] = {0};
+    const uint32_t k = pearl_host_card_k(&profile, device_index_, note, sizeof(note));
+    if (k) profile.k = k;
+    k_note_ = note;
+  }
+  profile_ = profile;
 
   ctx_ = pearl_host_create(&profile, err, sizeof(err));
   if (!ctx_) {
@@ -611,13 +640,27 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   return out;
 }
 
+// The k this card mines (cardK may have raised it), which the host builds this
+// card's config52, job_key, share bound and proofs from. A core built before
+// this has no `k`, and the host then uses its own profile's.
+Napi::Value PearlCore::GetK(const Napi::CallbackInfo &info) {
+  return Napi::Number::New(info.Env(), profile_.k);
+}
+
+// Why the card mines the profile's k when it could mine a larger one, or "".
+Napi::Value PearlCore::GetKNote(const Napi::CallbackInfo &info) {
+  return Napi::String::New(info.Env(), k_note_);
+}
+
 Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func =
       DefineClass(env, "PearlCore",
                   {InstanceMethod("setJob", &PearlCore::SetJob),
                    InstanceMethod("stop", &PearlCore::Stop),
                    InstanceMethod("on", &PearlCore::On),
-                   InstanceAccessor("device", &PearlCore::GetDevice, nullptr)});
+                   InstanceAccessor("device", &PearlCore::GetDevice, nullptr),
+                   InstanceAccessor("k", &PearlCore::GetK, nullptr),
+                   InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr)});
   exports.Set("PearlCore", func);
   return exports;
 }

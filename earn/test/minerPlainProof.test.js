@@ -123,3 +123,66 @@ describe('a serialised PlainProof', () => {
     expect(() => PP.serializePlainProof(bad)).toThrow(/32 bytes/);
   });
 });
+
+// The field read back, as a pool reads it: the stand-in pool (probes/verify-pool.js)
+// checks shares with it, and the tests decode what the miner sent.
+describe('decodePlainProof', () => {
+  const KEY = Buffer.alloc(32, 9);
+  const data = Buffer.alloc(16 * 1024);
+  for (let i = 0; i < data.length; i++) data[i] = (i * 13) & 0xff;
+  const layers = M.buildLayers(KEY, data);
+  const proof = M.multiLeafProof(KEY, data, layers, [2, 3, 9]);
+  const want = (k) => ({
+    m: 4096, n: 8192, k, noiseRank: 128,
+    a: { proof, rowIndices: [0, 1, 2, 3, 8, 9, 10, 11] },
+    bt: { proof, rowIndices: [16, 17, 24, 25] },
+  });
+  const same = (got, pp) => {
+    expect([got.m, got.n, got.k, got.noiseRank]).toEqual([pp.m, pp.n, pp.k, pp.noiseRank]);
+    for (const side of ['a', 'bt']) {
+      expect(got[side].rowIndices).toEqual(pp[side].rowIndices);
+      expect(got[side].proof.leafIndices).toEqual(pp[side].proof.leafIndices);
+      expect(got[side].proof.totalLeaves).toBe(pp[side].proof.totalLeaves);
+      expect(got[side].proof.root.equals(Buffer.from(pp[side].proof.root))).toBe(true);
+      expect(got[side].proof.leafData.map((b) => b.toString('hex'))).toEqual(pp[side].proof.leafData.map((b) => Buffer.from(b).toString('hex')));
+      expect(got[side].proof.siblings.map((b) => b.toString('hex'))).toEqual(pp[side].proof.siblings.map((b) => Buffer.from(b).toString('hex')));
+    }
+  };
+
+  test('reads back what encodePlainProof wrote, plain and gzipped, at k 2048 and k 4096', () => {
+    for (const k of [2048, 4096]) {
+      for (const gzip of [false, true]) {
+        const got = PP.decodePlainProof(PP.encodePlainProof(want(k), { gzip }), { gzip });
+        same(got, want(k));
+        // And it serialises back to the same bytes.
+        expect(PP.serializePlainProof(got).equals(PP.serializePlainProof(want(k)))).toBe(true);
+      }
+    }
+    // Plain by default.
+    same(PP.decodePlainProof(PP.encodePlainProof(want(4096))), want(4096));
+  });
+
+  test('reads a legacy V1 blob, which has no trailing Option tag', () => {
+    const b = PP.serializePlainProof(want(4096));
+    same(PP.decodePlainProof(b.subarray(0, b.length - 1).toString('base64')), want(4096));
+  });
+
+  test('refuses anything that is not one whole dense proof', () => {
+    const b = PP.serializePlainProof(want(2048));
+    const field = (buf) => buf.toString('base64');
+    // Cut short, anywhere.
+    for (const n of [7, 40, b.length - 40]) {
+      expect(() => PP.decodePlainProof(field(b.subarray(0, n)))).toThrow(/ends early/);
+    }
+    // A count larger than the bytes that are left.
+    const huge = Buffer.from(b);
+    huge.writeBigUInt64LE(1n << 40n, 32);
+    expect(() => PP.decodePlainProof(field(huge))).toThrow(/ends early/);
+    // MoE fields after the tag.
+    const moe = Buffer.from(b);
+    moe[moe.length - 1] = 1;
+    expect(() => PP.decodePlainProof(field(moe))).toThrow(/MoE/);
+    // Bytes after the proof.
+    expect(() => PP.decodePlainProof(field(Buffer.concat([b, Buffer.alloc(3)])))).toThrow(/3 bytes left over/);
+  });
+});

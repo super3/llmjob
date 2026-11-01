@@ -85,14 +85,29 @@ once. `PEARL_AMD_TRACE=1` prints a line on stderr every 10 s with each batch's G
 the fold and the hash, how long the GPU sat idle between batches, and the search thread's
 waits.
 
-**A k 4096 build, for timing only.** The app mines k 2048. At k 4096 a hash covers twice the
-MACs, so there are half the hashes and readouts per MAC, and credit per MAC is the same at rank
-128. `PEARL_AMD_CFLAGS=-DPEARL_FOLD_K=4096` builds a core whose folds put chunk c into word
-c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`), whose host takes 32 chunks,
-and whose fold test checks k 4096. Run it with `PEARL_PROFILE_K=4096` on `hashrate.js` and
-`verify-hits.js`; `test/sweep.sh` does that for a variant whose flags set `PEARL_FOLD_K`, and
-times its fold over the same MACs as a k 2048 build. `-DPEARL_AMD_KWRAP=1` alone builds the new
-readout at k 2048, to time what it costs there. No release is built with either.
+**RDNA 4 mines k 4096.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
+9060 XT that was +1.0 to +1.2% (`benchmark.md`). Past 16 chunks the folds need the wrap readout:
+chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
+about 0.4% at k 2048, so only the gfx12 code objects have it; every other target keeps today's
+readout and mines k 2048. One build holds both, since only a gfx12 device pass defines
+`__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
+(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 where it can (`pearl_host_card_k`). The core reports it as
+`core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
+rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
+k, so the pool needs nothing from us. A card stays at k 2048 with `PEARL_AMD_K=2048`, or when it
+has too little free VRAM for k 4096 (about 1,969 MiB against 1,137), and the "mining on GPU" line
+says why. If a pool turns down 3 shares at k 4096 and takes none, the miner mines k 2048 on every
+card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
+
+`build-amd.sh check` fails a release build (no `PEARL_AMD_CFLAGS`) in which a gfx12 target lacks
+the wrap readout or any other target has it. The fold test folds the card's own k by default (k
+4096 on RDNA 4) and names it on its device line; a 7th argument picks another.
+`-DPEARL_AMD_KWRAP=0` builds today's release, k 2048 everywhere, to race against;
+`-DPEARL_FOLD_K=4096` puts the wrap readout on every target. `PEARL_PROFILE_K=K` on
+`hashrate.js` and `verify-hits.js` pins a core to k K; `test/sweep.sh` does that for a variant
+whose flags set `PEARL_FOLD_K`, and times every variant's fold over the same MACs as a k 2048
+build.
 
 ## Checked without a GPU
 
@@ -109,6 +124,13 @@ Instruction Calculator layout. Everything else in the fold is the source the GPU
 | core, `ref` / `mfma16` / `mfma8` / `wmma11` / `wmma12`, constant fill, m=256 n=512 | 400 of 400 hits verified each, 95-176 salts |
 | core, `mfma16` and `wmma12`, hashed fill | 400 of 400 each |
 | core, `mfma16`, m=256 n=8192 (two batches a salt) | 400 of 400, 13 salts |
+
+Since the RDNA 4 change (k 4096), it also builds `pearl_core_hipcpu_kwrap.node` and
+`pearl_amd_foldtest_cpu_kwrap` with the wrap readout, and checks them at k 2048 and k 4096. The
+kwrap core opened with `cardK` must pick k 4096 and pass every hit at that k; with
+`PEARL_AMD_K=2048`, or the default core, it must stay at k 2048. With `SHARE_DIR` set, the k 4096
+runs write their shares there for `probes/refverify.rs`, the spec's own verifier (amdtest.sh's
+`refverify` task).
 
 "Verified" is `verify-hits.js`'s check: Merkle proofs, seed chain, noise and fold
 recomputed in JS, and the jackpot hash must match the core's exactly. The fold check was

@@ -1639,6 +1639,15 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   return chosen;
 }
 
+// The k a card mines when the miner lets the core choose (pearl_core.cc's cardK).
+// The CUDA folds are built for one k (PEARL_FOLD_K), so a card mines the profile's,
+// as it always has. The AMD host's answer differs (pearl_host_hip.cpp).
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int, char *note,
+                                      size_t note_len) {
+  if (note && note_len) note[0] = '\0';
+  return profile ? profile->k : 0;
+}
+
 extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
                                    size_t err_len) {
   if (!profile) { fail(err, err_len, "no profile supplied"); return nullptr; }

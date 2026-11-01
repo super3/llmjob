@@ -119,13 +119,14 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
   const wrapAt = FOLD.indexOf('#if PEARL_AMD_KWRAP\n  // PEARL_AMD_KWRAP: chunk c goes into word c % 16');
   const wrap = FOLD.slice(wrapAt, FOLD.indexOf('\n#else\n', wrapAt));
 
-  it('is on for a k past 16 chunks and off by default, and refuses what it can\'t build', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_KWRAP\n#define PEARL_AMD_KWRAP (PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS)\n#endif');
+  // Step 2 turned it on in every gfx12 device pass (RDNA 4 mines k 4096); amdCardK.test.js has the rule.
+  it('is on for a k past 16 chunks, and refuses what it can\'t build', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_KWRAP\n#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS\n#define PEARL_AMD_KWRAP 1\n');
     expect(FOLD).toContain('#if PEARL_AMD_KWRAP != 0 && PEARL_AMD_KWRAP != 1\n#error');
     expect(FOLD).toContain('#if !PEARL_AMD_KWRAP && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS\n#error');
     expect(FOLD).toContain('#if PEARL_AMD_KWRAP && PEARL_AMD_READOUT_DROP\n#error');
-    // A correct build: no cap bit, so the host mines with it.
-    expect(FOLD).not.toMatch(/PEARL_AMD_CAP_\w*WRAP/);
+    // A correct build, so the host mines with it; its caps say it has the wrap readout.
+    expect(FOLD).toContain('if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;');
   });
 
   it('keeps today\'s readout, end of tile and reference fold, word for word, in the default build', () => {
@@ -190,31 +191,36 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
     }
   });
 
-  it('makes the host take up to the build\'s chunks, a multiple of 16 past 16, and only then', () => {
+  // Step 2: the card's caps say whether it has the wrap readout (ctx->kwrap), and a card with it takes up to
+  // 32 chunks (k 4096, the k RDNA 4 mines), or the build's PEARL_FOLD_CHUNKS where that is more.
+  it('makes the host take more than 16 chunks only from a card with the wrap readout, a multiple of 16', () => {
     const max = grab(HOST, /const uint32_t maxChunks = (.*);\n/);
     const ok = grab(HOST, /const bool chunksOk = (.*);\n/);
-    expect(max).toBe('PEARL_AMD_KWRAP ? PEARL_FOLD_CHUNKS : PEARL_JACKPOT_BUCKETS');
+    const most = grab(HOST, /#define PEARL_AMD_KWRAP_CHUNKS (.*)\n/);
+    expect(max).toBe('ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS');
+    expect(most).toBe('(PEARL_FOLD_CHUNKS > 32u ? PEARL_FOLD_CHUNKS : 32u)');
     expect(HOST).toMatch(/\|\| !chunksOk\n/);
-    expect(HOST).toContain('PEARL_AMD_KWRAP ? " (a multiple of 16 past 16)" : ""');
+    expect(HOST).toContain('ctx->kwrap ? " (a multiple of 16 past 16)" : ""');
     const accepts = (kwrap, foldChunks) => new Function('chunks',
-      `const PEARL_AMD_KWRAP = ${kwrap}, PEARL_FOLD_CHUNKS = ${foldChunks}, PEARL_JACKPOT_BUCKETS = 16;
-       const maxChunks = ${max};
+      `const ctx = { kwrap: ${kwrap} }, PEARL_FOLD_CHUNKS = ${foldChunks}, PEARL_JACKPOT_BUCKETS = 16;
+       const PEARL_AMD_KWRAP_CHUNKS = ${toJs(most)};
+       const maxChunks = ${toJs(max).replace('ctx->kwrap', 'ctx.kwrap')};
        return ${toJs(ok)};`);
     const range = (f) => Array.from({ length: 80 }, (_, i) => i + 1).filter(f);
-    // Today's build: at most 16, as before.
-    expect(range(accepts(0, 16))).toEqual(range((c) => c <= 16));
-    // The readout alone at k 2048: the same.
-    expect(range(accepts(1, 16))).toEqual(range((c) => c <= 16));
-    // A k 4096 build: k 2048 and k 4096 at rank 128, and nothing in between.
-    expect(range(accepts(1, 32))).toEqual([...range((c) => c <= 16), 32]);
-    expect(range(accepts(1, 64))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
+    // A card without the wrap readout: at most 16, as before, whatever the build's k.
+    expect(range(accepts(false, 16))).toEqual(range((c) => c <= 16));
+    // With it: k 2048 and k 4096 at rank 128, and nothing in between.
+    expect(range(accepts(true, 16))).toEqual([...range((c) => c <= 16), 32]);
+    expect(range(accepts(true, 32))).toEqual([...range((c) => c <= 16), 32]);
+    expect(range(accepts(true, 64))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
   });
 });
 
 describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
-  // A stand-in core: it prints the profile it was made with, then reports 100 TH/s and no hits.
-  const STUB = `module.exports = { createCore(p) {
+  // A stand-in core: it prints the profile and options it was made with, then reports 100 TH/s and no hits.
+  const STUB = `module.exports = { createCore(p, o) {
     console.log('PROFILE ' + JSON.stringify(p));
+    console.log('OPTS ' + JSON.stringify(o));
     const on = {}; let t = null;
     return { device: 'stub', on(ev, cb) { on[ev] = cb; },
       setJob() { t = setInterval(() => on.hashrate && on.hashrate(100), 10); },
@@ -234,27 +240,35 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     if (k !== undefined) env.PEARL_PROFILE_K = k;
     const r = spawnSync(process.execPath, [script, stub, ...args], { env, encoding: 'utf8' });
     const line = r.stdout.split('\n').find((l) => l.startsWith('PROFILE '));
+    const opts = r.stdout.split('\n').find((l) => l.startsWith('OPTS '));
     const last = r.stdout.trim().split('\n').pop();
-    return { status: r.status, profile: line ? JSON.parse(line.slice(8)) : null, out: last, err: r.stderr };
+    return {
+      status: r.status, profile: line ? JSON.parse(line.slice(8)) : null, opts: opts ? JSON.parse(opts.slice(5)) : null,
+      out: last, err: r.stderr,
+    };
   }
 
   for (const [script, args, done] of [[HASHRATE, ['0.3', '0'], 0], [VERIFY, ['0.3'], 1]]) {
     const name = path.basename(script);
 
-    it(`${name}: the mainnet profile, unchanged, when it isn't set`, () => {
+    // Step 2: unset, the core is opened as the app opens it (cardK), and the k is the core's. This stand-in
+    // reports none, so it is the profile's.
+    it(`${name}: the mainnet profile, opened as the app opens it, when it isn't set`, () => {
       for (const k of [undefined, '']) {
         const r = run(script, args, k);
         expect(r.status).toBe(done);
         expect(JSON.stringify(r.profile)).toBe(JSON.stringify(PROFILE));
-        expect(JSON.parse(r.out)).not.toHaveProperty('k');
+        expect(r.opts).toEqual({ cardK: true });
+        expect(JSON.parse(r.out).k).toBe(2048);
       }
     }, 20000);
 
-    it(`${name}: the profile at that k when it is set`, () => {
+    it(`${name}: the profile at that k, without cardK, when it is set`, () => {
       for (const k of [4096, 8192]) {
         const r = run(script, args, String(k));
         expect(r.status).toBe(done);
         expect(r.profile).toEqual({ ...PROFILE, k });
+        expect(r.opts).toEqual({});
         expect(JSON.parse(r.out).k).toBe(k);
       }
     }, 20000);
@@ -268,12 +282,14 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     }, 20000);
   }
 
-  it('verify-hits.js checks every hit at the profile it made the core with', () => {
+  it('verify-hits.js checks every hit at the profile the core mines', () => {
     const src = fs.readFileSync(VERIFY, 'utf8');
-    // MAINNET is named only where the profile is chosen; the job key, proofs, noise and fold use PROFILE.
+    // MAINNET is named only where the profile asked for is chosen; the core's k makes PROFILE, and the job
+    // key, proofs, noise and fold use PROFILE.
     expect(src.match(/\bMAINNET\b/g)).toHaveLength(3);
-    for (const use of ['addon.createCore(PROFILE, {})', 'buildConfig52(PROFILE)', 'const { k, rank, m, n } = PROFILE;',
-      'buildShareProof(hit, jobKey, PROFILE)', 'regionToTile(hit.nonce, PROFILE)'])
+    for (const use of ['addon.createCore(ASKED, kEnv ? {} : { cardK: true })',
+      'const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);', 'buildConfig52(PROFILE)',
+      'const { k, rank, m, n } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'regionToTile(hit.nonce, PROFILE)'])
       expect(src).toContain(use);
   });
 });

@@ -289,6 +289,63 @@ class TestAmdtest(unittest.TestCase):
         self.assertIn('--address "$WALLET" --mode mining --pool "$POOL" -w "$WORKER"', body)
         self.assertIn("(mine_cli) > /root/mine.log 2>&1 &", src)
 
+    # RDNA 4 mines k 4096 (round 4 item 5, step 2): the tasks that check its shares outside our own code.
+    def lib(self, script, root):
+        """Source amdtest.sh as a library with AMDTEST_ROOT=root, then run `script`; the path goes in as $0."""
+        sh = os.path.join(HERE, "amdtest.sh")
+        return subprocess.run(["bash", "-c", 'AMDTEST_STAGE=lib . "$0"; ' + script, sh], capture_output=True, text=True,
+                              env={"PATH": os.environ["PATH"], "AMDTEST_ROOT": root.replace("\\", "/")})
+
+    def test_verifypool_and_refverify_are_tasks(self):
+        src = read(os.path.join(HERE, "amdtest.sh"))
+        self.assertIn("|mine|verifypool|srb|duel|cpuchecks|refverify|run) ;;", src)
+        # The spec the reference verifier is built from is pinned, and the probe is copied into its zk-pow.
+        self.assertIn("PEARL_SPEC_SHA=${PEARL_SPEC_SHA:-d7c517d267f10f5bcbbdc366f3e603942f9a5ab5}", src)
+        self.assertIn("cp $R/earn/native/probes/refverify.rs $spec/zk-pow/src/bin/refverify.rs", src)
+        self.assertIn("cargo build --release --bin refverify", src)
+        # verify writes its shares where refverify looks, and cpuchecks writes the CPU core's.
+        self.assertIn("PEARL_SHARE_DUMP=/root/shares/verify.jsonl", src)
+        self.assertIn("SHARE_DIR=/root/shares/cpu ./test/run-cpu-checks.sh", src)
+
+    def test_verifypool_refuses_an_unknown_mode_and_needs_a_build(self):
+        d = tempfile.mkdtemp()
+        r = self.lib("t_verifypool mixed; echo rc=$?", d)
+        self.assertIn("verifypool FAIL no build/pearl_core_hip.node (run build first)", r.stdout)
+        self.assertIn("rc=1", r.stdout)
+        os.makedirs(os.path.join(d, "earn", "native", "amd", "build"))
+        open(os.path.join(d, "earn", "native", "amd", "build", "pearl_core_hip.node"), "w").close()
+        r = self.lib("t_verifypool bogus; echo rc=$?", d)
+        self.assertIn("verifypool FAIL the mode is mixed, cli or cliplain, not bogus", r.stdout)
+        self.assertIn("rc=1", r.stdout)
+
+    def test_tap_mines_through_the_relay_under_the_pools_own_name(self):
+        src = read(os.path.join(HERE, "amdtest.sh"))
+        start = src[src.index("tap_start() {"):src.index("\n}\n", src.index("tap_start() {"))]
+        # The relay listens on the pool's own port, and the CLI's lookup of the pool's name answers 127.0.0.1, so
+        # the login is the one the pool's name picks (Kryptex: wallet/worker).
+        self.assertIn('sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl', start)
+        self.assertIn('export TAP_HOST=$host NODE_OPTIONS="--require /root/tap-dns.js"', start)
+        self.assertIn("if (host !== process.env.TAP_HOST) return lookup.apply(this, arguments);", start)
+        end = src[src.index("tap_end() {"):src.index("\n}\n", src.index("tap_end() {"))]
+        for sub in ("decode", "jobs", "shares"):
+            self.assertIn(f"sharetap.py {sub} /root/tap.jsonl --since \"$1\"", end)
+        mine = src[src.index("t_mine() {"):src.index("\n}\n", src.index("t_mine() {"))]
+        self.assertIn('if [ -n "${TAP:-}" ]; then tap_start || return 1; fi', mine)
+        self.assertEqual(mine.count('[ -n "${TAP:-}" ] && tap_end "$t0"'), 2)
+
+    def test_refverify_builds_the_probe_into_the_spec_then_checks_every_share_file(self):
+        src = read(os.path.join(HERE, "amdtest.sh"))
+        body = src[src.index("t_refverify() {"):src.index("\n}\n", src.index("t_refverify() {"))]
+        order = ["curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal",
+                 'git fetch -q --depth 1 origin "$PEARL_SPEC_SHA"',
+                 "cp $R/earn/native/probes/refverify.rs $spec/zk-pow/src/bin/refverify.rs",
+                 "cargo build --release --bin refverify",
+                 "mapfile -t files < <(find /root/shares -name '*.jsonl' 2>/dev/null | sort)",
+                 '$spec/zk-pow/target/release/refverify < "$f" > /root/refverify.log 2>&1 || rc=1']
+        at = [body.index(x) for x in order]
+        self.assertEqual(at, sorted(at))
+        self.assertIn('say "refverify FAIL no shares in /root/shares"; return 1;', body)
+
 
 class TestCompilersMemoryReadings(unittest.TestCase):
     """compilers.sh (earn/native/probes/turing), which nvtest.sh runs: med.py's and sum.py's memory columns."""

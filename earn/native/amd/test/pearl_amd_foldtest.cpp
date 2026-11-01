@@ -1,7 +1,7 @@
 // Fold check: run every AMD fold this build has over random operands and compare each
 // region's 16 transcript words with a plain CPU computation.
 //
-//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold]
+//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k]
 //
 // Built for HIP-CPU (build-amd.sh cpu), it runs all five folds through the emulated matrix
 // instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
@@ -9,7 +9,10 @@
 // layout is the one the folds were written against, before anything else depends on it.
 // It also times `reps` launches of each fold and prints the rate in TMAC/s. check=0 skips
 // the CPU computation, which takes minutes at sizes big enough to time a GPU with. `fold`
-// runs only the fold of that name (the reference fold is slow to time at big sizes).
+// runs only the fold of that name (the reference fold is slow to time at big sizes); "all"
+// runs every one. `k` is the k to fold. By default it is the k the card mines: 4096 where
+// the card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), else 2048, or
+// the build's PEARL_FOLD_K where that is larger. The device line names it.
 //
 // Operands are random over all of int8, wider than the miner's int7 operands make, so a
 // sign or byte-order mistake cannot hide. B' has twice `cols` rows and the batch starts at
@@ -69,8 +72,9 @@ int main(int argc, char **argv) {
   g_rng = argc > 3 ? (uint64_t)atoll(argv[3]) | 1u : 1u;
   const int reps = argc > 4 ? atoi(argv[4]) : 1;
   const bool check = argc > 5 ? atoi(argv[5]) != 0 : true;
-  const char *only = argc > 6 ? argv[6] : nullptr;
-  const uint32_t k = PEARL_FOLD_K, rank = PEARL_FOLD_RANK, chunks = k / rank;
+  const char *only = argc > 6 && argv[6][0] && strcmp(argv[6], "all") != 0 ? argv[6] : nullptr;
+  const uint32_t kArg = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
+  const uint32_t rank = PEARL_FOLD_RANK;
   if (m == 0 || m % PEARL_AMD_BM || cols == 0 || cols % PEARL_AMD_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n", PEARL_AMD_BM, PEARL_AMD_BN);
     return 2;
@@ -81,10 +85,29 @@ int main(int argc, char **argv) {
 
   hipDeviceProp_t prop;
   if (!ok(hipGetDeviceProperties(&prop, 0), "no device")) return 2;
+  // What the code object for this card has, first: it decides the k.
+  uint32_t *dCaps = nullptr;
+  if (!ok(hipMalloc(&dCaps, 8), "hipMalloc caps")) return 2;
+  hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, 0, dCaps);
+  uint32_t caps[2] = {0, 0};
+  if (!ok(hipDeviceSynchronize(), "caps") || !ok(hipMemcpy(caps, dCaps, 8, hipMemcpyDeviceToHost), "caps")) return 2;
+  const bool wrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
+  const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
+  const uint32_t chunks = k / rank;
+  // The host's rule (pearl_host_submit): at most 16 chunks without the wrap readout, and past 16
+  // a whole number of 16 with it.
+  if (k % rank || chunks == 0 || (chunks > 16u && (!wrap || chunks % 16u))) {
+    fprintf(stderr, "k %u: it must be a multiple of %u, at most %u without the wrap readout, and past that a "
+            "multiple of %u (this card's code object %s the wrap readout)\n", k, rank, 16u * rank, 16u * rank,
+            wrap ? "has" : "does not have");
+    return 2;
+  }
 #if defined(__HIP_CPU_RT__)
-  printf("device: %s (HIP-CPU: every fold runs on the emulated instructions)\n", prop.name);
+  printf("device: %s (HIP-CPU: every fold runs on the emulated instructions); k %u%s\n", prop.name, k,
+         wrap ? ", wrap readout" : "");
 #else
-  printf("device: %s, %s, %d CUs\n", prop.name, prop.gcnArchName, prop.multiProcessorCount);
+  printf("device: %s, %s, %d CUs; k %u%s\n", prop.name, prop.gcnArchName, prop.multiProcessorCount, k,
+         wrap ? ", wrap readout" : "");
 #endif
 
   std::vector<int8_t> A((size_t)m * k), B((size_t)n * k);
@@ -119,9 +142,9 @@ int main(int argc, char **argv) {
   }
 
   int8_t *dA = nullptr, *dB = nullptr;
-  uint32_t *dTr = nullptr, *dCaps = nullptr;
+  uint32_t *dTr = nullptr;
   if (!ok(hipMalloc(&dA, A.size()), "hipMalloc A") || !ok(hipMalloc(&dB, B.size()), "hipMalloc B")
-      || !ok(hipMalloc(&dTr, want.size() * 4), "hipMalloc tr") || !ok(hipMalloc(&dCaps, 8), "hipMalloc caps"))
+      || !ok(hipMalloc(&dTr, want.size() * 4), "hipMalloc tr"))
     return 2;
   // The matrix folds read the operands in per-tile order when built with PEARL_AMD_TILED, as
   // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
@@ -144,9 +167,6 @@ int main(int argc, char **argv) {
   }
   hipMemcpy(dA, A.data(), A.size(), hipMemcpyHostToDevice);
   hipMemcpy(dB, B.data(), B.size(), hipMemcpyHostToDevice);
-  hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, 0, dCaps);
-  uint32_t caps[2] = {0, 0};
-  if (!ok(hipMemcpy(caps, dCaps, 8, hipMemcpyDeviceToHost), "caps")) return 2;
   printf("folds in this build for this device: 0x%x, wave %u\n", caps[0], caps[1]);
 
   const Fold folds[] = {{"ref", PEARL_AMD_CAP_REF, false},
