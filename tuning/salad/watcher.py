@@ -2766,14 +2766,19 @@ class W:
         hours = credit / all_cost if all_cost > 0 else None
         # With more than one org read (salad_orgs), each lasts on its own: Salad stops an org's boxes when that org's
         # credit runs out, whatever the others hold. An org our boxes run in at their $/hr, another at its measured
-        # spend (org_burn); an org spending nothing isn't shown. [(org, hours)], or None with one org or no fresh read.
+        # spend (org_burn). An org spending nothing, as llmjob2 on 1 November with the fleet all in llmjob, is still
+        # shown, as the founder asked: marked idle and timed at the last $/hr it spent, or the fleet's $/hr before
+        # it has spent any. [(org, hours, idle)], or None with one org or no fresh read.
         runway = None
         if not cmark and len(sb.get("orgs") or {}) > 1:
-            runway = []
+            runway, last_rate = [], st.setdefault("org_rate", {})
             for o, bal in sb["orgs"].items():
                 rate = org_cost.get(o) or self.org_burn(o, t)
                 if rate:
-                    runway.append((o, bal / rate))
+                    last_rate[o] = rate
+                    runway.append((o, bal / rate, False))
+                elif last_rate.get(o) or all_cost:
+                    runway.append((o, bal / (last_rate.get(o) or all_cost), True))
         # Out of all the credit bought, when the portal's invoices have been read: $202.37/$500.
         b = st.get("salad_bought")
         of_bought = "" if not b else f"/${b:.0f}" if b == round(b) else f"/${b:.2f}"
@@ -2860,7 +2865,7 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        last = (" · ".join(f"{o} {lasts(h)}" for o, h in runway) if runway is not None
+        last = (" · ".join(f"{o} {lasts(h)}" + (" idle" if idle else "") for o, h, idle in runway) if runway is not None
                 else lasts(hours, cmark) if hours is not None else "")
         head = (f"**{stamp(t)}** · PRL ${price:.2f} · {mining}/{slots} mining · Salad ${credit:.2f}{cmark}{of_bought} left"
                 + (f" ({last})" if last else ""))
@@ -2875,10 +2880,11 @@ class W:
             f.write("\n".join(lines) + "\n")
         os.replace(REPORT + ".tmp", REPORT)
         if runway is not None:
-            for o, h in runway:
+            for o, h, idle in runway:
                 # An org at $0 has run out, not run short: Salad stopped it and credits_out says so. Its 0 h left the
                 # $/hr below dividing by zero: on 30 October that ended a round once an hour after llmjob2 hit $0.
-                if 0 < h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
+                # An idle org spends nothing, so its credit isn't running short.
+                if not idle and 0 < h < 12 and t - st.setdefault("org_credit_alert", {}).get(o, 0) > 3600:
                     st["org_credit_alert"][o] = t
                     event(f"ALERT {o}'s credit ${sb['orgs'][o]:.2f} lasts about {h:.1f} h at "
                           f"${sb['orgs'][o] / h:.3f}/hr")
