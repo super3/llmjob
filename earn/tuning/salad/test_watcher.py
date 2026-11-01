@@ -2637,14 +2637,20 @@ class TestSaladBalance(Base):
                            {"llmjob": (round(a * 100), 505.0), "llmjob2": (round(b * 100), paid2)})
             self.x.salad_balance()
 
-    def test_each_org_lasts_on_its_own_and_one_not_spending_isnt_shown(self):
-        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet.
+    def test_each_org_lasts_on_its_own_and_one_not_spending_is_shown_idle(self):
+        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet. 1 November: the founder asked to
+        # keep llmjob2's days in the heading anyway. Before it has spent, it's timed at the fleet's $/hr.
         g = self.group()
         self.step(g, 1, "m1")
         self.two_orgs([(175.0, 10.0, 10.0)] * 9)
         head = self.head()
         self.assertIn("Salad $185.00/$515 left (llmjob ", head)
-        self.assertNotIn("llmjob2", head)
+        cost = g["price"]
+        self.assertIn(f" · llmjob2 {w.lasts(10.0 / cost)} idle)", head)
+        self.assertNotIn("ALERT llmjob2", self.events())
+        # Once it has spent, an idle spell is timed at the last $/hr it spent.
+        self.x.st["org_rate"]["llmjob2"] = 0.5
+        self.assertIn(" · llmjob2 20 h idle)", self.head())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
