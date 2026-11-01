@@ -40,9 +40,12 @@ function grab(text, re) {
   return m[1];
 }
 // The C as a build with these switches leaves it (the others as a release has them).
-const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 }, sw));
+const at = (text, sw) => preprocess(text, Object.assign({ PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0, PEARL_AMD_LDS_AHEAD: 0,
+  PEARL_AMD_AHEAD_HERE: 0 }, sw));
 const code = (t) => t.split('\n').filter((l) => !/^\s*\/\//.test(l));
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+const stampBarrier = (t) => slice(t, 'auto stamp_barrier = [&]() {', '\n  };\n');
+const loopEnd = (t) => slice(t, '  {   // PEARL_AMD_STAMP: the slab loop ends.', '\n  }\n');
 const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t *out) {', '\n}\n');
 const body = (t) => slice(t, 'void pearl_amd_fold_body(', '\n}\n');
 // The top-level items of a C brace list, comments dropped.
@@ -55,6 +58,24 @@ const items = (list) => {
     if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = ''; } else cur += ch;
   }
   if (cur.trim()) out.push(cur.trim());
+  return out;
+};
+// Every value given to a stamp variable (st...) in C: [name, operator, the expression], declarations' lists too.
+const assigns = (text) => {
+  const out = [];
+  const re = /\b(st[A-Z]\w*) (=|\+=|-=|\|=|&=|\^=) /g;
+  let m;
+  while ((m = re.exec(text))) {
+    let depth = 0, rhs = '';
+    for (let i = re.lastIndex; i < text.length; i++) {
+      const ch = text[i];
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch) && depth-- === 0) break;
+      else if (',;'.includes(ch) && depth === 0) break;
+      rhs += ch;
+    }
+    out.push([m[1], m[2], rhs.trim()]);
+  }
   return out;
 };
 
@@ -71,7 +92,7 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
   it('leaves a release build as it was: at 0 nothing it adds is left', () => {
     // The token check is tokdiff.sh's (cl /EP on every pass); here, what the switch guards.
     const rel = at(FOLD, {});
-    const names = /STAMP|pearl_amd_stamps|pearl_amd_cycles|pearl_amd_realtime|pearl_amd_hw_id1|\bst[A-Z]\w*|\bc[01m]\b|\bx1[69]\b|s_getreg|s_sendmsg|s_waitcnt/;
+    const names = /STAMP|pearl_amd_stamps|pearl_amd_cycles|pearl_amd_realtime|pearl_amd_hw_id1|pearl_amd_sgpr|stamp_barrier|\bst[A-Z]\w*|\bc[01m]\b|\bx1[69]\b|\bnx\b|s_getreg|s_sendmsg|s_waitcnt|readfirstlane/;
     expect(code(rel).filter((l) => names.test(l))).toEqual([
       '#define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too',
       '#ifndef PEARL_AMD_STAMP',
@@ -109,7 +130,11 @@ describe('the clock-stamp switch (PEARL_AMD_STAMP)', () => {
   });
 
   it('stops a pass that builds an RDNA fold in the one-slab loop, which has no stamps', () => {
-    const one = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n#else\n', '\n#endif\n');
+    // The one-slab loop: from the PF2 loop's #else to its #endif.
+    const one = (t) => {
+      const a = t.indexOf('\n#else\n', t.indexOf('  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n'));
+      return t.slice(a, t.indexOf('\n#endif\n', a + 6) + 8);
+    };
     const stop = 'static_assert(!std::is_same<P, PearlAmdWmma11>::value && !std::is_same<P, PearlAmdWmma12>::value,\n'
       + '                "PEARL_AMD_STAMP is in the PF2 loop only: add -DPEARL_AMD_PF2=1");';
     expect(one(at(FOLD, { PEARL_AMD_STAMP: 1 }))).toContain(stop);
@@ -143,8 +168,8 @@ describe('the stamps in the fold', () => {
   });
 
   it('reads only the shader clock in the slab loop, before the release fence and inside the pair, and stores nothing there', () => {
-    // The barrier's steps, in order.
-    const steps = (sw) => code(slabStep(pass(sw))).map((l) => {
+    // The barrier's steps, in order: the stamp barrier's, which the slab step calls in place of the release's.
+    const steps = (sw) => code(stampBarrier(pass(sw))).map((l) => {
       let m;
       if ((m = /__builtin_amdgcn_fence\(__ATOMIC_(\w+), "workgroup"(, "local")?\)/.exec(l))) {
         return m[1].toLowerCase() + (m[2] ? ' lds' : ' all');
@@ -167,20 +192,29 @@ describe('the stamps in the fold', () => {
     expect(steps(Object.assign({ PEARL_AMD_ABLATE: 2 }, gfx11)))
       .toEqual(['cycles', 'release all', 'waitcnt', 'cycles', 'cycles', 'acquire all']);
     expect(steps(Object.assign({ PEARL_AMD_ABLATE: 2 }, gfx12))).toEqual(['cycles', 'release lds', 'cycles', 'cycles', 'acquire lds']);
-    // The first read is the next line of code after the next slab's LDS store, so the store's wait is counted
-    // there too, and the bit-8 read (before the store) has its wait in the fence's.
+    // The slab step calls it in the next line of code after the next slab's LDS store, and its first line is the
+    // first read, so the store's wait is counted there too, and the bit-8 read (before the store) has its wait in
+    // the fence's. It is the step's only barrier.
     for (const sw of [gfx11, gfx12, Object.assign({ PEARL_AMD_ABLATE: 8 }, gfx11)]) {
       const t = slabStep(pass(sw));
       expect(code(t.slice(t.indexOf('    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1'))).slice(0, 2)).toEqual([
         '    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago',
+        '    stamp_barrier();']);
+      expect(code(stampBarrier(pass(sw))).slice(0, 2)).toEqual(['auto stamp_barrier = [&]() {',
         '    const uint32_t cm = pearl_amd_cycles();']);
+      expect(code(t).filter((l) => /barrier|__syncthreads|fence/.test(l))).toEqual(['    stamp_barrier();']);
     }
+    // Defined once, before the step, after the loop's start is read.
+    const b = pass(gfx12);
+    expect(b.match(/auto stamp_barrier = /g)).toHaveLength(1);
+    expect(b.indexOf('auto stamp_barrier')).toBeGreaterThan(b.indexOf('stLast = pearl_amd_sgpr(pearl_amd_cycles());'));
+    expect(b.indexOf('auto stamp_barrier')).toBeLessThan(b.indexOf('auto slab_step'));
     // The pairs are the release's barriers' (amdAblate.test.js pins pearl_amd_lds_barrier's).
     expect(FOLD).toContain('__syncthreads() is a workgroup fence for every address space');
     // Nothing else: no REALTIME (its wait would be an lgkmcnt wait on gfx11, which counts the LDS loads too),
     // no HW_ID1 and no store.
     for (const sw of [gfx11, gfx12]) {
-      const s = code(slabStep(pass(sw))).join('\n');
+      const s = code(slabStep(pass(sw))).join('\n') + '\n' + code(stampBarrier(pass(sw))).join('\n');
       expect(s).not.toMatch(/pearl_amd_realtime|pearl_amd_hw_id1|pearl_amd_stamps|\bout\b/);
       expect(s.match(/pearl_amd_cycles\(\)/g)).toHaveLength(3);
     }
@@ -190,21 +224,28 @@ describe('the stamps in the fold', () => {
     const sinceC = grab(slice(FOLD, 'uint32_t pearl_amd_cycles_since(uint32_t a, uint32_t b) {', '\n}\n'), /return (.*);/);
     const sinceJs = (w11) => new Function('a', 'b', 'return (' + sinceC.replace('PEARL_AMD_WMMA11', String(w11))
       .replace(/(0x[0-9A-Fa-f]+|\d+)u\b/g, '$1') + ') >>> 0;');
-    const s = slabStep(pass(gfx11));
-    const upd = grab(s, /\n( {4}stMem \+= [\s\S]*? {4}stLast = c1;)\n/);
-    const js = upd.replace(/const bool /g, 'const ').replace(/pearl_amd_cycles_since\(/g, 'since(')
+    // The C as JS: readfirstlane gives the value, a uint32.
+    const asJs = (c) => c.replace(/\/\/[^\n]*/g, '').replace(/const uint32_t /g, 'const ')
+      .replace(/pearl_amd_cycles_since\(/g, 'since(').replace(/pearl_amd_sgpr\(/g, 'sgpr(')
       .replace(/(0x[0-9A-Fa-f]+|\d+)u\b/g, '$1').replace(/>>/g, '>>>');
-    const run = (bits) => new Function('st', 'cm', 'c0', 'c1', 'since',
-      'let { stMem, stBar, stLoop, stX16, stX19, stSeen, stLast } = st;\n' + js
-      + '\nreturn { stMem: stMem >>> 0, stBar: stBar >>> 0, stLoop: stLoop >>> 0, stX16, stX19, stSeen, stLast };');
-    expect(grab(body(pass(gfx11)), /\n {2}(stPro = .*;)\n/)).toBe('stPro = pearl_amd_cycles_since(stCyc0, stLast);');
+    const sgpr = (x) => x >>> 0;
+    const upd = asJs(grab(stampBarrier(pass(gfx11)), /\n( {4}stMem = [\s\S]*? {4}stLast = pearl_amd_sgpr\(c1\);)\n/));
+    const run = (bits) => new Function('st', 'cm', 'c0', 'c1', 'since', 'sgpr',
+      'let { stMem, stBar, stLoop, stX16, stX19, stSeen, stLast } = st;\n' + upd
+      + '\nreturn { stMem, stBar, stLoop, stX16, stX19, stSeen, stLast };');
+    // The loop's end: the sum runs to a read after the loop, so the epilogue starts there.
+    const endC = grab(loopEnd(pass(gfx11)), /\n {4}const uint32_t c = pearl_amd_cycles\(\);\n([\s\S]*?)\n {2}\}/);
+    const end = new Function('st', 'c', 'since', 'sgpr', 'let { stLoop, stLast } = st;\n' + asJs(endC)
+      + '\nreturn Object.assign({}, st, { stLoop, stLast });');
+    expect(grab(body(pass(gfx11)), /\n {2}(stPro = .*;)\n/)).toBe('stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));');
     for (const [bits, w11] of [[20, 1], [32, 0]]) {
       const mask = 2 ** bits;
       const cyc = (t) => t % mask;   // the counter at absolute cycle t
       const since = sinceJs(w11), step = run(bits);
       // A block whose counter starts near the top, 128 slabs of 9000 cycles with 120 at the release fence and
-      // 300 at the barrier: more than 2^20 cycles in all, so gfx11's counter wraps on the way.
-      const t0 = mask - 70000, pro = 4000, P = 9000, mem = 120, wait = 300, slabs = 128, epi = 2500;
+      // 300 at the barrier: more than 2^20 cycles in all, so gfx11's counter wraps on the way. The loop ends 40
+      // cycles after its last barrier (half a slab after it with PEARL_AMD_LDS_AHEAD).
+      const t0 = mask - 70000, pro = 4000, P = 9000, mem = 120, wait = 300, slabs = 128, tail = 40, epi = 2500;
       let st = { stMem: 0, stBar: 0, stLoop: 0, stX16: 0, stX19: 0, stSeen: 0, stLast: cyc(t0 + pro) };
       const stPro = since(cyc(t0), st.stLast);
       let first16 = null, first19 = null, prev = t0 + pro;
@@ -212,15 +253,16 @@ describe('the stamps in the fold', () => {
         const t1 = t0 + pro + i * P;
         if (first16 === null && Math.floor(t1 / 2 ** 16) !== Math.floor(prev / 2 ** 16)) first16 = t1;
         if (first19 === null && Math.floor(t1 / 2 ** 19) !== Math.floor(prev / 2 ** 19)) first19 = t1;
-        st = step(st, cyc(t1 - wait - mem), cyc(t1 - wait), cyc(t1), since);
+        st = step(st, cyc(t1 - wait - mem), cyc(t1 - wait), cyc(t1), since, sgpr);
         prev = t1;
       }
-      const stEpi = since(st.stLast, cyc(prev + epi));
+      st = end(st, cyc(prev + tail), since, sgpr);
+      const stEpi = since(st.stLast, cyc(prev + tail + epi));
       expect([bits, stPro, st.stLoop, st.stBar, st.stMem, stEpi])
-        .toEqual([bits, pro, slabs * P, slabs * wait, slabs * mem, epi]);
+        .toEqual([bits, pro, slabs * P + tail, slabs * wait, slabs * mem, epi]);
       // The block's whole length from the three sums, where its own delta has wrapped on 20 bits.
       const total = stPro + st.stLoop + stEpi;
-      expect(total).toBe(pro + slabs * P + epi);
+      expect(total).toBe(pro + slabs * P + tail + epi);
       if (bits === 20) expect(since(cyc(t0), cyc(t0 + total))).not.toBe(total);
       // The first barrier exits after bits 16 and 19 change, both seen.
       expect([st.stX16, st.stX19, st.stSeen]).toEqual([cyc(first16), cyc(first19), 3]);
@@ -235,26 +277,35 @@ describe('the stamps in the fold', () => {
     const b = body(pass(gfx12));
     expect(b.match(/pearl_amd_realtime\(\)/g)).toHaveLength(2);
     expect(b.match(/pearl_amd_hw_id1\(\)/g)).toHaveLength(2);
-    expect(b).toContain('  const uint32_t stCyc0 = pearl_amd_cycles();\n  const uint32_t stRt0 = pearl_amd_realtime();\n');
-    expect(b).toContain('    const uint32_t cyc = pearl_amd_cycles();\n    const uint32_t rt = pearl_amd_realtime();\n');
+    expect(b).toContain('  const uint32_t stCyc0 = pearl_amd_sgpr(pearl_amd_cycles());\n'
+      + '  const uint32_t stRt0 = pearl_amd_sgpr(pearl_amd_realtime());\n');
+    expect(b).toContain('    const uint32_t cyc = pearl_amd_sgpr(pearl_amd_cycles());\n'
+      + '    const uint32_t rt = pearl_amd_sgpr(pearl_amd_realtime());\n');
     // The start comes before anything else in the block; the end after the transcript words are stored.
-    expect(b.indexOf('stRt0 = pearl_amd_realtime()')).toBeLessThan(b.indexOf('const int t = (int)threadIdx.x'));
-    expect(b.indexOf('rt = pearl_amd_realtime()')).toBeGreaterThan(b.indexOf('w[r + 8] = keepHi[rb][cb][q];'));
+    expect(b.indexOf('stRt0 = pearl_amd_sgpr(pearl_amd_realtime())')).toBeGreaterThan(0);
+    expect(b.indexOf('stRt0 = pearl_amd_sgpr(pearl_amd_realtime())')).toBeLessThan(b.indexOf('const int t = (int)threadIdx.x'));
+    expect(b.indexOf(' rt = pearl_amd_sgpr(pearl_amd_realtime())')).toBeGreaterThan(b.indexOf('w[r + 8] = keepHi[rb][cb][q];'));
     // The loop's start: after the second slab's loads, before the first step.
-    expect(b).toContain('  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }\n  stLast = pearl_amd_cycles();');
+    expect(b).toContain('  if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }\n  stLast = pearl_amd_sgpr(pearl_amd_cycles());');
   });
 
   it('stores one record a wave, from its lane 0, in the order stamp-summary.js reads', () => {
     const b = body(pass(gfx11));
     const v = items(grab(b, /const uint32_t v\[PEARL_AMD_STAMP_WORDS\] = \{([\s\S]*?)\};/));
-    expect(v).toEqual(['0x53540002u', '(uint32_t)wave | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16)', 'stHw',
-      'hw', 'stCyc0', 'stRt0', 'cyc', 'rt', 'stPro', 'stLoop', 'pearl_amd_cycles_since(stLast, cyc)', 'stBar', 'stX16',
-      'stX19', 'slabs', 'stMem']);
+    expect(v).toEqual(['0x53540002u', 'stWave | kAhead | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16)',
+      'stHw', 'hw', 'stCyc0', 'stRt0', 'cyc', 'rt', 'stPro', 'stLoop', 'pearl_amd_cycles_since(stLast, cyc)', 'stBar',
+      'stX16', 'stX19', 'slabs', 'stMem']);
     expect(FOLD).toContain('#define PEARL_AMD_STAMP_WORDS 16u');
     expect(b).toContain('    if (out && lane == 0) {\n      const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;');
-    expect(b).toContain('uint32_t *o = out + ((size_t)block * (uint32_t)(T / W) + (uint32_t)wave) * PEARL_AMD_STAMP_WORDS;');
-    // Word 1's fields fit their bits: 8 waves of a block, 20 or 32 bits, 2 crossing flags.
-    expect([8 < 2 ** 8, 32 < 2 ** 6, 3 < 2 ** 2]).toEqual([true, true, true]);
+    expect(b).toContain('uint32_t *o = out + ((size_t)block * (uint32_t)(T / W) + stWave) * PEARL_AMD_STAMP_WORDS;');
+    // Bit 7: PEARL_AMD_LDS_AHEAD's layout, in the fold it applies to only.
+    const kAhead = grab(b, /\n {6}constexpr uint32_t kAhead = (.*);\n/);
+    expect(kAhead).toBe('PEARL_AMD_AHEAD_HERE && std::is_same<P, PearlAmdWmma12>::value ? 0x80u : 0u');
+    const layout = new Function('PEARL_AMD_AHEAD_HERE', 'wmma12', 'return ' + kAhead
+      .replace('std::is_same<P, PearlAmdWmma12>::value', 'wmma12').replace(/(0x[0-9A-Fa-f]+|\d+)u\b/g, '$1') + ';');
+    expect([[0, false], [0, true], [1, false], [1, true]].map(([h, w]) => layout(h, w))).toEqual([0, 0, 0, 0x80]);
+    // Word 1's fields fit their bits: 8 waves of a block, the layout bit, 20 or 32 bits, 2 crossing flags.
+    expect([8 < 2 ** 7, 32 < 2 ** 6, 3 < 2 ** 2]).toEqual([true, true, true]);
     // The summary reads those words as those fields; word 1's top half is the block's low 16 bits.
     const words = Array.from({ length: 16 }, (_, i) => 1000 + i);
     words[0] = 0x53540002;
@@ -263,8 +314,11 @@ describe('the stamps in the fold', () => {
     const f = file([], { blocks: block + 1, waves: 8 });
     words.forEach((w, i) => f.writeUInt32LE(w >>> 0, 4 * (16 + (block * 8 + 3) * 16 + i)));
     const r = summary.load(f).waves[0];
-    expect(r).toEqual({ wave: 3, bits: 32, seen: 2, block, hw0: 1002, hw1: 1003, cyc0: 1004, rt0: 1005, cyc1: 1006,
-      rt1: 1007, pro: 1008, loop: 1009, epi: 1010, bar: 1011, x16: 1012, x19: 1013, slabs: 1014, mem: 1015 });
+    expect(r).toEqual({ wave: 3, ahead: 0, bits: 32, seen: 2, block, hw0: 1002, hw1: 1003, cyc0: 1004, rt0: 1005,
+      cyc1: 1006, rt1: 1007, pro: 1008, loop: 1009, epi: 1010, bar: 1011, x16: 1012, x19: 1013, slabs: 1014, mem: 1015 });
+    // With bit 7 set: the same wave, in PEARL_AMD_LDS_AHEAD's layout.
+    f.writeUInt32LE((words[1] | 0x80) >>> 0, 4 * (16 + (block * 8 + 3) * 16 + 1));
+    expect(summary.load(f).waves[0]).toEqual(Object.assign({}, r, { ahead: 1 }));
     // The fold test's file header, as the summary reads it.
     const head = items(grab(FOLDTEST, /const uint32_t head\[16\] = \{([\s\S]*?)\};/));
     expect(head).toEqual(['0x31545350u', 'PEARL_AMD_STAMP_WORDS', 'PEARL_AMD_THREADS / 32u', '(uint32_t)stampBlocks',
@@ -273,6 +327,71 @@ describe('the stamps in the fold', () => {
     const h = summary.load(file([], { blocks: 3, waves: 8, gridX: 5, wallKhz: 99000, k: 2048, launches: 7, m: 384,
       cols: 1280 })).head;
     expect(h).toEqual({ words: 16, waves: 8, blocks: 3, gridX: 5, wallKhz: 99000, k: 2048, launches: 7, m: 384, cols: 1280 });
+  });
+
+  it('keeps every stamp in an SGPR: readfirstlane on each value it keeps, scalar compares and selects', () => {
+    // readfirstlane in the RDNA device passes, where the stamps are; the value itself elsewhere.
+    const sg = (sw) => slice(pass(sw), 'uint32_t pearl_amd_sgpr(uint32_t x) {', '\n}\n');
+    for (const sw of [gfx11, gfx12]) expect(sg(sw)).toContain('  return (uint32_t)__builtin_amdgcn_readfirstlane((int)x);\n}');
+    expect(sg({})).toContain('  return x;\n}');
+    for (const sw of [gfx11, gfx12, Object.assign({ PEARL_AMD_ABLATE: 8 }, gfx12)]) {
+      const b = code(body(pass(sw))).join('\n');
+      // The values a wave keeps: the start, the wave, and what the loop adds up. No more.
+      const declared = [...b.matchAll(/\b(?:const )?uint32_t (st[A-Z]\w*) = /g)].map((m) => m[1])
+        .concat([...b.matchAll(/, (st[A-Z]\w*) = /g)].map((m) => m[1]));
+      expect(declared.sort()).toEqual(['stBar', 'stCyc0', 'stHw', 'stLast', 'stLoop', 'stMem', 'stPro', 'stRt0', 'stSeen',
+        'stWave', 'stX16', 'stX19']);
+      // Every value given to one goes through pearl_amd_sgpr, but the start's zeros and stLast's first value, the
+      // start's counter (an SGPR already).
+      const sets = assigns(b);
+      expect(sets.length).toBeGreaterThan(20);
+      for (const [name, op, rhs] of sets) {
+        const ok = op === '=' && (/^pearl_amd_sgpr\(/.test(rhs) || rhs === '0u' || (name === 'stLast' && rhs === 'stCyc0'));
+        expect([name, op, rhs, ok]).toEqual([name, op, rhs, true]);
+      }
+      // The crossings: one compare and one select each, no && or || of two conditions and no bool.
+      const s = code(stampBarrier(pass(sw))).join('\n') + '\n' + code(loopEnd(pass(sw))).join('\n');
+      expect(s).not.toMatch(/&&|\|\||\bbool\b/);
+      // The wave's number for the record, kept from the start in an SGPR, not the per-lane `wave`.
+      expect(b).toContain('  const int t = (int)threadIdx.x, wave = t / W, lane = t % W;\n'
+        + '  const uint32_t stWave = pearl_amd_sgpr((uint32_t)wave);');
+      const rec = b.slice(b.indexOf('const uint32_t v[PEARL_AMD_STAMP_WORDS]'));
+      expect(rec).not.toMatch(/\bwave\b/);
+      // The 16 words are put together after the loop's end, from the SGPRs.
+      expect(b.indexOf('const uint32_t v[PEARL_AMD_STAMP_WORDS]')).toBeGreaterThan(b.indexOf('stLast = pearl_amd_sgpr(c);'));
+    }
+    // The pointer is in constant memory: a scalar load. As a __device__ variable it was a vector load.
+    expect(FOLD).toContain('\n__constant__ uint32_t *pearl_amd_stamps = nullptr;\n');
+    expect(FOLD).not.toMatch(/__device__ uint32_t \*pearl_amd_stamps/);
+  });
+
+  it('finds the same crossings as the first build did, with no && of two conditions', () => {
+    // The first build's rule, for each barrier exit c1 after the last one, stLast.
+    const old = (st, c1) => {
+      const x16 = !(st.seen & 1) && (c1 >>> 16) !== (st.last >>> 16);
+      const x19 = !(st.seen & 2) && (c1 >>> 19) !== (st.last >>> 19);
+      return { x16: x16 ? c1 : st.x16, x19: x19 ? c1 : st.x19, seen: st.seen | (x16 ? 1 : 0) | (x19 ? 2 : 0), last: c1 };
+    };
+    // This one's, run as JS out of the C.
+    const lines = grab(stampBarrier(pass(gfx12)), /\n( {4}const uint32_t chg = [\s\S]*? {4}stLast = pearl_amd_sgpr\(c1\);)\n/)
+      .replace(/const uint32_t /g, 'const ').replace(/pearl_amd_sgpr\(/g, 'sgpr(').replace(/(0x[0-9A-Fa-f]+|\d+)u\b/g, '$1')
+      .replace(/>>/g, '>>>');
+    const now = new Function('st', 'c1', 'sgpr', 'let stX16 = st.x16, stX19 = st.x19, stSeen = st.seen, stLast = st.last;\n'
+      + lines + '\nreturn { x16: stX16, x19: stX19, seen: stSeen, last: stLast };');
+    let seed = 12345;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) >>> 0; return seed; };
+    for (const bits of [20, 32]) {
+      for (let run = 0; run < 200; run++) {
+        let a = { x16: 0, x19: 0, seen: 0, last: rnd() % 2 ** bits }, b = Object.assign({}, a);
+        for (let i = 0; i < 64; i++) {
+          // Steps of a few thousand cycles, and now and then one that crosses many boundaries at once.
+          const c1 = (a.last + (i % 17 === 5 ? rnd() % 2 ** 20 : rnd() % 12000)) % 2 ** bits;
+          a = old(a, c1);
+          b = now(b, c1, (x) => x >>> 0);
+          expect([bits, run, i, b]).toEqual([bits, run, i, a]);
+        }
+      }
+    }
   });
 });
 
@@ -398,8 +517,8 @@ function file(waves, head) {
   const put = (i, v) => buf.writeUInt32LE(v >>> 0, 4 * i);
   [0x31545350, 16, h.waves, h.blocks, h.gridX, h.wallKhz, h.k, h.launches, h.m, h.cols].forEach((v, i) => put(i, v));
   for (const w of waves) {
-    [0x53540002, w.wave | (w.bits << 8) | (w.seen << 14) | ((w.block & 0xffff) << 16), w.hw0, w.hw1, w.cyc0, w.rt0,
-      w.cyc1, w.rt1, w.pro, w.loop, w.epi, w.bar, w.x16, w.x19, w.slabs, w.mem || 0]
+    [0x53540002, w.wave | (w.ahead ? 0x80 : 0) | (w.bits << 8) | (w.seen << 14) | ((w.block & 0xffff) << 16), w.hw0,
+      w.hw1, w.cyc0, w.rt0, w.cyc1, w.rt1, w.pro, w.loop, w.epi, w.bar, w.x16, w.x19, w.slabs, w.mem || 0]
       .forEach((v, i) => put(16 + (w.block * h.waves + w.wave) * 16 + i, v));
   }
   return buf;
@@ -416,7 +535,7 @@ function wave(o) {
   const cyc0 = (o.cyc0 || 0) % 2 ** bits;
   const hw0 = hwId(o.se || 0, o.sa || 0, o.wgp || 0, o.simd === undefined ? w % 4 : o.simd, w);
   return {
-    block: o.block, wave: w, bits, seen: o.seen || 0, hw0, hw1: o.hw1 === undefined ? hw0 : o.hw1, cyc0,
+    block: o.block, wave: w, ahead: o.ahead || 0, bits, seen: o.seen || 0, hw0, hw1: o.hw1 === undefined ? hw0 : o.hw1, cyc0,
     rt0: o.start >>> 0, cyc1: (cyc0 + cycles) % 2 ** bits, rt1: (o.start + o.ticks) >>> 0, pro, loop: cycles - pro - epi,
     epi, bar: o.bar || 0, x16: o.x16 || 0, x19: o.x19 || 0, slabs: o.slabs || 128, mem: o.mem || 0,
   };
@@ -515,6 +634,16 @@ describe('stamp-summary.js', () => {
     expect([s.counter.one.n, s.counter.one.med]).toEqual([4, 4]);
     expect(s.counter.other.n).toBe(24);
     expect(s.counter.other.med).toBeGreaterThan(100000);
+    expect(summary.format(s)[3]).toBe('counter: waves of a block at the loop\'s end, just after their last barrier, '
+      + 'one SIMD 4 cycles apart (p90 4, 4 pairs), different SIMDs 300000 (p90 448576, 24)');
+    // PEARL_AMD_LDS_AHEAD's layout: the last k-step comes after the last barrier, so the waves reach the loop's end
+    // apart and the line has no reading. The rest of the summary reads those blocks as any other.
+    const ahead = summarize(ws.map((w) => Object.assign({}, w, { ahead: 1 })));
+    expect([ahead.blocks, ahead.counter.ahead, ahead.counter.one.n, ahead.counter.other.n]).toEqual([1, 1, 0, 0]);
+    expect(summary.format(ahead)[3]).toBe('counter: no reading: 1 blocks in PEARL_AMD_LDS_AHEAD\'s layout, where the '
+      + 'last barrier comes a k-step before the loop\'s end');
+    expect(summary.load(file(ws.map((w) => Object.assign({}, w, { ahead: 1 })))).waves.map((w) => [w.wave, w.ahead]))
+      .toEqual(ws.map((w) => [w.wave, 1]));
     // Distances either way round, across a wrap.
     expect(summary.apart(2 ** 20 - 10, 15, 20)).toBe(25);
     expect(summary.apart(15, 2 ** 20 - 10, 20)).toBe(25);

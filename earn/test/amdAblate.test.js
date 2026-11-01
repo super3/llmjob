@@ -51,9 +51,10 @@ function block(text, first, last) {
   return lines.slice(a, b + 1).join('\n') + '\n';
 }
 
-// The text as the preprocessor leaves it with PEARL_AMD_ABLATE = v, in a build without clock stamps
-// (helpers/amdSwitches.js).
-const ablated = (text, v) => preprocess(text, { PEARL_AMD_ABLATE: v, PEARL_AMD_STAMP: 0 });
+// The text as the preprocessor leaves it with PEARL_AMD_ABLATE = v, in a build without clock stamps or
+// PEARL_AMD_LDS_AHEAD (helpers/amdSwitches.js).
+const ablated = (text, v) => preprocess(text,
+  { PEARL_AMD_ABLATE: v, PEARL_AMD_STAMP: 0, PEARL_AMD_LDS_AHEAD: 0, PEARL_AMD_AHEAD_HERE: 0 });
 const BITS = [2, 8, 16, 10, 18, 24, 26];
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
 const kSteps = (step) => slice(step, '    for (int kk = 0; kk < KS / P::kTK; kk++) {', '\n    }\n');

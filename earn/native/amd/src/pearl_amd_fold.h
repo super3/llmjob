@@ -453,7 +453,7 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //   - SHADER_CYCLES and REALTIME read side by side at the block's start and end. SHADER_CYCLES counts the
 //     shader clock (20 bits on gfx11, the low 32 of 64 on gfx12); REALTIME is a constant clock, 100 MHz
 //     on RDNA (hipDeviceAttributeWallClockRate). Cycles over ticks is the wave's clock in MHz.
-//   - The cycles of the prologue (start to the slab loop), the slab loop and the epilogue (the last barrier
+//   - The cycles of the prologue (start to the slab loop), the slab loop and the epilogue (the loop's end
 //     to the end), each a sum of short deltas in 32 bits. gfx11's counter wraps every 2^20 cycles, about
 //     0.4 ms, which a whole block at k 4096 can pass.
 //   - The cycles each slab waits at its s_barrier: the counter read just before and just after it, inside
@@ -470,6 +470,13 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //     can change it; test/stamp-summary.js drops such waves.
 // REALTIME is a message whose answer the wave waits for (lgkmcnt on gfx11, which counts LDS loads too;
 // kmcnt on gfx12), so only the prologue and epilogue read it. Nothing is stored in the slab loop.
+// Every stamp is the same in all lanes of a wave, so all of them belong in SGPRs, and the stamps must not
+// take a VGPR: the run scripts keep a stamp build only with its release twin's VGPRs. The first build took
+// 218 against 198 on gfx1201 and 245 against 240 on gfx1100, a wave less. So every value the fold keeps goes
+// through pearl_amd_sgpr (readfirstlane), the crossings are one compare and one select each, the 16 words
+// are built only after the loop, and the pointer is in constant memory, which a wave reads with a scalar
+// load. That build also had one more vector load than the release (13 global loads, not 12), most likely
+// the pointer: a __device__ variable read after the counter reads, which the compiler can't prove unchanged.
 // The transcripts are right: a stamp build passes the fold check. It must never mine or ship, as
 // PEARL_AMD_ABLATE: its code objects report PEARL_AMD_CAP_TIMING and PEARL_AMD_CAP_STAMP, the host refuses
 // any target but zero, and build-amd.sh refuses it in the builds that ship. pearl_amd_foldtest's stamps
@@ -490,9 +497,20 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #define PEARL_AMD_STAMP_BITS (PEARL_AMD_WMMA11 ? 20u : PEARL_AMD_WMMA12 ? 32u : 0u)
 }  // namespace
 // Where the stamps go: wave w of block b at word (b * waves a block + w) * PEARL_AMD_STAMP_WORDS, with
-// b = blockIdx.y * gridDim.x + blockIdx.x. The host sets it (hipMemcpyToSymbol); null stores nothing.
-__device__ uint32_t *pearl_amd_stamps = nullptr;
+// b = blockIdx.y * gridDim.x + blockIdx.x. The host sets it (hipMemcpyToSymbol); null stores nothing. In
+// constant memory, so the fold reads it with a scalar load into an SGPR pair.
+__constant__ uint32_t *pearl_amd_stamps = nullptr;
 namespace {
+// A stamp value, in an SGPR. It is the same in every lane, and readfirstlane says so: the compiler then keeps
+// it in an SGPR, and a value it had put in a VGPR costs one v_readfirstlane here, not a VGPR across the loop.
+// On a value in an SGPR already it is a copy.
+__device__ __forceinline__ uint32_t pearl_amd_sgpr(uint32_t x) {
+#if PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12
+  return (uint32_t)__builtin_amdgcn_readfirstlane((int)x);
+#else
+  return x;
+#endif
+}
 // SHADER_CYCLES: gfx11's 20 bits (hwreg 29, SHADER_CYCLES); gfx12's low 32 (hwreg 29, SHADER_CYCLES_LO).
 __device__ __forceinline__ uint32_t pearl_amd_cycles() {
 #if PEARL_AMD_WMMA11
@@ -523,6 +541,76 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
   return 0u;
 #endif
 }
+#endif
+
+// PEARL_AMD_LDS_AHEAD (item 15, RDNA 4): load the WMMA fragments from LDS before the k-step that uses them, so
+// the loads overlap matrix work. Off by default; 1 or 2 picks a form. It moves loads, not math: every WMMA gets
+// the release's fragments, from the release's addresses, in the release's order, so the transcripts are the
+// release's. It can ship: no caps bit, and nothing refuses it.
+// Inside a slab there is little to move. A 32-byte slab is two k-steps with no barrier between them, so the
+// compiler can already load the second k-step's fragments early: the gfx1201 fold's 24 LDS loads are 8 a slab,
+// each a ds_load_2addr_b64 of two fragments. The wait it can't hide is after the slab barrier: no fragment of
+// the next slab can load before it, and the first WMMAs wait for them. So with this on, the next slab's LDS
+// store and the barrier come one k-step earlier, after the first k-step's WMMAs, and the next slab's fragments
+// load right after the barrier, into a second set, while the last k-step runs on fragments already in
+// registers. Its global loads keep their place at the start of the step, so in the source they have a slab
+// and a half before their LDS store, not two. The forms:
+//   1  the next slab's first k-step after the barrier; its second at the start of its own slab, before the
+//      first k-step's WMMAs. About the release's VGPRs.
+//   2  both of the next slab's k-steps after the barrier. Up to 16 more VGPRs.
+// A sched_barrier keeps the WMMAs after the slab barrier there (otherwise the scheduler may move them above
+// it), and sched_group_barrier places the loads:
+//   - After the barrier, among the WMMAs. The compiler merges two fragment loads into each ds_load_2addr_b64
+//     before it schedules, so the pin counts those: at a 32-byte slab, one read to four WMMAs with 1, to two
+//     with 2. At a larger slab a group may take more than one read.
+//   - With 1, the second k-step's loads before the first k-step's WMMAs. Nothing between them and the slab
+//     barrier uses them, so the scheduler could move them down to it, and its release fence would wait for them.
+// RDNA 4's fold only. On gfx12 6 waves a SIMD allow 240 VGPRs (wave32: 1536 a SIMD, allocated 24 at a time),
+// and LDS already stops a SIMD at 6 waves; the release uses 198, so 42 are spare. gfx11's fold uses 240
+// already, and any more costs it a wave. So only a gfx12 device pass builds it: a gfx11 or host pass
+// preprocesses to the release's tokens. HIP-CPU builds every fold, and gives it to the emulated wmma12 fold,
+// with -DPEARL_AMD_PF2=1. It needs the PF2 loop, and takes no ablation bit 2 or 8.
+#ifndef PEARL_AMD_LDS_AHEAD
+#define PEARL_AMD_LDS_AHEAD 0
+#endif
+#if PEARL_AMD_LDS_AHEAD != 0 && PEARL_AMD_LDS_AHEAD != 1 && PEARL_AMD_LDS_AHEAD != 2
+#error "PEARL_AMD_LDS_AHEAD is 0, 1 or 2"
+#endif
+#if PEARL_AMD_LDS_AHEAD && (PEARL_AMD_ABLATE & 10)
+#error "PEARL_AMD_LDS_AHEAD moves what ablation bits 2 and 8 take out: build one or the other"
+#endif
+// Where it applies: a gfx12 device pass, and HIP-CPU.
+#if PEARL_AMD_LDS_AHEAD && (PEARL_AMD_WMMA12 || PEARL_AMD_EMU)
+#define PEARL_AMD_AHEAD_HERE 1
+#else
+#define PEARL_AMD_AHEAD_HERE 0
+#endif
+#if PEARL_AMD_AHEAD_HERE
+// PEARL_AMD_LDS_AHEAD's scheduling, in a gfx12 device pass (nothing in HIP-CPU). Right after the slab barrier:
+// nothing the scheduler can move crosses it.
+__device__ __forceinline__ void pearl_amd_ahead_fence() {
+#if PEARL_AMD_WMMA12
+  __builtin_amdgcn_sched_barrier(0);
+#endif
+}
+// The LDS reads and WMMAs before here, back to the last scheduling boundary, as kGroups groups in turn: kReads /
+// kGroups LDS reads, then kMmas / kGroups WMMAs. sched_group_barrier's groups take the instructions before it in
+// the region, in this order; its MFMA mask takes WMMAs too. A group takes at most its count, and what no group
+// takes the scheduler places as it likes.
+template <int kReads, int kMmas, int kGroups>
+__device__ __forceinline__ void pearl_amd_ahead_pin() {
+  static_assert(kReads > 0 && kMmas > 0 && kGroups > 0 && kReads % kGroups == 0 && kMmas % kGroups == 0,
+                "each group takes the same number of LDS reads, and of WMMAs");
+#if PEARL_AMD_WMMA12
+#pragma unroll
+  for (int i = 0; i < kGroups; i++) {
+    __builtin_amdgcn_sched_group_barrier(0x100, kReads / kGroups, 0);   // its LDS reads
+    __builtin_amdgcn_sched_group_barrier(0x008, kMmas / kGroups, 0);    // then its WMMAs
+  }
+#endif
+}
+// The most groups that split a and b evenly.
+constexpr int pearl_amd_gcd(int a, int b) { return b ? pearl_amd_gcd(b, a % b) : a; }
 #endif
 
 // PEARL_AMD_KWRAP: the readout for k past 2048 (round 4 item 5). The folds take k at run time, but past
@@ -595,14 +683,18 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
 
 #if PEARL_AMD_STAMP
-  // PEARL_AMD_STAMP (above): the start, and what the slab loop adds up, in scalar registers. stLast is the
-  // counter at the last barrier exit; stSeen says which crossings stX16 and stX19 hold (bits 0 and 1).
-  const uint32_t stHw = pearl_amd_hw_id1();
-  const uint32_t stCyc0 = pearl_amd_cycles();
-  const uint32_t stRt0 = pearl_amd_realtime();
+  // PEARL_AMD_STAMP (above): the start, and what the slab loop adds up, in SGPRs (pearl_amd_sgpr). stLast is the
+  // counter at its last read: the loop's start, each barrier exit, then the loop's end. stSeen says which
+  // crossings stX16 and stX19 hold (bits 0 and 1).
+  const uint32_t stHw = pearl_amd_sgpr(pearl_amd_hw_id1());
+  const uint32_t stCyc0 = pearl_amd_sgpr(pearl_amd_cycles());
+  const uint32_t stRt0 = pearl_amd_sgpr(pearl_amd_realtime());
   uint32_t stPro = 0u, stLast = stCyc0, stLoop = 0u, stBar = 0u, stMem = 0u, stX16 = 0u, stX19 = 0u, stSeen = 0u;
 #endif
   const int t = (int)threadIdx.x, wave = t / W, lane = t % W;
+#if PEARL_AMD_STAMP
+  const uint32_t stWave = pearl_amd_sgpr((uint32_t)wave);   // the record needs it after the loop: an SGPR, not a VGPR
+#endif
 #if PEARL_AMD_TID
   // The compiler doesn't know threadIdx.x < 256 here, so it guarded the first staging unit
   // (always A') with an exec-mask branch; told, the branch goes and the fold needs ~17 fewer VGPRs.
@@ -769,8 +861,110 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   pearl_amd_v4i pre2[2][U];
   if (slabs > 1u) { PEARL_AMD_LOADR(1, pre2[1]) }
 #if PEARL_AMD_STAMP
-  stLast = pearl_amd_cycles();   // the slab loop starts: before here is the prologue
-  stPro = pearl_amd_cycles_since(stCyc0, stLast);
+  stLast = pearl_amd_sgpr(pearl_amd_cycles());   // the slab loop starts: before here is the prologue
+  stPro = pearl_amd_sgpr(pearl_amd_cycles_since(stCyc0, stLast));
+  // PEARL_AMD_STAMP: the slab barrier as its parts, the counter read each side of the s_barrier inside the fence
+  // pair, and once before the pair, so the release fence's memory wait has a number of its own. PFX's pair is
+  // LDS-only; without PFX it is __syncthreads()'s, for every address space. Bit 2 of PEARL_AMD_ABLATE leaves out
+  // the s_barrier here too. Each sum goes through pearl_amd_sgpr, and each crossing is one compare and one
+  // select, never an && of two conditions.
+  auto stamp_barrier = [&]() {
+    const uint32_t cm = pearl_amd_cycles();
+#if PEARL_AMD_PFX
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+#else
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup");
+#if PEARL_AMD_WMMA11
+    __builtin_amdgcn_s_waitcnt(0);   // vmcnt, lgkmcnt and expcnt 0: the release's wait, before the first read
+#endif
+#endif
+    const uint32_t c0 = pearl_amd_cycles();
+#if !(PEARL_AMD_ABLATE & 2)
+    __builtin_amdgcn_s_barrier();
+#endif
+    const uint32_t c1 = pearl_amd_cycles();
+#if PEARL_AMD_PFX
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#else
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup");
+#endif
+    stMem = pearl_amd_sgpr(stMem + pearl_amd_cycles_since(cm, c0));
+    stBar = pearl_amd_sgpr(stBar + pearl_amd_cycles_since(c0, c1));
+    stLoop = pearl_amd_sgpr(stLoop + pearl_amd_cycles_since(stLast, c1));
+    // The first barrier exits after bits 16 and 19 change: bits 0 and 1 of nx, less the crossings already seen.
+    const uint32_t chg = c1 ^ stLast;
+    const uint32_t nx = (((chg >> 16) != 0u ? 1u : 0u) | ((chg >> 19) != 0u ? 2u : 0u)) & ~stSeen;
+    stX16 = pearl_amd_sgpr((nx & 1u) != 0u ? c1 : stX16);
+    stX19 = pearl_amd_sgpr((nx & 2u) != 0u ? c1 : stX19);
+    stSeen = pearl_amd_sgpr(stSeen | nx);
+    stLast = pearl_amd_sgpr(c1);
+  };
+#endif
+#if PEARL_AMD_AHEAD_HERE
+  if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+    // PEARL_AMD_LDS_AHEAD (above). fa[q] and fb[q] hold fragments of the slab in LDS buffer q, a k-step each.
+    constexpr int KK = KS / P::kTK;                           // k-steps a slab
+    constexpr int NA = PEARL_AMD_LDS_AHEAD == 2 ? KK : 1;     // k-steps of the next slab loaded after the barrier
+    constexpr int FR = P::kMT + P::kNT, MM = P::kMT * P::kNT;   // fragment loads and WMMAs a k-step
+    constexpr int RA = NA * FR / 2;   // LDS reads after the barrier, two fragments a ds_load_2addr_b64
+    typename P::AFrag fa[2][KK][P::kMT];
+    typename P::BFrag fb[2][KK][P::kNT];
+    // k-step kk of the slab in LDS buffer q, into set q: the release's loads, at the release's addresses.
+    auto frags = [&](auto q, int kk) {
+      constexpr int Q = decltype(q)::value;
+      const int8_t *aBase = sA[Q] + wr * WM * S;
+      const int8_t *bBase = sB[Q] + wc * WN * S;
+#pragma unroll
+      for (int mt = 0; mt < P::kMT; mt++) fa[Q][kk][mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) fb[Q][kk][nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
+    };
+    // Slab 0's first NA k-steps: it is in LDS buffer 0, synchronised above.
+#pragma unroll
+    for (int kk = 0; kk < NA; kk++) frags(std::integral_constant<int, 0>(), kk);
+    auto ahead_step = [&](uint32_t s, auto parity) {
+      constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer, register set and fragment set
+#if PEARL_AMD_PFX
+      {   // set B's slab s went to LDS a step ago
+        const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
+        PEARL_AMD_LOADR(n, pre2[B])
+      }
+#else
+      if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS a step ago
+#endif
+      // Each k-step but the last, on fragments loaded a k-step or more ago. With 1 it loads the next k-step's first.
+#pragma unroll
+      for (int kk = 0; kk + 1 < KK; kk++) {
+        if (kk + 1 >= NA) frags(parity, kk + 1);
+        pearl_amd_mma_step<P>(acc, fa[B][kk], fb[B][kk]);
+      }
+      // With 1, those loads go before these WMMAs: one group of them all (counted unmerged, the most there can be),
+      // then the WMMAs. Nothing before the slab barrier uses them.
+      if constexpr (NA < KK) pearl_amd_ahead_pin<(KK - NA) * FR, (KK - 1) * MM, 1>();
+      if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+#if PEARL_AMD_STAMP
+      stamp_barrier();
+#elif PEARL_AMD_PFX
+      pearl_amd_lds_barrier();
+#else
+      __syncthreads();
+#endif
+      pearl_amd_ahead_fence();
+      // The next slab's first NA k-steps, while the last k-step of this slab runs on fragments already loaded. The
+      // last step reads a buffer that holds an older slab; nothing uses those words.
+#pragma unroll
+      for (int kk = 0; kk < NA; kk++) frags(std::integral_constant<int, B ^ 1>(), kk);
+      pearl_amd_mma_step<P>(acc, fa[B][KK - 1], fb[B][KK - 1]);
+      pearl_amd_ahead_pin<RA, MM, pearl_amd_gcd(RA, MM)>();   // the reads spread among the WMMAs
+      if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+    };
+    uint32_t s = 0;
+    for (; s + 1 < slabs; s += 2) {
+      ahead_step(s, std::integral_constant<int, 0>());
+      ahead_step(s + 1, std::integral_constant<int, 1>());
+    }
+    if (s < slabs) ahead_step(s, std::integral_constant<int, 0>());
+  } else {
 #endif
   auto slab_step = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
@@ -826,38 +1020,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
 #if PEARL_AMD_STAMP
-    // PEARL_AMD_STAMP: the barrier as its parts, the counter read each side of the s_barrier inside the fence
-    // pair, and once before the pair, so the release fence's memory wait has a number of its own. PFX's pair
-    // is LDS-only; without PFX it is __syncthreads()'s, for every address space. Bit 2 of PEARL_AMD_ABLATE
-    // leaves out the s_barrier here too.
-    const uint32_t cm = pearl_amd_cycles();
-#if PEARL_AMD_PFX
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
-#else
-    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup");
-#if PEARL_AMD_WMMA11
-    __builtin_amdgcn_s_waitcnt(0);   // vmcnt, lgkmcnt and expcnt 0: the release's wait, before the first read
-#endif
-#endif
-    const uint32_t c0 = pearl_amd_cycles();
-#if !(PEARL_AMD_ABLATE & 2)
-    __builtin_amdgcn_s_barrier();
-#endif
-    const uint32_t c1 = pearl_amd_cycles();
-#if PEARL_AMD_PFX
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
-#else
-    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup");
-#endif
-    stMem += pearl_amd_cycles_since(cm, c0);
-    stBar += pearl_amd_cycles_since(c0, c1);
-    stLoop += pearl_amd_cycles_since(stLast, c1);
-    const bool x16 = !(stSeen & 1u) && (c1 >> 16) != (stLast >> 16);
-    const bool x19 = !(stSeen & 2u) && (c1 >> 19) != (stLast >> 19);
-    stX16 = x16 ? c1 : stX16;
-    stX19 = x19 ? c1 : stX19;
-    stSeen |= (x16 ? 1u : 0u) | (x19 ? 2u : 0u);
-    stLast = c1;
+    stamp_barrier();
 #elif PEARL_AMD_ABLATE & 2
     // PEARL_AMD_ABLATE bit 2: the barrier's fences without its s_barrier. __syncthreads() is the
     // workgroup pair for every address space, PFX's barrier the LDS-only pair.
@@ -888,6 +1051,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     slab_step(s + 1, std::integral_constant<int, 1>());
   }
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
+#if PEARL_AMD_AHEAD_HERE
+  }
+#endif
+#if PEARL_AMD_STAMP
+  {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, so it holds the whole loop whether the loop's last
+      // barrier ends it or comes a k-step before its end (PEARL_AMD_LDS_AHEAD).
+    const uint32_t c = pearl_amd_cycles();
+    stLoop = pearl_amd_sgpr(stLoop + pearl_amd_cycles_since(stLast, c));
+    stLast = pearl_amd_sgpr(c);
+  }
+#endif
 #else
 #if PEARL_AMD_ABLATE & 10
   // Only a compile pass that builds this fold stops here: the condition depends on P.
@@ -896,6 +1070,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #if PEARL_AMD_STAMP
   static_assert(!std::is_same<P, PearlAmdWmma11>::value && !std::is_same<P, PearlAmdWmma12>::value,
                 "PEARL_AMD_STAMP is in the PF2 loop only: add -DPEARL_AMD_PF2=1");
+#endif
+#if PEARL_AMD_AHEAD_HERE
+  static_assert(!std::is_same<P, PearlAmdWmma12>::value,
+                "PEARL_AMD_LDS_AHEAD is in the PF2 loop only: add -DPEARL_AMD_PF2=1");
 #endif
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
@@ -948,22 +1126,24 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
       }
 #if PEARL_AMD_STAMP
-  {   // PEARL_AMD_STAMP: the end, then lane 0 of each wave stores its words.
-    const uint32_t cyc = pearl_amd_cycles();
-    const uint32_t rt = pearl_amd_realtime();
-    const uint32_t hw = pearl_amd_hw_id1();
-    uint32_t *const out = pearl_amd_stamps;
+  {   // PEARL_AMD_STAMP: the end, then lane 0 of each wave stores its words, built here from SGPRs.
+    const uint32_t cyc = pearl_amd_sgpr(pearl_amd_cycles());
+    const uint32_t rt = pearl_amd_sgpr(pearl_amd_realtime());
+    const uint32_t hw = pearl_amd_sgpr(pearl_amd_hw_id1());
+    uint32_t *const out = pearl_amd_stamps;   // constant memory: a scalar load
     if (out && lane == 0) {
       const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;
-      // Word 1: the wave (bits 7:0), the counter's bits (13:8), the crossings seen (15:14) and the block's low
-      // 16 bits, which the summary checks against the record's place.
+      // Word 1: the wave (bits 6:0), the layout (bit 7), the counter's bits (13:8), the crossings seen (15:14) and
+      // the block's low 16 bits, which the summary checks against the record's place. Bit 7 is PEARL_AMD_LDS_AHEAD's
+      // layout, whose last barrier comes a k-step before the loop's end, so the summary reads no counter there.
+      constexpr uint32_t kAhead = PEARL_AMD_AHEAD_HERE && std::is_same<P, PearlAmdWmma12>::value ? 0x80u : 0u;
       const uint32_t v[PEARL_AMD_STAMP_WORDS] = {
           0x53540002u,                                                  // "ST", version 2: a written record
-          (uint32_t)wave | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16),
+          stWave | kAhead | (PEARL_AMD_STAMP_BITS << 8) | (stSeen << 14) | (block << 16),
           stHw, hw, stCyc0, stRt0, cyc, rt,                             // HW_ID1 and the clocks, start and end
           stPro, stLoop, pearl_amd_cycles_since(stLast, cyc), stBar,    // prologue, loop, epilogue, barrier wait
           stX16, stX19, slabs, stMem};                                  // the crossings, the slabs, memory wait
-      uint32_t *o = out + ((size_t)block * (uint32_t)(T / W) + (uint32_t)wave) * PEARL_AMD_STAMP_WORDS;
+      uint32_t *o = out + ((size_t)block * (uint32_t)(T / W) + stWave) * PEARL_AMD_STAMP_WORDS;
 #pragma unroll
       for (int i = 0; i < (int)PEARL_AMD_STAMP_WORDS; i++) o[i] = v[i];
     }
