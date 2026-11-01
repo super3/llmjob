@@ -1,7 +1,7 @@
 // Fold check: run every AMD fold this build has over random operands and compare each
 // region's 16 transcript words with a plain CPU computation.
 //
-//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k] [int8|miner]
+//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k] [int8|miner] [stamps file]
 //
 // Built for HIP-CPU (build-amd.sh cpu), it runs all five folds through the emulated matrix
 // instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
@@ -23,6 +23,11 @@
 // bits the matrix units see move a power-capped card's clock (3-7% on a 4090, pearl_config.h),
 // so time on these when the clock matters: sweep.sh's SWEEP_OPERANDS=miner. The salt stamp,
 // 11 bytes of A, is left out.
+//
+// `stamps file`, in a -DPEARL_AMD_STAMP=1 build (pearl_amd_fold.h): the `reps` timed launches of each
+// matrix fold store clock stamps, and the last launch's go to the file: a header of 16 words (see
+// write_stamps), then PEARL_AMD_STAMP_WORDS words for each wave of each block. test/stamp-summary.js reads it;
+// sweep.sh's SWEEP_STAMP runs both. With miner operands it reads the clock the miner runs at.
 #include <hip/hip_runtime.h>
 
 #include <chrono>
@@ -90,6 +95,21 @@ void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t
     hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
 }
 
+#if PEARL_AMD_STAMP
+// The stamps file: 16 words of header, little-endian as the card and the PC both are, then the records.
+//   0 "PST1"  1 words a wave  2 waves a block (room for)  3 blocks  4 blocks across (grid x)
+//   5 REALTIME's rate in kHz (hipDeviceAttributeWallClockRate; 0 if it said nothing)  6 k  7 launches
+//   8 m  9 cols  10-15 zero
+bool write_stamps(const char *path, const uint32_t *dStamps, size_t words, const uint32_t head[16]) {
+  std::vector<uint32_t> w(words);
+  if (!ok(hipMemcpy(w.data(), dStamps, words * 4, hipMemcpyDeviceToHost), "stamps")) return false;
+  FILE *f = fopen(path, "wb");
+  if (!f) { fprintf(stderr, "stamps: can't write %s\n", path); return false; }
+  const bool good = fwrite(head, 4, 16, f) == 16 && fwrite(w.data(), 4, words, f) == words;
+  return fclose(f) == 0 && good;
+}
+#endif
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -101,6 +121,7 @@ int main(int argc, char **argv) {
   const char *only = argc > 6 && argv[6][0] && strcmp(argv[6], "all") != 0 ? argv[6] : nullptr;
   const uint32_t kArg = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
+  const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;
   if (m == 0 || m % PEARL_AMD_BM || cols == 0 || cols % PEARL_AMD_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n", PEARL_AMD_BM, PEARL_AMD_BN);
@@ -122,6 +143,10 @@ int main(int argc, char **argv) {
   hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, 0, dCaps);
   uint32_t caps[2] = {0, 0};
   if (!ok(hipDeviceSynchronize(), "caps") || !ok(hipMemcpy(caps, dCaps, 8, hipMemcpyDeviceToHost), "caps")) return 2;
+  if (stampPath && !(caps[0] & PEARL_AMD_CAP_STAMP)) {
+    fprintf(stderr, "stamps: this build has no clock stamps; build it with -DPEARL_AMD_STAMP=1\n");
+    return 2;
+  }
   const bool wrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
   const uint32_t chunks = k / rank;
@@ -211,6 +236,18 @@ int main(int argc, char **argv) {
                         {"mfma8", PEARL_AMD_CAP_MFMA8, true},
                         {"wmma11", PEARL_AMD_CAP_WMMA11, true},
                         {"wmma12", PEARL_AMD_CAP_WMMA12, true}};
+#if PEARL_AMD_STAMP
+  // Room for every wave of a launch of the matrix folds (wave32: 8 a block), and REALTIME's rate.
+  uint32_t *dStamps = nullptr;
+  const size_t stampBlocks = (size_t)(cols / PEARL_AMD_BN) * (m / PEARL_AMD_BM);
+  const size_t stampWords = stampBlocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS;
+  int wallKhz = 0;
+  if (stampPath) {
+    if (!ok(hipMalloc(&dStamps, stampWords * 4), "hipMalloc stamps")) return 2;
+    if (hipDeviceGetAttribute(&wallKhz, hipDeviceAttributeWallClockRate, 0) != hipSuccess) wallKhz = 0;
+    (void)hipGetLastError();
+  }
+#endif
   int failed = 0, ran = 0;
   std::vector<uint32_t> got(want.size());
   for (const Fold &f : folds) {
@@ -226,11 +263,33 @@ int main(int argc, char **argv) {
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
     const int n = reps > 0 ? reps : 1;
+#if PEARL_AMD_STAMP
+    // The stamps: the timed launches store them, each over the last; the check launch above didn't.
+    uint32_t *stampTo = f.tall ? dStamps : nullptr;
+    if (stampTo) {
+      hipMemset(stampTo, 0, stampWords * 4);
+      if (!ok(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &stampTo, sizeof stampTo), "stamps")) {
+        failed++;
+        continue;
+      }
+    }
+#endif
     const auto t0 = std::chrono::steady_clock::now();
     for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     e = hipDeviceSynchronize();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
+#if PEARL_AMD_STAMP
+    if (stampTo) {
+      uint32_t *none = nullptr;
+      hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);
+      const uint32_t head[16] = {0x31545350u, PEARL_AMD_STAMP_WORDS, PEARL_AMD_THREADS / 32u, (uint32_t)stampBlocks,
+                                 cols / PEARL_AMD_BN, (uint32_t)wallKhz, k, (uint32_t)n, m, cols, 0, 0, 0, 0, 0, 0};
+      if (!write_stamps(stampPath, dStamps, stampWords, head)) { failed++; continue; }
+      printf("stamps: %s, %zu blocks, the last of %d launches, REALTIME %d kHz, in %s\n", f.name, stampBlocks, n,
+             wallKhz, stampPath);
+    }
+#endif
     const double tmacs = (double)m * cols * k * n / secs / 1e12;
     size_t bad = 0, first = 0;
     for (size_t i = 0; check && i < got.size(); i++)
@@ -250,6 +309,9 @@ int main(int argc, char **argv) {
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);
+#if PEARL_AMD_STAMP
+  if (dStamps) hipFree(dStamps);
+#endif
   if (!ran) { printf("no fold ran\n"); return 1; }
   printf("%s\n", failed ? "FAIL" : "PASS");
   return failed ? 1 : 0;

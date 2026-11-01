@@ -36,8 +36,8 @@
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
 #   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_TILED=0 to
 #                   build a tuning variant (pearl_amd_fold.h lists the knobs). Refused with
-#                   PEARL_AMD_READOUT_DROP or PEARL_AMD_ABLATE in winlib, and in gpu under CI:
-#                   they are timing-only.
+#                   PEARL_AMD_READOUT_DROP, PEARL_AMD_ABLATE or PEARL_AMD_STAMP in winlib, and in
+#                   gpu under CI: they are timing-only.
 #
 # The portable kernels are pearl_kernel.cu's own: this script copies that file up to the
 # start of the CUDA folds into build/gen/pearl_kernel_portable.cu, and stops if the line it
@@ -71,9 +71,10 @@ shift || true
 if windows; then archs="${*:-$WINDOWS_ARCHS}"; else archs="${*:-$DEFAULT_ARCHS}"; fi
 
 # PEARL_AMD_READOUT_DROP and PEARL_AMD_ABLATE (pearl_amd_fold.h) build a core with wrong
-# transcripts, to time the RDNA 4 readout or a part of the fold. Neither goes in a build that can
-# ship: winlib is the Windows package's, and a gpu build in CI is the Linux release's
-# (native-core.yml). Their place is a gpu build on a test box, from test/sweep.sh.
+# transcripts, to time the RDNA 4 readout or a part of the fold; PEARL_AMD_STAMP one whose folds
+# store clock stamps. None goes in a build that can ship: winlib is the Windows package's, and a
+# gpu build in CI is the Linux release's (native-core.yml). Their place is a gpu build on a test
+# box, from test/sweep.sh.
 case "${PEARL_AMD_CFLAGS:-}" in
   *PEARL_AMD_READOUT_DROP*)
     if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
@@ -85,6 +86,15 @@ case "${PEARL_AMD_CFLAGS:-}" in
   *PEARL_AMD_ABLATE*)
     if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
       echo "build-amd.sh: ablation build is timing-only: PEARL_AMD_ABLATE is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+esac
+case "${PEARL_AMD_CFLAGS:-}" in
+  *PEARL_AMD_STAMP*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: clock-stamp build is timing-only: PEARL_AMD_STAMP is refused in a $mode" >&2
       echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
       exit 1
     fi

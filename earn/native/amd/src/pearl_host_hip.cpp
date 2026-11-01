@@ -122,6 +122,10 @@ struct Ctx {
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
+#if PEARL_AMD_STAMP
+  bool stamp = false;           // a PEARL_AMD_CAP_STAMP build: the folds store clock stamps (pearl_amd_fold.h)
+  uint32_t *dStamps = nullptr;  // where they go: PEARL_AMD_STAMP_WORDS words for each wave of a batch
+#endif
   char foldErr[512] = {0};
   char foldName[320] = {0};
 
@@ -712,6 +716,9 @@ void resolve_fold(Ctx *ctx) {
   ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
   ctx->timing = (caps[0] & PEARL_AMD_CAP_TIMING) != 0;
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
+#if PEARL_AMD_STAMP
+  ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
+#endif
   // Past 16 chunks only the wrap readout is right. Said here, at create, rather than at the first
   // batch: a k 4096 asked of an RDNA 3 card (PEARL_PROFILE_K) fails at once with the reason.
   const uint32_t rank = ctx->profile.rank;
@@ -982,6 +989,18 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
     pearl_host_destroy(ctx);
     return nullptr;
   }
+#if PEARL_AMD_STAMP
+  // A PEARL_AMD_STAMP build's folds store clock stamps, each wave of a block its own. They get room for a
+  // whole batch, so a hashrate.js run times the same stores as the fold test; nothing here reads them.
+  if (ctx->stamp) {
+    const FoldInfo &f = kFolds[ctx->fold];
+    const size_t blocks = (size_t)(ctx->colBatch * PEARL_COLS_COUNT / f.bn) * (profile->m / f.bm);
+    HIP_OK(hipMalloc(&ctx->dStamps, blocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS * sizeof(uint32_t)),
+           "allocating the clock stamps");
+    HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &ctx->dStamps, sizeof ctx->dStamps),
+           "pointing the folds at the clock stamps");
+  }
+#endif
   return ctx;
 }
 
@@ -1005,6 +1024,13 @@ extern "C" void pearl_host_destroy(void *handle) {
   hipFree(ctx->dBoundA); hipFree(ctx->dBoundB);
   hipFree(ctx->dHashes); hipFree(ctx->dHitCount); hipFree(ctx->dHitIndex); hipFree(ctx->dCaps);
   for (int s = 0; s < Ctx::kSlots; s++) hipFree(ctx->dTr[s]);
+#if PEARL_AMD_STAMP
+  if (ctx->dStamps) {   // no fold may store to it once it is freed
+    uint32_t *none = nullptr;
+    hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);
+    hipFree(ctx->dStamps);
+  }
+#endif
   hipFree(ctx->dTreeA); hipFree(ctx->dTreeB);
   hipFree(ctx->dCvs); hipFree(ctx->dSeedBuf); hipFree(ctx->dSeedInput);
   hipFree(ctx->dHashA); hipFree(ctx->dHashB);
@@ -1329,6 +1355,19 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     if (err && err_len) snprintf(err, err_len, "%s", ctx->foldErr);
     return false;
   }
+#if PEARL_AMD_STAMP
+  // A PEARL_AMD_STAMP build is for timing too: the same rule as below, in its own words.
+  if (ctx->stamp) {
+    bool zero = true;
+    for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
+    if (!zero) {
+      if (err && err_len)
+        snprintf(err, err_len, "clock-stamp build is timing-only: it runs only at target 0 (hashrate.js), "
+                 "never on a job; build without PEARL_AMD_STAMP to mine");
+      return false;
+    }
+  }
+#endif
   // A PEARL_AMD_READOUT_DROP or PEARL_AMD_ABLATE build (pearl_amd_fold.h) computes wrong
   // transcripts, so a hit it reported would not be a real one. It runs only at target zero, the
   // hardest, which is what hashrate.js sets: it times the fold and finds nothing. Any other

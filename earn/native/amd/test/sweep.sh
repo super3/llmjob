@@ -38,6 +38,13 @@
 #                 only target such a core takes.
 #                 One whose check passes is not timed: its flags did not change the fold. Nor is one whose
 #                 fold did not run to the end.
+#   SWEEP_STAMP   variants to read clock stamps from, space-separated, each built with -DPEARL_AMD_STAMP=1
+#                 (pearl_amd_fold.h). After the fold timing, each runs the fold test's stamps mode on the miner's
+#                 operands, and test/stamp-summary.js prints its summary as "stamp <name> ..." lines. If one of
+#                 them is also built with -DPEARL_AMD_ABLATE=8 and another with no ablation, "stamp gates" lines
+#                 follow: D and the readings for items 14 and 15, from those two.
+#   SWEEP_STAMP_RUN  m:cols:launches for the stamps mode, launches at k 2048 as in SWEEP_FOLD (default
+#                 131072:4096:600). The file holds the last launch.
 #   SWEEP_ROOT    where the build logs and each variant's copy go (default /root)
 #
 # Each result is one "[amdtest] HH:MM:SS sweep ..." line, written straight to the container's log too, so it shows
@@ -59,13 +66,15 @@ ROUNDS=${SWEEP_ROUNDS:-2}
 FOLD_ROUNDS=${SWEEP_FOLD_ROUNDS:-0}
 ROOT=${SWEEP_ROOT:-/root}
 OPERANDS=${SWEEP_OPERANDS:-}
+STAMP_RUN=${SWEEP_STAMP_RUN:-131072:4096:600}
 case "$FOLD_ROUNDS" in '' | *[!0-9]*) out "SWEEP_FOLD_ROUNDS must be a whole number, not $FOLD_ROUNDS"; exit 2 ;; esac
 case "$OPERANDS" in '' | int8 | miner) ;; *) out "SWEEP_OPERANDS is int8 or miner, not $OPERANDS"; exit 2 ;; esac
-out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}$([ "$FOLD_ROUNDS" -gt 0 ] && echo " x $FOLD_ROUNDS rounds in turn")${OPERANDS:+ on $OPERANDS operands}; hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
+[[ "$STAMP_RUN" =~ ^[0-9]+:[0-9]+:[0-9]+$ ]] || { out "SWEEP_STAMP_RUN is m:cols:launches, not $STAMP_RUN"; exit 2; }
+out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}$([ "$FOLD_ROUNDS" -gt 0 ] && echo " x $FOLD_ROUNDS rounds in turn")${OPERANDS:+ on $OPERANDS operands}; hashrate ${HSECS}s+${HWARM}s x $ROUNDS${SWEEP_STAMP:+; stamps from $SWEEP_STAMP at $STAMP_RUN}"
 
 # PIN: a variant's k from -DPEARL_FOLD_K=K in its flags, unset otherwise. KOF: the k it is checked and timed at, PIN
-# or the k its fold test named (the k the core mines); unset when neither says, for k 2048.
-declare -A PIN=() KOF=()
+# or the k its fold test named (the k the core mines); unset when neither says, for k 2048. FLAGS: its flags.
+declare -A PIN=() KOF=() FLAGS=()
 # Launches for variant $1 given $2 at k 2048: the same MACs at its own k, and at least one.
 launches() {
   local k=${KOF[$1]:-} n
@@ -105,11 +114,37 @@ fold_rounds() {
   done
 }
 
+# SWEEP_STAMP: each variant's stamps (the fold test's stamps mode, miner operands) and their summary; then the gates
+# from the first stamp variant with no ablation and the first with -DPEARL_AMD_ABLATE=8.
+stamps() {
+  local n f r SM SC SR plain="" abl8="" built=" ${names[*]} "
+  IFS=: read -r SM SC SR <<< "$STAMP_RUN"
+  for n in ${SWEEP_STAMP:-}; do
+    case "$built" in *" $n "*) ;; *) out "stamp $n: not stamped, it isn't a variant that built and checked"; continue ;; esac
+    f=$ROOT/var/$n/stamps.bin
+    rm -f "$f"
+    r=$(timeout 900 $ROOT/var/$n/pearl_amd_foldtest "$SM" "$SC" 1 "$(launches "$n" "$SR")" 0 "$FOLD" "${PIN[$n]:-0}" miner "$f" 2>&1)
+    printf '%s\n' "$r" | grep -E "^($FOLD|stamps)" | sed 's/  */ /g' | while IFS= read -r l; do out "stamp $n ${l:0:300}"; done
+    if [ ! -s "$f" ]; then out "stamp $n: no stamps written"; continue; fi
+    node "$A/test/stamp-summary.js" summary "$f" 2>&1 | while IFS= read -r l; do out "stamp $n ${l:0:380}"; done
+    case " ${FLAGS[$n]} " in
+      *[[:space:]]-DPEARL_AMD_ABLATE=8[[:space:]]*) [ -n "$abl8" ] || abl8=$n ;;
+      *PEARL_AMD_ABLATE*) ;;
+      *) [ -n "$plain" ] || plain=$n ;;
+    esac
+  done
+  if [ -n "$plain" ] && [ -n "$abl8" ]; then
+    node "$A/test/stamp-summary.js" gates "$ROOT/var/$plain/stamps.bin" "$ROOT/var/$abl8/stamps.bin" 2>&1 \
+      | while IFS= read -r l; do out "stamp gates $plain/$abl8 ${l:0:360}"; done
+  fi
+}
+
 names=()
 IFS=';' read -ra VARS <<< "$SWEEP"
 for v in "${VARS[@]}"; do
   [ -n "$v" ] || continue
   name=${v%%=*}; flags=${v#*=}
+  FLAGS[$name]=$flags
   if [[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]; then PIN[$name]=${BASH_REMATCH[1]}; fi
   t0=$(date +%s)
   if ! PEARL_AMD_CFLAGS="$flags" ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-$name.log 2>&1; then
@@ -138,6 +173,7 @@ for v in "${VARS[@]}"; do
   done
 done
 fold_rounds
+stamps
 
 # Leave build/ holding the default, not the last variant.
 if ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-default.log 2>&1; then out "default rebuilt in build/"

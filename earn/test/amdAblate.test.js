@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const noise = require('../src/shared/miner/noise');
+const { preprocess } = require('./helpers/amdSwitches');
 
 const NATIVE = path.join(__dirname, '..', 'native');
 const ROOT = path.join(NATIVE, '..', '..');
@@ -50,55 +51,12 @@ function block(text, first, last) {
   return lines.slice(a, b + 1).join('\n') + '\n';
 }
 
-// The text as the preprocessor leaves it with PEARL_AMD_ABLATE = v. Every #if chain that starts on
-// the knob is resolved; every other line, directives too, is kept. An #elif in such a chain that
-// doesn't name the knob, reached with nothing taken, becomes the #if it was before the knob.
-function ablated(text, v) {
-  const out = [];
-  const stack = [];   // per open #if: { ours, taken, on }
-  const live = () => stack.every((f) => !f.ours || f.on);
-  const knob = (c) => /\bPEARL_AMD_ABLATE\b/.test(c);
-  const test = (c) => new Function('v', 'return (' + c.replace(/\bPEARL_AMD_ABLATE\b/g, 'v') + ') !== 0;')(v);
-  for (const l of text.split('\n')) {
-    let m;
-    if ((m = /^#if (.*)$/.exec(l)) && knob(m[1])) {
-      const on = test(m[1]);
-      stack.push({ ours: true, taken: on, on });
-    } else if (/^#if(n?def)?\b/.test(l)) {
-      stack.push({ ours: false });
-      if (live()) out.push(l);
-    } else if ((m = /^#elif (.*)$/.exec(l))) {
-      const f = stack[stack.length - 1];
-      if (!f.ours) {
-        if (live()) out.push(l);
-      } else if (knob(m[1])) {
-        f.on = !f.taken && test(m[1]);
-        f.taken = f.taken || f.on;
-      } else if (!f.taken) {
-        Object.assign(f, { ours: false });
-        if (live()) out.push('#if ' + m[1]);
-      } else {
-        f.on = false;
-      }
-    } else if (/^#else\b/.test(l)) {
-      const f = stack[stack.length - 1];
-      if (!f.ours) {
-        if (live()) out.push(l);
-      } else {
-        f.on = !f.taken;
-        f.taken = true;
-      }
-    } else if (/^#endif\b/.test(l)) {
-      if (!stack.pop().ours && live()) out.push(l);
-    } else if (live()) {
-      out.push(l);
-    }
-  }
-  if (stack.length) throw new Error('unbalanced #if');
-  return out.join('\n');
-}
+// The text as the preprocessor leaves it with PEARL_AMD_ABLATE = v, in a build without clock stamps
+// (helpers/amdSwitches.js).
+const ablated = (text, v) => preprocess(text, { PEARL_AMD_ABLATE: v, PEARL_AMD_STAMP: 0 });
 const BITS = [2, 8, 16, 10, 18, 24, 26];
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
+const kSteps = (step) => slice(step, '    for (int kk = 0; kk < KS / P::kTK; kk++) {', '\n    }\n');
 const oneSlab = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n#else\n', '\n#endif\n');
 const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t *out) {', '\n}\n');
 const refFold = (t) => slice(t, 'void pearl_amd_fold_ref(', '\n}\n');
@@ -172,7 +130,8 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
   it('bit 8 gives each k-step new fragments with no LDS load, and no fragment lives longer', () => {
     const t = ablated(FOLD, 8);
     const step = slabStep(t);
-    expect(step).not.toMatch(/P::load_[ab]\(/);
+    // The k-steps load nothing (the one read a slab that keeps LDS in use is tested below).
+    expect(kSteps(step)).not.toMatch(/P::load_[ab]\(/);
     // On a GPU: one asm a k-step that defines every fragment the k-step uses, for the RDNA folds.
     const gpu = grab(step, /\n#if PEARL_AMD_EMU \|\| !defined\(__HIP_DEVICE_COMPILE__\)\n {6}pearl_amd_mma_step<P>\(acc, a0, b0\);\n#else\n([\s\S]*?)#endif\n/);
     expect(gpu).toContain('static_assert(P::kMT == 4 && P::kNT == 4, "PEARL_AMD_ABLATE bit 8 is for the RDNA folds");');
@@ -230,11 +189,72 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
   it('makes every word wrong in every ablation build, so the fold check always fails', () => {
     for (const v of BITS) {
       const t = ablated(FOLD, v);
-      expect(t).toContain('        w[r] = keepLo[rb][cb][q] ^ 0x5A5A5A5Au;\n        w[r + 8] = keepHi[rb][cb][q] ^ 0x5A5A5A5Au;\n');
+      // Bit 8's sink goes in too (below).
+      const sink = v & 8 ? ' ^ sink' : '';
+      expect(t).toContain('        w[r] = keepLo[rb][cb][q] ^ 0x5A5A5A5Au' + sink + ';\n'
+        + '        w[r + 8] = keepHi[rb][cb][q] ^ 0x5A5A5A5Au' + sink + ';\n');
       // The reference fold is left alone.
       expect(refFold(t)).toBe(refFold(ablated(FOLD, 0)));
     }
     expect(FOLD.match(/\^ 0x5A5A5A5Au;/g)).toHaveLength(2);
+    expect(FOLD.match(/\^ 0x5A5A5A5Au \^ sink;/g)).toHaveLength(2);
+  });
+
+  it('bit 8 keeps one real fragment read a slab, the release\'s, and the stored words need it', () => {
+    const t = ablated(FOLD, 8);
+    const step = slabStep(t);
+    // One read a slab on a GPU, through the release's loader, at an address picked at run time.
+    const reads = step.match(/P::load_[ab]\([^;]*;/g);
+    expect(reads).toEqual(['P::load_a((s & 2u) ? bBase : aBase, S, lane);']);
+    const read = '    const typename P::AFrag kept = P::load_a((s & 2u) ? bBase : aBase, S, lane);';
+    // In a GPU's device pass only: the last directive before it is that guard, and it ends there.
+    const before = step.slice(0, step.indexOf(read));
+    expect(before.slice(before.lastIndexOf('\n#'))).toMatch(/^\n#if !PEARL_AMD_EMU && defined\(__HIP_DEVICE_COMPILE__\)\n/);
+    expect(step).toContain(read + '\n#endif\n');
+    // Every one of the four LDS buffers gets a reader. The loop runs step(s, B = 0) and step(s + 1, B = 1) for
+    // even s, then step(s, 0) for an odd count; B picks the half, the C's pick the array: run here as JS.
+    expect(t).toContain('    slab_step(s, std::integral_constant<int, 0>());\n    slab_step(s + 1, std::integral_constant<int, 1>());');
+    expect(step).toContain('    const int8_t *aBase = sA[B] + wr * WM * S;\n    const int8_t *bBase = sB[B] + wc * WN * S;\n');
+    const pick = new Function('s', 'aBase', 'bBase', 'return ' + grab(read, /P::load_a\((.*), S, lane\)/).replace(/2u/, '2') + ';');
+    const seen = new Set();
+    for (let s = 0; s < 4; s++) seen.add(pick(s, 'sA', 'sB') + '[' + (s % 2) + ']');
+    expect([...seen].sort()).toEqual(['sA[0]', 'sA[1]', 'sB[0]', 'sB[1]']);
+    // Those are the release's addresses at k-step 0 of tile 0: its loads, with mt, nt and kk all 0.
+    const rel = kSteps(slabStep(ablated(FOLD, 0)));
+    const at = (re) => grab(rel, re).replace(/\b(mt|nt|kk)\b/g, '0');
+    expect(at(/a\[mt\] = (P::load_a\(.*\));/)).toBe('P::load_a(aBase + 0 * P::kTM * S + 0 * P::kTK, S, lane)');
+    expect(at(/b\[nt\] = (P::load_b\(.*\));/)).toBe('P::load_b(bBase + 0 * P::kTN * S + 0 * P::kTK, S, lane)');
+    // The release reads KS / kTK * (kMT + kNT) fragments a slab; this reads 1 of them.
+    const KS = Number(grab(FOLD, /#define PEARL_AMD_SLAB (\d+)u/));
+    for (const p of ['PearlAmdWmma11', 'PearlAmdWmma12']) {
+      const pol = slice(FOLD, 'struct ' + p + ' {', '\n};\n');
+      const kTK = Number(grab(pol, /kTK = (\d+);/));
+      const [kMT, kNT] = grab(pol, /(kMT = \d+, kNT = \d+);/).match(/\d+/g).map(Number);
+      expect([p, (KS / kTK) * (kMT + kNT)]).toEqual([p, 16]);
+      // Both readers return the same fragment type, and load_b is load_a, so one call reads either array.
+      expect(pol).toMatch(/typedef (\w+) AFrag;\n {2}typedef \1 BFrag;/);
+      expect(pol).toContain('  static __device__ __forceinline__ BFrag load_b(const int8_t *s, int stride, int lane) {\n'
+        + '    return load_a(s, stride, lane);\n  }');
+    }
+    // After the k-steps and the readout, before the next slab's store: so not in the matrix work.
+    expect(step.indexOf(read)).toBeGreaterThan(step.indexOf('readout((s + 1) / perChunk - 1);'));
+    expect(step.indexOf(read)).toBeLessThan(step.indexOf('PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1])'));
+    // Its words go into the sink after the barrier, so its wait is the barrier's.
+    const xor = '    for (int i = 0; i < (int)(sizeof kept / sizeof(int32_t)); i++) sink ^= (uint32_t)kept[i];';
+    expect(step.endsWith('    pearl_amd_lds_barrier();\n#else\n    __syncthreads();\n#endif\n'
+      + '#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)\n#pragma unroll\n' + xor + '\n#endif\n  };\n')).toBe(true);
+    expect(t).toContain('  uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8');
+    // The sink is used only there and in the stored words.
+    expect(t.split('\n').filter((l) => /\bsink\b/.test(l) && !/^\s*\/\//.test(l))).toEqual([
+      '  uint32_t sink = 0u;   // PEARL_AMD_ABLATE bit 8: the words of the one fragment read a slab (slab_step)',
+      xor,
+      '        w[r] = keepLo[rb][cb][q] ^ 0x5A5A5A5Au ^ sink;',
+      '        w[r + 8] = keepHi[rb][cb][q] ^ 0x5A5A5A5Au ^ sink;',
+    ]);
+    // Only in bit 8 builds; HIP-CPU's path is still the first slab's fragments, with no read a slab.
+    const code = (x) => x.split('\n').map((l) => l.replace(/(^|\s)\/\/.*$/, '')).join('\n');
+    for (const v of [0, 2, 16, 18]) expect([v, /\bsink\b|\bkept\b/.test(code(ablated(FOLD, v)))]).toEqual([v, false]);
+    expect(step).toContain('#if PEARL_AMD_EMU || !defined(__HIP_DEVICE_COMPILE__)\n      pearl_amd_mma_step<P>(acc, a0, b0);\n#else\n');
   });
 
   it('marks every code object it is in with a caps bit of its own', () => {
