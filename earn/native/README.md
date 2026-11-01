@@ -181,7 +181,8 @@ all-Blackwell rig with a new enough driver (`src/shared/coreVariant.js`) and
 keeps `pearl_core.node` for everything else.
 
 Every entry also compiles `pearl_kernel.cu` with `-Xptxas -v` and reads what
-ptxas said, on every architecture, about the tall fold, the wmma fold, Hopper's
+ptxas said, on every architecture, about the tall fold, RTX 30's flip kernel
+(`pearl_tile_fold_tall_pinb`, a body only on sm_86, which must have one), the wmma fold, Hopper's
 wgmma fold (`pearl_tile_fold_hopper`, with a body only on sm_90a), Pascal's
 dp4a fold (`pearl_tile_fold_dp4a`, a body only on sm_61) and the transcript
 hash (`pearl_tall_hash80`). The tall fold sits at 253–255

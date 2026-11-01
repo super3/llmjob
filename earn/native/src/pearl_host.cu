@@ -1494,6 +1494,11 @@ uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // RTX 3080 10 GB (3.4 MiB, band 8): 64 offsets, 4.2 MB against 3.3 MB, so not taken.
 uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, uint32_t colBatch,
                                uint32_t colsValid, uint64_t maxSlice) {
+  // A forced band depth (-DPEARL_AMPERE_BAND) is a tuning build of the band walk: no flip.
+#ifdef PEARL_AMPERE_BAND
+  (void)k; (void)rowGroups; (void)band; (void)colBatch; (void)colsValid; (void)maxSlice;
+  return 0u;
+#else
   if (!PEARL_AMPERE_FLIP || band == 0u || maxSlice == 0u) return 0u;
   const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
   uint32_t width = 0u;
@@ -1504,6 +1509,7 @@ uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, ui
   const uint64_t bandWalk = (uint64_t)((rowGroups + band - 1u) / band) * colBytes + aBytes / colBatch;
   const uint64_t flip = aBytes / width;
   return flip * 100u <= bandWalk * (uint64_t)PEARL_AMPERE_FLIP_SHARE ? width : 0u;
+#endif
 }
 
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
@@ -1942,8 +1948,9 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       maxp = 0;
     }
     ctx->l2MaxSlice = maxp;
-    // Ampere's flip (PEARL_AMPERE_FLIP): sm_86's build alone has the pinb kernel's body.
-    if (ctx->foldPersistA && ctx->tallArch == 86 && !ctx->foldUnfused) {
+    // Ampere's flip (PEARL_AMPERE_FLIP): only where the loaded build has the pinb kernel's
+    // body (PEARL_TALL_PIN_B_ARCH, by binaryVersion * 10 as PEARL_TALL_ARCH reads it).
+    if (ctx->foldPersistA && PEARL_TALL_PIN_B_ARCH(ctx->tallArch * 10) && !ctx->foldUnfused) {
       const uint32_t rowGroups =
           (ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
       const uint32_t w = pearl_ampere_flip_for(profile->k, rowGroups, ctx->tallBand, ctx->colBatch,

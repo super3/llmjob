@@ -8,8 +8,9 @@ const path = require('path');
 // band of A'. Which cards take it is pearl_ampere_flip_for's byte model. The native side
 // cannot run here, so its source is checked for the model, and a JS transcription of the
 // model is checked against what Salad measured on 31 October (race mode): the 3060 Ti +1.92%
-// at 64 offsets and the 3090 +0.66% at 128 take it; the 3060 (-0.63% at 32) and the 3080
-// 10 GB (+0.03% at 64) don't, nor the 3070, whose slice allows the 3080's width.
+// at 64 offsets and the 3090 +0.66% at 128 take it; the 3060 and the 3080 10 GB don't (their
+// widths, 32 and 64, read -0.63% and +0.03% as strips of a 512 batch), nor the 3070, whose
+// slice allows the 3080's width.
 
 const SRC = path.join(__dirname, '..', 'native', 'src');
 const HOST = fs.readFileSync(path.join(SRC, 'pearl_host.cu'), 'utf8');
@@ -74,18 +75,21 @@ describe('Ampere flip', () => {
   });
 
   test('the flip kernel holds B, the other A, and only sm_86 builds its body', () => {
-    const first = KERNEL.indexOf('#define PEARL_TALL_FN pearl_tile_fold_tall');
-    const second = KERNEL.indexOf('#define PEARL_TALL_FN pearl_tile_fold_tall_pinb');
-    expect(first).toBeGreaterThan(0);
-    expect(KERNEL.indexOf('#define PEARL_TALL_PIN_B 0', first)).toBeLessThan(second);
-    expect(KERNEL.indexOf('#define PEARL_TALL_PIN_B 1', second)).toBeGreaterThan(second);
+    const lf = KERNEL.replace(/\r\n/g, NL);
+    expect(lf).toContain(['#define PEARL_TALL_FN pearl_tile_fold_tall', '#define PEARL_TALL_PIN_B 0',
+      '#include "pearl_fold_tall.cuh"'].join(NL));
+    expect(lf).toContain(['#define PEARL_TALL_FN pearl_tile_fold_tall_pinb', '#define PEARL_TALL_PIN_B 1',
+      '#include "pearl_fold_tall.cuh"'].join(NL));
+    expect(FOLD_TALL).toContain('&& (!PEARL_TALL_PIN_B || PEARL_TALL_PIN_B_ARCH(__CUDA_ARCH__))');
     expect(KERNEL.split('#include "pearl_fold_tall.cuh"').length - 1).toBe(2);
     expect(FOLD_TALL).toContain('#if PEARL_AMPERE_PERSIST_A && !PEARL_TALL_PIN_B && defined(__CUDA_ARCH__)');
     expect(FOLD_TALL).toContain('#if PEARL_TALL_PIN_B && defined(__CUDA_ARCH__) && PEARL_TALL_PIN_B_ARCH(__CUDA_ARCH__)');
     expect(FOLD_TALL).toContain('"l"(bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID), "l"(polB));');
     expect(CONFIG).toContain('#define PEARL_TALL_PIN_B_ARCH(a) ((a) == 860)');
     // The host runs it only where sm_86's build is loaded, and launches it by its own name.
-    expect(HOST).toContain('if (ctx->foldPersistA && ctx->tallArch == 86 && !ctx->foldUnfused) {');
+    expect(HOST).toContain('if (ctx->foldPersistA && PEARL_TALL_PIN_B_ARCH(ctx->tallArch * 10) && !ctx->foldUnfused) {');
+    // A forced band (a tuning build of the band walk) never flips.
+    expect(body(HOST, 'uint32_t pearl_ampere_flip_for(')).toContain('#ifdef PEARL_AMPERE_BAND');
     expect(HOST).toContain('if (ctx->foldPinB) foldFn = reinterpret_cast<const void *>(pearl_tile_fold_tall_pinb);');
     expect(HOST).toContain('pearl_tile_fold_tall_pinb<<<blocks, threads, smem, st>>>(');
   });

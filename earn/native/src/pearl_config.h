@@ -1445,7 +1445,7 @@ typedef struct {
 // Which builds carry a tall-fold body, by __CUDA_ARCH__: Ampere's and Ada's, both the
 // cp.async ring, and Blackwell's (sm_120, and sm_100 on the same code), which stages with
 // TMA unless PEARL_TALL_TMA is 0.
-// This one list is what the default below, the fold's own #if in pearl_kernel.cu and
+// This one list is what the default below, the fold's own #if in pearl_fold_tall.cuh and
 // PEARL_TALL_ARCH all test, so they cannot drift apart.
 #define PEARL_TALL_BODY_ARCH(a) (PEARL_AMPERE_ARCH(a) || (a) == 890 || PEARL_TMA_BODY_ARCH(a))
 #ifdef PEARL_FOLD_TALL
@@ -1622,7 +1622,8 @@ typedef struct {
 // ahead: 3060 46.66 -> 47.09 (+0.9%), 3070 Ti 84.50 -> 85.08 (+0.7%); the 3070 Ti's pool
 // run accepted 3 of 3 shares. The 3090, on an earlier build of the same rule: 121.32 ->
 // 123.49 (+1.8%).
-// -DPEARL_AMPERE_BAND=N forces N on every Ampere card. Host only. Hopper's wgmma fold takes
+// -DPEARL_AMPERE_BAND=N forces N on every Ampere card, and turns the flip off
+// (PEARL_AMPERE_FLIP): it is a tuning build of this walk. Host only. Hopper's wgmma fold takes
 // PEARL_HOPPER_BAND instead, unless that is 0.
 #ifndef PEARL_AMPERE_BAND_L2_SHARE
 #define PEARL_AMPERE_BAND_L2_SHARE 80u
@@ -1701,17 +1702,19 @@ typedef struct {
 // (3080 12 GB, 3080 Ti, 3090, 3090 Ti; batch 128), not the 3060, 3070, 3070 Ti or 3080 10
 // GB, where the batch it allows is too narrow (126-137% of the band walk's bytes).
 // Measured on Salad on 31 October in race mode (probes/race.cu: every build in one process
-// on one card, 4 s turns for 600 s, against the band walk's turn in the same round), every
-// arm verify-hits 400/400 and, at the same width, the band walk's exact hits:
+// on one card, 4 s turns for 600 s, against the band walk's turn in the same round):
 //   RTX 3060 Ti, 200 W, batch 64    +1.92% (+-0.09, ahead 35/35)  memory 37% -> 21%
-//                                   hashrate.js alone, 4 rounds: +1.5 to +1.7% once warm
 //   RTX 3090, 350 W, batch 128      +0.66% (+-0.04, 35/35; +0.68 and +0.66 in two more)
-//                                   memory 15% -> 10%
-//   RTX 3080 10 GB, batch 64        +0.03% (level)     RTX 3060, batch 32   -0.63%
-// Tried and dropped: tiles from a counter (PEARL_TALL_CTR) on top, -0.5% (3090) to -2.5%
-// (3060 Ti); half a 256-offset batch's B' held, -1.9 to -2.2%; a 256 to 2048-offset batch
-// walked in strips whose B' the slice holds, below the narrow batch on both cards (3060 Ti
-// +1.48 to +1.79%, 3090 -0.31 to +0.52%). 0 turns it off.
+//                                   memory 15% -> 10%; verify-hits 400/400, and at batch
+//                                   128 the band walk's exact 2,640 hits
+//   RTX 3090, 297.5 W, this build   +1.52% (+-0.37, 49/49), verify-hits 400/400
+// The 3080 10 GB and the 3060 ran a 512-offset batch walked in strips of the width the flip
+// would take there (64 and 32 offsets): +0.03% and -0.63%. On the 3060 Ti the same strips
+// read +1.48% against the narrow batch's +1.92%.
+// Tried and dropped: tiles from a counter (PEARL_TALL_CTR) on top, -0.5% on the 3090 and
+// -2.5% on the 3060 Ti's strip walk; half a 256-offset batch's B' held, -1.9 to -2.2%; a
+// 256 to 2048-offset batch walked in strips whose B' the slice holds, below the narrow batch
+// on both cards (3060 Ti +0.41 to +1.79%, 3090 -0.31 to +0.52%). 0 turns it off.
 #ifndef PEARL_AMPERE_FLIP
 #define PEARL_AMPERE_FLIP 1
 #endif
