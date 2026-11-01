@@ -25,12 +25,17 @@
 #                 instead of each variant once right after its build. Each round ends with a line of every
 #                 variant's TMAC/s and its change against the first variant. Score from round 2: the first
 #                 carries a warm-up bias. Default 0, the old way.
+#   SWEEP_OPERANDS  miner: time the fold alone on the miner's operands, fill 48 plus the protocol's noise, as
+#                 hashrate.js mines; the operand bits move the clock of a card at its power limit. Default int8:
+#                 uniform int8, as before. The check always uses int8, which catches more mistakes.
 #   SWEEP_HASH    secs:warm for each hashrate.js run (default 40:10)
 #   SWEEP_ROUNDS  rounds of hashrate.js over the variants (default 2)
 #   SWEEP_CB      batch widths to try on one variant, e.g. "64 128" (default none)
 #   SWEEP_CBV     the variant SWEEP_CB runs on (default the first)
 #   SWEEP_TIMEONLY  variants to time although their check finds wrong words, space-separated, e.g. "drop" for
-#                 a -DPEARL_AMD_READOUT_DROP=1 build, whose transcripts are wrong on purpose (pearl_amd_fold.h).
+#                 a -DPEARL_AMD_READOUT_DROP=1 build or "abl2" for -DPEARL_AMD_ABLATE=2, whose transcripts are
+#                 wrong on purpose (pearl_amd_fold.h). hashrate.js runs them too: it mines at target 0, the
+#                 only target such a core takes.
 #                 One whose check passes is not timed: its flags did not change the fold. Nor is one whose
 #                 fold did not run to the end.
 #   SWEEP_ROOT    where the build logs and each variant's copy go (default /root)
@@ -53,8 +58,10 @@ IFS=: read -r HSECS HWARM <<< "${SWEEP_HASH:-40:10}"
 ROUNDS=${SWEEP_ROUNDS:-2}
 FOLD_ROUNDS=${SWEEP_FOLD_ROUNDS:-0}
 ROOT=${SWEEP_ROOT:-/root}
+OPERANDS=${SWEEP_OPERANDS:-}
 case "$FOLD_ROUNDS" in '' | *[!0-9]*) out "SWEEP_FOLD_ROUNDS must be a whole number, not $FOLD_ROUNDS"; exit 2 ;; esac
-out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}$([ "$FOLD_ROUNDS" -gt 0 ] && echo " x $FOLD_ROUNDS rounds in turn"); hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
+case "$OPERANDS" in '' | int8 | miner) ;; *) out "SWEEP_OPERANDS is int8 or miner, not $OPERANDS"; exit 2 ;; esac
+out "start $ARCH fold $FOLD; variants: $SWEEP${SWEEP_TIMEONLY:+ (timing only: $SWEEP_TIMEONLY)}; fold timing ${SWEEP_FOLD:-none}$([ "$FOLD_ROUNDS" -gt 0 ] && echo " x $FOLD_ROUNDS rounds in turn")${OPERANDS:+ on $OPERANDS operands}; hashrate ${HSECS}s+${HWARM}s x $ROUNDS"
 
 # PIN: a variant's k from -DPEARL_FOLD_K=K in its flags, unset otherwise. KOF: the k it is checked and timed at, PIN
 # or the k its fold test named (the k the core mines); unset when neither says, for k 2048.
@@ -68,9 +75,10 @@ launches() {
   echo "$n"
 }
 # The fold alone, timed: the foldtest's line for variant $1 at m $2, cols $3, launches $4 (at k 2048), spaces squeezed.
+# k 0 is the k the card mines; then the operands, when SWEEP_OPERANDS names them.
 fold_rate() {
-  timeout 900 $ROOT/var/$1/pearl_amd_foldtest "$2" "$3" 1 "$(launches "$1" "$4")" 0 "$FOLD" ${PIN[$1]:+"${PIN[$1]}"} 2>&1 \
-    | grep -E "^$FOLD" | sed 's/  */ /g'
+  timeout 900 $ROOT/var/$1/pearl_amd_foldtest "$2" "$3" 1 "$(launches "$1" "$4")" 0 "$FOLD" "${PIN[$1]:-0}" ${OPERANDS:+"$OPERANDS"} \
+    2>&1 | grep -E "^$FOLD" | sed 's/  */ /g'
 }
 
 # SWEEP_FOLD_ROUNDS: every variant in turn, each round, so a round compares them on the card as it is then.

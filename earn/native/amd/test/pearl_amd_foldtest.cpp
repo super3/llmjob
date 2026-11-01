@@ -1,7 +1,7 @@
 // Fold check: run every AMD fold this build has over random operands and compare each
 // region's 16 transcript words with a plain CPU computation.
 //
-//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k]
+//   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k] [int8|miner]
 //
 // Built for HIP-CPU (build-amd.sh cpu), it runs all five folds through the emulated matrix
 // instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
@@ -12,11 +12,17 @@
 // runs only the fold of that name (the reference fold is slow to time at big sizes); "all"
 // runs every one. `k` is the k to fold. By default it is the k the card mines: 4096 where
 // the card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), else 2048, or
-// the build's PEARL_FOLD_K where that is larger. The device line names it.
+// the build's PEARL_FOLD_K where that is larger. The device line names it; k 0 asks for it.
 //
 // Operands are random over all of int8, wider than the miner's int7 operands make, so a
 // sign or byte-order mistake cannot hide. B' has twice `cols` rows and the batch starts at
 // row `cols`, so a fold that ignores its column start fails too.
+//
+// `miner` folds what the miner folds instead: every byte PEARL_OPERAND_FILL (48) plus the
+// protocol's noise, so A' and B' sit in [-15, 111] (pearl_config.h, PEARL_OPERAND_CONST). The
+// bits the matrix units see move a power-capped card's clock (3-7% on a 4090, pearl_config.h),
+// so time on these when the clock matters: sweep.sh's SWEEP_OPERANDS=miner. The salt stamp,
+// 11 bytes of A, is left out.
 #include <hip/hip_runtime.h>
 
 #include <chrono>
@@ -41,6 +47,26 @@ uint32_t next_rand() {
   g_rng ^= g_rng >> 7;
   g_rng ^= g_rng << 17;
   return (uint32_t)g_rng;
+}
+
+// `rows` rows of k bytes as the miner fills them: PEARL_OPERAND_FILL plus the noise, in the
+// shape noise.js ports from the reference. A row's noise at kk is e[p0] - e[p1]: e is the row's
+// `rank` draws in [-32, 32), and p0 != p1 is one pair per kk, the same for every row.
+void miner_operands(std::vector<int8_t> &x, uint32_t rows, uint32_t k, uint32_t rank) {
+  std::vector<uint32_t> p0(k), p1(k);
+  for (uint32_t kk = 0; kk < k; kk++) {
+    const uint32_t u = next_rand();
+    p0[kk] = u & (rank - 1u);
+    p1[kk] = p0[kk] ^ (1u + (uint32_t)(((uint64_t)(rank - 1u) * u) >> 32));
+  }
+  std::vector<int32_t> e(rank);
+  for (uint32_t r = 0; r < rows; r++) {
+    for (auto &v : e) v = (int32_t)(next_rand() & 63u) - 32;
+    for (uint32_t kk = 0; kk < k; kk++) {
+      const int32_t v = PEARL_OPERAND_FILL + e[p0[kk]] - e[p1[kk]];
+      x[(size_t)r * k + kk] = (int8_t)(v < -128 ? -128 : v > 127 ? 127 : v);
+    }
+  }
 }
 
 bool ok(hipError_t e, const char *what) {
@@ -74,9 +100,14 @@ int main(int argc, char **argv) {
   const bool check = argc > 5 ? atoi(argv[5]) != 0 : true;
   const char *only = argc > 6 && argv[6][0] && strcmp(argv[6], "all") != 0 ? argv[6] : nullptr;
   const uint32_t kArg = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
+  const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const uint32_t rank = PEARL_FOLD_RANK;
   if (m == 0 || m % PEARL_AMD_BM || cols == 0 || cols % PEARL_AMD_BN) {
     fprintf(stderr, "m must be a multiple of %u and cols of %u\n", PEARL_AMD_BM, PEARL_AMD_BN);
+    return 2;
+  }
+  if (argc > 8 && !miner && strcmp(argv[8], "int8") != 0) {
+    fprintf(stderr, "operands are int8 or miner, not %s\n", argv[8]);
     return 2;
   }
   const uint32_t n = 2 * cols, col0 = cols;
@@ -109,10 +140,16 @@ int main(int argc, char **argv) {
   printf("device: %s, %s, %d CUs; k %u%s\n", prop.name, prop.gcnArchName, prop.multiProcessorCount, k,
          wrap ? ", wrap readout" : "");
 #endif
+  if (miner) printf("operands: the miner's, fill %d plus the noise\n", (int)PEARL_OPERAND_FILL);
 
   std::vector<int8_t> A((size_t)m * k), B((size_t)n * k);
-  for (auto &v : A) v = (int8_t)next_rand();
-  for (auto &v : B) v = (int8_t)next_rand();
+  if (miner) {
+    miner_operands(A, m, k, rank);
+    miner_operands(B, n, k, rank);
+  } else {
+    for (auto &v : A) v = (int8_t)next_rand();
+    for (auto &v : B) v = (int8_t)next_rand();
+  }
 
   // The reference: every element of the batch's C, after every chunk, folded per region.
   std::vector<uint32_t> want((size_t)regions * 16, 0u);

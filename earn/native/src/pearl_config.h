@@ -2804,9 +2804,17 @@ typedef struct {
 // (earn-cli, 2026-09-26, v0.5.6's fold). The verifier recomputes A' from the
 // leaves a share carries, and these are valid int7. If a pool ever refuses them,
 // PEARL_OPERAND_HASHED is the fallback (probes/README.md, "Operand values").
+//
+// -DPEARL_OPERAND_FILL=N builds another fill, to time against 48. Before the #ifndef, the define
+// here replaced the flag with only a warning, so such a build ran 48. No shipped build sets it.
 #define PEARL_OPERAND_HASHED 0u
 #define PEARL_OPERAND_CONST 1u
+#ifndef PEARL_OPERAND_FILL
 #define PEARL_OPERAND_FILL 48
+#endif
+#if PEARL_OPERAND_FILL < -63 || PEARL_OPERAND_FILL > 63
+#error "PEARL_OPERAND_FILL must be in [-63, 63]: int7, as A and B are (noise.js)"
+#endif
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
 // consensus does not depend on runtime string hashing; both are re-derived from

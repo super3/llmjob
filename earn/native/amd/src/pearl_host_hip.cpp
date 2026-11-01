@@ -115,6 +115,7 @@ struct Ctx {
   int fold = -1;            // index into kFolds; -1 until resolve_fold settles it
   bool emulated = false;    // the HIP-CPU build
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
+  bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
   char foldErr[512] = {0};
   char foldName[320] = {0};
@@ -690,6 +691,7 @@ void resolve_fold(Ctx *ctx) {
   }
   ctx->emulated = (caps[0] & PEARL_AMD_CAP_EMULATED) != 0;
   ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
+  ctx->timing = (caps[0] & PEARL_AMD_CAP_TIMING) != 0;
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   // Past 16 chunks only the wrap readout is right. Said here, at create, rather than at the first
   // batch: a k 4096 asked of an RDNA 3 card (PEARL_PROFILE_K) fails at once with the reason.
@@ -785,7 +787,9 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k moves: 2048
 // at rank 128. The card stays at it with PEARL_AMD_K=2048, or without the free VRAM k 4096 needs,
 // so it still mines; `note` then says why, for the log. A HIP error leaves the profile's k too,
-// and pearl_host_create reports the error.
+// and pearl_host_create reports the error. An ablation build (PEARL_AMD_CAP_TIMING) gets the
+// release's k, unlike a readout-drop build, so it times the fold the card mines; pearl_host_submit
+// keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
   if (note && note_len) note[0] = '\0';
   if (!profile) return 0;
@@ -1306,17 +1310,20 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     if (err && err_len) snprintf(err, err_len, "%s", ctx->foldErr);
     return false;
   }
-  // A PEARL_AMD_READOUT_DROP build (pearl_amd_fold.h) computes wrong transcripts, so a hit it
-  // reported would not be a real one. It runs only at target zero, the hardest, which is what
-  // hashrate.js sets: it times the fold and finds nothing. Any other target is a job it must
-  // not mine.
-  if (ctx->readoutDrop) {
+  // A PEARL_AMD_READOUT_DROP or PEARL_AMD_ABLATE build (pearl_amd_fold.h) computes wrong
+  // transcripts, so a hit it reported would not be a real one. It runs only at target zero, the
+  // hardest, which is what hashrate.js sets: it times the fold and finds nothing. Any other
+  // target is a job it must not mine.
+  if (ctx->readoutDrop || ctx->timing) {
     bool zero = true;
     for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
     if (!zero) {
-      if (err && err_len)
+      if (err && err_len && ctx->readoutDrop)
         snprintf(err, err_len, "readout-drop build is timing-only: it runs only at target 0 (hashrate.js), "
                  "never on a job; build without PEARL_AMD_READOUT_DROP to mine");
+      else if (err && err_len)
+        snprintf(err, err_len, "ablation build is timing-only: it runs only at target 0 (hashrate.js), "
+                 "never on a job; build without PEARL_AMD_ABLATE to mine");
       return false;
     }
   }

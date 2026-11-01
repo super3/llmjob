@@ -97,6 +97,7 @@
 #define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, emulated
 #define PEARL_AMD_CAP_DROP 0x200u      // a PEARL_AMD_READOUT_DROP build: timing only, never mines
 #define PEARL_AMD_CAP_KWRAP 0x400u     // the wrap readout (PEARL_AMD_KWRAP): k past 2048, the k RDNA 4 mines
+#define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -412,6 +413,33 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #define PEARL_AMD_READOUT_DROP 0
 #endif
 
+// PEARL_AMD_ABLATE: a build for timing only, whose transcripts are wrong. Each bit leaves one part of
+// the matrix fold out, to see what that part costs:
+//   2   no s_barrier at the end of a slab. The data is the same; nothing orders the LDS stores and
+//       loads. The fences around the barrier stay, so the memory waits they add (vmcnt(0) and an L0
+//       invalidate on RDNA 3) are still timed: only the wait for the other waves goes.
+//   8   no LDS fragment loads. On a GPU an empty asm gives each k-step new fragments, so they live
+//       no longer than loaded ones and the fold needs no more VGPRs (gfx11's is at 240, the most
+//       for 6 waves). Their values are whatever the registers hold and may stop changing, and a
+//       card at its power limit may then clock up, so the time it saves overstates the wait on
+//       LDS. The HIP-CPU build uses the first slab's fragments at every k-step instead.
+//   16  every block reads tile 0's operands, which stay in L2. The loads still run.
+// Bits 2 and 8 are in the PF2 loop only (RDNA 3 and RDNA 4); bit 16 is in either loop. They combine.
+// These are bits 2, 8 and 16 of the old knob, which 534e285 removed: it only ever worked in the
+// one-slab loop.
+// Every word a matrix fold stores is XORed with a constant, so the fold check always fails, even where
+// an ablation leaves the sums right (with no barrier the words can still come out right). test/sweep.sh
+// times a build named in SWEEP_TIMEONLY only when its check fails. The reference fold is left alone.
+// It must never mine or ship. Its code objects report PEARL_AMD_CAP_TIMING, and the host then refuses
+// any target but zero, the one hashrate.js sets. build-amd.sh refuses it in the builds that ship. Its k
+// is the release's (pearl_host_card_k), so on RDNA 4 it times the k 4096 fold the card mines.
+#ifndef PEARL_AMD_ABLATE
+#define PEARL_AMD_ABLATE 0
+#endif
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16)
+#error "PEARL_AMD_ABLATE takes bits 2, 8 and 16 only"
+#endif
+
 // PEARL_AMD_KWRAP: the readout for k past 2048 (round 4 item 5). The folds take k at run time, but past
 // 16 chunks today's readout is wrong: it writes each word once, onto zero, where chunk c must go into
 // word c % 16 after that word's rotl 13 (the reference's rule, reference.js). With this on, every fold
@@ -490,8 +518,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const int wr = wave / P::kWC, wc = wave % P::kWC;
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
+#if PEARL_AMD_ABLATE & 16
+  // PEARL_AMD_ABLATE bit 16: every block reads tile 0's operands, which stay in L2.
+  const int8_t *gA = Ap;
+  const int8_t *gB = Bp + (size_t)col0 * k;
+#else
   const int8_t *gA = Ap + (size_t)tileRow * k;
   const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
+#endif
 
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
@@ -537,6 +571,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
   __syncthreads();
+#if PEARL_AMD_ABLATE & 8
+#if PEARL_AMD_EMU || !defined(__HIP_DEVICE_COMPILE__)
+  // PEARL_AMD_ABLATE bit 8, HIP-CPU: the first slab's fragments, loaded once and used at every k-step.
+  typename P::AFrag a0[P::kMT];
+  typename P::BFrag b0[P::kNT];
+#pragma unroll
+  for (int mt = 0; mt < P::kMT; mt++) a0[mt] = P::load_a(sA[0] + wr * WM * S + mt * P::kTM * S, S, lane);
+#pragma unroll
+  for (int nt = 0; nt < P::kNT; nt++) b0[nt] = P::load_b(sB[0] + wc * WN * S + nt * P::kTN * S, S, lane);
+#endif
+#endif
   // The end of chunk c: its transcript word, for every region the wave holds.
 #if PEARL_AMD_KWRAP
   // PEARL_AMD_KWRAP: chunk c goes into word c % 16 after that word's rotl 13. Each word is written once
@@ -641,6 +686,22 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const int8_t *bBase = sB[B] + wc * WN * S;
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
+#if PEARL_AMD_ABLATE & 8
+      (void)aBase; (void)bBase;
+#if PEARL_AMD_EMU || !defined(__HIP_DEVICE_COMPILE__)
+      pearl_amd_mma_step<P>(acc, a0, b0);
+#else
+      // PEARL_AMD_ABLATE bit 8: new fragments with no load. Fragments kept across the loop would
+      // hold 16-32 more VGPRs. The asm isn't volatile and touches no memory, so nothing waits on
+      // it; its input differs at every k-step, so the compiler can neither hoist nor merge it.
+      static_assert(P::kMT == 4 && P::kNT == 4, "PEARL_AMD_ABLATE bit 8 is for the RDNA folds");
+      typename P::AFrag a[P::kMT];
+      typename P::BFrag b[P::kNT];
+      asm("" : "=v"(a[0]), "=v"(a[1]), "=v"(a[2]), "=v"(a[3]), "=v"(b[0]), "=v"(b[1]), "=v"(b[2]), "=v"(b[3])
+          : "s"(s * (uint32_t)(KS / P::kTK) + (uint32_t)kk));
+      pearl_amd_mma_step<P>(acc, a, b);
+#endif
+#else
       typename P::AFrag a[P::kMT];
       typename P::BFrag b[P::kNT];
 #pragma unroll
@@ -650,10 +711,23 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       for (int nt = 0; nt < P::kNT; nt++)
         b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
       pearl_amd_mma_step<P>(acc, a, b);
+#endif
     }
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+#if PEARL_AMD_ABLATE & 2
+    // PEARL_AMD_ABLATE bit 2: the barrier's fences without its s_barrier. __syncthreads() is the
+    // workgroup pair for every address space, PFX's barrier the LDS-only pair.
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #if PEARL_AMD_PFX
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup", "local");
+#else
+    __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup");
+    __builtin_amdgcn_fence(__ATOMIC_ACQUIRE, "workgroup");
+#endif
+#endif
+#elif PEARL_AMD_PFX
     pearl_amd_lds_barrier();
 #else
     __syncthreads();
@@ -666,6 +740,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
 #else
+#if PEARL_AMD_ABLATE & 10
+  // Only a compile pass that builds this fold stops here: the condition depends on P.
+  static_assert(sizeof(P) == 0, "PEARL_AMD_ABLATE bits 2 and 8 are in the PF2 loop only: add -DPEARL_AMD_PF2=1");
+#endif
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
     if (s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
@@ -702,8 +780,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + roIdx;
         const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
         uint32_t *w = tr + ((size_t)colIdx * rows_valid + rowIdx) * PEARL_JACKPOT_BUCKETS;
+#if PEARL_AMD_ABLATE
+        // PEARL_AMD_ABLATE: wrong words on purpose, so the fold check always fails.
+        w[r] = keepLo[rb][cb][q] ^ 0x5A5A5A5Au;
+        w[r + 8] = keepHi[rb][cb][q] ^ 0x5A5A5A5Au;
+#else
         w[r] = keepLo[rb][cb][q];
         w[r + 8] = keepHi[rb][cb][q];
+#endif
       }
 #undef PEARL_AMD_LOAD
 #undef PEARL_AMD_LOADR
@@ -886,8 +970,9 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 
 // Which folds this code object has bodies for, and its wave size: out[0] and out[1]. A
 // PEARL_AMD_READOUT_DROP build says so on every target, the ones its drop leaves alone too, so
-// the host refuses to mine with it on any card. A code object with the wrap readout says so too:
-// it is how the host knows a card can mine k 4096 (pearl_host_card_k).
+// the host refuses to mine with it on any card. A PEARL_AMD_ABLATE build says so the same way,
+// with PEARL_AMD_CAP_TIMING. A code object with the wrap readout says so too: it is how the host
+// knows a card can mine k 4096 (pearl_host_card_k).
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -901,5 +986,8 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
 #endif
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
+#if PEARL_AMD_ABLATE
+  out[0] |= PEARL_AMD_CAP_TIMING;
+#endif
   out[1] = (uint32_t)warpSize;
 }
