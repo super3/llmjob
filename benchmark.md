@@ -682,6 +682,28 @@ spread between `pmevent.mask 0` fences), 2x2 against the release build. Not rows
   it replaced. The code is reverted; the verify stage was not run.
 - **Cost:** two high-priority boxes for about 15 minutes each, about $0.06.
 
+### Our own builds raced on Salad, 1 November: what the tile hash costs
+
+Research item 12, raced at 05:39 UTC on 2026-11-01 at `015c02e`, in race mode as above, on `nvtest` boxes. Timing-only
+stand-ins in the tall fold's hasher branch (they refuse to mine): `nohash` (`PEARL_TALL_STUB_SPIN=1`: no hash at all,
+the like-for-like reference), `s0`/`s0s` (spin 3,000 / 1,700 cycles from the hand-off), and `s1` (`PEARL_TALL_STUB_ALU`:
+the hash's issue count from 816 bytes of code). Not rows: no competitor ran.
+
+| Card | Machine ID | no hash | spin 1,700 | spin 3,000 | ALU burst | hash ablation | A/A copy |
+|---|---|---|---|---|---|---|---|
+| RTX 4070 (142 W of 200, 2,112 MHz) | 60ddb754 | +1.69% (19/20) | +1.79% | +1.31% | +0.49% | +2.14% | −0.16% ±0.13 |
+| RTX 3060 Ti (147 W of 200, 1,473 MHz) | b1a5c182 | +1.42% (24/25) | +1.16% | +0.50% | +0.27% | not run | not run |
+
+- **The tile hash costs RTX 30 and 40 about 1.4-1.7%,** far more than round 4's +0.15-0.2% estimate. Both PCs ran
+  below their power limits, so this is per clock.
+- **Most of it is issue contention:** the ALU burst, which keeps the hash's instruction count but not its code or its
+  waits, keeps almost all the cost. Waiting through the partner's window costs little (spin 1,700 matches no hash).
+  The existing hash ablation reads high because it also reschedules the chunk loop.
+- **So no cheap fix follows.** The matching fix is SASS control bits that let the hasher yield, which needs an
+  sm_86/sm_89 port of the sm_75 patcher; items 17 and 18 (readout pacing, warp turn-taking) aim at the same cost.
+  The stand-ins stay in the code, off, as their gauge.
+- **Cost:** two high-priority boxes for about 13 minutes each, about $0.05.
+
 ## RTX 40-series
 
 Run on 2026-10-10, 16:04–19:46 UTC. Ten rows are on their own machine; eight
