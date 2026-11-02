@@ -4471,7 +4471,7 @@ class TestKryptex(Base):
         new.update(ended=self.clock[0], hm_units=1.0, hm_gross=0.5)  # ended since
         report = self.report()
         self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 0\.940 \|\n")
-        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
+        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
         self.assertIn(f"| Ended{w.NB}×2 | — | — | — | 2.500* |\n", report)
         self.assertIn("| **5.380\\*** |\n", report)
 
@@ -4485,7 +4485,8 @@ class TestKryptex(Base):
         self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
         report = self.report()
         self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", report.replace("⛏️", "⏳"))
-        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch |", report)                # no group number: biz-rtx4080-2 is "4080"
+        self.assertNotIn("4080-2", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", shown(report))
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", shown(report))
         self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
@@ -4493,7 +4494,7 @@ class TestKryptex(Base):
         # Kryptex pays 94% of a share's value, so its shares (4 PRL at the network's rate) are 3.76 PRL, not starred.
         # HeroMiners' count (10 PRL of work) at its credit ratio is 8, starred: it pays by its luck.
         self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
-        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
+        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
         self.assertIn("| **11.760\\*** |\n", report)
 
     def test_each_pools_name_links_to_its_page_for_our_address(self):
@@ -4513,8 +4514,7 @@ class TestKryptex(Base):
         a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
         gone["ended"] = self.clock[0]                     # an ended HeroMiners group doesn't bring the mark back
         report = self.report()
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch |", report)
-        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertEqual(report.count(f"| ⏳{w.NB}4080{w.NB}batch |"), 2)   # both boxes, without their numbers
         self.assertNotIn("(K)", report)
         b["kx"] = False                                   # one box back on HeroMiners: Kryptex boxes are marked again
         self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", self.report())

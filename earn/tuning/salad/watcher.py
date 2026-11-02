@@ -2726,11 +2726,12 @@ class W:
             run_cost += 0.0 if start else cost
             org = g.get("org") or ORG
             org_cost[org] = org_cost.get(org, 0.0) + cost
-            # One cell for the box: state, group name less "biz-rtx" and priority, joined by no-break spaces, and
-            # its org when that isn't ORG, short as the founder asked on 29 October: llmjob2 is "(2)".
+            # One cell for the box: state, group name less "biz-rtx" and its number, and priority, joined by no-break
+            # spaces, and its org when that isn't ORG, short as the founder asked on 29 October: llmjob2 is "(2)".
+            # The number went on 2 November, at the founder's asking, so a row fits on one line; the events keep it.
             pri = "med" if g["pri"] == "medium" else g["pri"]
             tag = f"({org[len(ORG):] if org.startswith(ORG) and org != ORG else org})"
-            box = NB.join([state, re.sub(r"^biz-(rtx)?", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
+            box = NB.join([state, re.sub(r"^biz-(rtx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
                           + ([tag] if org != ORG else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
