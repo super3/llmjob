@@ -821,6 +821,45 @@ The 3060 Ti's rounds agreed to within 2 cycles a tile, and the 4070 Super's to w
   there. On the 4070 Super it isn't (H is negative).
 - **Cost:** two high-priority boxes for about 15 minutes each, about $0.08.
 
+### Our own builds on Salad, 2 November: a shorter hash on the 3060 Ti (Z6 and f39)
+
+Run at 07:34 UTC on 2026-11-02 at `3846a92` on one `nvtest` box, a 3060 Ti at 200 W (machine `d03cc581`). It ran
+bench (5 rounds of 20 s), then verify, then the hit-list check against base. The planning round left two ways to make
+the hash phase shorter, and these are their tests. Not rows: no competitor ran.
+
+- **Z6** clears each slot's transcripts with 6 conflict-free stores instead of 8 conflicted ones
+  (`PEARL_TALL_TR_ZERO6`). The arms carry clock stamps:
+  - `hpbase`: base;
+  - `hpz6`: Z6;
+  - `hpz0`: no clearing at all (timing only). This is the most any store-side change could win.
+- **f39** puts the hash's adds on the FMA pipe as IMAD by a 1 ptxas can't see (`PEARL_TALL_HASH_FMA`). The arms
+  carry tile cycles only:
+  - `c-base`;
+  - `c-f39`;
+  - `c-f39o2` (`PEARL_TALL_HASH_ONE`): ptxas can see the 1, so it gets f39's chunk loop with the plain hash. That
+    makes it the price of the loop.
+
+| Cycles a tile (median of 5; every round within 1) | hpbase | hpz6 | hpz0 | c-base | c-f39 | c-f39o2 |
+|---|---|---|---|---|---|---|
+| RTX 3060 Ti | 102,748 | 102,763 | 102,728 | 102,707 | 106,224 | 106,090 |
+
+- **Dropped: Z6, and all store-side work.** No clearing at all saves only 20 cycles a tile. The plan needed 30. Z6
+  itself is 15 cycles worse.
+  - As a mining build, z6 read +0.05 to +0.25% over base in 5 of 5 bench rounds. That is under the +0.3% bar, and
+    bench rounds wander by more than that, so it was not raced.
+- **Dropped: f39, and any edit to the hash's code on the fused fold.**
+  - An edit that changes the hash makes ptxas reallocate the chunk loop, which then costs 3,383 cycles a tile (about
+    3.3%). f39 lands at −3,517, which is −3.4%.
+  - October's 4090 run lost the same way.
+- **Both forms mine correctly.** Verify passed for c-base, c-f39, c-f39o2 and z6: 400 of 400 hits checked, none
+  wrong. In all four shapes the hit-list check against base matched batch for batch.
+- **That closes the RTX 30/40 hash line.** On the 3060 Ti the hash costs 1.3% of a tile, almost all of it the run past
+  the partner's window. That cost can't be reached:
+  - the window can't widen without costing more than it frees (g6);
+  - the clearing is worth only 20 cycles;
+  - the hash can't change without moving the chunk loop.
+- **Cost:** one high-priority box for about 25 minutes, about $0.07.
+
 ## RTX 40-series
 
 Run on 2026-10-10, 16:04–19:46 UTC. Ten rows are on their own machine; eight

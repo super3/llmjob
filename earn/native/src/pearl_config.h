@@ -1960,7 +1960,8 @@ typedef struct {
 // The test, one 3060 Ti, all three with stamps and _PRE: base, ZERO6 and NOZERO. Store-side
 // work is dead if NOZERO saves under 30 cycles a tile; ZERO6 passes at 30 or more in every
 // round and at least 60% of NOZERO's saving. Even then it is worth 20 to 60 cycles, so it
-// ships only in a bundle that passes.
+// ships only in a bundle that passes. Measured 2 Nov on a 3060 Ti (benchmark.md): NOZERO
+// saves 20 cycles a tile and ZERO6 costs 15, so store-side work is dropped.
 // CUDA 12.6 and 12.8.1, sm_86 (both kernels) and sm_89: all three keep base's registers (254
 // and 255) with no spill, and the stamped base's chunk loop byte for byte. Their hashes are not
 // the same code: ptxas schedules the hash around the stores, so on sm_86 (both kernels) the
@@ -2028,8 +2029,11 @@ typedef struct {
 // The hasher's path is 1,340 instructions on sm_86 (1,200 with HASH_ONE, 1,167 shipped).
 // On the CPU, pearl_kernel.cu's own pearl_hpf_msw and pearl_hpf_msw_pair, built for the host
 // with the pair's shuffles on two threads, gave pearl_transcript_msw's word in 2M whole and
-// 200k paired compressions over both byte orders, and a 1 of 3 broke every one. Not yet run
-// on a GPU. At 0 every kernel is byte for byte what it was. earn/test/tallHashStub.test.js.
+// 200k paired compressions over both byte orders, and a 1 of 3 broke every one. Measured 2 Nov
+// on a 3060 Ti (benchmark.md): the loop costs 3,383 cycles a tile and HASH_FMA loses 3,517
+// (-3.4%), so hash-form work on the fused fold stops. Both mine correctly: verify and the
+// hit-list check against base pass. At 0 every kernel is byte for byte what it was.
+// earn/test/tallHashStub.test.js.
 #ifndef PEARL_TALL_HASH_FMA
 #define PEARL_TALL_HASH_FMA 0
 #endif
