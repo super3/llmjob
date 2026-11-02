@@ -1930,10 +1930,11 @@ class TestCreditRatio(Base):
         # The credit left ($100 less $6.00 spent); no box is billing, so no hours.
         self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 · 0/1 mining · Salad $94.00* left")
 
-    def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
+    def test_the_empty_slots_share_one_row_with_their_count(self):
         report = self.report(cfg={"max_active": 10})
-        empty = f"| ⬜{w.NB}empty | — | — | — | — |"
-        self.assertEqual(report.count(empty + "\n"), 9)              # 1 group, 10 slots
+        empty = f"| ⬜{w.NB}empty{w.NB}×9 | — | — | — | — |"
+        self.assertEqual(report.count(empty + "\n"), 1)              # 1 group, 10 slots: one row for the other 9
+        self.assertEqual(report.count("empty"), 1)
         self.assertIn(" · 0/10 mining · Salad $", report)                    # counted against the slots, not the groups
         rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
@@ -1965,12 +1966,12 @@ class TestCreditRatio(Base):
     def test_salads_quota_caps_the_rows_too(self):
         self.x.st["quota"] = 3
         report = self.report(cfg={"max_active": 10})
-        self.assertEqual(report.count(f"| ⬜{w.NB}empty |"), 2)
+        self.assertIn(f"| ⬜{w.NB}empty{w.NB}×2 |", report)
         self.assertIn(" · 0/3 mining · Salad $", report)
 
     def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
         self.x.cfg["xmr_wallet"] = "4abc"
-        self.assertIn(f"| ⬜{w.NB}empty | — | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
+        self.assertIn(f"| ⬜{w.NB}empty{w.NB}×1 | — | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
 
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
