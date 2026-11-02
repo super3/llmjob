@@ -1531,7 +1531,9 @@ stage 0 EMPTY after its first chunk).
   hash's sleep, so its energy is not compared.
 
 compilers.sh's `multicast` stage builds and runs it, then `multicast-read.js` prints the
-reading. Not run on a card yet.
+reading. On a stock RTX 5090 (2 November, `b68b039`) the card granted 85 two-CTA clusters and
+arms e, a and d ran, but arm b, the multicast, never finished: multicast doesn't complete on
+sm_120 (benchmark.md, RTX 50).
 
 ## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
 
