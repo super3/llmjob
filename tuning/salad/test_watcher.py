@@ -1976,7 +1976,7 @@ class TestCreditRatio(Base):
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # The box's work is worth 8 PRL at the network's rate; the pool credits 75%: 6.
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch | — | — | — | 6.000* |\n", report)
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat. | — | — | — | 6.000* |\n", report)
         self.assertIn("| **6.000\\*** |\n", report)  # the All row
 
     def test_the_ratio_has_a_floor(self):
@@ -2683,7 +2683,7 @@ class TestSaladBalance(Base):
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
         self.assertIn("(llmjob 4 days · llmjob2 2 days)", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
-            self.assertIn(f"2060{w.NB}batch{w.NB}(2) |", f.read())       # the box says which org it's in, short
+            self.assertIn(f"2060{w.NB}bat.{w.NB}(2) |", f.read())       # the box says which org it's in, short
 
     def test_off_without_the_login(self):
         del os.environ["SALAD_PASS"]
@@ -2748,7 +2748,7 @@ class TestRound(Base):
         self.assertIn("FIRST SHARE biz-rtx4080", ev)
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}bat. | 199 |", report)
         self.assertIn(" · 1/1 mining · Salad $", report)
         self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
@@ -3027,8 +3027,8 @@ class TestMonero(Base):
         self.x.write_report()
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
-        self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
-        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}batch | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
+        self.assertIn(f"| 🧠{w.NB}4080{w.NB}bat. | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}bat. | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
         rows = [l for l in report.splitlines() if l.startswith("| ") and "%" in l.split("|")[5]]
         self.assertEqual(len(rows), 2)                     # the box with a reading, and the All row
         # The paused box's bill is left out of the total, as a starting box's is; the quiet one's counts.
@@ -3050,8 +3050,8 @@ class TestMonero(Base):
         self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
         # 0.0001 XMR from HeroMiners' count of its Monero work, starred.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13*{w.NB}(+54%*) | 0.000 | 0.000100* |", report)
-        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}bat. | 200 | 2.0 | 0.11 | +0.13*{w.NB}(+54%*) | 0.000 | 0.000100* |", report)
+        self.assertIn(f"| ⏳{w.NB}2060{w.NB}bat. | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
         self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", shown(report))  # straight from the pool: no stars
@@ -4470,8 +4470,8 @@ class TestKryptex(Base):
         old.update(ended=self.clock[0], prl=2.0)                     # ended before the counts: the ledger's estimate
         new.update(ended=self.clock[0], hm_units=1.0, hm_gross=0.5)  # ended since
         report = self.report()
-        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 0\.940 \|\n")
-        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 0\.940 \|\n")
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
         self.assertIn(f"| Ended{w.NB}×2 | — | — | — | 2.500* |\n", report)
         self.assertIn("| **5.380\\*** |\n", report)
 
@@ -4484,8 +4484,8 @@ class TestKryptex(Base):
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
         report = self.report()
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", report.replace("⛏️", "⏳"))
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch |", report)                # no group number: biz-rtx4080-2 is "4080"
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat.{w.NB}(K) |", report.replace("⛏️", "⏳"))
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat. |", report)                # no group number: biz-rtx4080-2 is "4080"
         self.assertNotIn("4080-2", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", shown(report))
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", shown(report))
@@ -4494,7 +4494,7 @@ class TestKryptex(Base):
         # Kryptex pays 94% of a share's value, so its shares (4 PRL at the network's rate) are 3.76 PRL, not starred.
         # HeroMiners' count (10 PRL of work) at its credit ratio is 8, starred: it pays by its luck.
         self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
-        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 8\.000\* \|\n")
         self.assertIn("| **11.760\\*** |\n", report)
 
     def test_each_pools_name_links_to_its_page_for_our_address(self):
@@ -4514,10 +4514,10 @@ class TestKryptex(Base):
         a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
         gone["ended"] = self.clock[0]                     # an ended HeroMiners group doesn't bring the mark back
         report = self.report()
-        self.assertEqual(report.count(f"| ⏳{w.NB}4080{w.NB}batch |"), 2)   # both boxes, without their numbers
+        self.assertEqual(report.count(f"| ⏳{w.NB}4080{w.NB}bat. |"), 2)   # both boxes, without their numbers
         self.assertNotIn("(K)", report)
         b["kx"] = False                                   # one box back on HeroMiners: Kryptex boxes are marked again
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", self.report())
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat.{w.NB}(K) |", self.report())
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False
@@ -4759,7 +4759,7 @@ class TestGemma(Base):
         self.assertEqual(self.events().count("PAUSED biz-rtx4080: mining stopped on PC m1 while Gemma answers a prompt"), 1)
         self.assertTrue(self.x.paused(g, self.clock[0]))
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
-            self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch |", f.read())
+            self.assertIn(f"| 🧠{w.NB}4080{w.NB}bat. |", f.read())
         items.append({"text_log": "[mining g0] 08:09:00 199.0 TH/s · 10 accepted · 0 rejected · up 0h 34m",
                       "time": "2027-01-15T08:09:00Z", "resource": lab})
         self.clock[0] = T0 + 600
