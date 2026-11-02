@@ -6,7 +6,11 @@
 // why it matters, is explained there; the comments here say what differs:
 //   - Which fold runs is read off the card's gfx architecture (resolve_fold), and checked
 //     against the folds the loaded code object has bodies for (pearl_amd_caps).
-//     PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12 picks one by hand.
+//     PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12|dot4 picks one by hand.
+//   - A card whose fold has not run on its kind of card in a release (gfx9, gfx103x, or an
+//     architecture the host could not read) mines only for an opener that checks every hit
+//     before sending it (pearl_host_create_checked). PEARL_AMD_UNTESTED=1 also opens it for one
+//     that checks nothing, for hashrate.js, which sends no shares (resolve_fold).
 //   - A card whose code object has the wrap readout (RDNA 4) mines k 4096 when the miner lets the
 //     core choose (pearl_host_card_k); every other card mines the profile's k. PEARL_AMD_K=2048
 //     keeps every card at k 2048.
@@ -94,6 +98,8 @@ const FoldInfo kFolds[] = {
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3), hash in its own kernel"},
     {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN,
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4), hash in its own kernel"},
+    {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN,
+     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers, hash in its own kernel"},
 };
 const int kFoldCount = (int)(sizeof kFolds / sizeof kFolds[0]);
 
@@ -103,13 +109,14 @@ int fold_by_name(const char *name) {
   return -1;
 }
 
-// The fold a gfx architecture runs by default: its matrix instruction, or the reference
-// fold where it has none (RDNA2 and older).
+// The fold a gfx architecture runs by default: its matrix instruction; on RDNA2, which has
+// none, the dot4 fold; and the reference fold on anything else.
 int native_fold(const char *arch) {
   if (!strncmp(arch, "gfx942", 6) || !strncmp(arch, "gfx950", 6)) return fold_by_name("mfma16");
   if (!strncmp(arch, "gfx90a", 6) || !strncmp(arch, "gfx908", 6)) return fold_by_name("mfma8");
   if (!strncmp(arch, "gfx11", 5)) return fold_by_name("wmma11");
   if (!strncmp(arch, "gfx12", 5)) return fold_by_name("wmma12");
+  if (!strncmp(arch, "gfx103", 6)) return fold_by_name("dot4");
   return fold_by_name("ref");
 }
 
@@ -122,6 +129,8 @@ struct Ctx {
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
+  bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
+  bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
 #if PEARL_AMD_STAMP
   bool stamp = false;           // a PEARL_AMD_CAP_STAMP build: the folds store clock stamps (pearl_amd_fold.h)
   uint32_t *dStamps = nullptr;  // where they go: PEARL_AMD_STAMP_WORDS words for each wave of a batch
@@ -732,7 +741,7 @@ void resolve_fold(Ctx *ctx) {
   if (forced && forced[0]) {
     want = fold_by_name(forced);
     if (want < 0) {
-      snprintf(err, err_len, "PEARL_AMD_FOLD=%s is not a fold: use ref, mfma16, mfma8, wmma11 or wmma12",
+      snprintf(err, err_len, "PEARL_AMD_FOLD=%s is not a fold: use ref, mfma16, mfma8, wmma11, wmma12 or dot4",
                forced);
       return;
     }
@@ -742,21 +751,31 @@ void resolve_fold(Ctx *ctx) {
              kFolds[want].name, ctx->arch[0] ? ctx->arch : "this card", caps[0]);
     return;
   }
-  // The folds on CDNA (gfx9: mfma8, mfma16) and on RDNA 2 (gfx103x: the reference fold on
-  // v_dot4c) have run only through the CPU emulation. If a card's matrix layout differs from
-  // the documented one, every hash is wrong yet meets the target, so every share is sent and
-  // rejected, and a pool can ban the address for it. They mine only once the owner has run the
-  // checks (README.md, "Testing on real hardware") and set PEARL_AMD_UNTESTED=1. A card whose
-  // architecture could not be read (hipGetDeviceProperties failed) gets the reference fold and
-  // could be one of these, so it is held back the same way.
-  const char *untested = getenv("PEARL_AMD_UNTESTED");
-  if (!ctx->emulated && (!ctx->arch[0] || !strncmp(ctx->arch, "gfx9", 4) || !strncmp(ctx->arch, "gfx103", 6))
-      && !(untested && !strcmp(untested, "1"))) {
-    snprintf(err, err_len,
-             "the %s fold has not run on %s%s card yet, so every share could be rejected: run the checks in "
-             "earn/native/amd/README.md (\"Testing on real hardware\"), then set PEARL_AMD_UNTESTED=1 to mine",
-             kFolds[want].name, ctx->arch[0] ? "a " : "", ctx->arch[0] ? ctx->arch : "this unidentified");
-    return;
+  // The folds on CDNA (gfx9: mfma8, mfma16) have run only through the CPU emulation, and the
+  // one on RDNA 2 (gfx103x: dot4) on RDNA 3 cards and the CPU, never on an RDNA 2 card. If a
+  // card's layout differs from the one the fold was written for, every hash is wrong yet meets
+  // the target, so every share is sent and rejected, and a pool can ban the address for it. A
+  // card whose architecture could not be read (hipGetDeviceProperties failed) gets the reference
+  // fold and could be one of these, so it counts as one. Such a card mines with every hit
+  // checked: its opener recomputes each hit in JS before sending it (checkHits, pearlMiner.js),
+  // and ctx->untested tells it to. PEARL_AMD_UNTESTED=1 does not change that. It only opens the
+  // card for an opener that checks nothing, which is for hashrate.js: it sends no shares. In
+  // v0.6.8 and v0.6.9 it let such a card mine with no check, and the error there told RX 6000
+  // owners to set it for the reference fold those cards ran then. They now run dot4, so a setting
+  // carried over must not vouch for it. A kind of card leaves this list here, once one has passed
+  // the checks in README.md ("Testing on real hardware"). Any other opener is refused.
+  const char *unchecked = getenv("PEARL_AMD_UNTESTED");
+  if (!ctx->emulated && (!ctx->arch[0] || !strncmp(ctx->arch, "gfx9", 4) || !strncmp(ctx->arch, "gfx103", 6))) {
+    if (ctx->checkHits) {
+      ctx->untested = true;
+    } else if (!(unchecked && !strcmp(unchecked, "1"))) {
+      snprintf(err, err_len,
+               "the %s fold has not run on %s%s card yet, so every share could be rejected: it mines only with "
+               "every hit checked, as the app and verify-hits.js do. For an opener that sends no shares, set "
+               "PEARL_AMD_UNTESTED=1 (earn/native/amd/README.md, \"Testing on real hardware\")",
+               kFolds[want].name, ctx->arch[0] ? "a " : "", ctx->arch[0] ? ctx->arch : "this unidentified");
+      return;
+    }
   }
   ctx->fold = want;
 }
@@ -861,7 +880,13 @@ extern "C" void pearl_host_destroy(void *handle);
     }                                                                             \
   } while (0)
 
-extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len) {
+// pearl_host_create for an opener that recomputes every hit before it sends it (check_hits: the
+// app's PearlMiner, with shared/miner/checkHit.js). Such an opener gets a card whose fold has not
+// run on its kind of card (resolve_fold), and *untested says when it got one, so that it checks
+// that card's hits, whatever PEARL_AMD_UNTESTED says. pearl_host_create is this with neither.
+extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool check_hits, bool *untested,
+                                           char *err, size_t err_len) {
+  if (untested) *untested = false;
   if (!profile) { fail(err, err_len, "no profile supplied"); return nullptr; }
   int devices = 0;
   if (!count_devices(&devices, err, err_len)) return nullptr;
@@ -895,6 +920,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
 
   Ctx *ctx = new Ctx();
   ctx->profile = *profile;
+  ctx->checkHits = check_hits;
   if (hipGetDevice(&ctx->device) != hipSuccess) ctx->device = 0;
 #if !defined(__HIP_CPU_RT__)
   {
@@ -1001,7 +1027,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
            "pointing the folds at the clock stamps");
   }
 #endif
+  if (untested) *untested = ctx->untested;
   return ctx;
+}
+
+// For an opener that checks no hits: a card whose fold has not run on its kind of card is
+// refused, unless PEARL_AMD_UNTESTED=1 (for an opener that sends no shares, resolve_fold).
+extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len) {
+  return pearl_host_create_checked(profile, false, nullptr, err, err_len);
 }
 
 extern "C" void pearl_host_bind_thread(void *handle) {
@@ -1457,6 +1490,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       break;
     case PEARL_AMD_CAP_WMMA12:
       hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
+      break;
+    case PEARL_AMD_CAP_DOT4:
+      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);
       break;
     default:
       hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr);

@@ -1202,8 +1202,8 @@ describe('PearlMiner — one core per card', () => {
     const b = fleet();
     b.m.start({ ...settings, gpus: GPUS });
     expect(b.made.map((c) => c.opts)).toEqual([
-      { saltBase: 0, saltStride: 2, deviceIndex: 0, cardK: true },
-      { saltBase: 1, saltStride: 2, deviceIndex: 1, cardK: true },
+      { saltBase: 0, saltStride: 2, deviceIndex: 0, cardK: true, checkHits: true },
+      { saltBase: 1, saltStride: 2, deviceIndex: 1, cardK: true, checkHits: true },
     ]);
   });
 
@@ -1274,7 +1274,7 @@ describe('PearlMiner — one core per card', () => {
     const b = fleet();
     b.m.start(settings);
     expect(b.made).toHaveLength(1);
-    expect(b.made[0].opts).toEqual({ saltBase: 0, saltStride: 1, cardK: true });
+    expect(b.made[0].opts).toEqual({ saltBase: 0, saltStride: 1, cardK: true, checkHits: true });
   });
 
   // A factory that returns nothing instead of throwing is the same answer: no
@@ -1597,7 +1597,7 @@ describe('PearlMiner — restarting a card that stopped', () => {
 
     // The same card, in the same lane, on salts its first run never reaches.
     expect(b.createCore.mock.calls[2][1]).toEqual({
-      deviceIndex: 1, saltStride: 2, saltBase: 1 + 2 * SALT_RUN, cardK: true,
+      deviceIndex: 1, saltStride: 2, saltBase: 1 + 2 * SALT_RUN, cardK: true, checkHits: true,
     });
     const again = coreFor(b, 1);
     expect(again).not.toBe(first);
@@ -1633,7 +1633,7 @@ describe('PearlMiner — restarting a card that stopped', () => {
 
     b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
     jest.advanceTimersByTime(RESTART_MS);
-    expect(b.createCore.mock.calls[1][1]).toEqual({ deviceIndex: 1, saltStride: 1, saltBase: SALT_RUN, cardK: true });
+    expect(b.createCore.mock.calls[1][1]).toEqual({ deviceIndex: 1, saltStride: 1, saltBase: SALT_RUN, cardK: true, checkHits: true });
     expect(b.made[1].setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
     expect(b.events.error).toEqual([]);
     expect(b.events.stopped).toEqual([]);
@@ -1688,6 +1688,26 @@ describe('PearlMiner — restarting a card that stopped', () => {
     expect(b.m.devices()).toEqual([GPUS[0]]);
     expect(b.m.isRunning()).toBe(true);
     expect(b.events.error).toEqual([]);
+  });
+
+  // The other card waiting for its restart is still one of the run's cards, so
+  // one card left off for good does not end the run and clear that restart.
+  test('a card left off while the other waits for its restart does not end the run', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    for (let i = 0; i < RESTART_LIMIT; i++) {
+      coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    coreFor(b, 0).emit('error', new Error('GPU 0: ' + ILLEGAL));
+    coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+    expect(b.lines()).toContain('leaving GPU 1 (NVIDIA GeForce RTX 4070) off: it stopped again within 10 '
+      + 'minutes of each of 3 restarts. Stop and start mining to try it again.');
+    expect([b.m.isRunning(), b.events.error, b.events.stopped]).toEqual([true, [], []]);
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.createCore).toHaveBeenCalledTimes(3 + RESTART_LIMIT);
+    expect(b.m.devices()).toEqual([GPUS[0]]);
+    expect(b.m.isRunning()).toBe(true);
   });
 
   // A card that mined ten minutes since it came back was healthy, so a fault
@@ -2086,7 +2106,7 @@ describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
     const again = coreFor(b, 0);
     expect(again).not.toBe(b.made[0]);
     // A fresh run of salts, so the pool is never sent a share twice.
-    expect(b.createCore.mock.calls[2][1]).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: true });
+    expect(b.createCore.mock.calls[2][1]).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: true, checkHits: true });
     expect(again.setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
     expect(b.m.devices()).toEqual([GPUS[1], GPUS[0]]);
     expect(b.lines().length).toBe(before);
@@ -2561,7 +2581,7 @@ describe('PearlMiner — each card mines its own k', () => {
       expect(r.lines).toContain(FALLBACK);
       expect(old.stop).toHaveBeenCalledTimes(1);
       expect(r.made).toHaveLength(3);
-      expect(r.made[2].opts).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: false });
+      expect(r.made[2].opts).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: false, checkHits: true });
       expect(r.core(0).setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
       expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048, 2048]);
       expect(r.lines.filter((l) => l === 'mining on GPU 0 · Radeon 0')).toHaveLength(1);
@@ -2745,5 +2765,229 @@ describe('PearlMiner — each card mines its own k', () => {
       expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048]);
       r.m.stop();
     });
+  });
+});
+
+// A card whose fold has not run on its kind of card in a release (core.untested; on AMD, RX 6000 and Instinct
+// cards) mines with every hit it would send recomputed first (shared/miner/checkHit). The hits here are
+// genuine, built in JS as the device builds them; a wrong one has one transcript word changed, as a fold that
+// is wrong on the card would give, with its proofs and seeds right.
+describe('PearlMiner — checking the hits of an untested card', () => {
+  const { hitFor: genuine } = require('./helpers/pearlHit');
+  const { penalizedAdjustmentFactor } = require('../src/shared/miner/pearlhash');
+  const SMALL = { ...PROFILE, m: 64, n: 64 };
+  const MAX = (1n << 256n) - 1n;
+  // A pool target whose bound every hash meets, so a hit is found in the first region.
+  const T = MAX / BigInt(penalizedAdjustmentFactor(SMALL));
+  const EASY = T.toString(16).padStart(64, '0');
+  const JOB = '00000000_2097152';
+  const opts = { bound: shareBound(T, SMALL), jobId: JOB };
+  const GOOD = genuine(SMALL, Buffer.from(HEADER, 'hex'), opts);
+  const WRONG = genuine(SMALL, Buffer.from(HEADER, 'hex'), { ...opts, tamper: (jp) => { jp[5] ^= 1; } });
+  const FOLD = 'dot4 128x256, 8 waves of 64x64, v_dot4 from registers, hash in its own kernel, batch 256 column '
+    + 'offsets, k 2048, gfx1030';
+  const said = (where) => where + ': this kind of card has not mined in a release yet, so each of its hits is '
+    + 'checked here before it is sent; the first was right';
+  const wrong = (where) => where + ': a hit came out wrong (jackpot hash mismatch (fold/transcript)). No share '
+    + 'was sent, and this card is off for the rest of this run. This kind of card has not mined in a release '
+    + 'yet: please report this line (earn/native/amd/README.md, "Testing on real hardware").';
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  // Cards as [{ index, untested, fold }]; an `untested` left out is a core that does not say (an older one).
+  // With `gpus: false` the rig has no card list and its one core names no card.
+  function rig(cards, { gpus = true } = {}) {
+    const sock = makeSocket();
+    const made = [];
+    const createCore = jest.fn((profile, o) => {
+      const card = gpus ? cards.find((c) => c.index === o.deviceIndex) : cards[0];
+      const c = makeCore();
+      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, fold: card.fold };
+      if (card.untested !== undefined) c.untested = card.untested;
+      made.push({ core: c, card });
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, restartMs: 10 });
+    const ev = { log: [], error: [], stopped: [], hashrate: [] };
+    m.on('log', (l) => ev.log.push(l));
+    m.on('error', (e) => ev.error.push(e));
+    m.on('stopped', (e) => ev.stopped.push(e));
+    m.on('hashrate', (th, d) => ev.hashrate.push([th, d ? d.index : null]));
+    m.start({
+      ...settings, profile: SMALL, gpus: gpus ? cards.map((c) => ({ index: c.index, name: 'Radeon ' + c.index })) : [],
+    });
+    sock.emit('connect');
+    sock.emit('data', '{"id":1,"result":true,"error":null}\n');
+    sock.emit('data', jobLine({ target: EASY }));
+    sock.written.length = 0;
+    return {
+      m, sock, made, ev, createCore,
+      submits: () => sock.written.map((w) => JSON.parse(w)).filter((x) => x.method === 'mining.submit'),
+      core: (index = cards[0].index) => made.filter((x) => x.card.index === index).pop().core,
+      lines: (level) => ev.log.filter((l) => !level || l.level === level).map((l) => l.line),
+    };
+  }
+
+  test('opens every core with checkHits, so the core may open an untested card', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    expect(r.createCore.mock.calls[0][1]).toMatchObject({ checkHits: true, cardK: true });
+    r.m.stop();
+  });
+
+  test('an untested card\'s right hits are checked and sent, and the check is said once', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    r.core().emit('hit', GOOD);
+    r.core().emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · gfx1030'));
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toHaveLength(1);
+    expect(r.lines('error')).toEqual([]);
+    r.m.stop();
+  });
+
+  test('a wrong hit is not sent, its card stops for the run, and the other cards keep mining', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const bad = r.core(0);
+    r.core(0).emit('hashrate', 20);
+    r.core(1).emit('hashrate', 30);
+    bad.emit('hit', WRONG);
+    expect(r.submits()).toEqual([]);
+    expect(bad.stop).toHaveBeenCalledTimes(1);
+    expect(r.lines('error')).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.hashrate.pop()).toEqual([0, 0]);
+    expect(r.m.hashrate).toBe(30);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    expect([r.m.isRunning(), r.ev.error, r.ev.stopped]).toEqual([true, [], []]);
+    // Nothing more from that card, not even a right hit still on its way; no restart; the next job is the
+    // other card's alone.
+    bad.emit('hit', GOOD);
+    jest.advanceTimersByTime(60 * 1000);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    r.sock.emit('data', jobLine({ job_id: '00000001_2097152', target: EASY }));
+    expect(bad.setJob).toHaveBeenCalledTimes(1);
+    expect(r.core(1).setJob).toHaveBeenCalledTimes(2);
+    // A tested card's hits are not checked: this one, wrong, goes out as it is.
+    r.core(1).emit('hit', { ...WRONG, jobId: '00000001_2097152' });
+    expect(r.submits()).toHaveLength(1);
+    expect(r.submits()[0].params.job_id).toBe('00000001_2097152');
+    r.m.stop();
+  });
+
+  test('a core that does not say whether it is untested (an older core) is not checked', () => {
+    const r = rig([{ index: 0, fold: FOLD }]);
+    r.core().emit('hit', WRONG);
+    expect(r.submits()).toHaveLength(1);
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toEqual([]);
+    r.m.stop();
+  });
+
+  test('the last card going wrong ends the run, with its line as the error', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    r.core().emit('hit', WRONG);
+    expect(r.ev.error.map((e) => e.message)).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.stopped).toEqual([{ failed: true }]);
+    expect(r.m.isRunning()).toBe(false);
+  });
+
+  test('a card whose architecture the core could not read, or that names no card, is said as such', () => {
+    const r = rig([{ index: 0, untested: true, fold: 'ref 32x64, dot products from LDS, hash in its own kernel' }]);
+    r.core().emit('hit', GOOD);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · unknown architecture'));
+    r.m.stop();
+    const quiet = rig([{ untested: true }], { gpus: false });
+    expect(quiet.m.cores[0].device).toBeNull();
+    quiet.core().emit('hit', WRONG);
+    expect(quiet.lines('error')).toEqual([wrong('the GPU · unknown architecture')]);
+    expect(quiet.ev.hashrate).toEqual([]);
+    expect(quiet.ev.stopped).toEqual([{ failed: true }]);
+  });
+
+  test('a wrong hit from a paused card\'s stopped core keeps the card from coming back', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    r.m.pauseCards([0]);
+    old.emit('hit', WRONG);
+    expect(r.lines('error')).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.m.resumeCards([0])).toEqual([]);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    expect(r.m.isRunning()).toBe(true);
+    r.m.stop();
+  });
+
+  test('a wrong hit from the core before a resume stops the card\'s new core', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    old.emit('hit', GOOD);
+    r.m.pauseCards([0]);
+    r.m.resumeCards([0]);
+    const resumed = r.core(0);
+    expect(resumed).not.toBe(old);
+    // The check is said once a run, not again for the resumed core.
+    resumed.emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toHaveLength(1);
+    old.emit('hit', WRONG);
+    expect(resumed.stop).toHaveBeenCalledTimes(1);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    resumed.emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    r.m.stop();
+  });
+
+  test('a wrong hit from a failed core keeps its waiting restart from opening the card', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    old.emit('error', new Error('GPU 0: a fault'));
+    expect(r.lines()).toContain('restarting GPU 0 (Radeon 0) in 0 s');
+    old.emit('hit', WRONG);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    expect(r.m.isRunning()).toBe(true);
+    r.m.stop();
+  });
+
+  test('on a one-card rig, that wrong hit ends the run: no card is left to wait for', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    const old = r.core(0);
+    old.emit('error', new Error('GPU 0: a fault'));
+    expect(r.m.isRunning()).toBe(true);
+    old.emit('hit', WRONG);
+    expect(r.ev.error.map((e) => e.message)).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.stopped).toEqual([{ failed: true }]);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(1);
+  });
+
+  test('a wrong hit on the last mining card leaves the run up while another card waits for its restart', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    r.core(1).emit('error', new Error('GPU 1: a fault'));
+    r.core(0).emit('hit', WRONG);
+    expect(r.lines('error')).toContain(wrong('GPU 0 (Radeon 0) · gfx1030'));
+    expect([r.m.isRunning(), r.ev.error, r.ev.stopped]).toEqual([true, [], []]);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(3);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    r.m.stop();
+  });
+
+  // buildShareProof would drop such a hit too, but one at a time: the card would mine on and send nothing.
+  test('a hit whose proof does not verify stops the card the same way, with the check\'s reason', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const leafData = Buffer.from(GOOD.proofA.leafData);
+    leafData[0] ^= 1;
+    const bad = r.core(0);
+    bad.emit('hit', { ...GOOD, proofA: { ...GOOD.proofA, leafData } });
+    expect(r.submits()).toEqual([]);
+    expect(bad.stop).toHaveBeenCalledTimes(1);
+    expect(r.lines('error')).toEqual(['GPU 0 (Radeon 0) · gfx1030: a hit came out wrong (Merkle proof does not verify). '
+      + 'No share was sent, and this card is off for the rest of this run. This kind of card has not mined in a '
+      + 'release yet: please report this line (earn/native/amd/README.md, "Testing on real hardware").']);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    r.m.stop();
   });
 });

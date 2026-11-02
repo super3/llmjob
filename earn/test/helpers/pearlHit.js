@@ -5,7 +5,9 @@
 // transcript hash. Small profiles only (m and n of a few hundred): the operands are held whole.
 //
 // hitFor(profile, header, { bound, jobId, salt }) tries each valid region in turn and returns the first
-// whose hash meets `bound` (default: any), or null when none does.
+// whose hash meets `bound` (default: any), or null when none does. `A` and `B` replace the operands
+// (m x k and n x k bytes), and `tamper(jackpot)` may change the transcript's 16 words before they are
+// hashed, as a card whose fold is wrong would: the proofs and seeds stay right.
 
 const path = require('path');
 const S = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
@@ -32,10 +34,10 @@ function side(jobKey, data, layers, rows, k) {
   };
 }
 
-function hitFor(profile, header, { bound = (1n << 256n) - 1n, jobId = 'job', salt = 0 } = {}) {
+function hitFor(profile, header, { bound = (1n << 256n) - 1n, jobId = 'job', salt = 0, A: a, B: b, tamper } = {}) {
   const { k, rank, m, n } = profile;
   const jobKey = hash(Buffer.concat([Buffer.from(header), buildConfig52(profile)]));
-  const A = operand(m, k, 7), B = operand(n, k, 11);
+  const A = a || operand(m, k, 7), B = b || operand(n, k, 11);
   const layersA = M.buildLayers(jobKey, A), layersB = M.buildLayers(jobKey, B);
   const rootA = M.rootOf(layersA), rootB = M.rootOf(layersB);
   const bSeed = hash(Buffer.concat([jobKey, keyedHash(SEED_SALT_B, bindMessage(rootB, n))]));
@@ -49,7 +51,9 @@ function hitFor(profile, header, { bound = (1n << 256n) - 1n, jobId = 'job', sal
     const At = new Int8Array(16 * k), Bt = new Int8Array(16 * k);
     rows.forEach((r, i) => At.set(new Int8Array(A.buffer, A.byteOffset + r * k, k), i * k));
     cols.forEach((c, i) => Bt.set(new Int8Array(B.buffer, B.byteOffset + c * k, k), i * k));
-    const jackpotHash = keyedHash(aSeed, transcriptBytes(foldTranscript({ A: At, Bt, noiseA, noiseB, rows: idx, cols: idx, k, rank })));
+    const jackpot = foldTranscript({ A: At, Bt, noiseA, noiseB, rows: idx, cols: idx, k, rank });
+    if (tamper) tamper(jackpot);
+    const jackpotHash = keyedHash(aSeed, transcriptBytes(jackpot));
     if (leBytesToBigInt(jackpotHash) > bound) continue;
     return {
       jobId, nonce, salt, jackpotHash, aSeed: aSeed.toString('hex'), bSeed: bSeed.toString('hex'),

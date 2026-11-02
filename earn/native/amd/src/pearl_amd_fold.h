@@ -9,26 +9,30 @@
 // most cards; storing first is what GA100 and Hopper do, and it is the simplest thing that
 // is correct on every AMD target.
 //
-// Five folds:
-//   pearl_amd_fold_ref     plain dot products from LDS. Any AMD GPU (sdot4/sudot4 where
-//                          the card has them), and the fold for RDNA2 (gfx103x).
+// Six folds:
+//   pearl_amd_fold_ref     plain dot products from LDS, 32x64 a block. Any AMD GPU
+//                          (sdot4/sudot4 where the card has them); slow, the baseline.
 //   pearl_amd_fold_mfma16  CDNA3/CDNA4 (gfx942, gfx950): v_mfma_i32_32x32x16_i8, wave64.
 //   pearl_amd_fold_mfma8   CDNA1/CDNA2 (gfx908, gfx90a): v_mfma_i32_32x32x8_i8, wave64.
 //   pearl_amd_fold_wmma11  RDNA3 (gfx11): v_wmma_i32_16x16x16_iu8, wave32.
 //   pearl_amd_fold_wmma12  RDNA4 (gfx12): v_wmma_i32_16x16x16_iu8, wave32, RDNA4's layout.
+//   pearl_amd_fold_dot4    RDNA2 (gfx103x), which has no matrix instruction: v_dot4 from
+//                          registers, wave32, in the matrix folds' tile. An RDNA3 or RDNA4
+//                          build with -DPEARL_AMD_PF2=0 has it too, to run it on those cards.
 //
-// Each matrix fold is the same code (pearl_amd_fold_body) over a policy that says how the
-// instruction lays out its operands and results across lanes. The layouts are AMD's, from
-// the Matrix Instruction Calculator (github.com/ROCm/amd_matrix_instruction_calculator).
+// Each of the last five is the same code (pearl_amd_fold_body) over a policy that says how
+// the instruction lays out its operands and results across lanes. The matrix layouts are
+// AMD's, from the Matrix Instruction Calculator
+// (github.com/ROCm/amd_matrix_instruction_calculator); dot4's is chosen here (PearlAmdDot4).
 //
-// No GPU was available to write this. So every policy also has an emulation of its
+// No GPU was available to write this. So every matrix policy also has an emulation of its
 // instruction, written from the same documented layout, and the HIP-CPU build
 // (__HIP_CPU_RT__) runs the folds with it: each lane puts its fragments in shared memory,
 // the block synchronises, and each lane computes the outputs the layout says it holds.
 // Everything else in the fold -- staging, fragment loads, the readout, the transcript
 // stores -- is the same source on the CPU and on the GPU. What the CPU run cannot show is
 // that the hardware matches the documented layout; test/pearl_amd_foldtest.cpp checks that
-// on a real card.
+// on a real card. The dot4 fold needs no emulation: the CPU runs its own mma.
 #pragma once
 
 #include <hip/hip_runtime.h>
@@ -71,6 +75,14 @@
 #if defined(__GFX11__) || defined(__GFX12__)
 #define PEARL_AMD_SUDOT4 1
 #endif
+// The dot4 fold (PearlAmdDot4) needs a dot4 instruction in wave32: RDNA2, RDNA3 and RDNA4. CDNA
+// has v_dot4 too, but runs its MFMA fold, so its code objects leave this one out. Which passes
+// build it is PEARL_AMD_DOT4_FOLD, below.
+#if defined(__gfx1030__) || defined(__gfx1031__) || defined(__gfx1032__) || defined(__gfx1033__) || \
+    defined(__gfx1034__) || defined(__gfx1035__) || defined(__gfx1036__) || defined(__GFX11__) || \
+    defined(__GFX12__)
+#define PEARL_AMD_DOT4 1
+#endif
 #endif
 
 #ifndef PEARL_AMD_MFMA16
@@ -85,6 +97,9 @@
 #ifndef PEARL_AMD_WMMA12
 #define PEARL_AMD_WMMA12 0
 #endif
+#ifndef PEARL_AMD_DOT4
+#define PEARL_AMD_DOT4 0
+#endif
 
 // Which folds have a body in the code object that runs (pearl_amd_caps). The host asks
 // once a context: a fold without a body for the card returns at once, finds nothing and
@@ -94,7 +109,8 @@
 #define PEARL_AMD_CAP_MFMA8 4u
 #define PEARL_AMD_CAP_WMMA11 8u
 #define PEARL_AMD_CAP_WMMA12 16u
-#define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, emulated
+#define PEARL_AMD_CAP_DOT4 32u
+#define PEARL_AMD_CAP_EMULATED 0x100u  // the HIP-CPU build: every fold, the matrix ones emulated
 #define PEARL_AMD_CAP_DROP 0x200u      // a PEARL_AMD_READOUT_DROP build: timing only, never mines
 #define PEARL_AMD_CAP_KWRAP 0x400u     // the wrap readout (PEARL_AMD_KWRAP): k past 2048, the k RDNA 4 mines
 #define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines
@@ -137,6 +153,21 @@ __device__ __forceinline__ int32_t pearl_amd_sbyte(uint64_t v, int i) {
   return (int32_t)(int8_t)(uint8_t)(v >> (8 * i));
 }
 
+// c plus the dot product of a's and b's four signed bytes: one v_dot4 where the card has it,
+// else four multiplies (the HIP-CPU build, and a GPU without one).
+__device__ __forceinline__ int32_t pearl_amd_dot4(int32_t a, int32_t b, int32_t c) {
+#if defined(PEARL_AMD_SDOT4)
+  return __builtin_amdgcn_sdot4(a, b, c, false);
+#elif defined(PEARL_AMD_SUDOT4)
+  return __builtin_amdgcn_sudot4(true, a, true, b, c, false);
+#else
+  return c + pearl_amd_sbyte((uint32_t)a, 0) * pearl_amd_sbyte((uint32_t)b, 0)
+         + pearl_amd_sbyte((uint32_t)a, 1) * pearl_amd_sbyte((uint32_t)b, 1)
+         + pearl_amd_sbyte((uint32_t)a, 2) * pearl_amd_sbyte((uint32_t)b, 2)
+         + pearl_amd_sbyte((uint32_t)a, 3) * pearl_amd_sbyte((uint32_t)b, 3);
+#endif
+}
+
 // ---------------------------------------------------------------------------------------
 // The policies. Each gives the instruction's shape (kTM x kTN x kTK), its wave size, how a
 // wave's tiles and a block's waves are arranged, and three things about its layout:
@@ -147,6 +178,8 @@ __device__ __forceinline__ int32_t pearl_amd_sbyte(uint64_t v, int i) {
 //                  the way the hardware reads it -- the emulation's only view of them;
 //   c_row/c_col    which element of C accumulator register g of lane `lane` is.
 // And for the readout, which region of a 32x64 block a register's row falls in (ro_of).
+// kEmulated says the HIP-CPU build replaces mma with the emulation built from a_elem, b_elem,
+// c_row and c_col; the dot4 policy has none of those, since the CPU runs its mma as it is.
 // ---------------------------------------------------------------------------------------
 
 // CDNA3 and CDNA4: v_mfma_i32_32x32x16_i8. Lane l holds A row l % 32 at k 8*(l/32) .. +7 and
@@ -155,6 +188,7 @@ struct PearlAmdMfma16 {
   static constexpr int kWave = 64, kTM = 32, kTN = 32, kTK = 16;
   static constexpr int kWR = 2, kWC = 2, kMT = 2, kNT = 4;
   static constexpr int kRegs = 16;
+  static constexpr bool kEmulated = true;
   typedef int64_t AFrag;
   typedef int64_t BFrag;
   typedef pearl_amd_v16i Acc;
@@ -192,6 +226,7 @@ struct PearlAmdMfma8 {
   static constexpr int kWave = 64, kTM = 32, kTN = 32, kTK = 8;
   static constexpr int kWR = 2, kWC = 2, kMT = 2, kNT = 4;
   static constexpr int kRegs = 16;
+  static constexpr bool kEmulated = true;
   typedef int32_t AFrag;
   typedef int32_t BFrag;
   typedef pearl_amd_v16i Acc;
@@ -230,6 +265,7 @@ struct PearlAmdWmma11 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
   static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;
   static constexpr int kRegs = 8;
+  static constexpr bool kEmulated = true;
   typedef pearl_amd_v4i AFrag;
   typedef pearl_amd_v4i BFrag;
   typedef pearl_amd_v8i Acc;
@@ -267,6 +303,7 @@ struct PearlAmdWmma12 {
   static constexpr int kWave = 32, kTM = 16, kTN = 16, kTK = 16;
   static constexpr int kWR = 2, kWC = 4, kMT = 4, kNT = 4;
   static constexpr int kRegs = 8;
+  static constexpr bool kEmulated = true;
   typedef pearl_amd_v2i AFrag;
   typedef pearl_amd_v2i BFrag;
   typedef pearl_amd_v8i Acc;
@@ -296,37 +333,139 @@ struct PearlAmdWmma12 {
   static __device__ __forceinline__ int ro_of(int g) { return g >> 2; }
 };
 
+// PEARL_AMD_DOT4_K: the bytes of k a dot4 k-step reads from each row, 4, 8 or 16 (one ds_read_b32,
+// b64 or b128 a row). More bytes a step means fewer LDS reads, each wider, and more VGPRs for the
+// fragments: 24, 48 or 96 a lane. 4 and 8 timed the same in RDNA 2's loop on an RX 7800 XT (PC
+// 16f1685c, 2 November: 18.09 and 17.99 TMAC/s against 18.01 and 17.91, two rounds), and 4 takes
+// fewer VGPRs (201 against 225 on gfx1030), so 4.
+#ifndef PEARL_AMD_DOT4_K
+#define PEARL_AMD_DOT4_K 4
+#endif
+#if PEARL_AMD_DOT4_K != 4 && PEARL_AMD_DOT4_K != 8 && PEARL_AMD_DOT4_K != 16
+#error "PEARL_AMD_DOT4_K is 4, 8 or 16"
+#endif
+// PEARL_AMD_DOT4_SPLIT=1: an empty asm with a memory clobber before each k-step's loads, so the
+// compiler keeps each k-step's LDS reads apart. Without it the compiler merged a row's 8 k-steps of
+// a slab into two ds_read_b128 and waited for each one (lgkmcnt(0)) right before the 32 dot4s that
+// use it, so no read was in flight while dot4s ran, and on gfx11 the slab's fragments didn't fit:
+// 256 VGPRs and 64 spilled, scratch loads in the slab loop. With it each k-step's 24 words are read
+// while earlier k-steps' dot4s run (most waits leave 2 to 9 reads in flight), gfx1101 takes 205
+// VGPRs and spills none, and gfx1030 201 (211 without). In RDNA 2's loop on an RX 7800 XT the fold went from 10.26
+// and 10.21 TMAC/s to 18.09 and 17.99 (PC 16f1685c, 2 November), where the card's v_dot4 peaks at
+// 18.5-19.2 with nothing else to do (RDNA 3 runs v_dot4_i32_iu8 at a little over half the rate of
+// its WMMA), so this is 94-98% of it. On by default; =0 builds the merged reads, to compare.
+#ifndef PEARL_AMD_DOT4_SPLIT
+#define PEARL_AMD_DOT4_SPLIT 1
+#endif
+
+// RDNA2 (gfx103x) has no matrix instruction, but by AMD's figures v_dot4_i32_i8 runs at full rate
+// there: 4 int8 MACs a lane a clock, 256 a CU a clock, the rate RDNA3's v_wmma_i32_16x16x16_iu8
+// has. (RDNA3's v_dot4_i32_iu8 measured about half that, 140 a CU a clock on an RX 7800 XT.) So
+// each lane sums its own part of C with dot4s from registers, and the rest is the matrix folds'
+// (the tile, the per-tile operands, the slab staging, the readout, the store). Here one "tile" is
+// a whole 32x64 block of C; a wave holds two, 64x64, as wmma11 and wmma12 do.
+//
+// Lane l, with i = (l >> 3) & 3, holds rows 4*(rho & 1) + i + 8*(rho >> 1) for rho = 0..7 and
+// columns (l & 7) + 8*j for j = 0..7 of the block: accumulator g = 8*rho + j is
+// C[row(rho)][col(j)], 64 a tile. Rows 4*ro + {0-3, 8-11, 16-19, 24-27} are row offset ro, so g bit
+// 3 is the region's row offset (ro_of). Columns {0, 1, 8, 9, ..., 56, 57} + 2*co are column offset
+// co = (l >> 1) & 3, lane bits 1 and 2, where the store looks for it. A lane holds 32 sums of each of
+// its two regions (4 rows by 8 columns), and the eight lanes of a region (lane bits 0, 3 and 4) hold
+// its 256, so pearl_amd_group_xor finishes it as it does the matrix folds'.
+//
+// A k-step (kTK bytes) reads the lane's 8 A' rows of each tile and its 8 B' rows (columns of C),
+// and does 64 dot4s a tile for each 4 bytes: at kTK 4, 24 words from LDS (the compiler pairs them
+// into ds_read2_b32) and 128 v_dot4 a lane over the wave's two tiles (PEARL_AMD_DOT4_SPLIT says how
+// the reads are kept apart). LDS rows are 48 bytes apart, 12 banks. An A' read touches 4 rows (i), banks
+// 0, 12, 24, 4 past the k offset, each word read by 8 lanes at once; a B' read touches 8 consecutive
+// rows, banks 0, 12, 24, 4, 16, 28, 8, 20, each word read by 4 lanes. No two rows of a read share a
+// bank, of 32 or of 64, at b32, and the 2 or 4 banks each row takes at b64 or b128 don't overlap.
+//
+// No emulation (kEmulated false): v_dot4 is a sum of four products, so the HIP-CPU build runs this
+// mma itself, with pearl_amd_dot4's scalar form. The layout the CPU check tests is the GPU's.
+struct PearlAmdDot4 {
+  static constexpr int kWave = 32, kTM = 32, kTN = 64, kTK = PEARL_AMD_DOT4_K;
+  static constexpr int kWR = 2, kWC = 4, kMT = 2, kNT = 1;
+  static constexpr int kRegs = 64;
+  static constexpr bool kEmulated = false;
+  static constexpr int kQ = kTK / 4;   // 4-byte words of k a row holds in a fragment
+  typedef int32_t AFrag __attribute__((ext_vector_type(8 * kQ)));   // word q of row rho: [kQ * rho + q]
+  typedef AFrag BFrag;                                              // word q of column j: [kQ * j + q]
+  typedef int32_t Acc[kRegs];
+  // kQ words at p, into f from word w.
+  static __device__ __forceinline__ void load_row(AFrag &f, int w, const int8_t *p) {
+    if constexpr (kQ == 1) {
+      f[w] = *reinterpret_cast<const int32_t *>(p);
+    } else if constexpr (kQ == 2) {
+      const pearl_amd_v2i v = *reinterpret_cast<const pearl_amd_v2i *>(p);
+      f[w] = v[0]; f[w + 1] = v[1];
+    } else {
+      const pearl_amd_v4i v = *reinterpret_cast<const pearl_amd_v4i *>(p);
+      f[w] = v[0]; f[w + 1] = v[1]; f[w + 2] = v[2]; f[w + 3] = v[3];
+    }
+  }
+  static __device__ __forceinline__ AFrag load_a(const int8_t *s, int stride, int lane) {
+#if PEARL_AMD_DOT4_SPLIT && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" ::: "memory");
+#endif
+    AFrag f;
+#pragma unroll
+    for (int rho = 0; rho < 8; rho++)
+      load_row(f, kQ * rho, s + (4 * (rho & 1) + ((lane >> 3) & 3) + 8 * (rho >> 1)) * stride);
+    return f;
+  }
+  static __device__ __forceinline__ BFrag load_b(const int8_t *s, int stride, int lane) {
+    BFrag f;
+#pragma unroll
+    for (int j = 0; j < 8; j++) load_row(f, kQ * j, s + ((lane & 7) + 8 * j) * stride);
+    return f;
+  }
+  static __device__ __forceinline__ void mma(Acc &c, AFrag a, BFrag b) {
+#pragma unroll
+    for (int q = 0; q < kQ; q++)
+#pragma unroll
+      for (int rho = 0; rho < 8; rho++)
+#pragma unroll
+        for (int j = 0; j < 8; j++) c[8 * rho + j] = pearl_amd_dot4(a[kQ * rho + q], b[kQ * j + q], c[8 * rho + j]);
+  }
+  static constexpr bool kRoByLane = false;
+  static __device__ __forceinline__ int ro_of(int g) { return (g >> 3) & 1; }
+};
+
 // One k-step of a wave: every tile of the wave's kMT x kNT, from the wave's A and B
-// fragments. On the GPU, one instruction a tile. In the HIP-CPU build, the emulation. Every
-// thread of the block calls it at the same point, which the emulation's barriers need.
+// fragments. On the GPU, one instruction a tile (dot4: 64 v_dot4 a 4 bytes). In the HIP-CPU
+// build, the emulation, but dot4's own mma. Every thread of the block calls it at the same
+// point, which the emulation's barriers need.
 template <class P>
 __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT][P::kNT],
                                                    const typename P::AFrag (&a)[P::kMT],
                                                    const typename P::BFrag (&b)[P::kNT]) {
 #if PEARL_AMD_EMU
-  constexpr int W = P::kWave, WAVES = P::kWR * P::kWC;
-  __shared__ typename P::AFrag ea[WAVES][P::kMT][W];
-  __shared__ typename P::BFrag eb[WAVES][P::kNT][W];
-  const int wave = (int)threadIdx.x / W, lane = (int)threadIdx.x % W;
-  for (int mt = 0; mt < P::kMT; mt++) ea[wave][mt][lane] = a[mt];
-  for (int nt = 0; nt < P::kNT; nt++) eb[wave][nt][lane] = b[nt];
-  __syncthreads();
-  for (int mt = 0; mt < P::kMT; mt++)
-    for (int nt = 0; nt < P::kNT; nt++)
-      for (int g = 0; g < P::kRegs; g++) {
-        const int i = P::c_row(lane, g), j = P::c_col(lane, g);
-        int32_t s = 0;
-        for (int kk = 0; kk < P::kTK; kk++)
-          s += P::a_elem(ea[wave][mt], i, kk, lane) * P::b_elem(eb[wave][nt], kk, j, lane);
-        acc[mt][nt][g] += s;
-      }
-  __syncthreads();
-#else
+  if constexpr (P::kEmulated) {
+    constexpr int W = P::kWave, WAVES = P::kWR * P::kWC;
+    __shared__ typename P::AFrag ea[WAVES][P::kMT][W];
+    __shared__ typename P::BFrag eb[WAVES][P::kNT][W];
+    const int wave = (int)threadIdx.x / W, lane = (int)threadIdx.x % W;
+    for (int mt = 0; mt < P::kMT; mt++) ea[wave][mt][lane] = a[mt];
+    for (int nt = 0; nt < P::kNT; nt++) eb[wave][nt][lane] = b[nt];
+    __syncthreads();
+    for (int mt = 0; mt < P::kMT; mt++)
+      for (int nt = 0; nt < P::kNT; nt++)
+        for (int g = 0; g < P::kRegs; g++) {
+          const int i = P::c_row(lane, g), j = P::c_col(lane, g);
+          int32_t s = 0;
+          for (int kk = 0; kk < P::kTK; kk++)
+            s += P::a_elem(ea[wave][mt], i, kk, lane) * P::b_elem(eb[wave][nt], kk, j, lane);
+          acc[mt][nt][g] += s;
+        }
+    __syncthreads();
+    return;
+  }
+#endif
 #pragma unroll
   for (int mt = 0; mt < P::kMT; mt++)
 #pragma unroll
     for (int nt = 0; nt < P::kNT; nt++) P::mma(acc[mt][nt], a[mt], b[nt]);
-#endif
 }
 
 // PEARL_AMD_PF2=1: global loads two slabs ahead instead of one (two register sets, the slab
@@ -445,6 +584,21 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #endif
 #if PEARL_AMD_ABLATE & ~(2 | 8 | 16)
 #error "PEARL_AMD_ABLATE takes bits 2, 8 and 16 only"
+#endif
+// Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
+// loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
+// fold on those cards; and HIP-CPU. The release's RDNA 3 and RDNA 4 code objects have no dot4 fold
+// and stay as they were: it is slower there than their WMMA folds (18.1 TMAC/s against wmma11's 32.8
+// on an RX 7800 XT), and built with their PF2 loop (and DPP, and on gfx12 PFX, TID and the wrap
+// readout) it needed more than the 256 VGPRs a wave can have, 21 to 101 spilled on gfx11 and 217 on
+// gfx12 (ROCm 7.2, 2 November, before PEARL_AMD_DOT4_SPLIT; not tried since). An ablation build leaves it
+// out too: it times the RDNA 3 and RDNA 4 matrix folds, and bits 2 and 8 have no dot4 form.
+#if PEARL_AMD_ABLATE
+#define PEARL_AMD_DOT4_FOLD 0
+#elif PEARL_AMD_EMU || (PEARL_AMD_DOT4 && !PEARL_AMD_PF2)
+#define PEARL_AMD_DOT4_FOLD 1
+#else
+#define PEARL_AMD_DOT4_FOLD 0
 #endif
 
 // PEARL_AMD_STAMP=1: a build for timing only, with clock stamps. In the PF2 loop of the RDNA folds (gfx11
@@ -1010,19 +1164,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #undef PEARL_AMD_STORE
 }
 
-__device__ __forceinline__ int32_t pearl_amd_dot4(int32_t a, int32_t b, int32_t c) {
-#if defined(PEARL_AMD_SDOT4)
-  return __builtin_amdgcn_sdot4(a, b, c, false);
-#elif defined(PEARL_AMD_SUDOT4)
-  return __builtin_amdgcn_sudot4(true, a, true, b, c, false);
-#else
-  return c + pearl_amd_sbyte((uint32_t)a, 0) * pearl_amd_sbyte((uint32_t)b, 0)
-         + pearl_amd_sbyte((uint32_t)a, 1) * pearl_amd_sbyte((uint32_t)b, 1)
-         + pearl_amd_sbyte((uint32_t)a, 2) * pearl_amd_sbyte((uint32_t)b, 2)
-         + pearl_amd_sbyte((uint32_t)a, 3) * pearl_amd_sbyte((uint32_t)b, 3);
-#endif
-}
-
 }  // namespace
 
 #define PEARL_AMD_FOLD_PARAMS                                                              \
@@ -1065,11 +1206,23 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 #endif
 }
 
+// RDNA2's fold (PearlAmdDot4), in the one-slab loop. RDNA3 and RDNA4 have it only in a build with
+// -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD); add -DPEARL_AMD_DPP=0 and it runs there exactly RDNA2's
+// loop and readout, with v_dot4_i32_iu8 for v_dot4_i32_i8 (and the wrap readout on RDNA4).
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_dot4(
+    PEARL_AMD_FOLD_PARAMS) {
+#if PEARL_AMD_DOT4_FOLD
+  pearl_amd_fold_body<PearlAmdDot4>(Ap, Bp, k, rank, col0, rows_valid, tr);
+#else
+  (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
+#endif
+}
+
 // The reference fold: one 32x64 block of C, eight regions, a block. Thread t works on region
 // t / 32 of the block and holds 8 of its 256 sums: one row, eight columns. Each chunk's
 // rows of A' and B' go through LDS; the sums are dot products of 4 bytes at a time. Slow
-// next to the matrix folds, but it needs nothing from the card, so it is the baseline to
-// compare against on hardware (PEARL_AMD_FOLD=ref) and the fold RDNA2 runs.
+// next to the matrix folds (each sum reads its A' and B' words from LDS), but it needs nothing
+// from the card, so it is the baseline to compare against on hardware (PEARL_AMD_FOLD=ref).
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_ref(
     PEARL_AMD_FOLD_PARAMS) {
   constexpr uint32_t T = PEARL_AMD_THREADS, RB = PEARL_AMD_REF_BM, CB = PEARL_AMD_REF_BN;
@@ -1200,6 +1353,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
            | (PEARL_AMD_WMMA11 ? PEARL_AMD_CAP_WMMA11 : 0u)
            | (PEARL_AMD_WMMA12 ? PEARL_AMD_CAP_WMMA12 : 0u);
 #endif
+  if (PEARL_AMD_DOT4_FOLD) out[0] |= PEARL_AMD_CAP_DOT4;
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE

@@ -281,12 +281,15 @@ has no fallback:
 It has code for RDNA 2, 3 and 4 Radeon cards and, on Linux, CDNA Instinct cards
 (gfx908, gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151,
 gfx1200, gfx1201). On Salad it beat SRBMiner on every Radeon class rented there,
-the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). It has not run
-on an Instinct card. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
-core refuses to mine until you set `PEARL_AMD_UNTESTED=1`: its folds for those
-cards have run only in emulation, and if one is wrong on the card every share
-is rejected, which a pool can ban the address for. Run the checks in
-`native/amd/README.md` ("Testing on real hardware") first. Card temperatures and VRAM stay empty on AMD, and
+the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). Its folds for
+Instinct (gfx9) and RX 6000 (gfx103x) cards have not run on such a card (the
+RX 6000 one, which uses `v_dot4` since RDNA 2 has no matrix instructions, has
+run only on an RX 7800 XT and in emulation). A fold that is wrong on the card
+makes every share wrong, and a pool can ban the address for that, so on those
+cards the miner checks every hit as the pool would before sending it (about 5
+ms a share), and stops the card at the first wrong one without sending it.
+`PEARL_AMD_UNTESTED=1`, which v0.6.8 and v0.6.9 asked RX 6000 owners to set
+to mine, does not turn the check off. Card temperatures and VRAM stay empty on AMD, and
 one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
 "Using it in the app").
 

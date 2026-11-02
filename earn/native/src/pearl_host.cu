@@ -2074,6 +2074,16 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   return ctx;
 }
 
+// The create pearl_core.cc calls, with whether the opener checks every hit before sending it
+// (checkHits). The AMD host opens a card whose fold has not run on its kind of card only for such
+// an opener, and says so in *untested (pearl_host_hip.cpp). Every NVIDIA card's fold has run on
+// its kind of card, so here no card is untested and this is pearl_host_create.
+extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool, bool *untested,
+                                           char *err, size_t err_len) {
+  if (untested) *untested = false;
+  return pearl_host_create(profile, err, err_len);
+}
+
 // Point the CALLING thread at the card this context lives on.
 //
 // cudaSetDevice is per-thread state, and the search runs on a thread of its own

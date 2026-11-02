@@ -52,7 +52,10 @@
 set -u
 A=$(pwd)
 ARCH=${ARCH:-$(timeout 60 rocminfo 2>/dev/null | grep -oE 'gfx[0-9a-f]{3,4}' | grep -v '^gfx000' | head -1)}
-FOLD=$(case "$ARCH" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; gfx94*|gfx95*) echo mfma16 ;; gfx90*) echo mfma8 ;; *) echo ref ;; esac)
+# The fold the host runs on the card (pearl_host_hip.cpp's native_fold), so the check and the fold timing are of the
+# fold hashrate.js runs.
+FOLD=$(case "$ARCH" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; gfx94*|gfx95*) echo mfma16 ;; gfx90*) echo mfma8 ;;
+  gfx103*) echo dot4 ;; *) echo ref ;; esac)
 out() {   # to the container's log now, and to the run task's output for its summary at the end
   local l="[amdtest] $(date -u +%T) sweep $*"
   echo "$l"
@@ -179,9 +182,11 @@ stamps
 if ./build-amd.sh gpu "$ARCH" > $ROOT/sweep-build-default.log 2>&1; then out "default rebuilt in build/"
 else out "default rebuild FAIL: build/ holds the last variant; run the build task before verify, duel or mine"; fi
 
+# PEARL_AMD_UNTESTED=1 lets hashrate.js, which checks no hits and sends no shares, open a card whose fold has not run
+# on its kind of card in a release (gfx9, gfx103x); it changes nothing on any other card (resolve_fold).
 hrun() {   # name [col batch]
   local r k=${PIN[$1]:-}
-  r=$(cd $A && PEARL_AMD_COL_BATCH=${2:-} timeout 600 env ${k:+PEARL_PROFILE_K=$k} node ../probes/hashrate.js \
+  r=$(cd $A && PEARL_AMD_COL_BATCH=${2:-} PEARL_AMD_UNTESTED=1 timeout 600 env ${k:+PEARL_PROFILE_K=$k} node ../probes/hashrate.js \
       $ROOT/var/$1/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi | grep -E '"th"|error' | tail -1)
   out "$1${2:+ cb=$2}${k:+ k=$k} hashrate: ${r:0:300}"
 }

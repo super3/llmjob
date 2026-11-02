@@ -3,10 +3,11 @@
 # first). Prints one line a check and exits non-zero if any fails. About ten minutes on
 # four cores.
 #
-#   1. pearl_amd_foldtest_cpu: each of the five folds, through the emulated matrix
-#      instructions, against a plain CPU computation of every transcript word.
-#      Also built with the RDNA 3 loop (PF2) and the RDNA 4 one (PF2 + PFX + TID), and
-#      with the wrap readout RDNA 4 mines k 4096 with (_kwrap), at k 2048 and k 4096.
+#   1. pearl_amd_foldtest_cpu: each of the six folds, the matrix ones through the emulated
+#      matrix instructions, against a plain CPU computation of every transcript word.
+#      Also built with the RDNA 3 loop (PF2) and the RDNA 4 one (PF2 + PFX + TID), with
+#      the wrap readout RDNA 4 mines k 4096 with (_kwrap), at k 2048 and k 4096, and dot4
+#      with its other k-steps (_dot4k8, _dot4k16).
 #   2. verify-hits-profile.js on pearl_core_hipcpu.node: the whole core -- draws,
 #      restamps, the fold, the hash, the hit list, the share proofs -- with every fold,
 #      both operand fills, and a profile whose salt takes two batches.
@@ -52,14 +53,17 @@ run "foldtest 256x512, RDNA 3 loop (PF2)" "$B/pearl_amd_foldtest_cpu_pf2" 256 51
 run "foldtest 256x512, RDNA 4 loop (PF2 + PFX + TID)" "$B/pearl_amd_foldtest_cpu_pfx" 256 512 1
 run "foldtest 256x512, wrap readout, k 2048" "$B/pearl_amd_foldtest_cpu_kwrap" 256 512 1 1 1 all 2048
 run "foldtest 256x512, wrap readout, k 4096 (its default)" "$B/pearl_amd_foldtest_cpu_kwrap" 256 512 3
-for f in ref mfma16 mfma8 wmma11 wmma12; do
+for dk in 8 16; do
+  run "foldtest 256x512, dot4, k-step $dk" "$B/pearl_amd_foldtest_cpu_dot4k$dk" 256 512 5 1 1 dot4
+done
+for f in ref mfma16 mfma8 wmma11 wmma12 dot4; do
   run "core $f, constant fill" env PEARL_AMD_FOLD=$f node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu.node" "$SECS" 252 256 512 1
 done
 for f in mfma16 wmma12; do
   run "core $f, hashed fill" env PEARL_AMD_FOLD=$f node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu.node" "$SECS" 252 256 512 0
 done
 run "core mfma16, two batches a salt" env PEARL_AMD_FOLD=mfma16 node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu.node" "$SECS" 254 256 8192 1
-for f in wmma12 ref; do
+for f in wmma12 ref dot4; do
   run "core $f, wrap readout, cardK: k 4096" want_k 4096 env PEARL_AMD_FOLD=$f PEARL_CARD_K=1 "$(dump "kwrap-$f")" \
     node "$HERE/verify-hits-profile.js" "$B/pearl_core_hipcpu_kwrap.node" "$SECS" 252 256 512 1
 done

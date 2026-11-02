@@ -582,10 +582,10 @@ describe('coreFactory — choosing a build', () => {
         expect(r.cu12.createCore).not.toHaveBeenCalled();
       });
 
-      // With no NVIDIA card the AMD core's reason is the useful one: an RX 6000 card
-      // it holds back, say. The CUDA build's "no CUDA device found" would hide it.
+      // With no NVIDIA card the AMD core's reason is the useful one: a card it has
+      // no code for, say. The CUDA build's "no CUDA device found" would hide it.
       test('when neither can start, throws the AMD core\'s reason', () => {
-        const held = new Error('the wmma11 fold has not run on a gfx1030 card: set PEARL_AMD_UNTESTED=1 to mine');
+        const held = new Error('this core has no code for gfx1010 (hipErrorNoBinaryForGpu): this build is for gfx1030');
         const r = amdRig(amdCore(() => { throw held; }));
         r.cu12.createCore.mockImplementation(() => { throw new Error('no CUDA device found'); });
         const f = factory(r, NONE);

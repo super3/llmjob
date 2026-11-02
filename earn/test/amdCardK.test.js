@@ -79,7 +79,7 @@ describe('the binding (pearl_core.cc)', () => {
     const select = at('pearl_host_select_device(&profile');
     const cardK = at('pearl_host_card_k(&profile, device_index_, note, sizeof(note))');
     const set = at('profile_ = profile;');
-    const create = at('pearl_host_create(&profile');
+    const create = at('pearl_host_create_checked(&profile');
     // profile_ after the k is known: the hashrate counts PEARL_DAF(profile_) MACs an attempt.
     expect(select < cardK && cardK < set && set < create).toBe(true);
     expect(ctor.match(/profile_ = profile;/g)).toHaveLength(1);
@@ -221,7 +221,9 @@ describe('build-amd.sh', () => {
 
   // A stand-in for hip-clang: -E -dM gives the device pass's PEARL_AMD_KWRAP (1 on gfx12, unless FLIP names the
   // target; the last -DPEARL_AMD_KWRAP=N sets it, as in clang), with CR LF line ends when CRLF is set (as clang on
-  // Windows may write them), and -c gives one fold's resource remarks, clean.
+  // Windows may write them), and -c gives the resource remarks of the folds a target has, clean: the reference
+  // fold and the one the host runs there (dot4 on gfx103x), less the one DROP names (target:fold), which shows 0
+  // VGPRs as a fold without a body does.
   const CC = [
     '#!/bin/bash',
     'arch=; e=0; set=',
@@ -234,8 +236,11 @@ describe('build-amd.sh', () => {
     '  printf "#define PEARL_AMD_TARGETS x%s\\n#define PEARL_AMD_KWRAP %s%s\\n" "$cr" "$kw" "$cr"; exit 0',
     'fi',
     'r() { echo "x.cpp:1:1: remark: $1 [-Rpass-analysis=kernel-resource-usage]"; }',
-    'r "Function Name: pearl_amd_fold_ref"; r "    VGPRs: 64"; r "    AGPRs: 0"; r "    ScratchSize [bytes/lane]: 0"',
-    'r "    VGPRs Spill: 0"; r "    SGPRs Spill: 0"; r "    Occupancy [waves/SIMD]: 8"; r "    LDS Size [bytes/block]: 1024"',
+    'k() { v=64; [ "${DROP:-}" = "$arch:$1" ] && v=0',
+    '  r "Function Name: pearl_amd_fold_$1"; r "    VGPRs: $v"; r "    AGPRs: 0"; r "    ScratchSize [bytes/lane]: 0"',
+    '  r "    VGPRs Spill: 0"; r "    SGPRs Spill: 0"; r "    Occupancy [waves/SIMD]: 8"; r "    LDS Size [bytes/block]: 1024"; }',
+    'k ref',
+    'case $arch in gfx103*) k dot4 ;; gfx11*) k wmma11 ;; gfx12*) k wmma12 ;; esac',
     '',
   ].join('\n');
   let tmp;
@@ -259,12 +264,12 @@ describe('build-amd.sh', () => {
   afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
   const WINDOWS = 'MINGW64_NT-10.0-22631';
-  function check(env = {}, uname = 'Linux') {
+  function check(env = {}, uname = 'Linux', archs = 'gfx1100 gfx1201') {
     const rocm = path.join(tmp, 'rocm').replace(/\\/g, '/');
     const e = { ...process.env, ROCM_PATH: rocm, HIP_PATH: rocm, FAKE_BIN: path.join(tmp, 'bin'), FAKE_UNAME: uname, ...env };
     if (!('PEARL_AMD_CFLAGS' in env)) delete e.PEARL_AMD_CFLAGS;
     // The real cygpath (Git Bash) turns the folder into a PATH entry; Linux has none and needs none.
-    const run = 'PATH="$(cygpath -u "$FAKE_BIN" 2>/dev/null || echo "$FAKE_BIN"):$PATH" exec bash build-amd.sh check gfx1100 gfx1201';
+    const run = 'PATH="$(cygpath -u "$FAKE_BIN" 2>/dev/null || echo "$FAKE_BIN"):$PATH" exec bash build-amd.sh check ' + archs;
     const r = spawnSync('bash', ['-c', run], { cwd: path.join(tmp, 'amd'), encoding: 'utf8', env: e });
     return { status: r.status, out: r.stdout, err: r.stderr };
   }
@@ -318,6 +323,28 @@ describe('build-amd.sh', () => {
       expect(r.out).not.toContain('and the wrap readout');
     }
   }, 30000);
+
+  bashIt('fails a release build where a target lacks the fold the host runs on it (RDNA 2: dot4)', () => {
+    const ARCHS = 'gfx1030 gfx1100 gfx1201';
+    const r0 = check({}, 'Linux', ARCHS);
+    expect([r0.status, r0.err]).toEqual([0, '']);
+    for (const row of ['gfx1030 +pearl_amd_fold_dot4 ', 'gfx1100 +pearl_amd_fold_wmma11 ', 'gfx1201 +pearl_amd_fold_wmma12 '])
+      expect(r0.out).toMatch(new RegExp(row + '+64 '));
+    expect(r0.out).toContain('every target has its fold');
+    for (const drop of ['gfx1030:dot4', 'gfx1201:wmma12']) {
+      const [arch, fold] = drop.split(':');
+      const r = check({ DROP: drop }, 'Linux', ARCHS);
+      expect([drop, r.status]).toEqual([drop, 1]);
+      expect(r.err).toContain(`${arch}: no body for pearl_amd_fold_${fold}\n`);
+      expect(r.err).toContain('check: a target lacks the fold the host runs on it (folds_of in build-amd.sh)');
+      expect(r.err).not.toContain('spills');
+      // A fold without a body has no row.
+      expect(r.out.split('\n').filter((l) => l.startsWith(arch) && l.includes(`_${fold} `))).toEqual([]);
+      // A tuning build (an ablation build has no dot4) only shows the rows.
+      const t = check({ DROP: drop, PEARL_AMD_CFLAGS: '-DPEARL_AMD_TILED=0' }, 'Linux', ARCHS);
+      expect([drop, t.status, t.err]).toEqual([drop, 0, '']);
+    }
+  }, 60000);
 
   bashIt('every changed script parses', () => {
     for (const f of [['amd', 'build-amd.sh'], ['amd', 'test', 'run-cpu-checks.sh'], ['amd', 'test', 'sweep.sh']]) {

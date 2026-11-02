@@ -9,6 +9,7 @@ const {
 } = require('../shared/miner/pearlhash');
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
+const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
@@ -98,6 +99,15 @@ function readDevice(core) {
   return { index: d.index, name: d.name ? String(d.name) : 'GPU ' + d.index };
 }
 
+// The card's gfx architecture, for the hit check's lines (see _checkedHit),
+// or null. The AMD core ends its fold's description (core.device.fold) with
+// the card's gcnArchName, e.g. gfx1030 or gfx90a:sramecc+:xnack-, and names
+// none when it could not read it.
+function archOf(core) {
+  const m = /\bgfx[0-9a-f]+/.exec(String((core.device && core.device.fold) || ''));
+  return m ? m[0] : null;
+}
+
 class PearlMiner extends EventEmitter {
   constructor({ connect, createCore, reconnectMs, restartMs, clocks, agent } = {}) {
     super();
@@ -109,6 +119,10 @@ class PearlMiner extends EventEmitter {
     this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
     this.restartTimers = new Set();
+    // slot -> timer for a card waiting for its restart. Still one of this run's
+    // cards, so the last other card going down does not end the run (see
+    // _outOfCards). Cleared by stop().
+    this.restarts = new Map();
 
     this.sock = null;
     // One core per card. `cores` is [{ core, device, slot, profile }] in the
@@ -334,8 +348,10 @@ class PearlMiner extends EventEmitter {
     slot.startedAt = Date.now();
     const want = this.profile();
     // cardK lets the core mine a larger k on its card than the profile's, where
-    // its fold is faster (see K_REJECT_LIMIT for when it stops).
-    const core = this.createCore(want, { ...opts, saltBase, cardK: this.cardK });
+    // its fold is faster (see K_REJECT_LIMIT for when it stops). checkHits
+    // says this miner checks every hit of a card the core reports untested
+    // (see _checkedHit), so the core opens such a card rather than refusing it.
+    const core = this.createCore(want, { ...opts, saltBase, cardK: this.cardK, checkHits: true });
     // A factory that returns nothing rather than throwing: no core, so the same
     // answer as one that refused. Wiring is inside the caller's try for the same
     // reason — a core we cannot listen to is a core we cannot mine with.
@@ -350,7 +366,12 @@ class PearlMiner extends EventEmitter {
       throw new Error('the core chose k ' + core.k + ', which a share can\'t carry');
     }
     const device = readDevice(core);
-    this._wireCore(core, device, profile, wallet, worker);
+    // A card whose fold has not run on its kind of card in a release
+    // (core.untested; on AMD, RX 6000 and Instinct cards) has every hit it
+    // would send recomputed first (see _checkedHit). A core built before this
+    // has no `untested`, and opens no such card.
+    const check = core.untested === true ? { slot, arch: archOf(core) } : null;
+    this._wireCore(core, device, profile, wallet, worker, check);
     const entry = { core, device, slot, profile };
     this.cores.push(entry);
     // Name the card in the log, every run and every card. The core chooses it
@@ -760,7 +781,7 @@ class PearlMiner extends EventEmitter {
     return (this.settings && this.settings.profile) || PROFILE;
   }
 
-  _wireCore(core, device, profile, wallet, worker) {
+  _wireCore(core, device, profile, wallet, worker, check) {
     core.on('hashrate', (th) => {
       // A sample the core queued before it failed can arrive after _onCoreError
       // dropped it; counting it would put the dead card back into the total we
@@ -774,7 +795,8 @@ class PearlMiner extends EventEmitter {
     core.on('error', (err) => this._onCoreError(core, device, err));
     // The profile is this core's, bound here: a hit still on its way from a
     // core that has since been closed is certified at the k it was found at.
-    core.on('hit', (hit) => this._onHit(hit, wallet, worker, device, profile));
+    // So is `check`, for a card whose hits are checked (see _openCore).
+    core.on('hit', (hit) => this._onHit(hit, wallet, worker, device, profile, check));
   }
 
   // A core's search failed, and a failed core does not search again (its CUDA
@@ -827,12 +849,18 @@ class PearlMiner extends EventEmitter {
   // for its restart, the pool connection stays open, so it comes back to work.
   _cardDown(slot, device, err) {
     if (this._scheduleRestart(slot, device)) return;
-    // A paused card is still one of this run's cards: it comes back when the
-    // prompt ends, so the rig is not out of cards yet.
-    if (!this.cores.length && !this.paused.size) {
+    if (this._outOfCards()) {
       this.emit('error', err);
       this.stop(true);
     }
+  }
+
+  // Whether no card of this run is left. A paused card comes back when the
+  // prompt ends, and one waiting for its restart when its timer fires, so
+  // both still count: ending the run would clear that restart and leave a
+  // healthy card off.
+  _outOfCards() {
+    return !this.cores.length && !this.paused.size && !this.restarts.size;
   }
 
   // Returns true when a restart is scheduled, false when the card is left off.
@@ -861,9 +889,11 @@ class PearlMiner extends EventEmitter {
     });
     const timer = setTimeout(() => {
       this.restartTimers.delete(timer);
+      this.restarts.delete(slot);
       this._restartCore(slot, device);
     }, this.restartMs);
     this.restartTimers.add(timer);
+    this.restarts.set(slot, timer);
     return true;
   }
 
@@ -1036,8 +1066,12 @@ class PearlMiner extends EventEmitter {
   // JS before submitting: the core may have been searching a job that vardiff has
   // since moved, and a bad submit earns a ban. Stale hits are dropped silently —
   // they are not errors, just races. `profile` is what the core that found it
-  // mines: the bound, the job_key and the proof are all at its k.
-  _onHit(hit, wallet, worker, device, profile) {
+  // mines: the bound, the job_key and the proof are all at its k. `check` is
+  // set for a card whose hits are checked (see _openCore).
+  _onHit(hit, wallet, worker, device, profile, check) {
+    // A card one of whose hits failed the check sends nothing more, not even a
+    // hit already on its way from its stopped core (see _wrongHit).
+    if (check && check.slot.wrongHit) return;
     // The pool connection is down (see _onClose), so there is nowhere to send
     // it, and the next connection brings jobs of its own. Said, because this is
     // a share lost to the reconnect, not a race. It used to be written to the
@@ -1063,7 +1097,12 @@ class PearlMiner extends EventEmitter {
     // pool that agreed rejects a plain proof, and one that did not cannot read
     // a compressed one.
     const gzip = this.gzip;
-    const plainProof = buildShareProof(hit, this._jobKey(job, profile), profile, { gzip });
+    const jobKey = this._jobKey(job, profile);
+    // A checked card's hit is checked first. Its check covers what
+    // buildShareProof checks, so a proof that does not verify stops the card
+    // too, as a wrong tree or leaf readout on the card would give every hit.
+    if (check && !this._checkedHit(check, hit, jobKey, profile, device)) return;
+    const plainProof = buildShareProof(hit, jobKey, profile, { gzip });
     if (!plainProof) {
       this.emit('log', { level: 'error', line: 'dropping a hit whose proof does not verify locally' });
       return;
@@ -1080,6 +1119,71 @@ class PearlMiner extends EventEmitter {
     this.sock.write(encode(buildSubmit(id, {
       jobId: job.jobId, plainProof, hashrate: (this.hashrate || 0) * 1e12,
     })));
+  }
+
+  // A hit from a card whose fold has not run on its kind of card, recomputed as
+  // the pool's verifier would before it is sent (shared/miner/checkHit: 4.6 ms
+  // at k 2048, 8.6 at k 4096). True when it is right; the first right one is
+  // said once a run. A fold that is wrong on the card makes every hash wrong,
+  // and every one still meets the target, so every share would be rejected and
+  // a pool can ban the address for that. A wrong hit is not sent, and the card
+  // goes off (see _wrongHit).
+  _checkedHit(check, hit, jobKey, profile, device) {
+    const why = checkHit(hit, jobKey, profile);
+    const where = cardName(device) + ' · ' + (check.arch || 'unknown architecture');
+    if (why) {
+      this._wrongHit(check, device, where, why);
+      return false;
+    }
+    if (!check.slot.hitsChecked) {
+      check.slot.hitsChecked = true;
+      this.emit('log', {
+        level: 'info',
+        line: where + ': this kind of card has not mined in a release yet, so each of its hits is checked '
+          + 'here before it is sent; the first was right',
+      });
+    }
+    return true;
+  }
+
+  // A hit of a checked card came out wrong, so its fold is likely wrong on it
+  // and every hit it finds would be too. The card is off for the rest of the
+  // run: its core is stopped and not opened again, by a restart or a resume,
+  // and the other cards keep mining. The hit can come from a core already
+  // stopped (paused for a prompt, or failed and waiting for its restart), so
+  // the card is found by its slot, taken out of `paused`, and its restart
+  // cancelled.
+  _wrongHit(check, device, where, why) {
+    const { slot } = check;
+    slot.wrongHit = true;
+    const i = this.cores.findIndex((c) => c.slot === slot);
+    if (i >= 0) {
+      const [{ core }] = this.cores.splice(i, 1);
+      try { core.stop(); } catch (e) { /* already gone */ }
+    }
+    this._cancelResumeRetry(slot);
+    this.paused.delete(slot);
+    const restart = this.restarts.get(slot);
+    if (restart) {
+      clearTimeout(restart);
+      this.restartTimers.delete(restart);
+      this.restarts.delete(slot);
+    }
+    const line = where + ': a hit came out wrong (' + why + '). No share was sent, and this card is off for '
+      + 'the rest of this run. This kind of card has not mined in a release yet: please report this line '
+      + '(earn/native/amd/README.md, "Testing on real hardware").';
+    this.emit('log', { level: 'error', line });
+    if (device) {
+      this.hashrates.delete(device.index);
+      this.hashrate = this.totalHashrate();
+      this.emit('hashrate', 0, device);
+      this._releaseMemClock(device.index);
+    }
+    // The last card going is the end of mining, as in _cardDown.
+    if (this._outOfCards()) {
+      this.emit('error', new Error(line));
+      this.stop(true);
+    }
   }
 
   _onClose(host, port, wallet, worker) {
@@ -1134,6 +1238,7 @@ class PearlMiner extends EventEmitter {
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     for (const t of this.restartTimers) clearTimeout(t);
     this.restartTimers.clear();
+    this.restarts.clear();
     this.resumeRetries.clear();
     for (const c of this.cores) {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }

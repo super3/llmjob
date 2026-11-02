@@ -3,8 +3,8 @@
 //
 //   pearl_amd_foldtest [m=256] [cols=512] [seed=1] [reps=1] [check=1] [fold|all] [k] [int8|miner] [stamps file]
 //
-// Built for HIP-CPU (build-amd.sh cpu), it runs all five folds through the emulated matrix
-// instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
+// Built for HIP-CPU (build-amd.sh cpu), it runs all six folds, the matrix ones through the
+// emulated matrix instructions. Built for a real card (build-amd.sh gpu), it runs the folds that card has
 // and is the first thing to run on new hardware: it shows whether the hardware's lane
 // layout is the one the folds were written against, before anything else depends on it.
 // It also times `reps` launches of each fold and prints the rate in TMAC/s. check=0 skips
@@ -43,7 +43,7 @@ namespace {
 struct Fold {
   const char *name;
   uint32_t cap;
-  bool tall;  // a 128x256 tile (the matrix folds) rather than 32x64 (the reference)
+  bool tall;  // a 128x256 tile (the matrix folds and dot4) rather than 32x64 (the reference)
 };
 
 uint64_t g_rng = 1;
@@ -91,8 +91,10 @@ void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t
     hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
   else if (f.cap == PEARL_AMD_CAP_WMMA11)
     hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
-  else
+  else if (f.cap == PEARL_AMD_CAP_WMMA12)
     hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+  else
+    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
 }
 
 #if PEARL_AMD_STAMP
@@ -235,7 +237,8 @@ int main(int argc, char **argv) {
                         {"mfma16", PEARL_AMD_CAP_MFMA16, true},
                         {"mfma8", PEARL_AMD_CAP_MFMA8, true},
                         {"wmma11", PEARL_AMD_CAP_WMMA11, true},
-                        {"wmma12", PEARL_AMD_CAP_WMMA12, true}};
+                        {"wmma12", PEARL_AMD_CAP_WMMA12, true},
+                        {"dot4", PEARL_AMD_CAP_DOT4, true}};
 #if PEARL_AMD_STAMP
   // Room for every wave of a launch of the matrix folds (wave32: 8 a block), and REALTIME's rate.
   uint32_t *dStamps = nullptr;

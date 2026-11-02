@@ -1865,6 +1865,81 @@ with no skew.
   hashrate rounds, and the code is reverted.
 - **Cost:** two high-priority boxes for about 8 and 5 minutes, plus a 1-minute first run on the 9070 XT, about $0.05.
 
+### Our own builds on Salad, 2 November: a fold for RDNA 2 (dot4)
+
+RDNA 2 (RX 6000, gfx103x) has no matrix instruction, so until now it got the reference fold. The new `dot4` fold
+is the matrix folds' code with `v_dot4` from registers in place of the instruction (`earn/native/amd/README.md`).
+Salad rents no RDNA 2 card, so it ran in RDNA 2's loop on an RDNA 3 card: a build with `-DPEARL_AMD_PF2=0
+-DPEARL_AMD_DPP=0` and `PEARL_AMD_FOLD=dot4`, which is gfx103x's code but for `v_dot4_i32_iu8` in place of
+`v_dot4_i32_i8`. Run from 13:22 to 15:16 UTC on 2 November 2026 on `amdtest-rdna3-42`, an RX 7800 XT (PC
+`16f1685c`, 60 CUs, HIP reports 2213 MHz), at `8ae501a` with the change sent as a patch. Fold alone:
+`pearl_amd_foldtest 131072 4096 1 100 0 <fold> 0 miner` (the miner's operands, k 2048); `hashrate.js` 60 s after
+10 s. Not rows: no competitor ran.
+
+| Fold | Build | Fold alone (TMAC/s) | `hashrate.js` (TH/s) |
+|---|---|---|---|
+| `wmma11`, the card's own | release | 32.81, 32.85 | 32.41, 32.61 |
+| `dot4` | RDNA 2's loop | 18.09, 17.99, 18.00 | 17.88, 17.87 |
+| `dot4` | RDNA 2's loop, DPP readout | 17.99 | 17.89 |
+| `dot4`, first try (reads merged) | RDNA 2's loop | 10.18, 10.26, 10.21 | 10.24 |
+| `ref`, what RDNA 2 got until now | release | 4.22, 4.21 | 4.31, 4.32 |
+| `v_dot4` alone, nothing else | test kernel | 18.45-19.19 | - |
+
+- **Right on the card:** every build's `dot4` matched the CPU bit for bit at 256 x 512 and 2048 x 2048, and
+  `verify-hits` (target 2^234, 120 s) re-verified 400 of 400 hits, 945 found in 31 salts, none failed. The first
+  try passed too (116 and 119 of 116 and 119, at 2^232).
+- **The first try ran at 10.2 TMAC/s because of how its LDS reads were compiled.** The compiler merged each row's 8
+  k-steps of a slab into two `ds_read_b128` and waited for each (`lgkmcnt(0)`) just before the 32 dot4s that used
+  it, so no read was in flight while dot4s ran; on gfx1101 the slab's fragments didn't fit either (256 VGPRs and 64
+  spilled, scratch loads in the slab loop). An empty asm with a memory clobber before each k-step's loads
+  (`PEARL_AMD_DOT4_SPLIT`, now the default) keeps them apart: most waits leave 2 to 9 reads in flight, and gfx1101
+  takes 205 VGPRs and 6 waves, no scratch, at 18.0 TMAC/s. gfx1030 went from 211 to 201 VGPRs (4 waves a SIMD
+  either way).
+- **RDNA 3's `v_dot4_i32_iu8` runs at a little over half the rate of its WMMA.** A kernel of nothing but dot4s from
+  registers did 18.45-19.19 TMAC/s (139-145 MAC a CU a clock at the 2213 MHz HIP reports; the clock under load
+  can't be read on Salad), and 18.06-18.14 with LDS reads in the fold's ratio. So `dot4` at 18.0 is 94-98% of what
+  this card's dot4 can do, and 55% of its own `wmma11` (TH/s). Against the reference fold it is 4.3x (fold) and
+  4.1x (TH/s).
+- **k-step, DPP:** `PEARL_AMD_DOT4_K=8` timed 18.01 and 17.91 against 4's 18.09 and 17.99 in the same rounds and
+  takes 225 VGPRs on gfx1030 against 201, so 4 stays. The DPP readout changed nothing here (17.99 against 18.00).
+- **Compile:** `build-amd.sh check` on all 14 targets: `dot4` on gfx1030-1032 at 201 VGPRs, no scratch, 36,864
+  bytes of LDS, 4 waves a SIMD; every other target's rows as before. RDNA 3 and RDNA 4 release builds leave `dot4`
+  out: it is slower there than their WMMA folds, and built with their PF2 loop (before the split) it spilled 21 to
+  101 VGPRs on gfx11 and 217 on gfx12.
+- **CPU checks** (`cpuchecks` on the box, the HIP-CPU build, which runs `dot4`'s own code): all 23 passed, among
+  them the fold check with every fold at 256 x 512 and 512 x 1024 and in the RDNA 3 and RDNA 4 loops, `dot4` at
+  k-steps 8 and 16, and the whole core with `dot4`, 400 of 400 hits verified at k 2048 (2,839 salts) and, with the
+  wrap readout, at k 4096 (1,526 salts).
+
+**What that projects for RDNA 2 cards. A projection, not a measurement: no RDNA 2 card has run it.** It assumes
+an RDNA 2 card does one `v_dot4_i32_i8` a lane a clock, four int8 MACs, 256 a CU a clock, as AMD describes it, and
+that its fold reaches the 96% of that peak this RX 7800 XT reached of its own (18.00 of 18.82, the middle of
+18.45-19.19), at the card's game clock; TH/s is the fold's rate times 0.993, the 7800 XT's `dot4` ratio (17.875 of
+18.00).
+
+| Card | CUs | Game clock (MHz) | `v_dot4` peak (TMAC/s) | Fold at 96% (TMAC/s) | Projected TH/s |
+|---|---|---|---|---|---|
+| RX 6600 | 28 | 2044 | 14.65 | 14.07 | 14.0 |
+| RX 6700 XT | 40 | 2424 | 24.82 | 23.83 | 23.7 |
+| RX 6800 | 60 | 1815 | 27.88 | 26.76 | 26.6 |
+| RX 6800 XT | 72 | 2015 | 37.14 | 35.65 | 35.4 |
+| Radeon PRO V620 | 72 | 2015 (the 6800 XT's; it lists none) | 37.14 | 35.65 | 35.4 |
+| RX 6900 XT | 80 | 2015 | 41.27 | 39.62 | 39.3 |
+| RX 6950 XT | 80 | 2100 | 43.01 | 41.29 | 41.0 |
+
+- **Why it could come in lower, or higher.** If RDNA 2's `v_dot4` turns out about half rate, as RDNA 3's is, every figure
+  halves (7.0 to 20.5 TH/s). On RDNA 2 the dot4s take half as many clocks as on RDNA 3, so everything else in a
+  slab (its 24 words of LDS reads a k-step, the barrier, the readout once a chunk) weighs twice as much: if those
+  cost the same clocks as here, the fold reaches about 92% rather than 96%. gfx103x runs 4 waves a SIMD to
+  gfx1101's 6, so there is less to hide waits behind. A game clock is a gaming load's; a card held at its power
+  limit by dot4s may run lower. The other way: at exactly half rate the 7800 XT's dot4s would do 16.3 TMAC/s at its
+  game clock (2124 MHz), and they did 18.45-19.19, so it ran above that clock here (or its dot4 is a little faster
+  than half).
+- **Next:** the checks under "Testing on real hardware" (`earn/native/amd/README.md`) on an RDNA 2 card, then
+  gfx103x taken out of the untested cards, whose every hit the miner checks in JS before sending it.
+- **Cost:** one high-priority RX 7800 XT box for about 1.9 hours, about $0.25. Three fetches from GitHub
+  failed on this PC with a TLS error and were rerun.
+
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT
 $0.054 / 0.088 / 0.122 / 0.156; RX 7800 XT $0.042 / 0.072 / 0.102 / 0.132.

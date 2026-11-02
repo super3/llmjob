@@ -5,16 +5,18 @@
 #   ./build-amd.sh cpu              HIP-CPU: build/pearl_core_hipcpu.node and
 #                                   build/pearl_amd_foldtest_cpu, which run the AMD kernels
 #                                   on the CPU, and their _kwrap twins with the wrap readout
-#                                   (RDNA 4's, which mines k 4096). For checking without a
-#                                   GPU; never shipped.
+#                                   (RDNA 4's, which mines k 4096), and fold checks with the
+#                                   RDNA 3 and 4 loops and dot4's other k-steps. For checking
+#                                   without a GPU; never shipped.
 #   ./build-amd.sh gpu [gfx...]     ROCm: build/pearl_core_hip.node and build/pearl_amd_foldtest
 #                                   for the listed targets (default: $DEFAULT_ARCHS below).
 #   ./build-amd.sh check [gfx...]   Compile the device code for each target and print each
 #                                   fold's registers, scratch and LDS. Fails if a fold
 #                                   spills or uses scratch memory, or, with no
 #                                   PEARL_AMD_CFLAGS, if a gfx12 target lacks the wrap
-#                                   readout (PEARL_AMD_KWRAP) or any other target has it.
-#                                   On Windows no target has it (KWRAP_OS below).
+#                                   readout (PEARL_AMD_KWRAP) or any other target has it, or
+#                                   a target lacks the fold the host runs on it (folds_of).
+#                                   On Windows no target has the wrap readout (KWRAP_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -159,6 +161,18 @@ offload_flags() {
   echo "$f"
 }
 
+# The fold a target's code object must have a body for, besides the reference fold: the one the host
+# runs on it (pearl_host_hip.cpp's native_fold). check fails a release build that lacks it.
+folds_of() {
+  case "$1" in
+    gfx908 | gfx90a) echo mfma8 ;;
+    gfx942 | gfx950) echo mfma16 ;;
+    gfx103*) echo dot4 ;;
+    gfx11*) echo wmma11 ;;
+    gfx12*) echo wmma12 ;;
+  esac
+}
+
 case "$mode" in
   cpu)
     slice
@@ -173,7 +187,9 @@ case "$mode" in
     fi
     mkdir -p "$OUT/cpu"
     inc="-I$HERE/compat/cpu -I$HERE/src -I$SRC -I$GEN -I$HIP_CPU_PATH/include $tbb_inc"
-    flags="-std=c++17 -O2 -fPIC -DNDEBUG"
+    # -Wno-psabi: the dot4 fold passes 32-byte vectors by value between inlined functions, and clang
+    # notes that without AVX that changes the x86 ABI (3 warnings). Nothing crosses a library boundary.
+    flags="-std=c++17 -O2 -fPIC -DNDEBUG -Wno-psabi"
     echo "cpu: kernels and host"
     $cxx $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip.o"
     echo "cpu: addon"
@@ -189,6 +205,13 @@ case "$mode" in
       $tbb_lib -ltbb -lpthread
     $cxx $flags -DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" \
       -o "$OUT/pearl_amd_foldtest_cpu_pfx" $tbb_lib -ltbb -lpthread
+    # The dot4 fold's k-step (PEARL_AMD_DOT4_K in pearl_amd_fold.h) at the two sizes the release doesn't use,
+    # so a tuning build of either is checked too.
+    echo "cpu: fold check with dot4's other k-steps"
+    for dk in 8 16; do
+      $cxx $flags -DPEARL_AMD_DOT4_K=$dk $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_dot4k$dk" \
+        $tbb_lib -ltbb -lpthread
+    done
     # The wrap readout is on only in a real gfx12 device pass (RDNA 4 mines k 4096), so the builds above
     # have today's. These have it, so the k 4096 path runs without a GPU: the core picks k 4096 when the
     # miner lets it (cardK), as it does on an RDNA 4 card.
@@ -198,7 +221,7 @@ case "$mode" in
       $tbb_lib -ltbb -lpthread
     $cxx $flags -DPEARL_AMD_KWRAP=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_kwrap" \
       $tbb_lib -ltbb -lpthread
-    echo "built $OUT/pearl_core_hipcpu{,_kwrap}.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx,_kwrap}"
+    echo "built $OUT/pearl_core_hipcpu{,_kwrap}.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx,_kwrap,_dot4k8,_dot4k16}"
     ;;
   gpu)
     slice
@@ -260,7 +283,7 @@ case "$mode" in
     rocm="$(rocm_root)"
     mkdir -p "$OUT/check"
     inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
-    bad=0 wrapbad=0
+    bad=0 wrapbad=0 foldbad=0
     where="on exactly the gfx12 targets"
     [ -n "$KWRAP_OS" ] && where="on no target (the Windows core mines k 2048)"
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
@@ -293,8 +316,11 @@ case "$mode" in
         wrapbad=1
       fi
       # One row a kernel: the fold kernels with a body on this target, the hash and the
-      # reference fold. A fold without a body here shows 0 VGPRs and is left out.
-      awk -v arch="$a" -v kw="${kw:-?}" '
+      # reference fold. A fold without a body here shows 0 VGPRs and is left out. In a release
+      # build, the fold folds_of names without one fails the check (awk exit bit 2; bit 1: a spill).
+      need=""
+      [ -z "${PEARL_AMD_CFLAGS:-}" ] && need="$(folds_of "$a")"
+      awk -v arch="$a" -v kw="${kw:-?}" -v need="$need" '
         /remark: Function Name: / { name = $(NF-1) }
         /remark:     VGPRs: / { v[name] = $(NF-1) }
         /remark:     AGPRs: / { g[name] = $(NF-1) }
@@ -309,16 +335,24 @@ case "$mode" in
             printf "%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n", arch, n, v[n], (n in g ? g[n] : "-"), s[n], sp[n] + ss[n], l[n], o[n], kw
             if (s[n] + 0 > 0 || sp[n] + ss[n] > 0) bad = 1
           }
+          nf = split(need, f, " ")
+          for (i = 1; i <= nf; i++)
+            if (!(("pearl_amd_fold_" f[i]) in v) || v["pearl_amd_fold_" f[i]] == 0) {
+              print arch ": no body for pearl_amd_fold_" f[i] > "/dev/stderr"
+              bad += 2
+              break
+            }
           exit bad
-        }' "$log" | sort || bad=1
+        }' "$log" | sort || { rc=$?; [ $((rc & 1)) -eq 0 ] || bad=1; [ $((rc & 2)) -eq 0 ] || foldbad=1; }
     done
-    if [ "$bad" -ne 0 ] || [ "$wrapbad" -ne 0 ]; then
+    if [ "$bad" -ne 0 ] || [ "$wrapbad" -ne 0 ] || [ "$foldbad" -ne 0 ]; then
       [ "$bad" -ne 0 ] && echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
       [ "$wrapbad" -ne 0 ] && echo "check: the wrap readout should be $where" >&2
+      [ "$foldbad" -ne 0 ] && echo "check: a target lacks the fold the host runs on it (folds_of in build-amd.sh)" >&2
       exit 1
     fi
     echo "check: every fold compiled for $archs with no spills and no scratch$([ -z "${PEARL_AMD_CFLAGS:-}" ] \
-      && echo ", and the wrap readout $where")"
+      && echo ", every target has its fold, and the wrap readout $where")"
     ;;
   *)
     sed -n '2,/^# The portable kernels/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'

@@ -252,13 +252,15 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     const name = path.basename(script);
 
     // Step 2: unset, the core is opened as the app opens it (cardK), and the k is the core's. This stand-in
-    // reports none, so it is the profile's.
+    // reports none, so it is the profile's. verify-hits.js checks every hit as the app checks an untested
+    // card's, so it opens the core with checkHits too; hashrate.js finds no hit and checks none.
+    const checks = script === VERIFY ? { checkHits: true } : {};
     it(`${name}: the mainnet profile, opened as the app opens it, when it isn't set`, () => {
       for (const k of [undefined, '']) {
         const r = run(script, args, k);
         expect(r.status).toBe(done);
         expect(JSON.stringify(r.profile)).toBe(JSON.stringify(PROFILE));
-        expect(r.opts).toEqual({ cardK: true });
+        expect(r.opts).toEqual({ cardK: true, ...checks });
         expect(JSON.parse(r.out).k).toBe(2048);
       }
     }, 20000);
@@ -268,7 +270,7 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
         const r = run(script, args, String(k));
         expect(r.status).toBe(done);
         expect(r.profile).toEqual({ ...PROFILE, k });
-        expect(r.opts).toEqual({});
+        expect(r.opts).toEqual(checks);
         expect(JSON.parse(r.out).k).toBe(k);
       }
     }, 20000);
@@ -287,9 +289,9 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     // MAINNET is named only where the profile asked for is chosen; the core's k makes PROFILE, and the job
     // key, proofs, noise and fold use PROFILE.
     expect(src.match(/\bMAINNET\b/g)).toHaveLength(3);
-    for (const use of ['addon.createCore(ASKED, kEnv ? {} : { cardK: true })',
+    for (const use of ['addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true })',
       'const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);', 'buildConfig52(PROFILE)',
-      'const { k, rank, m, n } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'regionToTile(hit.nonce, PROFILE)'])
+      'const { k } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'checkHit(hit, jobKey, PROFILE)'])
       expect(src).toContain(use);
   });
 });
@@ -323,13 +325,13 @@ describe('sweep.sh with a k 4096 variant', () => {
 
   // Runs a copy of sweep.sh with the stand-ins, writing nothing outside tmp: the container-log copy of
   // each line goes to /dev/null.
-  function sweep(env) {
+  function sweep(env, hash = HASH) {
     const amd = path.join(tmp, 'amd');
     fs.mkdirSync(path.join(amd, 'test'), { recursive: true });
-    fs.mkdirSync(path.join(tmp, 'probes'));
-    fs.mkdirSync(path.join(tmp, 'root'));
+    fs.mkdirSync(path.join(tmp, 'probes'), { recursive: true });
+    fs.mkdirSync(path.join(tmp, 'root'), { recursive: true });
     fs.writeFileSync(path.join(amd, 'build-amd.sh'), STUB, { mode: 0o755 });
-    fs.writeFileSync(path.join(tmp, 'probes', 'hashrate.js'), HASH);
+    fs.writeFileSync(path.join(tmp, 'probes', 'hashrate.js'), hash);
     fs.writeFileSync(path.join(amd, 'test', 'sweep.sh'), SWEEP.replace('/proc/1/fd/1', '/dev/null'));
     const e = { ...process.env, ARCH: 'gfx1201', SWEEP_ROOT: path.join(tmp, 'root').replace(/\\/g, '/'), ...env };
     delete e.PEARL_PROFILE_K;
@@ -376,6 +378,21 @@ describe('sweep.sh with a k 4096 variant', () => {
     expect(lines.filter((l) => / hashrate: /.test(l))).toEqual(['base hashrate: {"th":100,"k":null}',
       'tiled0 hashrate: {"th":100,"k":null}']);
   }, 30000);
+
+  // The fold the host runs on each card (native_fold in pearl_host_hip.cpp): RDNA 2's is dot4, not the reference
+  // fold. hashrate.js opens an untested card (gfx9, gfx103x) only with PEARL_AMD_UNTESTED=1, which it gets.
+  bashIt('checks and times the fold the host runs, dot4 on RDNA 2, and lets hashrate.js open an untested card', () => {
+    const shows = "console.log(JSON.stringify({ th: 100, untested: process.env.PEARL_AMD_UNTESTED || null }));\n";
+    for (const [arch, fold] of [['gfx1030', 'dot4'], ['gfx1032', 'dot4'], ['gfx1100', 'wmma11'], ['gfx1201', 'wmma12'],
+      ['gfx90a', 'mfma8'], ['gfx942', 'mfma16'], ['gfx1010', 'ref']]) {
+      const { status, lines } = sweep({ ARCH: arch, SWEEP_ROUNDS: '1' }, shows);
+      expect([arch, status]).toEqual([arch, 0]);
+      expect(lines[0]).toMatch(new RegExp(`^start ${arch} fold ${fold}; `));
+      expect(lines[1]).toMatch(new RegExp(`^base built in \\d+s \\(\\); check: ${fold} {2}ok: 1024 x 1024`));
+      expect(lines[2]).toBe(`base fold 131072 x 4096: ${fold} timed only: 131072 x 4096, 10 launches, 1.0000 s, 100.000 TMAC/s`);
+      expect(lines.filter((l) => / hashrate: /.test(l))).toEqual(['base hashrate: {"th":100,"untested":"1"}']);
+    }
+  }, 60000);
 
   bashIt('keeps a k build to at least one launch, and reads a k with a u suffix', () => {
     const { status, lines } = sweep({ SWEEP: 'k8192=-O3 -DPEARL_FOLD_K=8192u', SWEEP_FOLD: '131072:4096:3', SWEEP_ROUNDS: '1' });

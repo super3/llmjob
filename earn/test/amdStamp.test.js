@@ -415,7 +415,7 @@ describe('the AMD host with a stamp build', () => {
 
   it('reads the cap, gives the folds room for a batch\'s stamps, and takes it back before freeing it', () => {
     expect(slice(host, 'void resolve_fold(Ctx *ctx) {', '\n}\n')).toContain('  ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;');
-    const create = slice(host, 'extern "C" void *pearl_host_create(', '\n}\n');
+    const create = slice(host, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     const room = create.indexOf('  if (ctx->stamp) {');
     expect(room).toBeGreaterThan(create.indexOf('  if (ctx->fold < 0) {'));
     expect(create).toContain('const size_t blocks = (size_t)(ctx->colBatch * PEARL_COLS_COUNT / f.bn) * (profile->m / f.bm);');

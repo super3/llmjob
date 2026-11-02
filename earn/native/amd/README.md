@@ -9,15 +9,20 @@ NVIDIA card, and loads it with no fallback when asked to (`--core amd` or
 AMD's HIP SDK by its `windows-2022-hip` job, which no Windows Radeon has run yet.
 
 **Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct) or RDNA 2.** On
-those (gfx9 and gfx103x) the core refuses to mine until `PEARL_AMD_UNTESTED=1` is set: run the
-checks under "Testing on real hardware" first, since a fold whose layout differs on the card
-would have every share rejected, and a pool can ban the address for that. On 22 October,
+those (gfx9 and gfx103x) the app and the CLI mine with every hit checked: a fold whose layout
+differs on the card would have every share rejected, and a pool can ban the address for that, so
+each hit is recomputed in JS as the pool's verifier does before it is sent, and the card stops at
+the first wrong one ("Untested cards mine with every hit checked", below). No setting turns the
+check off: a kind of card leaves it by a change to `resolve_fold`, once one has passed the steps
+under "Testing on real hardware". On 22 October,
 unchanged, it passed steps 1-5 under "Testing on real hardware" on Salad: an RX 9070 XT (gfx1201)
 at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, every checked hit
 right and every share accepted on Kryptex (`benchmark.md`, "AMD Radeon", notes). It was written
 with no AMD card: correctness was first shown by running the same kernel source on the CPU
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
-checking hits against the JS reference the way the pool does.
+checking hits against the JS reference the way the pool does. RDNA 2 runs the `dot4` fold, which
+has run in RDNA 2's loop on an RX 7800 XT (a build with `-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`, and
+`PEARL_AMD_FOLD=dot4`) with every checked hit right, but on no RDNA 2 card.
 
 This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
 NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` and
@@ -56,7 +61,8 @@ them in a kernel of its own (as the CUDA core does on GA100 and Hopper).
 | `mfma8` | gfx908, gfx90a (MI100, MI210, MI250, MI250X) | `v_mfma_i32_32x32x8_i8`, wave64 | 128x256, 4 waves of 64x128 |
 | `wmma11` | gfx11 (RX 7000, Radeon PRO W7000, Ryzen AI 300 and Max) | `v_wmma_i32_16x16x16_iu8`, wave32 | 128x256, 8 waves of 64x64 |
 | `wmma12` | gfx12 (RX 9060, RX 9070, Radeon AI PRO R9700) | `v_wmma_i32_16x16x16_iu8`, wave32, RDNA4 layout | 128x256, 8 waves of 64x64 |
-| `ref` | any (the fold RDNA2, gfx103x, runs) | `v_dot4_i32_i8` where the card has it, else scalar | 32x64 |
+| `dot4` | gfx1030-1032 (RX 6600 to 6950, Radeon PRO W6600 and W6800, V620); gfx11 and gfx12 only in a build with `-DPEARL_AMD_PF2=0` | `v_dot4_i32_i8` (`v_dot4_i32_iu8` on gfx11 and gfx12) from registers, wave32 | 128x256, 8 waves of 64x64 |
+| `ref` | any (the baseline) | `v_dot4_i32_i8` where the card has it, else scalar | 32x64 |
 
 The region pattern lines up with every one of these layouts. In a 32x64 block of C each
 lane's accumulators belong to one region (two on RDNA, split by register), the eight
@@ -65,7 +71,24 @@ it. Lane r of the eight keeps words r and r + 8, so a region's transcript stays 
 registers until the tile ends. The 16x16x16 WMMA on RDNA3 needs A and B duplicated in
 both half-waves; the fold loads them that way.
 
-The matrix folds stage 32 bytes of k at a time through LDS, and read A' and B' in per-tile
+RDNA 2 has no matrix instruction, but by AMD's figures its `v_dot4_i32_i8` does 4 int8 MACs a lane
+a clock, 256 a CU a clock: RDNA 3's WMMA rate. The `dot4` fold is the matrix folds' code (tile,
+operand layout, staging, readout, store) with dot4s from registers in place of the instruction.
+Each lane holds 8 rows by 8 columns of each 32x64 block, laid out so the region rules above hold
+(`PearlAmdDot4` in `pearl_amd_fold.h`), and a k-step of 4 bytes is 24 words read from LDS and 128
+dot4s a lane. The reference fold reads both operands from LDS for every dot4, which is why it is
+slow. The compiler first merged each row's reads for a slab into two 16-byte reads and waited on
+each just before its dot4s, which spilled on gfx11 and ran at 10.2 TMAC/s on an RX 7800 XT; an
+empty asm between k-steps keeps the reads apart and in flight (`PEARL_AMD_DOT4_SPLIT`), and the
+fold runs at 18.0-18.1 there, in RDNA 2's loop. That card's `v_dot4_i32_iu8` did 18.5-19.2
+TMAC/s in a kernel of nothing but dot4s, so the fold gets 94-98% of what the card's dot4 can do;
+its own `wmma11` folds at 32.8. Per CU and clock, that dot4 rate is about half what AMD's figures
+give RDNA 2's `v_dot4_i32_i8`; no RDNA 2 card has measured it. What an RDNA 2 card gets is
+projected in `benchmark.md` until one runs it. RDNA 3 and RDNA 4 release builds have no `dot4`
+fold: it is slower there than their WMMA folds, and in their PF2 loop it spilled (before the
+split; not tried since).
+
+The matrix folds and `dot4` stage 32 bytes of k at a time through LDS, and read A' and B' in per-tile
 order: each 128-row tile of A' and 256-row tile of B' is stored as k / 32 slabs of [rows][32
 bytes] (`pearl_materialize16_tiled`, the kernel the CUDA tall fold's draw uses), so a block's
 slab is one contiguous run of whole cache lines. Row-major, it was 32 bytes of every row's
@@ -77,7 +100,7 @@ the row-major layout. The reference fold reads row-major operands.
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
-with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12`
+with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|wmma11|wmma12|dot4`
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
 keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile, and 128 on
 gfx1100 and gfx1101 (RX 7900 and RX 7800/7700 cards), which were faster there in the
@@ -88,6 +111,18 @@ runs in order on one stream; proof reads use a second, and a hit's reads are wai
 once. `PEARL_AMD_TRACE=1` prints a line on stderr every 10 s with each batch's GPU time for
 the fold and the hash, how long the GPU sat idle between batches, and the search thread's
 waits.
+
+**Untested cards mine with every hit checked.** A card whose fold has not run on its kind of card
+in a release (gfx9, gfx103x, or one whose architecture HIP could not read) mines only for an opener
+that checks every hit before sending it (createCore's `checkHits`, which the app and
+`verify-hits.js` pass), and the core then reports `core.untested`. The miner recomputes each of
+that card's hits with `../../src/shared/miner/checkHit.js`, the check `verify-hits.js` runs (4.6
+ms a hit at k 2048, 8.6 at k 4096), and at the first wrong one sends nothing, stops that card for
+the run and logs a line asking you to report it. `PEARL_AMD_UNTESTED=1` does not turn the check
+off. It only lets an opener that checks nothing open such a card, which is for `hashrate.js`: it
+sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and the error there
+told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
+a setting carried over must not vouch for it.
 
 **RDNA 4 mines k 4096.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
@@ -121,7 +156,8 @@ build.
 HIP-CPU (github.com/ROCm/HIP-CPU) runs HIP kernels as C++ on the CPU. The same
 `pearl_host_hip.cpp` and kernels build against it into `pearl_core_hipcpu.node`; in that
 build each matrix instruction is replaced by an emulation written from AMD's Matrix
-Instruction Calculator layout. Everything else in the fold is the source the GPU runs.
+Instruction Calculator layout. Everything else in the fold is the source the GPU runs. The `dot4`
+fold needs no emulation: the CPU runs its code as it is, with four multiplies for each `v_dot4`.
 
 `test/run-cpu-checks.sh`, on 2026-10-09 (4 cores, about 8 minutes):
 
@@ -138,6 +174,11 @@ kwrap core opened with `cardK` must pick k 4096 and pass every hit at that k; wi
 `PEARL_AMD_K=2048`, or the default core, it must stay at k 2048. With `SHARE_DIR` set, the k 4096
 runs write their shares there for `probes/refverify.rs`, the spec's own verifier (amdtest.sh's
 `refverify` task).
+
+With the `dot4` fold it also checks `dot4` at its other k-steps (`_dot4k8`, `_dot4k16`) and runs
+the whole core with it at k 2048 and, with the wrap readout, k 4096. All 23 checks passed on 2
+November, on a Salad box's 4 CPUs in 17 minutes (amdtest.sh's `cpuchecks`): `dot4` 400 of 400 hits
+at both k.
 
 "Verified" is `verify-hits.js`'s check: Merkle proofs, seed chain, noise and fold
 recomputed in JS, and the jackpot hash must match the core's exactly. The fold check was
@@ -163,14 +204,19 @@ no scratch memory on every target:
 |---|---|---|---|---|---|
 | gfx908, gfx90a | mfma8 | 168 | 128 | 36 KB | 1 |
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
+| gfx1030, gfx1031, gfx1032 | dot4 | 201 | - | 36 KB | 4 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1200, gfx1201 | wmma12 | 198 | - | 36 KB | 6 |
 
-The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. `./build-amd.sh
-gpu` builds all 14 targets into one addon (about 2 minutes) and the fold check binary.
+The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. On 2 November, with the
+`dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
+gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
+also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).
+`./build-amd.sh gpu` builds all 14 targets into one addon (about 2 minutes) and the fold check
+binary.
 
 ## Building
 
@@ -236,8 +282,9 @@ npm install --no-save node-addon-api
 ./build/pearl_amd_foldtest 16384 16384 1 20 0         # timed only: each fold's rate in TMAC/s
 
 # 3. The whole core at the mainnet profile, checked as the pool checks it. On a gfx9 or
-#    gfx103x card, which hasn't run the core yet, add PEARL_AMD_UNTESTED=1 to steps 3-5
-#    (export it), and to the app once every step here has passed.
+#    gfx103x card, which hasn't run the core yet, steps 3 and 5 check every hit themselves;
+#    step 4 checks none and sends nothing, so give that one line PEARL_AMD_UNTESTED=1. It
+#    turns no check off.
 #    Must print PASS with 400 verified. The reference fold is slow, so give it an easier target.
 node ../probes/verify-hits.js build/pearl_core_hip.node 120
 PEARL_AMD_FOLD=ref node ../probes/verify-hits.js build/pearl_core_hip.node 300 236
@@ -313,6 +360,13 @@ by contrast, stops only its own card.
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
+- Run steps 1-5 above on an RDNA 2 card (an RX 6600 to 6950, a Radeon PRO W6600 or W6800, or a
+  V620; Salad's AMD classes have none): the `dot4` fold has run only in RDNA 2's loop on an RX 7800
+  XT (`benchmark.md`, "a fold for RDNA 2"), so its speed on RDNA 2 is a projection. Then take gfx103x out of the
+  untested cards in `resolve_fold`, so its hits are no longer checked, and time `PEARL_AMD_DOT4_K=8`
+  and the DPP readout there. DPP needs its gate in `pearl_amd_group_xor` widened to gfx103x (its
+  lane moves exist on gfx10 too); it made no difference to `dot4` on RDNA 3, where each dot4 took
+  twice the clocks AMD's figures give it on RDNA 2.
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
   barrier with one slab of prefetch, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also

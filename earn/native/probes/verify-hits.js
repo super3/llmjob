@@ -6,6 +6,11 @@
 // counted, so a longer run checks no more. The target is set easy enough to hit
 // about once a batch so the run crosses many operand redraws.
 //
+// The recompute is shared/miner/checkHit.js, the check the app runs before it sends a hit of a card
+// whose fold has not run on its kind of card in a release. Since every hit is checked here, the core
+// is opened with checkHits, and the AMD core then opens such a card (RX 6000, Instinct) without
+// PEARL_AMD_UNTESTED=1.
+//
 // Besides PASS, the JSON says where the time went, so a slow run can be read from the
 // one line: the card and the fold it got (core.device), seconds from setJob to the
 // first hit and to the first hashrate sample, the last and the best hashrate sample
@@ -27,8 +32,7 @@ const fs = require('fs');
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
 const {
-  PROFILE: MAINNET, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage, profileForK,
-  penalizedAdjustmentFactor,
+  PROFILE: MAINNET, buildConfig52, meetsTarget, profileForK, penalizedAdjustmentFactor,
 } = require(R + 'pearlhash');
 const kEnv = process.env.PEARL_PROFILE_K;
 const ASKED = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
@@ -37,17 +41,15 @@ if (kEnv && !(Number.isInteger(ASKED.k) && ASKED.k >= 16 * ASKED.rank && (ASKED.
   console.log(JSON.stringify({ error: `PEARL_PROFILE_K must be a power of two of at least ${16 * ASKED.rank}, not ${kEnv}` }));
   process.exit(2);
 }
-const { hash, keyedHash } = require(R + 'blake3');
+const { hash } = require(R + 'blake3');
 const { buildShareProof } = require(R + 'shareProof');
-const { foldTranscript, transcriptBytes } = require(R + 'reference');
-const { computeNoiseForIndices } = require(R + 'noise');
-const { leafIndicesFromRows } = require(R + 'merkle');
+const { checkHit } = require(R + 'checkHit');
 const file = path.resolve(process.argv[2]);
 const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
 const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-const core = addon.createCore(ASKED, kEnv ? {} : { cardK: true });
+const core = addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
 const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
 if (!PROFILE) {
@@ -61,36 +63,17 @@ const jobKey = hash(Buffer.concat([header, buildConfig52(PROFILE)]));
 const target = 2n ** bits;
 const poolTarget = target / BigInt(penalizedAdjustmentFactor(PROFILE));
 const tb = Buffer.alloc(32); { let t = target; for (let i = 31; i >= 0; i--) { tb[i] = Number(t & 0xffn); t >>= 8n; } }
-const { k, rank, m, n } = PROFILE;
+const { k } = PROFILE;
 let hits = 0, ok = 0, bad = 0; const salts = new Set(); const fails = [];
 let t0 = 0, firstHit = null, firstRate = null, thLast = null, thMax = null; const saltAt = [];
 const since = () => +((Date.now() - t0) / 1000).toFixed(1);
-function rowsFromLeaves(side, idxs, want) {
-  // leaves are 1024-byte chunks in leafIndices order; row r spans bytes [r*k, r*k+k)
-  const map = new Map(); const L = Array.from(side.leafIndices);
-  L.forEach((li, i) => map.set(li, side.leafData.subarray(i * 1024, i * 1024 + 1024)));
-  return want.map((r) => { const out = new Int8Array(k); for (let b = 0; b < k; b += 1024) { const off = r * k + b; const leaf = map.get(Math.floor(off / 1024)); if (!leaf) throw new Error('missing leaf for row ' + r); out.set(new Int8Array(leaf.buffer, leaf.byteOffset + (off % 1024), 1024), b); } return out; });
-}
 let share = null;
 function check(hit) {
   share = buildShareProof(hit, jobKey, PROFILE);
   if (!share) return 'buildShareProof rejected (Merkle / leaf indices)';
-  const rootA = Buffer.from(hit.proofA.root), rootB = Buffer.from(hit.proofBt.root);
-  const boundA = keyedHash(SEED_SALT_A, bindMessage(rootA, m)), boundB = keyedHash(SEED_SALT_B, bindMessage(rootB, n));
-  const bSeed = hash(Buffer.concat([jobKey, boundB])), aSeed = hash(Buffer.concat([bSeed, boundA]));
-  if (aSeed.toString('hex') !== hit.aSeed || bSeed.toString('hex') !== hit.bSeed) return 'seed chain mismatch';
-  const { rows, cols } = regionToTile(hit.nonce, PROFILE);
-  const Ar = rowsFromLeaves(hit.proofA, leafIndicesFromRows(rows, k), rows);
-  const Bc = rowsFromLeaves(hit.proofBt, leafIndicesFromRows(cols, k), cols);
-  for (const r of Ar.concat(Bc)) for (const v of r) if (v < -63 || v > 63) return 'operand outside int7';
-  const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
-  const A = new Int8Array(16 * k), Bt = new Int8Array(16 * k);
-  Ar.forEach((r, i) => A.set(r, i * k)); Bc.forEach((c, i) => Bt.set(c, i * k));
-  const idx = Array.from({ length: 16 }, (_, i) => i);
-  const jp = foldTranscript({ A, Bt, noiseA, noiseB, rows: idx, cols: idx, k, rank });
-  const h = keyedHash(aSeed, transcriptBytes(jp));
-  if (!h.equals(Buffer.from(hit.jackpotHash))) return 'jackpot hash mismatch (fold/transcript)';
-  if (!meetsTarget(h, target)) return 'reported hit does not meet target';
+  const why = checkHit(hit, jobKey, PROFILE);
+  if (why) return why;
+  if (!meetsTarget(Buffer.from(hit.jackpotHash), target)) return 'reported hit does not meet target';
   return null;
 }
 core.on('hit', (hit) => {
