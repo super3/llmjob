@@ -2796,8 +2796,11 @@ class W:
         wallet, xwallet = self.cfg["wallet"], self.cfg.get("xmr_wallet")
         sa = st.get("st_acct")
 
-        if pt:
-            name = f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
+        # A HeroMiners row shows only while a live box mines there, or something did in the last hour (and PRL's
+        # always when no box uses Kryptex). Every box moved to Kryptex in October, so from November the rows (an
+        # unpaid balance under the payout line, and October's payouts) went.
+        if pt and (pt.get("ths_1h") or not kt or any(not g.get("kx") for g in live)):
+            name =f"[PRL{NB + 'HeroMiners' if kt else ''}]({HM_PAGE.format(coin='pearl', addr=wallet)})"
             pool.append(f"| ⛏️ {name} | {pt.get('ths_1h', 0):.0f} TH/s | {pt['balance']:.3f} "
                         f"| {pt['unconfirmed']:.3f} | {pt['paid']:.3f} |")
         if kt:
@@ -2805,7 +2808,7 @@ class W:
             kths = sum(g.get("pool_ths") or 0 for g in live if g["has_pc"] and self.on_kx(g, g.get("machine"), now()))
             pool.append(f"| ⛏️ [PRL{NB}Kryptex]({KX_PAGE.format(coin='prl', addr=wallet)}) | {kths:.0f} TH/s "
                         f"| {kt['confirmed']:.3f} | {kt['unconfirmed']:.3f} | {kt['paid']:.3f} |")
-        if xt:
+        if xt and (xt.get("khs_1h") or any(g.get("xmr") and not g.get("xmr_kx") for g in live)):
             pool.append(f"| 🪙 [XMR HeroMiners]({HM_PAGE.format(coin='monero', addr=xwallet)}) | {xt.get('khs_1h', 0):.1f} kH/s "
                         f"| {xt['balance']:.6f} | {xt.get('pending', 0):.6f} | {xt['paid']:.6f} |")
         kxx = st.get("kxx_tot") if xon else None
@@ -2816,9 +2819,7 @@ class W:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
         # SafeTrade in one table, a row a line. A coin a row in the order a coin moves: what the pools paid (Paid), what
         # reached SafeTrade, what waits there to sell (held and in open orders), what sold, its trading fees and the USDT
-        # it brought after them. Then a row for each currency withdrawn, with its fees (for a stablecoin bought with USDT
-        # first, that trade's fee too) and the USDT it took. Last, Left: the USDT still there and every fee paid. So the
-        # USDT column is a ledger: on 26 October +$357.11 + $6.42 − $110.27 − $209.28 = $43.98, the account's balance.
+        # it brought after them. Then the USDT sent to Salad. Last, Left: the USDT still there and every fee paid.
         # Until 26 October the coins were a 💵 row under each coin's pools, with the sales in Paid. No table without a
         # SafeTrade key, or with a read from before 24 Oct 10:40 am EDT (last-day sales only).
         if sa and "sold" in sa:
@@ -2835,26 +2836,16 @@ class W:
                 rows.append(f"| {coin_name(coin)} | {paid[coin]:.{dp}f} | " + ("—" if r is None else f"{r:.{dp}f}")
                             + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
                 fees += round(fee, 2)   # the shown cents, so the column adds up on screen
-            # Each withdrawal shows what reached the bank: the amount sent, with the network's fee (taken on top)
-            # and, for a stablecoin bought with USDT, that trade's fee in Fees. Total out adds them up.
-            sent, out_fees = 0.0, 0.0
+            # Withdrawals to LLMJob's other accounts have no rows (until 2 November a row a currency and a Total
+            # out row did, -$309.54 in October), so the USDT column no longer adds up to Left. Their fees still
+            # count in Left's Fees: the network's fee and, for a stablecoin bought with USDT, that trade's fee.
             outs = sa.get("out") or {}
-            for cur, (amt, wfee) in sorted(outs.items(), key=lambda kv: kv[0] != "usdc"):
-                if cur.endswith(">salad"):
-                    continue    # below, after the bank's total
+            for cur, (amt, wfee) in outs.items():
                 if cur == "usdt":
-                    fee = wfee
+                    fees += round(wfee, 2)
                 elif cur in (sa.get("bought") or {}):
-                    fee = sa["bought"][cur][1] + wfee
-                else:
-                    continue   # a coin withdrawn as itself never became USDT
-                rows.append(f"| {cur.upper()} out | | | | | ${fee:.2f} | −${amt:.2f} |")
-                sent += round(amt, 2)       # the shown cents, so the column adds up on screen
-                out_fees += round(fee, 2)
-            if sent:
-                rows.append(f"| **Total out** | | | | | {bold(f'${out_fees:.2f}')} | {bold(f'−${sent:.2f}')} |")
-            fees += out_fees
-            # Withdrawals to the Salad top-up wallet, which paid for credit: a row of their own, out of Total out.
+                    fees += round(sa["bought"][cur][1] + wfee, 2)
+            # Withdrawals to the Salad top-up wallet, which paid for credit: a row of their own.
             for cur, (amt, wfee) in sorted(outs.items()):
                 if cur.endswith(">salad"):
                     rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")

@@ -2313,25 +2313,22 @@ class TestSafeTrade(Base):
         self.assertEqual(rows[rows.index(head) + 1:], [
             "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |",
             "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
-            "| USDC out | | | | | $0.91 | −$9.00 |",    # the 9 USDC that arrived: its trade fee and the network's
-            "| USDT out | | | | | $1.00 | −$2.00 |",    # 2 USDT arrived, its fee on top; the failed one doesn't count
-            "| Total out | | | | | $1.91 | −$11.00 |",  # what reached the bank
+            # No rows for the 9 USDC and 2 USDT sent to the bank, but their fees ($0.91 and $1.00; the failed one's
+            # doesn't count) are in Left's.
             "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
     def test_usdt_sent_to_the_salad_wallet_is_its_own_row_not_the_banks(self):
         # 28 October: 5 USDT to the top-up wallet (1 of the 6 asked went in fees) paid for $5 of Salad credit; it was
-        # counted in USDT out, the money that reached the bank.
+        # counted in USDT out, the money that reached the bank. The bank's rows went on 2 November.
         self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
             {"currency_id": "usdt", "amount": "2.0", "fee": "1", "status": "succeed", "rid": "0xbank"},
             {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "rid": self.x.cfg["salad_wallet"]},
             {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
         self.x.safetrade()
         rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
-        self.assertEqual(rows[-5:], [
-            "| USDC out | | | | | $0.91 | −$9.00 |",
-            "| USDT out | | | | | $1.00 | −$2.00 |",
-            "| Total out | | | | | $1.91 | −$11.00 |",   # still only what reached the bank
+        self.assertEqual(rows[-3:], [
+            "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
             "| USDT to Salad | | | | | $1.00 | −$5.00 |",
             "| Left | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
 
@@ -4499,11 +4496,15 @@ class TestKryptex(Base):
 
     def test_each_pools_name_links_to_its_page_for_our_address(self):
         self.x.cfg.update(wallet="prl1abc", xmr_wallet="4xyz", xmr_groups=["*"])
-        self.group(kx=True)
+        self.group(kx=True)["xmr_kx"] = True   # its Monero on Kryptex too
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.0, "balance": 0.0, "unconfirmed": 0.0, "blocks": 20,
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 0.0}
         self.x.st["xmr_tot"] = {"t": T0, "balance": 0.0, "paid": 0.0, "pending": 0.0, "khs_1h": 0.0}
+        # Nothing mined on HeroMiners in the last hour and every box on Kryptex: its rows are gone.
+        report = self.report()
+        self.assertNotIn("HeroMiners", report)
+        self.x.st["pool_tot"]["ths_1h"], self.x.st["xmr_tot"]["khs_1h"] = 5, 0.5
         report = self.report()
         self.assertIn(f"| ⛏️ [PRL{w.NB}HeroMiners](https://pearl.herominers.com/?wallet=prl1abc) |", report)
         self.assertIn(f"| ⛏️ [PRL{w.NB}Kryptex](https://pool.kryptex.com/prl/miner/stats/prl1abc) |", report)
