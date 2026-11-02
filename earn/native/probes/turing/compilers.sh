@@ -31,9 +31,9 @@
 # Steps: bench.cu for every build in ROUNDS interleaved rounds (the order reverses each
 # round), hashrate.js on the fastest (or HR_BEST) and on base in HR_ROUNDS interleaved rounds,
 # verify-hits.js (400 hits) on every build but base, every build's hit list against
-# base's (complete, below), then the driver probe: the
-# base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and from
-# ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
+# base's (complete, below), both without the timing-only builds (TIMING below), then the
+# driver probe: the base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and
+# from ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
 #
 # Another architecture: GC (nvcc's -gencode flags, sm_75's by default) and FOLD (the
 # kernel that fold= hashes and the build line's regs= and spill= read,
@@ -133,6 +133,16 @@ for v in "${VARIANTS[@]}"; do
 done
 kof() { echo "${KOF[$1]:-2048}"; }
 kset() { [ "$(kof "$1")" = 2048 ] || kof "$1"; }
+# Timing-only builds (pearl_config.h: a tall-fold stub, the hasher's stamps, the TMA ring's
+# operand skip, or no transcript zeroing) refuse any target but zero, so verify-hits.js and
+# the hit lists (complete), which need a real one, skip them.
+declare -A TIMING=()
+for v in "${VARIANTS[@]}"; do
+  IFS='|' read -r name flags _ <<< "$v"
+  if [[ " $flags " =~ [[:space:]]-DPEARL_TALL_(STUB_SPIN|STUB_ALU|AB_SKIP|HASHCYC|TR_NOZERO)(=0*[1-9][0-9]*)?[[:space:]] ]]; then
+    TIMING[$name]=1
+  fi
+done
 GC=${GC:-"-gencode arch=compute_75,code=sm_75"}
 SM=$(printf '%s' "$GC" | grep -oE 'sm_[0-9]+' | tail -1 | cut -d_ -f2)
 FOLD=${FOLD:-pearl_tile_fold_wmma}
@@ -541,6 +551,7 @@ fi
 if has verify; then
   for name in "${BUILT[@]}"; do
     [ "$name" = base ] && continue
+    if [ -n "${TIMING[$name]:-}" ]; then say "verify $name skipped: a timing-only build refuses any target but zero"; continue; fi
     k=$(kset "$name")
     out=$(cd "$SRC/earn" && timeout -k 10 $((VERIFY_SECS + 120)) ${k:+env PEARL_PROFILE_K=$k} node native/probes/verify-hits.js "$OUT/v/$name/build/Release/pearl_core.node" "$VERIFY_SECS" 2>&1)
     j=$(echo "$out" | grep '^{' | tail -1)
@@ -559,6 +570,8 @@ fi
 # block has one, two or a few on any RTX 20 card (30 to 72 blocks): a persistent
 # block's first and last hand-offs. Each build's lines must match base's, batch for
 # batch; an ablation build (output meaningless) fails. A run stops after COMPLETE_SECS.
+# A timing-only build (TIMING above) refuses the lists' target, so it is left out, with
+# one line saying so.
 # The lines only line up between builds that search the same batch width: on RTX 30 a
 # shape's col_batch at or below every build's PEARL_AMPERE_COL_BATCH (the narrower
 # wins), such as "131072 128 160" for builds at 128 and 512. A wider shape fails a
@@ -570,7 +583,11 @@ fi
 if has complete && [ -f "$OUT/v/base/ok" ]; then
   IFS=';' read -r -a shapes <<< "$COMPLETE_SHAPES"
   order=(base)
-  for name in "${BUILT[@]}"; do [ "$name" = base ] || order+=("$name"); done
+  for name in "${BUILT[@]}"; do
+    [ "$name" = base ] && continue
+    if [ -n "${TIMING[$name]:-}" ]; then say "complete $name skipped: a timing-only build refuses any target but zero"; continue; fi
+    order+=("$name")
+  done
   declare -A REF=()
   for name in "${order[@]}"; do k=$(kof "$name"); [ -n "${REF[$k]:-}" ] || REF[$k]=$name; done
   for sh in "${shapes[@]}"; do

@@ -754,6 +754,29 @@ class TestCompilersK(unittest.TestCase):
             f"complete m8192-cb16 bad FAIL {s}, first difference: < HL 1 bbb > HL 1 zzz "], r.stderr)
         self.assertEqual(r.stderr, "")
 
+    def test_complete_leaves_out_the_timing_only_builds(self):
+        # A stamped build refuses the hit list's target, as verify's skip says; here its bench would pass, so only
+        # the skip keeps it out.
+        out = tempfile.mkdtemp()
+        for name in ("base", "real", "stamped"):
+            os.makedirs(os.path.join(out, "v", name))
+            with open(os.path.join(out, "v", name, "bench"), "w", newline="\n") as f:
+                f.write("#!/bin/sh\necho 'HL 0 aaa'\n"
+                        "echo 'hitlist bits=8 regions=64 batches=1 hits=1 full=0 salts=1 digest=0123'\n")
+            os.chmod(os.path.join(out, "v", name, "bench"), 0o755)
+        open(os.path.join(out, "v", "base", "ok"), "w").close()
+        stubs = 'say() { echo "$*"; }; has() { [ "$1" = complete ]; }; timeout() { shift 3; "$@"; }; '
+        r = self.bash(stubs + 'VARIANTS=("base|" "real|-DPEARL_TALL_CYC -DPEARL_TALL_HASH_FMA=1" '
+                      '"stamped|-DPEARL_TALL_CYC -DPEARL_TALL_HASHCYC=1"); BUILT=(base real stamped)\n'
+                      + self.kof() + self.part("declare -A TIMING=()", "done") + self.stage("if has complete && "),
+                      OUT=out.replace("\\", "/"), COMPLETE_SHAPES="8192 16 1", COMPLETE_SECS="5")
+        s = "bits=8 regions=64 batches=1 hits=1 full=0 salts=1 digest=0123"
+        self.assertEqual(r.stdout.splitlines(), [
+            "complete stamped skipped: a timing-only build refuses any target but zero",
+            f"complete m8192-cb16 base {s}",
+            f"complete m8192-cb16 real PASS {s}"], r.stderr)
+        self.assertEqual(r.stderr, "")
+
     def test_smi_lines_come_every_smi_every_seconds_while_a_stage_runs(self):
         d = tempfile.mkdtemp()
         log = os.path.join(d, "args").replace("\\", "/")

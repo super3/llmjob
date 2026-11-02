@@ -3006,6 +3006,100 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
   }
   return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
 }
+#if PEARL_TALL_HASH_FMA
+// The paired hash with its adds on the FMA pipe (PEARL_TALL_HASH_FMA; see pearl_config.h).
+// Each add is an IMAD by one, a 1 ptxas cannot see, so the adds leave the ALU pipe to the
+// XORs and rotates. With one = 1 each step is the same sum mod 2^32 as pearl_hp_g's, so the
+// words are pearl_hp_msw's and pearl_hp_msw_pair's.
+__device__ __forceinline__ void pearl_hpf_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d,
+                                            uint32_t mx, uint32_t my, uint32_t one) {
+  uint32_t t = mx * one + a;
+  a = b * one + t;
+  d = rotr32(d ^ a, 16);
+  c = d * one + c;
+  b = rotr32(b ^ c, 12);
+  t = my * one + a;
+  a = b * one + t;
+  d = rotr32(d ^ a, 8);
+  c = d * one + c;
+  b = rotr32(b ^ c, 7);
+}
+// The pair's g: its message words picked by IMADs, xA * h + xB * hn with hn = one - h, so
+// xA on h = 1 and xB on h = 0, with no select.
+__device__ __forceinline__ void pearl_hpf_g_sel(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d,
+                                                uint32_t xA, uint32_t xB, uint32_t yA, uint32_t yB,
+                                                uint32_t h, uint32_t hn, uint32_t one) {
+  uint32_t t = xA * h + (xB * hn + a);
+  a = b * one + t;
+  d = rotr32(d ^ a, 16);
+  c = d * one + c;
+  b = rotr32(b ^ c, 12);
+  t = yA * h + (yB * hn + a);
+  a = b * one + t;
+  d = rotr32(d ^ a, 8);
+  c = d * one + c;
+  b = rotr32(b ^ c, 7);
+}
+// pearl_hp_msw with pearl_hpf_g.
+__device__ __forceinline__ uint32_t pearl_hpf_msw(const uint32_t key[8], const uint32_t mm[16],
+                                                  int hbe, uint32_t one) {
+  uint32_t s[16], m[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i];
+  s[8] = BLAKE3_IV[0]; s[9] = BLAKE3_IV[1]; s[10] = BLAKE3_IV[2]; s[11] = BLAKE3_IV[3];
+  s[12] = 0u; s[13] = 0u; s[14] = 64u; s[15] = PEARL_TRANSCRIPT_FLAGS;
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = mm[i];
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+    pearl_hpf_g(s[0], s[4], s[8], s[12], m[0], m[1], one);
+    pearl_hpf_g(s[1], s[5], s[9], s[13], m[2], m[3], one);
+    pearl_hpf_g(s[2], s[6], s[10], s[14], m[4], m[5], one);
+    pearl_hpf_g(s[3], s[7], s[11], s[15], m[6], m[7], one);
+    pearl_hpf_g(s[0], s[5], s[10], s[15], m[8], m[9], one);
+    pearl_hpf_g(s[1], s[6], s[11], s[12], m[10], m[11], one);
+    pearl_hpf_g(s[2], s[7], s[8], s[13], m[12], m[13], one);
+    pearl_hpf_g(s[3], s[4], s[9], s[14], m[14], m[15], one);
+    if (r < 6) PEARL_HP_PERM(m)
+  }
+  return hbe ? pearl_bswap32(s[0] ^ s[8]) : (s[7] ^ s[15]);
+}
+// pearl_hp_msw_pair with pearl_hpf_g_sel. h goes through an empty asm first: ptxas then
+// cannot tell it is 0 or 1 and turn the IMADs by h back into selects.
+__device__ __forceinline__ uint32_t pearl_hpf_msw_pair(const uint32_t key[8], const uint32_t mm[16],
+                                                       uint32_t h, int hbe, uint32_t one) {
+  uint32_t A[2], B[2], C[2], Dd[2], m[16];
+#pragma unroll
+  for (int q = 0; q < 2; q++) {
+    A[q] = h ? key[2 + q] : key[q];
+    B[q] = h ? key[6 + q] : key[4 + q];
+    C[q] = h ? BLAKE3_IV[2 + q] : BLAKE3_IV[q];
+  }
+  Dd[0] = h ? 64u : 0u;
+  Dd[1] = h ? PEARL_TRANSCRIPT_FLAGS : 0u;
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = mm[i];
+  uint32_t ho = h;
+  asm volatile("" : "+r"(ho));
+  const uint32_t hn = one - ho;
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+#pragma unroll
+    for (int q = 0; q < 2; q++)
+      pearl_hpf_g_sel(A[q], B[q], C[q], Dd[q], m[4 + 2 * q], m[2 * q], m[5 + 2 * q], m[2 * q + 1], ho, hn, one);
+    const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pC1 = __shfl_xor_sync(~0u, C[1], 1);
+    const uint32_t pD1 = __shfl_xor_sync(~0u, Dd[1], 1), pB0 = __shfl_xor_sync(~0u, B[0], 1);
+    uint32_t a0 = A[0], b0 = B[1], c0 = pC0, d0 = pD1, a1 = A[1], b1 = pB0, c1 = pC1, d1 = Dd[0];
+    pearl_hpf_g_sel(a0, b0, c0, d0, m[12], m[8], m[13], m[9], ho, hn, one);
+    pearl_hpf_g_sel(a1, b1, c1, d1, m[14], m[10], m[15], m[11], ho, hn, one);
+    A[0] = a0; A[1] = a1; B[1] = b0; Dd[0] = d1;
+    C[0] = __shfl_xor_sync(~0u, c0, 1); C[1] = __shfl_xor_sync(~0u, c1, 1);
+    Dd[1] = __shfl_xor_sync(~0u, d0, 1); B[0] = __shfl_xor_sync(~0u, b1, 1);
+    if (r < 6) PEARL_HP_PERM(m)
+  }
+  return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);
+}
+#endif
 #if PEARL_TALL_STUB_SPIN
 // The tall fold's spin stand-in for the paired hash (PEARL_TALL_STUB_SPIN, timing only):
 // the hasher waits on clock64 until that many cycles after t0, read at the hand-off, and
@@ -3268,6 +3362,22 @@ __device__ __forceinline__ void pearl_tall_hcyc_add(uint32_t slot, bool counted,
                  " mad.wide.u32 q, %1, 4, p;\n red.global.add.u32 [q], 1;\n}" ::"r"(hb), "r"(rb) : "memory");
   }
 }
+#if PEARL_TALL_HASHCYC_PRE
+// pearl_tall_hcyc_add with both stamps already read (PEARL_TALL_HASHCYC_PRE): only the
+// release's clock and lane 0's counting come after the zeroing, and no shared load.
+__device__ __forceinline__ void pearl_tall_hcyc_add_pre(long long t0, long long t1, bool counted, uint32_t lane) {
+  const long long t2 = clock64();
+  if (counted && lane == 0u) {
+    const unsigned long long h = (unsigned long long)(t1 - t0) / PEARL_TALL_HCYC_BIN;
+    const unsigned long long r = (unsigned long long)(t2 - t0) / PEARL_TALL_HCYC_BIN;
+    const uint32_t hb = h < PEARL_TALL_HCYC_BINS ? (uint32_t)h : PEARL_TALL_HCYC_BINS - 1u;
+    const uint32_t rb = PEARL_TALL_HCYC_BINS + (r < PEARL_TALL_HCYC_BINS ? (uint32_t)r : PEARL_TALL_HCYC_BINS - 1u);
+    asm volatile("{\n .reg .u64 p, q;\n mov.u64 p, pearl_tall_hcyc;\n"
+                 " mad.wide.u32 q, %0, 4, p;\n red.global.add.u32 [q], 1;\n"
+                 " mad.wide.u32 q, %1, 4, p;\n red.global.add.u32 [q], 1;\n}" ::"r"(hb), "r"(rb) : "memory");
+  }
+}
+#endif
 #endif
 #ifdef PEARL_E4_GENLOAD
 // The cost of drawing A' inside the fold (bench only, -DPEARL_E4_GENLOAD, on top of

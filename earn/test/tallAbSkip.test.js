@@ -40,7 +40,12 @@ const SHIPPED = [
   'earn/native/binding.gyp',
 ];
 const NAME = 'PEARL_TALL_AB_SKIP';
-const STUBS_OFF = { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_HASHCYC: 0 };
+// The cp.async ring's hash switches (tallHashStub.test.js), all off.
+const STUBS_OFF = {
+  PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_HASHCYC: 0, PEARL_TALL_HASHCYC_PRE: 0,
+  PEARL_TALL_TR_ZERO6: 0, PEARL_TALL_TR_NOZERO: 0, PEARL_TALL_HASH_FMA: 0, PEARL_TALL_HASH_ONE: 0,
+  PEARL_TALL_TAGGED: 0,
+};
 const ARCH = '__CUDA_ARCH__';
 
 // Source without comments: comment lines dropped, trailing ones cut. The pins below hold the

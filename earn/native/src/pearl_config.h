@@ -1938,6 +1938,122 @@ typedef struct {
 #define PEARL_TALL_HCYC_BIN 8u       // cycles a bin
 #define PEARL_TALL_HCYC_BINS 2048u   // bins a histogram; the last also holds every longer seam
 #endif
+// PEARL_TALL_TR_ZERO6, PEARL_TALL_TR_NOZERO and PEARL_TALL_HASHCYC_PRE (0 by default): the
+// store side of the RTX 30/40 tile hash. Past about 2,300 cycles after the hand-off each cycle of the
+// hasher's phase costs a tile about 0.95 (benchmark.md, step 0 and g6), and the phase ends
+// with the zeroing: the hasher zeroes its column slot's 48 transcripts for the next tile's
+// XORs, eight STS.128 a lane (region L whole, and region 32 + L / 2 on the even lanes). Its
+// lanes are 64 bytes apart, so by the bank rule the eight take 96 wavefronts: 16 each for
+// region L's four, 8 each for the other four.
+// - TR_ZERO6=1: the slot's 48 regions are one run of 3,072 bytes, so six STS.128 of 512
+//   contiguous bytes zero them, 4 wavefronts each, 24 in all. The same bytes (the SASS
+//   addresses are sTr + wc * 3072 + lane * 16 + i * 512, i 0 to 5), so the same results. A
+//   real form: no refusal.
+// - TR_NOZERO=1: no zeroing at all, the ceiling for any store-side change. Timing only: the
+//   next tile XORs onto this tile's words, so every transcript after a block's first tile is
+//   wrong. The host refuses any target but zero, and the fold's name says so.
+// - HASHCYC_PRE=1, with PEARL_TALL_HASHCYC=1: the stamps are read back before the __syncwarp
+//   and the zeroing. In a plain stamped build lane 0's two LDS.64 come after the zero stores
+//   and wait for them, which puts the stores' drain on the hasher's path; the shipped build has
+//   no shared op there. With _PRE only the release's clock and lane 0's two REDs follow them.
+//   Read tile cycles, not the release stamp: ZERO6's release clock waits on its stores.
+// The test, one 3060 Ti, all three with stamps and _PRE: base, ZERO6 and NOZERO. Store-side
+// work is dead if NOZERO saves under 30 cycles a tile; ZERO6 passes at 30 or more in every
+// round and at least 60% of NOZERO's saving. Even then it is worth 20 to 60 cycles, so it
+// ships only in a bundle that passes.
+// CUDA 12.6 and 12.8.1, sm_86 (both kernels) and sm_89: all three keep base's registers (254
+// and 255) with no spill, and the stamped base's chunk loop byte for byte. Their hashes are not
+// the same code: ptxas schedules the hash around the stores, so on sm_86 (both kernels) the
+// stamped base's hasher path differs from ZERO6's and NOZERO's in 30 to 35 places. Only the
+// static stall from the hand-off to the hash's end is the same, 2,268 cycles (on sm_89 not
+// even that: 2,256 against 2,270), so the test also compares the three hash-end stamps.
+// ZERO6 alone keeps the shipped chunk loop too, and moves the hash as well (on sm_86, 2,264
+// static cycles to its end against 2,305). With PEARL_TALL_CYC and no stamps ZERO6 does not
+// keep the loop: it is 2 instructions shorter and sm_89 drops to 252 registers, so don't read
+// ZERO6 from a CYC-only build. At 0 every kernel is byte for byte what it was.
+// earn/test/tallHashStub.test.js.
+#ifndef PEARL_TALL_TR_ZERO6
+#define PEARL_TALL_TR_ZERO6 0
+#endif
+#ifndef PEARL_TALL_TR_NOZERO
+#define PEARL_TALL_TR_NOZERO 0
+#endif
+#ifndef PEARL_TALL_HASHCYC_PRE
+#define PEARL_TALL_HASHCYC_PRE 0
+#endif
+#if PEARL_TALL_TR_ZERO6 != 0 && PEARL_TALL_TR_ZERO6 != 1
+#error "PEARL_TALL_TR_ZERO6 is 0 or 1"
+#endif
+#if PEARL_TALL_TR_NOZERO != 0 && PEARL_TALL_TR_NOZERO != 1
+#error "PEARL_TALL_TR_NOZERO is 0 or 1"
+#endif
+#if PEARL_TALL_HASHCYC_PRE != 0 && PEARL_TALL_HASHCYC_PRE != 1
+#error "PEARL_TALL_HASHCYC_PRE is 0 or 1"
+#endif
+#if PEARL_TALL_TR_ZERO6 && PEARL_TALL_TR_NOZERO
+#error "PEARL_TALL_TR_ZERO6 and PEARL_TALL_TR_NOZERO replace the same zeroing: build one or the other"
+#endif
+#if (PEARL_TALL_TR_ZERO6 || PEARL_TALL_TR_NOZERO) && !PEARL_TALL_HASH_PAIRS
+#error "PEARL_TALL_TR_ZERO6 and PEARL_TALL_TR_NOZERO replace the paired hash's zeroing: build them without PEARL_TALL_HASH_PAIRS=0"
+#endif
+#if (PEARL_TALL_TR_ZERO6 || PEARL_TALL_TR_NOZERO) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 860 \
+    && __CUDA_ARCH__ != 890
+#error "PEARL_TALL_TR_ZERO6 and PEARL_TALL_TR_NOZERO replace the cp.async ring's zeroing: build them for sm_86 or sm_89 alone"
+#endif
+#if PEARL_TALL_HASHCYC_PRE && !PEARL_TALL_HASHCYC
+#error "PEARL_TALL_HASHCYC_PRE moves the stamps' reads: build it with -DPEARL_TALL_HASHCYC=1"
+#endif
+// PEARL_TALL_HASH_FMA and PEARL_TALL_HASH_ONE (0 by default): the pipe side of the tile hash.
+// With HASH_FMA=1 the paired hash's adds go to the FMA pipe as IMAD by a 1 ptxas cannot see
+// (hash_big_endian | 1, from the kernel's argument; the host passes hash_big_endian as 0 or 1
+// in this build), so the XORs and rotates have the ALU pipe to themselves. The pair picks its
+// message words with IMADs by h and 1 - h instead of a select. The words are the same: with a
+// 1 each step is the same sum mod 2^32. A real form: no refusal.
+// HASH_ONE=1 is its control: the same source with a 1 ptxas can see (an asm mov), so ptxas
+// folds the IMADs back into adds. Like the 35 or so hash forms tried in scratch, HASH_FMA makes
+// ptxas move the chunk loop's ring-wait parity into uniform registers: 4 R2UR in the loop, 549
+// against 542 instructions on sm_86, 546 against 540 on sm_89. October's IMAD hash had that
+// loop and lost 3.9% on a 4090 (106,704 against 102,658 cycles a tile; PEARL_TALL_BPT's notes
+// below). HASH_ONE keeps HASH_FMA's loop byte for byte, so HASH_ONE - base is the loop's
+// price, about 55 high, and HASH_FMA - base the trade. HASH_ONE's hash is not quite base's:
+// its pair still picks the message words with IMADs, so on sm_86 its static stall from the
+// hand-off to the hash's end is 2,364 cycles against 2,305, and past the knee a cycle there
+// costs a tile about 0.95.
+// The test, one 3060 Ti, PEARL_TALL_CYC without the stamps (they move this loop): base,
+// HASH_FMA and HASH_ONE. A loop price (HASH_ONE - base) of 300 or more stops all hash-form
+// work on the fused fold; a reading of 300 to about 355 is within HASH_ONE's own cost, so
+// report that with it. HASH_FMA passes only at 300 or more cycles a tile under base in every
+// round.
+// CUDA 12.6 and 12.8.1, sm_86 (both kernels) and sm_89: 254 and 255 registers, no spill.
+// The hasher's path is 1,340 instructions on sm_86 (1,200 with HASH_ONE, 1,167 shipped).
+// On the CPU, pearl_kernel.cu's own pearl_hpf_msw and pearl_hpf_msw_pair, built for the host
+// with the pair's shuffles on two threads, gave pearl_transcript_msw's word in 2M whole and
+// 200k paired compressions over both byte orders, and a 1 of 3 broke every one. Not yet run
+// on a GPU. At 0 every kernel is byte for byte what it was. earn/test/tallHashStub.test.js.
+#ifndef PEARL_TALL_HASH_FMA
+#define PEARL_TALL_HASH_FMA 0
+#endif
+#ifndef PEARL_TALL_HASH_ONE
+#define PEARL_TALL_HASH_ONE 0
+#endif
+#if PEARL_TALL_HASH_FMA != 0 && PEARL_TALL_HASH_FMA != 1
+#error "PEARL_TALL_HASH_FMA is 0 or 1"
+#endif
+#if PEARL_TALL_HASH_ONE != 0 && PEARL_TALL_HASH_ONE != 1
+#error "PEARL_TALL_HASH_ONE is 0 or 1"
+#endif
+#if PEARL_TALL_HASH_ONE && !PEARL_TALL_HASH_FMA
+#error "PEARL_TALL_HASH_ONE is PEARL_TALL_HASH_FMA's control: build it with -DPEARL_TALL_HASH_FMA=1"
+#endif
+#if PEARL_TALL_HASH_FMA && (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || defined(PEARL_ABLATE_TRANSCRIPT_HASH))
+#error "PEARL_TALL_HASH_FMA is a form of the hash a stub or the ablation removes: build one or the other"
+#endif
+#if PEARL_TALL_HASH_FMA && !PEARL_TALL_HASH_PAIRS
+#error "PEARL_TALL_HASH_FMA is a form of the paired hash: build it without PEARL_TALL_HASH_PAIRS=0"
+#endif
+#if PEARL_TALL_HASH_FMA && defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 860 && __CUDA_ARCH__ != 890
+#error "PEARL_TALL_HASH_FMA is a form of the cp.async ring's paired hash: build it for sm_86 or sm_89 alone"
+#endif
 // Blackwell's tall fold makes its readout's XOR folds before the chunk-0 hand-off guard,
 // where only the three shared XORs that write the transcripts need to wait for the hasher.
 // The readout's ~100 integer ops then run while the hasher's partner would otherwise sit

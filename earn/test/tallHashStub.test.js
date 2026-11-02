@@ -13,6 +13,9 @@ const { preprocess: resolve } = require('./helpers/amdSwitches');
 //   2 the same burst as one chain, 3 with its adds as IMAD, 4 with 32 IMMA, 5 all IMAD.
 // Both are timing only: the host refuses any target but zero, so neither can mine.
 // The hasher's stamps (PEARL_TALL_HASHCYC, bench only) are in the second block below.
+// The third block has the zeroing's forms (PEARL_TALL_TR_ZERO6, real; PEARL_TALL_TR_NOZERO,
+// timing only) and the stamps read early (PEARL_TALL_HASHCYC_PRE); the fourth the hash's
+// IMAD form (PEARL_TALL_HASH_FMA, real) and its control (PEARL_TALL_HASH_ONE).
 //
 // Nothing here runs device code. These check:
 // - both switches off by default, and the guards, through a small preprocessor;
@@ -45,6 +48,12 @@ const BENCH = rawRead(path.join(PROBES, 'bench.cu'));
 const HASHRATE = rawRead(path.join(PROBES, 'hashrate.js'));
 const SWITCHES = ['PEARL_TALL_STUB_SPIN', 'PEARL_TALL_STUB_ALU'];
 const STAMPS = 'PEARL_TALL_HASHCYC';
+// The zeroing's and the hash's forms, and the stamps read early (the third and fourth blocks).
+const ZEROS = ['PEARL_TALL_TR_ZERO6', 'PEARL_TALL_TR_NOZERO'];
+const PRE = 'PEARL_TALL_HASHCYC_PRE';
+const FMAS = ['PEARL_TALL_HASH_FMA', 'PEARL_TALL_HASH_ONE'];
+const FORMS = [...ZEROS, PRE, ...FMAS];
+const FORMS_OFF = Object.fromEntries(FORMS.map((n) => [n, 0]));
 
 // Source without comments: comment lines dropped, trailing ones cut. The pins below hold
 // the code, so a reworded comment does not break them.
@@ -57,6 +66,8 @@ function code(text) {
 const lines = (...l) => l.join(NL);
 const KERNEL_CODE = code(KERNEL);
 const FOLD_CODE = code(FOLD);
+// The fold with the third and fourth blocks' switches off, as the stubs and stamps knew it.
+const FOLD_BASE = resolve(FOLD_CODE, FORMS_OFF);
 
 // The body of the function or lambda whose head is head, braces and all.
 function body(src, head) {
@@ -487,7 +498,7 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
     // The spin's clock is read at the hand-off, before the tile's coordinates (about
     // 150-300 cycles), as the phase and the partner's window are counted: a spin counted from
     // after them would hold the hasher that much past the window at 1700.
-    inOrder(FOLD_CODE,
+    inOrder(FOLD_BASE,
       lines(
         '#if PEARL_TALL_HASH_PAIRS_ON',
         '    if (__any_sync(0xffffffffu, wr == 0u)) {',
@@ -526,22 +537,22 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
         '      __syncwarp();'));
     // The hash's words feed nothing but the default's hit test, and the hit test reads
     // only w1 and w2.
-    for (const h of ['h1', 'h2']) expect(FOLD_CODE.match(new RegExp(`\\b${h}\\b`, 'g'))).toHaveLength(2);
-    for (const w of ['w1', 'w2']) expect(FOLD_CODE.match(new RegExp(`\\b${w}\\b`, 'g'))).toHaveLength(4);
+    for (const h of ['h1', 'h2']) expect(FOLD_BASE.match(new RegExp(`\\b${h}\\b`, 'g'))).toHaveLength(2);
+    for (const w of ['w1', 'w2']) expect(FOLD_BASE.match(new RegExp(`\\b${w}\\b`, 'g'))).toHaveLength(4);
     // Each stand-in once, and only in the paired hash.
-    expect(FOLD_CODE.split('pearl_tall_stub_spin(').length - 1).toBe(1);
-    expect(FOLD_CODE.match(/\bstub_t0\b/g)).toHaveLength(2);
-    expect(FOLD_CODE.split('pearl_tall_stub_alu(').length - 1).toBe(1);
+    expect(FOLD_BASE.split('pearl_tall_stub_spin(').length - 1).toBe(1);
+    expect(FOLD_BASE.match(/\bstub_t0\b/g)).toHaveLength(2);
+    expect(FOLD_BASE.split('pearl_tall_stub_alu(').length - 1).toBe(1);
     // record() hashes the region again in full and tests every word before it reports, so a
     // stand-in's word that passes the top-word test (~0u at a target whose top word is all
     // ones, or a burst that comes out at or under the target's) still reports only a real hit.
-    const record = body(FOLD_CODE, 'auto record = [&](uint32_t Lc) {');
+    const record = body(FOLD_BASE, 'auto record = [&](uint32_t Lc) {');
     inOrder(record,
       'pearl_transcript_hash_again(test.key, t, h);',
       'if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;',
       'const uint32_t slot = atomicAdd(hits.count, 1u);');
     // The transcripts are still zeroed for the next tile after a stub.
-    expect(FOLD_CODE).toContain(lines(
+    expect(FOLD_BASE).toContain(lines(
       '      __syncwarp();',
       '#pragma unroll',
       '      for (uint32_t q = 0; q < 4; q++) {',
@@ -797,7 +808,7 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
     const STUBS = [{ PEARL_TALL_STUB_SPIN: 3000, PEARL_TALL_STUB_ALU: 0 },
       ...[1, 2, 3, 4, 5].map((alu) => ({ PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: alu }))];
     for (const stub of [...STUBS, ...STUBS.map((x) => ({ ...x, [STAMPS]: 1 }))]) {
-      const on = resolve(submit, { [STAMPS]: 0, ...stub, PEARL_TALL_AB_SKIP: 0 });
+      const on = resolve(submit, { [STAMPS]: 0, ...stub, PEARL_TALL_AB_SKIP: 0, ...FORMS_OFF });
       expect([stub, on.includes('hasher-stamp')]).toEqual([stub, false]);
       expect([stub, on.includes(lines(
         '    if (!zero) {',
@@ -818,29 +829,37 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
     expect(HASHRATE).toContain('target: 0n');
     // The fold's name: the tag, the spin with its cycles; added to Ampere's name (sm_86)
     // and Ada's cp.async ring (sm_89), not to the TMA ring's or any other fold's.
-    // STUB_ALU=1 keeps its tag; the others say which they are; the stamps add theirs.
+    // STUB_ALU=1 keeps its tag; the others say which they are; the stamps add theirs, after
+    // the forms' tags (the third and fourth blocks below), all in PEARL_TALL_TAIL_TAG.
     expect(HOST).toContain(lines(
-      '#if PEARL_TALL_HASHCYC',
+      '#if PEARL_TALL_HASHCYC_PRE',
+      '#define PEARL_TALL_HCYC_TAG ", hasher stamps read before the zeroing"',
+      '#elif PEARL_TALL_HASHCYC',
       '#define PEARL_TALL_HCYC_TAG ", hasher stamps"',
       '#else',
       '#define PEARL_TALL_HCYC_TAG ""',
-      '#endif',
+      '#endif'));
+    expect(HOST).toContain(lines(
+      '#define PEARL_TALL_TAIL_TAG PEARL_TALL_FMA_TAG PEARL_TALL_ZERO_TAG PEARL_TALL_HCYC_TAG',
+      '#define PEARL_TALL_TAGGED ' + BS,
+      '  (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_HASHCYC || PEARL_TALL_TR_ZERO6 ' + BS,
+      '   || PEARL_TALL_TR_NOZERO || PEARL_TALL_HASH_FMA)',
       '#if PEARL_TALL_STUB_SPIN',
       '#define PEARL_TALL_STUB_STR2(x) #x',
       '#define PEARL_TALL_STUB_STR(x) PEARL_TALL_STUB_STR2(x)',
-      'static const char kTallStubTag[] = ", STUB_SPIN=" PEARL_TALL_STUB_STR(PEARL_TALL_STUB_SPIN) PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_SPIN=" PEARL_TALL_STUB_STR(PEARL_TALL_STUB_SPIN) PEARL_TALL_TAIL_TAG;',
       '#elif PEARL_TALL_STUB_ALU == 1',
-      'static const char kTallStubTag[] = ", STUB_ALU" PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_ALU" PEARL_TALL_TAIL_TAG;',
       '#elif PEARL_TALL_STUB_ALU == 2',
-      'static const char kTallStubTag[] = ", STUB_ALU=2 (one chain)" PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_ALU=2 (one chain)" PEARL_TALL_TAIL_TAG;',
       '#elif PEARL_TALL_STUB_ALU == 3',
-      'static const char kTallStubTag[] = ", STUB_ALU=3 (adds as IMAD)" PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_ALU=3 (adds as IMAD)" PEARL_TALL_TAIL_TAG;',
       '#elif PEARL_TALL_STUB_ALU == 4',
-      'static const char kTallStubTag[] = ", STUB_ALU=4 (with 32 IMMA)" PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_ALU=4 (with 32 IMMA)" PEARL_TALL_TAIL_TAG;',
       '#elif PEARL_TALL_STUB_ALU == 5',
-      'static const char kTallStubTag[] = ", STUB_ALU=5 (IMAD only)" PEARL_TALL_HCYC_TAG;',
-      '#elif PEARL_TALL_HASHCYC',
-      'static const char kTallStubTag[] = PEARL_TALL_HCYC_TAG;',
+      'static const char kTallStubTag[] = ", STUB_ALU=5 (IMAD only)" PEARL_TALL_TAIL_TAG;',
+      '#elif PEARL_TALL_TAGGED',
+      'static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;',
       '#endif'));
     const name = code(body(HOST, 'extern "C" const char *pearl_host_fold_name('));
     expect(name.split('kTallStubTag').length - 1).toBe(2);
@@ -848,7 +867,7 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
       'if (ctx->foldAmpere) {',
       lines(
         '             PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);',
-        '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_HASHCYC',
+        '#if PEARL_TALL_TAGGED',
         '    {',
         '      Ctx *c = const_cast<Ctx *>(ctx);',
         '      const size_t n = strlen(c->foldName);',
@@ -857,7 +876,7 @@ describe('tall-fold tile-hash timing stubs (PEARL_TALL_STUB_SPIN, PEARL_TALL_STU
         '#endif',
         '    return ctx->foldName;'),
       lines(
-        '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_HASHCYC',
+        '#if PEARL_TALL_TAGGED',
         '  if (ctx->foldTall && !ctx->foldTma) {',
         '    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,',
         '             "tall 192x256, 8 warps of 96x64, cp.async ring%s%s",',
@@ -945,10 +964,13 @@ describe('tall-fold hasher stamps (PEARL_TALL_HASHCYC)', () => {
   });
 
   test('off, the fold, the kernel file, the host and bench are the shipped code token for token', () => {
-    const OFF = { [STAMPS]: 0, PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_AB_SKIP: 0 };
-    // The fold: three blocks of the stamps' own, and nothing else names them.
+    const OFF = { [STAMPS]: 0, PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_AB_SKIP: 0, ...FORMS_OFF,
+      PEARL_TALL_TAGGED: 0 };
+    // The fold: three blocks of the stamps' own, two of them holding PEARL_TALL_HASHCYC_PRE's
+    // (the third block below), and nothing else names them.
     expect(FOLD.match(/^#if PEARL_TALL_HASHCYC$/gm)).toHaveLength(3);
-    expect(FOLD.match(/^#if .*PEARL_TALL_HASHCYC/gm)).toHaveLength(3);
+    expect(FOLD.match(/^#if PEARL_TALL_HASHCYC_PRE$/gm)).toHaveLength(2);
+    expect(FOLD.match(/^#if .*PEARL_TALL_HASHCYC/gm)).toHaveLength(5);
     const fold = resolve(FOLD, OFF);
     expect(fold).not.toMatch(/hcyc|\bcv\b/);
     // The kernel file: the histograms and their take only under the switch.
@@ -966,7 +988,7 @@ describe('tall-fold hasher stamps (PEARL_TALL_HASHCYC)', () => {
   test('every stamp is in the hasher branch, after the hand-off and outside the chunk loop', () => {
     // t0 at the hand-off, t1 after the hit test (it waits for the hash's words), and the
     // release after the zeroing; all inside the vote-guarded hasher branch.
-    inOrder(FOLD_CODE,
+    inOrder(FOLD_BASE,
       '    pearl_bar_sync(1u + wc, 64u);',
       lines(
         '    if (__any_sync(0xffffffffu, wr == 0u)) {',
@@ -997,13 +1019,13 @@ describe('tall-fold hasher stamps (PEARL_TALL_HASHCYC)', () => {
         '#endif',
         '    }'));
     // Nothing of the stamps before the hand-off, where the chunk loop is.
-    const handoff = FOLD_CODE.indexOf('    pearl_bar_sync(1u + wc, 64u);');
-    expect(FOLD_CODE.slice(0, handoff)).not.toMatch(/HASHCYC|hcyc/);
+    const handoff = FOLD_BASE.indexOf('    pearl_bar_sync(1u + wc, 64u);');
+    expect(FOLD_BASE.slice(0, handoff)).not.toMatch(/HASHCYC|hcyc/);
     // The slots: each hasher warp's (wc 0 to 3) two words, t0 at sTr - 112 + 8 wc and t1 32
     // bytes on, are bytes 16 to 79 of the 128 behind ring buffer 2's rows (sTr is that
     // pad's end), past its FULL and EMPTY barriers (bytes 0 to 15), clear of PEARL_TALL_CYC's
     // word (buffer 0's bytes 16 to 23) and of the transcripts from sTr on.
-    expect(FOLD_CODE).toContain('  const uint32_t sTr = sbase + NST * STRIDE;');
+    expect(FOLD_BASE).toContain('  const uint32_t sTr = sbase + NST * STRIDE;');
     expect(HEADER).toContain('#define PEARL_TALL_STAGE_STRIDE (PEARL_TALL_STAGE_BYTES + 128u)');
     const slots = [0, 1, 2, 3].flatMap((wc) => [128 - 112 + 8 * wc, 128 - 112 + 8 * wc + 32]);
     expect(Math.min(...slots)).toBe(16);
@@ -1105,7 +1127,8 @@ describe('tall-fold hasher stamps (PEARL_TALL_HASHCYC)', () => {
 
   test('the host refuses to mine with the stamps alone, and names them', () => {
     const submit = code(body(HOST, 'extern "C" bool pearl_host_submit('));
-    const on = resolve(submit, { [STAMPS]: 1, PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_AB_SKIP: 0 });
+    const on = resolve(submit, { [STAMPS]: 1, PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_AB_SKIP: 0,
+      ...FORMS_OFF });
     expect(on).toContain(lines(
       '    if (!zero) {',
       '      if (err && err_len)',
@@ -1121,5 +1144,569 @@ describe('tall-fold hasher stamps (PEARL_TALL_HASHCYC)', () => {
     const name = resolve(code(body(HOST, 'extern "C" const char *pearl_host_fold_name(')),
       { [STAMPS]: 1, PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0 });
     expect(name.split('kTallStubTag').length - 1).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The zeroing's forms (PEARL_TALL_TR_ZERO6, real; PEARL_TALL_TR_NOZERO, timing only) and the
+// stamps read before the zeroing (PEARL_TALL_HASHCYC_PRE), all off by default.
+
+// Shared wavefronts of one STS.128 by the bank rule: the warp goes a quarter (8 lanes) at a
+// time, and within a quarter each bank's distinct words take a wavefront each. addr: each
+// lane's byte address, or null for an idle lane.
+function wavefronts(addr) {
+  let n = 0;
+  for (let q = 0; q < 4; q++) {
+    const banks = new Map();
+    for (let l = 8 * q; l < 8 * q + 8; l++) {
+      if (addr[l] === null) continue;
+      for (let w = 0; w < 4; w++) {
+        const word = addr[l] / 4 + w;
+        if (!banks.has(word % 32)) banks.set(word % 32, new Set());
+        banks.get(word % 32).add(word);
+      }
+    }
+    if (banks.size) n += Math.max(...[...banks.values()].map((s) => s.size));
+  }
+  return n;
+}
+
+// Every switch a build of the cp.async ring's hasher reads, off.
+const ALL_OFF = { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_AB_SKIP: 0, [STAMPS]: 0, ...FORMS_OFF };
+// PEARL_TALL_TAGGED's condition, as the host defines it.
+const TAGGED = /#define PEARL_TALL_TAGGED \\\n {2}\(([^)]*)\)/.exec(HOST)[1].split(BS + NL).join(' ');
+
+// The tag pearl_host_fold_name adds for a build with these switches (and no stub), worked out
+// from the host's #defines: PEARL_TALL_TAIL_TAG, or nothing when PEARL_TALL_TAGGED is 0.
+function tagFor(flags) {
+  const values = { ...ALL_OFF, ...flags };
+  if (evaluate(TAGGED, new Map(Object.entries(values).map(([k, v]) => [k, String(v)]))) === 0) return '';
+  const host = resolve(HOST, { ...values, PEARL_TALL_TAGGED: 1 });
+  const def = (name) => {
+    const m = host.match(new RegExp(`^#define ${name} "([^"]*)"$`, 'gm'));
+    expect([name, m && m.length]).toEqual([name, 1]);
+    return /"([^"]*)"/.exec(m[0])[1];
+  };
+  expect(host.match(/^static const char kTallStubTag\[\] = .*$/gm)).toEqual(
+    ['static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;']);
+  expect(HOST).toContain('#define PEARL_TALL_TAIL_TAG PEARL_TALL_FMA_TAG PEARL_TALL_ZERO_TAG PEARL_TALL_HCYC_TAG');
+  return def('PEARL_TALL_FMA_TAG') + def('PEARL_TALL_ZERO_TAG') + def('PEARL_TALL_HCYC_TAG');
+}
+
+describe('tall-fold zeroing forms (PEARL_TALL_TR_ZERO6, _TR_NOZERO) and early stamp reads (PEARL_TALL_HASHCYC_PRE)', () => {
+  const ARCH = '__CUDA_ARCH__';
+  const H = { PEARL_TALL_CYC: 1, [STAMPS]: 1, [PRE]: 1 };
+
+  test('are off by default, one zeroing at a time, and only on the sm_86 and sm_89 paired hash', () => {
+    for (const name of [...ZEROS, PRE]) expect(HEADER).toContain(`#ifndef ${name}${NL}#define ${name} 0${NL}#endif`);
+    const GUARDS = guards();
+    const errorsFor = (flags) => preprocess(GUARDS, flags).errors;
+    for (const name of [...ZEROS, PRE]) expect(evaluate(name, preprocess(GUARDS, {}).defs)).toBe(0);
+    // The test's arms (base, hpbase, hpz6, hpz0; z6 for verify), and ZERO6 beside a stub, the IMAD
+    // hash and CYC alone, on the host pass and both cp.async cards' device passes.
+    const arms = [{}, H, { ...H, PEARL_TALL_TR_ZERO6: 1 }, { ...H, PEARL_TALL_TR_NOZERO: 1 },
+      { PEARL_TALL_TR_ZERO6: 1 }, { PEARL_TALL_TR_NOZERO: 1 }, { PEARL_TALL_CYC: 1, PEARL_TALL_TR_ZERO6: 1 },
+      { PEARL_TALL_TR_ZERO6: 1, PEARL_TALL_STUB_SPIN: 1 }, { PEARL_TALL_TR_NOZERO: 1, PEARL_TALL_STUB_ALU: 1 },
+      { PEARL_TALL_TR_ZERO6: 1, PEARL_TALL_HASH_FMA: 1 }, { PEARL_TALL_TR_ZERO6: 0, PEARL_TALL_TR_NOZERO: 0, [PRE]: 0 }];
+    for (const f of arms) {
+      for (const arch of [null, 860, 890]) {
+        const flags = arch ? { ...f, [ARCH]: arch } : f;
+        expect([flags, errorsFor(flags)]).toEqual([flags, []]);
+      }
+    }
+    for (const arch of [750, 800, 900, 1000, 1200]) expect(errorsFor({ [ARCH]: arch })).toEqual([]);
+    const refused = [
+      [{ PEARL_TALL_TR_ZERO6: 2 }, {}],
+      [{ PEARL_TALL_TR_ZERO6: -1 }, {}],
+      [{ PEARL_TALL_TR_NOZERO: 2 }, {}],
+      [{ ...H, [PRE]: 2 }, { ...H, [PRE]: 0 }],
+      [{ PEARL_TALL_TR_ZERO6: 1, PEARL_TALL_TR_NOZERO: 1 }, { PEARL_TALL_TR_ZERO6: 1 }],
+      [{ PEARL_TALL_TR_ZERO6: 1, PEARL_TALL_HASH_PAIRS: 0 }, { PEARL_TALL_HASH_PAIRS: 0 }],
+      [{ PEARL_TALL_TR_NOZERO: 1, PEARL_TALL_HASH_PAIRS: 0 }, { PEARL_TALL_HASH_PAIRS: 0 }],
+      [{ [PRE]: 1 }, {}],
+      [{ PEARL_TALL_CYC: 1, [PRE]: 1 }, { PEARL_TALL_CYC: 1 }],
+      ...[750, 800, 900, 1000, 1200].flatMap((arch) => ZEROS.map((z) => [{ [z]: 1, [ARCH]: arch }, { [ARCH]: arch }])),
+    ];
+    for (const [f, without] of refused) {
+      const errors = errorsFor(f);
+      expect([f, errors.length > 0 && errors.every((e) => [...ZEROS, PRE].some((s) => e.includes(s)))]).toEqual([f, true]);
+      expect([without, errorsFor(without)]).toEqual([without, []]);
+    }
+  });
+
+  test('off, the fold, the kernel file and the host are the shipped code token for token', () => {
+    // Every line they add is in an #if of their own (with the IMAD hash's, the next block).
+    const ours = /^#(el)?if .*\bPEARL_TALL_(TR_ZERO6|TR_NOZERO|HASHCYC_PRE|HASH_FMA|HASH_ONE)\b.*$/gm;
+    expect(FOLD.match(ours)).toEqual(['#if PEARL_TALL_HASH_FMA', '#if PEARL_TALL_HASH_ONE', '#if PEARL_TALL_HASH_FMA',
+      '#if PEARL_TALL_HASHCYC_PRE', '#if PEARL_TALL_TR_NOZERO', '#elif PEARL_TALL_TR_ZERO6', '#if PEARL_TALL_HASHCYC_PRE']);
+    expect(KERNEL.match(ours)).toEqual(['#if PEARL_TALL_HASH_FMA', '#if PEARL_TALL_HASHCYC_PRE']);
+    const names = /TR_ZERO6|TR_NOZERO|HASHCYC_PRE|HASH_FMA|HASH_ONE|pearl_hpf|hp_one|hc_t[01]|hcyc_add_pre/;
+    expect(resolve(FOLD, ALL_OFF)).not.toMatch(names);
+    expect(resolve(KERNEL, ALL_OFF)).not.toMatch(names);
+    // The host: off, no refusal, no tag, and the byte order passed as it was.
+    const host = resolve(HOST, { ...ALL_OFF, PEARL_TALL_TAGGED: 0 });
+    expect(host).not.toMatch(/bool zero = true;|no-zeroing|kTallStubTag|\? 1 : 0;/);
+    expect(host).toContain('  test.hash_big_endian = (int)ctx->profile.hash_big_endian;');
+  });
+
+  test('ZERO6\'s six stores cover the slot\'s 3,072 bytes, the bytes the shipped eight cover, in a quarter the wavefronts', () => {
+    // The zeroing, after the warp's sync: none, six stores, or the shipped eight.
+    expect(FOLD_CODE).toContain(lines(
+      '      __syncwarp();',
+      '#if PEARL_TALL_TR_NOZERO',
+      '#elif PEARL_TALL_TR_ZERO6',
+      '      static_assert(2u * WARP_REGIONS * 64u == 6u * 32u * 16u, "six stores cover the slot");',
+      '#pragma unroll',
+      '      for (uint32_t i = 0; i < 6; i++)',
+      '        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};"',
+      '                     ::"r"(sTr + wc * (2u * WARP_REGIONS * 64u) + i * 512u + lane * 16u), "r"(0u) : "memory");',
+      '#else',
+      '#pragma unroll',
+      '      for (uint32_t q = 0; q < 4; q++) {',
+      '        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(ra + 16u * q), "r"(0u) : "memory");',
+      '        if (hh == 0u)',
+      '          asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(rp + 16u * q), "r"(0u) : "memory");',
+      '      }',
+      '#endif'));
+    expect(FOLD_CODE).toContain(lines(
+      '      const uint32_t Lp = 32u + (lane >> 1), hh = lane & 1u;',
+      '      const uint32_t ra = sTr + (wc * 2u * WARP_REGIONS + lane) * 64u;',
+      '      const uint32_t rp = sTr + (wc * 2u * WARP_REGIONS + Lp) * 64u;'));
+    expect(FOLD_CODE).toContain('static_assert(2u * WARP_REGIONS == 48u, "1.5 regions a lane");');
+    const WR = 24;
+    // The transcripts: BM x BN / 4 bytes from sTr (192 x 256), zeroed whole once at the start.
+    expect(FOLD_CODE).toContain('  for (uint32_t o = threadIdx.x * 16u; o < BM * BN / 4u; o += PEARL_TALL_THREADS * 16u)');
+    expect(HEADER).toContain('#define PEARL_TALL_BN (4u * 64u)');
+    expect(HEADER).toContain('#define PEARL_TALL_BM (2u * PEARL_TALL_ROW_TILES * 16u)          // 192 rows of A');
+    const AREA = 192 * 256 / 4;
+    expect(AREA).toBe(4 * 2 * WR * 64);
+    // The bytes from sTr a warp's stores write, with how many times each.
+    const covered = (addrs) => {
+      const n = new Map();
+      for (const a of addrs) for (let b = 0; b < 16; b++) n.set(a + b, (n.get(a + b) || 0) + 1);
+      return n;
+    };
+    const all6 = [];
+    const all8 = [];
+    let fronts6 = 0;
+    let fronts8 = 0;
+    for (let wc = 0; wc < 4; wc++) {
+      const six = [];
+      for (let i = 0; i < 6; i++) {
+        const a = Array.from({ length: 32 }, (_, lane) => wc * (2 * WR * 64) + i * 512 + lane * 16);
+        six.push(...a);
+        fronts6 += wavefronts(a);
+      }
+      const eight = [];
+      for (let q = 0; q < 4; q++) {
+        const ra = Array.from({ length: 32 }, (_, lane) => (wc * 2 * WR + lane) * 64 + 16 * q);
+        const rp = Array.from({ length: 32 },
+          (_, lane) => ((lane & 1) === 0 ? (wc * 2 * WR + 32 + (lane >> 1)) * 64 + 16 * q : null));
+        eight.push(...ra, ...rp.filter((x) => x !== null));
+        fronts8 += wavefronts(ra) + wavefronts(rp);
+      }
+      const c6 = covered(six);
+      const c8 = covered(eight);
+      // Each: exactly the slot's 3,072 bytes, every byte once.
+      for (const c of [c6, c8]) {
+        const keys = [...c.keys()].sort((x, y) => x - y);
+        expect([wc, keys.length, keys[0], keys[keys.length - 1], Math.max(...c.values())])
+          .toEqual([wc, 2 * WR * 64, wc * 2 * WR * 64, (wc + 1) * 2 * WR * 64 - 1, 1]);
+      }
+      expect([...c6.keys()].sort((x, y) => x - y)).toEqual([...c8.keys()].sort((x, y) => x - y));
+      all6.push(...c6.keys());
+      all8.push(...c8.keys());
+    }
+    // The four hasher warps (wc 0 to 3) cover the transcripts whole, each byte once.
+    expect([new Set(all6).size, all6.length, Math.min(...all6), Math.max(...all6)]).toEqual([AREA, AREA, 0, AREA - 1]);
+    expect([new Set(all8).size, all8.length]).toEqual([AREA, AREA]);
+    // A hasher warp's wavefronts by the bank rule: 24 against 96.
+    expect([fronts6 / 4, fronts8 / 4]).toEqual([24, 96]);
+  });
+
+  test('the stamps read early are read before the zeroing, and counted after it', () => {
+    const on = resolve(FOLD_CODE, { ...FORMS_OFF, [PRE]: 1 });
+    inOrder(on,
+      lines(
+        '#if PEARL_TALL_HASHCYC',
+        '      pearl_tall_hcyc_mark(sTr - 80u + 8u * wc);',
+        '      long long hc_t0, hc_t1;',
+        '      asm volatile("ld.shared.u64 %0, [%1];" : "=l"(hc_t0) : "r"(sTr - 112u + 8u * wc) : "memory");',
+        '      asm volatile("ld.shared.u64 %0, [%1];" : "=l"(hc_t1) : "r"(sTr - 80u + 8u * wc) : "memory");',
+        '#endif',
+        '      __syncwarp();'),
+      '          asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(rp + 16u * q), "r"(0u) : "memory");',
+      '        pearl_tall_hcyc_add_pre(hc_t0, hc_t1, cv + tile_stride < tiles, lane);');
+    expect(on).not.toContain('pearl_tall_hcyc_add(sTr');
+    // The same slots the shipped stamps use: t0 at the hand-off's, t1 32 bytes on.
+    expect(FOLD_CODE).toContain('      pearl_tall_hcyc_mark(sTr - 112u + 8u * wc);');
+    // The add without its loads: the release's clock, then lane 0's count, as pearl_tall_hcyc_add.
+    const add = body(KERNEL_CODE, '__device__ __forceinline__ void pearl_tall_hcyc_add(');
+    const pre = body(KERNEL_CODE, '__device__ __forceinline__ void pearl_tall_hcyc_add_pre(');
+    expect(pre).toBe(add.split(NL).filter((l) => !/long long t0, t1;|ld\.shared\.u64/.test(l)).join(NL));
+    expect(pre).not.toMatch(/ld\.shared/);
+  });
+
+  test('the host refuses to mine without zeroing, and every arm names itself in the fold\'s name', () => {
+    const submit = code(body(HOST, 'extern "C" bool pearl_host_submit('));
+    expect(submit).toContain(
+      '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC || PEARL_TALL_TR_NOZERO');
+    const NOZERO = lines(
+      '    if (!zero) {',
+      '      if (err && err_len)',
+      '        snprintf(err, err_len, "tall-fold no-zeroing build is timing-only: it runs only at "',
+      '                 "target 0 (bench, hashrate.js, race.cu), never on a job; build without "',
+      '                 "PEARL_TALL_TR_NOZERO to mine");',
+      '      return false;',
+      '    }');
+    // NOZERO alone and with the stamps (hpz0): its own message.
+    for (const f of [{ PEARL_TALL_TR_NOZERO: 1 }, { ...H, PEARL_TALL_TR_NOZERO: 1 }]) {
+      const on = resolve(submit, { ...ALL_OFF, ...f });
+      expect([f, on.includes(NOZERO), on.includes('hasher-stamp')]).toEqual([f, true, false]);
+    }
+    // The stamps read early refuse as the stamps do; the real forms alone do not refuse.
+    expect(resolve(submit, { ...ALL_OFF, ...H })).toContain('"tall-fold hasher-stamp build is timing-only: it runs only at "');
+    for (const f of [{ PEARL_TALL_TR_ZERO6: 1 }, { PEARL_TALL_HASH_FMA: 1 }, { PEARL_TALL_HASH_FMA: 1, PEARL_TALL_HASH_ONE: 1 }]) {
+      expect([f, resolve(submit, { ...ALL_OFF, ...f }).includes('bool zero = true;')]).toEqual([f, false]);
+    }
+    // Each arm's tag, as bench's "runs fold" line ends (read_z6f39.py checks these).
+    const arms = [
+      [{ PEARL_TALL_CYC: 1 }, ''],
+      [H, ', hasher stamps read before the zeroing'],
+      [{ ...H, PEARL_TALL_TR_ZERO6: 1 }, ', zeroing in 6 stores, hasher stamps read before the zeroing'],
+      [{ ...H, PEARL_TALL_TR_NOZERO: 1 }, ', no zeroing (timing only), hasher stamps read before the zeroing'],
+      [{ PEARL_TALL_TR_ZERO6: 1 }, ', zeroing in 6 stores'],
+      [{ PEARL_TALL_HASH_FMA: 1 }, ', hash adds as IMAD'],
+      [{ PEARL_TALL_HASH_FMA: 1, PEARL_TALL_HASH_ONE: 1 }, ', hash adds as IMAD, the 1 folded (control)'],
+      [{ [STAMPS]: 1 }, ', hasher stamps'],
+    ];
+    for (const [f, tag] of arms) expect([f, tagFor(f)]).toEqual([f, tag]);
+    // Every switch with a tag is in PEARL_TALL_TAGGED, so the tag reaches the fold's name.
+    for (const n of ['PEARL_TALL_STUB_SPIN', 'PEARL_TALL_STUB_ALU', STAMPS, ...ZEROS, 'PEARL_TALL_HASH_FMA']) {
+      expect([n, new RegExp(`\\b${n}\\b`).test(TAGGED)]).toEqual([n, true]);
+    }
+    // The longest tag on Ampere's longest name fits the context's buffer.
+    const longest = 'tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands, band 16, B\' held, '
+      + 'tiles from a counter, hash adds as IMAD, the 1 folded (control), zeroing in 6 stores, hasher stamps read '
+      + 'before the zeroing';
+    expect(HOST).toContain('  char foldName[224] = {0};');
+    expect(longest.length).toBeLessThan(224);
+  });
+
+  test('compilers.sh verifies the real forms and skips the timing-only builds', () => {
+    const m = /if \[\[ " \$flags " =~ (\S+) \]\]; then\n {4}TIMING\[\$name\]=1/.exec(COMPILERS);
+    expect(m).not.toBeNull();
+    const re = new RegExp(m[1].split('[[:space:]]').join('\\s'));
+    const timing = (flags) => re.test(` ${flags} `);
+    const HF = '-DPEARL_TALL_CYC -DPEARL_TALL_HASHCYC=1 -DPEARL_TALL_HASHCYC_PRE=1';
+    expect([HF, `${HF} -DPEARL_TALL_TR_ZERO6=1`, `${HF} -DPEARL_TALL_TR_NOZERO=1`, '-DPEARL_TALL_TR_NOZERO=1',
+      '-DPEARL_TALL_HASHCYC', '-DPEARL_TALL_STUB_SPIN=1700', '-DPEARL_TALL_STUB_ALU=5', '-DPEARL_TALL_AB_SKIP=3']
+      .map(timing)).toEqual(new Array(8).fill(true));
+    expect(['', '-DPEARL_TALL_CYC', '-DPEARL_TALL_TR_ZERO6=1', '-DPEARL_TALL_CYC -DPEARL_TALL_HASH_FMA=1',
+      '-DPEARL_TALL_CYC -DPEARL_TALL_HASH_FMA=1 -DPEARL_TALL_HASH_ONE=1', '-DPEARL_TALL_HASHCYC=0',
+      '-DPEARL_TALL_TR_NOZERO=0 -DPEARL_TALL_CYC'].map(timing)).toEqual(new Array(7).fill(false));
+    // Every switch the host refuses a real target on is one the stage skips.
+    const refusal = /^#if (PEARL_TALL_STUB_SPIN \|\| .*)$/m.exec(code(body(HOST, 'extern "C" bool pearl_host_submit(')))[1];
+    expect(refusal.split(' || ')).toHaveLength(5);
+    for (const n of refusal.split(' || ')) expect([n, timing(`-D${n}=1`)]).toEqual([n, true]);
+    expect(COMPILERS).toContain(lines(
+      '    [ "$name" = base ] && continue',
+      '    if [ -n "${TIMING[$name]:-}" ]; then say "verify $name skipped: a timing-only build refuses any target but zero"; continue; fi',
+      '    k=$(kset "$name")'));
+    // The hit lists (complete) leave them out too: base is the reference, the rest must match it.
+    expect(COMPILERS).toContain(lines(
+      '  order=(base)',
+      '  for name in "${BUILT[@]}"; do',
+      '    [ "$name" = base ] && continue',
+      '    if [ -n "${TIMING[$name]:-}" ]; then say "complete $name skipped: a timing-only build refuses any target but zero"; continue; fi',
+      '    order+=("$name")',
+      '  done'));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The paired hash's adds on the FMA pipe (PEARL_TALL_HASH_FMA) and its control
+// (PEARL_TALL_HASH_ONE), off by default.
+
+// A C expression of the g bodies (names, numbers, + * ^, parentheses, rotr32), compiled to a
+// function of the variables, mod 2^32 as uint32_t is.
+function cExpr(text) {
+  const t = text.match(/\w+|[+*^(),]/g);
+  let p = 0;
+  const want = (x) => {
+    if (t[p++] !== x) throw new Error(`want ${x} in ${text}`);
+  };
+  const chain = (next, op, f) => () => {
+    let v = next();
+    while (t[p] === op) {
+      p++;
+      const a = v;
+      const b = next();
+      v = (e) => f(a(e), b(e));
+    }
+    return v;
+  };
+  let xor = null;
+  function prim() {
+    const x = t[p++];
+    if (x === '(') {
+      const v = xor();
+      want(')');
+      return v;
+    }
+    if (x === 'rotr32') {
+      want('(');
+      const v = xor();
+      want(',');
+      const n = xor();
+      want(')');
+      return (e) => rotr(v(e), n(e));
+    }
+    if (/^\d+u?$/.test(x)) {
+      const k = Number(x.replace('u', ''));
+      return () => k;
+    }
+    if (!/^[A-Za-z_]\w*$/.test(x)) throw new Error(`unexpected ${x} in ${text}`);
+    return (e) => {
+      if (!(x in e)) throw new Error(`no ${x} in ${text}`);
+      return e[x];
+    };
+  }
+  const mul = chain(prim, '*', (a, b) => Math.imul(a, b) >>> 0);
+  const add = chain(mul, '+', (a, b) => (a + b) >>> 0);
+  xor = chain(add, '^', (a, b) => (a ^ b) >>> 0);
+  const v = xor();
+  if (p !== t.length) throw new Error(`left over in ${text}`);
+  return v;
+}
+
+// A g function's body, statement by statement ("[uint32_t ]x = expr;"), as a function of its
+// arguments that returns a, b, c and d.
+function gFromSource(src) {
+  const steps = src.slice(1, -1).split(';').map((s) => s.trim()).filter(Boolean).map((s) => {
+    const m = /^(?:uint32_t )?(\w+) = (.+)$/.exec(s);
+    if (!m) throw new Error(`not a step: ${s}`);
+    return [m[1], cExpr(m[2])];
+  });
+  return (args) => {
+    const e = { ...args };
+    for (const [x, f] of steps) e[x] = f(e);
+    return [e.a, e.b, e.c, e.d];
+  };
+}
+
+describe('tall-fold IMAD hash (PEARL_TALL_HASH_FMA, PEARL_TALL_HASH_ONE)', () => {
+  const ARCH = '__CUDA_ARCH__';
+  const FMA = { PEARL_TALL_HASH_FMA: 1 };
+  const G_HEAD = '__device__ __forceinline__ void pearl_hp_g(';
+  const GF_HEAD = '__device__ __forceinline__ void pearl_hpf_g(';
+  const GS_HEAD = '__device__ __forceinline__ void pearl_hpf_g_sel(';
+  const MSW_HEAD = '__device__ __forceinline__ uint32_t pearl_hp_msw(';
+  const MSWF_HEAD = '__device__ __forceinline__ uint32_t pearl_hpf_msw(';
+  const PAIR_HEAD = '__device__ __forceinline__ uint32_t pearl_hp_msw_pair(';
+  const PAIRF_HEAD = '__device__ __forceinline__ uint32_t pearl_hpf_msw_pair(';
+
+  test('is off by default, needs the paired hash, and only on sm_86 and sm_89', () => {
+    for (const name of FMAS) expect(HEADER).toContain(`#ifndef ${name}${NL}#define ${name} 0${NL}#endif`);
+    const GUARDS = guards();
+    const errorsFor = (flags) => preprocess(GUARDS, flags).errors;
+    for (const name of FMAS) expect(evaluate(name, preprocess(GUARDS, {}).defs)).toBe(0);
+    const arms = [{}, FMA, { ...FMA, PEARL_TALL_HASH_ONE: 1 }, { PEARL_TALL_CYC: 1, ...FMA },
+      { PEARL_TALL_CYC: 1, ...FMA, PEARL_TALL_HASH_ONE: 1 }, { PEARL_TALL_CYC: 1, [STAMPS]: 1, ...FMA },
+      { ...FMA, PEARL_TALL_TR_ZERO6: 1 }, { PEARL_TALL_HASH_FMA: 0, PEARL_TALL_HASH_ONE: 0 }];
+    for (const f of arms) {
+      for (const arch of [null, 860, 890]) {
+        const flags = arch ? { ...f, [ARCH]: arch } : f;
+        expect([flags, errorsFor(flags)]).toEqual([flags, []]);
+      }
+    }
+    const refused = [
+      [{ PEARL_TALL_HASH_FMA: 2 }, {}],
+      [{ PEARL_TALL_HASH_ONE: 1 }, {}],
+      [{ ...FMA, PEARL_TALL_HASH_ONE: 2 }, FMA],
+      [{ ...FMA, PEARL_TALL_STUB_SPIN: 1 }, { PEARL_TALL_STUB_SPIN: 1 }],
+      [{ ...FMA, PEARL_TALL_STUB_ALU: 3 }, { PEARL_TALL_STUB_ALU: 3 }],
+      [{ ...FMA, PEARL_ABLATE_TRANSCRIPT_HASH: 1 }, { PEARL_ABLATE_TRANSCRIPT_HASH: 1 }],
+      [{ ...FMA, PEARL_TALL_HASH_PAIRS: 0 }, { PEARL_TALL_HASH_PAIRS: 0 }],
+      ...[750, 800, 900, 1000, 1200].map((arch) => [{ ...FMA, [ARCH]: arch }, { [ARCH]: arch }]),
+    ];
+    for (const [f, without] of refused) {
+      const errors = errorsFor(f);
+      expect([f, errors.length > 0 && errors.every((e) => FMAS.some((s) => e.includes(s)))]).toEqual([f, true]);
+      expect([without, errorsFor(without)]).toEqual([without, []]);
+    }
+  });
+
+  test('the fold hashes with the IMAD forms and a 1 from the argument; the host passes the byte order as 0 or 1', () => {
+    expect(FOLD_CODE).toContain(lines(
+      '#if PEARL_TALL_HASH_FMA',
+      '#if PEARL_TALL_HASH_ONE',
+      '      uint32_t hp_one;',
+      '      asm volatile("mov.u32 %0, 1;" : "=r"(hp_one));',
+      '#else',
+      '      const uint32_t hp_one = (uint32_t)test.hash_big_endian | 1u;',
+      '#endif',
+      '      const uint32_t h1 = pearl_hpf_msw(test.key, tm, test.hash_big_endian, hp_one);',
+      '#else',
+      '      const uint32_t h1 = pearl_hp_msw(test.key, tm, test.hash_big_endian);',
+      '#endif'));
+    expect(FOLD_CODE).toContain(lines(
+      '#if PEARL_TALL_HASH_FMA',
+      '      const uint32_t h2 = pearl_hpf_msw_pair(test.key, tp, hh, test.hash_big_endian, hp_one);',
+      '#else',
+      '      const uint32_t h2 = pearl_hp_msw_pair(test.key, tp, hh, test.hash_big_endian);',
+      '#endif'));
+    // On, the hit test reads the IMAD forms' words, and nothing calls the shipped two.
+    const on = resolve(FOLD_CODE, { ...FORMS_OFF, ...FMA });
+    expect(on).not.toMatch(/pearl_hp_msw(_pair)?\(/);
+    expect(on).toContain('      const uint32_t w1 = h1, w2 = h2;');
+    // The 1 is hash_big_endian | 1, which is 1 only for 0 or 1. The profile reads it as any
+    // u32, so the host passes it as 0 or 1 in this build, which every other use reads the same
+    // (each only tests it for zero).
+    expect(read('pearl_core.cc')).toContain('profile.hash_big_endian = u32("hashBigEndian", profile.hash_big_endian);');
+    const slot = code(body(HOST, 'PearlTranscriptTest pearl_slot_test('));
+    expect(resolve(slot, FMA)).toContain('  test.hash_big_endian = ctx->profile.hash_big_endian ? 1 : 0;');
+    expect(resolve(slot, { PEARL_TALL_HASH_FMA: 0 })).toContain('  test.hash_big_endian = (int)ctx->profile.hash_big_endian;');
+    for (const hbe of [0, 1, 2, 3, 0x80000000, 0xffffffff]) {
+      const passed = hbe ? 1 : 0;
+      expect([hbe, (passed | 1) >>> 0, passed !== 0]).toEqual([hbe, 1, hbe !== 0]);
+    }
+  });
+
+  test('pearl_hpf_msw and _pair are pearl_hp_msw and _pair with the IMAD g, line for line', () => {
+    const msw = body(KERNEL_CODE, MSW_HEAD);
+    expect(msw.match(/pearl_hp_g\(/g)).toHaveLength(8);
+    expect(body(KERNEL_CODE, MSWF_HEAD)).toBe(msw.replace(/pearl_hp_g\(([^;]*)\);/g, 'pearl_hpf_g($1, one);'));
+    // The pair: each h ? x : y pick becomes the two words and h, 1 - h; h goes through an
+    // empty asm first, so ptxas cannot see it is 0 or 1.
+    const pair = body(KERNEL_CODE, PAIR_HEAD);
+    const M = 'm\\[[^\\]]+\\]';
+    const sel = new RegExp(`pearl_hp_g\\((.*?), h \\? (${M}) : (${M}), h \\? (${M}) : (${M})\\);`, 'g');
+    expect(pair.match(sel)).toHaveLength(3);
+    const want = pair.replace(sel, 'pearl_hpf_g_sel($1, $2, $3, $4, $5, ho, hn, one);').replace(
+      lines('  for (int i = 0; i < 16; i++) m[i] = mm[i];', '#pragma unroll', '  for (int r = 0; r < 7; r++) {'),
+      lines('  for (int i = 0; i < 16; i++) m[i] = mm[i];', '  uint32_t ho = h;', '  asm volatile("" : "+r"(ho));',
+        '  const uint32_t hn = one - ho;', '#pragma unroll', '  for (int r = 0; r < 7; r++) {'));
+    expect(body(KERNEL_CODE, PAIRF_HEAD)).toBe(want);
+    // All four under the switch, after the shipped pair and before the fold.
+    inOrder(KERNEL_CODE, PAIR_HEAD, '#if PEARL_TALL_HASH_FMA' + NL + GF_HEAD, GS_HEAD, MSWF_HEAD, PAIRF_HEAD,
+      '#define PEARL_TALL_FN pearl_tile_fold_tall' + NL);
+  });
+
+  test('the IMAD g, run from its source, is pearl_hp_g with a 1, and its words are BLAKE3\'s', () => {
+    const g = gFromSource(body(KERNEL_CODE, G_HEAD));
+    const gf = gFromSource(body(KERNEL_CODE, GF_HEAD));
+    const gs = gFromSource(body(KERNEL_CODE, GS_HEAD));
+    // Each of the IMAD g's six adding steps is a multiply-add by one; the shipped g has no multiply.
+    const adds = body(KERNEL_CODE, GF_HEAD).split(NL).filter((l) => l.includes('+'));
+    expect([adds.length, adds.every((l) => l.includes('* one +'))]).toEqual([6, true]);
+    expect(body(KERNEL_CODE, G_HEAD)).not.toContain('*');
+    const rand = xorshift(0x5eed1e55);
+    const w = (n) => Array.from({ length: n }, () => rand());
+    let broke = 0;
+    for (let t = 0; t < 2000; t++) {
+      const [a, b, c, d, mx, my, xB, yB] = w(8);
+      const base = g({ a, b, c, d, mx, my });
+      expect([t, gf({ a, b, c, d, mx, my, one: 1 })]).toEqual([t, base]);
+      for (const h of [0, 1]) {
+        const picked = g({ a, b, c, d, mx: h ? mx : xB, my: h ? my : yB });
+        expect([t, h, gs({ a, b, c, d, xA: mx, xB, yA: my, yB, h, hn: 1 - h, one: 1 })]).toEqual([t, h, picked]);
+      }
+      if (gf({ a, b, c, d, mx, my, one: 3 }).join() !== base.join()) broke++;
+    }
+    // A 1 of 3 changes every step's result: the 1 is used.
+    expect(broke).toBe(2000);
+    // Whole compressions, from the source's rounds, against BLAKE3 in both byte orders.
+    const IV = /__constant__ uint32_t BLAKE3_IV\[8\] = \{([^}]*)\};/.exec(KERNEL)[1].split(',')
+      .map((x) => Number(x.trim().replace('u', '')));
+    expect(IV).toHaveLength(8);
+    expect(KERNEL).toContain('#define PEARL_TRANSCRIPT_FLAGS (CHUNK_START | CHUNK_END | ROOT | KEYED_HASH)');
+    for (const [n, v] of [['CHUNK_START', 0], ['CHUNK_END', 1], ['ROOT', 3], ['KEYED_HASH', 4]]) {
+      expect(KERNEL).toContain(`#define ${n} (1u << ${v})`);
+    }
+    const FLAGS = 1 | 2 | 8 | 16;
+    const perm = /const uint32_t p_\[16\] = \{([^}]*)\};/.exec(KERNEL)[1].split(',')
+      .map((x) => Number(/m\[(\d+)\]/.exec(x)[1]));
+    expect(perm).toEqual([2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8]);
+    const calls = [...body(KERNEL_CODE, MSWF_HEAD).matchAll(
+      /pearl_hpf_g\(s\[(\d+)\], s\[(\d+)\], s\[(\d+)\], s\[(\d+)\], m\[(\d+)\], m\[(\d+)\], one\);/g)]
+      .map((m) => m.slice(1).map(Number));
+    expect(calls).toHaveLength(8);
+    const whole = (key, m0, hbe, one) => {
+      const s = [...key, IV[0], IV[1], IV[2], IV[3], 0, 0, 64, FLAGS];
+      let m = m0.slice();
+      for (let r = 0; r < 7; r++) {
+        for (const [a, b, c, d, x, y] of calls) {
+          [s[a], s[b], s[c], s[d]] = gf({ a: s[a], b: s[b], c: s[c], d: s[d], mx: m[x], my: m[y], one });
+        }
+        if (r < 6) m = perm.map((i) => m[i]);
+      }
+      return hbe ? bswap((s[0] ^ s[8]) >>> 0) : (s[7] ^ s[15]) >>> 0;
+    };
+    // The pair, as pearl_hpf_msw_pair runs on lanes h = 0 and 1, with the shuffles between them.
+    const pair = (key, m0, hbe, one) => {
+      const L = [0, 1].map((h) => ({
+        h, hn: (one - h) >>> 0,
+        A: [key[h ? 2 : 0], key[h ? 3 : 1]], B: [key[h ? 6 : 4], key[h ? 7 : 5]],
+        C: [IV[h ? 2 : 0], IV[h ? 3 : 1]], D: [h ? 64 : 0, h ? FLAGS : 0],
+      }));
+      const step = (s, v, xA, xB, yA, yB) =>
+        gs({ a: v[0], b: v[1], c: v[2], d: v[3], xA, xB, yA, yB, h: s.h, hn: s.hn, one });
+      let m = m0.slice();
+      for (let r = 0; r < 7; r++) {
+        for (const s of L) {
+          for (let q = 0; q < 2; q++) {
+            [s.A[q], s.B[q], s.C[q], s.D[q]] = step(s, [s.A[q], s.B[q], s.C[q], s.D[q]], m[4 + 2 * q], m[2 * q],
+              m[5 + 2 * q], m[2 * q + 1]);
+          }
+        }
+        // a0 = A[0], b0 = B[1], c0 = the other's C[0], d0 = the other's Dd[1]; a1 = A[1],
+        // b1 = the other's B[0], c1 = the other's C[1], d1 = Dd[0].
+        const v = L.map((s, i) => {
+          const o = L[i ^ 1];
+          return [step(s, [s.A[0], s.B[1], o.C[0], o.D[1]], m[12], m[8], m[13], m[9]),
+            step(s, [s.A[1], o.B[0], o.C[1], s.D[0]], m[14], m[10], m[15], m[11])];
+        });
+        L.forEach((s, i) => {
+          const o = v[i ^ 1];
+          s.A = [v[i][0][0], v[i][1][0]];
+          s.B = [o[1][1], v[i][0][1]];
+          s.C = [o[0][2], o[1][2]];
+          s.D = [v[i][1][3], o[0][3]];
+        });
+        if (r < 6) m = perm.map((i) => m[i]);
+      }
+      return L.map((s) => (hbe ? bswap((s.A[0] ^ s.C[0]) >>> 0) : (s.B[1] ^ s.D[1]) >>> 0));
+    };
+    // The JS pair's trades are the source's.
+    const pf = body(KERNEL_CODE, PAIRF_HEAD);
+    expect(pf).toContain('uint32_t a0 = A[0], b0 = B[1], c0 = pC0, d0 = pD1, a1 = A[1], b1 = pB0, c1 = pC1, d1 = Dd[0];');
+    expect(pf).toContain('const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pC1 = __shfl_xor_sync(~0u, C[1], 1);');
+    expect(pf).toContain('const uint32_t pD1 = __shfl_xor_sync(~0u, Dd[1], 1), pB0 = __shfl_xor_sync(~0u, B[0], 1);');
+    expect(pf).toContain('A[0] = a0; A[1] = a1; B[1] = b0; Dd[0] = d1;');
+    expect(pf).toContain('C[0] = __shfl_xor_sync(~0u, c0, 1); C[1] = __shfl_xor_sync(~0u, c1, 1);');
+    expect(pf).toContain('Dd[1] = __shfl_xor_sync(~0u, d0, 1); B[0] = __shfl_xor_sync(~0u, b1, 1);');
+    let wrong = 0;
+    for (let t = 0; t < 300; t++) {
+      const key = w(8);
+      const m = w(16);
+      for (const hbe of [0, 1]) {
+        const top = hashTopWord(key, m, hbe);
+        expect([t, hbe, whole(key, m, hbe, (hbe | 1) >>> 0)]).toEqual([t, hbe, top]);
+        // The word is valid on h = 0 big-endian, h = 1 little-endian (the fold's hh test).
+        expect([t, hbe, pair(key, m, hbe, (hbe | 1) >>> 0)[hbe ? 0 : 1]]).toEqual([t, hbe, top]);
+        if (whole(key, m, hbe, 3) === top || pair(key, m, hbe, 3)[hbe ? 0 : 1] === top) wrong++;
+      }
+    }
+    expect(wrong).toBe(0);
+    expect(FOLD_CODE).toContain('if (hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]) record(Lp);');
+  });
+
+  test('no build that ships names the zeroing\'s or the hash\'s forms', () => {
+    for (const file of SHIPPED) {
+      const text = rawRead(path.join(ROOT, file));
+      expect(text.length).toBeGreaterThan(0);
+      for (const name of FORMS) expect([file, name, text.includes(name)]).toEqual([file, name, false]);
+    }
   });
 });

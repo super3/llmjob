@@ -227,6 +227,9 @@ describe('native target test', () => {
       // A lane pair splits the state by columns: half 0 holds s0 and s8, half 1
       // holds s7 and s15, and the caller reads the half that has the word.
       ['uint32_t pearl_hp_msw_pair(', 'hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1])'],
+      // Their IMAD forms (PEARL_TALL_HASH_FMA), the same words.
+      ['uint32_t pearl_hpf_msw(', 'hbe ? pearl_bswap32(s[0] ^ s[8]) : (s[7] ^ s[15])'],
+      ['uint32_t pearl_hpf_msw_pair(', 'hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1])'],
       ['void pearl_tall_hash80(', 'test.hash_big_endian ? pearl_bswap32(v[0] ^ v[8]) : (v[7] ^ v[15])'],
     ];
     for (const [signature, choice] of sites) expect(body(KERNEL, signature)).toContain(choice);

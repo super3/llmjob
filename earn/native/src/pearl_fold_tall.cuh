@@ -1121,14 +1121,31 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
                      : "=r"(tm[4 * q]), "=r"(tm[4 * q + 1]), "=r"(tm[4 * q + 2]), "=r"(tm[4 * q + 3])
                      : "r"(ra + 16u * q)
                      : "memory");
+#if PEARL_TALL_HASH_FMA
+      // The adds' 1 (PEARL_TALL_HASH_FMA): hash_big_endian | 1, from the kernel's argument,
+      // so ptxas cannot fold the multiplies; the host passes hash_big_endian as 0 or 1 in
+      // this build. PEARL_TALL_HASH_ONE's is a 1 ptxas sees, and it folds them back.
+#if PEARL_TALL_HASH_ONE
+      uint32_t hp_one;
+      asm volatile("mov.u32 %0, 1;" : "=r"(hp_one));
+#else
+      const uint32_t hp_one = (uint32_t)test.hash_big_endian | 1u;
+#endif
+      const uint32_t h1 = pearl_hpf_msw(test.key, tm, test.hash_big_endian, hp_one);
+#else
       const uint32_t h1 = pearl_hp_msw(test.key, tm, test.hash_big_endian);
+#endif
 #pragma unroll
       for (uint32_t q = 0; q < 4; q++)
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(tp[4 * q]), "=r"(tp[4 * q + 1]), "=r"(tp[4 * q + 2]), "=r"(tp[4 * q + 3])
                      : "r"(rp + 16u * q)
                      : "memory");
+#if PEARL_TALL_HASH_FMA
+      const uint32_t h2 = pearl_hpf_msw_pair(test.key, tp, hh, test.hash_big_endian, hp_one);
+#else
       const uint32_t h2 = pearl_hp_msw_pair(test.key, tp, hh, test.hash_big_endian);
+#endif
       // The top words the hit test reads: the hash's, h1 and h2. With a timing stub
       // (PEARL_TALL_STUB_SPIN, _ALU) nothing reads h1 or h2, so ptxas drops the hash, and
       // the stand-in runs where it was. Its words keep the hit test: ~0u passes only a
@@ -1178,14 +1195,34 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #if PEARL_TALL_HASHCYC
       // The hash's end: after the test above, which waited for both words.
       pearl_tall_hcyc_mark(sTr - 80u + 8u * wc);
+#if PEARL_TALL_HASHCYC_PRE
+      // Both stamps read back here, before the zeroing, so no shared load waits behind its
+      // stores (PEARL_TALL_HASHCYC_PRE).
+      long long hc_t0, hc_t1;
+      asm volatile("ld.shared.u64 %0, [%1];" : "=l"(hc_t0) : "r"(sTr - 112u + 8u * wc) : "memory");
+      asm volatile("ld.shared.u64 %0, [%1];" : "=l"(hc_t1) : "r"(sTr - 80u + 8u * wc) : "memory");
+#endif
 #endif
       __syncwarp();   // every lane's reads (hit re-reads too) of both regions before any zeroing
+#if PEARL_TALL_TR_NOZERO
+      // No zeroing (PEARL_TALL_TR_NOZERO, timing only): the next tile's XORs land on this
+      // tile's words, so every transcript after the first tile is wrong.
+#elif PEARL_TALL_TR_ZERO6
+      // The column slot's 48 regions are one run of 3,072 bytes, so six stores of 16 bytes a
+      // lane, each 512 contiguous bytes, zero them all (PEARL_TALL_TR_ZERO6).
+      static_assert(2u * WARP_REGIONS * 64u == 6u * 32u * 16u, "six stores cover the slot");
+#pragma unroll
+      for (uint32_t i = 0; i < 6; i++)
+        asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};"
+                     ::"r"(sTr + wc * (2u * WARP_REGIONS * 64u) + i * 512u + lane * 16u), "r"(0u) : "memory");
+#else
 #pragma unroll
       for (uint32_t q = 0; q < 4; q++) {
         asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(ra + 16u * q), "r"(0u) : "memory");
         if (hh == 0u)
           asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(rp + 16u * q), "r"(0u) : "memory");
       }
+#endif
 #if PEARL_TALL_HASHCYC
       // The release, read in pearl_tall_hcyc_add, and both stamps counted. The next-tile test
       // is on an opaque copy of v: as v + tile_stride < tiles it was has_next, which ptxas
@@ -1193,7 +1230,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       {
         uint32_t cv = v;
         asm volatile("" : "+r"(cv));
+#if PEARL_TALL_HASHCYC_PRE
+        pearl_tall_hcyc_add_pre(hc_t0, hc_t1, cv + tile_stride < tiles, lane);
+#else
         pearl_tall_hcyc_add(sTr - 112u + 8u * wc, cv + tile_stride < tiles, lane);
+#endif
       }
 #endif
 #endif
