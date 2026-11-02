@@ -2730,10 +2730,15 @@ class W:
             # spaces, and its org when that isn't ORG, short as the founder asked on 29 October: llmjob2 is "(2)".
             # The number went on 2 November, at the founder's asking, so a row fits on one line; the events keep it.
             # Priority, short: "bat." for batch since 2 November, so a row fits on one line as the founder asked.
+            # From 2 November an org numbered after ORG is a superscript on the priority, "low²" for llmjob2: the chat
+            # app broke "low (2)" onto two lines at the space despite its being a no-break one.
             pri = {"medium": "med", "batch": "bat."}.get(g["pri"], g["pri"])
-            tag = f"({org[len(ORG):] if org.startswith(ORG) and org != ORG else org})"
+            sub = org[len(ORG):] if org.startswith(ORG) else None
+            if org != ORG and sub and sub.isdigit():
+                pri += sub.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
+            tag = f"({org})"
             box = NB.join([state, re.sub(r"^biz-(rtx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
-                          + ([tag] if org != ORG else []))
+                          + ([tag] if org != ORG and not (sub and sub.isdigit()) else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []

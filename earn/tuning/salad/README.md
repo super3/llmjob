@@ -244,7 +244,7 @@ one made before has none and is in llmjob), and every call about it goes there. 
 since a box's pool worker is named after its group. Credit runs out by org: Salad says `no_credits_available` or
 stops the boxes in that org only, so only that org's groups are left alone and only it stops getting new ones
 until a top-up and `restart_token`. A box outside llmjob says its org in the table, by what its name adds to
-llmjob (`5060-90 batch (2)` for llmjob2, since 29 October; it said `llmjob2` before). An org named otherwise shows
+llmjob (`5060 bat.²` for llmjob2 since 2 November, so the row fits on one line; `5060-90 batch (2)` from 29 October, and `llmjob2` before). An org named otherwise shows
 whole, as `(otherorg)`.
 
 ## Monero on the CPU
