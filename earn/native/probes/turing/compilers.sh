@@ -63,6 +63,9 @@
 # exactly as before, at k 2048. Write the flag just so, once: bench.cu checks that the build
 # mines the k read from it, and the build fails if not (-D PEARL_FOLD_K=K, say).
 #
+# Multicast (stage "multicast", not in the default list): probes/multicast-probe.cu on this card, last of all
+# (see that stage below). Needs no build stage.
+#
 # SMI_EVERY=5 (nvtest.sh sets it; unset, none): while the race and hashrate stages run, a
 # line every 5 s with the SM clock, power draw and power limit, so a box can be labelled
 # clock-held (drawing under its limit) or power-capped (at it).
@@ -633,5 +636,25 @@ if has probe && [ -f "$OUT/v/base/ok" ] && [ "$SM" = 75 ]; then
     else res="does not run: $(echo "$out" | grep -oE '(error|Error)[^{}]{0,200}' | head -1 | sed 's/ \{2,\}at .*//')"; fi
     say "probe ptxas $ver cubin $abi fold=$fh in-node=$inside driver $DRIVER: $res"
   done
+fi
+
+# Multicast probe (stage "multicast", not in the default list; sm_90 and newer): probes/multicast-probe.cu,
+# the TMA fold's B' feed in clusters of two without the mma, which prices what TMA multicast saves and shows
+# whether the cluster build's barriers hang (see its header). Its own build, with GC; MC_SECS seconds an arm a
+# round (6), MC_ROUNDS rounds (3), MC_PACE cycles a stage (3240), under a timeout of MC_TIMEOUT seconds (900).
+# Every line it prints goes out as "multicast ...", then multicast-read.js's reading. About 4 minutes. Last,
+# so a card that the probe leaves stuck has raced already.
+if has multicast; then
+  if [ "${SM:-0}" -lt 90 ]; then
+    say "multicast: skipped, sm_$SM has no clusters"
+  elif ! nvcc -O3 -std=c++17 $GC "$NATIVE/probes/multicast-probe.cu" -o "$OUT/multicast-probe" -ldl -lpthread \
+      > "$OUT/multicast-build.txt" 2>&1; then
+    say "multicast FAIL: build: $(grep -m2 -iE 'error' "$OUT/multicast-build.txt" | tr '\n' ' ')"
+  else
+    timeout -k 10 "${MC_TIMEOUT:-900}" "$OUT/multicast-probe" "${MC_SECS:-6}" "${MC_ROUNDS:-3}" "${MC_PACE:-3240}" 2>&1 |
+      tee "$OUT/multicast.log" | while IFS= read -r l; do say "multicast $l"; done
+    say "multicast exit ${PIPESTATUS[0]}"
+    node "$NATIVE/probes/multicast-read.js" "$OUT/multicast.log" 2>&1 | while IFS= read -r l; do say "multicast $l"; done
+  fi
 fi
 say "done in $(( ($(date +%s) - T0) / 60 )) min"

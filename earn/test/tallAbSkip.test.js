@@ -41,6 +41,9 @@ const SHIPPED = [
 ];
 const NAME = 'PEARL_TALL_AB_SKIP';
 const STUBS_OFF = { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0 };
+// The sham draw on top of the B' skip (PEARL_TALL_SHAM_DRAW, tallShamDraw.test.js) off: the skip as it
+// was raced on 1 November.
+const SHAM_OFF = { PEARL_TALL_SHAM_DRAW: 0 };
 const ARCH = '__CUDA_ARCH__';
 
 // Source without comments: comment lines dropped, trailing ones cut. The pins below hold the
@@ -325,7 +328,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
     // Everything the switch adds to the fold sits in one of three #if blocks of it alone. Off,
     // what is left of it is the refill's hook, defined empty, used once and undefined.
     expect(FOLD.match(/^#if PEARL_TALL_AB_SKIP$/gm)).toHaveLength(3);
-    const OFF = resolve(FOLD, { [NAME]: 0 });
+    const OFF = resolve(FOLD, { ...SHAM_OFF, [NAME]: 0 });
     const traces = OFF.split(NL).filter((l) => /AB_SKIP|ab_load|REFILL_LOAD/.test(l))
       .map((l) => (l.trimEnd().endsWith(BS) ? l.trimEnd().slice(0, -1) : l).trim());
     expect(traces).toEqual([EMPTY_HOOK, 'PEARL_TALL_REFILL_LOAD', '#undef PEARL_TALL_REFILL_LOAD']);
@@ -338,7 +341,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
         '    tma_fill(bi, cn * rank + s * SK);',
         '  }']);
     // The host: the refusal and the fold's name are all of it, and neither is left off.
-    const HOST_OFF = resolve(HOST, { ...STUBS_OFF, [NAME]: 0 });
+    const HOST_OFF = resolve(HOST, { ...STUBS_OFF, ...SHAM_OFF, [NAME]: 0 });
     expect(HOST_OFF).not.toMatch(/AB_SKIP|operand-skip/);
     expect(HOST.match(/^#if .*PEARL_TALL_AB_SKIP/gm)).toEqual([
       '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP',
@@ -350,11 +353,11 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
   });
 
   test('on, only the producer\'s fill changes: the same reads and mma, in the same places', () => {
-    const OFF = code(resolve(FOLD, { [NAME]: 0 })).split(NL);
+    const OFF = code(resolve(FOLD, { ...SHAM_OFF, [NAME]: 0 })).split(NL);
     const offLessHook = OFF.filter((l) => l !== EMPTY_HOOK);
     expect(OFF.length - offLessHook.length).toBe(1);
     for (const mask of [1, 2, 3]) {
-      const ON = code(resolve(FOLD, { [NAME]: mask }));
+      const ON = code(resolve(FOLD, { ...SHAM_OFF, [NAME]: mask }));
       // The fold off is the fold on less exactly these three runs.
       expect([mask, extraRuns(ON.split(NL), offLessHook)]).toEqual([mask, [FLAG, SKIP, HOOK]]);
       // In place: the flag before the fill, the skip at the top of the fill, before its whole
@@ -392,7 +395,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
   test('the mma still read the shared operands and feed the transcripts', () => {
     // So ptxas keeps every one of them: each fragment is an ldmatrix of the stage's buffer,
     // each mma's accumulators go to the readout's shared XOR, and the hasher reads that back.
-    const F = code(FOLD);
+    const F = code(resolve(FOLD, SHAM_OFF));
     expect(F).toContain(lines(
       '          const uint32_t aS = aLane0 + so, bS = bLane0 + so;',
       '          uint32_t ag[MT][4];',
@@ -559,7 +562,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
     expect(submit.slice(0, guard)).not.toMatch(/<<<|cudaLaunch|pendCount\+\+/);
     // Each arm's build: the refusal with the skip's message, and not the stubs'.
     for (const mask of [1, 2, 3]) {
-      const on = resolve(submit, { ...STUBS_OFF, [NAME]: mask });
+      const on = resolve(submit, { ...STUBS_OFF, ...SHAM_OFF, [NAME]: mask });
       expect([mask, on.includes(lines(
         '  {',
         '    bool zero = true;',
@@ -575,7 +578,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
       expect(on).not.toContain('tall-fold stub build');
     }
     // Off, with neither stub, there is no refusal at all.
-    expect(resolve(submit, { ...STUBS_OFF, [NAME]: 0 })).not.toContain('bool zero = true;');
+    expect(resolve(submit, { ...STUBS_OFF, ...SHAM_OFF, [NAME]: 0 })).not.toContain('bool zero = true;');
     // The target it checks is the job's, and every way to search goes through it.
     expect(code(body(HOST, 'extern "C" void pearl_host_set_job_salted('))).toContain(
       'memcpy(ctx->target, target, PEARL_HASH_BYTES);');
@@ -584,7 +587,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
     expect(RACE).toContain('memset(target, 0x00, sizeof target);');
     // The fold's name: the TMA ring's, then the arm, after the cluster's and Ampere's names and
     // before sm_100's, which it carries itself.
-    const name = code(body(HOST, 'extern "C" const char *pearl_host_fold_name('));
+    const name = code(resolve(body(HOST, 'extern "C" const char *pearl_host_fold_name('), SHAM_OFF));
     inOrder(name,
       'if (ctx->foldTall && ctx->foldCluster)',
       'if (ctx->foldAmpere) {',

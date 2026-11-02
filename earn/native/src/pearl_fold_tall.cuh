@@ -292,7 +292,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #if PEARL_TALL_AB_SKIP
   // Timing only (PEARL_TALL_AB_SKIP): whether this fill issues every box. The prologue's
   // fills do; each refill sets it just before its fill (PEARL_TALL_REFILL_LOAD).
+#if PEARL_TALL_SHAM_DRAW
+  // With PEARL_TALL_SHAM_DRAW no fill does: B' is the table the prologue writes.
+  constexpr bool ab_load = false;
+#else
   bool ab_load = true;
+#endif
 #endif
 #if PEARL_TALL_TMA_ROLES
   // (Here bi is the buffer's shared address, a ring role, and FULL sits behind it.)
@@ -452,6 +457,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       sy |= (hi + (p1 & 3u)) << sh;
     }
     pearl_e4_perm[i] = make_uint4(lx, ly, sx, sy);
+  }
+#endif
+#if PEARL_TALL_SHAM_DRAW
+  // Timing only (PEARL_TALL_SHAM_DRAW): the ring's three B' regions become the draw's table,
+  // bytes uniform in [0, 63], once a launch. No fill writes them after this (tma_fill), and
+  // the generic writes need no proxy fence: the TMA only writes the A' regions.
+  for (uint32_t o = threadIdx.x * 16u; o < NST * BN * SK; o += PEARL_TALL_THREADS * 16u) {
+    uint32_t w[4];
+#pragma unroll
+    for (uint32_t j = 0; j < 4u; j++) {
+      uint32_t h = (blockIdx.x * 0x9E3779B9u) ^ (o + 4u * j);
+      h = (h ^ (h >> 16)) * 0x85EBCA6Bu;
+      h = (h ^ (h >> 13)) * 0xC2B2AE35u;
+      w[j] = (h ^ (h >> 16)) & 0x3F3F3F3Fu;
+    }
+    asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                 ::"r"(sbase + (o / (BN * SK)) * STRIDE + o % (BN * SK)), "r"(w[0]), "r"(w[1]),
+                 "r"(w[2]), "r"(w[3]) : "memory");
   }
 #endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
@@ -643,7 +666,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // tile_stride: v starts at blockIdx.x and steps by the grid.
         // (Its first chunk alone would do, but a test of chunk and v together spilled 140
         // bytes in an sm_90 build of this fold under ptxas 12.6; v alone did not.)
+#if PEARL_TALL_SHAM_DRAW
+#define PEARL_TALL_REFILL_LOAD
+#else
 #define PEARL_TALL_REFILL_LOAD ab_load = v < tile_stride;
+#endif
 #else
 #define PEARL_TALL_REFILL_LOAD
 #endif
@@ -676,9 +703,36 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
           // pair p + 1 as pair p starts; each A reloaded for the next k32 step in place,
           // right after its last mma of this one.
           const uint32_t aS = aLane0 + so, bS = bLane0 + so;
+#if PEARL_TALL_SHAM_DRAW
+          // Timing only (PEARL_TALL_SHAM_DRAW): B fragment b of pair q (its k-step's base
+          // given) is read a second time and becomes 63 + b - b2 a byte, one IADD3 a register,
+          // as a draw would make it. The second read is two ldmatrix.x2 of pair q ^ 2's columns,
+          // the prologue's table bytes: the +512 half reads the rows of that pair's own matrices
+          // 2 and 3 at this k-step, the +128 half two columns on. The fold reads those bytes too,
+          // but shared memory has no cache, so each read pays its own wavefronts, and asm
+          // volatile keeps both: the wavefronts of one x4, conflict-free. Not one x4: four more
+          // live registers spilled 260 bytes at the fold's 255 in every placement tried (ptxas
+          // 12.6, the sm_90 stand-in), and two at a time spill none. A draw at this register
+          // count would read in halves too. The mma are the same.
+#define PEARL_TALL_SHAM_B(b, base, q)                                                  \
+  {                                                                                    \
+    uint32_t d0, d1;                                                                   \
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];"             \
+                 : "=r"(d0), "=r"(d1) : "r"((base) + ((q) ^ 2u) * 16u * SK + 512u));   \
+    b[0] = 0x3F3F3F3Fu + b[0] - d0;                                                    \
+    b[1] = 0x3F3F3F3Fu + b[1] - d1;                                                    \
+    asm volatile("ldmatrix.sync.aligned.m8n8.x2.shared.b16 {%0,%1}, [%2];"             \
+                 : "=r"(d0), "=r"(d1) : "r"((base) + ((q) ^ 2u) * 16u * SK + 128u));   \
+    b[2] = 0x3F3F3F3Fu + b[2] - d0;                                                    \
+    b[3] = 0x3F3F3F3Fu + b[3] - d1;                                                    \
+  }
+#endif
           uint32_t ag[MT][4];
           uint32_t bp[2][4];
           pearl_ldmatrix_x4(bp[0][0], bp[0][1], bp[0][2], bp[0][3], bS);
+#if PEARL_TALL_SHAM_DRAW
+          PEARL_TALL_SHAM_B(bp[0], bS, 0u)
+#endif
 #pragma unroll
           for (uint32_t mb = 0; mb < MT; mb++)
             pearl_ldmatrix_x4(ag[mb][0], ag[mb][1], ag[mb][2], ag[mb][3], aS + mb * 16u * SK);
@@ -695,6 +749,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               else if (step_next)
                 pearl_ldmatrix_x4(bp[nxt][0], bp[nxt][1], bp[nxt][2], bp[nxt][3],
                                   bS ^ (kt + 32u));
+#if PEARL_TALL_SHAM_DRAW
+              if (p + 1u < NB / 2u)
+                PEARL_TALL_SHAM_B(bp[nxt], bS ^ kt, p + 1u)
+              else if (step_next)
+                PEARL_TALL_SHAM_B(bp[nxt], bS ^ (kt + 32u), 0u)
+#endif
 #pragma unroll
               for (uint32_t j = 0; j < 2u; j++) {
                 const uint32_t nb = 2u * p + j;
@@ -723,6 +783,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
           if ((PEARL_TALL_STAGE_FENCE >> s) & 1u)
             asm volatile("griddepcontrol.launch_dependents;" ::: "memory");
         }
+#if PEARL_TALL_SHAM_DRAW
+#undef PEARL_TALL_SHAM_B
+#endif
 #else
         static_assert(PEARL_TALL_TMA_FILL_PT == 0, "a fill point needs the streamed body");
         // Each k32 step loads its six A fragments, then each B pair right before the

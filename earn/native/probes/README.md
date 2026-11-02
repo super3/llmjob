@@ -13,6 +13,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
+| `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
 
 ## Measured
 
@@ -1498,6 +1499,39 @@ The same arithmetic says why a memory-clock lock would have hurt these cards bef
 change: at 7001 MHz a 5060 has 224 GB/s, against the ~360 GB/s the 2048-wide walk needed.
 Now a launch reads A' once and B' once, ~8 GB/s on a 5060. Vast containers may not set
 clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.
+
+## RTX 50: what TMA multicast saves, and what hangs (`multicast-probe.cu`)
+
+Item 16, step 2. The cluster build (`PEARL_TALL_CLUSTER`) hung on a 5090 on 1 November, and
+nothing had measured what multicast saves. `multicast-probe.cu` is the TMA fold's B' feed
+without the mma: clusters of two CTAs with the fold's shared footprint, ring, boxes and
+lane bases, each stage held to a fixed time (3240 cycles, the fold's on a 5090) so energy a
+stage compares across arms. Arms, by what a pair loads a stage: e nothing, a each CTA its
+own B' box, b one box multicast to both, d rank 0 only. Then a ladder, each rung the one
+before plus one thing: c is b with the fold's barrier protocol (EMPTY counting both CTAs,
+with mapa remote arrives and cluster-scope acquires, and FULL with no remote arrival), cA
+adds each CTA's own A' box in the same FULL phase, and cAH adds the fold's tile seam (warps w
+and w + 4 meet, w sleeps a hash's 3000 cycles, and warps 4-7 wait at CTA scope on the tile's
+stage 0 EMPTY after its first chunk).
+
+- f = (E_a - E_b) / (E_a - E_d), E the energy a pair-stage from NVML's energy counter: the
+  share of a whole box's cost that multicast saves at equal bytes filled. Gate for #1 and
+  #3: f >= 0.5. A box is a small part of a pair-stage's energy, so an arm that ran a little
+  longer a stage moves f a lot (the reader prints how much for 1%). The reader takes f from
+  energies brought to e's stage time at e's power, prints f as measured beside it, and flags
+  any arm more than 0.5% off e in stage time or clock.
+- The hang ladder: a timeout in b and not a says the multicast itself never completes (unless
+  c, the same multicast, ran clean: then it is the probe's coupling); in c and not b, the
+  fold's barrier protocol; in cA and not c, multicast beside the CTA's own box; in cAH and
+  not cA, the tile seam. Every mbarrier wait gives up after a second and says what it waited
+  on; a launch that never ends prints HANG. A launch the runtime refuses is a refusal; a
+  fault after it launched is a crash, and the reader says which.
+- Also read: E_a - E_e against 2 (E_d - E_e) (two boxes cost twice one), a pace that did not
+  hold (a stage more than 1% over 3240 cycles), and wrong checksums. cAH's stages carry the
+  hash's sleep, so its energy is not compared.
+
+compilers.sh's `multicast` stage builds and runs it, then `multicast-read.js` prints the
+reading. Not run on a card yet.
 
 ## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
 
