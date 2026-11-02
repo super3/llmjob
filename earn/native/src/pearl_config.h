@@ -1818,9 +1818,12 @@ typedef struct {
 // stubs (RTX 40 rank 1). After the hand-off one warp a scheduler hashes its column slot's
 // 48 regions, about 3,000 cycles, while its partner runs on alone for about 1,700 before it
 // waits for the hasher's release of stage 0. Skipping the hash saves 1,295 cycles a tile
-// (PEARL_ABLATE_TRANSCRIPT_HASH, 4090), and nothing yet says whether that cost is the
+// (PEARL_ABLATE_TRANSCRIPT_HASH, 4090). The open question was whether that cost is the
 // phase outlasting the partner's window, issue and register-port contention while it runs,
-// or instruction fetch (the hot hash is 18.5 KB of straight-line code). Each switch puts
+// or instruction fetch (the hot hash is 18.5 KB of straight-line code). Step 0 (3060 Ti and
+// 4070 Super, benchmark.md) settled it: the hash releases about 3,150 cycles after the
+// hand-off. Past about 2,300, each cycle costs a tile about one. Contention is under 0.1
+// point. Each switch puts
 // a stand-in where the hash was and keeps the rest of the hasher: the transcripts zeroed
 // for the next tile, and the hit test with its record code, whose test never passes here:
 // - STUB_SPIN=N: the hasher spins on clock64 until N cycles after the hand-off and does

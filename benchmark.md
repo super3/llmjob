@@ -720,11 +720,79 @@ the hash's issue count from 816 bytes of code). Not rows: no competitor ran.
   below their power limits, so this is per clock.
 - **Most of it is issue contention:** the ALU burst, which keeps the hash's instruction count but not its code or its
   waits, keeps almost all the cost. Waiting through the partner's window costs little (spin 1,700 matches no hash).
-  The existing hash ablation reads high because it also reschedules the chunk loop.
+  The existing hash ablation reads high because it also reschedules the chunk loop. **Wrong, as step 0 below
+  shows:** the burst runs about as long as the hash, so it pays the same run past the window. Contention is
+  under 0.1 point.
 - **So no cheap fix follows.** The matching fix is SASS control bits that let the hasher yield, which needs an
   sm_86/sm_89 port of the sm_75 patcher; items 17 and 18 (readout pacing, warp turn-taking) aim at the same cost.
   The stand-ins stay in the code, off, as their gauge.
 - **Cost:** two high-priority boxes for about 13 minutes each, about $0.05.
+
+### Our own builds on Salad, 2 November: where the tile hash's cost comes from (step 0)
+
+Run at 03:27 UTC on 2026-11-02 at `4c78475` on `nvtest` boxes. This was not race mode: bench ran 15 builds in turn,
+20 s each, for 5 rounds, with `PEARL_TALL_CYC` tile cycles and the new `PEARL_TALL_HASHCYC` stamps. Those stamps time
+the hasher from the hand-off to its hash's end and to its release of stage 0. Each card ran at its stock power limit
+the whole time.
+
+Arms:
+- `base`: the real hash.
+- `s1`: no hash.
+- `s1200` to `s4600`: spins of that many cycles.
+- `a1` to `a5`: ALU bursts.
+  - `a1`: the hash's instruction count.
+  - `a2`: one chain.
+  - `a3`: adds as IMAD, on the FMA pipe.
+  - `a4`: `a1` plus 32 IMMAs.
+  - `a5`: IMAD only.
+- `base0` and `s1x`: `base` and `s1` without stamps.
+
+Not rows: no competitor ran.
+
+| Card | Machine ID | Tile, no hash | Hash cost | Hash ends / releases | Past the window | Contention | Stamps' own cost |
+|---|---|---|---|---|---|---|---|
+| RTX 3060 Ti (200 W) | 9db901eb | 101,648 cycles | +1,330 (1.31%) | 3,068 / 3,140 | 1,299 (1.28%) | +31 (0.03%) | +219 (0.22%) |
+| RTX 4070 Super (220 W) | 6d99dc2c | 101,561 cycles | +1,396 (1.37%) | 3,116 / 3,188 | 1,333 (1.31%) | +63 (0.06%) | +303 (0.30%) |
+
+What each spin length costs a tile, against no hash. The release cycle comes first, then the cost:
+
+| Card | 1,476 | 1,940 | 2,276 | 2,628 | 3,220 | 4,820 |
+|---|---|---|---|---|---|---|
+| RTX 3060 Ti | +311 | +464 | +502 | +809 | +1,375 | +2,990 |
+| RTX 4070 Super | +324 | +553 | +568 | +804 | +1,371 | +2,979 |
+
+Round-to-round spread was about 12 cycles a tile on the 3060 Ti and 2 on the 4070 Super. Each spin's stamp read 156 to
+180 cycles above its length on both cards. That is the stamp's own offset, so the stamps time what they should.
+
+- **The cost is the hash running past the partner's window, not contention.** Past about 2,300 cycles after the
+  hand-off, each cycle the hasher runs costs a tile 0.9-1.0 cycle on both cards. Below that it costs about 0.3. The
+  hash releases at about 3,150, so about 0.8 point is the hash's length past 2,300.
+  - The burst (`a1`) costs what a spin of the same length costs: −41 cycles on the 3060 Ti, +62 on the 4070 Super.
+  - That overturns item 12's reading above.
+- **Dropped: hash control bits (the SASS yield and stall bits).** The rule was to drop them if the 3060 Ti's
+  contention came in under 0.5 point. It is 0.03 point. Yield would also make the hash longer, and each extra cycle
+  costs about one.
+- **Dropped: #18, warp turn-taking.** The rule was to drop it if the partner kept under about 80% of its rate beside
+  the burst.
+  - On the 4070 Super, the burst's +62 cycles mean the partner had not finished its window's work by the release. It
+    therefore ran at under about 75% of its rate. The model puts it at 31-43%.
+  - The 3060 Ti can't settle it: its contention is inside the noise, which gives only a lower bound (at least 46%).
+- **Dropped: IMMAs during the hash.** The 32-IMMA arm (`a4`) released about 1,400 cycles later than `a1` and cost
+  what it added. The tensor pipe has no idle time at the seam.
+- **Parked: #17, readout pacing.** It was to ride the control-bit patch path, which is now not being built. On its own
+  it would need that 5-6 h path, and a hand-patched binary to ship, for +0.15-0.45% at 15-20% odds.
+- **What helps instead: a shorter hash.** The adds-as-IMAD burst (`a3`) has the same count as `a1` but splits it
+  between the ALU and FMA pipes. It released about 300 cycles sooner and cost 130-175 fewer cycles a tile, even
+  with more contention. The one-chain burst (`a2`) ran almost twice as long.
+  - So the hasher is limited by the ALU pipe and by its own length.
+  - The fixes that follow are a shorter hash phase (word-major transcript records, or more of the hash on the FMA
+    pipe) or a wider window (six 32-k stages).
+- **The stamps cost a fixed 220-300 cycles a tile.** `s1` minus `s1x` matches `base` minus `base0`, even though `s1`
+  releases well inside the window. So the cost doesn't come through the hash's length. It is the same in every
+  stamped arm and cancels in the comparisons above.
+- **Spill:** the box logs don't print registers. Locally, under CUDA 12.6 and 12.8.1 (the box ran 12.8.93), every
+  arm keeps 254/255 registers with no spill and the chunk loop unchanged.
+- **Cost:** two high-priority boxes for about 30 minutes each, about $0.15.
 
 ## RTX 40-series
 
