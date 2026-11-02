@@ -1003,6 +1003,23 @@ rows: no competitor ran.
   - Only the 5090 stays power-limited all the way, with the full 8%. For item 16 that means the prize is mostly the
     5090's (and any card held to a lower limit), and a rewrite that costs work per clock would lose on the mid cards.
   - Three high-priority boxes for about 18 minutes each, about $0.30.
+- **Step 2: neither way to move fewer operands works on a 5090.** At 00:10 UTC on 2 November, at `b68b039`, on
+  `nvtest-rtx5090-12` (stock 5090, PC `9888e456`, 600 W of a default 600 W, at the limit in every turn):
+  - **Drawing B' on the SM from a small table.** `PEARL_TALL_SHAM_DRAW` leaves B' unloaded and reads each B
+    fragment a second time from shared memory with one IADD3 a register, the work a real draw would add (it leaves out
+    the draw's table load and tile-seam wait, so it reads high). Against the release's 401.84 TH/s at 2440 MHz:
+    skip B' +7.65% ±0.10 (2621 MHz); the sham draw **+1.81% ±0.11** (2587 MHz), ahead in all 37 rounds; the copy of
+    the release −0.02%. The clock comes back, but the extra reads cost about 4% of work per clock. The draw had to
+    clear +2.5% to be worth building, so it is dropped.
+  - **Sharing B' between two CTAs by TMA multicast.** `multicast-probe.cu` (a `compilers.sh` stage) launched 85
+    two-CTA clusters on all 170 SMs (the cluster query returned success for every arm). The arms that load their own
+    boxes, only rank 0's, or nothing all ran; the arm that multicasts B' to both CTAs never finished, and its
+    watchdog never fired, so the stuck wait is the multicast's receiver on rank 1. It differs from the plain-load
+    arm only in its load: the multicast's bytes or its transaction count never arrive on this card. That is the
+    cluster build's hang, and CUTLASS keeps RTX 50 to one-CTA clusters. Every multicast option is dropped.
+  - **Item 16 stops here.** The operand traffic does cost a stock 5090 about 8%, but on-SM generation costs more work
+    than it saves, multicast doesn't complete, and the mid cards would gain 2-3% at most. One high-priority box for
+    about 20 minutes, about $0.14.
 
 ## A100-class (sm_80)
 
