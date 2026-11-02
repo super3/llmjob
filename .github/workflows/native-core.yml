@@ -348,7 +348,9 @@ jobs:
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and
       # ships; nothing else in CI can see that. This reads what ptxas said
-      # above for both fold kernels, for RTX 20's second fold kernel
+      # above for both fold kernels, for RTX 30's flip kernel
+      # (pearl_tile_fold_tall_pinb, PEARL_AMPERE_FLIP; a body only on sm_86),
+      # for RTX 20's second fold kernel
       # (pearl_tile_fold_wmma_rg, PEARL_BD_RG_KERNEL; a body only on sm_75),
       # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
       # sm_90a), for the transcript hash kernel (pearl_tall_hash80, a body only
@@ -363,7 +365,8 @@ jobs:
       # its body: a build whose gate lost Pascal still compiles and links, and
       # GTX 10 cards would then have no fold at all. Only the body uses more
       # than a handful of registers (123 under 12.8), so fewer than 64 fails the
-      # job. A failed cu13 job uploads no
+      # job. The same holds for the flip kernel on sm_86: the host launches it on
+      # the RTX 3060 Ti and the 6 MB RTX 30 cards, which would search nothing. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
       # right outcome for a fold that spills. Needs no GPU.
@@ -402,6 +405,8 @@ jobs:
           fail_archs=" ${{ matrix.spill_fail_archs }} "
           bad=0
           seen_tall=0
+          seen_tall_pinb=0
+          pinb_86=none
           seen_wmma=0
           seen_wmma_rg=0
           seen_h80=0
@@ -411,6 +416,7 @@ jobs:
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
+              pearl_tile_fold_tall_pinb) seen_tall_pinb=1 ;;
               pearl_tile_fold_wmma) seen_wmma=1 ;;
               pearl_tile_fold_wmma_rg) seen_wmma_rg=1 ;;
               pearl_tall_hash80) seen_h80=1 ;;
@@ -422,6 +428,10 @@ jobs:
             if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_61 ] \
                && [ "$regs" -ge 64 ] 2>/dev/null; then
               dp4a_body=1
+            fi
+            if [ "$name" = pearl_tile_fold_tall_pinb ] && [ "$arch" = sm_86 ]; then
+              pinb_86=stub
+              [ "$regs" -ge 64 ] 2>/dev/null && pinb_86=body
             fi
             if [ "$stores" != 0 ] || [ "$loads" != 0 ]; then
               case "$fail_archs" in
@@ -435,8 +445,8 @@ jobs:
           done <<< "$rows"
           # Nothing found is a failure, not a pass: the names changed, or ptxas
           # was not run with -v.
-          if [ "$seen_tall" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_wmma_rg" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ] || [ "$seen_dp4a" != 1 ]; then
-            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_wmma, pearl_tile_fold_wmma_rg, pearl_tall_hash80, pearl_tile_fold_hopper and pearl_tile_fold_dp4a; was pearl_kernel.cu compiled with -Xptxas -v?"
+          if [ "$seen_tall" != 1 ] || [ "$seen_tall_pinb" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_wmma_rg" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ] || [ "$seen_dp4a" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_tall_pinb, pearl_tile_fold_wmma, pearl_tile_fold_wmma_rg, pearl_tall_hash80, pearl_tile_fold_hopper and pearl_tile_fold_dp4a; was pearl_kernel.cu compiled with -Xptxas -v?"
             exit 1
           fi
           case " ${{ matrix.gencode }} " in
@@ -446,6 +456,10 @@ jobs:
                 bad=1
               fi ;;
           esac
+          if [ "$pinb_86" = stub ]; then
+            echo "::error::pearl_tile_fold_tall_pinb on sm_86 has no body (under 64 registers); the RTX 30 cards that take the flip would search nothing. Check PEARL_TALL_PIN_B_ARCH in pearl_config.h"
+            bad=1
+          fi
           exit $bad
 
       # The Blackwell tall fold's two TMA descriptors, and Hopper's wgmma fold's,

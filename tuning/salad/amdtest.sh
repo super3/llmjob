@@ -24,20 +24,33 @@
 #     hip                     builds and runs amdtest_hip.cpp: devices, runtime libraries loaded, kernels checked
 #     check[:all|:gfx...]     ./build-amd.sh check for this card's target (or all 14, or the ones given)
 #     build[:gfx...]          ./build-amd.sh gpu for this card's target (or the ones given)
-#     foldtest[:m:cols:seed:reps:check]   build/pearl_amd_foldtest
-#     verify[@fold][:secs:bits]           node ../probes/verify-hits.js build/pearl_core_hip.node [120]
+#     foldtest[:m:cols:seed:reps:check:fold:k]  build/pearl_amd_foldtest (k: the card's own, 4096 on RDNA 4)
+#     verify[@fold][:secs:bits]           node ../probes/verify-hits.js build/pearl_core_hip.node [120]; its
+#                                         shares go to /root/shares/verify.jsonl for refverify
 #     profile[@fold][:secs:bits:m:n:fill] node test/verify-hits-profile.js build/pearl_core_hip.node ...
 #     hashrate[@fold][:secs:warm]         node ../probes/hashrate.js build/pearl_core_hip.node [60 10]
-#     mine[@fold][:secs]      the app's CLI with PEARL_CORE_VARIANT=amd on POOL; secs 0 = until stopped [600]
-#     srb[:secs:warm]         SRBMiner 3.7.1 on DUEL_POOL for secs [300] after a warm-up of its own [60]
+#     mine[@fold][:secs]      the app's CLI with PEARL_CORE_VARIANT=amd on POOL; secs 0 = until stopped [600].
+#                             +TAP=1 mines through sharetap.py's relay, and at the end decodes the shares the
+#                             pool got (their k), says how often jobs came, and saves the shares for refverify
+#     verifypool[:mode[:secs[:arg]]]      earn/native/probes/verify-pool.js, a stand-in pool that checks every
+#                             share as the spec's verifier does:
+#                               mixed[:secs:bits|pool]  this card at k 4096 and k 2048 at once through one
+#                                 PearlMiner and one connection: to the stand-in at 2^bits [210], or to POOL
+#                               cli[:secs:bits]         the app's CLI against the stand-in [300 210]
+#                               cliplain[:secs:bits]    the same with no compression offered: raw proofs
+#     refverify[:file...]     builds earn/native/probes/refverify.rs against the spec at PEARL_SPEC_SHA (Rust
+#                             from rustup) and runs it on the files given, or on every /root/shares/*.jsonl
+#     srb[:secs:warm]         SRBMiner 3.8.2 on DUEL_POOL for secs [300] after a warm-up of its own [60]
 #     duel[:first:secs:warm]  benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
 #                             warm [60], then each runs secs [300]; ends with "duel <name> result ..." for each
-#     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB)
+#     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB); the
+#                             k 4096 runs' shares go to /root/shares/cpu/ for refverify
 #     run                     the bash script in RUN_GZ_B64 (gzip+base64), from earn/native/amd
 #     sleep:secs              wait
 #   ARCH          gfx target to build for (default: rocminfo's first GPU agent)
 #   POOL, WORKER, WALLET      for mine (default prl-us.kryptex.network:7048, amdtest, the user's wallet)
-#   DUEL_POOL     for srb and duel, both miners (default us.pearl.herominers.com:1200, the table's pool)
+#   DUEL_POOL     for srb and duel, both miners (default prl-us.kryptex.network:7048, bench.sh's pool)
+#   PEARL_SPEC_SHA  the commit of github.com/pearl-research-labs/pearl that refverify builds against
 #
 # Salad's PCs run the container in WSL2: the GPU is behind /dev/dxg, and Salad puts its ROCm-to-WSL bridge
 # (/opt/rocm-wsl) first on PATH and LD_LIBRARY_PATH. This script only appends to PATH and never sets
@@ -194,8 +207,9 @@ t_foldtest() {
 
 t_verify() {
   need_core verify || return 1
-  (cd $A && timeout 3600 node ../probes/verify-hits.js build/pearl_core_hip.node "${1:-120}" ${2:+"$2"}) \
-    > /root/verify.log 2>&1; local rc=$?
+  mkdir -p /root/shares && rm -f /root/shares/verify.jsonl
+  (cd $A && PEARL_SHARE_DUMP=/root/shares/verify.jsonl timeout 3600 node ../probes/verify-hits.js \
+    build/pearl_core_hip.node "${1:-120}" ${2:+"$2"}) > /root/verify.log 2>&1; local rc=$?
   tail -n 20 /root/verify.log | emit verify
   return $rc
 }
@@ -226,11 +240,49 @@ mine_cli() {
       --no-report --no-serve --no-update
 }
 
+# TAP=1 on mine: the CLI mines through sharetap.py's relay, which listens on 127.0.0.1 at the pool's port and passes
+# everything on to the pool. A preload makes the CLI's lookup of the pool's name answer 127.0.0.1, so the CLI logs in
+# exactly as it does to the pool itself: Kryptex's wallet/worker login is chosen by the name, and keeps the worker.
+tap_start() {
+  local host=${POOL%:*} port=${POOL##*:}
+  command -v python3 >/dev/null || apt-get install -y -qq --no-install-recommends python3 > /root/apt3.log 2>&1 \
+    || { say "mine FAIL TAP=1 needs python3"; return 1; }
+  rm -f /root/tap.jsonl
+  python3 $R/tuning/salad/sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl > /root/tap.log 2>&1 &
+  TAP_PID=$!
+  sleep 3
+  grep -q listening /root/tap.log || { say "mine FAIL sharetap: $(tail -c 200 /root/tap.log)"; return 1; }
+  cat > /root/tap-dns.js <<'JS'
+// The pool's name answers 127.0.0.1, where sharetap.py relays to the pool (amdtest.sh, TAP=1).
+const dns = require('dns');
+const lookup = dns.lookup;
+dns.lookup = function (host, opts, cb) {
+  if (host !== process.env.TAP_HOST) return lookup.apply(this, arguments);
+  const done = typeof opts === 'function' ? opts : cb;
+  const all = !!(opts && typeof opts === 'object' && opts.all);
+  process.nextTick(() => (all ? done(null, [{ address: '127.0.0.1', family: 4 }]) : done(null, '127.0.0.1', 4)));
+};
+JS
+  export TAP_HOST=$host NODE_OPTIONS="--require /root/tap-dns.js"
+}
+
+# The shares the pool got since $1 (epoch): the first two decoded (their k, compression, tile) and a summary, how
+# often the pool sent a job, and every share saved for refverify.
+tap_end() {
+  kill $TAP_PID 2>/dev/null
+  mkdir -p /root/shares
+  python3 $R/tuning/salad/sharetap.py decode /root/tap.jsonl --since "$1" --max 2 2>&1 | emit share
+  python3 $R/tuning/salad/sharetap.py jobs /root/tap.jsonl --since "$1" 2>&1 | emit share
+  python3 $R/tuning/salad/sharetap.py shares /root/tap.jsonl --since "$1" > "/root/shares/mine-$WORKER.jsonl" 2>&1
+  tail -n 1 "/root/shares/mine-$WORKER.jsonl" | emit share
+}
+
 # Every 60 s: the CLI's new lines, but only the last of its once-a-second "TH/s" lines.
 t_mine() {
   need_core mine || return 1
   local secs=${1:-600} t0=$(date +%s) seen=0 n pid
-  say "mine $POOL worker $WORKER for ${secs}s (0 = until stopped)"
+  say "mine $POOL worker $WORKER for ${secs}s (0 = until stopped)${TAP:+, through sharetap.py}"
+  if [ -n "${TAP:-}" ]; then tap_start || return 1; fi
   (mine_cli) > /root/mine.log 2>&1 &
   pid=$!
   while :; do
@@ -239,25 +291,93 @@ t_mine() {
     tail -n +$((seen + 1)) /root/mine.log | head -n $((n - seen)) | tr '\r' '\n' | grep -v 'TH/s ·' | head -20 | emit mine
     tail -n +$((seen + 1)) /root/mine.log | head -n $((n - seen)) | tr '\r' '\n' | grep 'TH/s ·' | tail -1 | emit mine
     seen=$n
-    kill -0 $pid 2>/dev/null || { say "mine exited"; tail -5 /root/mine.log | emit mine; wait $pid; return 1; }
+    if ! kill -0 $pid 2>/dev/null; then
+      say "mine exited"; tail -5 /root/mine.log | emit mine; wait $pid
+      [ -n "${TAP:-}" ] && tap_end "$t0"
+      return 1
+    fi
     [ "$secs" -gt 0 ] && [ $(( $(date +%s) - t0 )) -ge "$secs" ] && break
   done
   kill $pid; wait $pid 2>/dev/null
+  [ -n "${TAP:-}" ] && tap_end "$t0"
   return 0
 }
 
-# SRBMiner 3.7.1 from its official release, checked against the published MD5 (bench.sh downloads the same file).
+# earn/native/probes/verify-pool.js: mixed (one card at k 4096 and k 2048 through one PearlMiner), or the app's CLI
+# against the stand-in pool, which checks every share as the spec's verifier does (cli, or cliplain for raw proofs).
+t_verifypool() {
+  need_core verifypool || return 1
+  local mode=${1:-mixed} secs=${2:-300} arg=${3:-} rc pid cli port=3334
+  case $mode in
+    mixed)
+      (cd $A && timeout $((secs + 600)) node ../probes/verify-pool.js mixed build/pearl_core_hip.node "$secs" \
+        ${arg:+"$arg"}) > /root/verifypool.log 2>&1; rc=$?
+      grep -E '^\[miner\] (mining on|share rejected|the pool|could not|skipping)' /root/verifypool.log | head -n 20 \
+        | emit verifypool
+      tail -n 1 /root/verifypool.log | emit verifypool
+      ;;
+    cli | cliplain)
+      (cd $A && exec node ../probes/verify-pool.js serve $port $((secs + 600)) "${arg:-210}" \
+        $([ "$mode" = cliplain ] && echo plain)) > /root/verifypool.log 2> /root/verifypool.err &
+      pid=$!
+      sleep 3
+      ( POOL=127.0.0.1:$port mine_cli ) > /root/mine.log 2>&1 &
+      cli=$!
+      sleep "$secs"
+      kill $cli 2>/dev/null; wait $cli 2>/dev/null
+      kill -TERM $pid 2>/dev/null; wait $pid; rc=$?
+      tr '\r' '\n' < /root/mine.log | grep -E 'mining on|compressed|rejected|error' | grep -v 'TH/s ·' | head -n 20 \
+        | emit verifypool
+      grep -v '^\[verify-pool\] share k=[0-9]* accepted' /root/verifypool.err | tail -n 10 | emit verifypool
+      tail -n 1 /root/verifypool.log | emit verifypool
+      ;;
+    *) say "verifypool FAIL the mode is mixed, cli or cliplain, not $mode"; return 1 ;;
+  esac
+  return $rc
+}
+
+# The spec's own share check (earn/native/probes/refverify.rs, over zk-pow's verify_plain_proof), built from the spec
+# at PEARL_SPEC_SHA with Rust from rustup, then run on each file of shares: those given, or every /root/shares one.
+PEARL_SPEC_SHA=${PEARL_SPEC_SHA:-d7c517d267f10f5bcbbdc366f3e603942f9a5ab5}
+t_refverify() {
+  local spec=/opt/pearl t0=$(date +%s) rc=0 f files=("$@")
+  export PATH="$HOME/.cargo/bin:$PATH"
+  if ! command -v cargo >/dev/null; then
+    curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal > /root/rustup.log 2>&1 \
+      || { tail -5 /root/rustup.log | emit refverify; say "refverify FAIL rustup"; return 1; }
+  fi
+  if [ "$(git -C $spec rev-parse HEAD 2>/dev/null)" != "$PEARL_SPEC_SHA" ]; then
+    rm -rf $spec && mkdir -p $spec
+    (cd $spec && git init -q && git remote add origin https://github.com/pearl-research-labs/pearl.git \
+      && git fetch -q --depth 1 origin "$PEARL_SPEC_SHA" && git checkout -q FETCH_HEAD) > /root/spec.log 2>&1 \
+      || { tail -3 /root/spec.log | emit refverify; say "refverify FAIL fetching the spec at $PEARL_SPEC_SHA"; return 1; }
+  fi
+  cp $R/earn/native/probes/refverify.rs $spec/zk-pow/src/bin/refverify.rs
+  (cd $spec/zk-pow && cargo build --release --bin refverify) > /root/refverify-build.log 2>&1 \
+    || { grep -E '^(error|warning: unused)' -A 6 /root/refverify-build.log | head -n 40 | emit refverify
+         say "refverify FAIL build"; return 1; }
+  say "refverify built in $(( $(date +%s) - t0 ))s at spec ${PEARL_SPEC_SHA:0:12}"
+  [ ${#files[@]} -gt 0 ] || mapfile -t files < <(find /root/shares -name '*.jsonl' 2>/dev/null | sort)
+  [ ${#files[@]} -gt 0 ] || { say "refverify FAIL no shares in /root/shares"; return 1; }
+  for f in "${files[@]}"; do
+    $spec/zk-pow/target/release/refverify < "$f" > /root/refverify.log 2>&1 || rc=1
+    tail -n 12 /root/refverify.log | sed "s|^|$(basename "$f") |" | emit refverify
+  done
+  return $rc
+}
+
+# SRBMiner 3.8.2 from its official release, checked against the published MD5 (bench.sh downloads the same file).
 SRB_DIR=/opt/srb
 srb_get() {
   [ -x $SRB_DIR/SRBMiner-MULTI ] && return 0
   mkdir -p $SRB_DIR && cd $SRB_DIR || return 1
-  curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.7.1/SRBMiner-Multi-3-7-1-Linux.tar.gz \
+  curl -fsSL --retry 3 -o srb.tgz https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.2/SRBMiner-Multi-3-8-2-Linux.tar.gz \
     || { say "srb FAIL download"; return 1; }
-  echo "112223a663506023e31d7f9dbce3dfe2  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
+  echo "9f64784a9894067b7bc3811b4912dd81  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
   tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
 }
 # Both miners mine on DUEL_POOL in srb and duel, as benchmark.md's AMD table did (bench.sh's pool).
-DUEL_POOL=${DUEL_POOL:-us.pearl.herominers.com:1200}
+DUEL_POOL=${DUEL_POOL:-prl-us.kryptex.network:7048}
 srb_cli() {
   cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
     --worker "$WORKER-srb" --disable-cpu --api-enable --api-port 21550 --disable-gpu-nvidia --disable-gpu-intel
@@ -334,7 +454,8 @@ t_cpuchecks() {
   { apt-get install -y -qq --no-install-recommends libtbb-dev clang > /root/apt2.log 2>&1 \
     && { [ -d /opt/hip-cpu ] || git clone -q --depth 1 https://github.com/ROCm/HIP-CPU /opt/hip-cpu; }; } \
     || { tail -5 /root/apt2.log | emit cpuchecks; say "cpuchecks FAIL setup"; return 1; }
-  (cd $A && HIP_CPU_PATH=/opt/hip-cpu ./build-amd.sh cpu && ./test/run-cpu-checks.sh) > /root/cpuchecks.log 2>&1
+  (cd $A && HIP_CPU_PATH=/opt/hip-cpu ./build-amd.sh cpu && SHARE_DIR=/root/shares/cpu ./test/run-cpu-checks.sh) \
+    > /root/cpuchecks.log 2>&1
   local rc=$?; grep -E '^(PASS|FAIL|built| )' /root/cpuchecks.log | tail -n 40 | emit cpuchecks
   return $rc
 }
@@ -372,7 +493,7 @@ for item in "${LIST[@]}"; do
   name=${HP[0]%%@*}; fold=""; [ "$name" != "${HP[0]}" ] && fold=${HP[0]#*@}
   [ -n "$fold" ] && envs+=("PEARL_AMD_FOLD=$fold")
   args=("${P[@]:1}")
-  case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|srb|duel|cpuchecks|run) ;;
+  case $name in env|card|hip|check|build|foldtest|verify|profile|hashrate|mine|verifypool|srb|duel|cpuchecks|refverify|run) ;;
     sleep) sleep "${args[0]:-60}"; continue ;;
     *) say "$name FAIL unknown task"; failed="$failed $item"; continue ;;
   esac

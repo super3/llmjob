@@ -4,12 +4,19 @@
 #
 #   ./build-amd.sh cpu              HIP-CPU: build/pearl_core_hipcpu.node and
 #                                   build/pearl_amd_foldtest_cpu, which run the AMD kernels
-#                                   on the CPU. For checking without a GPU; never shipped.
+#                                   on the CPU, and their _kwrap twins with the wrap readout
+#                                   (RDNA 4's, which mines k 4096), and fold checks with the
+#                                   RDNA 3 and 4 loops and dot4's other k-steps. For checking
+#                                   without a GPU; never shipped.
 #   ./build-amd.sh gpu [gfx...]     ROCm: build/pearl_core_hip.node and build/pearl_amd_foldtest
 #                                   for the listed targets (default: $DEFAULT_ARCHS below).
 #   ./build-amd.sh check [gfx...]   Compile the device code for each target and print each
 #                                   fold's registers, scratch and LDS. Fails if a fold
-#                                   spills or uses scratch memory.
+#                                   spills or uses scratch memory, or, with no
+#                                   PEARL_AMD_CFLAGS, if a gfx12 target lacks the wrap
+#                                   readout (PEARL_AMD_KWRAP) or any other target has it, or
+#                                   a target lacks the fold the host runs on it (folds_of).
+#                                   On Windows no target has the wrap readout (KWRAP_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -30,7 +37,9 @@
 #   NODE_ADDON_API  node-addon-api's include folder (default: require('node-addon-api')).
 #   NODE_INCLUDE    Node's headers (default: the running node's include/node).
 #   PEARL_AMD_CFLAGS  extra compiler flags for gpu and check, e.g. -DPEARL_AMD_TILED=0 to
-#                   build a tuning variant (pearl_amd_fold.h lists the knobs).
+#                   build a tuning variant (pearl_amd_fold.h lists the knobs). Refused with
+#                   PEARL_AMD_READOUT_DROP, PEARL_AMD_ABLATE or PEARL_AMD_STAMP in winlib, and in
+#                   gpu under CI: they are timing-only.
 #
 # The portable kernels are pearl_kernel.cu's own: this script copies that file up to the
 # start of the CUDA folds into build/gen/pearl_kernel_portable.cu, and stops if the line it
@@ -51,10 +60,48 @@ DEFAULT_ARCHS="gfx908 gfx90a gfx942 gfx950 gfx1030 gfx1031 gfx1032 gfx1100 gfx11
 # The Radeon targets only: AMD's Windows runtime has no Instinct (gfx9) cards.
 WINDOWS_ARCHS="gfx1030 gfx1031 gfx1032 gfx1100 gfx1101 gfx1102 gfx1150 gfx1151 gfx1200 gfx1201"
 MARKER='^// A 16-byte global->shared copy that does not pass through registers'
+# The Windows core keeps today's readout on every target, so RDNA 4 mines k 2048 there. With the wrap
+# readout the SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory (native-core.yml's
+# windows-2022-hip, 1 November), and no Windows Radeon has run either readout: the +1.1% at k 4096
+# was measured on Linux, built with ROCm's clang 22. It goes before PEARL_AMD_CFLAGS, which can still
+# set the readout either way.
+KWRAP_OS=
+if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 
 mode="${1:-}"
 shift || true
 if windows; then archs="${*:-$WINDOWS_ARCHS}"; else archs="${*:-$DEFAULT_ARCHS}"; fi
+
+# PEARL_AMD_READOUT_DROP and PEARL_AMD_ABLATE (pearl_amd_fold.h) build a core with wrong
+# transcripts, to time the RDNA 4 readout or a part of the fold; PEARL_AMD_STAMP one whose folds
+# store clock stamps. None goes in a build that can ship: winlib is the Windows package's, and a
+# gpu build in CI is the Linux release's (native-core.yml). Their place is a gpu build on a test
+# box, from test/sweep.sh.
+case "${PEARL_AMD_CFLAGS:-}" in
+  *PEARL_AMD_READOUT_DROP*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: readout-drop build is timing-only: PEARL_AMD_READOUT_DROP is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+  *PEARL_AMD_ABLATE*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: ablation build is timing-only: PEARL_AMD_ABLATE is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+esac
+case "${PEARL_AMD_CFLAGS:-}" in
+  *PEARL_AMD_STAMP*)
+    if [ "$mode" = winlib ] || { [ "$mode" = gpu ] && [ -n "${CI:-}${GITHUB_ACTIONS:-}" ]; }; then
+      echo "build-amd.sh: clock-stamp build is timing-only: PEARL_AMD_STAMP is refused in a $mode" >&2
+      echo "  build that can ship (winlib, or gpu under CI). Build it with gpu on a test box (test/sweep.sh)." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 slice() {
   mkdir -p "$GEN"
@@ -114,6 +161,18 @@ offload_flags() {
   echo "$f"
 }
 
+# The fold a target's code object must have a body for, besides the reference fold: the one the host
+# runs on it (pearl_host_hip.cpp's native_fold). check fails a release build that lacks it.
+folds_of() {
+  case "$1" in
+    gfx908 | gfx90a) echo mfma8 ;;
+    gfx942 | gfx950) echo mfma16 ;;
+    gfx103*) echo dot4 ;;
+    gfx11*) echo wmma11 ;;
+    gfx12*) echo wmma12 ;;
+  esac
+}
+
 case "$mode" in
   cpu)
     slice
@@ -128,7 +187,9 @@ case "$mode" in
     fi
     mkdir -p "$OUT/cpu"
     inc="-I$HERE/compat/cpu -I$HERE/src -I$SRC -I$GEN -I$HIP_CPU_PATH/include $tbb_inc"
-    flags="-std=c++17 -O2 -fPIC -DNDEBUG"
+    # -Wno-psabi: the dot4 fold passes 32-byte vectors by value between inlined functions, and clang
+    # notes that without AVX that changes the x86 ABI (3 warnings). Nothing crosses a library boundary.
+    flags="-std=c++17 -O2 -fPIC -DNDEBUG -Wno-psabi"
     echo "cpu: kernels and host"
     $cxx $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip.o"
     echo "cpu: addon"
@@ -144,7 +205,23 @@ case "$mode" in
       $tbb_lib -ltbb -lpthread
     $cxx $flags -DPEARL_AMD_PF2=1 -DPEARL_AMD_PFX=1 -DPEARL_AMD_TID=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" \
       -o "$OUT/pearl_amd_foldtest_cpu_pfx" $tbb_lib -ltbb -lpthread
-    echo "built $OUT/pearl_core_hipcpu.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx}"
+    # The dot4 fold's k-step (PEARL_AMD_DOT4_K in pearl_amd_fold.h) at the two sizes the release doesn't use,
+    # so a tuning build of either is checked too.
+    echo "cpu: fold check with dot4's other k-steps"
+    for dk in 8 16; do
+      $cxx $flags -DPEARL_AMD_DOT4_K=$dk $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_dot4k$dk" \
+        $tbb_lib -ltbb -lpthread
+    done
+    # The wrap readout is on only in a real gfx12 device pass (RDNA 4 mines k 4096), so the builds above
+    # have today's. These have it, so the k 4096 path runs without a GPU: the core picks k 4096 when the
+    # miner lets it (cardK), as it does on an RDNA 4 card.
+    echo "cpu: kernels, host, addon and fold check with the wrap readout"
+    $cxx $flags -DPEARL_AMD_KWRAP=1 $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip_kwrap.o"
+    $cxx -shared -o "$OUT/pearl_core_hipcpu_kwrap.node" "$OUT/cpu/pearl_host_hip_kwrap.o" "$OUT/cpu/pearl_core.o" \
+      $tbb_lib -ltbb -lpthread
+    $cxx $flags -DPEARL_AMD_KWRAP=1 $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu_kwrap" \
+      $tbb_lib -ltbb -lpthread
+    echo "built $OUT/pearl_core_hipcpu{,_kwrap}.node and $OUT/pearl_amd_foldtest_cpu{,_pf2,_pfx,_kwrap,_dot4k8,_dot4k16}"
     ;;
   gpu)
     slice
@@ -185,7 +262,7 @@ case "$mode" in
     # The gpu build's flags, less -fPIC, and with the static C runtime: node-gyp builds the
     # rest of the addon with /MT, and both halves must use the same one. MSVC's headers warn
     # about getenv and friends unless told not to.
-    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value ${PEARL_AMD_CFLAGS:-}"
+    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS ${PEARL_AMD_CFLAGS:-}"
     targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "winlib: kernels and host for $archs"
     "$cc" -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" \
@@ -206,19 +283,44 @@ case "$mode" in
     rocm="$(rocm_root)"
     mkdir -p "$OUT/check"
     inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"
-    bad=0
-    printf '%-9s %-22s %6s %6s %8s %7s %8s %10s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD"
+    bad=0 wrapbad=0 foldbad=0
+    where="on exactly the gfx12 targets"
+    [ -n "$KWRAP_OS" ] && where="on no target (the Windows core mines k 2048)"
+    printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1
         continue
       fi
+      # The wrap readout (PEARL_AMD_KWRAP), as this target's device pass sets it: on in every gfx12
+      # code object, since RDNA 4 mines k 4096, and in no other, which mine k 2048 with today's
+      # readout; on Windows in none (KWRAP_OS). The release builds with no PEARL_AMD_CFLAGS, and
+      # then a target that differs fails the check. A tuning build may set it either way, so there
+      # it is only shown. tr: clang on Windows can end the lines with CR LF, and "1\r" is not 1.
+      kw=$("$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 $KWRAP_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+          -E -dM "$HERE/src/pearl_host_hip.cpp" 2>> "$log" | tr -d '\r' | sed -n 's/^#define PEARL_AMD_KWRAP //p' \
+          | head -n 1 || true)
+      case "$a" in gfx12*) want=1 ;; *) want=0 ;; esac
+      [ -n "$KWRAP_OS" ] && want=0
+      if [ -z "${PEARL_AMD_CFLAGS:-}" ] && [ "$kw" != "$want" ]; then
+        if [ -n "$KWRAP_OS" ]; then
+          echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not 0: the Windows core" \
+            "mines k 2048 on every card" >&2
+        else
+          echo "$a: the wrap readout (PEARL_AMD_KWRAP) is ${kw:-not set}, not $want: RDNA 4 (gfx12)" \
+            "has it and mines k 4096, every other target mines k 2048 without it" >&2
+        fi
+        wrapbad=1
+      fi
       # One row a kernel: the fold kernels with a body on this target, the hash and the
-      # reference fold. A fold without a body here shows 0 VGPRs and is left out.
-      awk -v arch="$a" '
+      # reference fold. A fold without a body here shows 0 VGPRs and is left out. In a release
+      # build, the fold folds_of names without one fails the check (awk exit bit 2; bit 1: a spill).
+      need=""
+      [ -z "${PEARL_AMD_CFLAGS:-}" ] && need="$(folds_of "$a")"
+      awk -v arch="$a" -v kw="${kw:-?}" -v need="$need" '
         /remark: Function Name: / { name = $(NF-1) }
         /remark:     VGPRs: / { v[name] = $(NF-1) }
         /remark:     AGPRs: / { g[name] = $(NF-1) }
@@ -230,17 +332,27 @@ case "$mode" in
         END {
           for (n in v) {
             if (n !~ /^pearl_amd_(fold|hash)/ || v[n] == 0) continue
-            printf "%-9s %-22s %6s %6s %8s %7s %8s %10s\n", arch, n, v[n], (n in g ? g[n] : "-"), s[n], sp[n] + ss[n], l[n], o[n]
+            printf "%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n", arch, n, v[n], (n in g ? g[n] : "-"), s[n], sp[n] + ss[n], l[n], o[n], kw
             if (s[n] + 0 > 0 || sp[n] + ss[n] > 0) bad = 1
           }
+          nf = split(need, f, " ")
+          for (i = 1; i <= nf; i++)
+            if (!(("pearl_amd_fold_" f[i]) in v) || v["pearl_amd_fold_" f[i]] == 0) {
+              print arch ": no body for pearl_amd_fold_" f[i] > "/dev/stderr"
+              bad += 2
+              break
+            }
           exit bad
-        }' "$log" | sort || bad=1
+        }' "$log" | sort || { rc=$?; [ $((rc & 1)) -eq 0 ] || bad=1; [ $((rc & 2)) -eq 0 ] || foldbad=1; }
     done
-    if [ "$bad" -ne 0 ]; then
-      echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
+    if [ "$bad" -ne 0 ] || [ "$wrapbad" -ne 0 ] || [ "$foldbad" -ne 0 ]; then
+      [ "$bad" -ne 0 ] && echo "check: a fold failed to compile, spills, or uses scratch memory" >&2
+      [ "$wrapbad" -ne 0 ] && echo "check: the wrap readout should be $where" >&2
+      [ "$foldbad" -ne 0 ] && echo "check: a target lacks the fold the host runs on it (folds_of in build-amd.sh)" >&2
       exit 1
     fi
-    echo "check: every fold compiled for $archs with no spills and no scratch"
+    echo "check: every fold compiled for $archs with no spills and no scratch$([ -z "${PEARL_AMD_CFLAGS:-}" ] \
+      && echo ", every target has its fold, and the wrap readout $where")"
     ;;
   *)
     sed -n '2,/^# The portable kernels/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'

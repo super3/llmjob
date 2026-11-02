@@ -6,6 +6,7 @@
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
 # BENCH_SET=amd runs the Radeon cards instead (our HIP core against SRBMiner), in one run or two lanes.
+# BENCH_SET=rtx reruns the RTX 20- to 50-series rows on Salad PCs, one lane a series.
 # `bench.py table [STATE...]` prints the set's whole table from its lanes' state files.
 import json, os, re, sys, time, importlib.util
 
@@ -14,18 +15,26 @@ _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "wa
 w = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(w)
 
-# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series) or "amd" (the Radeon cards). Each set has its own
-# state, status and log files, so the two runs never share a place in a plan.
+# BENCH_SET picks the cards: "gtx" (the GTX 10- and 16-series), "amd" (the Radeon cards) or "rtx" (the RTX 20- and
+# 30-series). Each set has its own state, status and log files, so two runs never share a place in a plan.
 SET = os.environ.get("BENCH_SET", "gtx")
-# BENCH_LANE ("a", "b" or "c", AMD set only) splits the set into runs that go at the same time, one Salad slot each.
-# Each lane has its own files and group names and takes its own classes. No lane: the whole set in one run.
-# The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
+# BENCH_LANE (AMD: "a", "b" or "c"; RTX: "20", "30", "40" or "50") splits the set into runs that go at the same time, one Salad
+# slot each. Each lane has its own files and group names and takes its own classes. No lane: the whole set in one
+# run. The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
 LANE = os.environ.get("BENCH_LANE", "")
-LANES = {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]}
+LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
+         "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
+                 "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
+                        "RTX 3060"],
+                 "40": ["RTX 4090", "RTX 4090D", "RTX 4080 Super", "RTX 4080", "RTX 4070 Ti Super", "RTX 4070 Ti",
+                        "RTX 4070 Super", "RTX 4070", "RTX 4060 Ti", "RTX 4060"],
+                 "50": ["RTX 5090", "RTX 5080", "RTX 5070 Ti", "RTX 5070", "RTX 5060 Ti", "RTX 5060"]}}.get(SET, {})
 NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
+# NVIDIA: every miner mines through sharetap.py, and each run ends with its shares decoded (bench.sh, TAP=1).
+TAP = os.environ.get("BENCH_TAP", "") == "1"
 # AMD set: the commit whose HIP core the boxes build (our miner there; the full SHA, which git fetch needs), and
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
@@ -33,6 +42,13 @@ VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
 # Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
 AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
+# Lanes share whatever Salad quota the watcher leaves. With room for one more box only, the lane that frees a
+# replica took it back within the minute and the other waited: on 28 October the RTX 20 lane waited 55 minutes
+# while the 30 lane ran three PCs. So a lane the quota turns away flags it in its own bench-<set>-<lane>.waiting.json
+# until its box gets a PC, and a lane about to start a new box leaves the freed replica to the lane that has waited
+# longest. A flag counts for TURN_MIN minutes after its lane's last refused try, so a lane that stopped holds no one
+# back.
+TURN_MIN = 3
 HOSTS = 2               # PCs per card, as in benchmark.md
 MAX_TRIES = 10          # boxes per class before moving on (the 1070/1080/1080 Ti class may not show all three)
 NO_PC_MIN = 30          # minutes to wait for a PC before moving on
@@ -74,10 +90,43 @@ if SET == "amd":
     # between them. 16-19 min plus the check in all; 40 plus the check leaves 20 min for the image to download.
     # 50 with the default 10-minute check.
     RUN_MIN = 40 + -(-VERIFY_SECS // 60)
+if SET == "rtx":
+    # benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with all three miners at their newest (bench.sh).
+    # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
+    # a 12 GB RTX 3060 class is run, as benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
+    PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
+            ("RTX 2070 (8 GB)", ["RTX 2070"], 300), ("RTX 2060 (6 GB)", ["RTX 2060"], 300),
+            ("RTX 3090 Ti (24 GB)", ["RTX 3090 Ti"], 300), ("RTX 3090 (24 GB)", ["RTX 3090"], 300),
+            ("RTX 3080 Ti (12 GB)", ["RTX 3080 Ti"], 300), ("RTX 3080 (10 GB)", ["RTX 3080"], 300),
+            ("RTX 3070 Ti (8 GB)", ["RTX 3070 Ti"], 300), ("RTX 3070 (8 GB)", ["RTX 3070"], 300),
+            ("RTX 3060 Ti (8 GB)", ["RTX 3060 Ti"], 300), ("RTX 3060 (12 GB)", ["RTX 3060"], 300),
+            # Salad has no 4090D, 4080 Super or 4070 Super class either (EXTRA), and its 4060 Ti and 5060 Ti come in
+            # 8 and 16 GB classes: the 16 GB ones had 4-6 times the PCs on 29 October.
+            ("RTX 4090 (24 GB)", ["RTX 4090"], 300), ("RTX 4080 (16 GB)", ["RTX 4080"], 300),
+            ("RTX 4070 Ti Super (16 GB)", ["RTX 4070 Ti Super"], 300), ("RTX 4070 Ti (12 GB)", ["RTX 4070 Ti"], 300),
+            ("RTX 4070 (12 GB)", ["RTX 4070"], 300), ("RTX 4060 Ti (16 GB)", ["RTX 4060 Ti"], 300),
+            ("RTX 4060 (8 GB)", ["RTX 4060"], 300),
+            ("RTX 5090 (32 GB)", ["RTX 5090"], 300), ("RTX 5080 (16 GB)", ["RTX 5080"], 300),
+            ("RTX 5070 Ti (16 GB)", ["RTX 5070 Ti"], 300), ("RTX 5070 (12 GB)", ["RTX 5070"], 300),
+            ("RTX 5060 Ti (16 GB)", ["RTX 5060 Ti"], 300), ("RTX 5060 (8 GB)", ["RTX 5060"], 300)]
+    EXTRA = {"RTX 2070 (8 GB)": ["RTX 2070 Super"], "RTX 2060 (6 GB)": ["RTX 2060 Super"],
+             "RTX 4090 (24 GB)": ["RTX 4090D"], "RTX 4080 (16 GB)": ["RTX 4080 Super"],
+             "RTX 4070 (12 GB)": ["RTX 4070 Super"]}
+    SECTIONS = [("RTX 20-series (on Salad)", LANES["20"]), ("RTX 30-series (on Salad)", LANES["30"]),
+                ("RTX 40-series (on Salad)", LANES["40"]), ("RTX 50-series (on Salad)", LANES["50"])]
+    MEM = {"RTX 2060": "6 GB", "RTX 3060": "12 GB", "RTX 4060 Ti": "16 GB", "RTX 5060 Ti": "16 GB"}
 ALL_SECTIONS = SECTIONS          # every row of the set, for `table`
-if SET == "amd" and LANE in LANES:
+if LANE in LANES:
     PLAN = [p for p in PLAN if p[1][0] in LANES[LANE]]
-    SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS]
+    # A section none of the lane's rows are in (RTX: the other series) isn't written at all.
+    SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS
+                if any(r in LANES[LANE] for r in rows)]
+# A probe rather than a table: BENCH_CLASSES (Salad class names, ";" between them, as some names hold commas) runs
+# only those classes of the set, and BENCH_HOSTS how many PCs per card (benchmark.md's 2 by default).
+ONLY = [c.strip() for c in os.environ.get("BENCH_CLASSES", "").split(";") if c.strip()]
+if ONLY:
+    PLAN = [p for p in PLAN if p[0] in ONLY]
+HOSTS = int(os.environ.get("BENCH_HOSTS") or HOSTS)
 
 
 def log(msg):
@@ -89,9 +138,10 @@ def log(msg):
 
 def row_for(card, rows):
     """The table row a card name is, the whole name without "NVIDIA GeForce" or "AMD Radeon", so neither
-    "GTX 1080 Ti" nor "GTX 1660 Ti" is read as the card without the Ti, nor "RX 7900 XTX" as "RX 7900 XT"."""
-    c = re.sub(r"^(NVIDIA\s+)?(GEFORCE\s+)?(AMD\s+)?(RADEON\s+)?", "", card.strip().upper())
-    return next((r for r in rows if r.upper() == c), None)
+    "GTX 1080 Ti" nor "GTX 1660 Ti" is read as the card without the Ti, nor "RX 7900 XTX" as "RX 7900 XT". Spaces don't
+    count: nvidia-smi calls the 4090D "RTX 4090 D"."""
+    c = re.sub(r"^(NVIDIA\s+)?(GEFORCE\s+)?(AMD\s+)?(RADEON\s+)?", "", card.strip().upper()).replace(" ", "")
+    return next((r for r in rows if r.upper().replace(" ", "") == c), None)
 
 
 def hit_check(body):
@@ -171,6 +221,12 @@ def figure(m, mean_after=None):
     if good and len(good) * 2 >= len(late):
         return (sum(good) / len(good) if mean_after is not None else good[-1]), None
     return None, ("didn't start" if m.get("exited") and not m.get("samples") else "no rate")
+
+
+def quota_refused(s, j):
+    """Salad's answer when the organization's container replicas are all in use ("created_replicas_quota_exceeded"
+    on a create, "replicas_quota_exceeded" on a start)."""
+    return s == 400 and "quota_exceeded" in str((j or {}).get("type", "") if isinstance(j, dict) else j)
 
 
 def cell(v, why):
@@ -262,11 +318,14 @@ class Bench:
         return all(len(self.st["results"].get(r, [])) >= HOSTS for r in rows)
 
     def order(self):
-        """Which miner goes first, and so gets the warm-up. GTX: by box. AMD: by how many PCs of the class are
-        recorded, so its two PCs take turns (each gets a group of its own, see move_on)."""
+        """Which miner goes first, and so gets the warm-up. GTX: by box. AMD and RTX: by how many PCs of the class
+        are recorded, so its two PCs take turns (each gets a group of its own, see move_on). RTX alternates ours
+        first and SRBMiner first, as benchmark.md's "How a host is tested" does."""
+        n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
         if SET == "amd":
-            n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
             return "ours,srb" if n % 2 == 0 else "srb,ours"
+        if SET == "rtx":
+            return "ours,peak,srb" if n % 2 == 0 else "srb,peak,ours"
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
@@ -279,9 +338,10 @@ class Bench:
                     f"curl -fsSL {url} -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o /root/amdtest.sh && "
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
                     f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+        tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
-                f"curl -fsSL {url} -o /root/bench.sh && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra} "
-                f"bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
+                f"{' TAP=1' if TAP else ''} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
 
     def create(self):
         cls, rows, ours = self.plan()
@@ -291,8 +351,9 @@ class Bench:
             self.next_class()
             return
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
-            w.slug(cls).replace("rtx", "gtx")
-        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}"[:60]
+            w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
+        bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
+        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
         cpu, mem = (4, 8192) if SET == "amd" else (2, 4096)
@@ -303,13 +364,57 @@ class Bench:
                                             "storage_amount": 10737418240},
                               "command": ["/bin/sh", "-c", self.command(ours, order)]}}
         s, j = w.http("POST", w.CB, body)
+        t = w.now()
+        if s == 400 and "name_conflict" in str(j):
+            # A create that errored can still have made the group: on 28 October Salad's gateway answered one with
+            # a 504 and made it. One we can see is ours, so it's watched rather than left billing. One Salad holds
+            # under the name but can't show or delete (404) is passed over with the next name; that one also held a
+            # replica of the quota, which only Salad can give back.
+            g, _ = w.http("GET", f"{w.CB}/{name}")
+            if 200 <= g < 300:
+                self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120,
+                               lines=[], order=order)
+                log(f"ADOPTED {name} ({cls}): a create that errored had made it")
+                return
+            self.st["bump"] = bump + 1
+            self.note(f"{name}: Salad has a group by that name that it can't show or delete (HTTP {g}); "
+                      "the next box takes another name")
+            return
         if not 200 <= s < 300:
             log(f"FAIL create {name}: HTTP {s} {str(j)[:200]}")
+            self.waiting(quota_refused(s, j))
             return
-        t = w.now()
+        # A lane's waiting flag stays until its box gets a PC: at 21:26 on 28 October the RTX 20 lane's create went
+        # through, Salad then stopped the box for want of a replica, and the RTX 30 lane, seeing no flag, took it.
         self.st.update(group=name, created=t, pc_t=None, machine=None, instance=None, log_t=t - 120, lines=[],
                        order=order)
         log(f"CREATED {name} ({cls}, high)")
+
+    def wait_file(self, lane):
+        return os.path.join(w.D, f"bench-{SET}-{lane}.waiting.json")
+
+    def waiting(self, on):
+        """Flag (or clear) that Salad's quota turned this lane away, for the set's other lanes (TURN_MIN)."""
+        self.st["waiting"] = bool(on)
+        if not LANE:
+            return
+        p = self.wait_file(LANE)
+        if on:
+            w.save(p, {"since": (w.load(p, None) or {}).get("since") or w.now(), "last": w.now()})
+        elif os.path.exists(p):
+            os.remove(p)
+
+    def ahead(self):
+        """The lane to leave a free replica to, or None: of the lanes the quota turned away in the last TURN_MIN
+        minutes, the one that has waited longest, unless that's this lane."""
+        t = w.now()
+        fresh = {}
+        for lane in LANES:
+            v = w.load(self.wait_file(lane), None)
+            if v and t - v.get("last", 0) <= TURN_MIN * MIN:
+                fresh[lane] = v
+        first = min(fresh, key=lambda lane: (fresh[lane].get("since", 0), lane), default=None)
+        return None if first == LANE else first
 
     def note(self, msg):
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
@@ -364,7 +469,7 @@ class Bench:
                 self.note(f"{cls}: stopped after {self.st['tries']} boxes with rows still empty")
             self.next_class()
             return
-        if SET == "amd" and why == "done":
+        if SET in ("amd", "rtx") and why == "done":
             # A moved instance keeps its group's command, so the next PC gets a new group: the other order.
             log(f"NEW GROUP for the next PC of {cls}, so the other miner goes first")
             self.delete()
@@ -413,6 +518,14 @@ class Bench:
             self.next_class()
             return True
         if not self.st["group"]:
+            other = self.ahead()
+            if other:
+                # The lane that has waited longest goes first; the others leave the freed replica to it.
+                if self.st.get("yielded") != other:
+                    log(f"YIELD to lane {other}: the quota turned it away, so it gets the next free replica")
+                self.st["yielded"] = other
+                return True
+            self.st["yielded"] = None
             self.create()
             return True
         t = w.now()
@@ -420,6 +533,8 @@ class Bench:
         insts = (j or {}).get("instances") or (j or {}).get("items") or [] if s == 200 else []
         on = [i for i in insts if i.get("machine_id") and i.get("state") in ("downloading", "creating", "running")]
         if on:
+            if self.st.get("waiting"):
+                self.waiting(False)
             m = on[0]["machine_id"]
             if m != self.st.get("machine"):
                 # A new PC, by our move or by Salad's own, which shows only as a new machine_id (README, "Salad API
@@ -432,11 +547,16 @@ class Bench:
                 if m in self.st["seen"]:
                     self.move_on(f"PC {m[:8]} was benchmarked already")
                     return True
-        elif not self.st.get("pc_t") and t - self.st.get("start_t", 0) >= 5 * MIN and self.stopped():
-            # Salad sometimes stops a new group before it gets a PC, as the watcher sees too. Start it again.
-            s, _ = w.http("POST", f"{w.CB}/{self.st['group']}/start")
+        elif not self.st.get("pc_t") and t - self.st.get("start_t", 0) >= MIN and self.stopped():
+            # Salad sometimes stops a new group before it gets a PC, as the watcher sees too. Start it again, every
+            # minute: until 28 October every 5, and a start the quota refused cost 5 minutes each time.
+            s, j = w.http("POST", f"{w.CB}/{self.st['group']}/start")
             self.st["start_t"] = t
             log(f"STARTED {self.st['group']} again: it was stopped with no PC (HTTP {s})")
+            if quota_refused(s, j):
+                # Held back by the quota, not by the class having no PC: that wait doesn't count to NO_PC_MIN.
+                self.st["created"] = t
+                self.waiting(True)
         elif not self.st.get("pc_t") and t - self.st["created"] >= NO_PC_MIN * MIN:
             self.note(f"{cls}: no PC at high in {NO_PC_MIN} min")
             self.next_class()
@@ -502,7 +622,9 @@ class Bench:
             return "All classes done." + (f" Waiting for Salad to remove {', '.join(left)}." if left else "")
         g = self.st.get("group")
         if not g:
-            return f"Next: {p[0]}."
+            if self.st.get("yielded"):
+                return f"Next: {p[0]}, once lane {self.st['yielded']} has its box (it was waiting for a replica)."
+            return f"Next: {p[0]}." + (" Salad's quota is full; trying every minute." if self.st.get("waiting") else "")
         if not self.st.get("machine"):
             return f"Now: {g} ({p[0]}, high) waiting for a PC since {time.strftime('%H:%M', time.gmtime(self.st['created']))}Z."
         return (f"Now: {g} on PC {self.st['machine'][:8]}" + (f" ({self.st.get('card')})" if self.st.get("card") else "")
@@ -524,8 +646,8 @@ class Bench:
         self.wallet = os.environ.get("PRL_WALLET") or w.load(w.CFG, {}).get("wallet", "")
         if not self.wallet.startswith("prl1") or not COMMIT:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
-        if LANE and (SET != "amd" or LANE not in LANES):
-            sys.exit(f"BENCH_LANE is one of {', '.join(LANES)}, and only with BENCH_SET=amd")
+        if LANE and LANE not in LANES:
+            sys.exit("BENCH_LANE is a, b or c with BENCH_SET=amd, or 20, 30, 40 or 50 with BENCH_SET=rtx")
         if SET == "amd" and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
@@ -547,8 +669,8 @@ class Bench:
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["table"]:
-        # Default: the set's lane files on AMD (bench-amd-a.json, bench-amd-b.json), else its own.
-        print(table(sys.argv[2:] or ([os.path.join(w.D, f"bench-{SET}-{x}.json") for x in LANES] if SET == "amd"
+        # Default: the set's lane files where it has lanes (bench-amd-a.json, bench-rtx-20.json, ...), else its own.
+        print(table(sys.argv[2:] or ([os.path.join(w.D, f"bench-{SET}-{x}.json") for x in LANES] if LANES
                                      else [STATE])))
     else:
         Bench().run()

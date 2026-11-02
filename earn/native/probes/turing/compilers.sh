@@ -9,7 +9,8 @@
 # complete probe" by default; "setup build" runs without a GPU. ONLY="base rul8" keeps just
 # those builds (to confirm a winner on a second card). Assumes an idle GPU 0 and the
 # nvidia/cuda:12.8.1-devel-ubuntu22.04 image (CUDA_HOME, default /usr/local/cuda, must
-# be CUDA 12.8.1, the toolkit CI builds with). About 35 minutes on a 2080 Ti.
+# be CUDA 12.8.1, the toolkit CI builds with, or the toolkit NVCC_VER names: nvtest.sh's
+# CUDA_VER=13.3 sets V13.3.73). About 35 minutes on a 2080 Ti.
 #
 # Why these builds. Built here first (2026-10-20), ptxas from CUDA 12.0, 12.2, 12.4,
 # 12.6, 12.8, 12.9, 13.0, 13.3 and 13.4, and cicc from 12.4 through 13.4, all give the
@@ -28,19 +29,57 @@
 # fold runs one block an SM at any register count above 128.
 #
 # Steps: bench.cu for every build in ROUNDS interleaved rounds (the order reverses each
-# round), hashrate.js on the fastest and on base in HR_ROUNDS interleaved rounds,
+# round), hashrate.js on the fastest (or HR_BEST) and on base in HR_ROUNDS interleaved rounds,
 # verify-hits.js (400 hits) on every build but base, every build's hit list against
-# base's (complete, below), then the driver probe: the
-# base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and from
-# ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
+# base's (complete, below), both without the timing-only builds (TIMING below), then the
+# driver probe: the base fold from ptxas 13.4, whose cubin has the CUDA 13 ELF format, and
+# from ptxas 12.9, packed into a 12.8 core, to see whether this card's driver loads them.
+#
+# Another architecture: GC (nvcc's -gencode flags, sm_75's by default) and FOLD (the
+# kernel that fold= hashes and the build line's regs= and spill= read,
+# pearl_tile_fold_wmma by default) race another card's fold with the same stages, as
+# tuning/salad/nvtest.sh does on RTX 30: GC="-gencode arch=compute_86,code=sm_86"
+# FOLD=pearl_tile_fold_tall, with VARIANTS_SPEC naming the builds. The second kernel
+# (rg=), the patch lists and the driver probe are sm_75's alone; on any other GC the
+# build line says rg=none and the probe stage is skipped.
+#
+# Every bench and hashrate round also reads the memory controller's use, the memory in
+# use and the memory clock (nvidia-smi's utilization.memory, memory.used, clocks.mem):
+# on Ampere the fold's DRAM traffic costs SM clock at the power limit.
+#
+# Race (stage "race", not in the default list): every build in one process, on this
+# card, taking turns of RACE_LEG seconds for RACE_SECS, with base as the reference
+# (probes/race.cu). Separate rounds wander 1.5-2.4% between runs; a race compares builds
+# seconds apart on the same clock, heat and power. RACE_AA=1 (the default) adds "aa", a
+# copy of base, whose figure is the race's own noise. Each build takes about 1.4 GB at
+# k 2048; A' and B' double with k, so on an 8 GB card race k 8192 with RACE_AA=0.
+#
+# k. A build with -DPEARL_FOLD_K=K in its flags mines only k K (pearl_host_submit refuses
+# any other), so every stage runs it at that k: the race as name=lib.so:K, hashrate and
+# verify with PEARL_PROFILE_K=K, bench's TH/s and the cycles' share of the peak scaled by
+# K. Every rate is MACs a second, so builds at different k compare. Their hit lists do not
+# (see "Completeness"). A salt at k 4096 is twice the work, and a race turn ends only on a
+# whole salt: on slow cards (RTX 20) use RACE_LEG=8 to 10. A build without the flag runs
+# exactly as before, at k 2048. Write the flag just so, once: bench.cu checks that the build
+# mines the k read from it, and the build fails if not (-D PEARL_FOLD_K=K, say).
+#
+# Multicast (stage "multicast", not in the default list): probes/multicast-probe.cu on this card, last of all
+# (see that stage below). Needs no build stage.
+#
+# SMI_EVERY=5 (nvtest.sh sets it; unset, none): while the race and hashrate stages run, a
+# line every 5 s with the SM clock, power draw and power limit, so a box can be labelled
+# clock-held (drawing under its limit) or power-capped (at it).
 set -u
 : "${SRC:?set SRC to the repo checkout}" "${OUT:?set OUT to a scratch directory}"
 STAGES=" ${STAGES:-setup build bench hashrate verify complete probe} "
 ROUNDS=${ROUNDS:-5}; BENCH_SECS=${BENCH_SECS:-20}
 HR_ROUNDS=${HR_ROUNDS:-3}; HR_SECS=${HR_SECS:-60}; VERIFY_SECS=${VERIFY_SECS:-90}
+RACE_SECS=${RACE_SECS:-600}; RACE_LEG=${RACE_LEG:-4}; RACE_WARM=${RACE_WARM:-1}; RACE_AA=${RACE_AA:-1}
 COMPLETE_SHAPES=${COMPLETE_SHAPES:-131072 2048 40;8192 32 300;8192 16 300;4096 16 300}
 COMPLETE_SECS=${COMPLETE_SECS:-600}
+SMI_EVERY=${SMI_EVERY:-0}
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}
+NVCC_VER=${NVCC_VER:-V12.8.93}
 NODE_VER=v22.22.0
 NATIVE=$SRC/earn/native
 T0=$(date +%s)
@@ -84,7 +123,29 @@ if [ -n "${ONLY:-}" ]; then
   for v in "${VARIANTS[@]}"; do case " $ONLY " in *" ${v%%|*} "*) keep+=("$v") ;; esac; done
   VARIANTS=("${keep[@]}")
 fi
-GC="-gencode arch=compute_75,code=sm_75"
+# Each build's k (see "k" above): -DPEARL_FOLD_K=K in its flags, as amd/test/sweep.sh reads
+# it. kof prints a build's k, 2048 without one. kset prints it only past 2048, so a k 2048
+# build's commands stay as they were.
+declare -A KOF=()
+for v in "${VARIANTS[@]}"; do
+  IFS='|' read -r name flags _ <<< "$v"
+  if [[ " $flags " =~ [[:space:]]-DPEARL_FOLD_K=([0-9]+)u?[[:space:]] ]]; then KOF[$name]=${BASH_REMATCH[1]}; fi
+done
+kof() { echo "${KOF[$1]:-2048}"; }
+kset() { [ "$(kof "$1")" = 2048 ] || kof "$1"; }
+# Timing-only builds (pearl_config.h: a tall-fold stub, the hasher's stamps, the TMA ring's
+# operand skip, or no transcript zeroing) refuse any target but zero, so verify-hits.js and
+# the hit lists (complete), which need a real one, skip them.
+declare -A TIMING=()
+for v in "${VARIANTS[@]}"; do
+  IFS='|' read -r name flags _ <<< "$v"
+  if [[ " $flags " =~ [[:space:]]-DPEARL_TALL_(STUB_SPIN|STUB_ALU|AB_SKIP|HASHCYC|TR_NOZERO)(=0*[1-9][0-9]*)?[[:space:]] ]]; then
+    TIMING[$name]=1
+  fi
+done
+GC=${GC:-"-gencode arch=compute_75,code=sm_75"}
+SM=$(printf '%s' "$GC" | grep -oE 'sm_[0-9]+' | tail -1 | cut -d_ -f2)
+FOLD=${FOLD:-pearl_tile_fold_wmma}
 COMMON="-O3 -std=c++17 -cudart static -Xcompiler -fPIC $GC"
 
 # Hash each kernel's machine code in the cubins given: "<kernel> <md5[:12]>".
@@ -102,14 +163,14 @@ for p in sys.argv[1:]:
             print(n[6:], hashlib.md5(b[h[4]:h[4] + h[5]]).hexdigest()[:12])
 EOF
 
-fold_hash() {   # $1 = an object, .node or cubin; prints the sm_75 fold's code hash
+fold_hash() {   # $1 = an object, .node or cubin; prints the fold's (FOLD's) code hash
   local d; d=$(mktemp -d "$OUT/x.XXXX")
   case "$1" in
     *.cubin) cp "$1" "$d/" ;;
     *) (cd "$d" && cuobjdump -xelf all "$1" > /dev/null 2>&1) ;;
   esac
-  # Every sm_75 image (the addon also carries pearl_host.cu's); the fold is in one.
-  python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk '$1 == "pearl_tile_fold_wmma" {print $2; exit}'
+  # Every image (the addon also carries pearl_host.cu's); the fold is in one.
+  python3 "$OUT/texthash.py" "$d"/*.cubin 2>/dev/null | awk -v f="$FOLD" '$1 == f {print $2; exit}'
   rm -rf "$d"
 }
 rg_hash() {   # $1 = an object or .node; the second sm_75 kernel's code hash (PEARL_BD_RG_KERNEL)
@@ -146,10 +207,15 @@ fi
 
 nv=$(nvcc --version 2>/dev/null | grep -oE 'V[0-9.]+' | tail -1)
 say "start $(date -u +%FT%TZ) commit $(git -C "$SRC" rev-parse --short HEAD 2>/dev/null) nvcc $nv node $(node --version 2>/dev/null) stages:$STAGES"
-[ "$nv" = V12.8.93 ] || say "WARN: nvcc $nv is not CI's 12.8.93; the expected fold hashes will not match"
+# The expected fold hashes above are 12.8.93's, so under another toolkit they cannot match.
+if [ "$NVCC_VER" = V12.8.93 ]; then
+  [ "$nv" = V12.8.93 ] || say "WARN: nvcc $nv is not CI's 12.8.93; the expected fold hashes will not match"
+else
+  [ "$nv" = "$NVCC_VER" ] || say "WARN: nvcc $nv is not the $NVCC_VER asked for (NVCC_VER)"
+fi
 if command -v nvidia-smi > /dev/null && nvidia-smi -i 0 > /dev/null 2>&1; then
   say "card $(nvidia-smi -i 0 --query-gpu=name,driver_version,compute_cap,power.limit,power.default_limit,clocks.max.sm,clocks.max.mem,memory.total --format=csv,noheader)"
-  q=clocks.sm,clocks.mem,power.draw,temperature.gpu,pstate,utilization.gpu
+  q=clocks.sm,clocks.mem,power.draw,temperature.gpu,pstate,utilization.gpu,utilization.memory,memory.used
   say "card now $(nvidia-smi -i 0 --query-gpu=$q,clocks_event_reasons.active --format=csv,noheader 2> /dev/null ||
     nvidia-smi -i 0 --query-gpu=$q --format=csv,noheader) gpus=$(nvidia-smi -L | wc -l)"
   DRIVER=$(nvidia-smi -i 0 --query-gpu=driver_version --format=csv,noheader | tr -d ' ')
@@ -214,16 +280,24 @@ build_variant() {   # name flags expect [patch list]
   (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) ||
     { say "build $name FAIL: node-gyp: $(grep -m2 -iE 'error' "$K/gyp.log" | tr '\n' ' ')"; return 1; }
-  nvcc -O3 -std=c++17 -cudart static $GC -I"$K/src" "$NATIVE/probes/bench.cu" \
+  # bench.cu with the build's flags too: -DPEARL_TALL_CYC has it print the fold's cycles a tile.
+  # PEARL_BENCH_K: the build fails unless it mines the k kof read from its flags (see "k").
+  # shellcheck disable=SC2086
+  nvcc -O3 -std=c++17 -cudart static $GC $flags -DPEARL_BENCH_K="$(kof "$name")" -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
-  local st h rst rg runs
-  st=$(awk '/Compiling entry function .pearl_tile_fold_wmma. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
+  # The same two objects as a library for the race stage. -Bsymbolic: its calls stay
+  # inside it when other builds with the same symbols are loaded beside it.
+  nvcc -shared -cudart static -Xlinker -Bsymbolic -o "$K/libpearl.so" "$K/cuda-build/pearl_kernel.o" \
+    "$K/cuda-build/pearl_host.o" > "$K/so-build.txt" 2>&1 ||
+    { rm -f "$K/libpearl.so"; say "build $name WARN: libpearl.so: $(grep -m1 -i error "$K/so-build.txt")"; }
+  local st h rst rg="" runs
+  st=$(awk "/Compiling entry function .$FOLD. for .sm_$SM./{f=1;next} f&&/Compiling entry/{f=0} f" "$K/ptxas.txt" | tr '\n' ' ')
   # The second sm_75 kernel, which the host runs on cards with 4 MB of L2 or more
   # (PEARL_BD_RG_KERNEL): its code hash, registers and spill, or rg=none in a build
   # without it. The patch, the expect check and fold.hash stay on the first.
   rst=$(awk '/Compiling entry function .pearl_tile_fold_wmma_rg. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' "$K/ptxas.txt" | tr '\n' ' ')
-  rg=$(rg_hash "$K/build/Release/pearl_core.node")
+  [ "$SM" = 75 ] && rg=$(rg_hash "$K/build/Release/pearl_core.node")
   if [ -n "$rg" ]; then
     rg="rg=$rg rg_regs=$(echo "$rst" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+') rg_spill=$(echo "$rst" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')/$(echo "$rst" | grep -oE '[0-9]+ bytes spill loads' | grep -oE '^[0-9]+')"
   else
@@ -262,13 +336,62 @@ for v in "${VARIANTS[@]}"; do
   [ -f "$OUT/v/$name/ok" ] && BUILT+=("$name")
 done
 
+# The card's SM clock, power draw and power limit every SMI_EVERY seconds while a stage runs
+# (see SMI_EVERY at the top), as "smi <stage> 1845 MHz 349.12/350.00 W". Off at 0. A stop
+# lets a line being written finish, so none comes after the stage, and leaves no sleep behind.
+# The query runs in the background like the sleep, so a stop ends at once even when
+# nvidia-smi hangs (bash holds a trap until a foreground command returns).
+smi_start() {   # $1 = the stage
+  SMI_PID=""
+  [ "${SMI_EVERY:-0}" != 0 ] || return 0
+  (
+    trap '[ -z "${!:-}" ] || kill "$!" 2> /dev/null; exit 0' TERM
+    while :; do
+      nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit --format=csv,noheader,nounits > "$OUT/smi.$1" 2> /dev/null &
+      wait $!
+      say "smi $1 $(head -1 "$OUT/smi.$1" | awk -F', *' '{printf "%s MHz %s/%s W", $1, $2, $3}')"
+      sleep "$SMI_EVERY" > /dev/null & wait $! || break
+    done
+  ) &
+  SMI_PID=$!
+}
+smi_stop() { [ -z "${SMI_PID:-}" ] || { kill "$SMI_PID" 2> /dev/null; wait "$SMI_PID" 2> /dev/null; }; SMI_PID=""; }
+
+# The race (see "Race" at the top): base first, then aa (a copy of base's library under
+# another path, which dlopen loads again), then the other builds. A build past k 2048 is
+# named lib.so:K (see "k" at the top).
+if has race && [ -f "$OUT/v/base/libpearl.so" ]; then
+  if ! nvcc -O2 -std=c++17 -I"$NATIVE/src" "$NATIVE/probes/race.cu" -o "$OUT/race" -ldl -lpthread > "$OUT/race-build.txt" 2>&1; then
+    say "race FAIL: build: $(grep -m1 -i error "$OUT/race-build.txt")"
+  else
+    k=$(kset base)
+    arms=("base=$OUT/v/base/libpearl.so${k:+:$k}")
+    if [ "$RACE_AA" = 1 ]; then
+      cp "$OUT/v/base/libpearl.so" "$OUT/v/base/libpearl-aa.so" && arms+=("aa=$OUT/v/base/libpearl-aa.so${k:+:$k}")
+    fi
+    for name in "${BUILT[@]}"; do
+      [ "$name" = base ] && continue
+      k=$(kset "$name")
+      if [ -f "$OUT/v/$name/libpearl.so" ]; then arms+=("$name=$OUT/v/$name/libpearl.so${k:+:$k}")
+      else say "race: $name has no libpearl.so, left out"; fi
+    done
+    say "race: ${#arms[@]} builds, ${RACE_SECS} s, turns of ${RACE_LEG} s after ${RACE_WARM} s warm"
+    smi_start race
+    timeout -k 10 $((RACE_SECS + 600)) "$OUT/race" "$RACE_SECS" "$RACE_LEG" "$RACE_WARM" "${arms[@]}" 2>&1 |
+      tee "$OUT/race.log" | while IFS= read -r l; do say "race $l"; done
+    smi_stop
+  fi
+fi
+
 # Median SM clock, power and temperature of the samples taken while the timed part ran,
 # and the mean SM clock: these cards clock in 15 MHz steps, so the median of a round's
-# 18 samples moves a whole step at a time, and the mean resolves finer.
+# 18 samples moves a whole step at a time, and the mean resolves finer. Then the medians
+# of the memory controller's use (%), the memory in use (MiB) and the memory clock, or
+# "-" where the card gave none.
 cat > "$OUT/med.py" <<'EOF'
 import statistics, sys
 f, t0, t1 = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-rows = []
+rows, mem = [], []
 for line in open(f):
     p = [x.strip() for x in line.split(",")]
     try:
@@ -277,14 +400,24 @@ for line in open(f):
         continue
     if t0 <= t <= t1:
         rows.append(v)
+        m = []
+        for x in p[4:7]:
+            try:
+                m.append(float(x))
+            except Exception:
+                m.append(None)
+        mem.append(m + [None] * (3 - len(m)))
 if not rows:
-    print("0 0 0 0 0"); sys.exit()
+    print("0 0 0 0 0 - - -"); sys.exit()
+def mm(i):
+    xs = [m[i] for m in mem if m[i] is not None]
+    return round(statistics.median(xs)) if xs else "-"
 print(len(rows), *[round(statistics.median(r[i] for r in rows), 1) for i in range(3)],
-      round(statistics.mean(r[0] for r in rows), 1))
+      round(statistics.mean(r[0] for r in rows), 1), mm(0), mm(1), mm(2))
 EOF
 sampler() {   # $1 = file; one sample a second until killed
   while :; do
-    printf '%s,%s\n' "$(date +%s.%N)" "$(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,temperature.gpu --format=csv,noheader,nounits)" >> "$1"
+    printf '%s,%s\n' "$(date +%s.%N)" "$(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,temperature.gpu,utilization.memory,memory.used,clocks.mem --format=csv,noheader,nounits)" >> "$1"
     sleep 1
   done
 }
@@ -305,18 +438,31 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
       if [ -z "$att" ] || [ -z "$secs" ]; then
         say "bench r$r $name FAIL: $(tail -2 "$K/bench.r$r" | tr '\n' ' ')"; continue
       fi
-      th=$(python3 -c "print(round($att * 256 * 2048 / $secs / 1e12, 3))")
-      read -r n mhz w c mean < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
+      # MACs a second: an attempt is a region, 256 x k MACs at the build's k.
+      th=$(python3 -c "print(round($att * 256 * $(kof "$name") / $secs / 1e12, 3))")
+      read -r n mhz w c mean mc mu mclk < <(python3 "$OUT/med.py" "$S" "$(python3 -c "print($t1 - $secs + 1)")" "$t1")
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" >> "$OUT/bench.tsv"
+      # A -DPEARL_TALL_CYC build's cycles a tile (bench.cu prints them), or "-".
+      cyc=$(grep -oE 'cycles a tile [0-9]+' "$K/bench.r$r" | tail -1 | grep -oE '[0-9]+$')
+      # A -DPEARL_TALL_HASHCYC=1 build's hasher cycles from the hand-off, median/p90, to the
+      # hash's end and to its release (bench.cu prints them), for the line below only.
+      hcyc=$(grep -oE 'hash [0-9]+/[0-9]+ release [0-9]+/[0-9]+' "$K/bench.r$r" | tail -1)
+      # Column 13, for a build past k 2048 only: its k, which scales sum.py's share of the peak.
+      kcol="" k=$(kset "$name"); [ -z "$k" ] || kcol=$'\t'$k
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" "$mc" "$mu" "$mclk" "${cyc:--}" "$kcol" >> "$OUT/bench.tsv"
       [ "$r" = 1 ] && say "bench $name runs $(grep -oE 'fold: [^|]*' "$K/bench.r$r" | head -1)"
-      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz (n=$n)"
+      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz${cyc:+ cyc $cyc}${hcyc:+ hcyc [$hcyc]}${k:+ k $k} (n=$n)"
     done
   done
   # Per build: medians over rounds, and against base in the same round. The mean clock
   # beside the median is the mean of the rounds' mean clocks: bench.tsv's 8th column, or
   # hashrate.tsv's clock, which hashrate.js already averages. A round with no clock
   # reading writes 0, which the mean leaves out: one such round would pull it far down.
+  # Columns 9 to 11, where there are any, are the memory readings: the medians of the
+  # rounds' memory-controller use and memory in use ("-" where a round had none). Column
+  # 12, a -DPEARL_TALL_CYC build's cycles a tile: their median, and its share of the peak,
+  # where a tile takes 48 x k cycles (98304 at k 2048, as bench.cu counts it). Column 13, a
+  # build's k where it is past 2048.
   cat > "$OUT/sum.py" <<'EOF'
 import statistics as st, sys
 rows = [l.rstrip("\n").split("\t") for l in open(sys.argv[1]) if l.strip()]
@@ -327,6 +473,28 @@ for r in rows:
                                          float(r[7]) if len(r) > 7 else float(r[3]))
 base = by.get("base", {})
 best, bestv = None, None
+def num(x):
+    try:
+        return float(x)
+    except ValueError:
+        return None
+mem, cyc, kof = {}, {}, {}
+for r in rows:
+    if len(r) > 9:
+        mem.setdefault(r[1], []).append((num(r[8]), num(r[9])))
+    if len(r) > 11 and num(r[11]):
+        cyc.setdefault(r[1], []).append(num(r[11]))
+    if len(r) > 12 and num(r[12]):
+        kof[r[1]] = int(num(r[12]))
+def memtxt(name):
+    ms = mem.get(name) or []
+    mc = [m[0] for m in ms if m[0] is not None]; mu = [m[1] for m in ms if m[1] is not None]
+    t = ""
+    if mc or mu:
+        t = (f" mem {st.median(mc):.0f}%" if mc else " mem -%") + (f" {st.median(mu):.0f} MiB" if mu else "")
+    if cyc.get(name):
+        t += f" cyc {st.median(cyc[name]):.0f} ({48 * kof.get(name, 2048) / st.median(cyc[name]) * 100:.2f}%)"
+    return t
 for name, d in by.items():
     th = [v[0] for v in d.values()]; mhz = [v[1] for v in d.values()]; w = [v[2] for v in d.values()]
     pg = [v[3] for v in d.values()]; clk = [v[4] for v in d.values() if v[4]] or [0]
@@ -340,42 +508,55 @@ for name, d in by.items():
             best, bestv = name, st.median(raw)
     print(f"[compilers] {tag} {name} n={len(th)} {st.median(th):.3f} TH/s ({min(th):.2f}-{max(th):.2f}) "
           f"{st.median(mhz):.0f} MHz (mean {st.mean(clk):.0f}) {st.median(w):.0f} W "
-          f"{st.median(pg):.3f} TH/s/GHz{vs}"[:490])
+          f"{st.median(pg):.3f} TH/s/GHz{memtxt(name)}{vs}"[:490])
 if best:
     open(sys.argv[3], "w").write(best)
 EOF
   python3 "$OUT/sum.py" "$OUT/bench.tsv" bench-sum "$OUT/best"
 fi
 
-if has hashrate && [ -f "$OUT/best" ] && [ -f "$OUT/v/base/ok" ]; then
-  best=$(cat "$OUT/best")
+# HR_BEST names the build to race against base instead (when the fastest in the bench
+# is an ablation, whose rate means nothing to the miner).
+if has hashrate && { [ -n "${HR_BEST:-}" ] || [ -f "$OUT/best" ]; } && [ -f "$OUT/v/base/ok" ]; then
+  best=${HR_BEST:-$(cat "$OUT/best")}
   say "hashrate: base against $best, $HR_ROUNDS rounds of ${HR_SECS} s"
   : > "$OUT/hashrate.tsv"
+  smi_start hashrate
   for r in $(seq 1 "$HR_ROUNDS"); do
     pair=(base "$best"); [ $((r % 2)) = 0 ] && pair=("$best" base)
     for name in "${pair[@]}"; do
-      j=$(cd "$SRC/earn" && timeout -k 10 $((HR_SECS + 120)) node native/probes/hashrate.js "$OUT/v/$name/build/Release/pearl_core.node" "$HR_SECS" 10 2>&1 | grep '^{' | tail -1)
+      # A build past k 2048 at its own k (see "k" at the top); hashrate.js then skips cardK.
+      k=$(kset "$name")
+      j=$(cd "$SRC/earn" && timeout -k 10 $((HR_SECS + 120)) ${k:+env PEARL_PROFILE_K=$k} node native/probes/hashrate.js "$OUT/v/$name/build/Release/pearl_core.node" "$HR_SECS" 10 2>&1 | grep '^{' | tail -1)
       th=$(echo "$j" | grep -oE '"th":[0-9.]+' | cut -d: -f2)
       mhz=$(echo "$j" | grep -oE '"mhz":[0-9.]+' | cut -d: -f2)
       w=$(echo "$j" | grep -oE '"watts":[0-9.]+' | cut -d: -f2)
       c=$(echo "$j" | grep -oE '"tempC":[0-9.]+' | cut -d: -f2)
+      mc=$(echo "$j" | grep -oE '"memUtil":[0-9.]+' | cut -d: -f2)
+      mu=$(echo "$j" | grep -oE '"memUsedMb":[0-9.]+' | cut -d: -f2)
+      mclk=$(echo "$j" | grep -oE '"memMhz":[0-9.]+' | cut -d: -f2)
       mhz=${mhz:-0}
       if [ -z "$th" ]; then say "hashrate r$r $name FAIL: $j"; continue; fi
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if '$mhz' and $mhz else 0)")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" >> "$OUT/hashrate.tsv"
-      say "hashrate r$r $name $th TH/s sd=$(echo "$j" | grep -oE '"sd":[0-9.]+' | cut -d: -f2) ${mhz} MHz ${w} W ${c} C $pg TH/s/GHz"
+      # The 8th column is the clock again (hashrate.js's is already a mean), so the memory
+      # readings sit where bench.tsv's do.
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mhz" "${mc:--}" "${mu:--}" "${mclk:--}" >> "$OUT/hashrate.tsv"
+      say "hashrate r$r $name $th TH/s sd=$(echo "$j" | grep -oE '"sd":[0-9.]+' | cut -d: -f2) ${mhz} MHz ${w} W ${c} C $pg TH/s/GHz mem ${mc:--}% ${mu:--} MiB ${mclk:--} MHz${k:+ k $k}"
     done
   done
+  smi_stop
   python3 "$OUT/sum.py" "$OUT/hashrate.tsv" hashrate-sum "$OUT/best-hr"
 fi
 
 if has verify; then
   for name in "${BUILT[@]}"; do
     [ "$name" = base ] && continue
-    out=$(cd "$SRC/earn" && timeout -k 10 $((VERIFY_SECS + 120)) node native/probes/verify-hits.js "$OUT/v/$name/build/Release/pearl_core.node" "$VERIFY_SECS" 2>&1)
+    if [ -n "${TIMING[$name]:-}" ]; then say "verify $name skipped: a timing-only build refuses any target but zero"; continue; fi
+    k=$(kset "$name")
+    out=$(cd "$SRC/earn" && timeout -k 10 $((VERIFY_SECS + 120)) ${k:+env PEARL_PROFILE_K=$k} node native/probes/verify-hits.js "$OUT/v/$name/build/Release/pearl_core.node" "$VERIFY_SECS" 2>&1)
     j=$(echo "$out" | grep '^{' | tail -1)
     if [ -z "$j" ]; then say "verify $name FAIL: no result: $(echo "$out" | tail -3 | tr '\n' ' ')"; continue; fi
-    say "verify $name $(echo "$j" | grep -oE '"(hits|verified|failed|salts|PASS)":[a-z0-9]+' | tr '\n' ' ')$(echo "$j" | grep -q '"PASS":true' || echo " FAILS: $(echo "$j" | grep -oE '"fails":.*' | cut -c1-300)")"
+    say "verify $name${k:+ k $k} $(echo "$j" | grep -oE '"(hits|verified|failed|salts|PASS)":[a-z0-9]+' | tr '\n' ' ')$(echo "$j" | grep -q '"PASS":true' || echo " FAILS: $(echo "$j" | grep -oE '"fails":.*' | cut -c1-300)")"
   done
 fi
 
@@ -389,25 +570,43 @@ fi
 # block has one, two or a few on any RTX 20 card (30 to 72 blocks): a persistent
 # block's first and last hand-offs. Each build's lines must match base's, batch for
 # batch; an ablation build (output meaningless) fails. A run stops after COMPLETE_SECS.
+# A timing-only build (TIMING above) refuses the lists' target, so it is left out, with
+# one line saying so.
+# The lines only line up between builds that search the same batch width: on RTX 30 a
+# shape's col_batch at or below every build's PEARL_AMPERE_COL_BATCH (the narrower
+# wins), such as "131072 128 160" for builds at 128 and 512. A wider shape fails a
+# narrower build that finds the same hits (31 October, RTX 3090).
+# Nor do they line up across k: k is in config52, so the job key differs, and the operands
+# are m x k, so every hash and every hit differs. Each build is held to the first build of
+# its own k (base, for k 2048), which is that k's reference. A k with one build has nothing
+# to match; verify-hits.js, at its k, is its check.
 if has complete && [ -f "$OUT/v/base/ok" ]; then
   IFS=';' read -r -a shapes <<< "$COMPLETE_SHAPES"
   order=(base)
-  for name in "${BUILT[@]}"; do [ "$name" = base ] || order+=("$name"); done
+  for name in "${BUILT[@]}"; do
+    [ "$name" = base ] && continue
+    if [ -n "${TIMING[$name]:-}" ]; then say "complete $name skipped: a timing-only build refuses any target but zero"; continue; fi
+    order+=("$name")
+  done
+  declare -A REF=()
+  for name in "${order[@]}"; do k=$(kof "$name"); [ -n "${REF[$k]:-}" ] || REF[$k]=$name; done
   for sh in "${shapes[@]}"; do
     read -r m cb nb <<< "$sh"
-    tag=m$m-cb$cb; B=$OUT/v/base/hitlist.$tag
+    tag=m$m-cb$cb
     for name in "${order[@]}"; do
-      f=$OUT/v/$name/hitlist.$tag
+      f=$OUT/v/$name/hitlist.$tag; k=$(kof "$name"); B=$OUT/v/${REF[$k]}/hitlist.$tag
       PEARL_HITLIST=$nb timeout -k 10 "$COMPLETE_SECS" "$OUT/v/$name/bench" 0 "$m" "$cb" > "$f" 2>&1
       sum=$(grep '^hitlist ' "$f" | tail -1)
       if [ -z "$sum" ] || [[ "$sum" == *FAIL* ]]; then
         say "complete $tag $name FAIL: $(tail -2 "$f" | tr '\n' ' ')"; continue
       fi
       if [ "$name" = base ]; then say "complete $tag base ${sum#hitlist }"; continue; fi
+      if [ "$name" = "${REF[$k]}" ]; then say "complete $tag $name ${sum#hitlist } (the reference for k $k)"; continue; fi
+      vs=""; [ "${REF[$k]}" = base ] || vs=" against ${REF[$k]}"
       if cmp -s <(grep '^HL ' "$B") <(grep '^HL ' "$f"); then
-        say "complete $tag $name PASS ${sum#hitlist }"
+        say "complete $tag $name PASS$vs ${sum#hitlist }"
       else
-        say "complete $tag $name FAIL ${sum#hitlist }, first difference: $(diff <(grep '^HL ' "$B") <(grep '^HL ' "$f") | grep -m2 '^[<>]' | tr '\n' ' ')"
+        say "complete $tag $name FAIL$vs ${sum#hitlist }, first difference: $(diff <(grep '^HL ' "$B") <(grep '^HL ' "$f") | grep -m2 '^[<>]' | tr '\n' ' ')"
       fi
     done
   done
@@ -416,7 +615,7 @@ fi
 # Driver probe: does this driver load an sm_75 cubin from a newer ptxas inside the 12.8
 # core? 13.x cubins use a new ELF format (OS ABI 0x41, ABI version 8, the architecture
 # moved within e_flags); 12.9's keep the old one. The fold's code is the same either way.
-if has probe && [ -f "$OUT/v/base/ok" ]; then
+if has probe && [ -f "$OUT/v/base/ok" ] && [ "$SM" = 75 ]; then
   P=$OUT/probe; mkdir -p "$P/keep"
   R=https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvcc/linux-x86_64
   nvcc $COMMON --keep --keep-dir "$P/keep" -c "$NATIVE/src/pearl_kernel.cu" -o "$P/pearl_kernel.o" > "$P/log" 2>&1 &&
@@ -457,5 +656,25 @@ if has probe && [ -f "$OUT/v/base/ok" ]; then
     else res="does not run: $(echo "$out" | grep -oE '(error|Error)[^{}]{0,200}' | head -1 | sed 's/ \{2,\}at .*//')"; fi
     say "probe ptxas $ver cubin $abi fold=$fh in-node=$inside driver $DRIVER: $res"
   done
+fi
+
+# Multicast probe (stage "multicast", not in the default list; sm_90 and newer): probes/multicast-probe.cu,
+# the TMA fold's B' feed in clusters of two without the mma, which prices what TMA multicast saves and shows
+# whether the cluster build's barriers hang (see its header). Its own build, with GC; MC_SECS seconds an arm a
+# round (6), MC_ROUNDS rounds (3), MC_PACE cycles a stage (3240), under a timeout of MC_TIMEOUT seconds (900).
+# Every line it prints goes out as "multicast ...", then multicast-read.js's reading. About 4 minutes. Last,
+# so a card that the probe leaves stuck has raced already.
+if has multicast; then
+  if [ "${SM:-0}" -lt 90 ]; then
+    say "multicast: skipped, sm_$SM has no clusters"
+  elif ! nvcc -O3 -std=c++17 $GC "$NATIVE/probes/multicast-probe.cu" -o "$OUT/multicast-probe" -ldl -lpthread \
+      > "$OUT/multicast-build.txt" 2>&1; then
+    say "multicast FAIL: build: $(grep -m2 -iE 'error' "$OUT/multicast-build.txt" | tr '\n' ' ')"
+  else
+    timeout -k 10 "${MC_TIMEOUT:-900}" "$OUT/multicast-probe" "${MC_SECS:-6}" "${MC_ROUNDS:-3}" "${MC_PACE:-3240}" 2>&1 |
+      tee "$OUT/multicast.log" | while IFS= read -r l; do say "multicast $l"; done
+    say "multicast exit ${PIPESTATUS[0]}"
+    node "$NATIVE/probes/multicast-read.js" "$OUT/multicast.log" 2>&1 | while IFS= read -r l; do say "multicast $l"; done
+  fi
 fi
 say "done in $(( ($(date +%s) - T0) / 60 )) min"

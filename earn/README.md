@@ -281,14 +281,28 @@ has no fallback:
 It has code for RDNA 2, 3 and 4 Radeon cards and, on Linux, CDNA Instinct cards
 (gfx908, gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151,
 gfx1200, gfx1201). On Salad it beat SRBMiner on every Radeon class rented there,
-the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). It has not run
-on an Instinct card. On Instinct (gfx9) and RX 6000 (gfx103x) cards the
-core refuses to mine until you set `PEARL_AMD_UNTESTED=1`: its folds for those
-cards have run only in emulation, and if one is wrong on the card every share
-is rejected, which a pool can ban the address for. Run the checks in
-`native/amd/README.md` ("Testing on real hardware") first. Card temperatures and VRAM stay empty on AMD, and
+the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). Its folds for
+Instinct (gfx9) and RX 6000 (gfx103x) cards have not run on such a card (the
+RX 6000 one, which uses `v_dot4` since RDNA 2 has no matrix instructions, has
+run only on an RX 7800 XT and in emulation). A fold that is wrong on the card
+makes every share wrong, and a pool can ban the address for that, so on those
+cards the miner checks every hit as the pool would before sending it (about 5
+ms a share), and stops the card at the first wrong one without sending it.
+`PEARL_AMD_UNTESTED=1`, which v0.6.8 and v0.6.9 asked RX 6000 owners to set
+to mine, does not turn the check off. Card temperatures and VRAM stay empty on AMD, and
 one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
 "Using it in the app").
+
+On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a
+share declares, where every other card mines k 2048. On Windows every card mines k 2048 for
+now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
+no Windows Radeon has tested it. Their fold measured about 1% faster per MAC
+there (`benchmark.md`), and a MAC earns the same at either k. The log names it:
+`mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
+a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too
+little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why, and
+`PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
+none, the miner mines k 2048 for the rest of the run.
 
 ## Monero on the CPU (opt-in)
 

@@ -13,6 +13,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
+| `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
 
 ## Measured
 
@@ -955,6 +956,40 @@ out of the fold.
   compute the same hashes print the same lines. It catches what `verify-hits.js` cannot:
   a build that drops hits. `turing/compilers.sh` runs it on every build against base
   (stage `complete`).
+- `bench.exe <secs>` built with `-DPEARL_TALL_CYC` (bench.cu and the kernel both) -- also
+  the tall fold's cycles a tile in steady state and its share of the tensor peak a clock
+  (ideal 98,304), from `clock64` in the fold. It needs no performance counters, so it
+  prices a change per clock on Salad and Vast, where the clock moves with power. The cp.async
+  ring only (sm_86 and sm_89); see `pearl_tall_cyc` for the RTX 4090's readings.
+  Built on Windows: `nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 -I ../src
+  -DPEARL_TALL_CYC bench.cu ../src/pearl_kernel.cu ../src/pearl_host.cu -o bench.exe`
+  from an MSVC (vcvars64) shell.
+- `race <secs> <leg secs> <warm secs> base=libA.so name=libB.so ...` (built from
+  `race.cu`, Linux only) -- two or more builds in one process, on one card, taking turns
+  of a few seconds, each scored against base's turn in the same round. Separate runs
+  wander 1.5-2.4% between rounds; here the builds share the clock, heat and power, so a
+  0.3-1% change can be told from noise. Each library is a build's `pearl_kernel.o` and
+  `pearl_host.o` linked `-shared -cudart static -Xlinker -Bsymbolic`;
+  `turing/compilers.sh` makes them and runs it (stage `race`), with a copy of base as an
+  A/A control. `name=lib.so:4096` races a `-DPEARL_FOLD_K=4096` build at its own k, with
+  its own profile and DAF, so its rate is still MACs a second; without `:K` a build runs
+  at k 2048.
+- `hashrate.js` and `verify-hits.js` open the core as the app does, with `cardK`: a core may
+  mine a larger k on its card than the mainnet profile's (an RDNA 4 card mines k 4096), and
+  both report and use the k it mines (`core.k`). `PEARL_PROFILE_K=K` pins the core to k K
+  instead. `PEARL_JOB_EVERY=secs` on `hashrate.js` gives the core a new job every secs
+  seconds, so the rate pays for job switches, which cost more at a larger k.
+  `PEARL_SHARE_DUMP=file` on `verify-hits.js` writes each hit that passes as a share, for
+  `refverify.rs`.
+- `node verify-pool.js serve PORT SECS` -- a stand-in pool for the app's CLI that checks every
+  share the way the spec's `verify_plain_proof` does, in JS. `node verify-pool.js mixed
+  <core.node> SECS [bits | pool]` runs PearlMiner with two cores on one card, one with
+  `cardK` and one without, so an RDNA 4 card sends k 4096 and k 2048 shares over one pool
+  connection, to the stand-in or to the live pool in `POOL`.
+- `refverify.rs` -- the spec's own share check, `verify_plain_proof` from zk-pow, over shares
+  our miner made. Everything else that checks a share before a pool does is our JS, so a
+  mistake the device and the JS reference share would pass it; this can't. amdtest.sh's
+  `refverify` task builds it against the spec at a pinned commit and runs it.
 
 Mind the operand fill when comparing builds. `hashrate.js` and `verify-hits.js` hand the
 core the JS profile, so they run the constant fill, but a core from v0.5.7 or older has no
@@ -1464,6 +1499,41 @@ The same arithmetic says why a memory-clock lock would have hurt these cards bef
 change: at 7001 MHz a 5060 has 224 GB/s, against the ~360 GB/s the 2048-wide walk needed.
 Now a launch reads A' once and B' once, ~8 GB/s on a 5060. Vast containers may not set
 clocks (`nvidia-smi -lmc` exits 4), so neither case has been measured.
+
+## RTX 50: what TMA multicast saves, and what hangs (`multicast-probe.cu`)
+
+Item 16, step 2. The cluster build (`PEARL_TALL_CLUSTER`) hung on a 5090 on 1 November, and
+nothing had measured what multicast saves. `multicast-probe.cu` is the TMA fold's B' feed
+without the mma: clusters of two CTAs with the fold's shared footprint, ring, boxes and
+lane bases, each stage held to a fixed time (3240 cycles, the fold's on a 5090) so energy a
+stage compares across arms. Arms, by what a pair loads a stage: e nothing, a each CTA its
+own B' box, b one box multicast to both, d rank 0 only. Then a ladder, each rung the one
+before plus one thing: c is b with the fold's barrier protocol (EMPTY counting both CTAs,
+with mapa remote arrives and cluster-scope acquires, and FULL with no remote arrival), cA
+adds each CTA's own A' box in the same FULL phase, and cAH adds the fold's tile seam (warps w
+and w + 4 meet, w sleeps a hash's 3000 cycles, and warps 4-7 wait at CTA scope on the tile's
+stage 0 EMPTY after its first chunk).
+
+- f = (E_a - E_b) / (E_a - E_d), E the energy a pair-stage from NVML's energy counter: the
+  share of a whole box's cost that multicast saves at equal bytes filled. Gate for #1 and
+  #3: f >= 0.5. A box is a small part of a pair-stage's energy, so an arm that ran a little
+  longer a stage moves f a lot (the reader prints how much for 1%). The reader takes f from
+  energies brought to e's stage time at e's power, prints f as measured beside it, and flags
+  any arm more than 0.5% off e in stage time or clock.
+- The hang ladder: a timeout in b and not a says the multicast itself never completes (unless
+  c, the same multicast, ran clean: then it is the probe's coupling); in c and not b, the
+  fold's barrier protocol; in cA and not c, multicast beside the CTA's own box; in cAH and
+  not cA, the tile seam. Every mbarrier wait gives up after a second and says what it waited
+  on; a launch that never ends prints HANG. A launch the runtime refuses is a refusal; a
+  fault after it launched is a crash, and the reader says which.
+- Also read: E_a - E_e against 2 (E_d - E_e) (two boxes cost twice one), a pace that did not
+  hold (a stage more than 1% over 3240 cycles), and wrong checksums. cAH's stages carry the
+  hash's sleep, so its energy is not compared.
+
+compilers.sh's `multicast` stage builds and runs it, then `multicast-read.js` prints the
+reading. On a stock RTX 5090 (2 November, `b68b039`) the card granted 85 two-CTA clusters and
+arms e, a and d ran, but arm b, the multicast, never finished: multicast doesn't complete on
+sm_120 (benchmark.md, RTX 50).
 
 ## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
 

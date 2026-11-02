@@ -14,6 +14,16 @@ const {
 //   core.on('hit', hit)                      // a candidate at/under target
 //   core.on('hashrate', thPerSec)            // periodic throughput
 //   core.on('error', err)
+//   core.device, core.k, core.kNote          // the card it opened, the k it mines
+//   core.untested                            // check its hits before sending them
+//
+// With `cardK` in its options a core may mine a larger k than the profile's on
+// its card (an RDNA 4 card mines k 4096), and says so in core.k; PearlMiner
+// builds that card's job_key, bound and proofs from it. With `checkHits` the
+// AMD core also opens a card whose fold has not run on its kind of card (an RX
+// 6000 or Instinct card), and says so in core.untested; PearlMiner checks each
+// of its hits before sending it. Every wrapper below passes the options through
+// as they are, so both reach the addon.
 //
 // Returns null when the addon is not present. That is the EXPECTED state on any
 // machine without a CUDA build of the core (including this dev box and, until the
@@ -269,7 +279,7 @@ function coreFactory(opts = {}) {
 
 // The AMD core picked because nvidia-smi listed no NVIDIA card. Its first card
 // decides, as the CUDA 13 build's does: when the AMD core can't start there (no
-// AMD card, a card it has no code for, a card it holds back), the 12.8 build
+// AMD card, a card it has no code for, too little VRAM), the 12.8 build
 // takes over for every card. That covers an NVIDIA rig whose nvidia-smi failed
 // beside AMD's driver for a Ryzen's built-in graphics. When the 12.8 build can't
 // start either, the AMD core's reason is the one thrown, since on a rig with no
