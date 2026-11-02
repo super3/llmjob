@@ -94,6 +94,14 @@ describe('extensionless page URLs', () => {
     expect(redirectFrom(res.text)).toBe('/?utm_source=rabid&utm_medium=youtube&utm_campaign=pearl-miner');
   });
 
+  // A second video from the same channel: same source, its own campaign, so
+  // Umami shows the two videos apart.
+  it('sends the /rabid2 short link to the home page with its own campaign', async () => {
+    const res = await request(app).get('/rabid2');
+    expect(res.status).toBe(200);
+    expect(redirectFrom(res.text)).toBe('/?utm_source=rabid&utm_medium=youtube&utm_campaign=pearl-miner-2');
+  });
+
   it('serves the LLM waitlist page at /llm', async () => {
     const res = await request(app).get('/llm');
     expect(res.status).toBe(200);

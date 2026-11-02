@@ -32,8 +32,8 @@ that redirects the visitor to the target. It works on both hosts because it is
 just a page, and the build fails if a redirect has the same name as a real page.
 
 Short links for campaigns live in the same file. `/nec` (New England Crypto's
-video) and `/rabid` go to the home page with UTM tags, so Umami can tell those
-visits and their download clicks apart.
+video), `/rabid` and `/rabid2` (rabid's second video) go to the home page with
+UTM tags, so Umami can tell those visits and their download clicks apart.
 
 The redirect page carries the visitor's own `?query` and `#fragment` along, so
 an old tagged link like `/earn.html?ref=rabid` still lands on `/?ref=rabid`. If
