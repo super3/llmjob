@@ -794,6 +794,33 @@ Round-to-round spread was about 12 cycles a tile on the 3060 Ti and 2 on the 407
   arm keeps 254/255 registers with no spill and the chunk loop unchanged.
 - **Cost:** two high-priority boxes for about 30 minutes each, about $0.15.
 
+### Our own builds on Salad, 2 November: can a wider window hide the hash? (g6)
+
+Run at 05:19 UTC on 2026-11-02 at `a2596d1` on `nvtest` boxes. Like step 0, this was bench, not race mode: 7 builds
+in turn, 20 s each, 5 rounds, `PEARL_TALL_CYC` only. `g6` is `PEARL_TALL_APT=6u`, a switch already in the code. It
+moves the partner's wait on the hasher from IMMA 128 to 152, so the partner gets 24 more IMMAs of work before it
+has to wait. The arms:
+- `base`, `s1` (no hash) and `s3000` (a 3,000-cycle spin);
+- the same three with g6;
+- `nr` (`PEARL_ABLATE_RING`): no ring waits at all. That is the most any wider window could win.
+
+Not rows: no competitor ran.
+
+| Card | Machine ID | Real hash cheaper with g6 (H) | g6's copy points alone (C) | g6 net | No ring waits (ceiling) |
+|---|---|---|---|---|---|
+| RTX 3060 Ti (200 W) | 3e1ddecd | +935 cycles | −1,380 (−1.34%) | −447 (−0.44%) | +355 (0.35%) |
+| RTX 4070 Super (220 W) | 3b770f34 | −356 | −961 (−0.93%) | −1,311 (−1.26%) | +487 (0.47%) |
+
+The 3060 Ti's rounds agreed to within 2 cycles a tile, and the 4070 Super's to within about 30.
+
+- **Dropped: the wider-window line.** That covers g6, stage-1-only copy points and a six-half-stage ring.
+  - Moving the copy points later costs 1,380 cycles a tile on the 3060 Ti. That is nearly four times what an
+    infinite window could free (+355, about 0.25% at the power cap).
+  - The 4070 Super loses the same way.
+- **On the 3060 Ti the partner really is blocked beside the hash** (H = +935). So making the hash shorter still pays
+  there. On the 4070 Super it isn't (H is negative).
+- **Cost:** two high-priority boxes for about 15 minutes each, about $0.08.
+
 ## RTX 40-series
 
 Run on 2026-10-10, 16:04–19:46 UTC. Ten rows are on their own machine; eight
