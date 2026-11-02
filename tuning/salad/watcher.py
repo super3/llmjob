@@ -2746,10 +2746,12 @@ class W:
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} |"))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
-        # A row for every slot, so a slot the search couldn't fill shows as empty instead of vanishing.
+        # The slots the search couldn't fill, so they show instead of vanishing: one row with their count, as the
+        # founder asked on 2 November (a row each made 12 rows of dashes on a quiet night).
         slots = max(len(live), self.slots())
         empty = slots - len(live)
-        lines += [f"| ⬜{NB}empty |" + " — |" * (6 if xon else 4)] * empty
+        if empty:
+            lines.append(f"| ⬜{NB}empty{NB}×{empty} |" + " — |" * (6 if xon else 4))
         ended = [g for g in groups if g["ended"]]
         if ended:
             # Groups that have ended, as one row with their count and what they earned; the events say which were
