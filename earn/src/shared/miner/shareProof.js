@@ -12,7 +12,8 @@
 //
 // What arrives here is flat: leaves concatenated into one buffer, siblings
 // likewise. This module unpacks that into the shape the encoder wants, checks
-// it, and produces the base64 `plain_proof` field.
+// it, and produces the base64 `plain_proof` field, gzipped or not as the
+// caller's connection agreed (see plainProof.encodePlainProof).
 
 const { regionToTile, PROFILE } = require('./pearlhash');
 const { verifyProof, leafIndicesFromRows } = require('./merkle');
@@ -52,7 +53,10 @@ function unpackSide(side) {
 // cannot check out at the pool either, and a rejected share costs a round trip
 // and counts against the worker — so a hit we cannot prove is worth strictly
 // less than no hit at all.
-function buildShareProof(hit, jobKey, profile) {
+//
+// `gzip` is whether the pool connection this share goes out on agreed to
+// compressed proofs. The caller decides it at the moment it sends.
+function buildShareProof(hit, jobKey, profile, { gzip = false } = {}) {
   const p = profile || PROFILE;
   const a = unpackSide(hit && hit.proofA);
   const bt = unpackSide(hit && hit.proofBt);
@@ -82,7 +86,7 @@ function buildShareProof(hit, jobKey, profile) {
     noiseRank: p.rank,
     a: { proof: a, rowIndices: rows },
     bt: { proof: bt, rowIndices: cols },
-  });
+  }, { gzip });
 }
 
 function sameIndices(a, b) {

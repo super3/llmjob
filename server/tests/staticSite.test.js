@@ -130,15 +130,14 @@ describe('extensionless page URLs', () => {
   });
 });
 
-// The home page carries the HiveOS flight sheet. The Installation URL must name
-// the tarball CI publishes: earn/scripts/build-hiveos.mjs names it after
-// earn/package.json's version, and the page stamps appVersion from
-// site/config.json. If the two ever differ, the page points at a file that the
-// release doesn't have.
+// The home page carries the HiveOS flight sheet. Its Installation URL is the
+// latest release's unversioned package, the same one h-manifest.conf names: a
+// flight sheet installs it once, and the miner updates itself after that
+// (earn/src/cli/hiveos.js).
 describe('HiveOS flight sheet on the home page', () => {
-  const { version } = JSON.parse(fs.readFileSync(path.join(ROOT, 'earn/package.json'), 'utf8'));
   const manifest = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-manifest.conf'), 'utf8');
   const minerName = manifest.match(/^CUSTOM_NAME=(.+)$/m)[1];
+  const URL = `https://github.com/super3/llmjob/releases/latest/download/${minerName}-hiveos.tar.gz`;
 
   // The section's HTML with the <wbr> line-break hints taken out: they add no
   // text, so a copied or selected URL doesn't carry them.
@@ -149,45 +148,45 @@ describe('HiveOS flight sheet on the home page', () => {
     return { page: res.text, sec: m[1].replace(/<wbr>/g, '') };
   }
 
-  // The text of the <code> with this id, which is what the Copy button copies.
+  // The text of the <code> with this id, which is what its Copy button copies.
   function codeText(sec, id) {
-    const m = sec.match(new RegExp(`<code id="${id}">([\\s\\S]*?)</code>`));
+    const m = sec.match(new RegExp(`<code id="${id}"[^>]*>([\\s\\S]*?)</code>`));
     expect(m).not.toBeNull();
     return m[1].replace(/<[^>]+>/g, '');
   }
 
-  it('gives the versioned package URL of the current release', async () => {
+  it('gives the package URL that never changes, the same as the manifest', async () => {
     const { sec } = await section();
-    const url = `https://github.com/super3/llmjob/releases/download/v${version}/${minerName}-${version}.tar.gz`;
-    expect(codeText(sec, 'hive-url')).toBe(url);
-    // Not the unversioned name: HiveOS would keep the old build on update.
-    expect(sec).not.toContain('llmjob-earn-hiveos.tar.gz');
+    expect(codeText(sec, 'hive-url')).toBe(URL);
+    expect(manifest).toContain(URL);
+    // Not a versioned URL: the page would have to change on every release.
+    expect(sec).not.toMatch(/releases\/download\/v/);
     expect(sec).not.toContain('{{');
   });
 
-  // The copy script finds the URL by the button's data-copy id, and does
-  // nothing if no element has that id.
-  it('points the Copy button at the Installation URL', async () => {
+  // The copy script finds each field by its button's data-copy id, and does
+  // nothing for an id no element has.
+  it('has a Copy button on each field to fill in', async () => {
     const { sec } = await section();
     const buttons = sec.match(/<button [^>]*data-copy="[^"]*"[^>]*>/g);
-    expect(buttons).toHaveLength(1);
-    const id = buttons[0].match(/data-copy="([^"]*)"/)[1];
-    expect(codeText(sec, id)).toMatch(/^https:\/\/github\.com\/\S+\.tar\.gz$/);
+    const ids = buttons.map((b) => b.match(/data-copy="([^"]*)"/)[1]);
+    expect(ids).toEqual(['hive-name', 'hive-url', 'hive-wallet', 'hive-pool']);
+    expect(codeText(sec, 'hive-name')).toBe(minerName);
+    expect(codeText(sec, 'hive-pool')).toBe('us.pearl.herominers.com:1200');
+    // The wallet template is filled in from the address box.
+    expect(sec).toContain('<input class="hive-addr" id="hive-addr"');
+    expect(buttons[2]).toContain('data-needs="hive-addr"');
   });
 
-  it('lists the flight sheet fields', async () => {
+  it('lists the four fields and says to leave the rest blank', async () => {
     const { sec } = await section();
-    for (const field of ['Miner', 'Miner name', 'Installation URL', 'Hash algorithm',
-      'Wallet and worker template', 'Pool URL', 'Pass', 'Extra config arguments']) {
+    for (const field of ['Miner', 'Miner name', 'Installation URL', 'Wallet and worker template', 'Pool URL', 'Everything else']) {
       expect(sec).toContain(`<span class="hive-k">${field}</span>`);
     }
     expect(sec).toContain('<code>Custom</code>');
-    expect(sec).toContain(`<code>${minerName}</code>`);
     expect(sec).toContain('<code>pearlhash</code>');
-    expect(sec).toContain('<code>%WAL%</code>');
-    expect(sec).toContain('<code>%WAL%.%WORKER_NAME%</code>');
-    expect(sec).toMatch(/<code[^>]*>us\.pearl\.herominers\.com:1200<\/code>/);
-    expect(sec).toContain('Ubuntu 22.04');
+    expect(sec).toContain('<code>--no-update</code>');
+    expect(sec).toContain('Ubuntu 20.04');
   });
 
   // HiveOS reads which cards are off only when the miner starts, and only the
@@ -200,19 +199,23 @@ describe('HiveOS flight sheet on the home page', () => {
   });
 
   // Umami counts the HiveOS path like the other platforms. A Copy of the
-  // Installation URL is the HiveOS download. Opening the flight sheet from a
-  // menu is its own event, so the two aren't counted as two downloads.
-  it('is linked from both download menus, and Umami counts its links and Copy', async () => {
+  // Installation URL is the HiveOS download; the other fields' Copy buttons are
+  // not. Opening the flight sheet from a menu is its own event, so the two
+  // aren't counted as two downloads.
+  it('is linked from both download menus, and Umami counts its links and the URL Copy', async () => {
     const { page, sec } = await section();
     const links = page.match(/<a role="menuitem"[^>]*href="#hiveos"[^>]*>/g);
     expect(links).toHaveLength(2);
     for (const a of links) expect(a).toContain('data-umami-event="hiveos-flight-sheet"');
     expect(links[0]).toContain('data-umami-event-place="top"');
     expect(links[1]).toContain('data-umami-event-place="bottom"');
-    const copy = sec.match(/<button class="hive-copy"[^>]*>/)[0];
-    expect(copy).toContain('data-umami-event="download"');
-    expect(copy).toContain('data-umami-event-os="hiveos"');
-    expect(copy).toContain('data-umami-event-place="flight-sheet"');
+    const copies = sec.match(/<button class="hive-copy"[^>]*>/g);
+    const counted = copies.filter((b) => b.includes('data-umami-event='));
+    expect(counted).toHaveLength(1);
+    expect(counted[0]).toContain('data-copy="hive-url"');
+    expect(counted[0]).toContain('data-umami-event="download"');
+    expect(counted[0]).toContain('data-umami-event-os="hiveos"');
+    expect(counted[0]).toContain('data-umami-event-place="flight-sheet"');
   });
 });
 

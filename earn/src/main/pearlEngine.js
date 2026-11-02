@@ -29,11 +29,14 @@ const TEMP_POLL_MS = 5000;
 const POOL_GRACE_MS = 30000;
 
 class PearlEngine extends EventEmitter {
-  constructor({ connect, createCore, profile, readTemps, tempPollMs } = {}) {
+  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent } = {}) {
     super();
     this.connect = connect;
     this.createCore = createCore;
     this.profile = profile || PROFILE;
+    // 'llmjob-earn/<version>', which the miner sends with its login so a pool
+    // can tell this miner apart. Both shells pass it.
+    this.agent = agent || null;
     this.readTemps = readTemps || null;
     this.tempPollMs = tempPollMs || TEMP_POLL_MS;
     this.tempTimer = null;
@@ -86,7 +89,7 @@ class PearlEngine extends EventEmitter {
     this.gpu = settings.gpu || null;
     this.endpoint = settings.endpoint || null;
 
-    const m = new PearlMiner({ connect: this.connect, createCore: this.createCore });
+    const m = new PearlMiner({ connect: this.connect, createCore: this.createCore, agent: this.agent });
     this.miner = m;
 
     m.on('log', (l) => this.emit('log', l));

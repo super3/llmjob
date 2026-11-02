@@ -142,6 +142,34 @@ describe('migrations', () => {
     await expect(pool.query('SELECT visibility FROM jobs')).rejects.toBeDefined();
   });
 
+  it('add-miner-ram-xmr adds and drops the RAM and Monero hashrate columns', async () => {
+    const pool = freshPool();
+    await apply(pool, load(byName('init-schema')), 'up');
+    // Simulate a miners table from before these columns existed.
+    await pool.query('ALTER TABLE miners DROP COLUMN ram_used');
+    await pool.query('ALTER TABLE miners DROP COLUMN ram_total');
+    await pool.query('ALTER TABLE miners DROP COLUMN xmr_hashrate');
+    await pool.query("INSERT INTO miners (id) VALUES ('old')");
+
+    const mod = load(byName('add-miner-ram-xmr'));
+    await apply(pool, mod, 'up');
+    await pool.query("INSERT INTO miners (id, ram_used, ram_total, xmr_hashrate) VALUES ('m1', 12288, 32768, 1845.2)");
+    const rows = (await pool.query('SELECT id, ram_used, ram_total, xmr_hashrate FROM miners ORDER BY id')).rows;
+    expect(rows).toEqual([
+      { id: 'm1', ram_used: 12288, ram_total: 32768, xmr_hashrate: 1845.2 },
+      // A row from before keeps NULL: unknown, as for a client too old to send them.
+      { id: 'old', ram_used: null, ram_total: null, xmr_hashrate: null },
+    ]);
+
+    // Idempotent: on a fresh database the schema already has the columns.
+    await apply(pool, mod, 'up');
+
+    await apply(pool, mod, 'down');
+    await expect(pool.query('SELECT ram_used FROM miners')).rejects.toBeDefined();
+    await expect(pool.query('SELECT ram_total FROM miners')).rejects.toBeDefined();
+    await expect(pool.query('SELECT xmr_hashrate FROM miners')).rejects.toBeDefined();
+  });
+
   it('add-hot-path-indexes creates the three hot-path indexes and drops them', async () => {
     const pool = freshPool();
     await apply(pool, load(byName('init-schema')), 'up');

@@ -189,10 +189,16 @@
     <p id="mode-hint" class="settings-note">Balances mining and the local LLM from free VRAM.</p>
 
     <div class="settings-section">Connection</div>
-    <div class="conn-grid">
+    <!-- One pool and server for both coins. Each pool is an option group with
+         its servers under it. A <select> shows only the option's own text, so
+         the pool's name is drawn in front of the server. -->
+    <div class="conn-grid pool-grid">
       <div class="conn-field">
-        <div class="fk">Pool region</div>
-        <select id="set-region" class="rv-input"></select>
+        <div class="fk">Pool</div>
+        <div class="pool-pick">
+          <span id="pool-name" class="pool-name" aria-hidden="true"></span>
+          <select id="set-pool" class="rv-input" aria-label="Pool"></select>
+        </div>
       </div>
       <div class="conn-field">
         <div class="fk">Worker name</div>

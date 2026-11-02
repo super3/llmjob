@@ -211,6 +211,17 @@ describe('cardForPrompt', () => {
     expect(cardForPrompt({ index: null, busId: null }, { 0: '00000000:01:00.0' })).toBeNull();
   });
 
+  // An AMD rig (PEARL_CORE_VARIANT=amd) has no nvidia-smi, so no bus ids, and
+  // only the miner knows it runs on several cards. Pausing every card for a
+  // model on one of them would stop the rest on every prompt.
+  test('with no bus ids but several mining cards, mining is left alone', () => {
+    expect(cardForPrompt({ index: null, busId: '0000:03:00.0' }, {}, 2)).toBeUndefined();
+    expect(cardForPrompt({ index: 0, busId: null }, {}, 3)).toBeUndefined();
+    // One mining card is still the only card it can be.
+    expect(cardForPrompt({ index: null, busId: null }, {}, 1)).toBeNull();
+    expect(cardForPrompt({ index: 0, busId: null }, { 0: '00000000:01:00.0' }, 1)).toBe(0);
+  });
+
   test('with no bus ids from nvidia-smi, the planned card (or every card) is all there is to go on', () => {
     expect(cardForPrompt({ index: 2, busId: '0000:0a:00.0' }, {})).toBe(2);
     expect(cardForPrompt({ index: undefined, busId: null }, null)).toBeNull();

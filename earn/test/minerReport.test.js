@@ -1,6 +1,10 @@
 'use strict';
 
-const { buildMinerReports } = require('../src/shared/minerReport');
+const { buildMinerReports, hostStats, readRamMb } = require('../src/shared/minerReport');
+
+// What a row says about the machine when the caller passes no `host`: unknown,
+// which is also what the server stores for a client too old to send it.
+const NO_HOST = { ramUsedMb: null, ramTotalMb: null, xmrHashrate: null };
 
 describe('buildMinerReports', () => {
   test('one card → one rig row with that card\'s own VRAM and hashrate', () => {
@@ -9,7 +13,7 @@ describe('buildMinerReports', () => {
     const vram = [{ index: 0, name: 'NVIDIA GeForce RTX 4090', usedMb: 4096, totalMb: 24564 }];
     expect(buildMinerReports({ address: '  prl1pabc ', worker: 'rig9', region: 'eu1' }, snap, vram, '0.1.16')).toEqual([
       { address: 'prl1pabc', worker: 'rig9', region: 'eu1', version: '0.1.16',
-        gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
+        gpu: 'NVIDIA GeForce RTX 4090', hashrate: 285.8, accepted: 5, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -24,8 +28,8 @@ describe('buildMinerReports', () => {
       { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
     ];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram, '0.1.16')).toEqual([
-      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: '0.1.16', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
-      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: '0.1.16', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380, llmModel: null, nodeId: null },
+      { address: 'prl1pabc', worker: 'rig01/gpu0', region: 'us2', version: '0.1.16', gpu: 'RTX 4090', hashrate: 200, accepted: 10, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null, ...NO_HOST },
+      { address: 'prl1pabc', worker: 'rig01/gpu1', region: 'us2', version: '0.1.16', gpu: 'RTX 4060 Ti', hashrate: 100, accepted: 4, vramUsedMb: 2000, vramTotalMb: 16380, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -53,8 +57,8 @@ describe('buildMinerReports', () => {
     const rows = buildMinerReports({ address: 'prl1pabc', worker: 'IPTU', region: 'us2' }, snap, vram, '0.6.6',
       { model: 'Gemma-4-E4B-it-Q4_K_M', indices: [1] });
     expect(rows).toEqual([
-      { address: 'prl1pabc', worker: 'IPTU/gpu0', region: 'us2', version: '0.6.6', gpu: 'RTX 4090', hashrate: 172.8, accepted: 30, vramUsedMb: 2000, vramTotalMb: 24564, llmModel: null, nodeId: null },
-      { address: 'prl1pabc', worker: 'IPTU/gpu1', region: 'us2', version: '0.6.6', gpu: 'RTX 3090', hashrate: 0, accepted: 0, vramUsedMb: 20000, vramTotalMb: 24576, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: null },
+      { address: 'prl1pabc', worker: 'IPTU/gpu0', region: 'us2', version: '0.6.6', gpu: 'RTX 4090', hashrate: 172.8, accepted: 30, vramUsedMb: 2000, vramTotalMb: 24564, llmModel: null, nodeId: null, ...NO_HOST },
+      { address: 'prl1pabc', worker: 'IPTU/gpu1', region: 'us2', version: '0.6.6', gpu: 'RTX 3090', hashrate: 0, accepted: 0, vramUsedMb: 20000, vramTotalMb: 24576, llmModel: 'Gemma-4-E4B-it-Q4_K_M', nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -140,7 +144,7 @@ describe('buildMinerReports', () => {
     const vram = [{ index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 }];
     expect(buildMinerReports({ address: 'prl1pabc', worker: 'rig01', region: 'us2' }, snap, vram)).toEqual([
       { address: 'prl1pabc', worker: 'rig01', region: 'us2', version: null,
-        gpu: 'RTX 4090', hashrate: 120, accepted: 3, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null },
+        gpu: 'RTX 4090', hashrate: 120, accepted: 3, vramUsedMb: 4096, vramTotalMb: 24564, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -153,7 +157,7 @@ describe('buildMinerReports', () => {
 
   test('applies defaults when called with nothing', () => {
     expect(buildMinerReports()).toEqual([
-      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null },
+      { address: '', worker: 'rig01', region: 'us2', version: null, gpu: null, hashrate: 0, accepted: 0, vramUsedMb: 0, vramTotalMb: 0, llmModel: null, nodeId: null, ...NO_HOST },
     ]);
   });
 
@@ -221,6 +225,37 @@ describe('buildMinerReports', () => {
     expect(row).toMatchObject({ worker: 'rig01', hashrate: 0, accepted: 0 });
   });
 
+  // RAM and the Monero hashrate are the machine's, like the node id: every card
+  // row of a rig carries the same values, on the per-card and single-row paths.
+  test('puts the machine\'s RAM and Monero hashrate on every row', () => {
+    const host = { ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 };
+    const snap = { gpus: [
+      { index: 0, gpu: 'RTX 4090', hashrate: 200, accepted: 10 },
+      { index: 1, gpu: 'RTX 4060', hashrate: 100, accepted: 4 },
+    ] };
+    const vram = [
+      { index: 0, name: 'RTX 4090', usedMb: 4096, totalMb: 24564 },
+      { index: 1, name: 'RTX 4060', usedMb: 2000, totalMb: 8192 },
+    ];
+    const rows = buildMinerReports({ address: 'prl1pabc', worker: 'rig01' }, snap, vram, '0.6.6', null, host);
+    expect(rows.map((r) => [r.worker, r.ramUsedMb, r.ramTotalMb, r.xmrHashrate])).toEqual([
+      ['rig01/gpu0', 12288, 32768, 1845.2],
+      ['rig01/gpu1', 12288, 32768, 1845.2],
+    ]);
+
+    const [single] = buildMinerReports({ address: 'prl1pabc' }, { total: 120, gpus: [] }, [], '0.6.6', null, host);
+    expect(single).toMatchObject(host);
+  });
+
+  // Not CPU mining is null, which the board must not confuse with 0 H/s; a
+  // value that isn't a number is unknown, not 0.
+  test('a host field left out, null, or not a number reports null; 0 stays 0', () => {
+    const [row] = buildMinerReports({}, {}, [], null, null, { ramUsedMb: 'lots', ramTotalMb: 0, xmrHashrate: null });
+    expect(row).toMatchObject({ ramUsedMb: null, ramTotalMb: 0, xmrHashrate: null });
+    const [partial] = buildMinerReports({}, {}, [], null, null, { xmrHashrate: 0 });
+    expect(partial).toMatchObject({ ramUsedMb: null, ramTotalMb: null, xmrHashrate: 0 });
+  });
+
   // alpha-miner 1.9.4 renders a stats table whose name column is abbreviated
   // ("RTX 5090"), where 1.8.x logged nvidia-smi's exact string. nvidia-smi is
   // the canonical device name, so it wins in EVERY row-building path — this rig
@@ -262,5 +297,92 @@ describe('buildMinerReports', () => {
       expect(buildMinerReports(settings, snap, []).map((r) => r.gpu)).toEqual([SHORT]);
       expect(buildMinerReports(settings, { gpu: SHORT, total: 310, gpus: [] }, []).map((r) => r.gpu)).toEqual([SHORT]);
     });
+  });
+});
+
+describe('readRamMb', () => {
+  const GB = 2 ** 30;
+  const fakeOs = (total, free) => ({ totalmem: () => total, freemem: () => free });
+  // A process with no memory limit, as on Windows, macOS or bare-metal Linux.
+  const unlimited = {};
+
+  test('whole MB, used being total minus free', () => {
+    expect(readRamMb(fakeOs(32 * GB, 20 * GB), unlimited)).toEqual({ usedMb: 12288, totalMb: 32768 });
+    // A size that isn't a whole number of MB rounds to one.
+    expect(readRamMb(fakeOs(16 * GB - 300 * 1024, 0), unlimited)).toEqual({ usedMb: 16384, totalMb: 16384 });
+  });
+
+  // Nonsense from the OS is not passed on as a number the board would believe.
+  test('a reading that makes no sense is null', () => {
+    expect(readRamMb(fakeOs(0, 0), unlimited)).toEqual({ usedMb: null, totalMb: null });
+    expect(readRamMb(fakeOs(NaN, 0), unlimited)).toEqual({ usedMb: null, totalMb: null });
+    // Free above total, below zero, or not a number: the total still stands.
+    expect(readRamMb(fakeOs(8 * GB, 9 * GB), unlimited)).toEqual({ usedMb: null, totalMb: 8192 });
+    expect(readRamMb(fakeOs(8 * GB, -1), unlimited)).toEqual({ usedMb: null, totalMb: 8192 });
+    expect(readRamMb(fakeOs(8 * GB, undefined), unlimited)).toEqual({ usedMb: null, totalMb: 8192 });
+  });
+
+  // A container limited to 32 GB on a 512 GB host whose other tenants use 300:
+  // the OS figures are the host's, and the board would show 300 / 512.
+  test('in a container with a memory limit, the limit is the total and used is the container\'s', () => {
+    const host = fakeOs(512 * GB, 212 * GB);
+    const container = (available) => ({ constrainedMemory: () => 32 * GB, availableMemory: () => available });
+    expect(readRamMb(host, container(20 * GB))).toEqual({ usedMb: 12288, totalMb: 32768 });
+    // Use past the limit for a moment: availableMemory() says 0, so all of it.
+    expect(readRamMb(host, container(0))).toEqual({ usedMb: 32768, totalMb: 32768 });
+    // More available than the limit makes no sense; it counts as none used.
+    expect(readRamMb(host, container(40 * GB))).toEqual({ usedMb: 0, totalMb: 32768 });
+    // No availableMemory() to ask: the host's free figure says nothing about
+    // the container, so used is unknown.
+    expect(readRamMb(host, { constrainedMemory: () => 32 * GB })).toEqual({ usedMb: null, totalMb: 32768 });
+  });
+
+  // No limit reads as 0, or as a number far past the RAM (cgroup "max"); a
+  // limit above the RAM limits nothing. The OS figures stand in each case.
+  test('a limit of 0, or one at or above the RAM, is no limit', () => {
+    const os = fakeOs(32 * GB, 20 * GB);
+    const limited = (limit) => ({ constrainedMemory: () => limit, availableMemory: () => 1 * GB });
+    for (const limit of [0, 2 ** 64, 32 * GB, 64 * GB]) {
+      expect(readRamMb(os, limited(limit))).toEqual({ usedMb: 12288, totalMb: 32768 });
+    }
+  });
+
+  // The shells pass no process and get the real one.
+  test('reads the real process when given none', () => {
+    const spy = jest.spyOn(process, 'constrainedMemory').mockReturnValue(16 * GB);
+    const avail = jest.spyOn(process, 'availableMemory').mockReturnValue(4 * GB);
+    try {
+      expect(readRamMb(fakeOs(32 * GB, 20 * GB))).toEqual({ usedMb: 12288, totalMb: 16384 });
+    } finally {
+      spy.mockRestore();
+      avail.mockRestore();
+    }
+  });
+});
+
+describe('hostStats', () => {
+  const os = { totalmem: () => 32 * 2 ** 30, freemem: () => 20 * 2 ** 30 };
+  const proc = {};
+  const engine = (running, hashrate) => ({ isRunning: () => running, snapshot: () => ({ hashrate }) });
+
+  test('the RAM, and the CPU miner\'s H/s while it runs', () => {
+    expect(hostStats(os, engine(true, 1845.2), proc)).toEqual({ ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 });
+    // Running but off its pool: the engine reads 0, and so does the board.
+    expect(hostStats(os, engine(true, 0), proc).xmrHashrate).toBe(0);
+    expect(hostStats(os, engine(true, undefined), proc).xmrHashrate).toBe(0);
+  });
+
+  // Null, not 0: "this machine is not CPU mining" is a different answer from
+  // "it is, at 0 H/s".
+  test('no CPU miner, or one that stopped, is null', () => {
+    expect(hostStats(os, null, proc).xmrHashrate).toBeNull();
+    expect(hostStats(os, undefined, proc).xmrHashrate).toBeNull();
+    expect(hostStats(os, engine(false, 1845.2), proc).xmrHashrate).toBeNull();
+  });
+
+  // The container's limit, not the host's RAM, as readRamMb reads it.
+  test('the RAM is a container\'s own when it has a limit', () => {
+    const container = { constrainedMemory: () => 16 * 2 ** 30, availableMemory: () => 4 * 2 ** 30 };
+    expect(hostStats(os, null, container)).toEqual({ ramUsedMb: 12288, ramTotalMb: 16384, xmrHashrate: null });
   });
 });

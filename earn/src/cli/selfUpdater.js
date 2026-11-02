@@ -10,6 +10,7 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { LATEST_RELEASE_API, parseRelease } = require('../shared/selfUpdate');
 const { getJson, downloadFile } = require('../main/io');
+const { AMD, FILES } = require('../shared/coreVariant');
 
 // Set on the re-exec'd child so it doesn't check/update again and loop.
 const UPDATED_ENV = 'LLMJOB_EARN_UPDATED';
@@ -58,17 +59,32 @@ function isPackaged() {
 // `opts.xmr`: this rig mines Monero. The CPU worker comes along only then, or
 // when one is already beside the binary to keep in step: a Pearl-only rig gets
 // no coin miner it didn't ask for.
+//
+// `opts.amd`: this rig asked for the AMD core (--core amd or
+// PEARL_CORE_VARIANT=amd). On such a rig it is the core that mines, so it is
+// paired as the 12.8 core is: downloaded before anything is replaced, and a
+// failed download fails the update. A release without one leaves the old copy
+// in place. Deleting it would leave the rig nothing to mine with. A copy that
+// is merely there (the HiveOS package used off HiveOS, say) on a rig that
+// didn't ask is kept in step like the CUDA 13 core, after the binary, and is
+// removed if its download fails: that rig doesn't mine with it, and a failure
+// there must not hold back its update.
 async function applyUpdate(plan, execPath, opts) {
   const exe = execPath || process.execPath;
   const dir = path.dirname(exe);
   const core = path.join(dir, 'pearl_core.node');
   const cu13 = path.join(dir, 'pearl_core_cu13.node');
+  const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
+  const hipTmp = hip + '.new-' + process.pid;
+  const withHip = !!plan.coreHipUrl && !!(opts && opts.amd);
+  const keepHip = !!plan.coreHipUrl && !withHip && fs.existsSync(hip);
   try {
     await downloadFile(plan.downloadUrl, tmp);
     // Releases older than the split have no core asset; nothing to pair then.
     if (plan.coreUrl) await downloadFile(plan.coreUrl, coreTmp);
+    if (withHip) await downloadFile(plan.coreHipUrl, hipTmp);
     fs.chmodSync(tmp, 0o755);
     // The CUDA 13 core (shared/coreVariant) is paired too, but it is optional.
     // Last release's copy goes before anything is replaced: on a Blackwell rig
@@ -79,12 +95,14 @@ async function applyUpdate(plan, execPath, opts) {
     // it.
     fs.rmSync(cu13, { force: true });
     if (plan.coreUrl) fs.renameSync(coreTmp, core);
+    if (withHip) fs.renameSync(hipTmp, hip);
     fs.renameSync(tmp, exe);
   } catch (e) {
     // downloadFile removes its own partial file. These are finished downloads
     // that never went in.
     fs.rmSync(tmp, { force: true });
     fs.rmSync(coreTmp, { force: true });
+    fs.rmSync(hipTmp, { force: true });
     throw e;
   }
   // The new CUDA 13 core. A failed download does not fail the update. The
@@ -101,6 +119,15 @@ async function applyUpdate(plan, execPath, opts) {
       // downloadFile removes its own partial file; this is one that arrived
       // but would not go in.
       fs.rmSync(cu13Tmp, { force: true });
+    }
+  }
+  if (keepHip) {
+    try {
+      await downloadFile(plan.coreHipUrl, hipTmp);
+      fs.renameSync(hipTmp, hip);
+    } catch (e) {
+      fs.rmSync(hipTmp, { force: true });
+      fs.rmSync(hip, { force: true });
     }
   }
   // The CPU worker. A failed download keeps the one already there, which the
@@ -155,6 +182,27 @@ async function syncXmrWorker(url, version, execPath) {
   return true;
 }
 
+// Whether the AMD core sits beside the binary.
+function hasAmdCore(execPath) {
+  return fs.existsSync(path.join(path.dirname(execPath || process.execPath), FILES[AMD]));
+}
+
+// Download the AMD core beside the binary, for a rig that asked for it and has
+// none: one installed from the bare binary, say. Through a temp file, so a
+// failure never leaves half an addon where the loader looks.
+async function fetchAmdCore(url, execPath) {
+  const hip = path.join(path.dirname(execPath || process.execPath), FILES[AMD]);
+  const tmp = hip + '.new-' + process.pid;
+  try {
+    await downloadFile(url, tmp);
+    fs.renameSync(tmp, hip);
+  } catch (e) {
+    fs.rmSync(tmp, { force: true });
+    throw e;
+  }
+  return hip;
+}
+
 // Re-run the (now updated) binary with the same args, flagged so it won't loop.
 // Returns the child's exit code.
 function reexec(argv) {
@@ -170,5 +218,7 @@ module.exports = {
   applyUpdate,
   hasXmrWorker,
   syncXmrWorker,
+  hasAmdCore,
+  fetchAmdCore,
   reexec,
 };

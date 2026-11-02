@@ -115,4 +115,31 @@ function parsePoolPriceUsd(json) {
   return Number.isFinite(usd) && usd > 0 ? usd : null;
 }
 
-module.exports = { POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd };
+// Kryptex (pool.kryptex.com, its openapi.yaml) answers per coin at
+// GET /{coin}/api/v1/miner/payouts/{address}/stats with
+// {"reward":{…},"paid":0.0,"unpaid":0.114}, in whole coins, not atomic units.
+// `unpaid` is the confirmed balance; the blocks still maturing are left out,
+// as they are on HeroMiners. An address it has never seen gets zeros.
+// `base` is config's KRYPTEX.apiBase.
+function buildKryptexBalanceUrl(base, coin, address) {
+  const a = String(address == null ? '' : address).trim();
+  return base + '/' + coin + '/api/v1/miner/payouts/' + encodeURIComponent(a) + '/stats';
+}
+
+// The same display fields as parseBalance, or null when unusable.
+function parseKryptexBalance(json, priceUsd) {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return null;
+  const amount = (v) => (v === null || v === undefined || v === '' ? NaN : Number(v));
+  const pending = amount(json.unpaid);
+  const paid = amount(json.paid);
+  if (!(pending >= 0) || !(paid >= 0) || !Number.isFinite(pending + paid)) return null;
+  const earned = pending + paid;
+  const price = Number(priceUsd);
+  const usd = Number.isFinite(price) && price >= 0 ? earned * price : null;
+  return { pending, paid, earned, usd };
+}
+
+module.exports = {
+  POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
+  buildKryptexBalanceUrl, parseKryptexBalance,
+};

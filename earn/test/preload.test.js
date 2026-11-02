@@ -29,8 +29,6 @@ describe('invoke-based methods', () => {
     ['getConfig', 'config:get'],
     ['detectGpu', 'gpu:detect'],
     ['detectRegion', 'region:detect'],
-    ['getBalance', 'balance:get', 'prl1abc'],
-    ['getXmrBalance', 'xmr:balance', '87wTMj'],
     ['checkXmrAddress', 'xmr:check', '87wTMj'],
     ['getLlmStatus', 'llm:status'],
     ['getNodeStatus', 'node:status'],
@@ -47,6 +45,16 @@ describe('invoke-based methods', () => {
       if (arg === undefined) expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel);
       else expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, arg);
     });
+  });
+});
+
+describe('balances name their pool', () => {
+  it.each([
+    ['getBalance', 'balance:get', 'prl1abc'],
+    ['getXmrBalance', 'xmr:balance', '87wTMj'],
+  ])('%s passes the pool on to %s', (method, channel, address) => {
+    api[method](address, 'kryptex');
+    expect(ipcRenderer.invoke).toHaveBeenCalledWith(channel, address, 'kryptex');
   });
 });
 

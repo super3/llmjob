@@ -27,6 +27,14 @@
 #    this commit changed the native source and its own run is late: wait for
 #    it. If none is in this commit's history, fail.
 #
+# GitHub's run lists filtered by head_sha or branch come back empty at random:
+# on 22 October about one answer in three was empty, for old runs as well as
+# new ones, and one such answer failed a Windows build. So no single empty
+# answer is taken to mean there are no runs. A commit's runs are read from
+# both the head_sha list and the unfiltered list of the newest 100, a run seen
+# once is looked up by id when neither lists it, and a branch's empty list is
+# asked again.
+#
 # Waiting stops after 25 minutes. Needs GH_TOKEN, and PR_HEAD_SHA on
 # pull_request events. Actions sets the rest.
 set -euo pipefail
@@ -35,6 +43,7 @@ workflow=native-core.yml
 grace=90      # seconds after this workflow run was created
 timeout=1500  # 25 minutes
 poll=20
+tries=6       # times to ask for a branch's runs while the answer is empty
 
 api=repos/$GITHUB_REPOSITORY
 
@@ -59,21 +68,34 @@ deadline=$(( $(now) + timeout ))
 created=$(ghapi "$api/actions/runs/$GITHUB_RUN_ID" --jq '.created_at | fromdateiso8601')
 grace_end=$(( created + grace ))
 
-# wait_for SHA FILTER LAST: waits on the native-core runs for SHA that match
-# the jq FILTER, and sets picked to the newest that succeeded. Leaves picked
-# empty if there are still none at time LAST. Fails the step if they all
-# failed, or on timeout. Call it as a plain command, not in an `if`: bash
-# turns off set -e inside a function called from a condition, and then an API
-# error would read as "no runs".
+# wait_for SHA FILTER LAST [IDS]: waits on the native-core runs for SHA that
+# match the jq FILTER, and sets picked to the newest that succeeded. IDS are
+# runs for SHA already known from elsewhere. Leaves picked empty if there are
+# still none at time LAST. Fails the step if they all failed, or on timeout.
+# Call it as a plain command, not in an `if`: bash turns off set -e inside a
+# function called from a condition, and then an API error would read as "no
+# runs".
 picked=
 wait_for() {
-  local sha=$1 filter=$2 last=$3 rows id status conclusion running failed
+  local sha=$1 filter=$2 last=$3 seen=${4:-} rows by_sha empties=0 id status conclusion running failed
+  local row=".workflow_runs[] | select(.head_sha == \"$sha\") | select($filter) | [.id, .status, (.conclusion // \"none\")] | @tsv"
   while :; do
-    rows=$(ghapi "$api/actions/workflows/$workflow/runs" -X GET -f head_sha="$sha" -f per_page=50 \
-      --jq ".workflow_runs[] | select($filter) | [.id, .status, (.conclusion // \"none\")] | @tsv")
+    # Either list can leave a run out: the head_sha one at random (see the
+    # top), the unfiltered one once 100 newer runs have started. Both are
+    # newest first, and any run only the head_sha list has is older than the
+    # unfiltered list's, so this is newest first too, each run once. Then, by
+    # id, each run seen before that neither listed.
+    rows=$(ghapi "$api/actions/workflows/$workflow/runs" -X GET -f per_page=100 --jq "$row")
+    by_sha=$(ghapi "$api/actions/workflows/$workflow/runs" -X GET -f head_sha="$sha" -f per_page=50 --jq "$row")
+    rows=$(printf '%s\n%s\n' "$rows" "$by_sha" | awk -F'\t' 'NF && !seen[$1]++')
+    for id in $seen; do
+      grep -q "^$id"$'\t' <<< "$rows" \
+        || rows+=$'\n'$(ghapi "$api/actions/runs/$id" --jq '[.id, .status, (.conclusion // "none")] | @tsv')
+    done
     running='' failed=''
     while IFS=$'\t' read -r id status conclusion; do
       [ -n "$id" ] || continue
+      [[ " $seen " == *" $id "* ]] || seen+=" $id"
       if [ "$status" != completed ]; then
         running=${running:-$id}
       elif [ "$conclusion" = success ]; then
@@ -88,6 +110,12 @@ wait_for() {
       [ "$(now)" -lt "$deadline" ] \
         || fail "timed out after $(( timeout / 60 )) min waiting for native-core run $running ($(short "$sha"))"
       echo "native-core run $running for $(short "$sha") is still running; checking again in ${poll}s"
+    elif [ -n "$failed" ] && [ -z "$by_sha" ] && [ $(( empties += 1 )) -lt "$tries" ]; then
+      # Only the head_sha list has every run of SHA, and it came back empty:
+      # an older run it would show may have succeeded, so ask it again first.
+      echo "GitHub's list of runs for $(short "$sha") came back empty; asking again"
+      sleep 3
+      continue
     elif [ -n "$failed" ]; then
       fail "native-core $failed for $(short "$sha"). Not taking a core from another run instead. Re-run that native-core run, then re-run this job."
     elif [ "$(now)" -ge "$last" ]; then
@@ -119,21 +147,33 @@ if [ -z "$picked" ]; then
   branches=main
   [ "$ref" = main ] || branches="$ref main"
   echo "no native-core run for $(short "$sha"); looking on $branches for a run built from the same native source"
-  # Newest first, each commit once. pull_request runs are left out: they built
-  # a merge commit, not their head_sha.
-  candidates=$(for b in $branches; do
-    ghapi "$api/actions/workflows/$workflow/runs" -X GET -f branch="$b" -f per_page=30 \
-      --jq '.workflow_runs[] | select(.event != "pull_request") | .head_sha'
-  done | awk '!seen[$0]++')
+  # Each run as commit:id. pull_request runs are left out: they built a merge
+  # commit, not their head_sha. An empty answer is asked again (see the top),
+  # but only a few times, since a new branch may really have no runs. The
+  # empty answers come per request, so there is no need to wait long between.
+  candidates=
+  for b in $branches; do
+    for (( try = 1; try <= tries; try++ )); do
+      list=$(ghapi "$api/actions/workflows/$workflow/runs" -X GET -f branch="$b" -f per_page=30 \
+        --jq '.workflow_runs[] | select(.event != "pull_request") | "\(.head_sha):\(.id)"')
+      [ -z "$list" ] || break
+      [ "$try" -eq "$tries" ] || { echo "GitHub listed no native-core runs on $b; asking again"; sleep 3; }
+    done
+    candidates+=$list$'\n'
+  done
+  # Newest first, each commit once.
+  candidates=$(awk -F: '$1 != "" && !seen[$1]++' <<< "$candidates")
 
-  base='' in_history=''
-  for candidate in $candidates; do
+  base='' base_run='' in_history=''
+  for entry in $candidates; do
+    candidate=${entry%%:*}
     # status is "ahead" or "identical" when candidate is in this commit's
     # history. changed counts the files changed since; in_filters counts those
     # native-core's path filters cover, by new name or, for a rename, old name.
     res=$(ghapi "$api/compare/$candidate...$GITHUB_SHA?per_page=1" --jq '[.status, (.files | length),
       ([.files[] | .filename, .previous_filename | select(. != null)
-        | select(startswith("earn/native/") or . == ".github/workflows/native-core.yml")] | length)] | @tsv')
+        | select(startswith("earn/native/") or . == ".github/workflows/native-core.yml"
+                 or . == ".github/scripts/check-glibc-floor.sh")] | length)] | @tsv')
     IFS=$'\t' read -r status changed in_filters <<< "$res"
     if [ "$status" != ahead ] && [ "$status" != identical ]; then
       echo "  $(short "$candidate"): not in this commit's history ($status)"
@@ -141,7 +181,7 @@ if [ -z "$picked" ]; then
     fi
     in_history=yes
     if [ "$in_filters" = 0 ] && [ "$changed" -lt 300 ]; then
-      base=$candidate
+      base=$candidate base_run=${entry#*:}
       break
     elif [ "$in_filters" != 0 ]; then
       echo "  $(short "$candidate"): in this commit's history, but $in_filters file(s) under earn/native or native-core.yml changed since"
@@ -151,7 +191,7 @@ if [ -z "$picked" ]; then
   done
 
   if [ -n "$base" ]; then
-    wait_for "$base" '.event != "pull_request"' 0
+    wait_for "$base" '.event != "pull_request"' 0 "$base_run"
     [ -n "$picked" ] || fail "the native-core run for $(short "$base") is no longer listed"
     why="no native-core run for $(short "$sha"), so the run for $(short "$base"): it is in the history of $(short "$GITHUB_SHA") and has the same earn/native and native-core.yml"
   elif [ -n "$in_history" ]; then

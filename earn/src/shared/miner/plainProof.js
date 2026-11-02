@@ -1,5 +1,6 @@
 'use strict';
 
+const zlib = require('zlib');
 const { CHUNK_LEN } = require('./merkle');
 
 // The `plain_proof` field of a share submission: base64 of a bincode-encoded
@@ -26,6 +27,10 @@ const { CHUNK_LEN } = require('./merkle');
 //
 // The verifier accepts a legacy V1 blob too, which is the same bytes without
 // the trailing Option tag. We always write the current form.
+//
+// On a connection where the pool agreed to compressed proofs (Kryptex's
+// "type":"v2", see stratum.js), the field is base64 of those bytes gzipped
+// instead. Both forms are made by encodePlainProof and nowhere else.
 
 const BINCODE_OPTION_NONE = 0x00;
 
@@ -99,13 +104,68 @@ function serializePlainProof(pp) {
   ]);
 }
 
-function encodePlainProof(pp) {
-  return serializePlainProof(pp).toString('base64');
+// The `plain_proof` field: base64(bincode), or base64(gzip(bincode)) when
+// `gzip` is set. gzip is the file format (RFC 1952), which is what the pool
+// unpacks: not raw deflate, and not a zlib stream.
+//
+// It shrinks to a few percent because the operands the proof carries are the
+// core's constant fill (PROFILE.operandFill): each 1024-byte leaf is one byte
+// value over and over, but for the salt stamped into A's first 11 bytes.
+function encodePlainProof(pp, { gzip = false } = {}) {
+  const bytes = serializePlainProof(pp);
+  return (gzip ? zlib.gzipSync(bytes) : bytes).toString('base64');
+}
+
+// A compressed field's size before and after compression, in bytes, for the
+// log. Measured by unpacking it, as the pool will.
+function gzipSizes(field) {
+  const sent = Buffer.from(field, 'base64');
+  return { plain: zlib.gunzipSync(sent).length, sent: sent.length };
+}
+
+// The `plain_proof` field read back: the inverse of encodePlainProof, giving
+// the object serializePlainProof takes. For the probes and tests that check a
+// share the way a pool does (probes/verify-pool.js), not for mining. `gzip` is
+// whether the field was sent compressed. Throws on anything that is not one
+// whole dense proof, the way the pool's parser refuses it. A legacy V1 blob,
+// with no trailing Option tag, reads too.
+function decodePlainProof(field, { gzip = false } = {}) {
+  const raw = Buffer.from(String(field), 'base64');
+  const b = gzip ? zlib.gunzipSync(raw) : raw;
+  let o = 0;
+  const take = (n) => {
+    if (o + n > b.length) throw new Error('not a valid PlainProof: it ends early');
+    const v = b.subarray(o, o + n);
+    o += n;
+    return v;
+  };
+  const u64 = () => Number(take(8).readBigUInt64LE(0));
+  // A count can't ask for more items than there are bytes left: each is at least one.
+  const count = () => {
+    const n = u64();
+    if (n > b.length - o) throw new Error('not a valid PlainProof: it ends early');
+    return n;
+  };
+  const many = (one) => Array.from({ length: count() }, one);
+  const merkle = () => {
+    const leafData = many(() => Buffer.from(take(u64())));
+    const leafIndices = many(u64);
+    const totalLeaves = u64();
+    const root = Buffer.from(take(32));
+    const siblings = many(() => Buffer.from(take(32)));
+    return { proof: { leafData, leafIndices, totalLeaves, root, siblings }, rowIndices: many(u64) };
+  };
+  const pp = { m: u64(), n: u64(), k: u64(), noiseRank: u64(), a: merkle(), bt: merkle() };
+  if (o < b.length && take(1)[0] !== BINCODE_OPTION_NONE) {
+    throw new Error('not a dense PlainProof: it carries MoE fields');
+  }
+  if (o !== b.length) throw new Error('not a valid PlainProof: ' + (b.length - o) + ' bytes left over');
+  return pp;
 }
 
 module.exports = {
   BINCODE_OPTION_NONE,
   u64le, seqOfU64, seqOfByteVecs, seqOfDigests,
   serializeMerkleProof, serializeMatrixMerkleProof,
-  serializePlainProof, encodePlainProof,
+  serializePlainProof, encodePlainProof, gzipSizes, decodePlainProof,
 };

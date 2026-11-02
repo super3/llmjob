@@ -9,12 +9,18 @@ jest.mock('../src/main/gpuClocks', () => ({
 }));
 
 const { EventEmitter } = require('events');
+const zlib = require('zlib');
 const {
-  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN,
+  PearlMiner, RECONNECT_MS, RESTART_MS, RESTART_LIMIT, STABLE_MS, SALT_RUN, GZIP_REJECT_LIMIT,
+  K_REJECT_LIMIT, K_ANSWER_MS,
 } = require('../src/main/pearlMiner');
 const gpuClocks = require('../src/main/gpuClocks');
 const { encode } = require('../src/shared/miner/stratum');
-const { shareBound, PROFILE, buildConfig52, regionToTile } = require('../src/shared/miner/pearlhash');
+const { buildShareProof } = require('../src/shared/miner/shareProof');
+const { decodePlainProof } = require('../src/shared/miner/plainProof');
+const {
+  shareBound, PROFILE, buildConfig52, regionToTile, profileForK,
+} = require('../src/shared/miner/pearlhash');
 const { hash, keyedHash } = require('../src/shared/miner/blake3');
 const M = require('../src/shared/miner/merkle');
 
@@ -34,7 +40,8 @@ function makeSocket() {
   const s = new EventEmitter();
   s.written = [];
   s.write = jest.fn((d) => { s.written.push(d); return true; });
-  s.destroy = jest.fn();
+  // As a real socket does: destroyed at once, closed later.
+  s.destroy = jest.fn(() => { s.destroyed = true; });
   return s;
 }
 
@@ -77,8 +84,10 @@ describe('PearlMiner — start', () => {
 
     sock.emit('connect');
     const sent = JSON.parse(sock.written[0]);
+    // Asking for compressed proofs (see 'compressed share proofs'), and with no
+    // agent given, naming none.
     expect(sent).toEqual({
-      id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01' },
+      id: 1, method: 'mining.authorize', params: { wallet: ADDR, worker: 'rig01', type: 'v2' },
     });
   });
 
@@ -97,6 +106,22 @@ describe('PearlMiner — start', () => {
     expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '+' + MDL);
   });
 
+  // Kryptex has no merge mining, and answered a login carrying an MDL address
+  // with "Invalid login". There the rig mines Pearl alone, and says so.
+  test('leaves an MDL address out of a Kryptex login', () => {
+    const { m, sock, events } = boot();
+    m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048', mdlAddress: MDL });
+    sock.emit('connect');
+    expect(JSON.parse(sock.written[0]).params.wallet).toBe(ADDR + '/rig01');
+    expect(events.log).toContainEqual({ level: 'warn', line: 'Kryptex has no MDL merge mining: mining Pearl only' });
+    m.stop();
+    // Without one there is nothing to say.
+    const quiet = boot();
+    quiet.m.start({ ...settings, endpoint: 'prl-us.kryptex.network:7048', mdlAddress: 'nope' });
+    expect(quiet.events.log.map((l) => l.line)).not.toContain('Kryptex has no MDL merge mining: mining Pearl only');
+    quiet.m.stop();
+  });
+
   test('a malformed MDL address is dropped, not sent', () => {
     const { m, sock } = boot();
     m.start({ ...settings, mdlAddress: 'nope' });
@@ -112,7 +137,7 @@ describe('PearlMiner — start', () => {
     expect(m.isRunning()).toBe(false);
     expect(connect).not.toHaveBeenCalled();
     expect(events.log[0].level).toBe('error');
-    expect(events.log[0].line).toMatch(/core is not built/i);
+    expect(events.log[0].line).toMatch(/^No Pearl core loaded — nothing to mine with./);
     expect(events.stopped).toHaveLength(1);
   });
 
@@ -309,7 +334,7 @@ describe('PearlMiner — shares', () => {
     b.sock.written.length = 0;
     core.emit('hit', goodHit());
     const sent = JSON.parse(b.sock.written[0]);
-    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1 });
+    expect(b.m.pending.get(sent.id)).toEqual({ jobId: '00000000_2097152', index: 1, gzip: false, k: TINY.k });
   });
 
   test('a valid hit is submitted as a plain proof', () => {
@@ -506,6 +531,292 @@ describe('PearlMiner — shares', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+// Kryptex's gzip extension as the miner runs it: asked for on every login,
+// decided by each connection's own reply, and dropped for the rest of the run
+// when a pool that agreed rejects compressed shares and accepts none.
+describe('PearlMiner — compressed share proofs', () => {
+  const JOB_KEY = hash(Buffer.concat([Buffer.from(HEADER, 'hex'), buildConfig52(TINY)]));
+  // Verbatim, 2026-10-20: Kryptex asked with the type, and asked without it.
+  const AUTH_V2 = '{"id":1,"result":true,"error":null,"type":"v2"}\n';
+  const AUTH_PLAIN = '{"id":1,"result":true,"error":null}\n';
+  const FALLBACK_LINE = 'the pool rejected 3 compressed shares and accepted none; '
+    + 'reconnecting to send shares uncompressed for the rest of this run';
+
+  // A hit with real proofs over the core's constant operand fill (every byte
+  // 48), so it compresses the way a real share does. Built once: the miner
+  // does not change a hit, so the same one can be found again and again.
+  let theHit = null;
+  function hit() {
+    if (theHit) return theHit;
+    const side = (rows) => {
+      const mat = Buffer.alloc(TINY.m * TINY.k, 48);
+      const p = M.multiLeafProof(JOB_KEY, mat, M.buildLayers(JOB_KEY, mat), M.leafIndicesFromRows(rows, TINY.k));
+      return {
+        leafIndices: p.leafIndices, leafData: Buffer.concat(p.leafData),
+        siblings: Buffer.concat(p.siblings), root: p.root, totalLeaves: p.totalLeaves,
+      };
+    };
+    const jackpotHash = Buffer.alloc(32);
+    jackpotHash[24] = 0x01; // 2^192, comfortably under the scaled bound
+    const { rows, cols } = regionToTile(0, TINY);
+    theHit = { jobId: '00000000_2097152', jackpotHash, nonce: 0, proofA: side(rows), proofBt: side(cols) };
+    return theHit;
+  }
+
+  // A miner with a fresh socket for every connection, so a reconnect can be
+  // followed from one to the next, and a fresh core for every run, so a hit
+  // after a restart is found once, as on a real rig.
+  function rig({ agent, endpoint } = {}) {
+    const socks = [];
+    let core = null;
+    const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+    const m = new PearlMiner({ connect, createCore: () => (core = makeCore()), reconnectMs: 0, agent });
+    const lines = [];
+    m.on('log', (l) => lines.push(l));
+    m.start({ ...settings, profile: TINY, ...(endpoint ? { endpoint } : {}) });
+    const sock = () => socks[socks.length - 1];
+    const sent = (method) => sock().written.map((w) => JSON.parse(w)).filter((x) => x.method === method);
+    return {
+      m, socks, lines, sock,
+      get core() { return core; },
+      restart() { m.stop(); m.start({ ...settings, profile: TINY }); },
+      said: () => lines.map((l) => l.line),
+      authorize: () => sent('mining.authorize')[0],
+      submits: () => sent('mining.submit'),
+      // The newest socket connects, logs in with this reply, and gets a job.
+      login(reply) {
+        sock().emit('connect');
+        sock().emit('data', reply);
+        sock().emit('data', jobLine());
+      },
+      answer(id, ok) {
+        sock().emit('data', JSON.stringify(ok ? { id, result: true, error: null }
+          : { id, result: null, error: [23, 'invalid share'] }) + '\n');
+      },
+      // The socket closes, as one the miner destroyed does, and the reconnect runs.
+      reconnect() {
+        sock().emit('close');
+        jest.runOnlyPendingTimers();
+      },
+    };
+  }
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => jest.useRealTimers());
+
+  test('every login asks for them and names the miner, Kryptex\'s wallet/worker included', () => {
+    const r = rig({ agent: 'llmjob-earn/0.6.6' });
+    r.sock().emit('connect');
+    expect(r.authorize().params).toEqual({ wallet: ADDR, worker: 'rig01', agent: 'llmjob-earn/0.6.6', type: 'v2' });
+    r.m.stop();
+
+    const kx = rig({ agent: 'llmjob-earn/0.6.6', endpoint: 'prl-us.kryptex.network:7048' });
+    kx.sock().emit('connect');
+    expect(kx.authorize().params)
+      .toEqual({ wallet: ADDR + '/rig01', worker: 'rig01', agent: 'llmjob-earn/0.6.6', type: 'v2' });
+    kx.m.stop();
+  });
+
+  test('a pool that says v2 is sent the proof gzipped, which unpacks to the plain one', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    expect(r.m.gzip).toBe(true);
+    expect(r.said()).toContain('authorized; the pool takes compressed share proofs');
+    r.core.emit('hit', hit());
+    const [submit] = r.submits();
+    expect(Object.keys(submit.params).sort()).toEqual(['hs', 'job_id', 'plain_proof']);
+    expect(zlib.gunzipSync(Buffer.from(submit.params.plain_proof, 'base64')))
+      .toEqual(Buffer.from(buildShareProof(hit(), JOB_KEY, TINY), 'base64'));
+    expect(r.m.pending.get(submit.id).gzip).toBe(true);
+    r.m.stop();
+  });
+
+  test('a pool that does not say v2 is sent the plain proof', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    expect(r.m.gzip).toBe(false);
+    expect(r.said()).toContain('authorized');
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+    expect(r.said().some((l) => /compressed/.test(l))).toBe(false);
+    r.m.stop();
+  });
+
+  // What one connection agreed says nothing about the next: a pool behind a
+  // different address may not offer it, and would reject a compressed proof.
+  test('the choice belongs to one connection: cleared on close, asked again, and decided by the new reply', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    expect(r.m.gzip).toBe(true);
+    r.reconnect();
+    expect(r.socks).toHaveLength(2);
+    expect(r.m.gzip).toBe(false);
+    r.sock().emit('connect');
+    expect(r.authorize().params.type).toBe('v2');
+    r.sock().emit('data', AUTH_PLAIN);
+    r.sock().emit('data', jobLine());
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+
+    // And back the other way.
+    r.reconnect();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    expect(zlib.gunzipSync(Buffer.from(r.submits()[0].params.plain_proof, 'base64')))
+      .toEqual(Buffer.from(buildShareProof(hit(), JOB_KEY, TINY), 'base64'));
+
+    // A stop lets go of the connection, and its choice with it.
+    r.m.stop();
+    expect(r.m.gzip).toBe(false);
+  });
+
+  test('the sizes are logged on the first compressed share of each connection', () => {
+    const r = rig();
+    const sizeLines = () => r.said().filter((l) => /^sending compressed share proofs/.test(l));
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    r.core.emit('hit', hit());
+    expect(r.submits()).toHaveLength(2);
+    // Whole KB for the plain proof, tenths for the compressed one.
+    expect(sizeLines()).toEqual([expect.stringMatching(/^sending compressed share proofs: \d+ KB -> \d\.\d KB$/)]);
+    r.reconnect();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    expect(sizeLines()).toHaveLength(2);
+    r.m.stop();
+  });
+
+  test('compressed shares rejected with none accepted: the miner logs in again without asking, for the rest of the run', () => {
+    expect(GZIP_REJECT_LIMIT).toBe(3);
+    const r = rig();
+    r.login(AUTH_V2);
+    const first = r.sock();
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    const ids = r.submits().map((s) => s.id);
+    r.answer(ids[0], false);
+    r.answer(ids[1], false);
+    expect(first.destroy).not.toHaveBeenCalled();
+    r.answer(ids[2], false);
+    expect(first.destroy).toHaveBeenCalledTimes(1);
+    expect(r.lines).toContainEqual({ level: 'warn', line: FALLBACK_LINE });
+
+    // The usual reconnect, and a login with no type: plain proofs from here.
+    r.reconnect();
+    r.sock().emit('connect');
+    expect(r.authorize().params).toEqual({ wallet: ADDR, worker: 'rig01' });
+    r.sock().emit('data', AUTH_PLAIN);
+    r.sock().emit('data', jobLine());
+    r.core.emit('hit', hit());
+    expect(r.submits()[0].params.plain_proof).toBe(buildShareProof(hit(), JOB_KEY, TINY));
+
+    // Every later connection of this run asks without it too.
+    r.reconnect();
+    r.sock().emit('connect');
+    expect(r.authorize().params).not.toHaveProperty('type');
+
+    // A new run asks again, and counts again: its first rejection is one, not
+    // the fourth.
+    r.restart();
+    r.login(AUTH_V2);
+    expect(r.authorize().params.type).toBe('v2');
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    r.m.stop();
+  });
+
+  // The fallback lets go of the socket at once, but it stays this.sock until
+  // its close event comes. A write to it in between is lost without a word.
+  test('a hit found after the fallback lets go of the socket, before it closes, is dropped and said', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    const written = r.sock().written.length;
+    r.core.emit('hit', hit());
+    expect(r.sock().written).toHaveLength(written);
+    expect(r.m.pending.size).toBe(0);
+    expect(r.said()).toContain('dropping a hit found while the pool connection is down');
+    r.m.stop();
+  });
+
+  // An accepted plain share says nothing about whether a pool reads
+  // compressed ones: a later connection may say v2 and then reject them all.
+  test('only an accepted compressed share turns the fallback off', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, true);
+    r.reconnect();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said()).toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  // The pool behind the next run's connection may not be the one that read
+  // them, so an accepted compressed share is per run too.
+  test('a new run can fall back again, whatever the last one accepted', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    r.core.emit('hit', hit());
+    r.answer(r.submits()[0].id, true);
+    r.restart();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said()).toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  // The socket closes some time after the miner lets go of it, and verdicts
+  // already on their way still arrive. They must not close it again.
+  test('rejections arriving before the close do not close it twice', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 4; i++) r.core.emit('hit', hit());
+    const reject = (s) => JSON.stringify({ id: s.id, result: null, error: [23, 'invalid share'] });
+    r.sock().emit('data', r.submits().map(reject).join('\n') + '\n');
+    expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+    expect(r.said().filter((l) => l === FALLBACK_LINE)).toHaveLength(1);
+    r.m.stop();
+  });
+
+  test('one accepted compressed share shows the pool reads them, for the rest of the run', () => {
+    const r = rig();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 5; i++) r.core.emit('hit', hit());
+    const ids = r.submits().map((s) => s.id);
+    r.answer(ids[0], false);
+    r.answer(ids[1], true);
+    for (const id of ids.slice(2)) r.answer(id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+
+    // Still so on the next connection.
+    r.reconnect();
+    r.login(AUTH_V2);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    expect(r.said()).not.toContain(FALLBACK_LINE);
+    r.m.stop();
+  });
+
+  test('rejected plain shares say nothing about compression', () => {
+    const r = rig();
+    r.login(AUTH_PLAIN);
+    for (let i = 0; i < 3; i++) r.core.emit('hit', hit());
+    for (const s of r.submits()) r.answer(s.id, false);
+    expect(r.sock().destroy).not.toHaveBeenCalled();
+    expect(r.m.askGzip).toBe(true);
+    r.m.stop();
   });
 });
 
@@ -891,8 +1202,8 @@ describe('PearlMiner — one core per card', () => {
     const b = fleet();
     b.m.start({ ...settings, gpus: GPUS });
     expect(b.made.map((c) => c.opts)).toEqual([
-      { saltBase: 0, saltStride: 2, deviceIndex: 0 },
-      { saltBase: 1, saltStride: 2, deviceIndex: 1 },
+      { saltBase: 0, saltStride: 2, deviceIndex: 0, cardK: true, checkHits: true },
+      { saltBase: 1, saltStride: 2, deviceIndex: 1, cardK: true, checkHits: true },
     ]);
   });
 
@@ -963,7 +1274,7 @@ describe('PearlMiner — one core per card', () => {
     const b = fleet();
     b.m.start(settings);
     expect(b.made).toHaveLength(1);
-    expect(b.made[0].opts).toEqual({ saltBase: 0, saltStride: 1 });
+    expect(b.made[0].opts).toEqual({ saltBase: 0, saltStride: 1, cardK: true, checkHits: true });
   });
 
   // A factory that returns nothing instead of throwing is the same answer: no
@@ -1286,7 +1597,7 @@ describe('PearlMiner — restarting a card that stopped', () => {
 
     // The same card, in the same lane, on salts its first run never reaches.
     expect(b.createCore.mock.calls[2][1]).toEqual({
-      deviceIndex: 1, saltStride: 2, saltBase: 1 + 2 * SALT_RUN,
+      deviceIndex: 1, saltStride: 2, saltBase: 1 + 2 * SALT_RUN, cardK: true, checkHits: true,
     });
     const again = coreFor(b, 1);
     expect(again).not.toBe(first);
@@ -1322,7 +1633,7 @@ describe('PearlMiner — restarting a card that stopped', () => {
 
     b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
     jest.advanceTimersByTime(RESTART_MS);
-    expect(b.createCore.mock.calls[1][1]).toEqual({ deviceIndex: 1, saltStride: 1, saltBase: SALT_RUN });
+    expect(b.createCore.mock.calls[1][1]).toEqual({ deviceIndex: 1, saltStride: 1, saltBase: SALT_RUN, cardK: true, checkHits: true });
     expect(b.made[1].setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
     expect(b.events.error).toEqual([]);
     expect(b.events.stopped).toEqual([]);
@@ -1377,6 +1688,26 @@ describe('PearlMiner — restarting a card that stopped', () => {
     expect(b.m.devices()).toEqual([GPUS[0]]);
     expect(b.m.isRunning()).toBe(true);
     expect(b.events.error).toEqual([]);
+  });
+
+  // The other card waiting for its restart is still one of the run's cards, so
+  // one card left off for good does not end the run and clear that restart.
+  test('a card left off while the other waits for its restart does not end the run', () => {
+    const b = rig();
+    b.m.start({ ...settings, gpus: GPUS });
+    for (let i = 0; i < RESTART_LIMIT; i++) {
+      coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+      jest.advanceTimersByTime(RESTART_MS);
+    }
+    coreFor(b, 0).emit('error', new Error('GPU 0: ' + ILLEGAL));
+    coreFor(b, 1).emit('error', new Error('GPU 1: ' + ILLEGAL));
+    expect(b.lines()).toContain('leaving GPU 1 (NVIDIA GeForce RTX 4070) off: it stopped again within 10 '
+      + 'minutes of each of 3 restarts. Stop and start mining to try it again.');
+    expect([b.m.isRunning(), b.events.error, b.events.stopped]).toEqual([true, [], []]);
+    jest.advanceTimersByTime(RESTART_MS);
+    expect(b.createCore).toHaveBeenCalledTimes(3 + RESTART_LIMIT);
+    expect(b.m.devices()).toEqual([GPUS[0]]);
+    expect(b.m.isRunning()).toBe(true);
   });
 
   // A card that mined ten minutes since it came back was healthy, so a fault
@@ -1775,7 +2106,7 @@ describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
     const again = coreFor(b, 0);
     expect(again).not.toBe(b.made[0]);
     // A fresh run of salts, so the pool is never sent a share twice.
-    expect(b.createCore.mock.calls[2][1]).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN });
+    expect(b.createCore.mock.calls[2][1]).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: true, checkHits: true });
     expect(again.setJob.mock.calls[0][0].jobId).toBe('00000000_2097153');
     expect(b.m.devices()).toEqual([GPUS[1], GPUS[0]]);
     expect(b.lines().length).toBe(before);
@@ -1983,5 +2314,680 @@ describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
     expect(b.m.isRunning()).toBe(true);
     expect(b.events.stopped).toEqual([]);
     expect(b.m.resumeCards([0])).toEqual([GPUS[0]]);
+  });
+});
+
+// A core may mine a larger k on its card than the profile's (cardK; an RDNA 4
+// card mines k 4096, everything else k 2048). Each card then has its own
+// profile, and with it its own share bound, job_key and proofs: a rig whose
+// cards mine different k must never send a share under the other k.
+describe('PearlMiner — each card mines its own k', () => {
+  // m and n small enough to build real trees here, at both k.
+  const SMALL = { ...PROFILE, m: 64, n: 64 };
+  const K4 = profileForK(SMALL, 4096);
+  const T = BigInt('0x' + TARGET);
+  const HEADER2 = HEADER.slice(0, -8) + '00000001';
+  const AUTH_V2 = '{"id":1,"result":true,"error":null,"type":"v2"}\n';
+  const AUTH_PLAIN = '{"id":1,"result":true,"error":null}\n';
+  const FALLBACK = 'the pool turned down 3 shares at k 4096 (rejected, unanswered, or dropped with the connection) '
+    + 'and accepted none; mining k 2048 on every card for the rest of this run';
+
+  // A hit with genuine proofs, as the device builds them: over the constant
+  // fill, under the job_key of `header` at this profile's k. Built once a
+  // (header, k): the miner does not change a hit.
+  const built = new Map();
+  function hitFor(profile, { header = HEADER, jobId = '00000000_2097152', value = 1n << 192n } = {}) {
+    const id = header + ':' + profile.k;
+    if (!built.has(id)) {
+      const jobKey = hash(Buffer.concat([Buffer.from(header, 'hex'), buildConfig52(profile)]));
+      const side = (rows, dim) => {
+        const mat = Buffer.alloc(dim * profile.k, 48);
+        const p = M.multiLeafProof(jobKey, mat, M.buildLayers(jobKey, mat), M.leafIndicesFromRows(rows, profile.k));
+        return {
+          leafIndices: p.leafIndices, leafData: Buffer.concat(p.leafData),
+          siblings: Buffer.concat(p.siblings), root: p.root, totalLeaves: p.totalLeaves,
+        };
+      };
+      const { rows, cols } = regionToTile(0, profile);
+      built.set(id, { nonce: 0, proofA: side(rows, profile.m), proofBt: side(cols, profile.n) });
+    }
+    const jackpotHash = Buffer.alloc(32);
+    let v = value;
+    for (let i = 0; i < 32; i++) { jackpotHash[i] = Number(v & 0xffn); v >>= 8n; }
+    return { ...built.get(id), jobId, jackpotHash };
+  }
+
+  // The k a submitted share declares, read off its proof as a pool reads it.
+  function kOf(submit) {
+    const raw = Buffer.from(submit.params.plain_proof, 'base64');
+    return decodePlainProof(submit.params.plain_proof, { gzip: raw[0] === 0x1f && raw[1] === 0x8b }).k;
+  }
+
+  // A rig of cards. Each card says what its core reports: `k` is the k it picks
+  // when the miner lets it (cardK), and with cardK off it keeps the profile's;
+  // no `k` is a core built before cores could choose. `fail` makes the card's
+  // next core throw it. With `gpus: false` the rig has no card list, and its one
+  // card's core (cards[0]) names no device.
+  function rig(cards, { gpus = true } = {}) {
+    const socks = [];
+    const made = [];
+    const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
+    const createCore = jest.fn((profile, opts) => {
+      const card = gpus ? cards.find((c) => c.index === opts.deviceIndex) : cards[0];
+      if (card.fail) {
+        const e = card.fail;
+        card.fail = null;
+        throw e;
+      }
+      const c = makeCore();
+      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index };
+      if (card.k !== undefined) c.k = opts.cardK ? card.k : profile.k;
+      if (card.kNote) c.kNote = card.kNote;
+      made.push({ core: c, opts, card });
+      return c;
+    });
+    const m = new PearlMiner({ connect, createCore, reconnectMs: 0, restartMs: 10 });
+    const lines = [];
+    m.on('log', (l) => lines.push(l.line));
+    m.on('error', () => {});
+    const start = () => m.start({
+      ...settings, profile: SMALL, gpus: gpus ? cards.map((c) => ({ index: c.index, name: 'Radeon ' + c.index })) : [],
+    });
+    start();
+    const sock = () => socks[socks.length - 1];
+    return {
+      m, socks, made, lines, createCore, sock, start,
+      // The newest core of a card (by index, or the only card).
+      core: (index = cards[0].index) => made.filter((x) => x.card.index === index).pop().core,
+      login(reply = AUTH_PLAIN, job) {
+        sock().emit('connect');
+        sock().emit('data', reply);
+        sock().emit('data', jobLine(job));
+      },
+      job: (over) => sock().emit('data', jobLine(over)),
+      submits: () => sock().written.map((w) => JSON.parse(w)).filter((x) => x.method === 'mining.submit'),
+      answer(id, ok, msg = 'invalid share') {
+        sock().emit('data', JSON.stringify(ok ? { id, result: true, error: null } : { id, result: null, error: [23, msg] }) + '\n');
+      },
+      // The socket closes, as one the pool hung up does, and the reconnect runs.
+      reconnect() {
+        sock().emit('close');
+        jest.runOnlyPendingTimers();
+      },
+    };
+  }
+
+  test('opens every core with cardK, and a core that reports no k mines the profile as it did', () => {
+    const r = rig([{ index: 0 }]);
+    r.login();
+    expect(r.createCore.mock.calls[0][0]).toBe(SMALL);
+    expect(r.createCore.mock.calls[0][1].cardK).toBe(true);
+    expect(r.m.cores[0].profile).toBe(SMALL);
+    expect(r.core().setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
+    expect(r.lines).toContain('mining on GPU 0 · Radeon 0');
+    r.core().emit('hit', hitFor(SMALL));
+    expect(kOf(r.submits()[0])).toBe(2048);
+    r.m.stop();
+  });
+
+  test('a mixed rig gives each card the bound of its own k, and names k 4096 only where it is mined', () => {
+    const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048, kNote: 'k 2048 (PEARL_AMD_K=2048)' }, { index: 2, k: 2048 }]);
+    r.login();
+    expect(r.m.cores.map((c) => c.profile.k)).toEqual([4096, 2048, 2048]);
+    expect(r.m.cores[0].profile).toEqual(K4);
+    expect(r.m.cores[2].profile).toBe(SMALL);
+    // A k 4096 attempt is twice the work, so its bound is twice as easy.
+    expect(r.core(0).setJob.mock.calls[0][0].target).toBe(2n * shareBound(T, SMALL));
+    expect(r.core(1).setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
+    expect(r.lines).toEqual(expect.arrayContaining([
+      'mining on GPU 0 · Radeon 0 · k 4096',
+      'mining on GPU 1 · Radeon 1 · k 2048 (PEARL_AMD_K=2048)',
+      'mining on GPU 2 · Radeon 2',
+    ]));
+    // Each card's rate is MACs a second at its own k, so they add up.
+    r.core(0).emit('hashrate', 60);
+    r.core(1).emit('hashrate', 30);
+    r.core(2).emit('hashrate', 10);
+    expect(r.m.totalHashrate()).toBe(100);
+    r.m.stop();
+  });
+
+  test('each card\'s hits go out at its own k, and a hit certified for the other k is dropped, never sent', () => {
+    const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+    r.login();
+    r.core(0).emit('hit', hitFor(K4));
+    r.core(1).emit('hit', hitFor(SMALL));
+    const [s4, s2] = r.submits();
+    expect([kOf(s4), kOf(s2)]).toEqual([4096, 2048]);
+    expect(r.m.pending.get(s4.id)).toEqual({ jobId: '00000000_2097152', index: 0, gzip: false, k: 4096 });
+    expect(r.m.pending.get(s2.id)).toEqual({ jobId: '00000000_2097152', index: 1, gzip: false, k: 2048 });
+    // Each proof opens to its roots under its own k's job_key, and only that one.
+    const key = (p) => hash(Buffer.concat([Buffer.from(HEADER, 'hex'), buildConfig52(p)]));
+    const pp4 = decodePlainProof(s4.params.plain_proof);
+    expect(M.verifyProof(key(K4), pp4.a.proof)).toBe(true);
+    expect(M.verifyProof(key(SMALL), pp4.a.proof)).toBe(false);
+    // Swapped round: each card handed the other k's hit.
+    r.core(1).emit('hit', hitFor(K4));
+    r.core(0).emit('hit', hitFor(SMALL));
+    expect(r.submits()).toHaveLength(2);
+    expect(r.lines.filter((l) => l === 'dropping a hit whose proof does not verify locally')).toHaveLength(2);
+    r.m.stop();
+  });
+
+  test('a hash between the two bounds is sent from the k 4096 card and dropped from the k 2048 card', () => {
+    const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+    r.login();
+    const v = shareBound(T, K4);
+    expect(v).toBeGreaterThan(shareBound(T, SMALL));
+    r.core(0).emit('hit', hitFor(K4, { value: v }));
+    r.core(1).emit('hit', hitFor(SMALL, { value: v }));
+    expect(r.submits().map(kOf)).toEqual([4096]);
+    expect(r.lines).toContain('dropping a hit that no longer meets target (vardiff moved)');
+    r.m.stop();
+  });
+
+  test('a new job empties the job_keys, so each card certifies with the new header\'s', () => {
+    const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+    r.login();
+    r.core(0).emit('hit', hitFor(K4));
+    expect(r.m.jobKeys.size).toBe(1);
+    r.job({ job_id: '00000001_2097152', header: HEADER2 });
+    expect(r.m.jobKeys.size).toBe(0);
+    r.core(0).emit('hit', hitFor(K4, { header: HEADER2, jobId: '00000001_2097152' }));
+    r.core(1).emit('hit', hitFor(SMALL, { header: HEADER2, jobId: '00000001_2097152' }));
+    expect(r.submits().map(kOf)).toEqual([4096, 4096, 2048]);
+    expect(r.m.jobKeys.size).toBe(2);
+    r.m.stop();
+  });
+
+  test('a core that chose a k a share can\'t carry is stopped, and the card skipped', () => {
+    const r = rig([{ index: 0, k: 3072 }, { index: 1, k: 2048 }]);
+    expect(r.made[0].core.stop).toHaveBeenCalledTimes(1);
+    expect(r.lines).toContain('skipping GPU 0 (Radeon 0): the core chose k 3072, which a share can\'t carry');
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    r.m.stop();
+  });
+
+  test('a target too easy for k 4096 alone: those cards wait for the next job, said once, and the rest mine', () => {
+    // Scaled by 2^19 it fits 256 bits; by 2^20 it doesn't.
+    const easy = (((1n << 256n) - 1n) >> 19n).toString(16).padStart(64, '0');
+    const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }, { index: 2, k: 4096 }]);
+    r.login(AUTH_PLAIN, { target: easy });
+    expect(r.core(0).setJob).not.toHaveBeenCalled();
+    expect(r.core(2).setJob).not.toHaveBeenCalled();
+    expect(r.core(1).setJob).toHaveBeenCalledTimes(1);
+    expect(r.lines.filter((l) => /too easy/.test(l))).toEqual([
+      'pool target is too easy to scale for k 4096; not mining this job at that k',
+    ]);
+    // The next job is said again.
+    r.job({ job_id: '00000001_2097152', target: easy });
+    expect(r.lines.filter((l) => /too easy/.test(l))).toHaveLength(2);
+    r.m.stop();
+  });
+
+  describe('opening a card again', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    test('a restart and a resume read the card\'s k again, and a resume at another k says so', () => {
+      const cards = [{ index: 0, k: 4096 }];
+      const r = rig(cards);
+      r.login();
+      expect(r.core().setJob.mock.calls[0][0].target).toBe(2n * shareBound(T, SMALL));
+      // Back after a fault with less memory free: the core stays at k 2048 and says why.
+      cards[0].k = 2048;
+      cards[0].kNote = 'k 2048: k 4096 needs ~1969 MiB and 900 MiB is free';
+      r.core().emit('error', new Error('GPU 0: boom'));
+      jest.advanceTimersByTime(10);
+      expect(r.m.cores[0].profile).toBe(SMALL);
+      expect(r.core().setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
+      expect(r.lines).toContain('mining on GPU 0 · Radeon 0 · k 2048: k 4096 needs ~1969 MiB and 900 MiB is free');
+      // A resume at another k than the card had says so, though a resume is quiet.
+      cards[0].k = 4096;
+      cards[0].kNote = '';
+      r.m.pauseCards([0]);
+      const said = r.lines.length;
+      r.m.resumeCards([0]);
+      expect(r.lines.slice(said)).toEqual(['mining on GPU 0 · Radeon 0 · k 4096']);
+      expect(r.core().setJob.mock.calls[0][0].target).toBe(2n * shareBound(T, SMALL));
+      // At the same k it stays quiet.
+      r.m.pauseCards([0]);
+      r.m.resumeCards([0]);
+      expect(r.lines.slice(said + 1).filter((l) => l.startsWith('mining on'))).toEqual([]);
+      r.m.stop();
+    });
+  });
+
+  describe('when a pool turns k 4096 down', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => jest.useRealTimers());
+
+    test('three rejections and no accept: the k 4096 cards open again at k 2048 on fresh salts, on the job', () => {
+      expect(K_REJECT_LIMIT).toBe(3);
+      const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+      r.login();
+      for (let i = 0; i < 3; i++) r.core(0).emit('hit', hitFor(K4));
+      r.core(1).emit('hit', hitFor(SMALL));
+      const ids = r.submits().map((s) => s.id);
+      // A k 2048 share's rejection says nothing about k 4096.
+      r.answer(ids[3], false);
+      r.answer(ids[0], false);
+      r.answer(ids[1], false);
+      expect(r.lines).toContain('share rejected (k 4096): [23] invalid share');
+      expect(r.lines).toContain('share rejected: [23] invalid share');
+      expect(r.made).toHaveLength(2);
+      const old = r.core(0);
+      r.answer(ids[2], false);
+      expect(r.lines).toContain(FALLBACK);
+      expect(old.stop).toHaveBeenCalledTimes(1);
+      expect(r.made).toHaveLength(3);
+      expect(r.made[2].opts).toEqual({ deviceIndex: 0, saltStride: 2, saltBase: 0 + 2 * SALT_RUN, cardK: false, checkHits: true });
+      expect(r.core(0).setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
+      expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048, 2048]);
+      expect(r.lines.filter((l) => l === 'mining on GPU 0 · Radeon 0')).toHaveLength(1);
+      // The k 2048 card and the connection are left alone.
+      expect(r.made[1].core.stop).not.toHaveBeenCalled();
+      expect(r.sock().destroy).not.toHaveBeenCalled();
+      // A hit still on its way from the closed core goes out at the k it was found at.
+      old.emit('hit', hitFor(K4));
+      const late = r.submits().pop();
+      expect(kOf(late)).toBe(4096);
+      r.answer(late.id, false);
+      expect(r.made).toHaveLength(3);
+      // Opened again later, a card stays at k 2048 for the rest of the run.
+      r.core(0).emit('error', new Error('GPU 0: boom'));
+      jest.advanceTimersByTime(10);
+      expect(r.made[3].opts.cardK).toBe(false);
+      expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048, 2048]);
+      r.m.stop();
+    });
+
+    test('one accepted share at k 4096 shows the pool takes it: no rejection after it falls back', () => {
+      const r = rig([{ index: 0, k: 4096 }]);
+      r.login();
+      for (let i = 0; i < 4; i++) r.core().emit('hit', hitFor(K4));
+      const ids = r.submits().map((s) => s.id);
+      r.answer(ids[0], true);
+      for (const id of ids.slice(1)) r.answer(id, false);
+      expect(r.m.kAccepted).toBe(true);
+      expect(r.made).toHaveLength(1);
+      expect(r.lines).not.toContain(FALLBACK);
+      r.m.stop();
+    });
+
+    test('stale, duplicate and job-not-found rejections count toward neither fallback', () => {
+      const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+      r.login(AUTH_V2);
+      for (let i = 0; i < 3; i++) {
+        r.core(0).emit('hit', hitFor(K4));
+        r.core(1).emit('hit', hitFor(SMALL));
+      }
+      const reasons = ['Stale share', 'Duplicate share', 'Job not found', 'stale job', 'duplicate', 'job expired'];
+      r.submits().forEach((s, i) => r.answer(s.id, false, reasons[i]));
+      expect([r.m.kRejects, r.m.gzipRejects]).toEqual([0, 0]);
+      expect(r.made).toHaveLength(2);
+      expect(r.sock().destroy).not.toHaveBeenCalled();
+      r.m.stop();
+    });
+
+    test('k 4096 rejections on a compressed connection count toward the k fallback only, so it goes first', () => {
+      const r = rig([{ index: 0, k: 4096 }]);
+      r.login(AUTH_V2);
+      for (let i = 0; i < 3; i++) r.core().emit('hit', hitFor(K4));
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(r.lines).toContain(FALLBACK);
+      expect([r.m.gzipRejects, r.m.askGzip]).toEqual([0, true]);
+      expect(r.sock().destroy).not.toHaveBeenCalled();
+      // At k 2048 with compression, rejections are the compression's, as before.
+      for (let i = 0; i < 3; i++) r.core().emit('hit', hitFor(SMALL));
+      for (const s of r.submits().slice(3)) r.answer(s.id, false);
+      expect(r.m.askGzip).toBe(false);
+      expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+      r.m.stop();
+    });
+
+    test('a new run lets cores choose their k again, and counts from nothing', () => {
+      const r = rig([{ index: 0, k: 4096 }]);
+      r.login();
+      for (let i = 0; i < 3; i++) r.core().emit('hit', hitFor(K4));
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(r.m.cardK).toBe(false);
+      r.m.stop();
+      r.start();
+      expect(r.createCore.mock.calls.pop()[1].cardK).toBe(true);
+      expect([r.m.cardK, r.m.kRejects, r.m.kAccepted]).toEqual([true, 0, false]);
+      r.login();
+      r.core().emit('hit', hitFor(K4));
+      r.answer(r.submits()[0].id, false);
+      expect(r.m.kRejects).toBe(1);
+      r.m.stop();
+    });
+
+    test('a pool that hangs up with a k 4096 share waiting: a strike a close, and three fall back', () => {
+      const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+      for (let i = 0; i < 3; i++) {
+        r.login();
+        // Two shares waiting are one hang-up, not two.
+        r.core(0).emit('hit', hitFor(K4));
+        r.core(0).emit('hit', hitFor(K4));
+        expect(r.m.kRejects).toBe(i);
+        r.reconnect();
+      }
+      expect(r.lines).toContain(FALLBACK);
+      // Reopened between connections: no job to give it until the next one.
+      expect(r.core(0).setJob).not.toHaveBeenCalled();
+      r.login();
+      expect(r.core(0).setJob.mock.calls[0][0].target).toBe(shareBound(T, SMALL));
+      r.m.stop();
+    });
+
+    test('a close the miner made, or with only k 2048 shares waiting, is no strike', () => {
+      const r = rig([{ index: 0, k: 4096 }, { index: 1, k: 2048 }]);
+      r.login(AUTH_V2);
+      for (let i = 0; i < 3; i++) r.core(1).emit('hit', hitFor(SMALL));
+      r.core(0).emit('hit', hitFor(K4));
+      // Three compressed k 2048 rejections: the miner closes the socket itself.
+      for (const s of r.submits().filter((x) => kOf(x) === 2048)) r.answer(s.id, false);
+      expect(r.sock().destroy).toHaveBeenCalledTimes(1);
+      r.reconnect();
+      expect(r.m.kRejects).toBe(0);
+      r.login();
+      r.core(1).emit('hit', hitFor(SMALL));
+      r.reconnect();
+      expect(r.m.kRejects).toBe(0);
+      r.m.stop();
+    });
+
+    test('a k 4096 share unanswered for K_ANSWER_MS is a strike, counted once', () => {
+      expect(K_ANSWER_MS).toBe(30000);
+      const r = rig([{ index: 0, k: 4096 }]);
+      r.login();
+      r.core().emit('hit', hitFor(K4));
+      jest.advanceTimersByTime(K_ANSWER_MS - 1);
+      expect(r.m.kRejects).toBe(0);
+      jest.advanceTimersByTime(1);
+      expect(r.m.kRejects).toBe(1);
+      // Its late rejection is not a second strike.
+      r.answer(r.submits()[0].id, false);
+      expect(r.m.kRejects).toBe(1);
+      // Nor is a hang-up while only a late share waits.
+      r.core().emit('hit', hitFor(K4));
+      jest.advanceTimersByTime(K_ANSWER_MS);
+      expect(r.m.kRejects).toBe(2);
+      r.reconnect();
+      expect(r.m.kRejects).toBe(2);
+      // An answer clears the wait: no strike comes after it.
+      r.login();
+      r.core().emit('hit', hitFor(K4));
+      r.answer(r.submits()[0].id, true);
+      jest.advanceTimersByTime(K_ANSWER_MS);
+      expect(r.m.kRejects).toBe(2);
+      // And stop() clears what is waiting.
+      r.core().emit('hit', hitFor(K4));
+      r.m.stop();
+      jest.advanceTimersByTime(K_ANSWER_MS);
+      expect(r.m.kRejects).toBe(2);
+    });
+
+    test('a card that will not open again at k 2048 is a card down, and comes back later', () => {
+      const cards = [{ index: 0, k: 4096 }, { index: 1, k: 4096 }];
+      const r = rig(cards);
+      r.login();
+      r.core(0).emit('hashrate', 60);
+      r.core(1).emit('hashrate', 30);
+      expect(r.m.hashrate).toBe(90);
+      const rates = [];
+      r.m.on('hashrate', (th, d) => rates.push([th, d.index]));
+      for (let i = 0; i < 3; i++) r.core(0).emit('hit', hitFor(K4));
+      cards[0].fail = new Error('not enough free VRAM for the rank-128 profile');
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(r.lines).toContain('could not open GPU 0 (Radeon 0) again at k 2048: not enough free VRAM for the rank-128 profile');
+      // The card that is down leaves the total and the board; the one that opened again reports anew.
+      expect(rates).toEqual([[0, 0]]);
+      expect(r.m.hashrate).toBe(0);
+      expect(r.lines).toContain('restarting GPU 0 (Radeon 0) in 0 s');
+      expect(r.m.cores.map((c) => [c.device.index, c.profile.k])).toEqual([[1, 2048]]);
+      jest.advanceTimersByTime(10);
+      expect(r.m.cores.map((c) => [c.device.index, c.profile.k])).toEqual([[1, 2048], [0, 2048]]);
+      r.m.stop();
+    });
+
+    test('a core that names no card falls back the same way, and a throw that is not an Error is said too', () => {
+      const cards = [{ k: 4096 }];
+      const r = rig(cards, { gpus: false });
+      r.login();
+      expect(r.m.cores[0].device).toBeNull();
+      for (let i = 0; i < 3; i++) r.core().emit('hit', hitFor(K4));
+      cards[0].fail = 'no luck';
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(r.lines).toContain('could not open the GPU again at k 2048: no luck');
+      jest.advanceTimersByTime(10);
+      expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048]);
+      r.m.stop();
+    });
+  });
+});
+
+// A card whose fold has not run on its kind of card in a release (core.untested; on AMD, RX 6000 and Instinct
+// cards) mines with every hit it would send recomputed first (shared/miner/checkHit). The hits here are
+// genuine, built in JS as the device builds them; a wrong one has one transcript word changed, as a fold that
+// is wrong on the card would give, with its proofs and seeds right.
+describe('PearlMiner — checking the hits of an untested card', () => {
+  const { hitFor: genuine } = require('./helpers/pearlHit');
+  const { penalizedAdjustmentFactor } = require('../src/shared/miner/pearlhash');
+  const SMALL = { ...PROFILE, m: 64, n: 64 };
+  const MAX = (1n << 256n) - 1n;
+  // A pool target whose bound every hash meets, so a hit is found in the first region.
+  const T = MAX / BigInt(penalizedAdjustmentFactor(SMALL));
+  const EASY = T.toString(16).padStart(64, '0');
+  const JOB = '00000000_2097152';
+  const opts = { bound: shareBound(T, SMALL), jobId: JOB };
+  const GOOD = genuine(SMALL, Buffer.from(HEADER, 'hex'), opts);
+  const WRONG = genuine(SMALL, Buffer.from(HEADER, 'hex'), { ...opts, tamper: (jp) => { jp[5] ^= 1; } });
+  const FOLD = 'dot4 128x256, 8 waves of 64x64, v_dot4 from registers, hash in its own kernel, batch 256 column '
+    + 'offsets, k 2048, gfx1030';
+  const said = (where) => where + ': this kind of card has not mined in a release yet, so each of its hits is '
+    + 'checked here before it is sent; the first was right';
+  const wrong = (where) => where + ': a hit came out wrong (jackpot hash mismatch (fold/transcript)). No share '
+    + 'was sent, and this card is off for the rest of this run. This kind of card has not mined in a release '
+    + 'yet: please report this line (earn/native/amd/README.md, "Testing on real hardware").';
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  // Cards as [{ index, untested, fold }]; an `untested` left out is a core that does not say (an older one).
+  // With `gpus: false` the rig has no card list and its one core names no card.
+  function rig(cards, { gpus = true } = {}) {
+    const sock = makeSocket();
+    const made = [];
+    const createCore = jest.fn((profile, o) => {
+      const card = gpus ? cards.find((c) => c.index === o.deviceIndex) : cards[0];
+      const c = makeCore();
+      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, fold: card.fold };
+      if (card.untested !== undefined) c.untested = card.untested;
+      made.push({ core: c, card });
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, restartMs: 10 });
+    const ev = { log: [], error: [], stopped: [], hashrate: [] };
+    m.on('log', (l) => ev.log.push(l));
+    m.on('error', (e) => ev.error.push(e));
+    m.on('stopped', (e) => ev.stopped.push(e));
+    m.on('hashrate', (th, d) => ev.hashrate.push([th, d ? d.index : null]));
+    m.start({
+      ...settings, profile: SMALL, gpus: gpus ? cards.map((c) => ({ index: c.index, name: 'Radeon ' + c.index })) : [],
+    });
+    sock.emit('connect');
+    sock.emit('data', '{"id":1,"result":true,"error":null}\n');
+    sock.emit('data', jobLine({ target: EASY }));
+    sock.written.length = 0;
+    return {
+      m, sock, made, ev, createCore,
+      submits: () => sock.written.map((w) => JSON.parse(w)).filter((x) => x.method === 'mining.submit'),
+      core: (index = cards[0].index) => made.filter((x) => x.card.index === index).pop().core,
+      lines: (level) => ev.log.filter((l) => !level || l.level === level).map((l) => l.line),
+    };
+  }
+
+  test('opens every core with checkHits, so the core may open an untested card', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    expect(r.createCore.mock.calls[0][1]).toMatchObject({ checkHits: true, cardK: true });
+    r.m.stop();
+  });
+
+  test('an untested card\'s right hits are checked and sent, and the check is said once', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    r.core().emit('hit', GOOD);
+    r.core().emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · gfx1030'));
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toHaveLength(1);
+    expect(r.lines('error')).toEqual([]);
+    r.m.stop();
+  });
+
+  test('a wrong hit is not sent, its card stops for the run, and the other cards keep mining', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const bad = r.core(0);
+    r.core(0).emit('hashrate', 20);
+    r.core(1).emit('hashrate', 30);
+    bad.emit('hit', WRONG);
+    expect(r.submits()).toEqual([]);
+    expect(bad.stop).toHaveBeenCalledTimes(1);
+    expect(r.lines('error')).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.hashrate.pop()).toEqual([0, 0]);
+    expect(r.m.hashrate).toBe(30);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    expect([r.m.isRunning(), r.ev.error, r.ev.stopped]).toEqual([true, [], []]);
+    // Nothing more from that card, not even a right hit still on its way; no restart; the next job is the
+    // other card's alone.
+    bad.emit('hit', GOOD);
+    jest.advanceTimersByTime(60 * 1000);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    r.sock.emit('data', jobLine({ job_id: '00000001_2097152', target: EASY }));
+    expect(bad.setJob).toHaveBeenCalledTimes(1);
+    expect(r.core(1).setJob).toHaveBeenCalledTimes(2);
+    // A tested card's hits are not checked: this one, wrong, goes out as it is.
+    r.core(1).emit('hit', { ...WRONG, jobId: '00000001_2097152' });
+    expect(r.submits()).toHaveLength(1);
+    expect(r.submits()[0].params.job_id).toBe('00000001_2097152');
+    r.m.stop();
+  });
+
+  test('a core that does not say whether it is untested (an older core) is not checked', () => {
+    const r = rig([{ index: 0, fold: FOLD }]);
+    r.core().emit('hit', WRONG);
+    expect(r.submits()).toHaveLength(1);
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toEqual([]);
+    r.m.stop();
+  });
+
+  test('the last card going wrong ends the run, with its line as the error', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    r.core().emit('hit', WRONG);
+    expect(r.ev.error.map((e) => e.message)).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.stopped).toEqual([{ failed: true }]);
+    expect(r.m.isRunning()).toBe(false);
+  });
+
+  test('a card whose architecture the core could not read, or that names no card, is said as such', () => {
+    const r = rig([{ index: 0, untested: true, fold: 'ref 32x64, dot products from LDS, hash in its own kernel' }]);
+    r.core().emit('hit', GOOD);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · unknown architecture'));
+    r.m.stop();
+    const quiet = rig([{ untested: true }], { gpus: false });
+    expect(quiet.m.cores[0].device).toBeNull();
+    quiet.core().emit('hit', WRONG);
+    expect(quiet.lines('error')).toEqual([wrong('the GPU · unknown architecture')]);
+    expect(quiet.ev.hashrate).toEqual([]);
+    expect(quiet.ev.stopped).toEqual([{ failed: true }]);
+  });
+
+  test('a wrong hit from a paused card\'s stopped core keeps the card from coming back', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    r.m.pauseCards([0]);
+    old.emit('hit', WRONG);
+    expect(r.lines('error')).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.m.resumeCards([0])).toEqual([]);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    expect(r.m.isRunning()).toBe(true);
+    r.m.stop();
+  });
+
+  test('a wrong hit from the core before a resume stops the card\'s new core', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    old.emit('hit', GOOD);
+    r.m.pauseCards([0]);
+    r.m.resumeCards([0]);
+    const resumed = r.core(0);
+    expect(resumed).not.toBe(old);
+    // The check is said once a run, not again for the resumed core.
+    resumed.emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    expect(r.lines().filter((l) => l.includes('each of its hits is checked'))).toHaveLength(1);
+    old.emit('hit', WRONG);
+    expect(resumed.stop).toHaveBeenCalledTimes(1);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    resumed.emit('hit', GOOD);
+    expect(r.submits()).toHaveLength(2);
+    r.m.stop();
+  });
+
+  test('a wrong hit from a failed core keeps its waiting restart from opening the card', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const old = r.core(0);
+    old.emit('error', new Error('GPU 0: a fault'));
+    expect(r.lines()).toContain('restarting GPU 0 (Radeon 0) in 0 s');
+    old.emit('hit', WRONG);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(2);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    expect(r.m.isRunning()).toBe(true);
+    r.m.stop();
+  });
+
+  test('on a one-card rig, that wrong hit ends the run: no card is left to wait for', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }]);
+    const old = r.core(0);
+    old.emit('error', new Error('GPU 0: a fault'));
+    expect(r.m.isRunning()).toBe(true);
+    old.emit('hit', WRONG);
+    expect(r.ev.error.map((e) => e.message)).toEqual([wrong('GPU 0 (Radeon 0) · gfx1030')]);
+    expect(r.ev.stopped).toEqual([{ failed: true }]);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(1);
+  });
+
+  test('a wrong hit on the last mining card leaves the run up while another card waits for its restart', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    r.core(1).emit('error', new Error('GPU 1: a fault'));
+    r.core(0).emit('hit', WRONG);
+    expect(r.lines('error')).toContain(wrong('GPU 0 (Radeon 0) · gfx1030'));
+    expect([r.m.isRunning(), r.ev.error, r.ev.stopped]).toEqual([true, [], []]);
+    jest.advanceTimersByTime(10);
+    expect(r.createCore).toHaveBeenCalledTimes(3);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    r.m.stop();
+  });
+
+  // buildShareProof would drop such a hit too, but one at a time: the card would mine on and send nothing.
+  test('a hit whose proof does not verify stops the card the same way, with the check\'s reason', () => {
+    const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
+    const leafData = Buffer.from(GOOD.proofA.leafData);
+    leafData[0] ^= 1;
+    const bad = r.core(0);
+    bad.emit('hit', { ...GOOD, proofA: { ...GOOD.proofA, leafData } });
+    expect(r.submits()).toEqual([]);
+    expect(bad.stop).toHaveBeenCalledTimes(1);
+    expect(r.lines('error')).toEqual(['GPU 0 (Radeon 0) · gfx1030: a hit came out wrong (Merkle proof does not verify). '
+      + 'No share was sent, and this card is off for the rest of this run. This kind of card has not mined in a '
+      + 'release yet: please report this line (earn/native/amd/README.md, "Testing on real hardware").']);
+    expect(r.m.cores.map((c) => c.device.index)).toEqual([1]);
+    r.m.stop();
   });
 });

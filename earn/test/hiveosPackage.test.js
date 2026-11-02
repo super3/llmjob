@@ -72,6 +72,7 @@ describe('hiveos package naming', () => {
     // process loads.
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_cu13.node'), 0o644)");
+    expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644)");
   });
 
   // The CPU worker is a program the CLI runs, not a library it loads.
@@ -98,7 +99,8 @@ const tarOk = process.platform === 'linux'
     for (const f of ['h-config.sh', 'h-run.sh', 'h-stats.sh', 'h-manifest.conf']) {
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
-    for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'llmjob-xmr-worker']) {
+    for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
+      'llmjob-xmr-worker']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
@@ -139,6 +141,7 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/llmjob-earn-cli-linux': '-rwxr-xr-x',
       'llmjob-earn/pearl_core.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
+      'llmjob-earn/pearl_core_hip.node': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
     });
 
@@ -167,6 +170,16 @@ const tarOk = process.platform === 'linux'
     expect(list).not.toContain('llmjob-xmr-worker');
   });
 
+  // The AMD core is for --core amd only; without it the rig mines on NVIDIA.
+  test('a missing pearl_core_hip.node still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_core_hip.node'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_core_hip.node');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('pearl_core_hip.node');
+  });
+
   test('a missing pearl_core.node builds nothing', () => {
     fs.rmSync(path.join(tmp, 'dist', 'pearl_core.node'));
     const r = build('9.8.7');
@@ -177,13 +190,15 @@ const tarOk = process.platform === 'linux'
 });
 
 describe('hiveos flight sheet docs', () => {
-  test('the Installation URL is versioned, not releases/latest', () => {
-    // HiveOS keeps the old build while the file name stays the same, and
-    // releases/latest/download/llmjob-earn-hiveos.tar.gz returned 404 for every
-    // release from v0.5.0 to v0.5.12.
+  test('the Installation URL is the one that never changes', () => {
+    // HiveOS keeps the old build while the file name stays the same, so the
+    // CLI updates the package itself (src/cli/hiveos.js) and a flight sheet
+    // installs once from the latest release's unversioned copy. That URL
+    // returned 404 for v0.5.0 to v0.5.12, which had no package; a release
+    // without one now fails its publish step (miner-build.yml).
     expect(manifestSrc).toContain(
-      'https://github.com/super3/llmjob/releases/download/v<version>/llmjob-earn-<version>.tar.gz');
-    expect(manifestSrc).not.toContain('releases/latest');
+      'https://github.com/super3/llmjob/releases/latest/download/llmjob-earn-hiveos.tar.gz');
+    expect(manifestSrc).not.toContain('<version>');
   });
 
   test('the Extra config example is flags the CLI takes', () => {

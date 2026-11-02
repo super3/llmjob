@@ -16,6 +16,10 @@ const fs = require('fs');
 const { parseCliArgs, USAGE } = require('../shared/cliArgs');
 const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
+const hiveos = require('./hiveos');
+const {
+  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage,
+} = require('../shared/hiveos');
 const net = require('net');
 const dns = require('dns');
 const { PearlEngine } = require('../main/pearlEngine');
@@ -35,22 +39,26 @@ const { createNodeClient, serverOf } = require('../main/nodeClient');
 const { llmEngine, makeLlmFleet, llmRunOptions } = require('../main/llmLaunch');
 const { initStats, applyEvent, snapshot, offPool, createRateMeter, meterSample, meterRead } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
-const { NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor } = require('../shared/config');
+const {
+  NETWORK, LLM, NODE, REGIONS, resolveEndpoint, regionLabel, xmrEndpointFor, splitEndpoint,
+} = require('../shared/config');
+const { isKryptexHost } = require('../shared/miner/stratum');
 const { defaultWorker } = require('../shared/worker');
-const { buildMinerReports } = require('../shared/minerReport');
+const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { statsFilePayload } = require('../shared/statsFile');
 const { shortenAddress, isValidAddress } = require('../shared/address');
 const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
+const { AMD: CORE_AMD, FILES: CORE_FILES, pickCoreVariant } = require('../shared/coreVariant');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus,
+  describeSkippedGpus, planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
@@ -147,7 +155,7 @@ async function runExplicitUpdate() {
 
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' …');
   try {
-    const exe = await selfUpdater.applyUpdate(plan);
+    const exe = await selfUpdater.applyUpdate(plan, undefined, { amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + ' (' + exe + '). Re-run to use it.');
     return 0;
   } catch (e) {
@@ -169,6 +177,24 @@ async function repairXmrWorker(url) {
   }
 }
 
+// Whether this run asked for the AMD core: --core amd, which run() copies into
+// PEARL_CORE_VARIANT, or that variable itself.
+function wantsAmdCore() {
+  return pickCoreVariant({ env: process.env }).variant === CORE_AMD;
+}
+
+// The AMD core beside the binary, fetched when this run asked for it and there
+// is none, as from an install of the bare binary. Without this the rig would
+// wait for the next release to get it.
+async function repairAmdCore(url) {
+  if (selfUpdater.hasAmdCore()) return;
+  try {
+    log('fetched ' + await selfUpdater.fetchAmdCore(url) + ' (it was missing)');
+  } catch (e) {
+    log('could not fetch ' + CORE_FILES[CORE_AMD] + ': ' + e.message, process.stderr);
+  }
+}
+
 // Best-effort auto-update on start. Returns an exit code when it replaced and
 // re-ran the binary (caller should return it), or null to keep mining.
 async function maybeAutoUpdate(argv, settings) {
@@ -181,6 +207,7 @@ async function maybeAutoUpdate(argv, settings) {
     // Only for a rig that mines Monero: a Pearl-only one gets no coin miner
     // it didn't ask for.
     if (plan.xmrWorkerUrl && settings.xmrAddress && selfUpdater.isPackaged()) await repairXmrWorker(plan.xmrWorkerUrl);
+    if (plan.coreHipUrl && wantsAmdCore() && selfUpdater.isPackaged()) await repairAmdCore(plan.coreHipUrl);
     return null;
   }
 
@@ -189,15 +216,54 @@ async function maybeAutoUpdate(argv, settings) {
     return null;
   }
 
+  // Exit 0 after the swap: HiveOS's miner loop starts the new h-run.sh, and the
+  // new CLI with it, three seconds later.
+  if (hiveos.isHiveos(process.env)) return (await updateHivePackage(plan)) ? 0 : null;
+
   log('updating ' + plan.currentVersion + ' → ' + plan.latestVersion + ' before starting…');
   try {
-    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress });
+    await selfUpdater.applyUpdate(plan, undefined, { xmr: !!settings.xmrAddress, amd: wantsAmdCore() });
     log('updated to v' + plan.latestVersion + '; restarting');
     return selfUpdater.reexec(argv);
   } catch (e) {
     log('auto-update failed (' + e.message + '); continuing on v' + pkg.version, process.stderr);
     return null;
   }
+}
+
+// Under HiveOS the CLI replaces its whole package folder -- binary, cores and
+// hook scripts -- because HiveOS installs from the flight sheet's URL only once.
+// True when the new package is in place and this CLI should exit. See
+// shared/hiveos for the trial the new version then runs on.
+async function updateHivePackage(plan) {
+  const dir = hiveos.packageDir();
+  if (hiveos.isSkipped(dir, plan.latestVersion, Date.now())) {
+    log('v' + plan.latestVersion + ' is out, but it failed on this rig in the last day; staying on v' + pkg.version);
+    return false;
+  }
+  if (!plan.packageUrl) {
+    log('v' + plan.latestVersion + ' is out, but its HiveOS package is not up yet; staying on v' + pkg.version);
+    return false;
+  }
+  log('updating the HiveOS package ' + plan.currentVersion + ' → ' + plan.latestVersion + '…');
+  try {
+    await hiveos.updatePackage(plan);
+  } catch (e) {
+    log('update failed: ' + e.message + '; staying on v' + pkg.version, process.stderr);
+    return false;
+  }
+  log('updated to v' + plan.latestVersion + '; HiveOS starts it in a few seconds');
+  return true;
+}
+
+// The check a HiveOS rig makes every few hours while it runs: nothing else
+// restarts the CLI for weeks at a time. True when it swapped in a new package.
+async function checkHiveUpdate() {
+  const release = await selfUpdater.fetchLatestRelease();
+  if (!release) return false;
+  const plan = planUpdate({ currentVersion: pkg.version, release, platform: process.platform });
+  if (!plan.updateAvailable || !selfUpdater.isPackaged()) return false;
+  return updateHivePackage(plan);
 }
 
 // Where the CLI caches the local-LLM binary + model (mirrors the engine dir).
@@ -750,14 +816,22 @@ async function run(argv) {
   if (parsed.help) { process.stdout.write(USAGE + '\n'); return 0; }
   if (parsed.version) { process.stdout.write(pkg.version + '\n'); return 0; }
 
+  // Under HiveOS (h-run.sh sets LLMJOB_HIVEOS=1) problems also go to the
+  // dashboard, where they are seen without opening the miner log.
+  const hive = hiveos.isHiveos(process.env);
+
   if (parsed.errors.length) {
     for (const e of parsed.errors) log('error: ' + e, process.stderr);
     log('run with --help for usage', process.stderr);
+    if (hive) hiveos.postMessage('danger', startupMessage(parsed.errors));
     return 1;
   }
 
   const settings = parsed.settings;
   for (const w of settings.warnings) log('warning: ' + w);
+  // --core beats PEARL_CORE_VARIANT. Set here, before the update, so the
+  // updater and the core loader read the same choice.
+  if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
@@ -768,6 +842,14 @@ async function run(argv) {
   // HiveOS passes none when every GPU is turned off there, and an exit would
   // only be restarted every few seconds.
   const noGpus = !!(gpuPick && !gpuPick.indices.length);
+
+  // An update killed half way leaves its staging folder; and a package swapped
+  // in by one is on trial until it hashes (shared/hiveos).
+  let trial = null;
+  if (hive) {
+    hiveos.cleanStaging(hiveos.packageDir());
+    trial = hiveos.readTrial(hiveos.packageDir());
+  }
 
   if (settings.update) {
     const code = await maybeAutoUpdate(argv, settings);
@@ -829,11 +911,17 @@ async function run(argv) {
     // chose some. Read here, with the rest of the startup probing, because the
     // start site below is inside a callback.
     settings.gpus = await detectMinerGpus(process.env, gpuPick ? gpuPick.indices : null);
+    // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
+    // with an NVIDIA card beside the AMD ones, its list would drop the AMD
+    // cards the indices name. The chosen indices go to the core as they are.
+    if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
     endpoint = resolveEndpoint(settings);
-    log('address:    ' + shortenAddress(settings.address) + (settings.mdlAddress ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
+    // Kryptex has no merge mining, so the miner leaves the MDL address out there.
+    const mdl = settings.mdlAddress && !isKryptexHost(splitEndpoint(endpoint).host);
+    log('address:    ' + shortenAddress(settings.address) + (mdl ? '  (+MDL ' + shortenAddress(settings.mdlAddress) + ')' : ''));
     // An old AlphaPool id (--region eu1) mines in the region it maps to.
     if (settings.legacyRegion) {
       log('region ' + settings.legacyRegion + ' is now ' + settings.region
@@ -894,6 +982,11 @@ async function run(argv) {
   let reportNow = null;
   let llm = null;
   let stopping = false;
+  // The exit code a deliberate shutdown ends with: 0, unless it is a failed
+  // trial (shared/hiveos), which HiveOS's h-run.sh rolls back on.
+  let stopCode = 0;
+  // Whether the miner has reported a hashrate yet, for the trial.
+  let hashed = false;
   // Co-running only: mining stops on a card while the LLM beside it answers a
   // prompt, and starts again a little after (shared/promptPause). Demand mode
   // has the whole card stop mining for as long as it serves, and LLM-only has no
@@ -926,16 +1019,46 @@ async function run(argv) {
     // rig with driver 580+) is decided from one more nvidia-smi query and the
     // card list above; see shared/coreVariant. The factory logs its choice.
     cudaCards = await probe.detectCudaCards();
+    // Set when the loader found a core that would not load. It has said why
+    // (a missing library, too old a glibc), and "not found" would contradict it.
+    let loadFailed = null;
     const createCore = coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
-      log: (level, line) => log(line, level === 'error' ? process.stderr : process.stdout),
+      coreFlag: !!settings.core,
+      log: (level, line) => {
+        if (line.includes(' is there but would not load: ')) loadFailed = line;
+        log(line, level === 'error' ? process.stderr : process.stdout);
+      },
     });
+    // A rig whose Blackwell cards the driver is too old for mines on the rest,
+    // or on none, and the dashboard should say why. Not awaited.
+    if (hive) {
+      hiveos.checkDriver().then((msg) => {
+        if (!msg) return;
+        log(msg, process.stderr);
+        hiveos.postMessage('warning', msg);
+      });
+    }
     if (!createCore) {
-      const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
-      log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
-      log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      if (hive && loadFailed) hiveos.postMessage('danger', coreLoadMessage(loadFailed));
+      // --core amd (or PEARL_CORE_VARIANT=amd) asked for the AMD core, a file
+      // of its own. Pointing at pearl_core.node there would load a CUDA core on
+      // an AMD rig. The core loader has already said what failed; when the file
+      // is missing, this says where it goes. With PEARL_CORE_PATH set, only that
+      // file is tried, so its own line is the whole answer.
+      if (loadFailed) {
+        // Nothing to add.
+      } else if (wantsAmdCore()) {
+        if (!process.env.PEARL_CORE_PATH) {
+          log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+        }
+      } else {
+        const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
+        log('pearl_core.node not found -- this build cannot mine (' + where + ').', process.stderr);
+        log('Fix: keep pearl_core.node from the release next to the executable, or set PEARL_CORE_PATH=/path/to/pearl_core.node.', process.stderr);
+      }
       if (settings.mode === 'mining') return 1;
       log('continuing with the local LLM only.', process.stderr);
     }
@@ -949,6 +1072,8 @@ async function run(argv) {
         // and to the network board. The GUI has always passed it (main.js);
         // omitting it here was an oversight, not a decision.
         readTemps: () => probe.detectGpuTemps(),
+        // Sent with the pool login, as the Monero miner's is.
+        agent: 'llmjob-earn/' + pkg.version,
       });
       // The pool took the login, so this address is one that worked.
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
@@ -966,6 +1091,7 @@ async function run(argv) {
     const meter = createRateMeter();
     miner.on('event', (evt) => {
       applyEvent(stats, evt, Date.now());
+      if (evt.type === 'status' && evt.hashrate > 0) hashed = true;
       if (evt.type === 'status') {
         const now = Date.now();
         meterSample(meter, snapshot(stats, now).total, now);
@@ -1016,7 +1142,11 @@ async function run(argv) {
             nodeId: demandServing.nodeId,
           };
         }
-        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving).map(postMinerReport));
+        // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+        // running), for every row. The CPU miner starts after this reporter and
+        // can give up on its own, so it is read at each report.
+        const host = hostStats(os, xmr && xmr.engine);
+        return Promise.all(buildMinerReports(settings, snap, gpuVram, pkg.version, serving, host).map(postMinerReport));
       };
       reportNow = report;
       report();
@@ -1073,7 +1203,12 @@ async function run(argv) {
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.
-  if (miner) {
+  // Not on an AMD core: the plan is nvidia-smi's, and on a rig with an NVIDIA
+  // card beside the AMD ones it would lock that idle card's memory clock.
+  if (miner && wantsAmdCore()) {
+    settings.mineMemClockByIndex = {};
+    settings.mineMemClockDefault = false;
+  } else if (miner) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
       cards: cudaCards,
@@ -1126,6 +1261,8 @@ async function run(argv) {
       if (demandWorker) { demandWorker.stop(); demandWorker = null; }
       if (demandPinger) { clearInterval(demandPinger); demandPinger = null; }
       if (idle) { clearInterval(idle); idle = null; }
+      if (updateTimer) { clearInterval(updateTimer); updateTimer = null; }
+      if (trialTimer) { clearInterval(trialTimer); trialTimer = null; }
       if (xmr) xmr.engine.stop();
       resolve(code);
     };
@@ -1139,10 +1276,16 @@ async function run(argv) {
     // A run with nothing to do on purpose has nothing else holding the process
     // open, so it would exit at once. This timer keeps it waiting for a signal.
     let idle = idleByChoice ? setInterval(() => {}, 60 * 60 * 1000) : null;
+    // HiveOS only: the update check every few hours, and a new version's trial.
+    let updateTimer = null;
+    let trialTimer = null;
 
-    const shutdown = () => {
+    // `code` is the exit code once everything has stopped. A signal handler is
+    // passed the signal's name, which is not one.
+    const shutdown = (code) => {
       if (stopping) return;
       stopping = true;
+      if (Number.isInteger(code)) stopCode = code;
       log('shutting down…');
       promptPause.stop();
       if (reporter) clearInterval(reporter);
@@ -1160,7 +1303,7 @@ async function run(argv) {
       // shutdown and its worker kept claiming jobs it would never finish. A
       // self-update is a restart, so the rollout mechanism hit this every time.
       if (miner && miner.isRunning()) miner.stop();
-      else finish(0); // nothing running that will resolve us with a 'stopped'
+      else finish(stopCode); // nothing running that will resolve us with a 'stopped'
     };
     process.on('SIGINT', shutdown);
     process.on('SIGTERM', shutdown);
@@ -1206,7 +1349,7 @@ async function run(argv) {
       // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();
       const fleet = await launchLlm(settings, coRun, true, true, (e) => {
-        const card = cardForPrompt(e, busIds);
+        const card = cardForPrompt(e, busIds, settings.gpus.length);
         if (card !== undefined) promptPause.setBusy(card, e.busy);
       });
       if (!fleet) return;
@@ -1404,6 +1547,51 @@ async function run(argv) {
       statsWriter.unref();
     }
 
+    // HiveOS: check for a new release every few hours and restart into it.
+    // Nothing else restarts a rig's CLI for weeks at a time.
+    if (hive && settings.update && selfUpdater.isPackaged()) {
+      let checking = false;
+      updateTimer = setInterval(() => {
+        if (checking || stopping) return;
+        checking = true;
+        checkHiveUpdate().then((swapped) => {
+          checking = false;
+          if (swapped) shutdown(0);
+        }, (e) => {
+          checking = false;
+          log('update check failed: ' + e.message, process.stderr);
+        });
+      }, NETWORK.updateCheckIntervalMs);
+      updateTimer.unref();
+    }
+
+    // A version an update swapped in is on trial until it hashes. If a run that
+    // should mine hasn't within ten minutes, it exits with an error, and
+    // h-run.sh puts the old version back (shared/hiveos).
+    if (trial) {
+      const trialStart = Date.now();
+      const from = trial.from ? ' from v' + trial.from : '';
+      trialTimer = setInterval(() => {
+        if (stopping) return;
+        const verdict = trialVerdict({ elapsedMs: Date.now() - trialStart, hashing: hashed, mines: !!miner });
+        if (verdict === 'wait') return;
+        clearInterval(trialTimer);
+        trialTimer = null;
+        if (verdict === 'pass') {
+          try {
+            hiveos.confirmTrial(hiveos.packageDir());
+          } catch (e) { /* the trial runs again on the next start */ }
+          log('the update' + from + ' to v' + pkg.version + ' is done');
+          hiveos.postMessage('success', 'LLMJob Earn updated to v' + pkg.version + from + '.');
+          return;
+        }
+        log('v' + pkg.version + ' has not hashed in ' + (TRIAL_FAIL_MS / 60000) + ' minutes since the update'
+          + from + '; exiting so HiveOS puts the old version back', process.stderr);
+        shutdown(TRIAL_FAILED_EXIT);
+      }, TRIAL_CHECK_MS);
+      trialTimer.unref();
+    }
+
     // The CPU miner runs beside whatever else runs. It ends the run only when it
     // is all there is and it gave up.
     if (xmr) {
@@ -1448,7 +1636,7 @@ async function run(argv) {
         stopServe();
         if (llm) llm.stop();
         log('engine exited (code ' + code + ')');
-        finish(stopping ? 0 : (code || 0));
+        finish(stopping ? stopCode : (code || 0));
       });
       try {
         // A false return is a fatal start failure, not a hiccup: the core did not

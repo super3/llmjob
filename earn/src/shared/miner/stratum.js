@@ -2,8 +2,10 @@
 
 // The Pearl Stratum protocol as HeroMiners actually speaks it — every shape here
 // was captured off the live wire (us.pearl.herominers.com:1200, 2026-08-23), not
-// read off a doc. Two findings that a from-the-spec implementation would get
-// wrong, and that cost the reference miners a round of trial and error:
+// read off a doc. The one exception is the compressed proofs at the end, which
+// follow Kryptex's spec and say so. Two findings that a from-the-spec
+// implementation would get wrong, and that cost the reference miners a round of
+// trial and error:
 //
 //   • authorize takes OBJECT params {wallet, worker}. The array form
 //     ["wallet.worker","x"] is rejected with {code:20,"params must be an
@@ -30,6 +32,26 @@
 //   << {"id":100,"error":null,"result":true}
 // Kryptex (prl-us.kryptex.network:7048) answers the same, with the keys in the
 // other order: {"id":100,"result":true,"error":null}. Both captured 2026-10-17.
+//
+// Compressed proofs ("type":"v2"), from Kryptex's "Pearl stratum gzip
+// protocol" (gist.github.com/maxmalysh/eaaf4332dbc5ca99d0a78f24a733fffe) and
+// not from a capture: a miner that adds "type":"v2" to authorize, and gets
+// "type":"v2" back on the reply, sends plain_proof as base64(gzip(bincode))
+// instead of base64(bincode). Kryptex shows "Implement proper gzip support" on
+// the address page of a miner that does not. Only the login was tried live, on
+// both pools on 2026-10-20, with no shares sent. The request is the shape we
+// send, not a copy of the probe; the replies are verbatim:
+//   >> {"id":1,"method":"mining.authorize","params":{"wallet":…,"worker":…,
+//        "agent":"llmjob-earn/…","type":"v2"}}
+//   << {"id":1,"result":true,"error":null,"type":"v2"}     Kryptex
+//   << {"id":1,"error":null,"result":true,"type":"v2"}     HeroMiners
+// and Kryptex asked without the type: {"id":1,"result":true,"error":null}.
+// The rest is the spec's word, not yet seen on the wire: the gzipped submit,
+// and that the reply decides, not the request. Once a pool has said v2 it
+// unpacks every submit on that connection, so a plain proof there is an
+// invalid share, and a reply without it means plain proofs. So the choice
+// belongs to one connection and is made again on the next one (see
+// main/pearlMiner.js).
 
 const HEADER_BYTES = 76;
 
@@ -38,18 +60,30 @@ const HEADER_BYTES = 76;
 // with id null, and submits carry their own ids allocated by the caller.
 const AUTHORIZE_ID = 1;
 
+// The authorize type that asks for compressed proofs, and the one a pool's
+// reply carries when it agrees (see the captures above).
+const GZIP_TYPE = 'v2';
+
 // Kryptex (`--pool prl-us.kryptex.network:7048`) takes the same message, but
 // names the worker from "wallet/worker" and ignores the worker field: a login
 // that sent only the field showed up there as "worker". Only Kryptex gets the
-// slash. HeroMiners' message stays exactly as captured, and another pool gets
-// the standard one rather than a guess.
+// slash. HeroMiners' wallet field stays exactly as captured, and another pool
+// gets the standard one rather than a guess.
 function isKryptexHost(host) {
   return /(^|\.)kryptex\.network$/i.test(String(host || ''));
 }
 
-function buildAuthorize(wallet, worker, host) {
+// Every pool is asked for compressed proofs: a pool that does not offer them
+// answers without the type, and the proofs stay plain. `gzip: false` leaves the
+// type out, for a pool that agreed and then rejected what we sent (see
+// PearlMiner's GZIP_REJECT_LIMIT). `agent` names the miner to the pool, as
+// Kryptex's documented message does; it is left out when not given.
+function buildAuthorize(wallet, worker, host, { agent, gzip = true } = {}) {
   const login = worker && isKryptexHost(host) ? wallet + '/' + worker : wallet;
-  return { id: AUTHORIZE_ID, method: 'mining.authorize', params: { wallet: login, worker } };
+  const params = { wallet: login, worker };
+  if (agent) params.agent = agent;
+  if (gzip) params.type = GZIP_TYPE;
+  return { id: AUTHORIZE_ID, method: 'mining.authorize', params };
 }
 
 // A share submission. The proof is the whole message: it carries m, n, k, the
@@ -113,7 +147,10 @@ function parseMessage(line) {
   if (msg.method == null && ('result' in msg || 'error' in msg)) {
     const failed = msg.error != null;
     if (msg.id === AUTHORIZE_ID) {
-      return { kind: failed ? 'auth-fail' : 'auth-ok', id: msg.id, error: normalizeError(msg.error) };
+      if (failed) return { kind: 'auth-fail', id: msg.id, error: normalizeError(msg.error) };
+      // `gzip`: whether this connection's proofs must go compressed. Only the
+      // exact type we ask for counts; any other type, or none, means plain.
+      return { kind: 'auth-ok', id: msg.id, error: null, gzip: msg.type === GZIP_TYPE };
     }
     // A share counts only on result true, the answer both pools give. One with
     // no error and any other result, such as false, was not accepted: counting
@@ -192,6 +229,7 @@ function parseDifficulty(params) {
 module.exports = {
   HEADER_BYTES,
   AUTHORIZE_ID,
+  GZIP_TYPE,
   buildAuthorize,
   isKryptexHost,
   buildSubmit,

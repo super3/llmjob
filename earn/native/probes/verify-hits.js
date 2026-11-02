@@ -5,59 +5,93 @@
 // hash -- and must match the device's jackpot hash exactly. Later hits are only
 // counted, so a longer run checks no more. The target is set easy enough to hit
 // about once a batch so the run crosses many operand redraws.
+//
+// The recompute is shared/miner/checkHit.js, the check the app runs before it sends a hit of a card
+// whose fold has not run on its kind of card in a release. Since every hit is checked here, the core
+// is opened with checkHits, and the AMD core then opens such a card (RX 6000, Instinct) without
+// PEARL_AMD_UNTESTED=1.
+//
+// Besides PASS, the JSON says where the time went, so a slow run can be read from the
+// one line: the card and the fold it got (core.device), seconds from setJob to the
+// first hit and to the first hashrate sample, the last and the best hashrate sample
+// (TH/s, the core's own windows of about half a second; a best far above the last
+// means the time goes between batches, not in them), and the second each salt was
+// first seen in a hit. None of it changes what passes.
+//
+// The core is opened as the app opens it (cardK): it may mine a larger k on its card than the
+// mainnet profile's 2048 (an RDNA 4 card mines k 4096), and everything here then uses the k it
+// reports (core.k): the job key's config, the proofs, the noise and the fold, which puts chunk c
+// into word c % 16 as a pool does. The JSON names the k. PEARL_PROFILE_K=4096 pins the core to that
+// k instead, without cardK, for a bench build made for it (the AMD core with -DPEARL_FOLD_K=4096).
+//
+// PEARL_SHARE_DUMP=file writes each hit that passes as a share, one JSON object a line
+// ({ header, target, plain_proof, k }), for the reference verifier (probes/refverify.rs). The
+// target is the pool's: the bound divided by the k scaling, as a pool's mining.notify carries it.
 'use strict';
+const fs = require('fs');
 const path = require('path');
 const R = path.join(__dirname, '..', '..', 'src', 'shared', 'miner') + path.sep;
-const { PROFILE, buildConfig52, regionToTile, meetsTarget, SEED_SALT_A, SEED_SALT_B, bindMessage } = require(R + 'pearlhash');
-const { hash, keyedHash } = require(R + 'blake3');
+const {
+  PROFILE: MAINNET, buildConfig52, meetsTarget, profileForK, penalizedAdjustmentFactor,
+} = require(R + 'pearlhash');
+const kEnv = process.env.PEARL_PROFILE_K;
+const ASKED = kEnv ? { ...MAINNET, k: Number(kEnv) } : MAINNET;
+// The sanity checks' least k is 16 x rank, and the operand trees need a power of two.
+if (kEnv && !(Number.isInteger(ASKED.k) && ASKED.k >= 16 * ASKED.rank && (ASKED.k & (ASKED.k - 1)) === 0)) {
+  console.log(JSON.stringify({ error: `PEARL_PROFILE_K must be a power of two of at least ${16 * ASKED.rank}, not ${kEnv}` }));
+  process.exit(2);
+}
+const { hash } = require(R + 'blake3');
 const { buildShareProof } = require(R + 'shareProof');
-const { foldTranscript, transcriptBytes } = require(R + 'reference');
-const { computeNoiseForIndices } = require(R + 'noise');
-const { leafIndicesFromRows } = require(R + 'merkle');
+const { checkHit } = require(R + 'checkHit');
 const file = path.resolve(process.argv[2]);
 const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
+const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-const core = addon.createCore(PROFILE, {});
+const core = addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true });
+// What the core mines: the profile at its k, or the profile asked for from a core that won't say.
+const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
+if (!PROFILE) {
+  core.stop();
+  console.log(JSON.stringify({ error: `the core chose k ${core.k}, which a share can't carry` }));
+  process.exit(2);
+}
+const device = core.device;
 const header = Buffer.alloc(76, 0x5A);
 const jobKey = hash(Buffer.concat([header, buildConfig52(PROFILE)]));
 const target = 2n ** bits;
+const poolTarget = target / BigInt(penalizedAdjustmentFactor(PROFILE));
 const tb = Buffer.alloc(32); { let t = target; for (let i = 31; i >= 0; i--) { tb[i] = Number(t & 0xffn); t >>= 8n; } }
-const { k, rank, m, n } = PROFILE;
+const { k } = PROFILE;
 let hits = 0, ok = 0, bad = 0; const salts = new Set(); const fails = [];
-function rowsFromLeaves(side, idxs, want) {
-  // leaves are 1024-byte chunks in leafIndices order; row r spans bytes [r*k, r*k+k)
-  const map = new Map(); const L = Array.from(side.leafIndices);
-  L.forEach((li, i) => map.set(li, side.leafData.subarray(i * 1024, i * 1024 + 1024)));
-  return want.map((r) => { const out = new Int8Array(k); for (let b = 0; b < k; b += 1024) { const off = r * k + b; const leaf = map.get(Math.floor(off / 1024)); if (!leaf) throw new Error('missing leaf for row ' + r); out.set(new Int8Array(leaf.buffer, leaf.byteOffset + (off % 1024), 1024), b); } return out; });
-}
+let t0 = 0, firstHit = null, firstRate = null, thLast = null, thMax = null; const saltAt = [];
+const since = () => +((Date.now() - t0) / 1000).toFixed(1);
+let share = null;
 function check(hit) {
-  if (!buildShareProof(hit, jobKey, PROFILE)) return 'buildShareProof rejected (Merkle / leaf indices)';
-  const rootA = Buffer.from(hit.proofA.root), rootB = Buffer.from(hit.proofBt.root);
-  const boundA = keyedHash(SEED_SALT_A, bindMessage(rootA, m)), boundB = keyedHash(SEED_SALT_B, bindMessage(rootB, n));
-  const bSeed = hash(Buffer.concat([jobKey, boundB])), aSeed = hash(Buffer.concat([bSeed, boundA]));
-  if (aSeed.toString('hex') !== hit.aSeed || bSeed.toString('hex') !== hit.bSeed) return 'seed chain mismatch';
-  const { rows, cols } = regionToTile(hit.nonce, PROFILE);
-  const Ar = rowsFromLeaves(hit.proofA, leafIndicesFromRows(rows, k), rows);
-  const Bc = rowsFromLeaves(hit.proofBt, leafIndicesFromRows(cols, k), cols);
-  for (const r of Ar.concat(Bc)) for (const v of r) if (v < -63 || v > 63) return 'operand outside int7';
-  const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
-  const A = new Int8Array(16 * k), Bt = new Int8Array(16 * k);
-  Ar.forEach((r, i) => A.set(r, i * k)); Bc.forEach((c, i) => Bt.set(c, i * k));
-  const idx = Array.from({ length: 16 }, (_, i) => i);
-  const jp = foldTranscript({ A, Bt, noiseA, noiseB, rows: idx, cols: idx, k, rank });
-  const h = keyedHash(aSeed, transcriptBytes(jp));
-  if (!h.equals(Buffer.from(hit.jackpotHash))) return 'jackpot hash mismatch (fold/transcript)';
-  if (!meetsTarget(h, target)) return 'reported hit does not meet target';
+  share = buildShareProof(hit, jobKey, PROFILE);
+  if (!share) return 'buildShareProof rejected (Merkle / leaf indices)';
+  const why = checkHit(hit, jobKey, PROFILE);
+  if (why) return why;
+  if (!meetsTarget(Buffer.from(hit.jackpotHash), target)) return 'reported hit does not meet target';
   return null;
 }
 core.on('hit', (hit) => {
+  if (firstHit === null) firstHit = since();
+  if (!salts.has(hit.salt)) saltAt.push(since());
   hits++; salts.add(hit.salt);
   if (ok + bad >= 400) return;
   let why; try { why = check(hit); } catch (e) { why = 'exception: ' + e.message; }
-  if (why) { bad++; if (fails.length < 5) fails.push({ nonce: hit.nonce, salt: hit.salt, why }); } else ok++;
+  if (why) { bad++; if (fails.length < 5) fails.push({ nonce: hit.nonce, salt: hit.salt, why }); } else {
+    ok++;
+    if (dumpTo) fs.appendFileSync(dumpTo, JSON.stringify({ header: header.toString('hex'), target: poolTarget.toString(16).padStart(64, '0'), plain_proof: share, k }) + '\n');
+  }
 });
 core.on('error', (e) => { console.log(JSON.stringify({ error: String(e) })); process.exit(2); });
-core.on('hashrate', () => {});
+core.on('hashrate', (th) => {
+  if (firstRate === null) firstRate = since();
+  thLast = +Number(th).toFixed(2); thMax = thMax === null ? thLast : Math.max(thMax, thLast);
+});
+t0 = Date.now();
 core.setJob({ header, target, jobId: 'verify' });
-setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3 }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);
+setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), k, hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);

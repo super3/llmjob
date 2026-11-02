@@ -90,6 +90,27 @@ describe('Miner API', () => {
     expect(res.body.miners[0].nodeId).toBeNull();
   });
 
+  // Same whitelist hazard again: the machine's RAM and Monero hashrate must
+  // survive the round trip. They are host-level, so the host row carries them
+  // and its cards don't. The board shows the RAM; xmrHashrate is served now so
+  // it can be shown later.
+  test('POST /api/miners/ping stores the machine\'s RAM and Monero hashrate and GET returns them', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100, ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0]).toMatchObject({ ramUsedMb: 12288, ramTotalMb: 32768, xmrHashrate: 1845.2 });
+    expect(res.body.miners[0].cards[0]).not.toHaveProperty('ramUsedMb');
+    expect(res.body.miners[0].cards[0]).not.toHaveProperty('xmrHashrate');
+  });
+
+  // A client too old to send them reads as unknown (null), not as 0.
+  test('POST /api/miners/ping without RAM or a Monero hashrate leaves them null', async () => {
+    await request(app).post('/api/miners/ping')
+      .send({ address: ADDR, worker: 'rig01', gpu: 'RTX 4090', hashrate: 100 });
+    const res = await request(app).get('/api/miners');
+    expect(res.body.miners[0]).toMatchObject({ ramUsedMb: null, ramTotalMb: null, xmrHashrate: null });
+  });
+
   test('POST returns 500 when the db fails', async () => {
     const res = await request(makeApp(brokenDb)).post('/api/miners/ping').send({ address: ADDR });
     expect(res.status).toBe(500);

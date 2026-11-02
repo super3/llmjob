@@ -34,7 +34,8 @@ const settingsStore = require('../shared/settingsStore');
 const { initStats, applyEvent, snapshot, offPool } = require('../shared/miningStats');
 const { makePoolLookup, fileCache } = require('../shared/poolLookup');
 const {
-  REGIONS, DEFAULTS, XMR, NETWORK, ECON, ECON_API, LLM, NODE, resolveEndpoint, migrateRegion, xmrEndpointFor,
+  DEFAULTS, POOLS, KRYPTEX, XMR, NETWORK, ECON, ECON_API, LLM, NODE,
+  resolveEndpoint, liveRegion, xmrEndpointFor, poolId, feeShare,
 } = require('../shared/config');
 const { defaultWorker } = require('../shared/worker');
 const { resolveEconomics } = require('../shared/economics');
@@ -48,16 +49,19 @@ const { buildChatBody } = require('../shared/llmChat');
 const { resolvePlan, DEFAULT_MODE } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote, autoUpdateSupported } = require('../shared/platform');
 const { placeLlmPlan, describeLlmStart, parseServedModel } = require('../shared/llama');
-const { buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd } = require('../shared/balance');
+const {
+  buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd, buildKryptexBalanceUrl, parseKryptexBalance,
+} = require('../shared/balance');
 const { isValidAddress } = require('../shared/address');
 const { checkXmrAddress } = require('../shared/xmr/address');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { formatUpdate, describeUpdateError } = require('../shared/updateStatus');
 const { repairUpdateConfig } = require('../shared/updateConfig');
-const { buildMinerReports } = require('../shared/minerReport');
+const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
+  planMinerGpus,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
@@ -129,6 +133,11 @@ let llmBusIds = {};
 // And nvidia-smi's cards, read at the same time, to name a card that gives up
 // on its GPU (see rememberGpuLoss).
 let llmCards = [];
+// How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
+// one) has no bus ids, and several cards are left mining. Read with the bus ids
+// when the LLM starts and kept for its life, so a prompt's start and its end map
+// to the same card even when the miner starts in between.
+let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
 // `note` is a transient "what is it doing right now" line — "Downloading model…
@@ -173,12 +182,14 @@ const settingsLog = (m) => console.error(m);
 function loadSettings() {
   return settingsStore.readSettings(settingsPath(), { fs, log: settingsLog });
 }
-// Translate a saved AlphaPool region onto a live one. Not a write: the renderer
-// hands the migrated id straight back when the user next saves, so the file
-// heals itself without a startup rewrite that would touch a settings file we
-// might have failed to read properly.
+// A pool that exists and a server it has, with a saved AlphaPool region
+// translated onto a live one. Not a write: the renderer hands the migrated id
+// straight back when the user next saves, so the file heals itself without a
+// startup rewrite that would touch a settings file we might have failed to
+// read properly.
 function withLiveRegion(s) {
-  return Object.assign({}, s, { region: migrateRegion(s.region) });
+  const pool = poolId(s.pool);
+  return Object.assign({}, s, { pool, region: liveRegion(pool, s.region) });
 }
 
 function persistSettings(s) {
@@ -316,17 +327,25 @@ function openExternalSafe(url) {
   }
 }
 
+// A Kryptex balance for either coin: the same fields as the HeroMiners ones,
+// or null on any failure.
+async function fetchKryptexBalance(coin, address, priceUsd) {
+  const json = await getJson(buildKryptexBalanceUrl(KRYPTEX.apiBase, coin, address)).catch(() => null);
+  return parseKryptexBalance(json, priceUsd);
+}
+
 // Fetch a pool balance for a payout address. Best-effort and never rejects —
 // resolves the parsed { pending, paid, earned, usd } or null (unknown address,
 // offline, non-200, bad JSON). `priceUsd` (optional) adds a USD figure. Runs
 // here in the main process so it isn't subject to the renderer's CSP /
-// cross-origin restrictions.
+// cross-origin restrictions. `pool` is the one Settings has picked for Pearl.
 //
 // This used to take buildUrl/parse/validate overrides so the merge-mined MDL
 // record could be read from its own route with its own payload shape. MDL is
 // gone, so the indirection is gone with it — one address kind, one route.
-async function fetchBalance(address, priceUsd) {
+async function fetchBalance(address, priceUsd, pool) {
   if (!isValidAddress(address)) return null;
+  if (poolId(pool) === 'kryptex') return fetchKryptexBalance('prl', address, priceUsd);
   let json;
   try {
     json = await getJson(buildBalanceUrl(String(address).trim()));
@@ -341,13 +360,17 @@ async function fetchBalance(address, priceUsd) {
   }
 }
 
-// The Monero balance on HeroMiners' Monero pool, the CPU miner's. Same pool
-// software and payload as the Pearl one, in 1e12 units, and with no `balance`
-// field until there is one. Best-effort like fetchBalance: null on any failure.
-// Its dollar value uses the pool's XMR price; without one, usd is null and
-// Settings shows the balance without dollars.
-async function fetchXmrBalance(address) {
+// The Monero balance on the CPU miner's pool. HeroMiners' Monero pool runs the
+// same software and payload as the Pearl one, in 1e12 units, and with no
+// `balance` field until there is one. Best-effort like fetchBalance: null on
+// any failure. Its dollar value uses HeroMiners' XMR price, on either pool;
+// without one, usd is null and Settings shows the balance without dollars.
+async function fetchXmrBalance(address, pool) {
   if (!checkXmrAddress(address).ok) return null;
+  if (poolId(pool) === 'kryptex') {
+    const price = await xmrPriceUsd();
+    return fetchKryptexBalance('xmr', address, price == null ? undefined : price);
+  }
   const json = await getJson(buildBalanceUrl(String(address).trim(), XMR.apiBase)).catch(() => null);
   if (json == null) return null;
   const price = await xmrPriceUsd();
@@ -450,8 +473,8 @@ function startCpuMining(settings) {
   engine.start({
     address: String(settings.xmrAddress).trim(),
     worker: settings.worker || DEFAULTS.worker,
-    // The Monero host follows the Pearl region.
-    endpoint: xmrEndpointFor(migrateRegion(settings.region)),
+    // The pool and server picked for Pearl.
+    endpoint: xmrEndpointFor(liveRegion(settings.pool, settings.region), settings.pool),
     threads: plan.threads,
   });
   sendCpu();
@@ -523,7 +546,9 @@ function statsView(snap) {
     gpu: format.formatDeviceLabel(snap.gpus.map((g) => g.gpu)) || snap.gpu,
     temp: snap.temp,
     uptime: format.formatUptime(snap.uptimeSec),
-    estDay: earnings.estDailyUsdLabel(snap.total, liveEcon),
+    // After the fee of the pool this START mines Pearl on.
+    estDay: earnings.estDailyUsdLabel(snap.total,
+      Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.pool) })),
   };
 }
 
@@ -649,7 +674,11 @@ async function startMining(settings, llmCoRuns) {
         nodeId: identity ? identity.nodeId : null,
       }
       : null;
-    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving).forEach(postMinerReport);
+    // The machine's RAM, and the CPU miner's hashrate (null when it isn't
+    // running), for every row. The CPU miner starts and stops on its own, so
+    // it is read at each report.
+    const host = hostStats(os, cpuMiner);
+    buildMinerReports(settings, snap, gpuVram, app.getVersion(), serving, host).forEach(postMinerReport);
   };
   report();
   if (reporter) clearInterval(reporter);
@@ -717,6 +746,8 @@ async function startMining(settings, llmCoRuns) {
     // NVML reading of its own to forward the way alpha-miner did, so the engine
     // polls nvidia-smi for it; a rig without nvidia-smi just shows the name.
     readTemps: () => probe.detectGpuTemps(),
+    // Sent with the pool login, as the Monero miner's is.
+    agent: 'llmjob-earn/' + app.getVersion(),
   });
   wireMinerEvents(miner, endpoint);
   try {
@@ -1349,6 +1380,7 @@ async function startLlm(reserveMb, epoch) {
   if (stale()) return false;
   llmBusIds = busIds;
   llmCards = cards;
+  llmMiningCards = planMinerGpus(cards, readGpuIndexEnv(process.env).indices).length;
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without
@@ -1531,7 +1563,7 @@ function buildFleet() {
     sendLlmStatus();
   });
   f.on('busy', (e) => {
-    const card = cardForPrompt(e, llmBusIds);
+    const card = cardForPrompt(e, llmBusIds, llmMiningCards);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
   });
   // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
@@ -2111,8 +2143,8 @@ function setPrefs(change) {
   return saved;
 }
 
-// The renderer gets a region that EXISTS. A saved AlphaPool id would otherwise
-// reach a <select> with no matching option, which blanks it silently.
+// The renderer gets a pool and region that EXIST. A saved AlphaPool id would
+// otherwise reach a <select> with no matching option, which blanks it silently.
 // A launch at login starts mining once, the first time the renderer asks.
 let startMiningOnLaunch = hiddenLaunch;
 
@@ -2155,7 +2187,8 @@ ipcMain.handle('config:get', () => {
   // install has the worker that does it.
   const plan = cpuPlan(0);
   return {
-    regions: REGIONS,
+    // Each pool with its servers, for the Settings pool menu.
+    pools: POOLS,
     // The worker default is this machine's, as settings:get fills it, so a
     // Worker box cleared in Settings falls back to it rather than to "rig01".
     defaults: Object.assign({}, DEFAULTS, { worker: defaultWorker() }),
@@ -2168,8 +2201,8 @@ ipcMain.handle('config:get', () => {
 });
 ipcMain.handle('gpu:detect', () => detectGpu());
 ipcMain.handle('region:detect', () => detectRegion());
-ipcMain.handle('balance:get', (_e, address) => fetchBalance(address, liveEcon.PRL_USD));
-ipcMain.handle('xmr:balance', (_e, address) => fetchXmrBalance(address));
+ipcMain.handle('balance:get', (_e, address, pool) => fetchBalance(address, liveEcon.PRL_USD, pool));
+ipcMain.handle('xmr:balance', (_e, address, pool) => fetchXmrBalance(address, pool));
 // The renderer has no Keccak, so the address check runs here.
 ipcMain.handle('xmr:check', (_e, address) => checkXmrAddress(address));
 ipcMain.on('miner:start', (_e, settings) => startSession(settings || {}));

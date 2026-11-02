@@ -2,6 +2,7 @@
 
 const {
   POOL_BASE, COIN_UNITS, buildBalanceUrl, parseBalance, buildPoolStatsUrl, parsePoolPriceUsd,
+  buildKryptexBalanceUrl, parseKryptexBalance,
 } = require('../src/shared/balance');
 
 const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
@@ -191,5 +192,31 @@ describe('the pool price', () => {
     expect(parsePoolPriceUsd({ pool: { price: { usd: '' } } })).toBeNull();
     expect(parsePoolPriceUsd({ pool: { price: { usd: '0' } } })).toBeNull();
     expect(parsePoolPriceUsd({ pool: { price: { usd: 'n/a' } } })).toBeNull();
+  });
+});
+
+// Kryptex's payout stats, in whole coins: what is confirmed and unpaid, and
+// what it has paid.
+describe('Kryptex balances', () => {
+  test('targets the payout stats of the coin for the address', () => {
+    expect(buildKryptexBalanceUrl('https://pool.kryptex.com', 'prl', ' ' + ADDR + ' '))
+      .toBe('https://pool.kryptex.com/prl/api/v1/miner/payouts/' + ADDR + '/stats');
+    expect(buildKryptexBalanceUrl('https://k', 'xmr', 'a/b')).toBe('https://k/xmr/api/v1/miner/payouts/a%2Fb/stats');
+    expect(buildKryptexBalanceUrl('https://k', 'xmr', null)).toBe('https://k/xmr/api/v1/miner/payouts//stats');
+  });
+
+  test('earned is unpaid plus paid, with dollars when there is a price', () => {
+    const live = { reward: { week: 0.114, month: 0.114 }, paid: 0.0, unpaid: 0.11421937459744771 };
+    expect(parseKryptexBalance(live)).toEqual({ pending: 0.11421937459744771, paid: 0, earned: 0.11421937459744771, usd: null });
+    expect(parseKryptexBalance({ paid: '2', unpaid: '0.5' }, 2)).toEqual({ pending: 0.5, paid: 2, earned: 2.5, usd: 5 });
+    // An address it has never seen.
+    expect(parseKryptexBalance({ reward: { week: 0, month: 0 }, paid: 0, unpaid: 0 }, 1)).toEqual({ pending: 0, paid: 0, earned: 0, usd: 0 });
+  });
+
+  test('anything else is null, not a guess', () => {
+    for (const bad of [null, undefined, 'x', [], {}, { paid: 1 }, { unpaid: 1 }, { paid: '', unpaid: 1 },
+      { paid: 1, unpaid: -1 }, { paid: 'x', unpaid: 1 }, { paid: Infinity, unpaid: 1 }, { paid: 1e308, unpaid: 1e308 }]) {
+      expect(parseKryptexBalance(bad)).toBeNull();
+    }
   });
 });

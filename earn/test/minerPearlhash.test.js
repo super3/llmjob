@@ -4,7 +4,7 @@ const {
   PROFILE, CONFIG_BYTES, JACKPOT_BUCKETS, ROTL_BITS,
   buildConfig52, leBytesToBigInt, meetsTarget, rotl13, rankMatches,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
-  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, profileForK,
   ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
 } = require('../src/shared/miner/pearlhash');
 
@@ -484,5 +484,50 @@ describe('valid tile offsets', () => {
 describe('constants', () => {
   test('jackpot bucket count matches the fold', () => {
     expect(JACKPOT_BUCKETS).toBe(16);
+  });
+});
+
+// A core may mine a larger k on its card than the profile's (core.k; RDNA 4
+// mines k 4096). The card then gets the profile at that k, and with it its own
+// config52, job_key and share bound.
+describe('profileForK', () => {
+  test('gives the profile at another k the verifier takes, and the same profile at its own k', () => {
+    expect(profileForK(PROFILE, 2048)).toBe(PROFILE);
+    const p = profileForK(PROFILE, 4096);
+    expect(p).toEqual({ ...PROFILE, k: 4096 });
+    expect(p).not.toBe(PROFILE);
+    expect(PROFILE.k).toBe(2048);
+    // The largest k rank 128 allows is 2^16: 4r^2 is 65536, and so is the cap.
+    expect(profileForK(PROFILE, 65536)).toEqual({ ...PROFILE, k: 65536 });
+    // No profile means the mainnet one.
+    expect(profileForK(null, 4096)).toEqual({ ...PROFILE, k: 4096 });
+    expect(profileForK(undefined, 2048)).toBe(PROFILE);
+  });
+
+  test("refuses a k a share can't carry or the operand trees can't hold", () => {
+    // Under 16r, not a power of two, past 2^16, not a number.
+    for (const k of [1024, 3072, 6144, 131072, 0, -4096, 4096.5, NaN, '4096', null]) {
+      expect([k, profileForK(PROFILE, k)]).toEqual([k, null]);
+    }
+    // 4r^2 bounds it below 2^16 at a smaller rank: rank 32 allows 512..4096.
+    const r32 = { ...PROFILE, rank: 32 };
+    expect(profileForK(r32, 4096)).toEqual({ ...r32, k: 4096 });
+    expect(profileForK(r32, 8192)).toBeNull();
+    // m*k/1024 and n*k/1024 must be powers of two: the commitment tree fold assumes it.
+    expect(profileForK({ ...PROFILE, m: 96 }, 4096)).toBeNull();
+    expect(profileForK({ ...PROFILE, n: 96 }, 4096)).toBeNull();
+    expect(profileForK({ ...PROFILE, m: 64, n: 64 }, 4096)).toEqual({ ...PROFILE, m: 64, n: 64, k: 4096 });
+  });
+
+  test("k is config52's first field, so a k 4096 card has its own job_key", () => {
+    expect(buildConfig52(profileForK(PROFILE, 4096)).subarray(0, 4).toString('hex')).toBe('00100000');
+    expect(buildConfig52(PROFILE).subarray(0, 4).toString('hex')).toBe('00080000');
+    expect(buildConfig52(profileForK(PROFILE, 4096)).subarray(4)).toEqual(buildConfig52(PROFILE).subarray(4));
+  });
+
+  test("a k 4096 card's share bound is twice a k 2048 card's, as its attempt is twice the work", () => {
+    const t = BigInt('0x00000000000007fff80000000000000000000000000000000000000000000000');
+    expect(shareBound(t, profileForK(PROFILE, 4096))).toBe(2n * shareBound(t, PROFILE));
+    expect(penalizedAdjustmentFactor(profileForK(PROFILE, 4096))).toBe(difficultyAdjustmentFactor(profileForK(PROFILE, 4096)));
   });
 });

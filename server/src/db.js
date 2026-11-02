@@ -21,6 +21,9 @@ CREATE TABLE IF NOT EXISTS miners (
   version text,
   llm_model text,
   node_id text,
+  ram_used double precision,
+  ram_total double precision,
+  xmr_hashrate double precision,
   first_seen bigint,
   last_seen bigint
 );

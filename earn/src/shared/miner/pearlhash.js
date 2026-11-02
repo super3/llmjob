@@ -156,14 +156,18 @@ function minStridePad(shape) {
 // miner computed.
 //
 // k / rank = 16 chunks, which is exactly the number of transcript lanes — so
-// every chunk lands in its own lane and the rotation never wraps. The earlier
-// k = 4096 gave 32 chunks and wrapped each lane twice.
+// every chunk lands in its own lane and the rotation never wraps. A core may
+// mine a larger k on its card when its fold is faster there (core.k; on AMD,
+// RDNA 4 mines k 4096, 32 chunks, which wraps each lane twice). That card then
+// gets its own profile (profileForK), and so its own config52 and job_key. At
+// rank 128 a MAC earns the same at any k.
 const PROFILE = {
   // Hashed into config52 — protocol-mandated, must match the network exactly.
   //
   // Rank sits on the PENALTY_BASE_RANK floor of 128, and k is the smallest the
-  // sanity checks allow for it (k >= 16r). That is not a tuning preference --
-  // it is worth an exact factor of two in accepted shares.
+  // sanity checks allow for it (k >= 16r). The rank is not a tuning preference
+  // -- it is worth an exact factor of two in accepted shares. The k is free: at
+  // rank 128 a MAC earns the same at any k, so a core may mine a larger one.
   //
   // The share bound is scaled by penalized_adjustment_factor,
   //   tile_size * (k/rank) * PENALTY_BASE_RANK,
@@ -172,10 +176,10 @@ const PROFILE = {
   // which falls as 1/rank for the same GPU work. At rank 256 every attempt cost
   // twice the arithmetic and earned the same bound: the unpenalized factor was
   // tile*k = 2^18, but the penalty rule only ever granted tile*(k/rank)*128 =
-  // 2^17. At rank 128 with k = 16r the two coincide and nothing is forfeited.
+  // 2^17. At rank 128 the two coincide, at any k, and nothing is forfeited.
   // The reference miner sits on the floor for exactly this reason.
   //
-  // k/rank is 16 either way, which is what fills the 16-lane transcript once.
+  // k/rank is 16 here, which is what fills the 16-lane transcript once.
   k: 2048,
   rank: 128,
   mmaType: 0, // Int7xInt7ToInt32
@@ -362,6 +366,25 @@ function shareBound(target, profile) {
   return t * factor;
 }
 
+// The profile a card mines when its core chose a k of its own (core.k): the
+// same profile at that k, or null when a share could not carry it. k goes into
+// config52, so the card gets its own job_key, share bound and proofs.
+//
+// The verifier's sanity checks take k from the share and want 16*rank <= k <=
+// 4*rank^2, k <= 2^16, k a multiple of 64. The operand trees here want m*k/1024
+// and n*k/1024 to be powers of two (see PROFILE.m), so k is a power of two too.
+// The same k returns the same profile, untouched: a core that kept the profile's
+// k mines exactly what it did before.
+function profileForK(profile, k) {
+  const p = profile || PROFILE;
+  if (k === p.k) return p;
+  const pow2 = (x) => Number.isInteger(x) && x > 0 && (x & (x - 1)) === 0;
+  const r = p.rank;
+  if (!pow2(k) || k < 16 * r || k > Math.min(4 * r * r, 1 << 16)) return null;
+  if (!pow2((p.m * k) / 1024) || !pow2((p.n * k) / 1024)) return null;
+  return { ...p, k };
+}
+
 // A tile offset is VALID only if it has the pattern's own bits clear.
 //
 // The verifier rebuilds the pattern from a submitted proof's row indices and
@@ -490,7 +513,7 @@ function rankMatches(jobRank, profile) {
 module.exports = {
   PROFILE, ROWS_PATTERN, COLS_PATTERN,
   SEED_SALT_A, SEED_SALT_B, bindMessage,
-  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, seedDerivationCode,
+  PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, profileForK, seedDerivationCode,
   operandFillCode,
   ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,

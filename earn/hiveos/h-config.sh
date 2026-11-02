@@ -29,7 +29,7 @@ mdl=
 [[ $wallet == *+* ]] && mdl=${wallet#*+}
 
 if [[ -z $address ]]; then
-  echo -e "${RED}No wallet set. Put %WAL% (your prl1p… address) in the flight sheet's wallet template${NOCOLOR}"
+  echo -e "${RED}No wallet set. Put your prl1p… address in the flight sheet's wallet template${NOCOLOR}"
   exit 1
 fi
 
@@ -57,7 +57,11 @@ args="--address $address"
 # Anything else in it (GPU UUIDs, MIG ids) did not come from HiveOS, so it is
 # not passed on, and the CLI logs that it ignored it. A --gpu-index in Extra
 # config replaces HiveOS's choice.
-if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=) ]]; then
+# With --core amd it isn't passed on either: those numbers are NVIDIA cards, and
+# the AMD core would take them as AMD card numbers and mine on the wrong cards.
+# To leave AMD cards out, put --gpu-index in Extra config.
+if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=)
+      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)[aA][mM][dD][[:space:]] ]]; then
   if [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*$ ]]; then
     args+=" --gpu-index=none"
   elif [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*$ ]]; then
@@ -65,9 +69,10 @@ if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-i
   fi
 fi
 
-# Self-update stays off: the agent owns the miner's lifecycle, and a new version
-# arrives as a new Installation URL. The stats file feeds h-stats.sh.
-args+=" --no-update --stats-file /run/hive/llmjob-earn-stats.json"
+# The CLI updates this package itself (h-run.sh says it runs under HiveOS), so
+# the Installation URL never has to change. --no-update in Extra config keeps a
+# rig on the version it has. The stats file feeds h-stats.sh.
+args+=" --stats-file /run/hive/llmjob-earn-stats.json"
 [[ -n $CUSTOM_USER_CONFIG ]] && args+=" $CUSTOM_USER_CONFIG"
 
 echo "$args" > "$CUSTOM_CONFIG_FILENAME"

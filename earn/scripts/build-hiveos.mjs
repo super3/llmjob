@@ -93,6 +93,16 @@ if (existsSync(cu13)) {
   console.error('warning: no pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core');
 }
 
+// The AMD core, for --core amd in Extra config. Optional like the CUDA 13
+// core: without it the package mines on NVIDIA cards as before.
+const hip = join(dist, 'pearl_core_hip.node');
+if (existsSync(hip)) {
+  copyFileSync(hip, join(pkgDir, 'pearl_core_hip.node'));
+  chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644);
+} else {
+  console.error('warning: no pearl_core_hip.node — this package cannot mine on AMD cards');
+}
+
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the
 // CUDA 13 core: without it the rig mines Pearl as before.
 const xmrWorker = join(dist, 'llmjob-xmr-worker');
@@ -106,7 +116,8 @@ if (existsSync(xmrWorker)) {
 // The tarball name carries the version. HiveOS reinstalls only when the
 // Installation URL changes, and then reuses any archive of the same file name
 // it already downloaded, even one from another URL. So only a new file name
-// gets a rig a new build.
+// gets a rig a new build from HiveOS. The CLI updates the installed package
+// itself from this versioned file (src/cli/hiveos.js).
 //
 // The stem before that version must be exactly CUSTOM_NAME. HiveOS splits a
 // `<name>-<version>.tar.gz` install URL to derive the miner name, then installs
@@ -115,11 +126,11 @@ if (existsSync(xmrWorker)) {
 // "llmjob-earn-hiveos", which never matches the llmjob-earn/ directory inside
 // the tar, and every install failed with "No llmjob-earn-hiveos/h-manifest.conf".
 //
-// The unversioned name is kept as a copy for flight sheets that point at
+// The unversioned copy is the one flight sheets use, at
 // releases/latest/download/llmjob-earn-hiveos.tar.gz. HiveOS reads "hiveos" as
-// its version and "llmjob-earn" as the miner name, so it installs. Because the
-// file name never changes, it only helps a first install: a rig that already
-// has it says "Already installed" and keeps its old build.
+// its version and "llmjob-earn" as the miner name, so it installs. Its file
+// name never changes, so HiveOS installs it once and says "Already installed"
+// after that, which is what keeps it from undoing the CLI's own updates.
 const out = join(dist, name + '-' + version + '.tar.gz');
 const legacy = join(dist, 'llmjob-earn-hiveos.tar.gz');
 execFileSync('tar', ['-czf', out, '-C', stage, name]);

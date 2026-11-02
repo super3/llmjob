@@ -21,6 +21,15 @@
 #include <cuda_runtime.h>
 #include "pearl_config.h"
 
+// compilers.sh scores a build at the k it reads from the flags (-DPEARL_FOLD_K=K, 2048
+// without one) and passes it here as PEARL_BENCH_K. Another spelling of the flag, such as
+// "-D PEARL_FOLD_K=K" or a second -DPEARL_FOLD_K, would have it score the build at the
+// wrong k, so the build stops here instead.
+#ifdef PEARL_BENCH_K
+static_assert(PEARL_FOLD_K == PEARL_BENCH_K,
+              "this build's PEARL_FOLD_K is not the k compilers.sh read from its flags: write -DPEARL_FOLD_K=K once");
+#endif
+
 // Must match pearl_host.cu's layout exactly: the host writes these through the
 // pointer, and the old {leaves, path, root} version was 48 bytes short of it.
 struct PearlProofSide {
@@ -36,12 +45,108 @@ extern "C" void *pearl_host_create(const PearlProfile *, char *, size_t);
 extern "C" void pearl_host_destroy(void *);
 extern "C" void pearl_host_set_job(void *, const uint8_t *, const uint8_t *);
 extern "C" bool pearl_host_search(void *, uint64_t, uint32_t, PearlSearchResult *, uint64_t *, char *, size_t);
+extern "C" bool pearl_host_next_hit(void *, PearlSearchResult *);
+extern "C" void pearl_host_reseed(void *, uint64_t);
 extern "C" const char *pearl_host_fold_name(void *);
+#ifdef PEARL_TALL_CYC
+// Built with -DPEARL_TALL_CYC (the kernel too): the tall fold's cycles a tile.
+extern "C" void pearl_tall_cyc_take(unsigned long long out[2]);
+#endif
+#if PEARL_TALL_HASHCYC
+// Built with -DPEARL_TALL_HASHCYC=1 as well: the hasher's two histograms (pearl_kernel.cu).
+extern "C" void pearl_tall_hcyc_take(unsigned int *out);
+// The cycles at quantile q of one histogram of n seams: the middle of the bin that holds the
+// ceil(q * n)-th seam, counting from 1. -1 for an empty one.
+static double hcyc_at(const unsigned int *h, unsigned long long n, double q) {
+  if (n == 0) return -1.0;
+  unsigned long long want = (unsigned long long)(q * (double)n);
+  if ((double)want < q * (double)n) want++;
+  if (want < 1) want = 1;
+  unsigned long long seen = 0;
+  for (unsigned i = 0; i < PEARL_TALL_HCYC_BINS; i++) {
+    seen += h[i];
+    if (seen >= want) return (i + 0.5) * PEARL_TALL_HCYC_BIN;
+  }
+  return (PEARL_TALL_HCYC_BINS - 0.5) * PEARL_TALL_HCYC_BIN;
+}
+#endif
+
+static void fnv(uint64_t &d, const void *p, size_t n) {
+  const uint8_t *q = static_cast<const uint8_t *>(p);
+  for (size_t i = 0; i < n; i++) d = (d ^ q[i]) * 1099511628211ull;
+}
+
+// PEARL_HITLIST=<batches>: every hit this build finds, to compare with another build's
+// (probes/turing/compilers.sh, stage "complete"). The fold reports a hit only after it
+// recomputes the whole hash from the transcript, so a fold whose filter misses (a split
+// hash that reads a stale state, say) drops hits and reports no wrong one: verify-hits.js
+// passes it, and the bench reads the lost work as speed. Here the target has
+// PEARL_HITLIST_BITS leading zero bits, by default as many as leave 16 to 32 hits a
+// batch on average, well under PEARL_MAX_HITS, so a batch's list is every hit in it.
+// From nonce 0 under salt 0, re-drawn at the next salt after every m*n regions as the
+// miner does, it prints a line a batch (its salt, nonce, hit count and a digest of its
+// hits' nonces and jackpot hashes, in region order) and then the totals. Two builds
+// that compute the same hashes print the same lines. A batch whose list is full
+// (PEARL_MAX_HITS) may have lost hits, and which ones changes from run to run: it is
+// counted as full, and only its count goes into the digest.
+static int hitlist(void *h, const PearlProfile &prof, const uint8_t *header, uint64_t regions,
+                   unsigned long batches) {
+  unsigned bits = 0;
+  while ((regions >> (bits + 1)) >= 16u) bits++;
+  if (getenv("PEARL_HITLIST_BITS")) bits = (unsigned)strtoul(getenv("PEARL_HITLIST_BITS"), nullptr, 10);
+  if (bits < 1 || bits > 255) { printf("hitlist FAIL: %u target bits\n", bits); return 1; }
+  // The target as the host reads it: a big-endian number, below 2^(256 - bits).
+  uint8_t target[PEARL_HASH_BYTES];
+  memset(target, 0xFF, sizeof target);
+  memset(target, 0x00, bits / 8);
+  target[bits / 8] = (uint8_t)(0xFFu >> (bits % 8));
+  pearl_host_set_job(h, header, target);
+  const uint64_t span = (uint64_t)(prof.m / PEARL_ROWS_COUNT) * (prof.n / PEARL_COLS_COUNT);
+  uint64_t nonce = 0, salt = 0, hits = 0, digest = 1469598103934665603ull;
+  unsigned long full = 0;
+  char err[512];
+  for (unsigned long b = 0; b < batches; b++) {
+    PearlSearchResult res;
+    uint64_t att = 0;
+    err[0] = 0;
+    const bool found = pearl_host_search(h, nonce, prof.col_batch, &res, &att, err, sizeof err);
+    if (err[0]) { printf("hitlist FAIL: batch %lu: %s\n", b, err); return 1; }
+    if (att == 0) { printf("hitlist FAIL: batch %lu: no attempts reported\n", b); return 1; }
+    uint64_t d = 1469598103934665603ull, n = 0;
+    if (found) {
+      fnv(d, &res.nonce, sizeof res.nonce);
+      fnv(d, res.jackpot_hash, PEARL_HASH_BYTES);
+      n++;
+      PearlSearchResult more;
+      while (pearl_host_next_hit(h, &more)) {
+        fnv(d, &more.nonce, sizeof more.nonce);
+        fnv(d, more.jackpot_hash, PEARL_HASH_BYTES);
+        n++;
+      }
+    }
+    const bool isfull = n >= PEARL_MAX_HITS;
+    if (isfull) { full++; d = n; }
+    printf("HL %lu salt=%llu nonce=%llu hits=%llu%s d=%016llx\n", b, (unsigned long long)salt,
+           (unsigned long long)nonce, (unsigned long long)n, isfull ? " full" : "",
+           (unsigned long long)d);
+    fnv(digest, &d, sizeof d);
+    hits += n;
+    nonce += att;
+    if (nonce >= span) {
+      pearl_host_reseed(h, ++salt);
+      nonce = 0;
+    }
+  }
+  printf("hitlist bits=%u regions=%llu batches=%lu hits=%llu full=%lu salts=%llu digest=%016llx\n",
+         bits, (unsigned long long)regions, batches, (unsigned long long)hits, full,
+         (unsigned long long)(salt + 1), (unsigned long long)digest);
+  return 0;
+}
 
 int main(int argc, char **argv) {
   double seconds = argc > 1 ? atof(argv[1]) : 20.0;
   PearlProfile prof{};
-  prof.k = 2048; prof.rank = 128; prof.mma_type = 0;
+  prof.k = PEARL_FOLD_K; prof.rank = 128; prof.mma_type = 0;
   prof.m = 131072; prof.n = 131072;
   prof.seed_derivation = PEARL_SEED_SALTED;
   prof.col_batch = 2048; prof.hash_big_endian = 0;
@@ -81,7 +186,20 @@ int main(int argc, char **argv) {
   pearl_host_search(h, nonce, prof.col_batch, &res, &attempts, err, sizeof err);
   if (err[0]) { printf("warmup failed: %s\n", err); return 1; }
   nonce += attempts;
+  if (getenv("PEARL_HITLIST")) {
+    const int rc = hitlist(h, prof, header, attempts, strtoul(getenv("PEARL_HITLIST"), nullptr, 10));
+    pearl_host_destroy(h);
+    return rc;
+  }
 
+#ifdef PEARL_TALL_CYC
+  unsigned long long cyc[2];
+  pearl_tall_cyc_take(cyc);   // drop the warm-up's
+#endif
+#if PEARL_TALL_HASHCYC
+  static unsigned int hcyc[2 * PEARL_TALL_HCYC_BINS];
+  pearl_tall_hcyc_take(hcyc);   // drop the warm-up's
+#endif
   cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
   cudaEventRecord(e0);
   double elapsed = 0; int iters = 0;
@@ -109,6 +227,29 @@ int main(int argc, char **argv) {
   double thps = (double)total * DAF / (elapsed * 1e-3) / 1e12;
   printf("  attempts=%llu  batches=%d  %.3f s  ->  %.1f TH/s\n",
          (unsigned long long)total, iters, elapsed / 1000.0, thps);
+#ifdef PEARL_TALL_CYC
+  pearl_tall_cyc_take(cyc);
+  if (cyc[1])
+    printf("  cycles a tile %.0f over %llu tiles  ->  %.2f%% of the tensor peak a clock\n",
+           (double)cyc[0] / (double)cyc[1], cyc[1], 100.0 * 48.0 * (double)PEARL_FOLD_K * (double)cyc[1] / (double)cyc[0]);
+#endif
+#if PEARL_TALL_HASHCYC
+  // The hasher's cycles from the hand-off, median/p90: to the hash's end, and to its release
+  // (compilers.sh's bench stage reads the "hash ... release ..." words). "over" counts the
+  // seams in the last bin, which holds every longer one too.
+  pearl_tall_hcyc_take(hcyc);
+  {
+    unsigned long long nh = 0, nr = 0;
+    for (unsigned i = 0; i < PEARL_TALL_HCYC_BINS; i++) {
+      nh += hcyc[i];
+      nr += hcyc[PEARL_TALL_HCYC_BINS + i];
+    }
+    const unsigned int *hr = hcyc + PEARL_TALL_HCYC_BINS;
+    printf("  hasher cycles a seam (median/p90): hash %.0f/%.0f release %.0f/%.0f over %llu seams (%u past %u)\n",
+           hcyc_at(hcyc, nh, 0.5), hcyc_at(hcyc, nh, 0.9), hcyc_at(hr, nr, 0.5), hcyc_at(hr, nr, 0.9), nh,
+           hr[PEARL_TALL_HCYC_BINS - 1], (PEARL_TALL_HCYC_BINS - 1) * PEARL_TALL_HCYC_BIN);
+  }
+#endif
   pearl_host_destroy(h);
   return 0;
 }

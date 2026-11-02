@@ -472,6 +472,28 @@ describe('--mine-mem-clock', () => {
 
 // Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
 // there, so a bad value has to be loud, not read as "every card".
+// Which core loads; HiveOS's Extra config takes flags, not environment variables.
+describe('--core', () => {
+  test('is unset by default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.core).toBeNull();
+  });
+
+  test('takes amd, cu12 or cu13, in any case', () => {
+    for (const [arg, want] of [['amd', 'amd'], [' AMD ', 'amd'], ['cu12', 'cu12'], ['--core=cu13', 'cu13']]) {
+      const argv = arg.startsWith('--') ? ['-a', ADDR, arg] : ['-a', ADDR, '--core', arg];
+      const r = parseCliArgs(argv);
+      expect([arg, r.errors, r.settings.core]).toEqual([arg, [], want]);
+    }
+  });
+
+  test('anything else is an error that lists the choices', () => {
+    const r = parseCliArgs(['-a', ADDR, '--core', 'rocm']);
+    expect(r.errors).toEqual(['invalid --core: rocm (choices: cu12, cu13, amd)']);
+    expect(r.settings.core).toBeNull();
+    expect(parseCliArgs(['-a', ADDR, '--core']).errors).toEqual(['missing value for --core']);
+  });
+});
+
 describe('--gpu-index', () => {
   test('not given: every card (null)', () => {
     expect(parseCliArgs(['-a', ADDR]).settings.gpuIndices).toBeNull();

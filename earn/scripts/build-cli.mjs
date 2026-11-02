@@ -66,6 +66,16 @@ if (existsSync(cu13)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core\n');
 }
+// The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
+// same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
+// is unaffected.
+const hip = join(root, 'vendor', 'native', 'pearl_core_hip.node');
+if (existsSync(hip)) {
+  copyFileSync(hip, join(dist, 'pearl_core_hip.node'));
+  process.stdout.write('staged pearl_core_hip.node beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_core_hip.node — this CLI cannot mine on AMD cards\n');
+}
 // The RandomX CPU worker (earn/xmr-worker, built by build-xmr-worker.sh) goes
 // beside the binary too: it is an executable of its own, run as a child
 // process. Optional: without it --xmr-address says the worker is missing, and
