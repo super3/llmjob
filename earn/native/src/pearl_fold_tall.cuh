@@ -1048,6 +1048,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       // partner's window are counted from, not after the tile's coordinates below.
       const long long stub_t0 = clock64();
 #endif
+#if PEARL_TALL_HASHCYC
+      // The hasher's stamps (PEARL_TALL_HASHCYC) count from here too. Each warp's two slots
+      // are in the 128 bytes behind ring buffer 2's rows, past its two barriers (bytes 16 to
+      // 79), addressed from sTr, the pad's end, which the hasher holds anyway.
+      pearl_tall_hcyc_mark(sTr - 112u + 8u * wc);
+#endif
 #else
     if (wr == 0u) {
 #endif
@@ -1134,7 +1140,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       pearl_tall_stub_spin(stub_t0);
       const uint32_t w1 = ~0u, w2 = ~0u;
 #elif PEARL_TALL_STUB_ALU
-      const uint32_t w1 = pearl_tall_stub_alu(test.key, tm, tp), w2 = ~0u;
+      const uint32_t w1 = pearl_tall_stub_alu(test.key, tm, tp, (uint32_t)test.hash_big_endian | 1u), w2 = ~0u;
 #else
       const uint32_t w1 = h1, w2 = h2;
 #endif
@@ -1169,6 +1175,10 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         if (hh == (test.hash_big_endian ? 0u : 1u) && w2 <= test.target_w[0]) record(Lp);
 #endif
       }
+#if PEARL_TALL_HASHCYC
+      // The hash's end: after the test above, which waited for both words.
+      pearl_tall_hcyc_mark(sTr - 80u + 8u * wc);
+#endif
       __syncwarp();   // every lane's reads (hit re-reads too) of both regions before any zeroing
 #pragma unroll
       for (uint32_t q = 0; q < 4; q++) {
@@ -1176,6 +1186,16 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         if (hh == 0u)
           asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(rp + 16u * q), "r"(0u) : "memory");
       }
+#if PEARL_TALL_HASHCYC
+      // The release, read in pearl_tall_hcyc_add, and both stamps counted. The next-tile test
+      // is on an opaque copy of v: as v + tile_stride < tiles it was has_next, which ptxas
+      // then kept through the chunk loop and changed it.
+      {
+        uint32_t cv = v;
+        asm volatile("" : "+r"(cv));
+        pearl_tall_hcyc_add(sTr - 112u + 8u * wc, cv + tile_stride < tiles, lane);
+      }
+#endif
 #endif
     }
 #if defined(PEARL_E4_GENLOAD) && defined(PEARL_E4_HASH)

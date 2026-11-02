@@ -434,11 +434,14 @@ if has bench && [ ${#BUILT[@]} -gt 0 ]; then
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if $mhz else 0)")
       # A -DPEARL_TALL_CYC build's cycles a tile (bench.cu prints them), or "-".
       cyc=$(grep -oE 'cycles a tile [0-9]+' "$K/bench.r$r" | tail -1 | grep -oE '[0-9]+$')
+      # A -DPEARL_TALL_HASHCYC=1 build's hasher cycles from the hand-off, median/p90, to the
+      # hash's end and to its release (bench.cu prints them), for the line below only.
+      hcyc=$(grep -oE 'hash [0-9]+/[0-9]+ release [0-9]+/[0-9]+' "$K/bench.r$r" | tail -1)
       # Column 13, for a build past k 2048 only: its k, which scales sum.py's share of the peak.
       kcol="" k=$(kset "$name"); [ -z "$k" ] || kcol=$'\t'$k
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s%s\n' "$r" "$name" "$th" "$mhz" "$w" "$c" "$pg" "$mean" "$mc" "$mu" "$mclk" "${cyc:--}" "$kcol" >> "$OUT/bench.tsv"
       [ "$r" = 1 ] && say "bench $name runs $(grep -oE 'fold: [^|]*' "$K/bench.r$r" | head -1)"
-      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz${cyc:+ cyc $cyc}${k:+ k $k} (n=$n)"
+      say "bench r$r $name $th TH/s ${mhz} MHz (mean $mean) ${w} W ${c} C $pg TH/s/GHz mem ${mc}% ${mu} MiB ${mclk} MHz${cyc:+ cyc $cyc}${hcyc:+ hcyc [$hcyc]}${k:+ k $k} (n=$n)"
     done
   done
   # Per build: medians over rounds, and against base in the same round. The mean clock

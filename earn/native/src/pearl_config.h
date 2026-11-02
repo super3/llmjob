@@ -1828,15 +1828,41 @@ typedef struct {
 //   1, no hash at all).
 // - STUB_ALU=1: both transcripts loaded, then an ALU burst of about the hash's issue
 //   count and mix in a 0.8 KB loop (pearl_tall_stub_alu). No shuffles.
+// - STUB_ALU=2: the same burst as one chain, so each instruction waits for the one before.
+//   Same instructions; ptxas's stalls make a pass 210 cycles against the burst's 90, so it
+//   issues at 0.43 of the burst's rate and runs about 2.3 times as long. Two chains would
+//   only get to 0.83: a dependent ALU op waits 4-5 cycles and the ALU pipe takes one every
+//   2, so two chains nearly fill it. At about 4,500 cycles it runs well past the partner's
+//   window, so it can only show that the partner kept at least the window's share.
+// - STUB_ALU=3: the burst with every add an IMAD, on the FMA pipe (a multiply by a 1 ptxas
+//   cannot see), and the two message words moved into the XORs so each add has two inputs.
+//   Same count. A pass sends 34 instructions to the ALU pipe and 16 to the FMA pipe,
+//   against the burst's 42 and 8 (ptxas already makes the burst's two-input adds IMAD).
+//   It is also shorter (79 cycles of stalls a pass against 90), so a cycle of it holds the
+//   ALU pipe about as full (86% against 93%) and issues 1.14 times as densely.
+// - STUB_ALU=4: the burst with 32 IMMA (m16n8k32 on the burst's own registers) whose results
+//   feed its word, one at a time, 45 to 65 cycles apart. Each holds the scheduler's tensor
+//   pipe 16 cycles, 512 a seam. ptxas fits them into the burst's ALU stalls (its static
+//   cycles a seam are 2,238 against the burst's 2,262), so on an idle tensor pipe the hasher
+//   releases when the burst does. Against STUB_ALU=1: a later release is the hasher waiting
+//   for the pipe, more contention is the partner waiting for it.
+// - STUB_ALU=5: the burst on the FMA pipe alone: four chains of 48 IMADs a pass (by a 1
+//   ptxas cannot see) and the loop's 3. A pass is 100 cycles of stalls against the burst's
+//   90, so about the same issue density (0.9 of it), with 2 ALU-pipe instructions a pass
+//   against 42. The partner's chunk loop sends 168 instructions to the ALU pipe and 48 to
+//   the FMA pipe, so this one leaves it most of what it uses.
 // Read against base and no hash: the spin at 3000 level with base and at 1700 level with
 // no hash says the window binds; the burst level with no hash says fetch or the hash's
-// own latency; the burst level with base says issue or port contention.
+// own latency; the burst level with base says issue or port contention. 5 against 1 splits
+// issue density from ALU-pipe load: the same density with the ALU pipe almost empty. 3
+// moves the two apart only a little, and 2 lowers both.
 // CUDA 12.6, sm_86 (both kernels) and sm_89: every arm keeps base's registers (254 and
 // 255) with no spill, and the chunk loop's code byte for byte. With the spin, all code
 // before the hand-off is base's; with the burst, the prologue's one-time zeroing loop is
 // 4 instructions shorter, so the same loop sits 64 bytes earlier. The ablation instead
 // changes the chunk loop (12 of its 540 instructions on sm_89, 22 of 542 on sm_86), so
-// STUB_SPIN=1 is the like-for-like "no hash".
+// STUB_SPIN=1 is the like-for-like "no hash". STUB_ALU=2 to 5 keep the same registers,
+// no spill and the same chunk loop too.
 // Timing only: no hit is ever reported, so the host refuses any target but zero
 // (pearl_host_submit), the one hashrate.js, probes/race.cu and bench set, and names the
 // stub in the fold's name. The cp.async ring's paired hash only: sm_86 and sm_89 builds.
@@ -1850,8 +1876,8 @@ typedef struct {
 #if PEARL_TALL_STUB_SPIN < 0 || PEARL_TALL_STUB_SPIN > 100000
 #error "PEARL_TALL_STUB_SPIN is a spin in cycles: 0 (off) to 100000"
 #endif
-#if PEARL_TALL_STUB_ALU != 0 && PEARL_TALL_STUB_ALU != 1
-#error "PEARL_TALL_STUB_ALU is 0 or 1"
+#if PEARL_TALL_STUB_ALU < 0 || PEARL_TALL_STUB_ALU > 5
+#error "PEARL_TALL_STUB_ALU is 0 (off), 1 (the burst), 2 (one chain), 3 (adds as IMAD), 4 (with 32 IMMA) or 5 (IMAD only)"
 #endif
 #if PEARL_TALL_STUB_SPIN && PEARL_TALL_STUB_ALU
 #error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the same hash: build one or the other"
@@ -1865,6 +1891,49 @@ typedef struct {
 #if (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU) && defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 860 \
     && __CUDA_ARCH__ != 890
 #error "PEARL_TALL_STUB_SPIN and PEARL_TALL_STUB_ALU replace the cp.async ring's paired hash: build them for sm_86 or sm_89 alone"
+#endif
+// PEARL_TALL_HASHCYC (0 by default; bench only, beside PEARL_TALL_CYC): the hasher's own
+// times at each tile seam that has a next tile. The hasher stamps clock64 at the hand-off,
+// after the hit test of the hash's words (or a stub's), which waits for them, and after
+// the zeroing, its last step before it goes back to its MMAs (the release). Lane 0 adds one
+// count to an 8-cycle bin of two histograms (pearl_tall_hcyc): hand-off to hash end, and
+// hand-off to release. bench.cu prints their medians and 90th percentiles. The stage-0
+// EMPTY arrive the partner waits on comes one stage of the hasher's own MMAs after the
+// release, inside the chunk loop, so it has no stamp: one there would change the loop.
+// Every stamp is in the hasher branch and touches nothing the chunk loop holds: the first
+// two go straight to shared memory (the unused pad behind ring buffer 2's barriers), the
+// histograms are named inside an asm, and the next-tile test reads an opaque copy of v. Each
+// of those was needed: stamps in registers, the histograms' address as a C++ pointer (held
+// through the tile loop) or v + tile_stride < tiles (which is has_next) took sm_86 to 255
+// registers and changed its chunk loop. CUDA 12.6 and 12.8.1, sm_86 (both kernels) and
+// sm_89, with PEARL_TALL_CYC, base and every stub: the same registers, no spill, and the
+// chunk loop byte for byte. Before the hand-off at most one word differs, in its control
+// bits only: the skip branch around PEARL_TALL_CYC's clock block at the top of the tile
+// loop keeps its target and offset, and its wait mask drops scoreboard 1 (or, in sm_89's
+// spins, adds it). It runs once a tile.
+// The release is stamped before the counting: lane 0 then reads both stamps back and adds
+// to the histograms while the warp waits, about 90 cycles a seam (65 of issue and the
+// shared loads' latency) before it goes back to its MMAs. So a stamped build's release is
+// that much before its real one; bench a build without the stamps beside it to see what
+// they cost. Timing only, like the stubs: the host refuses any target but zero.
+#ifndef PEARL_TALL_HASHCYC
+#define PEARL_TALL_HASHCYC 0
+#endif
+#if PEARL_TALL_HASHCYC != 0 && PEARL_TALL_HASHCYC != 1
+#error "PEARL_TALL_HASHCYC is 0 or 1"
+#endif
+#if PEARL_TALL_HASHCYC && !defined(PEARL_TALL_CYC)
+#error "PEARL_TALL_HASHCYC prints beside the cycles a tile: build it with -DPEARL_TALL_CYC too"
+#endif
+#if PEARL_TALL_HASHCYC && !PEARL_TALL_HASH_PAIRS
+#error "PEARL_TALL_HASHCYC stamps the paired hash: build it without PEARL_TALL_HASH_PAIRS=0"
+#endif
+#if PEARL_TALL_HASHCYC && defined(__CUDA_ARCH__) && __CUDA_ARCH__ != 860 && __CUDA_ARCH__ != 890
+#error "PEARL_TALL_HASHCYC stamps the cp.async ring's paired hash: build it for sm_86 or sm_89 alone"
+#endif
+#if PEARL_TALL_HASHCYC
+#define PEARL_TALL_HCYC_BIN 8u       // cycles a bin
+#define PEARL_TALL_HCYC_BINS 2048u   // bins a histogram; the last also holds every longer seam
 #endif
 // Blackwell's tall fold makes its readout's XOR folds before the chunk-0 hand-off guard,
 // where only the three shared XORs that write the transcripts need to wait for the hasher.

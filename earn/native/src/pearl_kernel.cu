@@ -3016,7 +3016,7 @@ __device__ __forceinline__ void pearl_tall_stub_spin(long long t0) {
   }
 }
 #endif
-#if PEARL_TALL_STUB_ALU
+#if PEARL_TALL_STUB_ALU == 1
 // The tall fold's ALU stand-in for the paired hash (PEARL_TALL_STUB_ALU, timing only):
 // about the hash's issue count in a 0.8 KB loop instead of 18 KB of straight code. Each
 // pass is four independent chains of g's twelve steps (adds of two or three registers,
@@ -3027,9 +3027,11 @@ __device__ __forceinline__ void pearl_tall_stub_spin(long long t0) {
 // loop (44 of its 540 instructions, sm_89); with eight it leaves it as it is.
 // CUDA 12.6: a pass is 51 instructions, 816 bytes. The hasher's path from the hand-off
 // to the zeroing runs 1,169 instructions a tile with it on sm_89 (1,172 on sm_86),
-// against 1,164 with the hash (1,167).
+// against 1,164 with the hash (1,167). The other arms take the same arguments; `one` is
+// for STUB_ALU=3 and 5.
 __device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
-                                                        const uint32_t tp[16]) {
+                                                        const uint32_t tp[16], uint32_t one) {
+  (void)one;
   uint32_t a[4], d[4];
 #pragma unroll
   for (int c = 0; c < 4; c++) {
@@ -3049,6 +3051,164 @@ __device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], c
       d[c] = rotr32(d[c] ^ a[c], 8);
       a[c] = a[c] + d[c];
       d[c] = rotr32(d[c] ^ a[c], 7);
+    }
+  }
+  return a[0] ^ a[1] ^ a[2] ^ a[3] ^ d[0] ^ d[1] ^ d[2] ^ d[3];
+}
+#elif PEARL_TALL_STUB_ALU == 2
+// The burst as one chain (PEARL_TALL_STUB_ALU=2, timing only): the same 21 passes of the
+// same instructions, but every step reads the step before it, so the warp issues at about
+// 0.43 of the burst's rate (CUDA 12.6: 210 cycles of stalls a pass against 90). The same
+// words feed its start. sm_86 and sm_89: a pass is the burst's 51 instructions, opcode for
+// opcode; the path from the hand-off runs 5 instructions more.
+__device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
+                                                        const uint32_t tp[16], uint32_t one) {
+  (void)one;
+  uint32_t a = 0u, d = 0u;
+#pragma unroll
+  for (int c = 0; c < 4; c++) {
+    a ^= key[c] ^ tm[c] ^ tp[c] ^ tm[4 + c] ^ tp[4 + c];
+    d ^= key[4 + c] ^ tm[8 + c] ^ tp[8 + c] ^ tm[12 + c] ^ tp[12 + c];
+  }
+  const uint32_t mx = tm[0], my = tp[1];
+#pragma unroll 1
+  for (int r = 0; r < 21; r++) {
+#pragma unroll
+    for (int c = 0; c < 4; c++) {
+      a = a + d + mx;
+      d = rotr32(d ^ a, 16);
+      a = a + d;
+      d = rotr32(d ^ a, 12);
+      a = a + d + my;
+      d = rotr32(d ^ a, 8);
+      a = a + d;
+      d = rotr32(d ^ a, 7);
+    }
+  }
+  return a ^ d;
+}
+#elif PEARL_TALL_STUB_ALU == 3
+// The burst with its adds on the FMA pipe (PEARL_TALL_STUB_ALU=3, timing only): each add is
+// d * one + a, an IMAD, where one is 1 but ptxas cannot see it. The message words go into
+// the XORs (three-input LOP3s), so every add has two inputs and the count stays the same:
+// a pass is 16 IMAD, 16 LOP3, 16 SHF and the loop's 3, against the burst's 9 IADD3, 8
+// IMAD.IADD, 16 LOP3, 16 SHF (CUDA 12.6, sm_86 and sm_89).
+__device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
+                                                        const uint32_t tp[16], uint32_t one) {
+  uint32_t a[4], d[4];
+#pragma unroll
+  for (int c = 0; c < 4; c++) {
+    a[c] = key[c] ^ tm[c] ^ tp[c] ^ tm[4 + c] ^ tp[4 + c];
+    d[c] = key[4 + c] ^ tm[8 + c] ^ tp[8 + c] ^ tm[12 + c] ^ tp[12 + c];
+  }
+  const uint32_t mx = tm[0], my = tp[1];
+#pragma unroll 1
+  for (int r = 0; r < 21; r++) {
+#pragma unroll
+    for (int c = 0; c < 4; c++) {
+      a[c] = d[c] * one + a[c];
+      d[c] = rotr32(d[c] ^ a[c] ^ mx, 16);
+      a[c] = d[c] * one + a[c];
+      d[c] = rotr32(d[c] ^ a[c], 12);
+      a[c] = d[c] * one + a[c];
+      d[c] = rotr32(d[c] ^ a[c] ^ my, 8);
+      a[c] = d[c] * one + a[c];
+      d[c] = rotr32(d[c] ^ a[c], 7);
+    }
+  }
+  return a[0] ^ a[1] ^ a[2] ^ a[3] ^ d[0] ^ d[1] ^ d[2] ^ d[3];
+}
+#elif PEARL_TALL_STUB_ALU == 4
+// The burst with 32 IMMA (PEARL_TALL_STUB_ALU=4, timing only): the same 21 passes, written
+// as quarters (each chain's add and its XOR and rotate) so an IMMA can sit inside a pass.
+// Two passes are a loop turn with an IMMA after quarters 3, 5 and 8, and the last pass has
+// two, after quarters 2 and 4. So the IMMAs come one at a time, two or three quarters
+// apart (about 45 to 65 cycles), never back to back: on an idle tensor pipe none waits for
+// the one before, and the hasher pays only their issue slots. Each is m16n8k32 on the
+// chains' registers (a as A, d[0] and d[1] as B) into one of three accumulators, and every
+// accumulator word feeds the result, so none can go. CUDA 12.6, sm_86 and sm_89: a turn is
+// the two passes' 96 steps, 3 IMMA, 2 IMAD.MOV that line up their operands and the loop's
+// 3; ptxas's stalls make it 179 cycles against the burst's 180 for two passes.
+__device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
+                                                        const uint32_t tp[16], uint32_t one) {
+  (void)one;
+  uint32_t a[4], d[4];
+#pragma unroll
+  for (int c = 0; c < 4; c++) {
+    a[c] = key[c] ^ tm[c] ^ tp[c] ^ tm[4 + c] ^ tp[4 + c];
+    d[c] = key[4 + c] ^ tm[8 + c] ^ tp[8 + c] ^ tm[12 + c] ^ tp[12 + c];
+  }
+  const uint32_t mx = tm[0], my = tp[1];
+  int32_t e[3][4];
+#pragma unroll
+  for (int i = 0; i < 3; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) e[i][j] = 0;
+  // Quarter q of a pass: STUB_ALU=1's two steps for q on every chain.
+  auto quarter = [&](int q) {
+#pragma unroll
+    for (int c = 0; c < 4; c++) {
+      a[c] = a[c] + d[c] + (q == 0 ? mx : q == 2 ? my : 0u);
+      d[c] = rotr32(d[c] ^ a[c], q == 0 ? 16 : q == 1 ? 12 : q == 2 ? 8 : 7);
+    }
+  };
+  auto mma = [&](int i) {
+    pearl_mma_m16n8k32(e[i][0], e[i][1], e[i][2], e[i][3], a[0], a[1], a[2], a[3], d[0], d[1]);
+  };
+#pragma unroll 1
+  for (int r = 0; r < 10; r++) {
+    quarter(0);
+    quarter(1);
+    quarter(2);
+    mma(0);
+    quarter(3);
+    quarter(0);
+    mma(1);
+    quarter(1);
+    quarter(2);
+    quarter(3);
+    mma(2);
+  }
+  quarter(0);
+  quarter(1);
+  mma(0);
+  quarter(2);
+  quarter(3);
+  mma(1);
+  uint32_t x = a[0] ^ a[1] ^ a[2] ^ a[3] ^ d[0] ^ d[1] ^ d[2] ^ d[3];
+#pragma unroll
+  for (int i = 0; i < 3; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) x ^= (uint32_t)e[i][j];
+  return x;
+}
+#elif PEARL_TALL_STUB_ALU == 5
+// The burst on the FMA pipe alone (PEARL_TALL_STUB_ALU=5, timing only): the same four
+// chains, 21 passes and 48 steps a pass, but every step an IMAD, d * one + a or a * one + d,
+// where one is 1 but ptxas cannot see it. The ALU pipe gets only the loop's counter and
+// test. The FMA pipe takes an IMAD every 2 cycles, as the ALU pipe takes the burst's ops,
+// so a pass issues at about the burst's rate with almost nothing on the ALU pipe, where the
+// partner's address math is. Against STUB_ALU=1 it splits issue density from ALU-pipe load.
+// Mod 2, six pairs of steps are the identity, so a flip of any input bit still flips that
+// bit of the word. CUDA 12.6, sm_86 and sm_89: a pass is 48 IMAD and the loop's IADD3,
+// ISETP and BRA, 100 cycles of ptxas's stalls against the burst's 90.
+__device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], const uint32_t tm[16],
+                                                        const uint32_t tp[16], uint32_t one) {
+  uint32_t a[4], d[4];
+#pragma unroll
+  for (int c = 0; c < 4; c++) {
+    a[c] = key[c] ^ tm[c] ^ tp[c] ^ tm[4 + c] ^ tp[4 + c];
+    d[c] = key[4 + c] ^ tm[8 + c] ^ tp[8 + c] ^ tm[12 + c] ^ tp[12 + c];
+  }
+#pragma unroll 1
+  for (int r = 0; r < 21; r++) {
+#pragma unroll
+    for (int s = 0; s < 6; s++) {
+#pragma unroll
+      for (int c = 0; c < 4; c++) {
+        a[c] = d[c] * one + a[c];
+        d[c] = a[c] * one + d[c];
+      }
     }
   }
   return a[0] ^ a[1] ^ a[2] ^ a[3] ^ d[0] ^ d[1] ^ d[2] ^ d[3];
@@ -3078,6 +3238,36 @@ __device__ __forceinline__ uint32_t pearl_tall_stub_alu(const uint32_t key[8], c
 // The same build measured 102,655 on an RTX 3060 Ti (sm_86) and 102,714 on an RTX 4060.
 // The counter changes no result: hit lists over 40 batches match the build without it.
 __device__ unsigned long long pearl_tall_cyc[2];
+#endif
+#if PEARL_TALL_HASHCYC
+// The hasher's stamps (bench only, PEARL_TALL_HASHCYC; see pearl_config.h): two histograms
+// of PEARL_TALL_HCYC_BINS bins of PEARL_TALL_HCYC_BIN cycles, hand-off to hash end and then
+// hand-off to release. Each stamp goes straight to shared memory, in one asm, so no register
+// holds it through the hash. pearl_tall_hcyc_add reads the release's clock and both stamps
+// back. Lane 0 counts a seam only when the tile has a next one: the block's last seam has
+// no partner window. pearl_tall_hcyc_take reads and zeroes the histograms.
+__device__ unsigned int pearl_tall_hcyc[2u * PEARL_TALL_HCYC_BINS];
+__device__ __forceinline__ void pearl_tall_hcyc_mark(uint32_t slot) {
+  asm volatile("{\n .reg .u64 t;\n mov.u64 t, %%clock64;\n st.shared.u64 [%0], t;\n}" ::"r"(slot) : "memory");
+}
+// slot holds the hand-off's stamp and slot + 32 the hash end's.
+__device__ __forceinline__ void pearl_tall_hcyc_add(uint32_t slot, bool counted, uint32_t lane) {
+  const long long t2 = clock64();
+  long long t0, t1;
+  asm volatile("ld.shared.u64 %0, [%1];" : "=l"(t0) : "r"(slot) : "memory");
+  asm volatile("ld.shared.u64 %0, [%1];" : "=l"(t1) : "r"(slot + 32u) : "memory");
+  if (counted && lane == 0u) {
+    const unsigned long long h = (unsigned long long)(t1 - t0) / PEARL_TALL_HCYC_BIN;
+    const unsigned long long r = (unsigned long long)(t2 - t0) / PEARL_TALL_HCYC_BIN;
+    const uint32_t hb = h < PEARL_TALL_HCYC_BINS ? (uint32_t)h : PEARL_TALL_HCYC_BINS - 1u;
+    const uint32_t rb = PEARL_TALL_HCYC_BINS + (r < PEARL_TALL_HCYC_BINS ? (uint32_t)r : PEARL_TALL_HCYC_BINS - 1u);
+    // The histogram named in the asm: as a C++ atomicAdd, its 64-bit address was worked out
+    // once before the tile loop and held through it (sm_86 rose to 255 registers).
+    asm volatile("{\n .reg .u64 p, q;\n mov.u64 p, pearl_tall_hcyc;\n"
+                 " mad.wide.u32 q, %0, 4, p;\n red.global.add.u32 [q], 1;\n"
+                 " mad.wide.u32 q, %1, 4, p;\n red.global.add.u32 [q], 1;\n}" ::"r"(hb), "r"(rb) : "memory");
+  }
+}
 #endif
 #ifdef PEARL_E4_GENLOAD
 // The cost of drawing A' inside the fold (bench only, -DPEARL_E4_GENLOAD, on top of
@@ -3153,6 +3343,17 @@ extern "C" void pearl_tall_cyc_take(unsigned long long out[2]) {
   cudaMemcpyFromSymbol(out, pearl_tall_cyc, 2u * sizeof(unsigned long long));
   const unsigned long long z[2] = {0ull, 0ull};
   cudaMemcpyToSymbol(pearl_tall_cyc, z, sizeof z);
+}
+#endif
+#if PEARL_TALL_HASHCYC
+// The hasher's histograms since the last call (see pearl_tall_hcyc), then zeroes them.
+// out holds 2 x PEARL_TALL_HCYC_BINS counts. Waits for the device first.
+extern "C" void pearl_tall_hcyc_take(unsigned int *out) {
+  cudaDeviceSynchronize();
+  cudaMemcpyFromSymbol(out, pearl_tall_hcyc, sizeof pearl_tall_hcyc);
+  void *p = nullptr;
+  cudaGetSymbolAddress(&p, pearl_tall_hcyc);
+  cudaMemset(p, 0, sizeof pearl_tall_hcyc);
 }
 #endif
 

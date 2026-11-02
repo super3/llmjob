@@ -40,7 +40,7 @@ const SHIPPED = [
   'earn/native/binding.gyp',
 ];
 const NAME = 'PEARL_TALL_AB_SKIP';
-const STUBS_OFF = { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0 };
+const STUBS_OFF = { PEARL_TALL_STUB_SPIN: 0, PEARL_TALL_STUB_ALU: 0, PEARL_TALL_HASHCYC: 0 };
 const ARCH = '__CUDA_ARCH__';
 
 // Source without comments: comment lines dropped, trailing ones cut. The pins below hold the
@@ -547,7 +547,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
     const submit = code(body(HOST, 'extern "C" bool pearl_host_submit('));
     inOrder(submit,
       'if (!ctx || !ctx->haveJob) return false;',
-      '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP',
+      '#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC',
       'for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;',
       'if (!zero) {',
       '#if PEARL_TALL_AB_SKIP',
@@ -555,7 +555,7 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
       'if (ctx->pendCount >= Ctx::kSlots) {',
       'DeviceScope scope(ctx->device);');
     // Nothing is queued or launched before it.
-    const guard = submit.indexOf('#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP');
+    const guard = submit.indexOf('#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC');
     expect(submit.slice(0, guard)).not.toMatch(/<<<|cudaLaunch|pendCount\+\+/);
     // Each arm's build: the refusal with the skip's message, and not the stubs'.
     for (const mask of [1, 2, 3]) {

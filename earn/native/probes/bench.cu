@@ -52,6 +52,24 @@ extern "C" const char *pearl_host_fold_name(void *);
 // Built with -DPEARL_TALL_CYC (the kernel too): the tall fold's cycles a tile.
 extern "C" void pearl_tall_cyc_take(unsigned long long out[2]);
 #endif
+#if PEARL_TALL_HASHCYC
+// Built with -DPEARL_TALL_HASHCYC=1 as well: the hasher's two histograms (pearl_kernel.cu).
+extern "C" void pearl_tall_hcyc_take(unsigned int *out);
+// The cycles at quantile q of one histogram of n seams: the middle of the bin that holds the
+// ceil(q * n)-th seam, counting from 1. -1 for an empty one.
+static double hcyc_at(const unsigned int *h, unsigned long long n, double q) {
+  if (n == 0) return -1.0;
+  unsigned long long want = (unsigned long long)(q * (double)n);
+  if ((double)want < q * (double)n) want++;
+  if (want < 1) want = 1;
+  unsigned long long seen = 0;
+  for (unsigned i = 0; i < PEARL_TALL_HCYC_BINS; i++) {
+    seen += h[i];
+    if (seen >= want) return (i + 0.5) * PEARL_TALL_HCYC_BIN;
+  }
+  return (PEARL_TALL_HCYC_BINS - 0.5) * PEARL_TALL_HCYC_BIN;
+}
+#endif
 
 static void fnv(uint64_t &d, const void *p, size_t n) {
   const uint8_t *q = static_cast<const uint8_t *>(p);
@@ -178,6 +196,10 @@ int main(int argc, char **argv) {
   unsigned long long cyc[2];
   pearl_tall_cyc_take(cyc);   // drop the warm-up's
 #endif
+#if PEARL_TALL_HASHCYC
+  static unsigned int hcyc[2 * PEARL_TALL_HCYC_BINS];
+  pearl_tall_hcyc_take(hcyc);   // drop the warm-up's
+#endif
   cudaEvent_t e0, e1; cudaEventCreate(&e0); cudaEventCreate(&e1);
   cudaEventRecord(e0);
   double elapsed = 0; int iters = 0;
@@ -210,6 +232,23 @@ int main(int argc, char **argv) {
   if (cyc[1])
     printf("  cycles a tile %.0f over %llu tiles  ->  %.2f%% of the tensor peak a clock\n",
            (double)cyc[0] / (double)cyc[1], cyc[1], 100.0 * 48.0 * (double)PEARL_FOLD_K * (double)cyc[1] / (double)cyc[0]);
+#endif
+#if PEARL_TALL_HASHCYC
+  // The hasher's cycles from the hand-off, median/p90: to the hash's end, and to its release
+  // (compilers.sh's bench stage reads the "hash ... release ..." words). "over" counts the
+  // seams in the last bin, which holds every longer one too.
+  pearl_tall_hcyc_take(hcyc);
+  {
+    unsigned long long nh = 0, nr = 0;
+    for (unsigned i = 0; i < PEARL_TALL_HCYC_BINS; i++) {
+      nh += hcyc[i];
+      nr += hcyc[PEARL_TALL_HCYC_BINS + i];
+    }
+    const unsigned int *hr = hcyc + PEARL_TALL_HCYC_BINS;
+    printf("  hasher cycles a seam (median/p90): hash %.0f/%.0f release %.0f/%.0f over %llu seams (%u past %u)\n",
+           hcyc_at(hcyc, nh, 0.5), hcyc_at(hcyc, nh, 0.9), hcyc_at(hr, nr, 0.5), hcyc_at(hr, nr, 0.9), nh,
+           hr[PEARL_TALL_HCYC_BINS - 1], (PEARL_TALL_HCYC_BINS - 1) * PEARL_TALL_HCYC_BIN);
+  }
 #endif
   pearl_host_destroy(h);
   return 0;

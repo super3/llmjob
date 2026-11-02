@@ -2888,12 +2888,14 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (regions_out) *regions_out = 0;
   if (!ctx || !ctx->haveJob) return false;
-#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC
   // A PEARL_TALL_STUB_SPIN or _ALU build (pearl_config.h) puts a stand-in where the tall
   // fold's hash was and reports no hit. A PEARL_TALL_AB_SKIP build folds stale operands, so
-  // its transcripts are wrong. Each runs only at target zero, the hardest, which
-  // hashrate.js, probes/race.cu and bench set: it times the fold and finds nothing. Any
-  // other target is a job it must not mine. Every card, not only the ones the switch is for.
+  // its transcripts are wrong. A PEARL_TALL_HASHCYC build hashes as it should but is a
+  // bench build, with clock reads and atomics in the hasher. Each runs only at target zero,
+  // the hardest, which hashrate.js, probes/race.cu and bench set: it times the fold and
+  // finds nothing. Any other target is a job it must not mine. Every card, not only the
+  // ones the switch is for.
   {
     bool zero = true;
     for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
@@ -2903,10 +2905,14 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
         snprintf(err, err_len, "tall-fold operand-skip build is timing-only: it runs only at "
                  "target 0 (hashrate.js, race.cu), never on a job; build without "
                  "PEARL_TALL_AB_SKIP to mine");
-#else
+#elif PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
         snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "
                  "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "
                  "and PEARL_TALL_STUB_ALU to mine");
+#else
+        snprintf(err, err_len, "tall-fold hasher-stamp build is timing-only: it runs only at "
+                 "target 0 (bench, race.cu), never on a job; build without PEARL_TALL_HASHCYC "
+                 "to mine");
 #endif
       return false;
     }
@@ -3377,13 +3383,29 @@ static const char kAblateDramTag[] = ", ABLATE_DRAM";
 static const char kAblateDramTag[] = "";
 #endif
 // A tall-fold timing stub (PEARL_TALL_STUB_SPIN or _ALU) says so too, so race.cu's AUDIT
-// line and bench's fold line never credit its reading to the fold.
+// line and bench's fold line never credit its reading to the fold. So do the hasher's
+// stamps (PEARL_TALL_HASHCYC).
+#if PEARL_TALL_HASHCYC
+#define PEARL_TALL_HCYC_TAG ", hasher stamps"
+#else
+#define PEARL_TALL_HCYC_TAG ""
+#endif
 #if PEARL_TALL_STUB_SPIN
 #define PEARL_TALL_STUB_STR2(x) #x
 #define PEARL_TALL_STUB_STR(x) PEARL_TALL_STUB_STR2(x)
-static const char kTallStubTag[] = ", STUB_SPIN=" PEARL_TALL_STUB_STR(PEARL_TALL_STUB_SPIN);
-#elif PEARL_TALL_STUB_ALU
-static const char kTallStubTag[] = ", STUB_ALU";
+static const char kTallStubTag[] = ", STUB_SPIN=" PEARL_TALL_STUB_STR(PEARL_TALL_STUB_SPIN) PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_STUB_ALU == 1
+static const char kTallStubTag[] = ", STUB_ALU" PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_STUB_ALU == 2
+static const char kTallStubTag[] = ", STUB_ALU=2 (one chain)" PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_STUB_ALU == 3
+static const char kTallStubTag[] = ", STUB_ALU=3 (adds as IMAD)" PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_STUB_ALU == 4
+static const char kTallStubTag[] = ", STUB_ALU=4 (with 32 IMMA)" PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_STUB_ALU == 5
+static const char kTallStubTag[] = ", STUB_ALU=5 (IMAD only)" PEARL_TALL_HCYC_TAG;
+#elif PEARL_TALL_HASHCYC
+static const char kTallStubTag[] = PEARL_TALL_HCYC_TAG;
 #endif
 
 // Which fold this context's card runs, as resolve_fold read it off the loaded
@@ -3421,7 +3443,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              ctx->foldPinB ? ", B' held" : "",
              ctx->foldUnfused ? ", hash in its own kernel" : "",
              PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);
-#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_HASHCYC
     {
       Ctx *c = const_cast<Ctx *>(ctx);
       const size_t n = strlen(c->foldName);
@@ -3449,7 +3471,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (ctx->foldTall && ctx->foldTma && PEARL_SM100_ARCH(ctx->tallArch * 10))
     return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, sm_100 build of "
            "sm_120's fold";
-#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_HASHCYC
   // Ada's cp.async ring with a timing stub: its name below, then the stub's.
   if (ctx->foldTall && !ctx->foldTma) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
