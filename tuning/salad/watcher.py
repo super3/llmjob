@@ -2817,7 +2817,10 @@ class W:
         if not cmark and len(sb.get("orgs") or {}) > 1:
             runway, last_rate = [], st.setdefault("org_rate", {})
             for o, bal in sb["orgs"].items():
-                rate = org_cost.get(o) or self.org_burn(o, t)
+                # An org of ours whose boxes are only waiting for PCs spends nothing; it's idle, not timed at the
+                # trickle org_burn measures (3 November: llmjob2 read "597d" with a 2070 waiting).
+                ours = any((g.get("org") or ORG) == o and not g["ended"] for g in groups)
+                rate = org_cost.get(o) or (None if ours else self.org_burn(o, t))
                 if rate:
                     last_rate[o] = rate
                     runway.append((o, bal / rate, False, bal))

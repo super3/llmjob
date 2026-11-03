@@ -2720,6 +2720,11 @@ class TestSaladBalance(Base):
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
         self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        # A box of its own waiting for a PC spends nothing: still idle, not timed at a measured trickle (3 November:
+        # "597d" with a 2070 waiting in llmjob2).
+        self.group(cls="RTX 2060 (6 GB)")["org"] = "llmjob2"
+        self.x.org_burn = lambda o, t: 0.001
+        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
         # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
         self.x.st["org_rate"]["llmjob2"] = 0.003
         self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", self.head())
