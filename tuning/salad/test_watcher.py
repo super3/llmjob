@@ -2208,14 +2208,26 @@ class TestBadPcs(Base):
             self.step(a, 1, "m1")
             self.step(a, 3, None)    # taken back 3 minutes after it was handed over
             self.assertEqual("m1" in self.x.st.get("bad_pcs", {}), i == 2)
-        self.assertIn("NOTE PC m1 goes on the bad list: Salad took it back within 10 min of handing it over 3 times "
-                      "in 24 h", self.events())
+        self.assertIn("NOTE PC m1 goes on the bad list: Salad took it back within 10 min of handing it over, or "
+                      "before it mined, 3 times in 24 h", self.events())
         self.assertNotIn("m1", self.x.st["pc_drops"])
         b = self.group(pri="medium")
         self.step(b, 1, "m1")        # the next group that gets it moves off at once, uncounted
         self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 1)
         self.assertIn("REALLOCATED biz-rtx4080-2 off PC m1 (biz-rtx4080 left this PC at", self.events())
         self.assertEqual(b["reallocs"], 0)
+
+    def test_a_pc_taken_back_before_the_box_mined_counts_though_it_held_it_longer(self):
+        # 2-3 November: ffa8ce60 held 2070 boxes 18-19 minutes, never mining, six times.
+        a = self.group(pri="medium")
+        for i in range(3):
+            self.step(a, 1, "m1")
+            self.step(a, 19, None)   # 19 minutes, no mining reading
+            self.assertEqual("m1" in self.x.st.get("bad_pcs", {}), i == 2)
+        b = self.group(pri="medium")
+        self.step(b, 1, "m2")
+        self.step(b, 35, None)       # held over drop_unmined_min: not a drop
+        self.assertNotIn("m2", self.x.st.get("pc_drops", {}))
 
     def test_only_quick_drops_within_a_day_count(self):
         a = self.group(pri="medium")

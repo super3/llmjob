@@ -79,7 +79,7 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # The search, and a group waiting for a PC when it moves up a priority, price a class at this share of
                # its stored PCs (0.35: 35% of them are slower), not the median (see pick_margin).
                "search_pct": 0.35,
-               "drop_count": 3, "drop_min": 10, "drop_hours": 24,
+               "drop_count": 3, "drop_min": 10, "drop_unmined_min": 30, "drop_hours": 24,
                # How far back each log read starts before the last one ended: a PC's lines can reach Salad minutes
                # late (see logs). Lines read twice count once.
                "log_overlap_min": 10,
@@ -2477,9 +2477,14 @@ class W:
         it on the bad list for every box (bad_pc_hold_h). On 17-19 October 3323a855 was handed to 3090 Ti groups 19
         times in 38 hours and taken back within minutes nearly every time, each stint billed with nothing mined. A
         PC taken back once isn't bad: in 14 days to 23 October such short stints cost $0.29/day, but holding a PC
-        after 3 in a day saved $0.02/day of it and blocked one longer stint."""
+        after 3 in a day saved $0.02/day of it and blocked one longer stint. A PC taken back within drop_unmined_min
+        (30) before the box had a mining reading on it counts too: on 2-3 November ffa8ce60 held 2070 boxes 18-19
+        minutes, never mining, six times, past the 10-minute line each time."""
         mach, since = g["machine"], g.get("pc_since")
-        if not since or t - since >= 60 * self.cfg["drop_min"]:
+        if not since:
+            return
+        mined = any(r[1] == mach and r[0] >= since and r[2] for r in g.get("readings") or [])
+        if t - since >= 60 * (self.cfg["drop_min"] if mined else max(self.cfg["drop_min"], self.cfg["drop_unmined_min"])):
             return
         st = self.st
         drops = [d for d in st.setdefault("pc_drops", {}).get(mach, []) if t - d < 3600 * self.cfg["drop_hours"]] + [t]
@@ -2490,8 +2495,8 @@ class W:
         bad = st.setdefault("bad_pcs", {})
         if bad.get(mach) and self.bad_ports(bad[mach]) is None and self.bad_ths(bad[mach]) is None:
             return   # already bad for every box
-        why = (f"Salad took it back within {self.cfg['drop_min']} min of handing it over {len(drops)} times in "
-               f"{self.cfg['drop_hours']} h")
+        why = (f"Salad took it back within {self.cfg['drop_min']} min of handing it over, or before it mined, "
+               f"{len(drops)} times in {self.cfg['drop_hours']} h")
         bad[mach] = {"t": t, "group": g["name"], "why": why}
         event(f"NOTE PC {mach[:8]} goes on the bad list: {why}")
 
