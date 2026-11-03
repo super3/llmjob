@@ -2811,9 +2811,9 @@ class W:
                 rate = org_cost.get(o) or self.org_burn(o, t)
                 if rate:
                     last_rate[o] = rate
-                    runway.append((o, bal / rate, False))
+                    runway.append((o, bal / rate, False, bal))
                 elif last_rate.get(o) or all_cost:
-                    runway.append((o, bal / (last_rate.get(o) or all_cost), True))
+                    runway.append((o, bal / (last_rate.get(o) or all_cost), True, bal))
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
         # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined
@@ -2892,11 +2892,14 @@ class W:
         # "a little bit too brief"): the time and weekday, PRL, slots, the credit, and each org's days as "16d".
         # Until 3 November: "9:01 am EST, Tue, Nov 3 · ... · Salad $164.39/$585 left (llmjob 19 days · llmjob2 78
         # days)", which wrapped; for one round "9:01 am · ... · $164 left · 19d · 78d²", which was too terse.
-        last = (" · ".join(f"{o} {short_lasts(h)}" + (" idle" if idle else "") for o, h, idle in runway)
-                if runway is not None else short_lasts(hours, cmark) if hours is not None else "")
+        # With two orgs, each org's own credit and days (founder, 3 November): "llmjob $114.37 (16d)", not one total.
         d = dt.datetime.fromtimestamp(t, NY)
-        head = (f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining · "
-                f"Salad ${credit:.2f}{cmark} left" + (f" · {last}" if last else ""))
+        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining · "
+        if runway is not None:
+            head += " · ".join(f"{o} ${bal:.2f} ({short_lasts(h)}" + (" idle" if idle else "") + ")"
+                               for o, h, idle, bal in runway)
+        else:
+            head += f"Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"] == [ORG] and len(self.orgs()) == 1:
@@ -2908,7 +2911,7 @@ class W:
             f.write("\n".join(lines) + "\n")
         replace(REPORT + ".tmp", REPORT)
         if runway is not None:
-            for o, h, idle in runway:
+            for o, h, idle, _ in runway:
                 # An org at $0 has run out, not run short: Salad stopped it and credits_out says so. Its 0 h left the
                 # $/hr below dividing by zero: on 30 October that ended a round once an hour after llmjob2 hit $0.
                 # An idle org spends nothing, so its credit isn't running short.
