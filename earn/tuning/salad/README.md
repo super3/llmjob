@@ -58,7 +58,7 @@ Config keys:
 | `bad_pc_hold_h` | Hours a PC that a group left stays on the shared bad list (24). |
 | `rate_days` | Days a PC's measured rate counts toward its class's rate (7). |
 | `search_pct` | The search and a waiting group's priority moves need a class to clear 10% at the rate this share of its PCs are slower than (0.35), not its median. |
-| `drop_count`, `drop_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 24). |
+| `drop_count`, `drop_min`, `drop_unmined_min`, `drop_hours` | A PC Salad takes back within `drop_min` minutes of handing it over, or within `drop_unmined_min` before the box mined on it, `drop_count` times in `drop_hours`, goes on the bad list for every box (3, 10, 30, 24). |
 | `drift` | How far the ledger and the pool may disagree before a `DRIFT` event (0.15). |
 | `sell` | The PRL seller (see [SafeTrade](#safetrade-row)): `{"live": true, "minute": 5}` sells once an hour from minute 5; without `"live": true` it only says what it would do; unset, it's off. Also `max_slippage` (0.03), `min_price` (0), `min_volume` (0.5). |
 | `salad_orgs` | Salad orgs whose credit the heading adds up, each with its own runway (`["llmjob", "llmjob2"]` on rig01); unset, just the org the boxes run in. |
