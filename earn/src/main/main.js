@@ -1566,13 +1566,11 @@ function buildFleet() {
     sendLlmStatus();
   });
   f.on('busy', (e) => {
-    // The app's own warm-up prompt (warmUpLlm) mines on: see warmUpUntil.
-    if (Date.now() < warmUpUntil) {
-      if (!e.busy) warmUpUntil = 0;
-      return;
-    }
+    // The app's own warm-up prompt (warmUpLlm) mines again as soon as it ends.
+    const warmUp = Date.now() < warmUpUntil;
+    if (warmUp && !e.busy) warmUpUntil = 0;
     const card = cardForPrompt(e, llmBusIds, llmMiningCards);
-    if (card !== undefined) promptPause.setBusy(card, e.busy);
+    if (card !== undefined) promptPause.setBusy(card, e.busy, warmUp ? 0 : undefined);
   });
   // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
   // follows. The row says why when no other card is still serving.
@@ -1616,10 +1614,12 @@ function buildFleet() {
 // to see the LLM is alive. Best-effort and discarded; a real request just
 // overwrites the warm-up's tok/s.
 //
-// It doesn't pause mining the way a prompt does (promptPause). The pause holds
-// for 10s after the last prompt, so this 0.2s warm-up showed Pearl, and $/day,
-// at 0 for ten seconds on every START, just after both had come up. Until it
-// ends, or WARM_UP_MS at most, the LLM's busy signal is taken as its own.
+// Mining pauses for it as for any prompt (promptPause), so the figure is the
+// card's own speed, what a real prompt gets: beside the miner it read 7 tok/s
+// on an RTX 4090 that answers at 140. But it starts mining again as soon as
+// the warm-up ends, not 10s after like a prompt: that wait showed Pearl, and
+// $/day, at 0 for ten seconds on every START. Until the warm-up ends, or
+// WARM_UP_MS at most, the LLM's busy signal is taken as its own.
 const WARM_UP_MS = 30000;
 let warmUpUntil = 0;
 function warmUpLlm(baseUrl) {
@@ -1628,7 +1628,7 @@ function warmUpLlm(baseUrl) {
     body.max_tokens = 24;
     const req = streamChatCompletion(baseUrl, body, () => {});
     warmUpUntil = Date.now() + WARM_UP_MS;
-    req.done.catch(() => {}).then(() => { warmUpUntil = 0; });
+    req.done.catch(() => {});
   } catch (e) { /* best effort — never blocks startup */ }
 }
 

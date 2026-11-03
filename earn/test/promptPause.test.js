@@ -158,6 +158,17 @@ describe('promptPause', () => {
     ]);
   });
 
+  // The app's own warm-up prompt: mining comes back as soon as it ends.
+  test('resumes at once when the end of a prompt asks for no wait', () => {
+    const { p, calls } = make();
+    p.setBusy(0, true);
+    p.setBusy(0, false, 0);
+    expect(calls).toEqual([['pause', [0]]]);
+    jest.advanceTimersByTime(0);
+    expect(calls).toEqual([['pause', [0]], ['resume', [0]]]);
+    expect(p.pausedNow()).toBe(false);
+  });
+
   test('says nothing when there was no mining to pause, but still remembers the pause', () => {
     let mining = false;
     const { p, calls, logs } = make({ pause: (i) => { calls.push(['pause', i]); return mining; } });

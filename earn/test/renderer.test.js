@@ -708,35 +708,53 @@ describe('boot with the full bridge', () => {
   });
 
   // Mining stops on the card for each LLM prompt and starts again about 10s
-  // later (shared/promptPause). Pearl reads 0 for those seconds, so it says
-  // why, and $/day keeps what mining makes instead of dropping to $0.00.
+  // later (shared/promptPause). A dip shorter than 3s, like the app's own
+  // warm-up prompt and the card coming back after it, keeps the last rate on
+  // screen. A pause that lasts reads 0 and says why, and $/day keeps what
+  // mining makes instead of dropping to $0.00.
   it('says when Pearl is paused for an LLM prompt, and keeps $/day through it', async () => {
-    const { api, cbs } = makeFullApi();
-    await boot({ api });
-    setInput($('addr-input'), ADDR);
-    click($('btn-start'));
-    const frame = (total, estDay, llmPaused) => cbs.stats({ total, acceptedLabel: '1', uptime: '1m', estDay, points: [1, 2], llmPaused });
-    frame('313.5', '$5.98', false);
-    expect($('mine-detail').classList.contains('quiet')).toBe(true);
-    expect($('estday').textContent).toBe('$5.98');
-    frame('0.0', '$0.00', true);
-    expect($('hashrate').textContent).toBe('0.0');
-    expect($('mine-detail').textContent).toBe('Paused for an LLM prompt');
-    expect($('mine-detail').classList.contains('quiet')).toBe(false);
-    expect($('mine-dot').className).toBe('dot2 busy');
-    expect($('estday').textContent).toBe('$5.98');
-    frame('312.9', '$5.97', false);
-    expect($('mine-detail').classList.contains('quiet')).toBe(true);
-    expect($('mine-dot').className).toBe('dot2 on');
-    expect($('estday').textContent).toBe('$5.97');
-    // STOP clears it. A START paused for a prompt before the card showed a
-    // hashrate is still starting, with nothing to keep for $/day.
-    click($('btn-stop'));
-    expect($('mine-detail').classList.contains('quiet')).toBe(true);
-    click($('btn-start'));
-    frame('0.0', '$0.00', true);
-    expect($('mine-detail').textContent).toBe('Starting…');
-    expect($('estday').textContent).toBe('$0.00');
+    let t = 1e9;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => t);
+    try {
+      const { api, cbs } = makeFullApi();
+      await boot({ api });
+      setInput($('addr-input'), ADDR);
+      click($('btn-start'));
+      const frame = (total, estDay, llmPaused) => cbs.stats({ total, acceptedLabel: '1', uptime: '1m', estDay, points: [1, 2], llmPaused });
+      const note = () => ($('mine-detail').classList.contains('quiet') ? '' : $('mine-detail').textContent);
+      frame('313.5', '$5.98', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['313.5', '', '$5.98']);
+      // The first seconds of a pause: the last rate stays, nothing to say yet.
+      t += 1000;
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['313.5', '', '$5.98']);
+      expect($('mine-dot').className).toBe('dot2 on');
+      // A pause that lasts.
+      t += 3000;
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', 'Paused for an LLM prompt', '$5.98']);
+      expect($('mine-dot').className).toBe('dot2 busy');
+      t += 1000;
+      frame('312.9', '$5.97', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['312.9', '', '$5.97']);
+      expect($('mine-dot').className).toBe('dot2 on');
+      // A dip with no prompt behind it: held for a moment, then shown as it is.
+      t += 1000;
+      frame('0.0', '$0.00', false);
+      expect([$('hashrate').textContent, $('estday').textContent]).toEqual(['312.9', '$5.97']);
+      t += 3000;
+      frame('0.0', '$0.00', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', '', '$0.00']);
+      // STOP clears it. A START paused for a prompt before the card showed a
+      // hashrate is still starting, with nothing to keep.
+      click($('btn-stop'));
+      expect(note()).toBe('');
+      click($('btn-start'));
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', 'Starting…', '$0.00']);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('refreshes the pool balance with debounce, races and resets', async () => {

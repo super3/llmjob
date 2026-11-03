@@ -72,7 +72,8 @@
     // The Pearl reading (see renderPearl): whether this START's card has shown
     // a hashrate yet, whether mining is paused for an LLM prompt, and the $/day
     // from before that pause.
-    pearlUp: false, llmPaused: false, estDay: null,
+    // And its last rate, and since when it has read 0, for a short dip.
+    pearlUp: false, llmPaused: false, estDay: null, lastTotal: null, zeroSince: 0,
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
@@ -467,6 +468,9 @@
     renderNode({ connected: false });
   }
 
+  // How long Pearl may read 0 before the Mine tab shows it (see applyStats).
+  const BLIP_MS = 3000;
+
   // ── Charts / mining stats ──────────────────────────────────────────────────
   // The chart's height on screen (.chart-card svg in styles.css) and its
   // viewBox, which is 480 by 72 at that height: 1.5 px a unit, as the line
@@ -785,6 +789,8 @@
     } else {
       state.llmPaused = false;
       state.estDay = null;
+      state.lastTotal = null;
+      state.zeroSince = 0;
       el.hashrate.textContent = '0.0';
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
@@ -843,15 +849,24 @@
 
   function applyStats(s) {
     if (!state.mining) return;
-    el.hashrate.textContent = s.total;
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
-    if (parseFloat(s.total) > 0) state.pearlUp = true;
-    state.llmPaused = !!s.llmPaused;
+    // A dip to 0 shorter than BLIP_MS keeps the card's last rate on screen.
+    // Mining pauses for the app's own warm-up prompt when the LLM comes up, and
+    // reopening the card's core after it takes about a second (warmUpLlm in
+    // main.js): a figure that blinked to 0 and back looked broken. A pause that
+    // lasts, as a real prompt's does, reads 0 and says why.
+    const rate = parseFloat(s.total) > 0;
+    if (rate) { state.pearlUp = true; state.lastTotal = s.total; state.zeroSince = 0; }
+    else if (state.pearlUp && !state.zeroSince) state.zeroSince = Date.now();
+    const blip = !rate && state.pearlUp && Date.now() - state.zeroSince < BLIP_MS;
+    el.hashrate.textContent = blip ? state.lastTotal : s.total;
+    state.llmPaused = !!s.llmPaused && !blip;
     // $/day is what the card makes mining. A prompt's pause lasts seconds, so
     // it keeps the figure from before the pause rather than showing $0.00.
-    if (!state.llmPaused) state.estDay = s.estDay;
-    el.estday.textContent = state.llmPaused && state.estDay ? state.estDay : s.estDay;
+    const hold = !!s.llmPaused || blip;
+    if (!hold) state.estDay = s.estDay;
+    el.estday.textContent = hold && state.estDay ? state.estDay : s.estDay;
     renderPearl();
     // The ENGINE's name wins while mining, and the detected one is the fallback.
     //

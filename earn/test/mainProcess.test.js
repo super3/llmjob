@@ -5207,30 +5207,33 @@ describe('mining pauses while the local LLM answers a prompt', () => {
   });
 
   // The app sends the model a "Say hello." the moment it is ready, to fill in
-  // the Mine tab's tok/s. Pausing for that showed Pearl and $/day at 0 for ten
-  // seconds on every START, just after both had come up. A prompt after it
-  // pauses mining as before, and the stats say so.
-  it("mines on through the app's own warm-up prompt, and pauses for the next", async () => {
+  // the Mine tab's tok/s. Mining pauses for it, so the figure is the card's own
+  // speed, but starts again as soon as it ends: the usual 10s wait showed
+  // Pearl and $/day at 0 for ten seconds on every START. The next prompt, a
+  // real one, waits the usual time.
+  it("pauses for the app's own warm-up prompt only until it ends", async () => {
     const ctx = await boot();
     const { miner, llm } = await coRunning(ctx);
-    let finish;
     ctx.io.streamChatCompletion.mockClear();
-    ctx.io.streamChatCompletion.mockReturnValueOnce({ done: new Promise((r) => { finish = r; }), cancel: jest.fn() });
+    ctx.io.streamChatCompletion.mockReturnValueOnce({ done: new Promise(() => {}), cancel: jest.fn() });
     llm.emit('ready', { baseUrl: llm.baseUrl });
     await flush();
     expect(ctx.io.streamChatCompletion.mock.calls[0][1].messages[0].content).toBe('Say hello.');
-    llm.emit('busy', true);
-    llm.emit('busy', false);
-    expect(miner.pauseCards).not.toHaveBeenCalled();
-    expect(lines(ctx).some((l) => l.startsWith('mining paused'))).toBe(false);
-    ctx.interval(1000).fn();
-    expect(ctx.sent('miner:stats').slice(-1)[0].llmPaused).toBe(false);
-    finish();
-    await flush();
+    // Timers here are captured, not run: the resume is the one queued last.
+    const resumeTimer = () => ctx.timers.timeouts.filter((h) => h.ms === 0 || h.ms === 10000).pop();
     llm.emit('busy', true);
     expect(miner.pauseCards).toHaveBeenCalledWith([0]);
     ctx.interval(1000).fn();
     expect(ctx.sent('miner:stats').slice(-1)[0].llmPaused).toBe(true);
+    llm.emit('busy', false);
+    expect(resumeTimer().ms).toBe(0);
+    resumeTimer().fn();
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    ctx.interval(1000).fn();
+    expect(ctx.sent('miner:stats').slice(-1)[0].llmPaused).toBe(false);
+    llm.emit('busy', true);
+    llm.emit('busy', false);
+    expect(resumeTimer().ms).toBe(10000);
   });
 
   it('a miner that starts while a prompt runs starts with that card paused', async () => {
