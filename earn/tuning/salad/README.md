@@ -793,7 +793,7 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   The pools' hashrate and the Received column went: the box table's All row has the speed, and Received equalled
   Paid but for a payout in transit, which now counts in At pool. **USDT to Salad** is the credit bought with USDT;
   **Withdrawn in Nov** is this month's transfers to LLMJob's other accounts (New York months; $0 so far in November);
-  **On SafeTrade** is the USDT there now (called **Left** until 3 November, with every fee paid in its Fees cell; the founder found it unclear). Without a SafeTrade read, the pool table below still shows.
+  **On SafeTrade** is every fee paid and the USDT there now (called **Left** until 3 November, which the founder found unclear). Without a SafeTrade read, the pool table below still shows.
 - **The 💵 SafeTrade table** (26 October to 3 November) came after the pool table and followed the money to what's left,
   one line a row. A row a coin, its columns in the order a coin moves: **Paid** is both pools' Paid, **Received**
   what reached SafeTrade (every deposit), **Waiting** what it holds to sell (held plus in open orders), **Sold**

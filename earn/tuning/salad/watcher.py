@@ -2856,8 +2856,8 @@ class W:
         # the pools hold for us (At pool: unpaid, and a payout not yet on SafeTrade), what they paid in all, what
         # waits on SafeTrade to sell (Unsold, held and in open orders; Waiting until 3 November), what sold, its
         # trading fees and the USDT it brought. Then the USDT sent to Salad, this month's withdrawals to LLMJob's
-        # other accounts, and On SafeTrade: the USDT there now. It was "Left", with every fee paid in its Fees cell,
-        # until the founder found it unclear on 3 November. Until then too a pool table (hashrate, confirmed,
+        # other accounts, and On SafeTrade: every fee paid and the USDT there now. It was "Left" until the founder
+        # found that unclear on 3 November; he kept the fee total. Until then too a pool table (hashrate, confirmed,
         # pending, paid a pool) sat above a SafeTrade table with a Received column; without a SafeTrade read the
         # pool table still shows.
         if sa and "sold" in sa:
@@ -2872,7 +2872,7 @@ class W:
                            + (kxx["confirmed"] + kxx["unconfirmed"] if kxx else 0.0)}
             link = {"pearl": KX_PAGE.format(coin="prl", addr=wallet) if kxp else HM_PAGE.format(coin="pearl", addr=wallet),
                     "xmr": KX_PAGE.format(coin="xmr", addr=xwallet) if kxx else HM_PAGE.format(coin="monero", addr=xwallet)}
-            rows = []
+            rows, fees = [], 0.0
             for coin in ["pearl"] + (["xmr"] if xon else []):
                 dp, (bl, lk) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
                 n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
@@ -2880,6 +2880,14 @@ class W:
                 at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
                 rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}) | {at:.{dp}f} "
                             f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
+                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
+            # Every withdrawal's fees count in the fee total: the network's fee and, for a stablecoin bought with
+            # USDT, that trade's fee.
+            for cur, (amt, wfee) in (sa.get("out") or {}).items():
+                if cur == "usdt" or cur.endswith(">salad"):
+                    fees += round(wfee, 2)
+                elif cur in (sa.get("bought") or {}):
+                    fees += round(sa["bought"][cur][1] + wfee, 2)
             for cur, (amt, wfee) in sorted((sa.get("out") or {}).items()):
                 if cur.endswith(">salad"):
                     rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")
@@ -2889,7 +2897,7 @@ class W:
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
             pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Unsold | Sold | Fees | USDT |",
                     "|---|---|---|---|---|---|---|", *rows,
-                    f"| **On SafeTrade** | | | | | | {bold(f'${left:.2f}')} |"]
+                    f"| **On SafeTrade** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
         elif pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
