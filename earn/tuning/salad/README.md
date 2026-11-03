@@ -787,9 +787,9 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   5 minutes: its workers' 30-minute hashrate, the coins confirmed (paid out from 0.1 XMR), pending and paid. It
   shows whenever Monero is on, even with no box mining there yet.
 - **Since 3 November the pool table and the SafeTrade table are one** (at the founder's request), when SafeTrade
-  reads: `| 💵 SafeTrade | At pool | Paid | Waiting | Sold | Fees | USDT |`. A row a coin, its name linking to its
+  reads: `| 💵 SafeTrade | At pool | Paid | Unsold | Sold | Fees | USDT |`. A row a coin, its name linking to its
   Kryptex page (HeroMiners' while it mines there): **At pool** is what the pools hold for us (confirmed and pending,
-  plus a payout not yet on SafeTrade), **Paid** everything they paid, then SafeTrade's Waiting, Sold, Fees and USDT.
+  plus a payout not yet on SafeTrade), **Paid** everything they paid, then SafeTrade's Unsold (what's on SafeTrade not sold yet, held or in an open order; called Waiting until 3 November), Sold, Fees and USDT.
   The pools' hashrate and the Received column went: the box table's All row has the speed, and Received equalled
   Paid but for a payout in transit, which now counts in At pool. **USDT to Salad** is the credit bought with USDT;
   **Withdrawn in Nov** is this month's transfers to LLMJob's other accounts (New York months; $0 so far in November);
