@@ -2854,10 +2854,12 @@ class W:
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
         # The pools and SafeTrade in one table (founder, 3 November), a coin a row in the order a coin moves: what
         # the pools hold for us (At pool: unpaid, and a payout not yet on SafeTrade), what they paid in all, what
-        # waits on SafeTrade to sell (Unsold; Waiting until the founder renamed it on 3 November) (held and in open orders), what sold, its trading fees and the USDT it brought.
-        # Then the USDT sent to Salad, this month's withdrawals to LLMJob's other accounts, and Left: the USDT still
-        # there and every fee paid. Until then a pool table (hashrate, confirmed, pending, paid a pool) sat above a
-        # SafeTrade table with a Received column; without a SafeTrade read the pool table still shows.
+        # waits on SafeTrade to sell (Unsold, held and in open orders; Waiting until 3 November), what sold, its
+        # trading fees and the USDT it brought. Then the USDT sent to Salad, this month's withdrawals to LLMJob's
+        # other accounts, and On SafeTrade: the USDT there now. It was "Left", with every fee paid in its Fees cell,
+        # until the founder found it unclear on 3 November. Until then too a pool table (hashrate, confirmed,
+        # pending, paid a pool) sat above a SafeTrade table with a Received column; without a SafeTrade read the
+        # pool table still shows.
         if sa and "sold" in sa:
             read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
             # Both pools' figures, Kryptex's even with no box on it now (its payouts still count).
@@ -2870,7 +2872,7 @@ class W:
                            + (kxx["confirmed"] + kxx["unconfirmed"] if kxx else 0.0)}
             link = {"pearl": KX_PAGE.format(coin="prl", addr=wallet) if kxp else HM_PAGE.format(coin="pearl", addr=wallet),
                     "xmr": KX_PAGE.format(coin="xmr", addr=xwallet) if kxx else HM_PAGE.format(coin="monero", addr=xwallet)}
-            rows, fees = [], 0.0
+            rows = []
             for coin in ["pearl"] + (["xmr"] if xon else []):
                 dp, (bl, lk) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
                 n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
@@ -2878,26 +2880,16 @@ class W:
                 at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
                 rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}) | {at:.{dp}f} "
                             f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
-                fees += round(fee, 2)   # the shown cents, so the column adds up on screen
-            # Every withdrawal's fees count in Left's Fees: the network's fee and, for a stablecoin bought with USDT,
-            # that trade's fee.
-            outs = sa.get("out") or {}
-            for cur, (amt, wfee) in outs.items():
-                if cur == "usdt":
-                    fees += round(wfee, 2)
-                elif cur in (sa.get("bought") or {}):
-                    fees += round(sa["bought"][cur][1] + wfee, 2)
-            for cur, (amt, wfee) in sorted(outs.items()):
+            for cur, (amt, wfee) in sorted((sa.get("out") or {}).items()):
                 if cur.endswith(">salad"):
                     rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")
-                    fees += round(wfee, 2)
             wm, wf = sa.get("out_month") or [0.0, 0.0]
             rows.append(f"| Withdrawn in {dt.datetime.fromtimestamp(t, NY):%b} | | | | | ${wf:.2f} | "
                         + (f"−${wm:.2f}" if wm else "$0.00") + " |")
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
             pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Unsold | Sold | Fees | USDT |",
                     "|---|---|---|---|---|---|---|", *rows,
-                    f"| **Left** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
+                    f"| **On SafeTrade** | | | | | | {bold(f'${left:.2f}')} |"]
         elif pool:
             pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 

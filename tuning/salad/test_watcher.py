@@ -2370,10 +2370,9 @@ class TestSafeTrade(Base):
         self.assertEqual(rows[rows.index(head) + 1:], [
             "| ⛏️ PRL | 48.087 | 196.743 | 1.646 | 5.000 | $0.01 | +$8.79 |",
             "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
-            # The 9 USDC and 2 USDT sent to the bank have no dates here, so they aren't this month's; their fees
-            # ($0.91 and $1.00; the failed one's doesn't count) are in Left's.
+            # The 9 USDC and 2 USDT sent to the bank have no dates here, so they aren't this month's.
             "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
-            "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
+            "| On SafeTrade | | | | | | $9.05 |"])         # the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
     def test_usdt_sent_to_the_salad_wallet_is_its_own_row_not_the_banks(self):
@@ -2389,7 +2388,7 @@ class TestSafeTrade(Base):
             "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
             "| USDT to Salad | | | | | $1.00 | −$5.00 |",
             "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
-            "| Left | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
+            "| On SafeTrade | | | | | | $9.05 |"])
 
     def test_withdrawn_is_this_months_transfers_to_our_other_accounts(self):
         now = self.clock[0]
@@ -2470,7 +2469,7 @@ class TestSafeTrade(Base):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0], "usdt": [3.8, 0.0]},
                                 "sold": {"pearl": [2.0, 3.8]}}
         self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.000 | 2.000 | $0.00 | +$3.80 |")
-        self.assertEqual(self.row("**Left**"), "| Left | | | | | $0.00 | $3.80 |")
+        self.assertEqual(self.row("**On SafeTrade**"), "| On SafeTrade | | | | | | $3.80 |")
 
     def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {}, "sales": {}}
