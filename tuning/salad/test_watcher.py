@@ -2343,7 +2343,8 @@ class TestSafeTrade(Base):
         return 200, self.deposits.get(coin, [])[(n - 1) * 100:n * 100]
 
     def row(self, coin):
-        return next(shown(l) for l in self.report().splitlines() if l.startswith(f"| {coin} |"))
+        return next(shown(l) for l in self.report().splitlines()
+                    if l.startswith(f"| {coin} |") or re.match(rf"\| (⛏️|🪙) {re.escape(coin)} \|", shown(l)))
 
     def report(self):
         self.x.write_report()
@@ -2359,17 +2360,19 @@ class TestSafeTrade(Base):
     def test_one_table_from_pools_paid_to_the_usdt_left(self):
         self.x.st["kx_tot"] = {"confirmed": 0.0, "unconfirmed": 2.6, "paid": 45.121}
         self.x.safetrade()
-        rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
-        head = "| 💵 SafeTrade | Paid | Received | Waiting | Sold | Fees | USDT |"
-        pools = rows[rows.index("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |") + 1:rows.index(head)]
-        self.assertFalse([r for r in pools if "💵" in r])   # no SafeTrade rows among the pools any more
-        # Paid is both pools'; Received the deposits less the rejected one; Waiting held plus in open orders; Sold every
-        # sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.
+        report = self.report()
+        self.assertNotIn("| Pool |", report)           # the pools are in this table since 3 November
+        rows = [shown(l) for l in report.splitlines() if l.startswith("| ")]
+        head = "| 💵 SafeTrade | At pool | Paid | Waiting | Sold | Fees | USDT |"
+        # At pool: HeroMiners' 0.744 unpaid, Kryptex's 2.6 pending, and the 44.743 paid that hasn't reached SafeTrade
+        # (196.743 paid by both, 152.000 received: the deposits less the rejected one). Waiting held plus in open
+        # orders; Sold every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.
         self.assertEqual(rows[rows.index(head) + 1:], [
-            "| PRL | 196.743 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |",
-            "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
-            # No rows for the 9 USDC and 2 USDT sent to the bank, but their fees ($0.91 and $1.00; the failed one's
-            # doesn't count) are in Left's.
+            "| ⛏️ PRL | 48.087 | 196.743 | 1.646 | 5.000 | $0.01 | +$8.79 |",
+            "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+            # The 9 USDC and 2 USDT sent to the bank have no dates here, so they aren't this month's; their fees
+            # ($0.91 and $1.00; the failed one's doesn't count) are in Left's.
+            "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
             "| Left | | | | | $1.93 | $9.05 |"])         # every fee, and the USDT the account holds
         self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
 
@@ -2382,16 +2385,28 @@ class TestSafeTrade(Base):
             {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
         self.x.safetrade()
         rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
-        self.assertEqual(rows[-3:], [
-            "| XMR | 0.010368 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+        self.assertEqual(rows[-4:], [
+            "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
             "| USDT to Salad | | | | | $1.00 | −$5.00 |",
+            "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
             "| Left | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
+
+    def test_withdrawn_is_this_months_transfers_to_our_other_accounts(self):
+        now = self.clock[0]
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "20.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 3600)},
+            {"currency_id": "usdt", "amount": "7.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 40 * 86400)},
+            {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 3600),
+             "rid": self.x.cfg["salad_wallet"]}]))
+        self.x.safetrade()
+        # Only the 20 sent this month: last month's 7 and the 5 to Salad's top-up wallet aren't in it.
+        self.assertEqual(self.row("Withdrawn in Jan"), "| Withdrawn in Jan | | | | | $1.00 | −$20.00 |")
 
     def test_only_our_own_sell_orders_count(self):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 0.000 | $0.00 | +$0.00 |")
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 0.000 | $0.00 | +$0.00 |")
 
     def test_every_page_of_fills_counts(self):
         self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
@@ -2448,13 +2463,13 @@ class TestSafeTrade(Base):
             self.clock[0] += 300
             self.x.safetrade()
         self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
-        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | Paid |", shown(self.report()))
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | 152.000 | 1.646 | 5.000 | $0.01 | +$8.79 |")
+        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | At pool |", shown(self.report()))
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 5.000 | $0.01 | +$8.79 |")
 
     def test_a_read_from_before_deposits_and_withdrawals_were_read_shows_what_it_has(self):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0], "usdt": [3.8, 0.0]},
                                 "sold": {"pearl": [2.0, 3.8]}}
-        self.assertEqual(self.row("PRL"), "| PRL | 151.622 | — | 1.000 | 2.000 | $0.00 | +$3.80 |")
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.000 | 2.000 | $0.00 | +$3.80 |")
         self.assertEqual(self.row("**Left**"), "| Left | | | | | $0.00 | $3.80 |")
 
     def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
