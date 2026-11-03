@@ -679,7 +679,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with seven columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**9:49 pm EDT, Mon, Oct 19** · PRL $1.92 · 7/10 mining · Salad $282.17* left (643* h)
+**9:01 am** · PRL $1.38 · 3/17 mining · $164 left · 19d · 78d²
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |
 |---|---|---|---|---|---|---|
@@ -855,7 +855,7 @@ is a Railway cron service: Root Directory `/tuning/salad`, start command
   balance from the portal once a report, as SafeTrade (Salad's public API has none) and shows it unstarred; each read also
   moves its own count to it (`credit_fix` in state), so the starred fallback starts from Salad's figure. Since
   26 October the same read also totals the credit added in Metronome (voided grants left out), and the heading
-  shows the balance out of it: `Salad $202.37/$500 left`. If that part fails, the last total stays. It read the
+  showed the balance out of it (`Salad $202.37/$500 left`) until 3 November, when the first line was cut to fit one line; the total is still kept in state. If that part fails, the last total stays. It read the
   credit purchase invoices until 28 October, when a $5 top-up in USDT made a credit grant and no invoice.
   With config `salad_orgs` (since 28 October `["llmjob", "llmjob2"]`) the balance and the total are added up over
   those orgs, as the founder asked once llmjob2 got $10 of its own. How long it lasts is then given for each org
