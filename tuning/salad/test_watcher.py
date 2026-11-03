@@ -2363,7 +2363,7 @@ class TestSafeTrade(Base):
         report = self.report()
         self.assertNotIn("| Pool |", report)           # the pools are in this table since 3 November
         rows = [shown(l) for l in report.splitlines() if l.startswith("| ")]
-        head = "| 💵 SafeTrade | At pool | Paid | Waiting | Sold | Fees | USDT |"
+        head = "| 💵 SafeTrade | At pool | Paid | Unsold | Sold | Fees | USDT |"
         # At pool: HeroMiners' 0.744 unpaid, Kryptex's 2.6 pending, and the 44.743 paid that hasn't reached SafeTrade
         # (196.743 paid by both, 152.000 received: the deposits less the rejected one). Waiting held plus in open
         # orders; Sold every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.

@@ -2854,7 +2854,7 @@ class W:
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
         # The pools and SafeTrade in one table (founder, 3 November), a coin a row in the order a coin moves: what
         # the pools hold for us (At pool: unpaid, and a payout not yet on SafeTrade), what they paid in all, what
-        # waits on SafeTrade to sell (held and in open orders), what sold, its trading fees and the USDT it brought.
+        # waits on SafeTrade to sell (Unsold; Waiting until the founder renamed it on 3 November) (held and in open orders), what sold, its trading fees and the USDT it brought.
         # Then the USDT sent to Salad, this month's withdrawals to LLMJob's other accounts, and Left: the USDT still
         # there and every fee paid. Until then a pool table (hashrate, confirmed, pending, paid a pool) sat above a
         # SafeTrade table with a Received column; without a SafeTrade read the pool table still shows.
@@ -2895,7 +2895,7 @@ class W:
             rows.append(f"| Withdrawn in {dt.datetime.fromtimestamp(t, NY):%b} | | | | | ${wf:.2f} | "
                         + (f"−${wm:.2f}" if wm else "$0.00") + " |")
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
-            pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Waiting | Sold | Fees | USDT |",
+            pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Unsold | Sold | Fees | USDT |",
                     "|---|---|---|---|---|---|---|", *rows,
                     f"| **Left** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
         elif pool:
