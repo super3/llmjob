@@ -273,7 +273,7 @@
       <a class="btn-sec" href="#hiveos"><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path fill-rule="evenodd" d="M3 4h18v4.5H3zM3 9.75h18v4.5H3zM3 15.5h18V20H3zM5 5.5h2v1.5H5zM5 11.25h2v1.5H5zM5 17h2v1.5H5z"></path></svg>HiveOS rigs →</a>
     </div>
     <div class="trust">
-      <a href="/network"><span class="live-dot"></span><b id="gpu-count">60+ GPUs</b> mining now</a>
+      <a href="/network"><span class="live-dot"></span><b id="gpu-count">GPUs</b> mining now</a>
       <span><svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a10 10 0 0 0-3.2 19.5c.5.1.7-.2.7-.5v-1.7c-2.8.6-3.4-1.3-3.4-1.3-.5-1.2-1.1-1.5-1.1-1.5-.9-.6.1-.6.1-.6 1 .1 1.5 1 1.5 1 .9 1.5 2.4 1.1 2.9.8.1-.7.4-1.1.6-1.3-2.2-.3-4.6-1.1-4.6-5a3.9 3.9 0 0 1 1-2.7 3.6 3.6 0 0 1 .1-2.7s.8-.3 2.7 1a9.4 9.4 0 0 1 5 0c1.9-1.3 2.7-1 2.7-1 .5 1.4.2 2.4.1 2.7a3.9 3.9 0 0 1 1 2.7c0 3.9-2.4 4.7-4.6 5 .4.3.7.9.7 1.9V21c0 .3.2.6.7.5A10 10 0 0 0 12 2z"></path></svg>Open source</span>
       <span><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"></path></svg>No account, no dev fee</span>
     </div>
@@ -588,12 +588,12 @@
     fetch(API_BASE + '/api/miners', { headers: { Accept: 'application/json' } })
       .then(function (r) { return r.ok ? r.json() : null; })
       .then(function (d) {
-        // totalWorkers counts online GPUs (minerService.js). Round down to the
-        // ten so the line doesn't promise more than is there; the page keeps
-        // its default if the board doesn't answer.
+        // totalWorkers counts online GPUs (minerService.js), shown exactly. If
+        // the board doesn't answer, the line reads "GPUs mining now" with no
+        // number rather than a stale one.
         const n = d && Number(d.totalWorkers);
         if (!(n > 0)) return;
-        el.textContent = (n >= 20 ? Math.floor(n / 10) * 10 + '+' : n) + (n === 1 ? ' GPU' : ' GPUs');
+        el.textContent = n + (n === 1 ? ' GPU' : ' GPUs');
       })
       .catch(function () {});
   })();

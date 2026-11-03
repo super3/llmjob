@@ -95,6 +95,25 @@ describe('extensionless page URLs', () => {
     for (const name of popular) expect(list.map((c) => c[0])).toContain(name);
   });
 
+  // "N GPUs mining now" is the board's exact count of online GPUs. Without an
+  // answer it shows no number at all, never a made-up one.
+  it('shows the exact number of GPUs mining from the network board', async () => {
+    const res = await request(app).get('/');
+    expect(res.text).toContain('<b id="gpu-count">GPUs</b> mining now');
+    const script = res.text.match(/\(function \(\) \{\s*const el = document\.getElementById\('gpu-count'\);[\s\S]*?\}\)\(\);/)[0];
+    async function shown(reply) {
+      const el = { textContent: 'GPUs' };
+      const fetch = async () => (reply ? { ok: true, json: async () => reply } : Promise.reject(new Error('offline')));
+      vm.runInNewContext(script, { document: { getElementById: () => el }, fetch, API_BASE: '' });
+      await new Promise((r) => setImmediate(r));
+      return el.textContent;
+    }
+    expect(await shown({ totalWorkers: 64 })).toBe('64 GPUs');
+    expect(await shown({ totalWorkers: 1 })).toBe('1 GPU');
+    expect(await shown({ totalWorkers: 0 })).toBe('GPUs');
+    expect(await shown(null)).toBe('GPUs');
+  });
+
   // Every public page carries the same header and footer.
   it('gives every public page the shared header and footer', async () => {
     for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy']) {
