@@ -340,11 +340,23 @@ def load(path, default):
         return default
 
 
+def replace(tmp, path, tries=5):
+    """os.replace, tried again for a second or so when Windows refuses it: a file another process has open (anyone
+    reading report.md) can't be replaced. On 3 November at 5:31 am EST a reader held report.md and the round failed."""
+    for i in range(tries):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.25)
+
+
 def save(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
-    os.replace(tmp, path)
+    replace(tmp, path)
 
 
 def median3(readings):
@@ -2887,7 +2899,7 @@ class W:
                           "They restart after a top-up."]
         with open(REPORT + ".tmp", "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
-        os.replace(REPORT + ".tmp", REPORT)
+        replace(REPORT + ".tmp", REPORT)
         if runway is not None:
             for o, h, idle in runway:
                 # An org at $0 has run out, not run short: Salad stopped it and credits_out says so. Its 0 h left the
