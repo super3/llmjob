@@ -1,6 +1,7 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
 import importlib.util, io, json, os, re, shutil, tempfile, unittest
+from unittest import mock
 
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
@@ -648,6 +649,24 @@ class TestRepeatedLine(Base):
             for tm, txt in lines]}))
         self.x.round()
         self.assertEqual(len(g["readings"]), 5)
+
+
+class TestReplace(unittest.TestCase):
+    def test_a_replace_windows_refuses_for_a_moment_is_tried_again(self):
+        calls = []
+        def flaky(a, b):
+            calls.append((a, b))
+            if len(calls) < 3:
+                raise PermissionError("in use")
+        with mock.patch.object(w.os, "replace", flaky), mock.patch.object(w.time, "sleep"):
+            w.replace("x.tmp", "x")
+        self.assertEqual(len(calls), 3)
+
+    def test_one_refused_every_time_still_fails(self):
+        with mock.patch.object(w.os, "replace", side_effect=PermissionError("in use")), \
+                mock.patch.object(w.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                w.replace("x.tmp", "x")
 
 
 class TestRule5Profit(Base):
