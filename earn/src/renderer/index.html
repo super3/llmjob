@@ -38,9 +38,8 @@
     <input id="addr-input" class="field-box" type="text" spellcheck="false" placeholder="Paste your prl1p… address" />
     <div id="addr-static" class="field-box mono" hidden></div>
 
-    <!-- One card: a reading per earner, what they make a day, and the Pearl
-         hashrate under them. The card's tooltip holds the rest (the card, its
-         temperature, the shares, the uptime); see renderCardFacts. -->
+    <!-- One card: a reading per earner and what they make a day, the Pearl
+         hashrate under them, then the shares, the uptime and the GPU. -->
     <div class="chart-card" id="chart-card">
       <div class="readings">
         <div class="reading">
@@ -61,17 +60,15 @@
           <div class="reading-sub"><span class="reading-label">per day</span></div>
         </div>
       </div>
-      <svg id="mk-chart" viewBox="0 0 480 118" width="100%" height="177" preserveAspectRatio="none">
+      <svg id="mk-chart" viewBox="0 0 480 72" width="100%" height="108" preserveAspectRatio="none">
         <defs><linearGradient id="mkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
-        <path id="mk-area" d="M0 118 L0 117 L480 117 L480 118 Z" fill="url(#mkFill)"></path>
-        <path id="mk-line" d="M0 117 L480 117" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
+        <path id="mk-area" d="M0 72 L0 71 L480 71 L480 72 Z" fill="url(#mkFill)"></path>
+        <path id="mk-line" d="M0 71 L480 71" fill="none" stroke="#2563eb" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"></path>
       </svg>
-      <!-- Not drawn, but read by screen readers and kept in the card's text, so
-           the release test can still read the shares and uptime off the card. -->
-      <div class="card-facts">
-        <span id="device-label">GPU · auto-detect</span>.
-        Accepted shares <span id="accepted">0</span><span id="cpu-shares" hidden> PRL · <span id="cpu-accepted">0</span> XMR</span>.
-        Uptime <span id="uptime">0m 00s</span>.
+      <div class="mk-stats">
+        <div class="mk-stat"><div class="k">Accepted shares</div><div class="v"><span id="accepted">0</span><span id="cpu-shares" hidden><span class="day"> PRL</span> · <span id="cpu-accepted">0</span><span class="day"> XMR</span></span></div></div>
+        <div class="mk-stat"><div class="k">Uptime</div><div class="v" id="uptime">0m 00s</div></div>
+        <div class="mk-stat"><div class="k">GPU</div><div class="v" id="device-label">GPU · auto-detect</div></div>
       </div>
     </div>
 

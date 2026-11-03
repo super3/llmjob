@@ -627,9 +627,8 @@ describe('boot with the full bridge', () => {
     // a rig that keeps crashing can be checked for heat without nvidia-smi.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
     expect($('device-label').textContent).toBe('gpu-live (86°C)');
-    // The card draws only the rates; the card's name, the shares and the uptime
-    // are in its tooltip, one per line.
-    expect($('chart-card').title).toBe('gpu-live (86°C)\nAccepted shares 34\nUptime 5m 00s');
+    // A long name ends in an ellipsis under the chart, so its title has all of it.
+    expect($('device-label').title).toBe('gpu-live (86°C)');
     // single point (flat-span pad fallback), no gpu — the label keeps the name
     // it last showed rather than reverting to the startup guess for a frame.
     // main's accumulator keeps the last reading, so the frame still carries it.
@@ -650,9 +649,9 @@ describe('boot with the full bridge', () => {
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });
-    expect($('mk-line').getAttribute('d')).toBe('M0 117 L480 117');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1' });
-    expect($('mk-line').getAttribute('d')).toBe('M0 117 L480 117');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
     // NaN points exercise the span fallback without throwing
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [NaN, NaN] });
     expect($('mk-line').getAttribute('d')).toMatch(/NaN/);
@@ -1390,8 +1389,8 @@ describe('mine view height', () => {
     }
     expect(body('#view-mine')).toMatch(/min-height:\s*calc\(470px \+ var\(--fill, 0px\)\)/);
     // The chart's own height matches the svg's height attribute and CHART_PX.
-    expect(body('.chart-card svg')).toMatch(/height:\s*calc\(177px \+ var\(--fill, 0px\)\)/);
-    expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 118" width="100%" height="177"/);
+    expect(body('.chart-card svg')).toMatch(/height:\s*calc\(108px \+ var\(--fill, 0px\)\)/);
+    expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 72" width="100%" height="108"/);
   });
 });
 
@@ -1443,9 +1442,9 @@ describe('a window taller than the content', () => {
     // A fit can leave a pixel or two; that is not spare height.
     resizeTo(655);
     expect(fill()).toBe('');
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 118');
-    expect($('mk-line').getAttribute('d')).toBe('M0 117 L480 117');
-    expect($('mk-area').getAttribute('d')).toBe('M0 118 L0 117 L480 117 L480 118 Z');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 72');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
+    expect($('mk-area').getAttribute('d')).toBe('M0 72 L0 71 L480 71 L480 72 Z');
   });
 
   it('gives the spare height to the views and the chart, and takes it back', async () => {
@@ -1453,15 +1452,15 @@ describe('a window taller than the content', () => {
     await bootFitted(api);
     resizeTo(720); // the 654x759 half of a 1280x800 screen
     expect(fill()).toBe('67px');
-    // 177 + 67 px tall at the same 1.5 px per unit: 118 * 244 / 177 = 162.7.
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 162.7');
-    expect($('mk-line').getAttribute('d')).toBe('M0 161.7 L480 161.7');
-    expect($('mk-area').getAttribute('d')).toBe('M0 162.7 L0 161.7 L480 161.7 L480 162.7 Z');
+    // 108 + 67 px tall at the same 1.5 px per unit: 72 * 175 / 108 = 116.7.
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 116.7');
+    expect($('mk-line').getAttribute('d')).toBe('M0 115.7 L480 115.7');
+    expect($('mk-area').getAttribute('d')).toBe('M0 116.7 L0 115.7 L480 115.7 L480 116.7 Z');
     ROStub.cb(); // the fill grew .app; the content did not change, so nothing moves
     expect(fill()).toBe('67px');
     resizeTo(653);
     expect(fill()).toBe('');
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 118');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 72');
     // Shorter than the content: no fill, the page scrolls as before.
     resizeTo(600);
     expect(fill()).toBe('');
@@ -1476,14 +1475,14 @@ describe('a window taller than the content', () => {
     click($('btn-start'));
     cbs.stats({ total: '226.0', acceptedLabel: '9', uptime: '5m', estDay: '$2.50', gpu: 'g', points: [226, 226, 225, 226, 120, 118, 119, 121] });
     const before = ys($('mk-line').getAttribute('d'));
-    resizeTo(830); // 177 px spare doubles the chart: 118 units become 236
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 236');
+    resizeTo(761); // 108 px spare doubles the chart: 72 units become 144
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 144');
     const after = ys($('mk-line').getAttribute('d'));
     // Each is rounded to 0.1, so doubling can be off by up to 0.15.
     after.forEach((y, i) => expect(Math.abs(y - 2 * before[i])).toBeLessThanOrEqual(0.151));
     // Stopping draws the flat line at the new height.
     click($('btn-stop'));
-    expect($('mk-line').getAttribute('d')).toBe('M0 235 L480 235');
+    expect($('mk-line').getAttribute('d')).toBe('M0 143 L480 143');
   });
 
   it('keeps a taller window its size while the content changes, until it no longer fits', async () => {
@@ -1714,7 +1713,6 @@ describe('CPU mining', () => {
     expect($('cpu-row').hidden).toBe(true);
     // The activity card is the GPU's alone, as before CPU mining.
     expect($('cpu-shares').hidden).toBe(true);
-    expect($('chart-card').title).toMatch(/\nAccepted shares 0\nUptime 0m 00s$/);
     expect(options()).toEqual(['Auto (7 threads)', '1 thread', '2 threads', '3 threads', '4 threads', '5 threads', '6 threads', '7 threads']);
     expect(api.checkXmrAddress).not.toHaveBeenCalled();
     click($('btn-start'));
@@ -1785,9 +1783,9 @@ describe('CPU mining', () => {
     expect($('cpu-meta').textContent).toBe('ready to start');
     expect($('cpu-row').title).toContain('0.0125 XMR earned');
     // Monero joins the card: a reading of its own, and its shares beside
-    // Pearl's in the tooltip.
+    // Pearl's under the chart.
     expect($('cpu-shares').hidden).toBe(false);
-    expect($('chart-card').title).toContain('\nAccepted shares 0 PRL · 0 XMR\n');
+    expect($('accepted').parentElement.textContent).toBe('0 PRL · 0 XMR');
     // "ready to start" adds nothing to the grey dot, so it stays in the tooltip.
     expect($('cpu-meta').classList.contains('quiet')).toBe(true);
     expect($('cpu-row').title).toBe('ready to start · 0.0125 XMR earned');
@@ -1813,9 +1811,9 @@ describe('CPU mining', () => {
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
     expect($('cpu-rate').textContent).toBe('1.85');
     expect($('cpu-meta').textContent).toBe('4 accepted · 3 threads');
-    // The count moves to the tooltip; the line is off the card.
+    // The count moves to the stats; the line is off the card.
     expect($('cpu-accepted').textContent).toBe('4');
-    expect($('chart-card').title).toContain('\nAccepted shares 0 PRL · 4 XMR\n');
+    expect($('accepted').parentElement.textContent).toBe('0 PRL · 4 XMR');
     expect($('cpu-meta').classList.contains('quiet')).toBe(true);
     expect($('cpu-dot').className).toBe('dot2 on');
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 1, threads: 3, error: null });

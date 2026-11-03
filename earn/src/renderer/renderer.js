@@ -465,16 +465,16 @@
 
   // ── Charts / mining stats ──────────────────────────────────────────────────
   // The chart's height on screen (.chart-card svg in styles.css) and its
-  // viewBox, which is 480 by 118 at that height: 1.5 px a unit, as the line
+  // viewBox, which is 480 by 72 at that height: 1.5 px a unit, as the line
   // has always been drawn. The height is what is left of the Mine screen's
-  // 470px once the address, the readings and START are in, so START sits just
-  // above the footer as on the other screens. A window made taller than the
+  // 470px once the address, the readings, the stats under the chart and START
+  // are in, so START sits just above the footer as on the other screens. A window made taller than the
   // content gives the chart the spare height (see watchWindowFit), and the
   // viewBox grows by the same ratio, so the line keeps its scale and thickness
   // and only the chart gets taller.
-  const CHART_PX = 177;
+  const CHART_PX = 108;
   const CHART_W = 480;
-  const CHART_H = 118;
+  const CHART_H = 72;
   // The spare height, in px, and the points on the chart (null while stopped).
   let fillPx = 0;
   let chartPoints = null;
@@ -694,17 +694,13 @@
     const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
     el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
     renderXmrBalance();
-    renderCardFacts();
   }
 
-  // The card draws the rates and what they earn. The rest of what it used to
-  // show, the card and its temperature, the shares and the uptime, is in its
-  // tooltip, one per line. The XMR count only while CPU mining is on.
-  function renderCardFacts() {
-    const xmr = el.cpuShares.hidden ? '' : ' PRL · ' + el.cpuAccepted.textContent + ' XMR';
-    el.chartCard.title = el.deviceLabel.textContent
-      + '\nAccepted shares ' + el.accepted.textContent + xmr
-      + '\nUptime ' + el.uptime.textContent;
+  // The GPU stat under the chart. A long name ends in an ellipsis there, so
+  // its title has the whole of it.
+  function showDevice(text) {
+    el.deviceLabel.textContent = text;
+    el.deviceLabel.title = text;
   }
 
   // Settings → CPU Mining: the Monero balance above the address, as the Pearl
@@ -774,7 +770,7 @@
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
       el.estday.textContent = '$0.00';
-      el.deviceLabel.textContent = state.gpu || 'GPU · auto-detect';
+      showDevice(state.gpu || 'GPU · auto-detect');
       chartPoints = null;
       drawChart();
       el.engineStatus.hidden = true;
@@ -865,8 +861,7 @@
     // back again.
     if (s.gpu) state.engineGpu = s.gpu;
     const deviceName = state.engineGpu || state.gpu;
-    if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, s.temp);
-    renderCardFacts();
+    if (deviceName) showDevice(deviceText(deviceName, s.temp));
     chartPoints = s.points;
     drawChart();
   }
@@ -1276,10 +1271,7 @@
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) {
-          el.deviceLabel.textContent = gpu;
-          renderCardFacts();
-        }
+        if (!state.mining) showDevice(gpu);
       }
     }
     // Only a fresh install picks the nearest region. A saved one is the user's

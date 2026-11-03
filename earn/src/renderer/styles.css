@@ -87,7 +87,7 @@ input.field-box { user-select: text; }
 #addr-static { user-select: text; cursor: text; }
 
 /* The Mine card: a reading per earner and what they make a day, in one row,
-   then the Pearl hashrate under them. */
+   the Pearl hashrate under them, then the shares, the uptime and the GPU. */
 .chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 10px; padding: 20px 20px 18px; margin-bottom: 26px; }
 /* A column per reading. Monero's takes a column only while CPU mining is on
    (it is hidden otherwise), and the rest share the width. */
@@ -104,16 +104,23 @@ input.field-box { user-select: text; }
 .reading-label { font-size: 13px; font-weight: 600; color: #5b5e62; white-space: nowrap; }
 /* A problem or a stage in progress gets its own line under the label. The
    routine detail (the model, the share count) is quiet and goes to the
-   tooltip instead. */
+   reading's tooltip instead. */
 .reading-detail { flex-basis: 100%; font-size: 11.5px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reading-detail.err { color: #dc2626; }
 .reading-detail.quiet { display: none; }
 /* CHART_PX in renderer.js, which sizes the viewBox to match, and the svg's
    height attribute in index.html. */
-.chart-card svg { display: block; height: calc(177px + var(--fill, 0px)); }
-/* The card, its temperature, the shares and the uptime: in the tooltip and
-   for screen readers, not drawn. */
-.card-facts { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.chart-card svg { display: block; height: calc(108px + var(--fill, 0px)); }
+/* Under the chart: the shares on the left, the uptime in the middle and the
+   GPU on the right. The GPU's name is the one that can run long, so it
+   shrinks and ends in an ellipsis, with the whole name in its title. */
+.mk-stats { display: flex; justify-content: space-between; gap: 16px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #ebe9e1; }
+.mk-stat { flex: none; min-width: 0; }
+.mk-stat:nth-child(2) { text-align: center; }
+.mk-stat:nth-child(3) { flex: 0 1 auto; text-align: right; }
+.mk-stat .k { font-size: 12.5px; font-weight: 600; color: var(--muted); margin-bottom: 3px; }
+.mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 15px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mk-stat .v .day { font-size: 12px; font-weight: 500; color: var(--muted-2); }
 
 /* buttons */
 .start-btn { width: 100%; border: none; cursor: pointer; background: var(--green); color: #fff; font-family: inherit; font-weight: 800; font-size: 16px; letter-spacing: .08em; padding: 18px; border-radius: 11px; box-shadow: 0 12px 26px -10px rgba(22,163,74,.7); transition: background .15s, box-shadow .15s; }
