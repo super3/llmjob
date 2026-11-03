@@ -92,7 +92,7 @@ input.field-box { user-select: text; }
 /* A column per reading. Monero's takes a column only while CPU mining is on
    (it is hidden otherwise), and the rest share the width. */
 .readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px 10px; margin-bottom: 18px; }
-.reading { min-width: 0; }
+.reading { min-width: 0; position: relative; }
 .reading.right { text-align: right; }
 .reading-num { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
 .reading.right .reading-num { justify-content: flex-end; }
@@ -102,10 +102,12 @@ input.field-box { user-select: text; }
 .reading-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; margin-top: 3px; }
 .reading.right .reading-sub { justify-content: flex-end; }
 .reading-label { font-size: 13px; font-weight: 600; color: #5b5e62; white-space: nowrap; }
-/* A problem or a stage in progress gets its own line under the label. The
+/* A problem or a stage in progress shows on a line under the label. The
    routine detail (the model, the share count) is quiet and goes to the
-   reading's tooltip instead. */
-.reading-detail { flex-basis: 100%; font-size: 11.5px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+   reading's tooltip instead. The line hangs in the 18px gap above the chart
+   rather than taking a row of its own: as a row, "starting…" made the card,
+   and so the window, grow on START and shrink back once mining began. */
+.reading-detail { position: absolute; left: 0; right: 0; top: 100%; margin-top: 2px; font-size: 11.5px; line-height: 14px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reading-detail.err { color: #dc2626; }
 .reading-detail.quiet { display: none; }
 /* CHART_PX in renderer.js, which sizes the viewBox to match, and the svg's

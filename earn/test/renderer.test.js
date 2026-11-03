@@ -1392,6 +1392,23 @@ describe('mine view height', () => {
     expect(body('.chart-card svg')).toMatch(/height:\s*calc\(108px \+ var\(--fill, 0px\)\)/);
     expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 72" width="100%" height="108"/);
   });
+
+  // "starting…" under Monero and the LLM comes and goes on every START. As a
+  // line of its own it made the card, and so the window, grow and then shrink
+  // back, so it hangs in the gap above the chart, out of the layout, and its
+  // line fits in that gap.
+  it('shows a reading\'s status line without changing the card\'s height', () => {
+    const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = (sel) => {
+      const rule = bare.split('}').map((c) => c.split('{')).find((p) => p.length === 2 && p[0].split(',').map((s) => s.trim()).includes(sel));
+      return rule ? rule[1] : '';
+    };
+    expect(body('.reading')).toMatch(/position:\s*relative/);
+    expect(body('.reading-detail')).toMatch(/position:\s*absolute/);
+    expect(body('.reading-detail')).toMatch(/top:\s*100%/);
+    const px = (rule, prop) => Number(body(rule).match(new RegExp('(?:^|;)\\s*' + prop + ':\\s*(\\d+)px'))[1]);
+    expect(px('.reading-detail', 'margin-top') + px('.reading-detail', 'line-height')).toBeLessThanOrEqual(px('.readings', 'margin-bottom'));
+  });
 });
 
 // A window made taller than the content by hand: snapped to half the screen, or
