@@ -37,17 +37,6 @@
   a { color: inherit; text-decoration: none; }
   @media (prefers-reduced-motion: reduce) { * { animation: none !important; } }
 
-  /* nav (shared partial) */
-  nav.nav { max-width: 1080px; margin: 0 auto; padding: 26px 28px; display: flex; align-items: center; justify-content: space-between; gap: 18px; }
-  .logo { font-weight: 700; font-size: 21px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 11px; color: var(--ink); }
-  .logo .bolt { display: inline-flex; width: 38px; height: 38px; border-radius: 11px; background: var(--dark); align-items: center; justify-content: center; flex: none; }
-  .nav-right { display: flex; align-items: center; gap: 26px; }
-  .nav-link { font-size: 15px; font-weight: 500; color: var(--ink); transition: opacity .15s; }
-  .nav-link:hover { opacity: .65; }
-  .nav-link.active { color: var(--accent); font-weight: 600; }
-  .btn-discord { color: #fff; background: var(--dark); font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; transition: transform .12s ease, box-shadow .15s ease; }
-  .btn-discord:hover { box-shadow: 0 8px 20px -10px rgba(26,26,23,.6); }
-  .btn-discord:active { transform: translateY(1px); }
 
   /* layout */
   .shell { max-width: 1080px; margin: 0 auto; padding: 0 28px 110px; display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 44px; align-items: start; }
@@ -77,7 +66,7 @@
   section.doc li strong, section.doc p strong { color: var(--ink); font-weight: 600; }
   /* Inline code wraps only when it has to: a full base URL is wider than a phone
      and would otherwise push the whole page sideways. */
-  code.ic { font-family: "IBM Plex Mono", monospace; font-size: .88em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 5px; color: var(--ink-strong); overflow-wrap: break-word; }
+  code.ic { font-family: "IBM Plex Mono", monospace; font-size: .88em; background: var(--field); border: 1px solid var(--line-soft); border-radius: 5px; padding: 1px 5px; color: var(--ink-strong); overflow-wrap: anywhere; } /* a long URL breaks anywhere rather than widening a phone screen */
 
   /* code blocks */
   .code { position: relative; margin-top: 18px; background: var(--dark); border-radius: 12px; overflow: hidden; }
@@ -123,23 +112,10 @@
     aside.toc { display: none; }
   }
   @media (max-width: 720px) {
-    nav.nav { padding: 20px 18px; }
-    .nav-right { gap: 15px; }
     .shell { padding: 0 18px 80px; }
   }
-  @media (max-width: 460px) {
-    nav.nav { gap: 10px; }
-/* Compact nav: the links plus the Discord button don't fit a small phone at
-       full size, so shrink the whole bar rather than drop one. */
-    .nav-right { gap: 9px; }
-    .nav-link { font-size: 14px; }
-    .logo { font-size: 18px; gap: 9px; }
-    .logo .bolt { width: 32px; height: 32px; border-radius: 9px; }
-    .btn-discord { padding: 9px 11px; }
-    .btn-discord .dc-txt { display: none; }
-  }
 </style>
-{{> footer-style}}
+{{> shell-style}}
 </head>
 <body id="top">
 

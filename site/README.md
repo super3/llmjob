@@ -55,6 +55,9 @@ the target already has a query, the visitor's is added after it with `&`.
 - `partials/` — shared fragments pulled in with `{{> name}}`:
   - `head.html` — analytics, Clerk loader (when `clerk` is set), favicon, fonts.
   - `api-base.html` — the shared `API_BASE` origin resolution.
+  - `nav.html` and `footer.html` — the header and footer of every public page,
+    styled by `shell-style.html`, which each page includes in its `<head>`.
+  - `legal-style.html` — the shared look of the terms and privacy pages.
 - `config.json` — shared constants (analytics id, Clerk key, API host, release
   version, …) available to every page and partial as `{{key}}`.
 - `static/` — optional; anything here is copied verbatim into `dist/` (images,

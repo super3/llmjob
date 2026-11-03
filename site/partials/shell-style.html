@@ -1,0 +1,31 @@
+<!-- Styles for the shared site header (nav partial) and footer (footer partial),
+     from the October 2026 site refresh mock. Included in each public page's
+     <head> after the page's own <style>, so these rules win.
+
+     Both sit in a 1280px column with the mock's fluid side padding, so the logo
+     lines up top and bottom on every page. The colours are written out rather
+     than taken from each page's palette variables: not every page defines the
+     same set, and the header must look the same everywhere. -->
+<style>
+  nav.nav { max-width: 1280px; margin: 0 auto; padding: 22px clamp(20px, 5vw, 56px); display: flex; flex-wrap: wrap; row-gap: 12px; align-items: center; justify-content: space-between; }
+  .logo { font-weight: 700; font-size: 20px; letter-spacing: -.02em; display: inline-flex; align-items: center; gap: 10px; color: #0e0f10; }
+  .logo .bolt { display: inline-flex; width: 34px; height: 34px; border-radius: 10px; background: #1a1a17; align-items: center; justify-content: center; flex: none; }
+  .nav-right { display: flex; align-items: center; gap: clamp(14px, 3vw, 28px); }
+  .nav-link { font-size: 15px; font-weight: 500; color: #0e0f10; transition: opacity .15s; }
+  .nav-link:hover { opacity: .65; }
+  .nav-link.active { color: #2563eb; font-weight: 600; }
+  .btn-discord { color: #fff; background: #1a1a17; font-size: 15px; font-weight: 600; padding: 9px 17px; border-radius: 8px; display: inline-flex; align-items: center; gap: 8px; }
+  /* A small phone keeps the icon and drops the word, so the bar stays on one line. */
+  @media (max-width: 400px) {
+    .btn-discord { padding: 9px 11px; }
+    .btn-discord .dc-txt { display: none; }
+  }
+
+  footer.foot { max-width: 1280px; margin: 72px auto 0; padding: 28px clamp(20px, 5vw, 56px); display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center; font-size: 14px; color: #8a8f98; }
+  .foot-brand { display: flex; align-items: center; gap: 16px; }
+  .foot-brand .logo { font-size: 17px; }
+  .foot-copy { font-size: 13.5px; color: #9a9da1; }
+  .foot-links { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 24px; }
+  .foot-links a { display: inline-flex; align-items: center; gap: 6px; transition: color .14s; }
+  .foot-links a:hover { color: #0e0f10; }
+</style>

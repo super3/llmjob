@@ -59,20 +59,55 @@ describe('extensionless page URLs', () => {
     expect(res.text).toContain('href="https://github.com/pearl-research-labs/pearl/releases"');
   });
 
-  // Download clicks are counted in Umami: every download link carries the event
-  // name and which OS and which button it was, top or bottom of the page.
+  // Download clicks are counted in Umami, with which OS and which button it
+  // was, top or bottom of the page. The two Download buttons download; the
+  // Windows and Linux items in their menus only pick the platform the button
+  // gets, so they count as a pick, not as a download.
   it('tags every download link on the home page as an Umami event', async () => {
     const res = await request(app).get('/');
     const links = res.text.match(/<a [^>]*releases\/download\/[^>]*>/g);
     expect(links).toHaveLength(6);
     for (const a of links) {
-      expect(a).toContain('data-umami-event="download"');
       expect(a).toMatch(/data-umami-event-os="(windows|linux)"/);
       expect(a).toMatch(/data-umami-event-place="(top|bottom)"/);
     }
+    const buttons = links.filter((a) => a.includes('data-dl-main'));
+    expect(buttons).toHaveLength(2);
+    for (const a of buttons) expect(a).toContain('data-umami-event="download"');
+    for (const a of links.filter((x) => !buttons.includes(x))) expect(a).toContain('data-umami-event="download-platform"');
     // Each installer's links say which OS they are.
     expect(links.filter((a) => a.includes('.exe')).every((a) => a.includes('data-umami-event-os="windows"'))).toBe(true);
     expect(links.filter((a) => a.includes('.AppImage')).every((a) => a.includes('data-umami-event-os="linux"'))).toBe(true);
+  });
+
+  // The calculator's popular-card chips look their card up by name in the
+  // benchmark list, so a chip whose name isn't in it would break the section.
+  it('has a benchmark for every popular card in the calculator', async () => {
+    const res = await request(app).get('/');
+    const list = vm.runInNewContext(res.text.match(/const CARDS = (\[[\s\S]*?\])\.map/)[1]);
+    const popular = vm.runInNewContext(res.text.match(/const POPULAR = (\[[^\]]*\])/)[1]);
+    expect(list.length).toBeGreaterThan(60);
+    for (const [name, th, arch] of list) {
+      expect(typeof name).toBe('string');
+      expect(th).toBeGreaterThan(0);
+      expect(arch).toMatch(/^(NVIDIA|AMD) · /);
+    }
+    for (const name of popular) expect(list.map((c) => c[0])).toContain(name);
+  });
+
+  // Every public page carries the same header and footer.
+  it('gives every public page the shared header and footer', async () => {
+    for (const page of ['/', '/llm', '/network', '/docs', '/terms', '/privacy']) {
+      const res = await request(app).get(page);
+      expect(res.text).toContain('<nav class="nav">');
+      expect(res.text).toContain('<footer class="foot">');
+      for (const href of ['/network', '/llm', '/terms', '/privacy', 'https://github.com/super3/llmjob']) {
+        expect(res.text).toContain(`href="${href}"`);
+      }
+      // The header's link for the page you're on is the highlighted one.
+      const active = res.text.match(/class="nav-link active" href="([^"]*)"/);
+      expect(active ? active[1] : null).toBe(['/', '/network'].includes(page) ? page : null);
+    }
   });
 
   // A short link for a sponsor's video: /nec lands on the home page with UTM
@@ -197,6 +232,40 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(sec).toContain('Ubuntu 20.04');
   });
 
+  // The flight sheet the Copy button puts on the clipboard, built by the page's
+  // own function, reading the same fields the manual table shows.
+  function flightSheet(page, sec, address) {
+    const src = page.match(/function flightSheet\(address\) \{[\s\S]*?\n {4}\}/)[0];
+    const document = { getElementById: (id) => ({ textContent: codeText(sec, id) }) };
+    return JSON.parse(vm.runInNewContext(src + '; flightSheet(address)', { document, address }));
+  }
+
+  // HiveOS's Import from Clipboard takes {name, isFavorite, items}. It can't
+  // carry a HiveOS wallet, so the address goes in the wallet template, which
+  // h-config.sh reads as the address and anything after a '.' as the worker.
+  it('builds a flight sheet for the custom miner with the address in the wallet template', async () => {
+    const { page, sec } = await section();
+    const sheet = flightSheet(page, sec, 'prl1pexample.rig7');
+    expect(sheet.items).toHaveLength(1);
+    const item = sheet.items[0];
+    expect(item.miner).toBe('custom');
+    expect(item.coin).toBe('PRL');
+    expect(item.miner_config).toMatchObject({
+      miner: minerName,
+      install_url: URL,
+      template: 'prl1pexample.rig7',
+      url: 'us.pearl.herominers.com:1200',
+    });
+    const config = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-config.sh'), 'utf8');
+    expect(config).toContain('wallet=${template%%.*}');
+    // The steps say HiveOS still asks for a wallet, and the button and the file
+    // link are there.
+    expect(sec).toContain('Import from clipboard');
+    expect(sec).toContain('pick your PRL wallet');
+    expect(sec).toContain('id="fs-copy"');
+    expect(sec).toContain('id="fs-file"');
+  });
+
   // HiveOS reads which cards are off only when the miner starts, and only the
   // mining follows it, so the page must not say more than that.
   it('says what turning a card off does and does not do', async () => {
@@ -224,6 +293,11 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(counted[0]).toContain('data-umami-event="download"');
     expect(counted[0]).toContain('data-umami-event-os="hiveos"');
     expect(counted[0]).toContain('data-umami-event-place="flight-sheet"');
+    // A flight sheet copied or saved is a HiveOS download too. The script counts
+    // it only once there was an address to put in it.
+    expect(page).toContain("umami.track('download', { os: 'hiveos', place: place })");
+    expect(page).toContain("count('flight-sheet-copy')");
+    expect(page).toContain("count('flight-sheet-file')");
   });
 });
 
