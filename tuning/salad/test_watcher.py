@@ -2699,20 +2699,20 @@ class TestSaladBalance(Base):
         self.step(g, 1, "m1")
         self.two_orgs([(175.0, 10.0, 10.0)] * 9)
         head = self.head()
-        self.assertIn("Salad $185.00 left · llmjob ", head)
+        self.assertIn(" mining · llmjob $175.00 (", head)
         cost = g["price"]
-        self.assertIn(f" · llmjob2 {w.short_lasts(10.0 / cost)} idle\n", head)
+        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", head)
         self.assertNotIn("ALERT llmjob2", self.events())
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
-        self.assertIn(" · llmjob2 20h idle\n", self.head())
+        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
         steps = [(175.0, 10.0 - 0.25 * i + (10.0 if i >= 8 else 0.0), 10.0 + (10.0 if i >= 8 else 0.0)) for i in range(12)]
         self.two_orgs(steps)
         self.assertAlmostEqual(self.x.org_burn("llmjob2", self.clock[0]), 1.0)
-        self.assertIn(" · llmjob2 17h\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
+        self.assertIn(" · llmjob2 $17.25 (17h)\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
         # And it warns once it's under 12 h, for that org.
         self.x.st["org_bal"] = {}
         self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
@@ -2722,7 +2722,7 @@ class TestSaladBalance(Base):
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
         self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
-        self.assertIn(" · llmjob2 0h\n", self.head())
+        self.assertIn(" · llmjob2 $0.00 (0h)\n", self.head())
         self.assertNotIn("ALERT llmjob2", self.events())
 
     def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
@@ -2735,7 +2735,7 @@ class TestSaladBalance(Base):
         g2["status"] = "running"
         self.step(g2, 1, "m2")
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
-        self.assertIn(" · llmjob 4d · llmjob2 2d\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
+        self.assertIn(" mining · llmjob $11.00 (4d) · llmjob2 $1.00 (2d)\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"2060{w.NB}bat.² |", f.read())       # the box says which org it's in, short
 
