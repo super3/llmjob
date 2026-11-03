@@ -1131,7 +1131,10 @@ class W:
         # What left: every withdrawal that went through, by currency -> [amount, network fee]. On 26 October, 103.26
         # USDC (fee 7) on 14 October and 206.28 USDT (fee 3) on 22 October, both on Ethereum. One to the Salad
         # top-up wallet (salad_wallet) is keyed "<currency>>salad": it paid for credit and never reached the bank.
-        out, topup = {}, self.cfg.get("salad_wallet")
+        # This month's (New York time) withdrawals to LLMJob's other accounts, for the report's Withdrawn row:
+        # [amount, network fee] over every currency, each counted as dollars (they are USDT and USDC).
+        out, topup, month = {}, self.cfg.get("salad_wallet"), dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m")
+        out_month = [0.0, 0.0]
         for page in range(1, 21):
             got = get(f"/account/withdraws?limit=100&page={page}")
             if got is None:
@@ -1145,7 +1148,12 @@ class W:
                     o = out.setdefault(cur + (">salad" if topup and x.get("rid") == topup else ""), [0.0, 0.0])
                     o[0] += float(x.get("amount") or 0)
                     o[1] += float(x.get("fee") or 0)
-                except (TypeError, ValueError):
+                    when = x.get("created_at")
+                    if (not (topup and x.get("rid") == topup) and when
+                            and dt.datetime.fromtimestamp(parse_iso(when), NY).strftime("%Y-%m") == month):
+                        out_month[0] += float(x.get("amount") or 0)
+                        out_month[1] += float(x.get("fee") or 0)
+                except (TypeError, ValueError, AttributeError):
                     pass
             if len(got) < 100:
                 break
@@ -1156,7 +1164,8 @@ class W:
             except (KeyError, TypeError, ValueError):
                 pass
         st["st_fill_id"] = max(ids + [last or 0])
-        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv, "bought": bought, "out": out}
+        st["st_acct"] = {"t": t, "coins": coins, "sold": sold, "recv": recv, "bought": bought, "out": out,
+                          "out_month": out_month}
         st["st_warned"] = False
         self.mark_report_read("st", t)
 
@@ -2843,45 +2852,54 @@ class W:
         if kxx:
             pool.append(f"| 🪙 [XMR Kryptex]({KX_PAGE.format(coin='xmr', addr=xwallet)}) | {kxx.get('khs', 0):.1f} kH/s "
                         f"| {kxx['confirmed']:.6f} | {kxx['unconfirmed']:.6f} | {kxx['paid']:.6f} |")
-        if pool:
-            pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
-        # SafeTrade in one table, a row a line. A coin a row in the order a coin moves: what the pools paid (Paid), what
-        # reached SafeTrade, what waits there to sell (held and in open orders), what sold, its trading fees and the USDT
-        # it brought after them. Then the USDT sent to Salad. Last, Left: the USDT still there and every fee paid.
-        # Until 26 October the coins were a 💵 row under each coin's pools, with the sales in Paid. No table without a
-        # SafeTrade key, or with a read from before 24 Oct 10:40 am EDT (last-day sales only).
+        # The pools and SafeTrade in one table (founder, 3 November), a coin a row in the order a coin moves: what
+        # the pools hold for us (At pool: unpaid, and a payout not yet on SafeTrade), what they paid in all, what
+        # waits on SafeTrade to sell (held and in open orders), what sold, its trading fees and the USDT it brought.
+        # Then the USDT sent to Salad, this month's withdrawals to LLMJob's other accounts, and Left: the USDT still
+        # there and every fee paid. Until then a pool table (hashrate, confirmed, pending, paid a pool) sat above a
+        # SafeTrade table with a Received column; without a SafeTrade read the pool table still shows.
         if sa and "sold" in sa:
             read = f"{NB}(read{NB}{short_clock(sa['t'], t)})" if t - sa["t"] >= 15 * MIN else ""
-            # Both pools' paid, Kryptex's even with no box on it now (its row is hidden then, its payouts aren't).
+            # Both pools' figures, Kryptex's even with no box on it now (its payouts still count).
             kxp = st.get("kx_tot")
             paid = {"pearl": (pt["paid"] if pt else 0.0) + (kxp["paid"] if kxp else 0.0),
                     "xmr": (xt["paid"] if xt else 0.0) + (kxx["paid"] if kxx else 0.0)}
+            held = {"pearl": (pt["balance"] + pt["unconfirmed"] if pt else 0.0)
+                             + (kxp["confirmed"] + kxp["unconfirmed"] if kxp else 0.0),
+                    "xmr": (xt["balance"] + xt.get("pending", 0) if xt else 0.0)
+                           + (kxx["confirmed"] + kxx["unconfirmed"] if kxx else 0.0)}
+            link = {"pearl": KX_PAGE.format(coin="prl", addr=wallet) if kxp else HM_PAGE.format(coin="pearl", addr=wallet),
+                    "xmr": KX_PAGE.format(coin="xmr", addr=xwallet) if kxx else HM_PAGE.format(coin="monero", addr=xwallet)}
             rows, fees = [], 0.0
             for coin in ["pearl"] + (["xmr"] if xon else []):
-                dp, (b, l) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
+                dp, (bl, lk) = COIN_DP[coin], sa["coins"].get(coin, [0.0, 0.0])
                 n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
                 r = (sa.get("recv") or {}).get(coin)
-                rows.append(f"| {coin_name(coin)} | {paid[coin]:.{dp}f} | " + ("—" if r is None else f"{r:.{dp}f}")
-                            + f" | {b + l:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
+                at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
+                rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}) | {at:.{dp}f} "
+                            f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
                 fees += round(fee, 2)   # the shown cents, so the column adds up on screen
-            # Withdrawals to LLMJob's other accounts have no rows (until 2 November a row a currency and a Total
-            # out row did, -$309.54 in October), so the USDT column no longer adds up to Left. Their fees still
-            # count in Left's Fees: the network's fee and, for a stablecoin bought with USDT, that trade's fee.
+            # Every withdrawal's fees count in Left's Fees: the network's fee and, for a stablecoin bought with USDT,
+            # that trade's fee.
             outs = sa.get("out") or {}
             for cur, (amt, wfee) in outs.items():
                 if cur == "usdt":
                     fees += round(wfee, 2)
                 elif cur in (sa.get("bought") or {}):
                     fees += round(sa["bought"][cur][1] + wfee, 2)
-            # Withdrawals to the Salad top-up wallet, which paid for credit: a row of their own.
             for cur, (amt, wfee) in sorted(outs.items()):
                 if cur.endswith(">salad"):
                     rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")
                     fees += round(wfee, 2)
+            wm, wf = sa.get("out_month") or [0.0, 0.0]
+            rows.append(f"| Withdrawn in {dt.datetime.fromtimestamp(t, NY):%b} | | | | | ${wf:.2f} | "
+                        + (f"−${wm:.2f}" if wm else "$0.00") + " |")
             left = sum(sa["coins"].get("usdt", [0.0, 0.0]))
-            pool += ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | Paid | Received | Waiting | Sold | Fees | USDT |",
-                     "|---|---|---|---|---|---|---|", *rows,
-                     f"| **Left** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
+            pool = ["", f"| 💵 [SafeTrade](https://safetrade.com){read} | At pool | Paid | Waiting | Sold | Fees | USDT |",
+                    "|---|---|---|---|---|---|---|", *rows,
+                    f"| **Left** | | | | | {bold(f'${fees:.2f}')} | {bold(f'${left:.2f}')} |"]
+        elif pool:
+            pool = ["", "| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", "|---|---|---|---|---|", *pool]
 
         # Just what the table doesn't show: profit an hour, margin and profit so far are in its All row. The Salad
         # credit left (with how long it lasts at the All row's $/hr: days, or hours under a day) ends the line. Until 20 October it was under
