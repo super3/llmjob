@@ -2822,7 +2822,9 @@ class W:
                     last_rate[o] = rate
                     runway.append((o, bal / rate, False, bal))
                 elif last_rate.get(o) or all_cost:
-                    runway.append((o, bal / (last_rate.get(o) or all_cost), True, bal))
+                    # The larger of its last $/hr and the fleet's: a trickle org_burn measured as an org wound down
+                    # (llmjob2 at $0.003/hr on 3 November) made it read "595d idle" with $47.86 left.
+                    runway.append((o, bal / max(last_rate.get(o) or 0.0, all_cost), True, bal))
         # What each pool reports for the account: its own hashrate (1-hour average) and the coins it holds and paid.
         pt, xt = st.get("pool_tot"), st.get("xmr_tot") if xon else None
         # Kryptex shows once a live box is on it or some PRL was mined there; an ended group that never mined

@@ -2720,6 +2720,9 @@ class TestSaladBalance(Base):
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
         self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
+        self.x.st["org_rate"]["llmjob2"] = 0.003
+        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", self.head())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
