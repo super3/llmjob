@@ -43,6 +43,7 @@ Config keys:
 | `wallet` | Payout address, if `PRL_WALLET` isn't set. |
 | `report_min` | Minutes between `REPORT` lines. |
 | `min_margin` | The margin every class and PC must clear (0.10). |
+| `keep_margin` | The margin a box must clear to stay on a PC it already has (unset: `min_margin`; never above it). rig01 runs 0.02 against a 0.05 `min_margin` since 2 November, after one line moved working 4070 Tis off +4% PCs until one was deleted. |
 | `max_new_per_hour` | Most new groups an hour (3). |
 | `max_per_class` | Most groups of one class (1). |
 | `search_every_min` | Minutes between searches while a slot is empty (60). |

@@ -72,7 +72,7 @@ KNOWN = {
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
-               "min_margin": 0.10, "max_new_per_hour": 3, "max_per_class": 1,
+               "min_margin": 0.10, "keep_margin": None, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
                "yield": "auto", "yield_min_blocks": 10, "yield_floor": 0.5, "bad_pc_hold_h": 24, "rate_days": 7, "min_rate_pcs": 3,
@@ -1283,6 +1283,14 @@ class W:
         gs = self.cfg["xmr_groups"]
         return bool(self.cfg["xmr_wallet"]) and ("*" in gs or name in gs)
 
+    def keep_bar(self):
+        """The margin a box must clear to stay on a PC it has: config keep_margin, or min_margin when that's unset.
+        Creating a box and choosing a priority still need min_margin. With one line for both, on 2 November at PRL
+        $1.40-1.46 a 4070 Ti PC earned +4% to +5% at low, so working boxes were moved off PCs that paid them, to
+        land on others that paid the same: 4070ti-135 moved 7 times in 3 h and was deleted at 157 TH/s, +4%."""
+        k = self.cfg.get("keep_margin")
+        return self.cfg["min_margin"] if k is None else min(k, self.cfg["min_margin"])
+
     def box(self, name, xmr, kx=False):
         """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later (xmr_kx_ver
         on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
@@ -2195,7 +2203,7 @@ class W:
                 bad = st.setdefault("bad_pcs", {}).get(mach)
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
-                    ths, bar = self.bad_ths(bad), self.cfg["min_margin"]
+                    ths, bar = self.bad_ths(bad), self.keep_bar()
                     if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
@@ -2207,7 +2215,7 @@ class W:
                 else:
                     seen = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
                     if seen and t - seen[1] < 86400 * self.cfg["rate_days"]:
-                        bar = self.cfg["min_margin"]
+                        bar = self.keep_bar()
                         mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
                             self.reallocate(g, f"PC {mach[:8]} made {seen[0]:.0f} TH/s {(t - seen[1]) / 3600:.0f} h ago, "
@@ -2335,7 +2343,7 @@ class W:
         if quiet:
             rate = self.credit_rate(g, max(start, pend, rs), t)
             if rate is not None:
-                earn, bar = rate * st["mkt"]["price"] + self.xmr_usd(g), self.cfg["min_margin"]
+                earn, bar = rate * st["mkt"]["price"] + self.xmr_usd(g), self.keep_bar()
                 if margin_of(earn, g["price"]) < bar:
                     logs = "its PC sends no log lines" if not cur else \
                         f"no reading from its PC for {(seen_to - cur[-1][0]) / 60:.0f} min"
@@ -2344,7 +2352,8 @@ class W:
                                   f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})")
                     return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last
-        # 3 readings must clear min_margin at the PC's price, every round; the first time it doesn't, the PC is left.
+        # 3 readings must clear keep_bar (keep_margin, else min_margin) at the PC's price, every round; the first time
+        # it doesn't, the PC is left.
         # The median, not the mean: in the 12.6 days to 23 October, 24 of 277 margin leaves whose readings were kept
         # came from one reading 5% or more under the other two (one minute at 3 TH/s between two at 133), where the
         # median cleared the bar. A PC that really slows shows it in 2 of 3 readings a minute later.
@@ -2354,7 +2363,7 @@ class W:
         if len(post) >= 3:
             # At the pool the box's PC mines on, which can differ from its command's for a while (see on_kx).
             # Its Monero counts too (xmr_usd).
-            usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.cfg["min_margin"], self.xmr_usd(g)
+            usd, bar, xmr = self.usd(self.on_kx(g, g["machine"], t)), self.keep_bar(), self.xmr_usd(g)
             ths = median3(post)
             if margin_of(ths * usd + xmr, g["price"]) < bar:
                 self.leave(g, f"earns ${ths * usd + xmr:.3f}/hr at {ths:.0f} TH/s" + (f" (Monero ${xmr:.3f} of it)" if xmr else "")

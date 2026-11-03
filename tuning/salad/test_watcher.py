@@ -671,6 +671,30 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 180, 5)
         self.assertIn("against its $0.190/hr (+9.7%, under 10%)", self.events())
 
+    def test_a_box_stays_on_a_pc_that_clears_keep_margin_though_not_min_margin(self):
+        # 2 November: one 5% line moved working 4070 Tis off PCs paying +4% until 4070ti-135 was deleted.
+        self.x.cfg["keep_margin"] = 0.02
+        g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%, under 10% but over 2%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 170, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 100, 3)   # $0.117: -62%, under 2% too
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+        self.assertIn("under 2%", self.events())
+
+    def test_keep_margin_never_raises_the_bar_over_min_margin(self):
+        self.x.cfg["keep_margin"] = 0.50
+        self.assertEqual(self.x.keep_bar(), self.x.cfg["min_margin"])
+        self.x.cfg["keep_margin"] = None
+        self.assertEqual(self.x.keep_bar(), self.x.cfg["min_margin"])
+
+    def test_a_pc_whose_measured_rate_clears_keep_margin_is_kept(self):
+        self.x.cfg["keep_margin"] = 0.02
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [170.0, self.clock[0] - 2 * 86400]}}
+        g = self.group(pri="medium")                # $0.19/hr: 170 TH/s is +4.5%
+        self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+
     def test_a_pc_that_pays_under_10_percent_is_left(self):
         g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%
         self.step(g, 1, "m1")
