@@ -86,45 +86,40 @@ input.field-box { user-select: text; }
 /* The read-only address shown while mining stays selectable so it can be copied. */
 #addr-static { user-select: text; cursor: text; }
 
-/* hashrate chart card */
-.chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 9px; padding: 16px 16px 16px; margin-bottom: 26px; }
-/* 84px is CHART_PX in renderer.js, which sizes the viewBox to match. */
-.chart-card svg { display: block; height: calc(84px + var(--fill, 0px)); }
-.mk-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-top: 18px; padding-top: 18px; border-top: 1px solid #ebe9e1; }
-/* Per the design mock the three stats anchor to their own edges — left, centre,
-   right — rather than all hugging the left of their grid cell. Aligning the cell
-   (not just the value) keeps each label sitting over its own number. */
-.mk-stat:nth-child(2) { text-align: center; }
-.mk-stat:nth-child(3) { text-align: right; }
-/* With Monero on, the card reads Pearl, Monero, LLM across the top, each
-   tagged with the chip it runs on. */
-.chart-card.with-cpu .hero2 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-/* Centred on the label's letters rather than its line box, which sits 1-2px
-   higher: measured on the Mine card's pixels. */
-.hw-tag { display: none; flex: none; position: relative; top: 1px; height: 16px; align-items: center; padding: 1px 5px 0; border-radius: 4px; background: #eef2fb; color: #3557b7; font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 10px; font-weight: 600; line-height: 1; }
-.hw-tag.cpu { background: #fdf0e6; color: #b45309; }
-.chart-card.with-cpu .hw-tag { display: inline-flex; }
-/* Routine details (the model, the share count) move to the tooltip; a
-   problem or a stage in progress still shows. */
-.chart-card.with-cpu .hero-detail.quiet { display: none; }
-.hero-col { min-width: 0; }
-.hero-col.mid { text-align: center; }
-.hero-col.mid .hero-num, .hero-col.mid .hero-sub { justify-content: center; }
-.hero-col.mid .hero-label, .hero-col.mid .dot2 { flex: none; }
-/* A third of the width cuts the details short, so each gets its own line. */
-.chart-card.with-cpu .hero-sub { flex-wrap: wrap; row-gap: 2px; }
-.chart-card.with-cpu .hero-detail { flex-basis: 100%; }
-.mk-stat .k { font-size: 11.5px; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
-.mk-stat .v { font-family: 'IBM Plex Mono', ui-monospace, Consolas, monospace; font-size: 17px; font-weight: 600; color: var(--ink); }
-.mk-stat .v.accent { color: var(--accent); }
-.mk-stat .v .day { font-size: 12px; color: var(--muted-2); font-weight: 500; }
+/* The Mine card: a reading per earner and what they make a day, in one row,
+   then the Pearl hashrate under them. */
+.chart-card { border: 1px solid var(--line); background: var(--field); border-radius: 10px; padding: 20px 20px 18px; margin-bottom: 26px; }
+/* A column per reading. Monero's takes a column only while CPU mining is on
+   (it is hidden otherwise), and the rest share the width. */
+.readings { display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 12px 10px; margin-bottom: 18px; }
+.reading { min-width: 0; }
+.reading.right { text-align: right; }
+.reading-num { display: flex; align-items: baseline; gap: 5px; white-space: nowrap; }
+.reading.right .reading-num { justify-content: flex-end; }
+.reading-num .num { font-weight: 800; font-size: 25px; letter-spacing: -.02em; color: var(--ink); }
+.reading-num .num.accent { color: var(--accent); }
+.reading-num .unit { font-size: 14px; font-weight: 600; color: var(--muted-2); }
+.reading-sub { display: flex; align-items: center; flex-wrap: wrap; gap: 2px 6px; margin-top: 3px; }
+.reading.right .reading-sub { justify-content: flex-end; }
+.reading-label { font-size: 13px; font-weight: 600; color: #5b5e62; white-space: nowrap; }
+/* A problem or a stage in progress gets its own line under the label. The
+   routine detail (the model, the share count) is quiet and goes to the
+   tooltip instead. */
+.reading-detail { flex-basis: 100%; font-size: 11.5px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reading-detail.err { color: #dc2626; }
+.reading-detail.quiet { display: none; }
+/* CHART_PX in renderer.js, which sizes the viewBox to match, and the svg's
+   height attribute in index.html. */
+.chart-card svg { display: block; height: calc(177px + var(--fill, 0px)); }
+/* The card, its temperature, the shares and the uptime: in the tooltip and
+   for screen readers, not drawn. */
+.card-facts { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
 /* buttons */
 .start-btn { width: 100%; border: none; cursor: pointer; background: var(--green); color: #fff; font-family: inherit; font-weight: 800; font-size: 16px; letter-spacing: .08em; padding: 18px; border-radius: 11px; box-shadow: 0 12px 26px -10px rgba(22,163,74,.7); transition: background .15s, box-shadow .15s; }
 .start-btn:disabled { cursor: not-allowed; background: #e8e6df; color: #b4b1a6; box-shadow: none; }
-.stop-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 10px; border: none; cursor: pointer; background: var(--accent); color: #fff; font-family: inherit; font-weight: 800; font-size: 15px; letter-spacing: .06em; padding: 18px; border-radius: 11px; transition: background .15s; }
+.stop-btn { width: 100%; display: flex; align-items: center; justify-content: center; border: none; cursor: pointer; background: var(--accent); color: #fff; font-family: inherit; font-weight: 800; font-size: 15.5px; letter-spacing: .06em; padding: 18px; border-radius: 11px; transition: background .15s; }
 .stop-btn:hover { background: #dc2626; }
-.stop-btn .dot { width: 9px; height: 9px; border-radius: 50%; background: #fff; animation: mkPulse 1.4s ease-in-out infinite; }
 
 .engine-status { margin-top: 12px; text-align: center; font-size: 12.5px; color: var(--muted); }
 .engine-status.err { color: #dc2626; }
@@ -138,18 +133,7 @@ input.field-box { user-select: text; }
 .toggle:checked::after { transform: translateX(14px); }
 .toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-/* GPU Activity hero: Mining | LLM two-column */
-.hero2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 16px; margin-bottom: 10px; }
-.hero-col.right { text-align: right; }
-.hero-num { display: flex; align-items: baseline; gap: 8px; }
-.hero-col.right .hero-num { justify-content: flex-end; }
-.hero-num .num { font-weight: 800; font-size: 27px; letter-spacing: -.02em; color: var(--ink); }
-.hero-num .unit { font-size: 14px; font-weight: 600; color: var(--muted-2); }
-.hero-sub { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.hero-col.right .hero-sub { justify-content: flex-end; }
-.hero-label { font-size: 12.5px; font-weight: 600; color: #5b5e62; }
-.hero-detail { font-size: 11.5px; color: #9a9da1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.hero-detail.err { color: #dc2626; }
+/* status dots on the Mine card's readings */
 .dot2 { width: 7px; height: 7px; flex: none; border-radius: 50%; background: #c2bfb4; }
 .dot2.on { background: var(--green); animation: mkPulse 1.6s ease-in-out infinite; }
 /* Working on it — downloading or loading the model. Pulses like .on so the row

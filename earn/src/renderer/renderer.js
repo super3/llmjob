@@ -50,7 +50,7 @@
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
     xmrBalanceMeta: $('xmr-balance-meta'), xmrBalance: $('xmr-balance'), xmrBalanceUsd: $('xmr-balance-usd'),
     setCpuThreads: $('set-cpu-threads'),
-    chartCard: $('chart-card'), activityLabel: $('activity-label'), mineLabel: $('mine-label'), llmCol: $('llm-col'),
+    chartCard: $('chart-card'), llmCol: $('llm-col'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
     cpuShares: $('cpu-shares'), cpuAccepted: $('cpu-accepted'),
     logTerm: $('log-term'),
@@ -200,11 +200,11 @@
     return state.cpuMining && state.xmrOk;
   }
 
-  // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
+  // ── Local LLM (the Mine card's LLM reading + chat/api gating) ─────────────
   // Detail line priority: a real error, then the transient stage note
   // ("downloading model … 42%", "Starting…"), then the model name. The note is
   // what tells a first-run user that a multi-GB download is moving rather than
-  // stuck — without it the hero shows the model name and a grey dot the whole
+  // stuck — without it the reading shows the model name and a grey dot the whole
   // time, which is indistinguishable from nothing happening.
   function renderLlmHero() {
     const err = state.llm.error;
@@ -465,13 +465,16 @@
 
   // ── Charts / mining stats ──────────────────────────────────────────────────
   // The chart's height on screen (.chart-card svg in styles.css) and its
-  // viewBox, which is 480 by 56 at that height. A window made taller than the
+  // viewBox, which is 480 by 118 at that height: 1.5 px a unit, as the line
+  // has always been drawn. The height is what is left of the Mine screen's
+  // 470px once the address, the readings and START are in, so START sits just
+  // above the footer as on the other screens. A window made taller than the
   // content gives the chart the spare height (see watchWindowFit), and the
   // viewBox grows by the same ratio, so the line keeps its scale and thickness
   // and only the chart gets taller.
-  const CHART_PX = 84;
+  const CHART_PX = 177;
   const CHART_W = 480;
-  const CHART_H = 56;
+  const CHART_H = 118;
   // The spare height, in px, and the points on the chart (null while stopped).
   let fillPx = 0;
   let chartPoints = null;
@@ -677,10 +680,6 @@
   function renderCpuRow() {
     el.cpuRow.hidden = !state.cpuMining;
     el.cpuShares.hidden = !state.cpuMining;
-    el.chartCard.classList.toggle('with-cpu', state.cpuMining);
-    el.activityLabel.textContent = state.cpuMining ? 'GPU & CPU Activity' : 'GPU Activity';
-    // Next to Monero, "Mining" doesn't say which; the coin does.
-    el.mineLabel.textContent = state.cpuMining ? 'Pearl' : 'Mining';
     const v = state.mining ? state.cpuView : null;
     el.cpuRate.textContent = v ? v.hashrate : '0.00';
     el.cpuAccepted.textContent = v ? String(v.accepted || 0) : '0';
@@ -689,12 +688,23 @@
     el.cpuMeta.textContent = cpuMetaText(v);
     el.cpuMeta.title = el.cpuMeta.textContent;
     el.cpuMeta.classList.toggle('err', bad);
-    // The share count is in the stats and "ready to start" says nothing the
-    // grey dot doesn't, so those two stay off the card.
+    // The share count is in the card's tooltip and "ready to start" says
+    // nothing the grey dot doesn't, so those two stay off the card.
     el.cpuMeta.classList.toggle('quiet', !bad && (v ? v.state === 'mining' : el.cpuMeta.textContent === 'ready to start'));
     const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
     el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
     renderXmrBalance();
+    renderCardFacts();
+  }
+
+  // The card draws the rates and what they earn. The rest of what it used to
+  // show, the card and its temperature, the shares and the uptime, is in its
+  // tooltip, one per line. The XMR count only while CPU mining is on.
+  function renderCardFacts() {
+    const xmr = el.cpuShares.hidden ? '' : ' PRL · ' + el.cpuAccepted.textContent + ' XMR';
+    el.chartCard.title = el.deviceLabel.textContent
+      + '\nAccepted shares ' + el.accepted.textContent + xmr
+      + '\nUptime ' + el.uptime.textContent;
   }
 
   // Settings → CPU Mining: the Monero balance above the address, as the Pearl
@@ -856,6 +866,7 @@
     if (s.gpu) state.engineGpu = s.gpu;
     const deviceName = state.engineGpu || state.gpu;
     if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, s.temp);
+    renderCardFacts();
     chartPoints = s.points;
     drawChart();
   }
@@ -1265,7 +1276,10 @@
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) el.deviceLabel.textContent = gpu;
+        if (!state.mining) {
+          el.deviceLabel.textContent = gpu;
+          renderCardFacts();
+        }
       }
     }
     // Only a fresh install picks the nearest region. A saved one is the user's
