@@ -718,7 +718,7 @@ watcher checks it against the pool and writes a `DRIFT` event when they disagree
 The report is **one table** with seven columns (five without a Monero address), so each row fits on one line in a chat window:
 
 ```
-**9:01 am** · PRL $1.38 · 3/17 mining · $164 left · 19d · 78d²
+**9:30 am Tue** · PRL $1.40 · 4/17 mining · Salad $164.39 left · llmjob 16d · llmjob2 119d
 
 | Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |
 |---|---|---|---|---|---|---|

@@ -1951,7 +1951,7 @@ class TestCreditRatio(Base):
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**3:00 am** · PRL $1.39 "))  # no rule above it, and no zone or date (3 Nov)
+        self.assertTrue(self.report().startswith("**3:00 am Fri** · PRL $1.39 "))  # no rule above it; no zone or date since 3 Nov
 
     def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
         t = w.parse_iso("2026-10-17T15:53:00Z")
@@ -1971,14 +1971,14 @@ class TestCreditRatio(Base):
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
         # The credit left ($100 less $6.00 spent); no box is billing, so no hours.
-        self.assertEqual(first, "**3:00 am** · PRL $1.39 · 0/1 mining · $94* left")
+        self.assertEqual(first, "**3:00 am Fri** · PRL $1.39 · 0/1 mining · Salad $94.00* left")
 
     def test_the_empty_slots_share_one_row_with_their_count(self):
         report = self.report(cfg={"max_active": 10})
         empty = f"| ⬜{w.NB}empty{w.NB}×9 | — | — | — | — |"
         self.assertEqual(report.count(empty + "\n"), 1)              # 1 group, 10 slots: one row for the other 9
         self.assertEqual(report.count("empty"), 1)
-        self.assertIn(" · 0/10 mining · $", report)                    # counted against the slots, not the groups
+        self.assertIn(" · 0/10 mining · Salad $", report)                    # counted against the slots, not the groups
         rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
         self.assertTrue(all(len(shown(l)) <= 90 for l in rows))
@@ -1997,7 +1997,7 @@ class TestCreditRatio(Base):
 
     def test_the_heading_says_how_many_days_the_credit_lasts(self):
         self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit: 627 h
-        self.assertIn(" · $94* left · 26*d\n", self.report(cfg={"max_active": 2}))
+        self.assertIn(" · Salad $94.00* left · 26*d\n", self.report(cfg={"max_active": 2}))
 
     def test_under_a_day_of_credit_shows_in_hours(self):
         self.assertEqual([w.lasts(h) for h in (627, 36, 24, 23.6, 5)], ["26 days", "2 days", "1 day", "24 h", "5 h"])
@@ -2010,7 +2010,7 @@ class TestCreditRatio(Base):
         self.x.st["quota"] = 3
         report = self.report(cfg={"max_active": 10})
         self.assertIn(f"| ⬜{w.NB}empty{w.NB}×2 |", report)
-        self.assertIn(" · 0/3 mining · $", report)
+        self.assertIn(" · 0/3 mining · Salad $", report)
 
     def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
         self.x.cfg["xmr_wallet"] = "4abc"
@@ -2113,7 +2113,7 @@ class TestStartingBoxes(Base):
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
         self.assertIn(f"| **All** | **200** | **0.22** | **+0.04\\*{w.NB}(+19%\\*)** |", report)
-        self.assertIn(" · 1/2 mining · $", report)  # the starting box counts as not mining yet
+        self.assertIn(" · 1/2 mining · Salad $", report)  # the starting box counts as not mining yet
 
     def test_stars_inside_bold_are_escaped(self):
         # "**+0.27* (+24%*)**" doesn't render as bold: Markdown takes the stars for more emphasis.
@@ -2138,7 +2138,7 @@ class TestStartingBoxes(Base):
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04*{w.NB}(+19%*) |", report)
-        self.assertRegex(report, r" · \$\d+\* left · \d+\*(h|d)\n")
+        self.assertRegex(report, r" · Salad \$[\d.]+\* left · \d+\*(h|d)\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
         a = self.group(pri="medium")
@@ -2617,17 +2617,17 @@ class TestSaladBalance(Base):
     def test_salads_own_balance_shows_without_a_star(self):
         self.x.salad_balance()
         self.assertEqual(self.reads, [("u@x", "pw")])
-        self.assertIn("$229 left", self.head())
+        self.assertIn("Salad $228.65 left", self.head())
 
     def test_shows_it_out_of_all_the_credit_bought(self):
         self.answer = (200, 20237, 500.0)
         self.x.salad_balance()
-        self.assertIn("$202 left", self.head())
+        self.assertIn("Salad $202.37 left", self.head())
         self.assertEqual(self.x.st["salad_bought"], 500.0)
         self.answer = (200, 20137, None)   # the invoices didn't read: keep the last total
         self.clock[0] += 900
         self.x.salad_balance()
-        self.assertIn("$201 left", self.head())
+        self.assertIn("Salad $201.37 left", self.head())
         self.assertEqual(self.x.st["salad_bought"], 500.0)
 
     def test_credit_bought_is_every_grant_not_voided(self):
@@ -2699,20 +2699,20 @@ class TestSaladBalance(Base):
         self.step(g, 1, "m1")
         self.two_orgs([(175.0, 10.0, 10.0)] * 9)
         head = self.head()
-        self.assertIn("$185 left · ", head)
+        self.assertIn("Salad $185.00 left · llmjob ", head)
         cost = g["price"]
-        self.assertIn(f" · {w.short_lasts(10.0 / cost)}² idle\n", head)
+        self.assertIn(f" · llmjob2 {w.short_lasts(10.0 / cost)} idle\n", head)
         self.assertNotIn("ALERT llmjob2", self.events())
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
-        self.assertIn(" · 20h² idle\n", self.head())
+        self.assertIn(" · llmjob2 20h idle\n", self.head())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
         steps = [(175.0, 10.0 - 0.25 * i + (10.0 if i >= 8 else 0.0), 10.0 + (10.0 if i >= 8 else 0.0)) for i in range(12)]
         self.two_orgs(steps)
         self.assertAlmostEqual(self.x.org_burn("llmjob2", self.clock[0]), 1.0)
-        self.assertIn(" · 17h²\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
+        self.assertIn(" · llmjob2 17h\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
         # And it warns once it's under 12 h, for that org.
         self.x.st["org_bal"] = {}
         self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
@@ -2722,7 +2722,7 @@ class TestSaladBalance(Base):
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
         self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
-        self.assertIn(" · 0h²\n", self.head())
+        self.assertIn(" · llmjob2 0h\n", self.head())
         self.assertNotIn("ALERT llmjob2", self.events())
 
     def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
@@ -2735,7 +2735,7 @@ class TestSaladBalance(Base):
         g2["status"] = "running"
         self.step(g2, 1, "m2")
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
-        self.assertIn(" · 4d · 2d²\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
+        self.assertIn(" · llmjob 4d · llmjob2 2d\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"2060{w.NB}bat.² |", f.read())       # the box says which org it's in, short
 
@@ -2743,7 +2743,7 @@ class TestSaladBalance(Base):
         del os.environ["SALAD_PASS"]
         self.x.salad_balance()
         self.assertEqual(self.reads, [])
-        self.assertIn("$501* left", self.head())
+        self.assertIn("Salad $501.01* left", self.head())
 
     def test_read_once_a_report_in_its_first_round(self):
         self.x.cfg["report_min"] = 15
@@ -2758,7 +2758,7 @@ class TestSaladBalance(Base):
         g["spend"] = 0.5
         self.clock[0] += 3601
         # No read for over an hour: our count, starred, from Salad's last figure less what was spent since.
-        self.assertIn("$228* left", self.head())
+        self.assertIn("Salad $228.15* left", self.head())
 
     def test_a_failed_read_warns_once_and_keeps_the_last(self):
         self.x.salad_balance()
@@ -2767,7 +2767,7 @@ class TestSaladBalance(Base):
             self.clock[0] += 600
             self.x.salad_balance()
         self.assertEqual(self.events().count("WARN can't read Salad's balance from the portal: HTTP 401"), 1)
-        self.assertIn("$229 left", self.head())
+        self.assertIn("Salad $228.65 left", self.head())
 
 
 class TestRound(Base):
@@ -2803,7 +2803,7 @@ class TestRound(Base):
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}4080{w.NB}bat. | 199 |", report)
-        self.assertIn(" · 1/1 mining · $", report)
+        self.assertIn(" · 1/1 mining · Salad $", report)
         self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
     def test_boxes_are_sorted_by_profit_an_hour(self):

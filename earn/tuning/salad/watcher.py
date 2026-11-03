@@ -2888,13 +2888,15 @@ class W:
         # the tables with what Salad had cost and what each PRL cost, and before that in a paragraph that also gave
         # each pool's credit ratio and payout threshold, SafeTrade's sales and the XMR mined; the key to the
         # symbols is in the README.
-        # One line, as the founder asked on 3 November: the time without its zone and date, the credit in whole
-        # dollars without what was bought, and each org's days as "19d", llmjob2's marked "²" like its boxes. Until
-        # then: "9:01 am EST, Tue, Nov 3 · ... · Salad $164.39/$585 left (llmjob 19 days · llmjob2 78 days)".
-        last = (" · ".join(f"{short_lasts(h)}{org_mark(o)}" + (" idle" if idle else "") for o, h, idle in runway)
+        # One line, as the founder asked on 3 November, but not so short it reads as code (his word at 9:30 am:
+        # "a little bit too brief"): the time and weekday, PRL, slots, the credit, and each org's days as "16d".
+        # Until 3 November: "9:01 am EST, Tue, Nov 3 · ... · Salad $164.39/$585 left (llmjob 19 days · llmjob2 78
+        # days)", which wrapped; for one round "9:01 am · ... · $164 left · 19d · 78d²", which was too terse.
+        last = (" · ".join(f"{o} {short_lasts(h)}" + (" idle" if idle else "") for o, h, idle in runway)
                 if runway is not None else short_lasts(hours, cmark) if hours is not None else "")
-        head = (f"**{clock(t).rsplit(' ', 1)[0]}** · PRL ${price:.2f} · {mining}/{slots} mining · ${credit:.0f}{cmark} left"
-                + (f" · {last}" if last else ""))
+        d = dt.datetime.fromtimestamp(t, NY)
+        head = (f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining · "
+                f"Salad ${credit:.2f}{cmark} left" + (f" · {last}" if last else ""))
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
         lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
         if st["credits_out"] == [ORG] and len(self.orgs()) == 1:
@@ -2932,15 +2934,6 @@ def short_lasts(hours, mark=""):
     """lasts, short for the report's first line: "19d", or "8h" under a day."""
     days = round(hours / 24)
     return f"{hours:.0f}{mark}h" if hours < 24 or days < 1 else f"{days}{mark}d"
-
-
-def org_mark(org):
-    """An org's mark after a number or box: none for ORG, a superscript for one numbered after it (llmjob2 "²"),
-    and its name in brackets otherwise."""
-    if org == ORG:
-        return ""
-    sub = org[len(ORG):] if org.startswith(ORG) else ""
-    return sub.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")) if sub.isdigit() else f" ({org})"
 
 
 def bold(text):
