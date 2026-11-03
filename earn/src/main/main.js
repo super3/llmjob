@@ -549,6 +549,9 @@ function statsView(snap) {
     // After the fee of the pool this START mines Pearl on.
     estDay: earnings.estDailyUsdLabel(snap.total,
       Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.pool) })),
+    // Mining is stopped on a card while the local LLM answers a prompt, so the
+    // Mine tab can say why Pearl reads 0 for those seconds.
+    llmPaused: promptPause.pausedNow(),
   };
 }
 
@@ -1563,8 +1566,11 @@ function buildFleet() {
     sendLlmStatus();
   });
   f.on('busy', (e) => {
+    // The app's own warm-up prompt (warmUpLlm) mines again as soon as it ends.
+    const warmUp = Date.now() < warmUpUntil;
+    if (warmUp && !e.busy) warmUpUntil = 0;
     const card = cardForPrompt(e, llmBusIds, llmMiningCards);
-    if (card !== undefined) promptPause.setBusy(card, e.busy);
+    if (card !== undefined) promptPause.setBusy(card, e.busy, warmUp ? 0 : undefined);
   });
   // An instance gave up on its card (see rememberGpuLoss), and its 'stopped'
   // follows. The row says why when no other card is still serving.
@@ -1607,11 +1613,22 @@ function buildFleet() {
 // tokens/sec figure populates on its own — the user shouldn't have to open Chat
 // to see the LLM is alive. Best-effort and discarded; a real request just
 // overwrites the warm-up's tok/s.
+//
+// Mining pauses for it as for any prompt (promptPause), so the figure is the
+// card's own speed, what a real prompt gets: beside the miner it read 7 tok/s
+// on an RTX 4090 that answers at 140. But it starts mining again as soon as
+// the warm-up ends, not 10s after like a prompt: that wait showed Pearl, and
+// $/day, at 0 for ten seconds on every START. Until the warm-up ends, or
+// WARM_UP_MS at most, the LLM's busy signal is taken as its own.
+const WARM_UP_MS = 30000;
+let warmUpUntil = 0;
 function warmUpLlm(baseUrl) {
   try {
     const body = buildChatBody([{ role: 'user', content: 'Say hello.' }], { stream: true });
     body.max_tokens = 24;
-    streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
+    const req = streamChatCompletion(baseUrl, body, () => {});
+    warmUpUntil = Date.now() + WARM_UP_MS;
+    req.done.catch(() => {});
   } catch (e) { /* best effort — never blocks startup */ }
 }
 

@@ -20,7 +20,7 @@
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
-    mineDot: $('mine-dot'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
+    mineDot: $('mine-dot'), mineDetail: $('mine-detail'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
@@ -50,7 +50,7 @@
     cpuNote: $('cpu-note'), setXmr: $('set-xmr'),
     xmrBalanceMeta: $('xmr-balance-meta'), xmrBalance: $('xmr-balance'), xmrBalanceUsd: $('xmr-balance-usd'),
     setCpuThreads: $('set-cpu-threads'),
-    chartCard: $('chart-card'), activityLabel: $('activity-label'), mineLabel: $('mine-label'), llmCol: $('llm-col'),
+    chartCard: $('chart-card'), llmCol: $('llm-col'),
     cpuRow: $('cpu-row'), cpuDot: $('cpu-dot'), cpuRate: $('cpu-rate'), cpuMeta: $('cpu-meta'),
     cpuShares: $('cpu-shares'), cpuAccepted: $('cpu-accepted'),
     logTerm: $('log-term'),
@@ -69,6 +69,11 @@
     // and someone is using the computer. STOP still shows.
     paused: false,
     idleAfterSec: 300,
+    // The Pearl reading (see renderPearl): whether this START's card has shown
+    // a hashrate yet, whether mining is paused for an LLM prompt, and the $/day
+    // from before that pause.
+    // And its last rate, and since when it has read 0, for a short dip.
+    pearlUp: false, llmPaused: false, estDay: null, lastTotal: null, zeroSince: 0,
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
@@ -200,11 +205,11 @@
     return state.cpuMining && state.xmrOk;
   }
 
-  // ── Local LLM (GPU Activity hero + chat/api gating) ────────────────────────
+  // ── Local LLM (the Mine card's LLM reading + chat/api gating) ─────────────
   // Detail line priority: a real error, then the transient stage note
   // ("downloading model … 42%", "Starting…"), then the model name. The note is
   // what tells a first-run user that a multi-GB download is moving rather than
-  // stuck — without it the hero shows the model name and a grey dot the whole
+  // stuck — without it the reading shows the model name and a grey dot the whole
   // time, which is indistinguishable from nothing happening.
   function renderLlmHero() {
     const err = state.llm.error;
@@ -463,15 +468,21 @@
     renderNode({ connected: false });
   }
 
+  // How long Pearl may read 0 before the Mine tab shows it (see applyStats).
+  const BLIP_MS = 3000;
+
   // ── Charts / mining stats ──────────────────────────────────────────────────
   // The chart's height on screen (.chart-card svg in styles.css) and its
-  // viewBox, which is 480 by 56 at that height. A window made taller than the
+  // viewBox, which is 480 by 72 at that height: 1.5 px a unit, as the line
+  // has always been drawn. The height is what is left of the Mine screen's
+  // 470px once the address, the readings, the stats under the chart and START
+  // are in, so START sits just above the footer as on the other screens. A window made taller than the
   // content gives the chart the spare height (see watchWindowFit), and the
   // viewBox grows by the same ratio, so the line keeps its scale and thickness
   // and only the chart gets taller.
-  const CHART_PX = 84;
+  const CHART_PX = 108;
   const CHART_W = 480;
-  const CHART_H = 56;
+  const CHART_H = 72;
   // The spare height, in px, and the points on the chart (null while stopped).
   let fillPx = 0;
   let chartPoints = null;
@@ -587,9 +598,11 @@
   // mining and apply at the next START. The address is checked in main: the
   // renderer has no Keccak for Monero's checksum.
   const CPU_STATES = {
-    starting: 'starting…',
-    dataset: 'building its dataset…',
-    restarting: 'restarting…',
+    starting: 'Starting…',
+    // Building the RandomX dataset is part of starting, as far as anyone
+    // watching is concerned: one word for both, as the LLM has.
+    dataset: 'Starting…',
+    restarting: 'Restarting…',
   };
   let xmrCheckTimer = null;
 
@@ -653,7 +666,7 @@
   function cpuMetaText(v) {
     if (!state.mining) return cpuIdleText();
     if (state.paused) return 'paused while in use';
-    if (!v) return 'starting…';
+    if (!v) return 'Starting…';
     if (v.error) return 'stopped: ' + v.error;
     if (v.pool) return v.pool;
     if (v.state === 'mining') {
@@ -677,10 +690,6 @@
   function renderCpuRow() {
     el.cpuRow.hidden = !state.cpuMining;
     el.cpuShares.hidden = !state.cpuMining;
-    el.chartCard.classList.toggle('with-cpu', state.cpuMining);
-    el.activityLabel.textContent = state.cpuMining ? 'GPU & CPU Activity' : 'GPU Activity';
-    // Next to Monero, "Mining" doesn't say which; the coin does.
-    el.mineLabel.textContent = state.cpuMining ? 'Pearl' : 'Mining';
     const v = state.mining ? state.cpuView : null;
     el.cpuRate.textContent = v ? v.hashrate : '0.00';
     el.cpuAccepted.textContent = v ? String(v.accepted || 0) : '0';
@@ -689,12 +698,19 @@
     el.cpuMeta.textContent = cpuMetaText(v);
     el.cpuMeta.title = el.cpuMeta.textContent;
     el.cpuMeta.classList.toggle('err', bad);
-    // The share count is in the stats and "ready to start" says nothing the
-    // grey dot doesn't, so those two stay off the card.
+    // The share count is in the card's tooltip and "ready to start" says
+    // nothing the grey dot doesn't, so those two stay off the card.
     el.cpuMeta.classList.toggle('quiet', !bad && (v ? v.state === 'mining' : el.cpuMeta.textContent === 'ready to start'));
     const bal = state.xmrBalance != null && state.xmrOk ? fmt4(state.xmrBalance) + ' XMR earned' : '';
     el.cpuRow.title = [el.cpuMeta.textContent, bal].filter(Boolean).join(' · ');
     renderXmrBalance();
+  }
+
+  // The GPU stat under the chart. A long name ends in an ellipsis there, so
+  // its title has the whole of it.
+  function showDevice(text) {
+    el.deviceLabel.textContent = text;
+    el.deviceLabel.title = text;
   }
 
   // Settings → CPU Mining: the Monero balance above the address, as the Pearl
@@ -748,28 +764,46 @@
     return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && isValid(state.address);
   }
 
+  // The Pearl reading's line under its label, like Monero's and the LLM's:
+  // "Starting…" from START until the card's first hashrate, and "Paused for an
+  // LLM prompt" while mining waits for the local LLM to answer one (it starts
+  // again about 10s after, see shared/promptPause). Without them Pearl read 0
+  // with nothing to say why, and looked broken. The dot is amber for both.
+  function renderPearl() {
+    const on = gpuMinerOn();
+    if (!on) state.pearlUp = false;
+    const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
+    el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
+    el.mineDetail.textContent = note;
+    el.mineDetail.classList.toggle('quiet', !note);
+  }
+
   function renderMiningState() {
     el.addrInput.hidden = state.mining;
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
-    el.mineDot.className = 'dot2' + (gpuMinerOn() ? ' on' : '');
     el.idleStatus.hidden = !(state.mining && state.paused);
     el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
       + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';
     if (state.mining) {
       el.addrStatic.textContent = state.address;
     } else {
+      state.llmPaused = false;
+      state.estDay = null;
+      state.lastTotal = null;
+      state.zeroSince = 0;
       el.hashrate.textContent = '0.0';
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
       el.estday.textContent = '$0.00';
-      el.deviceLabel.textContent = state.gpu || 'GPU · auto-detect';
+      showDevice(state.gpu || 'GPU · auto-detect');
       chartPoints = null;
       drawChart();
       el.engineStatus.hidden = true;
       state.cpuView = null;
     }
+    renderPearl();
     el.btnStart.disabled = !canStart();
     // A pool change takes the next START, and the balances show the pool
     // picked, so the pool stays put while mining, as the Monero address does.
@@ -817,10 +851,25 @@
 
   function applyStats(s) {
     if (!state.mining) return;
-    el.hashrate.textContent = s.total;
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
-    el.estday.textContent = s.estDay;
+    // A dip to 0 shorter than BLIP_MS keeps the card's last rate on screen.
+    // Mining pauses for the app's own warm-up prompt when the LLM comes up, and
+    // reopening the card's core after it takes about a second (warmUpLlm in
+    // main.js): a figure that blinked to 0 and back looked broken. A pause that
+    // lasts, as a real prompt's does, reads 0 and says why.
+    const rate = parseFloat(s.total) > 0;
+    if (rate) { state.pearlUp = true; state.lastTotal = s.total; state.zeroSince = 0; }
+    else if (state.pearlUp && !state.zeroSince) state.zeroSince = Date.now();
+    const blip = !rate && state.pearlUp && Date.now() - state.zeroSince < BLIP_MS;
+    el.hashrate.textContent = blip ? state.lastTotal : s.total;
+    state.llmPaused = !!s.llmPaused && !blip;
+    // $/day is what the card makes mining. A prompt's pause lasts seconds, so
+    // it keeps the figure from before the pause rather than showing $0.00.
+    const hold = !!s.llmPaused || blip;
+    if (!hold) state.estDay = s.estDay;
+    el.estday.textContent = hold && state.estDay ? state.estDay : s.estDay;
+    renderPearl();
     // The ENGINE's name wins while mining, and the detected one is the fallback.
     //
     // It used to be the other way round, for a reason that has since expired:
@@ -855,7 +904,7 @@
     // back again.
     if (s.gpu) state.engineGpu = s.gpu;
     const deviceName = state.engineGpu || state.gpu;
-    if (deviceName) el.deviceLabel.textContent = deviceText(deviceName, s.temp);
+    if (deviceName) showDevice(deviceText(deviceName, s.temp));
     chartPoints = s.points;
     drawChart();
   }
@@ -1265,7 +1314,7 @@
       const gpu = await api.detectGpu();
       if (gpu) {
         state.gpu = gpu;
-        if (!state.mining) el.deviceLabel.textContent = gpu;
+        if (!state.mining) showDevice(gpu);
       }
     }
     // Only a fresh install picks the nearest region. A saved one is the user's

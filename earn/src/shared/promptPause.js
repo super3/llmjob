@@ -100,17 +100,18 @@ function createPromptPause({
   }
 
   // A card's llama-server started (busy) or finished (not busy) a request.
+  // `afterMs` replaces resumeAfterMs for this one: 0 resumes as soon as it ends.
   //
   // The safety net counts from the start of the CURRENT stretch of work, not
   // from the pause: a steady run of prompts with short gaps between them is not
   // a stuck one, and should keep the card paused.
-  function setBusy(index, isBusy) {
+  function setBusy(index, isBusy, afterMs = resumeAfterMs) {
     const key = keyOf(index);
     if (!isBusy) {
       busy.delete(key);
       if (capTimers.has(key)) { clearTimer(capTimers.get(key)); capTimers.delete(key); }
       if (!paused.has(key) || resumeTimers.has(key)) return;
-      const t = setTimer(() => { resumeTimers.delete(key); doResume(key); }, resumeAfterMs);
+      const t = setTimer(() => { resumeTimers.delete(key); doResume(key); }, afterMs);
       t.unref();
       resumeTimers.set(key, t);
       return;
@@ -154,6 +155,8 @@ function createPromptPause({
   return {
     setBusy, reapply, reset, stop,
     isPaused: (index) => paused.has(keyOf(index)),
+    // Whether a pause has stopped mining on any card right now.
+    pausedNow: () => shown.size > 0,
     isBusy: (index) => busy.has(keyOf(index)),
   };
 }

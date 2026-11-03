@@ -5206,6 +5206,36 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     expect(lines(ctx)).toContain('mining resumed on GPU 0');
   });
 
+  // The app sends the model a "Say hello." the moment it is ready, to fill in
+  // the Mine tab's tok/s. Mining pauses for it, so the figure is the card's own
+  // speed, but starts again as soon as it ends: the usual 10s wait showed
+  // Pearl and $/day at 0 for ten seconds on every START. The next prompt, a
+  // real one, waits the usual time.
+  it("pauses for the app's own warm-up prompt only until it ends", async () => {
+    const ctx = await boot();
+    const { miner, llm } = await coRunning(ctx);
+    ctx.io.streamChatCompletion.mockClear();
+    ctx.io.streamChatCompletion.mockReturnValueOnce({ done: new Promise(() => {}), cancel: jest.fn() });
+    llm.emit('ready', { baseUrl: llm.baseUrl });
+    await flush();
+    expect(ctx.io.streamChatCompletion.mock.calls[0][1].messages[0].content).toBe('Say hello.');
+    // Timers here are captured, not run: the resume is the one queued last.
+    const resumeTimer = () => ctx.timers.timeouts.filter((h) => h.ms === 0 || h.ms === 10000).pop();
+    llm.emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith([0]);
+    ctx.interval(1000).fn();
+    expect(ctx.sent('miner:stats').slice(-1)[0].llmPaused).toBe(true);
+    llm.emit('busy', false);
+    expect(resumeTimer().ms).toBe(0);
+    resumeTimer().fn();
+    expect(miner.resumeCards).toHaveBeenCalledWith([0]);
+    ctx.interval(1000).fn();
+    expect(ctx.sent('miner:stats').slice(-1)[0].llmPaused).toBe(false);
+    llm.emit('busy', true);
+    llm.emit('busy', false);
+    expect(resumeTimer().ms).toBe(10000);
+  });
+
   it('a miner that starts while a prompt runs starts with that card paused', async () => {
     const ctx = await boot();
     const { miner, llm } = await coRunning(ctx);

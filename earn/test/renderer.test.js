@@ -609,11 +609,16 @@ describe('boot with the full bridge', () => {
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
     expect($('btn-stop').hidden).toBe(false);
-    expect($('mine-dot').className).toBe('dot2 on');
+    // Pearl says it is starting, amber, until the card shows a hashrate.
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('mine-detail').textContent).toBe('Starting…');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
     expect($('log-term').textContent).toMatch(/starting LLMJob Earn/);
     // live stats: multi-point chart + gpu label. main sends temp 0 until the
     // engine has a reading.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 0, points: [1, 2, 3] });
+    expect($('mine-dot').className).toBe('dot2 on');
+    expect($('mine-detail').classList.contains('quiet')).toBe(true);
     expect($('hashrate').textContent).toBe('1.2');
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
@@ -627,6 +632,8 @@ describe('boot with the full bridge', () => {
     // a rig that keeps crashing can be checked for heat without nvidia-smi.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 86.4, points: [1, 2, 3] });
     expect($('device-label').textContent).toBe('gpu-live (86°C)');
+    // A long name ends in an ellipsis under the chart, so its title has all of it.
+    expect($('device-label').title).toBe('gpu-live (86°C)');
     // single point (flat-span pad fallback), no gpu — the label keeps the name
     // it last showed rather than reverting to the startup guess for a frame.
     // main's accumulator keeps the last reading, so the frame still carries it.
@@ -647,9 +654,9 @@ describe('boot with the full bridge', () => {
     expect($('mk-line').getAttribute('d')).toMatch(/^M0 /);
     // empty + missing points → flat line
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [] });
-    expect($('mk-line').getAttribute('d')).toBe('M0 55 L480 55');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1' });
-    expect($('mk-line').getAttribute('d')).toBe('M0 55 L480 55');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
     // NaN points exercise the span fallback without throwing
     cbs.stats({ total: '1', acceptedLabel: '1', uptime: '1m', estDay: '$1', points: [NaN, NaN] });
     expect($('mk-line').getAttribute('d')).toMatch(/NaN/);
@@ -698,6 +705,56 @@ describe('boot with the full bridge', () => {
     click($('btn-stop'));
     expect(api.stopMiner).toHaveBeenCalled();
     expect($('btn-start').hidden).toBe(false);
+  });
+
+  // Mining stops on the card for each LLM prompt and starts again about 10s
+  // later (shared/promptPause). A dip shorter than 3s, like the app's own
+  // warm-up prompt and the card coming back after it, keeps the last rate on
+  // screen. A pause that lasts reads 0 and says why, and $/day keeps what
+  // mining makes instead of dropping to $0.00.
+  it('says when Pearl is paused for an LLM prompt, and keeps $/day through it', async () => {
+    let t = 1e9;
+    const now = jest.spyOn(Date, 'now').mockImplementation(() => t);
+    try {
+      const { api, cbs } = makeFullApi();
+      await boot({ api });
+      setInput($('addr-input'), ADDR);
+      click($('btn-start'));
+      const frame = (total, estDay, llmPaused) => cbs.stats({ total, acceptedLabel: '1', uptime: '1m', estDay, points: [1, 2], llmPaused });
+      const note = () => ($('mine-detail').classList.contains('quiet') ? '' : $('mine-detail').textContent);
+      frame('313.5', '$5.98', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['313.5', '', '$5.98']);
+      // The first seconds of a pause: the last rate stays, nothing to say yet.
+      t += 1000;
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['313.5', '', '$5.98']);
+      expect($('mine-dot').className).toBe('dot2 on');
+      // A pause that lasts.
+      t += 3000;
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', 'Paused for an LLM prompt', '$5.98']);
+      expect($('mine-dot').className).toBe('dot2 busy');
+      t += 1000;
+      frame('312.9', '$5.97', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['312.9', '', '$5.97']);
+      expect($('mine-dot').className).toBe('dot2 on');
+      // A dip with no prompt behind it: held for a moment, then shown as it is.
+      t += 1000;
+      frame('0.0', '$0.00', false);
+      expect([$('hashrate').textContent, $('estday').textContent]).toEqual(['312.9', '$5.97']);
+      t += 3000;
+      frame('0.0', '$0.00', false);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', '', '$0.00']);
+      // STOP clears it. A START paused for a prompt before the card showed a
+      // hashrate is still starting, with nothing to keep.
+      click($('btn-stop'));
+      expect(note()).toBe('');
+      click($('btn-start'));
+      frame('0.0', '$0.00', true);
+      expect([$('hashrate').textContent, note(), $('estday').textContent]).toEqual(['0.0', 'Starting…', '$0.00']);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   it('refreshes the pool balance with debounce, races and resets', async () => {
@@ -1387,8 +1444,25 @@ describe('mine view height', () => {
     }
     expect(body('#view-mine')).toMatch(/min-height:\s*calc\(470px \+ var\(--fill, 0px\)\)/);
     // The chart's own height matches the svg's height attribute and CHART_PX.
-    expect(body('.chart-card svg')).toMatch(/height:\s*calc\(84px \+ var\(--fill, 0px\)\)/);
-    expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 56" width="100%" height="84"/);
+    expect(body('.chart-card svg')).toMatch(/height:\s*calc\(108px \+ var\(--fill, 0px\)\)/);
+    expect(HTML).toMatch(/<svg id="mk-chart" viewBox="0 0 480 72" width="100%" height="108"/);
+  });
+
+  // "starting…" under Monero and the LLM comes and goes on every START. As a
+  // line of its own it made the card, and so the window, grow and then shrink
+  // back, so it hangs in the gap above the chart, out of the layout, and its
+  // line fits in that gap.
+  it('shows a reading\'s status line without changing the card\'s height', () => {
+    const bare = CSS.replace(/\/\*[\s\S]*?\*\//g, '');
+    const body = (sel) => {
+      const rule = bare.split('}').map((c) => c.split('{')).find((p) => p.length === 2 && p[0].split(',').map((s) => s.trim()).includes(sel));
+      return rule ? rule[1] : '';
+    };
+    expect(body('.reading')).toMatch(/position:\s*relative/);
+    expect(body('.reading-detail')).toMatch(/position:\s*absolute/);
+    expect(body('.reading-detail')).toMatch(/top:\s*100%/);
+    const px = (rule, prop) => Number(body(rule).match(new RegExp('(?:^|;)\\s*' + prop + ':\\s*(\\d+)px'))[1]);
+    expect(px('.reading-detail', 'margin-top') + px('.reading-detail', 'line-height')).toBeLessThanOrEqual(px('.readings', 'margin-bottom'));
   });
 });
 
@@ -1440,9 +1514,9 @@ describe('a window taller than the content', () => {
     // A fit can leave a pixel or two; that is not spare height.
     resizeTo(655);
     expect(fill()).toBe('');
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 56');
-    expect($('mk-line').getAttribute('d')).toBe('M0 55 L480 55');
-    expect($('mk-area').getAttribute('d')).toBe('M0 56 L0 55 L480 55 L480 56 Z');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 72');
+    expect($('mk-line').getAttribute('d')).toBe('M0 71 L480 71');
+    expect($('mk-area').getAttribute('d')).toBe('M0 72 L0 71 L480 71 L480 72 Z');
   });
 
   it('gives the spare height to the views and the chart, and takes it back', async () => {
@@ -1450,15 +1524,15 @@ describe('a window taller than the content', () => {
     await bootFitted(api);
     resizeTo(720); // the 654x759 half of a 1280x800 screen
     expect(fill()).toBe('67px');
-    // 84 + 67 px tall at the same 1.5 px per unit: 56 * 151 / 84 = 100.7.
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 100.7');
-    expect($('mk-line').getAttribute('d')).toBe('M0 99.7 L480 99.7');
-    expect($('mk-area').getAttribute('d')).toBe('M0 100.7 L0 99.7 L480 99.7 L480 100.7 Z');
+    // 108 + 67 px tall at the same 1.5 px per unit: 72 * 175 / 108 = 116.7.
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 116.7');
+    expect($('mk-line').getAttribute('d')).toBe('M0 115.7 L480 115.7');
+    expect($('mk-area').getAttribute('d')).toBe('M0 116.7 L0 115.7 L480 115.7 L480 116.7 Z');
     ROStub.cb(); // the fill grew .app; the content did not change, so nothing moves
     expect(fill()).toBe('67px');
     resizeTo(653);
     expect(fill()).toBe('');
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 56');
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 72');
     // Shorter than the content: no fill, the page scrolls as before.
     resizeTo(600);
     expect(fill()).toBe('');
@@ -1473,14 +1547,14 @@ describe('a window taller than the content', () => {
     click($('btn-start'));
     cbs.stats({ total: '226.0', acceptedLabel: '9', uptime: '5m', estDay: '$2.50', gpu: 'g', points: [226, 226, 225, 226, 120, 118, 119, 121] });
     const before = ys($('mk-line').getAttribute('d'));
-    resizeTo(737); // 84 px spare doubles the chart: 56 units become 112
-    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 112');
+    resizeTo(761); // 108 px spare doubles the chart: 72 units become 144
+    expect($('mk-chart').getAttribute('viewBox')).toBe('0 0 480 144');
     const after = ys($('mk-line').getAttribute('d'));
     // Each is rounded to 0.1, so doubling can be off by up to 0.15.
     after.forEach((y, i) => expect(Math.abs(y - 2 * before[i])).toBeLessThanOrEqual(0.151));
     // Stopping draws the flat line at the new height.
     click($('btn-stop'));
-    expect($('mk-line').getAttribute('d')).toBe('M0 111 L480 111');
+    expect($('mk-line').getAttribute('d')).toBe('M0 143 L480 143');
   });
 
   it('keeps a taller window its size while the content changes, until it no longer fits', async () => {
@@ -1639,7 +1713,9 @@ describe('Background settings: tray, start with the computer, idle-only', () => 
 
     cbs.idle({ paused: false });
     expect($('idle-status').hidden).toBe(true);
-    expect($('mine-dot').className).toBe('dot2 on');
+    // Mining starts again, so Pearl is starting again until its hashrate.
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('mine-detail').textContent).toBe('Starting…');
 
     // Paused again, then STOP: nothing left to wait for.
     cbs.idle({ paused: true });
@@ -1711,9 +1787,6 @@ describe('CPU mining', () => {
     expect($('cpu-row').hidden).toBe(true);
     // The activity card is the GPU's alone, as before CPU mining.
     expect($('cpu-shares').hidden).toBe(true);
-    expect($('chart-card').classList.contains('with-cpu')).toBe(false);
-    expect($('activity-label').textContent).toBe('GPU Activity');
-    expect($('mine-label').textContent).toBe('Mining');
     expect(options()).toEqual(['Auto (7 threads)', '1 thread', '2 threads', '3 threads', '4 threads', '5 threads', '6 threads', '7 threads']);
     expect(api.checkXmrAddress).not.toHaveBeenCalled();
     click($('btn-start'));
@@ -1783,12 +1856,10 @@ describe('CPU mining', () => {
     expect($('cpu-row').hidden).toBe(false);
     expect($('cpu-meta').textContent).toBe('ready to start');
     expect($('cpu-row').title).toContain('0.0125 XMR earned');
-    // Monero joins the activity card: a third reading, named by its coin, and
-    // its shares beside Pearl's.
+    // Monero joins the card: a reading of its own, and its shares beside
+    // Pearl's under the chart.
     expect($('cpu-shares').hidden).toBe(false);
-    expect($('chart-card').classList.contains('with-cpu')).toBe(true);
-    expect($('activity-label').textContent).toBe('GPU & CPU Activity');
-    expect($('mine-label').textContent).toBe('Pearl');
+    expect($('accepted').parentElement.textContent).toBe('0 PRL · 0 XMR');
     // "ready to start" adds nothing to the grey dot, so it stays in the tooltip.
     expect($('cpu-meta').classList.contains('quiet')).toBe(true);
     expect($('cpu-row').title).toBe('ready to start · 0.0125 XMR earned');
@@ -1798,7 +1869,7 @@ describe('CPU mining', () => {
     // Locked while mining: the settings ride on the START.
     expect($('set-xmr').disabled).toBe(true);
     expect($('set-cpu-threads').disabled).toBe(true);
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-dot').className).toBe('dot2');
 
     // Its own channel: an LLM-only START sends no GPU ticks. Those leave the
@@ -1806,16 +1877,18 @@ describe('CPU mining', () => {
     const tick = (cpu) => cbs.cpu(cpu);
     tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
     cbs.stats({ total: '1.0', acceptedLabel: '0', uptime: '00m 01s', estDay: '$0.01', points: [1] });
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-dot').className).toBe('dot2 busy');
     tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
-    expect($('cpu-meta').textContent).toBe('building its dataset…');
+    // Building the dataset reads as starting, too.
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
     expect($('cpu-rate').textContent).toBe('1.85');
     expect($('cpu-meta').textContent).toBe('4 accepted · 3 threads');
     // The count moves to the stats; the line is off the card.
     expect($('cpu-accepted').textContent).toBe('4');
+    expect($('accepted').parentElement.textContent).toBe('0 PRL · 4 XMR');
     expect($('cpu-meta').classList.contains('quiet')).toBe(true);
     expect($('cpu-dot').className).toBe('dot2 on');
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 1, threads: 3, error: null });
@@ -1835,7 +1908,7 @@ describe('CPU mining', () => {
     expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     expect($('cpu-dot').className).toBe('dot2 err');
     tick(undefined);
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
 
     // Idle-only pauses it with the GPU miner.
     cbs.idle({ paused: true, idleAfterSec: 300 });
