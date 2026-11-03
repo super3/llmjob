@@ -549,6 +549,9 @@ function statsView(snap) {
     // After the fee of the pool this START mines Pearl on.
     estDay: earnings.estDailyUsdLabel(snap.total,
       Object.assign({}, liveEcon, { FEE: feeShare(session && session.settings.pool) })),
+    // Mining is stopped on a card while the local LLM answers a prompt, so the
+    // Mine tab can say why Pearl reads 0 for those seconds.
+    llmPaused: promptPause.pausedNow(),
   };
 }
 
@@ -1563,6 +1566,11 @@ function buildFleet() {
     sendLlmStatus();
   });
   f.on('busy', (e) => {
+    // The app's own warm-up prompt (warmUpLlm) mines on: see warmUpUntil.
+    if (Date.now() < warmUpUntil) {
+      if (!e.busy) warmUpUntil = 0;
+      return;
+    }
     const card = cardForPrompt(e, llmBusIds, llmMiningCards);
     if (card !== undefined) promptPause.setBusy(card, e.busy);
   });
@@ -1607,11 +1615,20 @@ function buildFleet() {
 // tokens/sec figure populates on its own — the user shouldn't have to open Chat
 // to see the LLM is alive. Best-effort and discarded; a real request just
 // overwrites the warm-up's tok/s.
+//
+// It doesn't pause mining the way a prompt does (promptPause). The pause holds
+// for 10s after the last prompt, so this 0.2s warm-up showed Pearl, and $/day,
+// at 0 for ten seconds on every START, just after both had come up. Until it
+// ends, or WARM_UP_MS at most, the LLM's busy signal is taken as its own.
+const WARM_UP_MS = 30000;
+let warmUpUntil = 0;
 function warmUpLlm(baseUrl) {
   try {
     const body = buildChatBody([{ role: 'user', content: 'Say hello.' }], { stream: true });
     body.max_tokens = 24;
-    streamChatCompletion(baseUrl, body, () => {}).done.catch(() => {});
+    const req = streamChatCompletion(baseUrl, body, () => {});
+    warmUpUntil = Date.now() + WARM_UP_MS;
+    req.done.catch(() => {}).then(() => { warmUpUntil = 0; });
   } catch (e) { /* best effort — never blocks startup */ }
 }
 

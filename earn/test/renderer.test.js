@@ -609,11 +609,16 @@ describe('boot with the full bridge', () => {
     expect($('addr-static').hidden).toBe(false);
     expect($('addr-static').textContent).toBe(ADDR);
     expect($('btn-stop').hidden).toBe(false);
-    expect($('mine-dot').className).toBe('dot2 on');
+    // Pearl says it is starting, amber, until the card shows a hashrate.
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('mine-detail').textContent).toBe('Starting…');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
     expect($('log-term').textContent).toMatch(/starting LLMJob Earn/);
     // live stats: multi-point chart + gpu label. main sends temp 0 until the
     // engine has a reading.
     cbs.stats({ total: '1.2', acceptedLabel: '34', uptime: '5m 00s', estDay: '$0.42', gpu: 'gpu-live', temp: 0, points: [1, 2, 3] });
+    expect($('mine-dot').className).toBe('dot2 on');
+    expect($('mine-detail').classList.contains('quiet')).toBe(true);
     expect($('hashrate').textContent).toBe('1.2');
     expect($('accepted').textContent).toBe('34');
     expect($('uptime').textContent).toBe('5m 00s');
@@ -700,6 +705,38 @@ describe('boot with the full bridge', () => {
     click($('btn-stop'));
     expect(api.stopMiner).toHaveBeenCalled();
     expect($('btn-start').hidden).toBe(false);
+  });
+
+  // Mining stops on the card for each LLM prompt and starts again about 10s
+  // later (shared/promptPause). Pearl reads 0 for those seconds, so it says
+  // why, and $/day keeps what mining makes instead of dropping to $0.00.
+  it('says when Pearl is paused for an LLM prompt, and keeps $/day through it', async () => {
+    const { api, cbs } = makeFullApi();
+    await boot({ api });
+    setInput($('addr-input'), ADDR);
+    click($('btn-start'));
+    const frame = (total, estDay, llmPaused) => cbs.stats({ total, acceptedLabel: '1', uptime: '1m', estDay, points: [1, 2], llmPaused });
+    frame('313.5', '$5.98', false);
+    expect($('mine-detail').classList.contains('quiet')).toBe(true);
+    expect($('estday').textContent).toBe('$5.98');
+    frame('0.0', '$0.00', true);
+    expect($('hashrate').textContent).toBe('0.0');
+    expect($('mine-detail').textContent).toBe('Paused for an LLM prompt');
+    expect($('mine-detail').classList.contains('quiet')).toBe(false);
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('estday').textContent).toBe('$5.98');
+    frame('312.9', '$5.97', false);
+    expect($('mine-detail').classList.contains('quiet')).toBe(true);
+    expect($('mine-dot').className).toBe('dot2 on');
+    expect($('estday').textContent).toBe('$5.97');
+    // STOP clears it. A START paused for a prompt before the card showed a
+    // hashrate is still starting, with nothing to keep for $/day.
+    click($('btn-stop'));
+    expect($('mine-detail').classList.contains('quiet')).toBe(true);
+    click($('btn-start'));
+    frame('0.0', '$0.00', true);
+    expect($('mine-detail').textContent).toBe('Starting…');
+    expect($('estday').textContent).toBe('$0.00');
   });
 
   it('refreshes the pool balance with debounce, races and resets', async () => {
@@ -1658,7 +1695,9 @@ describe('Background settings: tray, start with the computer, idle-only', () => 
 
     cbs.idle({ paused: false });
     expect($('idle-status').hidden).toBe(true);
-    expect($('mine-dot').className).toBe('dot2 on');
+    // Mining starts again, so Pearl is starting again until its hashrate.
+    expect($('mine-dot').className).toBe('dot2 busy');
+    expect($('mine-detail').textContent).toBe('Starting…');
 
     // Paused again, then STOP: nothing left to wait for.
     cbs.idle({ paused: true });
@@ -1812,7 +1851,7 @@ describe('CPU mining', () => {
     // Locked while mining: the settings ride on the START.
     expect($('set-xmr').disabled).toBe(true);
     expect($('set-cpu-threads').disabled).toBe(true);
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-dot').className).toBe('dot2');
 
     // Its own channel: an LLM-only START sends no GPU ticks. Those leave the
@@ -1820,10 +1859,10 @@ describe('CPU mining', () => {
     const tick = (cpu) => cbs.cpu(cpu);
     tick({ state: 'starting', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
     cbs.stats({ total: '1.0', acceptedLabel: '0', uptime: '00m 01s', estDay: '$0.01', points: [1] });
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-dot').className).toBe('dot2 busy');
     tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
-    expect($('cpu-meta').textContent).toBe('building its dataset…');
+    expect($('cpu-meta').textContent).toBe('Building its dataset…');
     expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
     expect($('cpu-rate').textContent).toBe('1.85');
@@ -1850,7 +1889,7 @@ describe('CPU mining', () => {
     expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     expect($('cpu-dot').className).toBe('dot2 err');
     tick(undefined);
-    expect($('cpu-meta').textContent).toBe('starting…');
+    expect($('cpu-meta').textContent).toBe('Starting…');
 
     // Idle-only pauses it with the GPU miner.
     cbs.idle({ paused: true, idleAfterSec: 300 });

@@ -21,17 +21,22 @@ describe('promptPause', () => {
 
   test('pauses a card at once and resumes it a while after the prompt ends', () => {
     const { p, calls, logs } = make();
+    expect(p.pausedNow()).toBe(false);
     p.setBusy(0, true);
     expect(calls).toEqual([['pause', [0]]]);
     expect(p.isPaused(0)).toBe(true);
     expect(p.isBusy(0)).toBe(true);
+    // The Mine tab says Pearl is paused while a pause has stopped mining.
+    expect(p.pausedNow()).toBe(true);
     p.setBusy(0, false);
     expect(p.isBusy(0)).toBe(false);
     jest.advanceTimersByTime(9999);
     expect(calls).toHaveLength(1);
+    expect(p.pausedNow()).toBe(true);
     jest.advanceTimersByTime(1);
     expect(calls).toEqual([['pause', [0]], ['resume', [0]]]);
     expect(p.isPaused(0)).toBe(false);
+    expect(p.pausedNow()).toBe(false);
     expect(logs).toEqual([
       ['info', 'mining paused on GPU 0 while the local LLM answers a prompt'],
       ['info', 'mining resumed on GPU 0'],
@@ -159,10 +164,13 @@ describe('promptPause', () => {
     p.setBusy(0, true);
     expect(logs).toEqual([]);
     expect(p.isPaused(0)).toBe(true);
+    // Nothing stopped, so the Mine tab has no pause to show.
+    expect(p.pausedNow()).toBe(false);
     // A miner that starts during the prompt is paused, and that is said once.
     mining = true;
     p.reapply();
     expect(logs).toEqual([['info', 'mining paused on GPU 0 while the local LLM answers a prompt']]);
+    expect(p.pausedNow()).toBe(true);
     p.setBusy(0, false);
     jest.advanceTimersByTime(10000);
     expect(logs.pop()).toEqual(['info', 'mining resumed on GPU 0']);

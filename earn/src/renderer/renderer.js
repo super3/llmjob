@@ -20,7 +20,7 @@
     hashrate: $('hashrate'), accepted: $('accepted'), uptime: $('uptime'), estday: $('estday'),
     chart: $('mk-chart'), line: $('mk-line'), area: $('mk-area'),
     deviceLabel: $('device-label'),
-    mineDot: $('mine-dot'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
+    mineDot: $('mine-dot'), mineDetail: $('mine-detail'), llmHeroTps: $('llm-hero-tps'), llmHeroDot: $('llm-hero-dot'), llmHeroDetail: $('llm-hero-detail'),
     btnStart: $('btn-start'), btnStop: $('btn-stop'), engineStatus: $('engine-status'),
     // chat
     chatRunning: $('chat-running'), chatStopped: $('chat-stopped'), chatStoppedModel: $('chat-stopped-model'),
@@ -69,6 +69,10 @@
     // and someone is using the computer. STOP still shows.
     paused: false,
     idleAfterSec: 300,
+    // The Pearl reading (see renderPearl): whether this START's card has shown
+    // a hashrate yet, whether mining is paused for an LLM prompt, and the $/day
+    // from before that pause.
+    pearlUp: false, llmPaused: false, estDay: null,
     view: 'mine',        // mine | chat | api | settings | logs
     returnTab: 'mine',   // where settings/logs return to
     address: '', gpu: '', mode: 'auto', mdlAddress: '',
@@ -590,9 +594,9 @@
   // mining and apply at the next START. The address is checked in main: the
   // renderer has no Keccak for Monero's checksum.
   const CPU_STATES = {
-    starting: 'starting…',
-    dataset: 'building its dataset…',
-    restarting: 'restarting…',
+    starting: 'Starting…',
+    dataset: 'Building its dataset…',
+    restarting: 'Restarting…',
   };
   let xmrCheckTimer = null;
 
@@ -656,7 +660,7 @@
   function cpuMetaText(v) {
     if (!state.mining) return cpuIdleText();
     if (state.paused) return 'paused while in use';
-    if (!v) return 'starting…';
+    if (!v) return 'Starting…';
     if (v.error) return 'stopped: ' + v.error;
     if (v.pool) return v.pool;
     if (v.state === 'mining') {
@@ -754,18 +758,33 @@
     return state.mining && !state.paused && state.mode !== 'llm' && state.canMine !== false && isValid(state.address);
   }
 
+  // The Pearl reading's line under its label, like Monero's and the LLM's:
+  // "Starting…" from START until the card's first hashrate, and "Paused for an
+  // LLM prompt" while mining waits for the local LLM to answer one (it starts
+  // again about 10s after, see shared/promptPause). Without them Pearl read 0
+  // with nothing to say why, and looked broken. The dot is amber for both.
+  function renderPearl() {
+    const on = gpuMinerOn();
+    if (!on) state.pearlUp = false;
+    const note = !on ? '' : !state.pearlUp ? 'Starting…' : state.llmPaused ? 'Paused for an LLM prompt' : '';
+    el.mineDot.className = 'dot2' + (!on ? '' : note ? ' busy' : ' on');
+    el.mineDetail.textContent = note;
+    el.mineDetail.classList.toggle('quiet', !note);
+  }
+
   function renderMiningState() {
     el.addrInput.hidden = state.mining;
     el.addrStatic.hidden = !state.mining;
     el.btnStart.hidden = state.mining;
     el.btnStop.hidden = !state.mining;
-    el.mineDot.className = 'dot2' + (gpuMinerOn() ? ' on' : '');
     el.idleStatus.hidden = !(state.mining && state.paused);
     el.idleStatus.textContent = 'Waiting for your computer to be idle. Mining starts after '
       + Math.round(state.idleAfterSec / 60) + ' minutes without keyboard or mouse use.';
     if (state.mining) {
       el.addrStatic.textContent = state.address;
     } else {
+      state.llmPaused = false;
+      state.estDay = null;
       el.hashrate.textContent = '0.0';
       el.accepted.textContent = '0';
       el.uptime.textContent = '0m 00s';
@@ -776,6 +795,7 @@
       el.engineStatus.hidden = true;
       state.cpuView = null;
     }
+    renderPearl();
     el.btnStart.disabled = !canStart();
     // A pool change takes the next START, and the balances show the pool
     // picked, so the pool stays put while mining, as the Monero address does.
@@ -826,7 +846,13 @@
     el.hashrate.textContent = s.total;
     el.accepted.textContent = s.acceptedLabel;
     el.uptime.textContent = s.uptime;
-    el.estday.textContent = s.estDay;
+    if (parseFloat(s.total) > 0) state.pearlUp = true;
+    state.llmPaused = !!s.llmPaused;
+    // $/day is what the card makes mining. A prompt's pause lasts seconds, so
+    // it keeps the figure from before the pause rather than showing $0.00.
+    if (!state.llmPaused) state.estDay = s.estDay;
+    el.estday.textContent = state.llmPaused && state.estDay ? state.estDay : s.estDay;
+    renderPearl();
     // The ENGINE's name wins while mining, and the detected one is the fallback.
     //
     // It used to be the other way round, for a reason that has since expired:

@@ -154,6 +154,8 @@ function createPromptPause({
   return {
     setBusy, reapply, reset, stop,
     isPaused: (index) => paused.has(keyOf(index)),
+    // Whether a pause has stopped mining on any card right now.
+    pausedNow: () => shown.size > 0,
     isBusy: (index) => busy.has(keyOf(index)),
   };
 }
