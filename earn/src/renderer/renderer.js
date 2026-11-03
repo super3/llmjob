@@ -599,7 +599,9 @@
   // renderer has no Keccak for Monero's checksum.
   const CPU_STATES = {
     starting: 'Starting…',
-    dataset: 'Building its dataset…',
+    // Building the RandomX dataset is part of starting, as far as anyone
+    // watching is concerned: one word for both, as the LLM has.
+    dataset: 'Starting…',
     restarting: 'Restarting…',
   };
   let xmrCheckTimer = null;

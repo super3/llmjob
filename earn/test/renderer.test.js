@@ -1880,7 +1880,8 @@ describe('CPU mining', () => {
     expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-dot').className).toBe('dot2 busy');
     tick({ state: 'dataset', hashrate: '0.00', accepted: 0, rejected: 0, threads: 3, error: null });
-    expect($('cpu-meta').textContent).toBe('Building its dataset…');
+    // Building the dataset reads as starting, too.
+    expect($('cpu-meta').textContent).toBe('Starting…');
     expect($('cpu-meta').classList.contains('quiet')).toBe(false);
     tick({ state: 'mining', hashrate: '1.85', accepted: 4, rejected: 0, threads: 3, error: null });
     expect($('cpu-rate').textContent).toBe('1.85');
