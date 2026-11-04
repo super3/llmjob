@@ -50,9 +50,10 @@ const RECONNECT_MS = 5000;
 const GZIP_REJECT_LIMIT = 3;
 
 // A core may mine a larger k than the profile's on its card (cardK; on AMD,
-// RDNA 4 mines k 4096). Every pool that runs the reference verifier takes it,
-// but a pool with a check of its own could refuse it: a size cap, say, since a
-// k 4096 proof is about 135 KB against 68 KB. So when this many shares at a
+// RDNA 4 mines k 4096, or k 8192 on the big gfx1201 cards). Every pool that
+// runs the reference verifier takes it (HeroMiners and Kryptex took k 8192 on
+// 4 November), but a pool with a check of its own could refuse it: a size cap,
+// say, since a k 4096 proof is about 135 KB against 68 KB. So when this many shares at a
 // k other than the profile's go unaccepted before any is accepted, every card
 // mines the profile's k for the rest of the run. A share counts when the pool
 // rejects it, when it goes unanswered for K_ANSWER_MS, or when the pool drops

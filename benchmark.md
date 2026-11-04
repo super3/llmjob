@@ -2198,8 +2198,22 @@ bit-exact (1024 x 1024, k 4096).
   128 −0.10%, 512 −0.24%, 64 about −2%, in 4 of 4 rounds each; hashing the newest transcripts first +0.03%; no hit
   count reset a batch, level; the hash on a second stream −0.17%. None worth keeping.
 - **k 8192 as the default:** on top of the set +0.45% and +0.82% on the 9070 XT, but −5.8% and −5.9% on the 9060 XT
-  (50.47 against 53.58, 50.38 against 53.52), whose fold alone is about 7% slower there. It stays opt-in. Pool side,
-  Kryptex took every share at k 8192 and k 2048 on one connection; no other pool has been tried at k 8192.
+  (50.47 against 53.58, 50.38 against 53.52), whose fold alone is about 7% slower there. Pool side, Kryptex took
+  every share at k 8192 and k 2048 on one connection. So k 8192 became the default on the big gfx1201 cards only
+  (below).
+
+**k 8192 by default on the big gfx1201 cards (4 November, release build of v0.6.12 plus that change).** The host
+now picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT, R9700, RX 9070) and k 4096 on the rest of RDNA 4.
+
+| Card (PC) | Default k | `hashrate.js` | Pool run | `verify-hits` |
+|---|---|---|---|---|
+| RX 9070 XT (`0e2d082f`) | 8192 | 132.09 against 131.17 TH/s at `PEARL_AMD_K=4096` (+0.70%; +0.86, +0.82, +0.63, +0.50% by round) | HeroMiners (de), 15 min: 13 of 13 shares at k 8192 accepted | 400/400 at k 8192 |
+| RX 9060 XT (`f029e99c`) | 4096 | 69.49 to 69.52 TH/s | HeroMiners (us2), 10 min: 8 of 8 at k 4096; pinned to k 8192, 3 of 3 | 400/400 at k 4096 |
+
+- **First k 8192 on HeroMiners,** the app's default pool. It took every share, so no card fell back to k 2048.
+- **Left out:** the 48-CU RX 9070 GRE stays at k 4096, since nothing between 32 and 64 CUs has been timed; the RX
+  9070 (56 CUs) and R9700 (64) get k 8192 untimed, on the 9070 XT's result.
+- **Cost:** about $0.18 (two boxes, 25 and 40 minutes).
 
 **As the default.** `PEARL_AMD_RDNA4_SET` defaults to `PEARL_AMD_WMMA12`, so the set is on in gfx12 device passes
 only. Run through a C preprocessor (pcpp), the new tree's default gfx1200 and gfx1201 passes are token for token the

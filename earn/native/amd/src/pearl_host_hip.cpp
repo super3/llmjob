@@ -11,9 +11,9 @@
 //     architecture the host could not read) mines only for an opener that checks every hit
 //     before sending it (pearl_host_create_checked). PEARL_AMD_UNTESTED=1 also opens it for one
 //     that checks nothing, for hashrate.js, which sends no shares (resolve_fold).
-//   - A card whose code object has the wrap readout (RDNA 4) mines k 4096 when the miner lets the
-//     core choose (pearl_host_card_k); every other card mines the profile's k. PEARL_AMD_K=2048
-//     keeps every card at k 2048, and PEARL_AMD_K=8192 asks such a card for k 8192 instead.
+//   - A card whose code object has the wrap readout (RDNA 4) mines k 8192 on gfx1201 with 56+
+//     CUs and k 4096 on the rest, when the miner lets the core choose (pearl_host_card_k); every
+//     other card mines the profile's k. PEARL_AMD_K (2048, 4096 or 8192) picks the k instead.
 //   - Every fold stores every region's transcript, and pearl_amd_hash hashes them after
 //     it, so each pipeline slot has a transcript buffer: 64 bytes a region of the batch.
 //     The batch is narrower than the CUDA core's to keep those buffers small
@@ -54,7 +54,7 @@
 #endif
 
 // The most chunks (k / rank) a card with the wrap readout takes: 64, k 8192 at rank 128, the most
-// PEARL_AMD_K asks for (RDNA 4 mines k 4096); more in a build made for a larger PEARL_FOLD_K. Without
+// gfx1201 mines by default (pearl_host_card_k); more in a build made for a larger PEARL_FOLD_K. Without
 // that readout a card takes 16.
 #define PEARL_AMD_KWRAP_CHUNKS (PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)
 
@@ -829,17 +829,25 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   return chosen;
 }
 
-// The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): 4096 where the
-// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), whose fold is about 1%
-// faster a MAC at k 4096, and the profile's k everywhere else. A share says its own k and a MAC
-// earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k moves: 2048
-// at rank 128. The card stays at it with PEARL_AMD_K=2048, or without the free VRAM k 4096 needs,
-// so it still mines; `note` then says why, for the log. PEARL_AMD_K=8192 asks for k 8192 instead,
-// with the same VRAM check at that k; short of it, the card tries k 4096, then k 2048. It isn't the
-// default: it read +0.5 to +0.9% in hashrate.js on an RX 9070 XT, but about 6% slower than k 4096 on
-// an RX 9060 XT (4 November,
-// with the combined fold flags listed in pearl_amd_fold.h), so it can't be one default for every
-// RDNA 4 card (benchmark.md). A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// Whether k 8192 is a card's default. An RX 9070 XT (gfx1201, 64 CUs) read +0.5 to +0.9% over
+// k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares; an RX
+// 9060 XT (gfx1200, 32 CUs) read about 6% slower (4 November, with the combined fold flags in
+// pearl_amd_fold.h; benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
+// 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs) stays at
+// k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
+// carry feature flags after a colon ("gfx1201:xnack-"); `cus` is multiProcessorCount.
+static bool k8192_by_default(const char *arch, int cus) {
+  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && cus >= 56;
+}
+
+// The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
+// card's code object has the wrap readout (RDNA 4, PEARL_AMD_CAP_KWRAP), k 8192 where
+// k8192_by_default says so and k 4096 on the rest; the profile's k everywhere else. A share says
+// its own k and a MAC earns the same at rank 128, so the pool needs nothing from us. Only the
+// mainnet k moves: 2048 at rank 128. PEARL_AMD_K picks the k on any such card: 2048, 4096 or 8192;
+// any other value is ignored, and the note says so. Without the free VRAM the chosen k needs, the
+// card tries k 4096 (from 8192), then stays at k 2048, so it still mines; `note` says why, for
+// the log. A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {
@@ -860,7 +868,17 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     if (note && note_len) snprintf(note, note_len, "k 2048 (PEARL_AMD_K=2048)");
     return k;
   }
-  const uint32_t want = pin && !strcmp(pin, "8192") ? 8192u : 4096u;
+  hipDeviceProp_t prop;
+  const bool big = hipGetDeviceProperties(&prop, device) == hipSuccess
+                   && k8192_by_default(prop.gcnArchName, prop.multiProcessorCount);
+  (void)hipGetLastError();
+  const bool pin8 = pin && !strcmp(pin, "8192"), pin4 = pin && !strcmp(pin, "4096");
+  const uint32_t want = pin8 ? 8192u : pin4 ? 4096u : big ? 8192u : 4096u;
+  // A pin names itself; an unknown value is ignored, out loud. A VRAM step-down below overwrites it.
+  if (note && note_len) {
+    if (pin8 || pin4) snprintf(note, note_len, "k %u (PEARL_AMD_K=%s)", want, pin);
+    else if (pin && *pin) snprintf(note, note_len, "PEARL_AMD_K=%.16s ignored: not 2048, 4096 or 8192", pin);
+  }
   PearlProfile wide = *profile;
   wide.k = want;
   const size_t need = needed_bytes(&wide);

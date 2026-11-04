@@ -14,7 +14,7 @@
 // know — and when it assumed, it was wrong.
 //
 // `cardK` lets the host mine a larger k on this card than the profile asks: one
-// its fold is faster at (pearl_host_card_k; on AMD, RDNA 4 mines k 4096). A share
+// its fold is faster at (pearl_host_card_k; on AMD, RDNA 4 mines k 4096 or 8192). A share
 // says its own k, so the pool needs nothing from us. `k` is what the card mines,
 // and the host builds that card's job_key, share bound and proofs from it.
 //

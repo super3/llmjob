@@ -151,7 +151,7 @@ sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and
 told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
 a setting carried over must not vouch for it.
 
-**RDNA 4 mines k 4096.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+**RDNA 4 mines k 4096 or k 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
 9060 XT that was +1.0 to +1.2% (`benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
@@ -161,18 +161,28 @@ with it, the HIP SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory
 clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRAP_OS` in
 `build-amd.sh`). One build holds both, since only a gfx12 device pass defines
 `__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
-(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 where it can (`pearl_host_card_k`). The core reports it as
+(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 or 8192 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
-k, so the pool needs nothing from us. `PEARL_AMD_K=8192` asks such a card for k 8192 instead, for
-measuring it; it isn't the default (`benchmark.md`). A card stays at k 2048 with `PEARL_AMD_K=2048`,
-or when it has too little free VRAM for k 4096 (about 1,969 MiB against 1,137), and the "mining on GPU" line
-says why. If a pool turns down 3 shares at k 4096 and takes none, the miner mines k 2048 on every
-card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
+k, so the pool needs nothing from us.
+
+**The big gfx1201 cards mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to +0.9% over
+k 4096, and HeroMiners and Kryptex both took its shares; on an RX 9060 XT (gfx1200, 32 CUs) it was
+about 6% slower (`benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
+9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and k 4096 on the rest, the RX 9060 XT and
+the 48-CU RX 9070 GRE among them, since nothing between 32 and 64 CUs has been timed.
+k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
+nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
+any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on any RDNA 4
+card; another value is ignored, and the "mining on GPU" line says so. Without the free VRAM its k
+needs, a card tries k 4096 (from 8192), then stays at k 2048 (k 4096 takes
+about 1,969 MiB against 1,137), and the line says why. If a pool turns down 3 shares at a larger k and takes none, the
+miner mines k 2048 on every card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
 
 `build-amd.sh check` fails a release build (no `PEARL_AMD_CFLAGS`) in which a gfx12 target lacks
-the wrap readout or any other target has it, or, on Windows, in which any target has it. The fold test folds the card's own k by default (k
-4096 on RDNA 4) and names it on its device line; a 7th argument picks another.
+the wrap readout or any other target has it, or, on Windows, in which any target has it. The fold test folds k
+4096 on RDNA 4 by default, not k 8192 where the card mines that (verify-hits.js and hashrate.js open
+the core with `cardK`, so they use the mined k), and names it on its device line; a 7th argument picks another.
 `-DPEARL_AMD_KWRAP=0` builds today's release, k 2048 everywhere, to race against;
 `-DPEARL_FOLD_K=4096` puts the wrap readout on every target. `PEARL_PROFILE_K=K` on
 `hashrate.js` and `verify-hits.js` pins a core to k K; `test/sweep.sh` does that for a variant

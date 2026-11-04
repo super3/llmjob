@@ -868,7 +868,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // does that. At k 4096 a hash covers twice the MACs, so hashes and readouts per MAC halve, and credit
 // per MAC is the same at rank 128.
 //
-// RDNA 4 mines k 4096 (pearl_host_card_k), so its Linux code objects always have this readout: +1.0 to
+// RDNA 4 mines k 4096 or 8192 (pearl_host_card_k), so its Linux code objects always have this readout: +1.0 to
 // +1.2% on an RX 9070 XT and an RX 9060 XT (benchmark.md). Every other target keeps today's readout and
 // k 2048: the wrap readout at k 2048 costs about 0.4%. The Windows core (build-amd.sh winlib) builds
 // with -DPEARL_AMD_KWRAP=0, so RDNA 4 mines k 2048 there: its compiler put part of the gfx12 fold in

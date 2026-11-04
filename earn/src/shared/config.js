@@ -209,10 +209,13 @@ const LLM = {
   // co-run decision more conservative, which is the safe direction: the failure
   // it prevents is an OOM, the failure it can cause is idling a little VRAM.
   //
-  // An AMD core needs less: ~1,137 MiB at k 2048, and ~1,969 MiB on an RDNA 4
-  // card at k 4096, plus its HIP context. That fits under 2,600 only while the
-  // context stays under ~630 MiB. If it doesn't, the card mines k 2048 rather
-  // than not at all, and the "mining on GPU" line says why (pearl_host_card_k).
+  // An AMD core needs ~1,137 MiB at k 2048, ~1,969 MiB on an RDNA 4 card at
+  // k 4096, and ~3,633 MiB on a gfx1201 card with 56+ CUs, which mines k 8192
+  // (RX 9070, RX 9070 XT, R9700), each plus its HIP context. This reserve never
+  // sizes an LLM on those cards: VRAM is read through nvidia-smi only, so on an
+  // AMD card the model is the smallest one (~4 GB), which fits beside k 8192 on
+  // 16 GB and up. Short of VRAM, the core steps down to k 4096, then k 2048,
+  // and the "mining on GPU" line says why (pearl_host_card_k).
   miningReserveMb: 2600,
   // llama-server binary per platform (bundled/downloaded like the miner engine).
   serverBin: { win32: 'llama-server.exe', linux: 'llama-server', darwin: 'llama-server' },
