@@ -2185,7 +2185,10 @@ only. Run through a C preprocessor (pcpp), the new tree's default gfx1200 and gf
 (`-DPEARL_AMD_RDNA4_SET=0`, set by `build-amd.sh`) are as before, but for a dead `if (0 && ...)` in the caps kernel.
 The Windows core leaves the set out because it was timed only with ROCm's clang 22, and CRANK alone showed how much
 the scheduler matters. No RDNA 3 box was rented: no RDNA 3 code changed (the check run also matched the device
-assembly's md5 on gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1030 and gfx90a).
+assembly's md5 on gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1030 and gfx90a). CI's release check
+(`ubuntu-latest-hip`, the boxes' ROCm 7.2.0 image) shows the set's row on gfx1200 and gfx1201: 201 VGPRs, scratch
+0, spills 0, LDS 24,576, 7 waves. `windows-2022-hip` still shows 193 VGPRs and 36,864 bytes, and every RDNA 3 row
+is as before.
 
 **Cost:** the six try boxes about $2.31 ($0.13 to $0.68 each), the two combine boxes about $0.90 and the check boxes
 about $0.16: about $3.37 in all.
