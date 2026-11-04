@@ -38,6 +38,7 @@ NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-lat
 | `src/pearl_host_hip.cpp` | the host: `pearl_host.cu`'s C API on HIP |
 | `compat/gpu`, `compat/cpu` | stand-ins for `<cuda.h>`, `<cuda_runtime.h>` and `<mma.h>` |
 | `test/pearl_amd_foldtest.cpp` | runs each fold on random operands and checks every transcript word against the CPU; the layout check on hardware |
+| `test/pearl_amd_peak.cpp` | times the RDNA matrix instruction with little or nothing else in the loop, and the clock it runs at; timing only |
 | `test/verify-hits-profile.js` | `../probes/verify-hits.js` at a profile you choose (that one is fixed to mainnet) |
 | `test/run-cpu-checks.sh` | every check that runs without a GPU |
 
@@ -96,6 +97,16 @@ slab is one contiguous run of whole cache lines. Row-major, it was 32 bytes of e
 4 MB of L2) that took the fold alone from 15.4 to 52.1 TMAC/s at the mainnet batch, and
 hashrate.js from 21.75 to 51.3 TH/s (PC `a777486d`, 23 October). `-DPEARL_AMD_TILED=0` builds
 the row-major layout. The reference fold reads row-major operands.
+
+**RDNA 4 spends as few VALU as it can around its WMMAs.** On RDNA 4 a VALU instruction doesn't overlap
+the matrix work: each one costs about a cycle of WMMA time (`test/pearl_amd_peak.cpp`, `benchmark.md`,
+4 November). So the RDNA 4 fold reads each lane's fragments for both k-steps of a slab with one 16-byte
+LDS load (`PEARL_AMD_KPAIR`: a slab's k-steps may take its bytes in any order, as long as A' and B' take
+them alike), and loads its slabs with buffer loads, whose base and slab offset are scalar
+(`PEARL_AMD_BUFLD`). Before, the fold added the slab to each lane's 64-bit address for every global
+load and made new LDS addresses for most fragments, about 9 VALU a slab of 32 WMMAs. On an RX 9070 XT
+the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads:
+its fragments are 16 bytes already, and buffer loads haven't been timed there.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -209,9 +220,10 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 198 | - | 36 KB | 6 |
+| gfx1200, gfx1201 | wmma12 | 193 | - | 36 KB | 6 |
 
-The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. On 2 November, with the
+The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is 193 VGPRs
+from 4 November, with `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD` (198 before). On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
 gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
 also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).
