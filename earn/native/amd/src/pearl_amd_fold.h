@@ -606,6 +606,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_LDS_PAD
 #define PEARL_AMD_LDS_PAD 0
 #endif
+#if PEARL_AMD_LDS_PAD && PEARL_AMD_STOFF
+#error "PEARL_AMD_LDS_PAD pads the separate B' buffers: build it without PEARL_AMD_STOFF"
+#endif
 // PEARL_AMD_LDS32_S48=1, timing only: PEARL_AMD_LDS32's code (pinned with _PIN) at today's 48-byte rows; with
 // -DPEARL_AMD_LDS32_SWZ=0 the layout is today's exactly, so it times the pinned offsets alone.
 #ifndef PEARL_AMD_LDS32_S48
