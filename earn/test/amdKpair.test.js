@@ -23,7 +23,7 @@ function grab(text, re) {
   return m[1];
 }
 
-const release = preprocess(FOLD, { PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0 });
+const release = preprocess(FOLD, { PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 0, PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
 const step = slice(release, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
 const pair = slice(step, '#if PEARL_AMD_KPAIR\n', '\n#endif\n');
 const KS = Number(grab(FOLD, /#define PEARL_AMD_SLAB (\d+)u/));

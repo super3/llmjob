@@ -586,6 +586,36 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_UNROLL4 && !PEARL_AMD_CRANK
 #error "PEARL_AMD_UNROLL4 needs PEARL_AMD_CRANK"
 #endif
+// PEARL_AMD_LDS32=1 (RDNA 4, wmma12 with PEARL_AMD_KPAIR, 32-byte slab): LDS rows of 32 bytes with no padding, so a
+// block takes 24,576 bytes of LDS, not 36,864, and 4 blocks fit a WGP (8 waves a SIMD) where 3 did. The padding
+// spread rows over the banks; here the row's two 16-byte halves swap instead, on row bits PEARL_AMD_LDS32_SWZ (a
+// mask; the swap is the parity of the masked bits). Bits 2 and 3 (12) keep both an 8-lane pass over 32 banks and a
+// 16-lane pass over 64 banks free of conflicts, for the 16-byte fragment reads and the 16-byte stores alike. The
+// bytes a fragment holds are the same, so the fold is bit-exact. Off by default: an experiment.
+// PEARL_AMD_WAVES=N: amdgpu_waves_per_eu(N) on the wmma12 fold, so the compiler keeps it within 1536 / N VGPRs
+// (192 for 8 waves a SIMD). Off by default.
+#ifndef PEARL_AMD_LDS32
+#define PEARL_AMD_LDS32 0
+#endif
+#ifndef PEARL_AMD_LDS32_SWZ
+#define PEARL_AMD_LDS32_SWZ 12
+#endif
+#ifndef PEARL_AMD_LDS32_PIN
+#define PEARL_AMD_LDS32_PIN 0
+#endif
+#ifndef PEARL_AMD_LDS_PAD
+#define PEARL_AMD_LDS_PAD 0
+#endif
+// PEARL_AMD_LDS32_S48=1, timing only: PEARL_AMD_LDS32's code (pinned with _PIN) at today's 48-byte rows; with
+// -DPEARL_AMD_LDS32_SWZ=0 the layout is today's exactly, so it times the pinned offsets alone.
+#ifndef PEARL_AMD_LDS32_S48
+#define PEARL_AMD_LDS32_S48 0
+#endif
+#if PEARL_AMD_LDS32
+__device__ __forceinline__ int pearl_amd_l32_swz(int row) {
+  return __builtin_popcount((unsigned)row & (unsigned)PEARL_AMD_LDS32_SWZ) & 1;
+}
+#endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
@@ -853,7 +883,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int W = P::kWave, T = W * P::kWR * P::kWC;
   constexpr int WM = P::kMT * P::kTM, WN = P::kNT * P::kTN;
   constexpr int BM = P::kWR * WM, BN = P::kWC * WN;
+#if PEARL_AMD_LDS32
+  // PEARL_AMD_LDS32 (above): 32-byte rows, halves swapped by row bits, in the RDNA 4 fold with paired reads only.
+  constexpr int KS = (int)PEARL_AMD_SLAB;
+  constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;
+  static_assert(!kL32 || KS == 32, "PEARL_AMD_LDS32 is for 32-byte slabs");
+  constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
+#else
   constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16;
+#endif
   constexpr int QR = KS / 16;                          // 16-byte units in a slab row
   constexpr int UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
   constexpr int RB = WM / 32, CB = WN / 64;            // 32x64 blocks a wave
@@ -873,7 +911,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
 #else
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
+#if PEARL_AMD_LDS_PAD
+  // PEARL_AMD_LDS_PAD: unused bytes after each B' buffer, for timing only: with PEARL_AMD_LDS32, 6144 brings a block
+  // back to 36,864 bytes, so 3 blocks fit a WGP (6 waves a SIMD) with the 32-byte layout's code.
+  __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S + PEARL_AMD_LDS_PAD];
+#else
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+#endif
 #endif
 
 #if PEARL_AMD_STAMP
@@ -935,7 +979,38 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     R[u] = *p;                                                                               \
   }
 #endif
-#if PEARL_AMD_STOFF
+#if PEARL_AMD_LDS32
+  // A thread's rows are t / QR plus multiples of 128, whose bits 2 and 3 are t / QR's: one swap a thread.
+  static_assert(!kL32 || ((T / QR) % 16 == 0 && (UA / QR) % 16 == 0 && (PEARL_AMD_LDS32_SWZ & ~15) == 0),
+                "PEARL_AMD_LDS32's swap must be the same for every row a thread stores");
+  const int l32sw = kL32 ? pearl_amd_l32_swz(t / QR) : 0;
+#if PEARL_AMD_LDS32_PIN
+  // PEARL_AMD_LDS32_PIN: the thread's store offset (row t / QR, its half swapped) through an empty asm, so the
+  // compiler keeps it in a VGPR and can't recompute it in the slab loop. The other rows are whole 128 further.
+  static_assert(UA % T == 0 && T % QR == 0, "PEARL_AMD_LDS32_PIN needs whole rows a unit");
+  int l32st = (t / QR) * S + 16 * ((t % QR) ^ l32sw);
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (kL32) asm volatile("" : "+v"(l32st));
+#endif
+  // And the lane's fragment-read offset (slab_step's off at k-step 0), the same way.
+  int l32rd = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0));
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  if constexpr (kL32) asm volatile("" : "+v"(l32rd));
+#endif
+#define PEARL_AMD_STORER(buf, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    int8_t *dst = (u * T < UA ? sA[buf] + ((u * T) / QR) * S : sB[buf] + ((u * T - UA) / QR) * S) + l32st; \
+    *reinterpret_cast<pearl_amd_v4i *>(dst) = R[u];                                          \
+  }
+#else
+#define PEARL_AMD_STORER(buf, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    const int idx = t + u * T;                                                               \
+    int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
+    *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * ((idx % QR) ^ l32sw)) = R[u];              \
+  }
+#endif
+#elif PEARL_AMD_STOFF
   // PEARL_AMD_STOFF (above): unit u of thread t is row t / QR + u * T / QR of its tile's slab (less BM rows for
   // B'), at 16 * (t % QR) in the row, so its place in sL is the thread's ldsOff plus a constant.
   static_assert(T % QR == 0 && UA % QR == 0, "a thread's staging units must share its place in a row");
@@ -1244,7 +1319,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         if ((kk & 1) == 0) {
           typename P::AFrag a[2][P::kMT];
           typename P::BFrag b[2][P::kNT];
+#if PEARL_AMD_LDS32 && PEARL_AMD_LDS32_PIN
+          const int off = l32rd + kk * P::kTK;
+#elif PEARL_AMD_LDS32
+          // PEARL_AMD_LDS32: the half is swapped by the row's bits (tile offsets are whole 16 rows: bits 0-3 kept).
+          const int off = (lane & 15) * S + 16 * ((lane >> 4) ^ (kL32 ? pearl_amd_l32_swz(lane & 15) : 0)) + kk * P::kTK;
+#else
           const int off = (lane & 15) * S + 16 * (lane >> 4) + kk * P::kTK;
+#endif
 #pragma unroll
           for (int mt = 0; mt < P::kMT; mt++) {
             const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
@@ -1465,7 +1547,12 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 #endif
 }
 
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma12(
+#ifdef PEARL_AMD_WAVES
+#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_WAVES)))
+#else
+#define PEARL_AMD_WMMA12_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
   pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr);

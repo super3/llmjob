@@ -75,6 +75,7 @@ namespace {
 
 constexpr int kThreads = 256, kWaves = 8, kS = 48;                 // the fold's LDS row: 32 bytes of k + 16
 constexpr int kFoldLds = 2 * 128 * kS + 2 * 256 * kS;             // 36,864: sA[2][128 x 48], sB[2][256 x 48]
+constexpr int kLds32 = 2 * 128 * 32 + 2 * 256 * 32;               // 24,576: PEARL_AMD_LDS32's 32-byte rows
 constexpr int kStampWords = 8;
 // One block's operands: the fold's LDS bytes, then up to 4 x 4 fragments of 16 bytes in two sets for each thread.
 constexpr size_t kPerBlock = (size_t)kFoldLds + (size_t)kThreads * 2 * 8 * 16;
@@ -153,7 +154,7 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
       for (int j = 0; j < NB; j++) rb[s][j] = p[s * (NA + NB) + NA + j];
     }
   } else {
-    for (int i = 16 * t; i < kFoldLds; i += 16 * kThreads)
+    for (int i = 16 * t; i < (SRC == 3 ? kLds32 : kFoldLds); i += 16 * kThreads)
       *reinterpret_cast<peak_v4i *>(lds + i) = *reinterpret_cast<const peak_v4i *>(src + i);
     __syncthreads();
   }
@@ -172,6 +173,37 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
   uint32_t cyc = 0u, last = c0;
 #endif
   for (uint32_t it = 0; it < iters; it++) {
+    // SRC 2 and 3: the fold's paired reads (PEARL_AMD_KPAIR), one 16-byte read a fragment for both k-steps of the
+    // slab, lanes 0-15 bytes 0-15 of the row and lanes 16-31 bytes 16-31. 2: at the fold's 48-byte rows. 3: at
+    // PEARL_AMD_LDS32's 32-byte rows, the halves swapped on row bit 2 xor bit 3.
+    PeakFrag pa[2][NA], pb[2][NB];
+    if constexpr (SRC >= 2) {
+      constexpr int RS = SRC == 3 ? 32 : kS;
+      const int buf = (int)(it & 1u);
+      const int8_t *aBase = lds + buf * 128 * RS + wr * 64 * RS;
+      const int8_t *bBase = lds + 2 * 128 * RS + buf * 256 * RS + wc * 64 * RS;
+      const int row = lane & 15;
+      const int half = SRC == 3 ? ((lane >> 4) ^ ((row >> 2) & 1) ^ ((row >> 3) & 1)) : (lane >> 4);
+      const int off = row * RS + 16 * half;
+#pragma unroll
+      for (int i = 0; i < NA; i++) {
+        const peak_v4i q = *reinterpret_cast<const peak_v4i *>(aBase + i * 16 * RS + off);
+#if PEAK_GFX11
+        pa[0][i] = q; pa[1][i] = q;
+#else
+        pa[0][i] = peak_v2i{q[0], q[1]}; pa[1][i] = peak_v2i{q[2], q[3]};
+#endif
+      }
+#pragma unroll
+      for (int j = 0; j < NB; j++) {
+        const peak_v4i q = *reinterpret_cast<const peak_v4i *>(bBase + j * 16 * RS + off);
+#if PEAK_GFX11
+        pb[0][j] = q; pb[1][j] = q;
+#else
+        pb[0][j] = peak_v2i{q[0], q[1]}; pb[1][j] = peak_v2i{q[2], q[3]};
+#endif
+      }
+    }
 #pragma unroll
     for (int kk = 0; kk < 2; kk++) {
       PeakFrag a[NA], b[NB];
@@ -180,6 +212,11 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
         for (int i = 0; i < NA; i++) a[i] = ra[kk][i];
 #pragma unroll
         for (int j = 0; j < NB; j++) b[j] = rb[kk][j];
+      } else if constexpr (SRC >= 2) {
+#pragma unroll
+        for (int i = 0; i < NA; i++) a[i] = pa[kk][i];
+#pragma unroll
+        for (int j = 0; j < NB; j++) b[j] = pb[kk][j];
       } else {
         const int buf = (int)(it & 1u);
         const int8_t *aBase = lds + buf * 128 * kS + wr * 64 * kS;
@@ -258,7 +295,7 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
     }
     if constexpr (BAR) __syncthreads();
     // The LDS reads can't be hoisted out of the loop: as far as the compiler knows, memory changed.
-    if constexpr (SRC == 1) asm volatile("" ::: "memory");
+    if constexpr (SRC >= 1) asm volatile("" ::: "memory");
 #if PEAK_GFX11
     const uint32_t now = peak_cycles();
     cyc += (now - last) & 0xFFFFFu;
@@ -478,6 +515,14 @@ const Cfg kCfgs[] = {
     {"rdout", KV(0, 4, 4, 0, 0, 2), 0, 4, 4, 3, "miner"},
     {"rdlocal", KV(0, 4, 4, 0, 0, 3), 0, 4, 4, 3, "miner"},
     {"ldsrd", KV(1, 4, 4, 0, 1, 2), 1, 4, 4, 3, "miner"},
+    // The fold's paired 16-byte reads (PEARL_AMD_KPAIR) with the barrier, without and with the readout: at its
+    // 48-byte rows (6 waves a SIMD is all 36,864 bytes allow), then at PEARL_AMD_LDS32's 32-byte rows at 6 and 8.
+    {"lk48bar", KV(2, 4, 4, 0, 1, 0), 2, 4, 4, 3, "miner"},
+    {"lk32bar", KV(3, 4, 4, 0, 1, 0), 3, 4, 4, 3, "miner"},
+    {"lk32bar", KV(3, 4, 4, 0, 1, 0), 3, 4, 4, 4, "miner"},
+    {"lk48rd", KV(2, 4, 4, 0, 1, 2), 2, 4, 4, 3, "miner"},
+    {"lk32rd", KV(3, 4, 4, 0, 1, 2), 3, 4, 4, 3, "miner"},
+    {"lk32rd", KV(3, 4, 4, 0, 1, 2), 3, 4, 4, 4, "miner"},
 };
 #undef K
 #undef KV
@@ -640,7 +685,8 @@ int main(int argc, char **argv) {
       if (n <= c.bpw) { lds = l; fit = n; }
       if (n > c.bpw) break;
     }
-    if (c.src == 1 && lds < (size_t)kFoldLds) lds = kFoldLds;
+    const size_t need = c.src == 3 ? (size_t)kLds32 : c.src >= 1 ? (size_t)kFoldLds : 0;
+    if (lds < need) lds = need;
     if (lds == 0) lds = 65536;
     const int blocks = wgps * c.bpw;
     // Iterations for a launch of about 40 ms, from a short one.
