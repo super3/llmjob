@@ -148,8 +148,9 @@ clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRA
 (`PEARL_AMD_CAP_KWRAP`) and picks k 4096 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
-k, so the pool needs nothing from us. A card stays at k 2048 with `PEARL_AMD_K=2048`, or when it
-has too little free VRAM for k 4096 (about 1,969 MiB against 1,137), and the "mining on GPU" line
+k, so the pool needs nothing from us. `PEARL_AMD_K=8192` asks such a card for k 8192 instead, for
+measuring it; it isn't the default (`benchmark.md`). A card stays at k 2048 with `PEARL_AMD_K=2048`,
+or when it has too little free VRAM for k 4096 (about 1,969 MiB against 1,137), and the "mining on GPU" line
 says why. If a pool turns down 3 shares at k 4096 and takes none, the miner mines k 2048 on every
 card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
 

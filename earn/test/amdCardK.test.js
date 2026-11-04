@@ -171,16 +171,18 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     const cap = at('if (e != hipSuccess || !(caps[0] & PEARL_AMD_CAP_KWRAP) || (caps[0] & PEARL_AMD_CAP_DROP)) return k;');
     const pin = at('if (pin && !strcmp(pin, "2048")) {');
     const vram = at('if (known && freeMem < need) {');
-    const yes = at('return 4096u;');
-    expect(mainnet < caps && caps < cap && cap < pin && pin < vram && vram < yes).toBe(true);
+    const want = at('const uint32_t want = pin && !strcmp(pin, "8192") ? 8192u : 4096u;');
+    const yes = at('return want;');
+    expect(mainnet < caps && caps < cap && cap < pin && pin < want && want < vram && vram < yes).toBe(true);
     expect(lines).toContain('const char *pin = getenv("PEARL_AMD_K");');
-    expect(lines).toContain('wide.k = 4096u;');
+    // k 4096, or k 8192 when PEARL_AMD_K asks for it, and the VRAM check is at that k.
+    expect(lines).toContain('wide.k = want;');
     expect(lines).toContain('const size_t need = needed_bytes(&wide);');
     // Every way out but the last keeps the profile's k.
-    expect(lines.filter((l) => /return (4096u|k|0);/.test(l))).toHaveLength(6);
+    expect(lines.filter((l) => /return (want|k|0);/.test(l))).toHaveLength(6);
     // Why it stayed, for the log.
     expect(cardK).toContain('"k 2048 (PEARL_AMD_K=2048)"');
-    expect(cardK).toContain('"k 2048: k 4096 needs ~%zu MiB and %zu MiB is free"');
+    expect(cardK).toContain('"k 2048: k %u needs ~%zu MiB and %zu MiB is free", want,');
   });
 
   it('names the k and the readout in the fold\'s description', () => {
