@@ -833,9 +833,10 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // earns the same at rank 128, so the pool needs nothing from us. Only the mainnet k moves: 2048
 // at rank 128. The card stays at it with PEARL_AMD_K=2048, or without the free VRAM k 4096 needs,
 // so it still mines; `note` then says why, for the log. PEARL_AMD_K=8192 asks for k 8192 instead,
-// with the same VRAM check at that k (and k 2048 without it). It isn't the default: it read +0.9%
-// in hashrate.js on an RX 9070 XT, but only that card and one pool have been checked at it
-// (benchmark.md). A HIP error leaves the profile's k too, and pearl_host_create reports the error.
+// with the same VRAM check at that k (and k 2048 without it). It isn't the default: it read +0.5 to
+// +0.9% in hashrate.js on an RX 9070 XT, but about 6% slower than k 4096 on an RX 9060 XT (4 November,
+// with the combined fold flags listed in pearl_amd_fold.h), so it can't be one default for every
+// RDNA 4 card (benchmark.md). A HIP error leaves the profile's k too, and pearl_host_create reports the error.
 // An ablation build (PEARL_AMD_CAP_TIMING) gets the release's k, unlike a readout-drop build, so it
 // times the fold the card mines; pearl_host_submit keeps it from mining.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note, size_t note_len) {

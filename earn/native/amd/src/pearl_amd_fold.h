@@ -546,6 +546,17 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM 0
 #endif
+// The RDNA 4 cuts combined (4 November): -DPEARL_AMD_RDSEL=1 -DPEARL_AMD_RDPERM=2 -DPEARL_AMD_CRANK=1
+// -DPEARL_AMD_SCHEDB=1 -DPEARL_AMD_LDS32=1 -DPEARL_AMD_LDS32_PIN=1, all below: 201 VGPRs, 24,576 bytes of LDS, 6
+// waves. hashrate.js against PR #284's default, interleaved on one PC: +4.4 to +4.6% on an RX 9070 XT and +5.1 to
+// +5.4% on an RX 9060 XT (two PCs each), with verify-hits 400 of 400 on both. Alone the parts read +1.2 to +3.4%.
+// They overlap, but each still pays on top of the others (9070 XT): RDSEL + RDPERM +0.7%, CRANK + SCHEDB +1.9%,
+// LDS32 + PIN +0.9% (without PIN 0.5% less; PIN alone at 48-byte rows lost a little). Left out, because they stop
+// paying in the set: STOFF, level once LDS32's pinned store offset is in; the split slab barrier (s_barrier_signal
+// after a slab's LDS work, the wait before the next slab's reads), 1.1 to 1.4% behind on top of CRANK + SCHEDB; and
+// PEARL_AMD_WAVES=8, which fits the set in 189 VGPRs for 8 waves but lost 2.1 to 2.6%. The cards are at their power
+// limit: a slab falls from 2083 to 1888 cycles, but the clock from 2316 to 2266 MHz on the 9070 XT and from 2343 to
+// 2140 MHz on the 9060 XT (stamps).
 // Staging experiments (RDNA 4), off by default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
 // constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
