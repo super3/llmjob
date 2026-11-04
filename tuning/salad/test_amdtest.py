@@ -198,13 +198,26 @@ class TestAmdtest(unittest.TestCase):
 
     def test_lib_stage_only_defines_the_functions(self):
         # bench.sh sources it this way for setup, fetch, the build, the hit check and the CLI: nothing may run.
-        sh = os.path.join(HERE, "amdtest.sh")
+        # Forward slashes: Git Bash on Windows (rig01) can't source a path written with backslashes.
+        sh = os.path.join(HERE, "amdtest.sh").replace("\\", "/")
         r = subprocess.run(["bash", "-c", f'AMDTEST_STAGE=lib . {sh}; echo "rc=$?"; '
                             "declare -F setup fetch target t_hip t_build t_verify mine_cli"],
                            capture_output=True, text=True, env={"PATH": os.environ["PATH"], "BASE_SHA": "abc"})
         self.assertEqual(r.stdout.splitlines(), ["rc=0", "setup", "fetch", "target", "t_hip", "t_build", "t_verify",
                                                  "mine_cli"])
         self.assertEqual(r.stderr, "")
+
+    def test_pool_wallet_and_worker_reach_child_processes(self):
+        # verify-pool.js reads POOL, WALLET and WORKER from its environment, so the script must export them.
+        sh = os.path.join(HERE, "amdtest.sh").replace("\\", "/")
+        child = 'bash -c \'echo "${POOL:-none} ${WORKER:-none} ${WALLET:0:8}"\''
+        base = {"PATH": os.environ["PATH"], "BASE_SHA": "abc"}
+        r = subprocess.run(["bash", "-c", f"AMDTEST_STAGE=lib . {sh}; {child}"], capture_output=True, text=True,
+                           env=base)
+        self.assertEqual(r.stdout.strip(), "prl-us.kryptex.network:7048 amdtest prl1pw88")
+        r = subprocess.run(["bash", "-c", f"AMDTEST_STAGE=lib . {sh}; {child}"], capture_output=True, text=True,
+                           env={**base, "WALLET": "prl1given", "WORKER": "w2"})
+        self.assertEqual(r.stdout.strip(), "prl-us.kryptex.network:7048 w2 prl1give")
 
     def test_nvtest_names_and_classes(self):
         for good in ("nvtest-rtx3090", "nvtest-rtx3090ti", "nvtest-rtx3060ti-2", "nvtest-rtx3070-17", "nvtest-rtx4070",
