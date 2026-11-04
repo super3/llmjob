@@ -2213,6 +2213,9 @@ now picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT, R9700, RX 9070) an
 - **First k 8192 on HeroMiners,** the app's default pool. It took every share, so no card fell back to k 2048.
 - **Left out:** the 48-CU RX 9070 GRE stays at k 4096, since nothing between 32 and 64 CUs has been timed; the RX
   9070 (56 CUs) and R9700 (64) get k 8192 untimed, on the 9070 XT's result.
+- **HIP counts WGPs:** on a third 9070 XT (`e8f3bdaf`, ROCm 7.2) HIP's `multiProcessorCount` read 32 where rocminfo
+  says 64 CUs, so a gate at 56 kept the card at k 4096 (125.5 TH/s, verify-hits 400/400 at k 4096). The gate now takes
+  28–39 as WGPs or 56 and up as CUs.
 - **Cost:** about $0.18 (two boxes, 25 and 40 minutes).
 
 **As the default.** `PEARL_AMD_RDNA4_SET` defaults to `PEARL_AMD_WMMA12`, so the set is on in gfx12 device passes
