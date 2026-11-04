@@ -570,7 +570,11 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //       release; the run scripts also count the fold's LDS stores and global loads against the
 //       release's. The HIP-CPU build uses the first slab's fragments at every k-step instead.
 //   16  every block reads tile 0's operands, which stay in L2. The loads still run.
-// Bits 2 and 8 are in the PF2 loop only (RDNA 3 and RDNA 4); bit 16 is in either loop. They combine.
+//   32  no staging in the slab loop: no global loads of the slabs ahead and no LDS stores of them. Slab 0 is
+//       still loaded and stored before the loop, and the fragments are read from LDS as before (stale words,
+//       which the barrier's fences keep the compiler from hoisting). With 2 and 8 the loop is the WMMAs, the
+//       readout and the loop itself, which pearl_amd_peak's register-fed kernel times without the readout.
+// Bits 2, 8 and 32 are in the PF2 loop only (RDNA 3 and RDNA 4); bit 16 is in either loop. They combine.
 // These are bits 2, 8 and 16 of the old knob, which 534e285 removed: it only ever worked in the
 // one-slab loop.
 // Every word a matrix fold stores is XORed with a constant, so the fold check always fails, even where
@@ -582,8 +586,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16)
-#error "PEARL_AMD_ABLATE takes bits 2, 8 and 16 only"
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16 and 32 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -986,7 +990,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   auto slab_step = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;   // s mod 2: slab s's LDS buffer and register set
-#if PEARL_AMD_PFX
+#if PEARL_AMD_ABLATE & 32
+    // PEARL_AMD_ABLATE bit 32: no slab ahead is loaded.
+#elif PEARL_AMD_PFX
     {   // set B's slab s went to LDS last step
       const uint32_t n = s + 2 < slabs ? s + 2 : slabs - 1u;
       PEARL_AMD_LOADR(n, pre2[B])
@@ -1036,7 +1042,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const typename P::AFrag kept = P::load_a((s & 2u) ? bBase : aBase, S, lane);
 #endif
 #endif
+#if !(PEARL_AMD_ABLATE & 32)
     if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago
+#endif
 #if PEARL_AMD_STAMP
     stamp_barrier();
 #elif PEARL_AMD_ABLATE & 2
@@ -1078,9 +1086,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
 #endif
 #else
-#if PEARL_AMD_ABLATE & 10
+#if PEARL_AMD_ABLATE & 42
   // Only a compile pass that builds this fold stops here: the condition depends on P.
-  static_assert(sizeof(P) == 0, "PEARL_AMD_ABLATE bits 2 and 8 are in the PF2 loop only: add -DPEARL_AMD_PF2=1");
+  static_assert(sizeof(P) == 0, "PEARL_AMD_ABLATE bits 2, 8 and 32 are in the PF2 loop only: add -DPEARL_AMD_PF2=1");
 #endif
 #if PEARL_AMD_STAMP
   static_assert(!std::is_same<P, PearlAmdWmma11>::value && !std::is_same<P, PearlAmdWmma12>::value,
