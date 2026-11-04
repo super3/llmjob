@@ -546,6 +546,46 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM 0
 #endif
+// Staging experiments (RDNA 4), off by default.
+// PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
+// constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
+// unrolled pair carried a readout it never ran. The host refuses any other rank.
+// PEARL_AMD_UNROLL4=1 (needs CRANK): the slab loop four slabs at a time, so the readout runs unconditionally
+// after the fourth.
+// PEARL_AMD_STOFF=1: both tiles' LDS buffers in one array, and each staging store at one lane register plus an
+// immediate offset.
+// PEARL_AMD_CMASK=1: perChunk stays a kernel argument but is written as 1 << its log, so `%` and `/` by it are a
+// mask and a shift, not a division. rank is a power of two: it divides k, which the tiled folds need a power of two.
+// PEARL_AMD_SCHEDB=1: a sched_barrier(0) after each slab's WMMAs and readout, before its stores and barrier, so
+// the compiler can't move a slab's WMMAs past its barrier when both slabs of a pair are one basic block (CRANK).
+// PEARL_AMD_LPIN=1: a sched_barrier(0) after the slab loads at the top of each step, so they aren't sunk below
+// the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant.
+#ifndef PEARL_AMD_CRANK
+#define PEARL_AMD_CRANK 0
+#endif
+#ifndef PEARL_AMD_UNROLL4
+#define PEARL_AMD_UNROLL4 0
+#endif
+#ifndef PEARL_AMD_STOFF
+#define PEARL_AMD_STOFF 0
+#endif
+#ifndef PEARL_AMD_CMASK
+#define PEARL_AMD_CMASK 0
+#endif
+#ifndef PEARL_AMD_SCHEDB
+#define PEARL_AMD_SCHEDB 0
+#endif
+#ifndef PEARL_AMD_LPIN
+#define PEARL_AMD_LPIN 0
+#endif
+#if (PEARL_AMD_SCHEDB || PEARL_AMD_LPIN) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_SCHED_PIN() __builtin_amdgcn_sched_barrier(0)
+#else
+#define PEARL_AMD_SCHED_PIN() ((void)0)
+#endif
+#if PEARL_AMD_UNROLL4 && !PEARL_AMD_CRANK
+#error "PEARL_AMD_UNROLL4 needs PEARL_AMD_CRANK"
+#endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
@@ -826,8 +866,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
 
+#if PEARL_AMD_STOFF
+  // PEARL_AMD_STOFF (above): A' buffers 0 and 1, then B' buffers 0 and 1, in one array.
+  __shared__ __attribute__((aligned(16))) int8_t sL[2 * (BM + BN) * S];
+  int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
+  int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + 2 * BM * S);
+#else
   __shared__ __attribute__((aligned(16))) int8_t sA[2][BM * S];
   __shared__ __attribute__((aligned(16))) int8_t sB[2][BN * S];
+#endif
 
 #if PEARL_AMD_STAMP
   // PEARL_AMD_STAMP (above): the start, and what the slab loop adds up, in SGPRs (pearl_amd_sgpr). stLast is the
@@ -888,12 +935,25 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     R[u] = *p;                                                                               \
   }
 #endif
+#if PEARL_AMD_STOFF
+  // PEARL_AMD_STOFF (above): unit u of thread t is row t / QR + u * T / QR of its tile's slab (less BM rows for
+  // B'), at 16 * (t % QR) in the row, so its place in sL is the thread's ldsOff plus a constant.
+  static_assert(T % QR == 0 && UA % QR == 0, "a thread's staging units must share its place in a row");
+  const uint32_t ldsOff = (uint32_t)((t / QR) * S + 16 * (t % QR));
+#define PEARL_AMD_STORER(buf, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    const uint32_t c = u * T < UA ? (uint32_t)((buf) * (BM * S) + u * (T / QR) * S)           \
+                                  : (uint32_t)(2 * BM * S + (buf) * (BN * S) + (u * T - UA) / QR * S); \
+    *reinterpret_cast<pearl_amd_v4i *>(sL + (ldsOff + c)) = R[u];                             \
+  }
+#else
 #define PEARL_AMD_STORER(buf, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
     int8_t *dst = idx < UA ? sA[buf] + (idx / QR) * S : sB[buf] + ((idx - UA) / QR) * S;     \
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                        \
   }
+#endif
 #define PEARL_AMD_LOAD(slab) PEARL_AMD_LOADR(slab, pre)
 #define PEARL_AMD_STORE(buf) PEARL_AMD_STORER(buf, pre)
 
@@ -917,7 +977,20 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   const uint32_t r = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
 
+#if PEARL_AMD_CRANK && PEARL_AMD_PF2
+  // PEARL_AMD_CRANK (above): the host launches only rank PEARL_FOLD_RANK, so k is a whole number of chunks of 4.
+  static_assert(PEARL_FOLD_RANK % (uint32_t)KS == 0u && ((PEARL_FOLD_RANK / (uint32_t)KS) & 1u) == 0u,
+                "PEARL_AMD_CRANK: a chunk is an even number of slabs");
+  constexpr uint32_t perChunk = PEARL_FOLD_RANK / (uint32_t)KS;
+  const uint32_t slabs = k / (uint32_t)KS;
+  __builtin_assume((slabs & (perChunk - 1u)) == 0u);
+  (void)rank;
+#elif PEARL_AMD_CMASK
+  // PEARL_AMD_CMASK (above).
+  const uint32_t slabs = k / (uint32_t)KS, perChunk = 1u << (uint32_t)__builtin_ctz(rank / (uint32_t)KS);
+#else
   const uint32_t slabs = k / (uint32_t)KS, perChunk = rank / (uint32_t)KS;
+#endif
   PEARL_AMD_LOAD(0)
   PEARL_AMD_STORE(0)
   __syncthreads();
@@ -1141,6 +1214,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
     if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS last step
 #endif
+#if PEARL_AMD_LPIN
+    PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)
+#endif
     const int8_t *aBase = sA[B] + wr * WM * S;
     const int8_t *bBase = sB[B] + wc * WN * S;
 #pragma unroll
@@ -1199,7 +1275,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+#if PEARL_AMD_CRANK
+    // PEARL_AMD_CRANK (above): s mod 2 is B and a chunk is an even number of slabs, so only an odd slab ends one.
+    if constexpr (B == 1)
+#endif
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+#if PEARL_AMD_SCHEDB
+    PEARL_AMD_SCHED_PIN();   // PEARL_AMD_SCHEDB (above)
+#endif
 #if PEARL_AMD_ABLATE & 8
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     // PEARL_AMD_ABLATE bit 8: one real fragment read a slab, the release's load at k-step 0 of tile 0. Slabs 0
@@ -1240,6 +1323,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
   };
   uint32_t s = 0;
+#if PEARL_AMD_UNROLL4
+  // PEARL_AMD_UNROLL4 (above): s is a multiple of 4 here, so the fourth step's readout needs no test.
+  for (; s + 3 < slabs; s += 4) {
+    slab_step(s, std::integral_constant<int, 0>());
+    slab_step(s + 1, std::integral_constant<int, 1>());
+    slab_step(s + 2, std::integral_constant<int, 0>());
+    slab_step(s + 3, std::integral_constant<int, 1>());
+  }
+#endif
   for (; s + 1 < slabs; s += 2) {
     slab_step(s, std::integral_constant<int, 0>());
     slab_step(s + 1, std::integral_constant<int, 1>());

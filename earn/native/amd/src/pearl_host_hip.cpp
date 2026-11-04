@@ -1436,6 +1436,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
   if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
+      || (PEARL_AMD_CRANK && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // compiled in (pearl_amd_fold.h)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold) "
