@@ -1317,6 +1317,28 @@ moved.
 - **RTX A5000, Italy:** the host sets 200 W, 87% of the card's 230 W.
 - **RTX A4000s:** both cards ran at 89–93 C.
 
+### CMP 90HX on Clore, 4 November (our miner only)
+
+A five-minute check that the mining-only CMP 90HX (GA102, sm_86, 10 GB) runs
+our miner, and how fast. It isn't a full row: only our miner ran, on Clore,
+not on a Vast host. Release v0.6.11, which picked its CUDA 12.8 core, on
+Clore server 87329 in Sweden (6 cards, driver 595.91.07, PCIe gen 2), three
+cards mining on HeroMiners (fi), 15:51–15:56 UTC.
+
+| Card | Power limit | TH/s after 5 min | SM clock | Shares |
+|---|---|---|---|---|
+| CMP 90HX (GPU 0) | 200 W of 250 W | 72.7 | 1485 MHz | 2 accepted |
+| CMP 90HX (GPU 1) | 200 W of 250 W | 72.7 | 1500 MHz | 0 |
+| CMP 90HX (GPU 2) | 200 W of 250 W | 71.0 | 1380 MHz | 2 accepted |
+
+- **Power-bound:** every card drew 199–200 W at 100% use, with the power cap
+  as the only throttle reason. The host sets 200 W; a 250 W limit would give
+  more, by an amount we didn't measure.
+- **Rent:** at PRL $1.45 and difficulty 52.2M, 72 TH/s earns about
+  $0.056 an hour. The cheapest CMP 90HX on Clore was $0.073 a card-hour
+  on-demand (−23%) and $0.063 on spot (−11%), both on Russian hosts, so the
+  card doesn't pay to rent there.
+
 ## B200 (sm_100)
 
 Run on 2026-10-10, 16:47–17:06 UTC, on the row's own machine. The CLI loads
