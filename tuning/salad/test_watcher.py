@@ -4422,6 +4422,30 @@ class TestKryptex(Base):
         self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 1)  # totals at most every 5 minutes
         self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), 2)
 
+    def test_a_worker_that_isnt_ours_leaves_kryptex_s_ratio_where_it_was(self):
+        # The founder's dev4090 mined to the same wallet from 4 November: its PRL lands in the totals but not in our
+        # boxes' estimate, so the ratio stays at its last value instead of rising with it.
+        wl = os.environ["PRL_WALLET"]
+        live = self.group()
+        live["prl_kx"] = 10.0
+        self.x.st["kx_tot"] = {"t": T0, "total": 2.0, "confirmed": 2.0, "unconfirmed": 0, "paid": 7.7, "prl_kx": 10.0}
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [{"worker": "biz-rtx4080-g0", "valid": 3}]}))
+        self.x.kx_pool()
+        self.assertNotIn("kx_foreign", self.x.st)          # only our boxes: nothing noted
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
+            {"worker": "biz-rtx4080-g0", "valid": 3}, {"worker": "dev4090", "valid": 6}]}))
+        self.x.kx_pool()
+        self.assertEqual(self.x.st["kx_foreign"]["workers"], ["dev4090"])
+        self.assertIn("NOTE Kryptex worker dev4090 isn't one of our boxes", self.events())
+        self.assertIn("stays at 0.970", self.events())
+        self.x.st["kx_tot"].update(total=8.0)              # dev4090's PRL credited: 15.7 for our 10
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [{"worker": "biz-rtx4080-g0", "valid": 3}]}))
+        self.x.kx_pool()                                   # gone from the list, its PRL still in the totals
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.assertEqual(self.events().count("NOTE Kryptex worker"), 1)
+
     def test_every_page_of_kryptexs_payouts_is_counted(self):
         # Kryptex lists 15 payouts a page, newest first. Summing only the first page made the paid total drop
         # as old payouts left it (16.677, then 16.655 after a payout, of 23.452 paid on 22 October).

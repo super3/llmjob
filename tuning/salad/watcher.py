@@ -677,7 +677,13 @@ class W:
         prl = (kt or {}).get("prl_kx") or sum(g.get("prl_kx", 0.0) for g in self.st["groups"].values())
         if not kt or prl < 1:
             return self.cfg["kryptex_pay"]
-        return min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
+        r = min(1.0, max(self.cfg["yield_floor"], (kt["total"] + kt["paid"]) / prl))
+        # Once a worker that isn't ours has mined to the wallet (kx_pool), its PRL stays in these totals for good,
+        # so the ratio stays where it was before it: Kryptex's PPS+ pays a fixed share, so it barely moves.
+        if self.st.get("kx_foreign"):
+            return self.st.setdefault("kx_ratio_kept", r)
+        self.st["kx_ratio_kept"] = r
+        return r
 
     def ratio(self, g):
         """The credit ratio for a group's pool now."""
@@ -825,6 +831,14 @@ class W:
                 for x in j.get("results") or []:
                     if isinstance(x, dict) and x.get("worker"):
                         res[x["worker"].split("/")[-1].split(".")[-1]] = x
+                # A worker that isn't one of our boxes ("biz-…-g0") mining to the same wallet (the founder's dev4090
+                # from 4 November) adds its PRL to the wallet's totals but not to our boxes' estimate, which would
+                # push kx_ratio up toward 1.0 and every Kryptex box's earnings with it. Noted once; see kx_ratio.
+                other = sorted(n for n in res if not (n.startswith("biz-") and n.endswith("-g0")))
+                if other and not st.get("kx_foreign"):
+                    st["kx_foreign"] = {"t": t, "workers": other}
+                    event(f"NOTE Kryptex worker {', '.join(other)} isn't one of our boxes: the Kryptex credit ratio "
+                          f"stays at {self.kx_ratio():.3f} from now on")
         kt = st.get("kx_tot") or {}
         if t - max(kt.get("t", 0), st.get("kx_tot_try", 0)) < 5 * MIN:
             return res
