@@ -518,9 +518,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #endif
 // PEARL_AMD_BUFLD=1: the slab loads as buffer loads. A buffer resource for the block's tile of A' and of B' (in
 // SGPRs), the lane's place in the slab as the VGPR offset, which never changes, and the slab's start as the SGPR
-// offset: no VALU a load. Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Off by default.
+// offset: no VALU a load, where the global loads took a 64-bit VALU add of the slab to each lane's address (two
+// VALU a load). Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Every load stays inside its
+// tile, the resource's size (amdBufld.test.js). On top of PEARL_AMD_KPAIR the fold alone ran another 2.2%
+// faster on an RX 9070 XT (benchmark.md, 4 November). On by default on RDNA 4; RDNA 3 hasn't been timed with it.
 #ifndef PEARL_AMD_BUFLD
-#define PEARL_AMD_BUFLD 0
+#define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
