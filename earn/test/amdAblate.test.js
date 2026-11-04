@@ -2,7 +2,7 @@
 
 // PEARL_AMD_ABLATE (earn/native/amd/src/pearl_amd_fold.h) builds an AMD core whose fold leaves one part
 // out, for timing: bit 2 the slab barrier's s_barrier, 8 the LDS fragment loads, 16 the spread of the
-// operands over memory. Its transcripts are wrong on purpose. These pin the guards that keep it from mining or
+// operands over memory, 32 the slab loop's staging (its global loads and LDS stores). Its transcripts are wrong on purpose. These pin the guards that keep it from mining or
 // shipping, that a release build gets the same code, the fill a tuning build can now set, and the
 // fold test's miner operands that sweep.sh times with. No HIP compiler runs here, so the C++ is read as
 // text, its #if blocks resolved as the preprocessor would; the shell parts run under bash where there
@@ -54,7 +54,7 @@ function block(text, first, last) {
 // The text as the preprocessor leaves it with PEARL_AMD_ABLATE = v, in a build without clock stamps
 // (helpers/amdSwitches.js).
 const ablated = (text, v) => preprocess(text, { PEARL_AMD_ABLATE: v, PEARL_AMD_STAMP: 0 });
-const BITS = [2, 8, 16, 10, 18, 24, 26];
+const BITS = [2, 8, 16, 32, 10, 18, 24, 26, 34, 40, 42, 58];
 const slabStep = (t) => slice(t, 'auto slab_step = [&](uint32_t s, auto parity) {', '\n  };\n');
 const kSteps = (step) => slice(step, '    for (int kk = 0; kk < KS / P::kTK; kk++) {', '\n    }\n');
 const oneSlab = (t) => slice(t, '  if (s < slabs) slab_step(s, std::integral_constant<int, 0>());\n#else\n', '\n#endif\n');
@@ -62,17 +62,20 @@ const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t
 const refFold = (t) => slice(t, 'void pearl_amd_fold_ref(', '\n}\n');
 
 describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
-  it('is 0 unless a build sets it, and takes bits 2, 8 and 16 only', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_ABLATE\n#define PEARL_AMD_ABLATE 0\n#endif\n#if PEARL_AMD_ABLATE & ~(2 | 8 | 16)\n#error');
-    const cond = grab(FOLD, /^#if (PEARL_AMD_ABLATE & ~\(.*\))\n#error "PEARL_AMD_ABLATE takes bits 2, 8 and 16 only"/m);
+  it('is 0 unless a build sets it, and takes bits 2, 8, 16, 32 and 64 only', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_ABLATE\n#define PEARL_AMD_ABLATE 0\n#endif\n#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)\n#error');
+    const cond = grab(FOLD, /^#if (PEARL_AMD_ABLATE & ~\(.*\))\n#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"/m);
     const refused = (v) => new Function('PEARL_AMD_ABLATE', 'return (' + cond + ') !== 0;')(v);
     const allowed = [];
-    for (let v = 0; v < 64; v++) if (!refused(v)) allowed.push(v);
-    expect(allowed).toEqual([0, 2, 8, 10, 16, 18, 24, 26]);
+    for (let v = 0; v < 128; v++) if (!refused(v)) allowed.push(v);
+    expect(allowed).toEqual([0, 2, 8, 10, 16, 18, 24, 26, 32, 34, 40, 42, 48, 50, 56, 58,
+      64, 66, 72, 74, 80, 82, 88, 90, 96, 98, 104, 106, 112, 114, 120, 122]);
     // -DPEARL_AMD_ABLATE alone defines it as 1.
-    for (const v of [-1, 1, 4, 32, 64, 128]) expect([v, refused(v)]).toEqual([v, true]);
+    for (const v of [-1, 1, 4, 128]) expect([v, refused(v)]).toEqual([v, true]);
     // And no block tests a bit it refuses.
-    for (const m of FOLD.matchAll(/^#(?:el)?if PEARL_AMD_ABLATE & (\d+)$/gm)) expect(Number(m[1]) & ~26).toBe(0);
+    const tests = [...FOLD.matchAll(/^#(?:el)?if !?\(?PEARL_AMD_ABLATE & (\d+)\)?$/gm)].map((m) => Number(m[1]));
+    expect(tests).toContain(32);
+    for (const b of tests) expect(b & ~122).toBe(0);
   });
 
   it('leaves a release build as it was: at 0 every block it guards is out', () => {
@@ -87,11 +90,18 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     // Today's code, where each bit cuts in.
     expect(rel).toContain('  const int8_t *gA = Ap + (size_t)tileRow * k;\n  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;\n');
     expect(rel).toContain('  PEARL_AMD_STORE(0)\n  __syncthreads();\n  // The end of chunk c: its transcript word');
+    // The k-steps: RDNA 4's paired fragment reads (PEARL_AMD_KPAIR), then everyone else's.
     expect(slabStep(rel)).toContain([
       '    for (int kk = 0; kk < KS / P::kTK; kk++) {',
-      '      typename P::AFrag a[P::kMT];',
-      '      typename P::BFrag b[P::kNT];'].join('\n'));
-    expect(slabStep(rel)).toContain('      pearl_amd_mma_step<P>(acc, a, b);\n    }\n');
+      '#if PEARL_AMD_KPAIR',
+      '      if constexpr (std::is_same<P, PearlAmdWmma12>::value) {'].join('\n'));
+    expect(slabStep(rel)).toContain([
+      '      } else',
+      '#endif',
+      '      {',
+      '        typename P::AFrag a[P::kMT];',
+      '        typename P::BFrag b[P::kNT];'].join('\n'));
+    expect(slabStep(rel)).toContain('        pearl_amd_mma_step<P>(acc, a, b);\n      }\n    }\n');
     expect(slabStep(rel)).toContain([
       '    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago',
       '#if PEARL_AMD_PFX',
@@ -177,9 +187,35 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     expect(slabStep(t)).toBe(slabStep(ablated(FOLD, 0)));
   });
 
-  it('stops a pass that builds the one-slab loop with bit 2 or 8, which only the PF2 loop has', () => {
-    const stop = 'static_assert(sizeof(P) == 0, "PEARL_AMD_ABLATE bits 2 and 8 are in the PF2 loop only';
-    for (const v of [2, 8, 10, 18, 24, 26]) expect([v, oneSlab(ablated(FOLD, v)).includes(stop)]).toEqual([v, true]);
+  it('bit 32 takes the slab loop\'s staging out, and leaves the rest of the step as it was', () => {
+    const code = (t) => t.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
+    const base = code(slabStep(ablated(FOLD, 0)));
+    const step = code(slabStep(ablated(FOLD, 32)));
+    // No slab ahead is loaded, and nothing is stored to LDS in the loop; the release does both.
+    expect(step).not.toMatch(/PEARL_AMD_LOADR|PEARL_AMD_STORER/);
+    expect(base).toContain('PEARL_AMD_LOADR(n, pre2[B])');
+    expect(base).toContain('if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }');
+    expect(base).toContain('if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }');
+    // Everything else is the release's: take its loads and its store out, and the two match.
+    const loads = slice(base, '#if PEARL_AMD_PFX\n    {', '#endif\n');
+    const store = '    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago\n';
+    expect(base).toContain(store);
+    expect(step).toBe(base.replace(loads, '').replace(store, ''));
+    // Slab 0 still goes to LDS before the loop, so every block starts with whole LDS.
+    expect(ablated(FOLD, 32)).toContain('  PEARL_AMD_LOAD(0)\n  PEARL_AMD_STORE(0)\n  __syncthreads();\n');
+    // With 2 and 8 the loop is the WMMAs, the readout and the one LDS read a slab that bit 8 keeps.
+    const lean = code(slabStep(ablated(FOLD, 42)));
+    expect(lean).not.toMatch(/PEARL_AMD_LOADR|PEARL_AMD_STORER|__syncthreads\(\)|pearl_amd_lds_barrier\(\)|s_barrier/);
+    expect(lean).toContain('pearl_amd_mma_step<P>(acc, a, b);');
+    expect(lean).toContain('readout((s + 1) / perChunk - 1);');
+    expect(lean.match(/P::load_[ab]\(/g)).toEqual(['P::load_a(']);
+  });
+
+  it('stops a pass that builds the one-slab loop with bit 2, 8 or 32, which only the PF2 loop has', () => {
+    const stop = 'static_assert(sizeof(P) == 0, "PEARL_AMD_ABLATE bits 2, 8 and 32 are in the PF2 loop only';
+    for (const v of [2, 8, 10, 18, 24, 26, 32, 34, 40, 42, 48, 58]) {
+      expect([v, oneSlab(ablated(FOLD, v)).includes(stop)]).toEqual([v, true]);
+    }
     for (const v of [0, 16]) expect([v, oneSlab(ablated(FOLD, v)).includes('static_assert')]).toEqual([v, false]);
     // Inside the template: a pass that never builds a matrix fold (the host's, gfx1030's) isn't stopped.
     const body = slice(FOLD, '__device__ __forceinline__ void pearl_amd_fold_body(', '\n}\n');

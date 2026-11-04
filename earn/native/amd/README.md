@@ -38,6 +38,7 @@ NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-lat
 | `src/pearl_host_hip.cpp` | the host: `pearl_host.cu`'s C API on HIP |
 | `compat/gpu`, `compat/cpu` | stand-ins for `<cuda.h>`, `<cuda_runtime.h>` and `<mma.h>` |
 | `test/pearl_amd_foldtest.cpp` | runs each fold on random operands and checks every transcript word against the CPU; the layout check on hardware |
+| `test/pearl_amd_peak.cpp` | times the RDNA matrix instruction with little or nothing else in the loop, and the clock it runs at; timing only |
 | `test/verify-hits-profile.js` | `../probes/verify-hits.js` at a profile you choose (that one is fixed to mainnet) |
 | `test/run-cpu-checks.sh` | every check that runs without a GPU |
 
@@ -97,6 +98,32 @@ slab is one contiguous run of whole cache lines. Row-major, it was 32 bytes of e
 hashrate.js from 21.75 to 51.3 TH/s (PC `a777486d`, 23 October). `-DPEARL_AMD_TILED=0` builds
 the row-major layout. The reference fold reads row-major operands.
 
+**RDNA 4 spends as few VALU as it can around its WMMAs.** On RDNA 4 a VALU instruction doesn't overlap
+the matrix work: each one costs about a cycle of WMMA time (`test/pearl_amd_peak.cpp`, `benchmark.md`,
+4 November). So the RDNA 4 fold reads each lane's fragments for both k-steps of a slab with one 16-byte
+LDS load (`PEARL_AMD_KPAIR`: a slab's k-steps may take its bytes in any order, as long as A' and B' take
+them alike), and loads its slabs with buffer loads, whose base and slab offset are scalar
+(`PEARL_AMD_BUFLD`). Before, the fold added the slab to each lane's 64-bit address for every global
+load and made new LDS addresses for most fragments, about 9 VALU a slab of 32 WMMAs. On an RX 9070 XT
+the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads:
+its fragments are 16 bytes already, and buffer loads haven't been timed there.
+
+**On top of that, RDNA 4 builds six more cuts** (`PEARL_AMD_RDNA4_SET`, 4 November). The wrap
+readout picks the keep word's half with a scalar branch instead of selects (`PEARL_AMD_RDSEL`) and
+skips a register copy before `v_permlanex16` (`PEARL_AMD_RDPERM=2`). The slab loop takes rank 128 at
+compile time, so a chunk is a constant 4 slabs and the per-slab division goes (`PEARL_AMD_CRANK`),
+with a `sched_barrier` before each slab's stores so the compiler can't move the WMMAs past the
+barrier (`PEARL_AMD_SCHEDB`). And LDS rows are 32 bytes, their two halves swapped by row bits, where
+they were 48 with padding, with each thread's store and read offsets pinned in registers
+(`PEARL_AMD_LDS32`, `PEARL_AMD_LDS32_PIN`). Together `hashrate.js` read +4.3 to +4.6% on an RX 9070
+XT and +4.6 to +5.4% on an RX 9060 XT, each interleaved on one PC, on three PCs a card, and
+verify-hits passed 400 of 400 every time. CRANK makes the fold assume rank 128, so the card's caps
+say so (`PEARL_AMD_CAP_RANK`) and the host refuses any other rank. `-DPEARL_AMD_RDNA4_SET=0` builds
+the fold without them. The Windows core leaves them out, as it does the wrap readout: they were timed
+only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
+(`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
+(2.1-2.6% slower); see `benchmark.md`.
+
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
@@ -124,7 +151,7 @@ sends no shares. In v0.6.8 and v0.6.9 it let such a card mine with no check, and
 told RX 6000 owners to set it for the reference fold those cards ran then. They now run `dot4`, so
 a setting carried over must not vouch for it.
 
-**RDNA 4 mines k 4096.** At k 4096 a hash covers twice the MACs, so there are half the hashes
+**RDNA 4 mines k 4096 or k 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
 9060 XT that was +1.0 to +1.2% (`benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
@@ -134,17 +161,28 @@ with it, the HIP SDK's clang 21 put 24 bytes of the gfx12 fold in scratch memory
 clang 22 on Linux uses none, and no Windows Radeon has run either readout (`KWRAP_OS` in
 `build-amd.sh`). One build holds both, since only a gfx12 device pass defines
 `__GFX12__`. The app opens each core with `cardK`, and the host reads the card's caps
-(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 where it can (`pearl_host_card_k`). The core reports it as
+(`PEARL_AMD_CAP_KWRAP`) and picks k 4096 or 8192 where it can (`pearl_host_card_k`). The core reports it as
 `core.k`, and the miner builds that card's config52, job_key, share bound and proofs from it, so a
 rig of RDNA 4 and RDNA 3 cards mines both k side by side without mixing them. A share says its own
-k, so the pool needs nothing from us. A card stays at k 2048 with `PEARL_AMD_K=2048`, or when it
-has too little free VRAM for k 4096 (about 1,969 MiB against 1,137), and the "mining on GPU" line
-says why. If a pool turns down 3 shares at k 4096 and takes none, the miner mines k 2048 on every
-card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
+k, so the pool needs nothing from us.
+
+**The big gfx1201 cards mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to +0.9% over
+k 4096, and HeroMiners and Kryptex both took its shares; on an RX 9060 XT (gfx1200, 32 CUs) it was
+about 6% slower (`benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
+9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and k 4096 on the rest, the RX 9060 XT and
+the 48-CU RX 9070 GRE among them, since nothing between 32 and 64 CUs has been timed.
+k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
+nvidia-smi only, so on an AMD card it runs the smallest model (~4 GB), which fits beside k 8192 on
+any of these 16 GB and 32 GB cards. `PEARL_AMD_K` (2048, 4096 or 8192) picks the k on any RDNA 4
+card; another value is ignored, and the "mining on GPU" line says so. Without the free VRAM its k
+needs, a card tries k 4096 (from 8192), then stays at k 2048 (k 4096 takes
+about 1,969 MiB against 1,137), and the line says why. If a pool turns down 3 shares at a larger k and takes none, the
+miner mines k 2048 on every card for the rest of the run (`K_REJECT_LIMIT` in `pearlMiner.js`).
 
 `build-amd.sh check` fails a release build (no `PEARL_AMD_CFLAGS`) in which a gfx12 target lacks
-the wrap readout or any other target has it, or, on Windows, in which any target has it. The fold test folds the card's own k by default (k
-4096 on RDNA 4) and names it on its device line; a 7th argument picks another.
+the wrap readout or any other target has it, or, on Windows, in which any target has it. The fold test folds k
+4096 on RDNA 4 by default, not k 8192 where the card mines that (verify-hits.js and hashrate.js open
+the core with `cardK`, so they use the mined k), and names it on its device line; a 7th argument picks another.
 `-DPEARL_AMD_KWRAP=0` builds today's release, k 2048 everywhere, to race against;
 `-DPEARL_FOLD_K=4096` puts the wrap readout on every target. `PEARL_PROFILE_K=K` on
 `hashrate.js` and `verify-hits.js` pins a core to k K; `test/sweep.sh` does that for a variant
@@ -209,9 +247,12 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 198 | - | 36 KB | 6 |
+| gfx1200, gfx1201 | wmma12 | 201 | - | 24 KB | 7 |
 
-The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. On 2 November, with the
+The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
+set's (`PEARL_AMD_RDNA4_SET`, 4 November): 201 VGPRs and 24 KB of LDS, against 193 and 36 KB without it,
+and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
+runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
 gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
 also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).

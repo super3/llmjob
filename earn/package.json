@@ -1,6 +1,6 @@
 {
   "name": "llmjob-earn",
-  "version": "0.6.11",
+  "version": "0.6.12",
   "description": "LLMJob Earn",
   "main": "src/main/main.js",
   "bin": {

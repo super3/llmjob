@@ -66,6 +66,9 @@ export NODE_ADDON_API=$NM/node_modules/node-addon-api
 POOL=${POOL:-prl-us.kryptex.network:7048}
 WORKER=${WORKER:-amdtest}
 WALLET=${WALLET:-prl1pw88rlj2y4cazjej2gzavhwxut2js9gws936eazajzrll5ehjul8sfp5u3t}
+# Exported because verify-pool.js reads them from its environment: unexported, a verifypool:mixed run logged in to
+# the pool as the stand-in address prl1pstandin unless the task gave +WALLET=... itself.
+export POOL WORKER WALLET
 TASKS=${TASKS:-card,hip}
 
 say() { echo "[amdtest] $(date -u +%T) $*"; }

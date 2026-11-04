@@ -19,7 +19,9 @@ their sections and leave the Vast rows alone. On 29–30 October the RTX 40- and
 50-series were run the same way (under "On Salad, 29–30 October"), and the AMD
 rows were rerun with the v0.6.9 release against SRBMiner 3.8.0. On 30 October
 the RTX 20- and 50-series were run once more against SRBMiner 3.8.2 (under "On
-Salad, 30 October, against SRBMiner 3.8.2").
+Salad, 30 October, against SRBMiner 3.8.2"). On 4 November an RX 9070 XT's AMD fold was profiled and two
+RDNA 4 changes, not yet released, were raced; later that day six more, combined, added 4.3–5.4% on top on an RX
+9070 XT and an RX 9060 XT, also not yet released (both under "AMD Radeon").
 
 ## Summary
 
@@ -79,7 +81,11 @@ because no L40 was for rent other than the New York one.
   two PCs a card: 109–110% on the RX 9060 XT, 100–103% on the RX 9070 XT, 99–103% on the RX 7900 XT, 97–101% on
   the RX 7800 XT and 92–99% on the RX 7900 XTX. On 23 October, against SRBMiner 3.7.1, ours led on every card
   (102–148%). SRBMiner 3.8.0 is much faster on RDNA 4 and about the same on RDNA 3 (the section's notes).
-  PeakMiner doesn't mine Pearl on AMD (0).
+  PeakMiner doesn't mine Pearl on AMD (0). On 4 November two RDNA 4 changes, not yet released, cut the VALU
+  around the fold's WMMAs: `hashrate.js` +8.5% on an RX 9070 XT and +8.4% on an RX 9060 XT ("Our own builds
+  on Salad, 4 November"). Six more on top (a cheaper readout, a compile-time chunk, 32-byte LDS rows) read
+  +4.3–4.6% on the 9070 XT and +4.6–5.4% on the 9060 XT, each against the two-cut fold on one PC, three PCs a
+  card ("six more cuts on RDNA 4").
 - Tesla T4: 91%. As on the 20-series, the clock is close (15 MHz below the
   competitors') and we do 7% less work per clock.
 
@@ -1311,6 +1317,28 @@ moved.
 - **RTX A5000, Italy:** the host sets 200 W, 87% of the card's 230 W.
 - **RTX A4000s:** both cards ran at 89–93 C.
 
+### CMP 90HX on Clore, 4 November (our miner only)
+
+A five-minute check that the mining-only CMP 90HX (GA102, sm_86, 10 GB) runs
+our miner, and how fast. It isn't a full row: only our miner ran, on Clore,
+not on a Vast host. Release v0.6.11, which picked its CUDA 12.8 core, on
+Clore server 87329 in Sweden (6 cards, driver 595.91.07, PCIe gen 2), three
+cards mining on HeroMiners (fi), 15:51–15:56 UTC.
+
+| Card | Power limit | TH/s after 5 min | SM clock | Shares |
+|---|---|---|---|---|
+| CMP 90HX (GPU 0) | 200 W of 250 W | 72.7 | 1485 MHz | 2 accepted |
+| CMP 90HX (GPU 1) | 200 W of 250 W | 72.7 | 1500 MHz | 0 |
+| CMP 90HX (GPU 2) | 200 W of 250 W | 71.0 | 1380 MHz | 2 accepted |
+
+- **Power-bound:** every card drew 199–200 W at 100% use, with the power cap
+  as the only throttle reason. The host sets 200 W; a 250 W limit would give
+  more, by an amount we didn't measure.
+- **Rent:** at PRL $1.45 and difficulty 52.2M, 72 TH/s earns about
+  $0.056 an hour. The cheapest CMP 90HX on Clore was $0.073 a card-hour
+  on-demand (−23%) and $0.063 on spot (−11%), both on Russian hosts, so the
+  card doesn't pay to rent there.
+
 ## B200 (sm_100)
 
 Run on 2026-10-10, 16:47–17:06 UTC, on the row's own machine. The CLI loads
@@ -1939,6 +1967,270 @@ that its fold reaches the 96% of that peak this RX 7800 XT reached of its own (1
   gfx103x taken out of the untested cards, whose every hit the miner checks in JS before sending it.
 - **Cost:** one high-priority RX 7800 XT box for about 1.9 hours, about $0.25. Three fetches from GitHub
   failed on this PC with a TLS error and were rerun.
+
+### Our own builds on Salad, 4 November: where an RX 9070 XT's fold time goes, and two cuts
+
+Asked whether the RX 9070 XT had room to grow: ours and SRBMiner 3.8.0 both read 111–117 TH/s on 30 October.
+Run from 05:05 to 06:30 UTC on 4 November on `amdtest-rdna4-50` and `-51` (RX 9070 XT, four PCs) and
+`amdtest-rdna4-52` (RX 9060 XT), on branch `perf/rdna4-headroom` from `ba169e5` to `41c09b5`. Two new tools:
+`test/pearl_amd_peak.cpp`, which times the WMMA instruction with little or nothing else in the loop and reads each
+wave's clock (SHADER_CYCLES over REALTIME), and bit 32 of `PEARL_AMD_ABLATE`, which takes the slab loop's staging
+out (its global loads and LDS stores). Fold alone: `sweep.sh`, miner operands, 4 rounds of 600 launches at
+131072 x 4096 (k 4096), the builds taking turns, scored from round 2. `hashrate.js` 60 s after 20 s, the builds taking
+turns. Not rows: they are other PCs than the rows', and no competitor ran (but the duel in the notes).
+
+**The instruction itself** (`pearl_amd_peak`, PC `45ced7d9`, copy 566 GB/s). Register-fed `v_wmma_i32_16x16x16_iu8`
+in the fold's shape (a 4 x 4 tile of 16 x 16 a wave, 8 waves a block, 6 waves a SIMD), the fragments in two sets that
+take turns:
+
+| Kernel | Data | TMAC/s | Clock (MHz) | MAC a CU a clock |
+|---|---|---|---|---|
+| registers | miner | 168.43 | 2609 | 1,009 |
+| registers | zero | 205.28 | 3178 | 1,009 |
+| registers | random int8 | 162.22 | 2508 | 1,011 |
+| registers, 2 / 4 / 8 waves a SIMD | miner | 168.08 / 167.34 / 166.85 | 2587 / 2588 / 2586 | 1,015 / 1,010 / 1,008 |
+| 1 accumulator a wave / 2 / 4 / 8 | miner | 165.27 / 151.01 / 156.41 / 165.06 | 2525–2632 | 1,023 / 897 / 929 / 999 |
+| the fold's LDS fragment reads, no barrier | miner | 147.25 | 2586 | 890 |
+| the same with the slab barrier | miner | 135.55 | 2684 | 789 |
+| registers with the slab barrier | miner | 166.03 | 2575 | 1,008 |
+
+- **The instruction does 1,009 MAC a CU a clock, 98.6% of AMD's 1,024,** at 2 to 8 waves a SIMD. The clock follows the
+  bits the matrix units see: 3.18 GHz on zeros, 2.61 on the miner's operands, 2.51 on random bytes, at the same MAC a
+  clock. The card is at its power limit, and on the miner's operands this PC's ceiling is about 168 TMAC/s.
+- Run again after the fold timings below, warm: 1,012 MAC a clock at 2585 MHz, the same.
+
+**VALU beside the WMMAs** (PC `46850755`). The same kernel with VALU added, a slab being 32 WMMAs a wave:
+
+| VALU a slab | 0 | 4 | 16 | 64 | 256 |
+|---|---|---|---|---|---|
+| each waits on the one before (MAC a CU a clock) | 1,009 | 959 | 811 | 469 | 172 |
+| none waits on another | 1,009 | 977 | 938 | 797 | |
+
+- **A VALU instruction doesn't overlap the WMMAs.** One that waits on nothing costs 1.1–1.2 cycles of WMMA time, a
+  chained one about 4.5. The fold's own readout, every 4 slabs on registers, cost 11.8% (890 MAC a clock), and 8.5%
+  without its cross-lane steps (923). Its XORs of 128 accumulators a chunk can't be fewer than 62 `v_xor3_b32`, about
+  7% of the WMMA time.
+
+**The release fold's ablations** (PC `45ced7d9`, v0.6.11's code for gfx1201, fold alone):
+
+| Build | TMAC/s | Against the release |
+|---|---|---|
+| release | 117.36 | |
+| no slab barrier (bit 2) | 123.17 | +4.95% |
+| no LDS fragment reads (bit 8, one kept a slab) | 127.57 | +8.70% |
+| every block on tile 0, in L2 (bit 16) | 113.45 | −3.33% |
+| no staging (bit 32, new) | 130.68 | +11.35% |
+| no staging or barrier (34) | 134.00 | +14.18% |
+| no staging or fragment reads (40) | 136.19 | +16.04% |
+| no staging, fragment reads or barrier (42) | 137.64 | +17.28% |
+
+- **The release runs at 70% of the instruction's own rate.** Its clock stamps (a stamp build, 7.4% slower) read 2581
+  MHz, so 117.36 TMAC/s is 710 MAC a CU a clock against 1,009. `hashrate.js` read 111.40 and 111.27 TH/s.
+- **Where it goes, from the code** (the release fold's device assembly, ROCm 7.2.0): a slab is 32 WMMAs a wave, 8
+  `ds_load_2addr_b64` for its fragments, 3 global loads and 3 LDS stores of the slab two ahead, the barrier, and about
+  9 VALU, most of them addresses: a 64-bit add of the slab to each global load's address, and a new LDS address for
+  fragments the 8-bit offsets of `ds_load_2addr_b64` don't reach. Every 4 slabs the readout adds about 105 VALU: 64
+  XORs, 18 cross-lane steps and about 20 selects.
+
+**Two cuts, both now RDNA 4's default.**
+
+- `PEARL_AMD_KPAIR`: a slab's two k-steps don't have to take its bytes in order, so long as A' and B' take them alike.
+  Lanes 0–15 now take bytes 0–15 of each 32 and lanes 16–31 bytes 16–31, 8 for each k-step, so each fragment pair is
+  one 16-byte `ds_load_b128` at a 16-bit offset: no address VALU. Bit-exact in every fold check.
+- `PEARL_AMD_BUFLD`: the slab loads are buffer loads, a resource for each tile in SGPRs, the lane's place a VGPR that
+  never changes and the slab's start an SGPR offset: no VALU a load.
+
+| Card | PC | Release | KPAIR | KPAIR + BUFLD |
+|---|---|---|---|---|
+| RX 9070 XT, fold alone (TMAC/s) | `9a3e3210` | 117.83 | 125.11 (+6.18%) | 127.85 (+8.50%) |
+| RX 9070 XT, `hashrate.js` (TH/s) | `9a3e3210` | 115.93, 115.79, 115.71 | 122.72, 122.60, 122.62 (+5.9%) | 125.58, 125.63, 125.61 (+8.5%) |
+| RX 9070 XT, fold alone | `635a1ec0` | 103.91 | 110.63 (+6.47%) | not run |
+| RX 9070 XT, `hashrate.js` | `635a1ec0` | 107.17, 107.34 | 113.64, 113.57 (+5.9%) | not run |
+| RX 9060 XT, fold alone, by round | `50d8b8bf` | 59.76, 59.73, 57.43 | +5.38, +3.71, +4.66% | not run |
+| RX 9060 XT, `hashrate.js` | `50d8b8bf` | 53.35, 51.62, 51.29 | 54.74, 54.03, 53.77 (+2.6, +4.7, +4.8%) | not run |
+| RX 9060 XT, fold alone | `a4e51ee5` | 63.29 | 67.22 (+6.20%) | 68.69 (+8.53%) |
+| RX 9060 XT, `hashrate.js` | `a4e51ee5` | 62.41, 62.30, 62.30 | 66.20, 66.16, 66.18 (+6.2%) | 67.60, 67.58, 67.59 (+8.4%) |
+
+- **Hits:** `verify-hits` re-verified 400 of 400 hits on the 9060 XT with KPAIR (923 hits in 115 salts, 300 s), and
+  400 of 400 on the 9070 XT with both (`9a3e3210`, 2,171 hits in 267 salts, 300 s) and on the
+  9060 XT with both (`a4e51ee5`, 1,163 hits in 145 salts), none failed.
+- **What's left, on top of KPAIR** (`9a3e3210`): no barrier +3.6%, no staging +9.7%. The fold with both cuts runs at 77%
+  of the instruction's rate on that PC (127.85 against 166.14 register-fed at 2582 MHz).
+- RDNA 3 is unchanged: its fragments are 16 bytes already, and BUFLD is off there (not timed).
+
+**Tried and dropped:**
+
+- `PEARL_AMD_SADDR` (`635a1ec0`): the slab's start through `readfirstlane` as a scalar base for global loads: −4.0 to
+  −4.6% in the scored rounds. The `readfirstlane`s are VALU too. With KPAIR, +2.5 to +5.4% (KPAIR alone +5.9 to +6.8%).
+- A 64-byte slab (`-DPEARL_AMD_SLAB=64u`, half the barriers): −11.4% fold alone, −10.9% `hashrate.js`. Its 61,440 bytes of
+  LDS leave 2 blocks a WGP, 4 waves a SIMD. With KPAIR and SADDR, −2.2%.
+- `PEARL_AMD_RDBR`, the wrap readout keeping its words with branches instead of selects (36 fewer `v_cndmask` in the
+  fold): the compiler put 48 bytes of it in scratch memory, with and without a memory clobber in the branches, so it
+  wasn't timed.
+- **A fold with no LDS** (`pearl_amd_peak`'s `direct`, `9a3e3210`): the fold's grid and operands, each wave loading its
+  own fragments from memory one slab ahead, so no staging, fragment reads or barrier. 136.72 TMAC/s with no readout
+  (908 MAC a clock, at 2352 MHz) and 127.76 with it (821, at 2431 MHz); with every block on tile 0, in L2, 130.48 (821, at
+  2482 MHz). The extra memory traffic costs clock, and with the readout it only matches KPAIR + BUFLD (127.85) before
+  its transcript and hash, so it isn't worth building.
+- **Duel** (`9a3e3210`, both cuts, `amdtest.sh`'s `duel`, ours first, Kryptex): our CLI 125.75 TH/s (mean after the
+  first minute, 1 share accepted) against SRBMiner 3.8.2's 117.89 (5 accepted, 0 rejected): 106.7%. Not a row: the
+  rows' PCs are `a68b3382` and `21001ac3`, and the rows stay on the v0.6.9 release.
+- **Cost:** two high-priority RX 9070 XT boxes for about 61 and 41 minutes and one RX 9060 XT box for about 45,
+  about $0.43. Four restarts went silent and moved to a new PC (`realloc`).
+
+### Our own builds on Salad, 4 November: six more cuts on RDNA 4
+
+With the two cuts above the fold ran at 77% of the instruction's rate. Six ideas for the rest were raced one to a
+box against PR #284's default (KPAIR + BUFLD), from 07:00 to 10:31 UTC on `amdtest-rdna4-53` to `-58` (RX 9070 XT).
+The winners were combined and raced against that default on `amdtest-rdna4-59` (RX 9070 XT) and `-60` (RX 9060
+XT), three runs a card from 10:43 to 13:46 UTC. The final set was then checked on fresh PCs on `amdtest-rdna4-61` and
+`-62`, 13:54 to 14:23 UTC, the builds in ABBA order. Every comparison is inside one run on one PC, the builds taking
+turns: fold alone as above (scored from round 2) and `hashrate.js` 60 s after 20 s. The boxes built `57b52bd` with the
+cuts' diff applied. The code is now on `perf/rdna4-headroom`, with the set on by default for RDNA 4
+(`PEARL_AMD_RDNA4_SET`).
+
+**The set**, six switches in `pearl_amd_fold.h`:
+
+- `PEARL_AMD_RDSEL=1`: the wrap readout picks keepLo or keepHi with a scalar branch on `c & 8`, where the compiler
+  had made three `v_cndmask` a word.
+- `PEARL_AMD_RDPERM=2`: `v_permlanex16`'s old value comes from an empty asm, so no `v_dual_mov` copies x first.
+- `PEARL_AMD_CRANK=1`: rank 128 at compile time, so a chunk is a constant 4 slabs and the slab loop's runtime
+  `% perChunk` goes. The slab pair's loop went from 53 SALU, 20 `s_wait_alu` and 17 VALU to about 18, 4 and 8. The
+  host now refuses any other rank on such a card (`PEARL_AMD_CAP_RANK`).
+- `PEARL_AMD_SCHEDB=1`: a `sched_barrier` before each slab's stores. CRANK needs it: alone, CRANK made the slab pair
+  one basic block, the compiler moved the next slab's stores and barrier above the WMMAs, and it lost 1.8%.
+- `PEARL_AMD_LDS32=1` with `PEARL_AMD_LDS32_PIN=1`: 32-byte LDS rows with their 16-byte halves swapped on row bits 2
+  and 3, 24,576 bytes a block instead of 36,864, and each thread's store offset and each lane's read offset kept in
+  a register by an empty asm.
+
+Check row on gfx1201 and gfx1200: 201 VGPRs, scratch 0, spills 0, LDS 24,576, 7 waves by registers (6 in practice,
+since a block is 8 waves, 2 a SIMD). The default before was 193 VGPRs, LDS 36,864, 6 waves. Every fold check was
+bit-exact (1024 x 1024, k 4096).
+
+| Card, measure | PC | Run | PR #284's default | The set | Gain |
+|---|---|---|---|---|---|
+| RX 9070 XT, `hashrate.js` (TH/s) | `5353d048` | combine 3 | 110.05, 109.71, 109.57 | 115.06, 114.76, 114.75 | +4.63% (+4.55, +4.60, +4.73) |
+| RX 9070 XT, fold alone (TMAC/s) | `5353d048` | combine 3 | 112.22 | 117.73 | +4.84 to +4.96% |
+| RX 9070 XT, `hashrate.js` | `d481bdd9` | combine 2 | 115.30, 115.26, 115.25, 115.18 | 120.37, 120.33, 120.33, 120.33 | +4.42% (+4.40 to +4.47) |
+| RX 9070 XT, fold alone | `d481bdd9` | combine 2 | 117.42 | 123.21 | +4.76 to +5.05% |
+| RX 9070 XT, `hashrate.js`, ABBA | `3d6cb276` | check | 112.43 (6 runs, sd 0.15) | 117.26 (6 runs, sd 0.06) | +4.29% (+4.21, +4.35, +4.33) |
+| RX 9070 XT, fold alone, ABBA | `3d6cb276` | check | 116.81 | 121.89 | +4.35% (+4.32 to +4.38) |
+| RX 9060 XT, `hashrate.js` | `d706e2f4` | combine 3 | 50.67, 50.93, 50.95 | 53.71, 53.24, 53.60 | +5.24% (+6.00, +4.54, +5.20) |
+| RX 9060 XT, fold alone | `d706e2f4` | combine 3 | 51.12 | 53.10 | +3.83 to +3.96% |
+| RX 9060 XT, `hashrate.js` | `d706e2f4` | combine 2 | 50.79, 50.72, 51.33, 50.68 | 53.73, 53.67, 53.47, 53.65 | +5.40% (+4.17 to +5.86) |
+| RX 9060 XT, fold alone | `d706e2f4` | combine 2 | 51.25 | 53.51 | +4.27 to +4.59% |
+| RX 9060 XT, `hashrate.js`, ABBA | `b9b8ec1e` | check | 68.63 (6 runs, sd 0.29) | 71.80 (6 runs, sd 0.39) | +4.63% (+5.10, +3.81, +4.97) |
+| RX 9060 XT, fold alone, ABBA | `b9b8ec1e` | check | 68.96 | 73.18 | +6.11% (+5.53 to +6.76) |
+
+- **The set was ahead in every scored round on every PC.** In the check run the slowest run of the set beat the
+  fastest run of the default on both cards. Combine run 1 timed the set with STOFF too (a level part, below):
+  127.21 to 132.82 TH/s on a 9070 XT (`3846a8dd`, +4.41%) and 67.61 to 71.08 on a 9060 XT (`f9b8be8b`, +5.13%).
+- `d706e2f4` is a slow 9060 XT: about 51 TH/s on the default, where `f9b8be8b` and `b9b8ec1e` read 67.6 and 68.6.
+- **Hits:** `verify-hits` passed 400 of 400 with none failed in all ten combine runs, at k 4096 and k 8192 (the final
+  code: 1,958 hits in 244 salts on the 9070 XT, 892 in 111 on the 9060 XT), and in the check run (2,012 in 250 salts
+  and 1,240 in 154, about 8 a salt).
+- **The parts don't add up.** Alone they read +1.2 to +3.4% (below), about 8.9% in sum; together +4.3 to +5.4%. The
+  cards are at their power limit. Clock stamps (combine run 2): on the 9070 XT a slab fell from 2,083 cycles to 1,888
+  (−9.4%) but the clock from 2,316 to 2,266 MHz (−2.2%); on the 9060 XT from 2,104 to 1,897 cycles and from 2,343 to
+  2,140 MHz (−8.7%). The barrier is 33% of the slab loop with the set (9070 XT).
+
+**What each part adds on top of the others** (`hashrate.js`, TH/s, against the set with STOFF):
+
+| Build | RX 9070 XT `d481bdd9` | RX 9060 XT `d706e2f4` |
+|---|---|---|
+| the set with STOFF | 120.36 | 53.58 |
+| without STOFF (the final set) | 120.34 (−0.02%) | 53.63 (+0.09%) |
+| without RDSEL and RDPERM | 119.55 (−0.67%) | 53.18 (−0.75%) |
+| without CRANK, SCHEDB and STOFF | 118.09 (−1.89%) | 52.64 (−1.75%) |
+| PIN at 48-byte rows, no LDS32 | 119.09 (−1.06%) | 53.26 (−0.60%) |
+| without LDS32 and PIN | 119.32 (−0.86%) | 53.33 (−0.47%) |
+
+- Combine run 3, against the final set: without PIN 114.29 against 114.86 on the 9070 XT (−0.50%) and 52.80 against
+  53.52 on the 9060 XT (−1.35%). The rows and the pin pay only together.
+- Combine run 1 (`3846a8dd`, `f9b8be8b`), against the set with STOFF (132.82 and 71.08): without RDSEL and RDPERM
+  130.06 (−2.08%); without LDS32 and PIN 129.36 (−2.60%) and 69.30 (−2.50%); with the split slab barrier too 131.31
+  (−1.14%) and 70.07 (−1.42%); the split barrier in place of CRANK and SCHEDB 130.55 (−1.71%); forced to 8 waves a SIMD
+  (189 VGPRs, no spills) 129.99 (−2.13%) and 69.20 (−2.64%).
+
+**Each idea alone** (one box each, RX 9070 XT, against PR #284's default):
+
+| Idea | PC | `hashrate.js` | Fold alone | Hits |
+|---|---|---|---|---|
+| Readout: RDSEL=1, RDPERM=2 | `3fd19936` (slow, 2,385 MHz) | 115.75 to 117.08 (+1.15%; 5 paired rounds +0.97 to +1.26) | +1.16 to +1.25% | 400/400, twice |
+| Staging: CRANK, SCHEDB, STOFF | `5353d048` | 109.81 to 113.05 (+2.95%; without STOFF +2.74%) | +3.13% | 400/400 |
+| the same | `bab62a32` | 119.39 to 122.90 (+2.94%) | +3.08 to +3.41% | |
+| LDS32 + PIN (at 8 waves alone: 191 VGPRs) | `2e2d768f` | 124.10 to 128.18 (+3.29%) | +2.33 to +2.77% | 400/400 |
+| the same | `45ced7d9` | 120.33 to 124.38 (+3.36%) | +3.80 to +4.08% | |
+| Split slab barrier, loads 2 slabs ahead | `a68b3382` | 124.99 to 126.74 (+1.40%) | +1.49 to +1.76% | 400/400 |
+| the same | `5ecd7586` | 122.79 to 124.61 (+1.48%) | +1.39 to +1.49% | |
+| k 8192 (`PEARL_AMD_K=8192`) | `5ecd7586` | 122.60 to 123.67 (+0.88%, 4 of 4 rounds) | +0.50 to +0.72% | 400/400, Kryptex took both k |
+| the same | `33042316` | +0.76% (4 of 4 rounds) | +0.24 to +0.35% | |
+| Operand fill 63 (the default is 48) | `45ced7d9` | 120.27 to 120.32 (+0.04%) | +0.13% | 400/400 |
+
+**Tried and lost:**
+
+- **Operand fill** (`45ced7d9`): fills 48 to 63 are level (+0.04 to +0.13% over 48, inside the ±0.2% spread). Lower
+  fills and −63 lose, fold alone: 40 −0.36%, 32 −0.56%, 24 −1.15%, −63 −0.39%. The clock falls with them (2,527 MHz at
+  48, 2,467 at 24). From 48 to 63 the fold holds about 2.53 GHz, so what's left of the drop from 3.18 GHz on zeros
+  comes from the protocol's noise bits, which the miner can't choose. Register-fed: 167.15 TMAC/s at 2,588 MHz on 48,
+  167.54 at 2,606 on 63.
+- **Readout** (`3fd19936`): the keeping lane by exec mask, +0.51 and +0.73% fold alone, below RDSEL alone (+0.78%).
+  RDPERM=1 (fetch-inactive and bound_ctrl) +0.04%, against =2's +0.30%. Each lane keeping its part of all 16 words
+  and reducing once after the loop: in registers 256 VGPRs and 16 spills; with a 16-way switch −0.75%; with an
+  indexed vector +0.88%, below RDSEL + RDPERM; through scratch −8.2% and −6.6%. The bound for any readout cut
+  (`PEARL_AMD_ABLATE` bit 64, no cross-lane step, select or branch) is +3.7%: RDSEL + RDPERM take about 1.2% of
+  it alone and 0.7% in the set.
+- **Staging** (`d481bdd9`, `bab62a32`, `5353d048`): CRANK alone −1.8% in `hashrate.js` (the reorder above). STOFF,
+  both tiles' LDS in one array with immediate store offsets, alone +0.01%: the default already used immediate
+  offsets. CMASK, rank kept at run time with `%` as a mask, +2.08%, against CRANK + SCHEDB's +2.74%. LPIN, the loads
+  pinned at the step's top, +2.68%: nothing on top. A four-slab loop (UNROLL4) took 256 VGPRs and 5 waves, or 20
+  spills, and wasn't timed. LDS DMA doesn't exist on gfx1201: the assembler refuses `global_load_lds_*` and
+  `buffer_load ... lds`. Without staging (ablation) a slab is 1,885 cycles and the clock 2,383 MHz, against 1,922 and
+  2,203 with CRANK + SCHEDB: what's left there is memory power, not code.
+- **Eight waves a SIMD** (`3846a8dd`, `2e2d768f`, `45ced7d9`): forced by attribute on unpinned code, +0.64% against
+  the 32-byte rows' +0.80% at 6 waves. Pinned (191 VGPRs) 8 waves gave about +1% of LDS32 + PIN's +3.3%, but the set
+  takes 201 VGPRs, and forcing 8 waves on it lost 2.1–2.6%. The half swap matters: none −3.8%, row bit 3 alone −3.5%.
+- **Split slab barrier** (`s_barrier_signal` after a slab's LDS work, the wait before the next slab's reads): +1.4%
+  alone, −1.1% and −1.4% on top of the set, since CRANK + SCHEDB goes after the same stall. Loads 3 slabs ahead were
+  worse than 2 on every PC (+0.46% pinned). Its stamps: 5.6% fewer cycles a slab, but 1.9% less clock.
+- **Outside the fold** (`5ecd7586`, `bab62a32`, `33042316`): at k 4096 the hash kernel is 0.23–0.24 ms of an 18 ms
+  batch (1.3%) and the gaps 0.012–0.085 ms. Its reads alone take 0.23 ms and its arithmetic alone 0.18. Batch width
+  128 −0.10%, 512 −0.24%, 64 about −2%, in 4 of 4 rounds each; hashing the newest transcripts first +0.03%; no hit
+  count reset a batch, level; the hash on a second stream −0.17%. None worth keeping.
+- **k 8192 as the default:** on top of the set +0.45% and +0.82% on the 9070 XT, but −5.8% and −5.9% on the 9060 XT
+  (50.47 against 53.58, 50.38 against 53.52), whose fold alone is about 7% slower there. Pool side, Kryptex took
+  every share at k 8192 and k 2048 on one connection. So k 8192 became the default on the big gfx1201 cards only
+  (below).
+
+**k 8192 by default on the big gfx1201 cards (4 November, release build of v0.6.12 plus that change).** The host
+now picks k 8192 on gfx1201 with at least 56 CUs (RX 9070 XT, R9700, RX 9070) and k 4096 on the rest of RDNA 4.
+
+| Card (PC) | Default k | `hashrate.js` | Pool run | `verify-hits` |
+|---|---|---|---|---|
+| RX 9070 XT (`0e2d082f`) | 8192 | 132.09 against 131.17 TH/s at `PEARL_AMD_K=4096` (+0.70%; +0.86, +0.82, +0.63, +0.50% by round) | HeroMiners (de), 15 min: 13 of 13 shares at k 8192 accepted | 400/400 at k 8192 |
+| RX 9060 XT (`f029e99c`) | 4096 | 69.49 to 69.52 TH/s | HeroMiners (us2), 10 min: 8 of 8 at k 4096; pinned to k 8192, 3 of 3 | 400/400 at k 4096 |
+
+- **First k 8192 on HeroMiners,** the app's default pool. It took every share, so no card fell back to k 2048.
+- **Left out:** the 48-CU RX 9070 GRE stays at k 4096, since nothing between 32 and 64 CUs has been timed; the RX
+  9070 (56 CUs) and R9700 (64) get k 8192 untimed, on the 9070 XT's result.
+- **HIP counts WGPs:** on a third 9070 XT (`e8f3bdaf`, ROCm 7.2) HIP's `multiProcessorCount` read 32 where rocminfo
+  says 64 CUs, so a gate at 56 kept the card at k 4096 (125.5 TH/s, verify-hits 400/400 at k 4096). The gate now takes
+  28–39 as WGPs or 56 and up as CUs.
+- **Cost:** about $0.18 (two boxes, 25 and 40 minutes).
+
+**As the default.** `PEARL_AMD_RDNA4_SET` defaults to `PEARL_AMD_WMMA12`, so the set is on in gfx12 device passes
+only. Run through a C preprocessor (pcpp), the new tree's default gfx1200 and gfx1201 passes are token for token the
+`-D` build timed above (fold code md5 7a22374c43c7 on the boxes). Every other target's passes and the Windows core's
+(`-DPEARL_AMD_RDNA4_SET=0`, set by `build-amd.sh`) are as before, but for a dead `if (0 && ...)` in the caps kernel.
+The Windows core leaves the set out because it was timed only with ROCm's clang 22, and CRANK alone showed how much
+the scheduler matters. No RDNA 3 box was rented: no RDNA 3 code changed (the check run also matched the device
+assembly's md5 on gfx1100, gfx1101, gfx1102, gfx1150, gfx1151, gfx1030 and gfx90a). CI's release check
+(`ubuntu-latest-hip`, the boxes' ROCm 7.2.0 image) shows the set's row on gfx1200 and gfx1201: 201 VGPRs, scratch
+0, spills 0, LDS 24,576, 7 waves. `windows-2022-hip` still shows 193 VGPRs and 36,864 bytes, and every RDNA 3 row
+is as before.
+
+**Cost:** the six try boxes about $2.31 ($0.13 to $0.68 each), the two combine boxes about $0.90 and the check boxes
+about $0.16: about $3.37 in all.
 
 Salad's prices per hour on 17 October (batch / low / medium / high): RX 9070 XT $0.070 / 0.110 / 0.155 /
 0.196; RX 9060 XT $0.049 / 0.075 / 0.100 / 0.126; RX 7900 XTX $0.066 / 0.100 / 0.134 / 0.168; RX 7900 XT

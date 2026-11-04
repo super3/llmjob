@@ -192,13 +192,14 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
   });
 
   // Step 2: the card's caps say whether it has the wrap readout (ctx->kwrap), and a card with it takes up to
-  // 32 chunks (k 4096, the k RDNA 4 mines), or the build's PEARL_FOLD_CHUNKS where that is more.
+  // 64 chunks (k 8192, the most PEARL_AMD_K asks for; RDNA 4 mines k 4096), or the build's PEARL_FOLD_CHUNKS
+  // where that is more.
   it('makes the host take more than 16 chunks only from a card with the wrap readout, a multiple of 16', () => {
     const max = grab(HOST, /const uint32_t maxChunks = (.*);\n/);
     const ok = grab(HOST, /const bool chunksOk = (.*);\n/);
     const most = grab(HOST, /#define PEARL_AMD_KWRAP_CHUNKS (.*)\n/);
     expect(max).toBe('ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS');
-    expect(most).toBe('(PEARL_FOLD_CHUNKS > 32u ? PEARL_FOLD_CHUNKS : 32u)');
+    expect(most).toBe('(PEARL_FOLD_CHUNKS > 64u ? PEARL_FOLD_CHUNKS : 64u)');
     expect(HOST).toMatch(/\|\| !chunksOk\n/);
     expect(HOST).toContain('ctx->kwrap ? " (a multiple of 16 past 16)" : ""');
     const accepts = (kwrap, foldChunks) => new Function('chunks',
@@ -209,10 +210,12 @@ describe('the AMD folds with PEARL_AMD_KWRAP', () => {
     const range = (f) => Array.from({ length: 80 }, (_, i) => i + 1).filter(f);
     // A card without the wrap readout: at most 16, as before, whatever the build's k.
     expect(range(accepts(false, 16))).toEqual(range((c) => c <= 16));
-    // With it: k 2048 and k 4096 at rank 128, and nothing in between.
-    expect(range(accepts(true, 16))).toEqual([...range((c) => c <= 16), 32]);
-    expect(range(accepts(true, 32))).toEqual([...range((c) => c <= 16), 32]);
+    // With it: up to 16, then whole multiples of 16 up to 64 (k 8192 at rank 128), whatever the build's k
+    // below that. (The tiled operands also need k a power of two, checked apart.)
+    expect(range(accepts(true, 16))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
+    expect(range(accepts(true, 32))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
     expect(range(accepts(true, 64))).toEqual([...range((c) => c <= 16), 32, 48, 64]);
+    expect(range(accepts(true, 80)).slice(-1)).toEqual([80]);
   });
 });
 
