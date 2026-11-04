@@ -203,16 +203,21 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
   // k 8192 read +0.5 to +0.9% on an RX 9070 XT (gfx1201, 64 CUs) and about 6% slower on an RX
   // 9060 XT (gfx1200, 32 CUs), so it is the default on gfx1201 with 56+ CUs only: the RX 9070 XT,
   // R9700 and RX 9070, not the 48-CU RX 9070 GRE. gcnArchName may carry ":feature" flags.
-  it('defaults to k 8192 on gfx1201 with 56+ CUs only, matched as a whole architecture name', () => {
-    const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int cus) {', '\n}\n');
-    expect(fn).toContain(
-      'return !strncmp(arch, "gfx1201", 7) && (arch[7] == \'\\0\' || arch[7] == \':\') && cus >= 56;');
-    // The same rule in JS, on the cards it has to tell apart.
-    const k8192 = (arch, cus) => arch.startsWith('gfx1201') && (arch.length === 7 || arch[7] === ':') && cus >= 56;
+  // HIP's multiProcessorCount counts WGPs on RDNA (an RX 9070 XT read 32 on a box, rocminfo 64
+  // CUs), so the rule takes either count: 28-39 WGPs or 56+ CUs.
+  it('defaults to k 8192 on gfx1201 with 56+ CUs only, counted as CUs or as WGPs', () => {
+    const fn = slice(HOST, 'static bool k8192_by_default(const char *arch, int units) {', '\n}\n');
+    expect(fn).toContain('const bool big = (units >= 28 && units < 40) || units >= 56;');
+    expect(fn).toContain('return !strncmp(arch, "gfx1201", 7) && (arch[7] == \'\\0\' || arch[7] == \':\') && big;');
+    // The same rule in JS, on the cards it has to tell apart, in both counts.
+    const k8192 = (arch, u) => arch.startsWith('gfx1201') && (arch.length === 7 || arch[7] === ':')
+      && ((u >= 28 && u < 40) || u >= 56);
     expect([
-      ['gfx1201', 64], ['gfx1201:xnack-', 64], ['gfx1201', 56], // RX 9070 XT / R9700, RX 9070
-      ['gfx1201', 48], ['gfx1200', 32], ['gfx12010', 64], ['gfx1100', 96], // RX 9070 GRE, RX 9060 XT, ...
-    ].map(([a, c]) => k8192(a, c))).toEqual([true, true, true, false, false, false, false]);
+      ['gfx1201', 32], ['gfx1201', 64], ['gfx1201:xnack-', 32], // RX 9070 XT / R9700: WGPs, CUs
+      ['gfx1201', 28], ['gfx1201', 56], // RX 9070: WGPs, CUs
+      ['gfx1201', 24], ['gfx1201', 48], // RX 9070 GRE: WGPs, CUs
+      ['gfx1200', 16], ['gfx1200', 32], ['gfx12010', 32], ['gfx1100', 48], // RX 9060 XT, and other names
+    ].map(([a, u]) => k8192(a, u))).toEqual([true, true, true, true, true, false, false, false, false, false, false]);
   });
 
   it('names the k and the readout in the fold\'s description', () => {

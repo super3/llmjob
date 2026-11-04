@@ -835,9 +835,14 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // pearl_amd_fold.h; benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
 // 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs) stays at
 // k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
-// carry feature flags after a colon ("gfx1201:xnack-"); `cus` is multiProcessorCount.
-static bool k8192_by_default(const char *arch, int cus) {
-  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && cus >= 56;
+// carry feature flags after a colon ("gfx1201:xnack-"). `units` is multiProcessorCount, which
+// on RDNA counts WGPs, two CUs each: an RX 9070 XT reads 32 under ROCm 7.2, where rocminfo says
+// 64 CUs (a box on 4 November; a gate at 56 kept it at k 4096). Either count is taken, so a
+// runtime that reports CUs picks the same cards: 28-39 is 56-78 CUs counted as WGPs, 56 and up
+// is CUs. The GRE (24 WGPs, 48 CUs) is in neither.
+static bool k8192_by_default(const char *arch, int units) {
+  const bool big = (units >= 28 && units < 40) || units >= 56;
+  return !strncmp(arch, "gfx1201", 7) && (arch[7] == '\0' || arch[7] == ':') && big;
 }
 
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK): where the
