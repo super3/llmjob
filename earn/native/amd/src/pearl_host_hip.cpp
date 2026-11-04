@@ -130,6 +130,7 @@ struct Ctx {
   bool readoutDrop = false; // a PEARL_AMD_READOUT_DROP build: timing only (pearl_host_submit)
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
+  bool rank128 = false;     // and its matrix fold takes rank PEARL_FOLD_RANK only (PEARL_AMD_CAP_RANK)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
 #if PEARL_AMD_STAMP
@@ -726,6 +727,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->readoutDrop = (caps[0] & PEARL_AMD_CAP_DROP) != 0;
   ctx->timing = (caps[0] & PEARL_AMD_CAP_TIMING) != 0;
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
+  ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1441,13 +1443,13 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
   if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
-      || (PEARL_AMD_CRANK && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // compiled in (pearl_amd_fold.h)
+      || (ctx->rank128 && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // PEARL_AMD_CRANK (caps)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
-      snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold) "
+      snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold%s) "
                "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
-               (unsigned)PEARL_AMD_SLAB, (unsigned)maxChunks,
-               ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
+               (unsigned)PEARL_AMD_SLAB, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
+               (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
   const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;

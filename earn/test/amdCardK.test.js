@@ -218,7 +218,7 @@ describe('build-amd.sh', () => {
 
   it('builds the Windows library without the wrap readout, before any tuning flags', () => {
     expect(BUILD).toContain('if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi');
-    expect(BUILD).toContain('-D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS ${PEARL_AMD_CFLAGS:-}"');
+    expect(BUILD).toContain('-D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"');
   });
 
   // A stand-in for hip-clang: -E -dM gives the device pass's PEARL_AMD_KWRAP (1 on gfx12, unless FLIP names the

@@ -30,17 +30,19 @@ const S = 32, QR = 2, T = 256, UA = 128 * QR, U = (128 * QR + 256 * QR) / T;
 const A0 = 0, B0 = 2 * 128 * S;   // sA[0] and sB[0]; buffer 1 of each is one tile further
 
 describe('32-byte LDS rows (PEARL_AMD_LDS32)', () => {
-  it('is off by default, swaps on row bits 2 and 3, and is in the paired-read RDNA 4 fold only', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32\n#define PEARL_AMD_LDS32 0\n#endif');
+  it('is on by default in RDNA 4 code with its pin, swaps on row bits 2 and 3, and is in the paired-read RDNA 4 fold only', () => {
+    // On in the RDNA 4 set (PEARL_AMD_RDNA4_SET, on in gfx12 device passes only: amdRdna4Set.test.js), pinned.
+    expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32\n#define PEARL_AMD_LDS32 PEARL_AMD_RDNA4_SET\n#endif');
+    expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32_PIN\n#define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET\n#endif');
     expect(SWZ).toBe(12);
     expect(FOLD).toContain('constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;');
     expect(FOLD).toContain('constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;');
     expect(FOLD).toContain('#ifndef PEARL_AMD_LDS32_S48\n#define PEARL_AMD_LDS32_S48 0\n#endif');
-    // The default build's text is today's.
-    const release = preprocess(FOLD, { PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
-    expect(release).toContain('constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16;');
-    expect(release).toContain('const int off = (lane & 15) * S + 16 * (lane >> 4) + kk * P::kTK;');
-    expect(release).not.toContain('l32');
+    // Every other target's text, and RDNA 4's with the set off, is the 48-byte rows'.
+    const rows48 = preprocess(FOLD, { PEARL_AMD_LDS32: 0, PEARL_AMD_LDS32_PIN: 0 });
+    expect(rows48).toContain('constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16;');
+    expect(rows48).toContain('const int off = (lane & 15) * S + 16 * (lane >> 4) + kk * P::kTK;');
+    expect(rows48).not.toContain('l32');
   });
 
   it('reads every half of every row where the staging stored it, pinned or not', () => {

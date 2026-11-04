@@ -115,6 +115,7 @@
 #define PEARL_AMD_CAP_KWRAP 0x400u     // the wrap readout (PEARL_AMD_KWRAP): k past 2048, the k RDNA 4 mines
 #define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines
 #define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too
+#define PEARL_AMD_CAP_RANK 0x2000u     // PEARL_AMD_CRANK: the matrix fold takes rank PEARL_FOLD_RANK only
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -525,42 +526,57 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
-// Wrap-readout cuts for RDNA 4 (wmma12, PEARL_AMD_KWRAP), off by default, to time against the default:
+// PEARL_AMD_RDNA4_SET: the RDNA 4 cuts of 4 November, on by default in RDNA 4 (gfx12) code: PEARL_AMD_RDSEL=1,
+// PEARL_AMD_RDPERM=2, PEARL_AMD_CRANK=1, PEARL_AMD_SCHEDB=1, PEARL_AMD_LDS32=1 and PEARL_AMD_LDS32_PIN=1, each
+// described below. The wmma12 fold then takes 201 VGPRs and 24,576 bytes of LDS, not 193 and 36,864, and still runs
+// 6 waves a SIMD (7 by registers, but a block is 8 waves). hashrate.js against the fold without them, interleaved
+// on one PC: +4.4 to +4.6% on an RX 9070 XT and +5.1 to +5.4% on an RX 9060 XT (two PCs each), then +4.3% and
+// +4.6% on fresh PCs, with verify-hits 400 of 400 on both cards every time (benchmark.md, 4 November).
+// -DPEARL_AMD_RDNA4_SET=0 builds the fold without them, to race against; each switch can still be set on its own.
+// The Windows core builds with it off (build-amd.sh): it was timed with ROCm's clang 22 on Linux, one of its parts
+// alone (CRANK) lost 1.8% there to the scheduler, and the HIP SDK's clang 21 has never built it.
+// Alone the parts read +1.2 to +3.4%. They overlap, but each still pays on top of the others (9070 XT): RDSEL +
+// RDPERM +0.7%, CRANK + SCHEDB +1.9%, LDS32 + PIN +0.9% (without PIN 0.5% less; PIN alone at 48-byte rows lost a
+// little). Left out, because they stop paying in the set: STOFF, level once LDS32's pinned store offset is in; the
+// split slab barrier (s_barrier_signal after a slab's LDS work, the wait before the next slab's reads), 1.1 to 1.4%
+// behind on top of CRANK + SCHEDB; and PEARL_AMD_WAVES=8, which fits the set in 189 VGPRs for 8 waves but lost 2.1
+// to 2.6%. The cards are at their power limit: a slab falls from 2083 to 1888 cycles, but the clock from 2316 to
+// 2266 MHz on the 9070 XT and from 2343 to 2140 MHz on the 9060 XT (stamps).
+#ifndef PEARL_AMD_RDNA4_SET
+#define PEARL_AMD_RDNA4_SET PEARL_AMD_WMMA12
+#endif
+#if PEARL_AMD_RDNA4_SET != 0 && PEARL_AMD_RDNA4_SET != 1
+#error "PEARL_AMD_RDNA4_SET is 0 or 1"
+#endif
+// Wrap-readout cuts for RDNA 4 (wmma12, PEARL_AMD_KWRAP), in PEARL_AMD_RDNA4_SET:
 //   PEARL_AMD_RDSEL=1    c & 8 picks keepLo or keepHi with a scalar branch. The compiler had made it selects: each
 //                        keep word picked, XORed and written back, three v_cndmask a word. An asm comment in each
 //                        arm keeps the arms apart, and the arms change copies local to the readout (see there).
 //   PEARL_AMD_RDPERM=2   v_permlanex16's old value from an empty asm, so the compiler needn't copy x first (the
-//                        v_dual_mov before it). =1 sets fetch-inactive and bound_ctrl instead, so the compiler drops
-//                        the old value: the same code, timed 0.3 points lower on a quiet PC.
-// RX 9070 XT, PC 3fd19936, 4 November, fold alone at k 4096, rounds 2-6 against the default: RDSEL=1 +0.74 to
-// +0.80%, RDPERM=2 +0.21 to +0.40%, both +1.07 to +1.30% (three runs), and hashrate.js below. The bound for any
-// cut here is PEARL_AMD_ABLATE bit 64, the readout with no cross-lane step, select or branch: +3.64 to +3.78%.
+//                        v_dual_mov before it). The old value is a register nothing wrote, which is right only while
+//                        every lane is active at the readout, as it is: 256-thread blocks, no early return, and only
+//                        uniform branches around it. A lane off would get that register, not its x. =1 sets
+//                        fetch-inactive and bound_ctrl instead, so the compiler drops the old value: the same code,
+//                        timed 0.3 points lower on a quiet PC.
+// RX 9070 XT, PC 3fd19936, 4 November, fold alone at k 4096, rounds 2-6 against the default then: RDSEL=1 +0.74 to
+// +0.80%, RDPERM=2 +0.21 to +0.40%, both +1.07 to +1.30% (three runs). The bound for any cut here is
+// PEARL_AMD_ABLATE bit 64, the readout with no cross-lane step, select or branch: +3.64 to +3.78%.
 // Tried and dropped (benchmark.md): the keeping lane by exec mask (+0.35 to +0.83%, below RDSEL=1 alone); each
 // lane keeping its own part of all 16 words and combining the 8 lanes after the loop (rotl 13 and XOR commute):
 // in registers it needs 256 VGPRs and spills, or 230 with a lane-pair DPP step, but the 16-way switch or the
 // indexed vector that picks word c % 16 cost 30-50 v_mov a readout (-0.7 to +0.9%); in scratch, one store a chunk
 // at an SGPR offset and no VALU, it lost 6.6 to 8.2%.
 #ifndef PEARL_AMD_RDSEL
-#define PEARL_AMD_RDSEL 0
+#define PEARL_AMD_RDSEL PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_RDPERM
-#define PEARL_AMD_RDPERM 0
+#define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
-// The RDNA 4 cuts combined (4 November): -DPEARL_AMD_RDSEL=1 -DPEARL_AMD_RDPERM=2 -DPEARL_AMD_CRANK=1
-// -DPEARL_AMD_SCHEDB=1 -DPEARL_AMD_LDS32=1 -DPEARL_AMD_LDS32_PIN=1, all below: 201 VGPRs, 24,576 bytes of LDS, 6
-// waves. hashrate.js against PR #284's default, interleaved on one PC: +4.4 to +4.6% on an RX 9070 XT and +5.1 to
-// +5.4% on an RX 9060 XT (two PCs each), with verify-hits 400 of 400 on both. Alone the parts read +1.2 to +3.4%.
-// They overlap, but each still pays on top of the others (9070 XT): RDSEL + RDPERM +0.7%, CRANK + SCHEDB +1.9%,
-// LDS32 + PIN +0.9% (without PIN 0.5% less; PIN alone at 48-byte rows lost a little). Left out, because they stop
-// paying in the set: STOFF, level once LDS32's pinned store offset is in; the split slab barrier (s_barrier_signal
-// after a slab's LDS work, the wait before the next slab's reads), 1.1 to 1.4% behind on top of CRANK + SCHEDB; and
-// PEARL_AMD_WAVES=8, which fits the set in 189 VGPRs for 8 waves but lost 2.1 to 2.6%. The cards are at their power
-// limit: a slab falls from 2083 to 1888 cycles, but the clock from 2316 to 2266 MHz on the 9070 XT and from 2343 to
-// 2140 MHz on the 9060 XT (stamps).
-// Staging experiments (RDNA 4), off by default.
+// Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET; the rest are off by default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
 // constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
-// unrolled pair carried a readout it never ran. The host refuses any other rank.
+// unrolled pair carried a readout it never ran. A code object built with it says so (PEARL_AMD_CAP_RANK), and the
+// host then refuses any other rank for its matrix fold.
 // PEARL_AMD_UNROLL4=1 (needs CRANK): the slab loop four slabs at a time, so the readout runs unconditionally
 // after the fourth.
 // PEARL_AMD_STOFF=1: both tiles' LDS buffers in one array, and each staging store at one lane register plus an
@@ -572,7 +588,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // PEARL_AMD_LPIN=1: a sched_barrier(0) after the slab loads at the top of each step, so they aren't sunk below
 // the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant.
 #ifndef PEARL_AMD_CRANK
-#define PEARL_AMD_CRANK 0
+#define PEARL_AMD_CRANK PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_UNROLL4
 #define PEARL_AMD_UNROLL4 0
@@ -584,7 +600,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_CMASK 0
 #endif
 #ifndef PEARL_AMD_SCHEDB
-#define PEARL_AMD_SCHEDB 0
+#define PEARL_AMD_SCHEDB PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_LPIN
 #define PEARL_AMD_LPIN 0
@@ -602,17 +618,19 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // spread rows over the banks; here the row's two 16-byte halves swap instead, on row bits PEARL_AMD_LDS32_SWZ (a
 // mask; the swap is the parity of the masked bits). Bits 2 and 3 (12) keep both an 8-lane pass over 32 banks and a
 // 16-lane pass over 64 banks free of conflicts, for the 16-byte fragment reads and the 16-byte stores alike. The
-// bytes a fragment holds are the same, so the fold is bit-exact. Off by default: an experiment.
+// bytes a fragment holds are the same, so the fold is bit-exact. In PEARL_AMD_RDNA4_SET with PEARL_AMD_LDS32_PIN
+// (in the fold body), which it needs: the rows and the pin pay only together. With the rest of the set the fold
+// takes 201 VGPRs, so it still runs 6 waves a SIMD, not 8.
 // PEARL_AMD_WAVES=N: amdgpu_waves_per_eu(N) on the wmma12 fold, so the compiler keeps it within 1536 / N VGPRs
 // (192 for 8 waves a SIMD). Off by default.
 #ifndef PEARL_AMD_LDS32
-#define PEARL_AMD_LDS32 0
+#define PEARL_AMD_LDS32 PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_LDS32_SWZ
 #define PEARL_AMD_LDS32_SWZ 12
 #endif
 #ifndef PEARL_AMD_LDS32_PIN
-#define PEARL_AMD_LDS32_PIN 0
+#define PEARL_AMD_LDS32_PIN PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_LDS_PAD
 #define PEARL_AMD_LDS_PAD 0
@@ -1711,6 +1729,9 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 // with PEARL_AMD_CAP_TIMING, and a PEARL_AMD_STAMP build with that and PEARL_AMD_CAP_STAMP, which
 // also tells the host to give the folds somewhere to store their stamps. A code object with the
 // wrap readout says so too: it is how the host knows a card can mine k 4096 (pearl_host_card_k).
+// And one whose PF2 loop has PEARL_AMD_CRANK (RDNA 4's, by default) says its matrix fold takes
+// rank PEARL_FOLD_RANK only: the host pass never sees the gfx12 default, so the macro there would
+// say nothing about the card.
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -1724,6 +1745,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
 #endif
   if (PEARL_AMD_DOT4_FOLD) out[0] |= PEARL_AMD_CAP_DOT4;
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
+  if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;

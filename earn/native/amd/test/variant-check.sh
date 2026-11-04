@@ -15,9 +15,10 @@
 #   CHECK_ROOT  where the assembly goes (default /root/variant-check)
 #   CHECK_CC    the HIP compiler (default ROCm's, as build-amd.sh's)
 #
-# A variant is kept with no scratch and no spills, LDS 36864 bytes and 6 waves a SIMD (the release's on RDNA 3 and
-# RDNA 4), the base's LDS stores and global loads (so the compiler kept all of the operand staging), and its twin's
-# VGPRs. If the base's code can't be read, the counts aren't compared, and a line says so. The LDS loads between the
+# A variant is kept with no scratch and no spills, the base's LDS and waves a SIMD (the release's are 36864 bytes and
+# 6 waves on RDNA 3, and 24576 bytes and 7 by registers on RDNA 4 since PEARL_AMD_LDS32), the base's LDS stores and
+# global loads (so the compiler kept all of the operand staging), and its twin's VGPRs. If the base's code can't be
+# read, the counts aren't compared, and a line says so. The LDS loads between the
 # last WMMA and a barrier are counted, not held against a variant: the release fence before the barrier waits for
 # every LDS load, so a load there puts its wait on the barrier.
 #
@@ -103,6 +104,7 @@ sgprs() {
 }
 
 kept=()
+BL='' BW=''   # the base's LDS and waves, which every variant is held to
 for n in "${names[@]}"; do
   flags=${FL[$n]}
   row=$(PEARL_AMD_CFLAGS="$flags" ./build-amd.sh check "$ARCH" 2>&1 | grep -E "pearl_amd_fold_$F " | head -n 1)
@@ -130,10 +132,11 @@ for n in "${names[@]}"; do
   fi
   set -- $row   # target kernel VGPRs AGPRs scratch spills LDS waves wrap
   V[$n]=${3:-}
+  if [ "$n" = "$base" ]; then BL=${7:-} BW=${8:-}; fi
   why=''
   t=${TWIN[$n]:-}
-  if ! { [ "${5:-x}" = 0 ] && [ "${6:-x}" = 0 ] && [ "${7:-x}" = 36864 ] && [ "${8:-x}" = 6 ]; }; then
-    why='not LDS 36864 and 6 waves with no scratch and no spills'
+  if ! { [ "${5:-x}" = 0 ] && [ "${6:-x}" = 0 ] && [ -n "$BL" ] && [ "${7:-x}" = "$BL" ] && [ "${8:-x}" = "$BW" ]; }; then
+    why="not LDS ${BL:-?} and ${BW:-?} waves with no scratch and no spills"
   elif [ -n "$t" ] && [ "${V[$n]}" != "${V[$t]:-}" ]; then
     why="${V[$n]} VGPRs, not $t's ${V[$t]:-?}"
   elif [ -n "${N[$base]:-}" ] && [ "${N[$n]:-}" = '' ]; then

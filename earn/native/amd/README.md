@@ -108,6 +108,22 @@ load and made new LDS addresses for most fragments, about 9 VALU a slab of 32 WM
 the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads:
 its fragments are 16 bytes already, and buffer loads haven't been timed there.
 
+**On top of that, RDNA 4 builds six more cuts** (`PEARL_AMD_RDNA4_SET`, 4 November). The wrap
+readout picks the keep word's half with a scalar branch instead of selects (`PEARL_AMD_RDSEL`) and
+skips a register copy before `v_permlanex16` (`PEARL_AMD_RDPERM=2`). The slab loop takes rank 128 at
+compile time, so a chunk is a constant 4 slabs and the per-slab division goes (`PEARL_AMD_CRANK`),
+with a `sched_barrier` before each slab's stores so the compiler can't move the WMMAs past the
+barrier (`PEARL_AMD_SCHEDB`). And LDS rows are 32 bytes, their two halves swapped by row bits, where
+they were 48 with padding, with each thread's store and read offsets pinned in registers
+(`PEARL_AMD_LDS32`, `PEARL_AMD_LDS32_PIN`). Together `hashrate.js` read +4.3 to +4.6% on an RX 9070
+XT and +4.6 to +5.4% on an RX 9060 XT, each interleaved on one PC, on three PCs a card, and
+verify-hits passed 400 of 400 every time. CRANK makes the fold assume rank 128, so the card's caps
+say so (`PEARL_AMD_CAP_RANK`) and the host refuses any other rank. `-DPEARL_AMD_RDNA4_SET=0` builds
+the fold without them. The Windows core leaves them out, as it does the wrap readout: they were timed
+only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
+(`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
+(2.1-2.6% slower); see `benchmark.md`.
+
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
@@ -221,10 +237,12 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 193 | - | 36 KB | 6 |
+| gfx1200, gfx1201 | wmma12 | 201 | - | 24 KB | 7 |
 
-The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is 193 VGPRs
-from 4 November, with `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD` (198 before). On 2 November, with the
+The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
+set's (`PEARL_AMD_RDNA4_SET`, 4 November): 201 VGPRs and 24 KB of LDS, against 193 and 36 KB without it,
+and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
+runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
 gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
 also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).

@@ -191,7 +191,7 @@ describe('variant-check.sh', () => {
     expect(first).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -Icompat/gpu -Isrc -I../src '
       + '-Ibuild/gen --cuda-device-only -S src/pearl_host_hip.cpp -o ' + path.join(tmp, 'out').replace(/\\/g, '/')
       + '/base.s');
-    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
     expect(BUILD).toContain('inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"');
   }, 60000);
 
@@ -240,6 +240,24 @@ describe('variant-check.sh', () => {
     const r11 = run(vs, {}, 11);
     expect(r11.lines.find((l) => l.startsWith('late ('))).toMatch(/; LDS loads between the last WMMA and a barrier: 8; /);
     expect(r11.lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual(['kept: base late abl8']);
+  }, 60000);
+
+  bashIt('holds variants to the base\'s LDS and waves: RDNA 4\'s 24,576 bytes and 7 by registers', () => {
+    // RDNA 4's release has 32-byte LDS rows since PEARL_AMD_LDS32: 24,576 bytes, and 201 VGPRs. A variant back at
+    // 48-byte rows is no longer the release's occupancy, so it is dropped like any other that moves it.
+    const { status, lines, keep } = run([
+      ['base', '', '201 0 0 24576 7 70', RELEASE],
+      ['same', '-DSAME', '201 0 0 24576 7 70', RELEASE],
+      ['rows48', '-DPEARL_AMD_LDS32=0', '193 0 0 36864 6 70', RELEASE],
+      ['spills', '-DSPILLS', '240 0 3 24576 6 72', RELEASE],
+    ]);
+    expect(status).toBe(0);
+    expect(lines.filter((l) => / dropped: |^kept: /.test(l))).toEqual([
+      'rows48 dropped: not LDS 24576 and 7 waves with no scratch and no spills',
+      'spills dropped: not LDS 24576 and 7 waves with no scratch and no spills',
+      'kept: base same',
+    ]);
+    expect(keep).toBe('base=\nsame=-DSAME\n');
   }, 60000);
 
   bashIt('refuses a card it has no fold for, and a twin it can\'t read', () => {
