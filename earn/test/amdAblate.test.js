@@ -62,19 +62,20 @@ const caps = (t) => slice(t, 'extern "C" __global__ void pearl_amd_caps(uint32_t
 const refFold = (t) => slice(t, 'void pearl_amd_fold_ref(', '\n}\n');
 
 describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
-  it('is 0 unless a build sets it, and takes bits 2, 8, 16 and 32 only', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_ABLATE\n#define PEARL_AMD_ABLATE 0\n#endif\n#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32)\n#error');
-    const cond = grab(FOLD, /^#if (PEARL_AMD_ABLATE & ~\(.*\))\n#error "PEARL_AMD_ABLATE takes bits 2, 8, 16 and 32 only"/m);
+  it('is 0 unless a build sets it, and takes bits 2, 8, 16, 32 and 64 only', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_ABLATE\n#define PEARL_AMD_ABLATE 0\n#endif\n#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)\n#error');
+    const cond = grab(FOLD, /^#if (PEARL_AMD_ABLATE & ~\(.*\))\n#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"/m);
     const refused = (v) => new Function('PEARL_AMD_ABLATE', 'return (' + cond + ') !== 0;')(v);
     const allowed = [];
     for (let v = 0; v < 128; v++) if (!refused(v)) allowed.push(v);
-    expect(allowed).toEqual([0, 2, 8, 10, 16, 18, 24, 26, 32, 34, 40, 42, 48, 50, 56, 58]);
+    expect(allowed).toEqual([0, 2, 8, 10, 16, 18, 24, 26, 32, 34, 40, 42, 48, 50, 56, 58,
+      64, 66, 72, 74, 80, 82, 88, 90, 96, 98, 104, 106, 112, 114, 120, 122]);
     // -DPEARL_AMD_ABLATE alone defines it as 1.
-    for (const v of [-1, 1, 4, 64, 128]) expect([v, refused(v)]).toEqual([v, true]);
+    for (const v of [-1, 1, 4, 128]) expect([v, refused(v)]).toEqual([v, true]);
     // And no block tests a bit it refuses.
     const tests = [...FOLD.matchAll(/^#(?:el)?if !?\(?PEARL_AMD_ABLATE & (\d+)\)?$/gm)].map((m) => Number(m[1]));
     expect(tests).toContain(32);
-    for (const b of tests) expect(b & ~58).toBe(0);
+    for (const b of tests) expect(b & ~122).toBe(0);
   });
 
   it('leaves a release build as it was: at 0 every block it guards is out', () => {

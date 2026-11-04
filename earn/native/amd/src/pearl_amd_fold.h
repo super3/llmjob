@@ -525,6 +525,27 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
+// Wrap-readout cuts for RDNA 4 (wmma12, PEARL_AMD_KWRAP), off by default, to time against the default:
+//   PEARL_AMD_RDSEL=1    c & 8 picks keepLo or keepHi with a scalar branch. The compiler had made it selects: each
+//                        keep word picked, XORed and written back, three v_cndmask a word. An asm comment in each
+//                        arm keeps the arms apart, and the arms change copies local to the readout (see there).
+//   PEARL_AMD_RDPERM=2   v_permlanex16's old value from an empty asm, so the compiler needn't copy x first (the
+//                        v_dual_mov before it). =1 sets fetch-inactive and bound_ctrl instead, so the compiler drops
+//                        the old value: the same code, timed 0.3 points lower on a quiet PC.
+// RX 9070 XT, PC 3fd19936, 4 November, fold alone at k 4096, rounds 2-6 against the default: RDSEL=1 +0.74 to
+// +0.80%, RDPERM=2 +0.21 to +0.40%, both +1.07 to +1.30% (three runs), and hashrate.js below. The bound for any
+// cut here is PEARL_AMD_ABLATE bit 64, the readout with no cross-lane step, select or branch: +3.64 to +3.78%.
+// Tried and dropped (benchmark.md): the keeping lane by exec mask (+0.35 to +0.83%, below RDSEL=1 alone); each
+// lane keeping its own part of all 16 words and combining the 8 lanes after the loop (rotl 13 and XOR commute):
+// in registers it needs 256 VGPRs and spills, or 230 with a lane-pair DPP step, but the 16-way switch or the
+// indexed vector that picks word c % 16 cost 30-50 v_mov a readout (-0.7 to +0.9%); in scratch, one store a chunk
+// at an SGPR offset and no VALU, it lost 6.6 to 8.2%.
+#ifndef PEARL_AMD_RDSEL
+#define PEARL_AMD_RDSEL 0
+#endif
+#ifndef PEARL_AMD_RDPERM
+#define PEARL_AMD_RDPERM 0
+#endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
@@ -549,7 +570,21 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
+#if PEARL_AMD_RDPERM == 1 && PEARL_AMD_WMMA12
+  // PEARL_AMD_RDPERM=1 (above): every lane is active and picks a lane in range, so fetch-inactive and bound_ctrl
+  // change nothing, and with either set the compiler drops the old value (AMDGPU's instcombine).
+  x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, true, true);
+#endif
+#if PEARL_AMD_RDPERM == 2 && PEARL_AMD_WMMA12
+  {   // PEARL_AMD_RDPERM=2: the old value a fresh register from an empty asm, which costs no instruction.
+    uint32_t old;
+    asm("" : "=v"(old) : "v"(x));
+    x ^= __builtin_amdgcn_permlanex16(old, x, 0x76543210u, 0xFEDCBA98u, false, false);
+  }
+#endif
+#if !(PEARL_AMD_RDPERM && PEARL_AMD_WMMA12)
   x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, false, false);
+#endif
 #else
   x ^= (uint32_t)__shfl_xor((int)x, 1);
   x ^= (uint32_t)__shfl_xor((int)x, 8);
@@ -595,6 +630,9 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 //       still loaded and stored before the loop, and the fragments are read from LDS as before (stale words,
 //       which the barrier's fences keep the compiler from hoisting). With 2 and 8 the loop is the WMMAs, the
 //       readout and the loop itself, which pearl_amd_peak's register-fed kernel times without the readout.
+//   64  the wrap readout (PEARL_AMD_KWRAP) on RDNA 4 without its cross-lane steps, selects or branch: each lane
+//       XORs its own part of each word into keepLo. The bound for any cut to that readout at k 4096, where
+//       PEARL_AMD_READOUT_DROP times only the k 2048 one.
 // Bits 2, 8 and 32 are in the PF2 loop only (RDNA 3 and RDNA 4); bit 16 is in either loop. They combine.
 // These are bits 2, 8 and 16 of the old knob, which 534e285 removed: it only ever worked in the
 // one-slab loop.
@@ -607,8 +645,8 @@ __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
 #ifndef PEARL_AMD_ABLATE
 #define PEARL_AMD_ABLATE 0
 #endif
-#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32)
-#error "PEARL_AMD_ABLATE takes bits 2, 8, 16 and 32 only"
+#if PEARL_AMD_ABLATE & ~(2 | 8 | 16 | 32 | 64)
+#error "PEARL_AMD_ABLATE takes bits 2, 8, 16, 32 and 64 only"
 #endif
 // Whether this pass has the dot4 fold's body: a pass with PEARL_AMD_DOT4 that builds the one-slab
 // loop (no PF2), so RDNA 2's, and RDNA 3 or RDNA 4 built with -DPEARL_AMD_PF2=0, which runs RDNA 2's
@@ -904,6 +942,25 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // host takes past 16 only a multiple of 16 chunks, the whole passes this is right for.
   static_assert(!kDrop, "the readout-drop probe has no wrap form");
   auto readout = [&](uint32_t c) {
+#if PEARL_AMD_ABLATE & 64
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+      // PEARL_AMD_ABLATE bit 64 (timing only): each lane XORs its own part into keepLo. No rotate, cross-lane
+      // step, select or branch.
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
+#pragma unroll
+            for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
+#pragma unroll
+              for (int g = 0; g < P::kRegs; g++) keepLo[rb][cb][P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+      return;
+    }
+#endif  // a GPU
+#endif  // PEARL_AMD_ABLATE & 64
     if ((c & 15u) == 0u) {
 #pragma unroll
       for (int rb = 0; rb < RB; rb++)
@@ -933,6 +990,54 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #pragma unroll
         for (int q = 0; q < NRO; q++) v[rb][cb][q] = pearl_amd_group_xor(x[q]);
       }
+#if PEARL_AMD_RDSEL && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+      // PEARL_AMD_RDSEL (above): the keep by a scalar branch; the comment in each arm keeps the arms apart. The
+      // arms change copies local to this lambda, put back after: with the arms storing to keepLo and keepHi
+      // themselves, through the lambda's capture, the compiler merged the two arms' stores into one through a
+      // phi of the two addresses, and the arrays went to scratch memory (48 bytes, as PEARL_AMD_RDBR did).
+      static_assert(PEARL_AMD_RDSEL == 1, "PEARL_AMD_RDSEL is 0 or 1");
+      uint32_t kLo[RB][CB][NRO], kHi[RB][CB][NRO];
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            kLo[rb][cb][q] = keepLo[rb][cb][q];
+            kHi[rb][cb][q] = keepHi[rb][cb][q];
+          }
+      {
+        if (c & 8u) {
+          asm volatile("; rdsel hi");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) kHi[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;
+        } else {
+          asm volatile("; rdsel lo");
+#pragma unroll
+          for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+            for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+              for (int q = 0; q < NRO; q++) kLo[rb][cb][q] ^= mine ? v[rb][cb][q] : 0u;
+        }
+      }
+#pragma unroll
+      for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+        for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+          for (int q = 0; q < NRO; q++) {
+            keepLo[rb][cb][q] = kLo[rb][cb][q];
+            keepHi[rb][cb][q] = kHi[rb][cb][q];
+          }
+      return;
+    }
+#endif  // PEARL_AMD_RDSEL
     if (c & 8u) {
 #pragma unroll
       for (int rb = 0; rb < RB; rb++)
