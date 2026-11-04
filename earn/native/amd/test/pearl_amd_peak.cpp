@@ -15,6 +15,11 @@
 //          LDS at the fold's addresses, filled once. No barrier, no global loads, no stores.
 //   ldsbar lds, plus the fold's s_barrier at the end of each slab.
 //   bar    regs, plus the barrier.
+//   valuiN regs, plus N VALU a slab on 8 registers in turn: no instruction waits on the one before it.
+//   rdout  regs, plus the fold's readout at every chunk end (4 slabs at rank 128): RDNA 4's, with the wrap rotate.
+//          Its words are kept and stored, so none of it can be dropped.
+//   rdlocal  rdout without the cross-lane steps (each lane keeps its own XOR), as PEARL_AMD_READOUT_DROP times.
+//   ldsrd  ldsbar plus the readout: the fold with no staging.
 // The data the fragments hold: miner (the fold test's miner operands: 48 plus noise, [-15, 111]), zero, or rand
 // (uniform int8). On a card at its power limit the bits move the clock.
 //
@@ -102,9 +107,21 @@ __device__ __forceinline__ uint32_t peak_hw_id1() {
 #endif
 }
 
-// SRC 0: fragments in registers; 1: from LDS at the fold's addresses. VALU: filler instructions a slab. BAR: the
-// fold's slab barrier.
-template <int SRC, int NA, int NB, int VALU, int BAR>
+__device__ __forceinline__ uint32_t peak_rotl13(uint32_t x) { return (x << 13) | (x >> 19); }
+// The fold's cross-lane XOR over the eight lanes that share a region (lane bits 0, 3 and 4), RDNA's DPP form.
+__device__ __forceinline__ uint32_t peak_group_xor(uint32_t x) {
+#if PEAK_GFX12 || PEAK_GFX11
+  x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
+  x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
+  x ^= __builtin_amdgcn_permlanex16(x, x, 0x76543210u, 0xFEDCBA98u, false, false);
+#endif
+  return x;
+}
+
+// SRC 0: fragments in registers; 1: from LDS at the fold's addresses. VALU: filler instructions a slab, in a chain
+// (VM 0) or on 8 registers in turn (VM 1). VM 2: the fold's readout every 4 slabs; VM 3: the same without its
+// cross-lane steps. BAR: the fold's slab barrier.
+template <int SRC, int NA, int NB, int VALU, int BAR, int VM>
 __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict__ ops, uint32_t iters,
                                                          uint32_t *__restrict__ out, uint32_t *__restrict__ st) {
   extern __shared__ __attribute__((aligned(16))) int8_t lds[];
@@ -136,6 +153,16 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
     __syncthreads();
   }
   uint32_t vx = (uint32_t)t * 2654435761u, vy = (uint32_t)lane + 1u;
+  uint32_t vi[8];
+#pragma unroll
+  for (int i = 0; i < 8; i++) vi[i] = vx + (uint32_t)i;
+  // The readout's state, as the fold keeps it: words r and r + 8 of each region a lane shares (2 x 2 regions).
+  uint32_t keepLo[2][2], keepHi[2][2];
+#pragma unroll
+  for (int i = 0; i < 2; i++)
+#pragma unroll
+    for (int q = 0; q < 2; q++) keepLo[i][q] = keepHi[i][q] = 0u;
+  const uint32_t r8 = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
 #if PEAK_GFX11
   uint32_t cyc = 0u, last = c0;
 #endif
@@ -167,9 +194,62 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
 #pragma unroll
         for (int j = 0; j < NB; j++) peak_mma(acc[i][j], a[i], b[j]);
 #if PEAK_GFX12 || PEAK_GFX11
+      if constexpr (VM == 0) {
 #pragma unroll
-      for (int v = 0; v < VALU / 2; v++) asm volatile("v_xor_b32 %0, %1, %0" : "+v"(vx) : "v"(vy));
+        for (int v = 0; v < VALU / 2; v++) asm volatile("v_xor_b32 %0, %1, %0" : "+v"(vx) : "v"(vy));
+      } else if constexpr (VM == 1) {
+#pragma unroll
+        for (int v = 0; v < VALU / 2; v++) asm volatile("v_xor_b32 %0, %1, %0" : "+v"(vi[v % 8]) : "v"(vy));
+      }
 #endif
+    }
+    if constexpr (VM >= 2) {
+      static_assert(NA == 4 && NB == 4, "the readout is the fold's: a 4 x 4 wave tile");
+      // A chunk ends every 4 slabs (rank 128, 32 bytes a slab): the fold's readout of RDNA 4 (PEARL_AMD_KWRAP).
+      if ((it & 3u) == 3u) {
+        const uint32_t c = it >> 2;
+        if ((c & 15u) == 0u) {
+#pragma unroll
+          for (int i = 0; i < 2; i++)
+#pragma unroll
+            for (int q = 0; q < 2; q++) {
+              keepLo[i][q] = peak_rotl13(keepLo[i][q]);
+              keepHi[i][q] = peak_rotl13(keepHi[i][q]);
+            }
+        }
+        const bool mine = (c & 7u) == r8;
+        uint32_t v[2][2];
+#pragma unroll
+        for (int rb = 0; rb < 2; rb++) {
+          uint32_t x[2] = {0u, 0u};
+#pragma unroll
+          for (int i = 2 * rb; i < 2 * rb + 2; i++)
+#pragma unroll
+            for (int j = 0; j < 4; j++)
+#pragma unroll
+              for (int g = 0; g < 8; g++) x[g >> 2] ^= (uint32_t)acc[i][j][g];
+#pragma unroll
+          for (int q = 0; q < 2; q++) v[rb][q] = VM == 2 ? peak_group_xor(x[q]) : x[q];
+        }
+        if constexpr (VM == 2) {
+          if (c & 8u) {
+#pragma unroll
+            for (int i = 0; i < 2; i++)
+#pragma unroll
+              for (int q = 0; q < 2; q++) keepHi[i][q] ^= mine ? v[i][q] : 0u;
+          } else {
+#pragma unroll
+            for (int i = 0; i < 2; i++)
+#pragma unroll
+              for (int q = 0; q < 2; q++) keepLo[i][q] ^= mine ? v[i][q] : 0u;
+          }
+        } else {
+#pragma unroll
+          for (int i = 0; i < 2; i++)
+#pragma unroll
+            for (int q = 0; q < 2; q++) keepLo[i][q] ^= v[i][q];
+        }
+      }
     }
     if constexpr (BAR) __syncthreads();
     // The LDS reads can't be hoisted out of the loop: as far as the compiler knows, memory changed.
@@ -184,6 +264,12 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
   const uint32_t r1 = peak_realtime();
   const uint32_t hw1 = peak_hw_id1();
   uint32_t x = vx;
+#pragma unroll
+  for (int i = 0; i < 8; i++) x ^= vi[i] * (uint32_t)(3 + 2 * i);
+#pragma unroll
+  for (int i = 0; i < 2; i++)
+#pragma unroll
+    for (int q = 0; q < 2; q++) x ^= keepLo[i][q] * 5u ^ keepHi[i][q] * 7u;
 #pragma unroll
   for (int i = 0; i < NA; i++)
 #pragma unroll
@@ -219,7 +305,8 @@ struct Cfg {
   const char *data;   // miner, zero or rand
 };
 
-#define K(S, A, B, V, R) reinterpret_cast<Kernel>(&peak_kernel<S, A, B, V, R>)
+#define K(S, A, B, V, R) reinterpret_cast<Kernel>(&peak_kernel<S, A, B, V, R, 0>)
+#define KV(S, A, B, V, R, M) reinterpret_cast<Kernel>(&peak_kernel<S, A, B, V, R, M>)
 const Cfg kCfgs[] = {
     // The fold's shape: a 4 x 4 wave tile, 6 waves a SIMD, miner operands.
     {"regs4x4", K(0, 4, 4, 0, 0), 0, 4, 4, 3, "miner"},
@@ -242,8 +329,18 @@ const Cfg kCfgs[] = {
     {"lds4x4", K(1, 4, 4, 0, 0), 1, 4, 4, 3, "miner"},
     {"ldsbar4x4", K(1, 4, 4, 0, 1), 1, 4, 4, 3, "miner"},
     {"bar4x4", K(0, 4, 4, 0, 1), 0, 4, 4, 3, "miner"},
+    // VALU with no chain: 4, 16 and 64 a slab.
+    {"valui4", KV(0, 4, 4, 4, 0, 1), 0, 4, 4, 3, "miner"},
+    {"valui16", KV(0, 4, 4, 16, 0, 1), 0, 4, 4, 3, "miner"},
+    {"valui64", KV(0, 4, 4, 64, 0, 1), 0, 4, 4, 3, "miner"},
+    {"valu4", K(0, 4, 4, 4, 0), 0, 4, 4, 3, "miner"},
+    // The fold's readout, then without its cross-lane steps; then on the LDS-fed loop with the barrier.
+    {"rdout", KV(0, 4, 4, 0, 0, 2), 0, 4, 4, 3, "miner"},
+    {"rdlocal", KV(0, 4, 4, 0, 0, 3), 0, 4, 4, 3, "miner"},
+    {"ldsrd", KV(1, 4, 4, 0, 1, 2), 1, 4, 4, 3, "miner"},
 };
 #undef K
+#undef KV
 
 uint64_t g_rng = 0x9E3779B97F4A7C15ull;
 uint32_t next_rand() {
