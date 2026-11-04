@@ -20,6 +20,11 @@
 //          Its words are kept and stored, so none of it can be dropped.
 //   rdlocal  rdout without the cross-lane steps (each lane keeps its own XOR), as PEARL_AMD_READOUT_DROP times.
 //   ldsrd  ldsbar plus the readout: the fold with no staging.
+// direct, directrd, directl2: the fold's grid and operands (m 131072, 4096 columns, k 4096, A' and B' in per-tile
+// order as the host makes them), with no LDS: each wave loads its own fragments from memory into registers, one
+// slab ahead, 16 bytes a fragment a lane (lanes 0-15 take bytes 0-15 of each 32, lanes 16-31 bytes 16-31, the k
+// order PEARL_AMD_KPAIR uses), so there is no staging, no LDS read and no barrier. directrd adds the fold's readout,
+// directl2 has every block read tile 0, which stays in L2: the most that memory could give.
 // The data the fragments hold: miner (the fold test's miner operands: 48 plus noise, [-15, 111]), zero, or rand
 // (uniform int8). On a card at its power limit the bits move the clock.
 //
@@ -295,6 +300,141 @@ __global__ __launch_bounds__(kThreads) void peak_kernel(const int8_t *__restrict
   }
 }
 
+// The fold's grid with no LDS (direct, above). D: 1. RD: the readout. L2: every block reads tile 0.
+template <int RD, int L2>
+__global__ __launch_bounds__(kThreads) void direct_kernel(const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp,
+                                                           uint32_t k, uint32_t *__restrict__ out,
+                                                           uint32_t *__restrict__ st) {
+  const int t = (int)threadIdx.x, lane = t & 31, wave = t >> 5, wr = wave / 4, wc = wave % 4;
+  const uint32_t hw0 = peak_hw_id1();
+  const uint32_t c0 = peak_cycles();
+  const uint32_t r0 = peak_realtime();
+  const uint32_t tileRow = L2 ? 0u : blockIdx.y, tileCol = L2 ? 0u : blockIdx.x;
+  // A tile is k / 32 slabs of [rows][32 bytes]: 128 rows of A', 256 of B'.
+  const int8_t *gA = Ap + (size_t)tileRow * 128u * k;
+  const int8_t *gB = Bp + (size_t)tileCol * 256u * k;
+  const uint32_t aoff = (uint32_t)((wr * 64 + (lane & 15)) * 32 + 16 * (lane >> 4));
+  const uint32_t boff = (uint32_t)((wc * 64 + (lane & 15)) * 32 + 16 * (lane >> 4));
+  const uint32_t slabs = k / 32u;
+  auto uniform = [](const int8_t *q) {
+    const uint64_t v = (uint64_t)q;
+#if PEAK_GFX12 || PEAK_GFX11
+    return (const int8_t *)(((uint64_t)(uint32_t)__builtin_amdgcn_readfirstlane((int)(uint32_t)(v >> 32)) << 32) |
+                            (uint32_t)__builtin_amdgcn_readfirstlane((int)(uint32_t)v));
+#else
+    return q;
+#endif
+  };
+  auto load = [&](uint32_t sl, peak_v4i (&a)[4], peak_v4i (&b)[4]) {
+    const int8_t *sa = uniform(gA + (size_t)sl * (128u * 32u));
+    const int8_t *sb = uniform(gB + (size_t)sl * (256u * 32u));
+#pragma unroll
+    for (int i = 0; i < 4; i++) a[i] = *reinterpret_cast<const peak_v4i *>(sa + aoff + (uint32_t)(i * 16 * 32));
+#pragma unroll
+    for (int j = 0; j < 4; j++) b[j] = *reinterpret_cast<const peak_v4i *>(sb + boff + (uint32_t)(j * 16 * 32));
+  };
+  peak_v8i acc[4][4];
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++) acc[i][j] = peak_v8i{0, 0, 0, 0, 0, 0, 0, 0};
+  uint32_t keepLo[2][2], keepHi[2][2];
+#pragma unroll
+  for (int i = 0; i < 2; i++)
+#pragma unroll
+    for (int q = 0; q < 2; q++) keepLo[i][q] = keepHi[i][q] = 0u;
+  const uint32_t r8 = (uint32_t)((lane & 1) | ((lane >> 2) & 2) | ((lane >> 2) & 4));
+  auto mma = [&](const peak_v4i (&a)[4], const peak_v4i (&b)[4]) {
+#pragma unroll
+    for (int h = 0; h < 2; h++)
+#pragma unroll
+      for (int i = 0; i < 4; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++) {
+#if PEAK_GFX12
+          peak_mma(acc[i][j], peak_v2i{a[i][2 * h], a[i][2 * h + 1]}, peak_v2i{b[j][2 * h], b[j][2 * h + 1]});
+#elif PEAK_GFX11
+          peak_mma(acc[i][j], a[i], b[j]);   // gfx11 takes 16 bytes a fragment: timing only
+#endif
+        }
+  };
+  auto readout = [&](uint32_t c) {
+    if ((c & 15u) == 0u) {
+#pragma unroll
+      for (int i = 0; i < 2; i++)
+#pragma unroll
+        for (int q = 0; q < 2; q++) {
+          keepLo[i][q] = peak_rotl13(keepLo[i][q]);
+          keepHi[i][q] = peak_rotl13(keepHi[i][q]);
+        }
+    }
+    const bool mine = (c & 7u) == r8;
+#pragma unroll
+    for (int rb = 0; rb < 2; rb++) {
+      uint32_t x[2] = {0u, 0u};
+#pragma unroll
+      for (int i = 2 * rb; i < 2 * rb + 2; i++)
+#pragma unroll
+        for (int j = 0; j < 4; j++)
+#pragma unroll
+          for (int g = 0; g < 8; g++) x[g >> 2] ^= (uint32_t)acc[i][j][g];
+#pragma unroll
+      for (int q = 0; q < 2; q++) {
+        const uint32_t v = peak_group_xor(x[q]);
+        if (c & 8u) keepHi[rb][q] ^= mine ? v : 0u;
+        else keepLo[rb][q] ^= mine ? v : 0u;
+      }
+    }
+  };
+  peak_v4i f0a[4], f0b[4], f1a[4], f1b[4];
+  load(0u, f0a, f0b);
+  for (uint32_t sl = 0; sl < slabs; sl += 2) {
+    load(sl + 1u < slabs ? sl + 1u : slabs - 1u, f1a, f1b);
+    mma(f0a, f0b);
+    if (RD && ((sl + 1u) & 3u) == 0u) readout((sl + 1u) / 4u - 1u);
+    load(sl + 2u < slabs ? sl + 2u : slabs - 1u, f0a, f0b);
+    mma(f1a, f1b);
+    if (RD && ((sl + 2u) & 3u) == 0u) readout((sl + 2u) / 4u - 1u);
+  }
+  const uint32_t c1 = peak_cycles();
+  const uint32_t r1 = peak_realtime();
+  const uint32_t hw1 = peak_hw_id1();
+  uint32_t x = 0u;
+#pragma unroll
+  for (int i = 0; i < 4; i++)
+#pragma unroll
+    for (int j = 0; j < 4; j++)
+#pragma unroll
+      for (int g = 0; g < 8; g++) x ^= (uint32_t)acc[i][j][g] * (uint32_t)(1 + 2 * (i * 4 + j + g));
+#pragma unroll
+  for (int i = 0; i < 2; i++)
+#pragma unroll
+    for (int q = 0; q < 2; q++) x ^= keepLo[i][q] * 5u ^ keepHi[i][q] * 7u;
+  const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;
+  out[(size_t)block * kThreads + t] = x;
+  if (lane == 0) {
+    uint32_t *o = st + ((size_t)block * kWaves + (size_t)wave) * kStampWords;
+    o[0] = 0x50454b31u;
+    o[1] = c1 - c0;   // gfx12's counter; gfx11's 20 bits wrap in a block this long, so its clock is not read
+    o[2] = r0;
+    o[3] = r1;
+    o[4] = hw0;
+    o[5] = hw1;
+    o[6] = block;
+    o[7] = (uint32_t)wave;
+  }
+}
+
+// Fills n bytes with the miner's operands, roughly (as fill() below), from a hash of the place.
+__global__ void direct_fill(int8_t *p, size_t n, uint32_t seed) {
+  for (size_t i = (size_t)blockIdx.x * blockDim.x + threadIdx.x; i < n; i += (size_t)gridDim.x * blockDim.x) {
+    uint32_t h = (uint32_t)i * 2654435761u ^ (uint32_t)(i >> 32) * 40503u ^ seed;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13; h *= 3266489917u; h ^= h >> 16;
+    const int x = 48 + (int)(h & 63u) - 32 - ((int)((h >> 8) & 63u) - 32);
+    p[i] = (int8_t)x;
+  }
+}
+
 typedef void (*Kernel)(const int8_t *, uint32_t, uint32_t *, uint32_t *);
 
 struct Cfg {
@@ -375,6 +515,83 @@ double median(std::vector<double> v) {
   if (v.empty()) return 0.0;
   std::sort(v.begin(), v.end());
   return v[v.size() / 2];
+}
+
+// direct, directrd and directl2 (above): the fold's whole launch, timed as the fold test times it.
+bool run_direct(const char *only, double secs, int cus, int wallKhz) {
+  const uint32_t m = 131072u, cols = 4096u, k = 4096u;
+  struct D { const char *name; const void *k; };
+  const D ds[] = {{"direct", reinterpret_cast<const void *>(&direct_kernel<0, 0>)},
+                  {"directrd", reinterpret_cast<const void *>(&direct_kernel<1, 0>)},
+                  {"directl2", reinterpret_cast<const void *>(&direct_kernel<1, 1>)}};
+  bool any = false;
+  for (const D &d : ds) any |= !only || strstr(d.name, only);
+  if (!any) return true;
+  int8_t *a = nullptr, *b = nullptr;
+  uint32_t *out = nullptr, *st = nullptr;
+  const dim3 grid(cols / 256u, m / 128u);
+  const size_t blocks = (size_t)grid.x * grid.y;
+  if (!ok(hipMalloc(&a, (size_t)m * k), "malloc A'") || !ok(hipMalloc(&b, (size_t)cols * k), "malloc B'") ||
+      !ok(hipMalloc(&out, blocks * kThreads * 4), "malloc out") ||
+      !ok(hipMalloc(&st, blocks * kWaves * kStampWords * 4), "malloc stamps"))
+    return false;
+  hipLaunchKernelGGL(direct_fill, dim3(4096), dim3(256), 0, 0, a, (size_t)m * k, 1u);
+  hipLaunchKernelGGL(direct_fill, dim3(4096), dim3(256), 0, 0, b, (size_t)cols * k, 2u);
+  if (!ok(hipDeviceSynchronize(), "fill")) return false;
+  const double perLaunch = (double)m * cols * k;
+  for (const D &d : ds) {
+    if (only && !strstr(d.name, only)) continue;
+    hipFuncAttributes fa;
+    const int vgprs = hipFuncGetAttributes(&fa, d.k) == hipSuccess ? fa.numRegs : -1;
+    int occ = 0;
+    (void)hipOccupancyMaxActiveBlocksPerMultiprocessor(&occ, d.k, kThreads, 0);
+    hipEvent_t e0, e1;
+    (void)hipEventCreate(&e0);
+    (void)hipEventCreate(&e1);
+    uint32_t kk = k;
+    void *args[] = {&a, &b, &kk, &out, &st};
+    std::vector<double> rates;
+    double total = 0.0, timed = 0.0, macs = 0.0;
+    float ms = 0.f;
+    const auto start = std::chrono::steady_clock::now();
+    for (;;) {
+      (void)hipEventRecord(e0);
+      (void)hipLaunchKernel(d.k, grid, dim3(kThreads), args, 0, 0);
+      (void)hipEventRecord(e1);
+      if (!ok(hipEventSynchronize(e1), d.name)) return false;
+      (void)hipEventElapsedTime(&ms, e0, e1);
+      total += ms / 1000.0;
+      if (total > secs / 3) {
+        timed += ms / 1000.0;
+        macs += perLaunch;
+        rates.push_back(perLaunch / (ms / 1000.0) / 1e12);
+      }
+      if (std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count() > secs) break;
+    }
+    std::vector<uint32_t> s(blocks * kWaves * kStampWords);
+    if (!ok(hipMemcpy(s.data(), st, s.size() * 4, hipMemcpyDeviceToHost), "stamps")) return false;
+    std::vector<double> mhz;
+    for (size_t i = 0; i < blocks * kWaves; i++) {
+      const uint32_t *r = &s[i * kStampWords];
+      if (r[0] != 0x50454b31u || r[4] != r[5]) continue;
+      const double ticks = (double)(uint32_t)(r[3] - r[2]);
+      if (ticks > 0) mhz.push_back((double)r[1] / (ticks / ((double)wallKhz * 1e3)) / 1e6);
+    }
+    const double tmac = timed > 0 ? macs / timed / 1e12 : 0.0;
+    const double clk = median(mhz);
+    printf("peak %-9s miner m %u, %u columns, k %u, %d VGPRs, %d blocks a WGP: %.2f TMAC/s (median launch %.2f, %zu "
+           "launches, %.1f ms each), %.0f MHz (median of %zu waves), %.1f MAC/CU/clk\n",
+           d.name, m, cols, k, vgprs, occ, tmac, median(rates), rates.size(), ms, clk, mhz.size(),
+           clk > 0 ? tmac * 1e12 / (cus * clk * 1e6) : 0.0);
+    fflush(stdout);
+    (void)hipEventDestroy(e0);
+    (void)hipEventDestroy(e1);
+  }
+  (void)hipFree(a);
+  (void)hipFree(b);
+  (void)hipFree(out);
+  (void)hipFree(st);
+  return true;
 }
 
 }  // namespace
@@ -500,5 +717,6 @@ int main(int argc, char **argv) {
   (void)hipFree(dOps);
   (void)hipFree(dOut);
   (void)hipFree(dSt);
+  if (!run_direct(only, secs, cus, wallKhz)) return 1;
   return 0;
 }
