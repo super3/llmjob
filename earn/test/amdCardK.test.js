@@ -183,6 +183,13 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
     // Why it stayed, for the log.
     expect(cardK).toContain('"k 2048 (PEARL_AMD_K=2048)"');
     expect(cardK).toContain('"k 2048: k %u needs ~%zu MiB and %zu MiB is free", want,');
+    // k 8192 asked for without its VRAM falls to k 4096 when that fits, before k 2048; k 4096's own
+    // shortfall is unchanged (want is 4096 there, so the 8192 branch can't run).
+    const step = at('if (want == 8192u && freeMem >= needed_bytes(&wide)) {');
+    const four = at('return 4096u;');
+    expect(vram < step && step < four && four < yes).toBe(true);
+    expect(lines[step - 1]).toBe('wide.k = 4096u;');
+    expect(cardK).toContain('"k 4096: k 8192 needs ~%zu MiB and %zu MiB is free", need >> 20, freeMem >> 20);');
   });
 
   it('names the k and the readout in the fold\'s description', () => {
