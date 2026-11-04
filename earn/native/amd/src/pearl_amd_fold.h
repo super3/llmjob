@@ -504,6 +504,24 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_TID
 #define PEARL_AMD_TID PEARL_AMD_WMMA12
 #endif
+// PEARL_AMD_KPAIR=1 (RDNA 4, wmma12): each lane reads its fragments for two k-steps with one 16-byte LDS load.
+// A slab's k-steps don't have to take its bytes in order: the WMMAs of a slab add up over all of them, and a chunk
+// ends only on a slab boundary. So lanes 0-15 take bytes 0-15 of each 32 and lanes 16-31 bytes 16-31, the first
+// 8 for the even k-step and the next 8 for the odd one, in A' and B' alike. The k-step pair then reads 16 bytes a
+// lane at a 16-bit offset (ds_load_b128) where the old order read two 8-byte words 16 bytes apart
+// (ds_load_2addr_b64, whose 8-bit offsets needed a new address register, a VALU, for most fragments). On RDNA 4 a
+// VALU beside the WMMAs costs about a cycle of WMMA time (pearl_amd_peak's valui variants), so the fold alone ran
+// 5.9-6.8% faster on an RX 9070 XT (benchmark.md, 4 November). On by default on RDNA 4; -DPEARL_AMD_KPAIR=0 builds
+// the old order to race against. RDNA 3's fragments are 16 bytes already.
+#ifndef PEARL_AMD_KPAIR
+#define PEARL_AMD_KPAIR PEARL_AMD_WMMA12
+#endif
+// PEARL_AMD_BUFLD=1: the slab loads as buffer loads. A buffer resource for the block's tile of A' and of B' (in
+// SGPRs), the lane's place in the slab as the VGPR offset, which never changes, and the slab's start as the SGPR
+// offset: no VALU a load. Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Off by default.
+#ifndef PEARL_AMD_BUFLD
+#define PEARL_AMD_BUFLD 0
+#endif
 __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
   __builtin_amdgcn_fence(__ATOMIC_RELEASE, "workgroup", "local");
@@ -803,6 +821,20 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+  // PEARL_AMD_BUFLD (above): the tiles' resources.
+  const __amdgpu_buffer_rsrc_t rsA =
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
+  const __amdgpu_buffer_rsrc_t rsB =
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), 0x31004000);
+#define PEARL_AMD_LOADR(slab, R)                                                             \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    const int idx = t + u * T;                                                               \
+    R[u] = __builtin_bit_cast(pearl_amd_v4i,                                                 \
+        idx < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, 16 * idx, (int)((slab) * (uint32_t)(BM * KS)), 0)\
+                 : __builtin_amdgcn_raw_buffer_load_b128(rsB, 16 * (idx - UA), (int)((slab) * (uint32_t)(BN * KS)), 0));\
+  }
+#else
 #define PEARL_AMD_LOADR(slab, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
@@ -814,6 +846,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                         : gB + (size_t)((idx - UA) / QR) * k) + (size_t)(slab) * KS + 16 * (idx % QR)); \
     R[u] = *p;                                                                               \
   }
+#endif
 #define PEARL_AMD_STORER(buf, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
@@ -1020,15 +1053,42 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_mma_step<P>(acc, a, b);
 #endif
 #else
-      typename P::AFrag a[P::kMT];
-      typename P::BFrag b[P::kNT];
+#if PEARL_AMD_KPAIR
+      if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
+        // PEARL_AMD_KPAIR (above): k-steps kk and kk + 1 from one 16-byte read a fragment, at the even kk.
+        static_assert((KS / P::kTK) % 2 == 0, "PEARL_AMD_KPAIR pairs the k-steps of a slab");
+        if ((kk & 1) == 0) {
+          typename P::AFrag a[2][P::kMT];
+          typename P::BFrag b[2][P::kNT];
+          const int off = (lane & 15) * S + 16 * (lane >> 4) + kk * P::kTK;
 #pragma unroll
-      for (int mt = 0; mt < P::kMT; mt++)
-        a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+          for (int mt = 0; mt < P::kMT; mt++) {
+            const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+            a[0][mt] = pearl_amd_v2i{q[0], q[1]};
+            a[1][mt] = pearl_amd_v2i{q[2], q[3]};
+          }
 #pragma unroll
-      for (int nt = 0; nt < P::kNT; nt++)
-        b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
-      pearl_amd_mma_step<P>(acc, a, b);
+          for (int nt = 0; nt < P::kNT; nt++) {
+            const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
+            b[0][nt] = pearl_amd_v2i{q[0], q[1]};
+            b[1][nt] = pearl_amd_v2i{q[2], q[3]};
+          }
+          pearl_amd_mma_step<P>(acc, a[0], b[0]);
+          pearl_amd_mma_step<P>(acc, a[1], b[1]);
+        }
+      } else
+#endif
+      {
+        typename P::AFrag a[P::kMT];
+        typename P::BFrag b[P::kNT];
+#pragma unroll
+        for (int mt = 0; mt < P::kMT; mt++)
+          a[mt] = P::load_a(aBase + mt * P::kTM * S + kk * P::kTK, S, lane);
+#pragma unroll
+        for (int nt = 0; nt < P::kNT; nt++)
+          b[nt] = P::load_b(bBase + nt * P::kTN * S + kk * P::kTK, S, lane);
+        pearl_amd_mma_step<P>(acc, a, b);
+      }
 #endif
     }
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);

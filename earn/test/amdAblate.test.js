@@ -89,11 +89,18 @@ describe('the ablation knob (PEARL_AMD_ABLATE)', () => {
     // Today's code, where each bit cuts in.
     expect(rel).toContain('  const int8_t *gA = Ap + (size_t)tileRow * k;\n  const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;\n');
     expect(rel).toContain('  PEARL_AMD_STORE(0)\n  __syncthreads();\n  // The end of chunk c: its transcript word');
+    // The k-steps: RDNA 4's paired fragment reads (PEARL_AMD_KPAIR), then everyone else's.
     expect(slabStep(rel)).toContain([
       '    for (int kk = 0; kk < KS / P::kTK; kk++) {',
-      '      typename P::AFrag a[P::kMT];',
-      '      typename P::BFrag b[P::kNT];'].join('\n'));
-    expect(slabStep(rel)).toContain('      pearl_amd_mma_step<P>(acc, a, b);\n    }\n');
+      '#if PEARL_AMD_KPAIR',
+      '      if constexpr (std::is_same<P, PearlAmdWmma12>::value) {'].join('\n'));
+    expect(slabStep(rel)).toContain([
+      '      } else',
+      '#endif',
+      '      {',
+      '        typename P::AFrag a[P::kMT];',
+      '        typename P::BFrag b[P::kNT];'].join('\n'));
+    expect(slabStep(rel)).toContain('        pearl_amd_mma_step<P>(acc, a, b);\n      }\n    }\n');
     expect(slabStep(rel)).toContain([
       '    if (s + 1 < slabs) { PEARL_AMD_STORER(B ^ 1, pre2[B ^ 1]) }   // slab s + 1, loaded a step ago',
       '#if PEARL_AMD_PFX',
