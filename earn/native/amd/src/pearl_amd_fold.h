@@ -1492,17 +1492,37 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
           const int off = (lane & 15) * S + 16 * (lane >> 4) + kk * P::kTK;
 #endif
+          if constexpr (kLate) {
+            // PEARL_AMD_RDLATE: the readout's branch comes between these loads and the WMMAs, so the compiler can't
+            // order the loads by first use, as it does in the release. They go in the WMMAs' order here: A' tile 0,
+            // every B' tile, then the rest of A', so the first WMMA waits for two loads, not five.
 #pragma unroll
-          for (int mt = 0; mt < P::kMT; mt++) {
-            const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
-            a[0][mt] = pearl_amd_v2i{q[0], q[1]};
-            a[1][mt] = pearl_amd_v2i{q[2], q[3]};
-          }
+            for (int i = 0; i < P::kMT + P::kNT; i++) {
+              const bool isB = i > 0 && i <= P::kNT;
+              const int t = isB ? i - 1 : (i == 0 ? 0 : i - P::kNT);
+              const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(
+                  isB ? bBase + t * P::kTN * S + off : aBase + t * P::kTM * S + off);
+              if (isB) {
+                b[0][t] = pearl_amd_v2i{q[0], q[1]};
+                b[1][t] = pearl_amd_v2i{q[2], q[3]};
+              } else {
+                a[0][t] = pearl_amd_v2i{q[0], q[1]};
+                a[1][t] = pearl_amd_v2i{q[2], q[3]};
+              }
+            }
+          } else {
 #pragma unroll
-          for (int nt = 0; nt < P::kNT; nt++) {
-            const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
-            b[0][nt] = pearl_amd_v2i{q[0], q[1]};
-            b[1][nt] = pearl_amd_v2i{q[2], q[3]};
+            for (int mt = 0; mt < P::kMT; mt++) {
+              const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(aBase + mt * P::kTM * S + off);
+              a[0][mt] = pearl_amd_v2i{q[0], q[1]};
+              a[1][mt] = pearl_amd_v2i{q[2], q[3]};
+            }
+#pragma unroll
+            for (int nt = 0; nt < P::kNT; nt++) {
+              const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(bBase + nt * P::kTN * S + off);
+              b[0][nt] = pearl_amd_v2i{q[0], q[1]};
+              b[1][nt] = pearl_amd_v2i{q[2], q[3]};
+            }
           }
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
@@ -1589,6 +1609,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     slab_step(s, std::integral_constant<int, 0>());
     slab_step(s + 1, std::integral_constant<int, 1>());
   }
+  if constexpr (!kLate)   // RDLATE has CRANK: slabs is a whole number of 4-slab chunks, so the pairs ran them all
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
