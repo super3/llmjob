@@ -225,9 +225,8 @@ minute) as TH/s × 1 min × PRL per TH-hr at that moment.
 ## Two orgs
 
 The quota is an org's, so a second org has 10 replicas of its own. Since 28 October the watcher can run groups in
-more than one (config `org_slots`): on rig01 9 in llmjob and 9 in llmjob2, `max_active` 18, since 8:07 am EDT on
-6 November (llmjob was held at 8 before, a replica spare for the pearl2dev session's test boxes, which count in its
-quota too). The search counts every replica in an org, so a test box there just leaves one slot unfilled. The search fills the orgs in that order,
+more than one (config `org_slots`): on rig01 8 in llmjob, where the pearl2dev session's test boxes also count, and
+9 in llmjob2 (2 from 4:36 pm EDT, 9 from the evening; `max_active` 17). The search fills the orgs in that order,
 each up to its slots and inside its own quota (at most 9 of its 10, as in [Rules](#rules)), and a create refused for
 the quota stops only that org.
 
