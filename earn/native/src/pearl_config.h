@@ -1622,6 +1622,8 @@ typedef struct {
 // ahead: 3060 46.66 -> 47.09 (+0.9%), 3070 Ti 84.50 -> 85.08 (+0.7%); the 3070 Ti's pool
 // run accepted 3 of 3 shares. The 3090, on an earlier build of the same rule: 121.32 ->
 // 123.49 (+1.8%).
+// RTX 3080 10 GB (5 MB L2, band 8), race mode on 6 November: band 4 -0.79% (+-0.07) in the
+// rounds a 340 W PC was ours alone and -0.58% (+-0.09) in those it shared, behind in all 16.
 // -DPEARL_AMPERE_BAND=N forces N on every Ampere card, and turns the flip off
 // (PEARL_AMPERE_FLIP): it is a tuning build of this walk. Host only. Hopper's wgmma fold takes
 // PEARL_HOPPER_BAND instead, unless that is 0.
@@ -1658,6 +1660,8 @@ typedef struct {
 //   RTX 3090 (Quebec)     +0.4%   +0.7%    +0.3%
 //   RTX 3080 Ti (Portugal) +0.1%  -0.1%
 // 512 led in every round on all but the 3080 Ti. Pool runs at 512: 4 of 4 shares (3080 Ti).
+// RTX 3080 10 GB (320 W), race mode against 512 on 6 November: 256 -0.27% (+-0.08, ahead
+// 5/35), 1024 +0.11% (+-0.12, 24/35), a copy of 512 +0.02% (+-0.09). 512 stays.
 // Before the slice the width measured flat (RTX 3070 Ti, 1024 - 128 all within -0.4%).
 // 0 keeps the profile's width. Host only.
 #ifndef PEARL_AMPERE_COL_BATCH
@@ -1712,6 +1716,10 @@ typedef struct {
 //   RTX 3060 Ti, 156 W, this build  +3.62% (+-0.91, 41/42), verify-hits 400/400, Kryptex
 //                                   10 min: 8 accepted, 0 rejected
 //   RTX 3080 10 GB, forced on at 64 -0.71% (+-0.07, 0/44)
+// The 3080 Ti takes it on the model alone. Raced on 6 November against the band walk: at 400 W
+// it lost 0.14% (+-0.06, the walk ahead in 39/48; memory 18% -> 10%, clock +0.9%); on a 350 W
+// PC whose card slowed to about 1300 MHz and 250 W as it warmed, it won 1.63% (+-0.27, 43/46).
+// A small loss on a cool card against a large gain on a hot one, so it keeps the flip.
 // The 3060 ran a 512-offset batch walked in strips of the width the flip would take there
 // (32 offsets): -0.63%. On the 3060 Ti the same strips read +1.48% against the narrow batch's
 // +1.92%.
@@ -1725,7 +1733,7 @@ typedef struct {
 #ifndef PEARL_AMPERE_FLIP_SHARE
 #define PEARL_AMPERE_FLIP_SHARE 80u
 #endif
-// The flip's width in whole tiles (issue #287, item 3; off by default, not measured yet). The
+// The flip's width in whole tiles (issue #287, item 3; off, and it lost when raced). The
 // shipped rule takes only powers of two that divide the salt's 16384 offsets, so the B' it
 // holds fills a card's largest slice only where the slice is just over a power of two: 97% on
 // the 3060 Ti (64 offsets, 2 MiB of 2.06) and the 6 MB cards (128, 4 MiB of 4.125). Elsewhere
@@ -1741,6 +1749,14 @@ typedef struct {
 // 3060 too). What argues against it: forced on a 3080 10 GB at 64, the flip read -0.71% while
 // its clock rose (+0.68%), so it lost about 1.4% a clock somewhere; a wider batch may or may
 // not keep that. Host only.
+// Raced on Salad on 6 November, RTX 3080 10 GB, against the band walk (every width 400/400
+// hits). At 96 offsets memory busy fell from 21-23% to 13-14% and the clock rose 1.1%, but the
+// flip lost 1.5-1.6% a clock, so it lost overall:
+//   320 W PC: -0.44% (+-0.07, ahead 0/46; a copy of the release +0.01%)
+//   309 W PC: -0.55% (+-0.20, ahead 2/45; the copy +0.05%)
+//   340 W PC that another load shared now and then: in the rounds the card was ours alone, 96
+//   +0.05%, 80 -0.08%, 64 -0.05%; in the shared rounds 96 +0.32%.
+// The byte model doesn't predict this card, so no share should take it: leave FILL at 0.
 #ifndef PEARL_AMPERE_FLIP_FILL
 #define PEARL_AMPERE_FLIP_FILL 0
 #endif
