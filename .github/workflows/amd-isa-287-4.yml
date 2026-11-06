@@ -20,6 +20,11 @@ env:
     late2=-DPEARL_AMD_RDLATE=2;
     late1t=-DPEARL_AMD_RDLATE=1 -DPEARL_AMD_RDTREE=1;
     late2t=-DPEARL_AMD_RDLATE=2 -DPEARL_AMD_RDTREE=1
+  # Clock-stamp builds (timing only), compiled for their registers: a stamp build must keep its twin's VGPRs.
+  STAMPS: >-
+    baseS=-DPEARL_AMD_STAMP=1;
+    late1tS=-DPEARL_AMD_RDLATE=1 -DPEARL_AMD_RDTREE=1 -DPEARL_AMD_STAMP=1;
+    late2tS=-DPEARL_AMD_RDLATE=2 -DPEARL_AMD_RDTREE=1 -DPEARL_AMD_STAMP=1
 
 jobs:
   isa:
@@ -35,9 +40,11 @@ jobs:
           set -u
           V=$(echo "$VARIANTS" | tr -d '\n' | sed 's/; */;/g; s/^ *//; s/ *$//')
           echo "variants: $V"
+          W=$(echo "$STAMPS" | tr -d '\n' | sed 's/; */;/g; s/^ *//; s/ *$//')
           for a in gfx1201 gfx1200; do
             mkdir -p "$PWD/isa/$a"
-            VARIANTS="$V" ARCH=$a CHECK_ROOT="$PWD/isa/$a" bash test/variant-check.sh || true
+            VARIANTS="$V;$W" TWINS="baseS=base late1tS=late1t late2tS=late2t" ARCH=$a CHECK_ROOT="$PWD/isa/$a" \
+              bash test/variant-check.sh || true
             for f in "$PWD"/isa/$a/*.fold; do
               echo "$a $(basename "$f" .fold) fold md5 $(md5sum < "$f" | cut -c1-12)"
             done
