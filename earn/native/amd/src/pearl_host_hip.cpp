@@ -81,14 +81,8 @@ struct PearlSearchResult {
 
 namespace {
 
-// Where the matrix folds and dot4 hash their transcripts (PEARL_AMD_FUSE in pearl_amd_fold.h).
-#if PEARL_AMD_FUSE
-#define PEARL_AMD_HASH_TEXT "hash in the fold"
-#else
-#define PEARL_AMD_HASH_TEXT "hash in its own kernel"
-#endif
-
-// The folds, in the order of their PEARL_AMD_CAP_* bits.
+// The folds, in the order of their PEARL_AMD_CAP_* bits. Where a fold hashes its transcripts depends on the
+// card's code object (Ctx::fuse), so pearl_host_fold_name adds it.
 struct FoldInfo {
   const char *name;
   uint32_t cap;
@@ -97,17 +91,17 @@ struct FoldInfo {
 };
 const FoldInfo kFolds[] = {
     {"ref", PEARL_AMD_CAP_REF, PEARL_AMD_REF_BM, PEARL_AMD_REF_BN,
-     "ref 32x64, dot products from LDS, hash in its own kernel"},
+     "ref 32x64, dot products from LDS"},
     {"mfma16", PEARL_AMD_CAP_MFMA16, PEARL_AMD_BM, PEARL_AMD_BN,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8, " PEARL_AMD_HASH_TEXT},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8"},
     {"mfma8", PEARL_AMD_CAP_MFMA8, PEARL_AMD_BM, PEARL_AMD_BN,
-     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8, " PEARL_AMD_HASH_TEXT},
+     "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8"},
     {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3), " PEARL_AMD_HASH_TEXT},
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)"},
     {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN,
-     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4), " PEARL_AMD_HASH_TEXT},
+     "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)"},
     {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN,
-     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers, " PEARL_AMD_HASH_TEXT},
+     "dot4 128x256, 8 waves of 64x64, v_dot4 from registers"},
 };
 const int kFoldCount = (int)(sizeof kFolds / sizeof kFolds[0]);
 
@@ -138,6 +132,7 @@ struct Ctx {
   bool timing = false;      // a PEARL_AMD_CAP_TIMING build (PEARL_AMD_ABLATE): timing only, the same way
   bool kwrap = false;       // the card's code object has the wrap readout, so k may pass 2048
   bool rank128 = false;     // and its matrix fold takes rank PEARL_FOLD_RANK only (PEARL_AMD_CAP_RANK)
+  bool fuse = false;        // and every fold but ref hashes its own transcripts (PEARL_AMD_CAP_FUSE)
   bool checkHits = false;   // the opener recomputes every hit before it sends it (pearl_host_create_checked)
   bool untested = false;    // the card's fold has not run on its kind of card, and mines because of checkHits
 #if PEARL_AMD_STAMP
@@ -735,6 +730,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->timing = (caps[0] & PEARL_AMD_CAP_TIMING) != 0;
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
+  ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1524,37 +1520,31 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
-#if PEARL_AMD_FUSE
-  // PEARL_AMD_FUSE (pearl_amd_fold.h): every fold but the reference hashes its own transcripts into the hit
-  // list, so it is given no transcript buffer (it stores nothing) and no hash kernel follows it.
-  const bool fused = f.cap != PEARL_AMD_CAP_REF;
+  // In a code object with PEARL_AMD_FUSE (pearl_amd_fold.h; the caps say, ctx->fuse) every fold but the
+  // reference hashes its own transcripts into the hit list, so it is given no transcript buffer (it stores
+  // nothing) and no hash kernel follows it. Every fold takes the test and the list either way.
+  const bool fused = ctx->fuse && f.cap != PEARL_AMD_CAP_REF;
   if (fused) tr = nullptr;
-#define PEARL_AMD_FUSE_LAUNCH , test, hitList
-#else
-  const bool fused = false;
-#define PEARL_AMD_FUSE_LAUNCH
-#endif
   switch (f.cap) {
     case PEARL_AMD_CAP_MFMA16:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_MFMA8:
-      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_WMMA11:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_WMMA12:
-      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
     case PEARL_AMD_CAP_DOT4:
-      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
     default:
-      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);
+      hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, st, ap, bp, k, rank, col0, rv, tr, test, hitList);
       break;
   }
-#undef PEARL_AMD_FUSE_LAUNCH
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
   if (!fused)
     hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
@@ -1681,8 +1671,10 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 extern "C" const char *pearl_host_fold_name(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || ctx->fold < 0) return "unresolved";
-  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, batch %u column offsets, k %u%s%s%s%s",
-           kFolds[ctx->fold].text, ctx->colBatch, ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
+  const bool fused = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
+  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, %s, batch %u column offsets, k %u%s%s%s%s",
+           kFolds[ctx->fold].text, fused ? "hash in the fold" : "hash in its own kernel", ctx->colBatch,
+           ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
 }

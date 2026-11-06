@@ -54,7 +54,8 @@ stops and says so, so the two cannot drift silently.
 **The folds are new.** Each computes C = A' x B'ᵀ in int32 over k and, at each of the 16
 chunk ends, XORs every region's 256 running sums into that region's transcript word.
 Each fold writes all 16 words of every region of the batch, and `pearl_amd_hash` hashes
-them in a kernel of its own (as the CUDA core does on GA100 and Hopper).
+them in a kernel of its own (as the CUDA core does on GA100 and Hopper). RDNA 4 hashes inside
+the fold instead (below).
 
 | Fold | Targets | Instruction | Tile |
 |---|---|---|---|
@@ -123,6 +124,18 @@ the fold without them. The Windows core leaves them out, as it does the wrap rea
 only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
 (`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
 (2.1-2.6% slower); see `tuning/benchmark.md`.
+
+**RDNA 4 hashes inside the fold** (`PEARL_AMD_FUSE`, 6 November). Elsewhere each fold stores every
+region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms of a 30-31 ms
+batch on an RX 9060 XT (1.4%). In RDNA 4 code a block instead ends its tile by putting its 128 regions
+in the B' staging LDS, and half its threads hash one region each into the hit list, with the same
+region numbers. The fold got 0.33 ms slower (the hash's VALU doesn't overlap the WMMAs) and the batch
+0.11 ms faster. `hashrate.js` against the release, interleaved on one PC: +0.34% on an RX 9060 XT
+(+0.30 to +0.38% a round, copies of each build within 0.08%) and +0.36 to +0.44% on another, with
+verify-hits 400 of 400. The caps say so (`PEARL_AMD_CAP_FUSE`), and the host then skips the hash kernel
+and gives the fold no transcript buffer; the "mining on GPU" line says "hash in the fold". The fold
+test checks the fold's hits against `pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=0`
+builds the fold without it; the Windows core leaves it out.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -247,10 +260,11 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200, gfx1201 | wmma12 | 201 | - | 24 KB | 7 |
+| gfx1200, gfx1201 | wmma12 | 202 | - | 24 KB | 7 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
-set's (`PEARL_AMD_RDNA4_SET`, 4 November): 201 VGPRs and 24 KB of LDS, against 193 and 36 KB without it,
+set's (`PEARL_AMD_RDNA4_SET`, 4 November) with the hash in the fold (`PEARL_AMD_FUSE`, 6 November, one VGPR
+more): 201 VGPRs and 24 KB of LDS without the hash, against 193 and 36 KB without the set,
 and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
 runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
@@ -428,11 +442,9 @@ by contrast, stops only its own card.
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; persistent
   tiles; the batch and band sized from the L2 and Infinity Cache as `learnings.md` describes
   for NVIDIA.
-- The hash inside the fold: `-DPEARL_AMD_FUSE=1` builds folds that hash their own tile's regions
-  (through LDS, a thread a region) into the hit list, so no transcript is stored and no hash kernel
-  runs. Off until it is raced against the release on a card (`pearl_amd_fold.h` says what it saves
-  and costs). Its fold test also checks the fold's hits against `pearl_amd_hash`'s over the same
-  words, and CI checks its registers and builds it, without shipping it.
+- The hash inside the fold on RDNA 3: `-DPEARL_AMD_FUSE=1` turns it on for every target. RDNA 4
+  has it by default since 6 November (below); no RDNA 3 card has raced it yet. CI checks its
+  registers on every target, without failing the run.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's

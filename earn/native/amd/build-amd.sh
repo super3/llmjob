@@ -16,8 +16,9 @@
 #                                   PEARL_AMD_CFLAGS, if a gfx12 target lacks the wrap
 #                                   readout (PEARL_AMD_KWRAP) or any other target has it, or
 #                                   a target lacks the fold the host runs on it (folds_of).
-#                                   On Windows no target has the wrap readout (KWRAP_OS)
-#                                   or the RDNA 4 cuts of 4 November (SET_OS).
+#                                   On Windows no target has the wrap readout (KWRAP_OS),
+#                                   the RDNA 4 cuts of 4 November (SET_OS) or the hash in
+#                                   the fold (FUSE_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -73,6 +74,10 @@ if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 # the SDK's clang 21 has never built them. Also before PEARL_AMD_CFLAGS.
 SET_OS=
 if windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi
+# The hash in the fold (PEARL_AMD_FUSE, on in gfx12 code since 6 November) likewise: timed only on Linux with ROCm's
+# clang 22.
+FUSE_OS=
+if windows; then FUSE_OS=-DPEARL_AMD_FUSE=0; fi
 
 mode="${1:-}"
 shift || true
@@ -268,7 +273,7 @@ case "$mode" in
     # The gpu build's flags, less -fPIC, and with the static C runtime: node-gyp builds the
     # rest of the addon with /MT, and both halves must use the same one. MSVC's headers warn
     # about getenv and friends unless told not to.
-    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"
+    flags="-std=c++17 -O3 -fms-runtime-lib=static -D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"
     targets="-DPEARL_AMD_TARGETS=\"$(echo $archs | tr ' ' ',')\""
     echo "winlib: kernels and host for $archs"
     "$cc" -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" \
@@ -295,7 +300,7 @@ case "$mode" in
     printf '%-9s %-22s %6s %6s %8s %7s %8s %10s %5s\n' target kernel VGPRs AGPRs scratch spills LDS "waves/SIMD" wrap
     for a in $archs; do
       log="$OUT/check/$a.txt"
-      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
+      if ! "$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only \
           -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/check/$a.o" -Rpass-analysis=kernel-resource-usage > "$log" 2>&1; then
         echo "$a: compile failed, see $log" >&2
         bad=1

@@ -116,6 +116,7 @@
 #define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines
 #define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too
 #define PEARL_AMD_CAP_RANK 0x2000u     // PEARL_AMD_CRANK: the matrix fold takes rank PEARL_FOLD_RANK only
+#define PEARL_AMD_CAP_FUSE 0x4000u     // PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -895,30 +896,33 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #error "PEARL_AMD_KWRAP and PEARL_AMD_READOUT_DROP don't go together: build one or the other"
 #endif
 
-// PEARL_AMD_FUSE=1: the matrix folds and dot4 hash their own transcripts (issue #287, item 6). Off until it is
-// timed. Without it every fold stores all 16 words of every region, 128 MiB for a batch of 256 at the mainnet m,
-// and pearl_amd_hash reads them back in a kernel of its own: 0.23-0.24 ms of an 18 ms batch on an RX 9070 XT at
-// k 4096 (1.3%), 0.18 ms of it the hash's arithmetic, and 0.15-0.17 ms of a 20.6 ms batch on an RX 7900 XTX
-// (0.8%; tuning/benchmark.md). With it, a block ends its tile by putting the tile's 128 regions in LDS (the B'
-// staging buffers are free by then), and 128 of its threads hash one region each and test it as pearl_amd_hash
-// does, into the same hit list with the same region numbers. No transcript is stored and no hash kernel runs
-// (the reference fold still stores, and the host still hashes after it). That saves the hash kernel's reads and
-// launch and the fold's stores. It costs the hash's VALU inside the fold, where on RDNA 4 a VALU instruction
-// doesn't overlap the WMMAs. A fold given a transcript buffer (the fold test does) stores the words as well.
+// PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts (issue #287, item 6). Without it every
+// fold stores all 16 words of every region, 128 MiB for a batch of 256 at the mainnet m, and pearl_amd_hash
+// reads them back in a kernel of its own: 0.41-0.45 ms of a 30-31 ms batch on an RX 9060 XT at k 4096 (1.4%),
+// and 0.15-0.17 ms of a 20.6 ms batch on an RX 7900 XTX (0.8%). With it, a block ends its tile by putting the
+// tile's 128 regions in LDS (the B' staging buffers are free by then), and 128 of its threads hash one region
+// each and test it as pearl_amd_hash does, into the same hit list with the same region numbers. No transcript
+// is stored and no hash kernel runs (the reference fold still stores, and the host still hashes after it). That
+// saves the hash kernel's reads and launch and the fold's stores. It costs the hash's VALU inside the fold,
+// where on RDNA 4 a VALU instruction doesn't overlap the WMMAs: on the 9060 XT the fold got 0.33 ms slower and
+// the batch 0.11 ms faster. A fold given a transcript buffer (the fold test does) stores the words as well.
+// On by default in RDNA 4 (gfx12) device passes: hashrate.js against the release, interleaved on one PC, gained
+// +0.34% on an RX 9060 XT (+0.30 to +0.38% a round, two copies of each build within 0.08% of each other) and
+// +0.36 to +0.44% on another, with verify-hits 400 of 400 (tuning/benchmark.md, 6 November). Other targets
+// keep the hash kernel: no card of theirs has timed it. The Windows core builds with it off (build-amd.sh), as
+// it does the RDNA 4 set. -DPEARL_AMD_FUSE=0 builds the release before it, to race against; =1 turns it on for
+// every target. Only a gfx12 device pass sees the default, so the host learns which a card has from its caps
+// (PEARL_AMD_CAP_FUSE), never from this macro.
 #ifndef PEARL_AMD_FUSE
-#define PEARL_AMD_FUSE 0
+#define PEARL_AMD_FUSE PEARL_AMD_WMMA12
 #endif
 #if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1
 #error "PEARL_AMD_FUSE is 0 or 1"
 #endif
-// The fold kernels' extra parameters with it, and the arguments that pass them on.
-#if PEARL_AMD_FUSE
+// Every fold takes the test and the hit list, so one host launch fits every target's code object. A fold that
+// doesn't hash ignores them.
 #define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, [[maybe_unused]] const PearlHitList hits
 #define PEARL_AMD_FUSE_ARGS , test, hits
-#else
-#define PEARL_AMD_FUSE_PARAMS
-#define PEARL_AMD_FUSE_ARGS
-#endif
 
 // pearl_transcript_hash_again, for AMD. That one hides its inputs from the compiler with an
 // empty asm on "r" operands, which on AMD GPUs means scalar registers: the inputs are
@@ -1599,7 +1603,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
     }
   }
+#if !PEARL_AMD_STAMP
   if (tr == nullptr) return;   // the miner's launch; the fold test's passes a buffer and gets the words too
+#endif
 #endif
 
   // Each lane writes words r and r + 8 of its regions.
@@ -1610,6 +1616,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     for (int cb = 0; cb < CB; cb++)
 #pragma unroll
       for (int q = 0; q < NRO; q++) {
+#if PEARL_AMD_STAMP
+#if PEARL_AMD_FUSE
+        if (tr == nullptr) break;   // no words to store, but the stamps below still are
+#endif
+#endif
         const uint32_t roIdx = P::kRoByLane ? (uint32_t)(lane >> 5) : (uint32_t)q;
         const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + roIdx;
         const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
@@ -1804,7 +1815,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 // wrap readout says so too: it is how the host knows a card can mine k 4096 (pearl_host_card_k).
 // And one whose PF2 loop has PEARL_AMD_CRANK (RDNA 4's, by default) says its matrix fold takes
 // rank PEARL_FOLD_RANK only: the host pass never sees the gfx12 default, so the macro there would
-// say nothing about the card.
+// say nothing about the card. The same goes for one whose folds hash their own transcripts
+// (PEARL_AMD_FUSE): the host then launches no hash kernel after them.
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -1819,6 +1831,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_DOT4_FOLD) out[0] |= PEARL_AMD_CAP_DOT4;
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
+  if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;

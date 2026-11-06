@@ -29,9 +29,10 @@
 // write_stamps), then PEARL_AMD_STAMP_WORDS words for each wave of each block. test/stamp-summary.js reads it;
 // sweep.sh's SWEEP_STAMP runs both. With miner operands it reads the clock the miner runs at.
 //
-// In a -DPEARL_AMD_FUSE=1 build (pearl_amd_fold.h) the matrix folds and dot4 also hash their transcripts. The
-// check launch tests them at a target about 16 regions meet, and its hits must be pearl_amd_hash's over the words
-// the same launch stored. The timed launches store no words and test at target 0, as the miner's launches do.
+// Where the card's code object has PEARL_AMD_FUSE (pearl_amd_fold.h: RDNA 4's by default; its caps say), the
+// matrix folds and dot4 also hash their transcripts. The check launch tests them at a target about 16 regions
+// meet, and its hits must be pearl_amd_hash's over the words the same launch stored. The timed launches store no
+// words and test at target 0, as the miner's launches do.
 #include <hip/hip_runtime.h>
 
 #include <algorithm>
@@ -85,33 +86,28 @@ bool ok(hipError_t e, const char *what) {
   return false;
 }
 
-#if PEARL_AMD_FUSE
-// What a fused fold tests its transcripts against, and where its hits go; launch() passes them on.
+// What a fused fold tests its transcripts against, and where its hits go; launch() passes them on to every
+// fold, and one that doesn't hash ignores them.
 PearlTranscriptTest g_test = {};
 PearlHitList g_hits = {};
-#define PEARL_AMD_FT_FUSE , g_test, g_hits
-#else
-#define PEARL_AMD_FT_FUSE
-#endif
 
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
             uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr) {
   const dim3 block(PEARL_AMD_THREADS);
   if (f.cap == PEARL_AMD_CAP_REF)
-    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else if (f.cap == PEARL_AMD_CAP_MFMA16)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else if (f.cap == PEARL_AMD_CAP_MFMA8)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else if (f.cap == PEARL_AMD_CAP_WMMA11)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else if (f.cap == PEARL_AMD_CAP_WMMA12)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
   else
-    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
+    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr, g_test, g_hits);
 }
 
-#if PEARL_AMD_FUSE
 // A hit list in device memory (PEARL_MAX_HITS hits), and its hits read back sorted by region.
 struct Hit {
   uint32_t index, hash[8], transcript[16];
@@ -146,7 +142,6 @@ uint32_t read_hits(const PearlHitList &h, std::vector<Hit> &out) {
   std::sort(out.begin(), out.end());
   return n;
 }
-#endif
 
 #if PEARL_AMD_STAMP
 // The stamps file: 16 words of header, little-endian as the card and the PC both are, then the records.
@@ -201,6 +196,7 @@ int main(int argc, char **argv) {
     return 2;
   }
   const bool wrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
+  const bool fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;   // the matrix folds and dot4 hash (PEARL_AMD_FUSE)
   const uint32_t k = kArg ? kArg : (wrap && PEARL_FOLD_K < 4096u ? 4096u : (uint32_t)PEARL_FOLD_K);
   const uint32_t chunks = k / rank;
   // The host's rule (pearl_host_submit): at most 16 chunks without the wrap readout, and past 16
@@ -302,7 +298,6 @@ int main(int argc, char **argv) {
     (void)hipGetLastError();
   }
 #endif
-#if PEARL_AMD_FUSE
   // The check's test: a random key, either byte order, and a top word about 16 of the regions meet. The timed
   // launches' test: target 0, which nothing meets, as hashrate.js mines.
   PearlTranscriptTest checkTest = {}, timedTest = {};
@@ -313,7 +308,6 @@ int main(int argc, char **argv) {
   for (int i = 1; i < 8; i++) checkTest.target_w[i] = 0xFFFFFFFFu;
   PearlHitList foldHits = {}, kernelHits = {};
   if (!hit_list(foldHits) || !hit_list(kernelHits)) return 2;
-#endif
   int failed = 0, ran = 0;
   std::vector<uint32_t> got(want.size());
   for (const Fold &f : folds) {
@@ -322,11 +316,9 @@ int main(int argc, char **argv) {
     const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
-#if PEARL_AMD_FUSE
     g_test = checkTest;
     g_hits = foldHits;
     hipMemset(foldHits.count, 0, 4);
-#endif
     // One launch to check (and to load the code), then `reps` more to time.
     const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
@@ -334,8 +326,7 @@ int main(int argc, char **argv) {
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
     uint32_t *timedTr = dTr;
-#if PEARL_AMD_FUSE
-    if (f.tall) {
+    if (fuse && f.tall) {
       // The fold's hits against pearl_amd_hash's over the words that launch stored.
       hipMemset(kernelHits.count, 0, 4);
       hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
@@ -353,7 +344,6 @@ int main(int argc, char **argv) {
       timedTr = nullptr;   // the miner's launch: no words stored
     }
     g_test = timedTest;
-#endif
     const int n = reps > 0 ? reps : 1;
 #if PEARL_AMD_STAMP
     // The stamps: the timed launches store them, each over the last; the check launch above didn't.
@@ -401,10 +391,8 @@ int main(int argc, char **argv) {
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);
-#if PEARL_AMD_FUSE
   free_hits(foldHits);
   free_hits(kernelHits);
-#endif
 #if PEARL_AMD_STAMP
   if (dStamps) hipFree(dStamps);
 #endif

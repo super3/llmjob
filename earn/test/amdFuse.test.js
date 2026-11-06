@@ -2,10 +2,12 @@
 
 // PEARL_AMD_FUSE (earn/native/amd/src/pearl_amd_fold.h): the matrix folds and dot4 hash their own transcripts. A
 // block puts its tile's 128 regions in LDS, and 128 of its threads hash one each into the hit list, so no
-// transcript is stored and no hash kernel runs. No HIP compiler runs here, so the C is read as text. These check
-// that a release build is unchanged, how the host and the fold test use the switch, and, run as JS for every
-// fold's shape, the gather's index arithmetic: every word of every region lands in LDS once, and the thread that
-// hashes a region numbers it as the store path does. Also sweep.sh's trace line, which a race reads.
+// transcript is stored and no hash kernel runs. It is on by default in RDNA 4 (gfx12) device passes only, so the
+// host and the fold test must learn it from the card's caps, and the Windows core leaves it out. No HIP compiler
+// runs here, so the C is read as text. These check that selection, that a build without it is the release's, and,
+// run as JS for every fold's shape, the gather's index arithmetic: every word of every region lands in LDS once,
+// and the thread that hashes a region numbers it as the store path does. Also sweep.sh's trace line, which a race
+// reads.
 
 const fs = require('fs');
 const os = require('os');
@@ -19,6 +21,7 @@ const FOLD = read('amd', 'src', 'pearl_amd_fold.h');
 const HOST = read('amd', 'src', 'pearl_host_hip.cpp');
 const FOLDTEST = read('amd', 'test', 'pearl_amd_foldtest.cpp');
 const SWEEP = read('amd', 'test', 'sweep.sh');
+const BUILD = read('amd', 'build-amd.sh');
 const WORKFLOW = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'native-core.yml'), 'utf8')
   .replace(/\r\n/g, '\n');
 
@@ -36,16 +39,65 @@ const fused = (t) => slice(t, '  {   // PEARL_AMD_FUSE (above)', '\n  }\n');
 const submit = (t) => slice(t, 'extern "C" bool pearl_host_submit(', '\n}\n');
 
 describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
-  it('is 0 unless a build sets it, and takes 0 or 1', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n#define PEARL_AMD_FUSE 0\n#endif\n'
+  // Code without its comments: what the compiler reads.
+  const code = (t) => t.split('\n').map((l) => l.replace(/\/\/.*$/, '')).join('\n');
+
+  it('is on in a gfx12 device pass only: its default is PEARL_AMD_WMMA12, and it takes 0 or 1', () => {
+    expect(FOLD).toContain('#ifndef PEARL_AMD_FUSE\n#define PEARL_AMD_FUSE PEARL_AMD_WMMA12\n#endif\n'
       + '#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1\n#error "PEARL_AMD_FUSE is 0 or 1"\n#endif\n');
+    // PEARL_AMD_WMMA12 is 1 only in a gfx12 device pass, and has its value before the default reads it.
+    expect(FOLD).toContain('#if defined(__GFX12__)\n#define PEARL_AMD_WMMA12 1\n#endif');
+    expect(FOLD.indexOf('#define PEARL_AMD_FUSE PEARL_AMD_WMMA12'))
+      .toBeGreaterThan(FOLD.indexOf('#ifndef PEARL_AMD_WMMA12\n#define PEARL_AMD_WMMA12 0\n#endif'));
   });
 
-  it('leaves a release build\'s folds, hash kernel and host as they were', () => {
+  it('says so in the caps, and the host and the fold test read the caps, never the macro', () => {
+    const bits = [...FOLD.matchAll(/#define PEARL_AMD_CAP_\w+ (0x[0-9a-f]+|\d+)u/g)].map((m) => Number(m[1]));
+    expect(new Set(bits).size).toBe(bits.length);
+    expect(FOLD).toContain('#define PEARL_AMD_CAP_FUSE 0x4000u');
+    expect(slice(FOLD, 'void pearl_amd_caps(uint32_t *out) {', '\n}\n'))
+      .toContain('  if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;\n');
+    // The host pass never sees the gfx12 default, so neither the host nor the fold test may read the macro.
+    expect(code(HOST)).not.toContain('PEARL_AMD_FUSE');
+    expect(code(FOLDTEST)).not.toContain('PEARL_AMD_FUSE');
+    expect(HOST).toContain('  ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;\n');
+    expect(FOLDTEST).toContain('  const bool fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;');
+  });
+
+  it('passes every fold the test and hit list, and only a fused card\'s skip the buffer and the hash kernel', () => {
+    // Unconditional, so one host launch fits every target's code object.
+    expect(FOLD).toContain('\n#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, '
+      + '[[maybe_unused]] const PearlHitList hits\n#define PEARL_AMD_FUSE_ARGS , test, hits\n');
+    expect(at(FOLD, 0)).toContain('#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]]');
+    expect(FOLD).toContain('uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS\n');
+    for (const p of ['Mfma16', 'Mfma8', 'Wmma11', 'Wmma12', 'Dot4']) {
+      expect(FOLD).toContain(`pearl_amd_fold_body<PearlAmd${p}>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);`);
+    }
+    const s = submit(HOST);
+    expect(s).toContain('  const bool fused = ctx->fuse && f.cap != PEARL_AMD_CAP_REF;\n  if (fused) tr = nullptr;\n'
+      + '  switch (f.cap) {\n');
+    const launches = s.match(/hipLaunchKernelGGL\(pearl_amd_fold_\w+, [^;]*;/g);
+    expect(launches.map((l) => l.match(/pearl_amd_fold_(\w+)/)[1]))
+      .toEqual(['mfma16', 'mfma8', 'wmma11', 'wmma12', 'dot4', 'ref']);
+    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, col0, rv, tr, test, hitList);')).toBe(true);
+    expect(s).toContain('  if (!fused)\n    hipLaunchKernelGGL(pearl_amd_hash,');
+    // The hit count is cleared and the test and list made before the fold, which may write them.
+    expect(s.indexOf('hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);')).toBeLessThan(s.indexOf('switch (f.cap)'));
+    expect(s.indexOf('PearlHitList hitList;')).toBeLessThan(s.indexOf('switch (f.cap)'));
+  });
+
+  it('says where the card hashes in the fold\'s description, which the "mining on GPU" line shows', () => {
+    const name = slice(HOST, 'extern "C" const char *pearl_host_fold_name(void *handle) {', '\n}\n');
+    expect(name).toContain('const bool fused = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;');
+    expect(name).toContain('kFolds[ctx->fold].text, fused ? "hash in the fold" : "hash in its own kernel"');
+    // The table's texts no longer say it, so a card without it reads as it did.
+    expect(slice(HOST, 'const FoldInfo kFolds[] = {', '\n};\n')).not.toContain('hash in');
+  });
+
+  it('leaves a build without it as the release was', () => {
     const rel = at(FOLD, 0);
-    expect(rel).toContain('#define PEARL_AMD_FUSE_PARAMS\n#define PEARL_AMD_FUSE_ARGS\n\n');
     expect(rel).not.toContain('PEARL_AMD_FUSE (above)');
-    expect(rel).not.toContain('if (tr == nullptr) return;');
+    expect(rel).not.toContain('if (tr == nullptr)');
     // The words are stored as before, and the hash kernel tests them with the code it had (now a function).
     expect(rel).toContain('        w[r] = keepLo[rb][cb][q];\n        w[r + 8] = keepHi[rb][cb][q];\n      }\n');
     expect(slice(rel, 'void pearl_amd_hash(', '\n}\n')).toContain(
@@ -64,31 +116,6 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
       '#pragma unroll',
       '  for (int j = 0; j < 16; j++) hits.transcript[slot * 16u + j] = tm[j];',
     ].join('\n'));
-    const s = submit(at(HOST, 0));
-    expect(s).toContain('  const bool fused = false;\n#define PEARL_AMD_FUSE_LAUNCH\n  switch (f.cap) {\n');
-    expect(s).not.toContain('tr = nullptr');
-    expect(s).toContain('  if (!fused)\n    hipLaunchKernelGGL(pearl_amd_hash,');
-    expect(at(HOST, 0)).toContain('#define PEARL_AMD_HASH_TEXT "hash in its own kernel"\n\n// The folds');
-  });
-
-  it('passes every fold the test and hit list, and only the reference fold a buffer and a hash kernel', () => {
-    expect(FOLD).toContain('#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, '
-      + '[[maybe_unused]] const PearlHitList hits\n#define PEARL_AMD_FUSE_ARGS , test, hits\n');
-    expect(FOLD).toContain('uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS\n');
-    for (const p of ['Mfma16', 'Mfma8', 'Wmma11', 'Wmma12', 'Dot4']) {
-      expect(FOLD).toContain(`pearl_amd_fold_body<PearlAmd${p}>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);`);
-    }
-    const s = submit(at(HOST, 1));
-    expect(s).toContain('  const bool fused = f.cap != PEARL_AMD_CAP_REF;\n  if (fused) tr = nullptr;\n'
-      + '#define PEARL_AMD_FUSE_LAUNCH , test, hitList\n');
-    const launches = s.match(/hipLaunchKernelGGL\(pearl_amd_fold_\w+, [^;]*;/g);
-    expect(launches.map((l) => l.match(/pearl_amd_fold_(\w+)/)[1]))
-      .toEqual(['mfma16', 'mfma8', 'wmma11', 'wmma12', 'dot4', 'ref']);
-    for (const l of launches) expect(l.endsWith('ap, bp, k, rank, col0, rv, tr PEARL_AMD_FUSE_LAUNCH);')).toBe(true);
-    // The hit count is cleared and the test and list made before the fold, which now writes them.
-    expect(s.indexOf('hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);')).toBeLessThan(s.indexOf('switch (f.cap)'));
-    expect(s.indexOf('PearlHitList hitList;')).toBeLessThan(s.indexOf('switch (f.cap)'));
-    expect(at(HOST, 1)).toContain('#define PEARL_AMD_HASH_TEXT "hash in the fold"\n');
   });
 
   it('hashes after the slab loop, and returns before the stores only when given no buffer', () => {
@@ -98,12 +125,34 @@ describe('the fused-hash switch (PEARL_AMD_FUSE)', () => {
     expect(body.indexOf(block)).toBeGreaterThan(body.indexOf('  // The end of chunk c: its transcript word'));
     expect(body).toContain(block + '  if (tr == nullptr) return;');
     expect(body.indexOf('if (tr == nullptr) return;')).toBeLessThan(body.indexOf('// Each lane writes words r and r + 8'));
+    expect(body).not.toContain('if (tr == nullptr) break;');
     // Two barriers: the last slab's reads are done before the words go in the staging, and the words are all
     // there before any thread reads its region.
     expect(block.match(/__syncthreads\(\);/g)).toHaveLength(2);
     expect(block).toContain('uint32_t *const sT = reinterpret_cast<uint32_t *>(&sB[0][0]);');
     expect(block).toContain('static_assert(2 * BN * S >= RR * RC * (int)PEARL_JACKPOT_BUCKETS * 4,');
     expect(block).toContain('pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);');
+  });
+
+  it('in a stamps build skips only the stores, so the stamps are still written', () => {
+    const f = preprocess(FOLD, { PEARL_AMD_FUSE: 1, PEARL_AMD_ABLATE: 0, PEARL_AMD_STAMP: 1 });
+    const body = slice(f, 'void pearl_amd_fold_body(', '\n}\n');
+    expect(body).toContain(fused(f));
+    expect(body).not.toContain('if (tr == nullptr) return;');
+    const stores = body.indexOf('// Each lane writes words r and r + 8');
+    const skip = body.indexOf('        if (tr == nullptr) break;   // no words to store, but the stamps below still are\n'
+      + '        const uint32_t roIdx');
+    const stamps = body.indexOf('PEARL_AMD_STAMP: the end, then lane 0 of each wave stores its words');
+    expect([stores > 0, stores < skip, skip < stamps]).toEqual([true, true, true]);
+  });
+
+  it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
+    expect(BUILD).toContain('FUSE_OS=\nif windows; then FUSE_OS=-DPEARL_AMD_FUSE=0; fi\n');
+    expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"');
+    expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    // The gpu build (Linux, the release's) has no OS flag: the default holds there.
+    const gpu = BUILD.slice(BUILD.indexOf('\n  gpu)\n'), BUILD.indexOf('\n  winlib)\n'));
+    expect(gpu).not.toContain('FUSE_OS');
   });
 });
 
@@ -191,24 +240,24 @@ describe('the fused fold\'s gather, run as JS', () => {
   });
 });
 
-describe('the fold test with PEARL_AMD_FUSE', () => {
-  const ft = at(FOLDTEST, 1);
-
-  it('checks the fold\'s hits against pearl_amd_hash\'s, then times launches that store nothing', () => {
-    expect(ft).toContain('#define PEARL_AMD_FT_FUSE , g_test, g_hits\n');
-    expect(ft.match(/rowsValid, tr PEARL_AMD_FT_FUSE\);/g)).toHaveLength(6);
-    const main = ft.slice(ft.indexOf('int main('));
+describe('the fold test and PEARL_AMD_FUSE', () => {
+  it('checks a fused card\'s hits against pearl_amd_hash\'s, then times launches that store nothing', () => {
+    expect(FOLDTEST.match(/rowsValid, tr, g_test, g_hits\);/g)).toHaveLength(6);
+    const main = FOLDTEST.slice(FOLDTEST.indexOf('int main('));
     const check = main.indexOf('launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);');
+    const gate = main.indexOf('    if (fuse && f.tall) {\n      // The fold\'s hits against pearl_amd_hash\'s');
     const kernel = main.indexOf('hipLaunchKernelGGL(pearl_amd_hash,');
     const timed = main.indexOf('for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);');
-    expect([check > 0, check < kernel, kernel < timed]).toEqual([true, true, true]);
+    expect([check > 0, check < gate, gate < kernel, kernel < timed]).toEqual([true, true, true, true]);
     expect(main).toContain('(const uint32_t *)dTr, regions, checkTest, kernelHits);');
     expect(main).toContain('if (nf != nk || nk > PEARL_MAX_HITS || hf != hk) {');
+    // Only a fused card's timed launches store nothing; the rest store the words as before.
+    expect(main).toContain('    uint32_t *timedTr = dTr;\n    if (fuse && f.tall) {');
     expect(main).toContain('      timedTr = nullptr;   // the miner\'s launch: no words stored\n    }\n    g_test = timedTest;');
   });
 
   it('sets a target about 16 regions meet, at the sizes the fold test runs', () => {
-    expect(ft).toContain('const uint64_t top = (16ull << 32) / regions;');
+    expect(FOLDTEST).toContain('const uint64_t top = (16ull << 32) / regions;');
     for (const regions of [32 * 16, 64 * 64, 128 * 128, 8192 * 256]) {
       const top = Math.min(0xFFFFFFFF, Math.floor(16 * 2 ** 32 / regions));
       const expected = (top + 1) / 2 ** 32 * regions;
@@ -216,24 +265,17 @@ describe('the fold test with PEARL_AMD_FUSE', () => {
       expect(expected).toBeLessThan(17);
     }
   });
-
-  it('is the release\'s fold test without it', () => {
-    const rel = at(FOLDTEST, 0);
-    expect(rel).toContain('#define PEARL_AMD_FT_FUSE\n\nvoid launch(');
-    expect(rel).not.toContain('pearl_amd_hash,');
-    expect(rel).not.toContain('timedTr = nullptr');
-  });
 });
 
-describe('CI builds the fused variant without shipping it', () => {
-  it('checks and builds it before the release build overwrites build/', () => {
+describe('CI and PEARL_AMD_FUSE', () => {
+  it('checks every target with it on, after the release check and without failing the run', () => {
+    const release = WORKFLOW.indexOf('        run: ./build-amd.sh check\n');
     const fuseCheck = WORKFLOW.indexOf('run: PEARL_AMD_CFLAGS=-DPEARL_AMD_FUSE=1 ./build-amd.sh check\n');
-    const fuseBuild = WORKFLOW.indexOf('run: PEARL_AMD_CFLAGS=-DPEARL_AMD_FUSE=1 ./build-amd.sh gpu gfx1100 gfx1201\n');
-    const release = WORKFLOW.indexOf('- name: Build the addon (all 14 targets)');
-    expect([fuseCheck > 0, fuseCheck < fuseBuild, fuseBuild < release]).toEqual([true, true, true]);
-    for (const at of [fuseCheck, fuseBuild]) {
-      expect(WORKFLOW.slice(WORKFLOW.lastIndexOf('- name:', at), at)).toContain('continue-on-error: true');
-    }
+    const addon = WORKFLOW.indexOf('- name: Build the addon (all 14 targets)');
+    expect([release > 0, release < fuseCheck, fuseCheck < addon]).toEqual([true, true, true]);
+    expect(WORKFLOW.slice(WORKFLOW.lastIndexOf('- name:', fuseCheck), fuseCheck)).toContain('continue-on-error: true');
+    // The release build has it on gfx12 already; no separate fused build.
+    expect(WORKFLOW).not.toContain('-DPEARL_AMD_FUSE=1 ./build-amd.sh gpu');
   });
 });
 
