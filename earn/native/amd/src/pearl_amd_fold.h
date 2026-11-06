@@ -476,34 +476,28 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // loads below slab s's matrix instructions, about one slab ahead, and on gfx1100 (no PFX) the
 // LDS store and the barrier still wait for every load. The measured gains are real, but they
 // come mostly from the unrolled loop, the DPP readout and, on RDNA 4, PFX's barrier. Pinning
-// the loads at the top of the step (a sched_barrier after them) is untried. On by default on
+// the loads at the top of the step: PEARL_AMD_LPIN, and on RDNA 3 PEARL_AMD_PF2PIN. On by default on
 // RDNA 3 and RDNA 4. An RX
 // 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against 31.10-31.16
 // without, and 32.17-32.28 with the DPP readout below as well. RDNA 4: see PFX.
 #ifndef PEARL_AMD_PF2
 #define PEARL_AMD_PF2 (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
 #endif
-// PEARL_AMD_PF2PIN=1 (issue #287 item 8): RDNA 3's PF2 loop with its loads two slabs ahead in fact. In gfx11 code
-// only, it sets PEARL_AMD_PFX, PEARL_AMD_TID, PEARL_AMD_LPIN and PEARL_AMD_GOPQ (each below), which can still be
-// set one by one. Off by default until raced. What the gfx1100 assembly showed (ROCm 7.2, CI):
+// PEARL_AMD_PF2PIN=1 (issue #287 item 8): RDNA 3's PF2 loop with every load two slabs ahead in fact. In gfx11 code
+// only, it sets PEARL_AMD_PFX, PEARL_AMD_TID and PEARL_AMD_LPIN=2 (each below), which can still be set one by one.
+// Off by default until raced. What the gfx1100 assembly showed (ROCm 7.2, the release's image, 6 November):
 //   - The release issues slab s+2's loads at the top of step s, but __syncthreads()'s fence waits for them at the
 //     end of step s (vmcnt(0)): each load gets the 32 WMMAs of one slab, and its registers then sit a slab unused.
 //   - PFX alone (timed level on an RX 7900 XT) lets the compiler sink the loads to the end of the step: one slab.
-//   - PFX + LPIN keeps the loads of one step of the unrolled pair at the top, but the other step's sink past the
-//     pin into the block after its readout. LPIN's sched_barrier binds the scheduler inside a block, not machine
-//     sinking, and the slab loads count as loads of constant memory (const __restrict__ kernel arguments), which
-//     may move past any side effect.
-//   - GOPQ makes them ordinary loads, so the pin holds and every load gets two slabs.
+//   - PFX + LPIN=1 keeps the loads of one step of the unrolled pair at the top; the other step's sink past the
+//     sched_barrier into the block after its readout. Machine sinking stops a load only at a later store in its
+//     block, and a sched_barrier isn't one.
+//   - PFX + LPIN=2 keeps all six at the top: each gets 64 WMMAs. 235 VGPRs against 240, 6 waves, no spills; 233
+//     with PEARL_AMD_BUFLD, 232 with PEARL_AMD_CRANK and PEARL_AMD_SCHEDB, each still two slabs ahead.
 #ifndef PEARL_AMD_PF2PIN
 #define PEARL_AMD_PF2PIN 0
 #endif
 #define PEARL_AMD_PF2PIN_ON (PEARL_AMD_PF2PIN && PEARL_AMD_WMMA11)
-// PEARL_AMD_GOPQ=1: the tile bases pass through an empty asm, so alias analysis can't trace the slab loads to the
-// read-only kernel arguments. They are then ordinary loads, which the compiler can't move past a sched_barrier
-// (LPIN's). No instruction is added. Off by default; on with PEARL_AMD_PF2PIN in gfx11 code.
-#ifndef PEARL_AMD_GOPQ
-#define PEARL_AMD_GOPQ PEARL_AMD_PF2PIN_ON
-#endif
 // PEARL_AMD_PFX=1, with PF2: keep the loads two slabs ahead in flight across the barrier. Two
 // things stopped that. __syncthreads() is a workgroup fence for every address space, which
 // waits for every outstanding global load at each slab barrier (vmcnt(0) and an L0 invalidate
@@ -610,7 +604,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant. That binds the scheduler only,
 // inside one block. On gfx1100 machine sinking still moved one step's loads into the block after its readout,
 // since nothing after them in their block stores. =2 adds an empty asm with a memory clobber after the loads,
-// which counts as a store there, so the loads stay. It adds no instruction.
+// which counts as a store there, so the loads stay. It adds no instruction. On by default nowhere; =2 with
+// PEARL_AMD_PF2PIN.
 #ifndef PEARL_AMD_CRANK
 #define PEARL_AMD_CRANK PEARL_AMD_RDNA4_SET
 #endif
@@ -1007,17 +1002,6 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #else
   const int8_t *gA = Ap + (size_t)tileRow * k;
   const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
-#endif
-#if PEARL_AMD_GOPQ && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  {   // PEARL_AMD_GOPQ (above): through the asm as global pointers, so the loads stay global_load, not flat_load
-      // (which would count in lgkmcnt too, and so in every LDS wait). The bases are the block's: SGPRs.
-    typedef const __attribute__((address_space(1))) int8_t pearl_amd_gi8;
-    const pearl_amd_gi8 *a1 = (const pearl_amd_gi8 *)gA, *b1 = (const pearl_amd_gi8 *)gB;
-    asm("" : "+s"(a1));
-    asm("" : "+s"(b1));
-    gA = (const int8_t *)a1;
-    gB = (const int8_t *)b1;
-  }
 #endif
 
   // The next slab, in registers while the current one is used. A vector type, not HIP's

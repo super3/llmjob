@@ -415,9 +415,14 @@ by contrast, stops only its own card.
   `v_permlanex16` (`PEARL_AMD_DPP`): 31.10-31.16 TH/s to 32.17-32.28 on an RX 7800 XT (PC
   `16f1685c`), whose matrix instructions alone run the fold at 34.3 TMAC/s. That A/B against
   the old path is one PC per RDNA 3 chip (on gfx1100 each alone on an RX 7900 XTX: PF2 +2.4%, DPP
-  +0.5%); a second PC of each is still to run. The compiler keeps the loads only about one slab
-  ahead, not two (see the comment in `pearl_amd_fold.h`). RDNA 4 does both
-  too, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
+  +0.5%); a second PC of each is still to run. The compiler keeps the loads only one slab
+  ahead, not two: on gfx1100 `__syncthreads()` waits for each slab's loads at the end of the step
+  that issues them, and with PFX's barrier the compiler sinks them to that step's end instead.
+  `PEARL_AMD_PF2PIN` (off by default, not timed yet) keeps all of them two slabs ahead: PFX, TID,
+  and the loads pinned at the top of the step by a memory clobber as well as a `sched_barrier`
+  (`PEARL_AMD_LPIN=2`), since machine sinking moved half of them past the `sched_barrier` alone.
+  235 VGPRs, 6 waves, no spills (see the comment in `pearl_amd_fold.h`). RDNA 4 also has PF2
+  and the DPP readout, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
   LDS-only fence, since `__syncthreads()` waited for every outstanding global load there) and
   tells the compiler the thread index is under 256 (`PEARL_AMD_TID`): 52.88 TH/s to 59.99 on an
   RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster and stay off. A split slab
