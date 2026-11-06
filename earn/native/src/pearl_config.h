@@ -2614,7 +2614,12 @@ typedef struct {
 // its next refill waits on an EMPTY the peer's warps arrive on only after their FULL, which
 // needs the copy to have landed.
 // The host reads it too (the B' map's box): -DPEARL_TALL_CLUSTER=1 -DPEARL_TALL_CLUSTER_PUSH=1
-// binds both sides. CI compiles it, sm_120 only, beside the cluster build.
+// binds both sides. CI compiles it, sm_120 only, beside the cluster build, and prints the
+// fold's registers. Native core run 42277723541: under ptxas 13.3 (the cu13 core, and nvtest's
+// CUDA_VER=13.3) 254 registers and 0 spill, where the multicast cluster build spills 176 bytes;
+// under 12.8 it spills 176 bytes, as the cluster build does (172). So race it with CUDA_VER=13.3.
+// Its first prologue waited for stage 0's half before copying it and spilled even on an sm_90a
+// build under ptxas 12.6; the prologue now loads stage 0 whole and waits for nothing.
 #ifndef PEARL_TALL_CLUSTER_PUSH
 #define PEARL_TALL_CLUSTER_PUSH 0
 #endif
