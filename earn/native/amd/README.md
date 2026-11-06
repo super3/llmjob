@@ -428,6 +428,13 @@ by contrast, stops only its own card.
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
   Infinity Cache as `learnings.md` describes for NVIDIA.
+- Tile order, built and not yet timed: `-DPEARL_AMD_WALK=1` takes the tiles in supertiles about
+  the size of what a card holds at once (8 x 12 tiles on an RX 9070 XT, 4 x 12 on an RX 9060 XT),
+  so those blocks need a quarter to 40% fewer bytes from past the L2 than the release's 16-wide
+  rows. `=2` also deals each supertile's blocks to one sub-tile per shader array, in case the
+  dispatcher hands blocks to the arrays in turn. On RDNA 3 at batch 128, `=1` is the release's
+  order. `pearl_amd_fold.h` has the reasoning; `earn/test/amdWalk.test.js` checks that every tile
+  is folded exactly once.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's
