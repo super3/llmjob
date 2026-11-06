@@ -600,6 +600,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_RDTREE != 0 && PEARL_AMD_RDTREE != 1
 #error "PEARL_AMD_RDTREE is 0 or 1"
 #endif
+// PEARL_AMD_RDLATE's pin: nothing is scheduled across it. It emits no instruction.
+#if PEARL_AMD_RDLATE && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_RDLATE_PIN() __builtin_amdgcn_sched_barrier(0)
+#else
+#define PEARL_AMD_RDLATE_PIN() ((void)0)
+#endif
 // Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET; the rest are off by default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
 // constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
@@ -1363,9 +1369,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   auto readout_late = [&](uint32_t s, auto parity) {
     constexpr int B = decltype(parity)::value;
     if constexpr (B == 0 || PEARL_AMD_RDLATE == 2) {
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-      __builtin_amdgcn_sched_barrier(0);   // the fragment loads stay above the readout, in flight while it runs
-#endif
+      PEARL_AMD_RDLATE_PIN();   // the fragment loads stay above the readout, in flight while it runs
       if (s % perChunk == (uint32_t)B && s >= perChunk) {
         const uint32_t c = s / perChunk - 1u;
 #if PEARL_AMD_RDLATE == 1
@@ -1503,9 +1507,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
               const int t = isB ? i - 1 : (i == 0 ? 0 : i - P::kNT);
               const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(
                   isB ? bBase + t * P::kTN * S + off : aBase + t * P::kTM * S + off);
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-              __builtin_amdgcn_sched_barrier(0);
-#endif  // a GPU
+              PEARL_AMD_RDLATE_PIN();
               if (isB) {
                 b[0][t] = pearl_amd_v2i{q[0], q[1]};
                 b[1][t] = pearl_amd_v2i{q[2], q[3]};

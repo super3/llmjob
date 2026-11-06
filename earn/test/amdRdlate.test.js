@@ -114,7 +114,13 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
   }
 
   it('keeps each slab\'s WMMAs in the slab with an empty asm, and runs the readout after the fragment loads', () => {
-    expect(late).toContain('__builtin_amdgcn_sched_barrier(0);   // the fragment loads stay above the readout');
+    expect(late).toContain('PEARL_AMD_RDLATE_PIN();   // the fragment loads stay above the readout');
+    expect(FOLD).toContain('#if PEARL_AMD_RDLATE && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)\n'
+      + '#define PEARL_AMD_RDLATE_PIN() __builtin_amdgcn_sched_barrier(0)\n');
+    // The loads' order is pinned the same way, after each load.
+    const pairAt = slice(FOLD, '        if ((kk & 1) == 0) {\n', '\n        }\n');
+    expect(pairAt).toContain('isB ? bBase + t * P::kTN * S + off : aBase + t * P::kTM * S + off);\n'
+      + '              PEARL_AMD_RDLATE_PIN();\n');
     const hold = slice(FOLD, '  auto readout_hold = [&]() {', '\n  };\n');
     expect(hold).toContain('asm volatile("" ::"v"(acc[mt][nt]));');
     expect(hold).toContain('#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)');
