@@ -527,6 +527,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // item 2). Its fragments, LDS layout and loads two slabs ahead stay as they are; only the slab loads' addressing
 // changes. Only gfx11 and gfx12 code takes it, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep
 // their global loads. Add -DPEARL_AMD_TID=1 too, or the first staging unit's A'-or-B' test stays a run-time branch.
+// The gfx1100 release spends 12 VALU a slab on load addresses (8 of them that test's two arms, both run under an exec
+// mask); with both flags the loads take none, and the fold 232 VGPRs, not 240, still 6 waves (ROCm 7.2.0, 6 November).
+// A slab is 32 WMMAs of about 32 clocks on RDNA 3, against about 8 on RDNA 4, so the most it can pay is about 1.2%.
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
