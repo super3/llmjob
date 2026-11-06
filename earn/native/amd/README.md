@@ -105,8 +105,10 @@ LDS load (`PEARL_AMD_KPAIR`: a slab's k-steps may take its bytes in any order, a
 them alike), and loads its slabs with buffer loads, whose base and slab offset are scalar
 (`PEARL_AMD_BUFLD`). Before, the fold added the slab to each lane's 64-bit address for every global
 load and made new LDS addresses for most fragments, about 9 VALU a slab of 32 WMMAs. On an RX 9070 XT
-the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads:
-its fragments are 16 bytes already, and buffer loads haven't been timed there.
+the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads by
+default: its fragments are 16 bytes already, and buffer loads haven't been timed there yet. A build
+with `-DPEARL_AMD_BUFLD=1` (best with `-DPEARL_AMD_TID=1`) gives RDNA 3 the buffer loads, to race against
+the release (issue #287, item 2). Only gfx11 and gfx12 code takes them, whatever the setting.
 
 **On top of that, RDNA 4 builds six more cuts** (`PEARL_AMD_RDNA4_SET`, 4 November). The wrap
 readout picks the keep word's half with a scalar branch instead of selects (`PEARL_AMD_RDSEL`) and

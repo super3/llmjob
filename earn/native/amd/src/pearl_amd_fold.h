@@ -522,7 +522,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // offset: no VALU a load, where the global loads took a 64-bit VALU add of the slab to each lane's address (two
 // VALU a load). Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Every load stays inside its
 // tile, the resource's size (amdBufld.test.js). On top of PEARL_AMD_KPAIR the fold alone ran another 2.2%
-// faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4; RDNA 3 hasn't been timed with it.
+// faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4.
+// RDNA 3 (wmma11) takes it only with -DPEARL_AMD_BUFLD=1, a build to race against its global loads (issue #287,
+// item 2). Its fragments, LDS layout and loads two slabs ahead stay as they are; only the slab loads' addressing
+// changes. Only gfx11 and gfx12 code takes it, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep
+// their global loads. Add -DPEARL_AMD_TID=1 too, or the first staging unit's A'-or-B' test stays a run-time branch.
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
@@ -985,8 +989,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
-#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  // PEARL_AMD_BUFLD (above): the tiles' resources.
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+  // PEARL_AMD_BUFLD (above): the tiles' resources. PEARL_AMD_WMMA11 and _WMMA12 are set only in a gfx11 or gfx12
+  // device pass, never in HIP-CPU's, and word 3 is right on those two only.
   const __amdgpu_buffer_rsrc_t rsA =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
   const __amdgpu_buffer_rsrc_t rsB =
