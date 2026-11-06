@@ -703,34 +703,6 @@ jobs:
         shell: bash
         run: ./build-amd.sh check
 
-      # Temporary, on exp/287-5 only (issue 287 item 5); the next commit takes it out. The PEARL_AMD_WALK
-      # variants' registers, LDS, waves and fold code against the release, on the four targets with a shape.
-      - name: Walk variants against the release (temporary)
-        working-directory: earn/native/amd
-        shell: bash
-        run: |
-          norm() { sed -E 's/\b([sv])\[[0-9]+:[0-9]+\]/\1[#]/g; s/\b([sv])[0-9]+\b/\1#/g' "$1"; }
-          for a in gfx1100 gfx1101 gfx1200 gfx1201; do
-            d=$PWD/build/vc-$a
-            ARCH=$a CHECK_ROOT=$d VARIANTS="base=;walk1=-DPEARL_AMD_WALK=1;walk2=-DPEARL_AMD_WALK=2" \
-              bash test/variant-check.sh || true
-            for v in base walk1 walk2; do
-              f=$d/$v.fold
-              echo "== $a $v: $(wc -l < $f) instructions, $(grep -c '^\s*v_' $f) VALU, $(grep -c '^\s*s_' $f) SALU," \
-                "$(grep -c '^\s*v_wmma' $f) WMMA, $(grep -cE '^\s*(global|buffer)_load' $f) global/buffer loads," \
-                "$(grep -cE '^\s*ds_' $f) LDS ops, $(grep -cE '^\s*s_barrier' $f) barriers"
-            done
-            # The slab loop: from the first barrier to the last, registers numbered alike.
-            loop() { awk '{ l[NR] = $0 } /^\s*s_barrier/ { if (!f) f = NR; t = NR } END { for (i = f; i <= t; i++) print l[i] }' "$1"; }
-            for v in walk1 walk2; do
-              norm $d/base.fold > $d/base.n; norm $d/$v.fold > $d/$v.n
-              loop $d/base.n > $d/base.loop; loop $d/$v.n > $d/$v.loop
-              echo "== $a $v against base, registers numbered alike: $(diff $d/base.n $d/$v.n | grep -c '^[<>]') lines differ;" \
-                "slab loop $(wc -l < $d/base.loop) and $(wc -l < $d/$v.loop) lines, $(diff $d/base.loop $d/$v.loop | grep -c '^[<>]') differ"
-              diff $d/base.n $d/$v.n || true
-            done
-          done
-
       - name: Build the addon (all 14 targets)
         working-directory: earn/native/amd
         shell: bash

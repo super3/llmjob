@@ -174,8 +174,12 @@
 // gfx1100's and gfx1101's 128), shaped for the fewest bytes past the L2 (an A' tile is half a B' tile), and Q is the
 // shader arrays. gfx1201 (RX 9070 XT, 32 WGPs in 8 arrays): 8 x 12, sub-tiles 2 x 6. gfx1200 (RX 9060 XT, 16 WGPs
 // in 4): 4 x 12, 2 x 6. gfx1100 (RX 7900 XTX, 48 WGPs in 12): 8 x 18, 2 x 6. gfx1101 (RX 7800 XT, 30 WGPs in 6):
-// 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the release's order, so there a race of 1 times
-// what the map itself costs, and 2 the sub-tiles alone.
+// 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the release's order, so there 1 against the release
+// times what compiling the map in costs, and 2 against 1 the sub-tiles alone.
+// The code (ROCm 7.2, CI on 6 November): the map is 43-53 scalar instructions in the prologue, with the release's
+// VGPRs, LDS and waves on all four targets. On gfx12 the rest of the fold is the release's (one VALU moved in the
+// prologue, one operand order swapped in the epilogue). On gfx11 the compiler also reorders some selects and readout
+// steps (753 VALU to 750), the same way in 1 and 2.
 #if PEARL_AMD_WALK && !defined(PEARL_AMD_WALK_W)
 #if defined(__gfx1201__)
 #define PEARL_AMD_WALK_W 8
