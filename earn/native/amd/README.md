@@ -425,9 +425,14 @@ by contrast, stops only its own card.
   ran the same as this (59.39 against 59.99 on `ca4f64e4`, 33.20 against 32.85 on `54b217a9`)
   and was removed. Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
   layout is not in AMD's calculator yet, so gfx950 runs the gfx942 instruction); A' and B'
-  materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
-  hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
-  Infinity Cache as `learnings.md` describes for NVIDIA.
+  materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; persistent
+  tiles; the batch and band sized from the L2 and Infinity Cache as `learnings.md` describes
+  for NVIDIA.
+- The hash inside the fold: `-DPEARL_AMD_FUSE=1` builds folds that hash their own tile's regions
+  (through LDS, a thread a region) into the hit list, so no transcript is stored and no hash kernel
+  runs. Off until it is raced against the release on a card (`pearl_amd_fold.h` says what it saves
+  and costs). Its fold test also checks the fold's hits against `pearl_amd_hash`'s over the same
+  words, and CI checks its registers and builds it, without shipping it.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's

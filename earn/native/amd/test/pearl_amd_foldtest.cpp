@@ -28,8 +28,13 @@
 // matrix fold store clock stamps, and the last launch's go to the file: a header of 16 words (see
 // write_stamps), then PEARL_AMD_STAMP_WORDS words for each wave of each block. test/stamp-summary.js reads it;
 // sweep.sh's SWEEP_STAMP runs both. With miner operands it reads the clock the miner runs at.
+//
+// In a -DPEARL_AMD_FUSE=1 build (pearl_amd_fold.h) the matrix folds and dot4 also hash their transcripts. The
+// check launch tests them at a target about 16 regions meet, and its hits must be pearl_amd_hash's over the words
+// the same launch stored. The timed launches store no words and test at target 0, as the miner's launches do.
 #include <hip/hip_runtime.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -80,22 +85,68 @@ bool ok(hipError_t e, const char *what) {
   return false;
 }
 
+#if PEARL_AMD_FUSE
+// What a fused fold tests its transcripts against, and where its hits go; launch() passes them on.
+PearlTranscriptTest g_test = {};
+PearlHitList g_hits = {};
+#define PEARL_AMD_FT_FUSE , g_test, g_hits
+#else
+#define PEARL_AMD_FT_FUSE
+#endif
+
 void launch(const Fold &f, dim3 grid, const int8_t *a, const int8_t *b, uint32_t k,
             uint32_t rank, uint32_t col0, uint32_t rowsValid, uint32_t *tr) {
   const dim3 block(PEARL_AMD_THREADS);
   if (f.cap == PEARL_AMD_CAP_REF)
-    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_ref, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
   else if (f.cap == PEARL_AMD_CAP_MFMA16)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma16, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
   else if (f.cap == PEARL_AMD_CAP_MFMA8)
-    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_mfma8, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
   else if (f.cap == PEARL_AMD_CAP_WMMA11)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma11, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
   else if (f.cap == PEARL_AMD_CAP_WMMA12)
-    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_wmma12, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
   else
-    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr);
+    hipLaunchKernelGGL(pearl_amd_fold_dot4, grid, block, 0, 0, a, b, k, rank, col0, rowsValid, tr PEARL_AMD_FT_FUSE);
 }
+
+#if PEARL_AMD_FUSE
+// A hit list in device memory (PEARL_MAX_HITS hits), and its hits read back sorted by region.
+struct Hit {
+  uint32_t index, hash[8], transcript[16];
+  bool operator<(const Hit &o) const { return index < o.index; }
+  bool operator==(const Hit &o) const {
+    return index == o.index && memcmp(hash, o.hash, sizeof hash) == 0 && memcmp(transcript, o.transcript, sizeof transcript) == 0;
+  }
+};
+bool hit_list(PearlHitList &h) {
+  return ok(hipMalloc(&h.count, 4), "hipMalloc hits") && ok(hipMalloc(&h.index, PEARL_MAX_HITS * 4), "hipMalloc hits")
+         && ok(hipMalloc(&h.hash, PEARL_MAX_HITS * 32), "hipMalloc hits")
+         && ok(hipMalloc(&h.transcript, PEARL_MAX_HITS * 64), "hipMalloc hits");
+}
+void free_hits(PearlHitList &h) { hipFree(h.count); hipFree(h.index); hipFree(h.hash); hipFree(h.transcript); }
+// The list's count, and its hits (up to PEARL_MAX_HITS) sorted by region.
+uint32_t read_hits(const PearlHitList &h, std::vector<Hit> &out) {
+  uint32_t n = 0;
+  hipMemcpy(&n, h.count, 4, hipMemcpyDeviceToHost);
+  const uint32_t kept = n < PEARL_MAX_HITS ? n : PEARL_MAX_HITS;
+  std::vector<uint32_t> idx(kept), hash((size_t)kept * 8), tm((size_t)kept * 16);
+  if (kept) {
+    hipMemcpy(idx.data(), h.index, kept * 4, hipMemcpyDeviceToHost);
+    hipMemcpy(hash.data(), h.hash, (size_t)kept * 32, hipMemcpyDeviceToHost);
+    hipMemcpy(tm.data(), h.transcript, (size_t)kept * 64, hipMemcpyDeviceToHost);
+  }
+  out.assign(kept, Hit{});
+  for (uint32_t i = 0; i < kept; i++) {
+    out[i].index = idx[i];
+    memcpy(out[i].hash, &hash[(size_t)i * 8], 32);
+    memcpy(out[i].transcript, &tm[(size_t)i * 16], 64);
+  }
+  std::sort(out.begin(), out.end());
+  return n;
+}
+#endif
 
 #if PEARL_AMD_STAMP
 // The stamps file: 16 words of header, little-endian as the card and the PC both are, then the records.
@@ -251,6 +302,18 @@ int main(int argc, char **argv) {
     (void)hipGetLastError();
   }
 #endif
+#if PEARL_AMD_FUSE
+  // The check's test: a random key, either byte order, and a top word about 16 of the regions meet. The timed
+  // launches' test: target 0, which nothing meets, as hashrate.js mines.
+  PearlTranscriptTest checkTest = {}, timedTest = {};
+  for (auto &w : checkTest.key) w = next_rand();
+  checkTest.hash_big_endian = (int)(next_rand() & 1u);
+  const uint64_t top = (16ull << 32) / regions;
+  checkTest.target_w[0] = top > 0xFFFFFFFFull ? 0xFFFFFFFFu : (uint32_t)top;
+  for (int i = 1; i < 8; i++) checkTest.target_w[i] = 0xFFFFFFFFu;
+  PearlHitList foldHits = {}, kernelHits = {};
+  if (!hit_list(foldHits) || !hit_list(kernelHits)) return 2;
+#endif
   int failed = 0, ran = 0;
   std::vector<uint32_t> got(want.size());
   for (const Fold &f : folds) {
@@ -259,12 +322,38 @@ int main(int argc, char **argv) {
     const dim3 grid = f.tall ? dim3(cols / PEARL_AMD_BN, m / PEARL_AMD_BM)
                              : dim3(cols / PEARL_AMD_REF_BN, m / PEARL_AMD_REF_BM);
     hipMemset(dTr, 0xA5, want.size() * 4);  // a word the fold forgets cannot read as zero
+#if PEARL_AMD_FUSE
+    g_test = checkTest;
+    g_hits = foldHits;
+    hipMemset(foldHits.count, 0, 4);
+#endif
     // One launch to check (and to load the code), then `reps` more to time.
     const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
     hipMemcpy(got.data(), dTr, got.size() * 4, hipMemcpyDeviceToHost);
+    uint32_t *timedTr = dTr;
+#if PEARL_AMD_FUSE
+    if (f.tall) {
+      // The fold's hits against pearl_amd_hash's over the words that launch stored.
+      hipMemset(kernelHits.count, 0, 4);
+      hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
+                         dim3(PEARL_AMD_THREADS), 0, 0, (const uint32_t *)dTr, regions, checkTest, kernelHits);
+      if (!ok(hipDeviceSynchronize(), "pearl_amd_hash")) { failed++; continue; }
+      std::vector<Hit> hf, hk;
+      const uint32_t nf = read_hits(foldHits, hf), nk = read_hits(kernelHits, hk);
+      if (nf != nk || nk > PEARL_MAX_HITS || hf != hk) {
+        failed++;
+        printf("%-7s FAIL: the fold's own hash found %u hits, pearl_amd_hash %u over its words%s\n", f.name, nf, nk,
+               nf == nk ? ", not the same ones" : "");
+      } else {
+        printf("%-7s fused hash: %u hits, the same as pearl_amd_hash's over its words\n", f.name, nf);
+      }
+      timedTr = nullptr;   // the miner's launch: no words stored
+    }
+    g_test = timedTest;
+#endif
     const int n = reps > 0 ? reps : 1;
 #if PEARL_AMD_STAMP
     // The stamps: the timed launches store them, each over the last; the check launch above didn't.
@@ -278,7 +367,7 @@ int main(int argc, char **argv) {
     }
 #endif
     const auto t0 = std::chrono::steady_clock::now();
-    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
+    for (int i = 0; i < n; i++) launch(f, grid, fa, fb, k, rank, col0, rowsValid, timedTr);
     e = hipDeviceSynchronize();
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -312,6 +401,10 @@ int main(int argc, char **argv) {
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);
+#if PEARL_AMD_FUSE
+  free_hits(foldHits);
+  free_hits(kernelHits);
+#endif
 #if PEARL_AMD_STAMP
   if (dStamps) hipFree(dStamps);
 #endif
