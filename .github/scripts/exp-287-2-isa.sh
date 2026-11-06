@@ -10,10 +10,9 @@ ROOT=$(pwd)
 OUT=$ROOT/build/isa
 CC=/opt/rocm/lib/llvm/bin/clang++
 mkdir -p "$OUT"
-git config --global --add safe.directory '*'
-REL=$(git merge-base HEAD origin/fix/amd-rigs)
-echo "release base: $REL ($(git log -1 --format=%s "$REL"))"
-rm -rf /tmp/rel && git worktree add -f /tmp/rel "$REL" > /dev/null 2>&1 || { echo "worktree failed"; exit 1; }
+# The release this branch was cut from, checked out into rel/ by the workflow (the image has no git).
+[ -f "$ROOT/rel/earn/native/amd/build-amd.sh" ] || { echo "no release tree in rel/"; exit 1; }
+rm -rf /tmp/rel && cp -r "$ROOT/rel" /tmp/rel
 
 GFX11="gfx1100 gfx1101 gfx1102 gfx1150 gfx1151"
 fold_of() { case "$1" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; gfx90*) echo mfma8 ;; gfx103*) echo dot4 ;; esac; }
@@ -65,4 +64,3 @@ echo "== RDNA 4 release fold for reference (BUFLD and KPAIR on)"
 node "$ROOT/.github/scripts/exp-287-2-isa.js" "$OUT/base-gfx1201.fold" "base gfx1201"
 echo "== diff of the slab loop, base against bufldtid on gfx1100 (first 200 lines)"
 diff "$OUT/base-gfx1100.fold" "$OUT/bufldtid-gfx1100.fold" | head -n 200
-git worktree remove --force /tmp/rel > /dev/null 2>&1 || true
