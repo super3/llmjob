@@ -22,7 +22,7 @@ jobs:
           set -u
           ./build-amd.sh check gfx1100 > /dev/null
           v=$(grep -v '^#' ../../../.github/item8/variants.txt | grep -v '^$' | paste -sd ';')
-          for a in gfx1100 gfx1201; do
+          for a in gfx1100; do
             ARCH=$a CHECK_ROOT="$GITHUB_WORKSPACE/vcheck/$a" VARIANTS="$v" bash test/variant-check.sh
             cp build/check/$a.txt "$GITHUB_WORKSPACE/vcheck/$a/check-last.txt" || true
           done

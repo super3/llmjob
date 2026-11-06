@@ -607,7 +607,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // PEARL_AMD_SCHEDB=1: a sched_barrier(0) after each slab's WMMAs and readout, before its stores and barrier, so
 // the compiler can't move a slab's WMMAs past its barrier when both slabs of a pair are one basic block (CRANK).
 // PEARL_AMD_LPIN=1: a sched_barrier(0) after the slab loads at the top of each step, so they aren't sunk below
-// the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant.
+// the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant. That binds the scheduler only,
+// inside one block. On gfx1100 machine sinking still moved one step's loads into the block after its readout,
+// since nothing after them in their block stores. =2 adds an empty asm with a memory clobber after the loads,
+// which counts as a store there, so the loads stay. It adds no instruction.
 #ifndef PEARL_AMD_CRANK
 #define PEARL_AMD_CRANK PEARL_AMD_RDNA4_SET
 #endif
@@ -624,7 +627,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_SCHEDB PEARL_AMD_RDNA4_SET
 #endif
 #ifndef PEARL_AMD_LPIN
-#define PEARL_AMD_LPIN PEARL_AMD_PF2PIN_ON
+#define PEARL_AMD_LPIN (2 * PEARL_AMD_PF2PIN_ON)
+#endif
+#if PEARL_AMD_LPIN < 0 || PEARL_AMD_LPIN > 2
+#error "PEARL_AMD_LPIN is 0, 1 or 2"
 #endif
 #if (PEARL_AMD_SCHEDB || PEARL_AMD_LPIN) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #define PEARL_AMD_SCHED_PIN() __builtin_amdgcn_sched_barrier(0)
@@ -1003,9 +1009,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   const int8_t *gB = Bp + (size_t)(col0 + tileCol) * k;
 #endif
 #if PEARL_AMD_GOPQ && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  // PEARL_AMD_GOPQ (above): the bases are the block's, so they stay in SGPRs.
-  asm("" : "+s"(gA));
-  asm("" : "+s"(gB));
+  {   // PEARL_AMD_GOPQ (above): through the asm as global pointers, so the loads stay global_load, not flat_load
+      // (which would count in lgkmcnt too, and so in every LDS wait). The bases are the block's: SGPRs.
+    typedef const __attribute__((address_space(1))) int8_t pearl_amd_gi8;
+    const pearl_amd_gi8 *a1 = (const pearl_amd_gi8 *)gA, *b1 = (const pearl_amd_gi8 *)gB;
+    asm("" : "+s"(a1));
+    asm("" : "+s"(b1));
+    gA = (const int8_t *)a1;
+    gB = (const int8_t *)b1;
+  }
 #endif
 
   // The next slab, in registers while the current one is used. A vector type, not HIP's
@@ -1346,6 +1358,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
 #else
     if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS last step
+#endif
+#if PEARL_AMD_LPIN == 2 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" ::: "memory");   // PEARL_AMD_LPIN=2 (above)
 #endif
 #if PEARL_AMD_LPIN
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)
