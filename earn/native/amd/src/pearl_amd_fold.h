@@ -1495,13 +1495,17 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           if constexpr (kLate) {
             // PEARL_AMD_RDLATE: the readout's branch comes between these loads and the WMMAs, so the compiler can't
             // order the loads by first use, as it does in the release. They go in the WMMAs' order here: A' tile 0,
-            // every B' tile, then the rest of A', so the first WMMA waits for two loads, not five.
+            // every B' tile, then the rest of A', so the first WMMA waits for two loads, not five. A sched_barrier
+            // after each keeps that order (the scheduler put B' first).
 #pragma unroll
             for (int i = 0; i < P::kMT + P::kNT; i++) {
               const bool isB = i > 0 && i <= P::kNT;
               const int t = isB ? i - 1 : (i == 0 ? 0 : i - P::kNT);
               const pearl_amd_v4i q = *reinterpret_cast<const pearl_amd_v4i *>(
                   isB ? bBase + t * P::kTN * S + off : aBase + t * P::kTM * S + off);
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+              __builtin_amdgcn_sched_barrier(0);
+#endif  // a GPU
               if (isB) {
                 b[0][t] = pearl_amd_v2i{q[0], q[1]};
                 b[1][t] = pearl_amd_v2i{q[2], q[3]};
