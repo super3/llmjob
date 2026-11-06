@@ -650,6 +650,40 @@ class TestRepeatedLine(Base):
         self.x.round()
         self.assertEqual(len(g["readings"]), 5)
 
+    def test_a_pc_with_two_cards_is_read_as_the_sum_of_both(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = []
+        for i in range(3):
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g0] 07:5%d:17 351.0 TH/s · %d accepted · 0 rejected · up 1%dm 02s" % (i, 20 + i, i)))
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g1] 07:5%d:17 75.0 TH/s · %d accepted · 0 rejected · up 1%dm 01s" % (i, 3 + i, i)))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual([r[2] for r in g["readings"]], [426.0] * 3)
+        self.assertEqual(g["mined_min"], 3)
+        self.assertAlmostEqual(g["prl"], 3 * 426.0 / 60 * USD_TH_HR / PRICE)
+
+    def test_a_repeat_from_one_card_is_dropped_while_the_other_still_counts(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = []
+        for i in range(3):
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g0] 07:5%d:17 351.0 TH/s · %d accepted · 0 rejected · up 1%dm 02s" % (i, 20 + i, i)))
+            lines.append(("2027-01-15T07:5%d:18Z" % i, "[mining g1] 07:5%d:18 75.0 TH/s · 3 accepted · 0 rejected · up 9m 00s" % i))  # g1 died
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual([r[2] for r in g["readings"]], [426.0, 351.0, 351.0])
+
 
 class TestReplace(unittest.TestCase):
     def test_a_replace_windows_refuses_for_a_moment_is_tried_again(self):
