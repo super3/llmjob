@@ -1492,6 +1492,8 @@ uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // reads B' again every band, and A' once a batch; the flip holds B' and reads A' once a
 // batch. RTX 3090 (4.1 MiB slice, band 8): 128 offsets, 2.1 MB against 3.3 MB, so 63%.
 // RTX 3080 10 GB (3.4 MiB, band 8): 64 offsets, 4.2 MB against 3.3 MB, so not taken.
+// With PEARL_AMPERE_FLIP_FILL the width is any whole number of tiles that fits the slice
+// (96 on the 3080 10 GB: 2.8 MB, 84%), and -DPEARL_AMPERE_FLIP_WIDTH=N forces N.
 uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, uint32_t colBatch,
                                uint32_t colsValid, uint64_t maxSlice) {
   // A forced band depth (-DPEARL_AMPERE_BAND) is a tuning build of the band walk: no flip.
@@ -1500,16 +1502,38 @@ uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, ui
   return 0u;
 #else
   if (!PEARL_AMPERE_FLIP || band == 0u || maxSlice == 0u) return 0u;
+#ifdef PEARL_AMPERE_FLIP_WIDTH
+  // A forced width (a tuning build): taken on every card with a slice, whatever the model says.
+  (void)k; (void)rowGroups;
+  const uint32_t forced = (uint32_t)PEARL_AMPERE_FLIP_WIDTH;
+  return forced >= PEARL_TALL_COL_OFFSETS && forced % PEARL_TALL_COL_OFFSETS == 0u
+                 && forced < colBatch && forced <= colsValid
+                 && colsValid % PEARL_TALL_COL_OFFSETS == 0u
+             ? forced
+             : 0u;
+#else
   const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
   uint32_t width = 0u;
+#if PEARL_AMPERE_FLIP_FILL
+  // Any whole number of tiles whose B' fits the slice. A width that does not divide the
+  // valid offsets leaves the salt a short last batch (pearl_host_submit), which must still
+  // be whole tiles.
+  if (colsValid % PEARL_TALL_COL_OFFSETS == 0u)
+    for (uint32_t c = PEARL_TALL_COL_OFFSETS;
+         c < colBatch && c <= colsValid && (uint64_t)c * colBytes <= maxSlice;
+         c += PEARL_TALL_COL_OFFSETS)
+      width = c;
+#else
   for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
     if (colsValid % c == 0u) width = c;
+#endif
   if (width == 0u) return 0u;
   const uint64_t aBytes = (uint64_t)rowGroups * PEARL_TALL_BM * k;
   const uint64_t bandWalk = (uint64_t)((rowGroups + band - 1u) / band) * colBytes + aBytes / colBatch;
   const uint64_t flip = aBytes / width;
   return flip * 100u <= bandWalk * (uint64_t)PEARL_AMPERE_FLIP_SHARE ? width : 0u;
-#endif
+#endif  // PEARL_AMPERE_FLIP_WIDTH
+#endif  // PEARL_AMPERE_BAND
 }
 
 // Ampere's band depth for the tall fold (see PEARL_AMPERE_BAND_L2_SHARE): 16, halved
@@ -1957,6 +1981,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
       maxp = 0;
     }
     ctx->l2MaxSlice = maxp;
+    // The band walk's width and depth, which the flip replaces and its guard goes back to.
+    const uint32_t walkColBatch = ctx->colBatch, walkBand = ctx->tallBand;
     // Ampere's flip (PEARL_AMPERE_FLIP): only where the loaded build has the pinb kernel's
     // body (PEARL_TALL_PIN_B_ARCH, by binaryVersion * 10 as PEARL_TALL_ARCH reads it).
     if (ctx->foldPersistA && PEARL_TALL_PIN_B_ARCH(ctx->tallArch * 10) && !ctx->foldUnfused) {
@@ -1971,28 +1997,56 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
         ctx->tallBand = 1u;
       }
     }
+    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A), or the flip's batch
+    // of B'. Without one the band walk still runs, only slower, so a refusal is dropped (the
+    // flip's guard, below, decides for the flip). Hopper's copies carry no hint, so a slice
+    // would only take L2 from the rest.
+    auto setSlice = [&]() {
+      if (ctx->foldPersistA && maxp > 0 && (PEARL_AMPERE_PERSIST_A || ctx->foldPinB)) {
+        size_t slice = ctx->foldPinB ? (size_t)ctx->colBatch * PEARL_COLS_COUNT * profile->k
+                                     : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
+        if (slice > (size_t)maxp) slice = (size_t)maxp;
+        ctx->l2Slice = slice;
+        if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)
+          (void)cudaGetLastError();
+      }
+      size_t got = 0;
+      if (maxp > 0 && cudaDeviceGetLimit(&got, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
+        (void)cudaGetLastError();
+        got = 0;
+      }
+      ctx->l2Granted = got;
+    };
+    setSlice();
+#if PEARL_AMPERE_FLIP_GUARD
+    // The flip's guard (see PEARL_AMPERE_FLIP_GUARD): without its B' held, go back to the
+    // band walk, and give back whatever part of a slice the driver did grant.
+    if (ctx->foldPinB) {
+      const size_t asked = ctx->l2Slice;
+      if ((uint64_t)ctx->l2Granted * 4u < (uint64_t)asked * 3u) {
+        fprintf(stderr,
+                "[pearl] Ampere flip: the driver granted %zu of the %zu bytes of L2 asked for, so "
+                "the band walk runs instead\n",
+                ctx->l2Granted, asked);
+        ctx->foldPinB = false;
+        ctx->colBatch = walkColBatch;
+        ctx->batch = ctx->colBatch * ctx->rowsValid;
+        ctx->tallBand = walkBand;
+        ctx->l2Slice = 0;
+        if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, 0) != cudaSuccess)
+          (void)cudaGetLastError();
+        setSlice();
+      }
+    }
+#else
+    (void)walkColBatch;
+    (void)walkBand;
+#endif
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
     CUDA_OK(cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
                        cudaMemcpyHostToDevice),
             "setting the tall fold's band depth");
-    // A persisting L2 slice for the band's A' (PEARL_AMPERE_PERSIST_A), or the flip's batch
-    // of B'. Without one the fold still runs, only slower, so a refusal is dropped. Hopper's
-    // copies carry no hint, so a slice would only take L2 from the rest.
-    if (ctx->foldPersistA && maxp > 0 && (PEARL_AMPERE_PERSIST_A || ctx->foldPinB)) {
-      size_t slice = ctx->foldPinB ? (size_t)ctx->colBatch * PEARL_COLS_COUNT * profile->k
-                                   : (size_t)ctx->tallBand * PEARL_TALL_BM * profile->k;
-      if (slice > (size_t)maxp) slice = (size_t)maxp;
-      ctx->l2Slice = slice;
-      if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, slice) != cudaSuccess)
-        (void)cudaGetLastError();
-    }
-    size_t granted = 0;
-    if (maxp > 0 && cudaDeviceGetLimit(&granted, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
-      (void)cudaGetLastError();
-      granted = 0;
-    }
-    ctx->l2Granted = granted;
   }
   // GA100's unfused fold (PEARL_TALL_UNFUSED) and Hopper's wgmma fold (PEARL_HOPPER_WGMMA):
   // a transcript buffer a slot, 64 bytes a region of the batch. The batch width is final
@@ -2975,8 +3029,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Hopper's transcript buffers from it. nonce_base stays a multiple of
   // rowsValid because the caller advances by the region count reported back.
   (void)batch;
-  const uint32_t regions = ctx->batch;
-  const uint32_t col_groups = ctx->colBatch;
+  uint32_t regions = ctx->batch;
+  uint32_t col_groups = ctx->colBatch;
   // Which fold this card loaded: resolved when the context was created (see
   // resolve_fold), because the operand draw has to know it too.
   if (!ctx->foldKnown) {
@@ -3013,6 +3067,13 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // A valid-offset INDEX; the kernel expands it into an actual offset.
   const uint32_t col_off =
       (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
+  // The flip's width need not divide the valid offsets (PEARL_AMPERE_FLIP_FILL,
+  // PEARL_AMPERE_FLIP_WIDTH): then the salt's last batch is cut short, so it ends on the
+  // salt, and the caller's nonce lands exactly on m*n. Every other width divides them.
+  if (ctx->foldPinB && col_off + col_groups > ctx->colsValid) {
+    col_groups = ctx->colsValid - col_off;
+    regions = col_groups * ctx->rowsValid;
+  }
 
   // One fused launch: the tile fold keeps its accumulator across chunks, so
   // there are no reusable partials to stage and no second pass.

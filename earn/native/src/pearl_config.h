@@ -1725,6 +1725,40 @@ typedef struct {
 #ifndef PEARL_AMPERE_FLIP_SHARE
 #define PEARL_AMPERE_FLIP_SHARE 80u
 #endif
+// The flip's width in whole tiles (issue #287, item 3; off by default, not measured yet). The
+// shipped rule takes only powers of two that divide the salt's 16384 offsets, so the B' it
+// holds fills a card's largest slice only where the slice is just over a power of two: 97% on
+// the 3060 Ti (64 offsets, 2 MiB of 2.06) and the 6 MB cards (128, 4 MiB of 4.125). Elsewhere
+// it falls a step short, and the band walk, whose A' band fills more of the same slice, reads
+// fewer bytes: the 3080 10 GB holds 64 offsets (2 MiB) of a 3.44 MiB slice, the 3060 32 (1
+// MiB) of 1.55, the 3070 64 of 2.75. With FILL the width is the widest multiple of 16 offsets
+// whose B' fits the slice: 96 on the 3080 10 GB (3 MiB, 84% of the band walk's modelled
+// bytes, against 125% at 64), 48 on the 3060 (91%, against 137%), 80 on the 3070 (100%). The
+// 3060 Ti and 6 MB cards keep 64 and 128. Such a width does not divide the salt's offsets, so
+// the salt's last batch is cut short to end on the salt (pearl_host_submit). Only the batch
+// width changes: the same regions, the same kernel. At PEARL_AMPERE_FLIP_SHARE 80 no card
+// takes a new width; a race decides the share (above 84 takes the 3080 10 GB, above 92 the
+// 3060 too). What argues against it: forced on a 3080 10 GB at 64, the flip read -0.71% while
+// its clock rose (+0.68%), so it lost about 1.4% a clock somewhere; a wider batch may or may
+// not keep that. Host only.
+#ifndef PEARL_AMPERE_FLIP_FILL
+#define PEARL_AMPERE_FLIP_FILL 0
+#endif
+// -DPEARL_AMPERE_FLIP_WIDTH=N (a tuning build, off by default): the flip at N column offsets
+// (a multiple of 16) on every Ampere card with a persisting slice, whatever the model says.
+// The slice is still the card's largest at most. Host only.
+//
+// The flip's guard: the flip holds B' only if the driver grants the slice. If it grants less
+// than 3/4 of the slice the host asked for (a refused limit, or MPS, reads 0), the host goes
+// back to the band walk, whose A' band without a slice is the build measured before the slice
+// (PEARL_AMPERE_PERSIST_A). A flip without its slice has never been measured; its B' would
+// compete with A' streaming. 3/4 leaves room for a driver that rounds the limit to 1/16 of
+// the L2 (the largest slice is 11/16 on every RTX 30 card), which costs a flip's slice at most
+// 10%. Where the slice is granted, as on every card raced so far, nothing changes: race.cu's
+// AUDIT line shows slice and granted. 0 turns it off. Host only.
+#ifndef PEARL_AMPERE_FLIP_GUARD
+#define PEARL_AMPERE_FLIP_GUARD 1
+#endif
 // The builds with pearl_tile_fold_tall_pinb's body, by __CUDA_ARCH__: sm_86 alone. GA100's
 // 40 MB L2 holds a band of 32, and Hopper's copies take no hint (PEARL_AMPERE_PERSIST_ARCH).
 #define PEARL_TALL_PIN_B_ARCH(a) ((a) == 860)
