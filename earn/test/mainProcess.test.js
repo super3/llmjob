@@ -166,6 +166,8 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(() => Promise.resolve('us1')),
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
+  // The board's cards: nvidia-smi's here, as each test sets them.
+  detectBoardGpus: jest.fn((...a) => require('../src/main/probe').detectGpusVram(...a)),
   detectPciBusIds: jest.fn(() => Promise.resolve({})),
   // llama-server's own card list. Empty by default, so every card keeps
   // --main-gpu; the tests that care set it.

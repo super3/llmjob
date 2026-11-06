@@ -661,7 +661,7 @@ async function startMining(settings, llmCoRuns) {
     const snap = miner && !miner.poolConnected() ? offPool(live) : live;
     // nvidia-smi lists every card. A card PEARL_GPU_INDEX left out does not
     // mine, so it gets no row, as in the CLI.
-    const allVram = await detectGpusVram();
+    const allVram = await probe.detectBoardGpus();
     const gpuVram = gpuEnv.indices ? allVram.filter((v) => gpuEnv.indices.includes(Number(v.index))) : allVram;
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.

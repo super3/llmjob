@@ -1107,7 +1107,7 @@ async function run(argv) {
     }
 
     if (settings.report) {
-      // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
+      // Sample per-card live VRAM (nvidia-smi, or amdgpu on an AMD rig) and post one board row per GPU,
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       //
       // nvidia-smi lists every card, mining or not. When --gpu-index or
@@ -1116,7 +1116,7 @@ async function run(argv) {
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
         const snap = poolSnapshot();
-        const allVram = await detectGpusVram();
+        const allVram = await probe.detectBoardGpus();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
         // GPU runs. `nodeId` rides along only while this machine is armed to serve

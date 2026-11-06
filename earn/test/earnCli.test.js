@@ -24,6 +24,8 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
   detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
+  // The board's cards: nvidia-smi's here, as each test sets them.
+  detectBoardGpus: jest.fn(),
   detectMinerGpus: jest.fn(),
   detectCudaCards: jest.fn(),
   detectPciBusIds: jest.fn(),
@@ -244,6 +246,7 @@ function applyDefaults(m) {
   m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
+  m.probe.detectBoardGpus.mockImplementation((...a) => m.probe.detectGpusVram(...a));
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
