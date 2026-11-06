@@ -244,6 +244,7 @@ function coreFactory(opts = {}) {
     } else if (pick.variant !== CU13) say('info', CU12, pick.reason);
     else if (cu13Failed.length) say('warn', CU12, wouldNotLoad(cu13Failed));
     else say('info', CU12, FILES[CU13] + ' is not installed');
+    if (pick.variant === AMD && amdFailed.length) return cudaAfterAmd(found.addon, wouldNotLoad(amdFailed));
     return wrap(found.addon);
   }
 
@@ -308,6 +309,28 @@ function amdFirst(amdAddon, opts, say) {
       addon = cu12.addon;
       settled = true;
       return core;
+    }
+  };
+}
+
+// The 12.8 build standing in for an AMD core that would not load. nvidia-smi
+// listed no NVIDIA card, so it is there only in case nvidia-smi was wrong. When
+// it finds no card either, its "is an NVIDIA driver installed?" sends an AMD rig
+// the wrong way (a 9070 XT rig without ROCm restart-looped on it, 6 Nov), so the
+// error thrown is the AMD core's, which says what to install. Only the first
+// start can tell; once a core has started the CUDA build plainly works here.
+function cudaAfterAmd(addon, amdWhy) {
+  let settled = false;
+  return (profile, coreOpts) => {
+    const o = coreOpts || {};
+    if (settled) return addon.createCore(profile, o);
+    try {
+      const core = addon.createCore(profile, o);
+      settled = true;
+      return core;
+    } catch (e) {
+      if (!isRuntimeError(e)) throw e;
+      throw new Error('no NVIDIA card found, and the AMD core would not load: ' + amdWhy);
     }
   };
 }

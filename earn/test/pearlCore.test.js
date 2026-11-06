@@ -528,6 +528,26 @@ describe('coreFactory — choosing a build', () => {
           + 'LD_LIBRARY_PATH']]);
       });
 
+      // A 9070 XT rig without ROCm: the CUDA build stands in, finds no card, and
+      // its "is an NVIDIA driver installed?" sent the rig the wrong way.
+      test('when the 12.8 build then finds no card, the error is the AMD core\'s', () => {
+        const noCard = new Error('no CUDA device found — is an NVIDIA driver installed?');
+        const cu12 = { createCore: jest.fn(() => { throw noCard; }) };
+        const r = rig({ [AMD_BESIDE]: new Error('libamdhip64.so.7: cannot open shared object file'), [CU12_BESIDE]: cu12 });
+        const f = factory(r, NONE);
+        expect(() => f({})).toThrow(new Error('no NVIDIA card found, and the AMD core would not load: ' + AMD_BESIDE
+          + ' is there but would not load: libamdhip64.so.7: cannot open shared object file. It needs the ROCm 7 HIP '
+          + 'runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH'));
+        // Any other failure is the card's own, and passes through as it is.
+        cu12.createCore.mockImplementation(() => { throw new Error('out of memory'); });
+        expect(() => f({})).toThrow('out of memory');
+        // Once a core has started, the CUDA build works here: no more rewriting.
+        cu12.createCore.mockImplementation(() => ({ build: 'cu12' }));
+        expect(f({})).toEqual({ build: 'cu12' });
+        cu12.createCore.mockImplementation(() => { throw noCard; });
+        expect(() => f({}, { deviceIndex: 1 })).toThrow(noCard);
+      });
+
       // Windows names no library when one is missing. On a PC without AMD's driver
       // (an NVIDIA one whose nvidia-smi failed, say) this is what it says.
       test('on Windows, a core that will not load says which driver DLL it needs', () => {

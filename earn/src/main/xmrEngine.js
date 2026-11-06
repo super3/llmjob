@@ -303,7 +303,11 @@ class XmrEngine extends EventEmitter {
           this._log('info', 'building the 2080 MiB RandomX dataset on ' + m.threads + ' thread'
             + (m.threads === 1 ? '' : 's') + ' (about a minute; again when Monero changes its seed, every 2048 blocks)');
         } else {
-          this._log('info', 'dataset ready in ' + (Math.round(m.ms / 100) / 10) + ' s · ' + (PAGES[m.pages] || m.pages));
+          // On Linux, say how to get them: 1280 two-MB pages took a 9070 XT rig's
+          // dataset build to 3.1 s (6 Nov).
+          const hint = m.pages === 'normal' && this.platform === 'linux'
+            ? '; sudo sysctl -w vm.nr_hugepages=1280 gives them' : '';
+          this._log('info', 'dataset ready in ' + (Math.round(m.ms / 100) / 10) + ' s · ' + (PAGES[m.pages] || m.pages) + hint);
           this._setState('mining');
         }
         break;

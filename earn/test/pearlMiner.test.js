@@ -624,7 +624,8 @@ describe('PearlMiner — compressed share proofs', () => {
     const r = rig();
     r.login(AUTH_V2);
     expect(r.m.gzip).toBe(true);
-    expect(r.said()).toContain('authorized; the pool takes compressed share proofs');
+    // "authorized" alone on its line: rigs' health checks match it exactly.
+    expect(r.said()).toEqual(expect.arrayContaining(['authorized', 'the pool takes compressed share proofs']));
     r.core.emit('hit', hit());
     const [submit] = r.submits();
     expect(Object.keys(submit.params).sort()).toEqual(['hs', 'job_id', 'plain_proof']);

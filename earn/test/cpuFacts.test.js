@@ -125,8 +125,16 @@ describe('readCpuFacts', () => {
   test('on Linux: affinity, the cgroup limit, memory under its limit, and L3', () => {
     const fs = fakeFs({ '/proc/self/cgroup': '0::/', '/sys/fs/cgroup/cpu.max': '600000 100000' });
     expect(readCpuFacts({ fs, os, proc: { platform: 'linux', constrainedMemory: () => 16e9 } })).toEqual({
-      cpus: 8, quotaCpus: 6, memoryBytes: 16e9, l3Bytes: null,
+      cpus: 8, quotaCpus: 6, memoryBytes: 16e9, l3Bytes: null, virtual: false,
     });
+  });
+
+  // A VM's L3 is the hypervisor's: a Proxmox VM on a 64 MB Ryzen showed 16 MB.
+  test('a virtual machine is told by the hypervisor flag', () => {
+    const vm = fakeFs({ '/proc/cpuinfo': 'processor\t: 0\nflags\t\t: fpu vme hypervisor lahf_lm\n' });
+    expect(readCpuFacts({ fs: vm, os, proc: { platform: 'linux' } }).virtual).toBe(true);
+    const metal = fakeFs({ '/proc/cpuinfo': 'processor\t: 0\nflags\t\t: fpu vme lahf_lm\nbugs\t\t: hypervisor_fake\n' });
+    expect(readCpuFacts({ fs: metal, os, proc: { platform: 'linux' } }).virtual).toBe(false);
   });
 
   test('a memory "limit" above the real memory is not one', () => {
@@ -140,7 +148,7 @@ describe('readCpuFacts', () => {
     const fs = { readFileSync: () => { throw new Error('no'); }, readdirSync: () => { throw new Error('no'); } };
     const oldOs = { totalmem: () => 8e9, cpus: () => new Array(4) };
     expect(readCpuFacts({ fs, os: oldOs, proc: {}, platform: 'win32' })).toEqual({
-      cpus: 4, quotaCpus: null, memoryBytes: 8e9, l3Bytes: null,
+      cpus: 4, quotaCpus: null, memoryBytes: 8e9, l3Bytes: null, virtual: null,
     });
   });
 
