@@ -535,7 +535,7 @@ describe('coreFactory — choosing a build', () => {
         const cu12 = { createCore: jest.fn(() => { throw noCard; }) };
         const r = rig({ [AMD_BESIDE]: new Error('libamdhip64.so.7: cannot open shared object file'), [CU12_BESIDE]: cu12 });
         const f = factory(r, NONE);
-        expect(() => f({})).toThrow(new Error('no NVIDIA card found, and the AMD core would not load: ' + AMD_BESIDE
+        expect(() => f({})).toThrow(new Error('no CUDA device found, and the AMD core would not load: ' + AMD_BESIDE
           + ' is there but would not load: libamdhip64.so.7: cannot open shared object file. It needs the ROCm 7 HIP '
           + 'runtime (libamdhip64.so.7): install rocm-hip-runtime 7.x, or put ROCm\'s lib folder on LD_LIBRARY_PATH'));
         // Any other failure is the card's own, and passes through as it is.

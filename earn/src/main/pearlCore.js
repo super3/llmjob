@@ -330,7 +330,9 @@ function cudaAfterAmd(addon, amdWhy) {
       return core;
     } catch (e) {
       if (!isRuntimeError(e)) throw e;
-      throw new Error('no NVIDIA card found, and the AMD core would not load: ' + amdWhy);
+      // "no CUDA device found" stays: the HiveOS package's CI smoke test, on a
+      // runner with no GPU, waits for those words as proof a core loaded.
+      throw new Error('no CUDA device found, and the AMD core would not load: ' + amdWhy);
     }
   };
 }
