@@ -381,7 +381,7 @@ typedef struct {
 // fold for sm_100 in 255 registers with no spill, and keeps B in the operand cache for 159
 // of a chunk's 192 IMMA, where its sm_120 build keeps it for none. On a 1000 W B200 it found
 // 400/400 good hits and mined 460 TH/s, a third of PeakMiner's and SRBMiner's 1,380 there
-// (benchmark.md, "B200"). mma.sync tops out near 570 on that card, so matching them needs a
+// (tuning/benchmark.md, "B200"). mma.sync tops out near 570 on that card, so matching them needs a
 // tcgen05 fold.
 #define PEARL_SM100_ARCH(a) ((a) == 1000)
 // The builds whose tall fold stages with TMA (PEARL_TALL_TMA): consumer Blackwell (sm_120)
@@ -1821,7 +1821,7 @@ typedef struct {
 // (PEARL_ABLATE_TRANSCRIPT_HASH, 4090). The open question was whether that cost is the
 // phase outlasting the partner's window, issue and register-port contention while it runs,
 // or instruction fetch (the hot hash is 18.5 KB of straight-line code). Step 0 (3060 Ti and
-// 4070 Super, benchmark.md) settled it: the hash releases about 3,150 cycles after the
+// 4070 Super, tuning/benchmark.md) settled it: the hash releases about 3,150 cycles after the
 // hand-off. Past about 2,300, each cycle costs a tile about one. Contention is under 0.1
 // point. Each switch puts
 // a stand-in where the hash was and keeps the rest of the hasher: the transcripts zeroed
@@ -1940,7 +1940,7 @@ typedef struct {
 #endif
 // PEARL_TALL_TR_ZERO6, PEARL_TALL_TR_NOZERO and PEARL_TALL_HASHCYC_PRE (0 by default): the
 // store side of the RTX 30/40 tile hash. Past about 2,300 cycles after the hand-off each cycle of the
-// hasher's phase costs a tile about 0.95 (benchmark.md, step 0 and g6), and the phase ends
+// hasher's phase costs a tile about 0.95 (tuning/benchmark.md, step 0 and g6), and the phase ends
 // with the zeroing: the hasher zeroes its column slot's 48 transcripts for the next tile's
 // XORs, eight STS.128 a lane (region L whole, and region 32 + L / 2 on the even lanes). Its
 // lanes are 64 bytes apart, so by the bank rule the eight take 96 wavefronts: 16 each for
@@ -1960,7 +1960,7 @@ typedef struct {
 // The test, one 3060 Ti, all three with stamps and _PRE: base, ZERO6 and NOZERO. Store-side
 // work is dead if NOZERO saves under 30 cycles a tile; ZERO6 passes at 30 or more in every
 // round and at least 60% of NOZERO's saving. Even then it is worth 20 to 60 cycles, so it
-// ships only in a bundle that passes. Measured 2 Nov on a 3060 Ti (benchmark.md): NOZERO
+// ships only in a bundle that passes. Measured 2 Nov on a 3060 Ti (tuning/benchmark.md): NOZERO
 // saves 20 cycles a tile and ZERO6 costs 15, so store-side work is dropped.
 // CUDA 12.6 and 12.8.1, sm_86 (both kernels) and sm_89: all three keep base's registers (254
 // and 255) with no spill, and the stamped base's chunk loop byte for byte. Their hashes are not
@@ -2030,7 +2030,7 @@ typedef struct {
 // On the CPU, pearl_kernel.cu's own pearl_hpf_msw and pearl_hpf_msw_pair, built for the host
 // with the pair's shuffles on two threads, gave pearl_transcript_msw's word in 2M whole and
 // 200k paired compressions over both byte orders, and a 1 of 3 broke every one. Measured 2 Nov
-// on a 3060 Ti (benchmark.md): the loop costs 3,383 cycles a tile and HASH_FMA loses 3,517
+// on a 3060 Ti (tuning/benchmark.md): the loop costs 3,383 cycles a tile and HASH_FMA loses 3,517
 // (-3.4%), so hash-form work on the fused fold stops. Both mine correctly: verify and the
 // hit-list check against base pass. At 0 every kernel is byte for byte what it was.
 // earn/test/tallHashStub.test.js.
@@ -2563,7 +2563,7 @@ typedef struct {
 // doesn't work at all: this build hung on 1 November, and the feed probe
 // (probes/multicast-probe.cu) then launched 85 two-CTA clusters fine but its multicast arm
 // never finished while the same arm with plain loads did, so the multicast's bytes or its
-// transaction count never arrive on sm_120 (benchmark.md, RTX 50). Keep it off there; the
+// transaction count never arrive on sm_120 (tuning/benchmark.md, RTX 50). Keep it off there; the
 // probe can recheck it on a later driver or toolkit.
 // The host reads the value too (Ctx::foldCluster), so -DPEARL_TALL_CLUSTER=1 binds
 // both sides. The CI workflow compiles the switch on, sm_120 only, so it stays

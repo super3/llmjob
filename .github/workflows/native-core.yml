@@ -651,7 +651,7 @@ jobs:
   # cards on Linux. It ships in the Linux release from v0.6.8 and loads only when a rig asks
   # for it (--core amd, or PEARL_CORE_VARIANT=amd). Built in the image the Salad tests built
   # it in (tuning/salad/amdtest.py's IMAGE), pinned by digest, so the release's code is the
-  # compiler output the hardware rows in benchmark.md were measured on: ROCm 7.2.0's
+  # compiler output the hardware rows in tuning/benchmark.md were measured on: ROCm 7.2.0's
   # hip-clang, all 14 targets.
   #
   # Non-blocking, for the CUDA 13 build's reason: a failure here must not fail the run, or
@@ -746,7 +746,7 @@ jobs:
   #
   # The SDK's compiler is not the Linux image's: SDK 7.2 ships clang 21.0.0git, where
   # ROCm 7.2.0 on Linux has AMD clang 22.0.0git. So this core's code is not the code the
-  # Salad rows in benchmark.md measured, and no Windows Radeon has run it.
+  # Salad rows in tuning/benchmark.md measured, and no Windows Radeon has run it.
   #
   # Non-blocking, like the Linux AMD job, and for the same reason.
   amd-windows:

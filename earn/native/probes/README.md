@@ -1533,11 +1533,11 @@ stage 0 EMPTY after its first chunk).
 compilers.sh's `multicast` stage builds and runs it, then `multicast-read.js` prints the
 reading. On a stock RTX 5090 (2 November, `b68b039`) the card granted 85 two-CTA clusters and
 arms e, a and d ran, but arm b, the multicast, never finished: multicast doesn't complete on
-sm_120 (benchmark.md, RTX 50).
+sm_120 (tuning/benchmark.md, RTX 50).
 
 ## RTX 20-series: three ways at the last 5-7% (started 2026-10-20)
 
-On the RTX 20 cards we mine at 92-99% of the faster competitor (benchmark.md, "RTX
+On the RTX 20 cards we mine at 92-99% of the faster competitor (tuning/benchmark.md, "RTX
 20-series"). The clocks match, so the gap is work per clock: we do 5-7.5% less.
 pearl_config.h puts the B-direct fold at about 79% of the tensor pipe's peak per clock
 on a 2080 Ti, measured before the last round's gains (85-88% now, see the results), and
@@ -2151,6 +2151,6 @@ shapes passed on all four cards. The 4 MB cards gain what `HASH_RG` gained alone
 default core with `compilers.sh`, runs verify-hits.js on it for 90 s, then runs the CLI
 (`--mode mining`, no Monero) on `us.pearl.herominers.com:1200`: a 60 s warm-up that is not
 measured, then 5 minutes. It reports the mean of the CLI's readings after the first minute,
-as benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
-miner runs. It differs from benchmark.md's method only in using this checkout's core instead
+as tuning/benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
+miner runs. It differs from tuning/benchmark.md's method only in using this checkout's core instead
 of the release files, so its results go in a section's notes and never change a row.

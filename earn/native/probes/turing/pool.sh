@@ -1,5 +1,5 @@
 #!/bin/bash
-# Our miner on a pool, the way benchmark.md's "How a host is tested" runs it, but with
+# Our miner on a pool, the way tuning/benchmark.md's "How a host is tested" runs it, but with
 # this checkout's core instead of the published release files: a different method, so
 # a result goes in a section's notes, never into a row.
 #
@@ -9,7 +9,7 @@
 # runs the CLI on POOL (default us.pearl.herominers.com:1200, the benchmark's pool): a
 # 60 s warm-up that is not measured, then SECS (300) measured. Our rate is the mean of
 # the CLI's readings after the first minute of the measured run, each the average
-# since the one before, as benchmark.md takes it; the SM clock, power and temperature
+# since the one before, as tuning/benchmark.md takes it; the SM clock, power and temperature
 # are medians of nvidia-smi samples every 5 s over the same span. Only our miner runs:
 # PeakMiner's and SRBMiner's figures are the rows' fixed targets.
 #

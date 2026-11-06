@@ -110,7 +110,7 @@ cd earn && node src/cli/earn-cli.js -a "$W" -w kx-test --mode mining --no-serve 
 ## Step 4: release, then switch the watcher over
 
 1. Release v0.6.1 the repo's usual way (version in `earn/package.json`, a `v0.6.1` tag, which runs
-   `.github/workflows/miner-build.yml`; check `benchmark.md` first, per `CLAUDE.md`). Ask the user
+   `.github/workflows/miner-build.yml`; check `tuning/benchmark.md` first, per `CLAUDE.md`). Ask the user
    before tagging: a release reaches every user.
 2. In `tuning/salad/watcher.py`, replace the `/etc/hosts` + `socat` redirect in `cmd_for(...,
    kryptex=...)` with a `--pool` flag, the same way Monero adds `--xmr-address`: a `sed` edit that puts

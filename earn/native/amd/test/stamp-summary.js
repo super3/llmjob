@@ -28,7 +28,7 @@
 //            bit 19's falls anywhere in it. Two crossings of one boundary are under a slab apart in time, so
 //            a pair whose crossings are more than 3 slabs apart on REALTIME is dropped, and counted unless
 //            they are a whole number of gfx11's 2^20-cycle wraps apart (another boundary, the same value).
-// gates prints item 14's and 15's readings (benchmark.md, item 13) from two builds on one PC:
+// gates prints item 14's and 15's readings (tuning/benchmark.md, item 13) from two builds on one PC:
 //   D        the stall a start skew could hide: the stamp build's median barrier wait a slab, plus what its
 //            LDS fragment loads cost a slab. That is its median work a slab (the loop less barrier and memory
 //            wait) less the abl8 stamp build's, so a change in barrier wait isn't counted twice. A second D
