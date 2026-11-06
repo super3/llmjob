@@ -33,6 +33,21 @@
 //       PEARL_TALL_STUB_SPIN note) while w + 4 runs on, and at the end of the tile's first chunk
 //       (two stages) warps 4-7 wait at CTA scope on the EMPTY of the tile's stage 0, which counts
 //       the peer's arrivals too: the fold's hand-off.
+// The push arms (issue #287, item 7): B' shared between the pair without multicast. Each CTA loads
+// half of the pair's box and copies that half into the peer's buffer over distributed shared memory
+// (cp.async.bulk shared::cta to shared::cluster), so the L2 serves one box a pair-stage, not two. All
+// three use c's barrier protocol (cluster-wide EMPTY, local FULL):
+//   a2  each CTA loads its own whole B' box: two L2 reads, two fills. a with c's barriers.
+//   h2  each CTA loads its half of the box and nothing else: one L2 read, one fill. Each CTA reads
+//       half stale bytes.
+//   p   h2's loads, then each CTA's producer waits for its half to land (a HALF mbarrier behind
+//       FULL), copies it to the same offset in the peer's buffer, completing on the peer's FULL, and
+//       arrives on its own FULL. One L2 read, two fills, one box CTA to CTA.
+// fp = (E_a2 - E_p) / (E_a2 - E_h2): the share of an L2 box's cost the copy saves. A stock 5090 pays
+// about 5.2% of its rate for a B' box a CTA-stage (item 16, skip B'), so a fold that shares B' this
+// way could gain about 2.6% x fp, before its own costs. If p sticks and a2 does not, the copy never
+// lands on this card. MC_ARMS picks the phases: "push" (these three, with e), "multicast" (the arms
+// above), or both, push first (the default: on a 5090 the multicast arm b hangs, which ends the run).
 // e, a, b and d share another coupling, not the fold's: rank 1's warps also arrive on rank 0's
 // EMPTY, which is what lets rank 0 refill both CTAs' buffers in b, and rank 0's producer also
 // arrives on rank 1's FULL with each fill, so rank 1 can never run a phase ahead of rank 0 (in
@@ -83,6 +98,7 @@ constexpr uint32_t THREADS = 256u;
 constexpr uint32_t SK = 64u;                          // bytes of k a stage: one k-block
 constexpr uint32_t BN = 256u, BM = 192u;              // B' columns and A' rows a box
 constexpr uint32_t BOXB = BN * SK, BOXA = BM * SK;    // 16384 and 12288
+constexpr uint32_t BNH = BN / 2u, BOXH = BOXB / 2u;   // a push arm's half box: 128 columns, 8192
 constexpr uint32_t STAGE = BOXB + BOXA;
 constexpr uint32_t STRIDE = STAGE + 512u;             // the fold's ring: barriers in the pad
 constexpr uint32_t NST = 3u;
@@ -93,7 +109,7 @@ constexpr uint32_t CG = 32u;                          // B' column groups: 8192 
 constexpr uint32_t RG = 16u;                          // A' row groups: 3072 rows, 6 MB
 static_assert(SMEM == 99840u, "the fold's shared footprint");
 
-enum Arm { ARM_E, ARM_A, ARM_B, ARM_D, ARM_C, ARM_CA, ARM_CAH, NARMS };
+enum Arm { ARM_E, ARM_A, ARM_B, ARM_D, ARM_C, ARM_CA, ARM_CAH, ARM_A2, ARM_H2, ARM_P, NARMS };
 
 // Bytes a pair-stage: what TMA lands in shared (both CTAs), and what the boxes read from the
 // L2 (a multicast counted as one read). Which ranks' sums can be checked: a rank that gets no
@@ -112,6 +128,9 @@ const ArmInfo ARMS[] = {
     {"c", ARM_C, 2u * BOXB, BOXB, true, true},
     {"cA", ARM_CA, 2u * (BOXB + BOXA), BOXB + 2u * BOXA, true, true},
     {"cAH", ARM_CAH, 2u * (BOXB + BOXA), BOXB + 2u * BOXA, true, true},
+    {"a2", ARM_A2, 2u * BOXB, 2u * BOXB, true, true},
+    {"h2", ARM_H2, BOXB, BOXB, false, false},
+    {"p", ARM_P, 2u * BOXB, BOXB, true, true},
 };
 static_assert(sizeof ARMS / sizeof ARMS[0] == NARMS, "one row an arm, in the enum's order");
 
@@ -212,6 +231,14 @@ __device__ __forceinline__ void tma_3d_mc(uint32_t dst, const CUtensorMap *map, 
       "l"(reinterpret_cast<uint64_t>(map)), "r"(c0), "r"(c1), "r"(c2), "r"(bar), "h"(mask)
       : "memory");
 }
+// The push arm's copy: `bytes` of this CTA's shared memory at src into the peer's at dst, completing
+// on the peer's barrier at bar (dst and bar from mapa). Distributed shared memory, not the L2.
+__device__ __forceinline__ void push_bulk(uint32_t dst, uint32_t src, uint32_t bytes, uint32_t bar) {
+  asm volatile("cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];" ::"r"(
+                   dst),
+               "r"(src), "r"(bytes), "r"(bar)
+               : "memory");
+}
 __device__ __forceinline__ uint32_t ctarank() {
   uint32_t r;
   asm volatile("mov.u32 %0, %%cluster_ctarank;" : "=r"(r));
@@ -244,7 +271,7 @@ __device__ __forceinline__ uint32_t mix(uint32_t h) {
 
 // A wait that gives up: after waitNs of global time, or once another wait has given up. The
 // first to give up records what it waited on. role 0 is a FULL wait, 1 the producer's EMPTY, 2
-// the hand-off's EMPTY (cAH).
+// the hand-off's EMPTY (cAH), 3 the producer's HALF (p).
 template <bool CL>
 __device__ bool wait_bounded(uint32_t bar, uint32_t parity, uint64_t waitNs, unsigned *abortFlag,
                              volatile Status *st, uint32_t role, uint32_t g) {
@@ -278,26 +305,33 @@ __device__ bool wait_bounded(uint32_t bar, uint32_t parity, uint64_t waitNs, uns
 
 template <int ARM>
 __global__ void __launch_bounds__(THREADS, 1)
-    mc_probe(const __grid_constant__ Map tmB, const __grid_constant__ Map tmA, uint32_t tiles, uint32_t pace,
-             uint32_t hashCyc, unsigned long long waitNs, unsigned *abortFlag, CtaReport *rep, Status *st) {
+    mc_probe(const __grid_constant__ Map tmB, const __grid_constant__ Map tmA, const __grid_constant__ Map tmBh,
+             uint32_t tiles, uint32_t pace, uint32_t hashCyc, unsigned long long waitNs, unsigned *abortFlag,
+             CtaReport *rep, Status *st) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
-  // The fold's barrier protocol (c, cA, cAH), or the one-way coupling of the others; each CTA's
-  // own A' box (cA, cAH); the fold's tile seam (cAH).
-  constexpr bool SYM = ARM == ARM_C || ARM == ARM_CA || ARM == ARM_CAH;
+  // The fold's barrier protocol (c, cA, cAH, and the push arms), or the one-way coupling of the
+  // others; each CTA's own A' box (cA, cAH); the fold's tile seam (cAH).
+  constexpr bool SYM = ARM == ARM_C || ARM == ARM_CA || ARM == ARM_CAH || ARM == ARM_A2 || ARM == ARM_H2 || ARM == ARM_P;
   constexpr bool OWNA = ARM == ARM_CA || ARM == ARM_CAH;
   constexpr bool SEAM = ARM == ARM_CAH;
+  // Half a box a CTA (h2, p), and the copy of it into the peer (p).
+  constexpr bool HALF = ARM == ARM_H2 || ARM == ARM_P;
+  constexpr bool PUSH = ARM == ARM_P;
   extern __shared__ __align__(1024) uint8_t smem[];
   const uint32_t sbase = smem_addr(smem);
   if ((sbase & 1023u) != 0u) __trap();
   const uint32_t rank = ctarank();
   const uint32_t pair = blockIdx.x / 2u, pairs = gridDim.x / 2u;
   const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
-  // FULL: the producer's arrival, and rank 0's producer's too on rank 1 outside c, cA and cAH.
+  // FULL: the producer's arrival, and rank 0's producer's too on rank 1 outside the arms with the
+  // fold's barriers; in p the producer's second, made once its half has landed and gone to the peer.
   // EMPTY: one a warp, this CTA's eight, and the peer's eight where they arrive too (rank 0
-  // always; both ranks in c, cA and cAH).
+  // always; both ranks with the fold's barriers). HALF (p): the producer's expect_tx, and its half
+  // box's bytes.
   if (threadIdx.x < NST) {
-    mbar_init(sbase + threadIdx.x * STRIDE + STAGE, !SYM && rank == 1u ? 2u : 1u);
+    mbar_init(sbase + threadIdx.x * STRIDE + STAGE, PUSH || (!SYM && rank == 1u) ? 2u : 1u);
     mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, SYM || rank == 0u ? 16u : 8u);
+    if (PUSH) mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 16u, 1u);
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
   }
   // The B' regions start as noise, so a rank that loads nothing (e, d's rank 1) reads bytes like
@@ -323,12 +357,36 @@ __global__ void __launch_bounds__(THREADS, 1)
       mbar_arrive(full);
       return;
     }
+    if (HALF) {
+      // This rank's half of the pair's box: columns 128 rank on, at the same offset in the buffer.
+      // In p it lands on HALF, and FULL waits for the peer's half instead (push, below).
+      const uint32_t ho = rank * BOXH;
+      expect_tx(full, BOXH);
+      if (PUSH) expect_tx(buf + STAGE + 16u, BOXH);
+      tma_3d(buf + ho, &tmBh.map, 0u, col + rank * BNH, kb, PUSH ? buf + STAGE + 16u : full);
+      return;
+    }
     expect_tx(full, OWNA ? STAGE : BOXB);
-    if (ARM == ARM_A || ARM == ARM_D)
+    if (ARM == ARM_A || ARM == ARM_D || ARM == ARM_A2)
       tma_3d(buf, &tmB.map, 0u, col, kb, full);
     else if (rank == 0u)
       tma_3d_mc(buf, &tmB.map, 0u, col, kb, full, (uint16_t)3u);
     if (OWNA) tma_3d(buf + BOXB, &tmA.map, 0u, row, kb, full);
+  };
+  // p: once this rank's half of stage g's box has landed, copy it to the same offset in the peer's
+  // buffer, completing on the peer's FULL, and make this CTA's second FULL arrival. A release after
+  // the HALF wait's acquire, so the warps that see FULL complete see this half too. The peer's
+  // buffer is free: this producer's EMPTY wait before the fill covered both CTAs' warps. The source
+  // stays put until the copy is done: its next refill waits on an EMPTY that needs the peer's warps,
+  // which read it only after the copy landed. The proxy fence orders what the wait made visible
+  // before the copy, which reads it as TMA does. False if the wait gave up.
+  auto push = [&](uint32_t g) -> bool {
+    const uint32_t buf = sbase + (g % NST) * STRIDE, full = buf + STAGE, ho = rank * BOXH;
+    if (!wait_bounded<false>(full + 16u, (g / NST) & 1u, waitNs, abortFlag, st, 3u, g)) return false;
+    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+    push_bulk(mapa(buf + ho, rank ^ 1u), buf + ho, BOXH, mapa(full, rank ^ 1u));
+    mbar_arrive(full);
+    return true;
   };
   // The fold's lane bases for a warp's column slot: eight ldmatrix a stage read its 4 KB once.
   const uint32_t f = (lane >> 1) & 3u;
@@ -340,6 +398,7 @@ __global__ void __launch_bounds__(THREADS, 1)
   if (threadIdx.x == PRODUCER) {
     fill(0u);
     if (S > 1u) fill(1u);
+    if (PUSH) ok = push(0u);
   }
   const long long c0 = clock64();
   long long due = c0;
@@ -359,8 +418,10 @@ __global__ void __launch_bounds__(THREADS, 1)
       }
       due = clock64();
     }
+    // p: the next stage's half goes to the peer first; it has had a stage to land.
+    if (PUSH && threadIdx.x == PRODUCER && ok && g + 1u < S) ok = push(g + 1u);
     // The producer refills two stages ahead, once both CTAs (or this one) released the buffer.
-    if (threadIdx.x == PRODUCER && g + 2u < S) {
+    if (threadIdx.x == PRODUCER && ok && g + 2u < S) {
       const uint32_t n = g + 2u, empty = sbase + (n % NST) * STRIDE + STAGE + 8u;
       const uint32_t par = (n / NST - 1u) & 1u;
       // Acquired at cluster scope where the peer's warps arrive (the fold's wait in c, cA, cAH).
@@ -417,6 +478,7 @@ __global__ void __launch_bounds__(THREADS, 1)
 #else
   (void)tmB;
   (void)tmA;
+  (void)tmBh;
   (void)tiles;
   (void)pace;
   (void)hashCyc;
@@ -429,7 +491,7 @@ __global__ void __launch_bounds__(THREADS, 1)
 
 // ---------------------------------------------------------------------------------------------
 // Host.
-typedef void (*Kernel)(Map, Map, uint32_t, uint32_t, uint32_t, unsigned long long, unsigned *, CtaReport *,
+typedef void (*Kernel)(Map, Map, Map, uint32_t, uint32_t, uint32_t, unsigned long long, unsigned *, CtaReport *,
                        Status *);
 Kernel kernel_for(int arm) {
   switch (arm) {
@@ -439,6 +501,9 @@ Kernel kernel_for(int arm) {
     case ARM_D: return mc_probe<ARM_D>;
     case ARM_C: return mc_probe<ARM_C>;
     case ARM_CA: return mc_probe<ARM_CA>;
+    case ARM_A2: return mc_probe<ARM_A2>;
+    case ARM_H2: return mc_probe<ARM_H2>;
+    case ARM_P: return mc_probe<ARM_P>;
     default: return mc_probe<ARM_CAH>;
   }
 }
@@ -511,7 +576,7 @@ struct Probe {
   int sms = 0;
   uint32_t pace = 3240u, waitMs = 1000u, hashCyc = 3000u;
   double launchMs = 300.0;
-  Map tmB{}, tmA{};
+  Map tmB{}, tmA{}, tmBh{};   // tmBh: B' in half boxes, 128 columns (h2, p)
   unsigned *abortDev = nullptr;
   CtaReport *repDev = nullptr;
   Status *stHost = nullptr, *stDev = nullptr;
@@ -534,7 +599,8 @@ void print_status(const Probe &p, const char *arm) {
   if (!s->set) return;
   printf("TIMEOUT arm=%s role=%s block=%u rank=%u thread=%u stage=%u parity=%u bar=0x%x state=0x%016llx "
          "waited_ms=%.0f\n",
-         arm, s->role == 2u ? "handoff-empty" : s->role ? "producer-empty" : "consumer-full", s->block, s->rank,
+         arm, s->role == 3u ? "producer-half" : s->role == 2u ? "handoff-empty" : s->role ? "producer-empty" : "consumer-full",
+         s->block, s->rank,
          s->thread, s->stage, s->parity, s->bar, (unsigned long long)s->state, s->waited_ns / 1e6);
 }
 
@@ -560,7 +626,7 @@ LaunchOut launch(Probe &p, const ArmInfo &a, uint32_t tiles, bool smoke, cudaEve
   cfg.numAttrs = 1;
   const double t0 = now_s();
   if (before) cudaEventRecord(before, 0);
-  const cudaError_t lr = cudaLaunchKernelEx(&cfg, kernel_for(a.arm), p.tmB, p.tmA, tiles, p.pace, p.hashCyc,
+  const cudaError_t lr = cudaLaunchKernelEx(&cfg, kernel_for(a.arm), p.tmB, p.tmA, p.tmBh, tiles, p.pace, p.hashCyc,
                                             (unsigned long long)p.waitMs * 1000000ull, p.abortDev, p.repDev,
                                             p.stDev);
   if (after) cudaEventRecord(after, 0);
@@ -692,6 +758,10 @@ int main(int argc, char **argv) {
   p.launchMs = argc > 6 ? atof(argv[6]) : 300.0;
   p.hashCyc = argc > 7 ? (uint32_t)atoi(argv[7]) : 3000u;
   setvbuf(stdout, nullptr, _IOLBF, 0);
+  // MC_ARMS: which phases run, "push" and/or "multicast" (both when unset or empty).
+  const char *armsEnv = getenv("MC_ARMS");
+  const bool all = !armsEnv || !*armsEnv;
+  const bool runPush = all || strstr(armsEnv, "push"), runMc = all || strstr(armsEnv, "multicast");
 
   cudaDeviceProp prop;
   if (cudaGetDeviceProperties(&prop, 0) != cudaSuccess) {
@@ -702,10 +772,10 @@ int main(int argc, char **argv) {
   cudaDeviceGetAttribute(&clusterLaunch, cudaDevAttrClusterLaunch, 0);
   p.sms = prop.multiProcessorCount;
   printf("CARD name=%s cc=%d.%d sms=%d l2_mb=%.0f cluster_launch=%d smem_optin=%zu pace=%u secs=%.1f rounds=%d "
-         "settle=%.1f wait_ms=%u hash=%u own_dst=%s\n",
+         "settle=%.1f wait_ms=%u hash=%u own_dst=%s arms=%s%s\n",
          prop.name, prop.major, prop.minor, p.sms, prop.l2CacheSize / 1048576.0, clusterLaunch,
          (size_t)prop.sharedMemPerBlockOptin, p.pace, secs, rounds, settle, p.waitMs, p.hashCyc,
-         MC_SHARED_CTA ? "cta" : "cluster");
+         MC_SHARED_CTA ? "cta" : "cluster", runPush ? "push" : "", runPush && runMc ? ",multicast" : runMc ? "multicast" : "");
   if (prop.major < 9) {
     printf("SKIP clusters and TMA need sm_90 or newer\nDONE\n");
     return 0;
@@ -755,7 +825,8 @@ int main(int argc, char **argv) {
           != cudaSuccess
       || qres != cudaDriverEntryPointSuccess
       || !encode(reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(encp), &p.tmB, dB, rowsB, BN)
-      || !encode(reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(encp), &p.tmA, dA, rowsA, BM)) {
+      || !encode(reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(encp), &p.tmA, dA, rowsA, BM)
+      || !encode(reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(encp), &p.tmBh, dB, rowsB, BNH)) {
     printf("FAULT tensor maps\nDONE early\n");
     return 2;
   }
@@ -830,15 +901,23 @@ int main(int argc, char **argv) {
         if (!p.dropped[arm]) window(p, ARMS[arm], first + r, secs, settle, tiles);
     }
   };
-  for (int arm : {ARM_A, ARM_D, ARM_B}) launch(p, ARMS[arm], 8u, true);
-  rounds_over({ARM_E, ARM_A, ARM_D, ARM_B}, 1, rounds);
-  for (int arm : {ARM_C, ARM_CA}) launch(p, ARMS[arm], 8u, true);
-  const int phase2 = std::max(1, rounds - 1);
-  rounds_over({ARM_B, ARM_C, ARM_CA}, rounds + 1, phase2);
-  // Phase 3: the fold's tile seam on top (cAH), a smoke launch and one window, last of all: its
-  // named barrier can leave a warp stuck after a timeout, which ends the process.
-  launch(p, ARMS[ARM_CAH], 8u, true);
-  rounds_over({ARM_CAH}, rounds + phase2 + 1, 1);
+  // The push phase first (MC_ARMS): a2, h2 and p as a smoke launch each, p last (it is the one that
+  // can stick), then rounds with e, numbered from 101 so they never share a round with the others.
+  if (runPush) {
+    for (int arm : {ARM_A2, ARM_H2, ARM_P}) launch(p, ARMS[arm], 8u, true);
+    rounds_over({ARM_E, ARM_A2, ARM_H2, ARM_P}, 101, rounds);
+  }
+  if (runMc) {
+    for (int arm : {ARM_A, ARM_D, ARM_B}) launch(p, ARMS[arm], 8u, true);
+    rounds_over({ARM_E, ARM_A, ARM_D, ARM_B}, 1, rounds);
+    for (int arm : {ARM_C, ARM_CA}) launch(p, ARMS[arm], 8u, true);
+    const int phase2 = std::max(1, rounds - 1);
+    rounds_over({ARM_B, ARM_C, ARM_CA}, rounds + 1, phase2);
+    // Phase 3: the fold's tile seam on top (cAH), a smoke launch and one window, last of all: its
+    // named barrier can leave a warp stuck after a timeout, which ends the process.
+    launch(p, ARMS[ARM_CAH], 8u, true);
+    rounds_over({ARM_CAH}, rounds + phase2 + 1, 1);
+  }
   g_quit = true;
   samp.join();
   printf("DONE\n");

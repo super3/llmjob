@@ -318,6 +318,18 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       return;
     }
 #endif
+#if PEARL_TALL_PUSH_BODY
+    {
+      // This CTA's half of the pair's B' box, 128 columns from 128 x rank, at the same offset
+      // in the buffer, on HALF (PEARL_TALL_CLUSTER_PUSH). FULL expects this CTA's A box and
+      // the peer's half, which the peer's producer copies in once it has landed there.
+      const uint32_t hr = pearl_cluster_ctarank();
+      pearl_mbar_expect_tx(full, STAGE - BN * SK / 2u);
+      pearl_mbar_expect_tx(full + 16u, BN * SK / 2u);
+      pearl_tma_3d(dst + hr * (BN * SK / 2u), &tmB, 0u, boxB + hr * (BN / 2u), kofs / SK, full + 16u);
+      pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
+    }
+#else
     pearl_mbar_expect_tx(full, STAGE);
 #if PEARL_TALL_CLUSTER_BODY
     // B once for the pair: rank 0's box lands in both CTAs' buffers at this offset and
@@ -333,7 +345,23 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
 #endif
     pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
+#endif  // PEARL_TALL_PUSH_BODY
   };
+#if PEARL_TALL_PUSH_BODY
+  // Buffer bi's half of B', which this CTA loaded, to the same offset in the peer's buffer,
+  // completing on the peer's FULL, once it has landed here (HALF, at FULL's parity par);
+  // then this CTA's own second FULL arrival, a release after that wait's acquire, so the
+  // warps that see FULL complete see this half too (PEARL_TALL_CLUSTER_PUSH). The proxy
+  // fence orders what the wait made visible before the copy, which reads it as TMA does.
+  auto pearl_tall_push = [&](uint32_t bi, uint32_t par) {
+    pearl_mbar_wait(bi + STAGE + 16u, par);
+    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");
+    const uint32_t hr = pearl_cluster_ctarank();
+    const uint32_t src = bi + hr * (BN * SK / 2u);
+    pearl_bulk_push(pearl_mapa(src, hr ^ 1u), src, BN * SK / 2u, pearl_mapa(bi + STAGE, hr ^ 1u));
+    pearl_mbar_arrive(bi + STAGE);
+  };
+#endif
 #endif
 
   // Lane bases for buffer 0, k-step 0. The swizzle and the half select touch only bits 4
@@ -411,7 +439,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // EMPTY's are the eight warps', or every thread's (PEARL_TALL_TMA_EMPTY_ALL), from
     // both CTAs of the pair in the cluster build (PEARL_TALL_CLUSTER).
 #if PEARL_TALL_TMA_ROLES
+#if PEARL_TALL_PUSH_BODY
+    // FULL's second arrival is the producer's after its half went to the peer; HALF, behind
+    // EMPTY, takes the producer's expect_tx and its half's bytes (PEARL_TALL_CLUSTER_PUSH).
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 2u);
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 16u, 1u);
+#else
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 1u);
+#endif
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_TMA_EMPTY_ARRIVALS);
 #else
     pearl_mbar_init(barFull + 8u * threadIdx.x, 1u);
@@ -486,8 +521,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // read yet.
   if (threadIdx.x == PRODUCER) {
 #if PEARL_TALL_TMA_ROLES
+#if PEARL_TALL_PUSH_BODY
+    // The push build (PEARL_TALL_CLUSTER_PUSH): stage 0 whole from the L2, both halves of B'
+    // and A on FULL, then FULL's second arrival and HALF's first phase by plain arrivals, so
+    // HALF keeps FULL's parity. Nothing waits here: a wait for the half to land before the
+    // tile loop spilled the fold (164 bytes, sm_90a under ptxas 12.6). Stage 1 is a half,
+    // which the stage-0 top copies to the peer.
+    pearl_mbar_expect_tx(sbase + STAGE, STAGE);
+#pragma unroll
+    for (uint32_t h = 0; h < 2u; h++)
+      pearl_tma_3d(sbase + h * (BN * SK / 2u), &tmB, 0u, boxB + h * (BN / 2u), 0u, sbase + STAGE);
+    pearl_tma_3d(sbase + BN * SK, &tmA, 0u, boxA, 0u, sbase + STAGE);
+    pearl_mbar_arrive(sbase + STAGE);
+    pearl_mbar_arrive(sbase + STAGE + 16u);
+    tma_fill(sbase + STRIDE, SK);
+#else
 #pragma unroll
     for (uint32_t s = 0; s < SPC; s++) tma_fill(sbase + s * STRIDE, s * SK);
+#endif
 #else
 #pragma unroll
     for (uint32_t s = 0; s < SPC; s++) tma_fill(s, s * SK);
@@ -657,6 +708,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #define PEARL_TALL_PRODUCER_S (PRODUCER + 32u * s)
 #else
 #define PEARL_TALL_PRODUCER_S PRODUCER
+#endif
+#if PEARL_TALL_PUSH_BODY
+        // The next stage's half to the peer (PEARL_TALL_CLUSTER_PUSH): it was loaded a stage
+        // ago. Stage 0's next is stage 1, on soB; stage 1's is the next chunk's stage 0, on
+        // soC, which this chunk's stage 0 refilled only if stage_next.
+        if (threadIdx.x == PRODUCER && (s == 0u || stage_next))
+          pearl_tall_push(s == 0u ? soB : soC, s == 0u ? pB : pC);
 #endif
 #if PEARL_TALL_TMA_FILL_PT == 0
         PEARL_TALL_REFILL(PEARL_TALL_PRODUCER_S)

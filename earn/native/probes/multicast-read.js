@@ -2,7 +2,8 @@
 
 // node multicast-read.js <log> -- multicast-probe.cu's lines read for item 16's step 2: f, the
 // share of a B' box's cost that TMA multicast saves, and which barrier pattern hangs, if one
-// does. compilers.sh's "multicast" stage runs it on the probe's own log; a box log from
+// does. And for issue #287's item 7: fp, the share a copy between the pair's shared memories saves
+// (the push arms a2, h2 and p), and whether that copy lands at all. compilers.sh's "multicast" stage runs it on the probe's own log; a box log from
 // `amdtest.py logs` reads the same, since each probe line keeps its tag after the prefix.
 // Every line it prints starts with "read:", so its output is never read back as the probe's.
 
@@ -20,11 +21,22 @@ const ARMS = {
   c: { fill: 2 * BOXB, l2: BOXB },
   cA: { fill: 2 * (BOXB + BOXA), l2: BOXB + 2 * BOXA },
   cAH: { fill: 2 * (BOXB + BOXA), l2: BOXB + 2 * BOXA },
+  a2: { fill: 2 * BOXB, l2: 2 * BOXB },
+  h2: { fill: BOXB, l2: BOXB },
+  p: { fill: 2 * BOXB, l2: BOXB },
 };
+const PUSH_ARMS = ['a2', 'h2', 'p'];
+const MC_ARMS = ['a', 'd', 'b', 'c', 'cA', 'cAH'];
 // cAH's stages carry the tile seam's hash sleep, so its energy and pace are not compared.
 const UNTIMED = new Set(['cAH']);
 // The step-2 plan's gate for item 16's #1 (B' multicast) and #3 (A' multicast).
 const PASS_F = 0.5;
+// Item 7's gate for building the fold that shares B' by the copy: fp at least this. What a B' box a
+// CTA-stage costs a stock RTX 5090 at its 600 W limit: skip B' in item 16's step 1 (+5.20%, 1
+// November). A pair that shares B' reads half of it from the L2, so the fold could gain about
+// SKIP_B / 2 x fp, before its own costs.
+const PASS_FP = 0.5;
+const SKIP_B = 0.052;
 // A stage more than 1% over the pace did not hold it.
 const PACE_SLACK = 1.01;
 // Arms compared in one round must take the same time a stage at the same clock. A box is a small
@@ -119,6 +131,38 @@ function byRound(rounds) {
 function fShare(E) {
   const box = E.a - E.d;
   return box > 0 ? (E.a - E.b) / box : NaN;
+}
+
+// fp = (E_a2 - E_p) / (E_a2 - E_h2): what the copy saves of an L2 box's cost. a2 and p fill the same
+// bytes; h2 reads the same bytes from the L2 as p and fills half. NaN when an L2 box costs nothing
+// measurable (E_a2 <= E_h2).
+function fPush(E) {
+  const box = E.a2 - E.h2;
+  return box > 0 ? (E.a2 - E.p) / box : NaN;
+}
+
+// Whether the copy lands: p against a2 and h2, which share its barriers and loads but copy nothing.
+// Returns the verdict line, or null when no push arm ran.
+function pushVerdict(p, stuck) {
+  const ran = (arm) => (p.smoke[arm] && !p.smoke[arm].timeout) || p.rounds.some((r) => r.arm === arm);
+  if (!PUSH_ARMS.some((a) => ran(a) || stuck.has(a))) return null;
+  const first = (arm) => {
+    const t = p.timeouts.find((x) => x.arm === arm);
+    return t ? ` (first to give up: a ${t.role} wait on rank ${t.rank}, stage ${t.stage})` : '';
+  };
+  const base = ['a2', 'h2'].filter((a) => stuck.has(a));
+  if (base.length) {
+    return `${base.join(' and ')} stuck${first(base[0])}: the fold's cluster barriers with plain loads stick on this `
+      + 'card, so p cannot be read';
+  }
+  if (stuck.has('p')) {
+    return `p sticks and a2 and h2 do not${first('p')}: the copy between the pair's shared memories, or its `
+      + 'complete_tx on the peer\'s FULL, never lands on this card. With multicast gone too, two CTAs cannot share '
+      + 'B\' here: drop item 7';
+  }
+  if (PUSH_ARMS.every(ran)) return 'a2, h2 and p ran clean: the copy between the pair\'s shared memories lands on this card';
+  const missing = PUSH_ARMS.filter((a) => !ran(a));
+  return `${missing.join(', ')} never ran${p.done ? '' : ' (the probe stopped early)'}: no verdict on the copy`;
 }
 
 function pct(x, digits = 1) {
@@ -222,7 +266,11 @@ function summarize(p) {
         + 'arms after it did not run'
       : `verdict: ${f.arm} crashed: f cannot be read, and the arms after it did not run`);
   } else {
-    say(`verdict: ${hangVerdict(p, stuck)}`);
+    const ranAny = (arm) => p.smoke[arm] || p.rounds.some((r) => r.arm === arm) || stuck.has(arm);
+    // A run of the push phase alone (MC_ARMS=push) has no multicast verdict to give.
+    if (MC_ARMS.some(ranAny) || !PUSH_ARMS.some(ranAny)) say(`verdict: ${hangVerdict(p, stuck)}`);
+    const pv = pushVerdict(p, stuck);
+    if (pv) say(`push verdict: ${pv}`);
   }
 
   // f, round by round, from energies at e's stage time (and as measured).
@@ -233,6 +281,11 @@ function summarize(p) {
   const perB = [];
   const sens = [];
   const baseW = [];
+  const fpEven = [];
+  const fpRaw = [];
+  const fpSens = [];
+  const l2Box = [];
+  const copyBox = [];
   const drift = {};
   const note = (arm, ref, row, refRow) => {
     const d = drift[arm] = drift[arm] || { ref, time: [], mhz: [] };
@@ -259,10 +312,21 @@ function summarize(p) {
       lin.push((E.a - E.e) / (E.d - E.e));
       perB.push((E.d - E.e) / BOXB);
     }
+    if (PUSH_ARMS.every((k) => Number.isFinite(E[k]))) {
+      fpEven.push(fPush(E));
+      fpRaw.push(fPush(raw));
+      if (E.a2 > E.h2) fpSens.push(0.01 * E.e / (E.a2 - E.h2));
+      l2Box.push(E.a2 - E.h2);
+      copyBox.push(E.p - E.h2);
+    }
   }
   const fOk = fEven.filter(Number.isFinite);
   const rawOk = fRaw.filter(Number.isFinite);
-  if (!fEven.length) {
+  const mcRounds = p.rounds.some((r) => MC_ARMS.includes(r.arm));
+  const pushTried = PUSH_ARMS.some((a) => p.smoke[a] || p.rounds.some((r) => r.arm === a));
+  if (!fEven.length && !mcRounds && pushTried) {
+    // The push phase alone (MC_ARMS=push): no multicast f to give.
+  } else if (!fEven.length) {
     say('f: no round has a, b, d and e');
   } else if (!fOk.length) {
     say('f: a box costs nothing measurable here (E_a <= E_d in every round), so there is no f');
@@ -283,6 +347,31 @@ function summarize(p) {
   if (perB.length)
     say(`one box: ${(median(perB) * 1e12).toFixed(1)} pJ a byte filled (d - e); two cost ${median(lin).toFixed(2)} `
       + 'times one (a - e over d - e; 2 is linear)');
+
+  // fp, round by round, from energies at e's stage time (and as measured).
+  const fpOk = fpEven.filter(Number.isFinite);
+  const fpRawOk = fpRaw.filter(Number.isFinite);
+  if (fpEven.length && !fpOk.length) {
+    say('fp: an L2 box costs nothing measurable here (E_a2 <= E_h2 in every round), so there is no fp');
+  } else if (fpOk.length) {
+    const f = median(fpOk);
+    const fr = median(fpRawOk);
+    say(`fp = ${f.toFixed(2)} (${range(fpOk)}; as measured ${Number.isFinite(fr) ? fr.toFixed(2) : 'none'}): `
+      + `the copy between the pair saves ${Math.round(100 * f)}% of an L2 box's cost`);
+    say(`an L2 box (a2 - h2): ${nj(median(l2Box))} nJ a pair-stage, ${(median(l2Box) / BOXB * 1e12).toFixed(1)} pJ a `
+      + `byte; the copy of one (p - h2): ${nj(median(copyBox))} nJ, ${(median(copyBox) / BOXB * 1e12).toFixed(1)} pJ a byte`);
+    say(f >= PASS_FP
+      ? `push gate fp >= ${PASS_FP}: pass. A stock 5090 pays about ${pct(SKIP_B)} for a B' box a CTA-stage, so a fold `
+        + `sharing B' this way could gain about ${pct(SKIP_B / 2 * f)} there before its own costs: race it`
+      : `push gate fp >= ${PASS_FP}: fail (about ${pct(SKIP_B / 2 * f)} at most on a stock 5090): drop item 7`);
+    if (Number.isFinite(fr) && (fr >= PASS_FP) !== (f >= PASS_FP)) {
+      say('fp as measured falls on the other side of the gate: the arms\' stage times differ (lines below), so '
+        + 'repeat with longer rounds before deciding');
+    }
+    if (fpSens.length) say(`1% more stage time in one push arm moves fp by ${median(fpSens).toFixed(2)} here`);
+  } else if (PUSH_ARMS.some((a) => p.rounds.some((r) => r.arm === a))) {
+    say('fp: no round has e, a2, h2 and p');
+  }
 
   // The fold's barriers against the probe's, and the A' boxes on top, in the rounds without e:
   // b is the reference there, at e's power from the rounds before.
@@ -334,8 +423,8 @@ function summarize(p) {
   return lines;
 }
 
-module.exports = { BOXB, BOXA, ARMS, PASS_F, PACE_SLACK, SAME_SLACK, parse, energyPerPairStage, stageTime, evenTime,
-  fShare, summarize };
+module.exports = { BOXB, BOXA, ARMS, PUSH_ARMS, PASS_F, PASS_FP, SKIP_B, PACE_SLACK, SAME_SLACK, parse,
+  energyPerPairStage, stageTime, evenTime, fShare, fPush, summarize };
 
 if (require.main === module) {
   const file = process.argv[2];

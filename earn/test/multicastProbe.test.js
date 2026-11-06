@@ -13,6 +13,8 @@ const reader = require('../native/probes/multicast-read');
 // - its ring, modelled step by step for every arm, never refills a buffer a CTA is reading,
 //   never lets a barrier run two phases ahead of a waiter, and never deadlocks;
 // - the reader's bytes, f (with the stage-time correction) and verdicts;
+// - the push arms (issue #287, item 7): each CTA's half box copied into the peer, modelled with its
+//   HALF barrier, and the reader's fp, gate and verdict;
 // - the compilers.sh stage.
 
 const NL = String.fromCharCode(10);
@@ -62,20 +64,25 @@ function rng(seed) {
 
 // protocol: 'probe' (the kernel's), or 'oneway' (rank 0's producer does not arrive on rank 1's
 // FULL: the hole the kernel closes, kept to show the model finds it).
+// protocol 'nohalf' (p only): the producer copies its half without waiting for it to land, kept to
+// show the model finds a copy of stale bytes.
 function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {}) {
   const BOXB = 16384;
   const BOXA = 12288;
-  const SYM = arm === 'c' || arm === 'cA' || arm === 'cAH';
+  const SYM = ['c', 'cA', 'cAH', 'a2', 'h2', 'p'].includes(arm);
   const OWNA = arm === 'cA' || arm === 'cAH';
   const SEAM = arm === 'cAH';
+  const HALF = arm === 'h2' || arm === 'p';
+  const PUSH = arm === 'p';
   const H = Math.floor(W / 2);
   const rand = rng(seed);
   const bar = (count) => ({ count, pending: count, phase: 0, tx: 0 });
   const errors = [];
   const ctas = [0, 1].map((rank) => ({
-    full: [0, 1, 2].map(() => bar(!SYM && rank === 1 && protocol === 'probe' ? 2 : 1)),
+    full: [0, 1, 2].map(() => bar(PUSH || (!SYM && rank === 1 && protocol === 'probe') ? 2 : 1)),
     empty: [0, 1, 2].map(() => bar(SYM || rank === 0 ? 2 * W : W)),
-    content: [-1, -1, -1],   // the use of the B' box the buffer holds
+    half: [0, 1, 2].map(() => bar(1)),
+    content: [[-1, -1], [-1, -1], [-1, -1]],   // the use of each half of the B' box the buffer holds
     reading: [0, 0, 0],
   }));
   const complete = (b) => {
@@ -98,8 +105,12 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
     if (b.phase > k + 1) errors.push(`${what}: barrier two phases past use ${k}`);
     return (b.phase & 1) !== (k & 1);
   };
+  // A land: bytes into rank's buffer b for use u, the B' halves it writes (none for an A' box), the
+  // barrier it completes on, and for a copy the half it reads in the sending CTA.
   const lands = [];
   const loads = (rank) => !(arm === 'e' || (arm === 'd' && rank === 1));
+  // The halves of B' a warp's read must find holding its use.
+  const fresh = (rank) => (arm === 'e' || (arm === 'd' && rank === 1) ? [] : arm === 'h2' ? [rank] : [0, 1]);
   const fill = (rank, n) => {
     const b = n % 3;
     const u = Math.floor(n / 3);
@@ -109,10 +120,25 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
       arrive(me.full[b], 'full');
       return;
     }
+    if (HALF) {
+      expectTx(me.full[b], BOXB / 2, 'full');
+      if (PUSH) expectTx(me.half[b], BOXB / 2, 'half');
+      lands.push({ rank, b, u, bytes: BOXB / 2, halves: [rank], on: PUSH ? 'half' : 'full' });
+      return;
+    }
     expectTx(me.full[b], OWNA ? BOXB + BOXA : BOXB, 'full');
-    if (arm === 'a' || arm === 'd') lands.push({ rank, b, u, bytes: BOXB, isB: true });
-    else if (rank === 0) for (const r of [0, 1]) lands.push({ rank: r, b, u, bytes: BOXB, isB: true });
-    if (OWNA) lands.push({ rank, b, u, bytes: BOXA, isB: false });
+    if (arm === 'a' || arm === 'd' || arm === 'a2') lands.push({ rank, b, u, bytes: BOXB, halves: [0, 1], on: 'full' });
+    else if (rank === 0) for (const r of [0, 1]) lands.push({ rank: r, b, u, bytes: BOXB, halves: [0, 1], on: 'full' });
+    if (OWNA) lands.push({ rank, b, u, bytes: BOXA, halves: [], on: 'full' });
+  };
+  // p: rank's half of use g's box to the same half of the peer's buffer, on the peer's FULL; then
+  // rank's own second FULL arrival.
+  const push = (rank, g) => {
+    const b = g % 3;
+    const u = Math.floor(g / 3);
+    if (ctas[rank].content[b][rank] !== u) errors.push(`rank ${rank} copied buffer ${b} half ${rank} for use ${u} before it landed`);
+    lands.push({ rank: 1 - rank, b, u, bytes: BOXB / 2, halves: [rank], on: 'full', src: { rank, b, h: rank, u } });
+    arrive(ctas[rank].full[b], 'full after copy');
   };
   // Each warp: the seam's named barrier (cAH, at a tile's first stage but the first), then at the
   // top of stage g the producer warp refills g + 2 behind its EMPTY wait; then FULL wait, read
@@ -120,13 +146,17 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
   // second stage).
   const seams = {};
   const seamKey = (x) => `${x.rank}:${x.w % H}:${x.g}`;
-  const begin = (x) => (x.w === H ? 'top' : 'full');
+  // p's producer copies stage g + 1's half (step push) before it refills g + 2 (top); before stage
+  // 0, stage 0's (pre).
+  const begin = (x) => (x.w === H ? (PUSH ? 'push' : 'top') : 'full');
   const next = (x) => {
     x.g++;
     x.step = SEAM && x.g % KB === 0 && x.g < S ? 'seam' : begin(x);
   };
   const warps = [];
-  for (const rank of [0, 1]) for (let w = 0; w < W; w++) warps.push({ rank, w, g: 0, step: w === H ? 'top' : 'full' });
+  for (const rank of [0, 1]) {
+    for (let w = 0; w < W; w++) warps.push({ rank, w, g: 0, step: w === H ? (PUSH ? 'pre' : 'top') : 'full' });
+  }
   for (const rank of [0, 1]) {
     fill(rank, 0);
     fill(rank, 1);
@@ -138,7 +168,10 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
       if (x.g >= S) return;
       const me = ctas[x.rank];
       const b = x.g % 3;
-      if (x.step === 'top') {
+      if (x.step === 'pre' || x.step === 'push') {
+        const n = x.step === 'pre' ? 0 : x.g + 1;
+        if (n < S && protocol !== 'nohalf' && !ready(me.half[n % 3], Math.floor(n / 3), 'half')) return;
+      } else if (x.step === 'top') {
         const n = x.g + 2;
         if (n < S && n >= 3 && !ready(me.empty[n % 3], Math.floor(n / 3) - 1, 'empty')) return;
       } else if (x.step === 'full') {
@@ -158,12 +191,16 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
     if (c.land !== undefined) {
       const l = lands.splice(c.land, 1)[0];
       const t = ctas[l.rank];
-      if (l.isB) {
+      if (l.halves.length) {
         if (t.reading[l.b] > 0) errors.push(`B' box of use ${l.u} landed on rank ${l.rank} buffer ${l.b} while it was read`);
-        t.content[l.b] = l.u;
+        for (const h of l.halves) t.content[l.b][h] = l.u;
       }
-      t.full[l.b].tx -= l.bytes;
-      complete(t.full[l.b]);
+      // A copy reads its source until it lands: a refill of the source before then is a torn copy.
+      if (l.src && ctas[l.src.rank].content[l.src.b][l.src.h] !== l.src.u)
+        errors.push(`copy of use ${l.src.u} from rank ${l.src.rank} buffer ${l.src.b} read a refilled source`);
+      const on = l.on === 'half' ? t.half[l.b] : t.full[l.b];
+      on.tx -= l.bytes;
+      complete(on);
       continue;
     }
     const x = warps[c.i];
@@ -175,14 +212,21 @@ function simulate(arm, seed, { W = 2, S = 30, KB = 6, protocol = 'probe' } = {})
       x.step = 'seamwait';
     } else if (x.step === 'seamwait') {
       x.step = begin(x);
+    } else if (x.step === 'pre') {
+      push(x.rank, 0);
+      x.step = 'push';
+    } else if (x.step === 'push') {
+      if (x.g + 1 < S) push(x.rank, x.g + 1);
+      x.step = 'top';
     } else if (x.step === 'top') {
       if (x.g + 2 < S) fill(x.rank, x.g + 2);
       x.step = 'full';
     } else if (x.step === 'full') {
       x.step = 'read';
     } else if (x.step === 'read') {
-      if (loads(0) && (arm !== 'd' || x.rank === 0) && me.content[b] !== u)
-        errors.push(`rank ${x.rank} read buffer ${b} for use ${u} holding ${me.content[b]}`);
+      for (const h of fresh(x.rank)) {
+        if (me.content[b][h] !== u) errors.push(`rank ${x.rank} read buffer ${b} half ${h} for use ${u} holding ${me.content[b][h]}`);
+      }
       me.reading[b]++;
       x.step = 'end';
     } else if (x.step === 'end') {
@@ -230,6 +274,29 @@ function log(E, { rounds = 3, extra = [], phase2 = { b: 1, c: 1, cA: 1 }, cah = 
   return [...out, ...extra, end].join(NL);
 }
 const E0 = { e: 100e-9, a: 200e-9, d: 150e-9, b: 165e-9, c: 170e-9, cA: 230e-9, cAH: 240e-9 };
+// A run of the push phase alone (MC_ARMS=push): smoke launches of a2, h2 and p, then rounds of e, a2,
+// h2 and p numbered from 101, as the probe prints them.
+function pushLog(E, { rounds = 3, extra = [], smoke = ['a2', 'h2', 'p'], end = 'DONE', time = {} } = {}) {
+  const out = ['CARD name=NVIDIA GeForce RTX 5090 cc=12.0 sms=170 l2_mb=96 cluster_launch=1 smem_optin=101376 pace=3240 '
+    + 'secs=6.0 rounds=3 settle=1.5 wait_ms=1000 hash=3000 own_dst=cta arms=push', 'NVML yes energy=yes'];
+  for (const a of Object.keys(reader.ARMS)) out.push(`CLUSTERS arm=${a} rc=0 (cudaSuccess) smem_attr=0 clusters=85 ctas=170`);
+  out.push('SMOKE arm=e launch=0 sync=0 tiles=4 ctas=170 stages=21760 cyc_stage=3250 bad=0',
+    'LAUNCH tiles=7 stages=224 cycles_per_ms=2900000 stage_cycles=3241');
+  for (const a of smoke) out.push(`SMOKE arm=${a} launch=0 sync=0 tiles=8 ctas=170 stages=43520 cyc_stage=3250 bad=0`);
+  const stages = 170 * 4000 * 32;
+  for (let r = 101; r < 101 + rounds; r++) {
+    for (const a of ['e', 'a2', 'h2', 'p']) {
+      if (E[a] === undefined) continue;
+      const secs = 6 * (1 + (time[a] || 0));
+      const j = E[a] * (1 + 0.01 * (r - 102)) * stages / 2;
+      out.push(`ROUND r=${r} arm=${a} secs=${secs.toFixed(6)} launches=20 ctas=170 cta_stages=${stages} `
+        + `fill_gb=${(stages / 2 * reader.ARMS[a].fill / 1e9).toFixed(3)} l2_gb=${(stages / 2 * reader.ARMS[a].l2 / 1e9).toFixed(3)} `
+        + `j=${j.toFixed(9)} j_src=energy w=${(j / secs).toFixed(4)} mhz=2900.0 c=60 cyc_stage=3250 pace=3240 bad=0`);
+    }
+  }
+  return [...out, ...extra, end].join(NL);
+}
+const EP = { e: 100e-9, a2: 200e-9, h2: 150e-9, p: 165e-9 };
 // Phase 2 with b alone: c and cA stopped before their rounds.
 const NO_C = { b: 1, c: 0, cA: 0 };
 const summary = (text) => reader.summarize(reader.parse(text));
@@ -300,8 +367,8 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '      " [%0], [%1, {%2, %3, %4}], [%5];"'));
     expect(PROBE).toContain(lines('#ifndef MC_SHARED_CTA',
       '#if defined(__CUDACC_VER_MAJOR__) && __CUDACC_VER_MAJOR__ * 100 + __CUDACC_VER_MINOR__ >= 1208'));
-    expect(PROBE).toContain('MC_SHARED_CTA ? "cta" : "cluster");');
-    expect(PROBE.match(/tma_3d\(/g)).toHaveLength(3);   // the helper and the two own boxes
+    expect(PROBE).toContain('MC_SHARED_CTA ? "cta" : "cluster", runPush ? "push" : "",');
+    expect(PROBE.match(/tma_3d\(/g)).toHaveLength(4);   // the helper, the two own boxes and the half box
     // The fold's arrival, made twice: on the peer's EMPTY through mapa, then its own.
     expect(FOLD).toContain(lines(
       '#define PEARL_TALL_EMPTY_ARRIVE(bar)                       ' + BS,
@@ -316,15 +383,19 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '        mbar_arrive(empty);',
       '      }'));
     expect(PROBE).toContain(lines(
-      '  constexpr bool SYM = ARM == ARM_C || ARM == ARM_CA || ARM == ARM_CAH;',
+      '  constexpr bool SYM = ARM == ARM_C || ARM == ARM_CA || ARM == ARM_CAH || ARM == ARM_A2 || ARM == ARM_H2 || ARM == ARM_P;',
       '  constexpr bool OWNA = ARM == ARM_CA || ARM == ARM_CAH;',
-      '  constexpr bool SEAM = ARM == ARM_CAH;'));
+      '  constexpr bool SEAM = ARM == ARM_CAH;',
+      '  // Half a box a CTA (h2, p), and the copy of it into the peer (p).',
+      '  constexpr bool HALF = ARM == ARM_H2 || ARM == ARM_P;',
+      '  constexpr bool PUSH = ARM == ARM_P;'));
     // EMPTY counts both CTAs' eight warps in the fold's pattern, as PEARL_TALL_TMA_EMPTY_ARRIVALS does;
     // FULL is the producer's alone there, as in the fold.
     expect(HEADER).toContain('  (PEARL_TALL_TMA_EMPTY_COUNT * (PEARL_TALL_CLUSTER_BODY ? PEARL_TALL_CLUSTER_SIZE : 1u))');
     expect(FOLD).toContain('    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 1u);');
-    expect(PROBE).toContain('    mbar_init(sbase + threadIdx.x * STRIDE + STAGE, !SYM && rank == 1u ? 2u : 1u);');
+    expect(PROBE).toContain('    mbar_init(sbase + threadIdx.x * STRIDE + STAGE, PUSH || (!SYM && rank == 1u) ? 2u : 1u);');
     expect(PROBE).toContain('    mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, SYM || rank == 0u ? 16u : 8u);');
+    expect(PROBE).toContain('    if (PUSH) mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 16u, 1u);');
     // The fills, arm by arm, as the model has them.
     expect(PROBE).toContain(lines(
       '    if (!SYM && rank == 0u) mbar_arrive_remote(mapa(full, 1u));',
@@ -332,8 +403,17 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '      mbar_arrive(full);',
       '      return;',
       '    }',
+      '    if (HALF) {',
+      '      // This rank\'s half of the pair\'s box: columns 128 rank on, at the same offset in the buffer.',
+      '      // In p it lands on HALF, and FULL waits for the peer\'s half instead (push, below).',
+      '      const uint32_t ho = rank * BOXH;',
+      '      expect_tx(full, BOXH);',
+      '      if (PUSH) expect_tx(buf + STAGE + 16u, BOXH);',
+      '      tma_3d(buf + ho, &tmBh.map, 0u, col + rank * BNH, kb, PUSH ? buf + STAGE + 16u : full);',
+      '      return;',
+      '    }',
       '    expect_tx(full, OWNA ? STAGE : BOXB);',
-      '    if (ARM == ARM_A || ARM == ARM_D)',
+      '    if (ARM == ARM_A || ARM == ARM_D || ARM == ARM_A2)',
       '      tma_3d(buf, &tmB.map, 0u, col, kb, full);',
       '    else if (rank == 0u)',
       '      tma_3d_mc(buf, &tmB.map, 0u, col, kb, full, (uint16_t)3u);',
@@ -345,6 +425,46 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '        ok = SYM || rank == 0u ? wait_bounded<true>(empty, par, waitNs, abortFlag, st, 1u, n)',
       '                               : wait_bounded<false>(empty, par, waitNs, abortFlag, st, 1u, n);'));
     expect(PROBE).toContain('wait_bounded<false>(buf + STAGE, (g / NST) & 1u, waitNs, abortFlag, st, 0u, g);');
+  });
+
+  test('p copies each CTA\'s half into the peer once it has landed, as the model has it', () => {
+    // The copy: distributed shared memory, shared::cta to shared::cluster, completing on the peer's
+    // barrier; both addresses on the peer's side from mapa.
+    expect(PROBE).toContain('  asm volatile("cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];" ::"r"(');
+    expect(PROBE).toContain(lines(
+      '  auto push = [&](uint32_t g) -> bool {',
+      '    const uint32_t buf = sbase + (g % NST) * STRIDE, full = buf + STAGE, ho = rank * BOXH;',
+      '    if (!wait_bounded<false>(full + 16u, (g / NST) & 1u, waitNs, abortFlag, st, 3u, g)) return false;',
+      '    asm volatile("fence.proxy.async.shared::cta;" ::: "memory");',
+      '    push_bulk(mapa(buf + ho, rank ^ 1u), buf + ho, BOXH, mapa(full, rank ^ 1u));',
+      '    mbar_arrive(full);',
+      '    return true;',
+      '  };'));
+    // Stage 0's copy before the loop; in it, stage g + 1's before the refill of g + 2.
+    expect(PROBE).toContain(lines(
+      '    fill(0u);',
+      '    if (S > 1u) fill(1u);',
+      '    if (PUSH) ok = push(0u);'));
+    expect(PROBE).toContain(lines(
+      '    if (PUSH && threadIdx.x == PRODUCER && ok && g + 1u < S) ok = push(g + 1u);',
+      '    // The producer refills two stages ahead, once both CTAs (or this one) released the buffer.',
+      '    if (threadIdx.x == PRODUCER && ok && g + 2u < S) {'));
+    // Half boxes: 128 columns, 8 KB, a map of their own over the same B'.
+    const P = probeConsts();
+    expect([P.BNH, P.BOXH]).toEqual([128, 8192]);
+    expect(PROBE).toContain('|| !encode(reinterpret_cast<PFN_cuTensorMapEncodeTiled_v12000>(encp), &p.tmBh, dB, rowsB, BNH)) {');
+    // Without the HALF wait the producer can copy bytes that have not landed: the model finds it.
+    let bad = 0;
+    for (let seed = 1; seed <= 150; seed++) {
+      const r = simulate('p', seed, { protocol: 'nohalf', S: 24 });
+      if (r.errors.length) bad++;
+    }
+    expect(bad).toBeGreaterThan(0);
+    // MC_ARMS picks the phases, push first, its rounds numbered apart from the others.
+    expect(PROBE).toContain('  const bool runPush = all || strstr(armsEnv, "push"), runMc = all || strstr(armsEnv, "multicast");');
+    expect(PROBE).toContain('    rounds_over({ARM_E, ARM_A2, ARM_H2, ARM_P}, 101, rounds);');
+    expect(PROBE.indexOf('    rounds_over({ARM_E, ARM_A2, ARM_H2, ARM_P}, 101, rounds);'))
+      .toBeLessThan(PROBE.indexOf('    rounds_over({ARM_E, ARM_A, ARM_D, ARM_B}, 1, rounds);'));
   });
 
   test('cAH has the fold\'s tile seam: the named barrier, the hasher behind, and the hand-off', () => {
@@ -371,7 +491,7 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '      }',
       '      due = clock64();',
       '    }',
-      '    // The producer refills two stages ahead, once both CTAs (or this one) released the buffer.'));
+      '    // p: the next stage\'s half goes to the peer first; it has had a stage to land.'));
     expect(PROBE).toContain(lines(
       '    if (SEAM && g % KB == 1u && warp >= 4u) {',
       '      // The fold\'s hand-off (cAH): at the end of the tile\'s first chunk every thread of warps'));
@@ -386,8 +506,8 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
     // The hash's default is the 4090's measured phase, and the host passes it to every arm.
     expect(HEADER).toContain('// 48 regions, about 3,000 cycles, while its partner runs on alone for about 1,700 before it');
     expect(PROBE).toContain('  p.hashCyc = argc > 7 ? (uint32_t)atoi(argv[7]) : 3000u;');
-    expect(PROBE).toContain('kernel_for(a.arm), p.tmB, p.tmA, tiles, p.pace, p.hashCyc,');
-    expect(PROBE).toContain('s->role == 2u ? "handoff-empty" : s->role ? "producer-empty" : "consumer-full"');
+    expect(PROBE).toContain('kernel_for(a.arm), p.tmB, p.tmA, p.tmBh, tiles, p.pace, p.hashCyc,');
+    expect(PROBE).toContain('s->role == 3u ? "producer-half" : s->role == 2u ? "handoff-empty" : s->role ? "producer-empty" : "consumer-full"');
   });
 
   test('every wait gives up and says so, no CTA leaves while its peer may arrive on it, and the host exits cleanly', () => {
@@ -400,8 +520,8 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       '    const uint64_t dt = gtime() - t0;',
       '    if (dt > waitNs) {',
       '      if (atomicCAS(abortFlag, 0u, 1u) == 0u) {'));
-    // The producer's EMPTY (two scopes), the warps' FULL, and cAH's hand-off.
-    expect(PROBE.match(/wait_bounded<(true|false)>\(/g)).toHaveLength(4);
+    // The producer's EMPTY (two scopes), the warps' FULL, cAH's hand-off, and p's HALF.
+    expect(PROBE.match(/wait_bounded<(true|false)>\(/g)).toHaveLength(5);
     // A warp leaves the stage loop together (a vote), so every ldmatrix and the cluster barrier
     // stay converged; the cluster barrier is the last thing before the kernel returns.
     expect(PROBE).toContain('    if (__any_sync(0xFFFFFFFFu, !got)) break;');
@@ -420,7 +540,8 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
     expect(PROBE.match(/std::_Exit\(/g)).toHaveLength(2);
     // The arms that can hang run after the rounds that give f, and cAH, whose named barrier
     // cannot give up, last of all.
-    const order = ['rounds_over({ARM_E, ARM_A, ARM_D, ARM_B}, 1, rounds);', 'for (int arm : {ARM_C, ARM_CA}) launch(p, ARMS[arm], 8u, true);',
+    const order = ['rounds_over({ARM_E, ARM_A2, ARM_H2, ARM_P}, 101, rounds);',
+      'rounds_over({ARM_E, ARM_A, ARM_D, ARM_B}, 1, rounds);', 'for (int arm : {ARM_C, ARM_CA}) launch(p, ARMS[arm], 8u, true);',
       'rounds_over({ARM_B, ARM_C, ARM_CA}, rounds + 1, phase2);', 'launch(p, ARMS[ARM_CAH], 8u, true);',
       'rounds_over({ARM_CAH}, rounds + phase2 + 1, 1);', 'g_quit = true;'];
     for (const o of order) expect([o, PROBE.includes(o)]).toEqual([o, true]);
@@ -460,7 +581,12 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
       table[m[1]] = { fill: ev(m[2]), l2: ev(m[3]) };
     }
     expect(table).toEqual(reader.ARMS);
-    expect(PROBE).toContain('enum Arm { ARM_E, ARM_A, ARM_B, ARM_D, ARM_C, ARM_CA, ARM_CAH, NARMS };');
+    expect(PROBE).toContain('enum Arm { ARM_E, ARM_A, ARM_B, ARM_D, ARM_C, ARM_CA, ARM_CAH, ARM_A2, ARM_H2, ARM_P, NARMS };');
+    // p fills what a2 fills from half its L2 reads; h2 reads what p reads and fills half.
+    expect(reader.ARMS.p.fill).toBe(reader.ARMS.a2.fill);
+    expect(reader.ARMS.p.l2 * 2).toBe(reader.ARMS.a2.l2);
+    expect(reader.ARMS.h2).toEqual({ fill: reader.BOXB, l2: reader.BOXB });
+    expect(reader.PUSH_ARMS).toEqual(['a2', 'h2', 'p']);
     // Multicast fills what a fills from half the L2 reads; d fills one box from one read.
     expect(reader.ARMS.b.fill).toBe(reader.ARMS.a.fill);
     expect(reader.ARMS.b.l2 * 2).toBe(reader.ARMS.a.l2);
@@ -609,6 +735,55 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
     const boxed = log(E0).split(NL).map((l) => `[nvtest] 22:00:00 [compilers] multicast ${l}`).join(NL);
     const plain = summary(log(E0));
     expect(summary(boxed + NL + plain.map((l) => `[nvtest] 22:10:00 [compilers] multicast ${l}`).join(NL))).toEqual(plain);
+  });
+
+  test('the push arms: fp, the L2 box and the copy, the gate, and the verdict on whether the copy lands', () => {
+    expect(reader.fPush({ a2: 200, h2: 150, p: 165 })).toBeCloseTo(0.7, 12);
+    expect(reader.fPush({ a2: 150, h2: 150, p: 140 })).toBeNaN();
+    expect([reader.PASS_FP, reader.SKIP_B]).toEqual([0.5, 0.052]);
+    const out = summary(pushLog(EP)).join(NL);
+    expect(out).toContain('read: push verdict: a2, h2 and p ran clean: the copy between the pair\'s shared memories lands on this card');
+    expect(out).toMatch(/read: fp = 0\.70 \(3 rounds, 0\.7\d to 0\.7\d; as measured 0\.70\): the copy between the pair saves 70% of an L2 box's cost/);
+    // 50 nJ over 16384 bytes is 3.1 pJ a byte; the copy 15 nJ, 0.9 pJ a byte.
+    expect(out).toContain('read: an L2 box (a2 - h2): 50.0 nJ a pair-stage, 3.1 pJ a byte; the copy of one (p - h2): 15.0 nJ, 0.9 pJ a byte');
+    expect(out).toContain('read: push gate fp >= 0.5: pass. A stock 5090 pays about +5.2% for a B\' box a CTA-stage, so a fold '
+      + 'sharing B\' this way could gain about +1.8% there before its own costs: race it');
+    expect(out).toContain('read: 1% more stage time in one push arm moves fp by 0.02 here');
+    // A run of the push phase alone gives no multicast verdict or f, and lists its arms.
+    expect(out).not.toMatch(/read: verdict:|read: f |read: f:|never ran/);
+    for (const a of ['e', 'a2', 'h2', 'p']) expect(out).toMatch(new RegExp(`read: ${a}: [0-9.]+ nJ a pair-stage`));
+    const fail = summary(pushLog({ ...EP, p: 190e-9 })).join(NL);
+    expect(fail).toMatch(/read: fp = 0\.2\d/);
+    expect(fail).toContain('read: push gate fp >= 0.5: fail (about +0.5% at most on a stock 5090): drop item 7');
+    expect(summary(pushLog({ ...EP, a2: 150e-9 })).join(NL)).toContain('read: fp: an L2 box costs nothing measurable here');
+    // An arm that ran slower is flagged, and fp is taken at e's stage time.
+    expect(summary(pushLog({ ...EP, p: 168e-9 }, { time: { p: 0.03 }, rounds: 1 })).join(NL))
+      .toContain('read: p against e in one round: stage time +3.00%');
+  });
+
+  test('the push verdict: a copy that never lands, the fold\'s barriers sticking, and both phases in one run', () => {
+    const t = (arm, role, rank = 1) => `TIMEOUT arm=${arm} role=${role} block=17 rank=${rank} thread=128 stage=5 parity=0 `
+      + 'bar=0x6d10 state=0x0000000800000000 waited_ms=1000';
+    // p's smoke stuck on its FULL (the peer's half never came): the run ends there.
+    const stuck = summary(pushLog({}, { rounds: 0, end: 'DONE early',
+      extra: [t('p', 'consumer-full'), 'HANG arm=p launch did not finish in 12.0 s (expected 0.30 s)'] })).join(NL);
+    expect(stuck).toContain('read: push verdict: p sticks and a2 and h2 do not (first to give up: a consumer-full wait on rank 1, '
+      + 'stage 5): the copy between the pair\'s shared memories, or its complete_tx on the peer\'s FULL, never lands on this '
+      + 'card. With multicast gone too, two CTAs cannot share B\' here: drop item 7');
+    expect(stuck).not.toMatch(/read: verdict:|read: f:|read: fp/);
+    // The producer's own half never landing reads as a producer-half wait.
+    expect(summary(pushLog({}, { rounds: 0, end: 'DONE early', extra: [t('p', 'producer-half', 0)] })).join(NL))
+      .toContain('(first to give up: a producer-half wait on rank 0, stage 5)');
+    // a2 stuck: the fold's barriers with plain loads, so p says nothing.
+    expect(summary(pushLog({}, { rounds: 0, smoke: ['a2'], end: 'DONE early', extra: [t('a2', 'producer-empty')] })).join(NL))
+      .toContain('read: push verdict: a2 stuck (first to give up: a producer-empty wait on rank 1, stage 5): the fold\'s '
+        + 'cluster barriers with plain loads stick on this card, so p cannot be read');
+    // Both phases (MC_ARMS unset): the push rounds and the multicast rounds read apart.
+    const both = summary(pushLog(EP, { end: '' }).split(NL).filter((l) => l).concat(log(E0).split(NL).slice(2)).join(NL)).join(NL);
+    expect(both).toMatch(/read: fp = 0\.70/);
+    expect(both).toMatch(/read: f = 0\.70/);
+    expect(both).toContain('read: verdict: nothing stuck');
+    expect(both).toContain('read: push verdict: a2, h2 and p ran clean');
   });
 
   test('compilers.sh runs it as the "multicast" stage, last, and only when asked', () => {

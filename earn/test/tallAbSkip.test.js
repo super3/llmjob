@@ -355,11 +355,13 @@ describe('TMA tall fold operand skip (PEARL_TALL_AB_SKIP)', () => {
   });
 
   test('on, only the producer\'s fill changes: the same reads and mma, in the same places', () => {
-    const OFF = code(resolve(FOLD, { [NAME]: 0 })).split(NL);
+    // The cluster build's copy of B' (PEARL_TALL_CLUSTER_PUSH) is off wherever the skip builds:
+    // the skip refuses the cluster build, and the copy needs it.
+    const OFF = code(resolve(FOLD, { [NAME]: 0, PEARL_TALL_PUSH_BODY: 0 })).split(NL);
     const offLessHook = OFF.filter((l) => l !== EMPTY_HOOK);
     expect(OFF.length - offLessHook.length).toBe(1);
     for (const mask of [1, 2, 3]) {
-      const ON = code(resolve(FOLD, { [NAME]: mask }));
+      const ON = code(resolve(FOLD, { [NAME]: mask, PEARL_TALL_PUSH_BODY: 0 }));
       // The fold off is the fold on less exactly these three runs.
       expect([mask, extraRuns(ON.split(NL), offLessHook)]).toEqual([mask, [FLAG, SKIP, HOOK]]);
       // In place: the flag before the fill, the skip at the top of the fill, before its whole

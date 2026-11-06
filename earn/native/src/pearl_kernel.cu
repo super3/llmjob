@@ -1483,6 +1483,18 @@ __device__ __forceinline__ void pearl_tma_3d_multicast(uint32_t dst, const Pearl
       "l"(reinterpret_cast<uint64_t>(map)), "r"(c0), "r"(c1), "r"(c2), "r"(bar), "h"(mask)
       : "memory");
 }
+#if PEARL_TALL_PUSH_BODY
+// The push build's copy (PEARL_TALL_CLUSTER_PUSH): `bytes` of this CTA's shared memory at
+// src into the peer's at dst, completing on the peer's barrier at bar (dst and bar from
+// pearl_mapa). Over distributed shared memory, not the L2.
+__device__ __forceinline__ void pearl_bulk_push(uint32_t dst, uint32_t src, uint32_t bytes,
+                                                uint32_t bar) {
+  asm volatile(
+      "cp.async.bulk.shared::cluster.shared::cta.mbarrier::complete_tx::bytes [%0], [%1], %2, [%3];"
+      ::"r"(dst), "r"(src), "r"(bytes), "r"(bar)
+      : "memory");
+}
+#endif
 #endif
 #endif
 #endif

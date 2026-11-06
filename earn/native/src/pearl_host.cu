@@ -1239,6 +1239,8 @@ void resolve_fold(Ctx *ctx) {
 #if PEARL_HOPPER_WGMMA
                                    ctx->foldHopper && PEARL_HOPPER_CLUSTER ? PEARL_TALL_BN / 2u :
 #endif
+                                   // The push build loads half of B' a CTA (PEARL_TALL_CLUSTER_PUSH).
+                                   ctx->foldCluster && PEARL_TALL_CLUSTER_PUSH ? PEARL_TALL_BN / 2u :
                                    PEARL_TALL_BN))) {
     snprintf(err, err_len, "could not encode the tall fold's TMA descriptors (k %u, %u-byte k-blocks)",
              ctx->profile.k, (unsigned)PEARL_TALL_STAGE_K);
@@ -3463,8 +3465,11 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
     return ctx->foldName;
   }
   if (ctx->foldTall && ctx->foldCluster)
-    return "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
-           "2-CTA cluster sharing B by multicast";
+    return PEARL_TALL_CLUSTER_PUSH
+               ? "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
+                 "2-CTA cluster sharing B by a copy between the CTAs"
+               : "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, "
+                 "2-CTA cluster sharing B by multicast";
   if (ctx->foldHopper) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
 #if PEARL_HOPPER_WG3

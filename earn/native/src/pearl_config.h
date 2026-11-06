@@ -2583,6 +2583,53 @@ typedef struct {
 #define PEARL_TALL_CLUSTER_BODY 0
 #endif
 
+// The cluster build sharing B' by a copy between the pair's shared memories instead of
+// multicast (issue #287, item 7). An A/B switch, off; it needs PEARL_TALL_CLUSTER=1 and the
+// ring's roles (PEARL_TALL_TMA_ROLES). No hashrate has been measured.
+//
+// Why. Moving operands from the L2 costs a stock RTX 5090 about 8% of its clock at its 600 W
+// limit, 5.2% of it B' (PEARL_TALL_AB_SKIP; tuning/benchmark.md, RTX 50). The tile cannot
+// grow to read fewer bytes a MAC (192 accumulators a thread fill the registers), so the
+// way left is two CTAs that read the same 256 B columns sharing them. Multicast does that
+// in one TMA, and doesn't complete on sm_120 (the cluster build hangs). This does it in
+// two steps that each work alone: each CTA loads HALF of the pair's B' box (128 columns,
+// 8 KB, on a HALF mbarrier behind EMPTY), and its producer, once that half has landed,
+// copies it to the same offset in the peer's buffer (cp.async.bulk shared::cta to
+// shared::cluster), completing on the peer's FULL, then makes its own FULL's second
+// arrival. So the L2 serves one B' box a pair-stage instead of two, and the other half
+// comes over the SM-to-SM network. Whether that network costs less than the L2 per byte is
+// what probes/multicast-probe.cu's push arms price (fp, MC_ARMS=push); this build is the
+// fold to race only if they pass. At most about 2.6% x fp on a stock 5090, before this
+// build's own costs.
+//
+// What it changes against the cluster build:
+//   - FULL counts two arrivals (the producer's expect_tx of this CTA's A box and the peer's
+//     half, and its arrival after its own half went out); HALF one, plus the half's bytes.
+//   - The producer copies at the top of each stage, before its refill: the half of the
+//     NEXT stage's buffer, which it loaded a stage ago (soB at stage 0, soC at stage 1,
+//     their FULL parities pB and pC). The first tile's stage 0 is copied in the prologue.
+//   - The host encodes B' with a 128-column box.
+// The peer's buffer is free when the copy lands: this producer's cluster-scope EMPTY wait
+// before its fill counted the peer's warps. The source stays put until the copy has read it:
+// its next refill waits on an EMPTY the peer's warps arrive on only after their FULL, which
+// needs the copy to have landed.
+// The host reads it too (the B' map's box): -DPEARL_TALL_CLUSTER=1 -DPEARL_TALL_CLUSTER_PUSH=1
+// binds both sides. CI compiles it, sm_120 only, beside the cluster build.
+#ifndef PEARL_TALL_CLUSTER_PUSH
+#define PEARL_TALL_CLUSTER_PUSH 0
+#endif
+#if PEARL_TALL_CLUSTER_PUSH && !PEARL_TALL_CLUSTER
+#error "PEARL_TALL_CLUSTER_PUSH shares B' in the cluster build: set PEARL_TALL_CLUSTER=1 too"
+#endif
+#if PEARL_TALL_CLUSTER_PUSH && !PEARL_TALL_TMA_ROLES
+#error "PEARL_TALL_CLUSTER_PUSH copies the next stage's role (soB, soC): it needs PEARL_TALL_TMA_ROLES"
+#endif
+#if PEARL_TALL_CLUSTER_PUSH && PEARL_TALL_CLUSTER_BODY
+#define PEARL_TALL_PUSH_BODY 1
+#else
+#define PEARL_TALL_PUSH_BODY 0
+#endif
+
 // PEARL_TALL_AB_SKIP (0 by default): a timing-only switch for the TMA tall fold (sm_120,
 // and sm_100 on the same code). Research round 3's #11, step 1: does the operand traffic
 // cost a stock RTX 5090 clock at its power cap? The fills made in each block's first tile

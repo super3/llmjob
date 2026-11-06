@@ -663,7 +663,9 @@ fi
 # whether the cluster build's barriers hang (see its header). Its own build, with GC; MC_SECS seconds an arm a
 # round (6), MC_ROUNDS rounds (3), MC_PACE cycles a stage (3240), under a timeout of MC_TIMEOUT seconds (900).
 # Every line it prints goes out as "multicast ...", then multicast-read.js's reading. About 4 minutes. Last,
-# so a card that the probe leaves stuck has raced already.
+# so a card that the probe leaves stuck has raced already. MC_ARMS (read by the probe itself) picks its phases:
+# "push" for issue #287's item 7 alone (B' copied between the pair's shared memories, about 2 minutes),
+# "multicast" for item 16's arms alone; unset, both, push first.
 if has multicast; then
   if [ "${SM:-0}" -lt 90 ]; then
     say "multicast: skipped, sm_$SM has no clusters"
