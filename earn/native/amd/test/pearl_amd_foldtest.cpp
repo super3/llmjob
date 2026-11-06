@@ -29,7 +29,7 @@
 // write_stamps), then PEARL_AMD_STAMP_WORDS words for each wave of each block. test/stamp-summary.js reads it;
 // sweep.sh's SWEEP_STAMP runs both. With miner operands it reads the clock the miner runs at.
 //
-// Where the card's code object has PEARL_AMD_FUSE (pearl_amd_fold.h: RDNA 4's by default; its caps say), the
+// Where the card's code object has PEARL_AMD_FUSE (pearl_amd_fold.h: gfx1200's by default; its caps say), the
 // matrix folds and dot4 also hash their transcripts. The check launch tests them at a target about 16 regions
 // meet, and its hits must be pearl_amd_hash's over the words the same launch stored. The timed launches store no
 // words and test at target 0, as the miner's launches do.

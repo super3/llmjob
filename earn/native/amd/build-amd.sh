@@ -74,8 +74,8 @@ if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 # the SDK's clang 21 has never built them. Also before PEARL_AMD_CFLAGS.
 SET_OS=
 if windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi
-# The hash in the fold (PEARL_AMD_FUSE, on in gfx12 code since 6 November) likewise: timed only on Linux with ROCm's
-# clang 22.
+# The hash in the fold (PEARL_AMD_FUSE, on in gfx1200 code since 6 November) likewise: timed only on Linux with
+# ROCm's clang 22.
 FUSE_OS=
 if windows; then FUSE_OS=-DPEARL_AMD_FUSE=0; fi
 
