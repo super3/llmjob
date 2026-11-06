@@ -1,6 +1,7 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, json, os, re, tempfile, unittest
+import importlib.util, io, json, os, re, shutil, tempfile, unittest
+from unittest import mock
 
 TMP = tempfile.mkdtemp()
 os.environ["SALAD_MINE_DIR"] = TMP
@@ -38,6 +39,11 @@ class Fake:
 
     def made(self, method, frag):
         return [c for c in self.calls if c[0] == method and re.search(frag, c[1])]
+
+
+# The box command's sed and shell run on Salad's Linux boxes; a host without sh (Windows) skips the tests that run them.
+HAS_SH = bool(shutil.which("sh")) and os.path.exists("/bin/sh")
+needs_sh = unittest.skipUnless(HAS_SH, "needs sh, as the boxes have")
 
 
 def shown(row):
@@ -89,7 +95,7 @@ class Base(unittest.TestCase):
 
     def events(self):
         try:
-            with open(os.path.join(TMP, "events.log")) as f:
+            with open(os.path.join(TMP, "events.log"), encoding="utf-8") as f:
                 return f.read()
         except FileNotFoundError:
             return ""
@@ -116,6 +122,60 @@ class TestCommand(Base):
         self.assertEqual(body["container"]["priority"], "batch")
         self.assertEqual(body["container"]["resources"]["gpu_classes"], ["c4080"])
         self.assertEqual((body["restart_policy"], body["autostart_policy"], body["replicas"]), ("always", True, 1))
+
+    # The lines of box.sh (at BOX's commit) that an AMD box's command changes.
+    AMD_LINES = "  nvidia-smi --query-gpu=index,name,driver_version,power.limit,clocks.max.sm,compute_cap --format=csv,noheader | sed 's/^/[card] /'\n  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once\nif [ ! -f $D/tools ]; then\nN=$(nvidia-smi -L | wc -l)\nCC=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1 | tr -d ' .')\n    release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/ ;;\n  [ $((tick % 5)) = 0 ] && nvidia-smi --query-gpu=index,clocks.sm,clocks.mem,power.draw,power.limit,temperature.gpu,utilization.gpu --format=csv,noheader,nounits |\n"
+
+    def amd_box(self, cmd):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
+        import subprocess
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        out = subprocess.run(["sh", "-c", sed], input=self.AMD_LINES, capture_output=True, encoding="utf-8")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        return out.stdout
+
+    def test_slug_and_is_amd(self):
+        self.assertEqual(w.slug("AMD RX 9070 XT (16GB)"), "rx9070xt")
+        self.assertEqual(w.slug("AMD RX 7900 XT (20GB)"), "rx7900xt")
+        self.assertTrue(w.is_amd("biz-rx9070xt-2"))
+        self.assertFalse(w.is_amd("biz-rtx4080"))
+
+    def test_an_amd_box_runs_the_amd_core_and_needs_no_nvidia_smi(self):
+        out = self.amd_box(w.cmd_for("biz-rx9070xt", "prl1abc", "v0.6.8", XMR, 0, "prl-us.kryptex.network:7048", amd=True))
+        self.assertNotIn("nvidia-smi", out)
+        self.assertIn('echo "[card] 0, $(rocminfo 2>/dev/null | grep -m1 -oE "AMD Radeon[ A-Za-z0-9]+")', out)
+        self.assertIn("for f in pearl_core_hip.node llmjob-earn-cli-linux ", out)
+        self.assertIn("release) cp $D/rel/pearl_core_hip.node $D/rel/pearl_core.node ", out)
+        self.assertIn("\nN=1\n", out)
+        self.assertIn("if false; then", out)   # no CUDA build tools
+        self.assertIn("&& true --query-gpu=index,clocks.sm", out)
+        self.assertIn("--core amd", w.cmd_for("biz-rx9070xt", "prl1abc", "v0.6.8", amd=True))
+        # An NVIDIA box's command leaves these lines alone.
+        self.assertEqual(self.amd_box(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6", kryptex="prl-us.kryptex.network:7048")), self.AMD_LINES)
+
+    def test_an_amd_group_gets_the_rocm_image_v0_6_8_and_no_gemma(self):
+        self.x.cfg["llm"] = True
+        self.x.st["classes"]["AMD RX 9070 XT (16GB)"] = {"id": "c9070", "prices": {"batch": 0.07, "low": 0.11,
+                                                                                   "medium": 0.155, "high": 0.196}}
+        self.assertTrue(self.x.create("AMD RX 9070 XT (16GB)", "batch"))
+        body = self.http.made("POST", "/containers$")[-1][2]
+        self.assertEqual(body["name"], "biz-rx9070xt")
+        self.assertEqual(body["container"]["image"], "rocm/dev-ubuntu-24.04:7.2")
+        cmd = body["container"]["command"][2]
+        self.assertIn("--core amd", cmd)
+        self.assertIn("s/^VER=v0.5.13;/VER=v0.6.8;/", cmd)
+        self.assertNotIn("--mode auto", cmd)
+        g = list(self.x.st["groups"].values())[-1]
+        self.assertEqual((g["ver"], g["llm"]), ("v0.6.8", False))
+        # Gemma stays off it: llm_sync doesn't keep trying to turn it on.
+        self.x.llm_sync([g], w.now() + 3600)
+        self.assertEqual(len(self.http.made("PATCH", "/containers/biz-rx9070xt")), 0)
+        # An NVIDIA group still gets Gemma and its own image.
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch"))
+        nv = self.http.made("POST", "/containers$")[-1][2]
+        self.assertEqual(nv["container"]["image"], "nvidia/cuda:12.2.2-base-ubuntu22.04")
+        self.assertIn("--mode auto", nv["container"]["command"][2])
 
     def test_a_name_salad_still_holds_is_skipped(self):
         self.http.on("POST", "/containers$", lambda b: (400, {"type": "name_conflict"}) if b["name"] == "biz-rtx4080"
@@ -194,9 +254,52 @@ class TestRule2NoPc(Base):
         self.assertEqual(g["end_kind"], "released")
 
 
+class TestRestartAfterTopUp(Base):
+    def test_a_restarted_group_gets_20_fresh_minutes_to_find_a_pc(self):
+        g = self.group(pri="medium")  # high is +2% for a 4080: 20 minutes with no PC deletes it
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)          # lost its PC; credit runs out and Salad stops it
+        g["status"] = "stopped"
+        self.x.st["credits_out"].append(w.ORG)
+        self.step(g, 600, None)        # 10 hours stopped
+        self.assertIsNone(g["ended"])
+        self.x.restart_stopped([g], self.clock[0])
+        self.assertTrue(self.http.made("POST", "/containers/biz-rtx4080/start"))
+        self.assertEqual(self.x.st["credits_out"], [])
+        g["status"] = "running"
+        self.step(g, 1, None)
+        self.assertIsNone(g["ended"])  # until 31 October this deleted it at once
+        self.step(g, 20, None)
+        self.assertEqual(g["end_kind"], "released")
+
+
 class TestRule3LostPc(Base):
-    def test_deletes_20_min_after_losing_its_pc(self):
+    def test_moves_up_20_min_after_losing_its_pc_then_deletes_when_nothing_higher_clears(self):
+        g = self.group()  # batch; low clears 10% for a 4080, medium too, high doesn't
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)
+        self.step(g, 21, None)
+        self.assertEqual(self.http.made("PATCH", "/containers/biz-rtx4080")[0][2], {"container": {"priority": "low"}})
+        self.assertIsNone(g["ended"])
+        self.step(g, 19, None)  # 20 more minutes at low before the next step
+        self.assertEqual(len(self.http.made("PATCH", "")), 1)
+        self.step(g, 2, None)
+        self.assertEqual(g["pri"], "medium")
+        self.step(g, 21, None)
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("no PC since losing one 20 min ago, moved to low", self.events())
+
+    def test_a_refused_priority_change_waits_for_the_next_round(self):
         g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 5, None)
+        self.http.on("PATCH", "/containers/biz-rtx4080", (400, {}))
+        self.step(g, 21, None)
+        self.assertIsNone(g["ended"])
+        self.assertEqual(g["pri"], "batch")
+
+    def test_deletes_20_min_after_losing_its_pc(self):
+        g = self.group(pri="medium")  # high is +2% for a 4080
         self.step(g, 1, "m1")
         self.step(g, 5, None)
         self.step(g, 19, None)
@@ -246,6 +349,60 @@ class TestNotMining(Base):
         self.step(g, 1, "m1")
         self.step(g, 9, "m1")
         self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+    def test_the_reading_clock_starts_when_the_container_runs(self):
+        # 28 October: rx9060xt was left 10 minutes after getting a PC that was still downloading the 1.16 GB AMD image,
+        # with no container output at all, and its class barred for a day as failed.
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")       # a class that never paid: leaving deletes it
+        g["_run"] = False                                       # Salad shows the PC, downloading the image
+        self.step(g, 1, "m1")
+        self.step(g, 14, "m1")
+        self.assertIsNone(g["ended"])
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        g["_run"] = True                                        # running from minute 15
+        self.step(g, 1, "m1")
+        self.step(g, 9, "m1")
+        self.assertIsNone(g["ended"])
+        self.step(g, 1, "m1")                                   # 10 min after it started: judged as usual
+        self.assertEqual(g["end_kind"], "failed")
+        self.assertIn("no mining reading 10 min after it started on PC m1 (15 min loading first)", self.events())
+
+    def test_a_pc_that_never_starts_the_container_is_left_after_30_min(self):
+        g = self.group(cls="RTX 4070 (12 GB)", pri="low")
+        g["_run"] = False
+        self.step(g, 1, "m1")
+        self.step(g, 29, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIsNone(g["ended"])                           # the PC's fault: not deleted, class not barred
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("not running 30 min after getting PC m1 (image still loading)", self.x.st["bad_pcs"]["m1"]["why"])
+
+    def test_a_container_that_ran_counts_its_30_min_from_when_it_stopped(self):
+        # 29 October: 2070-88 had mined 1 h 53 m on a889b452 when one round read its instance not running, and the
+        # loading rule left the PC and bad-listed it as if the image had never loaded.
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 60)                             # mining an hour
+        self.assertIsNone(g["ended"])
+        g["_run"] = False                                       # Salad stops showing it running
+        self.step(g, 1, "m1")
+        self.step(g, 28, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertNotIn("m1", self.x.st.get("bad_pcs", {}))
+        self.step(g, 1, "m1")                                   # 30 min since it last ran
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+        self.assertIn("not running for 30 min on PC m1, after running there", self.x.st["bad_pcs"]["m1"]["why"])
+
+    def test_a_group_on_its_pc_before_the_run_clock_keeps_its_clock(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        del g["run_since"]                                      # as saved by the watcher before this rule
+        self.step(g, 9, "m1")
+        self.assertEqual(g["run_since"], g["pc_since"])
         self.step(g, 1, "m1")
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
@@ -493,6 +650,58 @@ class TestRepeatedLine(Base):
         self.x.round()
         self.assertEqual(len(g["readings"]), 5)
 
+    def test_a_pc_with_two_cards_is_read_as_the_sum_of_both(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = []
+        for i in range(3):
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g0] 07:5%d:17 351.0 TH/s · %d accepted · 0 rejected · up 1%dm 02s" % (i, 20 + i, i)))
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g1] 07:5%d:17 75.0 TH/s · %d accepted · 0 rejected · up 1%dm 01s" % (i, 3 + i, i)))
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual([r[2] for r in g["readings"]], [426.0] * 3)
+        self.assertEqual(g["mined_min"], 3)
+        self.assertAlmostEqual(g["prl"], 3 * 426.0 / 60 * USD_TH_HR / PRICE)
+
+    def test_a_repeat_from_one_card_is_dropped_while_the_other_still_counts(self):
+        self.x.cfg["search"] = False
+        g = self.group()
+        g["created"] = T0 - 3600
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        lines = []
+        for i in range(3):
+            lines.append(("2027-01-15T07:5%d:17Z" % i, "[mining g0] 07:5%d:17 351.0 TH/s · %d accepted · 0 rejected · up 1%dm 02s" % (i, 20 + i, i)))
+            lines.append(("2027-01-15T07:5%d:18Z" % i, "[mining g1] 07:5%d:18 75.0 TH/s · 3 accepted · 0 rejected · up 9m 00s" % i))  # g1 died
+        self.http.on("POST", "/log-entries", (200, {"items": [
+            {"text_log": txt, "time": tm, "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}
+            for tm, txt in lines]}))
+        self.x.round()
+        self.assertEqual([r[2] for r in g["readings"]], [426.0, 351.0, 351.0])
+
+
+class TestReplace(unittest.TestCase):
+    def test_a_replace_windows_refuses_for_a_moment_is_tried_again(self):
+        calls = []
+        def flaky(a, b):
+            calls.append((a, b))
+            if len(calls) < 3:
+                raise PermissionError("in use")
+        with mock.patch.object(w.os, "replace", flaky), mock.patch.object(w.time, "sleep"):
+            w.replace("x.tmp", "x")
+        self.assertEqual(len(calls), 3)
+
+    def test_one_refused_every_time_still_fails(self):
+        with mock.patch.object(w.os, "replace", side_effect=PermissionError("in use")), \
+                mock.patch.object(w.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                w.replace("x.tmp", "x")
+
 
 class TestRule5Profit(Base):
     def test_an_unprofitable_pc_is_left_at_once(self):
@@ -514,6 +723,30 @@ class TestRule5Profit(Base):
         self.step(g, 1, "m1")
         self.mine(g, "m1", 180, 5)
         self.assertIn("against its $0.190/hr (+9.7%, under 10%)", self.events())
+
+    def test_a_box_stays_on_a_pc_that_clears_keep_margin_though_not_min_margin(self):
+        # 2 November: one 5% line moved working 4070 Tis off PCs paying +4% until 4070ti-135 was deleted.
+        self.x.cfg["keep_margin"] = 0.02
+        g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%, under 10% but over 2%
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 170, 5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.mine(g, "m1", 100, 3)   # $0.117: -62%, under 2% too
+        self.assertTrue(self.http.made("POST", "/reallocate"))
+        self.assertIn("under 2%", self.events())
+
+    def test_keep_margin_never_raises_the_bar_over_min_margin(self):
+        self.x.cfg["keep_margin"] = 0.50
+        self.assertEqual(self.x.keep_bar(), self.x.cfg["min_margin"])
+        self.x.cfg["keep_margin"] = None
+        self.assertEqual(self.x.keep_bar(), self.x.cfg["min_margin"])
+
+    def test_a_pc_whose_measured_rate_clears_keep_margin_is_kept(self):
+        self.x.cfg["keep_margin"] = 0.02
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [170.0, self.clock[0] - 2 * 86400]}}
+        g = self.group(pri="medium")                # $0.19/hr: 170 TH/s is +4.5%
+        self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
 
     def test_a_pc_that_pays_under_10_percent_is_left(self):
         g = self.group(pri="medium")  # $0.19/hr; 170 TH/s earns $0.199: +4.5%
@@ -686,8 +919,8 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 200, 5)
         g.update(kxx_khs=100.0, kxx_seen=self.clock[0])
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
-            self.assertIn("| 0.19 | +0.23* (+55%*) |", f.read())
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn(f"| 0.19 | +0.23*{w.NB}(+55%*) |", f.read())
 
     def test_the_median_of_an_even_count_is_the_mean_of_the_middle_two(self):
         self.monero(1.0, 3.0)
@@ -713,8 +946,65 @@ class TestRule5Profit(Base):
                     o["xmr_seen"] = self.clock[0]
             self.x.record_rates(self.clock[0])
         self.assertAlmostEqual(self.x.xmr_usd(g), 0.2 * 0.005)
-        g.update(machine="m2", pc_since=self.clock[0])   # a new PC: the median again until 30 minutes of its own
-        self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)
+        # A new PC: its class's figures again (its own on m1, not the 2060s' median) until 30 minutes of its own.
+        g.update(machine="m2", pc_since=self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.2 * 0.005)
+
+    def test_a_box_the_pools_never_see_counts_no_monero_after_45_minutes(self):
+        self.monero(2.0, 2.0, 2.0)
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0])
+        def others_seen():
+            for o in self.x.st["groups"].values():
+                if o is not g:
+                    o["xmr_seen"] = self.clock[0]
+        self.clock[0] += 44 * 60
+        others_seen()
+        self.assertAlmostEqual(self.x.xmr_usd(g), 2.0 * 0.005)   # still the median: it may not show yet
+        self.clock[0] += 2 * 60
+        others_seen()
+        self.assertEqual(self.x.xmr_usd(g), 0.0)
+        g.update(xmr_khs=0.4, xmr_seen=self.clock[0])                # seen at last, 46 minutes in: its own figure
+        self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.4 * 0.005)
+
+    def test_a_new_box_s_monero_comes_from_its_own_class(self):
+        # 23 October: the fleet median (3060s at 3–5 kH/s) credited a new 4060, whose PCs make 0.5–1.3, with about
+        # twice its Monero, so it kept a PC it left 8 minutes later (OPEN.md #65).
+        self.monero(4.0, 4.0, 4.0)                                  # three 2060s at 4 kH/s: the fleet median
+        t = self.clock[0]
+        self.x.st["xmr_rates"] = {"RTX 4080 (16 GB)": {"m1": [0.5, t], "m2": [1.0, t], "m3": [1.3, t]}}
+        self.assertAlmostEqual(self.x.xmr_usd(cls="RTX 4080 (16 GB)"), 1.0 * 0.005)
+        self.assertAlmostEqual(self.x.xmr_usd(cls="RTX 4070 (12 GB)"), 4.0 * 0.005)   # none stored: the fleet's
+        self.assertAlmostEqual(self.x.xmr_usd(), 4.0 * 0.005)
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m9", pc_since=self.clock[0])   # on a PC, no reads of its own yet
+        self.assertAlmostEqual(self.x.xmr_usd(g), 1.0 * 0.005)
+        self.assertAlmostEqual(self.x.margin("RTX 4080 (16 GB)", "medium", rate=175),
+                               1 - 0.19 / (175 * USD_TH_HR + 0.005))
+
+    def test_a_box_on_a_pc_its_class_has_measured_counts_that_pc_s_monero(self):
+        # 31 October: the class median kept a new 3070 on a PC whose CPU made less, which the 10% rule then left.
+        self.monero(4.0, 4.0, 4.0)
+        t = self.clock[0]
+        self.x.st["xmr_rates"] = {"RTX 4080 (16 GB)": {"m1": [0.5, t], "m2": [1.0, t], "m3": [1.3, t]}}
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=t)               # no reads of its own yet; m1 made 0.5
+        self.assertAlmostEqual(self.x.xmr_usd(g), 0.5 * 0.005)
+
+    def test_a_box_s_own_monero_is_stored_for_its_class_for_rate_days(self):
+        self.monero()
+        g = self.group(pri="medium")
+        g.update(has_pc=True, machine="m1", pc_since=self.clock[0])
+        for i in range(8):                           # reads every 5 minutes for 40 minutes, at 0.6 kH/s
+            self.clock[0] += 300
+            g.update(xmr_khs=0.6, xmr_seen=self.clock[0])
+            self.x.record_rates(self.clock[0])
+        self.assertAlmostEqual(self.x.st["xmr_rates"]["RTX 4080 (16 GB)"]["m1"][0], 0.6)
+        g.update(has_pc=False, machine=None, pc_since=None)
+        self.clock[0] += 7 * 86400
+        self.x.record_rates(self.clock[0])
+        self.assertEqual(self.x.st["xmr_rates"]["RTX 4080 (16 GB)"], {})
 
     def test_monero_counts_only_for_a_box_that_mines_it_and_from_fresh_figures(self):
         self.assertEqual(self.x.xmr_usd(), 0.0)    # Monero off
@@ -749,7 +1039,7 @@ class TestRule5Profit(Base):
         self.pools()
         self.x.cfg.update(kryptex_groups=1, max_active=2, max_new_per_hour=5)
         self.http.on("POST", "availability", (200, {f"available_gpu_{p}": 1 for p in w.PRIS}))
-        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {"m1": [110, self.clock[0]]}}   # batch: +12% Kryptex, +5% HM
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {m: [110, self.clock[0]] for m in ("m1", "m2", "m3")}}   # batch: +12% Kryptex, +5% HM
         self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "batch", kx=True), 0.10)
         self.assertLess(self.x.margin("RTX 4080 (16 GB)", "batch", kx=False), 0.10)
         self.x.search()
@@ -791,11 +1081,14 @@ class TestRule5Profit(Base):
         self.mine(g, "m1", 199, 5)
         self.assertFalse(self.http.made("POST", "/reallocate"))
 
-    def test_class_that_never_paid_is_deleted(self):
+    def test_class_that_never_paid_is_deleted_released_and_the_pc_barred(self):
+        # Left for its rate, the PC was at fault: it's barred, and the class may be tried again on another PC.
         g = self.group(cls="RTX 4070 (12 GB)", pri="low")  # $0.09/hr; 50 TH/s earns $0.059
         self.step(g, 1, "m1")
         self.mine(g, "m1", 50, 5)
-        self.assertEqual(g["end_kind"], "failed")
+        self.assertEqual(g["end_kind"], "released")
+        self.assertEqual(self.x.st["bad_pcs"]["m1"]["group"], g["name"])
+        self.assertEqual(self.x.st["pc_rates"]["RTX 4070 (12 GB)"]["m1"][0], 50.0)
 
 
 class TestPaidClasses(Base):
@@ -956,11 +1249,35 @@ class TestRule7Credit(Base):
         self.step(g, 1, None)
         self.assertIn("POST /start -> HTTP 400 {'type': 'invalid_state', 'detail': 'the image is still downloading'}",
                       self.events())
+        self.assertIsNone(g["ended"])                       # tried again in 5 minutes
+
+    def test_a_start_refused_for_the_replica_quota_deletes_the_group(self):
+        # 28 October: 3080-83 sat stopped, refused every 5 minutes, holding a replica while the account was full.
+        self.http.on("POST", "/start$", (400, {"type": "replicas_quota_exceeded", "title": "Bad Request"}))
+        g = self.group(status="stopped")
+        self.step(g, 1, None)
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("Salad's replica quota is full, so it can't start", self.events())
 
     def test_no_credits_on_create(self):
         self.http.on("POST", "/containers$", (400, {"errors": {"code": ["no_credits_available"]}}))
         self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch"))
         self.assertTrue(self.x.st["credits_out"])
+
+    def test_a_create_that_times_out_but_was_made_is_kept(self):
+        # 29 October: Salad's gateway answered 504 to creates it had carried out; the groups sat outside the ledger.
+        self.http.on("POST", "/containers$", (504, {"title": "Error 504: Gateway time-out"}))
+        self.http.on("GET", "/containers/biz-rtx4080$", (200, {"name": "biz-rtx4080"}))
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch"))
+        self.assertEqual([g["name"] for g in self.x.st["groups"].values()], ["biz-rtx4080"])
+        self.assertIn("(Salad answered HTTP 504 but made it)", self.events())
+
+    def test_a_create_that_times_out_and_wasnt_made_fails(self):
+        self.http.on("POST", "/containers$", (0, {"error": "The read operation timed out"}))
+        self.http.on("GET", "/containers/biz-rtx4080$", (404, {}))
+        self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch"))
+        self.assertEqual(self.x.st["groups"], {})
+        self.assertIn("CREATE FAILED biz-rtx4080", self.events())
 
 
 class TestSearch(Base):
@@ -977,13 +1294,19 @@ class TestSearch(Base):
 
     def test_the_search_trusts_salad_s_count_of_replicas_in_use(self):
         # 22 October: Salad counted one replica more than we had at times all day, so every search sent creates it then
-        # refused with created_replicas_quota_exceeded. With 1 group and 9 of 10 replicas in use, there's room for 1.
+        # refused with created_replicas_quota_exceeded. And Salad won't start a group once its count, which takes in
+        # stopped groups and other sessions', is at the quota (28 October), so at most 9 of 10 run: with 1 group of
+        # ours and 8 of 10 replicas in use there's room for 1, and with 9 in use none.
         self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
         self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
-                                                                         "container_replicas_used": 9}}))
+                                                                         "container_replicas_used": 8}}))
         self.group(cls="RTX 4070 (12 GB)", pri="low")
         n = len(self.http.made("POST", "/containers$"))
         self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")) - n, 1)
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                         "container_replicas_used": 9}}))
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")) - n, 1)
 
@@ -995,6 +1318,19 @@ class TestSearch(Base):
         self.x.search()
         self.assertEqual(len(self.http.made("POST", "/containers$")), 1)   # not one refused create per class
         self.assertEqual(self.events().count("CREATE FAILED"), 1)
+        self.http.on("POST", "/containers$", (201, {}))
+        self.x.search()                                                    # the next search tries again
+        self.assertGreater(len(self.http.made("POST", "/containers$")), 2)
+
+    def test_the_search_stops_when_a_create_gets_no_answer(self):
+        # 29 October: with Salad's gateway timing out, one search sent 10 creates and waited 30 s on each.
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.http.on("POST", "/containers$", (504, {"title": "Error 504: Gateway time-out"}))
+        self.http.on("GET", "/containers/biz-", (404, {}))
+        self.x.cfg["max_active"] = 10
+        self.x.search()
+        self.assertEqual(len(self.http.made("POST", "/containers$")), 1)
         self.http.on("POST", "/containers$", (201, {}))
         self.x.search()                                                    # the next search tries again
         self.assertGreater(len(self.http.made("POST", "/containers$")), 2)
@@ -1230,6 +1566,128 @@ class TestSearch(Base):
         self.assertEqual(len(self.http.made("POST", "/containers$")), n)
 
 
+class TestOrgs(Base):
+    """28 October: groups in a second org (llmjob2), which has its own replica quota and credit (config org_slots)."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg.update(max_active=3, org_slots={w.ORG: 1, "llmjob2": 2})
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                         "container_replicas_used": 0}}))
+
+    def orgs_made(self):
+        return [c[1].split("/organizations/")[1].split("/")[0] for c in self.http.made("POST", "/containers$")]
+
+    def test_a_group_in_another_org_is_made_and_run_there(self):
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        g = list(self.x.st["groups"].values())[-1]
+        self.assertEqual(g["org"], "llmjob2")
+        self.assertIn("CREATED biz-rtx4080 in llmjob2: ", self.events())
+        g.update(machine="m1", instance="inst-m1", had_pc=True)
+        self.x.set_priority(g, "low")
+        self.x.reallocate(g, "slow")
+        self.x.delete(g, "released", "done")              # reads its last log lines first
+        urls = [c[1] for c in self.http.calls]
+        self.assertEqual(len(urls), 5)
+        self.assertTrue(all("/organizations/llmjob2/" in u for u in urls), urls)
+
+    def test_the_search_fills_each_org_in_order_up_to_its_slots(self):
+        self.x.search()
+        self.assertEqual(self.orgs_made(), [w.ORG, "llmjob2", "llmjob2"])
+        self.assertEqual(self.x.st["quota"], 20)
+        self.assertEqual(self.x.slots(), 3)
+
+    def test_each_org_s_room_is_against_its_own_quota(self):
+        self.http.on("GET", "/llmjob2/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10,
+                                                                                 "container_replicas_used": 9}}))
+        self.x.search()
+        self.assertEqual(self.orgs_made(), [w.ORG])        # the pearl2dev session's boxes fill llmjob2's quota
+
+    def test_a_quota_refusal_stops_only_that_org(self):
+        self.http.on("POST", "/llmjob2/projects/default/containers$", (400, {"type": "created_replicas_quota_exceeded"}))
+        self.x.cfg["org_slots"] = {"llmjob2": 2, w.ORG: 1}
+        self.x.search()
+        self.assertEqual(self.orgs_made(), ["llmjob2", w.ORG])
+
+    def test_credit_out_in_one_org_leaves_the_other_running(self):
+        self.http.on("POST", "/llmjob2/projects/default/containers$", (400, {"errors": {"code": ["no_credits_available"]}}))
+        self.assertFalse(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        self.assertEqual(self.x.st["credits_out"], ["llmjob2"])
+        self.assertIn("ALERT Salad says no credits are available in llmjob2", self.events())
+        g = self.group(status="stopped")                   # in llmjob, which still has credit: started as usual
+        self.step(g, 1, None)
+        self.assertTrue(self.http.made("POST", f"/organizations/{w.ORG}/projects/default/containers/biz-rtx4080/start"))
+        g["ended"] = self.clock[0]
+        n = len(self.orgs_made())
+        self.x.search()
+        self.assertEqual(self.orgs_made()[n:], [w.ORG])    # llmjob2 isn't tried until a top-up
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn("⚠️ Credit ran out in llmjob2: Salad stopped the groups there.", f.read())
+
+    def test_a_state_from_before_orgs_keeps_its_credit_flag(self):
+        for old, new in ((True, [w.ORG]), (False, [])):
+            w.save(w.STATE, {"groups": {}, "credits_out": old})
+            self.assertEqual(w.W().st["credits_out"], new)
+
+    def test_strays_are_swept_in_each_org(self):
+        self.http.on("GET", "/llmjob2/projects/default/containers$", (200, {"items": [{"name": "biz-rtx4080-9"},
+                                                                                   {"name": "bench-30-rtx3080-1"}]}))
+        self.x.sweep(self.clock[0])
+        self.clock[0] += 11 * 60
+        self.x.sweep(self.clock[0])
+        self.assertTrue(self.http.made("DELETE", "/llmjob2/projects/default/containers/biz-rtx4080-9$"))
+        self.assertFalse(self.http.made("DELETE", "bench"))
+        self.assertIn("SWEPT llmjob2/biz-rtx4080-9: ", self.events())
+
+    def test_logs_are_read_in_each_org_and_a_failure_in_one_is_read_again(self):
+        g = self.group()
+        self.x.logs([g])
+        self.assertEqual([c[1].split("/organizations/")[1] for c in self.http.made("POST", "/log-entries")],
+                         [f"{w.ORG}/log-entries", "llmjob2/log-entries"])
+        end = self.x.st["last_log_end"]
+        self.clock[0] += 60
+        self.http.on("POST", "/llmjob2/log-entries", (408, {}))
+        self.assertEqual(self.x.logs([g]), [])
+        self.assertEqual(self.x.st["last_log_end"], end)   # not moved on: next round reads this minute again
+
+    def test_a_waiting_group_never_moves_above_another_of_its_class_on_a_pc(self):
+        # 13 October: 4080-35 at medium got 4080-33's PC at low, twice. With groups in two orgs it's likelier.
+        a = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        a["has_pc"] = True
+        self.assertTrue(self.x.create("RTX 4080 (16 GB)", "batch", org="llmjob2"))
+        b = list(self.x.st["groups"].values())[-1]
+        b["status"] = "running"
+        self.assertEqual(self.x.next_pri(b), "low")        # up to a's priority, not past it
+        b["pri"] = "low"
+        self.assertIsNone(self.x.next_pri(b))
+        self.step(b, 11, None)
+        self.assertEqual(b["end_kind"], "released")
+        self.assertIn("no PC at low and a higher priority could take the PC of another group of its class",
+                      self.events())
+
+    def test_the_search_doesnt_make_a_group_above_another_of_its_class_on_a_pc(self):
+        self.x.cfg["max_per_class"] = 2
+        self.x.pc_margin = lambda g: 0.5                   # the 4080 on its PC clears the margin, so a second may come
+        a = self.group(cls="RTX 4080 (16 GB)", pri="batch")
+        a["has_pc"] = True
+        made = lambda: [(c, p) for *_, c, p in self.x.candidates([a], self.clock[0]) if c == "RTX 4080 (16 GB)"]
+        self.assertEqual(made(), [])                       # GPUs free only at low, above a's batch
+        a["pri"] = "low"
+        self.assertEqual(made(), [("RTX 4080 (16 GB)", "low")])
+
+    def test_another_session_s_group_on_a_pc_caps_its_class_too(self):
+        def other(name, gpu, counts):
+            return {"name": name, "priority": "batch", "container": {"resources": {"gpu_classes": [gpu]}},
+                    "current_state": {"instance_status_counts": counts}}
+        self.http.on("GET", "/llmjob2/projects/default/containers$", (200, {"items": [
+            other("bench-30-rtx4080-1", "c4080", {"running_count": 1}),
+            other("bench-30-rtx2060-1", "c2060", {"allocating_count": 1})]}))
+        self.x.sweep(self.clock[0])
+        self.assertEqual(self.x.pri_cap("RTX 4080 (16 GB)"), 0)   # on a PC at batch: ours stay at batch
+        self.assertEqual(self.x.pri_cap("RTX 2060 (6 GB)"), 3)    # still waiting for a PC: no cap
+
+
 class TestUpgrade(Base):
     def full_with_a_2060(self, avail, placed=True):
         """Every slot taken by one 2060 mining at 40 TH/s at low: $0.017/hr. A 4080 at low should make $0.083/hr,
@@ -1405,6 +1863,62 @@ class TestLogOutage(Base):
         self.assertEqual(self.events().count("WARN Salad log reads have failed for 11 min"), 1)
 
 
+class TestNoLogPc(Base):
+    """30 October: 5090-47's PC sent no log lines for 4¾ h while Kryptex credited its shares at about $0.28/hr against
+    its $0.33/hr, and no rule judged it. Such a box is judged on its last full hour of Kryptex credit."""
+    def run_on(self, per_bucket, minutes, read=0):
+        g = self.group()
+        g["kx"] = True
+        share = USD_TH_HR / PRICE * 2 ** 32 / 3.6e15 * 2 ** 21                          # PRL the network pays a share
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, read)            # readings for its first `read` minutes, then none
+        for _ in range(minutes):
+            self.clock[0] += 60
+            t = self.clock[0]
+            g["last_share"] = t                                                          # Kryptex gets its shares...
+            g["kx_b"] = {str(s * 1000): [per_bucket, share]
+                         for s in range(int(g["pc_since"]) // 600 * 600, int(t), 600)}
+            self.x.st["kx_count_t"] = t
+            g["has_pc"], g["_machine"], g["instance"] = True, "m1", "inst-m1"            # ...but no reading comes
+            self.x.rules(g, t)
+            if g["ended"] or g["machine"] is None:
+                break
+        return g
+
+    def test_a_pc_whose_credit_doesnt_clear_the_bar_is_left(self):
+        self.run_on(5, 100)                      # 30 shares an hour: about $0.08 against $0.11
+        self.assertIn("by Kryptex's count of its shares over the last hour (its PC sends no log lines) on PC m1",
+                      self.events())
+
+    def test_one_whose_credit_clears_it_stays(self):
+        g = self.run_on(10, 100)                 # 60 shares an hour: about $0.17
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertFalse(g["ended"])
+        self.assertEqual(g["machine"], "m1")
+
+    def test_it_waits_for_a_full_hour_of_credit(self):
+        g = self.run_on(5, 80)                   # the hour ending 25 min ago doesn't start after it got the PC yet
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertFalse(g["ended"])
+
+    def test_a_pc_whose_logs_stop_is_judged_on_its_credit_too(self):
+        # 31 October: 5070-127's readings on 69461ace stopped 5 minutes in while its shares kept coming.
+        g = self.run_on(5, 100, read=5)          # 199 TH/s clears the bar, but Kryptex credits about $0.08
+        self.assertIn("by Kryptex's count of its shares over the last hour (no reading from its PC for", self.events())
+        self.assertIsNone(g["machine"])
+
+    def test_one_whose_logs_stop_and_whose_credit_clears_stays(self):
+        g = self.run_on(10, 100, read=5)
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_stale_chart_read_judges_nothing(self):
+        g = self.group()
+        g["kx"], g["kx_b"] = True, {}
+        self.x.st["kx_count_t"] = self.clock[0] - 20 * 60
+        self.assertIsNone(self.x.credit_rate(g, self.clock[0] - 3 * 3600, self.clock[0]))
+
+
 class TestPoolTotals(Base):
     POOL = {"stats": {"paid": "156064257", "balance": "20000000", "hashes": "8875147264", "hashrate_1h": 264765.8},
             "unconfirmed": [{"reward": "102092647"}, {"reward": "50000000"}],
@@ -1449,7 +1963,7 @@ class TestPoolTotals(Base):
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.5, "balance": 0.5, "unconfirmed": 4.0, "blocks": 6,
                                  "hashes": 0, "ths_1h": 0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # Work worth 8 PRL at the network's rate; in under 10 blocks the pool's credit ratio isn't used yet.
         self.assertIn("| **8.000\\*** |\n", report)  # the All row
@@ -1467,11 +1981,11 @@ class TestCreditRatio(Base):
                                  "hashes": 0, "ths_1h": 0}
         self.x.cfg.update(cfg or {})
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return f.read()
 
     def test_the_first_line_starts_with_a_readable_time(self):
-        self.assertTrue(self.report().startswith("**3:00 am EST, Fri, Jan 15** · PRL $1.39 "))  # no rule above it
+        self.assertTrue(self.report().startswith("**3:00 am Fri** · PRL $1.39 "))  # no rule above it; no zone or date since 3 Nov
 
     def test_the_time_is_new_york_time_and_says_edt_in_summer(self):
         t = w.parse_iso("2026-10-17T15:53:00Z")
@@ -1491,12 +2005,13 @@ class TestCreditRatio(Base):
     def test_the_first_line_leaves_out_what_the_all_row_shows(self):
         first = self.report().split("\n")[0]
         # The credit left ($100 less $6.00 spent); no box is billing, so no hours.
-        self.assertEqual(first, "**3:00 am EST, Fri, Jan 15** · PRL $1.39 · 0/1 mining · Salad $94.00* left")
+        self.assertEqual(first, "**3:00 am Fri** · PRL $1.39 · 0/1 mining · Salad $94.00* left")
 
-    def test_every_slot_has_a_row_and_an_empty_one_says_so(self):
+    def test_the_empty_slots_share_one_row_with_their_count(self):
         report = self.report(cfg={"max_active": 10})
-        empty = f"| ⬜{w.NB}empty | — | — | — | — |"
-        self.assertEqual(report.count(empty + "\n"), 9)              # 1 group, 10 slots
+        empty = f"| ⬜{w.NB}empty{w.NB}×9 | — | — | — | — |"
+        self.assertEqual(report.count(empty + "\n"), 1)              # 1 group, 10 slots: one row for the other 9
+        self.assertEqual(report.count("empty"), 1)
         self.assertIn(" · 0/10 mining · Salad $", report)                    # counted against the slots, not the groups
         rows =[l for l in report.split("\n") if l.startswith("| ")]
         self.assertLess(rows.index(empty), rows.index(next(l for l in rows if l.startswith("| **All**"))))
@@ -1514,9 +2029,12 @@ class TestCreditRatio(Base):
                      "spent", "Cost per", "Credit left", "costs us"):
             self.assertNotIn(gone, report)
 
-    def test_the_heading_says_how_many_hours_the_credit_lasts(self):
-        self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit
-        self.assertIn(" · Salad $94.00* left (627* h)\n", self.report(cfg={"max_active": 2}))
+    def test_the_heading_says_how_many_days_the_credit_lasts(self):
+        self.group(pri="low")["has_pc"] = True                      # $0.15/hr against $94.00 of credit: 627 h
+        self.assertIn(" · Salad $94.00* left · 26*d\n", self.report(cfg={"max_active": 2}))
+
+    def test_under_a_day_of_credit_shows_in_hours(self):
+        self.assertEqual([w.lasts(h) for h in (627, 36, 24, 23.6, 5)], ["26 days", "2 days", "1 day", "24 h", "5 h"])
 
     def test_a_full_account_has_no_empty_rows(self):
         report = self.report()                                       # 1 group, 1 slot
@@ -1525,17 +2043,17 @@ class TestCreditRatio(Base):
     def test_salads_quota_caps_the_rows_too(self):
         self.x.st["quota"] = 3
         report = self.report(cfg={"max_active": 10})
-        self.assertEqual(report.count(f"| ⬜{w.NB}empty |"), 2)
+        self.assertIn(f"| ⬜{w.NB}empty{w.NB}×2 |", report)
         self.assertIn(" · 0/3 mining · Salad $", report)
 
     def test_an_empty_slot_has_a_cell_for_monero_when_it_is_on(self):
         self.x.cfg["xmr_wallet"] = "4abc"
-        self.assertIn(f"| ⬜{w.NB}empty | — | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
+        self.assertIn(f"| ⬜{w.NB}empty{w.NB}×1 | — | — | — | — | — | — |\n", self.report(cfg={"max_active": 2}))
 
     def test_the_table_counts_on_what_the_pool_credits(self):
         report = self.report()
         # The box's work is worth 8 PRL at the network's rate; the pool credits 75%: 6.
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch | — | — | — | 6.000* |\n", report)
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat. | — | — | — | 6.000* |\n", report)
         self.assertIn("| **6.000\\*** |\n", report)  # the All row
 
     def test_the_ratio_has_a_floor(self):
@@ -1549,7 +2067,7 @@ class TestCreditRatio(Base):
         self.x.cfg["yield"] = 1.0
         self.assertAlmostEqual(self.x.usd(), USD_TH_HR)               # fixed: the network's rate
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             # the table still counts on the ratio: 6 PRL, not 8
             self.assertIn("| **6.000\\*** |\n", f.read())
 
@@ -1594,11 +2112,21 @@ class TestMeasuredRates(Base):
         self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
 
     def test_the_first_time_it_fills_from_the_ledger(self):
-        g = self.group(pri="medium")
-        g["readings"] = [[self.clock[0] + 60 * i, "m1", 180.0, 0] for i in range(6)]
-        g["ended"] = self.clock[0]
+        for m in ("m1", "m2", "m3"):
+            g = self.group(pri="medium")
+            g["readings"] = [[self.clock[0] + 60 * i, m, 180.0, 0] for i in range(6)]
+            g["ended"] = self.clock[0]
         self.x.record_rates(self.clock[0] + 600)
         self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 180)
+
+    def test_one_or_two_slow_pcs_don_t_lower_the_benchmark(self):
+        # OPEN.md #62: a 5090 left at 131 TH/s would have set the class's rate to 131 against its 418.
+        self.mined("RTX 4080 (16 GB)", [150], pri="medium")
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+        self.mined("RTX 4080 (16 GB)", [160], pri="medium")
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 199)
+        self.mined("RTX 4080 (16 GB)", [170], pri="medium")   # the third PC: now the median rules
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 160)
 
     def test_a_new_group_is_created_at_the_measured_rate(self):
         self.mined("RTX 4080 (16 GB)", [210], pri="medium")
@@ -1614,11 +2142,11 @@ class TestStartingBoxes(Base):
         self.mine(a, "m1", 200, 5)
         self.step(b, 0, "m2")
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn(f"| ⛏️{w.NB}2060{w.NB}low | 0 | 0.03 | — |", report)
         # $/hr counts both bills; Profit/hr only the 4080: 200 × 0.00117 − 0.19 = +0.044.
-        self.assertIn("| **All** | **200** | **0.22** | **+0.04\\* (+19%\\*)** |", report)
+        self.assertIn(f"| **All** | **200** | **0.22** | **+0.04\\*{w.NB}(+19%\\*)** |", report)
         self.assertIn(" · 1/2 mining · Salad $", report)  # the starting box counts as not mining yet
 
     def test_stars_inside_bold_are_escaped(self):
@@ -1630,28 +2158,28 @@ class TestStartingBoxes(Base):
             g = self.group()
             g["ended"], g["end_kind"], g["prl"], g["spend"] = self.clock[0], kind, 1.0, 1.0
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # They ended before the pools' counts were kept: 1 PRL each by the ledger's estimate, before 10 blocks.
-        self.assertIn(f"| Others{w.NB}×3 | — | — | — | 3.000* |", report)
+        self.assertIn(f"| Ended{w.NB}×3 | — | — | — | 3.000* |", report)
 
     def test_estimates_are_starred_and_api_figures_are_not(self):
         a = self.group(pri="medium")
         self.step(a, 1, "m1")
         self.mine(a, "m1", 200, 5)
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         # TH/s (the miner's log) and $/hr (Salad's price list) come from an API; the rest is our own count.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04* (+19%*) |", report)
-        self.assertRegex(report, r" · Salad \$[\d.]+\* left \(\d+\* h\)\n")
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med | 200 | 0.19 | +0.04*{w.NB}(+19%*) |", report)
+        self.assertRegex(report, r" · Salad \$[\d.]+\* left · \d+\*(h|d)\n")
 
     def test_a_box_with_no_reading_after_15_min_counts_again(self):
         a = self.group(pri="medium")
         self.step(a, 1, "m1")
         self.clock[0] += 16 * 60
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn("| 0 | 0.19 | -0.19* |", f.read())
 
 
@@ -1714,14 +2242,26 @@ class TestBadPcs(Base):
             self.step(a, 1, "m1")
             self.step(a, 3, None)    # taken back 3 minutes after it was handed over
             self.assertEqual("m1" in self.x.st.get("bad_pcs", {}), i == 2)
-        self.assertIn("NOTE PC m1 goes on the bad list: Salad took it back within 10 min of handing it over 3 times "
-                      "in 24 h", self.events())
+        self.assertIn("NOTE PC m1 goes on the bad list: Salad took it back within 10 min of handing it over, or "
+                      "before it mined, 3 times in 24 h", self.events())
         self.assertNotIn("m1", self.x.st["pc_drops"])
         b = self.group(pri="medium")
         self.step(b, 1, "m1")        # the next group that gets it moves off at once, uncounted
         self.assertEqual(len(self.http.made("POST", "/instances/inst-m1/reallocate")), 1)
         self.assertIn("REALLOCATED biz-rtx4080-2 off PC m1 (biz-rtx4080 left this PC at", self.events())
         self.assertEqual(b["reallocs"], 0)
+
+    def test_a_pc_taken_back_before_the_box_mined_counts_though_it_held_it_longer(self):
+        # 2-3 November: ffa8ce60 held 2070 boxes 18-19 minutes, never mining, six times.
+        a = self.group(pri="medium")
+        for i in range(3):
+            self.step(a, 1, "m1")
+            self.step(a, 19, None)   # 19 minutes, no mining reading
+            self.assertEqual("m1" in self.x.st.get("bad_pcs", {}), i == 2)
+        b = self.group(pri="medium")
+        self.step(b, 1, "m2")
+        self.step(b, 35, None)       # held over drop_unmined_min: not a drop
+        self.assertNotIn("m2", self.x.st.get("pc_drops", {}))
 
     def test_only_quick_drops_within_a_day_count(self):
         a = self.group(pri="medium")
@@ -1791,84 +2331,499 @@ class TestCritic(Base):
         self.assertNotIn("DRIFT", self.events())
 
 
-class TestTraderStatus(Base):
-    CFG = {"project": "p1", "service": "s1", "environment": "e1"}
-    STATUS = {"t": 1800003900, "market": "prlusdt", "prl": 0.0, "prl_locked": 0.0, "usdt": 7.08, "usdt_locked": 0.0,
-              "sold": 5.2564, "received": 7.1, "fees": 0.0142, "trades": 2,
-              "last": {"order": 77, "sold": 5.2564, "average": 1.3507}}
+class TestSafeTrade(Base):
+    BAL = [{"currency": "pearl", "balance": "1.1461474", "locked": "0.5"},
+           {"currency": "usdt", "balance": "9.0505421", "locked": "0"},
+           {"currency": "xmr", "balance": "0.000008", "locked": "0"}]
 
-    def railway(self, deployments=("d2", "d1"), logs=None, status=200):
-        logs = logs if logs is not None else {"d2": ["starting", "STATUS " + json.dumps(self.STATUS)]}
-        def answer(body):
-            q = body["query"]
-            if "deployments(" in q:
-                return status, {"data": {"deployments": {"edges": [{"node": {"id": d}} for d in deployments]}}}
-            return status, {"data": {"deploymentLogs": [{"message": m, "timestamp": "2027-01-15T08:05:01Z"}
-                                                        for m in logs.get(body["variables"]["id"], [])]}}
-        self.http.on("POST", "backboard.railway.com", answer)
+    def fill(self, fid, market="pearlusdt", amount=2.0, price=1.9, order_side="sell", side="buy", order=None):
+        return {"id": fid, "order_id": order or fid * 10, "market": market, "price": str(price), "amount": str(amount),
+                "total": str(amount * price), "side": side, "order_side": order_side, "fee_currency": "usdt",
+                "fee": str(amount * price / 1000), "created_at": w.iso(self.clock[0] - 3600)}
 
-    def test_the_newest_status_line_is_read(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        self.x.trader()
-        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
-        q = self.http.made("POST", "backboard")[0][2]
-        self.assertEqual(q["variables"]["i"], {"projectId": "p1", "serviceId": "s1", "environmentId": "e1"})
+    def setUp(self):
+        super().setUp()
+        os.environ["SAFETRADE_API_KEY"], os.environ["SAFETRADE_API_SECRET"] = "k" * 16, "s" * 32
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_KEY", None)
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_SECRET", None)
+        self.x.cfg.update(xmr_wallet="4" + "a" * 94)
+        # Newest first, as SafeTrade lists them. The buy of USDC isn't a sale.
+        self.fills = [self.fill(5), self.fill(4, amount=1.0, price=2.0), self.fill(3, price=1.5),
+                      self.fill(2, market="xmrusdt", amount=0.01, price=620.1),
+                      self.fill(1, market="usdcusdt", amount=10.0, price=0.999, order_side="buy", side="sell")]
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/balances/spot$", (200, self.BAL))
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/market/trades\?", self.page)
+        # Deposits by coin: two pages of PRL (one rejected), one of XMR.
+        self.deposits = {"pearl": [{"amount": "1.5", "status": "collected"}] * 100 + [{"amount": "2.0", "status": "collected"},
+                                   {"amount": "9.0", "status": "rejected"}],
+                         "xmr": [{"amount": "0.010368", "status": "collected"}]}
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/deposits\?", self.deposit_page)
+        # The USDC bought (fill 1) withdrawn, some USDT withdrawn, and a failed withdrawal that doesn't count.
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "2.0", "fee": "1", "status": "succeed"},
+            {"currency_id": "usdt", "amount": "50.0", "fee": "1", "status": "failed"},
+            {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
+        st = self.x.st
+        st["pool_tot"] = {"t": T0, "ths_1h": 0, "balance": 0.744, "unconfirmed": 0.0, "paid": 151.622, "blocks": 0}
+        st["xmr_tot"] = {"khs_1h": 5.1, "balance": 0.000949, "pending": 0.000094, "paid": 0.010368}
 
-    def test_an_older_deployment_is_read_when_the_newest_has_no_status(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway(logs={"d2": ["building"], "d1": ["STATUS " + json.dumps(self.STATUS)]})
-        self.x.trader()
-        self.assertEqual(self.x.st["trader_status"]["sold"], 5.2564)
+    def page(self, _):
+        n = int(re.search(r"page=(\d+)", self.http.calls[-1][1]).group(1))
+        return 200, self.fills[(n - 1) * 100:n * 100]
 
-    def test_read_at_most_every_5_min(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        self.x.trader()
-        self.clock[0] += 120
-        self.x.trader()
-        self.assertEqual(len(self.http.made("POST", "backboard")), 2)   # deployments + one deployment's logs
-        self.clock[0] += 300
-        self.x.trader()
-        self.assertEqual(len(self.http.made("POST", "backboard")), 4)
+    def deposit_page(self, _):
+        url = self.http.calls[-1][1]
+        coin, n = re.search(r"currency=(\w+)", url).group(1), int(re.search(r"page=(\d+)", url).group(1))
+        return 200, self.deposits.get(coin, [])[(n - 1) * 100:n * 100]
 
-    def test_the_token_is_sent_as_a_project_token(self):
-        self.x.cfg["trader"] = self.CFG
-        self.railway()
-        os.environ["RAILWAY_TOKEN"] = "tok"
-        try:
-            self.x.trader()
-        finally:
-            del os.environ["RAILWAY_TOKEN"]
-        self.assertEqual(self.http.headers, {"Project-Access-Token": "tok"})
+    def row(self, coin):
+        return next(shown(l) for l in self.report().splitlines()
+                    if l.startswith(f"| {coin} |") or re.match(rf"\| (⛏️|🪙) {re.escape(coin)} \|", shown(l)))
 
-    def test_off_without_config(self):
-        self.railway()
-        self.x.trader()
-        self.assertFalse(self.http.made("POST", "backboard"))
+    def report(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            return f.read()
 
-    def test_a_refused_read_warns_once_and_keeps_the_last_status(self):
-        self.x.cfg["trader"] = self.CFG
-        self.x.st["trader_status"] = dict(self.STATUS)
-        self.http.on("POST", "backboard.railway.com", (200, {"errors": [{"message": "Not Authorized"}]}))
-        self.x.trader()
-        self.clock[0] += 600
-        self.x.trader()
-        self.assertEqual(self.events().count("WARN can't read the trader's Railway logs"), 1)
-        self.assertEqual(self.x.st["trader_status"]["usdt"], 7.08)
+    def test_off_without_keys(self):
+        del os.environ["SAFETRADE_API_KEY"]
+        self.x.safetrade()
+        self.assertFalse(self.http.made("GET", "safetrade"))
+        self.assertNotIn("SafeTrade", self.report())
 
-    def test_sales_dont_change_the_report(self):
+    def test_one_table_from_pools_paid_to_the_usdt_left(self):
+        self.x.st["kx_tot"] = {"confirmed": 0.0, "unconfirmed": 2.6, "paid": 45.121}
+        self.x.safetrade()
+        report = self.report()
+        self.assertNotIn("| Pool |", report)           # the pools are in this table since 3 November
+        rows = [shown(l) for l in report.splitlines() if l.startswith("| ")]
+        head = "| 💵 SafeTrade | At pool | Paid | Unsold | Sold | Fees | USDT |"
+        # At pool: HeroMiners' 0.744 unpaid, Kryptex's 2.6 pending, and the 44.743 paid that hasn't reached SafeTrade
+        # (196.743 paid by both, 152.000 received: the deposits less the rejected one). Waiting held plus in open
+        # orders; Sold every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.
+        self.assertEqual(rows[rows.index(head) + 1:], [
+            "| ⛏️ PRL | 48.087 | 196.743 | 1.646 | 5.000 | $0.01 | +$8.79 |",
+            "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+            # The 9 USDC and 2 USDT sent to the bank have no dates here, so they aren't this month's.
+            "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
+            "| On SafeTrade | | | | | $1.93 | $9.05 |"])  # every fee ($0.91 and $1.00 for the 9 USDC and 2 USDT sent), the USDT held
+        self.assertEqual(len(self.http.made("GET", "deposits")), 3)   # two pages of PRL, one of XMR
+
+    def test_usdt_sent_to_the_salad_wallet_is_its_own_row_not_the_banks(self):
+        # 28 October: 5 USDT to the top-up wallet (1 of the 6 asked went in fees) paid for $5 of Salad credit; it was
+        # counted in USDT out, the money that reached the bank. The bank's rows went on 2 November.
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "2.0", "fee": "1", "status": "succeed", "rid": "0xbank"},
+            {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "rid": self.x.cfg["salad_wallet"]},
+            {"currency_id": "usdc", "amount": "9.0", "fee": "0.9", "status": "succeed"}]))
+        self.x.safetrade()
+        rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
+        self.assertEqual(rows[-4:], [
+            "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+            "| USDT to Salad | | | | | $1.00 | −$5.00 |",
+            "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
+            "| On SafeTrade | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
+
+    def test_withdrawn_is_this_months_transfers_to_our_other_accounts(self):
+        now = self.clock[0]
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "20.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 3600)},
+            {"currency_id": "usdt", "amount": "7.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 40 * 86400)},
+            {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "created_at": w.iso(now - 3600),
+             "rid": self.x.cfg["salad_wallet"]}]))
+        self.x.safetrade()
+        # Only the 20 sent this month: last month's 7 and the 5 to Salad's top-up wallet aren't in it.
+        self.assertEqual(self.row("Withdrawn in Jan"), "| Withdrawn in Jan | | | | | $1.00 | −$20.00 |")
+
+    def test_only_our_own_sell_orders_count(self):
+        # A fill whose taker sold into our buy order is a buy of ours.
+        self.fills = [self.fill(1, order_side="buy", side="sell")]
+        self.x.safetrade()
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 0.000 | $0.00 | +$0.00 |")
+
+    def test_every_page_of_fills_counts(self):
+        self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
+        self.x.safetrade()
+        self.assertEqual(len(self.http.made("GET", "market/trades")), 3)
+        self.assertIn("| 250.000 | $0.50 | +$499.50 |", self.row("PRL"))
+
+    def test_a_new_sale_is_an_event_with_its_usdt_and_old_ones_are_not(self):
+        self.x.safetrade()
+        self.assertNotIn("SOLD", self.events())
+        # One order filled twice, then a newer order: one event each, oldest first.
+        self.fills = [self.fill(8, amount=0.5, price=2.0, order=200), self.fill(7, amount=1.0, price=2.1, order=100),
+                      self.fill(6, amount=1.0, price=1.9, order=100)] + self.fills
+        self.clock[0] += 60 * self.x.cfg["report_min"]   # the next report's read
+        self.x.safetrade()
+        sold = [l for l in self.events().splitlines() if " SOLD " in l]
+        self.assertEqual(len(sold), 2)
+        self.assertIn("SOLD 2.000 PRL on SafeTrade for $4.00 USDT after fees ($2.00 each)", sold[0])
+        self.assertIn("SOLD 0.500 PRL on SafeTrade for $1.00 USDT after fees ($2.00 each)", sold[1])
+
+    def test_requests_are_signed(self):
+        self.x.safetrade()
+        h = self.http.headers
+        self.assertEqual(h["X-Auth-Apikey"], "k" * 16)
+        want = w.hmac.new(b"s" * 32, (h["X-Auth-Nonce"] + "k" * 16).encode(), w.hashlib.sha256).hexdigest()
+        self.assertEqual(h["X-Auth-Signature"], want)
+        self.assertFalse([c for c in self.http.calls if c[0] != "GET"])
+
+    def test_read_once_a_report_in_its_first_round(self):
+        self.x.cfg["report_min"] = 15
+        reads = lambda: len(self.http.made("GET", "balances"))
+        self.x.safetrade()
+        for _ in range(14):   # the rest of the quarter hour
+            self.clock[0] += 60
+            self.x.safetrade()
+        self.assertEqual(reads(), 1)
+        self.clock[0] += 60   # T0 + 15 min: the next report's first round
+        self.x.safetrade()
+        self.assertEqual(reads(), 2)
+
+    def test_a_failed_read_is_tried_again_5_minutes_later(self):
+        self.x.cfg["report_min"] = 15
+        self.http.on("GET", r"safetrade\.com", (500, {}))
+        self.x.safetrade()
+        for _ in range(5):
+            self.clock[0] += 60
+            self.x.safetrade()
+        self.assertEqual(len(self.http.made("GET", "balances")), 2)   # T0 and T0 + 5 min
+
+    def test_a_refused_read_warns_once_keeps_the_last_and_says_when_it_was(self):
+        self.x.safetrade()
+        self.http.on("GET", r"safetrade\.com", (403, {"raw": ""}))
+        for _ in range(4):
+            self.clock[0] += 300
+            self.x.safetrade()
+        self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
+        self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | At pool |", shown(self.report()))
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 5.000 | $0.01 | +$8.79 |")
+
+    def test_a_read_from_before_deposits_and_withdrawals_were_read_shows_what_it_has(self):
+        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0], "usdt": [3.8, 0.0]},
+                                "sold": {"pearl": [2.0, 3.8]}}
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.000 | 2.000 | $0.00 | +$3.80 |")
+        self.assertEqual(self.row("**On SafeTrade**"), "| On SafeTrade | | | | | $0.00 | $3.80 |")
+
+    def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):
+        self.x.st["st_acct"] = {"t": self.clock[0], "coins": {}, "sales": {}}
+        self.assertNotIn("SafeTrade", self.report())
+
+
+class TestClassPrices(Base):
+    def test_a_running_group_takes_a_new_price(self):
+        g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old = self.group(cls="RTX 4080 (16 GB)", pri="low")
+        old["ended"] = True
+        items = [{"name": n, "id": c["id"], "prices": [{"priority": p, "price": v} for p, v in c["prices"].items()]}
+                 for n, c in CLASSES.items()]
+        items[0]["prices"][1]["price"] = 0.163   # 4080 at low: 0.15 → 0.163
+        self.http.on("GET", "/gpu-classes$", (200, {"items": items}))
+        self.x.st["classes_t"] = 0
+        self.x.classes()
+        self.assertEqual(g["price"], 0.163)
+        self.assertEqual(old["price"], 0.15)          # an ended group keeps what it cost
+        self.assertEqual(self.events().count("PRICE"), 1)
+        self.assertIn("now $0.163/hr (was $0.150)", self.events())
+        self.x.classes()                              # within the hour: no read, no second event
+        self.assertEqual(self.events().count("PRICE"), 1)
+
+
+class TestSell(Base):
+    """The PRL autoseller, moved in from the Railway trader service (removed); the book and numbers are its tests'."""
+    BOOK = {"bids": [{"price": "1.40", "remaining_volume": "3"}, {"price": "1.38", "remaining_volume": "2"},
+                     {"price": "1.30", "remaining_volume": "50"}], "asks": []}
+    MKT = {"id": "pearlusdt", "base_unit": "pearl", "state": "enabled", "amount_precision": 2, "price_precision": 4,
+           "min_amount": "0.1"}
+
+    def setUp(self):
+        super().setUp()
+        os.environ["SAFETRADE_API_KEY"], os.environ["SAFETRADE_API_SECRET"] = "k" * 16, "s" * 32
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_KEY", None)
+        self.addCleanup(os.environ.pop, "SAFETRADE_API_SECRET", None)
+        w.time.sleep, real_sleep = (lambda s: None), w.time.sleep
+        self.addCleanup(setattr, w.time, "sleep", real_sleep)
+        self.x.cfg["sell"] = {"live": True}
+        self.book(self.BOOK)
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, self.MKT))
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$", (200, []))
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "usdt", "balance": "9"},
+                                                               {"currency": "pearl", "balance": "4.123"}]))
+        self.http.on("POST", r"/market/orders$", (201, {"id": 77, "state": "wait"}))
+        self.http.on("POST", r"/cancel$", (200, {}))
+        self.clock[0] = T0 - T0 % 3600 + 5 * 60          # :05 past the hour
+
+    def book(self, b):
+        self.http.on("GET", r"/public/markets/pearlusdt/depth\?limit=50$", (200, b))
+
+    def orders(self):
+        return [c[2] for c in self.http.made("POST", r"/market/orders$")]
+
+    def test_sells_what_the_book_takes_within_slippage(self):
+        self.x.sell(self.clock[0])
+        # 3% under the best bid of 1.40 is 1.358: the bids at 1.40 and 1.38 (5 PRL) qualify; we have 4.123
+        self.assertEqual(self.orders(), [{"market": "pearlusdt", "side": "sell", "amount": 4.12, "price": 1.358}])
+        self.assertIn("SELL: order 77 for 4.12 PRL with a limit at 1.358 (best bid 1.4, balance 4.123)", self.events())
+        self.assertTrue(self.http.headers["X-Auth-Apikey"])
+
+    def test_sells_only_what_the_bids_above_the_floor_take(self):
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "pearl", "balance": "20"}]))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders()[0]["amount"], 5.0)
+
+    def test_never_under_min_price(self):
+        self.x.cfg["sell"]["min_price"] = 1.45
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("nothing to sell (best bid 1.4 is under the floor 1.45)", self.events())
+
+    def test_dust_and_the_markets_minimum_are_left(self):
+        self.http.on("GET", r"/account/balances/spot$", (200, [{"currency": "pearl", "balance": "0.3"}]))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("nothing to sell (only 0.3 PRL", self.events())
+        self.assertEqual(w.sell_plan(1.5, [(1.4, 10)], dict(self.MKT, min_amount="2"), {}),
+                         (None, "only 1.5 PRL to sell (balance 1.5, bids down to 1.358 take 10.0000)"))
+
+    def test_last_runs_open_sell_is_cancelled_first(self):
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$",
+                     (200, [{"id": 5, "side": "sell", "state": "wait", "origin_amount": "2", "filled_amount": "1", "price": "1.5"},
+                            {"id": 6, "side": "sell", "state": "done"}]))
+        self.x.sell(self.clock[0])
+        posts = [c[1].split("/api/v2/trade")[1] for c in self.http.calls if c[0] == "POST"]
+        self.assertEqual(posts, ["/market/orders/5/cancel", "/market/orders"])   # only what's open, then the sale
+        self.assertIn("SELL: cancelled open sell 5, 1 PRL at 1.5", self.events())
+
+    def test_book_as_price_volume_pairs(self):
+        self.book({"bids": [["1.40", "10"]], "asks": []})
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders()[0]["amount"], 4.12)
+
+    def test_amounts_round_down_never_up(self):
+        self.assertEqual(w.floor_to(4.12999999999995, 4), 4.1299)
+        self.assertEqual(w.floor_to(4.12, 2), 4.12)
+        self.assertEqual(w.floor_to(0.30000000000000004, 1), 0.3)
+
+    def test_a_dry_run_places_and_cancels_nothing(self):
+        self.x.cfg["sell"] = {}                              # live isn't set
+        self.http.on("GET", r"/market/orders\?market=pearlusdt&state=wait&side=sell$",
+                     (200, [{"id": 5, "side": "sell", "state": "wait", "origin_amount": "1", "price": "1.5"}]))
+        self.x.sell(self.clock[0])
+        self.assertFalse([c for c in self.http.calls if c[0] == "POST"])
+        self.assertIn("SELL DRY RUN: would cancel open sell 5, 1 PRL at 1.5", self.events())
+        self.assertIn("SELL DRY RUN: would sell 4.12 PRL with a limit at 1.358 (best bid 1.4, balance 4.123)", self.events())
+
+    def test_once_an_hour_from_its_minute(self):
+        self.x.cfg["sell"]["minute"] = 10
+        self.x.sell(self.clock[0])                           # :05, before :10
+        self.assertEqual(self.orders(), [])
+        self.clock[0] += 5 * 60
+        self.x.sell(self.clock[0])
+        self.x.sell(self.clock[0] + 600)                     # same hour: no second run
+        self.assertEqual(len(self.orders()), 1)
+        self.x.sell(self.clock[0] + 3600)
+        self.assertEqual(len(self.orders()), 2)
+
+    def test_off_without_its_config_or_the_keys(self):
+        del self.x.cfg["sell"]
+        self.x.sell(self.clock[0])
+        self.x.cfg["sell"] = {"live": True}
+        del os.environ["SAFETRADE_API_SECRET"]
+        self.x.sell(self.clock[0])
+        self.assertFalse(self.http.calls)
+
+    def test_the_retired_prl_market_is_passed_over_and_errors_are_one_warning(self):
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, dict(self.MKT, state="disabled")))
+        self.http.on("GET", r"/public/markets/prlusdt$", (404, {}))
+        self.x.sell(self.clock[0])
+        self.assertEqual(self.orders(), [])
+        self.assertIn("WARN SELL failed: no enabled PRL/USDT market", self.events())
+        self.http.on("GET", r"/public/markets/pearlusdt$", (200, self.MKT))
+        self.http.on("POST", r"/market/orders$", (422, {"errors": ["market.order.insufficient_funds"]}))
+        self.x.sell(self.clock[0] + 3600)
+        self.assertIn("WARN SELL failed: sell order: HTTP 422", self.events())
+
+
+class TestSaladBalance(Base):
+    def setUp(self):
+        super().setUp()
+        os.environ["SALAD_USER"], os.environ["SALAD_PASS"] = "u@x", "pw"
+        self.addCleanup(os.environ.pop, "SALAD_USER", None)
+        self.addCleanup(os.environ.pop, "SALAD_PASS", None)
+        self.reads, self.answer = [], (200, 22865, None)
+        self.real_balance = real = w.portal_balance
+        w.portal_balance = lambda u, p, orgs=None: self.reads.append((u, p)) or self.orgs.append(orgs) or self.answer
+        self.orgs = []
+        self.addCleanup(setattr, w, "portal_balance", real)
+        self.x.cfg.update(credit_start=100.0, credit_offset=401.01)
+
+    def head(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            return f.readline()
+
+    def test_salads_own_balance_shows_without_a_star(self):
+        self.x.salad_balance()
+        self.assertEqual(self.reads, [("u@x", "pw")])
+        self.assertIn("Salad $228.65 left", self.head())
+
+    def test_shows_it_out_of_all_the_credit_bought(self):
+        self.answer = (200, 20237, 500.0)
+        self.x.salad_balance()
+        self.assertIn("Salad $202.37 left", self.head())
+        self.assertEqual(self.x.st["salad_bought"], 500.0)
+        self.answer = (200, 20137, None)   # the invoices didn't read: keep the last total
+        self.clock[0] += 900
+        self.x.salad_balance()
+        self.assertIn("Salad $201.37 left", self.head())
+        self.assertEqual(self.x.st["salad_bought"], 500.0)
+
+    def test_credit_bought_is_every_grant_not_voided(self):
+        # A crypto top-up makes a Metronome credit grant and no purchase invoice (28 October: $5 in USDT).
+        grants = [{"amount_granted": "40000", "voided_at": None}, {"amount_granted": "40000", "voided_at": "2026-10-14"},
+                  {"amount_granted": "10000", "voided_at": None}, {"amount_granted": "500", "voided_at": None}]
+        asked = []
+
+        class R(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        real = w.urllib.request.urlopen
+        w.urllib.request.urlopen = lambda req, timeout=None: asked.append(json.loads(req.data)["query"]) or \
+            R(json.dumps({"data": {"Customer": [{"CreditGrants": grants}]}}).encode())
+        self.addCleanup(setattr, w.urllib.request, "urlopen", real)
+        call = lambda m, p, b=None: (200, {"embed_url": "https://x/embed?token=t1"}) if p.endswith("/dashboard-sessions/credits") else (404, None)
+        self.assertEqual(w.bought(call), 505.0)
+        self.assertIn("CreditGrants", asked[0])
+        self.assertIsNone(w.bought(lambda m, p, b=None: (500, "down")))
+
+    def test_every_org_in_salad_orgs_adds_up(self):
+        # 28 October: llmjob mines, llmjob2 got $10 of its own; the heading is both.
+        self.x.salad_balance()
+        self.assertEqual(self.orgs, [[w.ORG]])                 # none set: just the org the boxes run in
+        self.x.cfg["salad_orgs"] = ["llmjob", "llmjob2"]
+        self.clock[0] += 900
+        self.x.salad_balance()
+        self.assertEqual(self.orgs[-1], ["llmjob", "llmjob2"])
+        bal = {"llmjob": 17533, "llmjob2": 1000}
+        grants = {"llmjob": 505.0, "llmjob2": 10.0}
+
+        def call(method, path, body=None):
+            if path == "/users/login":
+                return 204, None
+            org = path.split("/")[2]
+            if path.endswith("/credits-balance"):
+                return 200, {"amount": bal[org]}
+            return 404, None
+        real = w.bought
+        w.bought = lambda c, org=None: grants[org]
+        self.addCleanup(setattr, w, "bought", real)
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call),
+                         (200, 18533, 515.0, {"llmjob": (17533, 505.0), "llmjob2": (1000, 10.0)}))
+        grants["llmjob2"] = None                               # one org's grants didn't read: no total
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], call)[:3], (200, 18533, None))
+        bal.pop("llmjob2")                                     # one org's balance didn't read: no balance at all
+        self.assertEqual(self.real_balance("u", "p", ["llmjob", "llmjob2"], lambda m, p, b=None:
+                                           (204, None) if p == "/users/login" else
+                                           (200, {"amount": 1}) if "/llmjob/" in p else (500, "down"))[:2], (500, "down"))
+
+    def two_orgs(self, steps):
+        """Reads of llmjob and llmjob2, a quarter-hour apart: steps is [(llmjob $, llmjob2 $, llmjob2 bought $)]."""
+        self.x.cfg["salad_orgs"] = ["llmjob", "llmjob2"]
+        for i, (a, b, paid2) in enumerate(steps):
+            if i:
+                self.clock[0] += 900
+            self.answer = (200, round((a + b) * 100), 505.0 + paid2,
+                           {"llmjob": (round(a * 100), 505.0), "llmjob2": (round(b * 100), paid2)})
+            self.x.salad_balance()
+
+    def test_each_org_lasts_on_its_own_and_one_not_spending_is_shown_idle(self):
+        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet. 1 November: the founder asked to
+        # keep llmjob2's days in the heading anyway. Before it has spent, it's timed at the fleet's $/hr.
         g = self.group()
-        g.update(prl=10.0, spend=8.0, hm_units=1.0, hm_gross=10.0)
-        for status, manual in ((dict(self.STATUS), None), (None, {"sold": 5.2564, "received": 7.1, "fees": 0.0142})):
-            self.x.st["trader_status"], self.x.cfg["safetrade"] = status, manual
-            self.x.write_report()
-            with open(os.path.join(TMP, "report.md")) as f:
-                report = f.read()
-            # The table counts coins earned (10 PRL of work, before 10 blocks), not dollars: no Profit $ since 20 October.
-            self.assertIn("| **10.000\\*** |\n", report)
-            for gone in ("SafeTrade", "Profit $", "Locked"):
-                self.assertNotIn(gone, report)
+        self.step(g, 1, "m1")
+        self.two_orgs([(175.0, 10.0, 10.0)] * 9)
+        head = self.head()
+        self.assertIn(" mining · llmjob $175.00 (", head)
+        cost = g["price"]
+        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", head)
+        self.assertNotIn("ALERT llmjob2", self.events())
+        # Once it has spent, an idle spell is timed at the last $/hr it spent.
+        self.x.st["org_rate"]["llmjob2"] = 0.5
+        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        # A box of its own waiting for a PC spends nothing: still idle, not timed at a measured trickle (3 November:
+        # "597d" with a 2070 waiting in llmjob2).
+        self.group(cls="RTX 2060 (6 GB)")["org"] = "llmjob2"
+        self.x.org_burn = lambda o, t: 0.001
+        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
+        self.x.st["org_rate"]["llmjob2"] = 0.003
+        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", self.head())
+
+    def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
+        # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
+        steps = [(175.0, 10.0 - 0.25 * i + (10.0 if i >= 8 else 0.0), 10.0 + (10.0 if i >= 8 else 0.0)) for i in range(12)]
+        self.two_orgs(steps)
+        self.assertAlmostEqual(self.x.org_burn("llmjob2", self.clock[0]), 1.0)
+        self.assertIn(" · llmjob2 $17.25 (17h)\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
+        # And it warns once it's under 12 h, for that org.
+        self.x.st["org_bal"] = {}
+        self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
+        self.head()
+        self.assertIn("ALERT llmjob2's credit $6.25 lasts about 6.2 h", self.events())
+
+    def test_an_org_at_no_credit_gets_no_runway_alert(self):
+        # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
+        self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
+        self.assertIn(" · llmjob2 $0.00 (0h)\n", self.head())
+        self.assertNotIn("ALERT llmjob2", self.events())
+
+    def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
+        # 28 October: llmjob2 got 2 of the slots (config org_slots); each org lasts at its own boxes' $/hr.
+        self.x.cfg["org_slots"] = {"llmjob": 8, "llmjob2": 2}
+        g = self.group()                                    # a 4080 at $0.11/hr in llmjob
+        self.step(g, 1, "m1")
+        self.assertTrue(self.x.create("RTX 2060 (6 GB)", "batch", org="llmjob2"))   # $0.02/hr in llmjob2
+        g2 = list(self.x.st["groups"].values())[-1]
+        g2["status"] = "running"
+        self.step(g2, 1, "m2")
+        self.two_orgs([(11.0, 1.0, 10.0)] * 9)
+        self.assertIn(" mining · llmjob $11.00 (4d) · llmjob2 $1.00 (2d)\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn(f"2060{w.NB}bat.² |", f.read())       # the box says which org it's in, short
+
+    def test_off_without_the_login(self):
+        del os.environ["SALAD_PASS"]
+        self.x.salad_balance()
+        self.assertEqual(self.reads, [])
+        self.assertIn("Salad $501.01* left", self.head())
+
+    def test_read_once_a_report_in_its_first_round(self):
+        self.x.cfg["report_min"] = 15
+        for _ in range(16):   # T0 to T0 + 15 min, a round a minute
+            self.x.salad_balance()
+            self.clock[0] += 60
+        self.assertEqual(len(self.reads), 2)   # at T0 and at T0 + 15 min
+
+    def test_a_read_sets_our_count_so_a_stale_read_falls_back_close_to_it(self):
+        self.x.salad_balance()
+        g = self.group()
+        g["spend"] = 0.5
+        self.clock[0] += 3601
+        # No read for over an hour: our count, starred, from Salad's last figure less what was spent since.
+        self.assertIn("Salad $228.15* left", self.head())
+
+    def test_a_failed_read_warns_once_and_keeps_the_last(self):
+        self.x.salad_balance()
+        self.answer = (401, "Unauthorized", None)
+        for _ in range(3):
+            self.clock[0] += 600
+            self.x.salad_balance()
+        self.assertEqual(self.events().count("WARN can't read Salad's balance from the portal: HTTP 401"), 1)
+        self.assertIn("Salad $228.65 left", self.head())
 
 
 class TestRound(Base):
@@ -1901,9 +2856,9 @@ class TestRound(Base):
         ev = self.events()
         self.assertIn("CARD biz-rtx4080", ev)
         self.assertIn("FIRST SHARE biz-rtx4080", ev)
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 199 |", report)
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}bat. | 199 |", report)
         self.assertIn(" · 1/1 mining · Salad $", report)
         self.assertTrue(all(l.count("|") == 6 for l in report.splitlines() if l.startswith("|")))
 
@@ -1915,7 +2870,7 @@ class TestRound(Base):
             g["has_pc"], g["machine"] = True, m
             g["readings"] = [[self.clock[0] - 60, m, float(ths), 0]]
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             boxes = [l.split(" | ")[0] for l in f.read().splitlines() if l.startswith("| ⛏") or l.startswith("| ⏳")]
         self.assertEqual([b.split("\u00a0")[1] for b in boxes], ["4080", "2060", "4070"])
 
@@ -1923,7 +2878,7 @@ class TestRound(Base):
         g = self.group(pri="medium")
         g["has_pc"], g["machine"] = True, "abcdef1234"
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"| ⛏️{w.NB}4080{w.NB}med |", f.read())
 
     def test_a_busy_round_reads_more_pages(self):
@@ -1940,6 +2895,22 @@ class TestRound(Base):
         self.assertEqual(len(got), 150)  # every line, and the one on the split counted once
         self.assertLess(len(self.http.made("POST", "/log-entries")), 10)
         self.assertEqual(self.x.st["last_log_end"], self.clock[0])
+
+    def test_a_line_that_reaches_salad_late_is_still_read(self):
+        # 28 October: 5070-97's lines reached Salad 2.5-4 min late, behind a 2 min overlap, and were never read.
+        g = self.group()
+        g["created"] = T0 - 3600
+        line = lambda tm, n: {"text_log": f"[mining g0] 08:00:00 132.0 TH/s · {n} accepted · 0 rejected · up 1h {n}m",
+                              "time": w.iso(tm), "resource": {"labels": {"container_group_name": "biz-rtx4080",
+                                                                         "machine_id": "m1"}}}
+        lines = [line(T0 - 30, 1)]
+        self.http.on("POST", "/log-entries", lambda b: (200, {"items": [
+            x for x in lines if w.parse_iso(b["start_time"]) <= w.parse_iso(x["time"]) <= w.parse_iso(b["end_time"])]}))
+        self.assertEqual(len(self.x.logs([g])), 1)
+        self.clock[0] += 60
+        lines.append(line(T0 - 240, 2))                    # stamped 4 min before the last read, arriving only now
+        got = self.x.logs([g])
+        self.assertEqual([x[0] for x in got], [T0 - 240])  # read now, and the line read before isn't counted again
 
     def test_a_failed_read_is_tried_again_next_round(self):
         g = self.group()
@@ -1963,6 +2934,23 @@ class TestRound(Base):
         self.assertAlmostEqual(g["spend"], 0.11 * 600 / 3600)
 
 
+    def test_billing_skips_a_pc_still_downloading_but_the_rules_see_it(self):
+        # Salad bills only a running instance; a downloading one has a PC for the rules (bad list, NEW PC) already.
+        self.x.cfg["search"] = False
+        g = self.group()
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "downloading"}]}))
+        self.x.round()
+        self.clock[0] += 120
+        self.x.round()
+        self.assertTrue(g["has_pc"])
+        self.assertEqual(g["machine"], "m1")
+        self.assertEqual(g["spend"], 0)
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
+        self.clock[0] += 60
+        self.x.round()
+        self.assertAlmostEqual(g["spend"], 0.11 * 60 / 3600)
+
 XMR = "8" + "a" * 94
 
 
@@ -1972,6 +2960,7 @@ class TestMonero(Base):
         super().setUp()
         self.x.cfg.update(xmr_wallet=XMR, xmr_groups=["biz-rtx4080"])
 
+    @needs_sh
     def test_the_command_adds_the_worker_and_the_address(self):
         cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
@@ -1980,7 +2969,7 @@ class TestMonero(Base):
                "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
                "  rm -rf $R && mkdir -p $R && cp $D/rel/cli $R/\n")
         import subprocess
-        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, encoding="utf-8").stdout
         self.assertIn("pearl_core_cu13.node llmjob-xmr-worker; do", out)
         self.assertIn(f"BASE='{{\"core\":\"release\",\"env\":{{}},\"flags\":\"--xmr-address {XMR}\"}}'", out)
         self.assertIn("cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ && chmod +x $R/llmjob-xmr-worker", out)
@@ -2146,17 +3135,17 @@ class TestMonero(Base):
         d["readings"] = [[t - 900, "m1", 40.0, 0]]       # no reading for 15 minutes, not paused: a quiet miner
         ok["readings"] = [[t - 60, "m1", 200.0, 0]]
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
-        self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
-        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}batch | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
+        self.assertIn(f"| 🧠{w.NB}4080{w.NB}bat. | 0 | 1.0 | 0.11 | — |", report)   # like a box starting
+        self.assertIn(f"| ⛏️{w.NB}2060{w.NB}bat. | 0 | 1.0 | {d['price']:.2f} | {0.002 - d['price']:+.2f}* |", report)  # no margin
         rows = [l for l in report.splitlines() if l.startswith("| ") and "%" in l.split("|")[5]]
         self.assertEqual(len(rows), 2)                     # the box with a reading, and the All row
         # The paused box's bill is left out of the total, as a starting box's is; the quiet one's counts.
         earn = 200 * self.x.st["mkt"]["usd_th_hr"] * self.x.credit_ratio() + 3 * 0.002
         hr = earn - ok["price"] - d["price"]
         self.assertIn(f"| **All** | **200** | **3.0** | **{p['price'] + d['price'] + ok['price']:.2f}** | "
-                      f"**{hr:+.2f}\\* ({hr / earn * 100:+.0f}%\\*)** |", report)
+                      f"**{hr:+.2f}\\*{w.NB}({hr / earn * 100:+.0f}%\\*)** |", report)
 
     def test_the_table_shows_monero(self):
         g = self.group()
@@ -2166,13 +3155,13 @@ class TestMonero(Base):
         g.update(has_pc=True, machine="m1", readings=[[self.clock[0] - 60, "m1", 200.0, 0]],
                  xmr_khs=2.0, xmr_seen=self.clock[0], xmr_coins=0.0001)
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn("| Box | TH/s | kH/s | $/hr | Profit/hr (margin) | PRL | XMR |", report)
         # 200 TH/s × 0.00117 + 2 kH/s × 0.002 = 0.238 an hour, less 0.11 billed. No Pearl counted at a pool yet;
         # 0.0001 XMR from HeroMiners' count of its Monero work, starred.
-        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}batch | 200 | 2.0 | 0.11 | +0.13* (+54%*) | 0.000 | 0.000100* |", report)
-        self.assertIn(f"| ⏳{w.NB}2060{w.NB}batch | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
+        self.assertIn(f"| ⛏️{w.NB}4080{w.NB}bat. | 200 | 2.0 | 0.11 | +0.13*{w.NB}(+54%*) | 0.000 | 0.000100* |", report)
+        self.assertIn(f"| ⏳{w.NB}2060{w.NB}bat. | — | — | — | — | 0.000 | 0.000000 |", report)   # nothing to star
         self.assertIn("| **All** | **200** | **2.0** | **0.11** |", report)
         self.assertIn("| Pool | Hashrate (1h) | Confirmed | Pending | Paid |", report)
         self.assertIn("| 🪙 XMR HeroMiners | 1.5 kH/s | 0.005000 | 0.000100 | 0.000000 |", shown(report))  # straight from the pool: no stars
@@ -2236,7 +3225,7 @@ class TestMonero(Base):
         self.x.st["xmr_tot"] = {"balance": 0.005, "paid": 0.0, "pending": 0.0001, "khs_1h": 1.5}
         self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertIn("| 🪙 [XMR Kryptex](https://pool.kryptex.com/xmr/miner/stats/4xyz) | 0.0 kH/s "
                       "| 0.000002 | 0.000000 | 0.000000 |", report)
@@ -2433,7 +3422,7 @@ class TestMonero(Base):
 
     def xmr_row(self, name):
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return next(l for l in f.read().splitlines() if name in l)
 
     def test_each_boxs_work_on_kryptex_is_counted_from_its_worker_chart(self):
@@ -2515,7 +3504,7 @@ class TestMonero(Base):
         self.assertAlmostEqual(g["kxx_gross"], 6e-5)
         old = self.group()
         old.update(ended=self.clock[0], xmr_coins=0.0001)   # ended before the charts: its rate over time, starred
-        self.assertIn("| 0.000 | 0.000156* |", self.xmr_row(f"Others{w.NB}×2"))   # 0.0001 + 0.00006 × 94%
+        self.assertIn("| 0.000 | 0.000156* |", self.xmr_row(f"Ended{w.NB}×2"))   # 0.0001 + 0.00006 × 94%
 
     def test_a_boxs_khs_counts_each_monero_pool_that_saw_it_lately(self):
         g = self.group()
@@ -2525,7 +3514,7 @@ class TestMonero(Base):
 
         def row():
             self.x.write_report()
-            with open(os.path.join(TMP, "report.md")) as f:
+            with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
                 return next(l for l in f.read().splitlines() if "4080" in l)
         self.assertIn("| 200 | 2.0 |", row())
         g.update(xmr_khs=1.0, xmr_seen=t - 60)   # HeroMiners still sees it just after a switch
@@ -2538,7 +3527,7 @@ class TestMonero(Base):
         self.group()
         self.x.st["kxx_tot"] = {"t": self.clock[0], "confirmed": 2.061e-06, "unconfirmed": 0.0, "paid": 0.0, "khs": 0.0}
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             report = f.read()
         self.assertNotIn("kH/s", report)
         self.assertNotIn("Monero", report)
@@ -2568,7 +3557,7 @@ class TestKryptex(Base):
 
     def report(self):
         self.x.write_report()
-        with open(os.path.join(TMP, "report.md")) as f:
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return f.read()
 
     def mining(self, machine, since_min, ths=199.0, pri="medium"):
@@ -2582,17 +3571,18 @@ class TestKryptex(Base):
     def commands(self):
         return [c[2]["container"]["command"][2] for c in self.http.made("PATCH", "/containers/")]
 
+    @needs_sh
     def test_the_command_points_the_miner_at_kryptex_with_pool(self):
         cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", kryptex="prl-us.kryptex.network:7048")
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
         import subprocess
         base = "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"\"}'\n"
-        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, encoding="utf-8").stdout
         self.assertEqual(out, "BASE='{\"core\":\"release\",\"env\":{},\"flags\":\"--pool prl-us.kryptex.network:7048\"}'\n")
         # With Monero too, both flags go in, and the CPU worker is downloaded as before.
         both = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")
         sed = re.search(r"(sed .*?) > /root/box\.sh", both).group(1)
-        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, text=True).stdout
+        out = subprocess.run(["sh", "-c", sed], input=base, capture_output=True, encoding="utf-8").stdout
         self.assertIn(f"\"flags\":\"--pool prl-us.kryptex.network:7048 --xmr-address {XMR}\"", out)
         self.assertIn("llmjob-xmr-worker", both)
         # No /etc/hosts redirect or local forward any more (the file is read-only on Salad), and no "; curl".
@@ -2607,9 +3597,11 @@ class TestKryptex(Base):
                   "  [ $ok = 1 ] || { echo \"[run] FAIL: outbound port 1200 blocked\"; sleep infinity; }\n")
 
     def port_check(self, cmd):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
-        return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, text=True).stdout
+        return subprocess.run(["sh", "-c", sed], input=self.PORT_CHECK, capture_output=True, encoding="utf-8").stdout
 
     def test_a_kryptex_box_checks_kryptexs_port_and_others_check_1200_as_before(self):
         out = self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048"))
@@ -3464,6 +4456,30 @@ class TestKryptex(Base):
         self.assertEqual(len(self.http.made("GET", "v1/miner/balance")), 1)  # totals at most every 5 minutes
         self.assertEqual(len(self.http.made("GET", "v3/miner/workers")), 2)
 
+    def test_a_worker_that_isnt_ours_leaves_kryptex_s_ratio_where_it_was(self):
+        # The founder's dev4090 mined to the same wallet from 4 November: its PRL lands in the totals but not in our
+        # boxes' estimate, so the ratio stays at its last value instead of rising with it.
+        wl = os.environ["PRL_WALLET"]
+        live = self.group()
+        live["prl_kx"] = 10.0
+        self.x.st["kx_tot"] = {"t": T0, "total": 2.0, "confirmed": 2.0, "unconfirmed": 0, "paid": 7.7, "prl_kx": 10.0}
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [{"worker": "biz-rtx4080-g0", "valid": 3}]}))
+        self.x.kx_pool()
+        self.assertNotIn("kx_foreign", self.x.st)          # only our boxes: nothing noted
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
+            {"worker": "biz-rtx4080-g0", "valid": 3}, {"worker": "dev4090", "valid": 6}]}))
+        self.x.kx_pool()
+        self.assertEqual(self.x.st["kx_foreign"]["workers"], ["dev4090"])
+        self.assertIn("NOTE Kryptex worker dev4090 isn't one of our boxes", self.events())
+        self.assertIn("stays at 0.970", self.events())
+        self.x.st["kx_tot"].update(total=8.0)              # dev4090's PRL credited: 15.7 for our 10
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [{"worker": "biz-rtx4080-g0", "valid": 3}]}))
+        self.x.kx_pool()                                   # gone from the list, its PRL still in the totals
+        self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
+        self.assertEqual(self.events().count("NOTE Kryptex worker"), 1)
+
     def test_every_page_of_kryptexs_payouts_is_counted(self):
         # Kryptex lists 15 payouts a page, newest first. Summing only the first page made the paid total drop
         # as old payouts left it (16.677, then 16.655 after a payout, of 23.452 paid on 22 October).
@@ -3588,9 +4604,9 @@ class TestKryptex(Base):
         old.update(ended=self.clock[0], prl=2.0)                     # ended before the counts: the ledger's estimate
         new.update(ended=self.clock[0], hm_units=1.0, hm_gross=0.5)  # ended since
         report = self.report()
-        self.assertRegex(report, rf"4080{w.NB}batch \|[^\n]*\| 0\.940 \|\n")
-        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
-        self.assertIn(f"| Others{w.NB}×2 | — | — | — | 2.500* |\n", report)
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 0\.940 \|\n")
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 1\.940\* \|\n")  # 0.94 + 1.0 before 10 blocks
+        self.assertIn(f"| Ended{w.NB}×2 | — | — | — | 2.500* |\n", report)
         self.assertIn("| **5.380\\*** |\n", report)
 
     def test_the_report_marks_kryptex_boxes_and_shows_both_pools(self):
@@ -3602,8 +4618,9 @@ class TestKryptex(Base):
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 1.88, "confirmed": 1.0, "unconfirmed": 0.88, "paid": 2.0}
         report = self.report()
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", report.replace("⛏️", "⏳"))
-        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat.{w.NB}(K) |", report.replace("⛏️", "⏳"))
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat. |", report)                # no group number: biz-rtx4080-2 is "4080"
+        self.assertNotIn("4080-2", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}HeroMiners | 0 TH/s | 1.000 | 1.000 | 6.000 |", shown(report))
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 200 TH/s | 1.000 | 0.880 | 2.000 |", shown(report))
         self.assertAlmostEqual(self.x.kx_ratio(), 0.97)
@@ -3611,16 +4628,20 @@ class TestKryptex(Base):
         # Kryptex pays 94% of a share's value, so its shares (4 PRL at the network's rate) are 3.76 PRL, not starred.
         # HeroMiners' count (10 PRL of work) at its credit ratio is 8, starred: it pays by its luck.
         self.assertRegex(report, r"\(K\) \|[^\n]*\| 3\.760 \|\n")
-        self.assertRegex(report, rf"4080-2{w.NB}batch \|[^\n]*\| 8\.000\* \|\n")
+        self.assertRegex(report, rf"4080{w.NB}bat\. \|[^\n]*\| 8\.000\* \|\n")
         self.assertIn("| **11.760\\*** |\n", report)
 
     def test_each_pools_name_links_to_its_page_for_our_address(self):
         self.x.cfg.update(wallet="prl1abc", xmr_wallet="4xyz", xmr_groups=["*"])
-        self.group(kx=True)
+        self.group(kx=True)["xmr_kx"] = True   # its Monero on Kryptex too
         self.x.st["pool_tot"] = {"t": T0, "paid": 1.0, "balance": 0.0, "unconfirmed": 0.0, "blocks": 20,
                                  "hashes": 0, "ths_1h": 0}
         self.x.st["kx_tot"] = {"t": T0, "total": 0.0, "confirmed": 0.0, "unconfirmed": 0.0, "paid": 0.0}
         self.x.st["xmr_tot"] = {"t": T0, "balance": 0.0, "paid": 0.0, "pending": 0.0, "khs_1h": 0.0}
+        # Nothing mined on HeroMiners in the last hour and every box on Kryptex: its rows are gone.
+        report = self.report()
+        self.assertNotIn("HeroMiners", report)
+        self.x.st["pool_tot"]["ths_1h"], self.x.st["xmr_tot"]["khs_1h"] = 5, 0.5
         report = self.report()
         self.assertIn(f"| ⛏️ [PRL{w.NB}HeroMiners](https://pearl.herominers.com/?wallet=prl1abc) |", report)
         self.assertIn(f"| ⛏️ [PRL{w.NB}Kryptex](https://pool.kryptex.com/prl/miner/stats/prl1abc) |", report)
@@ -3631,11 +4652,10 @@ class TestKryptex(Base):
         a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
         gone["ended"] = self.clock[0]                     # an ended HeroMiners group doesn't bring the mark back
         report = self.report()
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch |", report)
-        self.assertIn(f"| ⏳{w.NB}4080-2{w.NB}batch |", report)
+        self.assertEqual(report.count(f"| ⏳{w.NB}4080{w.NB}bat. |"), 2)   # both boxes, without their numbers
         self.assertNotIn("(K)", report)
         b["kx"] = False                                   # one box back on HeroMiners: Kryptex boxes are marked again
-        self.assertIn(f"| ⏳{w.NB}4080{w.NB}batch{w.NB}(K) |", self.report())
+        self.assertIn(f"| ⏳{w.NB}4080{w.NB}bat.{w.NB}(K) |", self.report())
 
     def test_a_round_reads_a_kryptex_box_from_kryptex_and_logs_its_miner_lines(self):
         self.x.cfg["search"] = False
@@ -3697,10 +4717,13 @@ class TestGemma(Base):
            "    echo \"[mining g$g] $(now) $line\"\n")
 
     def sed(self, cmd, text):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
         import subprocess
         sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
-        return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, text=True).stdout
+        return subprocess.run(["sh", "-c", sed], input=text, capture_output=True, encoding="utf-8").stdout
 
+    @needs_sh
     def test_the_command_runs_auto_mode_serving_and_says_when_mining_pauses(self):
         out = self.sed(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.5", XMR, 0, "prl-us.kryptex.network:7048", True), self.BOX)
         self.assertIn("./cli -a $W --mode auto -w $WORKER-g$g --no-update $flags", out)
@@ -3711,10 +4734,10 @@ class TestGemma(Base):
         with tempfile.TemporaryDirectory() as d:
             log = os.path.join(d, "g0.log")
             def line(text):
-                with open(log, "a") as f:
+                with open(log, "a", encoding="utf-8") as f:
                     f.write(text)
                 return subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
-                                      capture_output=True, text=True).stdout.strip()
+                                      capture_output=True, encoding="utf-8").stdout.strip()
             mine = "121.0 TH/s · 22 accepted · 0 rejected · up 0h 31m"
             self.assertEqual(line("⛏  " + mine + "\n"), "[mining g0] 02:30:00 " + mine)
             self.assertEqual(line("mining paused on GPU 0 while the local LLM answers a prompt\n"),
@@ -3873,8 +4896,8 @@ class TestGemma(Base):
         self.assertEqual((g["pause_since"], g["paused_t"]), (T0 + 360, T0 + 420))
         self.assertEqual(self.events().count("PAUSED biz-rtx4080: mining stopped on PC m1 while Gemma answers a prompt"), 1)
         self.assertTrue(self.x.paused(g, self.clock[0]))
-        with open(os.path.join(TMP, "report.md")) as f:
-            self.assertIn(f"| 🧠{w.NB}4080{w.NB}batch |", f.read())
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn(f"| 🧠{w.NB}4080{w.NB}bat. |", f.read())
         items.append({"text_log": "[mining g0] 08:09:00 199.0 TH/s · 10 accepted · 0 rejected · up 0h 34m",
                       "time": "2027-01-15T08:09:00Z", "resource": lab})
         self.clock[0] = T0 + 600
@@ -3883,6 +4906,150 @@ class TestGemma(Base):
         self.assertIn("RESUMED biz-rtx4080: mining again on PC m1 after 3 min paused for Gemma", self.events())
         self.assertEqual(g["paused_t"], T0 + 420)               # its end still gives the next readings their warm-up
         self.assertFalse(self.x.paused(g, self.clock[0]))
+
+
+class TestPickMargin(Base):
+    """The search, and a waiting group moving up a priority, price a class at a slower-than-median PC (OPEN.md #69)."""
+    def setUp(self):
+        super().setUp()
+        self.x.cfg["yield"] = 1.0
+        t = self.clock[0]
+        self.x.st["pc_rates"] = {"RTX 4080 (16 GB)": {f"m{i}": [r, t] for i, r in enumerate((150, 170, 185, 190, 200))}}
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+
+    def test_the_rate_at_a_share_of_the_stored_pcs(self):
+        self.assertEqual(self.x.rate("RTX 4080 (16 GB)"), 185)                       # the median
+        self.assertAlmostEqual(self.x.rate("RTX 4080 (16 GB)", 0.35), 176)            # 170 + 0.4 of the way to 185
+        self.assertAlmostEqual(self.x.pick_margin("RTX 4080 (16 GB)", "medium"), 1 - 0.19 / (176 * USD_TH_HR))
+
+    def test_the_search_skips_a_price_only_the_median_pc_clears(self):
+        # At medium the median PC (185 TH/s) makes +12%, but one at 176 makes +8%: 2 of the 5 stored PCs fail.
+        self.assertGreater(self.x.margin("RTX 4080 (16 GB)", "medium"), 0.10)
+        avail = {"c4080": {"available_gpu_medium": 5}}
+        self.http.on("POST", "/availability/", lambda b: (200, avail.get(b["gpu_classes"][0], {})))
+        self.x.cfg["max_active"] = 2
+        self.x.search()
+        self.assertFalse(self.http.made("POST", "/containers$"))
+        self.assertIn("SEARCH found nothing to create", self.events())
+        avail["c4080"]["available_gpu_low"] = 5                                     # low clears at 176: +27%
+        self.x.search()
+        made = [(c[2]["name"], c[2]["container"]["priority"]) for c in self.http.made("POST", "/containers$")]
+        self.assertEqual(made, [("biz-rtx4080", "low")])
+
+    def test_a_waiting_group_moves_up_only_to_a_price_a_slower_pc_clears(self):
+        g = self.group(pri="low")
+        self.step(g, 10, None)
+        self.assertFalse(self.http.made("PATCH", ""))
+        self.assertEqual(g["end_kind"], "released")
+        self.assertIn("no PC at low and no higher priority clears 10%", self.events())
+
+
+class TestMoveCountReset(Base):
+    """A group's count of moves starts again after 2 h above the bar on one PC (OPEN.md #68)."""
+    def test_the_count_starts_again_after_2_h_on_a_pc(self):
+        g = self.group(pri="medium")
+        g["reallocs"] = 2
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 119)                 # 119 min on the PC
+        self.assertEqual(g["reallocs"], 2)
+        self.mine(g, "m1", 199, 1)
+        self.assertEqual(g["reallocs"], 0)
+        self.assertIn("MOVES biz-rtx4080: 2 h above 10% on PC m1, so its count of moves starts again (it had used 2 "
+                      "of 3)", self.events())
+
+    def test_a_restart_on_the_pc_starts_the_2_h_again(self):
+        g = self.group(pri="medium")
+        g["reallocs"] = 1
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 60)
+        g["restart_t"] = self.clock[0]               # Salad restarted the box here an hour in
+        self.mine(g, "m1", 199, 70)
+        self.assertEqual(g["reallocs"], 1)
+        self.mine(g, "m1", 199, 50)
+        self.assertEqual(g["reallocs"], 0)
+
+
+class TestNodeIdentity(Base):
+    """A Gemma box keeps one LLMJob node identity across its PCs, so the server's speed test (and its pause in
+    mining) comes once a day a group, not once a PC (OPEN.md #11)."""
+    def node(self, cmd):
+        m = re.search(r"printf '%s' '(\{.*?\})' > \$d/node.json", cmd)
+        return json.loads(m.group(1)) if m else None
+
+    def test_a_gemma_box_keeps_one_identity_across_commands(self):
+        self.x.cfg["llm"] = True
+        a = self.node(self.x.box("biz-rtx4080", False)[1][2])
+        b = self.node(self.x.box("biz-rtx4080", True)[1][2])
+        self.assertEqual(a, b)
+        self.assertEqual(set(a), {"nodeId", "publicKey", "secretKey", "name", "connected", "createdAt"})
+        self.assertIsNone(a["name"])
+        self.assertFalse(a["connected"])
+        # The CLI's form: tweetnacl's 64-byte secret key (seed, then public key) and the id the server computes.
+        pub, sec = w.base64.b64decode(a["publicKey"]), w.base64.b64decode(a["secretKey"])
+        self.assertEqual((len(pub), len(sec), sec[32:]), (32, 64, pub))
+        self.assertEqual(a["nodeId"], w.hashlib.sha256(a["publicKey"].encode()).hexdigest()[:16])
+        sk = w.Ed25519PrivateKey.from_private_bytes(sec[:32])
+        sk.public_key().verify(sk.sign(b"id:123"), b"id:123")
+        self.assertEqual(sk.public_key().public_bytes(w.serialization.Encoding.Raw, w.serialization.PublicFormat.Raw),
+                         pub)
+        self.assertNotEqual(self.node(self.x.box("biz-rtx4080-2", False)[1][2]), a)   # another group, another node
+
+    def test_no_identity_without_gemma_or_on_an_amd_box(self):
+        self.assertNotIn("node.json", self.x.box("biz-rtx4080", False)[1][2])
+        self.x.cfg["llm"] = True
+        self.assertNotIn("node.json", self.x.box("biz-rx9070xt", False)[1][2])
+        self.assertNotIn("biz-rx9070xt", self.x.st.get("node_keys", {}))
+
+    def test_create_sends_the_group_s_identity(self):
+        self.x.cfg["llm"] = True
+        self.group()
+        cmd = self.http.made("POST", "/containers$")[-1][2]["container"]["command"][2]
+        self.assertEqual(self.node(cmd)["nodeId"], self.x.st["node_keys"]["biz-rtx4080"]["nodeId"])
+
+    @needs_sh
+    def test_the_step_writes_the_cli_s_node_json(self):
+        import subprocess, stat
+        k = self.x.node_key("biz-rtx4080")
+        home = tempfile.mkdtemp()
+        subprocess.run(["/bin/sh", "-c", w.node_step(k)], env={"HOME": home, "PATH": os.environ["PATH"]}, check=True)
+        path = os.path.join(home, ".local", "share", "llmjob-earn", "node.json")
+        with open(path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), {"nodeId": k["nodeId"], "publicKey": k["publicKey"], "secretKey": k["secretKey"],
+                                            "name": None, "connected": False, "createdAt": k["createdAt"]})
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+    def test_an_identity_no_live_group_uses_goes_after_rate_days(self):
+        self.x.node_key("biz-rtx4080")
+        self.clock[0] += 7 * 86400 - 60
+        self.x.record_rates(self.clock[0])
+        self.assertIn("biz-rtx4080", self.x.st["node_keys"])
+        self.clock[0] += 60
+        self.x.record_rates(self.clock[0])
+        self.assertNotIn("biz-rtx4080", self.x.st["node_keys"])
+
+
+class TestFilesAreUtf8(Base):
+    """Python on Windows (before 3.15) opens text in cp1252 unless told otherwise, which has no ⛏️: the watcher's
+    first report there would have crashed it."""
+    def test_every_file_the_watcher_writes_or_reads_is_opened_as_utf8(self):
+        import builtins
+        seen = []
+        def spy(file, mode="r", *a, **kw):
+            seen.append((os.path.basename(str(file)), mode, kw.get("encoding")))
+            return builtins.open(file, mode, *a, **kw)
+        w.open = spy
+        try:
+            w.event("PORT BLOCKED — ⛏️ ×3")
+            w.save(w.STATE, {"note": "⏳"})
+            w.load(w.STATE, None)
+            self.group()
+            self.x.write_report()
+        finally:
+            del w.open
+        self.assertTrue(seen)
+        self.assertEqual([s for s in seen if s[2] != "utf-8"], [])
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            self.assertIn("⏳", f.read())
 
 
 if __name__ == "__main__":
