@@ -720,10 +720,14 @@ jobs:
                 "$(grep -c '^\s*v_wmma' $f) WMMA, $(grep -cE '^\s*(global|buffer)_load' $f) global/buffer loads," \
                 "$(grep -cE '^\s*ds_' $f) LDS ops, $(grep -cE '^\s*s_barrier' $f) barriers"
             done
+            # The slab loop: from the first barrier to the last, registers numbered alike.
+            loop() { awk '{ l[NR] = $0 } /^\s*s_barrier/ { if (!f) f = NR; t = NR } END { for (i = f; i <= t; i++) print l[i] }' "$1"; }
             for v in walk1 walk2; do
               norm $d/base.fold > $d/base.n; norm $d/$v.fold > $d/$v.n
-              echo "== $a $v against base, registers numbered alike: $(diff $d/base.n $d/$v.n | grep -c '^[<>]') lines differ"
-              diff $d/base.n $d/$v.n | head -60 || true
+              loop $d/base.n > $d/base.loop; loop $d/$v.n > $d/$v.loop
+              echo "== $a $v against base, registers numbered alike: $(diff $d/base.n $d/$v.n | grep -c '^[<>]') lines differ;" \
+                "slab loop $(wc -l < $d/base.loop) and $(wc -l < $d/$v.loop) lines, $(diff $d/base.loop $d/$v.loop | grep -c '^[<>]') differ"
+              diff $d/base.n $d/$v.n || true
             done
           done
 
