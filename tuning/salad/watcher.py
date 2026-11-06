@@ -2036,12 +2036,37 @@ class W:
                     continue
                 m = re.search(r"\[mining g(\d+)\] \d\d:\d\d:\d\d\s+([0-9.]+) TH/s · ([0-9,]+) accepted(?:.*?up (\S+ \S+))?", text)
                 if m:
+                    gi = int(m.group(1))
                     ths, acc, up = float(m.group(2)), int(m.group(3).replace(",", "")), m.group(4)
                     # box.sh repeats the miner's last line after the miner dies. Its uptime ("up 1h 23m") then
                     # stops moving; a live miner's moves every minute, though its rate and share count can repeat.
                     # A repeat isn't a reading: it earns nothing, and the stale-reading rule sees the miner stopped.
+                    # Each card on a PC is its own miner (g0, g1, ...), so a repeat is one from the same card.
+                    ups = g.setdefault("ups", {})
+                    key = mach if gi == 0 else f"{mach}/g{gi}"
                     same = [r for r in g["readings"] if r[1] == mach]
-                    if up and same and len(same[-1]) > 4 and same[-1][4] == up:
+                    last_up = ups.get(key) if key in ups else (same[-1][4] if gi == 0 and same and len(same[-1]) > 4 else None)
+                    if up and last_up == up:
+                        continue
+                    ups[key] = up
+                    # A PC with more than one card mines on each, one line a minute a card (6 Nov: a 4090 at 351
+                    # TH/s as g0 and a 70 W card at 75 TH/s as g1, and the box was deleted on the 75). The rules take
+                    # one reading a minute a PC, so a card's line adds to the reading another card made that minute.
+                    if same and len(same[-1]) < 6:
+                        same[-1].extend([None] * (5 - len(same[-1])) + [[0]])   # a reading saved before cards were told apart
+                    if same and abs(same[-1][0] - tm) < 45 and gi not in same[-1][5]:
+                        r = same[-1]
+                        r[2] += ths
+                        r[3] += acc
+                        r[5].append(gi)
+                        if ths > 0:
+                            g["prl"] += ths / 60 * st["mkt"]["prl_th_hr"]
+                            if self.on_kx(g, mach, tm):
+                                g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
+                        prev = g["acc"].get(key)
+                        if (prev is None and acc > 0) or (prev is not None and acc != prev and acc > 0):
+                            g["last_share"] = max(g["last_share"] or 0, tm)
+                        g["acc"][key] = acc
                         continue
                     # Salad can start a second copy of a group on a new PC and list only that one while the first
                     # keeps mining (OPEN.md #23: 3060-50 on 21 Oct, 3060-71 on 23 Oct, each then deleted on the new
@@ -2052,7 +2077,7 @@ class W:
                         g["ghost_said"].append(mach)
                         event(f"WARN {name}: PC {mach[:8]} still mines for it ({ths:g} TH/s, up {up}), though Salad "
                               f"lists it on PC {g['machine'][:8]}: two copies, and only {g['machine'][:8]} is judged")
-                    g["readings"].append([tm, mach, ths, acc, up])
+                    g["readings"].append([tm, mach, ths, acc, up, [gi]])
                     if g.get("pause_since") and mach == g.get("machine") and tm > (g.get("paused_t") or 0):
                         event(f"RESUMED {name}: mining again on PC {(mach or '')[:8]} after "
                               f"{(tm - g['pause_since']) / 60:.0f} min paused for Gemma")
@@ -2066,10 +2091,10 @@ class W:
                         if on_kx:   # the part mined on Kryptex, which has its own credit ratio
                             g["prl_kx"] = g.get("prl_kx", 0.0) + ths / 60 * st["mkt"]["prl_th_hr"]
                         g["mined_min"] += 1
-                    prev = g["acc"].get(mach)
+                    prev = g["acc"].get(key)
                     if (prev is None and acc > 0) or (prev is not None and acc > prev) or (prev is not None and acc < prev and acc > 0):
                         g["last_share"] = max(g["last_share"] or 0, tm)
-                    g["acc"][mach] = acc
+                    g["acc"][key] = acc
                     continue
                 text = text.strip()
                 blocked = re.search(r"outbound port (\d+) blocked", text)
