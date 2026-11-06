@@ -1,0 +1,45 @@
+# TEMPORARY, for issue #287 item 4 only: remove before merging.
+# The RDNA 4 fold's device assembly for the release and each variant, on the release's compiler (the pinned ROCm
+# 7.2.0 image native-core.yml builds in), with test/variant-check.sh's row and counts. Uploads the .s files.
+name: amd isa 287-4 (temporary)
+
+on:
+  push:
+    branches: ['exp/287-4']
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/amd-isa-287-4.yml'
+  workflow_dispatch:
+
+jobs:
+  isa:
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
+    timeout-minutes: 40
+    env:
+      VARIANTS: >-
+        base=;
+        set0=-DPEARL_AMD_RDNA4_SET=0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Variants on gfx1201 and gfx1200
+        working-directory: earn/native/amd
+        shell: bash
+        run: |
+          set -u
+          V=$(echo "$VARIANTS" | tr -d '\n' | sed 's/; */;/g; s/^ *//; s/ *$//')
+          echo "variants: $V"
+          for a in gfx1201 gfx1200; do
+            mkdir -p "$PWD/isa/$a"
+            VARIANTS="$V" ARCH=$a CHECK_ROOT="$PWD/isa/$a" bash test/variant-check.sh || true
+            for f in "$PWD"/isa/$a/*.fold; do
+              n=$(basename "$f" .fold)
+              echo "== $a $n: mnemonic counts in the fold"
+              awk '{print $1}' "$f" | grep -vE ':$' | sort | uniq -c | sort -rn | head -n 60
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amd-isa-287-4
+          path: earn/native/amd/isa
+          if-no-files-found: error
