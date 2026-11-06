@@ -40,7 +40,29 @@
 // reference's turn in the same round, as a change in percent, the standard deviation of
 // those ratios, a 95% interval of the mean, and in how many rounds it was ahead. AUDIT and
 // RACE lines end with the build's k. FAIL and exit 1 on any error.
+//
+// Windows: the same, with each build a DLL of the same two objects (nvcc -shared -cudart
+// static, the race functions exported by a .def file) and NVML from nvml.dll. Built with
+// nvcc from an MSVC (vcvars64) shell: nvcc -O2 -std=c++17 -I ../src race.cu -o race.exe
+// Give the DLLs as relative paths: a drive letter's colon reads as name=lib:K.
+#ifdef _WIN32
+#define NOMINMAX
+#include <windows.h>
+#include <cstdio>
+#define RTLD_NOW 0
+#define RTLD_LOCAL 0
+static void *dlopen(const char *path, int) { return (void *)LoadLibraryA(path); }
+static void *dlsym(void *lib, const char *name) { return (void *)GetProcAddress((HMODULE)lib, name); }
+static const char *dlerror() {
+  static char e[32];
+  snprintf(e, sizeof e, "error %lu", (unsigned long)GetLastError());
+  return e;
+}
+#define PEARL_RACE_NVML "nvml.dll"
+#else
 #include <dlfcn.h>
+#define PEARL_RACE_NVML "libnvidia-ml.so.1"
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -104,7 +126,7 @@ static void *g_dev = nullptr;
 static NvmlClockFn nvClock; static NvmlPowerFn nvPower; static NvmlTempFn nvTemp; static NvmlUtilFn nvUtil;
 
 static bool nvml_open() {
-  void *h = dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL);
+  void *h = dlopen(PEARL_RACE_NVML, RTLD_NOW | RTLD_LOCAL);
   if (!h) return false;
   NvmlInitFn init = (NvmlInitFn)dlsym(h, "nvmlInit_v2");
   NvmlHandleFn handle = (NvmlHandleFn)dlsym(h, "nvmlDeviceGetHandleByIndex_v2");
