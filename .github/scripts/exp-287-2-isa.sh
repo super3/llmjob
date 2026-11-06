@@ -64,3 +64,11 @@ echo "== RDNA 4 release fold for reference (BUFLD and KPAIR on)"
 node "$ROOT/.github/scripts/exp-287-2-isa.js" "$OUT/base-gfx1201.fold" "base gfx1201"
 echo "== diff of the slab loop, base against bufldtid on gfx1100 (first 200 lines)"
 diff "$OUT/base-gfx1100.fold" "$OUT/bufldtid-gfx1100.fold" | head -n 200
+echo "== the box run's twin (-DPEARL_AMD_TWIN=1, a macro nothing reads) must be the base's code"
+for a in gfx1100 gfx1101; do fold_code "$ROOT" twin "$a" "-DPEARL_AMD_TWIN=1"; done
+echo "== the peak probe (test/pearl_amd_peak.cpp) for gfx11, which no box has built yet"
+for a in gfx1100 gfx1101; do
+  (cd earn/native/amd && "$CC" -x hip --offload-arch="$a" --rocm-path=/opt/rocm -std=c++17 -O3 test/pearl_amd_peak.cpp \
+    -o "$OUT/peak-$a" -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib) > "$OUT/peak-$a.log" 2>&1 \
+    && echo "peak $a: built" || { echo "peak $a: build FAILED"; head -20 "$OUT/peak-$a.log"; }
+done
