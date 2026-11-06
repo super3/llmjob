@@ -377,7 +377,8 @@ Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD
 | RX 7800 XT | Salad (16 GB) | d0dbba63 | 30.2 | 0 | 31.2 | 97% |
 | RX 7800 XT | Salad (16 GB) | 53c8eb50 | 31.2 | 0 | 30.9 | 101% |
 
-v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet.
+v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet. Since then the RX
+9060 XT hashes inside the fold (+0.34%, research notes).
 
 ## Research notes
 
@@ -405,6 +406,14 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - The B200 needs a tcgen05 fold; `mma.sync` can't pass about 41% of the competitors there.
 - RDNA 2 (`dot4`, a fold for RDNA 2) is a projection, not a measurement: 14.0–41.0 TH/s, half that if its `v_dot4`
   runs at half rate. No RDNA 2 card has run it.
+- AMD's separate transcript hash (#287 item 6, 6 November, `PEARL_AMD_TRACE`): 0.41–0.45 ms of a 30–31 ms batch on an
+  RX 9060 XT at k 4096 (1.4%; 128 MiB read at 322 GB/s), 0.23 ms of 33.6 ms on an RX 9070 XT at k 8192 (0.7%).
+  Hashing inside the fold (`PEARL_AMD_FUSE`) made the fold 0.33 ms slower on the 9060 XT and 0.36 ms on the 9070 XT.
+  It ships on gfx1200 only: `hashrate.js`, interleaved on one PC against two copies of the release, read +0.34% on a
+  9060 XT (54b217a9: +0.30 to +0.38% a round over 5 scored rounds, copies within 0.08%), +0.36 to +0.44% in the quiet
+  rounds of another (b9b8ec1e), with verify-hits 400 of 400 and 7 Kryptex shares in 30 minutes, none rejected (refverify
+  7 of 7). The shipped build (default flags, gfx1200 only) passed again on a third 9060 XT (9454033f): verify-hits 400
+  of 400, 3 Kryptex shares in 10 minutes, none rejected.
 
 **Tried and dropped (don't repeat without a new idea)**
 - k 4096 on NVIDIA: RTX 20 (item 9) loses 1.2–2.8% to DRAM; RTX 50 and 40 (item 8) −0.78% and −0.29% at the power cap.
@@ -421,6 +430,8 @@ What future speed work needs: how to measure, the limits found, and what has alr
   split slab barrier; the keeping lane by exec mask (below RDSEL alone); batch-width and hash-kernel changes.
 - k 8192 pays only on gfx1201 with 56+ CUs (+0.70% on a 9070 XT, 4 November); the 9060 XT is about 6% slower at it.
   HIP counts WGPs on RDNA (32 on a 64-CU card), so the gate takes either count.
+- The hash in the fold on gfx1201 (#287 item 6): −0.50% on an RX 9070 XT at k 8192 (a68b3382, both scored rounds, copies
+  within 0.06%). RDNA 3 hasn't raced it; its hash kernel is a smaller share (0.8% on a 7900 XTX) and its DRAM faster.
 
 ## Keeping this file current
 
