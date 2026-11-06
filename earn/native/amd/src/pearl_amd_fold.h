@@ -600,9 +600,14 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_RDTREE != 0 && PEARL_AMD_RDTREE != 1
 #error "PEARL_AMD_RDTREE is 0 or 1"
 #endif
-// PEARL_AMD_RDLATE's pin: nothing is scheduled across it. It emits no instruction.
+// PEARL_AMD_RDLATE's pin: no load moves across it (the memory clobber; with RDLATE=2 the compiler had moved a slab's
+// fragment loads below the XORs) and nothing is scheduled across it. It emits no instruction and waits for nothing.
 #if PEARL_AMD_RDLATE && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-#define PEARL_AMD_RDLATE_PIN() __builtin_amdgcn_sched_barrier(0)
+#define PEARL_AMD_RDLATE_PIN() \
+  do {                         \
+    asm volatile("" ::: "memory"); \
+    __builtin_amdgcn_sched_barrier(0); \
+  } while (0)
 #else
 #define PEARL_AMD_RDLATE_PIN() ((void)0)
 #endif
