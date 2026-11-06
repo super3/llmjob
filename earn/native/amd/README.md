@@ -17,7 +17,7 @@ check off: a kind of card leaves it by a change to `resolve_fold`, once one has 
 under "Testing on real hardware". On 22 October,
 unchanged, it passed steps 1-5 under "Testing on real hardware" on Salad: an RX 9070 XT (gfx1201)
 at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, every checked hit
-right and every share accepted on Kryptex (`benchmark.md`, "AMD Radeon", notes). It was written
+right and every share accepted on Kryptex (`tuning/benchmark.md`, "AMD Radeon", notes). It was written
 with no AMD card: correctness was first shown by running the same kernel source on the CPU
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
 checking hits against the JS reference the way the pool does. RDNA 2 runs the `dot4` fold, which
@@ -85,7 +85,7 @@ fold runs at 18.0-18.1 there, in RDNA 2's loop. That card's `v_dot4_i32_iu8` did
 TMAC/s in a kernel of nothing but dot4s, so the fold gets 94-98% of what the card's dot4 can do;
 its own `wmma11` folds at 32.8. Per CU and clock, that dot4 rate is about half what AMD's figures
 give RDNA 2's `v_dot4_i32_i8`; no RDNA 2 card has measured it. What an RDNA 2 card gets is
-projected in `benchmark.md` until one runs it. RDNA 3 and RDNA 4 release builds have no `dot4`
+projected in `tuning/benchmark.md` until one runs it. RDNA 3 and RDNA 4 release builds have no `dot4`
 fold: it is slower there than their WMMA folds, and in their PF2 loop it spilled (before the
 split; not tried since).
 
@@ -99,7 +99,7 @@ hashrate.js from 21.75 to 51.3 TH/s (PC `a777486d`, 23 October). `-DPEARL_AMD_TI
 the row-major layout. The reference fold reads row-major operands.
 
 **RDNA 4 spends as few VALU as it can around its WMMAs.** On RDNA 4 a VALU instruction doesn't overlap
-the matrix work: each one costs about a cycle of WMMA time (`test/pearl_amd_peak.cpp`, `benchmark.md`,
+the matrix work: each one costs about a cycle of WMMA time (`test/pearl_amd_peak.cpp`, `tuning/benchmark.md`,
 4 November). So the RDNA 4 fold reads each lane's fragments for both k-steps of a slab with one 16-byte
 LDS load (`PEARL_AMD_KPAIR`: a slab's k-steps may take its bytes in any order, as long as A' and B' take
 them alike), and loads its slabs with buffer loads, whose base and slab offset are scalar
@@ -122,7 +122,7 @@ say so (`PEARL_AMD_CAP_RANK`) and the host refuses any other rank. `-DPEARL_AMD_
 the fold without them. The Windows core leaves them out, as it does the wrap readout: they were timed
 only with ROCm's clang 22. Tried with them and left out: one array for both LDS tiles
 (`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
-(2.1-2.6% slower); see `benchmark.md`.
+(2.1-2.6% slower); see `tuning/benchmark.md`.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -131,7 +131,7 @@ with a message rather than searching nothing. `PEARL_AMD_FOLD=ref|mfma16|mfma8|w
 overrides the choice. A batch is at most 256 column offsets (`PEARL_AMD_COL_BATCH`), which
 keeps each pipeline slot's transcript buffer to 128 MiB at the mainnet profile, and 128 on
 gfx1100 and gfx1101 (RX 7900 and RX 7800/7700 cards), which were faster there in the
-miner's own loop (+0.1 to +1.8% a round, `benchmark.md`). A build that sets `PEARL_AMD_COL_BATCH`
+miner's own loop (+0.1 to +1.8% a round, `tuning/benchmark.md`). A build that sets `PEARL_AMD_COL_BATCH`
 gets that cap on every card; the variable of that name in the environment can only lower it,
 to measure widths on one build. All work
 runs in order on one stream; proof reads use a second, and a hit's reads are waited for
@@ -153,7 +153,7 @@ a setting carried over must not vouch for it.
 
 **RDNA 4 mines k 4096 or k 8192.** At k 4096 a hash covers twice the MACs, so there are half the hashes
 and readouts per MAC, and credit per MAC is the same at rank 128. On an RX 9070 XT and an RX
-9060 XT that was +1.0 to +1.2% (`benchmark.md`). Past 16 chunks the folds need the wrap readout:
+9060 XT that was +1.0 to +1.2% (`tuning/benchmark.md`). Past 16 chunks the folds need the wrap readout:
 chunk c goes into word c % 16 after a rotl 13 (`PEARL_AMD_KWRAP` in `pearl_amd_fold.h`). It costs
 about 0.4% at k 2048, so only the gfx12 code objects have it; every other target keeps today's
 readout and mines k 2048. The Windows core has it on no target, so RDNA 4 mines k 2048 there:
@@ -168,7 +168,7 @@ k, so the pool needs nothing from us.
 
 **The big gfx1201 cards mine k 8192.** On an RX 9070 XT (64 CUs), k 8192 read +0.5 to +0.9% over
 k 4096, and HeroMiners and Kryptex both took its shares; on an RX 9060 XT (gfx1200, 32 CUs) it was
-about 6% slower (`benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
+about 6% slower (`tuning/benchmark.md`). So the host picks k 8192 on gfx1201 with at least 56 CUs (RX
 9070 XT and Radeon AI PRO R9700 at 64, RX 9070 at 56) and k 4096 on the rest, the RX 9060 XT and
 the 48-CU RX 9070 GRE among them, since nothing between 32 and 64 CUs has been timed.
 k 8192 needs about 3,633 MiB of VRAM. That doesn't crowd an LLM: the app reads VRAM through
@@ -395,15 +395,15 @@ by contrast, stops only its own card.
   On 23 October every Radeon class Salad rents ran: RX 9060 XT (gfx1200), RX 9070 XT (gfx1201),
   RX 7800 XT (gfx1101), RX 7900 XT and RX 7900 XTX (gfx1100). Each 300 s or 600 s hit check gave
   7.81-8.05 hits a salt with no failed hit, so the low counts of 22 October (6.92-7.55) came from
-  short runs. `amdtest.sh`'s `duel` task runs SRBMiner on the same PC (benchmark.md's method);
-  the rows are in `benchmark.md`.
+  short runs. `amdtest.sh`'s `duel` task runs SRBMiner on the same PC (tuning/benchmark.md's method);
+  the rows are in `tuning/benchmark.md`.
 - Pause only the LLM's card for a prompt on a rig of several AMD cards (see "Using it in
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
 - Run steps 1-5 above on an RDNA 2 card (an RX 6600 to 6950, a Radeon PRO W6600 or W6800, or a
   V620; Salad's AMD classes have none): the `dot4` fold has run only in RDNA 2's loop on an RX 7800
-  XT (`benchmark.md`, "a fold for RDNA 2"), so its speed on RDNA 2 is a projection. Then take gfx103x out of the
+  XT (`tuning/benchmark.md`, "a fold for RDNA 2"), so its speed on RDNA 2 is a projection. Then take gfx103x out of the
   untested cards in `resolve_fold`, so its hits are no longer checked, and time `PEARL_AMD_DOT4_K=8`
   and the DPP readout there. DPP needs its gate in `pearl_amd_group_xor` widened to gfx103x (its
   lane moves exist on gfx10 too); it made no difference to `dot4` on RDNA 3, where each dot4 took

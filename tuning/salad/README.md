@@ -432,7 +432,7 @@ manages only the groups `amdtest-rdna3` and `amdtest-rdna4`, or those with `-2` 
 git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
 `amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, srb, duel, cpuchecks, run).
-`duel` is benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
+`duel` is tuning/benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
 CLI) and SRBMiner 3.8.2 run 5 minutes each on Kryptex; it ends with ours' mean after the first minute and
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
 can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
@@ -513,7 +513,7 @@ quota.
 
 ## AMD benchmark (bench.py)
 
-`BENCH_SET=amd` fills benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
+`BENCH_SET=amd` fills tuning/benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
 PC, 5 minutes each after a 60 s warm-up, on `us.pearl.herominers.com:1200`. PeakMiner has no Pearl kernel for
 AMD and isn't run, so its column reads "not run" and "% of best" is ours against SRBMiner. No release has an AMD
 build, so each box (`bench.sh` on the ROCm image, high priority, 4 vCPU, 8 GB) uses `amdtest.sh`'s setup to
@@ -540,7 +540,7 @@ export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd
 BENCH_LANE=a nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
 BENCH_LANE=b nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
 BENCH_LANE=c nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-c.out 2>&1 &
-python3 tuning/salad/bench.py table      # every lane's rows, in benchmark.md's shape
+python3 tuning/salad/bench.py table      # every lane's rows, in tuning/benchmark.md's shape
 ```
 
 Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a
@@ -548,7 +548,7 @@ salt (hits / salts; the check's target makes 8).
 
 ## RTX 20 and 30 rerun (bench.py)
 
-`BENCH_SET=rtx` reruns benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
+`BENCH_SET=rtx` reruns tuning/benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
 our release v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.0 (`bench.sh` pins all three, by commit). Lane `20` takes
 the 2080 Ti, 2080, 2070 and 2060 classes, lane `30` the eight RTX 30 classes from the 3090 Ti to the 3060 (12 GB),
 one Salad slot each. Two PCs per class, each in a group of its own (`bench-20-rtx2080ti-1`, ...), the first with
@@ -688,7 +688,7 @@ All row's margin below zero. A box with no Pearl reading shows its profit an hou
 
 ## SafeTrade row
 
-When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`) from its
+When `trader` is set, the watcher reads the newest `STATUS` line of the autoseller (`trader/`, removed on 5 November) from its
 Railway logs, at most every 5 minutes. The report used it for Profit $ (sold PRL at what it sold for), with
 sales entered by hand in config `safetrade` standing in, until Profit $ went on 20 October; it listed the sales
 under the table until then too. Nothing in the report uses it now.
@@ -766,7 +766,7 @@ PC.
 
 Batch rarely gets a PC for 40- and 50-series cards; low works for older cards. The same class varies
 about ±15% between PCs, because owners cap the card's power. Salad has AMD classes, but the miner is
-CUDA-only. SRBMiner mines Pearl on them at 32–85 TH/s (benchmark.md's AMD section).
+CUDA-only. SRBMiner mines Pearl on them at 32–85 TH/s (tuning/benchmark.md's AMD section).
 
 What went wrong on the first account:
 

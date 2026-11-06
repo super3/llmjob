@@ -218,7 +218,7 @@ host) runs the sm_100 half of `pearl_core.node`: the CUDA 12.8 build of the tall
 fold source that RTX 50 cards use, built for sm_100. (An RTX 50 card on driver
 580 or newer mines on the CUDA 13 build of it.) It does not use the B200's own
 tensor instructions (tcgen05) yet, so it is slow: a 1000 W B200 mined 460 TH/s
-on it, a third of PeakMiner's and SRBMiner's 1,380 (`benchmark.md`, "B200").
+on it, a third of PeakMiner's and SRBMiner's 1,380 (`tuning/benchmark.md`, "B200").
 Before this build the core had no sm_100 code, so a B200 could not mine at all. A GB200 can't run the miner: its host CPU is Arm
 (Grace), and the core is built for x86-64 Linux and Windows only.
 
@@ -281,7 +281,7 @@ has no fallback:
 It has code for RDNA 2, 3 and 4 Radeon cards and, on Linux, CDNA Instinct cards
 (gfx908, gfx90a, gfx942, gfx950, gfx1030-1032, gfx1100-1102, gfx1150, gfx1151,
 gfx1200, gfx1201). On Salad it beat SRBMiner on every Radeon class rented there,
-the RX 7800 XT to the RX 9070 XT (`benchmark.md`, "AMD Radeon"). Its folds for
+the RX 7800 XT to the RX 9070 XT (`tuning/benchmark.md`, "AMD Radeon"). Its folds for
 Instinct (gfx9) and RX 6000 (gfx103x) cards have not run on such a card (the
 RX 6000 one, which uses `v_dot4` since RDNA 2 has no matrix instructions, has
 run only on an RX 7800 XT and in emulation). A fold that is wrong on the card
@@ -297,7 +297,7 @@ On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix
 share declares, where every other card mines k 2048. On Windows every card mines k 2048 for
 now: the Windows core leaves the k 4096 readout out, since its compiler builds it worse and
 no Windows Radeon has tested it. Their fold measured about 1% faster per MAC
-there (`benchmark.md`), and a MAC earns the same at either k. The log names it:
+there (`tuning/benchmark.md`), and a MAC earns the same at either k. The log names it:
 `mining on GPU 0 · AMD Radeon RX 9070 XT · k 4096`. Each card's shares carry its own k, so
 a rig with RDNA 4 and older cards mines both at once. A card stays at k 2048 when it has too
 little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why, and

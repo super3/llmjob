@@ -1452,7 +1452,7 @@ uint32_t pearl_dp4a_col_batch(uint32_t colBatch, uint32_t colsValid) {
 // RTX 6000 Ada: 96 MB); takes 1024 on 40-64 MB (4070 Super, 4070 Ti, 4080, L4, RTX 4000,
 // 4500 and 5000 Ada); and 512 on 24-36 MB (4060, 4060 Ti, 4070, and the RTX 2000 Ada,
 // which reports 24 MB), where 1024's 38 MB does not fit. Measured on 21 Ada hosts on
-// 2026-10-08 (benchmark.md, "Ada batch width"): the release, then the rule, then the
+// 2026-10-08 (tuning/benchmark.md, "Ada batch width"): the release, then the rule, then the
 // release again in one rental, 5 minutes each on the pool. The rule never lost, and it
 // gains most where the power cap is tight: L4 (72 W, 48 MB) +1.7%, RTX 2000 Ada (70 W)
 // +1.4%, RTX 4000 Ada (130 W, 40 MB) +1.1%, RTX 4500 Ada (210 W) +0.7%, RTX 4070 Super

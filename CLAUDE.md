@@ -30,7 +30,7 @@ scheduled report would show it anyway.
 
 ## Fix what you know is broken
 
-When you run something for me (the Salad watcher, its report, the trader, the
+When you run something for me (the Salad watcher, its report, the
 benchmark tools), its bugs are part of the job, not extra work to ask about.
 
 - **A bug that costs money or makes a number I read wrong: fix it now.** Fix it on
@@ -61,8 +61,8 @@ app. The job isn't done until every test passes.
 
 ## Benchmarks
 
-Follow "Keeping this file current" in `benchmark.md`. A re-measure goes into
-`benchmark.md` in the same PR, and the file is checked before every release.
+Follow "Keeping this file current" in `tuning/benchmark.md`. A re-measure goes into
+`tuning/benchmark.md` in the same PR, and the file is checked before every release.
 
 ## Git
 

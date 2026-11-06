@@ -41,7 +41,7 @@
 #     refverify[:file...]     builds earn/native/probes/refverify.rs against the spec at PEARL_SPEC_SHA (Rust
 #                             from rustup) and runs it on the files given, or on every /root/shares/*.jsonl
 #     srb[:secs:warm]         SRBMiner 3.8.2 on DUEL_POOL for secs [300] after a warm-up of its own [60]
-#     duel[:first:secs:warm]  benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
+#     duel[:first:secs:warm]  tuning/benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
 #                             warm [60], then each runs secs [300]; ends with "duel <name> result ..." for each
 #     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB); the
 #                             k 4096 runs' shares go to /root/shares/cpu/ for refverify
@@ -379,7 +379,7 @@ srb_get() {
   echo "9f64784a9894067b7bc3811b4912dd81  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
   tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
 }
-# Both miners mine on DUEL_POOL in srb and duel, as benchmark.md's AMD table did (bench.sh's pool).
+# Both miners mine on DUEL_POOL in srb and duel, as tuning/benchmark.md's AMD table did (bench.sh's pool).
 DUEL_POOL=${DUEL_POOL:-prl-us.kryptex.network:7048}
 srb_cli() {
   cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
@@ -397,7 +397,7 @@ sample_ours() {
 }
 # run_miner NAME SECS MEASURED: runs ours or srb for SECS. Measured, it samples every 10 s, prints a line a minute,
 # and ends with "NAME result ...": the mean of the samples after the first minute, and the miner's last figure,
-# which is what benchmark.md's table takes for SRBMiner ("its own figure at the end").
+# which is what tuning/benchmark.md's table takes for SRBMiner ("its own figure at the end").
 run_miner() {
   local name=$1 secs=$2 measured=$3 pid t0 t s th acc rej n=0 sum=0 last="" fails=0
   say "duel $name start ${secs}s$([ "$measured" = 1 ] || echo ' (warm-up, not measured)')"
@@ -439,7 +439,7 @@ t_srb() {
   run_miner srb "$secs" 1
 }
 
-# benchmark.md's AMD method on one PC: the first miner warms the card for WARM seconds, unmeasured, then each
+# tuning/benchmark.md's AMD method on one PC: the first miner warms the card for WARM seconds, unmeasured, then each
 # runs SECS seconds. FIRST is ours or srb. Ours is the CLI with this core (needs build first).
 t_duel() {
   local first=${1:-ours} secs=${2:-300} warm=${3:-60} second rc=0

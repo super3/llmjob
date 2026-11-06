@@ -512,7 +512,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // lane at a 16-bit offset (ds_load_b128) where the old order read two 8-byte words 16 bytes apart
 // (ds_load_2addr_b64, whose 8-bit offsets needed a new address register, a VALU, for most fragments). On RDNA 4 a
 // VALU beside the WMMAs costs about a cycle of WMMA time (pearl_amd_peak's valui variants), so the fold alone ran
-// 5.9-6.8% faster on an RX 9070 XT (benchmark.md, 4 November). On by default on RDNA 4; -DPEARL_AMD_KPAIR=0 builds
+// 5.9-6.8% faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4; -DPEARL_AMD_KPAIR=0 builds
 // the old order to race against. RDNA 3's fragments are 16 bytes already.
 #ifndef PEARL_AMD_KPAIR
 #define PEARL_AMD_KPAIR PEARL_AMD_WMMA12
@@ -522,7 +522,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // offset: no VALU a load, where the global loads took a 64-bit VALU add of the slab to each lane's address (two
 // VALU a load). Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Every load stays inside its
 // tile, the resource's size (amdBufld.test.js). On top of PEARL_AMD_KPAIR the fold alone ran another 2.2%
-// faster on an RX 9070 XT (benchmark.md, 4 November). On by default on RDNA 4; RDNA 3 hasn't been timed with it.
+// faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4; RDNA 3 hasn't been timed with it.
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
 #endif
@@ -531,7 +531,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // described below. The wmma12 fold then takes 201 VGPRs and 24,576 bytes of LDS, not 193 and 36,864, and still runs
 // 6 waves a SIMD (7 by registers, but a block is 8 waves). hashrate.js against the fold without them, interleaved
 // on one PC: +4.4 to +4.6% on an RX 9070 XT and +5.1 to +5.4% on an RX 9060 XT (two PCs each), then +4.3% and
-// +4.6% on fresh PCs, with verify-hits 400 of 400 on both cards every time (benchmark.md, 4 November).
+// +4.6% on fresh PCs, with verify-hits 400 of 400 on both cards every time (tuning/benchmark.md, 4 November).
 // -DPEARL_AMD_RDNA4_SET=0 builds the fold without them, to race against; each switch can still be set on its own.
 // The Windows core builds with it off (build-amd.sh): it was timed with ROCm's clang 22 on Linux, one of its parts
 // alone (CRANK) lost 1.8% there to the scheduler, and the HIP SDK's clang 21 has never built it.
@@ -561,7 +561,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // RX 9070 XT, PC 3fd19936, 4 November, fold alone at k 4096, rounds 2-6 against the default then: RDSEL=1 +0.74 to
 // +0.80%, RDPERM=2 +0.21 to +0.40%, both +1.07 to +1.30% (three runs). The bound for any cut here is
 // PEARL_AMD_ABLATE bit 64, the readout with no cross-lane step, select or branch: +3.64 to +3.78%.
-// Tried and dropped (benchmark.md): the keeping lane by exec mask (+0.35 to +0.83%, below RDSEL=1 alone); each
+// Tried and dropped (tuning/benchmark.md): the keeping lane by exec mask (+0.35 to +0.83%, below RDSEL=1 alone); each
 // lane keeping its own part of all 16 words and combining the 8 lanes after the loop (rotl 13 and XOR commute):
 // in registers it needs 256 VGPRs and spills, or 230 with a lane-pair DPP step, but the 16-way switch or the
 // indexed vector that picks word c % 16 cost 30-50 v_mov a readout (-0.7 to +0.9%); in scratch, one store a chunk
@@ -869,7 +869,7 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 // per MAC is the same at rank 128.
 //
 // RDNA 4 mines k 4096 or 8192 (pearl_host_card_k), so its Linux code objects always have this readout: +1.0 to
-// +1.2% on an RX 9070 XT and an RX 9060 XT (benchmark.md). Every other target keeps today's readout and
+// +1.2% on an RX 9070 XT and an RX 9060 XT (tuning/benchmark.md). Every other target keeps today's readout and
 // k 2048: the wrap readout at k 2048 costs about 0.4%. The Windows core (build-amd.sh winlib) builds
 // with -DPEARL_AMD_KWRAP=0, so RDNA 4 mines k 2048 there: its compiler put part of the gfx12 fold in
 // scratch memory with this readout, and no Windows Radeon has run it. Only a gfx12 device pass defines __GFX12__, so one
