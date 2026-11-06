@@ -1913,15 +1913,34 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   resolve_fold(ctx);
   // Pascal and GTX 16 (the dp4a fold): a narrower batch, so a launch stays tens of
   // milliseconds (PEARL_DP4A_COL_BATCH). One line on stderr says which fold this card
-  // got, so a miner log from a GTX 10 or GTX 16 card shows it.
+  // got and how many of its blocks an SM holds, so a miner log from a GTX 10 or GTX 16
+  // card shows it.
   if (ctx->foldDp4a) {
     const uint32_t cb = pearl_dp4a_col_batch(ctx->colBatch, ctx->colsValid);
     if (cb != ctx->colBatch) {
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
-    fprintf(stderr, "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch\n",
-            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch);
+    // Turing splits 96 KB an SM between L1 and shared, 32 or 64 KB of it shared. Two
+    // blocks take 42 KB, so a Turing card asks for the larger shared part, as the RTX 20
+    // fold does (PEARL_BD_A_DIRECT_CARVEOUT). The fold stages its operands in shared, so
+    // it leans little on L1. Pascal's shared is its own.
+    if (ctx->ccMajor == 7
+        && cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),
+                                cudaFuncAttributePreferredSharedMemoryCarveout,
+                                (int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)
+      (void)cudaGetLastError();
+    int perSm = 0;
+    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,
+        reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);
+    if (oe != cudaSuccess) {
+      (void)cudaGetLastError();
+      perSm = 0;
+    }
+    fprintf(stderr,
+            "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "
+            "blocks an SM\n",
+            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);
   }
   // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
   // sweeps fits the L2. See PEARL_TMA_L2_SHARE.

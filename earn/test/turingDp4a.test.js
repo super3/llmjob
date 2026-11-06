@@ -11,6 +11,7 @@ const path = require('path');
 //   keeps its body in the sm_75 pass when the dp4a fold gets one;
 // - the host's card rule: every GTX 16 and Quadro T card takes it, no RTX 20 card or T4;
 // - resolve_fold picks it before any tensor fold is set up, and only from a body;
+// - a Turing card asks for the 64 KB shared part, so two blocks fit an SM;
 // - the names and log lines say which cards it runs on, as before on Pascal;
 // - CI compiles the switch and checks the other sm_75 kernels; no shipped build sets it;
 // - pool.sh can build it.
@@ -211,6 +212,25 @@ describe('resolve_fold and what follows a card it takes', () => {
     expect(CI).toContain('[ "$regs" -ge 64 ] 2>/dev/null; then');
   });
 
+  // A Turing card asks for the larger shared part, so two blocks (42 KB) fit an SM. Pascal's
+  // shared is fixed, and its setup is as before.
+  test('a Turing card asks for 64 KB of shared, and the log says how many blocks an SM holds', () => {
+    const setup = slice(HOST, '    const uint32_t cb = pearl_dp4a_col_batch(ctx->colBatch, ctx->colsValid);',
+      'ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);');
+    inOrder(setup, [
+      'if (ctx->ccMajor == 7',
+      '&& cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),',
+      'cudaFuncAttributePreferredSharedMemoryCarveout,',
+      '(int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)',
+      '(void)cudaGetLastError();',
+      'const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,',
+      'reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);',
+      'if (oe != cudaSuccess) {']);
+    // 21 KB of static shared a block: two fit Turing's 64 KB part, not its 32 KB one.
+    const smem = 2 * 2 * 8 * 132 * 4 + 64 * 17 * 4;
+    expect([smem, 2 * smem > 32 * 1024, 2 * smem <= 64 * 1024]).toEqual([21248, true, true]);
+  });
+
   // A dp4a card gets the dp4a batch width and launch, whichever cards it is on.
   test('the batch width, the draw and the launch are the dp4a fold\'s, as on Pascal', () => {
     expect(HOST).toContain('  if (ctx->foldDp4a) {' + NL
@@ -224,8 +244,9 @@ describe('resolve_fold and what follows a card it takes', () => {
     expect(HOST).toContain(
       'const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }');
     const arch = (major) => (major === 7 ? 'Turing' : 'Pascal');
-    expect(HOST).toContain('fprintf(stderr, "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch\\n",'
-      + NL + '            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch);');
+    expect(HOST).toContain('"[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "' + NL
+      + '            "blocks an SM\\n",' + NL
+      + '            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);');
     expect(HOST).toContain('  if (!ctx->foldDp4a) return "";' + NL
       + '  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";');
     expect(HOST).toContain('"%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",' + NL
