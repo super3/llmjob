@@ -1191,31 +1191,36 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
           for (int q = 0; q < NRO; q++) {
 #if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
             asm("" : "+v"(y[q][0]), "+v"(y[q][1]), "+v"(y[q][2]));
-#endif
+#endif  // a GPU
             x[rb][cb][q] = y[q][0] ^ y[q][1] ^ y[q][2];
           }
           continue;
         }
-#endif
+#endif  // PEARL_AMD_RDTREE
+        uint32_t xr[NRO];
 #pragma unroll
-        for (int q = 0; q < NRO; q++) x[rb][cb][q] = 0u;
+        for (int q = 0; q < NRO; q++) xr[q] = 0u;
 #pragma unroll
         for (int mt = rb * (32 / P::kTM); mt < (rb + 1) * (32 / P::kTM); mt++)
 #pragma unroll
           for (int nt = cb * (64 / P::kTN); nt < (cb + 1) * (64 / P::kTN); nt++)
 #pragma unroll
-            for (int g = 0; g < P::kRegs; g++) x[rb][cb][P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+            for (int g = 0; g < P::kRegs; g++) xr[P::ro_of(g)] ^= (uint32_t)acc[mt][nt][g];
+#pragma unroll
+        for (int q = 0; q < NRO; q++) x[rb][cb][q] = xr[q];
       }
   };
-  auto readout_keep = [&](uint32_t c, const uint32_t (&x)[RB][CB][NRO]) {
+  auto readout_keep = [&](uint32_t c, const uint32_t (&xs)[RB][CB][NRO]) {
     const bool mine = (c & 7u) == r;
     uint32_t v[RB][CB][NRO];
 #pragma unroll
     for (int rb = 0; rb < RB; rb++)
 #pragma unroll
-      for (int cb = 0; cb < CB; cb++)
+      for (int cb = 0; cb < CB; cb++) {
+        const uint32_t *x = xs[rb][cb];
 #pragma unroll
-        for (int q = 0; q < NRO; q++) v[rb][cb][q] = pearl_amd_group_xor(x[rb][cb][q]);
+        for (int q = 0; q < NRO; q++) v[rb][cb][q] = pearl_amd_group_xor(x[q]);
+      }
 #if PEARL_AMD_RDSEL && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
     if constexpr (std::is_same<P, PearlAmdWmma12>::value) {
       // PEARL_AMD_RDSEL (above): the keep by a scalar branch; the comment in each arm keeps the arms apart. The
@@ -1340,9 +1345,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // are KPAIR's, and with CRANK a chunk is a constant 4 slabs, so only slabs 4c + 4 (and 4c + 5) test for it.
   constexpr bool kLate = PEARL_AMD_RDLATE != 0 && PEARL_AMD_KWRAP && std::is_same<P, PearlAmdWmma12>::value;
   static_assert(!(PEARL_AMD_RDLATE && std::is_same<P, PearlAmdWmma12>::value) ||
-                    (PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4 &&
-                     !PEARL_AMD_ABLATE),
-                "PEARL_AMD_RDLATE needs the RDNA 4 set's loop (KWRAP, KPAIR, CRANK, PF2), no UNROLL4 and no ablation");
+                    (PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4),
+                "PEARL_AMD_RDLATE needs the RDNA 4 set's slab loop (KWRAP, KPAIR, CRANK, PF2) and no UNROLL4");
+#if PEARL_AMD_ABLATE & 8
+  static_assert(!kLate, "PEARL_AMD_RDLATE runs the readout after the fragment loads, which ablation bit 8 leaves out");
+#endif
+#if PEARL_AMD_ABLATE & 64
+  static_assert(!kLate || PEARL_AMD_RDLATE == 1, "ablation bit 64 is in the readout RDLATE=1 runs, not in =2's parts");
+#endif
   (void)kLate;
 #if PEARL_AMD_RDLATE && PEARL_AMD_KWRAP && PEARL_AMD_CRANK && PEARL_AMD_PF2
 #if PEARL_AMD_RDLATE == 2
@@ -1371,7 +1381,23 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
     }
   };
+  // A use of every sum right after a slab's WMMAs. With the readout's branch in the slab, the compiler had moved the
+  // even slab's WMMAs below its stores and barrier, beside the odd slab's, so two slabs' fragments were live at once
+  // (234 VGPRs). No instruction: the asm is empty.
+  auto readout_hold = [&]() {
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#pragma unroll
+    for (int mt = 0; mt < P::kMT; mt++)
+#pragma unroll
+      for (int nt = 0; nt < P::kNT; nt++) asm volatile("" ::"v"(acc[mt][nt]));
 #endif
+  };
+#else
+  auto readout_late = [](uint32_t, auto) {};   // PEARL_AMD_RDLATE off
+  auto readout_hold = []() {};
+#endif  // PEARL_AMD_RDLATE
+  (void)readout_late;
+  (void)readout_hold;
 #if PEARL_AMD_PF2
   // pre2[q] holds the slab whose number is q mod 2. Slab 0 is in LDS buffer 0 already.
   pearl_amd_v4i pre2[2][U];
@@ -1478,11 +1504,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
             b[0][nt] = pearl_amd_v2i{q[0], q[1]};
             b[1][nt] = pearl_amd_v2i{q[2], q[3]};
           }
-#if PEARL_AMD_RDLATE && PEARL_AMD_KWRAP && PEARL_AMD_CRANK && PEARL_AMD_PF2
           if constexpr (kLate) readout_late(s, parity);   // PEARL_AMD_RDLATE (above)
-#endif
           pearl_amd_mma_step<P>(acc, a[0], b[0]);
           pearl_amd_mma_step<P>(acc, a[1], b[1]);
+          if constexpr (kLate) readout_hold();
         }
       } else
 #endif
@@ -1499,11 +1524,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
       }
 #endif
     }
+    if constexpr (!kLate)   // PEARL_AMD_RDLATE runs it in the next slab instead
 #if PEARL_AMD_CRANK
     // PEARL_AMD_CRANK (above): s mod 2 is B and a chunk is an even number of slabs, so only an odd slab ends one.
-    if constexpr (B == 1 && !kLate)
-#else
-    if constexpr (!kLate)
+    if constexpr (B == 1)
 #endif
     if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
 #if PEARL_AMD_SCHEDB
@@ -1558,14 +1582,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     slab_step(s + 3, std::integral_constant<int, 1>());
   }
 #endif
+#if PEARL_AMD_RDLATE
+#pragma clang loop unroll(disable)   // PEARL_AMD_RDLATE: the compiler peeled the slabs before the first readout
+#endif
   for (; s + 1 < slabs; s += 2) {
     slab_step(s, std::integral_constant<int, 0>());
     slab_step(s + 1, std::integral_constant<int, 1>());
   }
   if (s < slabs) slab_step(s, std::integral_constant<int, 0>());
-#if PEARL_AMD_RDLATE && PEARL_AMD_KWRAP && PEARL_AMD_CRANK && PEARL_AMD_PF2
-  if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
-#endif
 #if PEARL_AMD_STAMP
   {   // PEARL_AMD_STAMP: the slab loop ends. Its sum runs to here, just after the loop's last barrier, and the
       // epilogue starts here.
@@ -1606,6 +1630,8 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   }
 
 #endif
+
+  if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
 
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
