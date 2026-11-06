@@ -986,6 +986,12 @@ out of the fold.
   <core.node> SECS [bits | pool]` runs PearlMiner with two cores on one card, one with
   `cardK` and one without, so an RDNA 4 card sends k 4096 and k 2048 shares over one pool
   connection, to the stand-in or to the live pool in `POOL`.
+- `node memclock-sweep.js <pearl_core.node> [clocks=0,5001] [rounds=3] [secs=90]` -- the miner
+  at each memory clock, interleaved, as Administrator (Windows) or root (Linux). Each leg is
+  `hashrate.js` under `nvidia-smi -lmc` (0 is the driver's clock); a leg whose memory clock
+  did not read what was locked is marked, and the clock goes back to the driver at the end.
+  Without the rights it stops, unless every clock is 0 (an A/A run). See "The memory clock
+  on Ada" below for why it exists.
 - `refverify.rs` -- the spec's own share check, `verify_plain_proof` from zk-pow, over shares
   our miner made. Everything else that checks a share before a pool does is our JS, so a
   mistake the device and the JS reference share would pass it; this can't. amdtest.sh's
@@ -1061,6 +1067,37 @@ roughly half the power budget -- but hashrate collapses, because L2 is in that c
 domain and the fold pulls 2.12 TB/s through it. At 2659 MHz with bandwidth intact the
 kernel would be around 368 TH/s. So **L2 traffic per MAC is the thing to attack**;
 DRAM traffic is already irrelevant.
+
+### The memory clock on Ada: not measured yet, and why (2026-11-06)
+
+Nobody has run an RTX 4090 with its memory clock locked, because no 4090 we reach lets us:
+
+- rig01 (Windows 11, driver 610.88) mines under an account that is not an Administrator.
+  `nvidia-smi -lmc`, `-lgc` and `-pl` exit 4 ("does not have permission"), and `-ac` is
+  deprecated on this driver. Vast containers can't set clocks either (`-lmc` exits 4 there
+  too, see "RTX 50 cards below the 5090"), nor can Salad's (tuning/salad/README.md).
+- The desktop app on Windows runs unelevated, so it can't take a lock either. A 4090 default
+  would reach only rigs that mine as root on Linux.
+
+What a lock would have to work with, measured on rig01 with the v0.6.13 core:
+
+- A 4090 offers 10501, 10251, 5001, 810 and 405 MHz (`nvidia-smi -q -d SUPPORTED_CLOCKS`), and
+  CUDA runs it at 10251. 5001 keeps the full SM range; there is no middle step like the 5090's
+  7001, so 5001 is the one to try.
+- At stock the card is power-capped: 315.9 TH/s over four legs (spread 0.29%), 2519 MHz, 449 W
+  of 450 with `SW Power Cap` active in every sample, 77-78 C, memory controller 2-3% busy.
+- The rate follows the SM clock. In a cold start it held 125.1-125.8 TH/s per GHz while the
+  clock fell from 2560 to 2506 MHz, so nothing but clock limits it at 10251.
+- A one-warp load boosts the same card to 2715 MHz, so unlimited watts would buy at most +7.7%.
+- At near-zero traffic, P2 (10251 MHz memory, 2595 MHz SM, SMs idle) drew 68.7 W and P8 (405 /
+  210 MHz) 28.5 W. The memory clock, the SM clock and the voltage together are worth at most
+  40 W. One P5 sample (810 / 585 MHz) read 51.9 W, which hints the memory's share is under 20 W.
+  Copying 27 GB/s from the host adds about 3 W, so the miner's own DRAM traffic costs little.
+
+So 5001 might free 5-15 W, roughly +0.5-1.5% of SM clock, if L2 keeps up at half the memory
+clock (on the 5090 it did at 7001 and did not at 810). That is a guess from the numbers above,
+not a measurement. To settle it, run `memclock-sweep.js` with the rights: `0,5001` for three
+rounds of 90 s (about 20 minutes), then `0,810` once to see whether L2 starves.
 
 ## The ablation table does not transfer from Ada
 
