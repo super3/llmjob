@@ -436,10 +436,16 @@ describe('Pascal dp4a fold', () => {
   const LINES = HEADER.split(String.fromCharCode(10)).map((l) => l.trim());
 
   // __dp4a is sm_61 and up (the P100, sm_60, has none), and Turing and later
-  // have their tensor folds. The kernel and the host read the same macro.
+  // have their tensor folds. The kernel and the host read the same macro. Those
+  // passes have only this fold (PEARL_DP4A_ONLY); sm_75 builds it as well only
+  // with PEARL_DP4A_TURING (turingDp4a.test.js).
   test('the body is built from sm_61 up to, not including, sm_75', () => {
     expect(LINES).toContain('#define PEARL_DP4A_ARCH(a) ((a) >= 610 && (a) < 750)');
-    expect(LINES).toContain('#if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)');
+    const at = LINES.indexOf('#if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)');
+    expect(LINES.slice(at, at + 5)).toEqual([
+      '#if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)',
+      '#define PEARL_DP4A_ONLY 1', '#else', '#define PEARL_DP4A_ONLY 0', '#endif']);
+    expect(LINES).toContain('#if defined(__CUDA_ARCH__) && (PEARL_DP4A_ONLY || (PEARL_DP4A_TURING && __CUDA_ARCH__ == 750))');
     const arch = (a) => a >= 610 && a < 750;
     expect([600, 610, 620, 700, 750, 800, 890, 1200].map(arch))
       .toEqual([false, true, true, true, false, false, false, false]);
