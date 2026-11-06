@@ -386,6 +386,8 @@ What future speed work needs: how to measure, the limits found, and what has alr
 **Measuring**
 - Race mode (`earn/native/probes/race.cu`, builds taking 4 s turns in one process) is the comparison to trust: a copy
   of the release reads within ±0.05–0.10%. Separate `hashrate.js` runs favour the build that runs on the warm card.
+  It also runs on Windows, each build a DLL: on rig01's RTX 4090 a copy of the release read −0.015% ±0.030 over 25
+  rounds.
 - Compare builds on the same PC only. Salad PCs of one card differ by up to 24% on the same code, and some run far
   slower for every miner because something else is using the GPU.
 - Our CLI's 5-minute mean carries about ±1.5–2.4% noise on fast cards, so 1–2 points between PCs mean nothing.
@@ -412,6 +414,18 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - RTX 30/40: copy groups and readout fences (item 10); hash control bits, warp turn-taking (#18), IMMAs during the hash;
   a wider window (g6: costs 1,380 cycles a tile to free at most 355); Z6 (no clearing at all saves only 20 cycles);
   f39 (`PEARL_TALL_HASH_FMA`, −3,517 cycles).
+- RTX 4090 hash tail (#287 item 1, rig01, 450 W, 6 November). The hash costs 1,397 cycles a tile here (102,778 against
+  101,381 with no hash). Every form lost in race mode, 25 rounds, 0 of 25 ahead:
+  - chunk 0's stage-1 refill after the chunk, so the partner runs 192 IMMAs before it waits, not 128: −0.61%. The
+    knee moved from about 2,600 to 3,300 cycles, but the hash got only 61 cycles cheaper and the moved refill cost 416.
+    Below the knee each cycle of hash still costs about 0.4: the partner and then the hasher run alone.
+  - the same refill moved into chunk 1, with a guard before chunk 0's readout: +3,150 cycles, ptxas rebuilt the loop.
+  - the hash as a `__noinline__` call: the chunk loop stays the same whatever the hash's form, but the call itself
+    costs 270–340 cycles: −0.76%.
+  - in that call, the adds as IMAD: the hash releases 480 cycles sooner but the tile gains only 40, because the hash
+    then takes issue slots from the partner's IMMAs (−0.62%; whole-region hash only, −0.56%). A shorter all-ALU hash
+    does pay: dropping a round (timing only) released 280 cycles sooner and saved 316 a tile. The hash has no ALU
+    instruction to spare, so nothing is left to try there.
 - RTX 50 (item 16): drawing B' on the SM (+1.81% against a +2.5% bar); TMA multicast hangs because its transaction count
   never arrives on sm_120.
 - RDNA 3 (item 13): k 4096 gained under +0.3%. Batch 128 shipped on gfx1100 and gfx1101 (+0.1 to +1.8% a round, and 64
