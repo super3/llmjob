@@ -120,6 +120,19 @@ measured and keep their global loads, and the Windows core leaves it out (`SET_O
 `-DPEARL_AMD_RDNA3_BUFLD=0` builds the fold without it. Only gfx11 and gfx12 code takes buffer loads,
 whatever the setting.
 
+**gfx1100 and gfx1101 also build three of RDNA 4's staging switches** (`PEARL_AMD_RDNA3_SET`: `PEARL_AMD_PFX`,
+`PEARL_AMD_CRANK` and `PEARL_AMD_SCHEDB`, 7 November, issue #287 item 8). CRANK takes rank 128 at compile time,
+which merges a slab pair into one block and cuts its LDS fragment loads from 48 to 32; SCHEDB keeps the WMMAs on
+their side of each barrier. Alone the two lost 1.2% on an RX 7800 XT: in the merged block three of the pair's six
+slab loads sat just before a barrier whose fence waits for them, with no WMMA in between. PFX's LDS-only fence
+lets those loads run on, so each gets 32 to 96 WMMAs. 226 VGPRs, 6 waves. Against the buffer-load fold on the
+same PC, with a twin of it for the noise, the fold alone ran +0.60 to +0.88% a round and `hashrate.js` +0.89 to
++1.20% on an RX 7900 XTX (PC `28a12f15`), and +0.83 to +0.89% and +0.83 to +0.93% on an RX 7800 XT (`72dd708c`);
+verify-hits checked 400 of 400 hits on the 7800 XT, and on Kryptex the XTX got 6 accepted shares and 0 rejected
+in 10 minutes. The same with the loads pinned two slabs ahead (`PEARL_AMD_PF2PIN`, below) was about 0.2% slower
+in the fold on both cards and in `hashrate.js` on the 7800 XT. It follows `PEARL_AMD_RDNA3_BUFLD`, so the other
+gfx11 targets and the Windows core keep their code; `-DPEARL_AMD_RDNA3_SET=0` builds the fold without it.
+
 **On top of that, RDNA 4 builds six more cuts** (`PEARL_AMD_RDNA4_SET`, 4 November). The wrap
 readout picks the keep word's half with a scalar branch instead of selects (`PEARL_AMD_RDSEL`) and
 skips a register copy before `v_permlanex16` (`PEARL_AMD_RDPERM=2`). The slab loop takes rank 128 at
@@ -256,7 +269,7 @@ no scratch memory on every target:
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
 | gfx1030, gfx1031, gfx1032 | dot4 | 201 | - | 36 KB | 4 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
-| gfx1100, gfx1101 | wmma11 | 232 | - | 36 KB | 6 |
+| gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1200, gfx1201 | wmma12 | 201 | - | 24 KB | 7 |
@@ -265,8 +278,9 @@ The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The w
 set's (`PEARL_AMD_RDNA4_SET`, 4 November): 201 VGPRs and 24 KB of LDS, against 193 and 36 KB without it,
 and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
 runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. The gfx1100 and
-gfx1101 rows have RDNA 3's buffer loads (`PEARL_AMD_RDNA3_BUFLD`): 232 VGPRs, against 240 without them, as
-the Windows core and the other gfx11 targets build it. On 2 November, with the
+gfx1101 rows have RDNA 3's buffer loads and staging cuts (`PEARL_AMD_RDNA3_BUFLD`, `PEARL_AMD_RDNA3_SET`):
+226 VGPRs, against 232 with the loads alone and 240 without either, as the Windows core and the other gfx11
+targets build it. On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
 gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
 also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).
@@ -432,14 +446,18 @@ by contrast, stops only its own card.
   +0.5%); a second PC of each is still to run. The compiler keeps the loads only one slab
   ahead, not two: on gfx1100 `__syncthreads()` waits for each slab's loads at the end of the step
   that issues them, and with PFX's barrier the compiler sinks them to that step's end instead.
-  `PEARL_AMD_PF2PIN` (off by default, not timed yet) keeps all of them two slabs ahead: PFX, TID,
+  `PEARL_AMD_PF2PIN` keeps all of them two slabs ahead: PFX, TID,
   and the loads pinned at the top of the step by a memory clobber as well as a `sched_barrier`
   (`PEARL_AMD_LPIN=2`), since machine sinking moved half of them past the `sched_barrier` alone.
-  235 VGPRs, 6 waves, no spills (see the comment in `pearl_amd_fold.h`). RDNA 4 also has PF2
+  235 VGPRs, 6 waves, no spills (see the comment in `pearl_amd_fold.h`). It stays off: one slab
+  ahead already hides the loads (their wait at the fence is 0.8-1.9% of the slab loop, by the
+  stamps), the pin alone ran the fold 0.05-0.42% faster, and with CRANK and SCHEDB it was 0.2%
+  slower than `PEARL_AMD_RDNA3_SET`, which leaves three loads one slab ahead. RDNA 4 also has PF2
   and the DPP readout, and on top keeps the loads in flight across the slab barrier (`PEARL_AMD_PFX`: an
   LDS-only fence, since `__syncthreads()` waited for every outstanding global load there) and
   tells the compiler the thread index is under 256 (`PEARL_AMD_TID`): 52.88 TH/s to 59.99 on an
-  RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster and stay off. A split slab
+  RX 9060 XT (PC `ca4f64e4`). On RDNA 3 those two measured no faster alone; gfx1100 and gfx1101
+  now take them with the buffer loads and `PEARL_AMD_RDNA3_SET`. A split slab
   barrier on gfx12 (`s_barrier_signal` after the LDS work, `s_barrier_wait` before the next slab)
   ran the same as this (59.39 against 59.99 on `ca4f64e4`, 33.20 against 32.85 on `54b217a9`)
   and was removed. Next: `v_mfma_i32_32x32x32_i8` on gfx950 (2x the rate; its
