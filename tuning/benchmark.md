@@ -400,7 +400,8 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
   KPAIR and BUFLD (4 November). Each VALU instruction beside the WMMAs costs about a cycle of WMMA time.
 - A stock RTX 5090 loses about 8% of its clock to moving operands from L2. Mid RTX 50 cards hit their top clock first,
-  so they could gain at most 2–3.3%.
+  so they could gain at most 2–3.3%. A byte copied from another SM's shared memory costs as much energy as one read
+  from L2 (33.0 against 34.1 pJ, #287 item 7), so sharing operands between SMs by a copy saves nothing.
 - On RTX 30/40 the tile hash costs about 1.3% of a tile, almost all of it the hash running past the partner's window
   (step 0): each cycle past about 2,300 after the hand-off costs a tile 0.9–1.0 cycle, and the hash releases at about
   3,150. Any edit to the hash's code makes ptxas reallocate the chunk loop, which then costs 3,383 cycles a tile.
@@ -471,6 +472,20 @@ What future speed work needs: how to measure, the limits found, and what has alr
   The two switches stay on exp/gpu10-7, off.
 - RTX 50 (item 16): drawing B' on the SM (+1.81% against a +2.5% bar); TMA multicast hangs because its transaction count
   never arrives on sm_120.
+- RTX 5090: two CTAs sharing B' by a copy between their shared memories (#287 item 7, 7 November,
+  `PEARL_TALL_CLUSTER_PUSH` on branch exp/287-7, CUDA 13.3, 254 registers, no spill). Each CTA loads half of the pair's
+  B' box and copies it to the peer (`cp.async.bulk` shared::cta to shared::cluster), so the L2 serves one box a pair. It
+  is correct (verify 400/400) but loses on both counts:
+  - Energy: `multicast-probe.cu`'s push arms, all held to 7500 cycles a stage at 2425 MHz (PC `380ecfca`), put a
+    copied byte at 33.0 pJ and a byte from L2 at 34.1 pJ. The copy saves 2% of an L2 box (fp 0.02, −0.04 to 0.04 over 6
+    rounds), against a gate of 50%.
+  - Time: in race mode on the same PC, −50.50% ±0.023 against the release (49 rounds, 0 ahead; 197.3 against 398.7
+    TH/s). The half gets one stage to land and the copy one more, where the release gives a whole box two. A box takes
+    longer than one stage under load, and the ring has no room for a fourth buffer.
+  - That PC was clock-held (2467 MHz at 409 W of 540 W): skip B' read −0.26% ±0.032, the release's copy −0.005% ±0.021.
+  - At the probe's default pace (3240) the loaded arms can't keep up (a2 4807, h2 3492, p 5962 cycles a stage, PC
+    `64002f7c`), so its energies aren't comparable and fp read 3.02 (1.30 to 27.12). On exp/287-7 `multicast-read.js`
+    now gives no verdict then and names a pace to rerun at. One high-priority box, about 50 minutes.
 - RTX 40/50: making A' and B' on the SM from their compact tables (each row's 128 noise bytes plus one pair table, 16x
   smaller than A'). Built on 29 October (branch exp/newkernel, never merged): producer warps drawing into the ring ran
   80.8% of tensor peak a clock on the 4090 against 95.75%, at 1.68 pJ a MAC against 1.42. The one 255-register layout
