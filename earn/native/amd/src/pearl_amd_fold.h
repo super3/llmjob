@@ -572,11 +572,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
-// Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), off by
-// default, for issue #287 item 4. In the release the slab loop has no VALU but the readout's, about 88 a chunk (64
-// XORs of the 128 sums, 16 cross-lane steps, the keep), and it runs after the chunk's last WMMAs, just before that
-// slab's stores and barrier. Every slab then starts with each wave waiting on its fragment loads from LDS, and the
-// blocks on a WGP run in step (item 14), so nothing else fills that wait.
+// Readout scheduling for RDNA 4 (wmma12 with the set's KPAIR, CRANK and PF2 loop, and the wrap readout), issue #287
+// item 4. On by default with PEARL_AMD_RDNA4_SET: RDLATE=2 and RDTREE=1 (RDLATE's default is below PEARL_AMD_KWRAP's,
+// which it needs). Before them the slab loop had no VALU but the readout's, about 88 a chunk (64 XORs of the 128
+// sums, 16 cross-lane steps, the keep), and it ran after the chunk's last WMMAs, just before that slab's stores and
+// barrier. Every slab then starts with each wave waiting on its fragment loads from LDS, and the blocks on a WGP run
+// in step (item 14), so nothing else filled that wait.
 //   PEARL_AMD_RDLATE=1   chunk c's readout runs in the next slab (4c + 4) after its fragment loads are issued and
 //                        before its WMMAs, which change the sums only after it. Its VALU then run while the loads are
 //                        in flight, and the chunk's last slab reaches its barrier sooner. The last chunk's readout
@@ -588,28 +589,14 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 //                        chains wait on each other (an s_delay_alu before most XORs), and a VALU that waits costs
 //                        RDNA 4 about 4.5 cycles of WMMA time against 1.1 for one that doesn't (pearl_amd_peak).
 // The transcript is the same with any of them. They change only where and in what order the readout runs.
-#ifndef PEARL_AMD_RDLATE
-#define PEARL_AMD_RDLATE 0
-#endif
-#if PEARL_AMD_RDLATE != 0 && PEARL_AMD_RDLATE != 1 && PEARL_AMD_RDLATE != 2
-#error "PEARL_AMD_RDLATE is 0, 1 or 2"
-#endif
+// hashrate.js against the release, interleaved on one RX 9070 XT at k 8192 (7 November): RDTREE alone +1.2 to +1.3%,
+// RDLATE=1 or 2 alone +1.3%, both (RDLATE=2, RDTREE=1) +1.7%, while a copy of the release read within 0.02%. The
+// fold takes 213 VGPRs, not 201, and still runs 6 waves a SIMD (tuning/benchmark.md).
 #ifndef PEARL_AMD_RDTREE
-#define PEARL_AMD_RDTREE 0
+#define PEARL_AMD_RDTREE PEARL_AMD_RDNA4_SET
 #endif
 #if PEARL_AMD_RDTREE != 0 && PEARL_AMD_RDTREE != 1
 #error "PEARL_AMD_RDTREE is 0 or 1"
-#endif
-// PEARL_AMD_RDLATE's pin: no load moves across it (the memory clobber; with RDLATE=2 the compiler had moved a slab's
-// fragment loads below the XORs) and nothing is scheduled across it. It emits no instruction and waits for nothing.
-#if PEARL_AMD_RDLATE && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-#define PEARL_AMD_RDLATE_PIN() \
-  do {                         \
-    asm volatile("" ::: "memory"); \
-    __builtin_amdgcn_sched_barrier(0); \
-  } while (0)
-#else
-#define PEARL_AMD_RDLATE_PIN() ((void)0)
 #endif
 // Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET; the rest are off by default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
@@ -932,6 +919,35 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #endif
 #if PEARL_AMD_KWRAP && PEARL_AMD_READOUT_DROP
 #error "PEARL_AMD_KWRAP and PEARL_AMD_READOUT_DROP don't go together: build one or the other"
+#endif
+
+// PEARL_AMD_RDLATE (with RDTREE, above PEARL_AMD_CRANK): 2 in RDNA 4 code with the set, where its slab loop is (the
+// wrap readout, KPAIR, CRANK and PF2, no UNROLL4), as it was timed and verified. A build that takes a part of that loop
+// out, or ablates the fragment loads (bit 8) or the readout (bit 64), gets 0, the readout as it was, not an error.
+#ifndef PEARL_AMD_RDLATE
+#if PEARL_AMD_ABLATE & (8 | 64)
+#define PEARL_AMD_RDLATE 0
+#else
+#if PEARL_AMD_RDNA4_SET && PEARL_AMD_KWRAP && PEARL_AMD_KPAIR && PEARL_AMD_CRANK && PEARL_AMD_PF2 && !PEARL_AMD_UNROLL4
+#define PEARL_AMD_RDLATE 2
+#else
+#define PEARL_AMD_RDLATE 0
+#endif
+#endif
+#endif
+#if PEARL_AMD_RDLATE != 0 && PEARL_AMD_RDLATE != 1 && PEARL_AMD_RDLATE != 2
+#error "PEARL_AMD_RDLATE is 0, 1 or 2"
+#endif
+// PEARL_AMD_RDLATE's pin: no load moves across it (the memory clobber; with RDLATE=2 the compiler had moved a slab's
+// fragment loads below the XORs) and nothing is scheduled across it. It emits no instruction and waits for nothing.
+#if PEARL_AMD_RDLATE && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_RDLATE_PIN() \
+  do {                         \
+    asm volatile("" ::: "memory"); \
+    __builtin_amdgcn_sched_barrier(0); \
+  } while (0)
+#else
+#define PEARL_AMD_RDLATE_PIN() ((void)0)
 #endif
 
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
