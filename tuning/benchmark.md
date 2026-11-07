@@ -404,6 +404,13 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - On RTX 30/40 the tile hash costs about 1.3% of a tile, almost all of it the hash running past the partner's window
   (step 0): each cycle past about 2,300 after the hand-off costs a tile 0.9–1.0 cycle, and the hash releases at about
   3,150. Any edit to the hash's code makes ptxas reallocate the chunk loop, which then costs 3,383 cycles a tile.
+- Everything outside the fold costs about 0.2% of a card's time, so there is little to win there (6 November, from
+  records, no GPU run). On the 4090 a salt is 223 ms. Between salts the miner rewrites A' (0.34 ms, DRAM-bound: 0.15%)
+  and two batch tails show (~0.07 ms each). Launch gaps are ~2 µs a batch. Hit proofs are read while the next batch
+  runs. Job switches every 35–60 s cost nothing measurable. Halving the redraws (n 131072 to 262144) measured +0.2%.
+  On an RX 9060 XT, `PEARL_AMD_TRACE` shows 0.13% outside the fold and hash kernels. A larger k doesn't dilute the
+  redraw, because A' and a salt's work both grow with k; only n does. The one stage above 0.5% is the transcript hash
+  (1.36% in the 4090's fold; 0.7–1.4% as AMD's separate kernel).
 - The B200 needs a tcgen05 fold; `mma.sync` can't pass about 41% of the competitors there.
 - RDNA 2 (`dot4`, a fold for RDNA 2) is a projection, not a measurement: 14.0–41.0 TH/s, half that if its `v_dot4`
   runs at half rate. No RDNA 2 card has run it.
