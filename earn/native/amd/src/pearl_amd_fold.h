@@ -123,6 +123,7 @@
 #define PEARL_AMD_CAP_TIMING 0x800u    // a PEARL_AMD_ABLATE build: timing only, never mines
 #define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too
 #define PEARL_AMD_CAP_RANK 0x2000u     // PEARL_AMD_CRANK: the matrix fold takes rank PEARL_FOLD_RANK only
+#define PEARL_AMD_CAP_FUSE 0x4000u     // PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -1143,6 +1144,84 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 #endif
 }
 
+// PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts (issue #287, item 6). Without it every
+// fold stores all 16 words of every region, 128 MiB for a batch of 256 at the mainnet m, and pearl_amd_hash
+// reads them back in a kernel of its own: 0.41-0.45 ms of a 30-31 ms batch on an RX 9060 XT at k 4096 (1.4%),
+// and 0.15-0.17 ms of a 20.6 ms batch on an RX 7900 XTX (0.8%). With it, a block ends its tile by putting the
+// tile's 128 regions in LDS (the B' staging buffers are free by then), and 128 of its threads hash one region
+// each and test it as pearl_amd_hash does, into the same hit list with the same region numbers. No transcript
+// is stored and no hash kernel runs (the reference fold still stores, and the host still hashes after it). That
+// saves the hash kernel's reads and launch and the fold's stores. It costs the hash's VALU inside the fold,
+// where on RDNA 4 a VALU instruction doesn't overlap the WMMAs: on the 9060 XT the fold got 0.33 ms slower and
+// the batch 0.11 ms faster. A fold given a transcript buffer (the fold test does) stores the words as well.
+// On by default in gfx1200 (RX 9060 XT) device passes only. hashrate.js against the release, interleaved on one
+// PC: +0.34% on an RX 9060 XT at k 4096 (+0.30 to +0.38% a round, two copies of each build within 0.08% of each
+// other) and +0.36 to +0.44% on another, with verify-hits 400 of 400 and 7 Kryptex shares, none rejected. On an
+// RX 9070 XT (gfx1201) at k 8192 it lost 0.50%: its hash kernel takes only 0.23 ms of a 33.6 ms batch, and the
+// fold got 0.36 ms slower (tuning/benchmark.md, 6 November). So gfx1201 and every other target keep the hash
+// kernel. The Windows core builds with it off (build-amd.sh), as it does the RDNA 4 set. -DPEARL_AMD_FUSE=0
+// builds the release before it, to race against; =1 turns it on for every target. Only a gfx1200 device pass
+// sees the default, so the host learns which a card has from its caps (PEARL_AMD_CAP_FUSE), never from this
+// macro.
+#ifndef PEARL_AMD_FUSE
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) && defined(__gfx1200__)
+#define PEARL_AMD_FUSE 1
+#else
+#define PEARL_AMD_FUSE 0
+#endif
+#endif
+#if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1
+#error "PEARL_AMD_FUSE is 0 or 1"
+#endif
+// Every fold takes the test and the hit list, so one host launch fits every target's code object. A fold that
+// doesn't hash ignores them.
+#define PEARL_AMD_FUSE_PARAMS , [[maybe_unused]] const PearlTranscriptTest test, [[maybe_unused]] const PearlHitList hits
+#define PEARL_AMD_FUSE_ARGS , test, hits
+
+// pearl_transcript_hash_again, for AMD. That one hides its inputs from the compiler with an
+// empty asm on "r" operands, which on AMD GPUs means scalar registers: the inputs are
+// per-lane, so the backend refuses it ("illegal VGPR to SGPR copy"). "v" is a vector
+// register. The point is the same: keep the full hash, which only the rare region that
+// passes the first word needs, from being merged into every region's.
+__device__ __forceinline__ void pearl_amd_hash_again(const uint32_t key[8], const uint32_t m[16],
+                                                     uint32_t h[8]) {
+  uint32_t k2[8], m2[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) {
+    k2[i] = key[i];
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" : "+v"(k2[i]));
+#endif
+  }
+#pragma unroll
+  for (int i = 0; i < 16; i++) {
+    m2[i] = m[i];
+#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" : "+v"(m2[i]));
+#endif
+  }
+  pearl_transcript_hash(k2, m2, h);
+}
+
+// One region's transcript hashed and tested, as pearl_tall_hash80 in pearl_kernel.cu does: the top word
+// first, and only for the rare region that passes, the whole hash against the target. A hit goes in the list
+// with region number i. pearl_amd_hash runs it for every region of a batch, a PEARL_AMD_FUSE fold for every
+// region of its tile.
+__device__ __forceinline__ void pearl_amd_hash_region(const uint32_t tm[16], uint32_t i,
+                                                      const PearlTranscriptTest &test, const PearlHitList &hits) {
+  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+  uint32_t h[8];
+  pearl_amd_hash_again(test.key, tm, h);
+  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = i;
+#pragma unroll
+  for (int j = 0; j < 8; j++) hits.hash[slot * 8u + j] = h[j];
+#pragma unroll
+  for (int j = 0; j < 16; j++) hits.transcript[slot * 16u + j] = tm[j];
+}
+
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
 // col0 + blockIdx.x * 256 (the batch's columns start at col0), or the tile PEARL_AMD_WALK gives.
 // Every region of the tile gets its 16 transcript words in `tr`, at its batch-local number:
@@ -1159,7 +1238,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
                                                     const int8_t *__restrict__ Bp, uint32_t k,
                                                     uint32_t rank, uint32_t col0,
                                                     uint32_t rows_valid,
-                                                    uint32_t *__restrict__ tr) {
+                                                    uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS) {
   constexpr int W = P::kWave, T = W * P::kWR * P::kWC;
   constexpr int WM = P::kMT * P::kTM, WN = P::kNT * P::kTN;
   constexpr int BM = P::kWR * WM, BN = P::kWC * WN;
@@ -1884,6 +1963,48 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #endif
 
   if constexpr (kLate) readout(slabs / perChunk - 1u);   // PEARL_AMD_RDLATE: the last chunk has no next slab
+#if PEARL_AMD_FUSE
+  {   // PEARL_AMD_FUSE (above): the tile's regions through LDS to a thread each, which hashes and tests one.
+    constexpr int RR = 2 * BM / 32, RC = 4 * BN / 64;   // regions down and across the tile: 8 and 16
+    static_assert(2 * RR * RC == T, "half the block hashes, a region a thread");
+    static_assert(2 * BN * S >= RR * RC * (int)PEARL_JACKPOT_BUCKETS * 4, "the B' staging holds the transcripts");
+    uint32_t *const sT = reinterpret_cast<uint32_t *>(&sB[0][0]);   // region j's words at 16 j
+    __syncthreads();   // every wave is done reading the last slab
+    const uint32_t co = (uint32_t)((lane >> 1) & 3);
+#pragma unroll
+    for (int rb = 0; rb < RB; rb++)
+#pragma unroll
+      for (int cb = 0; cb < CB; cb++)
+#pragma unroll
+        for (int q = 0; q < NRO; q++) {
+          // The store loop's row and column offsets below, less the tile's first.
+          const uint32_t lr = 2u * (uint32_t)((wr * WM + rb * 32) / 32) + (P::kRoByLane ? (uint32_t)(lane >> 5) : (uint32_t)q);
+          const uint32_t lc = 4u * (uint32_t)((wc * WN + cb * 64) / 64) + co;
+          uint32_t *const o = sT + (lc * RR + lr) * PEARL_JACKPOT_BUCKETS;
+          o[r] = keepLo[rb][cb][q];
+          o[r + 8] = keepHi[rb][cb][q];
+        }
+    __syncthreads();
+    // Threads 0-127 hash in half the blocks and 128-255 in the other half, so the work doesn't always land on
+    // the same waves' SIMDs, however the hardware spreads a block's waves over them.
+    const uint32_t j = (uint32_t)t ^ (((blockIdx.x ^ blockIdx.y) & 1u) << 7);
+    if (j < (uint32_t)(RR * RC)) {
+      uint32_t tm[16];
+#pragma unroll
+      for (int u = 0; u < 4; u++) {
+        const pearl_amd_v4i v = reinterpret_cast<const pearl_amd_v4i *>(sT + j * PEARL_JACKPOT_BUCKETS)[u];
+        tm[4 * u] = (uint32_t)v[0]; tm[4 * u + 1] = (uint32_t)v[1];
+        tm[4 * u + 2] = (uint32_t)v[2]; tm[4 * u + 3] = (uint32_t)v[3];
+      }
+      const uint32_t rowIdx = 2u * (tileRow / 32u) + j % (uint32_t)RR;
+      const uint32_t colIdx = 4u * (tileCol / 64u) + j / (uint32_t)RR;
+      pearl_amd_hash_region(tm, colIdx * rows_valid + rowIdx, test, hits);
+    }
+  }
+#if !PEARL_AMD_STAMP
+  if (tr == nullptr) return;   // the miner's launch; the fold test's passes a buffer and gets the words too
+#endif
+#endif
 
   // Each lane writes words r and r + 8 of its regions.
   const uint32_t coIdx = (uint32_t)((lane >> 1) & 3);
@@ -1893,6 +2014,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     for (int cb = 0; cb < CB; cb++)
 #pragma unroll
       for (int q = 0; q < NRO; q++) {
+#if PEARL_AMD_STAMP
+#if PEARL_AMD_FUSE
+        if (tr == nullptr) break;   // no words to store, but the stamps below still are
+#endif
+#endif
         const uint32_t roIdx = P::kRoByLane ? (uint32_t)(lane >> 5) : (uint32_t)q;
         const uint32_t rowIdx = 2u * ((tileRow + (uint32_t)(wr * WM + rb * 32)) / 32u) + roIdx;
         const uint32_t colIdx = 4u * ((tileCol + (uint32_t)(wc * WN + cb * 64)) / 64u) + coIdx;
@@ -1943,12 +2069,12 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 
 #define PEARL_AMD_FOLD_PARAMS                                                              \
   const int8_t *__restrict__ Ap, const int8_t *__restrict__ Bp, uint32_t k, uint32_t rank, \
-      uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr
+      uint32_t col0, uint32_t rows_valid, uint32_t *__restrict__ tr PEARL_AMD_FUSE_PARAMS
 
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_mfma16(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_MFMA16
-  pearl_amd_fold_body<PearlAmdMfma16>(Ap, Bp, k, rank, col0, rows_valid, tr);
+  pearl_amd_fold_body<PearlAmdMfma16>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -1957,7 +2083,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_mfma8(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_MFMA8
-  pearl_amd_fold_body<PearlAmdMfma8>(Ap, Bp, k, rank, col0, rows_valid, tr);
+  pearl_amd_fold_body<PearlAmdMfma8>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -1966,7 +2092,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_m
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_wmma11(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA11
-  pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr);
+  pearl_amd_fold_body<PearlAmdWmma11>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -1980,7 +2106,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_w
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC void pearl_amd_fold_wmma12(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_EMU || PEARL_AMD_WMMA12
-  pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr);
+  pearl_amd_fold_body<PearlAmdWmma12>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -1992,7 +2118,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC 
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_dot4(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_DOT4_FOLD
-  pearl_amd_fold_body<PearlAmdDot4>(Ap, Bp, k, rank, col0, rows_valid, tr);
+  pearl_amd_fold_body<PearlAmdDot4>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
 #else
   (void)Ap; (void)Bp; (void)k; (void)rank; (void)col0; (void)rows_valid; (void)tr;
 #endif
@@ -2063,35 +2189,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_r
   }
 }
 
-namespace {
-// pearl_transcript_hash_again, for AMD. That one hides its inputs from the compiler with an
-// empty asm on "r" operands, which on AMD GPUs means scalar registers: the inputs are
-// per-lane, so the backend refuses it ("illegal VGPR to SGPR copy"). "v" is a vector
-// register. The point is the same: keep the full hash, which only the rare region that
-// passes the first word needs, from being merged into every region's.
-__device__ __forceinline__ void pearl_amd_hash_again(const uint32_t key[8], const uint32_t m[16],
-                                                     uint32_t h[8]) {
-  uint32_t k2[8], m2[16];
-#pragma unroll
-  for (int i = 0; i < 8; i++) {
-    k2[i] = key[i];
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-    asm volatile("" : "+v"(k2[i]));
-#endif
-  }
-#pragma unroll
-  for (int i = 0; i < 16; i++) {
-    m2[i] = m[i];
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-    asm volatile("" : "+v"(m2[i]));
-#endif
-  }
-  pearl_transcript_hash(k2, m2, h);
-}
-}  // namespace
-
-// The transcript hash after a fold: one thread a region of the batch, the same tests and
-// the same hit list as pearl_tall_hash80 in pearl_kernel.cu.
+// The transcript hash after a fold: one thread a region of the batch (pearl_amd_hash_region). A
+// PEARL_AMD_FUSE build runs it only after the reference fold.
 extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
     const uint32_t *__restrict__ tr, uint32_t regions, const PearlTranscriptTest test,
     const PearlHitList hits) {
@@ -2103,17 +2202,7 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
     const uint4 w = reinterpret_cast<const uint4 *>(tr)[(size_t)i * 4u + q];
     tm[4 * q] = w.x; tm[4 * q + 1] = w.y; tm[4 * q + 2] = w.z; tm[4 * q + 3] = w.w;
   }
-  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
-  uint32_t h[8];
-  pearl_amd_hash_again(test.key, tm, h);
-  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
-  const uint32_t slot = atomicAdd(hits.count, 1u);
-  if (slot >= PEARL_MAX_HITS) return;
-  hits.index[slot] = i;
-#pragma unroll
-  for (int j = 0; j < 8; j++) hits.hash[slot * 8u + j] = h[j];
-#pragma unroll
-  for (int j = 0; j < 16; j++) hits.transcript[slot * 16u + j] = tm[j];
+  pearl_amd_hash_region(tm, i, test, hits);
 }
 
 // Which folds this code object has bodies for, and its wave size: out[0] and out[1]. A
@@ -2124,7 +2213,8 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_hash(
 // wrap readout says so too: it is how the host knows a card can mine k 4096 (pearl_host_card_k).
 // And one whose PF2 loop has PEARL_AMD_CRANK (RDNA 4's, by default) says its matrix fold takes
 // rank PEARL_FOLD_RANK only: the host pass never sees the gfx12 default, so the macro there would
-// say nothing about the card.
+// say nothing about the card. The same goes for one whose folds hash their own transcripts
+// (PEARL_AMD_FUSE): the host then launches no hash kernel after them.
 extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (blockIdx.x != 0 || threadIdx.x != 0) return;
 #if PEARL_AMD_EMU
@@ -2139,6 +2229,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_DOT4_FOLD) out[0] |= PEARL_AMD_CAP_DOT4;
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
+  if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;

@@ -92,8 +92,8 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
 
   it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
     expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi\n');
-    expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"');
-    expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"');
+    expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
     // The gpu build (Linux, the release's) has no OS flag: the default holds there.
     const gpu = BUILD.slice(BUILD.indexOf('\n  gpu)\n'), BUILD.indexOf('\n  winlib)\n'));
     expect(gpu).not.toContain('SET_OS');

@@ -703,6 +703,14 @@ jobs:
         shell: bash
         run: ./build-amd.sh check
 
+      # PEARL_AMD_FUSE (pearl_amd_fold.h): folds that hash their own transcripts. The release has it on gfx1200
+      # (RX 9060 XT) only, which the check above covers. Its rows on every other target, for whoever races it there.
+      - name: Check the fused-hash folds on every target (PEARL_AMD_FUSE=1; the release has it on gfx1200 only)
+        working-directory: earn/native/amd
+        shell: bash
+        continue-on-error: true
+        run: PEARL_AMD_CFLAGS=-DPEARL_AMD_FUSE=1 ./build-amd.sh check
+
       - name: Build the addon (all 14 targets)
         working-directory: earn/native/amd
         shell: bash

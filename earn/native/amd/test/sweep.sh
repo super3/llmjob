@@ -46,6 +46,8 @@
 #   SWEEP_STAMP_RUN  m:cols:launches for the stamps mode, launches at k 2048 as in SWEEP_FOLD (default
 #                 131072:4096:600). The file holds the last launch.
 #   SWEEP_ROOT    where the build logs and each variant's copy go (default /root)
+#   PEARL_AMD_TRACE  1: each hashrate.js run also prints the core's last "[pearl-amd]" line, its GPU time a batch in
+#                 the fold and in the hash kernel (amdtest.sh's run+PEARL_AMD_TRACE=1 sets it)
 #
 # Each result is one "[amdtest] HH:MM:SS sweep ..." line, written straight to the container's log too, so it shows
 # while the sweep runs (the run task prints only the end of its output, when it finishes).
@@ -185,10 +187,15 @@ else out "default rebuild FAIL: build/ holds the last variant; run the build tas
 # PEARL_AMD_UNTESTED=1 lets hashrate.js, which checks no hits and sends no shares, open a card whose fold has not run
 # on its kind of card in a release (gfx9, gfx103x); it changes nothing on any other card (resolve_fold).
 hrun() {   # name [col batch]
-  local r k=${PIN[$1]:-}
-  r=$(cd $A && PEARL_AMD_COL_BATCH=${2:-} PEARL_AMD_UNTESTED=1 timeout 600 env ${k:+PEARL_PROFILE_K=$k} node ../probes/hashrate.js \
-      $ROOT/var/$1/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi | grep -E '"th"|error' | tail -1)
+  local log r k=${PIN[$1]:-}
+  log=$(cd $A && PEARL_AMD_COL_BATCH=${2:-} PEARL_AMD_UNTESTED=1 timeout 600 env ${k:+PEARL_PROFILE_K=$k} node ../probes/hashrate.js \
+      $ROOT/var/$1/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi)
+  r=$(printf '%s\n' "$log" | grep -E '"th"|error' | tail -1)
   out "$1${2:+ cb=$2}${k:+ k=$k} hashrate: ${r:0:300}"
+  # With PEARL_AMD_TRACE=1 in the environment, the core's last timing line too: each batch's GPU time in the fold
+  # and in the hash kernel, and the idle gaps between batches.
+  r=$(printf '%s\n' "$log" | grep '^\[pearl-amd\]' | tail -1)
+  [ -z "$r" ] || out "$1${2:+ cb=$2}${k:+ k=$k} trace: ${r:0:330}"
 }
 for ((i = 1; i <= ROUNDS; i++)); do
   for n in "${names[@]}"; do hrun "$n"; done
