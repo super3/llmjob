@@ -404,6 +404,11 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - On RTX 30/40 the tile hash costs about 1.3% of a tile, almost all of it the hash running past the partner's window
   (step 0): each cycle past about 2,300 after the hand-off costs a tile 0.9–1.0 cycle, and the hash releases at about
   3,150. Any edit to the hash's code makes ptxas reallocate the chunk loop, which then costs 3,383 cycles a tile.
+- On RTX 30/40 the staging ring's waits cost 475 cycles a tile on a 4090 (0.46%), and all of it is that hash seam.
+  With the hash stubbed out, removing every ring wait made the tile 164 cycles slower (101,381 → 101,545; #287 item
+  1's builds). So lighter ring synchronization has nothing to win outside the seam (G4, 6 November). RTX 50's TMA
+  ring hasn't been ablated, but a 5070 Ti's cycles a tile (102,989) are within 0.2% of the 4090's, and a 5090 with
+  no TMA bytes at all did +0.15% ±0.3 more work a clock.
 - The B200 needs a tcgen05 fold; `mma.sync` can't pass about 41% of the competitors there.
 - RDNA 2 (`dot4`, a fold for RDNA 2) is a projection, not a measurement: 14.0–41.0 TH/s, half that if its `v_dot4`
   runs at half rate. No RDNA 2 card has run it.
