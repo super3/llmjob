@@ -1489,6 +1489,36 @@ describe('mining', () => {
         { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
     });
 
+    // Two AMD cards mine from the OS's count, but the lock is nvidia-smi's. The
+    // request is set aside for that reason, mining alone or beside the LLM, and
+    // no AMD card is sent to nvidia-smi (6 Nov: an AMD rig was blamed on the LLM).
+    it('locks no AMD card, and says the lock is NVIDIA-only, on a rig of two', async () => {
+      const gpuIndexBefore = process.env.PEARL_GPU_INDEX;
+      delete process.env.PEARL_GPU_INDEX;
+      process.env[ENV] = '7001';
+      try {
+        for (const mode of ['mining', 'auto']) {
+          const ctx = await boot({ platform: 'win32' });
+          const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+          ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+          ctx.emit('miner:start', { address: VALID_ADDR, mode });
+          await flush();
+          expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+            gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+            mineMemClockByIndex: {}, mineMemClockDefault: false,
+          }));
+          expect(ctx.sent('miner:log')).toContainEqual({
+            level: 'info',
+            line: 'LLMJOB_MINE_MEM_CLOCK=7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only',
+          });
+          expect(lines(ctx).join('\n')).not.toMatch(/MHz on GPU|needs full memory bandwidth/);
+        }
+      } finally {
+        if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
+        else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
+      }
+    });
+
     // A request the LLM co-run refuses is a warning, as on the CLI (stderr).
     it('warns when the LLM co-run drops the requested clock', async () => {
       process.env[ENV] = '7001';

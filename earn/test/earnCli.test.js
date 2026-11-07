@@ -2907,6 +2907,26 @@ describe('--mine-mem-clock', () => {
     });
   });
 
+  // HiveOS passes no --core, so the CLI picks the AMD core itself and mines the
+  // AMD plan. That plan is no NVIDIA card: the lock is NVIDIA-only, as on a
+  // one-card AMD rig, and no AMD card is sent to nvidia-smi.
+  test('an AMD rig of two cards locks no clock, and says the lock is NVIDIA-only', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+      m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', '7001']);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.gpus).toEqual([{ index: 0, name: null }, { index: 1, name: null }]);
+      expect(miner.settings.mineMemClockByIndex).toEqual({});
+      expect(allOut()).toContain('--mine-mem-clock 7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
+      expect(allOut()).not.toContain('MHz on GPU');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
   // The default. An RTX 5090 is locked without being asked, and the log
   // says so and names the way to turn it off.
   test('an RTX 5090 is locked by default, and told how to opt out', async () => {

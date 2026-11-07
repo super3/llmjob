@@ -902,6 +902,7 @@ async function run(argv) {
   };
 
   let endpoint = null;
+  let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
   if (plan.miner) {
     // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
     // back to the defaults already in `settings` and never blocks mining. Explicit
@@ -927,7 +928,7 @@ async function run(argv) {
     // With none chosen, an AMD rig's list is empty and one core would mine one
     // card. The OS counts them instead (det.amd, shared/gpu planAmdGpus), as in
     // the GUI.
-    const amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
+    amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
     if (amdGpus.length) settings.gpus = amdGpus;
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
@@ -1223,6 +1224,8 @@ async function run(argv) {
   // restarts (startMinerArgs) carry the same plan.
   // Not on an AMD core: the plan is nvidia-smi's, and on a rig with an NVIDIA
   // card beside the AMD ones it would lock that idle card's memory clock.
+  // An AMD core the CLI picked itself (HiveOS passes no --core) mines the AMD
+  // plan, which is no NVIDIA card: an empty list says "NVIDIA-only".
   if (miner && wantsAmdCore()) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
@@ -1230,7 +1233,7 @@ async function run(argv) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
       cards: cudaCards,
-      gpus: settings.gpus,
+      gpus: amdGpus.length ? [] : settings.gpus,
       llmCoRuns: !!(plan.llm && !demand),
     });
     settings.mineMemClockByIndex = memPlan.byIndex;

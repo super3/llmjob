@@ -750,11 +750,13 @@ async function startMining(settings, llmCoRuns) {
   // both; the GUI has no demand mode), so plan.llm is the whole of the GUI's
   // co-run condition. The plan rides on the start call, not on `settings`,
   // so persistSettings never writes it to disk.
+  // nvidia-smi's cards only: the lock is nvidia-smi's. Given the AMD plan, it
+  // would try to lock each AMD card, where an empty list says "NVIDIA-only".
   const memRequest = readMemClockEnv(process.env);
   if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
   const memPlan = planMemClocks({
     requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
-    cards: cudaCards, gpus, llmCoRuns: !!llmCoRuns,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
