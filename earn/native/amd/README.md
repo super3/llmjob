@@ -441,14 +441,18 @@ CUDA build. `PEARL_CORE_PATH=/path/to/pearl_core_hip.node` works too. Give it an
 path: a relative one counts from the executable's folder. With `PEARL_CORE_VARIANT=amd`,
 a `PEARL_CORE_PATH` that doesn't load is the end of it; the CUDA cores aren't tried.
 
-The app finds cards with nvidia-smi, which lists no AMD card. So one core starts and picks
-the AMD card with the most compute units times clock. If HIP lists a card the release has no
+The app finds NVIDIA cards with nvidia-smi, which lists no AMD card. When it lists none and the
+AMD core is in use, the app counts the AMD cards the system lists (Windows' display adapters,
+Linux's `amdgpu` sysfs files), leaving out an APU's graphics. With two or more it starts one core
+per card, HIP indices 0 to N-1, no more than `HIP_VISIBLE_DEVICES` or `ROCR_VISIBLE_DEVICES`
+shows, and logs "mining on N AMD cards". With one, or a count it can't read, one core starts and
+picks the AMD card with the most compute units times clock. If HIP lists a card the release has no
 code for (an RX 5000 card, or an APU's graphics) before the ones it has, HIP loads no code for
-any card after it; the error names that card, and `HIP_VISIBLE_DEVICES` hides it. On a rig with several, choose them
-by index with `--gpu-index 0,1` (or `PEARL_GPU_INDEX`); the app passes indices
-nvidia-smi does not list straight to the core, one core each. Indices are HIP's, which
-follow `rocm-smi` unless `HIP_VISIBLE_DEVICES` says otherwise. Temperatures, VRAM rows on
-the board and memory clocks are read with nvidia-smi and stay empty on AMD.
+any card after it; the error names that card, and `HIP_VISIBLE_DEVICES` hides it. To choose
+cards yourself, give their indices with `--gpu-index 0,1` (or `PEARL_GPU_INDEX`); the app passes
+indices nvidia-smi does not list straight to the core, one core each. Indices are HIP's, which
+follow `rocm-smi` unless `HIP_VISIBLE_DEVICES` says otherwise. Temperatures and memory clocks
+are read with nvidia-smi and stay empty on AMD; on Linux the board's VRAM rows come from sysfs.
 
 Without nvidia-smi the app also can't tell which card the local LLM loaded on. While the
 LLM co-runs on a rig mining on one AMD card, each prompt pauses that card, whichever card
