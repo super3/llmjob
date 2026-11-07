@@ -1374,10 +1374,12 @@ typedef struct {
 //
 // Raced against the tensor fold on the same Salad PC on 7 November: a GTX 1660 Super ran
 // 9.615 TH/s against 1.095 (+777%, ahead in 3 of 3 rounds), at 1895 MHz and 117 W of its
-// 125 W, where the tensor fold drew 47 W. That is about 231 MAC an SM a clock, 90% of the
-// 256 a half-rate dp4a allows (64 an SM a clock by NVIDIA's profiler docs), so the fold
-// has little left to gain there. It found the tensor fold's exact hits and mined 9.48
-// TH/s on Kryptex for 45 minutes, 4 shares accepted and 0 rejected.
+// 125 W, where the tensor fold drew 47 W. A GTX 1650 ran 5.654 against 0.692 (+717%, 2 of
+// 2), at 1738 MHz and 67 W of 75. Both are about 231 MAC an SM a clock, 90% of the 256 a
+// half-rate dp4a allows (64 an SM a clock by NVIDIA's profiler docs), so the fold has
+// little left to gain there. Both found the tensor fold's exact hits. On Kryptex the 1660
+// Super mined 9.48 TH/s for 45 minutes (4 shares accepted, 0 rejected) and the 1650 5.48
+// TH/s for 35 minutes (2 accepted, 0 rejected).
 //
 // Every Turing card with tensor cores has 30 SMs or more (the RTX 2060 and the Quadro RTX
 // 3000 have 30, the T4 40); every one without has 24 or fewer (TU116 24, TU117 16). So the
