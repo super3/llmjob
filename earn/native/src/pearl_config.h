@@ -1353,12 +1353,49 @@ typedef struct {
 // kernel). 32 bytes of k a stage, double buffered through registers (Pascal has no
 // cp.async): 21 KB of static shared, so no opt-in, and two blocks fit an SM.
 //
-// The body is built only where __CUDA_ARCH__ is in PEARL_DP4A_ARCH: sm_61 and up (sm_60,
-// the P100, has no dp4a), below Turing. Elsewhere it is an empty kernel nothing launches,
-// as the tall and Hopper folds are on the archs that do not run them. The host takes a
-// card for it when the loaded binary of pearl_tile_fold_dp4a says so (binaryVersion 61).
+// The body is built where __CUDA_ARCH__ is in PEARL_DP4A_ARCH: sm_61 and up (sm_60, the
+// P100, has no dp4a), below Turing. Those passes have no int8 mma, so the wmma fold is
+// empty there (PEARL_DP4A_ONLY). It is also built for sm_75 with PEARL_DP4A_TURING, below.
+// Elsewhere it is an empty kernel nothing launches, as the tall and Hopper folds are on
+// the archs that do not run them. The host takes a card for it when the loaded binary of
+// pearl_tile_fold_dp4a says so (binaryVersion 61).
 #define PEARL_DP4A_ARCH(a) ((a) >= 610 && (a) < 750)
 #if defined(__CUDA_ARCH__) && PEARL_DP4A_ARCH(__CUDA_ARCH__)
+#define PEARL_DP4A_ONLY 1
+#else
+#define PEARL_DP4A_ONLY 0
+#endif
+// GTX 16 (sm_75 without tensor cores: the GTX 1650 to 1660 Ti, the Quadro T400 to T2000,
+// the MX450 and MX550). On Turing's tensor fold, with no tensor cores to run it, they
+// mined 0.7 to 1.3 TH/s, as PeakMiner and SRBMiner do (tuning/benchmark.md). Turing has
+// __dp4a, so PEARL_DP4A_TURING (1, the default) builds Pascal's fold, unchanged, into the
+// sm_75 binary as well, and the host runs it on an sm_75 card with fewer than
+// PEARL_DP4A_TURING_SMS SMs (pearl_dp4a_turing_for in pearl_host.cu).
+//
+// Raced against the tensor fold on the same Salad PC on 7 November: a GTX 1660 Super ran
+// 9.615 TH/s against 1.095 (+777%, ahead in 3 of 3 rounds), at 1895 MHz and 117 W of its
+// 125 W, where the tensor fold drew 47 W. A GTX 1650 ran 5.654 against 0.692 (+717%, 2 of
+// 2), at 1738 MHz and 67 W of 75. Both are about 231 MAC an SM a clock, 90% of the 256 a
+// half-rate dp4a allows (64 an SM a clock by NVIDIA's profiler docs), so the fold has
+// little left to gain there. Both found the tensor fold's exact hits. On Kryptex the 1660
+// Super mined 9.48 TH/s for 45 minutes (4 shares accepted, 0 rejected) and the 1650 5.48
+// TH/s for 35 minutes (2 accepted, 0 rejected).
+//
+// Every Turing card with tensor cores has 30 SMs or more (the RTX 2060 and the Quadro RTX
+// 3000 have 30, the T4 40); every one without has 24 or fewer (TU116 24, TU117 16). So the
+// RTX 20 cards and the T4 run the fold they ran, and the other sm_75 kernels' machine
+// code does not change (native-core.yml checks that against a build with the switch
+// off). At run time PEARL_DP4A_TURING_FORCE=1 sends every sm_75 card to the dp4a fold, for
+// tests on a card with tensor cores, and 0 sends none, back to the tensor fold. Host and
+// device: build both with the same value.
+#ifndef PEARL_DP4A_TURING
+#define PEARL_DP4A_TURING 1
+#endif
+#if PEARL_DP4A_TURING != 0 && PEARL_DP4A_TURING != 1
+#error "PEARL_DP4A_TURING is 0 or 1"
+#endif
+#define PEARL_DP4A_TURING_SMS 30
+#if defined(__CUDA_ARCH__) && (PEARL_DP4A_ONLY || (PEARL_DP4A_TURING && __CUDA_ARCH__ == 750))
 #define PEARL_DP4A_BODY 1
 #else
 #define PEARL_DP4A_BODY 0
@@ -1381,7 +1418,8 @@ typedef struct {
 #endif
 // Column offsets a batch (Ctx::colBatch). The profile's 2048 is a 4090's batch: on a
 // GTX 1080 Ti it would be about 0.4 s a launch. 256 keeps a launch near 50 ms there and
-// a few hundred ms on the smallest Pascal cards, well inside Windows' 2 s watchdog.
+// a few hundred ms on the smallest Pascal cards and on a GTX 1650 (14 SMs, about 6 T MAC
+// a second at its dp4a peak), well inside Windows' 2 s watchdog.
 // -DPEARL_DP4A_COL_BATCH=N forces N (a multiple of 8 that divides the valid offsets).
 #ifndef PEARL_DP4A_COL_BATCH
 #define PEARL_DP4A_COL_BATCH 256u

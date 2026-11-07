@@ -5,7 +5,8 @@
 #
 #   WALLET=prl1... SRC=<llmjob checkout> OUT=<scratch dir> bash earn/native/probes/turing/pool.sh
 #
-# Builds the default core with compilers.sh, runs verify-hits.js on it for 90 s, then
+# Builds the default core with compilers.sh (or, with POOL_FLAGS, the core those nvcc
+# flags build, such as -DPEARL_DP4A_TURING=0), runs verify-hits.js on it for 90 s, then
 # runs the CLI on POOL (default us.pearl.herominers.com:1200, the benchmark's pool): a
 # 60 s warm-up that is not measured, then SECS (300) measured. Our rate is the mean of
 # the CLI's readings after the first minute of the measured run, each the average
@@ -24,11 +25,11 @@ export CUDA_VISIBLE_DEVICES=0
 mkdir -p "$OUT"
 say() { printf '[pool] %s\n' "$*" | cut -c1-490; }
 
-say "start $(date -u +%FT%TZ) commit $(git -C "$SRC" rev-parse --short HEAD 2>/dev/null) pool $POOL worker $WORKER"
+say "start $(date -u +%FT%TZ) commit $(git -C "$SRC" rev-parse --short HEAD 2>/dev/null) pool $POOL worker $WORKER flags [${POOL_FLAGS:-}]"
 say "apps on the GPU: $(nvidia-smi --query-compute-apps=pid --format=csv,noheader | wc -l)"
 
-# 1. The default core, built as compilers.sh builds base.
-STAGES="setup build" VARIANTS_SPEC='base|' SRC="$SRC" OUT="$OUT/cs" \
+# 1. The default core, built as compilers.sh builds base, with POOL_FLAGS if set.
+STAGES="setup build" VARIANTS_SPEC="base|${POOL_FLAGS:-}" SRC="$SRC" OUT="$OUT/cs" \
   bash "$SRC/earn/native/probes/turing/compilers.sh" > "$OUT/compilers.log" 2>&1
 grep -a '^\[compilers\] \(card \|build \)' "$OUT/compilers.log" | sed 's/^\[compilers\] /[pool] core: /' | cut -c1-490
 CORE=$OUT/cs/v/base/build/Release/pearl_core.node

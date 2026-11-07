@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Test boxes for the AMD (HIP) Pearl core on Salad's AMD classes, and for our own NVIDIA builds on its RTX 30
-classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx5090, or those
-with -2 to -99 after them (it refuses any other name, so it can never touch the mining fleet's biz- groups). An
-amdtest box runs amdtest.sh, which prints "[amdtest] HH:MM:SS <tag> ..." lines; an nvtest box runs nvtest.sh
-(compilers.sh's builds and races on the card), which prints "[nvtest] HH:MM:SS ..." lines. `logs` and `wait`
-read them back.
+classes. Manages only the groups amdtest-rdna3 and amdtest-rdna4, nvtest-rtx2060 to nvtest-rtx5090,
+nvtest-gtx1650, nvtest-gtx1660 and nvtest-gtx1660super, or those with -2 to -99 after them (it refuses any other
+name, so it can never touch the mining fleet's biz- groups). An amdtest box runs amdtest.sh, which prints
+"[amdtest] HH:MM:SS <tag> ..." lines; an nvtest box runs nvtest.sh (compilers.sh's builds and races on the card),
+which prints "[nvtest] HH:MM:SS ..." lines. `logs` and `wait` read them back.
 
   amdtest.py create NAME CLASS --sha SHA [--tasks LIST] [--env K=V ...] [--patch-from DIR] [--cpu 4 --mem 8192]
                                 [--retry SECS]
@@ -20,7 +20,7 @@ CLASS is Salad's name ("AMD RX 7900 XTX (24GB)") or a short one: 7900xtx, 7900xt
 for nvtest boxes 3090ti, 3090, 3080ti, 3080, 3070ti, 3070, 3060ti, 3060, and 4090, 4080, 4070ti, 4070, 4060ti,
 4060 (RTX 40, the other cp.async card a tall-fold change has to be raced on), and 2080ti, 2080, 2070, 2060 (RTX 20,
 for the B-direct fold), and 5090, 5080, 5070ti, 5070, 5060ti, 5060 (RTX 50, for the TMA tall fold; CUDA_VER=13.3
-builds with the toolkit their cu13 core ships with).
+builds with the toolkit their cu13 core ships with), and 1660super, 1660, 1650 (GTX 16, for the dp4a fold).
 The box's command never changes: it fetches amdtest.sh at SCRIPT_SHA or BASE_SHA and runs it, so `set-env` is
 how a new run starts. It updates the environment and then restarts the instance (--no-restart leaves that to
 Salad). See "AMD test boxes" in README.md for how long that took. --patch-from DIR sends DIR's uncommitted and
@@ -54,7 +54,10 @@ NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080
               "2080ti": "RTX 2080 Ti (11 GB)", "2080": "RTX 2080 (8 GB)", "2070": "RTX 2070 (8 GB)",
               "2060": "RTX 2060 (6 GB)",
               "5090": "RTX 5090 (32 GB)", "5080": "RTX 5080 (16 GB)", "5070ti": "RTX 5070 Ti (16 GB)",
-              "5070": "RTX 5070 (12 GB)", "5060ti": "RTX 5060 Ti (16 GB)", "5060": "RTX 5060 (8 GB)"}
+              "5070": "RTX 5070 (12 GB)", "5060ti": "RTX 5060 Ti (16 GB)", "5060": "RTX 5060 (8 GB)",
+              # GTX 16 (sm_75 without tensor cores), for the dp4a fold (PEARL_DP4A_TURING). Salad's "GTX 1660"
+              # class gave a GTX 1660 Ti on 17 October (bench.py).
+              "1650": "GTX 1650 (4 GB)", "1660": "GTX 1660 (6 GB)", "1660super": "GTX 1660 Super (6 GB)"}
 NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
@@ -81,21 +84,23 @@ def tag(name):
 
 
 def check_name(name):
-    """One of NAMES or nvtest-rtx<card> (nvtest-rtx3090ti, nvtest-rtx4070, nvtest-rtx5090), or one with a number
-    after it (amdtest-rdna4-2).
+    """One of NAMES, nvtest-rtx<card> (nvtest-rtx3090ti, nvtest-rtx4070, nvtest-rtx5090) or nvtest-gtx<card>
+    (nvtest-gtx1650, nvtest-gtx1660, nvtest-gtx1660super), or one with a number after it (amdtest-rdna4-2).
     Salad holds a deleted group's name for hours, so a box deleted once can't be made again under the same
     name."""
-    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40|50)[6-9]0(ti)?)(-[2-9]|-[1-9][0-9])?", name):
-        sys.exit(f"amdtest.py manages only {', '.join(NAMES)} and nvtest-rtx2060 to nvtest-rtx5090 (or -2 to -99 "
-                 f"after them), not {name!r}")
+    if not re.fullmatch(r"(amdtest-rdna[34]|nvtest-rtx(20|30|40|50)[6-9]0(ti)?|nvtest-gtx(1650|1660|1660super))"
+                        r"(-[2-9]|-[1-9][0-9])?", name):
+        sys.exit(f"amdtest.py manages only {', '.join(NAMES)}, nvtest-rtx2060 to nvtest-rtx5090 and nvtest-gtx1650, "
+                 f"-gtx1660 and -gtx1660super (or -2 to -99 after them), not {name!r}")
     return name
 
 
 def class_name(arg, nv=False):
-    """A class name from Salad's name or a short one (7900xtx, 3090ti). Exact short names only, so 7900xt is
-    never read as 7900xtx, nor 3090 as 3090ti."""
+    """A class name from Salad's name or a short one (7900xtx, 3090ti, 1660super). Exact short names only, so
+    7900xt is never read as 7900xtx, nor 3090 as 3090ti, nor 1660 as 1660super."""
     if nv:
-        key = re.sub(r"[^a-z0-9]", "", arg.lower().replace("nvidia", "").replace("geforce", "").replace("rtx", ""))
+        key = re.sub(r"[^a-z0-9]", "", arg.lower().replace("nvidia", "").replace("geforce", "").replace("rtx", "")
+                     .replace("gtx", ""))
         return NV_CLASSES.get(key, arg)
     key = re.sub(r"[^a-z0-9]", "", arg.lower().replace("amd", "").replace("rx", ""))
     return CLASSES.get(key, arg)

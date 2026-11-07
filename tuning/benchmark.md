@@ -360,6 +360,23 @@ Salad, 17 October, v0.6.0 against PeakMiner 2.17.6 and SRBMiner 3.7.1.
 
 No tensor cores, so every miner is equally slow and none is worth running on these cards.
 
+Our miner now runs the GTX 10 cards' dp4a fold on these cards instead of the tensor fold (`PEARL_DP4A_TURING` in
+pearl_config.h, on by default). Raced against the tensor fold on the same PC, Salad, 7 November. These are our own
+builds on nvtest boxes, not the release files, so the rows above are unchanged:
+
+| Card | Machine ID | Tensor fold | dp4a fold | Change | dp4a fold's clock and power |
+|---|---|---|---|---|---|
+| GTX 1660 Super | e4505b49 | 1.095 | 9.615 | +777% (ci95 3.3%, ahead 3 of 3 rounds) | 1895 MHz, 117 of 125 W |
+| GTX 1650 | 13120675 | 0.692 | 5.654 | +717% (ci95 45%, ahead 2 of 2 rounds) | 1738 MHz, 67 of 75 W |
+
+- Both cards run about 231 MAC an SM a clock. That is 90% of the 256 a half-rate dp4a allows, so there is little left
+  to gain. The tensor fold drew only 47 W and 34 W.
+- Both found the tensor fold's exact hits on three batch shapes and passed the pool's hit check.
+- On Kryptex the 1660 Super mined 9.48 TH/s for 45 minutes, with 4 shares accepted and 0 rejected. The 1650 mined
+  5.48 TH/s for 35 minutes on the default build, with 2 accepted and 0 rejected.
+- Still not worth renting: Salad's 1660 Super costs $0.027/h at low priority, against $0.034/h for an RTX 2060 that
+  mines 40–48 TH/s. The gain is for people who own these cards.
+
 ## AMD Radeon (RDNA 3 and 4, on Salad)
 
 Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD.

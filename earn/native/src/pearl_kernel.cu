@@ -1658,9 +1658,9 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     uint32_t m, uint32_t n, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg,
     uint32_t col_off, uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits) {
-#if PEARL_DP4A_BODY
+#if PEARL_DP4A_ONLY
   // Pascal has no int8 mma (nor nvcuda::wmma): its fold is pearl_tile_fold_dp4a, and the
-  // host never launches this one there.
+  // host never launches this one there. (sm_75 with PEARL_DP4A_TURING builds both.)
   (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg;
   (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles;
   (void)test; (void)hits;
@@ -2801,7 +2801,7 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
     }();
   }
 #endif  // PEARL_TURING_BD_BODY
-#endif  // PEARL_DP4A_BODY
+#endif  // PEARL_DP4A_ONLY
 }
 
 #if PEARL_BD_RG_KERNEL_BUILT
@@ -4111,7 +4111,8 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 }
 #endif  // PEARL_HOPPER_WGMMA
 
-// Pascal's fold (PEARL_DP4A_ARCH: sm_61, the GTX 10 series). An int8 GEMM on __dp4a over
+// Pascal's fold (PEARL_DP4A_ARCH: sm_61, the GTX 10 series), and with PEARL_DP4A_TURING
+// the GTX 16 cards' (sm_75 without tensor cores), the same code. An int8 GEMM on __dp4a over
 // 128x128 tiles, with the tensor folds' tile pattern, chunk readout, transcript hash and
 // hit list, so a hit from it is the same hit any other fold would report. The layout and
 // the inner loop live in pearl_fold_dp4a.h, which probes/dp4a-check.cc also runs on the
@@ -4136,8 +4137,8 @@ pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, u
 // threads 0-63 hash one region each, exactly as the tensor folds' hashers do.
 //
 // Built for every architecture, because the host launches it by name; the body is empty
-// outside PEARL_DP4A_ARCH, and the host launches it only where it has one
-// (Ctx::foldDp4a).
+// outside PEARL_DP4A_ARCH (and sm_75 with PEARL_DP4A_TURING), and the host launches it
+// only where it has one (Ctx::foldDp4a).
 extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_fold_dp4a(
     const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime, uint32_t a_rows,
     uint32_t b_rows, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,

@@ -161,7 +161,8 @@ extern "C" __global__ void pearl_tile_fold_tall_pinb(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits,
     const PearlTensorMap tmA, const PearlTensorMap tmB);
-// Pascal's dp4a fold (PEARL_DP4A_ARCH; a body only in an sm_61 build).
+// Pascal's dp4a fold (PEARL_DP4A_ARCH; a body only in an sm_61 build, and in an sm_75 one
+// with PEARL_DP4A_TURING).
 extern "C" __global__ void pearl_tile_fold_dp4a(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
     uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
@@ -324,8 +325,8 @@ struct Ctx {
   bool foldHopper = false;
   // Whether this card runs Pascal's dp4a fold (PEARL_DP4A_ARCH): pearl_tile_fold_dp4a,
   // over 128x128 tiles of A' and B' k-blocked in 32-byte blocks (draw_noise), one block
-  // a tile. Read off that kernel's loaded binary (binaryVersion 61). Set, no other fold
-  // flag is.
+  // a tile. Read off that kernel's loaded binary (binaryVersion 61), or on a GTX 16 card
+  // with PEARL_DP4A_TURING, its sm_75 body (resolve_fold). Set, no other fold flag is.
   bool foldDp4a = false;
   // The card's compute capability, for the fold's name and its errors.
   int ccMajor = 0, ccMinor = 0;
@@ -1039,6 +1040,25 @@ bool pearl_encode_operand(PearlTensorMap *map, const void *base, uint64_t rows, 
          == CUDA_SUCCESS;
 }
 
+// An unsigned number from the environment, parsed by hand (defined below, with the launch
+// sweep that first used it).
+bool pearl_bd_sweep_env(const char *name, uint32_t *out);
+
+// Whether an sm_75 card with `sms` SMs runs the dp4a fold (PEARL_DP4A_TURING): one with
+// no tensor cores, which every sm_75 card with fewer than PEARL_DP4A_TURING_SMS SMs is
+// (pearl_config.h). `force` is PEARL_DP4A_TURING_FORCE: 1 sends every sm_75 card to it,
+// 0 none, anything else (-1, unset) leaves it to the SM count. An SM count of 0 (not
+// known) keeps the tensor fold. Never in a build without the switch.
+bool pearl_dp4a_turing_for(int sms, int force) {
+  if (!PEARL_DP4A_TURING) return false;
+  if (force == 0 || force == 1) return force == 1;
+  return sms > 0 && sms < PEARL_DP4A_TURING_SMS;
+}
+
+// Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's, or
+// Turing's (a GTX 16 card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
+const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }
+
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
 // that runs. The Ada-layout builds of pearl_tile_fold_wmma (sm_89, and sm_86, which
@@ -1070,11 +1090,30 @@ void resolve_fold(Ctx *ctx) {
   // applies; draw_noise writes its operands k-blocked in 32-byte blocks. The launch
   // bound alone does not say it: the empty kernel every other build carries has the same
   // one.
+  //
+  // GTX 16 (sm_75 without tensor cores, PEARL_DP4A_TURING): the same fold, when the
+  // sm_75 binary has its body and pearl_dp4a_turing_for takes the card. That binary
+  // also has the tensor folds, so the binary version cannot tell the body from the empty
+  // kernel; its registers can (123 for the body on sm_61, a handful for the empty one).
+  // Then nothing below applies either, as for Pascal.
   {
     cudaFuncAttributes fd;
     if (cudaFuncGetAttributes(&fd, reinterpret_cast<const void *>(pearl_tile_fold_dp4a))
         == cudaSuccess) {
-      if (PEARL_DP4A_ARCH(fd.binaryVersion * 10)
+      bool turing = false;
+      if (PEARL_DP4A_TURING && fd.binaryVersion == 75 && fd.numRegs >= 64) {
+        int sms = 0;
+        if (cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, ctx->device)
+            != cudaSuccess) {
+          (void)cudaGetLastError();
+          sms = 0;
+        }
+        uint32_t v = 0;
+        const int force =
+            pearl_bd_sweep_env("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;
+        turing = pearl_dp4a_turing_for(sms, force);
+      }
+      if ((PEARL_DP4A_ARCH(fd.binaryVersion * 10) || turing)
           && (uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS) {
         ctx->foldDp4a = true;
         ctx->foldKnown = true;
@@ -1872,17 +1911,36 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Which fold runs, before any operand is drawn (see resolve_fold).
   resolve_fold(ctx);
-  // Pascal (the dp4a fold): a narrower batch, so a launch stays tens of milliseconds
-  // (PEARL_DP4A_COL_BATCH). One line on stderr says which fold this card got, so a
-  // miner log from a GTX 10 card shows it.
+  // Pascal and GTX 16 (the dp4a fold): a narrower batch, so a launch stays tens of
+  // milliseconds (PEARL_DP4A_COL_BATCH). One line on stderr says which fold this card
+  // got and how many of its blocks an SM holds, so a miner log from a GTX 10 or GTX 16
+  // card shows it.
   if (ctx->foldDp4a) {
     const uint32_t cb = pearl_dp4a_col_batch(ctx->colBatch, ctx->colsValid);
     if (cb != ctx->colBatch) {
       ctx->colBatch = cb;
       ctx->batch = ctx->colBatch * ctx->rowsValid;
     }
-    fprintf(stderr, "[pearl] GPU %d: compute %d.%d, Pascal dp4a fold, %u column offsets a batch\n",
-            ctx->device, ctx->ccMajor, ctx->ccMinor, ctx->colBatch);
+    // Turing splits 96 KB an SM between L1 and shared, 32 or 64 KB of it shared. Two
+    // blocks take 42 KB, so a Turing card asks for the larger shared part, as the RTX 20
+    // fold does (PEARL_BD_A_DIRECT_CARVEOUT). The fold stages its operands in shared, so
+    // it leans little on L1. Pascal's shared is its own.
+    if (ctx->ccMajor == 7
+        && cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),
+                                cudaFuncAttributePreferredSharedMemoryCarveout,
+                                (int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)
+      (void)cudaGetLastError();
+    int perSm = 0;
+    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,
+        reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);
+    if (oe != cudaSuccess) {
+      (void)cudaGetLastError();
+      perSm = 0;
+    }
+    fprintf(stderr,
+            "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "
+            "blocks an SM\n",
+            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);
   }
   // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
   // sweeps fits the L2. See PEARL_TMA_L2_SHARE.
@@ -2364,11 +2422,11 @@ void draw_noise(Ctx *ctx, bool isA) {
   } else
 #endif
   if (ctx->foldDp4a && kPow2 && k >= PEARL_DP4A_STAGE_K) {
-    // Pascal's dp4a fold reads both noised operands k-blocked in 32-byte blocks, its
-    // stage (pearl_fold_dp4a.h): a tile's stage is then one contiguous 4 KB run rather
-    // than one sector of each of 128 lines. Same values, only the addresses differ, as
-    // for the tall fold below. (The dp4a fold runs only at k = 2048; the search
-    // refuses any other.)
+    // The dp4a fold (Pascal, GTX 16) reads both noised operands k-blocked in 32-byte
+    // blocks, its stage (pearl_fold_dp4a.h): a tile's stage is then one contiguous 4 KB
+    // run rather than one sector of each of 128 lines. Same values, only the addresses
+    // differ, as for the tall fold below. (The dp4a fold runs only at k = 2048; the
+    // search refuses any other.)
     uint32_t dpLog2 = 0;
     while ((1u << dpLog2) < PEARL_DP4A_STAGE_K) dpLog2++;
     pearl_materialize16_kblocked<<<draw_blocks(len / 16), kDrawThreads>>>(
@@ -2805,10 +2863,11 @@ PearlHitList pearl_slot_hits(Ctx *ctx, int slot) {
   return hitList;
 }
 
-// What a search error says about the fold, so a log from a GTX 10 card says which fold
-// failed. Empty for every other fold, whose messages are as they were.
+// What a search error says about the fold, so a log from a GTX 10 or GTX 16 card says
+// which fold failed. Empty for every other fold, whose messages are as they were.
 const char *pearl_fold_tag(const Ctx *ctx) {
-  return ctx->foldDp4a ? " (Pascal dp4a fold)" : "";
+  if (!ctx->foldDp4a) return "";
+  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";
 }
 
 // The end of every submit, once the batch's kernels are queued on `st`: the hit count
@@ -2840,12 +2899,13 @@ bool pearl_queue_batch(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   return true;
 }
 
-// One batch of Pascal's dp4a fold (Ctx::foldDp4a), from pearl_host_submit: every valid
-// row offset by the batch's col_batch column offsets, as 128x128 tiles of 8 row offsets
-// by 8 column offsets, one block of PEARL_DP4A_THREADS a tile. Its 21 KB of shared is
-// static, inside the 48 KB every block gets, so there is no opt-in; two blocks fit a
-// GTX 10 SM (96 KB of shared, 64K registers, at most 128 registers a thread). The
-// operands are A' and B' k-blocked in 32-byte blocks (draw_noise), m and n rows.
+// One batch of the dp4a fold (Ctx::foldDp4a: Pascal, or GTX 16), from pearl_host_submit:
+// every valid row offset by the batch's col_batch column offsets, as 128x128 tiles of 8
+// row offsets by 8 column offsets, one block of PEARL_DP4A_THREADS a tile. Its 21 KB of
+// shared is static, inside the 48 KB every block gets, so there is no opt-in; two blocks
+// fit a GTX 10 SM (96 KB of shared, 64K registers, at most 128 registers a thread) and a
+// Turing one (64 KB of shared, the same registers). The operands are A' and B' k-blocked
+// in 32-byte blocks (draw_noise), m and n rows.
 bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint32_t k,
                        uint32_t rank, uint32_t chunks, uint64_t *regions_out, char *err,
                        size_t err_len) {
@@ -2887,8 +2947,9 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   if (le != cudaSuccess) {
     if (err && err_len)
       snprintf(err, err_len,
-               "Pascal dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
-               ctx->ccMajor, ctx->ccMinor, tiles, (unsigned)PEARL_DP4A_THREADS,
+               "%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
+               pearl_dp4a_arch(ctx), ctx->ccMajor, ctx->ccMinor, tiles,
+               (unsigned)PEARL_DP4A_THREADS,
                cudaGetErrorString(le));
     return false;
   }
@@ -2983,7 +3044,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     if (err && err_len) snprintf(err, err_len, "%s", ctx->foldErr);
     return false;
   }
-  // Pascal's dp4a fold has a launch of its own; nothing below is for it.
+  // The dp4a fold (Pascal, GTX 16) has a launch of its own; nothing below is for it.
   if (ctx->foldDp4a)
     return pearl_submit_dp4a(ctx, slot, st, nonce_base, k, rank, chunks, regions_out, err,
                              err_len);
@@ -3458,8 +3519,8 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   if (!ctx || !ctx->foldKnown) return "unresolved";
   if (ctx->foldDp4a) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
-             "dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (Pascal)",
-             (unsigned)PEARL_DP4A_BAND, ctx->colBatch);
+             "dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (%s)",
+             (unsigned)PEARL_DP4A_BAND, ctx->colBatch, pearl_dp4a_arch(ctx));
     return ctx->foldName;
   }
   if (ctx->foldTall && ctx->foldCluster)

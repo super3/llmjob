@@ -34,6 +34,8 @@
 #   SMI_EVERY       seconds between the SM clock and power lines compilers.sh prints during the race and
 #                   hashrate stages (default 5; 0 for none)
 #   WALLET, POOL, POOL_SECS   pool.sh after the race, when WALLET and POOL_SECS are both set
+#   POOL_FLAGS      nvcc flags for the core pool.sh builds (default none, the default core), so a build from
+#                   VARIANTS_SPEC can mine on the pool: POOL_FLAGS=-DPEARL_DP4A_TURING=0
 set -u
 R=${NVTEST_ROOT:-/opt/llmjob}
 OUT=${NVTEST_OUT:-/root/out}
