@@ -1,8 +1,0 @@
-# name=flags, one a line; the first is the base the others are held to.
-# After item 2: the base is gfx1100/gfx1101's default, buffer loads with TID; rel is the release before it.
-base=
-rel=-DPEARL_AMD_RDNA3_BUFLD=0
-pfx=-DPEARL_AMD_PFX=1
-pin=-DPEARL_AMD_PF2PIN=1
-pinc=-DPEARL_AMD_PF2PIN=1 -DPEARL_AMD_CRANK=1 -DPEARL_AMD_SCHEDB=1
-st=-DPEARL_AMD_STAMP=1
