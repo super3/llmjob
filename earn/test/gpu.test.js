@@ -541,6 +541,24 @@ describe('AMD cards on an AMD rig', () => {
     expect(planAmdGpus({ env: { PEARL_CORE_VARIANT: 'cu12' }, det: { amd: [R9700, R9700] } })).toEqual([]);
   });
 
+  // These hide cards from HIP, as the AMD README advises for a card the release
+  // has no code for. HIP then lists fewer cards than the OS, and a planned GPU 1
+  // would fail with a line naming PEARL_GPU_INDEX, which the user never set.
+  it('plans no more cards than HIP_VISIBLE_DEVICES or ROCR_VISIBLE_DEVICES show', () => {
+    const two = { amd: [R9700, R9700] };
+    const three = { amd: [R9700, R9700, R9700] };
+    // One card shown: the old path, the core picks it.
+    expect(planAmdGpus({ env: { HIP_VISIBLE_DEVICES: '1' }, det: two })).toEqual([]);
+    expect(planAmdGpus({ env: { ROCR_VISIBLE_DEVICES: '0' }, det: three })).toEqual([]);
+    expect(planAmdGpus({ env: { HIP_VISIBLE_DEVICES: '0,1', ROCR_VISIBLE_DEVICES: '2' }, det: three })).toEqual([]);
+    // HIP numbers what it shows from 0.
+    expect(planAmdGpus({ env: { HIP_VISIBLE_DEVICES: '0,2' }, det: three }))
+      .toEqual([{ index: 0, name: null }, { index: 1, name: null }]);
+    expect(planAmdGpus({ env: { HIP_VISIBLE_DEVICES: '0,1,2' }, det: two })).toHaveLength(2);
+    // Set but empty hides nothing.
+    expect(planAmdGpus({ env: { HIP_VISIBLE_DEVICES: '', ROCR_VISIBLE_DEVICES: ' ' }, det: two })).toHaveLength(2);
+  });
+
   it('says how many cards mine and how to choose them', () => {
     expect(describeAmdPlan([{ index: 0 }, { index: 1 }], 'set PEARL_GPU_INDEX'))
       .toBe('mining on 2 AMD cards (GPU 0, 1), one core each; set PEARL_GPU_INDEX to choose cards');

@@ -391,6 +391,13 @@ function isDiscreteAmd(name) {
   return /\b(?:AMD|Radeon)\b/i.test(n) && AMD_DISCRETE.test(n) && !INTEGRATED.test(n) && !IGNORE.test(n);
 }
 
+// Variables that hide cards from HIP, so HIP lists fewer than the OS does. The
+// AMD README says to set HIP_VISIBLE_DEVICES to hide a card the release has no
+// code for. Planning from the OS's count would then ask for a card HIP no
+// longer has. HIP numbers the cards it shows 0..k-1, so a list of k cards caps
+// the plan at k.
+const HIP_HIDES = ['HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES'];
+
 // The cards an AMD rig mines on when nobody chose any: HIP's 0..N-1, one core
 // each, for the N AMD cards the OS reports.
 //
@@ -402,12 +409,17 @@ function isDiscreteAmd(name) {
 // its own salt lane, as on NVIDIA, because PearlMiner gives one to each entry.
 //
 // [] keeps the old path: cards were chosen (`chosen`, PEARL_GPU_INDEX or
-// --gpu-index), the OS shows one AMD card or can't say, or `env` makes the rig
-// load a CUDA core. The cards get no names: the OS's order need not be HIP's,
-// and each core names the card it opened. An index HIP has no card for fails
-// on its own, and the other cards mine (PearlMiner._startCores).
+// --gpu-index), the OS shows one AMD card or can't say (or HIP_HIDES in `env`
+// show one), or `env` makes the rig load a CUDA core. The cards get no names:
+// the OS's order need not be HIP's, and each core names the card it opened. An
+// index HIP has no card for fails on its own, and the other cards mine
+// (PearlMiner._startCores).
 function planAmdGpus({ env, det, chosen } = {}) {
-  const n = det && Array.isArray(det.amd) ? det.amd.length : 0;
+  let n = det && Array.isArray(det.amd) ? det.amd.length : 0;
+  for (const name of HIP_HIDES) {
+    const shown = String((env || {})[name] || '').split(',').filter((id) => /\S/.test(id));
+    if (shown.length) n = Math.min(n, shown.length);
+  }
   if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [] }).variant !== AMD) return [];
   return Array.from({ length: n }, (_, index) => ({ index, name: null }));
 }
