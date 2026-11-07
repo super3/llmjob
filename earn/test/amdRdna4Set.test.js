@@ -44,8 +44,9 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
     for (const [name, on] of Object.entries(SET)) {
       const expr = defaultOf(name);
       expect([name, expr]).toEqual([name, expect.stringContaining('PEARL_AMD_RDNA4_SET')]);
-      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 1 })]).toEqual([name, on]);
-      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 0 })]).toEqual([name, 0]);
+      // CRANK and SCHEDB are in RDNA 3's set too (amdRdna3Set.test.js), which is off outside gfx11 code.
+      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 1, PEARL_AMD_RDNA3_SET_ON: 0 })]).toEqual([name, on]);
+      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 0, PEARL_AMD_RDNA3_SET_ON: 0 })]).toEqual([name, 0]);
     }
     // Every default is defined after the set's, which comes after the instruction gates.
     const at = FOLD.indexOf('#define PEARL_AMD_RDNA4_SET PEARL_AMD_WMMA12');
@@ -54,10 +55,13 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
   });
 
   it('leaves out the parts that stopped paying in the set, and the timing-only switches', () => {
-    for (const name of ['PEARL_AMD_STOFF', 'PEARL_AMD_UNROLL4', 'PEARL_AMD_CMASK', 'PEARL_AMD_LPIN', 'PEARL_AMD_LDS_PAD',
+    for (const name of ['PEARL_AMD_STOFF', 'PEARL_AMD_UNROLL4', 'PEARL_AMD_CMASK', 'PEARL_AMD_LDS_PAD',
       'PEARL_AMD_LDS32_S48']) {
       expect([name, defaultOf(name)]).toEqual([name, '0']);
     }
+    // LPIN is on only with PEARL_AMD_PF2PIN, and only in gfx11 code (amdPf2pin.test.js), so it is 0 in RDNA 4's.
+    expect(defaultOf('PEARL_AMD_LPIN')).toBe('(2 * PEARL_AMD_PF2PIN_ON)');
+    expect(FOLD).toContain('#define PEARL_AMD_PF2PIN_ON (PEARL_AMD_PF2PIN && PEARL_AMD_WMMA11)\n');
     // PEARL_AMD_WAVES has no default: the attribute is there only when it is set.
     expect(FOLD).toContain('#ifdef PEARL_AMD_WAVES\n#define PEARL_AMD_WMMA12_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_WAVES)))');
     expect(FOLD).not.toMatch(/#define PEARL_AMD_WAVES /);
@@ -87,7 +91,7 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
   });
 
   it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
-    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0"; fi\n');
+    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi\n');
     expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"');
     expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
     // The gpu build (Linux, the release's) has no OS flag: the default holds there.

@@ -39,7 +39,9 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
   it('is on by default in RDNA 4 code and, with PEARL_AMD_RDNA3_BUFLD, in RDNA 3 code, for the per-tile layout only', () => {
     expect(defaultOf('PEARL_AMD_BUFLD')).toBe('(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))');
     // TID goes with it: without TID the first staging unit's A'-or-B' test stays a run-time branch.
-    expect(defaultOf('PEARL_AMD_TID')).toBe('(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))');
+    // (PF2PIN and RDNA3_SET, issue #287 item 8, turn TID on in gfx11 code too: amdPf2pin and amdRdna3Set.test.js.)
+    expect(defaultOf('PEARL_AMD_TID')).toBe(
+      '(PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)');
     expect(buf.split('\n')[0]).toBe(
       '#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)');
   });
@@ -80,7 +82,8 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
     // [BUFLD, TID] in a target's device pass, as the Linux core (no flags) or the Windows core (SET_OS) builds it.
     const loads = (arch, windows) => {
       const v = { PEARL_AMD_WMMA11: +/^gfx11/.test(arch), PEARL_AMD_WMMA12: +/^gfx12/.test(arch),
-        PEARL_AMD_GFX1100_1101: +['gfx1100', 'gfx1101'].includes(arch) };
+        PEARL_AMD_GFX1100_1101: +['gfx1100', 'gfx1101'].includes(arch), PEARL_AMD_PF2PIN_ON: 0,
+        PEARL_AMD_RDNA3_SET_ON: 0 };
       v.PEARL_AMD_RDNA3_BUFLD = windows ? 0 : evalWith(sw, v);
       return [evalWith(defaultOf('PEARL_AMD_BUFLD'), v), evalWith(defaultOf('PEARL_AMD_TID'), v)];
     };
@@ -95,7 +98,7 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
   });
 
   it('stays out of the Windows core, and build-amd.sh never turns the loads on itself', () => {
-    expect(buildScript).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0"; fi\n');
+    expect(buildScript).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi\n');
     expect(buildScript).not.toMatch(/-DPEARL_AMD_BUFLD/);
     expect(buildScript).not.toMatch(/-DPEARL_AMD_RDNA3_BUFLD=1/);
   });

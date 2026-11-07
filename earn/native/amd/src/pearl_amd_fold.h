@@ -483,30 +483,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // loads below slab s's matrix instructions, about one slab ahead, and on gfx1100 (no PFX) the
 // LDS store and the barrier still wait for every load. The measured gains are real, but they
 // come mostly from the unrolled loop, the DPP readout and, on RDNA 4, PFX's barrier. Pinning
-// the loads at the top of the step (a sched_barrier after them) is untried. On by default on
+// the loads at the top of the step: PEARL_AMD_LPIN and PEARL_AMD_PF2PIN. On by default on
 // RDNA 3 and RDNA 4. An RX
 // 7800 XT (PC 16f1685c) ran hashrate.js at 31.86-31.93 TH/s with it against 31.10-31.16
 // without, and 32.17-32.28 with the DPP readout below as well. RDNA 4: see PFX.
 #ifndef PEARL_AMD_PF2
 #define PEARL_AMD_PF2 (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
-#endif
-// PEARL_AMD_PFX=1, with PF2: keep the loads two slabs ahead in flight across the barrier. Two
-// things stopped that. __syncthreads() is a workgroup fence for every address space, which
-// waits for every outstanding global load at each slab barrier (vmcnt(0) and an L0 invalidate
-// on gfx11; loadcnt(0) and global_inv scope:SCOPE_SE on gfx12). And the loads were issued
-// under `if`, so where the two paths met the compiler waited for all of them before the LDS
-// stores (vmcnt(0), not 3). So the slab barrier fences LDS only (the loads go to registers;
-// nothing else is shared), and the last two steps load the last slab again instead of skipping
-// (two slabs in 64, from L2). PEARL_AMD_TID=1 tells the compiler threadIdx.x < 256, which drops
-// an exec-mask branch in the staging addresses (wmma12 215 -> 198 VGPRs; wmma11 240 -> 231).
-// PFX is on by default on RDNA 4 only; TID on RDNA 4 and with RDNA 3's buffer loads (below). An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
-// the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
-// with PF2 + DPP + PFX + TID; the old path against all four on other PCs: 9060 XT d324328f
-// 56.27-56.34 against 63.92-63.94, 54b217a9 28.16 against 32.85; 9070 XT 83151dba 81.26-81.33
-// against 89.05-89.81, 77904d36 97.81-97.85 against 110.09-110.49. On RDNA 3 PFX + TID changed
-// nothing (RX 7900 XT 67c308d2, 47.13-47.23 against 47.22-47.26), so PFX stays off there.
-#ifndef PEARL_AMD_PFX
-#define PEARL_AMD_PFX PEARL_AMD_WMMA12
 #endif
 // PEARL_AMD_RDNA3_BUFLD: RDNA 3's buffer loads, PEARL_AMD_BUFLD and PEARL_AMD_TID together (see BUFLD, below). On by
 // default on gfx1100 and gfx1101 only, the two chips it was raced on; gfx1102, gfx1150 and gfx1151 keep their global
@@ -518,8 +500,66 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_RDNA3_BUFLD != 0 && PEARL_AMD_RDNA3_BUFLD != 1
 #error "PEARL_AMD_RDNA3_BUFLD is 0 or 1"
 #endif
+// PEARL_AMD_RDNA3_SET (issue #287 item 8): RDNA 3's staging cuts, on by default where its buffer loads are
+// (PEARL_AMD_RDNA3_BUFLD, so gfx1100 and gfx1101 in the Linux core), the only code they were raced on. In gfx11 code
+// it sets PEARL_AMD_PFX and, with RDNA 4's set, PEARL_AMD_CRANK and PEARL_AMD_SCHEDB (each below). CRANK + SCHEDB
+// drop the per-slab division and the readout code an even slab carried but never ran (the fold's code has 32 LDS
+// loads, not 48), but alone they lost 1.2% on an RX 7800 XT: three of a pair's six slab loads then have no WMMA
+// between their issue and the barrier's wait for them. With PFX the barrier no longer waits for the loads, and they get 32 to 96 WMMAs. The wmma11 fold takes
+// 226 VGPRs, 6 waves. Against the buffer-load fold on the same PC, 7 November, with a twin of it for the noise:
+// on an RX 7900 XTX (28a12f15) the fold alone +0.60 to +0.88% a round and hashrate.js +0.89 to +1.20%; on an
+// RX 7800 XT (72dd708c) +0.83 to +0.89% and +0.83 to +0.93%, verify-hits 400 of 400; on Kryptex
+// the XTX got 6 accepted shares and 0 rejected in 10 minutes.
+// -DPEARL_AMD_RDNA3_SET=0 builds item 2's fold to race against; the Windows core leaves it out (SET_OS).
+#ifndef PEARL_AMD_RDNA3_SET
+#define PEARL_AMD_RDNA3_SET PEARL_AMD_RDNA3_BUFLD
+#endif
+#if PEARL_AMD_RDNA3_SET != 0 && PEARL_AMD_RDNA3_SET != 1
+#error "PEARL_AMD_RDNA3_SET is 0 or 1"
+#endif
+#define PEARL_AMD_RDNA3_SET_ON (PEARL_AMD_RDNA3_SET && PEARL_AMD_WMMA11)
+// PEARL_AMD_PF2PIN=1 (issue #287 item 8): RDNA 3's PF2 loop with every load two slabs ahead in fact. In gfx11 code
+// only, it sets PEARL_AMD_PFX, PEARL_AMD_TID and PEARL_AMD_LPIN=2 (each below), which can still be set one by one.
+// Off by default; the races below show why. What the gfx1100 assembly showed (ROCm 7.2):
+//   - The release issues slab s+2's loads at the top of step s, but __syncthreads()'s fence waits for them at the
+//     end of step s (vmcnt(0)): each load gets the 32 WMMAs of one slab, and its registers then sit a slab unused.
+//   - PFX alone (timed level on an RX 7900 XT) lets the compiler sink the loads to the end of the step: one slab.
+//   - PFX + LPIN=1 keeps the loads of one step of the unrolled pair at the top; the other step's sink past the
+//     sched_barrier into the block after its readout. Machine sinking stops a load only at a later store in its
+//     block, and a sched_barrier isn't one.
+//   - PFX + LPIN=2 keeps all six at the top: each gets 64 WMMAs. 235 VGPRs against 240, 6 waves, no spills; 233
+//     with PEARL_AMD_BUFLD, 230 with PEARL_AMD_CRANK and PEARL_AMD_SCHEDB as well, each still two slabs ahead.
+// Raced on top of the buffer loads, 7 November: the stamps of the buffer-load fold put the memory wait at the release
+// fence at 0.76-0.79% of the slab loop on two RX 7900 XTX PCs and 1.85% on an RX 7800 XT. PF2PIN alone ran the fold
+// +0.05%, +0.42% and +0.25% on those three PCs (hashrate.js +0.24% on the second, inside its noise). With CRANK and
+// SCHEDB it ran +0.66% in hashrate.js on the 7800 XT, but PEARL_AMD_RDNA3_SET without the pin (226 VGPRs, three loads
+// one slab ahead and three two) ran +0.88% there, and +1.04% against +0.38% on an RX 7900 XTX (the fold +0.70%
+// against +0.52%).
+#ifndef PEARL_AMD_PF2PIN
+#define PEARL_AMD_PF2PIN 0
+#endif
+#define PEARL_AMD_PF2PIN_ON (PEARL_AMD_PF2PIN && PEARL_AMD_WMMA11)
+// PEARL_AMD_PFX=1, with PF2: keep the loads two slabs ahead in flight across the barrier. Two
+// things stopped that. __syncthreads() is a workgroup fence for every address space, which
+// waits for every outstanding global load at each slab barrier (vmcnt(0) and an L0 invalidate
+// on gfx11; loadcnt(0) and global_inv scope:SCOPE_SE on gfx12). And the loads were issued
+// under `if`, so where the two paths met the compiler waited for all of them before the LDS
+// stores (vmcnt(0), not 3). So the slab barrier fences LDS only (the loads go to registers;
+// nothing else is shared), and the last two steps load the last slab again instead of skipping
+// (two slabs in 64, from L2). PEARL_AMD_TID=1 tells the compiler threadIdx.x < 256, which drops
+// an exec-mask branch in the staging addresses (wmma12 215 -> 198 VGPRs; wmma11 240 -> 231).
+// PFX is on by default on RDNA 4 and with PEARL_AMD_RDNA3_SET or PEARL_AMD_PF2PIN; TID on RDNA 4, with RDNA 3's
+// buffer loads (above) and with either of those. An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
+// the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
+// with PF2 + DPP + PFX + TID; the old path against all four on other PCs: 9060 XT d324328f
+// 56.27-56.34 against 63.92-63.94, 54b217a9 28.16 against 32.85; 9070 XT 83151dba 81.26-81.33
+// against 89.05-89.81, 77904d36 97.81-97.85 against 110.09-110.49. On RDNA 3 PFX + TID changed
+// nothing (RX 7900 XT 67c308d2, 47.13-47.23 against 47.22-47.26), so PFX alone stays off there.
+#ifndef PEARL_AMD_PFX
+#define PEARL_AMD_PFX (PEARL_AMD_WMMA12 || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)
+#endif
 #ifndef PEARL_AMD_TID
-#define PEARL_AMD_TID (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))
+#define PEARL_AMD_TID (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)
 #endif
 // PEARL_AMD_KPAIR=1 (RDNA 4, wmma12): each lane reads its fragments for two k-steps with one 16-byte LDS load.
 // A slab's k-steps don't have to take its bytes in order: the WMMAs of a slab add up over all of them, and a chunk
@@ -599,7 +639,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_RDPERM
 #define PEARL_AMD_RDPERM (2 * PEARL_AMD_RDNA4_SET)
 #endif
-// Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET; the rest are off by default.
+// Staging cuts (RDNA 4). CRANK and SCHEDB are in PEARL_AMD_RDNA4_SET and PEARL_AMD_RDNA3_SET; the rest are off by
+// default.
 // PEARL_AMD_CRANK=1: the PF2 slab loop takes rank as PEARL_FOLD_RANK (128) at compile time, so a chunk is a
 // constant 4 slabs. The runtime `% perChunk` was a scalar division every slab, and every even slab of the
 // unrolled pair carried a readout it never ran. A code object built with it says so (PEARL_AMD_CAP_RANK), and the
@@ -613,9 +654,12 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // PEARL_AMD_SCHEDB=1: a sched_barrier(0) after each slab's WMMAs and readout, before its stores and barrier, so
 // the compiler can't move a slab's WMMAs past its barrier when both slabs of a pair are one basic block (CRANK).
 // PEARL_AMD_LPIN=1: a sched_barrier(0) after the slab loads at the top of each step, so they aren't sunk below
-// the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant.
+// the slab's WMMAs and readout: each load gets two slabs to arrive in, as PF2 meant. That binds the scheduler only,
+// inside one block. On gfx1100 machine sinking still moved one step's loads into the block after its readout,
+// since nothing after them in their block stores. =2 adds an empty asm with a memory clobber after the loads,
+// which counts as a store there, so the loads stay. It adds no instruction. =2 with PEARL_AMD_PF2PIN.
 #ifndef PEARL_AMD_CRANK
-#define PEARL_AMD_CRANK PEARL_AMD_RDNA4_SET
+#define PEARL_AMD_CRANK (PEARL_AMD_RDNA4_SET || PEARL_AMD_RDNA3_SET_ON)
 #endif
 #ifndef PEARL_AMD_UNROLL4
 #define PEARL_AMD_UNROLL4 0
@@ -627,10 +671,13 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_CMASK 0
 #endif
 #ifndef PEARL_AMD_SCHEDB
-#define PEARL_AMD_SCHEDB PEARL_AMD_RDNA4_SET
+#define PEARL_AMD_SCHEDB (PEARL_AMD_RDNA4_SET || PEARL_AMD_RDNA3_SET_ON)
 #endif
 #ifndef PEARL_AMD_LPIN
-#define PEARL_AMD_LPIN 0
+#define PEARL_AMD_LPIN (2 * PEARL_AMD_PF2PIN_ON)
+#endif
+#if PEARL_AMD_LPIN < 0 || PEARL_AMD_LPIN > 2
+#error "PEARL_AMD_LPIN is 0, 1 or 2"
 #endif
 #if (PEARL_AMD_SCHEDB || PEARL_AMD_LPIN) && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #define PEARL_AMD_SCHED_PIN() __builtin_amdgcn_sched_barrier(0)
@@ -1348,6 +1395,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     }
 #else
     if (s + 2 < slabs) { PEARL_AMD_LOADR(s + 2, pre2[B]) }   // set B's slab s went to LDS last step
+#endif
+#if PEARL_AMD_LPIN == 2 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+    asm volatile("" ::: "memory");   // PEARL_AMD_LPIN=2 (above)
 #endif
 #if PEARL_AMD_LPIN
     PEARL_AMD_SCHED_PIN();   // PEARL_AMD_LPIN (above)

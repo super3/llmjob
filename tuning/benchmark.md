@@ -398,6 +398,24 @@ release, for the noise.
 - The 7800 XT's +0.62% twin round is one low release reading (31.765 TMAC/s against 31.97-32.01 in the others).
 - Not yet raced against SRBMiner, so the rows above stay as they are.
 
+RDNA 3's staging cuts on top of those loads (`PEARL_AMD_RDNA3_SET`: PFX, CRANK and SCHEDB, on by default on gfx1100
+and gfx1101; issue #287, item 8), 7 November: item 2's build (base) and the new one taking turns on one PC, order
+rotating, scored from round 2. The twin is a second copy of the base.
+
+| Card | PC | Fold alone | `hashrate.js` | Twin: fold, `hashrate.js` |
+|---|---|---|---|---|
+| RX 7900 XTX | `28a12f15` | +0.71, +0.60, +0.88, +0.62% | +0.89, +1.01, +1.20% (base 55.22-55.70) | 0 to +0.13%, not run |
+| RX 7800 XT | `72dd708c` | +0.83, +0.89, +0.85, +0.87% | +0.90, +0.86, +0.83, +0.93% (base 31.25-31.28) | −0.02 to +0.08%, −0.10 to +0.10% |
+
+- The same with the slab loads pinned two slabs ahead (`PEARL_AMD_PF2PIN`, which the set leaves off) was slower on
+  both: fold +0.52% and `hashrate.js` +0.38% on the XTX, +0.67% and +0.66% on the 7800 XT. CRANK and SCHEDB alone
+  lost 1.22% in the fold on the 7800 XT.
+- verify-hits checked 400 of 400 hits on the 7800 XT. On Kryptex the XTX got 6 accepted shares and 0 rejected in
+  10 minutes at 55.6-57.1 TH/s.
+- The pinned build was also raced on two more XTX PCs: on `fd4ebc44` the fold +0.87 to +1.37% and `hashrate.js` +0.36
+  to +1.15% (mean +0.68%; that PC drifted, its twin read up to +0.75%), verify-hits 400 of 400 and 4 accepted, 0
+  rejected in 15 minutes on Kryptex; on `c15f2792` the fold +0.24 to +0.53%, before Salad moved the box.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
@@ -421,6 +439,10 @@ What future speed work needs: how to measure, the limits found, and what has alr
 **Limits found**
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
   KPAIR and BUFLD (4 November). Each VALU instruction beside the WMMAs costs about a cycle of WMMA time.
+- RDNA 3's slab loads one slab ahead are nearly hidden already. The stamps of the buffer-load fold put the wait for
+  them at the release fence at 0.76% and 0.79% of the slab loop on two RX 7900 XTX PCs and 1.85% on an RX 7800 XT
+  (7 November), while waves wait 27-30% of it at the slab barrier for each other. Two slabs ahead
+  (`PEARL_AMD_PF2PIN`) gained +0.05 to +0.42% in the fold.
 - RDNA 3's WMMA does 238-241 MAC a CU a clock (93-94% of AMD's 256; `pearl_amd_peak`, RX 7900 XTX and 7800 XT,
   7 November). A VALU beside the WMMAs costs about 1 clock of WMMA time alone and 3.5-5 in a dependent chain, read
   from MAC a CU a clock, since the clock moves between kernels.
@@ -520,6 +542,10 @@ What future speed work needs: how to measure, the limits found, and what has alr
   and the readout gains a move. Nothing to race.
 - RDNA 3 (item 13): k 4096 gained under +0.3%. Batch 128 shipped on gfx1100 and gfx1101 (+0.1 to +1.8% a round, and 64
   was slower on both chips); RDNA 4 was level at 128 and keeps 256.
+- RDNA 3 load scheduling (#287 item 8, 7 November): the loads pinned two slabs ahead (`PEARL_AMD_PF2PIN`, an empty
+  asm with a memory clobber keeps them at the top of the step), alone +0.05%, +0.42% and +0.25% fold alone on three
+  PCs and with CRANK and SCHEDB 0.2% behind the same without the pin; CRANK and SCHEDB without PFX, −1.22%, since
+  three of a pair's six loads then wait at the barrier with no WMMA to hide them. The set that shipped is above.
 - AMD fold: two-lane readout regions and readout v2 (items 2 and 4); start skew (item 14); the LDS store a k-step
   earlier (item 15); `PEARL_AMD_SADDR`; a 64-byte slab; a fold with no LDS; operand fill above 48; 8 waves a SIMD; a
   split slab barrier; the keeping lane by exec mask (below RDSEL alone); batch-width and hash-kernel changes.
