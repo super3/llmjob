@@ -409,6 +409,13 @@ What future speed work needs: how to measure, the limits found, and what has alr
   1's builds). So lighter ring synchronization has nothing to win outside the seam (G4, 6 November). RTX 50's TMA
   ring hasn't been ablated, but a 5070 Ti's cycles a tile (102,989) are within 0.2% of the 4090's, and a 5090 with
   no TMA bytes at all did +0.15% ±0.3 more work a clock.
+- The hash on RTX 50 was never stubbed out (the stubs are cp.async-ring only), but it can cost little more than on
+  Ada: a 5070 Ti at a locked 1346 MHz runs the fold at 102,989 cycles a tile, 211 (0.2%) behind the 4090's 102,778.
+  Its TMA producer (warp 4) folds only 96 IMMAs after the hand-off before it waits for the hashers, against 128 on
+  Ada. Issuing just that refill at the stage's end is bounded by the 0.2%, and `PEARL_TALL_TMA_FILL_PT` 16, which
+  includes it, read +0.07% on a 5090; not built. At the power limit a cycle saving comes back at about half on RTX 30
+  (the paired hash: −0.30% cycles gave +0.14 to +0.22%, and −0.15% on a 3080 Ti), so the whole hash is worth under 1%
+  there. (G8, 6 November, from records.)
 - The B200 needs a tcgen05 fold; `mma.sync` can't pass about 41% of the competitors there.
 - RDNA 2 (`dot4`, a fold for RDNA 2) is a projection, not a measurement: 14.0–41.0 TH/s, half that if its `v_dot4`
   runs at half rate. No RDNA 2 card has run it.
