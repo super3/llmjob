@@ -121,7 +121,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
         .replace('PEARL_AMD_RDLATE', String(mode));
       const when = toJs(grab(body, /\n {6}if \((.*)\) \{\n/));
       const chunk = whole(toJs(grab(body, /\n {8}const uint32_t c = (.*);\n/)));
-      const after = whole(toJs(grab(FOLD, /if constexpr \(kLate\) readout\((.*)\);   \/\/ PEARL_AMD_RDLATE: the last chunk/)));
+      const after = whole(toJs(grab(FOLD, /if constexpr \(kLate\) readout\((.*)\); {3}\/\/ PEARL_AMD_RDLATE: the last chunk/)));
       const f = (expr, ...names) => new Function(...names, 'return (' + expr + ');');
       const stepOn = f(steps, 'B'), test = f(when, 's', 'B', 'perChunk'), chunkOf = f(chunk, 's', 'perChunk');
       const lastOf = f(after, 'slabs', 'perChunk');

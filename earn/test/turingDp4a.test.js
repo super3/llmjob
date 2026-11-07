@@ -96,7 +96,6 @@ function turingFor(sw) {
     'if (!PEARL_DP4A_TURING) return false;',
     'if (force == 0 || force == 1) return force == 1;',
     'return sms > 0 && sms < PEARL_DP4A_TURING_SMS;']);
-  // eslint-disable-next-line no-new-func
   const f = new Function('sms', 'force', 'PEARL_DP4A_TURING', 'PEARL_DP4A_TURING_SMS', body);
   const sms = Number(/^#define PEARL_DP4A_TURING_SMS (\d+)$/m.exec(CONFIG)[1]);
   return (cardSms, force = -1) => f(cardSms, force, sw, sms);

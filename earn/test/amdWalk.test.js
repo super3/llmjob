@@ -28,7 +28,7 @@ const ON = between(BODY, '#if PEARL_AMD_WALK_ON\n', '#else\n');
 // pearl_amd_walk as JS for walk `mode` (1 or 2) and shape { W, H, SW, SH }: (bx, by, gx, gy) -> [x, y], BigInts.
 function walkFn(mode, { W, H, SW = W, SH = H }) {
   const js = ON
-    .replace(/  static_assert\([^;]*;\n/, '')
+    .replace(/ {2}static_assert\([^;]*;\n/, '')
     .replace(/\bconstexpr uint32_t |\bconst uint32_t /g, 'const ')
     .replace(/\bPEARL_AMD_WALK_W\b/g, `${W}n`)
     .replace(/\bPEARL_AMD_WALK_H\b/g, `${H}n`)
