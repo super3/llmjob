@@ -220,6 +220,8 @@ jest.mock('../src/main/pearlEngine', () => {
       // The cards a pause or resume acted on: one card, unless a test says none.
       this.pauseCards = jest.fn(() => (PearlEngine.noCards ? [] : [{ index: 0, name: 'GPU0' }]));
       this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      // Every planned card started, unless a test says fewer.
+      this.cardCount = jest.fn(() => Math.max(1, ((this.settings && this.settings.gpus) || []).length));
       PearlEngine.instances.push(this);
     }
   }
@@ -5531,6 +5533,24 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
     await flush();
     const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith(null);
+  });
+
+  // The OS lists two, but HIP has one: an old Radeon it has no code for fails on
+  // its own, and one card mines. The LLM, started after the miner, counts the
+  // cards that started, so that card still pauses for each prompt.
+  it('with two AMD cards planned and one started, a prompt still pauses it', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 0, name: null }, { index: 1, name: null }] }));
+    miner.cardCount.mockReturnValue(1);
     miner.emit('event', { type: 'status', hashrate: '2.5' });
     await flush(30);
     ctx.LlmManager.instances[0].emit('busy', true);

@@ -137,9 +137,10 @@ let llmCards = [];
 // How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
 // one) has no bus ids, and several cards are left mining. On an AMD rig that is
 // the cards PEARL_GPU_INDEX names, else the AMD cards the OS lists
-// (planAmdGpus); one AMD card is 0 here, so its prompts still pause it. Read with
-// the bus ids when the LLM starts and kept for its life, so a prompt's start and
-// its end map to the same card even when the miner starts in between.
+// (planAmdGpus) that the miner started; one AMD card is 0 or 1 here, so its
+// prompts still pause it. Read with the bus ids when the LLM starts and kept
+// for its life, so a prompt's start and its end map to the same card even when
+// the miner starts in between.
 let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
@@ -1410,8 +1411,13 @@ async function startLlm(reserveMb, epoch) {
   if (stale()) return false;
   llmBusIds = busIds;
   llmCards = cards;
+  // The AMD plan can name a card HIP doesn't have, such as an old Radeon it
+  // has no code for. That card fails on its own (PearlMiner._startCores), so a
+  // miner already running counts the cards that started. A rig left mining on
+  // one card still pauses it for each prompt.
+  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
   llmMiningCards = planMinerGpus(cards, chosen).length
-    || planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
+    || (amdPlanned && miner && miner.isRunning() ? Math.min(amdPlanned, miner.cardCount()) : amdPlanned);
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without

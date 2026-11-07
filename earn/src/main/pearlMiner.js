@@ -204,6 +204,13 @@ class PearlMiner extends EventEmitter {
     return this.cores.map((c) => c.device).filter(Boolean);
   }
 
+  // How many cards this run has: mining, paused for a prompt, or waiting for a
+  // restart, the cards _outOfCards counts. A card that would not start is not
+  // one, so a planned card HIP doesn't have is left out.
+  cardCount() {
+    return this.cores.length + this.paused.size + this.restarts.size;
+  }
+
   start(settings = {}) {
     if (this.running) return false;
     this.settings = settings;

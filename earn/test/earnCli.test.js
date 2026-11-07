@@ -94,12 +94,16 @@ jest.mock('../src/main/pearlEngine', () => {
       this.poolConnected = jest.fn(() => true);
       this.pauseCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      // Every planned card started, unless a test says how many did.
+      this.cardCount = jest.fn(() => PearlEngine.startedCards
+        ?? Math.max(1, ((this.settings && this.settings.gpus) || []).length));
       PearlEngine.instances.push(this);
     }
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
   PearlEngine.startReturns = undefined;
+  PearlEngine.startedCards = null;
   return { PearlEngine };
 });
 // The Monero CPU miner: an engine that records what it is asked, the CPU facts
@@ -278,6 +282,7 @@ function applyDefaults(m) {
   m.hive.updatePackage.mockResolvedValue(undefined);
   m.hive.checkDriver.mockResolvedValue(null);
   m.PearlEngine.startReturns = undefined;
+  m.PearlEngine.startedCards = null;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
   m.xmrWorker.findWorker.mockReturnValue('/opt/llmjob-xmr-worker');
 }
@@ -1906,6 +1911,33 @@ describe('local LLM', () => {
       + 'NVIDIA, AMD and Intel');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // The OS lists two AMD cards (planAmdGpus), but HIP may not have both: an old
+  // Radeon it has no code for fails on its own. The count is the cards that
+  // started, so a rig left mining on one still pauses it for each prompt.
+  test('on an AMD rig, counts the planned cards that started', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      for (const [started, paused] of [[2, false], [1, true]]) {
+        const m = load();
+        fiveNinety(m);
+        // No nvidia-smi: no VRAM rows and no bus ids, so the model's card is unknown.
+        m.probe.detectGpusVram.mockResolvedValue([]);
+        m.probe.detectPciBusIds.mockResolvedValue({});
+        const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+        m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+        m.PearlEngine.startedCards = started;
+        const p = m.run(argvCoRun);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.settings.gpus).toHaveLength(2);
+        m.LlmManager.instances[0].emit('busy', true);
+        if (paused) expect(miner.pauseCards).toHaveBeenCalledWith(null);
+        else expect(miner.pauseCards).not.toHaveBeenCalled();
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      }
+    });
   });
 
   test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {

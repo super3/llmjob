@@ -187,6 +187,11 @@ class PearlEngine extends EventEmitter {
     return this.miner ? this.miner.resumeCards(indices) : [];
   }
 
+  // How many cards the miner runs (see PearlMiner.cardCount). 0 before a start.
+  cardCount() {
+    return this.miner ? this.miner.cardCount() : 0;
+  }
+
   // Poll the card temperature while mining. Sampled once immediately so the
   // reading appears with the first status rather than five seconds into the
   // run, then on a timer -- a status event fires on every share and every
