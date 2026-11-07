@@ -44,8 +44,9 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
     for (const [name, on] of Object.entries(SET)) {
       const expr = defaultOf(name);
       expect([name, expr]).toEqual([name, expect.stringContaining('PEARL_AMD_RDNA4_SET')]);
-      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 1 })]).toEqual([name, on]);
-      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 0 })]).toEqual([name, 0]);
+      // CRANK and SCHEDB are in RDNA 3's load pin too (amdPf2pin.test.js), which is off outside gfx11 code.
+      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 1, PEARL_AMD_RDNA3_PIN_ON: 0 })]).toEqual([name, on]);
+      expect([name, evalWith(expr, { PEARL_AMD_RDNA4_SET: 0, PEARL_AMD_RDNA3_PIN_ON: 0 })]).toEqual([name, 0]);
     }
     // Every default is defined after the set's, which comes after the instruction gates.
     const at = FOLD.indexOf('#define PEARL_AMD_RDNA4_SET PEARL_AMD_WMMA12');
@@ -90,7 +91,7 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
   });
 
   it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
-    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0"; fi\n');
+    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_PIN=0"; fi\n');
     expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"');
     expect(BUILD).toContain('-std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
     // The gpu build (Linux, the release's) has no OS flag: the default holds there.

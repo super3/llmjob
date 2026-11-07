@@ -97,7 +97,7 @@ describe('slab loads as buffer loads (PEARL_AMD_BUFLD)', () => {
   });
 
   it('stays out of the Windows core, and build-amd.sh never turns the loads on itself', () => {
-    expect(buildScript).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0"; fi\n');
+    expect(buildScript).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_PIN=0"; fi\n');
     expect(buildScript).not.toMatch(/-DPEARL_AMD_BUFLD/);
     expect(buildScript).not.toMatch(/-DPEARL_AMD_RDNA3_BUFLD=1/);
   });
