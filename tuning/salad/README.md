@@ -509,9 +509,9 @@ python3 tuning/salad/amdtest.py delete nvtest-rtx3090
 ```
 
 GTX 16 boxes (`nvtest-gtx1650`, `nvtest-gtx1660`, `nvtest-gtx1660super`, classes `1650`, `1660`, `1660super`) race
-the dp4a fold on sm_75 cards without tensor cores (`PEARL_DP4A_TURING` in pearl_config.h). Salad's `GTX 1660` class
+the dp4a fold on sm_75 cards without tensor cores (`PEARL_DP4A_TURING` in pearl_config.h, on by default). Salad's `GTX 1660` class
 has given a 1660 Ti. `POOL_FLAGS` gives pool.sh's core the same nvcc flags as a build in `VARIANTS_SPEC`, so that build
-can mine on the pool (`POOL_FLAGS=-DPEARL_DP4A_TURING=1`).
+can mine on the pool (`POOL_FLAGS=-DPEARL_DP4A_TURING=0` mines with the tensor fold the GTX 16 cards ran before).
 
 A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
 quota.

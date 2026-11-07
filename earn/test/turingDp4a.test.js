@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 // GTX 16 cards (sm_75 without tensor cores) on Pascal's dp4a fold: PEARL_DP4A_TURING,
-// off by default. The switch builds pearl_tile_fold_dp4a's body into the sm_75 binary too,
+// on by default. The switch builds pearl_tile_fold_dp4a's body into the sm_75 binary too,
 // and the host runs it on an sm_75 card with fewer than 30 SMs. Nothing here runs device
 // code: the checks read the sources, and run the host's card rule on the CPU.
 // - where each fold has a body, with and without the switch, and that the RTX 20 fold
@@ -13,7 +13,8 @@ const path = require('path');
 // - resolve_fold picks it before any tensor fold is set up, and only from a body;
 // - a Turing card asks for the 64 KB shared part, so two blocks fit an SM;
 // - the names and log lines say which cards it runs on, as before on Pascal;
-// - CI compiles the switch and checks the other sm_75 kernels; no shipped build sets it;
+// - CI holds the shipped sm_75 kernels, all but the dp4a fold, to a build with the switch
+//   off, and fails a build whose sm_75 dp4a fold has no body;
 // - pool.sh can build it.
 
 const NL = String.fromCharCode(10);
@@ -102,10 +103,10 @@ function turingFor(sw) {
 }
 
 describe('the switch and where each fold has a body (pearl_config.h)', () => {
-  test('is off by default, 0 or 1, with 30 SMs as the line', () => {
+  test('is on by default, 0 or 1, with 30 SMs as the line', () => {
     const at = LINES.indexOf('#ifndef PEARL_DP4A_TURING');
     expect(LINES.slice(at, at + 7)).toEqual([
-      '#ifndef PEARL_DP4A_TURING', '#define PEARL_DP4A_TURING 0', '#endif',
+      '#ifndef PEARL_DP4A_TURING', '#define PEARL_DP4A_TURING 1', '#endif',
       '#if PEARL_DP4A_TURING != 0 && PEARL_DP4A_TURING != 1', '#error "PEARL_DP4A_TURING is 0 or 1"', '#endif',
       '#define PEARL_DP4A_TURING_SMS 30']);
     const refused = (v) => condition('PEARL_DP4A_TURING != 0 && PEARL_DP4A_TURING != 1', null, { PEARL_DP4A_TURING: v });
@@ -265,29 +266,45 @@ describe('resolve_fold and what follows a card it takes', () => {
 });
 
 describe('builds', () => {
-  // CI compiles the switch for sm_75, prints the body's registers and spill, and holds
-  // every other sm_75 kernel to the default build's machine code.
-  test('CI compiles the switch on its own and compares the other sm_75 kernels', () => {
-    const step = slice(CI, '- name: Compile the GTX 16 dp4a build (sm_75, not shipped)', '          exit $bad');
+  // The shipped compile has the switch on (the default). CI compiles sm_75 again with it
+  // off and holds every other sm_75 kernel to that build's machine code, so the RTX 20
+  // cards and the T4 run what they ran. Its spill check fails a build whose sm_75 dp4a
+  // fold has no body, as it does for sm_61.
+  test('CI compares the shipped sm_75 kernels with the switch off', () => {
+    const step = slice(CI, '- name: Check that the GTX 16 dp4a fold changes no other sm_75 kernel', '          EOF');
     expect(step).toContain("if: runner.os == 'Linux' && matrix.variant == ''");
-    expect(step).toContain('continue-on-error: true');
-    expect(step.match(/-gencode arch=compute_75,code=sm_75 \\/g)).toHaveLength(2);
-    expect(step.match(/-DPEARL_DP4A_TURING=1 \\/g)).toHaveLength(2);
-    expect(step).toContain('-c src/pearl_kernel.cu -o $G/pearl_kernel.o 2>&1 | tee $G/ptxas-kernel.txt');
-    expect(step).toContain('-c src/pearl_host.cu -o $G/pearl_host.o');
-    expect(step).toContain('(cd $G/default && cuobjdump -xelf all ../../pearl_kernel.o > /dev/null)');
-    expect(step).toContain('(cd $G/switch && cuobjdump -xelf all ../pearl_kernel.o > /dev/null)');
+    // Blocking: the switch ships, so a change it makes to the RTX 20 folds fails the job.
+    expect(step).not.toContain('continue-on-error');
+    expect(step.match(/-gencode arch=compute_75,code=sm_75 \\/g)).toHaveLength(1);
+    expect(step.match(/-DPEARL_DP4A_TURING=0 \\/g)).toHaveLength(1);
+    expect(step).toContain('-c src/pearl_kernel.cu -o $G/pearl_kernel.o');
+    expect(step).toContain('(cd $G/shipped && cuobjdump -xelf all ../../pearl_kernel.o > /dev/null)');
+    expect(step).toContain('(cd $G/off && cuobjdump -xelf all ../pearl_kernel.o > /dev/null)');
+    expect(step).toContain("python3 - $G/off/*sm_75*.cubin $G/shipped/*sm_75*.cubin <<'EOF'");
     expect(step).toContain('if n == "pearl_tile_fold_dp4a":');
     expect(step).toContain('changed an sm_75 kernel other than the dp4a fold');
-    // After the shipped compile it reads, which does not set the switch.
+    expect(step).toContain('sys.exit(bad)');
+    // After the shipped compile it reads, which takes the default.
     expect(CI.indexOf('- name: Compile the CUDA kernels')).toBeLessThan(CI.indexOf(step));
     const shipped = slice(CI, '- name: Compile the CUDA kernels', '-c src/pearl_host.cu -o cuda-build/pearl_host.o');
     expect(shipped).not.toContain('PEARL_DP4A_TURING');
     // That step is the only place a workflow or build script sets it.
-    expect(CI.replace(step, '')).not.toContain('PEARL_DP4A_TURING=1');
+    expect(CI.replace(step, '')).not.toContain('PEARL_DP4A_TURING=');
     for (const f of ['.github/workflows/miner-build.yml', 'earn/native/build-local.ps1', 'earn/native/binding.gyp']) {
       expect([f, fs.readFileSync(path.join(ROOT, f), 'utf8').includes('PEARL_DP4A_TURING')]).toEqual([f, false]);
     }
+    // The spill check: an sm_75 dp4a fold under 64 registers is the empty kernel, and fails
+    // any build that compiles sm_75.
+    const spill = slice(CI, '- name: Check the fold kernels for register spills', '          exit $bad');
+    inOrder(spill, [
+      'dp4a_body_75=0',
+      'if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_75 ] \\',
+      '&& [ "$regs" -ge 64 ] 2>/dev/null; then',
+      'dp4a_body_75=1',
+      '*"code=sm_75 "*)',
+      'if [ "$dp4a_body_75" != 1 ]; then',
+      '::error::pearl_tile_fold_dp4a on sm_75 has no body',
+      'bad=1']);
   });
 
   // pool.sh builds the core it mines with from POOL_FLAGS, as nvtest.sh documents.

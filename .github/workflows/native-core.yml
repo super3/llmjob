@@ -354,8 +354,8 @@ jobs:
       # (pearl_tile_fold_wmma_rg, PEARL_BD_RG_KERNEL; a body only on sm_75),
       # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
       # sm_90a), for the transcript hash kernel (pearl_tall_hash80, a body only
-      # on sm_80 and sm_90a), and for Pascal's dp4a fold (pearl_tile_fold_dp4a,
-      # a body only on sm_61), on
+      # on sm_80 and sm_90a), and for the dp4a fold (pearl_tile_fold_dp4a,
+      # a body only on sm_61 and sm_75), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
       # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120
@@ -365,7 +365,9 @@ jobs:
       # its body: a build whose gate lost Pascal still compiles and links, and
       # GTX 10 cards would then have no fold at all. Only the body uses more
       # than a handful of registers (123 under 12.8), so fewer than 64 fails the
-      # job. The same holds for the flip kernel on sm_86: the host launches it on
+      # job. So does the sm_75 dp4a fold (127 registers, PEARL_DP4A_TURING):
+      # without it GTX 16 cards fall back to the tensor fold at about an
+      # eighth of the rate. The same holds for the flip kernel on sm_86: the host launches it on
       # the RTX 3060 Ti and the 6 MB RTX 30 cards, which would search nothing. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
@@ -413,6 +415,7 @@ jobs:
           seen_hopper=0
           seen_dp4a=0
           dp4a_body=0
+          dp4a_body_75=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
@@ -428,6 +431,10 @@ jobs:
             if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_61 ] \
                && [ "$regs" -ge 64 ] 2>/dev/null; then
               dp4a_body=1
+            fi
+            if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_75 ] \
+               && [ "$regs" -ge 64 ] 2>/dev/null; then
+              dp4a_body_75=1
             fi
             if [ "$name" = pearl_tile_fold_tall_pinb ] && [ "$arch" = sm_86 ]; then
               pinb_86=stub
@@ -456,53 +463,42 @@ jobs:
                 bad=1
               fi ;;
           esac
+          case " ${{ matrix.gencode }} " in
+            *"code=sm_75 "*)
+              if [ "$dp4a_body_75" != 1 ]; then
+                echo "::error::pearl_tile_fold_dp4a on sm_75 has no body (under 64 registers); GTX 16 cards would fall back to the tensor fold. Check PEARL_DP4A_TURING in pearl_config.h"
+                bad=1
+              fi ;;
+          esac
           if [ "$pinb_86" = stub ]; then
             echo "::error::pearl_tile_fold_tall_pinb on sm_86 has no body (under 64 registers); the RTX 30 cards that take the flip would search nothing. Check PEARL_TALL_PIN_B_ARCH in pearl_config.h"
             bad=1
           fi
           exit $bad
 
-      # GTX 16 cards (sm_75 without tensor cores) can run Pascal's dp4a fold
-      # (PEARL_DP4A_TURING in pearl_config.h: off by default, not measured on a
-      # card yet). Nothing ships it, so it is compiled here, sm_75 only, into a
-      # scratch directory no later step reads. ptxas -v gives the sm_75 body's
-      # registers and spill (the launch bound allows 128 a thread; under 64 is the
-      # empty kernel). Then every other sm_75 kernel's machine code (the md5 of its
-      # .text section, as probes/turing/compilers.sh hashes a fold) must be the
-      # default build's, so turning the switch on cannot change what the RTX 20
-      # cards and the T4 run. Linux 12.8 only: the machine code does not depend on
-      # the host OS. Non-blocking, as the cluster build is.
-      - name: Compile the GTX 16 dp4a build (sm_75, not shipped)
+      # GTX 16 cards (sm_75 without tensor cores) run Pascal's dp4a fold
+      # (PEARL_DP4A_TURING in pearl_config.h, on by default: raced on Salad
+      # against the tensor fold, tuning/benchmark.md). The switch must not touch
+      # what the RTX 20 cards and the T4 run. So the sm_75 half is compiled again
+      # with it off, into a scratch directory no later step reads, and every
+      # sm_75 kernel's machine code but the dp4a fold's (the md5 of its .text
+      # section, as probes/turing/compilers.sh hashes a fold) must match the
+      # shipped build's. Linux 12.8 only: the machine code does not depend on
+      # the host OS.
+      - name: Check that the GTX 16 dp4a fold changes no other sm_75 kernel
         if: runner.os == 'Linux' && matrix.variant == ''
         working-directory: earn/native
         shell: bash
-        continue-on-error: true
         run: |
           G=cuda-build/gtx16
-          mkdir -p $G/default $G/switch
+          mkdir -p $G/shipped $G/off
           nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC \
             -gencode arch=compute_75,code=sm_75 \
-            -DPEARL_DP4A_TURING=1 \
-            -Xptxas -v \
-            -c src/pearl_kernel.cu -o $G/pearl_kernel.o 2>&1 | tee $G/ptxas-kernel.txt
-          nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC \
-            -gencode arch=compute_75,code=sm_75 \
-            -DPEARL_DP4A_TURING=1 \
-            -c src/pearl_host.cu -o $G/pearl_host.o
-          # || true: nothing found is reported below, not by bash -e.
-          st=$(awk '/Compiling entry function .pearl_tile_fold_dp4a. for .sm_75./{f=1;next} f&&/Compiling entry/{f=0} f' $G/ptxas-kernel.txt)
-          regs=$(printf '%s\n' "$st" | grep -oE 'Used [0-9]+ registers' | grep -oE '[0-9]+' | head -1 || true)
-          spill=$(printf '%s\n' "$st" | grep -oE '[0-9]+ bytes spill (stores|loads)' | grep -oE '^[0-9]+' | paste -sd/ - || true)
-          echo "sm_75 pearl_tile_fold_dp4a with PEARL_DP4A_TURING=1: ${regs:-?} registers, spill ${spill:-?} bytes (stores/loads)"
-          bad=0
-          if ! [ "${regs:-0}" -ge 64 ] 2>/dev/null; then
-            echo "::error::pearl_tile_fold_dp4a on sm_75 has no body with PEARL_DP4A_TURING=1 (under 64 registers)"
-            bad=1
-          fi
-          case "$spill" in 0/0) ;; *) echo "::warning::pearl_tile_fold_dp4a on sm_75 spills ($spill bytes stored/loaded)" ;; esac
-          (cd $G/default && cuobjdump -xelf all ../../pearl_kernel.o > /dev/null)
-          (cd $G/switch && cuobjdump -xelf all ../pearl_kernel.o > /dev/null)
-          python3 - $G/default/*sm_75*.cubin $G/switch/*sm_75*.cubin <<'EOF' || bad=1
+            -DPEARL_DP4A_TURING=0 \
+            -c src/pearl_kernel.cu -o $G/pearl_kernel.o
+          (cd $G/shipped && cuobjdump -xelf all ../../pearl_kernel.o > /dev/null)
+          (cd $G/off && cuobjdump -xelf all ../pearl_kernel.o > /dev/null)
+          python3 - $G/off/*sm_75*.cubin $G/shipped/*sm_75*.cubin <<'EOF'
           import hashlib, struct, sys
           def texts(p):
               b = open(p, "rb").read()
@@ -523,15 +519,14 @@ jobs:
           bad = 0
           for n in sorted(set(a) | set(b)):
               if n == "pearl_tile_fold_dp4a":
-                  print(f"{n}: {a.get(n)} -> {b.get(n)} (the dp4a fold, built for sm_75 with the switch)")
+                  print(f"{n}: {a.get(n)} with the switch off -> {b.get(n)} shipped (the GTX 16 fold)")
               elif a.get(n) == b.get(n):
                   print(f"{n}: {a[n]} unchanged")
               else:
-                  print(f"::error::{n}: {a.get(n)} -> {b.get(n)}: PEARL_DP4A_TURING=1 changed an sm_75 kernel other than the dp4a fold")
+                  print(f"::error::{n}: {a.get(n)} -> {b.get(n)}: PEARL_DP4A_TURING changed an sm_75 kernel other than the dp4a fold")
                   bad = 1
           sys.exit(bad)
           EOF
-          exit $bad
 
       # The Blackwell tall fold's two TMA descriptors, and Hopper's wgmma fold's,
       # must sit at 128-byte-aligned parameter addresses. In v0.5.7 and v0.5.8 the

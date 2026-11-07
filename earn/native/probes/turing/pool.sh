@@ -6,7 +6,7 @@
 #   WALLET=prl1... SRC=<llmjob checkout> OUT=<scratch dir> bash earn/native/probes/turing/pool.sh
 #
 # Builds the default core with compilers.sh (or, with POOL_FLAGS, the core those nvcc
-# flags build, such as -DPEARL_DP4A_TURING=1), runs verify-hits.js on it for 90 s, then
+# flags build, such as -DPEARL_DP4A_TURING=0), runs verify-hits.js on it for 90 s, then
 # runs the CLI on POOL (default us.pearl.herominers.com:1200, the benchmark's pool): a
 # 60 s warm-up that is not measured, then SECS (300) measured. Our rate is the mean of
 # the CLI's readings after the first minute of the measured run, each the average

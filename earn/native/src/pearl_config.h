@@ -1366,24 +1366,28 @@ typedef struct {
 #define PEARL_DP4A_ONLY 0
 #endif
 // GTX 16 (sm_75 without tensor cores: the GTX 1650 to 1660 Ti, the Quadro T400 to T2000,
-// the MX450 and MX550). Today they run Turing's tensor fold on a chip with no tensor
-// cores, at 0.7 to 1.3 TH/s, as PeakMiner and SRBMiner do (tuning/benchmark.md). Turing
-// has __dp4a too, at half Pascal's rate a clock by NVIDIA's profiler docs (64 an SM a
-// clock, on the FMA pipe; not measured here). So a GTX 1660 Super (22 SMs, about 1.85
-// GHz) would peak near 10 T MAC a second on dp4a. The 1080 Ti mined 17.8 TH/s, about 75%
-// of its dp4a peak (28 SMs of 128 a clock at about 1.7 GHz, 24 T).
+// the MX450 and MX550). On Turing's tensor fold, with no tensor cores to run it, they
+// mined 0.7 to 1.3 TH/s, as PeakMiner and SRBMiner do (tuning/benchmark.md). Turing has
+// __dp4a, so PEARL_DP4A_TURING (1, the default) builds Pascal's fold, unchanged, into the
+// sm_75 binary as well, and the host runs it on an sm_75 card with fewer than
+// PEARL_DP4A_TURING_SMS SMs (pearl_dp4a_turing_for in pearl_host.cu).
 //
-// PEARL_DP4A_TURING=1 (0 by default: not measured on a card yet) builds Pascal's fold,
-// unchanged, into the sm_75 binary as well, and the host runs it on an sm_75 card with
-// fewer than PEARL_DP4A_TURING_SMS SMs (pearl_dp4a_turing_for in pearl_host.cu). Every
-// Turing card with tensor cores has 30 or more (the RTX 2060 and the Quadro RTX 3000 have
-// 30, the T4 40); every one without has 24 or fewer (TU116 24, TU117 16). So the RTX 20
-// cards and the T4 run the fold they ran, and the other sm_75 kernels' machine code does
-// not change (native-core.yml compiles the switch and checks that). For tests on a card
-// that has tensor cores, PEARL_DP4A_TURING_FORCE=1 at run time sends every sm_75 card to
-// it, and 0 none. Host and device: build both with the same value.
+// Raced against the tensor fold on the same Salad PC on 7 November: a GTX 1660 Super ran
+// 9.615 TH/s against 1.095 (+777%, ahead in 3 of 3 rounds), at 1895 MHz and 117 W of its
+// 125 W, where the tensor fold drew 47 W. That is about 231 MAC an SM a clock, 90% of the
+// 256 a half-rate dp4a allows (64 an SM a clock by NVIDIA's profiler docs), so the fold
+// has little left to gain there. It found the tensor fold's exact hits and mined 9.48
+// TH/s on Kryptex for 45 minutes, 4 shares accepted and 0 rejected.
+//
+// Every Turing card with tensor cores has 30 SMs or more (the RTX 2060 and the Quadro RTX
+// 3000 have 30, the T4 40); every one without has 24 or fewer (TU116 24, TU117 16). So the
+// RTX 20 cards and the T4 run the fold they ran, and the other sm_75 kernels' machine
+// code does not change (native-core.yml checks that against a build with the switch
+// off). At run time PEARL_DP4A_TURING_FORCE=1 sends every sm_75 card to the dp4a fold, for
+// tests on a card with tensor cores, and 0 sends none, back to the tensor fold. Host and
+// device: build both with the same value.
 #ifndef PEARL_DP4A_TURING
-#define PEARL_DP4A_TURING 0
+#define PEARL_DP4A_TURING 1
 #endif
 #if PEARL_DP4A_TURING != 0 && PEARL_DP4A_TURING != 1
 #error "PEARL_DP4A_TURING is 0 or 1"
