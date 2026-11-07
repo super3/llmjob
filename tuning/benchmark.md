@@ -491,6 +491,13 @@ What future speed work needs: how to measure, the limits found, and what has alr
   split slab barrier; the keeping lane by exec mask (below RDSEL alone); batch-width and hash-kernel changes.
 - k 8192 pays only on gfx1201 with 56+ CUs (+0.70% on a 9070 XT, 4 November); the 9060 XT is about 6% slower at it.
   HIP counts WGPs on RDNA (32 on a 64-CU card), so the gate takes either count.
+- Unsigned or biased int8 operands (6 November, desk study, no card time). Fill 63 already gives nonnegative A' and
+  B' (the noise is triangular on [−63, 63]) with the same bits a u8 mma would see, and it measured level with 48 or
+  just below it: −0.23% on the 4090, +0.13% fold alone on a 9070 XT. The four int8 `mma.sync` type pairs compile to
+  the same IMMA, registers and schedule on sm_89 and sm_86; the types are two mode bits. Any bias the operand doesn't
+  already carry has to come off every accumulator before the XOR readout: one IADD per IMMA, about +8.8% energy an
+  IMMA (0.51 against 5.81 nJ), or about −2.6% TH/s. A bit-flip model fitted to the fill sweep puts every bias at or
+  below fill 48.
 
 ## Keeping this file current
 
