@@ -24,6 +24,8 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
   detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
+  // The board's cards: nvidia-smi's here, as each test sets them.
+  detectBoardGpus: jest.fn(),
   detectMinerGpus: jest.fn(),
   detectCudaCards: jest.fn(),
   detectPciBusIds: jest.fn(),
@@ -244,6 +246,7 @@ function applyDefaults(m) {
   m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
+  m.probe.detectBoardGpus.mockImplementation((...a) => m.probe.detectGpusVram(...a));
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
@@ -1262,7 +1265,7 @@ describe('CPU mining', () => {
     m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
     await settle();
     expect(allOut()).toContain('cpu:        6 of 12 CPUs  (auto: one thread per 2 MB of L3 cache, and this CPU has 12 MB;'
-      + ' more threads add power, not hashrate)');
+      + ' more threads add power, not hashrate. Set a thread count to change it)');
   });
 
   test('off: by --cpu-threads 0, by the plan, or with no worker beside the binary', async () => {
@@ -1283,7 +1286,7 @@ describe('CPU mining', () => {
     m3.xmrWorker.findWorker.mockReturnValue(null);
     m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
     await settle();
-    expect(allErr()).toContain('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it, or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.');
+    expect(allErr()).toContain('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it, or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker. From a source checkout, build it with earn/scripts/build-xmr-worker.sh.');
     expect(m3.XmrEngine.instances).toHaveLength(0);
   });
 
@@ -1801,6 +1804,8 @@ describe('local LLM', () => {
     const miner = m.PearlEngine.instances[0];
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    // Its --llm-binary sees the cards, so there is nothing to warn about.
+    expect(allErr()).not.toContain('lists no GPU');
     llm.emit('busy', true);
     expect(miner.pauseCards).toHaveBeenCalledWith([0]);
     miner.emit('stopped', 0);
@@ -1818,6 +1823,11 @@ describe('local LLM', () => {
     const miner = m.PearlEngine.instances[0];
     m.LlmManager.instances[0].emit('busy', true);
     expect(miner.pauseCards).not.toHaveBeenCalled();
+    // Its --llm-binary listed no card (the default here): a CUDA build left on
+    // an AMD rig looks like this, and the log says so.
+    expect(allErr()).toContain('LLM: --llm-binary /lb lists no GPU (llama-server --list-devices), or would not run. '
+      + 'It may be built for another GPU vendor; without --llm-binary the CLI downloads a Vulkan build that runs on '
+      + 'NVIDIA, AMD and Intel');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

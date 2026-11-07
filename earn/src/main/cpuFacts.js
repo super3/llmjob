@@ -11,6 +11,8 @@
 //               still sees 128 in its affinity mask, and only this says 18.
 //   memoryBytes os.totalmem(), or the cgroup memory limit when lower
 //   l3Bytes     the L3 cache across all sockets, from sysfs (Linux only)
+//   virtual     true in a virtual machine (the CPU's hypervisor flag), whose L3
+//               size is the hypervisor's invention, not the host's (Linux only)
 
 const pathPosix = require('path').posix;
 
@@ -118,6 +120,14 @@ function readL3Bytes(fs) {
   return total;
 }
 
+// The hypervisor flag in /proc/cpuinfo: set in every VM (KVM, Proxmox, Hyper-V,
+// VMware), not in a container. A Proxmox VM on a Ryzen 9 3950X (64 MB of L3)
+// showed one 16 MB L3 shared by all 16 vCPUs (6 Nov).
+function readVirtual(fs) {
+  const text = readText(fs, '/proc/cpuinfo');
+  return text ? /^flags\s*:.*\bhypervisor\b/m.test(text) : false;
+}
+
 function readCpuFacts({ fs, os, proc, platform }) {
   const p = proc || process;
   const cpus = typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
@@ -130,7 +140,8 @@ function readCpuFacts({ fs, os, proc, platform }) {
     quotaCpus: linux ? readQuotaCpus(fs) : null,
     memoryBytes,
     l3Bytes: linux ? readL3Bytes(fs) : null,
+    virtual: linux ? readVirtual(fs) : null,
   };
 }
 
-module.exports = { parseCpuMax, parseCfs, parseCacheSize, cgroupDirs, readQuotaCpus, readL3Bytes, readCpuFacts };
+module.exports = { parseCpuMax, parseCfs, parseCacheSize, cgroupDirs, readQuotaCpus, readL3Bytes, readVirtual, readCpuFacts };

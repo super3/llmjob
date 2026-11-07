@@ -1018,6 +1018,13 @@ recover. Hashrate is bought with watts, almost perfectly linearly:
 At ~0.25 TH/W, 300 TH/s would need 1200 W. **The only route to the goal is roughly
 doubling MACs per joule** -- there is no clock left to find.
 
+**Treat this section with suspicion: the card may have been faulty.** Rented 5090s mine
+355-405 TH/s (`tuning/benchmark.md`, RTX 50-series), more than twice the table above. The
+founder's 5090, likely the card measured here, later sat at a steady 600 W "SW Power Cap"
+at 615-675 MHz and 42 C, mining about 80 TH/s, while its own 600 W soak in June ran 2,500
+MHz at 80 C. It went back for RMA in November. Its power telemetry or power path looks
+broken, so a cap at 47 C may be the card's fault, not the kernel's.
+
 Where the power goes, per launch (49.08 ms, from Nsight):
 
 | | |

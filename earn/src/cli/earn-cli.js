@@ -596,6 +596,13 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   const [devices, busIds] = await Promise.all([
     probe.detectLlmDevices(binaryPath, modelPath), probe.detectPciBusIds(),
   ]);
+  // A --llm-binary built for another GPU vendor runs but sees no card: a rig
+  // swapped from an RTX 5090 to an RX 9070 XT kept its CUDA build (6 Nov).
+  if (settings.llmBinary && !devices.length) {
+    log('LLM: --llm-binary ' + settings.llmBinary + ' lists no GPU (llama-server --list-devices), or would not run. '
+      + 'It may be built for another GPU vendor; without --llm-binary the CLI downloads a Vulkan build that runs on '
+      + 'NVIDIA, AMD and Intel', process.stderr);
+  }
   const placed = placeLlmPlan(planned.plan, cards, devices, busIds);
   for (const w of placed.warnings) log(w);
   const plan = placed.plan;
@@ -790,7 +797,8 @@ function setUpCpuMining(settings, poolLookup) {
   const workerPath = findWorker({ execPath: process.execPath, env: process.env, exists: fs.existsSync });
   if (!workerPath) {
     log('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it,'
-      + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.', process.stderr);
+      + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker. From a source checkout, build it with'
+      + ' earn/scripts/build-xmr-worker.sh.', process.stderr);
     return null;
   }
   const auto = settings.cpuThreads ? '' : 'auto';
@@ -1107,7 +1115,7 @@ async function run(argv) {
     }
 
     if (settings.report) {
-      // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
+      // Sample per-card live VRAM (nvidia-smi, or amdgpu on an AMD rig) and post one board row per GPU,
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       //
       // nvidia-smi lists every card, mining or not. When --gpu-index or
@@ -1116,7 +1124,7 @@ async function run(argv) {
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
         const snap = poolSnapshot();
-        const allVram = await detectGpusVram();
+        const allVram = await probe.detectBoardGpus();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
         // GPU runs. `nodeId` rides along only while this machine is armed to serve

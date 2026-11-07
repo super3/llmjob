@@ -121,6 +121,12 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
     return !!card && card.major === BLACKWELL_COMPUTE_MAJOR && DEFAULT_LOCK_NAME.test(nameOf(index));
   });
 
+  // Said first: an AMD rig with the 5090's setting left over was told the LLM
+  // was the reason (6 Nov), when the lock is nvidia-smi's and has no card here.
+  if (requested && !mining.length) {
+    return none(named(requested) + ': nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
+  }
+
   if (llmCoRuns) {
     if (requested) return none(requestName + CORUN_IGNORED_TAIL, true);
     if (!byDefault.length) return none(null);
@@ -129,7 +135,6 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
   }
 
   if (requested) {
-    if (!mining.length) return none(named(requested) + ': nvidia-smi listed no GPU, nothing to lock');
     const byIndex = {};
     for (const index of mining) byIndex[index] = requested;
     return {

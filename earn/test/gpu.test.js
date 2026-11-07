@@ -424,3 +424,50 @@ describe('planMinerGpus', () => {
       .toEqual([{ index: 2, name: null }]);
   });
 });
+
+describe('AMD card names from PCI ids', () => {
+  const { parsePciIds, amdCardName } = require('../src/shared/gpu');
+  const IDS = [
+    '# pci.ids excerpt',
+    '',
+    '10de  NVIDIA Corporation',
+    '\t2684  AD102 [GeForce RTX 4090]',
+    '1002  Advanced Micro Devices, Inc. [AMD/ATI]',
+    '\t164e  Raphael',
+    '\t7550  Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]',
+    '\t\t148c 2435  Reaper Radeon RX 9070 XT 16GB GDDR6',
+    '\t\t1da2 e490  Pulse Radeon RX 9070 16GB',
+    '\t7551  Navi 48 GL',
+    '1022  Advanced Micro Devices, Inc. [AMD]',
+  ].join('\n');
+
+  it('finds the device and the board maker\'s name', () => {
+    expect(parsePciIds(IDS, '1002', '7550', '148c', '2435')).toEqual({
+      deviceName: 'Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]',
+      subsystemName: 'Reaper Radeon RX 9070 XT 16GB GDDR6',
+    });
+  });
+
+  it('gives nulls for what pci.ids lacks', () => {
+    expect(parsePciIds(IDS, '1002', '7550', 'ffff', 'ffff').subsystemName).toBeNull();
+    expect(parsePciIds(IDS, '1002', '9999', '148c', '2435')).toEqual({ deviceName: null, subsystemName: null });
+    expect(parsePciIds(null, '1002', '7550', '148c', '2435')).toEqual({ deviceName: null, subsystemName: null });
+  });
+
+  it('names the model from the subsystem name first', () => {
+    expect(amdCardName('7550', parsePciIds(IDS, '1002', '7550', '148c', '2435'))).toBe('AMD Radeon RX 9070 XT');
+    expect(amdCardName('7550', parsePciIds(IDS, '1002', '7550', '1da2', 'e490'))).toBe('AMD Radeon RX 9070');
+  });
+
+  it('falls back to the family from its own table', () => {
+    expect(amdCardName('7550', {})).toBe('AMD Radeon RX 9070/9070 XT/9070 GRE');
+    expect(amdCardName('1586', { subsystemName: 'Some laptop board' })).toBe('AMD Radeon 8050S/8060S');
+  });
+
+  it('uses a pci.ids name only for a discrete card', () => {
+    expect(amdCardName('aaaa', { deviceName: 'Navi 99 [Radeon RX 9999 XT]' })).toBe('AMD Radeon RX 9999 XT');
+    expect(amdCardName('bbbb', { deviceName: 'AMD Instinct MI300X' })).toBe('AMD Instinct MI300X');
+    expect(amdCardName('164e', { deviceName: 'Raphael' })).toBeNull();
+    expect(amdCardName('cccc', {})).toBeNull();
+  });
+});
