@@ -503,9 +503,9 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // PEARL_AMD_RDNA3_SET (issue #287 item 8): RDNA 3's staging cuts, on by default where its buffer loads are
 // (PEARL_AMD_RDNA3_BUFLD, so gfx1100 and gfx1101 in the Linux core), the only code they were raced on. In gfx11 code
 // it sets PEARL_AMD_PFX and, with RDNA 4's set, PEARL_AMD_CRANK and PEARL_AMD_SCHEDB (each below). CRANK + SCHEDB
-// halve a slab pair's readout work (32 LDS loads, not 48) and drop the per-slab division, but alone they lost 1.2%
-// on an RX 7800 XT: three of a pair's six slab loads then have no WMMA between their issue and the barrier's wait
-// for them. With PFX the barrier no longer waits for the loads, and they get 32 to 96 WMMAs. The wmma11 fold takes
+// drop the per-slab division and the readout code an even slab carried but never ran (the fold's code has 32 LDS
+// loads, not 48), but alone they lost 1.2% on an RX 7800 XT: three of a pair's six slab loads then have no WMMA
+// between their issue and the barrier's wait for them. With PFX the barrier no longer waits for the loads, and they get 32 to 96 WMMAs. The wmma11 fold takes
 // 226 VGPRs, 6 waves. Against the buffer-load fold on the same PC, 7 November, with a twin of it for the noise:
 // on an RX 7900 XTX (28a12f15) the fold alone +0.60 to +0.88% a round and hashrate.js +0.89 to +1.20%; on an
 // RX 7800 XT (72dd708c) +0.83 to +0.89% and +0.83 to +0.93%, verify-hits 400 of 400; on Kryptex

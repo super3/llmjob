@@ -122,8 +122,8 @@ whatever the setting.
 
 **gfx1100 and gfx1101 also build three of RDNA 4's staging switches** (`PEARL_AMD_RDNA3_SET`: `PEARL_AMD_PFX`,
 `PEARL_AMD_CRANK` and `PEARL_AMD_SCHEDB`, 7 November, issue #287 item 8). CRANK takes rank 128 at compile time,
-which merges a slab pair into one block and cuts its LDS fragment loads from 48 to 32; SCHEDB keeps the WMMAs on
-their side of each barrier. Alone the two lost 1.2% on an RX 7800 XT: in the merged block three of the pair's six
+which drops the per-slab division and the readout code an even slab never ran (the fold's code goes from 48 LDS
+loads to 32) and makes a slab pair one block; SCHEDB keeps the WMMAs on their side of each barrier. Alone the two lost 1.2% on an RX 7800 XT: in the merged block three of the pair's six
 slab loads sat just before a barrier whose fence waits for them, with no WMMA in between. PFX's LDS-only fence
 lets those loads run on, so each gets 32 to 96 WMMAs. 226 VGPRs, 6 waves. Against the buffer-load fold on the
 same PC, with a twin of it for the noise, the fold alone ran +0.60 to +0.88% a round and `hashrate.js` +0.89 to
