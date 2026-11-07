@@ -209,8 +209,8 @@ const LLM = {
   // co-run decision more conservative, which is the safe direction: the failure
   // it prevents is an OOM, the failure it can cause is idling a little VRAM.
   //
-  // An AMD core needs ~1,137 MiB at k 2048, each plus its HIP context. On Linux
-  // an RDNA 4 card mines k 4096 (~1,969 MiB), and a gfx1201 card with 56+ CUs
+  // An AMD core needs ~1,137 MiB at k 2048, plus its HIP context. On Linux an
+  // RDNA 4 card mines k 4096 (~1,969 MiB), and a gfx1201 card with 56+ CUs
   // k 8192 (~3,633 MiB: RX 9070, RX 9070 XT, R9700). The Windows AMD core mines
   // k 2048 on every card: its build leaves out the wrap readout that larger k
   // needs (build-amd.sh, KWRAP_OS). This reserve never sizes an LLM on those
