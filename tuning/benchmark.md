@@ -426,6 +426,15 @@ What future speed work needs: how to measure, the limits found, and what has alr
     then takes issue slots from the partner's IMMAs (−0.62%; whole-region hash only, −0.56%). A shorter all-ALU hash
     does pay: dropping a round (timing only) released 280 cycles sooner and saved 316 a tile. The hash has no ALU
     instruction to spare, so nothing is left to try there.
+- RTX 30/40 unrolling and prefetch distance (GPU list item 7, 6 November; compile and records, no GPU run). Inside a
+  chunk everything is unrolled, and ptxas already keeps A two m16 tiles ahead and reloads B under the last tile. Left
+  to try were the chunk loop unrolled by 2 (`PEARL_TALL_CHUNK_UNROLL`: 470 → 455 instructions a chunk, all waits,
+  branches and moves; by 4 it spills) and the A fragment after each copy group loaded before it (`PEARL_TALL_A_AHEAD`:
+  same instructions). Both bound under 0.3%: with no hash, removing the ring's waits (33 wait and branch instructions
+  a chunk, and half those post-copy-group stalls with them) made the tile 164 cycles slower, and 15 cheap instructions
+  are at most 0.7% of a chunk's energy, about +0.2% of clock. A deeper ring doesn't fit (98,688 of 101,376 bytes of
+  shared) and a 4 × 64 ring lost 2% on the probe; Blackwell's streamed fragments lost 3.5–5.3% a tile on this ring.
+  The two switches stay on exp/gpu10-7, off.
 - RTX 50 (item 16): drawing B' on the SM (+1.81% against a +2.5% bar); TMA multicast hangs because its transaction count
   never arrives on sm_120.
 - RDNA 3 (item 13): k 4096 gained under +0.3%. Batch 128 shipped on gfx1100 and gfx1101 (+0.1 to +1.8% a round, and 64
