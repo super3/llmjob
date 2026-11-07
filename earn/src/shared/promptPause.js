@@ -48,8 +48,9 @@ const ALL = 'all';
 // Without a bus id, a one-card rig has only one card it can be, and several
 // cards are left mining: guessing wrong costs a card's mining on every prompt
 // for no gain. The cards are counted both ways, because nvidia-smi is not the
-// only way a rig mines: an AMD rig (PEARL_CORE_VARIANT=amd) has no nvidia-smi
-// and so no bus ids, and only the miner knows it runs several cards. A bus id
+// only way a rig mines: an AMD rig has no nvidia-smi and so no bus ids, and
+// only the miner's plan (shared/gpu.planAmdGpus) knows it runs several cards.
+// Its llama-server runs with no --device, so which card it is on is unknown. A bus id
 // nvidia-smi does not list is a card it does not know (an AMD card beside
 // NVIDIA ones, say), so nothing pauses for it.
 function cardForPrompt(ev, busIds, miningCards = 0) {

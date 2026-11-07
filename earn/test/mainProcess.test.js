@@ -5452,6 +5452,71 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     expect(lines(ctx).some((l) => /busy for 10 minutes/.test(l))).toBe(false);
   });
 
+  // The same rig with PEARL_GPU_INDEX unset: the miner plans from the OS's
+  // count, and so does the count here. It used to be 0, and every prompt paused
+  // both cards.
+  const amdOs = (ctx, n) => {
+    delete process.env.PEARL_GPU_INDEX;
+    ctx.probe.detectGpusVram.mockResolvedValue([]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({});
+    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+    ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+  };
+
+  it('with two AMD cards the OS lists, a prompt pauses nothing', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 0, name: null }, { index: 1, name: null }] }));
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+  });
+
+  // The LLM shares the one card, so it still gets the card for each prompt.
+  it('with one AMD card, a prompt still pauses it', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 1);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith(null);
+  });
+
+  // An LLM started before the miner (LLM mode, then auto) counts the same cards.
+  it('counts the OS\'s AMD cards when the LLM starts first', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('busy', true);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    llm.emit('busy', false);
+    expect(ctx.PearlEngine.instances[0].pauseCards).not.toHaveBeenCalled();
+  });
+
+  // macOS mines nothing and its GPU probe is slow, so the LLM's start asks nothing.
+  it('asks macOS nothing about AMD cards when the LLM starts', async () => {
+    const ctx = await boot({ platform: 'darwin' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpuInfo.mockClear();
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.probe.detectGpuInfo).not.toHaveBeenCalled();
+  });
+
   it('says nothing when the prompt runs on a card that is not mining', async () => {
     const ctx = await boot();
     const { miner, llm } = await coRunning(ctx);

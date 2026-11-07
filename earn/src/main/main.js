@@ -134,9 +134,11 @@ let llmBusIds = {};
 // on its GPU (see rememberGpuLoss).
 let llmCards = [];
 // How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
-// one) has no bus ids, and several cards are left mining. Read with the bus ids
-// when the LLM starts and kept for its life, so a prompt's start and its end map
-// to the same card even when the miner starts in between.
+// one) has no bus ids, and several cards are left mining. On an AMD rig that is
+// the cards PEARL_GPU_INDEX names, else the AMD cards the OS lists
+// (planAmdGpus); one AMD card is 0 here, so its prompts still pause it. Read with
+// the bus ids when the LLM starts and kept for its life, so a prompt's start and
+// its end map to the same card even when the miner starts in between.
 let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
@@ -1396,10 +1398,15 @@ async function startLlm(reserveMb, epoch) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
+  // On an AMD rig the miner's cards come from the OS's count (planAmdGpus), as
+  // in startMining. Asked only when nvidia-smi lists nothing and no card was chosen.
+  const chosen = readGpuIndexEnv(process.env).indices;
+  const amdCards = await readAmdCards(cards.length > 0 || chosen != null);
   if (stale()) return false;
   llmBusIds = busIds;
   llmCards = cards;
-  llmMiningCards = planMinerGpus(cards, readGpuIndexEnv(process.env).indices).length;
+  llmMiningCards = planMinerGpus(cards, chosen).length
+    || planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without
