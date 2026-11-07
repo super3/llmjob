@@ -276,7 +276,7 @@ function log(E, { rounds = 3, extra = [], phase2 = { b: 1, c: 1, cA: 1 }, cah = 
 const E0 = { e: 100e-9, a: 200e-9, d: 150e-9, b: 165e-9, c: 170e-9, cA: 230e-9, cAH: 240e-9 };
 // A run of the push phase alone (MC_ARMS=push): smoke launches of a2, h2 and p, then rounds of e, a2,
 // h2 and p numbered from 101, as the probe prints them.
-function pushLog(E, { rounds = 3, extra = [], smoke = ['a2', 'h2', 'p'], end = 'DONE', time = {} } = {}) {
+function pushLog(E, { rounds = 3, extra = [], smoke = ['a2', 'h2', 'p'], end = 'DONE', time = {}, cyc = {} } = {}) {
   const out = ['CARD name=NVIDIA GeForce RTX 5090 cc=12.0 sms=170 l2_mb=96 cluster_launch=1 smem_optin=101376 pace=3240 '
     + 'secs=6.0 rounds=3 settle=1.5 wait_ms=1000 hash=3000 own_dst=cta arms=push', 'NVML yes energy=yes'];
   for (const a of Object.keys(reader.ARMS)) out.push(`CLUSTERS arm=${a} rc=0 (cudaSuccess) smem_attr=0 clusters=85 ctas=170`);
@@ -291,7 +291,7 @@ function pushLog(E, { rounds = 3, extra = [], smoke = ['a2', 'h2', 'p'], end = '
       const j = E[a] * (1 + 0.01 * (r - 102)) * stages / 2;
       out.push(`ROUND r=${r} arm=${a} secs=${secs.toFixed(6)} launches=20 ctas=170 cta_stages=${stages} `
         + `fill_gb=${(stages / 2 * reader.ARMS[a].fill / 1e9).toFixed(3)} l2_gb=${(stages / 2 * reader.ARMS[a].l2 / 1e9).toFixed(3)} `
-        + `j=${j.toFixed(9)} j_src=energy w=${(j / secs).toFixed(4)} mhz=2900.0 c=60 cyc_stage=3250 pace=3240 bad=0`);
+        + `j=${j.toFixed(9)} j_src=energy w=${(j / secs).toFixed(4)} mhz=2900.0 c=60 cyc_stage=${cyc[a] || 3250} pace=3240 bad=0`);
     }
   }
   return [...out, ...extra, end].join(NL);
@@ -759,6 +759,15 @@ describe('RTX 50 multicast probe (multicast-probe.cu, multicast-read.js)', () =>
     // An arm that ran slower is flagged, and fp is taken at e's stage time.
     expect(summary(pushLog({ ...EP, p: 168e-9 }, { time: { p: 0.03 }, rounds: 1 })).join(NL))
       .toContain('read: p against e in one round: stage time +3.00%');
+    // Arms that missed the pace get no gate, whatever fp reads, and a pace to rerun at: on a 5090 at pace
+    // 3240, a2 and p ran 4807 and 5962 cycles a stage and fp read 3.02, then 0.02 at pace 7500.
+    const slow = summary(pushLog(EP, { cyc: { a2: 4807, h2: 3260, p: 5962 } })).join(NL);
+    expect(slow).toContain('read: push gate: no verdict. a2, p did not hold the pace of 3240 cycles a stage (slowest '
+      + '5962), so the arms\' energies are not at one stage time: rerun with MC_PACE=7200 or more');
+    expect(slow).not.toMatch(/push gate fp|other side/);
+    expect(slow).toMatch(/read: fp = 0\.70/);
+    // Within 1% of the pace still counts as held.
+    expect(summary(pushLog(EP, { cyc: { p: 3272 } })).join(NL)).toContain('read: push gate fp >= 0.5: pass');
   });
 
   test('the push verdict: a copy that never lands, the fold\'s barriers sticking, and both phases in one run', () => {

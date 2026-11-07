@@ -165,6 +165,22 @@ function pushVerdict(p, stuck) {
   return `${missing.join(', ')} never ran${p.done ? '' : ' (the probe stopped early)'}: no verdict on the copy`;
 }
 
+// The arms whose median stage ran past the pace, each with its cycles a stage and the pace. Their
+// energies are then not at one stage time, and the time correction can't stand in for that: on a
+// 5090 on 7 November, at pace 3240, a2, h2 and p ran 4807, 3492 and 5962 cycles a stage and fp read
+// 3.02 (1.30 to 27.12); at pace 7500 every arm held it and fp read 0.02.
+function paceMissed(p, arms) {
+  const out = [];
+  for (const arm of arms) {
+    const rows = p.rounds.filter((r) => r.arm === arm);
+    if (!rows.length) continue;
+    const cyc = median(rows.map((r) => r.cyc_stage));
+    const pace = median(rows.map((r) => r.pace));
+    if (pace > 0 && cyc > pace * PACE_SLACK) out.push({ arm, cyc, pace });
+  }
+  return out;
+}
+
 function pct(x, digits = 1) {
   return (x >= 0 ? '+' : '') + (100 * x).toFixed(digits) + '%';
 }
@@ -360,11 +376,20 @@ function summarize(p) {
       + `the copy between the pair saves ${Math.round(100 * f)}% of an L2 box's cost`);
     say(`an L2 box (a2 - h2): ${nj(median(l2Box))} nJ a pair-stage, ${(median(l2Box) / BOXB * 1e12).toFixed(1)} pJ a `
       + `byte; the copy of one (p - h2): ${nj(median(copyBox))} nJ, ${(median(copyBox) / BOXB * 1e12).toFixed(1)} pJ a byte`);
-    say(f >= PASS_FP
-      ? `push gate fp >= ${PASS_FP}: pass. A stock 5090 pays about ${pct(SKIP_B)} for a B' box a CTA-stage, so a fold `
-        + `sharing B' this way could gain about ${pct(SKIP_B / 2 * f)} there before its own costs: race it`
-      : `push gate fp >= ${PASS_FP}: fail (about ${pct(SKIP_B / 2 * f)} at most on a stock 5090): drop item 7`);
-    if (Number.isFinite(fr) && (fr >= PASS_FP) !== (f >= PASS_FP)) {
+    const missed = paceMissed(p, ['e', ...PUSH_ARMS]);
+    if (missed.length) {
+      // Longer rounds don't help here: the stage time is the feed's, not noise. A slower pace does.
+      const slowest = Math.max(...missed.map((m) => m.cyc));
+      say(`push gate: no verdict. ${missed.map((m) => m.arm).join(', ')} did not hold the pace of ${missed[0].pace} `
+        + `cycles a stage (slowest ${slowest}), so the arms' energies are not at one stage time: rerun with `
+        + `MC_PACE=${Math.ceil((slowest * 1.2) / 100) * 100} or more`);
+    } else {
+      say(f >= PASS_FP
+        ? `push gate fp >= ${PASS_FP}: pass. A stock 5090 pays about ${pct(SKIP_B)} for a B' box a CTA-stage, so a fold `
+          + `sharing B' this way could gain about ${pct(SKIP_B / 2 * f)} there before its own costs: race it`
+        : `push gate fp >= ${PASS_FP}: fail (about ${pct(SKIP_B / 2 * f)} at most on a stock 5090): drop item 7`);
+    }
+    if (!missed.length && Number.isFinite(fr) && (fr >= PASS_FP) !== (f >= PASS_FP)) {
       say('fp as measured falls on the other side of the gate: the arms\' stage times differ (lines below), so '
         + 'repeat with longer rounds before deciding');
     }
