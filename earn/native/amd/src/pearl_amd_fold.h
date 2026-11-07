@@ -64,6 +64,10 @@
 #if defined(__GFX12__)
 #define PEARL_AMD_WMMA12 1
 #endif
+// The two RDNA 3 chips the buffer loads were raced on (PEARL_AMD_RDNA3_BUFLD): Navi 31 and Navi 32.
+#if defined(__gfx1100__) || defined(__gfx1101__)
+#define PEARL_AMD_GFX1100_1101 1
+#endif
 // v_dot4_i32_i8 (or v_dot4c on RDNA2): Vega 20, CDNA, RDNA1's gfx1011/1012 and RDNA2.
 #if defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__) || \
     defined(__gfx950__) || defined(__gfx1011__) || defined(__gfx1012__) || defined(__gfx1030__) || \
@@ -96,6 +100,9 @@
 #endif
 #ifndef PEARL_AMD_WMMA12
 #define PEARL_AMD_WMMA12 0
+#endif
+#ifndef PEARL_AMD_GFX1100_1101
+#define PEARL_AMD_GFX1100_1101 0
 #endif
 #ifndef PEARL_AMD_DOT4
 #define PEARL_AMD_DOT4 0
@@ -491,19 +498,28 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // stores (vmcnt(0), not 3). So the slab barrier fences LDS only (the loads go to registers;
 // nothing else is shared), and the last two steps load the last slab again instead of skipping
 // (two slabs in 64, from L2). PEARL_AMD_TID=1 tells the compiler threadIdx.x < 256, which drops
-// an exec-mask branch in the staging addresses (wmma12 215 -> 198 VGPRs; wmma11, where it's off by
-// default, uses 240).
-// On by default on RDNA 4 only. An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
+// an exec-mask branch in the staging addresses (wmma12 215 -> 198 VGPRs; wmma11 240 -> 231).
+// PFX is on by default on RDNA 4 only; TID on RDNA 4 and with RDNA 3's buffer loads (below). An RX 9060 XT (PC ca4f64e4) ran hashrate.js at 52.88 TH/s on
 // the old path (one slab ahead, shuffle readout), 54.52 with DPP, 57.41 with PF2 + DPP, 59.99
 // with PF2 + DPP + PFX + TID; the old path against all four on other PCs: 9060 XT d324328f
 // 56.27-56.34 against 63.92-63.94, 54b217a9 28.16 against 32.85; 9070 XT 83151dba 81.26-81.33
 // against 89.05-89.81, 77904d36 97.81-97.85 against 110.09-110.49. On RDNA 3 PFX + TID changed
-// nothing (RX 7900 XT 67c308d2, 47.13-47.23 against 47.22-47.26), so it stays off there.
+// nothing (RX 7900 XT 67c308d2, 47.13-47.23 against 47.22-47.26), so PFX stays off there.
 #ifndef PEARL_AMD_PFX
 #define PEARL_AMD_PFX PEARL_AMD_WMMA12
 #endif
+// PEARL_AMD_RDNA3_BUFLD: RDNA 3's buffer loads, PEARL_AMD_BUFLD and PEARL_AMD_TID together (see BUFLD, below). On by
+// default on gfx1100 and gfx1101 only, the two chips it was raced on; gfx1102, gfx1150 and gfx1151 keep their global
+// loads. The Windows core leaves it out (build-amd.sh's SET_OS). -DPEARL_AMD_RDNA3_BUFLD=0 builds the release before
+// it, to race against.
+#ifndef PEARL_AMD_RDNA3_BUFLD
+#define PEARL_AMD_RDNA3_BUFLD PEARL_AMD_GFX1100_1101
+#endif
+#if PEARL_AMD_RDNA3_BUFLD != 0 && PEARL_AMD_RDNA3_BUFLD != 1
+#error "PEARL_AMD_RDNA3_BUFLD is 0 or 1"
+#endif
 #ifndef PEARL_AMD_TID
-#define PEARL_AMD_TID PEARL_AMD_WMMA12
+#define PEARL_AMD_TID (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))
 #endif
 // PEARL_AMD_KPAIR=1 (RDNA 4, wmma12): each lane reads its fragments for two k-steps with one 16-byte LDS load.
 // A slab's k-steps don't have to take its bytes in order: the WMMAs of a slab add up over all of them, and a chunk
@@ -522,9 +538,20 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // offset: no VALU a load, where the global loads took a 64-bit VALU add of the slab to each lane's address (two
 // VALU a load). Word 3 is the one AMD's Composable Kernel uses on gfx11 and gfx12. Every load stays inside its
 // tile, the resource's size (amdBufld.test.js). On top of PEARL_AMD_KPAIR the fold alone ran another 2.2%
-// faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4; RDNA 3 hasn't been timed with it.
+// faster on an RX 9070 XT (tuning/benchmark.md, 4 November). On by default on RDNA 4.
+// RDNA 3 (wmma11) takes it with PEARL_AMD_TID on gfx1100 and gfx1101 (PEARL_AMD_RDNA3_BUFLD, above; issue #287,
+// item 2). Its fragments, LDS layout and loads two slabs ahead stay as they are; only the slab loads' addressing
+// changes. Without TID the first staging unit's A'-or-B' test stays a run-time branch. The fold without them spent
+// 12 VALU a slab on load addresses (8 of them that test's two arms, both run under an exec mask, in chains of 64-bit
+// adds); with both the loads take none, and the fold 232 VGPRs, not 240, still 6 waves (ROCm 7.2.0). On RDNA 3 a
+// chained VALU beside the WMMAs costs about 4-5 clocks of WMMA time and a lone one about 1 (pearl_amd_peak on an
+// RX 7900 XTX and an RX 7800 XT), so it paid more than the 1.2% a clock each would. Against the release on the same
+// PC, 7 November: on the RX 7900 XTX (57cc1801) the fold alone +1.02 to +1.25% a round and hashrate.js +0.66 to
+// +0.77%, with TID alone +0.16% and +0.04%; on the RX 7800 XT (72dd708c) +0.81 to +1.34% and +0.75 to +0.82%. Only
+// gfx11 and gfx12 code takes buffer loads, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep their
+// global loads.
 #ifndef PEARL_AMD_BUFLD
-#define PEARL_AMD_BUFLD PEARL_AMD_WMMA12
+#define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))
 #endif
 // PEARL_AMD_RDNA4_SET: the RDNA 4 cuts of 4 November, on by default in RDNA 4 (gfx12) code: PEARL_AMD_RDSEL=1,
 // PEARL_AMD_RDPERM=2, PEARL_AMD_CRANK=1, PEARL_AMD_SCHEDB=1, PEARL_AMD_LDS32=1 and PEARL_AMD_LDS32_PIN=1, each
@@ -985,8 +1012,9 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
-#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
-  // PEARL_AMD_BUFLD (above): the tiles' resources.
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+  // PEARL_AMD_BUFLD (above): the tiles' resources. PEARL_AMD_WMMA11 and _WMMA12 are set only in a gfx11 or gfx12
+  // device pass, never in HIP-CPU's, and word 3 is right on those two only.
   const __amdgpu_buffer_rsrc_t rsA =
       __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
   const __amdgpu_buffer_rsrc_t rsB =
