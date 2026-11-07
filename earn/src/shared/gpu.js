@@ -368,6 +368,20 @@ function amdCardName(device, ids) {
   return AMD_DISCRETE.test(name) ? 'AMD ' + name.replace(/^AMD\s+/i, '') : null;
 }
 
+// The Win32_VideoController query's lines, "Name|DriverVersion", as
+// [{ name, driverVersion }]. A line with no "|" is a name alone, with
+// driverVersion null. Blank lines are dropped.
+function parseVideoControllers(out) {
+  const list = [];
+  for (const row of String(out == null ? '' : out).split(/\r?\n/)) {
+    const bar = row.lastIndexOf('|');
+    const name = (bar < 0 ? row : row.slice(0, bar)).trim();
+    const driverVersion = bar < 0 ? '' : row.slice(bar + 1).trim();
+    if (name) list.push({ name, driverVersion: driverVersion || null });
+  }
+  return list;
+}
+
 // Whether a Windows adapter name (Win32_VideoController) is a discrete AMD
 // card: "AMD Radeon RX 9070 XT", "AMD Radeon AI PRO R9700". An APU's graphics
 // ("AMD Radeon(TM) Graphics", "AMD Radeon 780M Graphics") is not: no AMD core
@@ -409,5 +423,5 @@ module.exports = {
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
-  AMD_DEVICES, parsePciIds, amdCardName, isDiscreteAmd, planAmdGpus, describeAmdPlan,
+  AMD_DEVICES, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
 };

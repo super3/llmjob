@@ -482,6 +482,27 @@ describe('AMD card names from PCI ids', () => {
   });
 });
 
+describe('parseVideoControllers', () => {
+  const { parseVideoControllers } = require('../src/shared/gpu');
+
+  it('reads each adapter\'s name and driver version', () => {
+    expect(parseVideoControllers('AMD Radeon AI PRO R9700|32.0.31007.5012\r\nMicrosoft Basic Display Adapter|10.0.22621.1\r\n'))
+      .toEqual([
+        { name: 'AMD Radeon AI PRO R9700', driverVersion: '32.0.31007.5012' },
+        { name: 'Microsoft Basic Display Adapter', driverVersion: '10.0.22621.1' },
+      ]);
+  });
+
+  it('takes a name alone, an empty version, and skips blank lines', () => {
+    expect(parseVideoControllers('AMD Radeon RX 7900 XTX\n\nIntel(R) UHD Graphics| \n|1.0\n')).toEqual([
+      { name: 'AMD Radeon RX 7900 XTX', driverVersion: null },
+      { name: 'Intel(R) UHD Graphics', driverVersion: null },
+    ]);
+    expect(parseVideoControllers(null)).toEqual([]);
+    expect(parseVideoControllers(undefined)).toEqual([]);
+  });
+});
+
 describe('AMD cards on an AMD rig', () => {
   const { isDiscreteAmd, planAmdGpus, describeAmdPlan } = require('../src/shared/gpu');
   const R9700 = { name: 'AMD Radeon AI PRO R9700' };

@@ -413,24 +413,27 @@ describe('detectGpuInfo', () => {
         ? cb(new Error('not installed'))
         : cb(null, 'Intel(R) UHD Graphics\r\nAMD Radeon RX 7900 XTX\r\n')));
       expect(await probe.detectGpuInfo()).toEqual({
-        name: 'AMD Radeon RX 7900 XTX', count: 1, amd: [{ name: 'AMD Radeon RX 7900 XTX' }],
+        name: 'AMD Radeon RX 7900 XTX', count: 1, amd: [{ name: 'AMD Radeon RX 7900 XTX', driverVersion: null }],
       });
       expect(execFile).toHaveBeenCalledWith('powershell.exe', expect.any(Array), { timeout: 5000 }, expect.any(Function));
     });
   });
 
   // nvidia-smi lists no AMD card, so the AMD cards Windows lists are what the
-  // miner plans from. An APU's graphics beside them is not one.
-  it('lists the discrete AMD cards from WMI', async () => {
+  // miner plans from. An APU's graphics beside them is not one. Each card's
+  // driver version comes in the same query, for the AMD driver line.
+  it('lists the discrete AMD cards from WMI, with their driver versions', async () => {
     await withPlatform('win32', async () => {
       execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
         ? cb(new Error('not installed'))
-        : cb(null, 'AMD Radeon(TM) Graphics\r\nAMD Radeon AI PRO R9700\r\nAMD Radeon AI PRO R9700\r\n')));
-      expect(await probe.detectGpuInfo()).toEqual({
-        name: 'AMD Radeon AI PRO R9700',
-        count: 2,
-        amd: [{ name: 'AMD Radeon AI PRO R9700' }, { name: 'AMD Radeon AI PRO R9700' }],
-      });
+        : cb(null, 'AMD Radeon(TM) Graphics|32.0.31007.5012\r\nAMD Radeon AI PRO R9700|32.0.31007.5012\r\n'
+          + 'AMD Radeon AI PRO R9700|32.0.31007.5012\r\n')));
+      const R9700 = { name: 'AMD Radeon AI PRO R9700', driverVersion: '32.0.31007.5012' };
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'AMD Radeon AI PRO R9700', count: 2, amd: [R9700, R9700] });
+      // One query: names and driver versions together.
+      const ps = execFile.mock.calls.filter((c) => c[0] === 'powershell.exe');
+      expect(ps).toHaveLength(1);
+      expect(ps[0][1][3]).toBe("Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.DriverVersion }");
     });
   });
 

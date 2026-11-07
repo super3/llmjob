@@ -61,6 +61,7 @@ const {
   describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
+const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -947,6 +948,9 @@ async function run(argv) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
         + (settings.gpuProvided ? '' : '  (auto)'));
     }
+    // The AMD driver's version, and a warning for a build reported to move idle
+    // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
+    for (const l of describeAmdDrivers(det)) log(l.line, l.level === 'warn' ? process.stderr : process.stdout);
     // What will actually mine, which is not always what the line above names: a
     // mixed rig has one name there and several cards here, and --gpu-index or
     // PEARL_GPU_INDEX narrows it. Each card names itself again as its core

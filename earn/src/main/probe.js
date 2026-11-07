@@ -15,7 +15,7 @@ const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
-  parsePciBusIds, parsePciIds, amdCardName, isDiscreteAmd,
+  parsePciBusIds, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
@@ -347,9 +347,10 @@ function detectMacGpuInfo() {
 }
 
 // When nvidia-smi lists no card, the answer on Windows and Linux also has
-// `amd`: the AMD cards the OS reports, as [{ name }] (on Linux, detectAmdGpus'
-// entries). nvidia-smi can't count them, so shared/gpu.planAmdGpus counts these.
-// There is no `amd` when nvidia-smi answered, or on macOS.
+// `amd`: the AMD cards the OS reports. On Windows that is
+// [{ name, driverVersion }], on Linux detectAmdGpus' entries. nvidia-smi can't
+// count them, so shared/gpu.planAmdGpus counts these. There is no `amd` when
+// nvidia-smi answered, or on macOS.
 function detectGpuInfo(opts) {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
@@ -370,15 +371,18 @@ function detectGpuInfo(opts) {
           const amd = detectAmdGpus(opts);
           return resolve(amd.length ? { name: amd[0].name, count: amd.length, amd } : null);
         }
+        // Each adapter's driver version rides on the same query, for the AMD
+        // driver line at mining start (shared/amdDriver).
         execFile('powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command',
-            'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+            "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.DriverVersion }"],
           { timeout: 5000 },
           (e2, out2) => {
             if (e2) return resolve(null);
-            const names = String(out2).split(/\r?\n/);
+            const adapters = parseVideoControllers(out2);
+            const names = adapters.map((a) => a.name);
             const name = pickGpu(names);
-            const amd = names.filter(isDiscreteAmd).map((n) => ({ name: n.trim() }));
+            const amd = adapters.filter((a) => isDiscreteAmd(a.name));
             resolve(name ? { name, count: countGpus(names), amd } : null);
           });
       });

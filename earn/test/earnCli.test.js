@@ -1472,6 +1472,22 @@ describe('--gpu-index', () => {
       });
     });
 
+    // Only Windows reports a driver version (the same WMI query names the cards).
+    test('logs the AMD driver, warns on stderr about a bad build, and mines anyway', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        const card = { name: R9700.name, driverVersion: '32.0.31007.5012' };
+        m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 1, amd: [card] });
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(allOut()).toContain('AMD graphics driver 32.0.31007.5012\n');
+        expect(allErr()).toContain('AMD graphics driver 32.0.31007.5012 is reported to move an idle card\'s VRAM');
+        expect(allOut()).not.toContain('is reported to move');
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+        await stop(m, p);
+      });
+    });
+
     test('follows --gpu-index, and leaves one card to the core', async () => {
       await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
         const m = load();

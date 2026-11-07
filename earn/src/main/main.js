@@ -64,6 +64,7 @@ const {
   planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 const appPrefs = require('../shared/appPrefs');
@@ -724,9 +725,11 @@ async function startMining(settings, llmCoRuns) {
   ]);
   // nvidia-smi lists no AMD card, so on an AMD rig the list above is empty and
   // one core would mine one card. The OS counts them instead (shared/gpu
-  // planAmdGpus). Asked only when nvidia-smi lists no card.
+  // planAmdGpus). Asked only when nvidia-smi lists no card. On Windows the same
+  // answer has the AMD driver's version, logged once a start (shared/amdDriver).
   const amdCards = await readAmdCards(cudaCards.length > 0);
   if (epoch !== miningEpoch) return;
+  for (const l of describeAmdDrivers(amdCards)) send('miner:log', l);
   const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
   const gpus = amdGpus.length ? amdGpus : nvidiaGpus;
   if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });

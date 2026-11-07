@@ -1294,6 +1294,22 @@ describe('mining', () => {
       }));
     });
 
+    // The driver's version comes in the same Windows query, and a build reported
+    // to move an idle card's VRAM to system RAM gets a warning. Mining starts anyway.
+    it('logs the AMD driver once a start, warns about a bad build, and mines anyway', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      const card = { name: R9700.name, driverVersion: '32.0.31007.5012' };
+      ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 1, amd: [card] });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const logs = ctx.sent('miner:log');
+      expect(logs.filter((l) => l.line.startsWith('AMD graphics driver'))).toEqual([
+        { level: 'info', line: 'AMD graphics driver 32.0.31007.5012' },
+        expect.objectContaining({ level: 'warn', line: expect.stringContaining('Adrenalin 26.9.2 or newer fixes it') }),
+      ]);
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+    });
+
     it('abandons a start that STOP overtakes while the OS is asked', async () => {
       const ctx = await boot();
       let release;
