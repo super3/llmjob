@@ -314,7 +314,7 @@ describe('readGpuIndexEnv', () => {
       expect(readGpuIndexEnv({ PEARL_GPU_INDEX: v })).toEqual({
         indices: null,
         warning: 'PEARL_GPU_INDEX=' + v + ' ignored (give GPU numbers from nvidia-smi separated by commas, '
-          + 'such as 0,2, or none); every GPU mines',
+          + 'such as 0,2, or none); mining as if it were not set',
       });
     }
   });
@@ -323,7 +323,7 @@ describe('readGpuIndexEnv', () => {
     expect(readGpuIndexEnv({ PEARL_GPU_INDEX: ' None ' })).toEqual({
       indices: null,
       warning: 'PEARL_GPU_INDEX=None ignored: the app cannot mine on no GPU '
-        + '(set Compute Mode to LLM for that); every GPU mines',
+        + '(set Compute Mode to LLM for that); mining as if it were not set',
     });
   });
 

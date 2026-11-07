@@ -1339,7 +1339,7 @@ describe('mining', () => {
       await flush();
       expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
       expect(warnings(ctx)).toEqual([
-        'PEARL_GPU_INDEX=none ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+        'PEARL_GPU_INDEX=none ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); mining as if it were not set',
       ]);
     });
 

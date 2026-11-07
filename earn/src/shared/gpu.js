@@ -136,7 +136,7 @@ function parseGpuIndexList(raw) {
 }
 
 // PEARL_GPU_INDEX as the desktop app reads it: { indices, warning }. `indices`
-// is the cards chosen, or null for every card. `warning` is the log line for a
+// is the cards chosen, or null when none were. `warning` is the log line for a
 // value that is set but not used, or null.
 //
 // It is an escape hatch, not the mechanism: normally every card mines. But "it
@@ -154,13 +154,16 @@ function readGpuIndexEnv(env) {
   const parsed = parseGpuIndexList(raw);
   if (!parsed) return { indices: null, warning: null };
   const said = 'PEARL_GPU_INDEX=' + String(raw).trim();
+  // Not "every GPU mines": a mixed rig mines its NVIDIA cards only, and an AMD
+  // rig whose cards the OS can't count mines on the one its core picks.
   if (parsed.error) {
-    return { indices: null, warning: said + ' ignored (' + parsed.error + '); every GPU mines' };
+    return { indices: null, warning: said + ' ignored (' + parsed.error + '); mining as if it were not set' };
   }
   if (!parsed.indices.length) {
     return {
       indices: null,
-      warning: said + ' ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+      warning: said + ' ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); '
+        + 'mining as if it were not set',
     };
   }
   return { indices: parsed.indices, warning: null };
