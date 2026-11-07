@@ -450,6 +450,22 @@ extra flag, the same code. Not rows: no competitor ran.
 - **Cost:** a 9070 XT box for 74 minutes (10 of them a restart that went silent until `realloc`) and a 9060 XT box
   for 55, high priority.
 
+RDNA 4's tile order (`PEARL_AMD_WALK=1`, on by default on gfx1200 and gfx1201 in the Linux core; issue #287, item 5),
+7 November: supertiles about the size of what the card holds at once (4 x 12 tiles on an RX 9060 XT, 8 x 12 on an
+RX 9070 XT), every other row of them backwards, against v0.6.13's order on the same PC, `hashrate.js`.
+
+| Card, k | PC | `hashrate.js` | Fold alone |
+|---|---|---|---|
+| RX 9060 XT, 4096 | `9ac12ceb` | +0.38% | — |
+| RX 9060 XT, 4096 | `ffa9f87b` | +1.85% | +1.91% |
+| RX 9070 XT, 8192 | `c10c6949` | +0.56% | — |
+| RX 9070 XT, 8192 | `1dba3ce9` | +0.75% | +0.57% |
+
+- verify-hits checked 400 of 400, and Kryptex accepted 14 shares with none rejected.
+- Dealing each supertile's blocks to one sub-tile per shader array (`=2`) read 0.04-0.20% above `=1`, under the bar.
+- On an RX 7900 XTX (`45c94e40`) both were level (+0.06%, -0.04%), and the stamps put only 19% of blocks on array
+  i % 12, so RDNA 3 keeps the old order. So does the Windows core, which mines k 2048.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

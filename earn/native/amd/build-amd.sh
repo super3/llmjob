@@ -17,7 +17,7 @@
 #                                   readout (PEARL_AMD_KWRAP) or any other target has it, or
 #                                   a target lacks the fold the host runs on it (folds_of).
 #                                   On Windows no target has the wrap readout (KWRAP_OS)
-#                                   or the RDNA 4 cuts of 4 November, and RDNA 3 has no
+#                                   or the RDNA 4 cuts of 4 November or tile order, and RDNA 3 has no
 #                                   buffer loads or staging cuts (SET_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
@@ -75,6 +75,9 @@ if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 # (PEARL_AMD_RDNA3_BUFLD, 7 November) and its staging cuts (PEARL_AMD_RDNA3_SET, 7 November), for the same reason.
 SET_OS=
 if windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi
+# So does the RDNA 4 tile order of 7 November (PEARL_AMD_WALK): it was timed on Linux at k 4096 and 8192, and the
+# Windows core mines k 2048.
+if windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi
 
 mode="${1:-}"
 shift || true

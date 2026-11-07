@@ -150,6 +150,96 @@
 #define PEARL_AMD_TILED 1
 #endif
 
+// PEARL_AMD_WALK: the order the matrix folds take their tiles in (issue 287, item 5). 1 by default on RDNA 4 (gfx1200
+// and gfx1201), where it was raced; 0 (the old order) on every other target. -DPEARL_AMD_WALK=0 builds the old order
+// everywhere, to race against. The Windows core is built with it off (build-amd.sh's SET_OS): it mines k 2048, which
+// the walk wasn't timed at.
+// Salad, 7 November, each walk build against v0.6.13's order on the same PC, hashrate.js (the whole miner):
+//   RX 9060 XT  +0.38% (PC 9ac12ceb) and +1.85% (ffa9f87b, where the fold alone gained +1.91%)
+//   RX 9070 XT  +0.56% (c10c6949) and +0.75% (1dba3ce9), at the k 8192 it mines
+// Every walk build passed the fold check and verify-hits (400 of 400), and Kryptex took every share of 1 (8 on the
+// 9060 XT, 6 on the 9070 XT, none rejected). 2 read 0.04-0.20% above 1 on every RDNA 4 PC, under the +0.3% bar, so 1
+// is the default. On an RX 7900 XTX (45c94e40) neither is faster (hashrate.js +0.06% and -0.04%), and the stamps show
+// the dispatcher doesn't deal blocks to the shader arrays in turn (19% of blocks, not 100%), so 2's premise is wrong
+// there.
+// The old order takes them x fastest, so the blocks on the card at once (3 a WGP) cover every column tile of the
+// batch and only a few row tiles: 16 x 6 tiles on an RX 9070 XT (96 blocks), 16 x 3 on an RX 9060 XT (48). Those
+// blocks read each slab of their tiles at about the same time, so the L2 fetches that slab once for all of them,
+// from the Infinity Cache or memory. At RDNA 4's k one such group reads more than the L2 holds (28-38 MB on the
+// 9070 XT against 8 MB), so nothing stays in L2 for the next group, and the bytes past the L2 are 16 B' tiles and
+// 6 A' tiles a group. Cut into 8 x 12 tiles the same 96 blocks need 8 and 12, about a quarter fewer bytes; on the
+// 9060 XT 4 x 12 needs about 40% fewer. Every block still reads its whole slab from L2, as before.
+//   1  supertiles: the grid in W column tiles by H row tiles, each about the blocks the card holds at once, x
+//      fastest inside one. A row of supertiles crosses the batch, every other row backwards, so the turn starts on
+//      the B' the last supertile read.
+//   2  supertiles, and inside each the blocks are dealt in turn to Q sub-tiles of SW x SH: block j of a supertile
+//      folds a tile of sub-tile j % Q. If the dispatcher hands blocks to the shader arrays in turn (a guess: AMD
+//      doesn't document it), each array then holds one compact sub-tile, so its L1 and its WGPs' L0 see fewer
+//      different lines. Q is the card's shader arrays.
+// The tested group-of-4 walk (removed 23 October) took every row tile for 4 column tiles, so it read all of A' from
+// memory 4 times a batch; a supertile row reads A' from memory once, as the old order does.
+// PEARL_AMD_WALK_W, _H, _SW and _SH set the shape; the targets below have defaults, and on any other target the walk
+// is off unless W is given. The map is one-to-one on the grid (amdWalk.test.js), so every tile is folded once and
+// the transcripts are the old order's. A grid that W doesn't divide, and the rows after the last whole supertile row
+// (4 of 1024 at H 12), keep the old order.
+#ifndef PEARL_AMD_WALK
+#if defined(__gfx1200__) || defined(__gfx1201__)
+#define PEARL_AMD_WALK 1
+#else
+#define PEARL_AMD_WALK 0
+#endif
+#endif
+#if PEARL_AMD_WALK != 0 && PEARL_AMD_WALK != 1 && PEARL_AMD_WALK != 2
+#error "PEARL_AMD_WALK is 0, 1 or 2"
+#endif
+// The defaults: W x H is about the blocks a card holds (3 a WGP) in the batch's column tiles (16 at batch 256, 8 at
+// gfx1100's and gfx1101's 128), shaped for the fewest bytes past the L2 (an A' tile is half a B' tile), and Q is the
+// shader arrays. gfx1201 (RX 9070 XT, 32 WGPs in 8 arrays): 8 x 12, sub-tiles 2 x 6. gfx1200 (RX 9060 XT, 16 WGPs
+// in 4): 4 x 12, 2 x 6. gfx1100 (RX 7900 XTX, 48 WGPs in 12): 8 x 18, 2 x 6. gfx1101 (RX 7800 XT, 30 WGPs in 6):
+// 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the old order, so there 1 against 0 times what
+// compiling the map in costs, and 2 against 1 the sub-tiles alone.
+// The code (ROCm 7.2, CI on 6 November): the map is 43-53 scalar instructions in the prologue, with the release's
+// VGPRs, LDS and waves on all four targets. On gfx12 the rest of the fold is the release's (one VALU moved in the
+// prologue, one operand order swapped in the epilogue). On gfx11 the compiler also reorders some selects and readout
+// steps (753 VALU to 750), the same way in 1 and 2.
+#if PEARL_AMD_WALK && !defined(PEARL_AMD_WALK_W)
+#if defined(__gfx1201__)
+#define PEARL_AMD_WALK_W 8
+#define PEARL_AMD_WALK_H 12
+#define PEARL_AMD_WALK_SW 2
+#define PEARL_AMD_WALK_SH 6
+#elif defined(__gfx1200__)
+#define PEARL_AMD_WALK_W 4
+#define PEARL_AMD_WALK_H 12
+#define PEARL_AMD_WALK_SW 2
+#define PEARL_AMD_WALK_SH 6
+#elif defined(__gfx1100__)
+#define PEARL_AMD_WALK_W 8
+#define PEARL_AMD_WALK_H 18
+#define PEARL_AMD_WALK_SW 2
+#define PEARL_AMD_WALK_SH 6
+#elif defined(__gfx1101__)
+#define PEARL_AMD_WALK_W 8
+#define PEARL_AMD_WALK_H 12
+#define PEARL_AMD_WALK_SW 4
+#define PEARL_AMD_WALK_SH 4
+#endif
+#endif
+#ifndef PEARL_AMD_WALK_W
+#define PEARL_AMD_WALK_W 0
+#endif
+#ifndef PEARL_AMD_WALK_H
+#define PEARL_AMD_WALK_H 1
+#endif
+#ifndef PEARL_AMD_WALK_SW
+#define PEARL_AMD_WALK_SW PEARL_AMD_WALK_W
+#endif
+#ifndef PEARL_AMD_WALK_SH
+#define PEARL_AMD_WALK_SH PEARL_AMD_WALK_H
+#endif
+// Whether this pass remaps its tiles: the walk asked for, and a shape for this target.
+#define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)
+
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
 typedef int32_t pearl_amd_v4i __attribute__((ext_vector_type(4)));
@@ -1025,11 +1115,38 @@ __device__ __forceinline__ uint32_t pearl_amd_hw_id1() {
 #else
 #define PEARL_AMD_RDLATE_PIN() ((void)0)
 #endif
+// PEARL_AMD_WALK (above): the tile (x, y) that block (bx, by) of a gx x gy grid folds. In a whole supertile row r,
+// off counts the row's blocks in launch order, n is the supertile, j the block in it, q its sub-tile and p its place
+// there. One-to-one on the grid. Every value is the same in all lanes, so the compiler keeps it scalar.
+__device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_t gx, uint32_t gy, uint32_t &x,
+                                               uint32_t &y) {
+  x = bx;
+  y = by;
+#if PEARL_AMD_WALK_ON
+  constexpr uint32_t W = PEARL_AMD_WALK_W, H = PEARL_AMD_WALK_H;
+  constexpr uint32_t SW = PEARL_AMD_WALK == 2 ? PEARL_AMD_WALK_SW : W, SH = PEARL_AMD_WALK == 2 ? PEARL_AMD_WALK_SH : H;
+  static_assert(H > 0u && SW > 0u && SH > 0u && W % SW == 0u && H % SH == 0u,
+                "PEARL_AMD_WALK: sub-tiles must tile a supertile");
+  constexpr uint32_t Q = (W / SW) * (H / SH);
+  if (gx % W != 0u || by >= gy / H * H) return;
+  const uint32_t r = by / H;
+  const uint32_t off = (by - r * H) * gx + bx;
+  const uint32_t n = off / (W * H);
+  const uint32_t j = off - n * (W * H);
+  const uint32_t b = (r & 1u) != 0u ? gx / W - 1u - n : n;
+  const uint32_t q = j % Q, p = j / Q;
+  x = b * W + q % (W / SW) * SW + p % SW;
+  y = r * H + q / (W / SW) * SH + p / SW;
+#else
+  (void)gx;
+  (void)gy;
+#endif
+}
 
 // The matrix fold over one 128x256 tile of C: rows blockIdx.y * 128 of A', and B' rows
-// col0 + blockIdx.x * 256 (the batch's columns start at col0). Every region of the tile gets
-// its 16 transcript words in `tr`, at its batch-local number: column offset index within
-// the batch times rows_valid, plus row offset index.
+// col0 + blockIdx.x * 256 (the batch's columns start at col0), or the tile PEARL_AMD_WALK gives.
+// Every region of the tile gets its 16 transcript words in `tr`, at its batch-local number:
+// column offset index within the batch times rows_valid, plus row offset index.
 //
 // A wave holds kMT x kNT tiles: 64 rows by 128 columns on CDNA, 64 by 64 on RDNA. That is
 // whole 32x64 blocks, and each block holds eight whole regions. At every chunk end a lane
@@ -1102,8 +1219,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   __builtin_assume(t >= 0 && t < T);
 #endif
   const int wr = wave / P::kWC, wc = wave % P::kWC;
+#if PEARL_AMD_WALK_ON
+  uint32_t tileX, tileY;   // PEARL_AMD_WALK (above): this block's tile
+  pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
+  const uint32_t tileRow = tileY * (uint32_t)BM;
+  const uint32_t tileCol = tileX * (uint32_t)BN;
+#else
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
+#endif
 #if PEARL_AMD_ABLATE & 16
   // PEARL_AMD_ABLATE bit 16: every block reads tile 0's operands, which stay in L2.
   const int8_t *gA = Ap;
