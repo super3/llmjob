@@ -90,6 +90,26 @@ describe('the RDNA 4 set (PEARL_AMD_RDNA4_SET)', () => {
     expect(off).not.toContain('if constexpr (B == 1)\n    if ((s + 1) % perChunk == 0)');
   });
 
+  // A diagnostic, not a build: whether the HIP SDK's clang 21 builds the Linux RDNA 4 settings with no
+  // spills or scratch. It must not fail the job or change what winlib builds and ships.
+  it('is checked with the Windows compiler in CI, without failing the job or reaching winlib', () => {
+    const ci = fs.readFileSync(path.join(__dirname, '..', '..', '.github', 'workflows', 'native-core.yml'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    const job = ci.slice(ci.indexOf('\n  amd-windows:\n'));
+    const release = job.indexOf('        run: ./build-amd.sh check\n');
+    const full = job.indexOf("run: PEARL_AMD_CFLAGS='-DPEARL_AMD_KWRAP=1 -DPEARL_AMD_RDNA4_SET=1 -DPEARL_AMD_WALK=1' "
+      + './build-amd.sh check gfx1200 gfx1201\n');
+    const wrap = job.indexOf('run: PEARL_AMD_CFLAGS=-DPEARL_AMD_KWRAP=1 ./build-amd.sh check gfx1200 gfx1201\n');
+    const winlib = job.indexOf('        run: ./build-amd.sh winlib\n');
+    expect([release > 0, release < full, full < wrap, wrap < winlib]).toEqual([true, true, true, true]);
+    for (const at of [full, wrap]) {
+      expect(job.slice(job.lastIndexOf('- name:', at), at)).toContain('continue-on-error: true');
+    }
+    // winlib and the release check take no tuning flags.
+    expect(job.slice(job.lastIndexOf('- name:', winlib), winlib + 40)).not.toContain('PEARL_AMD_CFLAGS');
+    expect(job.slice(job.lastIndexOf('- name:', release), release)).not.toContain('PEARL_AMD_CFLAGS');
+  });
+
   it('stays out of the Windows core, before any tuning flags, in its build and its check', () => {
     expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi\n');
     expect(BUILD).toContain('-Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"');
