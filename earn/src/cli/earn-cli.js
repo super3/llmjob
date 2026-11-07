@@ -58,7 +58,7 @@ const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus, planMinerGpus,
+  describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const format = require('../shared/format');
@@ -923,6 +923,11 @@ async function run(argv) {
     // with an NVIDIA card beside the AMD ones, its list would drop the AMD
     // cards the indices name. The chosen indices go to the core as they are.
     if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
+    // With none chosen, an AMD rig's list is empty and one core would mine one
+    // card. The OS counts them instead (det.amd, shared/gpu planAmdGpus), as in
+    // the GUI.
+    const amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
+    if (amdGpus.length) settings.gpus = amdGpus;
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -959,7 +964,8 @@ async function run(argv) {
     } else {
       const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
       if (cudaLine) log(cudaLine);
-      if (mining.length > 1) log('mining on:  ' + cardList(mining));
+      if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
+      else if (mining.length > 1) log('mining on:  ' + cardList(mining));
     }
   }
 

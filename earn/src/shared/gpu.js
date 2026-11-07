@@ -4,6 +4,8 @@
 // (Win32_VideoController) and feeds the raw adapter-name list here; keeping the
 // selection logic here makes it unit-testable without touching the OS.
 
+const { AMD, pickCoreVariant } = require('./coreVariant');
+
 // Virtual / basic display adapters that aren't real mining GPUs.
 const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|citrix|vmware|oray/i;
 
@@ -363,10 +365,46 @@ function amdCardName(device, ids) {
   return AMD_DISCRETE.test(name) ? 'AMD ' + name.replace(/^AMD\s+/i, '') : null;
 }
 
+// Whether a Windows adapter name (Win32_VideoController) is a discrete AMD
+// card: "AMD Radeon RX 9070 XT", "AMD Radeon AI PRO R9700". An APU's graphics
+// ("AMD Radeon(TM) Graphics", "AMD Radeon 780M Graphics") is not: no AMD core
+// mines on it, and counting it would plan a core for a card that isn't there.
+function isDiscreteAmd(name) {
+  const n = String(name == null ? '' : name).trim();
+  return /\b(?:AMD|Radeon)\b/i.test(n) && AMD_DISCRETE.test(n) && !INTEGRATED.test(n) && !IGNORE.test(n);
+}
+
+// The cards an AMD rig mines on when nobody chose any: HIP's 0..N-1, one core
+// each, for the N AMD cards the OS reports.
+//
+// nvidia-smi lists no AMD card, so on an AMD rig planMinerGpus has nothing to
+// plan, one core starts with no index, and that core picks one card. A rig of
+// two R9700s mined on one. The count comes from the OS instead: `det` is
+// probe.detectGpuInfo's answer, whose `amd` (Win32_VideoController on Windows,
+// sysfs on Linux) is there only when nvidia-smi lists no card. Each card keeps
+// its own salt lane, as on NVIDIA, because PearlMiner gives one to each entry.
+//
+// [] keeps the old path: cards were chosen (`chosen`, PEARL_GPU_INDEX or
+// --gpu-index), the OS shows one AMD card or can't say, or `env` makes the rig
+// load a CUDA core. The cards get no names: the OS's order need not be HIP's,
+// and each core names the card it opened. An index HIP has no card for fails
+// on its own, and the other cards mine (PearlMiner._startCores).
+function planAmdGpus({ env, det, chosen } = {}) {
+  const n = det && Array.isArray(det.amd) ? det.amd.length : 0;
+  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [] }).variant !== AMD) return [];
+  return Array.from({ length: n }, (_, index) => ({ index, name: null }));
+}
+
+// The log line for planAmdGpus' cards. `how` is how this shell chooses cards.
+function describeAmdPlan(gpus, how) {
+  return 'mining on ' + gpus.length + ' AMD cards (GPU ' + gpus.map((g) => g.index).join(', ')
+    + '), one core each; ' + how + ' to choose cards';
+}
+
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
-  AMD_DEVICES, parsePciIds, amdCardName,
+  AMD_DEVICES, parsePciIds, amdCardName, isDiscreteAmd, planAmdGpus, describeAmdPlan,
 };

@@ -61,7 +61,7 @@ const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
-  planMinerGpus,
+  planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const earnings = require('../shared/earnings');
@@ -610,6 +610,15 @@ function poolLookup() {
   return poolLookupFn;
 }
 
+// What the OS says about the AMD cards of a rig whose nvidia-smi lists none:
+// probe.detectGpuInfo, whose `amd` shared/gpu.planAmdGpus counts. Null without
+// asking when nvidia-smi lists cards, so an NVIDIA rig spawns nothing more, and
+// on macOS, which has no AMD core and whose probe is slow.
+function readAmdCards(nvidiaListsCards) {
+  if (nvidiaListsCards || process.platform === 'darwin') return Promise.resolve(null);
+  return probe.detectGpuInfo();
+}
+
 // One miner start at a time. runPlan and an idle resume can each ask for one
 // while the other's is still in its nvidia-smi await, before `miner` is set; the
 // second joins the first instead of building a second engine on the same cards.
@@ -708,10 +717,17 @@ async function startMining(settings, llmCoRuns) {
   // The same nvidia-smi round also reads each card's compute capability and the
   // driver version, which decide whether this rig loads the CUDA 12.8 core or
   // the CUDA 13 one (shared/coreVariant). The factory logs its choice.
-  const [gpus, cudaCards] = await Promise.all([
+  const [nvidiaGpus, cudaCards] = await Promise.all([
     probe.detectMinerGpus(process.env, gpuEnv.indices), probe.detectCudaCards(),
   ]);
+  // nvidia-smi lists no AMD card, so on an AMD rig the list above is empty and
+  // one core would mine one card. The OS counts them instead (shared/gpu
+  // planAmdGpus). Asked only when nvidia-smi lists no card.
+  const amdCards = await readAmdCards(cudaCards.length > 0);
   if (epoch !== miningEpoch) return;
+  const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
+  const gpus = amdGpus.length ? amdGpus : nvidiaGpus;
+  if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
     send('miner:log', { level: 'warn', line });
   }

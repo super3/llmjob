@@ -1229,6 +1229,84 @@ describe('mining', () => {
     }));
   });
 
+  // An AMD rig: nvidia-smi lists nothing, so the OS's count of AMD cards
+  // (detectGpuInfo's `amd`) plans one core per card. Before, one core started
+  // with no index and a rig of two R9700s mined on one.
+  describe('on an AMD rig', () => {
+    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+    const amdInfo = (n) => ({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+    const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+    let gpuIndexBefore;
+    beforeEach(() => { gpuIndexBefore = process.env.PEARL_GPU_INDEX; delete process.env.PEARL_GPU_INDEX; });
+    afterEach(() => {
+      if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
+      else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
+    });
+
+    it('mines on every AMD card the OS lists, one core each, and says how to choose', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+      }));
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+      }));
+      expect(lines(ctx)).toContain('mining on 2 AMD cards (GPU 0, 1), one core each; set PEARL_GPU_INDEX to choose cards');
+    });
+
+    it('leaves one card, or a count it cannot read, to the core', async () => {
+      for (const info of [amdInfo(1), null]) {
+        const ctx = await boot();
+        ctx.probe.detectGpuInfo.mockResolvedValue(info);
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        expect(lines(ctx).some((l) => l.includes('AMD cards'))).toBe(false);
+      }
+    });
+
+    it('follows PEARL_GPU_INDEX when it is set', async () => {
+      process.env.PEARL_GPU_INDEX = '1';
+      const ctx = await boot();
+      ctx.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 1, name: null }]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 1, name: null }],
+      }));
+    });
+
+    // An NVIDIA rig starts as it did: nothing more is asked of the OS.
+    it('asks the OS nothing when nvidia-smi lists cards', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+      ctx.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 8, minor: 9, driverMajor: 610 }]);
+      ctx.probe.detectGpuInfo.mockClear();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.probe.detectGpuInfo).not.toHaveBeenCalled();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }],
+      }));
+    });
+
+    it('abandons a start that STOP overtakes while the OS is asked', async () => {
+      const ctx = await boot();
+      let release;
+      ctx.probe.detectGpuInfo.mockReturnValue(new Promise((r) => { release = r; }));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      ctx.emit('miner:stop');
+      release(amdInfo(2));
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+    });
+  });
+
   // PEARL_GPU_INDEX narrows the cards. What the app can't use (none, a typo)
   // and a listed card nvidia-smi doesn't show are logged, not dropped quietly.
   describe('PEARL_GPU_INDEX', () => {

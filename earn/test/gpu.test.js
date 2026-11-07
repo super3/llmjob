@@ -481,3 +481,47 @@ describe('AMD card names from PCI ids', () => {
     expect(amdCardName('cccc', {})).toBeNull();
   });
 });
+
+describe('AMD cards on an AMD rig', () => {
+  const { isDiscreteAmd, planAmdGpus, describeAmdPlan } = require('../src/shared/gpu');
+  const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+
+  // Windows' adapter names. An APU's graphics is no card to mine on, and an
+  // R9700 is one, though nothing in its name says "Radeon PRO".
+  it('tells a discrete AMD card from the rest by its Windows name', () => {
+    for (const n of ['AMD Radeon AI PRO R9700', 'AMD Radeon RX 9070 XT', 'AMD Radeon PRO W7900', ' AMD Radeon RX 6800 XT ']) {
+      expect([n, isDiscreteAmd(n)]).toEqual([n, true]);
+    }
+    for (const n of ['AMD Radeon(TM) Graphics', 'AMD Radeon 780M Graphics', 'AMD Radeon(TM) RX Vega 11 Graphics',
+      'AMD Radeon RX 7900 XTX Virtual Adapter', 'NVIDIA GeForce RTX 4090', 'RX 580', 'Microsoft Basic Display Adapter',
+      '', null, undefined]) {
+      expect([n, isDiscreteAmd(n)]).toEqual([n, false]);
+    }
+  });
+
+  // nvidia-smi lists no AMD card, so the OS's count is what plans one core per card.
+  it('plans HIP\'s 0..N-1 for two or more cards, with no names', () => {
+    expect(planAmdGpus({ env: {}, det: { amd: [R9700, R9700] }, chosen: null }))
+      .toEqual([{ index: 0, name: null }, { index: 1, name: null }]);
+    expect(planAmdGpus({ det: { amd: [R9700, R9700, R9700] } }).map((g) => g.index)).toEqual([0, 1, 2]);
+    // Asked for by name, the AMD core is still the one in use.
+    expect(planAmdGpus({ env: { PEARL_CORE_VARIANT: 'amd' }, det: { amd: [R9700, R9700] } })).toHaveLength(2);
+  });
+
+  // The old path: one core, its own choice of card.
+  it('plans nothing for one card, an unknown count, a choice, or a CUDA core', () => {
+    expect(planAmdGpus({ det: { amd: [R9700] } })).toEqual([]);
+    expect(planAmdGpus({ det: { amd: [] } })).toEqual([]);
+    expect(planAmdGpus({ det: { name: 'NVIDIA GeForce RTX 4090', count: 2 } })).toEqual([]);
+    expect(planAmdGpus({ det: null })).toEqual([]);
+    expect(planAmdGpus()).toEqual([]);
+    expect(planAmdGpus({ det: { amd: [R9700, R9700] }, chosen: [1] })).toEqual([]);
+    expect(planAmdGpus({ det: { amd: [R9700, R9700] }, chosen: [] })).toEqual([]);
+    expect(planAmdGpus({ env: { PEARL_CORE_VARIANT: 'cu12' }, det: { amd: [R9700, R9700] } })).toEqual([]);
+  });
+
+  it('says how many cards mine and how to choose them', () => {
+    expect(describeAmdPlan([{ index: 0 }, { index: 1 }], 'set PEARL_GPU_INDEX'))
+      .toBe('mining on 2 AMD cards (GPU 0, 1), one core each; set PEARL_GPU_INDEX to choose cards');
+  });
+});

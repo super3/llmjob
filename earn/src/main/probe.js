@@ -15,7 +15,7 @@ const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
-  parsePciBusIds, parsePciIds, amdCardName,
+  parsePciBusIds, parsePciIds, amdCardName, isDiscreteAmd,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
@@ -346,6 +346,10 @@ function detectMacGpuInfo() {
   });
 }
 
+// When nvidia-smi lists no card, the answer on Windows and Linux also has
+// `amd`: the AMD cards the OS reports, as [{ name }] (on Linux, detectAmdGpus'
+// entries). nvidia-smi can't count them, so shared/gpu.planAmdGpus counts these.
+// There is no `amd` when nvidia-smi answered, or on macOS.
 function detectGpuInfo(opts) {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
@@ -364,7 +368,7 @@ function detectGpuInfo(opts) {
         // Linux with no NVIDIA card: an AMD card, named from its PCI ids.
         if (process.platform !== 'win32') {
           const amd = detectAmdGpus(opts);
-          return resolve(amd.length ? { name: amd[0].name, count: amd.length } : null);
+          return resolve(amd.length ? { name: amd[0].name, count: amd.length, amd } : null);
         }
         execFile('powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command',
@@ -374,7 +378,8 @@ function detectGpuInfo(opts) {
             if (e2) return resolve(null);
             const names = String(out2).split(/\r?\n/);
             const name = pickGpu(names);
-            resolve(name ? { name, count: countGpus(names) } : null);
+            const amd = names.filter(isDiscreteAmd).map((n) => ({ name: n.trim() }));
+            resolve(name ? { name, count: countGpus(names), amd } : null);
           });
       });
   });

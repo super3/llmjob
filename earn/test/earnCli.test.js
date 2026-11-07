@@ -1435,6 +1435,66 @@ describe('--gpu-index', () => {
     });
   });
 
+  // An AMD rig: nvidia-smi lists nothing, so the OS's count of AMD cards
+  // (detectGpuInfo's `amd`, sysfs on Linux) plans one core per card, as in the
+  // GUI. Before, one core started with no index and mined on one card.
+  describe('on an AMD rig', () => {
+    const R9700 = { index: 0, name: 'AMD Radeon AI PRO R9700' };
+    const amdInfo = (n) => ({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+    const LINE = 'mining on 2 AMD cards (GPU 0, 1), one core each; use --gpu-index to choose cards';
+
+    test('mines on every AMD card the OS lists, one core each, and says how to choose', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        }));
+        expect(allOut()).toContain(LINE);
+        expect(allOut()).not.toContain('mining on:  2 GPUs');
+        await stop(m, p);
+      });
+    });
+
+    // HiveOS passes --core amd from Extra config. With no NVIDIA card it is the same rig.
+    test('does the same with --core amd', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'amd']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        }));
+        await stop(m, p);
+      });
+    });
+
+    test('follows --gpu-index, and leaves one card to the core', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        m.probe.detectMinerGpus.mockResolvedValue([{ index: 1, name: null }]);
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '1']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 1, name: null }],
+        }));
+        expect(allOut()).not.toContain('AMD cards');
+        await stop(m, p);
+
+        const m2 = load();
+        m2.probe.detectGpuInfo.mockResolvedValue(amdInfo(1));
+        const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m2.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        await stop(m2, p2);
+      });
+    });
+  });
+
   // nvidia-smi has no GPU 5 (planMinerGpus drops it): mine on the rest and say so.
   test('a card nvidia-smi does not list is skipped with a line on stderr', async () => {
     const m = load();

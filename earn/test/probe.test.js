@@ -412,8 +412,25 @@ describe('detectGpuInfo', () => {
       execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
         ? cb(new Error('not installed'))
         : cb(null, 'Intel(R) UHD Graphics\r\nAMD Radeon RX 7900 XTX\r\n')));
-      expect(await probe.detectGpuInfo()).toEqual({ name: 'AMD Radeon RX 7900 XTX', count: 1 });
+      expect(await probe.detectGpuInfo()).toEqual({
+        name: 'AMD Radeon RX 7900 XTX', count: 1, amd: [{ name: 'AMD Radeon RX 7900 XTX' }],
+      });
       expect(execFile).toHaveBeenCalledWith('powershell.exe', expect.any(Array), { timeout: 5000 }, expect.any(Function));
+    });
+  });
+
+  // nvidia-smi lists no AMD card, so the AMD cards Windows lists are what the
+  // miner plans from. An APU's graphics beside them is not one.
+  it('lists the discrete AMD cards from WMI', async () => {
+    await withPlatform('win32', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
+        ? cb(new Error('not installed'))
+        : cb(null, 'AMD Radeon(TM) Graphics\r\nAMD Radeon AI PRO R9700\r\nAMD Radeon AI PRO R9700\r\n')));
+      expect(await probe.detectGpuInfo()).toEqual({
+        name: 'AMD Radeon AI PRO R9700',
+        count: 2,
+        amd: [{ name: 'AMD Radeon AI PRO R9700' }, { name: 'AMD Radeon AI PRO R9700' }],
+      });
     });
   });
 
@@ -569,7 +586,10 @@ describe('AMD cards from sysfs', () => {
   it('names the rig from its AMD card when Linux has no nvidia-smi', async () => {
     await withPlatform('linux', async () => {
       execCb(new Error('ENOENT'));
-      expect(await probe.detectGpuInfo(opts)).toEqual({ name: 'AMD Radeon RX 9070 XT', count: 2 });
+      expect(await probe.detectGpuInfo(opts)).toEqual({
+        name: 'AMD Radeon RX 9070 XT', count: 2, amd: probe.detectAmdGpus(opts),
+      });
+      expect((await probe.detectGpuInfo(opts)).amd).toHaveLength(2);
       expect(await probe.detectGpuInfo({ fs: fakeFs({}, {}, null) })).toBeNull();
     });
   });
