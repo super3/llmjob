@@ -545,10 +545,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // 12 VALU a slab on load addresses (8 of them that test's two arms, both run under an exec mask, in chains of 64-bit
 // adds); with both the loads take none, and the fold 232 VGPRs, not 240, still 6 waves (ROCm 7.2.0). On RDNA 3 a
 // chained VALU beside the WMMAs costs about 4-5 clocks of WMMA time and a lone one about 1 (pearl_amd_peak on an
-// RX 7900 XTX), so it paid more than the 1.2% a clock each would. On that card (PC 57cc1801, 7 November), against
-// the release on the same PC: the fold alone +1.02 to +1.25% a round, hashrate.js +0.66 to +0.77%; TID alone +0.16%
-// and +0.04%. Only gfx11 and gfx12 code takes buffer loads, whatever the setting: word 3 is theirs, and CDNA and
-// RDNA 2 keep their global loads.
+// RX 7900 XTX and an RX 7800 XT), so it paid more than the 1.2% a clock each would. Against the release on the same
+// PC, 7 November: on the RX 7900 XTX (57cc1801) the fold alone +1.02 to +1.25% a round and hashrate.js +0.66 to
+// +0.77%, with TID alone +0.16% and +0.04%; on the RX 7800 XT (72dd708c) +0.81 to +1.34% and +0.75 to +0.82%. Only
+// gfx11 and gfx12 code takes buffer loads, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep their
+// global loads.
 #ifndef PEARL_AMD_BUFLD
 #define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))
 #endif

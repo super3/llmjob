@@ -111,9 +111,11 @@ the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%).
 `PEARL_AMD_BUFLD` with `PEARL_AMD_TID`, 7 November, issue #287 item 2). Its fragments are 16 bytes
 already, so KPAIR has nothing to give it, but its fold spent 12 VALU a slab on load addresses, mostly in
 chains of 64-bit adds, and now spends none. On RDNA 3 a chained VALU beside the WMMAs costs about 4-5
-clocks of WMMA time and a lone one about 1 (`test/pearl_amd_peak.cpp` on an RX 7900 XTX). Against the
-release on the same RX 7900 XTX (PC `57cc1801`), the fold alone ran +1.02 to +1.25% a round and
-`hashrate.js` +0.66 to +0.77%; TID alone gave +0.16% and +0.04%. gfx1102, gfx1150 and gfx1151 weren't
+clocks of WMMA time and a lone one about 1 (`test/pearl_amd_peak.cpp` on an RX 7900 XTX and an RX 7800
+XT). Against the release on the same PC, the fold alone ran +1.02 to +1.25% a round and `hashrate.js`
++0.66 to +0.77% on an RX 7900 XTX (PC `57cc1801`), and +0.81 to +1.34% and +0.75 to +0.82% on an RX 7800
+XT (`72dd708c`); TID alone gave +0.16% and +0.04% on the XTX, so the gain is the loads'. verify-hits
+checked 400 of 400 hits on both. gfx1102, gfx1150 and gfx1151 weren't
 measured and keep their global loads, and the Windows core leaves it out (`SET_OS` in `build-amd.sh`).
 `-DPEARL_AMD_RDNA3_BUFLD=0` builds the fold without it. Only gfx11 and gfx12 code takes buffer loads,
 whatever the setting.
