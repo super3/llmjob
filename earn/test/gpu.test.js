@@ -464,6 +464,16 @@ describe('AMD card names from PCI ids', () => {
     expect(amdCardName('1586', { subsystemName: 'Some laptop board' })).toBe('AMD Radeon 8050S/8060S');
   });
 
+  // Device 7551 is the Radeon AI PRO R9700 (gfx1201, 32 GB). It had no row, and
+  // "AI PRO" matched neither pattern, so a Linux rig of them got no board name.
+  it('names the Radeon AI PRO R9700', () => {
+    expect(amdCardName('7551', parsePciIds(IDS, '1002', '7551', '1002', '0000'))).toBe('AMD Radeon AI PRO R9700');
+    expect(amdCardName('7551', { subsystemName: 'Radeon AI PRO R9700 32GB' })).toBe('AMD Radeon AI PRO R9700');
+    expect(amdCardName('dddd', { subsystemName: 'Radeon AI PRO R9600D' })).toBe('AMD Radeon AI PRO R9600D');
+    expect(amdCardName('dddd', { deviceName: 'Navi 48 [Radeon AI PRO R9700]' })).toBe('AMD Radeon AI PRO R9700');
+    expect(amdCardName('dddd', { deviceName: 'Navi 48 [Radeon AI PRO]' })).toBeNull();
+  });
+
   it('uses a pci.ids name only for a discrete card', () => {
     expect(amdCardName('aaaa', { deviceName: 'Navi 99 [Radeon RX 9999 XT]' })).toBe('AMD Radeon RX 9999 XT');
     expect(amdCardName('bbbb', { deviceName: 'AMD Instinct MI300X' })).toBe('AMD Instinct MI300X');

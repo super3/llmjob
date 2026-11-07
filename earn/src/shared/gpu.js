@@ -305,6 +305,7 @@ function parseMacGpu(out) {
 // AMD core mines on, so it gets no row.
 const AMD_DEVICES = {
   '7550': 'Radeon RX 9070/9070 XT/9070 GRE',
+  '7551': 'Radeon AI PRO R9700',
   '7590': 'Radeon RX 9060/9060 XT',
   '744c': 'Radeon RX 7900 XT/7900 XTX/7900 GRE',
   '747e': 'Radeon RX 7700 XT/7800 XT',
@@ -315,10 +316,11 @@ const AMD_DEVICES = {
   '1586': 'Radeon 8050S/8060S',
 };
 
-// One card's model inside a longer name.
-const AMD_MODEL = /Radeon (?:RX \d{4}(?: XTX| XT| GRE)?|PRO [A-Z]?\d{4,5}[A-Z]*|80[56]0S)\b/i;
+// One card's model inside a longer name. "AI PRO" is the R9700's line, with
+// nothing of "Radeon PRO" in it: "AMD Radeon AI PRO R9700".
+const AMD_MODEL = /Radeon (?:RX \d{4}(?: XTX| XT| GRE)?|PRO [A-Z]?\d{4,5}[A-Z]*|AI PRO R\d+[A-Z]*|80[56]0S)\b/i;
 // A pci.ids device name worth showing: "Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]".
-const AMD_DISCRETE = /\bRX\b|Radeon PRO|Instinct/i;
+const AMD_DISCRETE = /\bRX\b|Radeon PRO|Radeon AI PRO R\d+|Instinct/i;
 
 // A device's own name and its board's subsystem name, from pci.ids text. The IDs
 // are lower-case hex without 0x. Either name is null when pci.ids lacks it.
