@@ -576,6 +576,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll
         for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
 
+#if PEARL_TALL_CHUNK_UNROLL_ON == 2
+#pragma unroll 2
+#elif PEARL_TALL_CHUNK_UNROLL_ON == 4
+#pragma unroll 4
+#endif
     for (uint32_t chunk = 0; chunk < chunks; chunk++) {
       // The last chunk stages the next tile's chunk 0, from the next tile's sources.
       const bool last = chunk + 1u == chunks;
@@ -892,6 +897,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // output is meaningless.
         pearl_mbar_wait(so + STAGE, rpar);
 #endif
+#if PEARL_TALL_A_AHEAD_ON
+        // The A fragment of the tile after a copy point, loaded before the copy group
+        // (PEARL_TALL_A_AHEAD).
+        static_assert(PEARL_TALL_BPT + 1u < KS * MT, "the tile after B's copy point is in the stage");
+        uint32_t an0 = 0u, an1 = 0u, an2 = 0u, an3 = 0u;
+#endif
 #pragma unroll
         for (uint32_t t = 0; t < KS; t++) {
           const uint32_t kt = t * 32u;
@@ -903,7 +914,30 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
+#if PEARL_TALL_A_AHEAD_ON
+            {
+              const uint32_t ptc = t * MT + mb;
+              if (ptc == PEARL_TALL_APT + 1u || ptc == PEARL_TALL_BPT + 1u) {
+                a0 = an0;
+                a1 = an1;
+                a2 = an2;
+                a3 = an3;
+              } else {
+                pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+              }
+              // At a copy point, the next tile's A goes out now, ahead of this tile's mma
+              // and of the copy group after them. Unconditional: the fragment is needed
+              // whether or not the group copies (stage_next).
+              if (ptc == PEARL_TALL_APT || ptc == PEARL_TALL_BPT) {
+                const uint32_t nt = (mb + 1u == MT) ? t + 1u : t;
+                const uint32_t nmb = (mb + 1u == MT) ? 0u : mb + 1u;
+                pearl_ldmatrix_x4(an0, an1, an2, an3,
+                                  ((aLane0 + so) ^ (nt * 32u)) + nmb * 16u * SK);
+              }
+            }
+#else
             pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+#endif
 #pragma unroll
             for (uint32_t nb = 0; nb < NB; nb++)
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],

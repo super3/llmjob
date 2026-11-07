@@ -344,6 +344,52 @@ jobs:
             -DPEARL_TALL_CLUSTER=1 \
             -c src/pearl_host.cu -o cuda-build/cluster/pearl_host.o
 
+      # The unroll and A-ahead builds of the cp.async tall fold (PEARL_TALL_CHUNK_UNROLL
+      # and PEARL_TALL_A_AHEAD in pearl_config.h): A/B switches, off, not shipped. Each is
+      # compiled here for sm_86 and sm_89 next to the release, so the log shows its
+      # registers, spill and chunk loop under this entry's compiler before a card races it.
+      # "executed" is the loop less the last chunk's next-tile block (its divides), which a
+      # chunk that is not a tile's last skips; u2's loop is two chunks. Compile only,
+      # Linux only, non-blocking, for the reasons the cluster step gives.
+      - name: Compile the unroll and A-ahead builds of the tall fold (sm_86, sm_89, not shipped)
+        if: runner.os == 'Linux'
+        working-directory: earn/native
+        shell: bash
+        continue-on-error: true
+        run: |
+          for v in "base:" "u2:-DPEARL_TALL_CHUNK_UNROLL=2" "aa:-DPEARL_TALL_A_AHEAD=1" \
+                   "u2aa:-DPEARL_TALL_CHUNK_UNROLL=2 -DPEARL_TALL_A_AHEAD=1"; do
+            n=${v%%:*}; d=${v#*:}
+            mkdir -p "cuda-build/g7/$n"
+            for a in 86 89; do
+              o="cuda-build/g7/$n/sm$a"
+              if ! nvcc -O3 -std=c++17 -cubin -arch=sm_$a $d -Xptxas -v -Isrc \
+                   src/pearl_kernel.cu -o "$o.cubin" > "$o.ptxas.txt" 2>&1; then
+                echo "::warning::G7 $n sm_$a did not compile"; tail -20 "$o.ptxas.txt"; continue
+              fi
+              regs=$(awk -v a="$a" '
+                $0 ~ ("Compiling entry function .pearl_tile_fold_tall. for .sm_" a ".") { on = 1; next }
+                on && /bytes spill stores/ { gsub(/^[ \t]+|ptxas info *: */, ""); spill = $0 }
+                on && /Used [0-9]+ registers/ { match($0, /Used [0-9]+ registers/); r = substr($0, RSTART + 5, RLENGTH - 15); on = 0 }
+                END { print r " registers, " spill }' "$o.ptxas.txt")
+              loop=$(cuobjdump -sass -fun pearl_tile_fold_tall "$o.cubin" \
+                | grep -E '^\s+/\*[0-9a-f]{4}\*/' \
+                | sed -E 's/^\s+\/\*([0-9a-f]+)\*\/\s+/\1 /; s/\s*\/\*.*$//' | awk '
+                { off[NR] = strtonum("0x" $1); txt[NR] = $0; n = NR }
+                /BAR.SYNC.DEFER_BLOCKING R/ && !hand { hand = NR }
+                END {
+                  for (i = 1; i < hand; i++) if (txt[i] ~ / BRA 0x/ && txt[i] !~ /@/) {
+                    t = strtonum(substr(txt[i], index(txt[i], "BRA 0x") + 4)); if (t < off[i]) { lo = t; hi = off[i] } }
+                  for (i = 1; i <= n; i++) if (off[i] >= lo && off[i] <= hi) {
+                    len++; if (txt[i] ~ /IMMA/) imma++
+                    if (txt[i] ~ /@P[0-9] BRA 0x/) { t = strtonum(substr(txt[i], index(txt[i], "BRA 0x") + 4))
+                      for (j = i + 1; j <= n && off[j] < t; j++) if (txt[j] ~ /MUFU.RCP/) { skip = (t - off[i]) / 16 - 1; break } }
+                  }
+                  printf "chunk loop %d instr (%d IMMA), %d executed", len, imma, len - skip }')
+              echo "G7 sm_$a $n: $regs; $loop"
+            done
+          done
+
       # The tall fold sits at 253-255 registers (probes/README.md: 255 or fewer
       # and 0 spill after any edit). A compiler or gate change that pushes it
       # over spills to local memory, and the kernel still compiles, links and

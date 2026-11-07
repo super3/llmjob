@@ -2393,6 +2393,43 @@ typedef struct {
 #endif
 #endif
 
+// Unrolling and prefetch distance on the cp.async ring (sm_86 and sm_89 only), two A/B
+// switches, off by default. At their defaults every kernel is byte for byte what it was.
+//
+// PEARL_TALL_CHUNK_UNROLL (1, 2 or 4): unroll the chunk loop by this much. Everything
+// inside a chunk is unrolled already (2 stages x 2 k-steps x 6 m16 tiles x 8 n8 columns,
+// 192 IMMA); the 16-chunk loop is not. Unrolled, the chunks that cannot be a tile's last
+// lose their "last" tests, and the ring's role rotation becomes renaming inside the body.
+// The cost is code: the chunk loop is 540 instructions (8.6 KB) on sm_89.
+//
+// PEARL_TALL_A_AHEAD (0 or 1): at the two copy points of a stage (PEARL_TALL_APT and
+// _BPT), load the next m16 tile's A fragment before the copy group instead of after it.
+// ptxas already keeps A two tiles ahead inside a basic block, but a copy group is a
+// branch (and A's holds the EMPTY spin), so the release issues the next tile's ldmatrix
+// after the group and the tile's first IMMA waits on it, four times a chunk. The same
+// fragments, the same mma and the same order; only where one ldmatrix a copy point sits.
+// (Not Blackwell's streamed body, PEARL_TALL_FRAG_PIPE, which on this ring lost 3.5-5.3%
+// a tile: see PEARL_TALL_BPT's notes.)
+#ifndef PEARL_TALL_CHUNK_UNROLL
+#define PEARL_TALL_CHUNK_UNROLL 1
+#endif
+#ifndef PEARL_TALL_A_AHEAD
+#define PEARL_TALL_A_AHEAD 0
+#endif
+#if PEARL_TALL_CHUNK_UNROLL != 1 && PEARL_TALL_CHUNK_UNROLL != 2 && PEARL_TALL_CHUNK_UNROLL != 4
+#error "PEARL_TALL_CHUNK_UNROLL is 1 (off), 2 or 4"
+#endif
+#if PEARL_TALL_A_AHEAD != 0 && PEARL_TALL_A_AHEAD != 1
+#error "PEARL_TALL_A_AHEAD is 0 or 1"
+#endif
+#if defined(__CUDA_ARCH__) && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890)
+#define PEARL_TALL_CHUNK_UNROLL_ON PEARL_TALL_CHUNK_UNROLL
+#define PEARL_TALL_A_AHEAD_ON PEARL_TALL_A_AHEAD
+#else
+#define PEARL_TALL_CHUNK_UNROLL_ON 1
+#define PEARL_TALL_A_AHEAD_ON 0
+#endif
+
 // The order Ada's tall fold (the cp.async ring) reads its noised operands in: 1 for
 // per-tile blocks, 0 for the k-blocked order Blackwell's TMA reads.
 //
