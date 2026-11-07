@@ -406,7 +406,7 @@ What future speed work needs: how to measure, the limits found, and what has alr
   3,150. Any edit to the hash's code makes ptxas reallocate the chunk loop, which then costs 3,383 cycles a tile.
 - On RTX 30/40 the staging ring's waits cost 475 cycles a tile on a 4090 (0.46%), and all of it is that hash seam.
   With the hash stubbed out, removing every ring wait made the tile 164 cycles slower (101,381 → 101,545; #287 item
-  1's builds). So lighter ring synchronization has nothing to win outside the seam (G4, 6 November). RTX 50's TMA
+  1's builds). So lighter ring synchronization has nothing to win outside the seam (suggestion list item 4, 6 November). RTX 50's TMA
   ring hasn't been ablated, but a 5070 Ti's cycles a tile (102,989) are within 0.2% of the 4090's, and a 5090 with
   no TMA bytes at all did +0.15% ±0.3 more work a clock.
 - The hash on RTX 50 was never stubbed out (the stubs are cp.async-ring only), but it can cost little more than on
@@ -415,9 +415,9 @@ What future speed work needs: how to measure, the limits found, and what has alr
   Ada. Issuing just that refill at the stage's end is bounded by the 0.2%, and `PEARL_TALL_TMA_FILL_PT` 16, which
   includes it, read +0.07% on a 5090; not built. At the power limit a cycle saving comes back at about half on RTX 30
   (the paired hash: −0.30% cycles gave +0.14 to +0.22%, and −0.15% on a 3080 Ti), so the whole hash is worth under 1%
-  there. (G8, 6 November, from records.)
-- Everything outside the fold costs about 0.2% of a card's time, so there is little to win there (6 November, from
-  records, no GPU run). On the 4090 a salt is 223 ms. Between salts the miner rewrites A' (0.34 ms, DRAM-bound: 0.15%)
+  there. (Suggestion list item 8, 6 November, from records.)
+- Everything outside the fold costs about 0.2% of a card's time, so there is little to win there (suggestion list item
+  10, 6 November, from records, no GPU run). On the 4090 a salt is 223 ms. Between salts the miner rewrites A' (0.34 ms, DRAM-bound: 0.15%)
   and two batch tails show (~0.07 ms each). Launch gaps are ~2 µs a batch. Hit proofs are read while the next batch
   runs. Job switches every 35–60 s cost nothing measurable. Halving the redraws (n 131072 to 262144) measured +0.2%.
   On an RX 9060 XT, `PEARL_AMD_TRACE` shows 0.13% outside the fold and hash kernels. A larger k doesn't dilute the
@@ -428,7 +428,16 @@ What future speed work needs: how to measure, the limits found, and what has alr
   runs at half rate. No RDNA 2 card has run it.
 
 **Tried and dropped (don't repeat without a new idea)**
+"Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
+6 November, which stopped on every item before any GPU time.
+
 - k 4096 on NVIDIA: RTX 20 (item 9) loses 1.2–2.8% to DRAM; RTX 50 and 40 (item 8) −0.78% and −0.29% at the power cap.
+- Larger k after cutting operand traffic (suggestion list item 3, 6 November, from records, no GPU run). On a 4090 the
+  fold takes 102,658, 101,764 and 101,220 cycles per 2048 of k at k 2048, 4096 and 8192: about 1,900 cycles a tile are
+  fixed (mostly the hash), so depth can win at most +1.64% a clock at k 16384. A 3090 with operands held in L2 turned
+  +1.30% and +1.56% a clock at k 8192 and 16384 into +0.6% and +0.8% at the power cap. With today's operands depth
+  loses (above), and no on-chip operand supply pays (compact tables, below), so it stops. The cp.async fold's
+  `tile_srcs` offsets are 32-bit and overflow past k 16384.
 - RTX 20: a smaller transcript hash for the L0 instruction cache (item 11), at most +0.10%.
 - RTX 30/40: copy groups and readout fences (item 10); hash control bits, warp turn-taking (#18), IMMAs during the hash;
   a wider window (g6: costs 1,380 cycles a tile to free at most 355); Z6 (no clearing at all saves only 20 cycles);
@@ -445,13 +454,13 @@ What future speed work needs: how to measure, the limits found, and what has alr
     then takes issue slots from the partner's IMMAs (−0.62%; whole-region hash only, −0.56%). A shorter all-ALU hash
     does pay: dropping a round (timing only) released 280 cycles sooner and saved 316 a tile. The hash has no ALU
     instruction to spare, so nothing is left to try there.
-- Tile shape on RTX 30, 40 and 50 (6 November, no GPU run). The tall fold's 192 accumulators a thread (192x256, eight
+- Tile shape on RTX 30, 40 and 50 (suggestion list item 5, 6 November, no GPU run). The tall fold's 192 accumulators a thread (192x256, eight
   96x64 warps) is the most 255 registers allow at 256 threads. 128 lost three ways: 128x256 on the same ring −4.6% on a
   4090 (probes/README.md), twelve 64x64 warps over 192x256 at 168 registers −2.1 to −5.3% a clock (branch
   exp/rtx30-layout), and on a 5090 the 192x256 tile was +3.4% over 128x256. 160 can't keep whole regions in a warp: a
   region spans 32 rows by 64 columns, so a warp holds 64, 128 or 192 words. A 160x256 tile that splits regions between
   warps moves 11.4% more bytes a MAC than 192x256 and frees registers nothing has used to gain; the model puts it near −2%.
-- RTX 30/40 unrolling and prefetch distance (GPU list item 7, 6 November; compile and records, no GPU run). Inside a
+- RTX 30/40 unrolling and prefetch distance (suggestion list item 7, 6 November; compile and records, no GPU run). Inside a
   chunk everything is unrolled, and ptxas already keeps A two m16 tiles ahead and reloads B under the last tile. Left
   to try were the chunk loop unrolled by 2 (`PEARL_TALL_CHUNK_UNROLL`: 470 → 455 instructions a chunk, all waits,
   branches and moves; by 4 it spills) and the A fragment after each copy group loaded before it (`PEARL_TALL_A_AHEAD`:
@@ -468,8 +477,8 @@ What future speed work needs: how to measure, the limits found, and what has alr
   with producer warps (4+4) reached only 93.25% before any draw. Drawing in the fold's own warps costs 1.1–1.6 tensor
   cycles an instruction (E4 on a 3090, item 16's sham draw), so even at half a staged byte's energy a full draw nets
   −1.3 to −3.5%, and a tile's 57 KB of tables don't fit beside the ring (2.7 KB free). Rechecked on 6 November for
-  item 1 of that day's suggestion list, no GPU time.
-- Shared-memory layout and fragment loads on RTX 40 and 50 (G6, 6 November, no GPU run). The tall fold's 64-byte
+  suggestion list item 1, no GPU time.
+- Shared-memory layout and fragment loads on RTX 40 and 50 (suggestion list item 6, 6 November, no GPU run). The tall fold's 64-byte
   stage rows with unit q at q ^ ((r >> 1) & 3) (SWIZZLE_64B under TMA) give conflict-free `ldmatrix` and `cp.async`.
   It loads only `LDSM.x4`, 40 a chunk a warp, 106.7 shared bytes an IMMA: the least a 96x64 warp tile can read. Its
   address math is 2 IADD and 2 LOP3 a stage on sm_89 and sm_120. Holding k-step 1's lane bases in two more
@@ -477,7 +486,7 @@ What future speed work needs: how to measure, the limits found, and what has alr
   That's about 0.23% of a tile's energy, so about +0.07% TH/s. On sm_120 it saves nothing, because the ring roles
   sit in plain registers there. The readout's `red.shared.xor` runs 16 serial passes (8 words on 2 banks, 4 lanes a
   word). Fixing that would save the hash seam at most 50–120 cycles a tile, and it adds about as many ALU instructions.
-- Registers and occupancy (6 November, compiled code only, no GPU). No shipped fold spills anywhere: 0 bytes of stack on
+- Registers and occupancy (suggestion list item 9, 6 November, compiled code only, no GPU). No shipped fold spills anywhere: 0 bytes of stack on
   every NVIDIA kernel and arch, 0 local loads or stores in the SASS, 0 scratch on every AMD target. The tall fold
   (254-255 registers, 98.7-99.8 KB of shared) is held to one block an SM by both. ptxas
   `--register-usage-level` 8 and 10 leave the sm_89 and sm_86 chunk loop byte for byte the same (0 and 2 make it
@@ -491,7 +500,7 @@ What future speed work needs: how to measure, the limits found, and what has alr
   split slab barrier; the keeping lane by exec mask (below RDSEL alone); batch-width and hash-kernel changes.
 - k 8192 pays only on gfx1201 with 56+ CUs (+0.70% on a 9070 XT, 4 November); the 9060 XT is about 6% slower at it.
   HIP counts WGPs on RDNA (32 on a 64-CU card), so the gate takes either count.
-- Unsigned or biased int8 operands (6 November, desk study, no card time). Fill 63 already gives nonnegative A' and
+- Unsigned or biased int8 operands (suggestion list item 2, 6 November, desk study, no card time). Fill 63 already gives nonnegative A' and
   B' (the noise is triangular on [−63, 63]) with the same bits a u8 mma would see, and it measured level with 48 or
   just below it: −0.23% on the 4090, +0.13% fold alone on a 9070 XT. The four int8 `mma.sync` type pairs compile to
   the same IMMA, registers and schedule on sm_89 and sm_86; the types are two mode bits. Any bias the operand doesn't
