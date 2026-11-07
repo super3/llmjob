@@ -428,6 +428,13 @@ What future speed work needs: how to measure, the limits found, and what has alr
     instruction to spare, so nothing is left to try there.
 - RTX 50 (item 16): drawing B' on the SM (+1.81% against a +2.5% bar); TMA multicast hangs because its transaction count
   never arrives on sm_120.
+- Registers and occupancy (6 November, compiled code only, no GPU). No shipped fold spills anywhere: 0 bytes of stack on
+  every NVIDIA kernel and arch, 0 local loads or stores in the SASS, 0 scratch on every AMD target. The tall fold
+  (254-255 registers, 98.7-99.8 KB of shared) is held to one block an SM by both. ptxas
+  `--register-usage-level` 8 and 10 leave the sm_89 and sm_86 chunk loop byte for byte the same (0 and 2 make it
+  longer). RDNA 3 sits at 240 VGPRs, the 6-wave cap, and its LDS allows 3 blocks anyway. RDNA 4 uses 201 VGPRs and could
+  use 240 at the 6 waves it runs, but with the compiler told so (`-DPEARL_AMD_WAVES=6,6`) the slab loop doesn't change
+  and the readout gains a move. Nothing to race.
 - RDNA 3 (item 13): k 4096 gained under +0.3%. Batch 128 shipped on gfx1100 and gfx1101 (+0.1 to +1.8% a round, and 64
   was slower on both chips); RDNA 4 was level at 128 and keeps 256.
 - AMD fold: two-lane readout regions and readout v2 (items 2 and 4); start skew (item 14); the LDS store a k-step
