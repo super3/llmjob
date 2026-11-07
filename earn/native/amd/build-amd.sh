@@ -79,8 +79,8 @@ if windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEA
 # So does the RDNA 4 tile order of 7 November (PEARL_AMD_WALK): it was timed on Linux at k 4096 and 8192, and the
 # Windows core mines k 2048.
 if windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi
-# The hash in the fold (PEARL_AMD_FUSE, on in gfx1200 code since 6 November) likewise: timed only on Linux with
-# ROCm's clang 22.
+# The hash in the fold (PEARL_AMD_FUSE) likewise, though it is off by default since 7 November: timed only on Linux
+# with ROCm's clang 22.
 FUSE_OS=
 if windows; then FUSE_OS=-DPEARL_AMD_FUSE=0; fi
 

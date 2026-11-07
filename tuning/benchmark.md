@@ -394,8 +394,7 @@ Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD
 | RX 7800 XT | Salad (16 GB) | d0dbba63 | 30.2 | 0 | 31.2 | 97% |
 | RX 7800 XT | Salad (16 GB) | 53c8eb50 | 31.2 | 0 | 30.9 | 101% |
 
-v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet. Since then the RX
-9060 XT hashes inside the fold (+0.34%, research notes).
+v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet.
 
 RDNA 3's buffer loads (`PEARL_AMD_RDNA3_BUFLD`, on by default on gfx1100 and gfx1101; issue #287, item 2), 7 November:
 the release and the new build taking turns on one PC, order rotating, rounds 2-5. The twin is a second copy of the
@@ -484,6 +483,30 @@ RX 9070 XT), every other row of them backwards, against v0.6.13's order on the s
 - On an RX 7900 XTX (`45c94e40`) both were level (+0.06%, -0.04%), and the stamps put only 19% of blocks on array
   i % 12, so RDNA 3 keeps the old order. So does the Windows core, which mines k 2048.
 
+### Our own builds on Salad, 7 November: RDNA 4's #287 items 4, 5 and 6 together
+
+Each was raced alone against the release. Merged (exp/287-combined, 45b2c771), they were raced together on one PC per
+card: base (all three off; its fold's md5 is the release's, b6633aeb, as main built on the same box), a no-op twin of
+base, item 4 alone, items 4 and 5 (9060 XT only) and the merged default. `hashrate.js` 60 s after 20 s, order
+rotating, round 1 not scored. Not rows: no competitor ran.
+
+| Card, k | PC | Base (TH/s) | Twin | Item 4 | Items 4 + 5 | Items 4 + 5 + 6 |
+|---|---|---|---|---|---|---|
+| RX 9060 XT, 4096 | `85387649` | 70.63–71.31 | +0.06, −0.58, −0.07, −3.08, −0.55% | +1.71% (5 of 5) | **+2.20%** (5 of 5) | +1.71% (5 of 5) |
+| RX 9070 XT, 8192 | `1dba3ce9` | 121.05–123.02 | −1.84, +0.03, −0.76, 0.00% | +0.92% (4 of 4) | **+1.66%** (4 of 4) | item 6 is off on gfx1201 |
+
+- **Item 5 adds on top of item 4** on both: `hashrate.js` +0.49% (ahead in 4 of 5) and +0.74% (4 of 4); the fold alone
+  +0.38% and +0.40% (5 of 5, 4 of 4).
+- **Item 6 doesn't.** On top of items 4 and 5 it lost 0.47% on the 9060 XT (behind in 4 of 5; fold alone −0.39%, 0 of 5).
+  On a second 9060 XT (`b1aeab8d`) the twin swung 1.4% and it read −0.12% by mean, +0.90% and +0.81% by median in
+  the two settled rounds. So `PEARL_AMD_FUSE` is off by default; the gfx1200 that ships is the items 4 + 5 build.
+- **Noise:** the 9060 XT's twin swung up to 3.1% from round 4 on, the 9070 XT's up to 1.8%. The bar, twice the twin's
+  mean |delta|, was 1.73% and 1.31%: items 4 + 5 cleared it on both, items 4 + 5 + 6 missed by 0.02%.
+- **Checks:** every build's fold bit-exact at 1024 and 4096 square (and k 8192 on the 9070 XT). The merged default:
+  verify-hits 400 of 400 on both (on the 9060 XT with item 6 on), Kryptex 4 of 4 shares on the 9060 XT and 9 of 9 on
+  the 9070 XT, none rejected, one connection each.
+- **Cost:** three boxes, about 141 minutes, high priority.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
@@ -556,11 +579,12 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - AMD's separate transcript hash (#287 item 6, 6 November, `PEARL_AMD_TRACE`): 0.41–0.45 ms of a 30–31 ms batch on an
   RX 9060 XT at k 4096 (1.4%; 128 MiB read at 322 GB/s), 0.23 ms of 33.6 ms on an RX 9070 XT at k 8192 (0.7%).
   Hashing inside the fold (`PEARL_AMD_FUSE`) made the fold 0.33 ms slower on the 9060 XT and 0.36 ms on the 9070 XT.
-  It ships on gfx1200 only: `hashrate.js`, interleaved on one PC against two copies of the release, read +0.34% on a
+  It went in on gfx1200 first: `hashrate.js`, interleaved on one PC against two copies of the release, read +0.34% on a
   9060 XT (54b217a9: +0.30 to +0.38% a round over 5 scored rounds, copies within 0.08%), +0.36 to +0.44% in the quiet
   rounds of another (b9b8ec1e), with verify-hits 400 of 400 and 7 Kryptex shares in 30 minutes, none rejected (refverify
   7 of 7). The shipped build (default flags, gfx1200 only) passed again on a third 9060 XT (9454033f): verify-hits 400
-  of 400, 3 Kryptex shares in 10 minutes, none rejected.
+  of 400, 3 Kryptex shares in 10 minutes, none rejected. On 7 November, on top of #287 items 4 and 5, it lost 0.47% on a
+  9060 XT and read level on a second, too noisy to settle (the combined race above), so it is off by default.
 
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on

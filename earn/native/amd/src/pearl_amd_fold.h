@@ -1154,21 +1154,16 @@ __device__ __forceinline__ void pearl_amd_walk(uint32_t bx, uint32_t by, uint32_
 // saves the hash kernel's reads and launch and the fold's stores. It costs the hash's VALU inside the fold,
 // where on RDNA 4 a VALU instruction doesn't overlap the WMMAs: on the 9060 XT the fold got 0.33 ms slower and
 // the batch 0.11 ms faster. A fold given a transcript buffer (the fold test does) stores the words as well.
-// On by default in gfx1200 (RX 9060 XT) device passes only. hashrate.js against the release, interleaved on one
-// PC: +0.34% on an RX 9060 XT at k 4096 (+0.30 to +0.38% a round, two copies of each build within 0.08% of each
-// other) and +0.36 to +0.44% on another, with verify-hits 400 of 400 and 7 Kryptex shares, none rejected. On an
-// RX 9070 XT (gfx1201) at k 8192 it lost 0.50%: its hash kernel takes only 0.23 ms of a 33.6 ms batch, and the
-// fold got 0.36 ms slower (tuning/benchmark.md, 6 November). So gfx1201 and every other target keep the hash
-// kernel. The Windows core builds with it off (build-amd.sh), as it does the RDNA 4 set. -DPEARL_AMD_FUSE=0
-// builds the release before it, to race against; =1 turns it on for every target. Only a gfx1200 device pass
-// sees the default, so the host learns which a card has from its caps (PEARL_AMD_CAP_FUSE), never from this
-// macro.
+// Off by default on every target. Against the release alone it ran hashrate.js +0.34% on an RX 9060 XT at k 4096
+// (+0.30 to +0.38% a round, two copies of each build within 0.08% of each other) and +0.36 to +0.44% on another,
+// with verify-hits 400 of 400 and 7 Kryptex shares, none rejected. On an RX 9070 XT (gfx1201) at k 8192 it lost
+// 0.50%: its hash kernel takes only 0.23 ms of a 33.6 ms batch, and the fold got 0.36 ms slower (6 November).
+// Raced on top of the late readout and the tile order (items 4 and 5) on 7 November, it lost 0.47% on a
+// 9060 XT and read level on a second, noisier one, so it stays off (tuning/benchmark.md). -DPEARL_AMD_FUSE=1
+// turns it on for every target, to race again. The host learns whether a card has it from its caps
+// (PEARL_AMD_CAP_FUSE), never from this macro.
 #ifndef PEARL_AMD_FUSE
-#if !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__) && defined(__gfx1200__)
-#define PEARL_AMD_FUSE 1
-#else
 #define PEARL_AMD_FUSE 0
-#endif
 #endif
 #if PEARL_AMD_FUSE != 0 && PEARL_AMD_FUSE != 1
 #error "PEARL_AMD_FUSE is 0 or 1"

@@ -54,8 +54,8 @@ stops and says so, so the two cannot drift silently.
 **The folds are new.** Each computes C = A' x B'ᵀ in int32 over k and, at each of the 16
 chunk ends, XORs every region's 256 running sums into that region's transcript word.
 Each fold writes all 16 words of every region of the batch, and `pearl_amd_hash` hashes
-them in a kernel of its own (as the CUDA core does on GA100 and Hopper). The RX 9060 XT's chip
-(gfx1200) hashes inside the fold instead (below).
+them in a kernel of its own (as the CUDA core does on GA100 and Hopper). A build with
+`-DPEARL_AMD_FUSE=1` hashes inside the fold instead (below).
 
 | Fold | Targets | Instruction | Tile |
 |---|---|---|---|
@@ -177,20 +177,20 @@ k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fo
 reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
 walk is on.
 
-**The RX 9060 XT hashes inside the fold** (`PEARL_AMD_FUSE`, gfx1200 only, 6 November). Elsewhere each
+**Hashing inside the fold** (`PEARL_AMD_FUSE`, off by default; 6 and 7 November). Each
 fold stores every region's 16 words, 128 MiB a batch, and `pearl_amd_hash` reads them back: 0.41-0.45 ms
-of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. In gfx1200 code a block
+of a 30-31 ms batch on an RX 9060 XT (1.4%), whose 322 GB/s makes that read slow. With it a block
 instead ends its tile by putting its 128 regions in the B' staging LDS, and half its threads hash one
 region each into the hit list, with the same region numbers. The fold got 0.33 ms slower (the hash's
 VALU doesn't overlap the WMMAs) and the batch 0.11 ms faster. `hashrate.js` against the release,
 interleaved on one PC: +0.34% on an RX 9060 XT (+0.30 to +0.38% a round, copies of each build within
 0.08%) and +0.36 to +0.44% on another, with verify-hits 400 of 400 and 7 Kryptex shares, none rejected.
 On an RX 9070 XT (gfx1201, k 8192) it lost 0.50%: the hash kernel there takes 0.23 ms of 33.6, and the
-fold got 0.36 ms slower. So gfx1201 keeps the hash kernel. The caps say which a card has
+fold got 0.36 ms slower. On 7 November, on top of the late readout and the tile order, it lost 0.47% on a
+9060 XT and read level on a second, noisier one, so it is off by default everywhere. The caps say which a card has
 (`PEARL_AMD_CAP_FUSE`). With it the host skips the hash kernel, gives the fold no transcript buffer,
 and the fold's description says "hash in the fold". The fold test checks the fold's hits against
-`pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=0` builds the fold without it, `=1` turns it
-on for every target; the Windows core leaves it out.
+`pearl_amd_hash`'s over the same words. `-DPEARL_AMD_FUSE=1` turns it on for every target.
 
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
@@ -315,14 +315,12 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200 | wmma12 | 214 | - | 24 KB | 7 |
-| gfx1201 | wmma12 | 213 | - | 24 KB | 7 |
+| gfx1200, gfx1201 | wmma12 | 213 | - | 24 KB | 7 |
 
-The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 rows are the RDNA 4
+The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
 set's (`PEARL_AMD_RDNA4_SET`, 4 November) with the late readout (`PEARL_AMD_RDLATE=2`,
-`PEARL_AMD_RDTREE=1`, 7 November) and the tile order (`PEARL_AMD_WALK`, 7 November), gfx1200's with the
-hash in the fold too (`PEARL_AMD_FUSE`, 6 November, one VGPR more): 213 VGPRs and 24 KB of LDS, against 201
-without the late readout, 193 and 36 KB without the set, and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`
+`PEARL_AMD_RDTREE=1`, 7 November) and the tile order (`PEARL_AMD_WALK`, 7 November): 213 VGPRs and 24 KB of LDS (214 on gfx1200 with
+`PEARL_AMD_FUSE=1`), against 201 without the late readout, 193 and 36 KB without the set, and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`
 (CI check, 7 November). Its 7 waves are what the registers allow; it
 runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. The gfx1100 and
 gfx1101 rows have RDNA 3's buffer loads and staging cuts (`PEARL_AMD_RDNA3_BUFLD`, `PEARL_AMD_RDNA3_SET`):
@@ -517,8 +515,8 @@ by contrast, stops only its own card.
   tiles; the batch and band sized from the L2 and Infinity Cache as `learnings.md` describes
   for NVIDIA.
 - The hash inside the fold on other chips: `-DPEARL_AMD_FUSE=1` turns it on for every target.
-  Only gfx1200 has it by default (above); the RX 9070 XT lost 0.5% with it, and no RDNA 3 card
-  has raced it. CI checks its registers on every target, without failing the run.
+  It is off by default (above): the RX 9070 XT lost 0.5% with it, an RX 9060 XT 0.47% on top of
+  #287 items 4 and 5, and no RDNA 3 card has raced it. CI checks its registers on every target, without failing the run.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's
