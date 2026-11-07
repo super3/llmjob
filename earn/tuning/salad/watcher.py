@@ -2382,8 +2382,11 @@ class W:
                             f"({(start - g['pc_since']) / 60:.0f} min loading first)")
             return
         # A miner that stops (the card is taken back, the driver fails) stops sending readings: leave the PC
-        # once the newest is 6 min old.
-        if cur and seen_to - max(cur[-1][0], pend) >= 6 * MIN and not sharing:
+        # once the newest is 6 min old. Not in the first 10 min on a PC: a box handed back the PC it just lost
+        # carries readings from its last run there, and on 7 November 3060ti-90 was deleted 2 min after getting
+        # f231b72b back, while box.sh was still installing, on a reading from before it lost the PC.
+        if cur and seen_to - max(cur[-1][0], pend) >= 6 * MIN and seen_to - max(start, rs) >= 10 * MIN \
+                and not sharing:
             self.leave(g, f"no mining reading for {(t - cur[-1][0]) / 60:.0f} min on PC {g['machine'][:8]}")
             return
         # Rule 4: no share after 20 min on a PC.
