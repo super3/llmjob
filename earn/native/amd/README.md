@@ -124,6 +124,19 @@ only with ROCm's clang 22. Tried with them and left out: one array for both LDS 
 (`PEARL_AMD_STOFF`, level), a split slab barrier (1.1-1.4% slower on top) and 8 waves a SIMD
 (2.1-2.6% slower); see `tuning/benchmark.md`.
 
+RDNA 4 also takes its tiles in a different order (`PEARL_AMD_WALK`, gfx1200 and gfx1201 only):
+supertiles about the size of what the card holds at once, 8 x 12 tiles on an RX 9070 XT and 4 x 12
+on an RX 9060 XT, every other row of them backwards. The blocks on the card at once then need a
+quarter to 40% fewer bytes from past the L2 than the old 16-wide rows. Raced on Salad on 7 November
+against v0.6.13's order on the same PC (`hashrate.js`): RX 9060 XT +0.38% and +1.85% on two PCs,
+RX 9070 XT +0.56% and +0.75%; hits checked and Kryptex accepted every share. `=2` also deals each
+supertile's blocks to one sub-tile per shader array: 0.04-0.20% above `=1`, under the bar, and on an
+RX 7900 XTX the stamps show blocks aren't dealt to the arrays in turn. RDNA 3 keeps the old order
+(at batch 128 `=1` is that order, and `=2` was level), and so does the Windows core, which mines
+k 2048. `-DPEARL_AMD_WALK=0` builds the old order to race against. `pearl_amd_fold.h` has the
+reasoning; `earn/test/amdWalk.test.js` checks that every tile is folded exactly once and where the
+walk is on.
+
 **The host** (`src/pearl_host_hip.cpp`) is `pearl_host.cu` without the NVIDIA folds. It
 picks the fold from the card's `gcnArchName` and checks it against the folds the loaded
 code object actually has (`pearl_amd_caps`), so a build without the card's target fails
@@ -428,13 +441,6 @@ by contrast, stops only its own card.
   materialised in fragment order so the folds skip LDS; `global_load_lds` on CDNA; the
   hash fused into the fold; persistent tiles; the batch and band sized from the L2 and
   Infinity Cache as `learnings.md` describes for NVIDIA.
-- Tile order, built and not yet timed: `-DPEARL_AMD_WALK=1` takes the tiles in supertiles about
-  the size of what a card holds at once (8 x 12 tiles on an RX 9070 XT, 4 x 12 on an RX 9060 XT),
-  so those blocks need a quarter to 40% fewer bytes from past the L2 than the release's 16-wide
-  rows. `=2` also deals each supertile's blocks to one sub-tile per shader array, in case the
-  dispatcher hands blocks to the arrays in turn. On RDNA 3 at batch 128, `=1` is the release's
-  order. `pearl_amd_fold.h` has the reasoning; `earn/test/amdWalk.test.js` checks that every tile
-  is folded exactly once.
 - AMD cards in the app: rocm-smi or amd-smi for card lists, temperatures and VRAM.
 - Run the Windows core on a Radeon: steps 2-5 under "Testing on real hardware", and its speed
   against the Linux core's on the same card. HIP SDK 7.2's compiler is clang 21; ROCm 7.2.0's

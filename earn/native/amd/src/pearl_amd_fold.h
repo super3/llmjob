@@ -143,8 +143,19 @@
 #define PEARL_AMD_TILED 1
 #endif
 
-// PEARL_AMD_WALK: the order the matrix folds take their tiles in (issue 287, item 5). Off by default; not yet timed.
-// The release takes them x fastest, so the blocks on the card at once (3 a WGP) cover every column tile of the
+// PEARL_AMD_WALK: the order the matrix folds take their tiles in (issue 287, item 5). 1 by default on RDNA 4 (gfx1200
+// and gfx1201), where it was raced; 0 (the old order) on every other target. -DPEARL_AMD_WALK=0 builds the old order
+// everywhere, to race against. The Windows core is built with it off (build-amd.sh's SET_OS): it mines k 2048, which
+// the walk wasn't timed at.
+// Salad, 7 November, each walk build against v0.6.13's order on the same PC, hashrate.js (the whole miner):
+//   RX 9060 XT  +0.38% (PC 9ac12ceb) and +1.85% (ffa9f87b, where the fold alone gained +1.91%)
+//   RX 9070 XT  +0.56% (c10c6949) and +0.75% (1dba3ce9), at the k 8192 it mines
+// Every walk build passed the fold check and verify-hits (400 of 400), and Kryptex took every share of 1 (8 on the
+// 9060 XT, 6 on the 9070 XT, none rejected). 2 read 0.04-0.20% above 1 on every RDNA 4 PC, under the +0.3% bar, so 1
+// is the default. On an RX 7900 XTX (45c94e40) neither is faster (hashrate.js +0.06% and -0.04%), and the stamps show
+// the dispatcher doesn't deal blocks to the shader arrays in turn (19% of blocks, not 100%), so 2's premise is wrong
+// there.
+// The old order takes them x fastest, so the blocks on the card at once (3 a WGP) cover every column tile of the
 // batch and only a few row tiles: 16 x 6 tiles on an RX 9070 XT (96 blocks), 16 x 3 on an RX 9060 XT (48). Those
 // blocks read each slab of their tiles at about the same time, so the L2 fetches that slab once for all of them,
 // from the Infinity Cache or memory. At RDNA 4's k one such group reads more than the L2 holds (28-38 MB on the
@@ -159,13 +170,17 @@
 //      doesn't document it), each array then holds one compact sub-tile, so its L1 and its WGPs' L0 see fewer
 //      different lines. Q is the card's shader arrays.
 // The tested group-of-4 walk (removed 23 October) took every row tile for 4 column tiles, so it read all of A' from
-// memory 4 times a batch; a supertile row reads A' from memory once, as the release does.
+// memory 4 times a batch; a supertile row reads A' from memory once, as the old order does.
 // PEARL_AMD_WALK_W, _H, _SW and _SH set the shape; the targets below have defaults, and on any other target the walk
 // is off unless W is given. The map is one-to-one on the grid (amdWalk.test.js), so every tile is folded once and
-// the transcripts are the release's. A grid that W doesn't divide, and the rows after the last whole supertile row
-// (4 of 1024 at H 12), keep the release order.
+// the transcripts are the old order's. A grid that W doesn't divide, and the rows after the last whole supertile row
+// (4 of 1024 at H 12), keep the old order.
 #ifndef PEARL_AMD_WALK
+#if defined(__gfx1200__) || defined(__gfx1201__)
+#define PEARL_AMD_WALK 1
+#else
 #define PEARL_AMD_WALK 0
+#endif
 #endif
 #if PEARL_AMD_WALK != 0 && PEARL_AMD_WALK != 1 && PEARL_AMD_WALK != 2
 #error "PEARL_AMD_WALK is 0, 1 or 2"
@@ -174,8 +189,8 @@
 // gfx1100's and gfx1101's 128), shaped for the fewest bytes past the L2 (an A' tile is half a B' tile), and Q is the
 // shader arrays. gfx1201 (RX 9070 XT, 32 WGPs in 8 arrays): 8 x 12, sub-tiles 2 x 6. gfx1200 (RX 9060 XT, 16 WGPs
 // in 4): 4 x 12, 2 x 6. gfx1100 (RX 7900 XTX, 48 WGPs in 12): 8 x 18, 2 x 6. gfx1101 (RX 7800 XT, 30 WGPs in 6):
-// 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the release's order, so there 1 against the release
-// times what compiling the map in costs, and 2 against 1 the sub-tiles alone.
+// 8 x 12, 4 x 4. At RDNA 3's batch of 128 (8 column tiles) 1 is the old order, so there 1 against 0 times what
+// compiling the map in costs, and 2 against 1 the sub-tiles alone.
 // The code (ROCm 7.2, CI on 6 November): the map is 43-53 scalar instructions in the prologue, with the release's
 // VGPRs, LDS and waves on all four targets. On gfx12 the rest of the fold is the release's (one VALU moved in the
 // prologue, one operand order swapped in the epilogue). On gfx11 the compiler also reorders some selects and readout

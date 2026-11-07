@@ -77,8 +77,40 @@ function oneToOne(f, gx, gy) {
 const spread = (ts) => ({ b: new Set(ts.map(([x]) => x)).size, a: new Set(ts.map(([, y]) => y)).size });
 
 describe('the supertile walk (PEARL_AMD_WALK)', () => {
-  it('is off by default, and a build without it keeps the release order\'s lines', () => {
-    expect(FOLD).toContain('#ifndef PEARL_AMD_WALK\n#define PEARL_AMD_WALK 0\n#endif\n');
+  it('is on by default only on the RDNA 4 chips it was raced on, and -DPEARL_AMD_WALK=0 turns it off', () => {
+    // The default as each device pass (and the host pass, which defines no __gfx...__) sees it.
+    const block = between(FOLD, '#ifndef PEARL_AMD_WALK\n', '\n#endif\n#endif\n') + '\n#endif\n';
+    const m = /^#if (.*)\n#define PEARL_AMD_WALK 1\n#else\n#define PEARL_AMD_WALK 0\n#endif\n$/.exec(block);
+    expect(m).not.toBeNull();
+    const cond = m[1];
+    expect(cond.replace(/defined\(__gfx[0-9a-f]+__\)/g, 'D').replace(/ \|\| /g, '')).toMatch(/^D+$/);
+    const defaultFor = (target) => (new Function('defined', `return ${cond.replace(/defined\((__\w+__)\)/g, 'defined("$1")')};`)(
+      (n) => target !== null && n === `__${target}__`) ? 1 : 0);
+    const targets = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'build-amd.sh'), 'utf8')
+      .match(/^DEFAULT_ARCHS="(.*)"$/m)[1].split(' ');
+    expect(targets).toHaveLength(14);
+    const on = targets.filter((t) => defaultFor(t));
+    expect(on).toEqual(['gfx1200', 'gfx1201']);
+    expect(defaultFor(null)).toBe(0);
+    // Each has a shape, so the default does remap there.
+    for (const t of on) expect(SHAPES[t]).toBeDefined();
+    // A -D given to the compiler wins: the default sits under #ifndef.
+    expect(FOLD).toContain('#ifndef PEARL_AMD_WALK\n#if ' + cond + '\n');
+  });
+
+  it('stays out of the Windows core, which mines k 2048, and the Linux build keeps the default', () => {
+    const BUILD = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'build-amd.sh'), 'utf8')
+      .replace(/\r\n/g, '\n');
+    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi\n');
+    expect(BUILD).toContain('\nif windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi\n');
+    // Both winlib compiles take SET_OS before PEARL_AMD_CFLAGS, so a flag given there can still turn it on.
+    expect(BUILD.match(/\$KWRAP_OS \$SET_OS \$\{PEARL_AMD_CFLAGS:-\}/g)).toHaveLength(2);
+    const gpu = BUILD.slice(BUILD.indexOf('\n  gpu)\n'), BUILD.indexOf('\n  winlib)\n'));
+    expect(gpu).not.toContain('SET_OS');
+    expect(gpu).not.toContain('PEARL_AMD_WALK');
+  });
+
+  it('a build with the walk off keeps the release order\'s lines', () => {
     expect(FOLD).toContain('#if PEARL_AMD_WALK != 0 && PEARL_AMD_WALK != 1 && PEARL_AMD_WALK != 2\n#error');
     expect(FOLD).toContain('#define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)\n');
     // Without a shape (every target but the four below, and the host pass) W is 0, so it is off there.
