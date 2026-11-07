@@ -1,0 +1,49 @@
+# TEMPORARY, for G9 (registers and occupancy) only: remove before merging.
+# RDNA 4's wmma12 fold uses 201 VGPRs. The compiler aims for 7 waves a SIMD (216 VGPRs at most), but a block is
+# 8 waves, 2 to a SIMD, so the card runs 6 either way, and 6 waves allow 240. This compiles the fold with the
+# compiler told 6 (amdgpu_waves_per_eu through the existing PEARL_AMD_WAVES macro) and says whether its code
+# differs from the release's. Same compiler as native-core.yml's ubuntu-latest-hip (the pinned ROCm 7.2.0 image).
+name: amd isa gpu10-9 (temporary)
+
+on:
+  push:
+    branches: ['exp/gpu10-9']
+    paths:
+      - 'earn/native/**'
+      - '.github/workflows/amd-isa-gpu10-9.yml'
+  workflow_dispatch:
+
+jobs:
+  isa:
+    runs-on: ubuntu-latest
+    container: rocm/dev-ubuntu-24.04:7.2@sha256:749f9ee120c739682cc2e1553e62632c2676f98bc49e4d8133f380e0af682bcc
+    timeout-minutes: 40
+    env:
+      VARIANTS: >-
+        base=;
+        w6=-DPEARL_AMD_WAVES=6;
+        w66=-DPEARL_AMD_WAVES=6,6;
+        w56=-DPEARL_AMD_WAVES=5,6
+    steps:
+      - uses: actions/checkout@v4
+      - name: Variants on gfx1201 and gfx1200
+        working-directory: earn/native/amd
+        shell: bash
+        run: |
+          set -u
+          V=$(echo "$VARIANTS" | tr -d '\n' | sed 's/; */;/g; s/^ *//; s/ *$//')
+          echo "variants: $V"
+          for a in gfx1201 gfx1200; do
+            mkdir -p "$PWD/isa/$a"
+            VARIANTS="$V" ARCH=$a CHECK_ROOT="$PWD/isa/$a" bash test/variant-check.sh || true
+            for f in "$PWD"/isa/$a/*.fold; do
+              n=$(basename "$f" .fold)
+              echo "== $a $n: $(wc -l < "$f") lines, md5 $(md5sum < "$f" | cut -c1-12)"
+              awk '{print $1}' "$f" | grep -vE ':$' | sort | uniq -c | sort -rn | head -n 40
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: amd-isa-gpu10-9
+          path: earn/native/amd/isa
+          if-no-files-found: error
