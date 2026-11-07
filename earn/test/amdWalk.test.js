@@ -101,10 +101,11 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
   it('stays out of the Windows core, which mines k 2048, and the Linux build keeps the default', () => {
     const BUILD = fs.readFileSync(path.join(__dirname, '..', 'native', 'amd', 'build-amd.sh'), 'utf8')
       .replace(/\r\n/g, '\n');
-    expect(BUILD).toContain('SET_OS=\nif windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi\n');
+    expect(BUILD).toContain(
+      'SET_OS=\nif windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi\n');
     expect(BUILD).toContain('\nif windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi\n');
     // Both winlib compiles take SET_OS before PEARL_AMD_CFLAGS, so a flag given there can still turn it on.
-    expect(BUILD.match(/\$KWRAP_OS \$SET_OS \$\{PEARL_AMD_CFLAGS:-\}/g)).toHaveLength(2);
+    expect(BUILD.match(/\$KWRAP_OS \$SET_OS \$FUSE_OS \$\{PEARL_AMD_CFLAGS:-\}/g)).toHaveLength(2);
     const gpu = BUILD.slice(BUILD.indexOf('\n  gpu)\n'), BUILD.indexOf('\n  winlib)\n'));
     expect(gpu).not.toContain('SET_OS');
     expect(gpu).not.toContain('PEARL_AMD_WALK');

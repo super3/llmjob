@@ -87,7 +87,7 @@ describe('readout scheduling on RDNA 4 (PEARL_AMD_RDLATE, PEARL_AMD_RDTREE)', ()
     }
     // The build script sets neither: the Windows core turns the set off (-DPEARL_AMD_RDNA4_SET=0), so both are 0 there.
     expect(BUILD).not.toMatch(/RDLATE|RDTREE/);
-    expect(BUILD).toContain('if windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi');
+    expect(BUILD).toContain('if windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEARL_AMD_RDNA3_SET=0"; fi');
     // The RDNA 4 fold only, with the set's slab loop: a constant chunk of 4 slabs and the paired fragment reads.
     expect(FOLD).toContain(
       'constexpr bool kLate = PEARL_AMD_RDLATE != 0 && PEARL_AMD_KWRAP && std::is_same<P, PearlAmdWmma12>::value;');
