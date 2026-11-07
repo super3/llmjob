@@ -105,10 +105,18 @@ LDS load (`PEARL_AMD_KPAIR`: a slab's k-steps may take its bytes in any order, a
 them alike), and loads its slabs with buffer loads, whose base and slab offset are scalar
 (`PEARL_AMD_BUFLD`). Before, the fold added the slab to each lane's 64-bit address for every global
 load and made new LDS addresses for most fragments, about 9 VALU a slab of 32 WMMAs. On an RX 9070 XT
-the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%). RDNA 3 keeps its loads by
-default: its fragments are 16 bytes already, and buffer loads haven't been timed there yet. A build
-with `-DPEARL_AMD_BUFLD=1` (best with `-DPEARL_AMD_TID=1`) gives RDNA 3 the buffer loads, to race against
-the release (issue #287, item 2). Only gfx11 and gfx12 code takes them, whatever the setting.
+the two took `hashrate.js` from 115.8 to 125.6 TH/s on one PC (+8.5%).
+
+**RDNA 3's gfx1100 and gfx1101 load their slabs with buffer loads too** (`PEARL_AMD_RDNA3_BUFLD`:
+`PEARL_AMD_BUFLD` with `PEARL_AMD_TID`, 7 November, issue #287 item 2). Its fragments are 16 bytes
+already, so KPAIR has nothing to give it, but its fold spent 12 VALU a slab on load addresses, mostly in
+chains of 64-bit adds, and now spends none. On RDNA 3 a chained VALU beside the WMMAs costs about 4-5
+clocks of WMMA time and a lone one about 1 (`test/pearl_amd_peak.cpp` on an RX 7900 XTX). Against the
+release on the same RX 7900 XTX (PC `57cc1801`), the fold alone ran +1.02 to +1.25% a round and
+`hashrate.js` +0.66 to +0.77%; TID alone gave +0.16% and +0.04%. gfx1102, gfx1150 and gfx1151 weren't
+measured and keep their global loads, and the Windows core leaves it out (`SET_OS` in `build-amd.sh`).
+`-DPEARL_AMD_RDNA3_BUFLD=0` builds the fold without it. Only gfx11 and gfx12 code takes buffer loads,
+whatever the setting.
 
 **On top of that, RDNA 4 builds six more cuts** (`PEARL_AMD_RDNA4_SET`, 4 November). The wrap
 readout picks the keep word's half with a scalar branch instead of selects (`PEARL_AMD_RDSEL`) and
@@ -246,7 +254,7 @@ no scratch memory on every target:
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
 | gfx1030, gfx1031, gfx1032 | dot4 | 201 | - | 36 KB | 4 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
-| gfx1100, gfx1101 | wmma11 | 240 | - | 36 KB | 6 |
+| gfx1100, gfx1101 | wmma11 | 232 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
 | gfx1200, gfx1201 | wmma12 | 201 | - | 24 KB | 7 |
@@ -254,7 +262,9 @@ no scratch memory on every target:
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 row is the RDNA 4
 set's (`PEARL_AMD_RDNA4_SET`, 4 November): 201 VGPRs and 24 KB of LDS, against 193 and 36 KB without it,
 and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
-runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. On 2 November, with the
+runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. The gfx1100 and
+gfx1101 rows have RDNA 3's buffer loads (`PEARL_AMD_RDNA3_BUFLD`): 232 VGPRs, against 240 without them, as
+the Windows core and the other gfx11 targets build it. On 2 November, with the
 `dot4` fold, every row was the same as before but gfx103x's new `dot4` row; RDNA 2's loop built for
 gfx1101 (`-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`) put `dot4` at 205 VGPRs, 6 waves. A release check
 also fails a target without the fold the host runs on it (`folds_of` in `build-amd.sh`).
