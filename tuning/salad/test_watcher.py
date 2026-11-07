@@ -450,6 +450,20 @@ class TestMinerStops(Base):
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
         self.assertIn("no mining reading for 6 min", self.events())
 
+    def test_a_pc_handed_back_gets_its_warm_up_before_old_readings_count(self):
+        # 7 November: 3060ti-90 lost f231b72b, got it back 3 min later and was deleted 2 min after that, while
+        # box.sh was still installing, because its last reading there was 6 min old.
+        g = self.group(pri="medium")
+        self.step(g, 1, "m1")
+        self.mine(g, "m1", 199, 10)
+        self.step(g, 1)                                  # lost the PC
+        self.step(g, 3, "m1")                            # handed the same PC back
+        self.step(g, 3, "m1")                            # newest reading 7 min old, but only 3 min on the PC
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.assertNotIn("DELETED", self.events())
+        self.step(g, 7, "m1")                            # 10 min on it and still no reading: left
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
 
 class TestRestartOnTheSamePC(Base):
     def test_a_restart_on_the_same_pc_starts_the_reading_clock_again(self):
