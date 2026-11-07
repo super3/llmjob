@@ -379,6 +379,25 @@ Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD
 
 v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet.
 
+RDNA 3's buffer loads (`PEARL_AMD_RDNA3_BUFLD`, on by default on gfx1100 and gfx1101; issue #287, item 2), 7 November:
+the release and the new build taking turns on one PC, order rotating, rounds 2-5. The twin is a second copy of the
+release, for the noise.
+
+| Card | PC | Fold alone | `hashrate.js` | Twin: fold, `hashrate.js` |
+|---|---|---|---|---|
+| RX 7900 XTX | `57cc1801` | +1.17, +1.02, +1.25, +1.04% | +0.77, +0.76, +0.77, +0.66% (release 54.27-54.34) | −0.22 to +0.14%, 0 to +0.17% |
+| RX 7800 XT | `72dd708c` | +0.81, +1.34, +0.86, +0.88% | +0.82, +0.79, +0.79, +0.75% (release 31.81-31.82) | 0 to +0.62%, 0 to +0.03% |
+
+- TID alone (XTX): fold +0.16%, `hashrate.js` +0.04%. The gain is the buffer loads'.
+- verify-hits checked 400 of 400 hits on both PCs. On Kryptex the XTX got 8 accepted shares and 0 rejected in 20
+  minutes at 54.5-54.8 TH/s. The 7800 XT's default build (the shipping code) got 1 accepted and 0 rejected in 15
+  minutes, but the pool reset the connection 4 times, 3 of them just after a share went out, so those shares got
+  no answer. Through the stand-in pool (`verifypool:cli`) the same build's 86 shares all passed the spec's checks,
+  and on another 7800 XT (`70b39a06`) it got 2 accepted, 0 rejected, with no reset in 10 minutes. So the resets
+  were that PC's link to the pool.
+- The 7800 XT's +0.62% twin round is one low release reading (31.765 TMAC/s against 31.97-32.01 in the others).
+- Not yet raced against SRBMiner, so the rows above stay as they are.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
@@ -393,12 +412,18 @@ What future speed work needs: how to measure, the limits found, and what has alr
 - Our CLI's 5-minute mean carries about ±1.5–2.4% noise on fast cards, so 1–2 points between PCs mean nothing.
 - On AMD, use 10-minute hit checks: 2-minute checks read low hits a salt for no known reason. Salad's `amd-smi`
   reports no power or clocks.
+- Time a short fold on a Salad AMD PC before a race. On 7 November a 7900 XTX PC (`ec58ea79`) ran `pearl_amd_peak`'s
+  plain WMMA loop at 161 MAC a CU a clock (241 on a good PC) and its 4-VALU loop at 5.6 TMAC/s, and didn't finish
+  600 launches of the fold in 15 minutes.
 - Cards mine at their power limit, so a saving shows up as clock, and cuts don't add: the six RDNA 4 cuts summed to
   about 8.9% alone and gave +4.3–5.4% together.
 
 **Limits found**
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
   KPAIR and BUFLD (4 November). Each VALU instruction beside the WMMAs costs about a cycle of WMMA time.
+- RDNA 3's WMMA does 238-241 MAC a CU a clock (93-94% of AMD's 256; `pearl_amd_peak`, RX 7900 XTX and 7800 XT,
+  7 November). A VALU beside the WMMAs costs about 1 clock of WMMA time alone and 3.5-5 in a dependent chain, read
+  from MAC a CU a clock, since the clock moves between kernels.
 - A stock RTX 5090 loses about 8% of its clock to moving operands from L2. Mid RTX 50 cards hit their top clock first,
   so they could gain at most 2–3.3%.
 - On RTX 30/40 the tile hash costs about 1.3% of a tile, almost all of it the hash running past the partner's window

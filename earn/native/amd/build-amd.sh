@@ -17,7 +17,8 @@
 #                                   readout (PEARL_AMD_KWRAP) or any other target has it, or
 #                                   a target lacks the fold the host runs on it (folds_of).
 #                                   On Windows no target has the wrap readout (KWRAP_OS)
-#                                   or the RDNA 4 cuts of 4 November (SET_OS).
+#                                   or the RDNA 4 cuts of 4 November, and RDNA 3 has no
+#                                   buffer loads (SET_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -70,9 +71,10 @@ KWRAP_OS=
 if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi
 # The RDNA 4 cuts of 4 November (PEARL_AMD_RDNA4_SET in pearl_amd_fold.h) stay out of the Windows core too: they
 # were timed only with ROCm's clang 22 on Linux, where one of them alone (CRANK) lost 1.8% to the scheduler, and
-# the SDK's clang 21 has never built them. Also before PEARL_AMD_CFLAGS.
+# the SDK's clang 21 has never built them. Also before PEARL_AMD_CFLAGS. So do RDNA 3's buffer loads
+# (PEARL_AMD_RDNA3_BUFLD, 7 November), for the same reason.
 SET_OS=
-if windows; then SET_OS=-DPEARL_AMD_RDNA4_SET=0; fi
+if windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0"; fi
 
 mode="${1:-}"
 shift || true

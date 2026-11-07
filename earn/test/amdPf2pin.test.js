@@ -27,10 +27,10 @@ function defineOf(name) {
 const evalWith = (expr, vars) => Number(new Function(...Object.keys(vars), `return (${expr});`)(...Object.values(vars)));
 
 // PFX, TID and LPIN as a pass's defaults give them: wmma11 and wmma12 say which device pass (both 0: the host's, or
-// another target's), pf2pin is -DPEARL_AMD_PF2PIN.
-function pass({ wmma11 = 0, wmma12 = 0, pf2pin = 0 }) {
+// another target's), pf2pin is -DPEARL_AMD_PF2PIN, bufld is PEARL_AMD_RDNA3_BUFLD (item 2's buffer loads, which bring TID).
+function pass({ wmma11 = 0, wmma12 = 0, pf2pin = 0, bufld = 0 }) {
   const on = evalWith(defineOf('PEARL_AMD_PF2PIN_ON'), { PEARL_AMD_PF2PIN: pf2pin, PEARL_AMD_WMMA11: wmma11 });
-  const v = { PEARL_AMD_WMMA11: wmma11, PEARL_AMD_WMMA12: wmma12, PEARL_AMD_PF2PIN_ON: on };
+  const v = { PEARL_AMD_WMMA11: wmma11, PEARL_AMD_WMMA12: wmma12, PEARL_AMD_PF2PIN_ON: on, PEARL_AMD_RDNA3_BUFLD: bufld };
   return {
     PFX: evalWith(defaultOf('PEARL_AMD_PFX'), v),
     TID: evalWith(defaultOf('PEARL_AMD_TID'), v),
@@ -53,6 +53,9 @@ describe('PEARL_AMD_PF2PIN', () => {
     expect(pass({ wmma11: 1, pf2pin: 1 })).toEqual({ PFX: 1, TID: 1, LPIN: 2 });
     expect(pass({ wmma12: 1 })).toEqual(rdna4);
     expect(pass({ wmma12: 1, pf2pin: 1 })).toEqual(rdna4);
+    // On top of RDNA 3's buffer loads (gfx1100 and gfx1101 by default), which already bring TID.
+    expect(pass({ wmma11: 1, bufld: 1 })).toEqual({ PFX: 0, TID: 1, LPIN: 0 });
+    expect(pass({ wmma11: 1, bufld: 1, pf2pin: 1 })).toEqual({ PFX: 1, TID: 1, LPIN: 2 });
   });
 
   it('is defined after the instruction gates and before the switches that read it', () => {
