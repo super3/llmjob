@@ -315,14 +315,15 @@ no scratch memory on every target:
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
 | gfx1151 | wmma11 | 240 | - | 36 KB | 6 |
-| gfx1200 | wmma12 | 213 | - | 24 KB | 7 |
+| gfx1200 | wmma12 | 214 | - | 24 KB | 7 |
 | gfx1201 | wmma12 | 213 | - | 24 KB | 7 |
 
 The hash kernel takes 49-52 VGPRs and the reference fold 40-46 everywhere. The wmma12 rows are the RDNA 4
 set's (`PEARL_AMD_RDNA4_SET`, 4 November) with the late readout (`PEARL_AMD_RDLATE=2`,
 `PEARL_AMD_RDTREE=1`, 7 November) and the tile order (`PEARL_AMD_WALK`, 7 November), gfx1200's with the
-hash in the fold too (`PEARL_AMD_FUSE`, 6 November): 24 KB of LDS, against 201 VGPRs without the late
-readout, 193 and 36 KB without the set, and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`. Its 7 waves are what the registers allow; it
+hash in the fold too (`PEARL_AMD_FUSE`, 6 November, one VGPR more): 213 VGPRs and 24 KB of LDS, against 201
+without the late readout, 193 and 36 KB without the set, and 198 before `PEARL_AMD_KPAIR` and `PEARL_AMD_BUFLD`
+(CI check, 7 November). Its 7 waves are what the registers allow; it
 runs 6, since a block is 8 waves, 2 to a SIMD. The Windows core's is still 193 and 36 KB. The gfx1100 and
 gfx1101 rows have RDNA 3's buffer loads and staging cuts (`PEARL_AMD_RDNA3_BUFLD`, `PEARL_AMD_RDNA3_SET`):
 226 VGPRs, against 232 with the loads alone and 240 without either, as the Windows core and the other gfx11
