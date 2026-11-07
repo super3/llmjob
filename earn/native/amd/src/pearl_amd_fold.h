@@ -589,9 +589,11 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 //                        chains wait on each other (an s_delay_alu before most XORs), and a VALU that waits costs
 //                        RDNA 4 about 4.5 cycles of WMMA time against 1.1 for one that doesn't (pearl_amd_peak).
 // The transcript is the same with any of them. They change only where and in what order the readout runs.
-// hashrate.js against the release, interleaved on one RX 9070 XT at k 8192 (7 November): RDTREE alone +1.2 to +1.3%,
-// RDLATE=1 or 2 alone +1.3%, both (RDLATE=2, RDTREE=1) +1.7%, while a copy of the release read within 0.02%. The
-// fold takes 213 VGPRs, not 201, and still runs 6 waves a SIMD (tuning/benchmark.md).
+// hashrate.js against the release, interleaved on one PC each (7 November), while a copy of the release read within
+// 0.1%: on an RX 9070 XT at k 8192 RDTREE alone +1.2 to +1.3%, RDLATE=1 or 2 alone +1.3%, both (RDLATE=2, RDTREE=1)
+// +1.7%; on an RX 9060 XT at k 4096 RDTREE alone +1.0%, both +1.4%. RDLATE=1 with RDTREE read +1.7% there, 0.3% more
+// than =2, but it hasn't run on a 9070 XT or been checked on a pool. The fold takes 213 VGPRs, not 201, and still runs
+// 6 waves a SIMD (tuning/benchmark.md).
 #ifndef PEARL_AMD_RDTREE
 #define PEARL_AMD_RDTREE PEARL_AMD_RDNA4_SET
 #endif
