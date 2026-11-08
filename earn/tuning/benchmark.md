@@ -2796,6 +2796,7 @@ rotating, round 1 not scored. Not rows: no competitor ran.
   verify-hits 400 of 400 on both (on the 9060 XT with item 6 on), Kryptex 4 of 4 shares on the 9060 XT and 9 of 9 on
   the 9070 XT, none rejected, one connection each.
 - **Cost:** three boxes, about 141 minutes, high priority.
+
 v0.6.8's release tests (23 October), on two other RX 9070 XT PCs (`8081f47f`, `5e3d4671`): every checked hit verified
 (400 of 3,589 and 400 of 3,703), 105.8 and 110.95 TH/s in `hashrate.js`, and 106.5 and 111.5 TH/s through the CLI with
 `--core amd` for 300 s, 0 rejected. Another method and other PCs, so not rows.
