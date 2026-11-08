@@ -3259,6 +3259,9 @@ class TestMonero(Base):
             self.assertIn("--xmr-pool xmr-us.kryptex.network:7029", c[2])
             self.assertEqual(res, {"cpu": 8, "memory": 8192})
         self.assertNotIn("--xmr", self.x.box("biz-rtx4080", False)[1][2])   # no Monero, no Monero pool
+        self.assertIn('grep -a "cpu: "', cmd)                            # the CLI's Monero lines, as [xmr gN]
+        self.assertIn("[xmr g$g]", cmd)
+        self.assertNotIn("[xmr g$g]", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.6"))
         self.x.cfg["ver_override"] = {"biz-rtx4080": "v0.7.0"}
         self.assertEqual(self.x.box("biz-rtx4080", True)[0], "v0.7.0")       # never lowered
         self.x.cfg.update(xmr_kx=False, ver_override={})
@@ -4678,6 +4681,8 @@ class TestKryptex(Base):
         self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
         self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m1", "state": "running"}]}))
         items = [{"text_log": "[minerlog g0] pool accepted login as biz-rtx4080-g0", "time": "2027-01-15T08:06:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}},
+                 {"text_log": "[xmr g0] cpu: RandomX self-test passed (812 ms)", "time": "2027-01-15T08:07:00Z",
                   "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
         self.http.on("POST", "/log-entries", (200, {"items": items}))
         # HeroMiners has a worker of that name too (an earlier group): a Kryptex box must not take its figures.
@@ -4697,6 +4702,7 @@ class TestKryptex(Base):
         self.assertAlmostEqual(g["pool_ths"], 200.0)
         self.assertTrue(g["kx"])   # it has a PC: nothing to switch
         self.assertIn("LOG biz-rtx4080 PC m1: [minerlog g0] pool accepted login as biz-rtx4080-g0", self.events())
+        self.assertIn("LOG biz-rtx4080 PC m1: [xmr g0] cpu: RandomX self-test passed (812 ms)", self.events())
 
     def test_an_ended_kryptex_group_that_never_mined_there_leaves_the_table_as_before(self):
         g = self.group()

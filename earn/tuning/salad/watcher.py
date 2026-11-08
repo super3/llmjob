@@ -438,6 +438,12 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                      + (f" --cpu-threads {threads}" if threads else ""))
         sed += (" -e 's/ pearl_core_cu13.node; do/ pearl_core_cu13.node llmjob-xmr-worker; do/'"
                 " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
+        # The CLI's Monero lines (worker start, self-test, dataset, exits) come after the 12 [minerlog] lines box.sh
+        # echoes at a start, so none reached Salad's log: on 7 November no 2080 Ti on an 8-CPU PC sent Monero, and
+        # nothing said why. Each minute the box now echoes up to 4 new "cpu: " lines as [xmr gN].
+        sed += (" -e '/^    line=\\$(tr -d/i\\    o=$(cat $D/g$g.xo 2>/dev/null || echo 0); s=$(wc -c < $D/g$g.log); "
+                "[ \"$s\" -lt \"$o\" ] \\&\\& o=0; tail -c +$((o + 1)) $D/g$g.log | tr \"\\\\r\" \"\\\\n\" | "
+                "grep -a \"cpu: \" | head -4 | cut -c1-200 | sed \"s/^/[xmr g$g] /\"; echo $s > $D/g$g.xo'")
     if llm:
         # Gemma beside mining: auto mode instead of mining only, and serving the network's jobs. While the LLM answers
         # a prompt the CLI stops mining on the card and prints no hashrate, so box.sh would repeat the miner's last
@@ -2118,6 +2124,9 @@ class W:
                         g["restart_t"], g["restart_pc"] = tm, mach
                         event(f"RESTARTED {name} on PC {mach[:8]}: Salad started the box again there; its readings "
                               "and shares count from now, as on a new PC")
+                elif text.startswith("[xmr g"):
+                    # The CLI's Monero lines (cmd_for): why a box's Monero does or doesn't reach the pool.
+                    event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
