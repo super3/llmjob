@@ -2568,10 +2568,14 @@ class W:
 
     def unplaced(self, cls, t):
         """True when the class's last no_pc_streak groups all ended without ever getting a PC, the latest within
-        no_pc_hold_min: the search then leaves the class out, so it stops taking a slot it can't fill."""
+        no_pc_hold_min: the search then leaves the class out, so it stops taking a slot it can't fill. A group that got
+        only PCs it left before mining a minute (known slow, port-blocked, or taken back) counts as never getting one:
+        on 7 November Salad offered 3070s only f321d0cf (30 TH/s) twelve times, 2070s only their three slow PCs, and
+        the RX 9060 XT and 9070 XT only port-blocked PCs, and a new group of each took a slot every 20 minutes."""
         ended = sorted((g for g in self.st["groups"].values() if g["class"] == cls and g["ended"]),
                        key=lambda g: g["ended"], reverse=True)[:self.cfg["no_pc_streak"]]
-        return (len(ended) == self.cfg["no_pc_streak"] and all(g["end_kind"] == "released" and not g["had_pc"] for g in ended)
+        return (len(ended) == self.cfg["no_pc_streak"]
+                and all(g["end_kind"] == "released" and not (g["had_pc"] and g.get("mined_min")) for g in ended)
                 and t - ended[0]["ended"] < 60 * self.cfg["no_pc_hold_min"])
 
     def note_drop(self, g, t):

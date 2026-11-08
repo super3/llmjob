@@ -1520,9 +1520,23 @@ class TestSearch(Base):
         for had in (False, True, False):
             g = self.group(cls="RTX 4080 (16 GB)", pri="low")
             g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
+            g["mined_min"] = 30 if had else 0
             self.clock[0] += 3600
         self.x.search()
         self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx4080-4")
+
+    def test_a_class_whose_groups_only_got_pcs_they_left_unmined_is_held_back(self):
+        # 7 November: Salad offered 3070s only f321d0cf (30 TH/s, -112%) twelve times; each new group refused it,
+        # waited 20 minutes for another, was deleted, and the search made the next one at once.
+        self.http.on("POST", "/availability/", (200, {"available_gpu_low": 5}))
+        self.http.on("GET", "/quotas", (200, {"container_groups_quotas": {"container_replicas_quota": 10}}))
+        self.x.cfg.update(max_active=10, max_new_per_hour=1, retry_after_min=10, max_per_class=3)
+        for _ in range(3):
+            g = self.group(cls="RTX 4080 (16 GB)", pri="low")
+            g.update(ended=self.clock[0], end_kind="released", had_pc=True, mined_min=0)   # a PC, but never mined
+            self.clock[0] += 3600
+        self.x.search()
+        self.assertEqual(self.http.made("POST", "/containers$")[-1][2]["name"], "biz-rtx2060")  # not the 4080
 
     def start_after(self, tries):
         """Search after 4080 groups ended as (priority, had_pc), oldest first; return the new 4080's priority."""
@@ -1532,6 +1546,7 @@ class TestSearch(Base):
         for pri, had in tries:
             g = self.group(cls="RTX 4080 (16 GB)", pri=pri)
             g["ended"], g["end_kind"], g["had_pc"] = self.clock[0], "released", had
+            g["mined_min"] = 30 if had else 0   # a PC it mined on
             self.clock[0] += 3600
         self.x.search()
         return next(c[2]["container"]["priority"] for c in self.http.made("POST", "/containers$")[len(tries):]
