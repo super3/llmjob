@@ -335,5 +335,15 @@
 </main>
 
 {{> footer}}
+<script>
+  // Each cell carries its column's name, which a phone shows above the value once the
+  // table stacks (the header row is hidden there).
+  document.querySelectorAll('.twrap table').forEach(function (table) {
+    var names = Array.prototype.map.call(table.querySelectorAll('thead th'), function (th) { return th.textContent.trim(); });
+    table.querySelectorAll('tbody tr').forEach(function (tr) {
+      Array.prototype.forEach.call(tr.children, function (td, i) { if (names[i]) td.setAttribute('data-label', names[i]); });
+    });
+  });
+</script>
 </body>
 </html>

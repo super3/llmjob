@@ -80,6 +80,11 @@
 
   /* ---- hero ---- */
   .hero { padding: 80px var(--pad-x) 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 56px; align-items: center; }
+  /* Just above where the hero stacks, two equal columns leave the text side too narrow for
+     both buttons on one row. Give the app picture a narrower column there instead. */
+  @media (min-width: 1048px) and (max-width: 1199px) {
+    .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 40px; }
+  }
   .hero h1 { font-weight: 800; font-size: clamp(38px, 7vw, 58px); line-height: 1.02; letter-spacing: -.04em; }
   .hero .lede { font-size: 19px; line-height: 1.5; color: var(--muted); margin-top: 22px; max-width: 27em; }
   .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 32px; }
@@ -122,13 +127,20 @@
   .ap-tab { display: inline-flex; align-items: center; font-size: 14px; font-weight: 500; color: var(--muted-2); }
   .ap-tabs .sp { flex: 1; }
   .ap-gear { align-self: center; display: grid; place-items: center; width: 32px; height: 32px; background: #fff; border: 1px solid var(--line-ctl); border-radius: 9px; flex: none; }
-  .ap-label { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+  /* On a phone the balance goes under the label rather than breaking "Payout address" in two. */
+  .ap-label { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 10px; margin-bottom: 7px; }
+  .ap-label .lbl { white-space: nowrap; }
   .ap-bal { font-size: 12.5px; color: var(--muted-2); white-space: nowrap; }
   .ap-bal b { color: var(--ink); font-family: "IBM Plex Mono", monospace; }
   .ap-bal span { color: var(--muted-3); }
   .ap-field { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 11px 13px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--body-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ap-card { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 14px; }
-  .ap-reads { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 12px 8px; }
+  .ap-card { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 14px; container-type: inline-size; }
+  /* Four readings in a row when the card has room, else two by two. An auto-fit grid
+     put three in a row and left "$ per day" alone on a second one. */
+  .ap-reads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
+  @container (min-width: 330px) {
+    .ap-reads { grid-template-columns: repeat(4, auto); justify-content: space-between; }
+  }
   .ap-v { font-weight: 800; font-size: 19px; letter-spacing: -.02em; white-space: nowrap; }
   .ap-v small { font-size: 12px; color: #9a9ea6; font-weight: 600; }
   .ap-k { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -139,7 +151,12 @@
   .ap-foot { display: flex; justify-content: space-between; margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--line-div); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
 
   /* ---- three steps ---- */
-  .steps { margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 36px; }
+  /* Three across or one under another: an auto-fit grid put two in a row on a tablet and
+     left the third alone under them. */
+  .steps { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
+  @media (min-width: 700px) {
+    .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+  }
   .step-n { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-weight: 700; font-size: 14px; display: grid; place-items: center; margin-bottom: 14px; }
   .step-t { font-weight: 700; font-size: 19px; letter-spacing: -.01em; }
   .step p { margin-top: 6px; font-size: 15px; line-height: 1.5; color: var(--muted); }
@@ -148,8 +165,13 @@
   .calc-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; margin-bottom: 24px; }
   .calc-note { font-size: 13px; color: var(--muted-3); }
   .calc { border: 1px solid var(--line-card); border-radius: 16px; background: #fff; padding: 26px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 28px; }
-  .calc-in { display: flex; flex-direction: column; gap: 16px; }
-  .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 7px; margin-top: -6px; }
+  .calc-in { display: flex; flex-direction: column; gap: 16px; container-type: inline-size; }
+  /* Ten cards: two rows of five, or five rows of two on a phone. An auto-fill grid left
+     one card alone on its last row at most widths. */
+  .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: -6px; }
+  @container (min-width: 460px) {
+    .chips { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  }
   .chip { font-size: 13px; font-weight: 600; white-space: nowrap; border-radius: 9px; padding: 9px 4px; cursor: pointer; border: 1px solid var(--line-ctl); background: #fff; color: var(--body-app); transition: border-color .12s; }
   .chip:hover { border-color: var(--accent); }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -241,6 +263,18 @@
     #hiveos .hive-val code { flex-basis: 100%; }
     .hive-copy { margin-left: auto; }
     .out-big { font-size: 46px; }
+    .calc { padding: 18px; }
+    .calc-out { padding: 22px; }
+  }
+  /* Phones: the download and HiveOS buttons take the full width, one under the other,
+     instead of two different widths with a ragged edge. */
+  @media (max-width: 480px) {
+    .cta-row .dl-wrap, .cta-row .btn-sec { width: 100%; }
+    .cta-row .btn-dl { flex: 1; justify-content: center; }
+    .cta-row .btn-sec { justify-content: center; }
+    .closing .dl-wrap { width: 100%; }
+    .closing .btn-dl { flex: 1; justify-content: center; }
+    .hero { padding-top: 48px; }
   }
 </style>
 {{> shell-style}}

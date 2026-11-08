@@ -58,7 +58,9 @@
       .infobox .lbl { font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-3); }
       .infobox .row { display: flex; gap: 8px; font-family: "IBM Plex Mono", monospace; font-size: 13px; margin-top: 6px; }
       .infobox .row .k { color: var(--ink-3); }
-      .infobox .row .v { color: var(--ink); word-break: break-all; }
+      /* Wrap at spaces, and break a long word only when it can't fit: break-all split
+         ordinary words mid-word ("an / d", "w / ith") on a phone. */
+      .infobox .row .v { color: var(--ink); min-width: 0; overflow-wrap: anywhere; }
 
       /* fields */
 
@@ -69,6 +71,13 @@
       .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 24px; }
 
       /* status badges for success/error */
+
+      /* Phones: less padding around the card, so its text gets the width. */
+      @media (max-width: 480px) {
+        .wrap { padding: 0 20px; }
+        main { padding-top: 32px; }
+        .panel { padding: 22px; }
+      }
     </style>
 </head>
 <body>

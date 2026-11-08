@@ -174,9 +174,42 @@
   @media (max-width: 900px) {
     .net-stats { grid-template-columns: repeat(2, 1fr); }
   }
+  /* Tablets: the eight tracks need 856px, so the board scrolled sideways with the hashrate
+     off screen. RAM and Last seen drop out and the other six fit: 628px at the minimum,
+     which a 761px window has. */
+  @media (min-width: 761px) and (max-width: 1000px) {
+    .nt-cols, .miner-row { grid-template-columns: 28px 130px minmax(150px, 1fr) 120px 78px 72px; gap: 10px; min-width: 0; }
+    .nt-cols > :nth-child(6), .nt-cols > :nth-child(8), .mr-ram, .mr-last { display: none; }
+  }
+  /* Phones: each miner becomes three short lines instead: rank, address and hashrate;
+     the GPU and when it was last seen; the LLM and VRAM. RAM is left out at this size.
+     The stat cards go two by two, icon above the number. */
+  @media (max-width: 760px) {
+    .wrap { padding: 0 clamp(20px, 5vw, 28px); }
+    .nt-top { padding: 16px; }
+    .nt-cols { display: none; }
+    .nt-scroll { overflow-x: visible; }
+    .nt-cols, .miner-row { min-width: 0; }
+    .miner-row { grid-template-columns: 26px minmax(0, 1fr) auto; grid-template-areas: "rank addr hash" ". gpu last" ". llm vram"; gap: 3px 10px; padding: 13px 16px; }
+    .mr-rank { grid-area: rank; }
+    .mr-addr { grid-area: addr; }
+    .mr-gpu { grid-area: gpu; }
+    .mr-llm { grid-area: llm; }
+    .mr-vram { grid-area: vram; }
+    /* No column header on a phone, so the memory figure names itself. */
+    .mr-vram::before { content: "VRAM"; font-size: 10px; letter-spacing: .04em; color: var(--muted-3); margin-right: 6px; }
+    .mr-ram { display: none; }
+    .mr-hash { grid-area: hash; }
+    .mr-last { grid-area: last; }
+    /* An opened host's per-card lines: the card and its hashrate, then its LLM and VRAM. */
+    .mr-cards .miner-row { grid-template-areas: ". gpu hash" ". llm vram"; }
+    .mr-cards .mr-rank, .mr-cards .mr-addr, .mr-cards .mr-last { display: none; }
+  }
   @media (max-width: 480px) {
-    .net-stats { grid-template-columns: 1fr; }
-    .stat-v { font-size: 30px; }
+    .net-stats { gap: 10px; }
+    .stat-card { flex-direction: column; align-items: flex-start; gap: 12px; padding: 16px; }
+    .stat-ic { width: 38px; height: 38px; border-radius: 11px; }
+    .stat-v { font-size: 24px; }
   }
 </style>
 {{> shell-style}}

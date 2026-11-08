@@ -43,7 +43,9 @@
 
   /* app bar */
   header.bar { border-bottom: 1px solid #ECE9E1; background: var(--bg); }
-  .bar-inner { display: flex; align-items: center; justify-content: space-between; padding: 26px 0; }
+  /* Top and bottom only: "padding: 26px 0" also wiped .wrap's side padding, so below
+     1080px the logo touched the edge of the screen. */
+  .bar-inner { display: flex; align-items: center; justify-content: space-between; padding-top: 26px; padding-bottom: 26px; }
   .logo { display: inline-flex; align-items: center; gap: 11px; font-weight: 700; font-size: 21px; letter-spacing: -0.02em; }
   .logo .bolt { width: 38px; height: 38px; border-radius: 11px; background: var(--ink); color: var(--bg); display: grid; place-items: center; }
   .bar-right { display: flex; align-items: center; gap: 18px; }
@@ -111,7 +113,9 @@
 
   .empty-state { padding: 56px 20px; text-align: center; color: var(--ink-4); font-family: "IBM Plex Mono", monospace; font-size: 13px; }
   .loading-row td { text-align: center; color: var(--ink-4); font-family: "IBM Plex Mono", monospace; font-size: 13px; padding: 40px 16px; }
-  .page-loading { display: grid; place-items: center; min-height: 60vh; gap: 14px; color: var(--ink-3); }
+  /* align-content keeps the spinner and its text together in the middle; without it the
+     grid split the height between them and they sat far apart. */
+  .page-loading { display: grid; place-items: center; align-content: center; min-height: 60vh; gap: 14px; color: var(--ink-3); }
   .page-loading a { color: var(--accent); }
   .spinner { width: 26px; height: 26px; border-radius: 50%; border: 2.5px solid var(--line); border-top-color: var(--accent); animation: rot .8s linear infinite; }
 

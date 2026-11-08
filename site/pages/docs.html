@@ -112,7 +112,20 @@
     aside.toc { display: none; }
   }
   @media (max-width: 720px) {
-    .shell { padding: 0 18px 80px; }
+    .shell { padding: 0 20px 80px; }
+  }
+  /* Phones: a three-column table scrolled sideways and cut off its last column. Each row
+     stacks instead, the first cell as its title and the others labelled with their column
+     (data-label, copied from the header by the script at the end of the page). */
+  @media (max-width: 600px) {
+    table { min-width: 0; }
+    .twrap { overflow-x: visible; }
+    thead { display: none; }
+    tbody tr { display: block; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+    tbody tr:last-child { border-bottom: none; }
+    tbody td { display: block; padding: 3px 0; border-bottom: none; overflow-wrap: anywhere; }
+    tbody td:first-child { padding-bottom: 5px; }
+    tbody td[data-label]:not(:first-child)::before { content: attr(data-label); display: block; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-3); font-weight: 600; margin-top: 4px; }
   }
 </style>
 {{> shell-style}}
@@ -627,6 +640,15 @@ for chunk in stream:
           if (pane) pane.hidden = t !== tab;
         });
       });
+    });
+  });
+
+  // Each cell carries its column's name, which a phone shows above the value once the
+  // table stacks (the header row is hidden there).
+  document.querySelectorAll('.twrap table').forEach(function (table) {
+    var names = Array.prototype.map.call(table.querySelectorAll('thead th'), function (th) { return th.textContent.trim(); });
+    table.querySelectorAll('tbody tr').forEach(function (tr) {
+      Array.prototype.forEach.call(tr.children, function (td, i) { if (names[i]) td.setAttribute('data-label', names[i]); });
     });
   });
 </script>

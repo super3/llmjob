@@ -72,4 +72,17 @@
   @media (max-width: 720px) {
     main.legal { padding-top: 40px; padding-bottom: 72px; }
   }
+  /* Phones: the tables scrolled sideways and cut off their last column. Each row stacks
+     instead, its first cell as the title and the others labelled with their column
+     (data-label, copied from the header by the privacy page's script). */
+  @media (max-width: 600px) {
+    table { min-width: 0; }
+    .twrap { overflow-x: visible; }
+    thead { display: none; }
+    tbody tr { display: block; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+    tbody tr:last-child { border-bottom: none; }
+    tbody td { display: block; padding: 3px 0; border-bottom: none; overflow-wrap: anywhere; }
+    tbody td:first-child { padding-bottom: 5px; }
+    tbody td[data-label]:not(:first-child)::before { content: attr(data-label); display: block; font-family: "IBM Plex Mono", monospace; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--muted-3); font-weight: 600; margin-top: 4px; }
+  }
 </style>
