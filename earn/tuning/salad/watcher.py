@@ -422,6 +422,10 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
     sed = f"sed -e 's/^WORKER=__WORKER__$/WORKER={worker}/' -e 's/^W=prl1.*$/W={wallet}/'"
     if ver != "v0.5.13":
         sed += f" -e 's/^VER=v0.5.13;/VER={ver};/'"
+    # box.sh's downloads retry 3 times, about 7 s in all. On 8 November GitHub's file servers gave 503s and 504s for
+    # v0.6.13's 125 MB CLI for over an hour, so boxes printed "FAIL: download" and sat until they were moved. Retry
+    # 20 times, 10 s apart. (Not --retry-all-errors: a curl older than 7.71 would fail every download on it.)
+    sed += " -e 's/curl -fsSL --retry 3 -o /curl -fsSL --retry 20 --retry-delay 10 -o /'"
     flags = []
     if kryptex:
         # Kryptex: Pearl on its stratum (release v0.6.1 on). The miner logs in there as "wallet/worker" by itself.

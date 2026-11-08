@@ -135,6 +135,17 @@ class TestCommand(Base):
         self.assertEqual(out.returncode, 0, out.stderr)
         return out.stdout
 
+    def test_downloads_retry_20_times_10_s_apart(self):
+        if not HAS_SH:
+            self.skipTest("needs sh, as the boxes have")
+        import subprocess
+        line = '    curl -fsSL --retry 3 -o $D/rel/$f "$REL/$f" & dl[$f]=$!\n'
+        for amd in (False, True):
+            cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.13", XMR, 0, "prl-us.kryptex.network:7048", amd=amd)
+            sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+            out = subprocess.run(["sh", "-c", sed], input=line, capture_output=True, encoding="utf-8").stdout
+            self.assertEqual(out, '    curl -fsSL --retry 20 --retry-delay 10 -o $D/rel/$f "$REL/$f" & dl[$f]=$!\n')
+
     def test_slug_and_is_amd(self):
         self.assertEqual(w.slug("AMD RX 9070 XT (16GB)"), "rx9070xt")
         self.assertEqual(w.slug("AMD RX 7900 XT (20GB)"), "rx7900xt")
