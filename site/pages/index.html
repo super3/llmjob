@@ -140,6 +140,11 @@
   /* Four readings in a row when the card has room, else two by two. An auto-fit grid
      put three in a row and left "$ per day" alone on a second one. */
   .ap-reads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
+  /* Two by two, the right column sits flush right, Monero as well as "$ per day", so the
+     two readings in it line up. */
+  @container (width < 330px) {
+    .ap-reads > :nth-child(2) { text-align: right; }
+  }
   @container (min-width: 330px) {
     .ap-reads { grid-template-columns: repeat(4, auto); justify-content: space-between; }
   }
