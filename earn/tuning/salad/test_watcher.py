@@ -4677,6 +4677,11 @@ class TestKryptex(Base):
         self.assertIn("| 🪙 [XMR HeroMiners](https://monero.herominers.com/?wallet=4xyz) |", report)
         self.assertIn(f"| ⛏️ PRL{w.NB}Kryptex | 0 TH/s |", shown(report))   # in a chat window: just the name
 
+    def test_an_amd_box_drops_rx_from_its_name_as_nvidia_drops_rtx(self):
+        a = self.group(kx=True)
+        a["name"] = "biz-rx9070xt-35"                     # founder, 7 Nov: "You can drop the rx for these cards"
+        self.assertIn(f"| ⏳{w.NB}9070xt{w.NB}bat. |", self.report())
+
     def test_with_every_box_on_kryptex_the_report_drops_the_k_mark(self):
         a, b, gone = self.group(kx=True), self.group(kx=True), self.group()
         gone["ended"] = self.clock[0]                     # an ended HeroMiners group doesn't bring the mark back

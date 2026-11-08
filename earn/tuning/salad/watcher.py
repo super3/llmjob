@@ -2832,7 +2832,8 @@ class W:
             if org != ORG and sub and sub.isdigit():
                 pri += sub.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
             tag = f"({org})"
-            box = NB.join([state, re.sub(r"^biz-(rtx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
+            # An AMD box drops "rx" too (founder, 7 November): "9070xt bat.", not "rx9070xt bat.".
+            box = NB.join([state, re.sub(r"^biz-(rtx|rx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
                           + ([tag] if org != ORG and not (sub and sub.isdigit()) else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
