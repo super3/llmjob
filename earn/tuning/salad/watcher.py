@@ -37,7 +37,7 @@ KNOWN = {
     "RTX 4080 (16 GB)": (199, True), "RTX 5080 (16 GB)": (223, True),
     "RTX 4070 (12 GB)": (105, False), "RTX 4070 Ti (12 GB)": (152, False), "RTX 3090 Ti (24 GB)": (152, False),
     "RTX 5070 (12 GB)": (121, False), "RTX 3060 Ti (8 GB)": (45, False),
-    # Not tried on Salad yet: tuning/benchmark.md or our Vast boxes (the rates #255's search used). Salad PCs often run
+    # Not tried on Salad yet: earn/tuning/benchmark.md or our Vast boxes (the rates #255's search used). Salad PCs often run
     # power-capped under these, so rule 5 judges each PC on its own readings within minutes. Left out: the 3080 Ti,
     # 3090 and 4070 Ti Super (lost money on the first account) and the 3070 Ti (no share).
     "RTX 2070 (8 GB)": (48, False), "RTX 2080 Ti (11 GB)": (79, False), "RTX 3060 (12 GB)": (49, False),

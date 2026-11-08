@@ -38,7 +38,7 @@
 # Another architecture: GC (nvcc's -gencode flags, sm_75's by default) and FOLD (the
 # kernel that fold= hashes and the build line's regs= and spill= read,
 # pearl_tile_fold_wmma by default) race another card's fold with the same stages, as
-# tuning/salad/nvtest.sh does on RTX 30: GC="-gencode arch=compute_86,code=sm_86"
+# earn/tuning/salad/nvtest.sh does on RTX 30: GC="-gencode arch=compute_86,code=sm_86"
 # FOLD=pearl_tile_fold_tall, with VARIANTS_SPEC naming the builds. The second kernel
 # (rg=), the patch lists and the driver probe are sm_75's alone; on any other GC the
 # build line says rg=none and the probe stage is skipped.

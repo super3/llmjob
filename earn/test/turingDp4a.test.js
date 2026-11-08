@@ -29,7 +29,7 @@ const KERNEL = rawRead(path.join(NATIVE, 'src', 'pearl_kernel.cu'));
 const FOLD = rawRead(path.join(NATIVE, 'src', 'pearl_fold_dp4a.h'));
 const CI = rawRead(path.join(ROOT, '.github', 'workflows', 'native-core.yml'));
 const POOL = rawRead(path.join(NATIVE, 'probes', 'turing', 'pool.sh'));
-const NVTEST = rawRead(path.join(ROOT, 'tuning', 'salad', 'nvtest.sh'));
+const NVTEST = rawRead(path.join(ROOT, 'earn', 'tuning', 'salad', 'nvtest.sh'));
 
 const LINES = CONFIG.split(NL).map((l) => l.trim());
 

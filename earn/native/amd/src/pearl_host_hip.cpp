@@ -274,8 +274,8 @@ hipError_t event_query(hipEvent_t ev) {
 // arch is the card's gcnArchName ("gfx1100" or "gfx1100:xnack-"). On gfx1100 (RX 7900 XTX,
 // 7900 XT, 7900 GRE) and gfx1101 (RX 7800 XT, 7700 XT) the cap is 128: in the miner's own loop
 // 128 read +0.47 to +0.64% and +1.44 to +1.84% a round on two 7900 XTX PCs and +0.12 to +0.37%
-// on a 7800 XT, ahead in every round, and 64 was slower on both chips (tuning/benchmark.md, AMD, item
-// 13). RDNA 4 was level at 128 (a 9060 XT, README.md; a 9070 XT, tuning/benchmark.md), and the other
+// on a 7800 XT, ahead in every round, and 64 was slower on both chips (earn/tuning/benchmark.md, AMD, item
+// 13). RDNA 4 was level at 128 (a 9060 XT, README.md; a 9070 XT, earn/tuning/benchmark.md), and the other
 // targets weren't measured, so they keep 256.
 uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   const uint32_t colsValid = profile->n / PEARL_COLS_COUNT;
@@ -835,7 +835,7 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // Whether k 8192 is a card's default. An RX 9070 XT (gfx1201, 64 CUs) read +0.5 to +0.9% over
 // k 4096 in hashrate.js, and +0.7% again with HeroMiners taking 13 of 13 k 8192 shares; an RX
 // 9060 XT (gfx1200, 32 CUs) read about 6% slower (4 November, with the combined fold flags in
-// pearl_amd_fold.h; tuning/benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
+// pearl_amd_fold.h; earn/tuning/benchmark.md). So: gfx1201 with at least 56 CUs, the full Navi 48 cards (RX
 // 9070 XT and R9700, 64 CUs) and the RX 9070 (56). The RX 9070 GRE (gfx1201, 48 CUs) stays at
 // k 4096, since nothing between 32 and 64 CUs has been timed. `arch` is gcnArchName, which may
 // carry feature flags after a colon ("gfx1201:xnack-"). `units` is multiProcessorCount, which

@@ -1,5 +1,5 @@
 # Tests for sharetap.py's decoder: a tap log made here, with shares in the PlainProof format.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import base64, gzip, importlib.util, json, os, struct, tempfile, unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))

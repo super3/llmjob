@@ -1,6 +1,6 @@
 # Tests for amdtest.py's pure parts: names, classes, the create and update bodies, time parsing, log lines and
 # the patch it sends, with no Salad calls. Also checks amdtest.sh's syntax and the task line parsing.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, sys, tempfile, time, unittest
 
 os.environ["SALAD_MINE_DIR"] = tempfile.mkdtemp()     # never an exported folder, where live files may be
@@ -69,7 +69,7 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(c["resources"], {"cpu": 4, "memory": 8192, "gpu_classes": ["cid"],
                                           "storage_amount": 10 * 1024 ** 3})
         self.assertEqual(c["command"][:2], ["/bin/sh", "-c"])
-        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh", c["command"][2])
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh", c["command"][2])
         self.assertEqual(c["environment_variables"]["TASKS"], "card,hip")
 
     def test_boot_command_is_valid_sh(self):
@@ -272,7 +272,7 @@ class TestAmdtest(unittest.TestCase):
     def test_nvtest_create_body_runs_nvtest_sh_on_the_fleet_image(self):
         c = a.body("nvtest-rtx3090", "cid", {"BASE_SHA": "abc"})["container"]
         self.assertEqual(c["image"], a.w.IMAGE)
-        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/nvtest.sh", c["command"][2])
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/nvtest.sh", c["command"][2])
         self.assertNotIn("amdtest", c["command"][2])
         self.assertEqual(c["resources"]["gpu_classes"], ["cid"])
         self.assertEqual(a.body("amdtest-rdna3", "cid", {})["container"]["image"], a.IMAGE)
@@ -475,7 +475,7 @@ class TestCompilersMemoryReadings(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.SRC = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "turing", "compilers.sh"))
+        cls.SRC = read(os.path.join(HERE, "..", "..", "native", "probes", "turing", "compilers.sh"))
 
     def script(self, name):
         start = self.SRC.index(f'cat > "$OUT/{name}" <<\'EOF\'\n') + len(f'cat > "$OUT/{name}" <<\'EOF\'\n')
@@ -544,7 +544,7 @@ class TestCompilersRace(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        native = os.path.join(HERE, "..", "..", "earn", "native")
+        native = os.path.join(HERE, "..", "..", "native")
         cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
         cls.RACE = read(os.path.join(native, "probes", "race.cu"))
 
@@ -611,7 +611,7 @@ class TestCompilersK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        native = os.path.join(HERE, "..", "..", "earn", "native")
+        native = os.path.join(HERE, "..", "..", "native")
         cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
         cls.SWEEP = read(os.path.join(native, "amd", "test", "sweep.sh"))
 
@@ -665,7 +665,7 @@ class TestCompilersK(unittest.TestCase):
     def test_a_build_whose_k_is_not_the_one_read_from_its_flags_fails(self):
         """bench.cu is built with the k kof read as PEARL_BENCH_K, and does not compile if the build mines another k:
         -D PEARL_FOLD_K=4096 (read as 2048) or a second -DPEARL_FOLD_K. nvcc 12.6 refused both (1 November)."""
-        bench = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "bench.cu"))
+        bench = read(os.path.join(HERE, "..", "..", "native", "probes", "bench.cu"))
         self.assertIn("#ifdef PEARL_BENCH_K\nstatic_assert(PEARL_FOLD_K == PEARL_BENCH_K,", bench)
         cmd = self.part('nvcc -O3 -std=c++17 -cudart static $GC $flags -DPEARL_BENCH_K=', 'say "build $name FAIL: bench:')
         out = tempfile.mkdtemp().replace("\\", "/")

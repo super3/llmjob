@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Runs tuning/benchmark.md's GTX 10- and 16-series benchmark on Salad: one high-priority box at a time, card class by
+# Runs earn/tuning/benchmark.md's GTX 10- and 16-series benchmark on Salad: one high-priority box at a time, card class by
 # card class from the top of the tables, two PCs per card. Each box runs bench.sh (PeakMiner, SRBMiner and our
 # miner, 5 minutes each after a warm-up) and prints "[bench]" lines, which this reads from Salad's logs. Every 15
 # minutes it writes both tables, filled so far, with what the box is doing now, to bench_status.md and a STATUS
@@ -49,13 +49,13 @@ MIN = 60
 # longest. A flag counts for TURN_MIN minutes after its lane's last refused try, so a lane that stopped holds no one
 # back.
 TURN_MIN = 3
-HOSTS = 2               # PCs per card, as in tuning/benchmark.md
+HOSTS = 2               # PCs per card, as in earn/tuning/benchmark.md
 MAX_TRIES = 10          # boxes per class before moving on (the 1070/1080/1080 Ti class may not show all three)
 NO_PC_MIN = 30          # minutes to wait for a PC before moving on
 RUN_MIN = 45            # minutes from a PC to "all done" before moving the box on
 STATUS_MIN = 15
 
-# Salad's class, the rows it can fill (tuning/benchmark.md's order) and how long our miner runs (90 s where the release
+# Salad's class, the rows it can fill (earn/tuning/benchmark.md's order) and how long our miner runs (90 s where the release
 # has no build for the card, 300 s where it does).
 PLAN = [
     ("GTX 1070, 1080, 1080Ti (8 GB)", ["GTX 1080 Ti", "GTX 1080", "GTX 1070"], 90),
@@ -91,9 +91,9 @@ if SET == "amd":
     # 50 with the default 10-minute check.
     RUN_MIN = 40 + -(-VERIFY_SECS // 60)
 if SET == "rtx":
-    # tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with all three miners at their newest (bench.sh).
+    # earn/tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with all three miners at their newest (bench.sh).
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
-    # a 12 GB RTX 3060 class is run, as tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
+    # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
             ("RTX 2070 (8 GB)", ["RTX 2070"], 300), ("RTX 2060 (6 GB)", ["RTX 2060"], 300),
             ("RTX 3090 Ti (24 GB)", ["RTX 3090 Ti"], 300), ("RTX 3090 (24 GB)", ["RTX 3090"], 300),
@@ -122,7 +122,7 @@ if LANE in LANES:
     SECTIONS = [(t, [r for r in rows if r in LANES[LANE]]) for t, rows in SECTIONS
                 if any(r in LANES[LANE] for r in rows)]
 # A probe rather than a table: BENCH_CLASSES (Salad class names, ";" between them, as some names hold commas) runs
-# only those classes of the set, and BENCH_HOSTS how many PCs per card (tuning/benchmark.md's 2 by default).
+# only those classes of the set, and BENCH_HOSTS how many PCs per card (earn/tuning/benchmark.md's 2 by default).
 ONLY = [c.strip() for c in os.environ.get("BENCH_CLASSES", "").split(";") if c.strip()]
 if ONLY:
     PLAN = [p for p in PLAN if p[0] in ONLY]
@@ -256,7 +256,7 @@ def pc_note(row, h):
 
 
 def render(st, sections=None):
-    """Both tables, in tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner isn't run, so "% of best"
+    """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner isn't run, so "% of best"
     is ours against SRBMiner, and a line for each PC under the table gives its copy rate and hit check."""
     out = []
     for title, rows in sections or SECTIONS:
@@ -320,7 +320,7 @@ class Bench:
     def order(self):
         """Which miner goes first, and so gets the warm-up. GTX: by box. AMD and RTX: by how many PCs of the class
         are recorded, so its two PCs take turns (each gets a group of its own, see move_on). RTX alternates ours
-        first and SRBMiner first, as tuning/benchmark.md's "How a host is tested" does."""
+        first and SRBMiner first, as earn/tuning/benchmark.md's "How a host is tested" does."""
         n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
         if SET == "amd":
             return "ours,srb" if n % 2 == 0 else "srb,ours"
@@ -329,7 +329,7 @@ class Bench:
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
-        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/tuning/salad"
+        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/earn/tuning/salad"
         url = f"{raw}/bench.sh"
         extra = f" SRB_EXTRA='{SRB_EXTRA}'" if SRB_EXTRA else ""
         if SET == "amd":

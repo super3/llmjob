@@ -33,7 +33,7 @@
 //            blocks of their class (i % count) went to. 100% when it deals them in turn, in any fixed order;
 //            near 100% / count when it places them at random. Of the launch's first blocks, then of all.
 //            gfx11 only: gfx12's HW_ID1 names no shader engine.
-// gates prints item 14's and 15's readings (tuning/benchmark.md, item 13) from two builds on one PC:
+// gates prints item 14's and 15's readings (earn/tuning/benchmark.md, item 13) from two builds on one PC:
 //   D        the stall a start skew could hide: the stamp build's median barrier wait a slab, plus what its
 //            LDS fragment loads cost a slab. That is its median work a slab (the loop less barrier and memory
 //            wait) less the abl8 stamp build's, so a change in barrier wait isn't counted twice. A second D

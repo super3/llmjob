@@ -1,5 +1,5 @@
 #!/bin/bash
-# Benchmarks PeakMiner, SRBMiner and our miner on one Salad GPU, one after another, the way tuning/benchmark.md's
+# Benchmarks PeakMiner, SRBMiner and our miner on one Salad GPU, one after another, the way earn/tuning/benchmark.md's
 # "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes on Kryptex
 # (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it).
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.

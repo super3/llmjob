@@ -65,7 +65,7 @@ BOOT = r"""say() { echo "[amdtest] $(date -u +%T) $*"; }
 say "boot container started"
 if [ -z "$BASE_SHA" ]; then say "boot no BASE_SHA; idle"; exec sleep infinity; fi
 command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null 2>&1; }
-u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh"
+u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh"
 n=0
 until curl -fsSL "$u" -o /root/amdtest.sh; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
 bash /root/amdtest.sh 2>&1 | tee -a /root/amdtest.log

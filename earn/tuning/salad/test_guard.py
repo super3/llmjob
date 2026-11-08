@@ -1,5 +1,5 @@
 # Tests for guard.py, with Salad, the pool and the clock faked.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import importlib.util, os, re, unittest
 
 spec = importlib.util.spec_from_file_location("guard", os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard.py"))

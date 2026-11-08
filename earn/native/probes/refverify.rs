@@ -2,7 +2,7 @@
 // shares our miner made. Every other check of a share before a pool sees it is our own JS (verify-hits.js,
 // verify-pool.js), so a mistake the device and the JS reference share would pass them. It can't pass this.
 //
-// It is not built with the app. tuning/salad/amdtest.sh's refverify task fetches the spec
+// It is not built with the app. earn/tuning/salad/amdtest.sh's refverify task fetches the spec
 // (github.com/pearl-research-labs/pearl) at a pinned commit, copies this file to zk-pow/src/bin/refverify.rs
 // and builds it with cargo, then runs it on the shares earlier tasks wrote.
 //

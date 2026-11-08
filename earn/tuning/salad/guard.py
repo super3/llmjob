@@ -6,7 +6,7 @@
 # The watcher never lets that happen (it leaves a PC that isn't mining within 10 min, and deletes a group
 # after 3 tries), so a hit means nothing is watching. Stopping is reversible: start the group again from
 # the portal, or bump restart_token once the watcher runs. Run it hourly, e.g. from a Routine:
-#   PRL_WALLET=prl1... python3 -I tuning/salad/guard.py [--dry-run]
+#   PRL_WALLET=prl1... python3 -I earn/tuning/salad/guard.py [--dry-run]
 import importlib.util, os, sys, tempfile
 
 os.environ.setdefault("SALAD_MINE_DIR", tempfile.mkdtemp())   # the watcher module wants one; nothing is written
