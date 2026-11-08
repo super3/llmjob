@@ -445,10 +445,13 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                 " -e 's|cp $D/rel/cli $R/|cp $D/rel/cli $D/rel/llmjob-xmr-worker $R/ \\&\\& chmod +x $R/llmjob-xmr-worker|'")
         # The CLI's Monero lines (worker start, self-test, dataset, exits) come after the 12 [minerlog] lines box.sh
         # echoes at a start, so none reached Salad's log: on 7 November no 2080 Ti on an 8-CPU PC sent Monero, and
-        # nothing said why. Each minute the box now echoes up to 4 new "cpu: " lines as [xmr gN].
+        # nothing said why. Each minute the box now echoes up to 4 new "cpu: " lines as [xmr gN]. On 8 November two
+        # 2080 Tis on 8-CPU PCs logged in to the pool and never heard back, while the pool answered the same login from
+        # rig01 at once: the box also echoes its load average, to see whether the CLI is starved of CPU there.
         sed += (" -e '/^    line=\\$(tr -d/i\\    o=$(cat $D/g$g.xo 2>/dev/null || echo 0); s=$(wc -c < $D/g$g.log); "
                 "[ \"$s\" -lt \"$o\" ] \\&\\& o=0; tail -c +$((o + 1)) $D/g$g.log | tr \"\\\\r\" \"\\\\n\" | "
-                "grep -a \"cpu: \" | head -4 | cut -c1-200 | sed \"s/^/[xmr g$g] /\"; echo $s > $D/g$g.xo'")
+                "grep -a \"cpu: \" | head -4 | cut -c1-200 | sed \"s/^/[xmr g$g] /\"; echo $s > $D/g$g.xo; "
+                "read l1 l5 l15 lr < /proc/loadavg; echo \"[xmr g$g] cpu: load $l1 $l5 $l15 on $(nproc) CPUs\"'")
     if llm:
         # Gemma beside mining: auto mode instead of mining only, and serving the network's jobs. While the LLM answers
         # a prompt the CLI stops mining on the card and prints no hashrate, so box.sh would repeat the miner's last
@@ -2176,10 +2179,13 @@ class W:
                     # a box, ~50,000 a day: those are dropped, and a hashrate line is kept once in 10 minutes a box.
                     if re.search(r"cpu: (XMR share accepted|pool difficulty)", text):
                         continue
-                    if re.search(r"cpu: [\d.]+ kH/s", text):
-                        if tm - g.get("xmr_log_t", 0) < 10 * MIN:
+                    # The box's load average comes every minute too: kept once in 10 minutes a box, as a hashrate is.
+                    routine = ("xmr_load_t" if re.search(r"cpu: load ", text)
+                               else "xmr_log_t" if re.search(r"cpu: [\d.]+ kH/s", text) else None)
+                    if routine:
+                        if tm - g.get(routine, 0) < 10 * MIN:
                             continue
-                        g["xmr_log_t"] = tm
+                        g[routine] = tm
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.

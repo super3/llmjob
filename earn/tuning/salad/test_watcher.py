@@ -4755,8 +4755,9 @@ class TestKryptex(Base):
         # Its routine Monero lines: shares and difficulty dropped, one hashrate line kept in 10 minutes.
         for i, line in enumerate(["cpu: XMR share accepted", "cpu: pool difficulty 200007",
                                   "cpu: 3.21 kH/s · 47 accepted · 0 rejected · 7 threads",
-                                  "cpu: 3.08 kH/s · 48 accepted · 0 rejected · 7 threads"]):
-            items.append({"text_log": f"[xmr g0] {line}", "time": f"2027-01-15T08:07:{10 + i * 10}Z",
+                                  "cpu: 3.08 kH/s · 48 accepted · 0 rejected · 7 threads",
+                                  "cpu: load 7.95 7.80 7.62 on 8 CPUs", "cpu: load 7.99 7.81 7.62 on 8 CPUs"]):
+            items.append({"text_log": f"[xmr g0] {line}", "time": f"2027-01-15T08:07:{10 + i * 5}Z",
                           "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}})
         self.http.on("POST", "/log-entries", (200, {"items": items}))
         # HeroMiners has a worker of that name too (an earlier group): a Kryptex box must not take its figures.
@@ -4778,7 +4779,8 @@ class TestKryptex(Base):
         self.assertIn("LOG biz-rtx4080 PC m1: [minerlog g0] pool accepted login as biz-rtx4080-g0", self.events())
         self.assertIn("LOG biz-rtx4080 PC m1: [xmr g0] cpu: RandomX self-test passed (812 ms)", self.events())
         self.assertIn("[xmr g0] cpu: 3.21 kH/s", self.events())
-        for dropped in ("3.08 kH/s", "share accepted", "pool difficulty"):
+        self.assertIn("[xmr g0] cpu: load 7.95 7.80 7.62 on 8 CPUs", self.events())   # its load, once in 10 minutes
+        for dropped in ("3.08 kH/s", "share accepted", "pool difficulty", "load 7.99"):
             self.assertNotIn(dropped, self.events())
 
     def test_an_ended_kryptex_group_that_never_mined_there_leaves_the_table_as_before(self):
