@@ -4752,6 +4752,12 @@ class TestKryptex(Base):
                   "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}},
                  {"text_log": "[xmr g0] cpu: RandomX self-test passed (812 ms)", "time": "2027-01-15T08:07:00Z",
                   "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        # Its routine Monero lines: shares and difficulty dropped, one hashrate line kept in 10 minutes.
+        for i, line in enumerate(["cpu: XMR share accepted", "cpu: pool difficulty 200007",
+                                  "cpu: 3.21 kH/s · 47 accepted · 0 rejected · 7 threads",
+                                  "cpu: 3.08 kH/s · 48 accepted · 0 rejected · 7 threads"]):
+            items.append({"text_log": f"[xmr g0] {line}", "time": f"2027-01-15T08:07:{10 + i * 10}Z",
+                          "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}})
         self.http.on("POST", "/log-entries", (200, {"items": items}))
         # HeroMiners has a worker of that name too (an earlier group): a Kryptex box must not take its figures.
         self.http.on("GET", "herominers", (200, {"workers": [{"name": "biz-rtx4080-g0", "hashrate": 44500,
@@ -4771,6 +4777,9 @@ class TestKryptex(Base):
         self.assertTrue(g["kx"])   # it has a PC: nothing to switch
         self.assertIn("LOG biz-rtx4080 PC m1: [minerlog g0] pool accepted login as biz-rtx4080-g0", self.events())
         self.assertIn("LOG biz-rtx4080 PC m1: [xmr g0] cpu: RandomX self-test passed (812 ms)", self.events())
+        self.assertIn("[xmr g0] cpu: 3.21 kH/s", self.events())
+        for dropped in ("3.08 kH/s", "share accepted", "pool difficulty"):
+            self.assertNotIn(dropped, self.events())
 
     def test_an_ended_kryptex_group_that_never_mined_there_leaves_the_table_as_before(self):
         g = self.group()

@@ -2171,7 +2171,15 @@ class W:
                         event(f"RESTARTED {name} on PC {mach[:8]}: Salad started the box again there; its readings "
                               "and shares count from now, as on a new PC")
                 elif text.startswith("[xmr g"):
-                    # The CLI's Monero lines (cmd_for): why a box's Monero does or doesn't reach the pool.
+                    # The CLI's Monero lines (cmd_for): why a box's Monero does or doesn't reach the pool. Its routine
+                    # lines (every share, each new pool difficulty, a hashrate line every 30 s) made 2–4 lines a minute
+                    # a box, ~50,000 a day: those are dropped, and a hashrate line is kept once in 10 minutes a box.
+                    if re.search(r"cpu: (XMR share accepted|pool difficulty)", text):
+                        continue
+                    if re.search(r"cpu: [\d.]+ kH/s", text):
+                        if tm - g.get("xmr_log_t", 0) < 10 * MIN:
+                            continue
+                        g["xmr_log_t"] = tm
                     event(f"LOG {name} PC {(mach or '')[:8]}: {text.strip()[:200]}")
                 elif g.get("kx") and text.startswith("[minerlog"):
                     # A Kryptex box's first miner lines show whether Kryptex took its login.
