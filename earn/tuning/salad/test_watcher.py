@@ -1,6 +1,6 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
 # Run: python3 -m unittest discover -s tuning/salad
-import importlib.util, io, json, os, re, shutil, tempfile, unittest
+import importlib.util, io, json, os, re, shutil, tempfile, time, unittest
 from unittest import mock
 
 TMP = tempfile.mkdtemp()
@@ -3283,6 +3283,31 @@ class TestMonero(Base):
         self.assertIn(", Monero on 8 vCPUs to Kryptex", self.events())
         plain = self.group(cls="RTX 2060 (6 GB)")   # not in xmr_groups
         self.assertFalse(plain["xmr_kx"])
+
+    def test_with_follow_latest_the_fleet_takes_the_newest_release_once_its_files_are_up(self):
+        # Founder, 7 November: "Please always keep the fleet up to date with the latest version."
+        t = self.clock[0]
+        files = [{"name": n} for n in ("llmjob-earn-cli-linux", "pearl_core.node", "pearl_core_cu13.node",
+                                       "llmjob-xmr-worker", "pearl_core_hip.node")]
+        pub = lambda ago: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t - ago))
+        self.x.cfg.update(box_ver="v0.6.13", follow_latest=True)
+        self.http.on("GET", "releases/latest", (200, {"tag_name": "v0.6.14", "published_at": pub(600), "assets": files}))
+        self.x.follow_latest(t)
+        self.assertEqual(self.x.cfg["box_ver"], "v0.6.13")       # 10 minutes old: its files may still be uploading
+        self.http.on("GET", "releases/latest", (200, {"tag_name": "v0.6.14", "published_at": pub(3600), "assets": files[:2]}))
+        self.x.follow_latest(t + 3600)
+        self.assertEqual(self.x.cfg["box_ver"], "v0.6.13")       # an hour old, but missing files a box downloads
+        self.http.on("GET", "releases/latest", (200, {"tag_name": "v0.6.14", "published_at": pub(3600), "assets": files}))
+        self.x.follow_latest(t + 3 * 3600)
+        self.assertEqual(self.x.cfg["box_ver"], "v0.6.14")
+        self.assertIn("RELEASE latest is v0.6.14: the fleet moves to it from v0.6.13", self.events())
+        self.x.cfg["box_ver"] = "v0.6.13"                       # config read again next round: still moved up, said once
+        self.x.follow_latest(t + 3 * 3600 + 60)
+        self.assertEqual(self.x.cfg["box_ver"], "v0.6.14")
+        self.assertEqual(self.events().count("RELEASE latest is v0.6.14"), 1)
+        self.x.cfg.update(box_ver="v0.6.13", follow_latest=False)
+        self.x.follow_latest(t + 3 * 3600 + 120)
+        self.assertEqual(self.x.cfg["box_ver"], "v0.6.13")       # off: config's release stands
 
     def test_turning_xmr_kx_on_updates_each_monero_group_without_moving_a_box_that_mines(self):
         self.x.cfg["xmr_groups"] = ["biz-rtx4080", "biz-rtx4080-2", "biz-rtx4080-3"]

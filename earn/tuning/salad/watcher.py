@@ -72,6 +72,7 @@ KNOWN = {
 }
 DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_token": 0,
                "credit_start": 100.0, "credit_offset": 0.0, "box_ver": "v0.5.13", "ver_override": {}, "report_min": 10,
+               "follow_latest": False,
                "min_margin": 0.10, "keep_margin": None, "max_new_per_hour": 3, "max_per_class": 1,
                "search_every_min": 60, "retry_after_min": 60, "retry_failed_h": 24, "no_pc_streak": 3, "no_pc_hold_min": 180, "drift": 0.15,
                "upgrade_gain": 0.05, "upgrade_every_min": 15, "swap_wait_min": 20,
@@ -1335,6 +1336,39 @@ class W:
         k = self.cfg.get("keep_margin")
         return self.cfg["min_margin"] if k is None else min(k, self.cfg["min_margin"])
 
+    def follow_latest(self, t):
+        """With config follow_latest, the fleet runs the newest published release (founder, 7 November: "Please always
+        keep the fleet up to date with the latest version"). Once an hour GitHub's latest release is read; one 30 min
+        old or more (so its assets are up) that has every file a box downloads becomes box_ver for this round when it
+        is newer than config's, and ver_sync moves each group to it. ver_override still holds a group back."""
+        st = self.st
+        if not self.cfg.get("follow_latest"):
+            return
+        lt = st.get("latest") or {}
+        if t - lt.get("try", 0) >= 3600:
+            lt["try"] = t
+            s, j = http("GET", "https://api.github.com/repos/super3/llmjob/releases/latest", timeout=30)
+            if s == 200 and isinstance(j, dict) and re.match(r"^v\d+\.\d+\.\d+$", str(j.get("tag_name", ""))):
+                names = {a.get("name") for a in j.get("assets") or [] if isinstance(a, dict)}
+                need = {"llmjob-earn-cli-linux", "pearl_core.node", "pearl_core_cu13.node", "llmjob-xmr-worker",
+                        "pearl_core_hip.node"}
+                try:
+                    pub = dt.datetime.strptime(j.get("published_at", ""), "%Y-%m-%dT%H:%M:%SZ").replace(
+                        tzinfo=dt.timezone.utc).timestamp()
+                except ValueError:
+                    pub = t
+                if need <= names and t - pub >= 30 * MIN:
+                    lt["ver"] = j["tag_name"]
+            else:
+                err(f"latest release read failed {s} {str(j)[:120]}")
+            st["latest"] = lt
+        ver = lt.get("ver")
+        if ver and vnum(ver) > vnum(self.cfg["box_ver"]):
+            if lt.get("said") != ver:
+                lt["said"] = ver
+                event(f"RELEASE latest is {ver}: the fleet moves to it from {self.cfg['box_ver']}")
+            self.cfg["box_ver"] = ver
+
     def box(self, name, xmr, kx=False):
         """The release, start command and CPU/RAM for a group's box. Monero needs release xmr_ver or later (xmr_kx_ver
         on Kryptex), Kryptex kryptex_ver or later, and Gemma (config "llm") llm_ver or later."""
@@ -1952,6 +1986,7 @@ class W:
     def round(self):
         st, t = self.st, now()
         self.cfg = dict(DEFAULT_CFG, **load(CFG, {}))
+        self.follow_latest(t)
         self.market()
         self.classes()
         if not st["mkt"] or not st["classes"]:
