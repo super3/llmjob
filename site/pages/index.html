@@ -81,9 +81,11 @@
   /* ---- hero ---- */
   .hero { padding: 80px var(--pad-x) 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 56px; align-items: center; }
   /* Just above where the hero stacks, two equal columns leave the text side too narrow for
-     both buttons on one row. Give the app picture a narrower column there instead. */
-  @media (min-width: 1048px) and (max-width: 1199px) {
-    .hero { grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 40px; }
+     both buttons on one row (they need 477px). Give the text at least 480px and the app picture
+     the rest, up to 420px. From 1040px: the auto-fit grid goes two-column there without a
+     scrollbar, and with a 15-17px one this keeps it two-column with room for the buttons. */
+  @media (min-width: 1040px) and (max-width: 1199px) {
+    .hero { grid-template-columns: minmax(480px, 1fr) minmax(0, 420px); gap: 40px; }
   }
   .hero h1 { font-weight: 800; font-size: clamp(38px, 7vw, 58px); line-height: 1.02; letter-spacing: -.04em; }
   .hero .lede { font-size: 19px; line-height: 1.5; color: var(--muted); margin-top: 22px; max-width: 27em; }
@@ -141,6 +143,10 @@
   @container (min-width: 330px) {
     .ap-reads { grid-template-columns: repeat(4, auto); justify-content: space-between; }
   }
+  /* Room for four equal cells, as on desktop before. */
+  @container (min-width: 424px) {
+    .ap-reads { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
   .ap-v { font-weight: 800; font-size: 19px; letter-spacing: -.02em; white-space: nowrap; }
   .ap-v small { font-size: 12px; color: #9a9ea6; font-weight: 600; }
   .ap-k { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -155,7 +161,7 @@
      left the third alone under them. */
   .steps { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
   @media (min-width: 700px) {
-    .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 28px; }
+    .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
   .step-n { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-weight: 700; font-size: 14px; display: grid; place-items: center; margin-bottom: 14px; }
   .step-t { font-weight: 700; font-size: 19px; letter-spacing: -.01em; }
@@ -169,7 +175,7 @@
   /* Ten cards: two rows of five, or five rows of two on a phone. An auto-fill grid left
      one card alone on its last row at most widths. */
   .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: -6px; }
-  @container (min-width: 460px) {
+  @container (min-width: 500px) {
     .chips { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   }
   .chip { font-size: 13px; font-weight: 600; white-space: nowrap; border-radius: 9px; padding: 9px 4px; cursor: pointer; border: 1px solid var(--line-ctl); background: #fff; color: var(--body-app); transition: border-color .12s; }
@@ -268,7 +274,7 @@
   }
   /* Phones: the download and HiveOS buttons take the full width, one under the other,
      instead of two different widths with a ragged edge. */
-  @media (max-width: 480px) {
+  @media (max-width: 520px) {
     .cta-row .dl-wrap, .cta-row .btn-sec { width: 100%; }
     .cta-row .btn-dl { flex: 1; justify-content: center; }
     .cta-row .btn-sec { justify-content: center; }

@@ -181,16 +181,19 @@
     .nt-cols, .miner-row { grid-template-columns: 28px 130px minmax(150px, 1fr) 120px 78px 72px; gap: 10px; min-width: 0; }
     .nt-cols > :nth-child(6), .nt-cols > :nth-child(8), .mr-ram, .mr-last { display: none; }
   }
-  /* Phones: each miner becomes three short lines instead: rank, address and hashrate;
-     the GPU and when it was last seen; the LLM and VRAM. RAM is left out at this size.
+  /* Phones: each miner becomes three short lines instead: rank, address and hashrate; the
+     GPU across the whole width, so a long name keeps its "× 2" count; the LLM and VRAM. RAM
+     and Last seen are left out, as on tablets. VRAM spans two tracks so that a wide figure
+     ("146 / 192 GB") takes room from the LLM name, not from the address above it.
+     760.98: no gap at fractional widths (browser zoom) between this and the 761px rule.
      The stat cards go two by two, icon above the number. */
-  @media (max-width: 760px) {
+  @media (max-width: 760.98px) {
     .wrap { padding: 0 clamp(20px, 5vw, 28px); }
     .nt-top { padding: 16px; }
     .nt-cols { display: none; }
     .nt-scroll { overflow-x: visible; }
     .nt-cols, .miner-row { min-width: 0; }
-    .miner-row { grid-template-columns: 26px minmax(0, 1fr) auto; grid-template-areas: "rank addr hash" ". gpu last" ". llm vram"; gap: 3px 10px; padding: 13px 16px; }
+    .miner-row { grid-template-columns: 26px minmax(0, 1fr) auto auto; grid-template-areas: "rank addr addr hash" ". gpu gpu gpu" ". llm vram vram"; gap: 3px 10px; padding: 13px 16px; }
     .mr-rank { grid-area: rank; }
     .mr-addr { grid-area: addr; }
     .mr-gpu { grid-area: gpu; }
@@ -200,10 +203,10 @@
     .mr-vram::before { content: "VRAM"; font-size: 10px; letter-spacing: .04em; color: var(--muted-3); margin-right: 6px; }
     .mr-ram { display: none; }
     .mr-hash { grid-area: hash; }
-    .mr-last { grid-area: last; }
+    .mr-last { display: none; }
     /* An opened host's per-card lines: the card and its hashrate, then its LLM and VRAM. */
-    .mr-cards .miner-row { grid-template-areas: ". gpu hash" ". llm vram"; }
-    .mr-cards .mr-rank, .mr-cards .mr-addr, .mr-cards .mr-last { display: none; }
+    .mr-cards .miner-row { grid-template-areas: ". gpu gpu hash" ". llm vram vram"; }
+    .mr-cards .mr-rank, .mr-cards .mr-addr { display: none; }
   }
   @media (max-width: 480px) {
     .net-stats { gap: 10px; }
