@@ -8,7 +8,7 @@
 # BENCH_SET=amd runs the Radeon cards instead (our HIP core against SRBMiner), in one run or two lanes.
 # BENCH_SET=rtx reruns the RTX 20- to 50-series rows on Salad PCs, one lane a series.
 # `bench.py table [STATE...]` prints the set's whole table from its lanes' state files.
-import json, os, re, sys, time, importlib.util
+import functools, json, os, re, subprocess, sys, time, importlib.util
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("watcher", os.path.join(HERE, "watcher.py"))
@@ -39,6 +39,20 @@ TAP = os.environ.get("BENCH_TAP", "") == "1"
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
+
+
+@functools.lru_cache(maxsize=None)
+def salad_dir(commit):
+    """Where commit keeps these tools: earn/tuning/salad, or tuning/salad before they moved on 7 November. A commit
+    this checkout doesn't have gets the new path."""
+    if not commit:
+        return "earn/tuning/salad"
+    try:
+        r = subprocess.run(["git", "-C", os.path.join(HERE, "..", "..", ".."), "cat-file", "-e",
+                            f"{commit}:tuning/salad/bench.sh"], capture_output=True)
+    except OSError:
+        return "earn/tuning/salad"
+    return "tuning/salad" if r.returncode == 0 else "earn/tuning/salad"
 # Salad's AMD PCs run containers in WSL2 with the GPU behind /dev/dxg; the image brings its own ROCm (7.1 or later).
 AMD_IMAGE = "rocm/dev-ubuntu-24.04:7.2"
 MIN = 60
@@ -329,7 +343,7 @@ class Bench:
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
-        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/earn/tuning/salad"
+        raw = f"https://raw.githubusercontent.com/super3/llmjob/{COMMIT}/{salad_dir(COMMIT)}"
         url = f"{raw}/bench.sh"
         extra = f" SRB_EXTRA='{SRB_EXTRA}'" if SRB_EXTRA else ""
         if SET == "amd":

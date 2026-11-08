@@ -58,6 +58,8 @@
 export DEBIAN_FRONTEND=noninteractive
 R=${AMDTEST_ROOT:-/opt/llmjob}   # AMDTEST_ROOT and AMDTEST_NM: for trying the script off a box
 A=$R/earn/native/amd
+# This folder, in the checkout. It was tuning/salad before 7 November, so a run on an older BASE_SHA finds it there.
+tdir() { if [ -d "$R/earn/tuning/salad" ]; then echo "$R/earn/tuning/salad"; else echo "$R/tuning/salad"; fi; }
 NM=${AMDTEST_NM:-/opt/nm}
 NODE_VER=v22.22.0
 CLANG=/opt/rocm/lib/llvm/bin/clang++
@@ -163,7 +165,7 @@ t_hip() {
   local arch=${ARCH:-$(target)} bin=/root/amdtest_hip
   [ -n "$arch" ] || { say "hip FAIL no gfx target from rocminfo"; return 1; }
   [ -x $CLANG ] || { say "hip FAIL no hip-clang at $CLANG"; return 1; }
-  $CLANG -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O2 "$R/earn/tuning/salad/amdtest_hip.cpp" \
+  $CLANG -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O2 "$(tdir)/amdtest_hip.cpp" \
     -o $bin -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/hipcc.log 2>&1 \
     || { tail -20 /root/hipcc.log | emit hip; say "hip FAIL compile"; return 1; }
   ldd $bin | grep -E 'amdhip|hsa|dxg|rocprof|not found' | sed 's/ (0x[0-9a-f]*)//' | emit hip
@@ -251,7 +253,7 @@ tap_start() {
   command -v python3 >/dev/null || apt-get install -y -qq --no-install-recommends python3 > /root/apt3.log 2>&1 \
     || { say "mine FAIL TAP=1 needs python3"; return 1; }
   rm -f /root/tap.jsonl
-  python3 $R/earn/tuning/salad/sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl > /root/tap.log 2>&1 &
+  python3 $(tdir)/sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl > /root/tap.log 2>&1 &
   TAP_PID=$!
   sleep 3
   grep -q listening /root/tap.log || { say "mine FAIL sharetap: $(tail -c 200 /root/tap.log)"; return 1; }
@@ -274,9 +276,9 @@ JS
 tap_end() {
   kill $TAP_PID 2>/dev/null
   mkdir -p /root/shares
-  python3 $R/earn/tuning/salad/sharetap.py decode /root/tap.jsonl --since "$1" --max 2 2>&1 | emit share
-  python3 $R/earn/tuning/salad/sharetap.py jobs /root/tap.jsonl --since "$1" 2>&1 | emit share
-  python3 $R/earn/tuning/salad/sharetap.py shares /root/tap.jsonl --since "$1" > "/root/shares/mine-$WORKER.jsonl" 2>&1
+  python3 $(tdir)/sharetap.py decode /root/tap.jsonl --since "$1" --max 2 2>&1 | emit share
+  python3 $(tdir)/sharetap.py jobs /root/tap.jsonl --since "$1" 2>&1 | emit share
+  python3 $(tdir)/sharetap.py shares /root/tap.jsonl --since "$1" > "/root/shares/mine-$WORKER.jsonl" 2>&1
   tail -n 1 "/root/shares/mine-$WORKER.jsonl" | emit share
 }
 
@@ -480,9 +482,9 @@ if [ "${AMDTEST_STAGE:-}" != repo ]; then
   setup
   fetch
   # A patch that changes this script hands over to the patched copy, which skips what is done.
-  if ! cmp -s "$0" "$R/earn/tuning/salad/amdtest.sh"; then
+  if ! cmp -s "$0" "$(tdir)/amdtest.sh"; then
     say "patched amdtest.sh takes over"
-    AMDTEST_STAGE=repo exec bash "$R/earn/tuning/salad/amdtest.sh"
+    AMDTEST_STAGE=repo exec bash "$(tdir)/amdtest.sh"
   fi
 fi
 

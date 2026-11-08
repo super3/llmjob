@@ -1087,5 +1087,22 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual(bodies[-2:], ["FAIL no BASE_SHA", "all done"])
 
 
+class TestBenchToolsMoved(unittest.TestCase):
+    """The tools moved from tuning/salad to earn/tuning/salad on 7 November; a BENCH_COMMIT from before then is
+    fetched from the old folder."""
+
+    def test_salad_dir(self):
+        b = load_bench(BENCH_COMMIT="c0ffee")
+        self.assertEqual(b.salad_dir(""), "earn/tuning/salad")
+        self.assertEqual(b.salad_dir("0" * 40), "earn/tuning/salad")      # a commit this checkout doesn't have
+        repo = os.path.join(HERE, "..", "..", "..")
+        has = lambda rev: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", rev + "^{commit}"],
+                                         capture_output=True).returncode == 0
+        if has("HEAD"):
+            self.assertEqual(b.salad_dir("HEAD"), "earn/tuning/salad")
+        if has("v0.6.13"):                                                   # the last release before the move
+            self.assertEqual(b.salad_dir("v0.6.13"), "tuning/salad")
+
+
 if __name__ == "__main__":
     unittest.main()

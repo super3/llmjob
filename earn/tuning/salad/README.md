@@ -437,6 +437,12 @@ CLI) and SRBMiner 3.8.2 run 5 minutes each on Kryptex; it ends with ours' mean a
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
 can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
 
+These tools were in `tuning/salad` until 7 November, when they moved to `earn/tuning/salad`. A box created since
+then runs commits from either side of the move: its boot command tries the new path and then the old one, and
+`amdtest.sh` finds its own folder in either layout of the checkout. A box created before then can't run a commit
+from after it (its fixed command fetches the old path only), and `set-env` refuses to point it at one rather
+than leave it idle on a billed PC: delete it and create a new one under another name.
+
 ```sh
 python3 earn/tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
 python3 earn/tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,verify:120,hashrate:60:10   # next run, same PC

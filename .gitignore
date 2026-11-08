@@ -156,6 +156,8 @@ earn/native/node_modules/
 # compare-miners.sh output
 earn/native/probes/compare-*/
 
-# Salad mining watcher data (ledger, events, report)
+# Salad mining watcher data (ledger, events, report, wallets). The old path stays ignored too: a checkout that
+# had the watcher running before tuning/ moved into earn/ keeps its run/ folder there, and it must never be committed.
 earn/tuning/salad/run/
+tuning/salad/run/
 __pycache__/
