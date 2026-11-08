@@ -129,12 +129,17 @@
   .ap-tab { display: inline-flex; align-items: center; font-size: 14px; font-weight: 500; color: var(--muted-2); }
   .ap-tabs .sp { flex: 1; }
   .ap-gear { align-self: center; display: grid; place-items: center; width: 32px; height: 32px; background: #fff; border: 1px solid var(--line-ctl); border-radius: 9px; flex: none; }
-  /* On a phone the balance goes under the label rather than breaking "Payout address" in two. */
+  /* "Payout address" and the balance share one line. When it runs short, the word "Balance"
+     goes first, then the dollar estimate. The full line needs about 292px, and each step
+     leaves room for the estimate to grow a digit. */
+  .ap-addr { container-type: inline-size; }
   .ap-label { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 10px; margin-bottom: 7px; }
   .ap-label .lbl { white-space: nowrap; }
   .ap-bal { font-size: 12.5px; color: var(--muted-2); white-space: nowrap; }
   .ap-bal b { color: var(--ink); font-family: "IBM Plex Mono", monospace; }
-  .ap-bal span { color: var(--muted-3); }
+  .ap-bal-est { color: var(--muted-3); }
+  @container (width < 312px) { .ap-bal-w { display: none; } }
+  @container (width < 258px) { .ap-bal-est { display: none; } }
   .ap-field { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 11px 13px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--body-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ap-card { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 14px; container-type: inline-size; }
   /* Four readings in a row when the card has room, else two by two. An auto-fit grid
@@ -336,8 +341,8 @@
         <span class="sp"></span>
         <span class="ap-gear"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></span>
       </div>
-      <div>
-        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal">Balance <b>128.41 PRL</b> <span id="pv-bal">≈ $146.39</span></span></div>
+      <div class="ap-addr">
+        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal"><span class="ap-bal-w">Balance </span><b>128.41 PRL</b><span class="ap-bal-est" id="pv-bal"> ≈ $146.39</span></span></div>
         <div class="ap-field">prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c</div>
       </div>
       <div class="ap-card">
@@ -827,7 +832,7 @@
       const th = pick.card.th * pick.qty;
       elTh.textContent = fmt(th * mult[mult.length - 1], 1);
       elDay.textContent = money(usdPerDay(th));
-      elBal.textContent = '≈ ' + money(128.41 * est.PRICE);
+      elBal.textContent = ' ≈ ' + money(128.41 * est.PRICE);
       const step = W / (mult.length - 1);
       const xy = mult.map((v, i) => [+(i * step).toFixed(1), +(H - ((v - LO) / (HI - LO)) * H).toFixed(1)]);
       elLine.setAttribute('d', xy.map((p, i) => (i ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' '));
