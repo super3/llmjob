@@ -600,9 +600,12 @@ class W:
     def box_khs(self, g, t):
         """A box's Monero kH/s as HeroMiners' pay values it (xmr_mkt's usd_khs_hr is HeroMiners' net pay): its
         HeroMiners figure, plus its Kryptex one times what Kryptex pays against that (kryptex_xmr_pay over
-        1 - XMR_FEE, 0.94 against 0.991), each only when the pool saw the box in the 15 minutes before t."""
+        1 - XMR_FEE, 0.94 against 0.991), each only when the pool saw the box in the 15 minutes before t. For Kryptex
+        that counts only up to its last good read (kxx_read_t): on 7 November its API served a bot-check page instead
+        of JSON, and every box's Monero went to 0 after 15 minutes, which pushed boxes near the keep bar under it."""
         hm = g.get("xmr_khs") or 0.0 if t - (g.get("xmr_seen") or 0) < 15 * MIN else 0.0
-        kx = g.get("kxx_khs") or 0.0 if t - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
+        ref = min(t, self.st.get("kxx_read_t") or t)
+        kx = g.get("kxx_khs") or 0.0 if ref - (g.get("kxx_seen") or 0) < 15 * MIN else 0.0
         return hm + kx * self.cfg["kryptex_xmr_pay"] / (1 - XMR_FEE)
 
     def rate(self, cls, q=0.5):
@@ -1811,6 +1814,10 @@ class W:
         paid = kx_paid(KXX_API, addr)
         s3, ws = http("GET", f"{KXX_API}/v3/miner/workers/{addr}", timeout=30)
         rows = (ws.get("results") or []) if s3 == 200 and isinstance(ws, dict) else []
+        if s3 == 200 and isinstance(ws, dict):
+            st["kxx_read_t"] = t
+        else:
+            err(f"Kryptex Monero workers read failed {s3} {str(ws)[:120]}")
         # Each box's rate there, read even when the balance or payouts fail: the rules count each box's Monero
         # from these (xmr_usd), and they went stale after 15 minutes of balance failures.
         byw = {x["worker"]: x for x in rows if isinstance(x, dict) and x.get("worker")}
@@ -2796,8 +2803,10 @@ class W:
             ths = sum(r[2] for r in cur) / len(cur) if cur else 0.0
             cost = g["price"] if g["has_pc"] else 0.0
             # Its rate at each Monero pool that saw it in the last 15 minutes: one, or both just after a switch.
-            khs = sum(g.get(k, 0.0) for k, seen in (("xmr_khs", "xmr_seen"), ("kxx_khs", "kxx_seen"))
-                      if g.get("xmr") and g["has_pc"] and t - (g.get(seen) or 0) < 15 * MIN)
+            # Kryptex's counts only up to its last good read (box_khs).
+            kref = min(t, st.get("kxx_read_t") or t)
+            khs = sum(g.get(k, 0.0) for k, seen, ref in (("xmr_khs", "xmr_seen", t), ("kxx_khs", "kxx_seen", kref))
+                      if g.get("xmr") and g["has_pc"] and ref - (g.get(seen) or 0) < 15 * MIN)
             earn = ths * mk["usd_th_hr"] * yg(g) + (self.box_khs(g, t) * xusd if g.get("xmr") and g["has_pc"] else 0.0)
             state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
                      else "⏳")

@@ -3539,6 +3539,18 @@ class TestMonero(Base):
         g["kxx_seen"] = t - 15 * w.MIN           # Kryptex hasn't seen it for 15 minutes
         self.assertIn("| 200 | 1.0 |", row())
 
+    def test_a_kryptex_outage_doesnt_zero_a_boxs_monero(self):
+        # 7 November: Kryptex's API served a bot-check page for an hour. Every box's Monero went to 0 after 15
+        # minutes, so boxes near the keep bar looked under it. Seen at the last good read, a box keeps its figure.
+        g = self.group()
+        t = self.clock[0]
+        self.x.st["xmr_mkt"] = {"t": t, "price": 500.0, "per_hash": 1e-12, "usd_khs_hr": 0.002}
+        g.update(has_pc=True, machine="m1", xmr=True, kxx_khs=2.0, kxx_seen=t - 40 * w.MIN)
+        self.x.st["kxx_read_t"] = t - 40 * w.MIN          # Kryptex's last good answer, 40 minutes ago
+        self.assertGreater(self.x.box_khs(g, t), 0)
+        self.x.st["kxx_read_t"] = t - 60                  # it answers again, without this box
+        self.assertEqual(self.x.box_khs(g, t), 0)
+
     def test_without_an_address_the_table_is_unchanged(self):
         self.x.cfg["xmr_wallet"] = ""
         self.group()
