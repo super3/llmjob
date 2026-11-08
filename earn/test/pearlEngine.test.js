@@ -129,6 +129,15 @@ describe('PearlEngine — the surface main.js drives', () => {
     e.stop();
   });
 
+  test('cardCount is the running miner\'s, and 0 before a start', () => {
+    const { e } = boot();
+    expect(e.cardCount()).toBe(0);
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    jest.spyOn(e.miner, 'cardCount').mockReturnValue(2);
+    expect(e.cardCount()).toBe(2);
+    e.stop();
+  });
+
   // Both shells pass 'llmjob-earn/<version>', and the miner's login carries it.
   test('hands the agent it was given to the miner, which logs in with it', () => {
     const sock = fakeSocket();

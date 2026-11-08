@@ -354,8 +354,8 @@ jobs:
       # (pearl_tile_fold_wmma_rg, PEARL_BD_RG_KERNEL; a body only on sm_75),
       # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
       # sm_90a), for the transcript hash kernel (pearl_tall_hash80, a body only
-      # on sm_80 and sm_90a), and for Pascal's dp4a fold (pearl_tile_fold_dp4a,
-      # a body only on sm_61), on
+      # on sm_80 and sm_90a), and for the dp4a fold (pearl_tile_fold_dp4a,
+      # a body only on sm_61 and sm_75), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
       # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120
@@ -365,7 +365,9 @@ jobs:
       # its body: a build whose gate lost Pascal still compiles and links, and
       # GTX 10 cards would then have no fold at all. Only the body uses more
       # than a handful of registers (123 under 12.8), so fewer than 64 fails the
-      # job. The same holds for the flip kernel on sm_86: the host launches it on
+      # job. So does the sm_75 dp4a fold (127 registers, PEARL_DP4A_TURING):
+      # without it GTX 16 cards fall back to the tensor fold at about an
+      # eighth of the rate. The same holds for the flip kernel on sm_86: the host launches it on
       # the RTX 3060 Ti and the 6 MB RTX 30 cards, which would search nothing. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
@@ -413,6 +415,7 @@ jobs:
           seen_hopper=0
           seen_dp4a=0
           dp4a_body=0
+          dp4a_body_75=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
@@ -428,6 +431,10 @@ jobs:
             if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_61 ] \
                && [ "$regs" -ge 64 ] 2>/dev/null; then
               dp4a_body=1
+            fi
+            if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_75 ] \
+               && [ "$regs" -ge 64 ] 2>/dev/null; then
+              dp4a_body_75=1
             fi
             if [ "$name" = pearl_tile_fold_tall_pinb ] && [ "$arch" = sm_86 ]; then
               pinb_86=stub
@@ -456,11 +463,70 @@ jobs:
                 bad=1
               fi ;;
           esac
+          case " ${{ matrix.gencode }} " in
+            *"code=sm_75 "*)
+              if [ "$dp4a_body_75" != 1 ]; then
+                echo "::error::pearl_tile_fold_dp4a on sm_75 has no body (under 64 registers); GTX 16 cards would fall back to the tensor fold. Check PEARL_DP4A_TURING in pearl_config.h"
+                bad=1
+              fi ;;
+          esac
           if [ "$pinb_86" = stub ]; then
             echo "::error::pearl_tile_fold_tall_pinb on sm_86 has no body (under 64 registers); the RTX 30 cards that take the flip would search nothing. Check PEARL_TALL_PIN_B_ARCH in pearl_config.h"
             bad=1
           fi
           exit $bad
+
+      # GTX 16 cards (sm_75 without tensor cores) run Pascal's dp4a fold
+      # (PEARL_DP4A_TURING in pearl_config.h, on by default: raced on Salad
+      # against the tensor fold, tuning/benchmark.md). The switch must not touch
+      # what the RTX 20 cards and the T4 run. So the sm_75 half is compiled again
+      # with it off, into a scratch directory no later step reads, and every
+      # sm_75 kernel's machine code but the dp4a fold's (the md5 of its .text
+      # section, as probes/turing/compilers.sh hashes a fold) must match the
+      # shipped build's. Linux 12.8 only: the machine code does not depend on
+      # the host OS.
+      - name: Check that the GTX 16 dp4a fold changes no other sm_75 kernel
+        if: runner.os == 'Linux' && matrix.variant == ''
+        working-directory: earn/native
+        shell: bash
+        run: |
+          G=cuda-build/gtx16
+          mkdir -p $G/shipped $G/off
+          nvcc -O3 -std=c++17 -cudart static -Xcompiler -fPIC \
+            -gencode arch=compute_75,code=sm_75 \
+            -DPEARL_DP4A_TURING=0 \
+            -c src/pearl_kernel.cu -o $G/pearl_kernel.o
+          (cd $G/shipped && cuobjdump -xelf all ../../pearl_kernel.o > /dev/null)
+          (cd $G/off && cuobjdump -xelf all ../pearl_kernel.o > /dev/null)
+          python3 - $G/off/*sm_75*.cubin $G/shipped/*sm_75*.cubin <<'EOF'
+          import hashlib, struct, sys
+          def texts(p):
+              b = open(p, "rb").read()
+              shoff = struct.unpack_from("<Q", b, 0x28)[0]
+              ent, num, stri = struct.unpack_from("<HHH", b, 0x3A)
+              hs = [struct.unpack_from("<IIQQQQIIQQ", b, shoff + i * ent) for i in range(num)]
+              names = b[hs[stri][4]:hs[stri][4] + hs[stri][5]]
+              out = {}
+              for h in hs:
+                  n = names[h[0]:names.index(b"\0", h[0])].decode()
+                  if n.startswith(".text."):
+                      out[n[6:]] = hashlib.md5(b[h[4]:h[4] + h[5]]).hexdigest()[:12]
+              return out
+          if len(sys.argv) != 3:
+              print("::error::expected one sm_75 cubin from each object, got " + " ".join(sys.argv[1:]))
+              sys.exit(1)
+          a, b = texts(sys.argv[1]), texts(sys.argv[2])
+          bad = 0
+          for n in sorted(set(a) | set(b)):
+              if n == "pearl_tile_fold_dp4a":
+                  print(f"{n}: {a.get(n)} with the switch off -> {b.get(n)} shipped (the GTX 16 fold)")
+              elif a.get(n) == b.get(n):
+                  print(f"{n}: {a[n]} unchanged")
+              else:
+                  print(f"::error::{n}: {a.get(n)} -> {b.get(n)}: PEARL_DP4A_TURING changed an sm_75 kernel other than the dp4a fold")
+                  bad = 1
+          sys.exit(bad)
+          EOF
 
       # The Blackwell tall fold's two TMA descriptors, and Hopper's wgmma fold's,
       # must sit at 128-byte-aligned parameter addresses. In v0.5.7 and v0.5.8 the
@@ -703,6 +769,14 @@ jobs:
         shell: bash
         run: ./build-amd.sh check
 
+      # PEARL_AMD_FUSE (pearl_amd_fold.h): folds that hash their own transcripts. Off by default since 7 November.
+      # Its rows on every target, for whoever races it again.
+      - name: Check the fused-hash folds on every target (PEARL_AMD_FUSE=1; off by default)
+        working-directory: earn/native/amd
+        shell: bash
+        continue-on-error: true
+        run: PEARL_AMD_CFLAGS=-DPEARL_AMD_FUSE=1 ./build-amd.sh check
+
       - name: Build the addon (all 14 targets)
         working-directory: earn/native/amd
         shell: bash
@@ -829,6 +903,24 @@ jobs:
         working-directory: earn/native/amd
         shell: bash
         run: ./build-amd.sh check
+
+      # Diagnostic only. The Linux core's RDNA 4 settings (the wrap readout, the set, the tile
+      # order), compiled with this clang 21 for gfx1200 and gfx1201, since a -D reaches every target.
+      # On 1 November the wrap readout alone put 24 bytes of the gfx12 fold in scratch here, so the
+      # second step checks it alone. Compare the rows with Linux's in amd/README.md ("Compile check").
+      # check writes only build/check, so winlib below builds and ships what it did. A spill or
+      # scratch fails the step, not the job.
+      - name: Check the Linux RDNA 4 settings with this compiler (gfx1200, gfx1201; not shipped)
+        working-directory: earn/native/amd
+        shell: bash
+        continue-on-error: true
+        run: PEARL_AMD_CFLAGS='-DPEARL_AMD_KWRAP=1 -DPEARL_AMD_RDNA4_SET=1 -DPEARL_AMD_WALK=1' ./build-amd.sh check gfx1200 gfx1201
+
+      - name: Check the wrap readout alone with this compiler (gfx1200, gfx1201; not shipped)
+        working-directory: earn/native/amd
+        shell: bash
+        continue-on-error: true
+        run: PEARL_AMD_CFLAGS=-DPEARL_AMD_KWRAP=1 ./build-amd.sh check gfx1200 gfx1201
 
       - name: Compile the kernels and host (Windows targets)
         working-directory: earn/native/amd

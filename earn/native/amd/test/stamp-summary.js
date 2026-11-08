@@ -28,6 +28,11 @@
 //            bit 19's falls anywhere in it. Two crossings of one boundary are under a slab apart in time, so
 //            a pair whose crossings are more than 3 slabs apart on REALTIME is dropped, and counted unless
 //            they are a whole number of gfx11's 2^20-cycle wraps apart (another boundary, the same value).
+//   placement  whether the dispatcher deals block i to engine, shader array and WGP i % their count, which
+//            PEARL_AMD_WALK=2 (pearl_amd_fold.h) counts on: for each, the share of blocks on the place most
+//            blocks of their class (i % count) went to. 100% when it deals them in turn, in any fixed order;
+//            near 100% / count when it places them at random. Of the launch's first blocks, then of all.
+//            gfx11 only: gfx12's HW_ID1 names no shader engine.
 // gates prints item 14's and 15's readings (tuning/benchmark.md, item 13) from two builds on one PC:
 //   D        the stall a start skew could hide: the stamp build's median barrier wait a slab, plus what its
 //            LDS fragment loads cost a slab. That is its median work a slab (the loop less barrier and memory
@@ -91,6 +96,24 @@ function apart(a, b, bits) {
 // HW_ID1: SIMD_ID 9:8, WGP_ID 13:10, SA_ID 16, SE_ID 20:18. A WGP is its engine, array and number.
 const wgpOf = (h) => (((h >>> 18) & 7) << 5) | (((h >>> 16) & 1) << 4) | ((h >>> 10) & 15);
 const simdOf = (h) => (wgpOf(h) << 2) | ((h >>> 8) & 3);
+const engineOf = (h) => (h >>> 18) & 7;
+const arrayOf = (h) => (engineOf(h) << 1) | ((h >>> 16) & 1);
+
+// For the n places placeOf finds among `blocks`: the share of blocks on their class's most common place, where a
+// block's class is its number mod n.
+function dealt(blocks, placeOf) {
+  const n = new Set(blocks.map((b) => placeOf(b.lead.hw0))).size;
+  const classes = new Map();
+  for (const b of blocks) {
+    const c = b.lead.block % n, p = placeOf(b.lead.hw0);
+    if (!classes.has(c)) classes.set(c, new Map());
+    classes.get(c).set(p, (classes.get(c).get(p) || 0) + 1);
+  }
+  let on = 0;
+  for (const m of classes.values()) on += Math.max(...m.values());
+  return { n, share: blocks.length ? on / blocks.length : NaN };
+}
+const PLACES = [['engines', engineOf], ['arrays', arrayOf], ['WGPs', wgpOf]];
 
 function quantile(sorted, q) {
   if (!sorted.length) return NaN;
@@ -233,6 +256,12 @@ function summarize(data) {
   const firstEnd = blocks.reduce((m, b) => Math.min(m, b.lead.end), Infinity);
   s.first = position(blocks.filter((b) => b.lead.start < firstEnd));
   s.rest = position(blocks.filter((b) => b.lead.start >= firstEnd));
+  // Where the dispatcher put the blocks: gfx11 only (its 20-bit counter), whose HW_ID1 names the engine.
+  if (s.bits === 20) {
+    const first = blocks.filter((b) => b.lead.start < firstEnd);
+    s.place = {};
+    for (const [name, of] of PLACES) s.place[name] = { first: dealt(first, of), all: dealt(blocks, of) };
+  }
 
   // The waves of a block leave their last barrier together, and the loop ends right after it: where each one's
   // counter stood at the loop's end.
@@ -318,6 +347,12 @@ function format(s) {
       + r0(p.rt.med) + ' cycles apart on REALTIME (p90 ' + r0(p.rt.p90) + '); ' + p.rejected + ' dropped: more than '
       + MAX_SLABS_APART + ' slabs apart there');
   }
+  const pct0 = (x) => (Number.isFinite(x) ? (100 * x).toFixed(0) + '%' : '-');
+  lines.push(s.place
+    ? 'placement: blocks dealt in turn (block i to place i % places): ' + PLACES.map(([name]) => name + ' ('
+      + s.place[name].all.n + ') ' + pct0(s.place[name].first.share) + ' of the first blocks, '
+      + pct0(s.place[name].all.share) + ' of all').join('; ')
+    : 'placement: not read: gfx12\'s HW_ID1 names no shader engine');
   return lines;
 }
 

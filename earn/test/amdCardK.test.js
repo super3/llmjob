@@ -222,7 +222,7 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
 
   it('names the k and the readout in the fold\'s description', () => {
     const name = slice(HOST, 'extern "C" const char *pearl_host_fold_name(void *handle) {', '\n}\n');
-    expect(name).toContain('"%s, batch %u column offsets, k %u%s%s%s%s"');
+    expect(name).toContain('"%s, %s, batch %u column offsets, k %u%s%s%s%s"');
     expect(name).toContain('ctx->kwrap ? ", wrap readout" : ""');
   });
 
@@ -254,7 +254,7 @@ describe('build-amd.sh', () => {
 
   it('builds the Windows library without the wrap readout, before any tuning flags', () => {
     expect(BUILD).toContain('if windows; then KWRAP_OS=-DPEARL_AMD_KWRAP=0; fi');
-    expect(BUILD).toContain('-D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-}"');
+    expect(BUILD).toContain('-D_CRT_SECURE_NO_WARNINGS -Wno-unused-result -Wno-unused-value $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-}"');
   });
 
   // A stand-in for hip-clang: -E -dM gives the device pass's PEARL_AMD_KWRAP (1 on gfx12, unless FLIP names the

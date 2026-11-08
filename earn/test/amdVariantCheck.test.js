@@ -191,7 +191,7 @@ describe('variant-check.sh', () => {
     expect(first).toBe('-x hip --offload-arch=gfx1201 --rocm-path=/opt/rocm -std=c++17 -O3 -Icompat/gpu -Isrc -I../src '
       + '-Ibuild/gen --cuda-device-only -S src/pearl_host_hip.cpp -o ' + path.join(tmp, 'out').replace(/\\/g, '/')
       + '/base.s');
-    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
+    expect(BUILD).toContain('"$cc" -x hip --offload-arch="$a" --rocm-path="$rocm" -std=c++17 -O3 $KWRAP_OS $SET_OS $FUSE_OS ${PEARL_AMD_CFLAGS:-} $inc --cuda-device-only');
     expect(BUILD).toContain('inc="-I$HERE/compat/gpu -I$HERE/src -I$SRC -I$GEN"');
   }, 60000);
 

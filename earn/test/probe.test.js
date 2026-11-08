@@ -412,8 +412,28 @@ describe('detectGpuInfo', () => {
       execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
         ? cb(new Error('not installed'))
         : cb(null, 'Intel(R) UHD Graphics\r\nAMD Radeon RX 7900 XTX\r\n')));
-      expect(await probe.detectGpuInfo()).toEqual({ name: 'AMD Radeon RX 7900 XTX', count: 1 });
+      expect(await probe.detectGpuInfo()).toEqual({
+        name: 'AMD Radeon RX 7900 XTX', count: 1, amd: [{ name: 'AMD Radeon RX 7900 XTX', driverVersion: null }],
+      });
       expect(execFile).toHaveBeenCalledWith('powershell.exe', expect.any(Array), { timeout: 5000 }, expect.any(Function));
+    });
+  });
+
+  // nvidia-smi lists no AMD card, so the AMD cards Windows lists are what the
+  // miner plans from. An APU's graphics beside them is not one. Each card's
+  // driver version comes in the same query, for the AMD driver line.
+  it('lists the discrete AMD cards from WMI, with their driver versions', async () => {
+    await withPlatform('win32', async () => {
+      execFile.mockImplementation((bin, _args, _opts, cb) => (bin === 'nvidia-smi'
+        ? cb(new Error('not installed'))
+        : cb(null, 'AMD Radeon(TM) Graphics|32.0.31007.5012\r\nAMD Radeon AI PRO R9700|32.0.31007.5012\r\n'
+          + 'AMD Radeon AI PRO R9700|32.0.31007.5012\r\n')));
+      const R9700 = { name: 'AMD Radeon AI PRO R9700', driverVersion: '32.0.31007.5012' };
+      expect(await probe.detectGpuInfo()).toEqual({ name: 'AMD Radeon AI PRO R9700', count: 2, amd: [R9700, R9700] });
+      // One query: names and driver versions together.
+      const ps = execFile.mock.calls.filter((c) => c[0] === 'powershell.exe');
+      expect(ps).toHaveLength(1);
+      expect(ps[0][1][3]).toBe("Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.DriverVersion }");
     });
   });
 
@@ -497,6 +517,96 @@ describe('detectGpuInfo', () => {
     await withPlatform('linux', async () => {
       execCb(null, '\n\n');
       expect(await probe.detectGpuInfo()).toBeNull();
+    });
+  });
+});
+
+describe('AMD cards from sysfs', () => {
+  // A fake /sys/class/drm: files by path, and realpath for each card's device.
+  const fakeFs = (files, real, entries) => ({
+    readdirSync: jest.fn(() => {
+      if (!entries) throw new Error('ENOENT');
+      return entries;
+    }),
+    readFileSync: jest.fn((p) => {
+      if (!(p in files)) throw new Error('ENOENT ' + p);
+      return files[p];
+    }),
+    realpathSync: jest.fn((p) => {
+      if (!(p in real)) throw new Error('ENOENT ' + p);
+      return real[p];
+    }),
+  });
+  const IDS = '1002  AMD\n\t7550  Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]\n\t\t148c 2435  Reaper Radeon RX 9070 XT 16GB GDDR6\n';
+  const card = (n, device, extra) => Object.assign({
+    ['/d/card' + n + '/device/vendor']: '0x1002\n',
+    ['/d/card' + n + '/device/device']: '0x' + device + '\n',
+    ['/d/card' + n + '/device/subsystem_vendor']: '0x148c\n',
+    ['/d/card' + n + '/device/subsystem_device']: '0x2435\n',
+  }, extra || {});
+  const files = {
+    '/ids': IDS,
+    ...card(1, '7550', {
+      '/d/card1/device/mem_info_vram_total': String(16 * 2 ** 30),
+      '/d/card1/device/mem_info_vram_used': String(512 * 2 ** 20),
+    }),
+    ...card(0, '7590'),
+    ...card(2, '164e'),
+    '/d/card3/device/vendor': '0x10de',
+  };
+  const real = { '/d/card1/device': '/sys/devices/pci0000:00/0000:01:00.0', '/d/card0/device': '/sys/devices/pci0000:00/0000:03:00.0' };
+  const entries = ['card0', 'card0-DP-1', 'card1', 'card2', 'card3', 'renderD128'];
+  const opts = { fs: fakeFs(files, real, entries), root: '/d', pciIds: ['/missing', '/ids', '/later'] };
+
+  it('names each AMD card, in PCI bus order, with its VRAM', () => {
+    expect(probe.detectAmdGpus(opts)).toEqual([
+      { index: 0, name: 'AMD Radeon RX 9070 XT', usedMb: 512, totalMb: 16384 },
+      { index: 1, name: 'AMD Radeon RX 9060/9060 XT', usedMb: 0, totalMb: 0 },
+    ]);
+  });
+
+  it('keeps sysfs order when realpath fails, and is empty with no drm folder', () => {
+    const noReal = { fs: fakeFs(files, {}, ['card1', 'card0']), root: '/d', pciIds: ['/ids'] };
+    expect(probe.detectAmdGpus(noReal).map((c) => c.name)).toEqual(['AMD Radeon RX 9060/9060 XT', 'AMD Radeon RX 9070 XT']);
+    expect(probe.detectAmdGpus({ fs: fakeFs({}, {}, null) })).toEqual([]);
+  });
+
+  it('looks for pci.ids in the usual places by default', () => {
+    const own = { fs: fakeFs(files, real, ['card1']), root: '/d' };
+    expect(probe.detectAmdGpus(own)[0].name).toBe('AMD Radeon RX 9070/9070 XT/9070 GRE');
+  });
+
+  it('reads the real system by default without throwing', () => {
+    expect(Array.isArray(probe.detectAmdGpus())).toBe(true);
+  });
+
+  const withPlatform = (value, fn) => {
+    const original = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value, configurable: true });
+    return Promise.resolve(fn()).finally(() => Object.defineProperty(process, 'platform', original));
+  };
+
+  it('names the rig from its AMD card when Linux has no nvidia-smi', async () => {
+    await withPlatform('linux', async () => {
+      execCb(new Error('ENOENT'));
+      expect(await probe.detectGpuInfo(opts)).toEqual({
+        name: 'AMD Radeon RX 9070 XT', count: 2, amd: probe.detectAmdGpus(opts),
+      });
+      expect((await probe.detectGpuInfo(opts)).amd).toHaveLength(2);
+      expect(await probe.detectGpuInfo({ fs: fakeFs({}, {}, null) })).toBeNull();
+    });
+  });
+
+  it('gives the board nvidia-smi\'s cards, else the AMD ones on Linux', async () => {
+    execCb(null, '0, NVIDIA GeForce RTX 4090, 1000, 24564\n');
+    expect((await probe.detectBoardGpus(opts))[0].name).toBe('NVIDIA GeForce RTX 4090');
+    execCb(new Error('ENOENT'));
+    await withPlatform('win32', async () => {
+      expect(await probe.detectBoardGpus(opts)).toEqual([]);
+    });
+    await withPlatform('linux', async () => {
+      expect((await probe.detectBoardGpus(opts)).map((c) => c.name))
+        .toEqual(['AMD Radeon RX 9070 XT', 'AMD Radeon RX 9060/9060 XT']);
     });
   });
 });

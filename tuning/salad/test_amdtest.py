@@ -246,6 +246,29 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(a.class_name("RTX 3080 (10 GB)", nv=True), "RTX 3080 (10 GB)")   # Salad's own name
         self.assertEqual(a.class_name("7900xt"), "AMD RX 7900 XT (20GB)")                 # AMD's unchanged
 
+    def test_nvtest_gtx16_names_and_classes(self):
+        # GTX 16 boxes, for the dp4a fold on sm_75 without tensor cores (PEARL_DP4A_TURING).
+        for good in ("nvtest-gtx1650", "nvtest-gtx1660", "nvtest-gtx1660super", "nvtest-gtx1660super-2",
+                     "nvtest-gtx1650-17"):
+            self.assertEqual(a.check_name(good), good)
+        for bad in ("nvtest-gtx1660ti", "nvtest-gtx1650super", "nvtest-gtx1080", "nvtest-gtx1660s", "nvtest-gtx1660-1",
+                    "nvtest-gtx1660-100", "biz-nvtest-gtx1660", "nvtest-rtx1660", "nvtest-gtx2060"):
+            with self.assertRaises(SystemExit):
+                a.check_name(bad)
+        # Salad's names, as its gpu-classes listed them on 6 November 2026; exact short names only.
+        self.assertEqual(a.class_name("1650", nv=True), "GTX 1650 (4 GB)")
+        self.assertEqual(a.class_name("1660", nv=True), "GTX 1660 (6 GB)")
+        self.assertEqual(a.class_name("1660super", nv=True), "GTX 1660 Super (6 GB)")
+        self.assertEqual(a.class_name("GTX 1660 Super", nv=True), "GTX 1660 Super (6 GB)")
+        self.assertEqual(a.class_name("NVIDIA GeForce GTX 1650", nv=True), "GTX 1650 (4 GB)")
+        self.assertEqual(a.class_name("GTX 1660 (6 GB)", nv=True), "GTX 1660 (6 GB)")       # Salad's own name
+        self.assertEqual(a.class_name("1660s", nv=True), "1660s")                           # not a short name
+        # The RTX names still map as before.
+        self.assertEqual(a.class_name("2060", nv=True), "RTX 2060 (6 GB)")
+        c = a.body("nvtest-gtx1660super", "cid", {"BASE_SHA": "abc"})["container"]
+        self.assertEqual(c["image"], a.NV_IMAGE)
+        self.assertIn("nvtest.sh", c["command"][2])
+
     def test_nvtest_create_body_runs_nvtest_sh_on_the_fleet_image(self):
         c = a.body("nvtest-rtx3090", "cid", {"BASE_SHA": "abc"})["container"]
         self.assertEqual(c["image"], a.w.IMAGE)

@@ -805,6 +805,32 @@ describe('stamp-summary.js', () => {
     expect(summary.gates(ab, firstOnly).why).toMatch(/^the abl8 build has no blocks after the first round/);
   });
 
+  it('reads whether the dispatcher deals blocks to engines, arrays and WGPs in turn, on gfx11 only', () => {
+    // 2 engines of 2 arrays of 2 WGPs. Blocks 0-15 start before the first one ends; 16-31 after.
+    const inTurn = (i) => ({ se: i % 2, sa: (i >> 1) % 2, wgp: (i >> 2) % 2 });
+    const launch = (to, o = {}) => Array.from({ length: 32 },
+      (_, i) => wave({ block: i, start: i < 16 ? i : 20000 + i, ticks: 10000, ...to(i), ...o }));
+    const dealt = summarize(launch(inTurn));
+    const all = (n) => ({ first: { n, share: 1 }, all: { n, share: 1 } });
+    expect(dealt.place).toEqual({ engines: all(2), arrays: all(4), WGPs: all(8) });
+    // Dealt in another fixed order is still in turn.
+    expect(summarize(launch((i) => inTurn((5 * i + 3) % 8))).place).toEqual(dealt.place);
+    // Placed at random, a class's blocks spread over the places.
+    let x = 12345;
+    const random = () => { x = (Math.imul(x, 1103515245) + 12345) >>> 0; return inTurn(x >>> 16); };
+    const mixed = summarize(launch(random)).place;
+    for (const name of ['engines', 'arrays', 'WGPs']) {
+      expect([name, mixed[name].all.share < 0.9, mixed[name].all.share > 0]).toEqual([name, true, true]);
+    }
+    expect(summary.format(dealt).pop()).toBe('placement: blocks dealt in turn (block i to place i % places): engines (2) '
+      + '100% of the first blocks, 100% of all; arrays (4) 100% of the first blocks, 100% of all; WGPs (8) 100% of the '
+      + 'first blocks, 100% of all');
+    // gfx12's 32-bit counter: its HW_ID1 has no engine, so the places aren't known.
+    const g12 = summarize(launch(inTurn, { bits: 32 }));
+    expect(g12.place).toBeUndefined();
+    expect(summary.format(g12).pop()).toBe('placement: not read: gfx12\'s HW_ID1 names no shader engine');
+  });
+
   it('runs from the command line', () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'amd-stamps-'));
     try {
@@ -908,6 +934,7 @@ describe('sweep.sh SWEEP_STAMP', () => {
       expect.stringMatching(/^stamp stamp pairs: 0 pairs/),
       expect.stringMatching(/^stamp stamp phase bit 16: 0 pairs/),
       expect.stringMatching(/^stamp stamp phase bit 19: 0 pairs/),
+      expect.stringMatching(/^stamp stamp placement: blocks dealt in turn .*: engines \(1\) 100% of the first blocks/),
     ]);
     expect(stamp).toContainEqual(expect.stringMatching(/^stamp abl8s rest: 2 blocks, 2400 MHz/));
     expect(stamp).toContain('stamp gone: not stamped, it isn\'t a variant that built and checked');

@@ -7,6 +7,7 @@
 // lands in both. Thin wrappers over net/child_process and io.postJson —
 // unit-tested by mocking those.
 
+const fs = require('fs');
 const net = require('net');
 const { execFile, spawn } = require('child_process');
 
@@ -14,7 +15,7 @@ const { REGIONS, DEFAULTS, NETWORK } = require('../shared/config');
 const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
-  parsePciBusIds,
+  parsePciBusIds, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
@@ -82,6 +83,56 @@ function detectGpusVram() {
       { timeout: 5000 },
       (err, stdout) => resolve(err ? [] : parseGpuStats(stdout)));
   });
+}
+
+// Where Linux distributions put pci.ids (pciutils, hwdata).
+const PCI_IDS_FILES = ['/usr/share/misc/pci.ids', '/usr/share/hwdata/pci.ids', '/usr/share/pci.ids'];
+
+// AMD cards on Linux, from the amdgpu driver's sysfs files, in the same shape as
+// detectGpusVram: [{ index, name, usedMb, totalMb }]. nvidia-smi knows none of
+// them and ROCm calls an RX 9070 XT "AMD Radeon Graphics", so this is where an
+// AMD rig's model and VRAM come from (shared/gpu.amdCardName has the naming).
+// Cards are in PCI bus order, which is the order HIP numbers them in. Empty when
+// there is no /sys/class/drm or no AMD card we name. `opts` ({ fs, root,
+// pciIds }) is for tests. Never throws.
+function detectAmdGpus(opts) {
+  const o = opts || {};
+  const fsx = o.fs || fs;
+  const root = o.root || '/sys/class/drm';
+  const read = (p) => {
+    try { return String(fsx.readFileSync(p, 'utf8')).trim(); } catch (_) { return ''; }
+  };
+  let entries;
+  try { entries = fsx.readdirSync(root); } catch (_) { return []; }
+  let ids = '';
+  for (const p of o.pciIds || PCI_IDS_FILES) if (!ids) ids = read(p);
+  const found = [];
+  for (const entry of entries) {
+    if (!/^card\d+$/.test(entry)) continue;
+    const dev = root + '/' + entry + '/device';
+    const hex = (f) => read(dev + '/' + f).toLowerCase().replace(/^0x/, '');
+    if (hex('vendor') !== '1002') continue;
+    const device = hex('device');
+    const name = amdCardName(device, parsePciIds(ids, '1002', device, hex('subsystem_vendor'), hex('subsystem_device')));
+    if (!name) continue;
+    let bus = entry;
+    try { bus = String(fsx.realpathSync(dev)).split('/').pop(); } catch (_) { /* keep the card's name */ }
+    const mb = (f) => {
+      const n = Number(read(dev + '/' + f) || NaN);
+      return Number.isFinite(n) ? Math.round(n / 1048576) : 0;
+    };
+    found.push({ bus, name, usedMb: mb('mem_info_vram_used'), totalMb: mb('mem_info_vram_total') });
+  }
+  found.sort((a, b) => a.bus.localeCompare(b.bus));
+  return found.map((c, index) => ({ index, name: c.name, usedMb: c.usedMb, totalMb: c.totalMb }));
+}
+
+// The cards for the network board's rows: nvidia-smi's, or on Linux with none,
+// the AMD cards. Same shape as detectGpusVram. Never rejects.
+async function detectBoardGpus(opts) {
+  const cards = await detectGpusVram();
+  if (cards.length || process.platform !== 'linux') return cards;
+  return detectAmdGpus(opts);
 }
 
 // The cards this rig mines on: one entry per card, [{ index, name }], in index
@@ -295,7 +346,12 @@ function detectMacGpuInfo() {
   });
 }
 
-function detectGpuInfo() {
+// When nvidia-smi lists no card, the answer on Windows and Linux also has
+// `amd`: the AMD cards the OS reports. On Windows that is
+// [{ name, driverVersion }], on Linux detectAmdGpus' entries. nvidia-smi can't
+// count them, so shared/gpu.planAmdGpus counts these. There is no `amd` when
+// nvidia-smi answered, or on macOS.
+function detectGpuInfo(opts) {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
       { timeout: 5000 },
@@ -310,16 +366,24 @@ function detectGpuInfo() {
         // otherwise the Mac build, whose whole job is running the model on that
         // GPU, reports no device at all.
         if (process.platform === 'darwin') return resolve(detectMacGpuInfo());
-        if (process.platform !== 'win32') return resolve(null);
+        // Linux with no NVIDIA card: an AMD card, named from its PCI ids.
+        if (process.platform !== 'win32') {
+          const amd = detectAmdGpus(opts);
+          return resolve(amd.length ? { name: amd[0].name, count: amd.length, amd } : null);
+        }
+        // Each adapter's driver version rides on the same query, for the AMD
+        // driver line at mining start (shared/amdDriver).
         execFile('powershell.exe',
           ['-NoProfile', '-NonInteractive', '-Command',
-            'Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name'],
+            "Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name + '|' + $_.DriverVersion }"],
           { timeout: 5000 },
           (e2, out2) => {
             if (e2) return resolve(null);
-            const names = String(out2).split(/\r?\n/);
+            const adapters = parseVideoControllers(out2);
+            const names = adapters.map((a) => a.name);
             const name = pickGpu(names);
-            resolve(name ? { name, count: countGpus(names) } : null);
+            const amd = adapters.filter((a) => isDiscreteAmd(a.name));
+            resolve(name ? { name, count: countGpus(names), amd } : null);
           });
       });
   });
@@ -330,6 +394,8 @@ module.exports = {
   detectRegion,
   detectVram,
   detectGpusVram,
+  detectAmdGpus,
+  detectBoardGpus,
   detectMinerGpus,
   detectGpuTemps,
   detectCudaCards,

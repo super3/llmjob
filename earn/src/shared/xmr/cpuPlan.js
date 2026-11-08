@@ -44,6 +44,8 @@ function gb(bytes) {
 //   quotaCpus   the cgroup CPU limit in CPUs (cpu.max), or null for none
 //   memoryBytes total memory, or the cgroup limit when lower
 //   l3Bytes     total L3 cache, or null when unknown
+//   virtual     true in a virtual machine, where l3Bytes isn't the host's and
+//               so caps nothing
 // requested: a thread count, or 0/null for the default.
 //
 // Returns { available, reserve, auto, threads, reason }:
@@ -62,7 +64,8 @@ function planCpuThreads(facts, requested) {
   const max = available - 1;
   const memory = Number(f.memoryBytes) || 0;
   const l3 = Number(f.l3Bytes);
-  const l3Threads = Number.isFinite(l3) && l3 > 0 ? Math.max(1, Math.floor(l3 / L3_PER_THREAD)) : Infinity;
+  const l3Cap = Number.isFinite(l3) && l3 > 0 ? Math.max(1, Math.floor(l3 / L3_PER_THREAD)) : Infinity;
+  const l3Threads = f.virtual ? Infinity : l3Cap;
   const ask = Math.floor(Number(requested) || 0);
   const out = (auto, threads, reason) => ({ available, reserve, auto, threads, reason });
 
@@ -93,7 +96,11 @@ function planCpuThreads(facts, requested) {
   // Said, or "N of M CPUs" reads as if the rest were kept for the GPU miner.
   if (auto < available - reserve) {
     return out(auto, auto, 'one thread per 2 MB of L3 cache, and this CPU has ' + Math.round(l3 / MIB)
-      + ' MB; more threads add power, not hashrate');
+      + ' MB; more threads add power, not hashrate. Set a thread count to change it');
+  }
+  if (l3Cap < auto) {
+    return out(auto, auto, 'not capped by L3 cache: this is a virtual machine, and the ' + Math.round(l3 / MIB)
+      + ' MB it reports may not be the host\'s. Set a thread count to change it');
   }
   return out(auto, auto, null);
 }

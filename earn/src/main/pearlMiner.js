@@ -204,6 +204,13 @@ class PearlMiner extends EventEmitter {
     return this.cores.map((c) => c.device).filter(Boolean);
   }
 
+  // How many cards this run has: mining, paused for a prompt, or waiting for a
+  // restart, the cards _outOfCards counts. A card that would not start is not
+  // one, so a planned card HIP doesn't have is left out.
+  cardCount() {
+    return this.cores.length + this.paused.size + this.restarts.size;
+  }
+
   start(settings = {}) {
     if (this.running) return false;
     this.settings = settings;
@@ -577,10 +584,11 @@ class PearlMiner extends EventEmitter {
         this.emit('authorized', {
           host: this.poolHost, address: this.sock.remoteAddress, family: this.sock.remoteFamily,
         });
-        this.emit('log', {
-          level: 'info',
-          line: m.gzip ? 'authorized; the pool takes compressed share proofs' : 'authorized',
-        });
+        // "authorized" stays a line of its own: rigs' health checks match it
+        // exactly, and one held every release from v0.6.7 to v0.6.12 back when
+        // the compression note joined it (6 Nov).
+        this.emit('log', { level: 'info', line: 'authorized' });
+        if (m.gzip) this.emit('log', { level: 'info', line: 'the pool takes compressed share proofs' });
         break;
       case 'auth-fail':
         this.emit('log', { level: 'error', line: 'pool rejected the wallet: ' + errText(m.error) });

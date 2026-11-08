@@ -61,9 +61,10 @@ const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
-  planMinerGpus,
+  planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
 const appPrefs = require('../shared/appPrefs');
@@ -134,9 +135,12 @@ let llmBusIds = {};
 // on its GPU (see rememberGpuLoss).
 let llmCards = [];
 // How many cards mine, for the same function: a rig with no nvidia-smi (an AMD
-// one) has no bus ids, and several cards are left mining. Read with the bus ids
-// when the LLM starts and kept for its life, so a prompt's start and its end map
-// to the same card even when the miner starts in between.
+// one) has no bus ids, and several cards are left mining. On an AMD rig that is
+// the cards PEARL_GPU_INDEX names, else the AMD cards the OS lists
+// (planAmdGpus) that the miner started; one AMD card is 0 or 1 here, so its
+// prompts still pause it. Read with the bus ids when the LLM starts and kept
+// for its life, so a prompt's start and its end map to the same card even when
+// the miner starts in between.
 let llmMiningCards = 0;
 let llmEverReady = false;       // did any instance reach "ready" this run (vs. dying first)
 let serveLogged = false;        // "serving cluster jobs" logged once per serving run
@@ -610,6 +614,15 @@ function poolLookup() {
   return poolLookupFn;
 }
 
+// What the OS says about the AMD cards of a rig whose nvidia-smi lists none:
+// probe.detectGpuInfo, whose `amd` shared/gpu.planAmdGpus counts. Null without
+// asking when nvidia-smi lists cards, so an NVIDIA rig spawns nothing more, and
+// on macOS, which has no AMD core and whose probe is slow.
+function readAmdCards(nvidiaListsCards) {
+  if (nvidiaListsCards || process.platform === 'darwin') return Promise.resolve(null);
+  return probe.detectGpuInfo();
+}
+
 // One miner start at a time. runPlan and an idle resume can each ask for one
 // while the other's is still in its nvidia-smi await, before `miner` is set; the
 // second joins the first instead of building a second engine on the same cards.
@@ -661,7 +674,7 @@ async function startMining(settings, llmCoRuns) {
     const snap = miner && !miner.poolConnected() ? offPool(live) : live;
     // nvidia-smi lists every card. A card PEARL_GPU_INDEX left out does not
     // mine, so it gets no row, as in the CLI.
-    const allVram = await detectGpusVram();
+    const allVram = await probe.detectBoardGpus();
     const gpuVram = gpuEnv.indices ? allVram.filter((v) => gpuEnv.indices.includes(Number(v.index))) : allVram;
     // Tag the cards serving the local LLM so the board shows which model each GPU
     // runs; null when the fleet isn't up (mining only) → blank on the board.
@@ -708,10 +721,19 @@ async function startMining(settings, llmCoRuns) {
   // The same nvidia-smi round also reads each card's compute capability and the
   // driver version, which decide whether this rig loads the CUDA 12.8 core or
   // the CUDA 13 one (shared/coreVariant). The factory logs its choice.
-  const [gpus, cudaCards] = await Promise.all([
+  const [nvidiaGpus, cudaCards] = await Promise.all([
     probe.detectMinerGpus(process.env, gpuEnv.indices), probe.detectCudaCards(),
   ]);
+  // nvidia-smi lists no AMD card, so on an AMD rig the list above is empty and
+  // one core would mine one card. The OS counts them instead (shared/gpu
+  // planAmdGpus). Asked only when nvidia-smi lists no card. On Windows the same
+  // answer has the AMD driver's version, logged once a start (shared/amdDriver).
+  const amdCards = await readAmdCards(cudaCards.length > 0);
   if (epoch !== miningEpoch) return;
+  for (const l of describeAmdDrivers(amdCards)) send('miner:log', l);
+  const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
+  const gpus = amdGpus.length ? amdGpus : nvidiaGpus;
+  if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
     send('miner:log', { level: 'warn', line });
   }
@@ -729,11 +751,13 @@ async function startMining(settings, llmCoRuns) {
   // both; the GUI has no demand mode), so plan.llm is the whole of the GUI's
   // co-run condition. The plan rides on the start call, not on `settings`,
   // so persistSettings never writes it to disk.
+  // nvidia-smi's cards only: the lock is nvidia-smi's. Given the AMD plan, it
+  // would try to lock each AMD card, where an empty list says "NVIDIA-only".
   const memRequest = readMemClockEnv(process.env);
   if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
   const memPlan = planMemClocks({
     requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
-    cards: cudaCards, gpus, llmCoRuns: !!llmCoRuns,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
@@ -1380,10 +1404,20 @@ async function startLlm(reserveMb, epoch) {
   // did; when VRAM can't be read the planner returns one unknown-placement
   // instance and lets llama.cpp decide.
   const [cards, busIds] = await Promise.all([detectGpusVram(), probe.detectPciBusIds()]);
+  // On an AMD rig the miner's cards come from the OS's count (planAmdGpus), as
+  // in startMining. Asked only when nvidia-smi lists nothing and no card was chosen.
+  const chosen = readGpuIndexEnv(process.env).indices;
+  const amdCards = await readAmdCards(cards.length > 0 || chosen != null);
   if (stale()) return false;
   llmBusIds = busIds;
   llmCards = cards;
-  llmMiningCards = planMinerGpus(cards, readGpuIndexEnv(process.env).indices).length;
+  // The AMD plan can name a card HIP doesn't have, such as an old Radeon it
+  // has no code for. That card fails on its own (PearlMiner._startCores), so a
+  // miner already running counts the cards that started. A rig left mining on
+  // one card still pauses it for each prompt.
+  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
+  llmMiningCards = planMinerGpus(cards, chosen).length
+    || (amdPlanned && miner && miner.isRunning() ? Math.min(amdPlanned, miner.cardCount()) : amdPlanned);
   // A model that kept losing the GPU on a card is not loaded there again until
   // the app updates or the user presses START LLM (see rememberGpuLoss). A card
   // that lost it even under the smallest model is left out altogether. Without

@@ -31,8 +31,16 @@ describe('planCpuThreads', () => {
     // A 12-thread CPU with 12 MiB of L3: six threads use all of it.
     expect(planCpuThreads({ cpus: 12, memoryBytes: 16 * GB, l3Bytes: 12 * MB })).toEqual({
       available: 12, reserve: 1, auto: 6, threads: 6,
-      reason: 'one thread per 2 MB of L3 cache, and this CPU has 12 MB; more threads add power, not hashrate',
+      reason: 'one thread per 2 MB of L3 cache, and this CPU has 12 MB; more threads add power, not hashrate. '
+        + 'Set a thread count to change it',
     });
+    // In a VM the L3 it reports isn't the host's, so it caps nothing, and says so.
+    expect(planCpuThreads({ cpus: 16, memoryBytes: 32 * GB, l3Bytes: 16 * MB, virtual: true })).toEqual({
+      available: 16, reserve: 1, auto: 15, threads: 15,
+      reason: 'not capped by L3 cache: this is a virtual machine, and the 16 MB it reports may not be the host\'s. '
+        + 'Set a thread count to change it',
+    });
+    expect(planCpuThreads({ cpus: 16, memoryBytes: 32 * GB, l3Bytes: 64 * MB, virtual: true }).reason).toBeNull();
     // A count set by hand is the user's call.
     expect(planCpuThreads({ cpus: 12, memoryBytes: 16 * GB, l3Bytes: 12 * MB }, 8)).toMatchObject({ threads: 8, reason: null });
     expect(planCpuThreads({ cpus: 12, memoryBytes: 16 * GB, l3Bytes: 1 * MB }).auto).toBe(1);

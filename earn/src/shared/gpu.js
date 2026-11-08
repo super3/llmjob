@@ -4,6 +4,8 @@
 // (Win32_VideoController) and feeds the raw adapter-name list here; keeping the
 // selection logic here makes it unit-testable without touching the OS.
 
+const { AMD, pickCoreVariant } = require('./coreVariant');
+
 // Virtual / basic display adapters that aren't real mining GPUs.
 const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|citrix|vmware|oray/i;
 
@@ -134,7 +136,7 @@ function parseGpuIndexList(raw) {
 }
 
 // PEARL_GPU_INDEX as the desktop app reads it: { indices, warning }. `indices`
-// is the cards chosen, or null for every card. `warning` is the log line for a
+// is the cards chosen, or null when none were. `warning` is the log line for a
 // value that is set but not used, or null.
 //
 // It is an escape hatch, not the mechanism: normally every card mines. But "it
@@ -152,13 +154,16 @@ function readGpuIndexEnv(env) {
   const parsed = parseGpuIndexList(raw);
   if (!parsed) return { indices: null, warning: null };
   const said = 'PEARL_GPU_INDEX=' + String(raw).trim();
+  // Not "every GPU mines": a mixed rig mines its NVIDIA cards only, and an AMD
+  // rig whose cards the OS can't count mines on the one its core picks.
   if (parsed.error) {
-    return { indices: null, warning: said + ' ignored (' + parsed.error + '); every GPU mines' };
+    return { indices: null, warning: said + ' ignored (' + parsed.error + '); mining as if it were not set' };
   }
   if (!parsed.indices.length) {
     return {
       indices: null,
-      warning: said + ' ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+      warning: said + ' ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); '
+        + 'mining as if it were not set',
     };
   }
   return { indices: parsed.indices, warning: null };
@@ -292,9 +297,143 @@ function parseMacGpu(out) {
   return name ? { name, count: countGpus(names) } : null;
 }
 
+// AMD cards on Linux, named from their PCI ids. ROCm names every RDNA 4 card
+// "AMD Radeon Graphics" (the board showed an RX 9070 XT that way, 6 Nov), and
+// nvidia-smi lists none of them, so an AMD rig's row had no model and no VRAM.
+//
+// A device ID alone names a family: 0x7550 is the 9070, 9070 XT and 9070 GRE.
+// The board maker's subsystem name in pci.ids usually says which ("Reaper Radeon
+// RX 9070 XT 16GB GDDR6"), so it is read first. This table is the fallback when
+// pci.ids isn't installed or doesn't know the board, and it keeps the family
+// rather than guess. An AMD device that is neither here nor named in pci.ids as a
+// Radeon RX, PRO or Instinct card is an APU's iGPU (Raphael, Phoenix), which no
+// AMD core mines on, so it gets no row.
+const AMD_DEVICES = {
+  '7550': 'Radeon RX 9070/9070 XT/9070 GRE',
+  '7551': 'Radeon AI PRO R9700',
+  '7590': 'Radeon RX 9060/9060 XT',
+  '744c': 'Radeon RX 7900 XT/7900 XTX/7900 GRE',
+  '747e': 'Radeon RX 7700 XT/7800 XT',
+  '7480': 'Radeon RX 7600/7600 XT',
+  '73bf': 'Radeon RX 6800/6800 XT/6900 XT',
+  '73df': 'Radeon RX 6700/6700 XT/6750 XT',
+  '73ff': 'Radeon RX 6600/6600 XT/6650 XT',
+  '1586': 'Radeon 8050S/8060S',
+};
+
+// One card's model inside a longer name. "AI PRO" is the R9700's line, with
+// nothing of "Radeon PRO" in it: "AMD Radeon AI PRO R9700".
+const AMD_MODEL = /Radeon (?:RX \d{4}(?: XTX| XT| GRE)?|PRO [A-Z]?\d{4,5}[A-Z]*|AI PRO R\d+[A-Z]*|80[56]0S)\b/i;
+// A pci.ids device name worth showing: "Navi 48 [Radeon RX 9070/9070 XT/9070 GRE]".
+const AMD_DISCRETE = /\bRX\b|Radeon PRO|Radeon AI PRO R\d+|Instinct/i;
+
+// A device's own name and its board's subsystem name, from pci.ids text. The IDs
+// are lower-case hex without 0x. Either name is null when pci.ids lacks it.
+function parsePciIds(text, vendor, device, subVendor, subDevice) {
+  const out = { deviceName: null, subsystemName: null };
+  let inVendor = false;
+  let inDevice = false;
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (!line || line[0] === '#') continue;
+    if (line[0] !== '\t') {
+      if (inVendor) break;
+      inVendor = line.toLowerCase().startsWith(vendor + ' ');
+      continue;
+    }
+    if (!inVendor) continue;
+    if (line[1] !== '\t') {
+      if (inDevice) break;
+      const m = /^\t([0-9a-f]{4})\s+(.*)$/i.exec(line);
+      inDevice = !!m && m[1].toLowerCase() === device;
+      if (inDevice) out.deviceName = m[2].trim();
+      continue;
+    }
+    const m = inDevice && /^\t\t([0-9a-f]{4}) ([0-9a-f]{4})\s+(.*)$/i.exec(line);
+    if (m && m[1].toLowerCase() === subVendor && m[2].toLowerCase() === subDevice) {
+      out.subsystemName = m[3].trim();
+    }
+  }
+  return out;
+}
+
+// "AMD Radeon RX 9070 XT", or null for a device that isn't a card we name.
+// `ids` is parsePciIds' answer for the device.
+function amdCardName(device, ids) {
+  const sub = ids.subsystemName ? AMD_MODEL.exec(ids.subsystemName) : null;
+  if (sub) return 'AMD ' + sub[0];
+  if (AMD_DEVICES[device]) return 'AMD ' + AMD_DEVICES[device];
+  const dev = ids.deviceName || '';
+  const bracket = /\[([^\]]+)\]/.exec(dev);
+  const name = bracket ? bracket[1] : dev;
+  return AMD_DISCRETE.test(name) ? 'AMD ' + name.replace(/^AMD\s+/i, '') : null;
+}
+
+// The Win32_VideoController query's lines, "Name|DriverVersion", as
+// [{ name, driverVersion }]. A line with no "|" is a name alone, with
+// driverVersion null. Blank lines are dropped.
+function parseVideoControllers(out) {
+  const list = [];
+  for (const row of String(out == null ? '' : out).split(/\r?\n/)) {
+    const bar = row.lastIndexOf('|');
+    const name = (bar < 0 ? row : row.slice(0, bar)).trim();
+    const driverVersion = bar < 0 ? '' : row.slice(bar + 1).trim();
+    if (name) list.push({ name, driverVersion: driverVersion || null });
+  }
+  return list;
+}
+
+// Whether a Windows adapter name (Win32_VideoController) is a discrete AMD
+// card: "AMD Radeon RX 9070 XT", "AMD Radeon AI PRO R9700". An APU's graphics
+// ("AMD Radeon(TM) Graphics", "AMD Radeon 780M Graphics") is not: no AMD core
+// mines on it, and counting it would plan a core for a card that isn't there.
+function isDiscreteAmd(name) {
+  const n = String(name == null ? '' : name).trim();
+  return /\b(?:AMD|Radeon)\b/i.test(n) && AMD_DISCRETE.test(n) && !INTEGRATED.test(n) && !IGNORE.test(n);
+}
+
+// Variables that hide cards from HIP, so HIP lists fewer than the OS does. The
+// AMD README says to set HIP_VISIBLE_DEVICES to hide a card the release has no
+// code for. Planning from the OS's count would then ask for a card HIP no
+// longer has. HIP numbers the cards it shows 0..k-1, so a list of k cards caps
+// the plan at k.
+const HIP_HIDES = ['HIP_VISIBLE_DEVICES', 'ROCR_VISIBLE_DEVICES'];
+
+// The cards an AMD rig mines on when nobody chose any: HIP's 0..N-1, one core
+// each, for the N AMD cards the OS reports.
+//
+// nvidia-smi lists no AMD card, so on an AMD rig planMinerGpus has nothing to
+// plan, one core starts with no index, and that core picks one card. A rig of
+// two R9700s mined on one. The count comes from the OS instead: `det` is
+// probe.detectGpuInfo's answer, whose `amd` (Win32_VideoController on Windows,
+// sysfs on Linux) is there only when nvidia-smi lists no card. Each card keeps
+// its own salt lane, as on NVIDIA, because PearlMiner gives one to each entry.
+//
+// [] keeps the old path: cards were chosen (`chosen`, PEARL_GPU_INDEX or
+// --gpu-index), the OS shows one AMD card or can't say (or HIP_HIDES in `env`
+// show one), or `env` makes the rig load a CUDA core. The cards get no names:
+// the OS's order need not be HIP's, and each core names the card it opened. An
+// index HIP has no card for fails on its own, and the other cards mine
+// (PearlMiner._startCores).
+function planAmdGpus({ env, det, chosen } = {}) {
+  let n = det && Array.isArray(det.amd) ? det.amd.length : 0;
+  for (const name of HIP_HIDES) {
+    const shown = String((env || {})[name] || '').split(',').filter((id) => /\S/.test(id));
+    if (shown.length) n = Math.min(n, shown.length);
+  }
+  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [] }).variant !== AMD) return [];
+  return Array.from({ length: n }, (_, index) => ({ index, name: null }));
+}
+
+// The log line for planAmdGpus' cards. `how` is how this shell chooses cards.
+function describeAmdPlan(gpus, how) {
+  return 'mining on ' + gpus.length + ' AMD cards (GPU ' + gpus.map((g) => g.index).join(', ')
+    + '), one core each; ' + how + ' to choose cards';
+}
+
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
+  AMD_DEVICES, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
 };

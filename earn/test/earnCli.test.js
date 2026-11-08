@@ -24,6 +24,8 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(),
   detectVram: jest.fn(),
   detectGpusVram: jest.fn(),
+  // The board's cards: nvidia-smi's here, as each test sets them.
+  detectBoardGpus: jest.fn(),
   detectMinerGpus: jest.fn(),
   detectCudaCards: jest.fn(),
   detectPciBusIds: jest.fn(),
@@ -92,12 +94,16 @@ jest.mock('../src/main/pearlEngine', () => {
       this.poolConnected = jest.fn(() => true);
       this.pauseCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
       this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      // Every planned card started, unless a test says how many did.
+      this.cardCount = jest.fn(() => PearlEngine.startedCards
+        ?? Math.max(1, ((this.settings && this.settings.gpus) || []).length));
       PearlEngine.instances.push(this);
     }
   }
   PearlEngine.instances = [];
   PearlEngine.startError = null;
   PearlEngine.startReturns = undefined;
+  PearlEngine.startedCards = null;
   return { PearlEngine };
 });
 // The Monero CPU miner: an engine that records what it is asked, the CPU facts
@@ -244,6 +250,7 @@ function applyDefaults(m) {
   m.probe.detectRegion.mockResolvedValue('us');
   m.probe.detectVram.mockResolvedValue(null);
   m.probe.detectGpusVram.mockResolvedValue([]);
+  m.probe.detectBoardGpus.mockImplementation((...a) => m.probe.detectGpusVram(...a));
   // No card list by default: one core that places itself, which is what a rig
   // with no nvidia-smi gets.
   m.probe.detectMinerGpus.mockResolvedValue([]);
@@ -275,6 +282,7 @@ function applyDefaults(m) {
   m.hive.updatePackage.mockResolvedValue(undefined);
   m.hive.checkDriver.mockResolvedValue(null);
   m.PearlEngine.startReturns = undefined;
+  m.PearlEngine.startedCards = null;
   m.cpuFacts.readCpuFacts.mockReturnValue({ cpus: 16, quotaCpus: null, memoryBytes: 32 * 2 ** 30, l3Bytes: null });
   m.xmrWorker.findWorker.mockReturnValue('/opt/llmjob-xmr-worker');
 }
@@ -1262,7 +1270,7 @@ describe('CPU mining', () => {
     m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
     await settle();
     expect(allOut()).toContain('cpu:        6 of 12 CPUs  (auto: one thread per 2 MB of L3 cache, and this CPU has 12 MB;'
-      + ' more threads add power, not hashrate)');
+      + ' more threads add power, not hashrate. Set a thread count to change it)');
   });
 
   test('off: by --cpu-threads 0, by the plan, or with no worker beside the binary', async () => {
@@ -1283,7 +1291,7 @@ describe('CPU mining', () => {
     m3.xmrWorker.findWorker.mockReturnValue(null);
     m3.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--xmr-address', XMR_ADDR]);
     await settle();
-    expect(allErr()).toContain('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it, or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.');
+    expect(allErr()).toContain('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it, or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker. From a source checkout, build it with earn/scripts/build-xmr-worker.sh.');
     expect(m3.XmrEngine.instances).toHaveLength(0);
   });
 
@@ -1429,6 +1437,82 @@ describe('--gpu-index', () => {
       expect(allOut()).toContain('ignoring CUDA_VISIBLE_DEVICES=0,2: --gpu-index picks the cards');
       expect(allOut()).not.toContain('every GPU can mine');
       await stop(m, p);
+    });
+  });
+
+  // An AMD rig: nvidia-smi lists nothing, so the OS's count of AMD cards
+  // (detectGpuInfo's `amd`, sysfs on Linux) plans one core per card, as in the
+  // GUI. Before, one core started with no index and mined on one card.
+  describe('on an AMD rig', () => {
+    const R9700 = { index: 0, name: 'AMD Radeon AI PRO R9700' };
+    const amdInfo = (n) => ({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+    const LINE = 'mining on 2 AMD cards (GPU 0, 1), one core each; use --gpu-index to choose cards';
+
+    test('mines on every AMD card the OS lists, one core each, and says how to choose', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        }));
+        expect(allOut()).toContain(LINE);
+        expect(allOut()).not.toContain('mining on:  2 GPUs');
+        await stop(m, p);
+      });
+    });
+
+    // HiveOS passes --core amd from Extra config. With no NVIDIA card it is the same rig.
+    test('does the same with --core amd', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'amd']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        }));
+        await stop(m, p);
+      });
+    });
+
+    // Only Windows reports a driver version (the same WMI query names the cards).
+    test('logs the AMD driver, warns on stderr about a bad build, and mines anyway', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        const card = { name: R9700.name, driverVersion: '32.0.31007.5012' };
+        m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 1, amd: [card] });
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(allOut()).toContain('AMD graphics driver 32.0.31007.5012\n');
+        expect(allErr()).toContain('AMD graphics driver 32.0.31007.5012 is reported to move an idle card\'s VRAM');
+        expect(allOut()).not.toContain('is reported to move');
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalled();
+        await stop(m, p);
+      });
+    });
+
+    test('follows --gpu-index, and leaves one card to the core', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+        m.probe.detectMinerGpus.mockResolvedValue([{ index: 1, name: null }]);
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '1']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+          gpus: [{ index: 1, name: null }],
+        }));
+        expect(allOut()).not.toContain('AMD cards');
+        await stop(m, p);
+
+        const m2 = load();
+        m2.probe.detectGpuInfo.mockResolvedValue(amdInfo(1));
+        const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m2.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        await stop(m2, p2);
+      });
     });
   });
 
@@ -1801,6 +1885,8 @@ describe('local LLM', () => {
     const miner = m.PearlEngine.instances[0];
     const llm = m.LlmManager.instances[0];
     expect(llm.start).toHaveBeenCalledWith(expect.objectContaining({ mainGpu: 0, device: 'Vulkan1' }));
+    // Its --llm-binary sees the cards, so there is nothing to warn about.
+    expect(allErr()).not.toContain('lists no GPU');
     llm.emit('busy', true);
     expect(miner.pauseCards).toHaveBeenCalledWith([0]);
     miner.emit('stopped', 0);
@@ -1818,8 +1904,40 @@ describe('local LLM', () => {
     const miner = m.PearlEngine.instances[0];
     m.LlmManager.instances[0].emit('busy', true);
     expect(miner.pauseCards).not.toHaveBeenCalled();
+    // Its --llm-binary listed no card (the default here): a CUDA build left on
+    // an AMD rig looks like this, and the log says so.
+    expect(allErr()).toContain('LLM: --llm-binary /lb lists no GPU (llama-server --list-devices), or would not run. '
+      + 'It may be built for another GPU vendor; without --llm-binary the CLI downloads a Vulkan build that runs on '
+      + 'NVIDIA, AMD and Intel');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
+  });
+
+  // The OS lists two AMD cards (planAmdGpus), but HIP may not have both: an old
+  // Radeon it has no code for fails on its own. The count is the cards that
+  // started, so a rig left mining on one still pauses it for each prompt.
+  test('on an AMD rig, counts the planned cards that started', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      for (const [started, paused] of [[2, false], [1, true]]) {
+        const m = load();
+        fiveNinety(m);
+        // No nvidia-smi: no VRAM rows and no bus ids, so the model's card is unknown.
+        m.probe.detectGpusVram.mockResolvedValue([]);
+        m.probe.detectPciBusIds.mockResolvedValue({});
+        const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+        m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+        m.PearlEngine.startedCards = started;
+        const p = m.run(argvCoRun);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.settings.gpus).toHaveLength(2);
+        m.LlmManager.instances[0].emit('busy', true);
+        if (paused) expect(miner.pauseCards).toHaveBeenCalledWith(null);
+        else expect(miner.pauseCards).not.toHaveBeenCalled();
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      }
+    });
   });
 
   test('a shutdown mid-prompt leaves the pause to the miner\'s own stop', async () => {
@@ -2816,6 +2934,26 @@ describe('--mine-mem-clock', () => {
         coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
       });
       expect(allErr()).not.toContain('nvidia-smi does not list it');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // HiveOS passes no --core, so the CLI picks the AMD core itself and mines the
+  // AMD plan. That plan is no NVIDIA card: the lock is NVIDIA-only, as on a
+  // one-card AMD rig, and no AMD card is sent to nvidia-smi.
+  test('an AMD rig of two cards locks no clock, and says the lock is NVIDIA-only', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+      m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+      const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', '7001']);
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.gpus).toEqual([{ index: 0, name: null }, { index: 1, name: null }]);
+      expect(miner.settings.mineMemClockByIndex).toEqual({});
+      expect(allOut()).toContain('--mine-mem-clock 7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
+      expect(allOut()).not.toContain('MHz on GPU');
       miner.emit('stopped', 0);
       await expect(p).resolves.toBe(0);
     });

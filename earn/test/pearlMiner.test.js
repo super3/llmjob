@@ -624,7 +624,8 @@ describe('PearlMiner — compressed share proofs', () => {
     const r = rig();
     r.login(AUTH_V2);
     expect(r.m.gzip).toBe(true);
-    expect(r.said()).toContain('authorized; the pool takes compressed share proofs');
+    // "authorized" alone on its line: rigs' health checks match it exactly.
+    expect(r.said()).toEqual(expect.arrayContaining(['authorized', 'the pool takes compressed share proofs']));
     r.core.emit('hit', hit());
     const [submit] = r.submits();
     expect(Object.keys(submit.params).sort()).toEqual(['hs', 'job_id', 'plain_proof']);
@@ -1246,6 +1247,30 @@ describe('PearlMiner — one core per card', () => {
     expect(b.m.devices().map((d) => d.index)).toEqual([1]);
     expect(b.events.log.map((l) => l.line))
       .toContain('skipping GPU 0 (NVIDIA RTX PRO 4500 Blackwell): not enough free VRAM');
+    expect(b.events.error).toEqual([]);
+  });
+
+  // An AMD rig whose OS lists more cards than HIP has (shared/gpu.planAmdGpus
+  // plans from the OS's count): the extra index fails in the core, on its own,
+  // with no restart, and the card HIP has mines.
+  test('mines on the AMD cards HIP has when the OS listed one more', () => {
+    const b = fleet();
+    const real = b.createCore.getMockImplementation();
+    b.createCore.mockImplementation((profile, opts) => {
+      if (opts.deviceIndex === 1) {
+        throw new Error('GPU 1 was asked for (PEARL_GPU_INDEX) but this machine has 1: valid indices are 0..0');
+      }
+      return real(profile, opts);
+    });
+    expect(b.m.start({ ...settings, gpus: [{ index: 0, name: null }, { index: 1, name: null }] })).toBe(true);
+    expect(b.m.devices().map((d) => d.index)).toEqual([0]);
+    // The prompt pause counts one mining card, not the two planned.
+    expect(b.m.cardCount()).toBe(1);
+    expect(b.made[0].opts).toMatchObject({ saltBase: 0, saltStride: 2, deviceIndex: 0 });
+    expect(b.events.log).toContainEqual({
+      level: 'info', line: 'skipping GPU 1: GPU 1 was asked for (PEARL_GPU_INDEX) but this machine has 1: valid indices are 0..0',
+    });
+    expect(b.events.log.map((l) => l.line).join(' ')).not.toMatch(/restarting/);
     expect(b.events.error).toEqual([]);
   });
 
@@ -2093,6 +2118,23 @@ describe('PearlMiner — pausing cards while the LLM answers a prompt', () => {
     b.sock.emit('data', jobLine({ job_id: '00000000_2097153' }));
     expect(b.made[0].setJob).toHaveBeenCalledTimes(1);
     expect(b.made[1].setJob).toHaveBeenCalledTimes(2);
+  });
+
+  // The shells' prompt pause counts these on an AMD rig (shared/promptPause): a
+  // paused card and one waiting to restart are still the run's. A planned card
+  // that would not start, one HIP doesn't have, is not.
+  test('counts the cards mining, paused or waiting to restart, not one that never started', () => {
+    const b = rig({ refuse: (opts) => opts.deviceIndex === 2 });
+    expect(b.m.cardCount()).toBe(0);
+    mining(b, [...GPUS, { index: 2, name: 'GPU 2' }]);
+    expect(b.m.cardCount()).toBe(2);
+    b.m.pauseCards([0]);
+    expect(b.m.cardCount()).toBe(2);
+    b.made[1].emit('error', new Error('an illegal memory access was encountered'));
+    expect(b.lines()).toContain('restarting GPU 1 (NVIDIA GeForce RTX 4070) in 30 s');
+    expect(b.m.cardCount()).toBe(2);
+    b.m.stop();
+    expect(b.m.cardCount()).toBe(0);
   });
 
   test('resumes the card on fresh salts and the current job, without logging it as a new start', () => {

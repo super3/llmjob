@@ -166,6 +166,8 @@ jest.mock('../src/main/probe', () => ({
   detectRegion: jest.fn(() => Promise.resolve('us1')),
   detectVram: jest.fn(() => Promise.resolve(null)),
   detectGpusVram: jest.fn(() => Promise.resolve([])),
+  // The board's cards: nvidia-smi's here, as each test sets them.
+  detectBoardGpus: jest.fn((...a) => require('../src/main/probe').detectGpusVram(...a)),
   detectPciBusIds: jest.fn(() => Promise.resolve({})),
   // llama-server's own card list. Empty by default, so every card keeps
   // --main-gpu; the tests that care set it.
@@ -218,6 +220,8 @@ jest.mock('../src/main/pearlEngine', () => {
       // The cards a pause or resume acted on: one card, unless a test says none.
       this.pauseCards = jest.fn(() => (PearlEngine.noCards ? [] : [{ index: 0, name: 'GPU0' }]));
       this.resumeCards = jest.fn(() => [{ index: 0, name: 'GPU0' }]);
+      // Every planned card started, unless a test says fewer.
+      this.cardCount = jest.fn(() => Math.max(1, ((this.settings && this.settings.gpus) || []).length));
       PearlEngine.instances.push(this);
     }
   }
@@ -1227,6 +1231,100 @@ describe('mining', () => {
     }));
   });
 
+  // An AMD rig: nvidia-smi lists nothing, so the OS's count of AMD cards
+  // (detectGpuInfo's `amd`) plans one core per card. Before, one core started
+  // with no index and a rig of two R9700s mined on one.
+  describe('on an AMD rig', () => {
+    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+    const amdInfo = (n) => ({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+    const lines = (ctx) => ctx.sent('miner:log').map((l) => l.line);
+    let gpuIndexBefore;
+    beforeEach(() => { gpuIndexBefore = process.env.PEARL_GPU_INDEX; delete process.env.PEARL_GPU_INDEX; });
+    afterEach(() => {
+      if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
+      else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
+    });
+
+    it('mines on every AMD card the OS lists, one core each, and says how to choose', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+      }));
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+      }));
+      expect(lines(ctx)).toContain('mining on 2 AMD cards (GPU 0, 1), one core each; set PEARL_GPU_INDEX to choose cards');
+    });
+
+    it('leaves one card, or a count it cannot read, to the core', async () => {
+      for (const info of [amdInfo(1), null]) {
+        const ctx = await boot();
+        ctx.probe.detectGpuInfo.mockResolvedValue(info);
+        ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+        await flush();
+        expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        expect(lines(ctx).some((l) => l.includes('AMD cards'))).toBe(false);
+      }
+    });
+
+    it('follows PEARL_GPU_INDEX when it is set', async () => {
+      process.env.PEARL_GPU_INDEX = '1';
+      const ctx = await boot();
+      ctx.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 1, name: null }]);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 1, name: null }],
+      }));
+    });
+
+    // An NVIDIA rig starts as it did: nothing more is asked of the OS.
+    it('asks the OS nothing when nvidia-smi lists cards', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+      ctx.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 8, minor: 9, driverMajor: 610 }]);
+      ctx.probe.detectGpuInfo.mockClear();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.probe.detectGpuInfo).not.toHaveBeenCalled();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }],
+      }));
+    });
+
+    // The driver's version comes in the same Windows query, and a build reported
+    // to move an idle card's VRAM to system RAM gets a warning. Mining starts anyway.
+    it('logs the AMD driver once a start, warns about a bad build, and mines anyway', async () => {
+      const ctx = await boot({ platform: 'win32' });
+      const card = { name: R9700.name, driverVersion: '32.0.31007.5012' };
+      ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 1, amd: [card] });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const logs = ctx.sent('miner:log');
+      expect(logs.filter((l) => l.line.startsWith('AMD graphics driver'))).toEqual([
+        { level: 'info', line: 'AMD graphics driver 32.0.31007.5012' },
+        expect.objectContaining({ level: 'warn', line: expect.stringContaining('Adrenalin 26.9.2 or newer fixes it') }),
+      ]);
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+    });
+
+    it('abandons a start that STOP overtakes while the OS is asked', async () => {
+      const ctx = await boot();
+      let release;
+      ctx.probe.detectGpuInfo.mockReturnValue(new Promise((r) => { release = r; }));
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      ctx.emit('miner:stop');
+      release(amdInfo(2));
+      await flush();
+      expect(ctx.PearlEngine.instances).toHaveLength(0);
+    });
+  });
+
   // PEARL_GPU_INDEX narrows the cards. What the app can't use (none, a typo)
   // and a listed card nvidia-smi doesn't show are logged, not dropped quietly.
   describe('PEARL_GPU_INDEX', () => {
@@ -1259,7 +1357,7 @@ describe('mining', () => {
       await flush();
       expect(ctx.probe.detectMinerGpus).toHaveBeenCalledWith(process.env, null);
       expect(warnings(ctx)).toEqual([
-        'PEARL_GPU_INDEX=none ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); every GPU mines',
+        'PEARL_GPU_INDEX=none ignored: the app cannot mine on no GPU (set Compute Mode to LLM for that); mining as if it were not set',
       ]);
     });
 
@@ -1391,6 +1489,36 @@ describe('mining', () => {
       }));
       expect(ctx.sent('miner:log')).toContainEqual(
         { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
+    });
+
+    // Two AMD cards mine from the OS's count, but the lock is nvidia-smi's. The
+    // request is set aside for that reason, mining alone or beside the LLM, and
+    // no AMD card is sent to nvidia-smi (6 Nov: an AMD rig was blamed on the LLM).
+    it('locks no AMD card, and says the lock is NVIDIA-only, on a rig of two', async () => {
+      const gpuIndexBefore = process.env.PEARL_GPU_INDEX;
+      delete process.env.PEARL_GPU_INDEX;
+      process.env[ENV] = '7001';
+      try {
+        for (const mode of ['mining', 'auto']) {
+          const ctx = await boot({ platform: 'win32' });
+          const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+          ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+          ctx.emit('miner:start', { address: VALID_ADDR, mode });
+          await flush();
+          expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+            gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+            mineMemClockByIndex: {}, mineMemClockDefault: false,
+          }));
+          expect(ctx.sent('miner:log')).toContainEqual({
+            level: 'info',
+            line: 'LLMJOB_MINE_MEM_CLOCK=7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only',
+          });
+          expect(lines(ctx).join('\n')).not.toMatch(/MHz on GPU|needs full memory bandwidth/);
+        }
+      } finally {
+        if (gpuIndexBefore === undefined) delete process.env.PEARL_GPU_INDEX;
+        else process.env.PEARL_GPU_INDEX = gpuIndexBefore;
+      }
     });
 
     // A request the LLM co-run refuses is a warning, as on the CLI (stderr).
@@ -5370,6 +5498,89 @@ describe('mining pauses while the local LLM answers a prompt', () => {
     llm.emit('busy', false);
     expect(miner.pauseCards).not.toHaveBeenCalled();
     expect(lines(ctx).some((l) => /busy for 10 minutes/.test(l))).toBe(false);
+  });
+
+  // The same rig with PEARL_GPU_INDEX unset: the miner plans from the OS's
+  // count, and so does the count here. It used to be 0, and every prompt paused
+  // both cards.
+  const amdOs = (ctx, n) => {
+    delete process.env.PEARL_GPU_INDEX;
+    ctx.probe.detectGpusVram.mockResolvedValue([]);
+    ctx.probe.detectPciBusIds.mockResolvedValue({});
+    const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+    ctx.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: n, amd: Array(n).fill(R9700) });
+  };
+
+  it('with two AMD cards the OS lists, a prompt pauses nothing', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 0, name: null }, { index: 1, name: null }] }));
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).not.toHaveBeenCalled();
+  });
+
+  // The LLM shares the one card, so it still gets the card for each prompt.
+  it('with one AMD card, a prompt still pauses it', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 1);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith(null);
+  });
+
+  // The OS lists two, but HIP has one: an old Radeon it has no code for fails on
+  // its own, and one card mines. The LLM, started after the miner, counts the
+  // cards that started, so that card still pauses for each prompt.
+  it('with two AMD cards planned and one started, a prompt still pauses it', async () => {
+    const ctx = await boot({ platform: 'win32' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush();
+    const miner = ctx.PearlEngine.instances[0];
+    expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [{ index: 0, name: null }, { index: 1, name: null }] }));
+    miner.cardCount.mockReturnValue(1);
+    miner.emit('event', { type: 'status', hashrate: '2.5' });
+    await flush(30);
+    ctx.LlmManager.instances[0].emit('busy', true);
+    expect(miner.pauseCards).toHaveBeenCalledWith(null);
+  });
+
+  // An LLM started before the miner (LLM mode, then auto) counts the same cards.
+  it('counts the OS\'s AMD cards when the LLM starts first', async () => {
+    const ctx = await boot();
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    amdOs(ctx, 2);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'llm' });
+    await flush(30);
+    const llm = ctx.LlmManager.instances[0];
+    llm.emit('busy', true);
+    ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+    await flush(30);
+    llm.emit('busy', false);
+    expect(ctx.PearlEngine.instances[0].pauseCards).not.toHaveBeenCalled();
+  });
+
+  // macOS mines nothing and its GPU probe is slow, so the LLM's start asks nothing.
+  it('asks macOS nothing about AMD cards when the LLM starts', async () => {
+    const ctx = await boot({ platform: 'darwin' });
+    wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+    ctx.probe.detectGpuInfo.mockClear();
+    ctx.emit('miner:start', { mode: 'llm' });
+    await flush(30);
+    expect(ctx.LlmManager.instances).toHaveLength(1);
+    expect(ctx.probe.detectGpuInfo).not.toHaveBeenCalled();
   });
 
   it('says nothing when the prompt runs on a card that is not mining', async () => {

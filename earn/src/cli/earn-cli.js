@@ -58,9 +58,10 @@ const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
 const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/llama');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
-  describeSkippedGpus, planMinerGpus,
+  describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
+const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
 
@@ -596,6 +597,13 @@ async function launchLlm(settings, planned, armServe, background, onBusy) {
   const [devices, busIds] = await Promise.all([
     probe.detectLlmDevices(binaryPath, modelPath), probe.detectPciBusIds(),
   ]);
+  // A --llm-binary built for another GPU vendor runs but sees no card: a rig
+  // swapped from an RTX 5090 to an RX 9070 XT kept its CUDA build (6 Nov).
+  if (settings.llmBinary && !devices.length) {
+    log('LLM: --llm-binary ' + settings.llmBinary + ' lists no GPU (llama-server --list-devices), or would not run. '
+      + 'It may be built for another GPU vendor; without --llm-binary the CLI downloads a Vulkan build that runs on '
+      + 'NVIDIA, AMD and Intel', process.stderr);
+  }
   const placed = placeLlmPlan(planned.plan, cards, devices, busIds);
   for (const w of placed.warnings) log(w);
   const plan = placed.plan;
@@ -790,7 +798,8 @@ function setUpCpuMining(settings, poolLookup) {
   const workerPath = findWorker({ execPath: process.execPath, env: process.env, exists: fs.existsSync });
   if (!workerPath) {
     log('cpu:        off: llmjob-xmr-worker is not beside the executable. Keep it from the release next to it,'
-      + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker.', process.stderr);
+      + ' or set LLMJOB_XMR_WORKER=/path/to/llmjob-xmr-worker. From a source checkout, build it with'
+      + ' earn/scripts/build-xmr-worker.sh.', process.stderr);
     return null;
   }
   const auto = settings.cpuThreads ? '' : 'auto';
@@ -893,6 +902,7 @@ async function run(argv) {
   };
 
   let endpoint = null;
+  let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
   if (plan.miner) {
     // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
     // back to the defaults already in `settings` and never blocks mining. Explicit
@@ -915,6 +925,11 @@ async function run(argv) {
     // with an NVIDIA card beside the AMD ones, its list would drop the AMD
     // cards the indices name. The chosen indices go to the core as they are.
     if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
+    // With none chosen, an AMD rig's list is empty and one core would mine one
+    // card. The OS counts them instead (det.amd, shared/gpu planAmdGpus), as in
+    // the GUI.
+    amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
+    if (amdGpus.length) settings.gpus = amdGpus;
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -934,6 +949,9 @@ async function run(argv) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu
         + (settings.gpuProvided ? '' : '  (auto)'));
     }
+    // The AMD driver's version, and a warning for a build reported to move idle
+    // VRAM to system RAM (shared/amdDriver). Only Windows reports a version.
+    for (const l of describeAmdDrivers(det)) log(l.line, l.level === 'warn' ? process.stderr : process.stdout);
     // What will actually mine, which is not always what the line above names: a
     // mixed rig has one name there and several cards here, and --gpu-index or
     // PEARL_GPU_INDEX narrows it. Each card names itself again as its core
@@ -951,7 +969,8 @@ async function run(argv) {
     } else {
       const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
       if (cudaLine) log(cudaLine);
-      if (mining.length > 1) log('mining on:  ' + cardList(mining));
+      if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
+      else if (mining.length > 1) log('mining on:  ' + cardList(mining));
     }
   }
 
@@ -1107,7 +1126,7 @@ async function run(argv) {
     }
 
     if (settings.report) {
-      // Sample per-card live VRAM (nvidia-smi) and post one board row per GPU,
+      // Sample per-card live VRAM (nvidia-smi, or amdgpu on an AMD rig) and post one board row per GPU,
       // just like the GUI — otherwise the board shows 0 GB for a CLI-driven rig.
       //
       // nvidia-smi lists every card, mining or not. When --gpu-index or
@@ -1116,7 +1135,7 @@ async function run(argv) {
       const miningCards = new Set(settings.gpus.map((g) => g.index));
       const report = async () => {
         const snap = poolSnapshot();
-        const allVram = await detectGpusVram();
+        const allVram = await probe.detectBoardGpus();
         const gpuVram = gpuPick ? allVram.filter((v) => miningCards.has(Number(v.index))) : allVram;
         // Tag the cards serving the local LLM so the board shows which model each
         // GPU runs. `nodeId` rides along only while this machine is armed to serve
@@ -1205,6 +1224,8 @@ async function run(argv) {
   // restarts (startMinerArgs) carry the same plan.
   // Not on an AMD core: the plan is nvidia-smi's, and on a rig with an NVIDIA
   // card beside the AMD ones it would lock that idle card's memory clock.
+  // An AMD core the CLI picked itself (HiveOS passes no --core) mines the AMD
+  // plan, which is no NVIDIA card: an empty list says "NVIDIA-only".
   if (miner && wantsAmdCore()) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
@@ -1212,7 +1233,7 @@ async function run(argv) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
       cards: cudaCards,
-      gpus: settings.gpus,
+      gpus: amdGpus.length ? [] : settings.gpus,
       llmCoRuns: !!(plan.llm && !demand),
     });
     settings.mineMemClockByIndex = memPlan.byIndex;
@@ -1345,11 +1366,15 @@ async function run(argv) {
     // on, as it did when the LLM started first. A run that ended while the model
     // was downloading must not leave a server behind.
     const startCoRun = async () => {
+      // How many cards mine. The AMD plan can name a card HIP doesn't have; it
+      // fails on its own, so count the cards that started, as the GUI does. A
+      // rig left mining on one card still pauses it for each prompt.
+      const miningCards = amdGpus.length ? Math.min(amdGpus.length, miner.cardCount()) : settings.gpus.length;
       // Each card's bus id, to tell which card a prompt runs on
       // (promptPause.cardForPrompt).
       const busIds = await probe.detectPciBusIds();
       const fleet = await launchLlm(settings, coRun, true, true, (e) => {
-        const card = cardForPrompt(e, busIds, settings.gpus.length);
+        const card = cardForPrompt(e, busIds, miningCards);
         if (card !== undefined) promptPause.setBusy(card, e.busy);
       });
       if (!fleet) return;

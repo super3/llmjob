@@ -289,9 +289,42 @@ makes every share wrong, and a pool can ban the address for that, so on those
 cards the miner checks every hit as the pool would before sending it (about 5
 ms a share), and stops the card at the first wrong one without sending it.
 `PEARL_AMD_UNTESTED=1`, which v0.6.8 and v0.6.9 asked RX 6000 owners to set
-to mine, does not turn the check off. Card temperatures and VRAM stay empty on AMD, and
-one core mines the fastest AMD card unless `--gpu-index` lists several (`native/amd/README.md`,
-"Using it in the app").
+to mine, does not turn the check off. Card temperatures stay empty on AMD. On Linux the
+board names the card and shows its VRAM from the `amdgpu` driver's sysfs files, since ROCm
+calls an RX 9070 XT just "AMD Radeon Graphics". Every AMD card the system lists mines, one core
+each; `--gpu-index` picks cards instead (`native/amd/README.md`, "Using it in the app").
+
+#### Setting up a Linux AMD rig
+
+What a Debian 13 VM with an RX 9070 XT needed (6 November):
+
+- **ROCm's HIP runtime.** ROCm 7.2 is published for Ubuntu 22.04 and 24.04 only; on Debian
+  13 the Ubuntu 24.04 (`noble`) repository works (`repo.radeon.com/rocm/apt/7.2.4 noble`,
+  pinned at 600). Only `hip-runtime-amd` is needed; it pulls in the rest. Then
+  `echo /opt/rocm/lib > /etc/ld.so.conf.d/rocm.conf && ldconfig`, and add the miner's user
+  to the `render` and `video` groups.
+- **Firmware.** `firmware-amd-graphics` is in Debian's non-free-firmware and isn't
+  installed by default. Without it `/lib/firmware/amdgpu` is empty and the driver stops
+  before the card works.
+- **A recent kernel for RDNA 4.** Debian 13's stock 6.12 kernel crashed in `amdgpu` while
+  starting an RX 9070 XT. The trixie-backports kernel (7.2) with the backports firmware
+  worked. As a rule, RDNA 4 wants kernel 6.14 or later and a recent linux-firmware.
+- **For the local LLM**, the CLI's Vulkan llama-server needs Mesa's Vulkan driver
+  (`mesa-vulkan-drivers`). Its "radv is not a conformant Vulkan implementation" warning
+  is harmless.
+- **Huge pages** speed up the Monero dataset build: `sysctl -w vm.nr_hugepages=1280` took
+  it to 3.1 s.
+
+#### In a virtual machine (Proxmox passthrough)
+
+An RX 9070 XT sits behind its own PCIe switch, and a bus reset kills it: the card reads
+all ones until the host reboots. QEMU resets the bus at VM start when it owns every
+function on it. What worked: pass through only the GPU function (`1002:7550`), leave its
+HDMI audio (`1002:ab40`) on the host so no bus reset can happen, clear the GPU's
+`reset_method`, and set `vfio-pci disable_idle_d3=1`. If it is the host's only GPU, also
+boot the host with `initcall_blacklist=sysfb_init` so its framebuffer doesn't hold the
+card. A VM's L3 cache size is the hypervisor's, not the host's, so the Monero miner
+doesn't cap its threads by it there; `--cpu-threads` sets the count.
 
 On Linux, RDNA 4 cards (RX 9000, gfx1200 and gfx1201) mine at k 4096, the matrix depth a
 share declares, where every other card mines k 2048. On Windows every card mines k 2048 for

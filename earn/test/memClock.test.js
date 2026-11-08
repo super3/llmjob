@@ -130,8 +130,11 @@ describe('an explicit --mine-mem-clock', () => {
   test('with no card listed anywhere has nothing to lock, and says so', () => {
     expect(planMemClocks({ requestedMhz: 7001, cards: [], gpus: [] })).toEqual({
       byIndex: {}, isDefault: false, dropped: false,
-      reason: '--mine-mem-clock 7001: nvidia-smi listed no GPU, nothing to lock',
+      reason: '--mine-mem-clock 7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only',
     });
+    // An AMD rig with a co-running LLM: no NVIDIA card is the reason, not the LLM.
+    expect(planMemClocks({ requestedMhz: 7001, cards: [], gpus: [], llmCoRuns: true }).reason)
+      .toBe('--mine-mem-clock 7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
   });
 
   // 0 is the off switch for the default: nothing is locked, even on a 5090.
@@ -161,7 +164,7 @@ describe('an explicit --mine-mem-clock', () => {
     expect(planMemClocks({ ...gui, requestedMhz: 7001 }))
       .toEqual({ byIndex: { 0: 7001 }, isDefault: false, dropped: false, reason: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
     expect(planMemClocks({ ...gui, requestedMhz: 7001, cards: [], gpus: [] }).reason)
-      .toBe('LLMJOB_MINE_MEM_CLOCK=7001: nvidia-smi listed no GPU, nothing to lock');
+      .toBe('LLMJOB_MINE_MEM_CLOCK=7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
     expect(planMemClocks({ ...gui, requestedMhz: 7001, llmCoRuns: true }))
       .toEqual({ byIndex: {}, isDefault: false, dropped: true, reason: 'LLMJOB_MINE_MEM_CLOCK ignored: the LLM co-runs with the miner and needs full memory bandwidth' });
   });

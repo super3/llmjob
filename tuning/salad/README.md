@@ -478,7 +478,7 @@ What it found on 22 October:
 
 ## NVIDIA test boxes (nvtest)
 
-`amdtest.py` also runs `nvtest-rtx2060` to `nvtest-rtx5090` boxes (or `-2` to `-99` after them), to race our
+`amdtest.py` also runs `nvtest-rtx2060` to `nvtest-rtx5090` and GTX 16 boxes (or `-2` to `-99` after them), to race our
 own builds of the NVIDIA core on Salad's RTX 20 to 50 PCs, where Vast isn't available. Each runs `nvtest.sh` on the
 fleet's image (`nvidia/cuda:12.2.2-base-ubuntu22.04`, high priority, 4 vCPU, 8 GB): it installs CUDA 12.8.1's
 compiler from NVIDIA's archives (nvcc V12.8.93, as CI builds with; the SHA-256s are pinned), fetches the repo at
@@ -507,6 +507,11 @@ python3 tuning/salad/amdtest.py wait nvtest-rtx3090 --until 'all done|FAIL' --si
 python3 tuning/salad/amdtest.py logs nvtest-rtx3090 --since 2h
 python3 tuning/salad/amdtest.py delete nvtest-rtx3090
 ```
+
+GTX 16 boxes (`nvtest-gtx1650`, `nvtest-gtx1660`, `nvtest-gtx1660super`, classes `1650`, `1660`, `1660super`) race
+the dp4a fold on sm_75 cards without tensor cores (`PEARL_DP4A_TURING` in pearl_config.h, on by default). Salad's `GTX 1660` class
+has given a 1660 Ti. `POOL_FLAGS` gives pool.sh's core the same nvcc flags as a build in `VARIANTS_SPEC`, so that build
+can mine on the pool (`POOL_FLAGS=-DPEARL_DP4A_TURING=0` mines with the tensor fold the GTX 16 cards ran before).
 
 A box takes one of the organization's replicas: keep the watcher's `max_active` plus the test boxes within the
 quota.

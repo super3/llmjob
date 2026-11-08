@@ -198,9 +198,18 @@ describe('the worker', () => {
       'cpu: RandomX worker 0.5.14 (RandomX 7607fb2faed2) · no JIT · software AES',
       expect.stringMatching(/dataset on 1 thread \(/),
       'cpu: dataset ready in 1 s · huge pages',
-      'cpu: dataset ready in 1 s · no huge pages (hashrate is up to 30% lower without them)',
+      'cpu: dataset ready in 1 s · no huge pages (hashrate is up to 30% lower without them); '
+        + 'sudo sysctl -w vm.nr_hugepages=1280 gives them',
       'cpu: dataset ready in 1 s · odd',
     ]));
+  });
+
+  test('the huge pages hint is Linux\'s only', () => {
+    const h = setup({ platform: 'win32' });
+    h.engine.start(SETTINGS);
+    h.child().say(HELLO);
+    h.child().say({ type: 'dataset', state: 'ready', ms: 1000, pages: 'normal' });
+    expect(h.lines()).toContain('cpu: dataset ready in 1 s · no huge pages (hashrate is up to 30% lower without them)');
   });
 
   test('the job goes to the worker as soon as the pool sends it', () => {
