@@ -290,16 +290,16 @@ class TestBenchRTX(unittest.TestCase):
         self.assertEqual(body["container"]["image"], self.l20.w.IMAGE)
         self.assertEqual(body["container"]["priority"], "high")
         cmd = body["container"]["command"][2]
-        self.assertIn("ORDER=ours,peak,srb,wild,ozm OURS_SECS=300 bash /root/bench.sh", cmd)
+        self.assertIn("ORDER=ours,peak,srb,ozm OURS_SECS=300 bash /root/bench.sh", cmd)
         self.assertNotIn("amdtest.sh", cmd)
 
     def test_the_two_pcs_of_a_class_take_turns_going_first_each_in_a_group_of_its_own(self):
         res = {"machine": "m1" * 8, "card": "NVIDIA GeForce RTX 2080 Ti", "power": "250.00 W", "ours": (90.0, None),
                "peak": (92.0, None), "srb": (91.0, None)}
         x = self.bench(self.l20, cls=0, tries=0, group="bench-20-rtx2080ti-1")
-        self.assertEqual(x.order(), "ours,peak,srb,wild,ozm")
+        self.assertEqual(x.order(), "ours,peak,srb,ozm")
         x.st["results"] = {"RTX 2080 Ti": [res]}
-        self.assertEqual(x.order(), "srb,peak,wild,ozm,ours")
+        self.assertEqual(x.order(), "srb,peak,ozm,ours")
         x.move_on("done")                       # a moved PC would keep the first group's order
         self.assertIsNone(x.st["group"])
 
@@ -309,9 +309,9 @@ class TestBenchRTX(unittest.TestCase):
         st = {"results": {"RTX 2070": [{"machine": "abcdef1234", "power": "175.00 W", "ours": (50.0, None),
                                          "peak": (52.0, None), "srb": (51.0, None)}]}}
         text = self.l20.render(st)
-        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | not run | not run | 96% |", text)
+        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | not run | 96% |", text)
         self.assertNotIn("RTX 2070 Super", text)          # not waited for: no empty rows for it
-        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | not run | not run | — |", text)
+        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | not run | — |", text)
 
     def lane_with(self, m, answers, now=50_000):
         """A lane whose Salad answers POSTs from `answers` (a list of (status, body)), and a clock at `now`. Its and
@@ -437,8 +437,8 @@ class TestBenchRTX(unittest.TestCase):
                                               "peak": (69.0, None), "srb": (71.5, None)}]}}, f)
         text = self.r.table([f"{d}/20.json", f"{d}/30.json"])
         self.assertLess(text.index("## RTX 20-series"), text.index("## RTX 30-series"))
-        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | not run | 98% |", text)
-        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | not run | 98% |", text)
+        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | 98% |", text)
+        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | 98% |", text)
 
     def test_a_tap_run_fetches_sharetap_and_sets_tap_and_a_plain_run_does_not(self):
         t = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_TAP="1")
@@ -494,7 +494,7 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual([p[0] for p in self.a.PLAN][0], "AMD RX 9070 XT (16GB)")
         self.assertEqual(len(self.a.PLAN), 5)
         self.assertEqual({p[2] for p in self.a.PLAN}, {300})     # ours runs 5 minutes, like SRBMiner
-        self.assertEqual(self.a.RUN_MIN, 55)
+        self.assertEqual(self.a.RUN_MIN, 50)
         self.assertEqual(b.RUN_MIN, 45)
 
     def test_each_lane_has_its_own_files_and_classes(self):
@@ -531,7 +531,7 @@ class TestBenchAMD(unittest.TestCase):
         cmd = c["command"][2]
         raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/earn/tuning/salad"
         self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o "
-                      "/root/amdtest.sh && W=prl1x ORDER=ours,srb,wild OURS_SECS=300 BASE_SHA=beef VERIFY_SECS=900 "
+                      "/root/amdtest.sh && W=prl1x ORDER=ours,srb OURS_SECS=300 BASE_SHA=beef VERIFY_SECS=900 "
                       "bash /root/bench.sh", cmd)
         self.assertNotIn("peak", cmd)
         self.assertNotIn("; curl", cmd)          # Salad refuses it
@@ -546,11 +546,11 @@ class TestBenchAMD(unittest.TestCase):
 
     def test_the_two_pcs_of_a_class_take_turns_going_first(self):
         x = self.bench(self.la, cls=0, tries=0, group=None, results={})
-        self.assertEqual(x.order(), "ours,srb,wild")
+        self.assertEqual(x.order(), "ours,srb")
         x.st["tries"] = 3                       # PCs skipped don't count
-        self.assertEqual(x.order(), "ours,srb,wild")
+        self.assertEqual(x.order(), "ours,srb")
         x.st["results"] = {"RX 9070 XT": [{"machine": "m1"}]}
-        self.assertEqual(x.order(), "srb,wild,ours")
+        self.assertEqual(x.order(), "srb,ours")
 
     def test_after_a_recorded_pc_the_next_one_gets_a_new_group_with_the_other_order(self):
         calls = []
@@ -564,7 +564,7 @@ class TestBenchAMD(unittest.TestCase):
         x.create()
         body = [c[2] for c in calls if c[0] == "POST"][-1]
         self.assertEqual(body["name"], "bench-a-rx9070xt-2")
-        self.assertIn("ORDER=srb,wild,ours ", body["container"]["command"][2])
+        self.assertIn("ORDER=srb,ours ", body["container"]["command"][2])
         # A PC that wasn't recorded is moved as before, keeping the group and its order.
         calls.clear()
         x.st.update(group="bench-a-rx9070xt-2", instance="i2")
@@ -636,14 +636,14 @@ class TestBenchAMD(unittest.TestCase):
         x2, _ = self.done(self.la, lines, order="srb,ours")
         x.st["results"]["RX 9070 XT"].append(dict(x2.st["results"]["RX 9070 XT"][0], machine="3d6cb276-yy"))
         text = self.la.render(x.st)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | not run | 0 | 118% |", text)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | not run | 0 | — |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | 0 | 118% |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | 0 | — |", text)
         self.assertIn("- `83151dba` (RX 9070 XT): copy 564 GB/s; hit check PASS, 400 of 2202 hits verified, 0 failed, "
                       "277 salts in 600 s, 7.95 hits a salt; ours ran first.", text)
         self.assertIn("- `3d6cb276` (RX 9070 XT): copy 564 GB/s; hit check FAIL, 400 of 410 hits verified, 2 failed, "
                       "60 salts in 600 s, 6.83 hits a salt (jackpot hash mismatch (fold/transcript)); "
                       "SRBMiner ran first.", text)
-        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | 0 | not run | not run | 0 | — |", text)
+        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | 0 | not run | 0 | — |", text)
         self.assertNotIn("RX 7900", text)                 # lane b's rows
         self.assertNotIn("RX 7800", text)                 # lane c's
         self.assertNotIn("hits a salt", b.render({"results": {}}))
@@ -658,8 +658,8 @@ class TestBenchAMD(unittest.TestCase):
         text = self.la.table([os.path.join(d, "a.json"), os.path.join(d, "b.json"), os.path.join(d, "none.json")])
         rows = [l for l in text.splitlines() if l.startswith("| RX")]
         self.assertEqual(len(rows), 10)
-        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | 0 | 79.4 | not run | 0 | 118% |")
-        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | 0 | 52.8 | not run | 0 | 95% |")
+        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | 0 | 79.4 | 0 | 118% |")
+        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | 0 | 52.8 | 0 | 95% |")
         self.assertIn("- `aaaa1111` (RX 9070 XT): copy 564 GB/s; no hit check.", text)
 
     def test_a_failed_check_on_the_pc_meant_to_go_first_says_srbminer_went_first(self):
@@ -717,10 +717,10 @@ class TestBenchAMD(unittest.TestCase):
             self.assertIn("FINISHED", read(m.LOG))
 
     def test_the_time_given_a_box_grows_with_the_hit_check(self):
-        self.assertEqual(self.a.RUN_MIN, 55)
-        self.assertEqual(self.la.RUN_MIN, 60)                    # BENCH_VERIFY_SECS=900
-        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="1800").RUN_MIN, 75)
-        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="601").RUN_MIN, 56)
+        self.assertEqual(self.a.RUN_MIN, 50)
+        self.assertEqual(self.la.RUN_MIN, 55)                    # BENCH_VERIFY_SECS=900
+        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="1800").RUN_MIN, 70)
+        self.assertEqual(load_bench(BENCH_SET="amd", BENCH_VERIFY_SECS="601").RUN_MIN, 51)
         self.assertEqual(load_bench(BENCH_VERIFY_SECS="1800").RUN_MIN, 45)     # the GTX set runs no check
 
     def test_a_deleted_group_is_looked_at_until_salad_says_it_is_gone(self):

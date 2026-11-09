@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Runs earn/tuning/benchmark.md's GTX 10- and 16-series benchmark on Salad: one high-priority box at a time, card class by
 # card class from the top of the tables, two PCs per card. Each box runs bench.sh (PeakMiner, SRBMiner and our
-# miner, 5 minutes each after a warm-up; on RTX and AMD also WildRig Multi and OneZeroMiner, since 9 November) and prints "[bench]" lines, which this reads from Salad's logs. Every 15
+# miner, 5 minutes each after a warm-up; on RTX also OneZeroMiner, since 9 November) and prints "[bench]" lines,
+# which this reads from Salad's logs. Every 15
 # minutes it writes both tables, filled so far, with what the box is doing now, to bench_status.md and a STATUS
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
@@ -102,8 +103,8 @@ if SET == "amd":
     # On a PC that has the image: setup 1-4 min (apt is the slow part), build under a minute, the hit check,
     # SRBMiner's device list up to 1 min, then the warm-up and two 5-minute runs, about 12 min with the pauses
     # between them. 16-19 min plus the check in all; 40 plus the check leaves 20 min for the image to download.
-    # 50 with the default 10-minute check. WildRig's 5 minutes (9 November) add 5.
-    RUN_MIN = 45 + -(-VERIFY_SECS // 60)
+    # 50 with the default 10-minute check.
+    RUN_MIN = 40 + -(-VERIFY_SECS // 60)
 if SET == "rtx":
     # earn/tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with every miner at its newest (bench.sh).
     # Five miners since 9 November, about 31 minutes of mining after the downloads, so a box gets an hour.
@@ -246,9 +247,11 @@ def quota_refused(s, j):
     return s == 400 and "quota_exceeded" in str((j or {}).get("type", "") if isinstance(j, dict) else j)
 
 
-# The competitors, in the tables' column order. WildRig Multi and OneZeroMiner joined the RTX and AMD sets on 9
-# November; a result from before then has no figure for them and shows "not run".
-COMPETITORS = {"gtx": ("peak", "srb")}.get(SET, ("peak", "srb", "wild", "ozm"))
+# The competitors, in the tables' column order. OneZeroMiner joined the RTX and AMD sets on 9 November; a result
+# from before then has no figure for it and shows "not run". WildRig Multi ran for an afternoon and was dropped
+# (the founder, 9 November): it mines NVIDIA cards through OpenCL, which Salad's WSL2 containers don't have, so it
+# can't be measured on Salad. bench.sh can still run it (ORDER with "wild") where it can.
+COMPETITORS = {"gtx": ("peak", "srb")}.get(SET, ("peak", "srb", "ozm"))
 # Miners with no Pearl kernel for the set's cards: they mine nothing there, so their cells say 0 rather than
 # "not run" (the founder, 9 November). PeakMiner has no AMD kernel and OneZeroMiner no AMD support.
 UNSUPPORTED = {"amd": ("peak", "ozm")}.get(SET, ())
@@ -283,7 +286,7 @@ def pc_note(row, h):
 
 def render(st, sections=None):
     """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner and OneZeroMiner
-    aren't run and show 0, so "% of best" is ours against SRBMiner and WildRig, and a line for each PC under the table
+    aren't run and show 0, so "% of best" is ours against SRBMiner, and a line for each PC under the table
     gives its copy rate and hit check."""
     out = []
     for title, rows in sections or SECTIONS:
@@ -352,9 +355,9 @@ class Bench:
         first and SRBMiner first, as earn/tuning/benchmark.md's "How a host is tested" does."""
         n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
         if SET == "amd":
-            return "ours,srb,wild" if n % 2 == 0 else "srb,wild,ours"
+            return "ours,srb" if n % 2 == 0 else "srb,ours"
         if SET == "rtx":
-            return "ours,peak,srb,wild,ozm" if n % 2 == 0 else "srb,peak,wild,ozm,ours"
+            return "ours,peak,srb,ozm" if n % 2 == 0 else "srb,peak,ozm,ours"
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
