@@ -2418,7 +2418,7 @@ class TestSafeTrade(Base):
 
     def row(self, coin):
         return next(shown(l) for l in self.report().splitlines()
-                    if l.startswith(f"| {coin} |") or re.match(rf"\| (⛏️|🪙) {re.escape(coin)} \|", shown(l)))
+                    if l.startswith(f"| {coin} |") or re.match(rf"\| (⛏️|🪙) {re.escape(coin)}( \(\$[\d.]+\))? \|", shown(l)))
 
     def report(self):
         self.x.write_report()
@@ -2442,7 +2442,7 @@ class TestSafeTrade(Base):
         # (196.743 paid by both, 152.000 received: the deposits less the rejected one). Waiting held plus in open
         # orders; Sold every sale: 2.0 at 1.9, 1.0 at 2.0 and 2.0 at 1.5 make 8.8 USDT, of which 0.1% fees.
         self.assertEqual(rows[rows.index(head) + 1:], [
-            "| ⛏️ PRL | 48.087 | 196.743 | 1.646 | 5.000 | $0.01 | +$8.79 |",
+            "| ⛏️ PRL ($1.39) | 48.087 | 196.743 | 1.646 | 5.000 | $0.01 | +$8.79 |",   # PRL's price beside it
             "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
             # The 9 USDC and 2 USDT sent to the bank have no dates here, so they aren't this month's.
             "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
@@ -2479,7 +2479,7 @@ class TestSafeTrade(Base):
         # A fill whose taker sold into our buy order is a buy of ours.
         self.fills = [self.fill(1, order_side="buy", side="sell")]
         self.x.safetrade()
-        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 0.000 | $0.00 | +$0.00 |")
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL ($1.39) | 0.744 | 151.622 | 1.646 | 0.000 | $0.00 | +$0.00 |")
 
     def test_every_page_of_fills_counts(self):
         self.fills = [self.fill(300 - i, amount=1.0, price=2.0) for i in range(250)]
@@ -2537,12 +2537,12 @@ class TestSafeTrade(Base):
             self.x.safetrade()
         self.assertEqual(self.events().count("WARN can't read SafeTrade /account/balances/spot: HTTP 403"), 1)
         self.assertIn(f"| 💵 SafeTrade{w.NB}(read{w.NB}3:00{w.NB}am) | At pool |", shown(self.report()))
-        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.646 | 5.000 | $0.01 | +$8.79 |")
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL ($1.39) | 0.744 | 151.622 | 1.646 | 5.000 | $0.01 | +$8.79 |")
 
     def test_a_read_from_before_deposits_and_withdrawals_were_read_shows_what_it_has(self):
         self.x.st["st_acct"] = {"t": self.clock[0], "coins": {"pearl": [1.0, 0.0], "usdt": [3.8, 0.0]},
                                 "sold": {"pearl": [2.0, 3.8]}}
-        self.assertEqual(self.row("PRL"), "| ⛏️ PRL | 0.744 | 151.622 | 1.000 | 2.000 | $0.00 | +$3.80 |")
+        self.assertEqual(self.row("PRL"), "| ⛏️ PRL ($1.39) | 0.744 | 151.622 | 1.000 | 2.000 | $0.00 | +$3.80 |")
         self.assertEqual(self.row("**On SafeTrade**"), "| On SafeTrade | | | | | $0.00 | $3.80 |")
 
     def test_a_read_from_before_the_totals_shows_no_row_until_the_next(self):

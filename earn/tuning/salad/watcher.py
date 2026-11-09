@@ -3001,7 +3001,9 @@ class W:
                 n, usd, fee = (sa["sold"].get(coin, []) + [0.0, 0.0, 0.0])[:3]
                 r = (sa.get("recv") or {}).get(coin)
                 at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
-                rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}) | {at:.{dp}f} "
+                # PRL's price beside its name (founder, 9 November: "⛏️ PRL ($1.55)").
+                each = f" (${price:.2f})" if coin == "pearl" else ""
+                rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}){each} | {at:.{dp}f} "
                             f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
                 fees += round(fee, 2)   # the shown cents, so the column adds up on screen
             # Every withdrawal's fees count in the fee total: the network's fee and, for a stablecoin bought with
