@@ -220,9 +220,10 @@ def parse(lines):
                 mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5)})
                 out["phase"] = f"{name} {t}s"
         elif body.startswith("exited "):
-            e = re.match(r"exited (\w+) t=(\d+): (.*)", body)
+            # "exited srb t=15:" with nothing after it: SRBMiner 3.8.6 quit with no output (9 November).
+            e = re.match(r"exited (\w+) t=(\d+):\s*(.*)", body)
             if e:
-                out["miners"].setdefault(e.group(1), {"samples": []})["exited"] = e.group(3)[:200]
+                out["miners"].setdefault(e.group(1), {"samples": []})["exited"] = e.group(3)[:200] or "no output"
     return out
 
 

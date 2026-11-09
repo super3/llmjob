@@ -90,8 +90,14 @@ amd_ours() {
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
 }
 
+# WildRig loads libOpenCL even on NVIDIA, and Salad's CUDA image has no OpenCL loader (9 November: "libOpenCL.so.1:
+# cannot open shared object file"). The ICD file points the loader at the driver's OpenCL library.
+OCL=; [ -z "$AMD" ] && has wild && OCL=1
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
-  ${AMD:+clinfo} ${TAP:+python3} >/dev/null 2>&1 || fail "apt-get install"
+  ${AMD:+clinfo} ${TAP:+python3} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
+if [ -n "$OCL" ] && [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
+  mkdir -p /etc/OpenCL/vendors && echo libnvidia-opencl.so.1 > /etc/OpenCL/vendors/nvidia.icd
+fi
 if [ -z "$AMD" ]; then
   say "card $(nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit,memory.total,compute_cap --format=csv,noheader | head -1)"
 else
@@ -215,11 +221,17 @@ sample() {
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
-  ( $name > "/opt/b/$name.log" 2>&1 ) & local pid=$! t0; t0=$(date +%s)
+  ( $name > "/opt/b/$name.log" 2>&1; echo $? > "/opt/b/$name.rc" ) & local pid=$! t0; t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do
     sleep 15; local t=$(( $(date +%s) - t0 ))
     if ! kill -0 $pid 2>/dev/null; then
-      say "exited $name t=$t: $(tr '\r\n' '  ' < "/opt/b/$name.log" | tail -c 300)"; stop_all; return
+      say "exited $name t=$t: rc=$(cat "/opt/b/$name.rc" 2>/dev/null || echo '?') $(tr '\r\n' '  ' < "/opt/b/$name.log" | tail -c 300)"
+      # SRBMiner 3.8.6 quit in its first seconds with no output on a 2080 Ti (9 November): say what it says about
+      # itself, and any library it can't find.
+      if [ "$name" = srb ]; then
+        say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
+      fi
+      stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done

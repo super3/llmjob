@@ -1130,6 +1130,14 @@ class TestBenchToolsMoved(unittest.TestCase):
     """The tools moved from tuning/salad to earn/tuning/salad on 7 November; a BENCH_COMMIT from before then is
     fetched from the old folder."""
 
+    def test_a_miner_that_quits_with_no_output_counts_as_not_starting(self):
+        # SRBMiner 3.8.6 on a 2080 Ti, 9 November: "exited srb t=15:" and nothing after it, which read as "not run".
+        b = load_bench(BENCH_SET="rtx")
+        r = b.parse(["[bench] 18:21:13 start srb 300s", "[bench] 18:21:28 exited srb t=15:"])
+        self.assertEqual(b.figure(r["miners"]["srb"]), (None, "didn't start"))
+        r = b.parse(["[bench] 18:21:28 exited srb t=15: rc=1 "])
+        self.assertEqual(r["miners"]["srb"]["exited"], "rc=1")
+
     def test_salad_dir(self):
         b = load_bench(BENCH_COMMIT="c0ffee")
         self.assertEqual(b.salad_dir(""), "earn/tuning/salad")
