@@ -1,7 +1,8 @@
 # Benchmarks
 
-Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool. "% of best" is our rate over the
-faster competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 on home PCs, so compare "% of
+Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
+WildRig Multi and OneZeroMiner too, the third and fourth most downloaded Pearl miners (OneZeroMiner has no AMD
+support). "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 on home PCs, so compare "% of
 best" between them, not TH/s. The old file with every run's notes:
 [benchmark.md at 16192d68](https://github.com/super3/llmjob/blob/16192d68f40b9c7ba11048e1128e7ba2c5509dca/benchmark.md).
 
@@ -697,6 +698,6 @@ What future speed work needs: how to measure, the limits found, and what has alr
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
 - Only a run of our miner on the row's own machine replaces "Ours" and "% of best". Competitor figures stay until the
-  next full rerun; a new host runs all three miners.
+  next full rerun; a new host runs every miner.
 - A run on another host or by another method doesn't change a row: record it as a new table or a research note.
 - Before tagging a release, check that the intro and the Summary name the right release.

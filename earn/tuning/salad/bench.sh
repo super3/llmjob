@@ -1,10 +1,12 @@
 #!/bin/bash
-# Benchmarks PeakMiner, SRBMiner and our miner on one Salad GPU, one after another, the way earn/tuning/benchmark.md's
-# "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes on Kryptex
-# (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it).
+# Benchmarks PeakMiner, SRBMiner, WildRig Multi, OneZeroMiner and our miner on one Salad GPU, one after another, the
+# way earn/tuning/benchmark.md's "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes
+# on Kryptex (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it). WildRig and
+# OneZeroMiner joined on 9 November, as the third and fourth most downloaded Pearl miners; a box runs them only
+# when ORDER names them ("wild", "ozm"). OneZeroMiner has no AMD support, so an AMD box leaves it out.
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.
 #
-# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,ours"), OURS_SECS (300, or 90 on a card
+# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
 # our release has no build for), SRB_EXTRA (extra SRBMiner flags, usually empty), and on AMD BASE_SHA and
 # VERIFY_SECS. Every line it prints for bench.py starts "[bench] HH:MM:SS".
 #
@@ -26,10 +28,14 @@ export DEBIAN_FRONTEND=noninteractive
 POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=300; WARM=60
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
 # this file by commit, so a run keeps the versions it started with. Until 28 October: v0.6.0, PeakMiner 2.17.6
-# and SRBMiner 3.7.1 (the GTX and AMD tables).
-VER=v0.6.9
-PEAK_VER=2.20.3; PEAK_SHA256=345a4446acaa9213e6cd4622460b002a966dad4a8ec127f965d3a8878375fc2a
-SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
+# and SRBMiner 3.7.1 (the GTX and AMD tables); until 9 November: v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.2.
+# PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
+# on 9 November.
+VER=v0.6.13
+PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
+SRB_VER=3.8.6; SRB_MD5=38128fa15afff3c488e53726aa251249
+WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
+OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
@@ -42,6 +48,8 @@ drop() {
   [ -n "${2:-}" ] && say "skip $1: $2"
   ORDER=$(echo "${ORDER:-peak,srb,ours}" | tr , '\n' | grep -vx "$1" | paste -sd, -)
 }
+# has NAME: whether ORDER runs that miner.
+has() { case ",${ORDER:-peak,srb,ours}," in *",$1,"*) return 0 ;; esac; return 1; }
 
 # copy_rate LOG: the GB/s of amdtest_hip.cpp's timed device copy ("copy: 564 GB/s (read + write)").
 copy_rate() { grep -oE '^copy: [0-9]+' "$1" 2>/dev/null | grep -oE '[0-9]+$' | head -1; }
@@ -102,6 +110,7 @@ else
   say "opencl $(clinfo -l 2>&1 | tr -s ' \n' ' ' | head -c 300)"
   say "gpucols $(timeout 5 $SMI monitor -p -t -u --csv 2>&1 | head -1)"
   drop peak   # no Pearl kernel for AMD
+  drop ozm    # NVIDIA only
 fi
 
 mkdir -p /opt/b && cd /opt/b || fail "no /opt/b"
@@ -118,6 +127,20 @@ curl -fsSL --retry 3 -o srb.tgz \
   || fail "download SRBMiner"
 echo "$SRB_MD5  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
+if has wild; then
+  curl -fsSL --retry 3 -o wild.tgz \
+    "https://github.com/andru-kun/wildrig-multi/releases/download/$WILD_VER/wildrig-multi-linux-$WILD_VER.tar.gz" \
+    || fail "download WildRig"
+  echo "$WILD_SHA256  wild.tgz" | sha256sum -c --quiet || fail "WildRig checksum"
+  mkdir -p /opt/b/wild && tar xzf wild.tgz -C /opt/b/wild && [ -x /opt/b/wild/wildrig-multi ] || fail "unpack WildRig"
+fi
+if has ozm; then
+  curl -fsSL --retry 3 -o ozm.tgz \
+    "https://github.com/OneZeroMiner/onezerominer/releases/download/v$OZM_VER/onezerominer-linux-$OZM_VER.tar.gz" \
+    || fail "download OneZeroMiner"
+  echo "$OZM_SHA256  ozm.tgz" | sha256sum -c --quiet || fail "OneZeroMiner checksum"
+  tar xzf ozm.tgz && [ -x /opt/b/onezerominer-linux/onezerominer ] || fail "unpack OneZeroMiner"
+fi
 # Our miner: the published release, as a user gets it; on AMD, the HIP core built here.
 case ",${ORDER:-peak,srb,ours}," in *,ours,*)
   if [ -z "$AMD" ]; then
@@ -138,10 +161,11 @@ if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
   say "$(cat /opt/b/tap.log)"
   POOL_HOST=127.0.0.1; POOL_PORT=3333
 fi
+others=; has wild && others="$others, WildRig $WILD_VER"; has ozm && others="$others, OneZeroMiner $OZM_VER"
 if [ -z "$AMD" ]; then
-  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER, ours $VER"
+  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER$others, ours $VER"
 else
-  r="SRBMiner $SRB_VER"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
+  r="SRBMiner $SRB_VER$others"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
   say "ready $r"
   say "srb devices $(cd "$(dirname "$SRB")" && timeout 60 "$SRB" --list-devices $SRB_EXTRA 2>&1 | tr -s '\r\n ' ' ' | tail -c 400)"
 fi
@@ -150,13 +174,19 @@ peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
+# WildRig and OneZeroMiner, run as their own Pearl start scripts do, each with its API on, as their HiveOS packages
+# read them (h-stats.sh).
+wild() { cd /opt/b/wild && ./wildrig-multi --algo pearlhash --url "stratum+tcp://$POOL_HOST:$POOL_PORT" \
+           --user "$W.bench-wild" --pass x --api-port 21551; }
+ozm()  { cd /opt/b/onezerominer-linux && ./onezerominer -a pearl -w "$W" --worker bench-ozm \
+           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552; }
 # Our CLI picks Kryptex's "wallet/worker" login from the host name, so behind the TAP relay (127.0.0.1) Kryptex
 # credits the same wallet but names the worker "worker" rather than bench-ours.
 ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
            --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
-stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
+stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
 # One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature,
 # then (NVIDIA) its memory clock, GPU use, memory-controller use and memory in use (MiB), in gpu=.
@@ -168,6 +198,10 @@ sample() {
     peak) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:4068/summary | jq -r '
             def num(p): [paths(numbers) as $q | select(($q|map(tostring)|join(".")) | test(p; "i")) | getpath($q)];
             [(num("hash") | max), (num("accept") | max), (num("reject") | max)] | @tsv' 2>/dev/null) ;;
+    wild) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21551 | jq -r '
+            [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
+    ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
+            [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
     ours) local l; l=$(tr '\r' '\n' < ours.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
