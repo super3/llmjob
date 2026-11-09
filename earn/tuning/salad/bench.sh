@@ -33,7 +33,9 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=300; WARM=60
 # on 9 November.
 VER=v0.6.13
 PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
-SRB_VER=3.8.6; SRB_MD5=38128fa15afff3c488e53726aa251249
+# SRBMiner stays at 3.8.2: on Salad 3.8.6 exited 73 within seconds and printed only its interactive setup prompt
+# ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two 2080 Tis, 9 November).
+SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
 OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -236,6 +238,11 @@ run() {
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -v '^\s*$' | tail -2 | tr '\n' ' ' | tail -c 300)"
+  # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
+  # whether the driver's OpenCL library is in the container.
+  if [ "$name" = wild ]; then
+    say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -v '^\s*$' | grep -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | tail -c 400)"
+  fi
   kill $pid 2>/dev/null; stop_all
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done

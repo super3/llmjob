@@ -568,7 +568,7 @@ second. A warm-up of the first miner, then each for 5 minutes. Salad has no 2060
 those rows fill only if the 2060 or 2070 class hands one out. There's no hit check: the release's cores are run as
 users get them, and the pool's accepted and rejected shares are in each box's lines. A PC takes about 25 minutes.
 
-Since 9 November `bench.sh` pins v0.6.13, PeakMiner 2.20.7 and SRBMiner 3.8.6, and the RTX and AMD sets also run
+Since 9 November `bench.sh` pins v0.6.13, PeakMiner 2.20.7 and SRBMiner 3.8.2 (3.8.6 quits at once on Salad), and the RTX and AMD sets also run
 WildRig Multi 0.51.9 and OneZeroMiner 1.8.5, the third and fourth most downloaded Pearl miners. The first PC of a
 class runs ours, PeakMiner, SRBMiner, WildRig, OneZeroMiner, the second SRBMiner first and ours last. OneZeroMiner
 has no AMD support, so AMD boxes run ours, SRBMiner and WildRig. bench.py reads each from its API, as the miners'
