@@ -222,6 +222,14 @@ done
 [[ $conf != *" --no-update "* ]] || fail "the argument line turns updates off:$conf"
 start
 wait_for "LLMJob Earn CLI v$version" 60
+if [ -d rocm ]; then
+  # There's no nvidia-smi here, so the miner tries the AMD core first, and with the runtime in
+  # rocm/ it loads (a rig with NVIDIA cards has nvidia-smi and doesn't). Then the CUDA core by name.
+  wait_for "Pearl core: AMD build (ROCm)" 60
+  wait_exit 60
+  configure "--region us --core cu12"
+  start
+fi
 wait_for "Pearl core: CUDA 12.8 build" 60
 wait_for "$no_gpu" 60
 wait_exit 60
