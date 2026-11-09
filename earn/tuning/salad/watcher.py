@@ -3085,18 +3085,20 @@ class W:
         # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the
         # heading ended "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84". One Salad org and no Clore read keep
         # the old ending, "Salad $228.65 left · 9d".
-        cb, credit_rows = st.get("clore_bal"), []
+        cb, credit_rows, salad_link = st.get("clore_bal"), [], "[Salad](https://portal.salad.com)"
         if runway is not None:
-            credit_rows = [(o, bal, short_lasts(h) + (" idle" if idle else "")) for o, h, idle, bal in runway]
+            # Each org named as Salad's (founder, 9 November: "label the credit for llmjob and llmjob2 as Salad").
+            credit_rows = [(f"{salad_link} {o}", bal, short_lasts(h) + (" idle" if idle else ""))
+                           for o, h, idle, bal in runway]
         elif cb:
-            credit_rows = [("Salad", credit, short_lasts(hours, cmark) if hours is not None else "")]
+            credit_rows = [(salad_link, credit, short_lasts(hours, cmark) if hours is not None else "")]
         else:
             head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
         if cb:
             credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], ""))
         if credit_rows:
             credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
-                          *(f"| {o} | ${bal:.2f}{cmark if o == 'Salad' else ''} | {lasts} |" for o, bal, lasts in credit_rows)]
+                          *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {lasts} |" for o, bal, lasts in credit_rows)]
             if len(credit_rows) > 1:
                 credit_tab.append(f"| **All** | **${sum(bal for _, bal, _ in credit_rows):.2f}** | |")
         else:
