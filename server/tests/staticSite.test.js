@@ -277,10 +277,13 @@ describe('HiveOS flight sheet on the home page', () => {
     });
     const config = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-config.sh'), 'utf8');
     expect(config).toContain('wallet=${template%%.*}');
-    // The steps say HiveOS still asks for a wallet, and the button and the file
-    // link are there.
-    expect(sec).toContain('Import from clipboard');
-    expect(sec).toContain('pick your PRL wallet');
+    // The steps say HiveOS still asks for a wallet and that this is expected,
+    // give the file import for when HiveOS can't read the clipboard, and the
+    // button and the file link are there.
+    expect(sec).toContain('Import from Clipboard');
+    expect(sec).toContain('Import from File');
+    expect(sec).toContain('marks <b>Wallet</b> as a required field');
+    expect(sec).toContain('Pick your PRL wallet');
     expect(sec).toContain('id="fs-copy"');
     expect(sec).toContain('id="fs-file"');
   });
