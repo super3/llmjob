@@ -4835,8 +4835,10 @@ class TestGemma(Base):
             def line(text):
                 with open(log, "a", encoding="utf-8") as f:
                     f.write(text)
-                return subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
-                                      capture_output=True, encoding="utf-8").stdout.strip()
+                out = subprocess.run(["bash", "-c", loop], env={"D": d, "g": "0", "PATH": os.environ["PATH"]},
+                                     capture_output=True, encoding="utf-8").stdout
+                # A Monero box also echoes its CPU lines and load each minute ([xmr gN], cmd_for); the status is [mining gN].
+                return [l for l in out.splitlines() if l.startswith("[mining")][-1]
             mine = "121.0 TH/s · 22 accepted · 0 rejected · up 0h 31m"
             self.assertEqual(line("⛏  " + mine + "\n"), "[mining g0] 02:30:00 " + mine)
             self.assertEqual(line("mining paused on GPU 0 while the local LLM answers a prompt\n"),
@@ -4848,7 +4850,11 @@ class TestGemma(Base):
         for args in (("v0.6.0",), ("v0.6.0", XMR), ("v0.6.1", XMR, 0, "prl-us.kryptex.network:7048")):
             self.assertEqual(w.cmd_for("biz-rtx4080", "prl1abc", *args), w.cmd_for("biz-rtx4080", "prl1abc", *args, llm=False)
                              if len(args) == 4 else w.cmd_for("biz-rtx4080", "prl1abc", *args))
-            self.assertEqual(self.sed(w.cmd_for("biz-rtx4080", "prl1abc", *args), self.BOX), self.BOX)
+            out = self.sed(w.cmd_for("biz-rtx4080", "prl1abc", *args), self.BOX)
+            # A Monero box's status loop also echoes its CPU lines ([xmr gN]); Gemma's own changes are what must be absent.
+            self.assertTrue(set(self.BOX.splitlines()) <= set(out.splitlines()))
+            self.assertNotIn("--mode auto", out)
+            self.assertNotIn("paused for a prompt", out)
         self.x.cfg["xmr_wallet"], self.x.cfg["xmr_groups"] = XMR, ["*"]
         self.assertNotIn("--mode auto", self.x.box("biz-rtx4080", True, True)[1][2])
 
