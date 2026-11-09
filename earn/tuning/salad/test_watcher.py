@@ -2464,6 +2464,22 @@ class TestSafeTrade(Base):
             "| Withdrawn in Jan | | | | | $0.00 | $0.00 |",
             "| On SafeTrade | | | | | $2.93 | $9.05 |"])        # its fee counts with the rest
 
+    def test_usdt_sent_to_clore_is_its_own_row_too(self):
+        # 9 November: 50 USDT (3 fee) to the Clore business account's deposit address, which SafeTrade gives in lower
+        # case. It paid for Clore credit, so it gets its own row and stays out of Withdrawn.
+        now = self.clock[0]
+        self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [
+            {"currency_id": "usdt", "amount": "50.0", "fee": "3", "status": "confirming", "created_at": w.iso(now - 3600),
+             "rid": self.x.cfg["clore_wallet"].lower()},
+            {"currency_id": "usdt", "amount": "5.0", "fee": "1", "status": "succeed", "rid": self.x.cfg["salad_wallet"]}]))
+        self.x.safetrade()
+        rows = [shown(l) for l in self.report().splitlines() if l.startswith("| ")]
+        self.assertEqual(rows[-5:-1], [
+            "| 🪙 XMR | 0.001043 | 0.010368 | 0.000008 | 0.010000 | $0.01 | +$6.19 |",
+            "| USDT to Clore | | | | | $3.00 | −$50.00 |",
+            "| USDT to Salad | | | | | $1.00 | −$5.00 |",
+            "| Withdrawn in Jan | | | | | $0.00 | $0.00 |"])
+
     def test_withdrawn_is_this_months_transfers_to_our_other_accounts(self):
         now = self.clock[0]
         self.http.on("GET", r"safetrade\.com/api/v2/trade/account/withdraws\?", (200, [

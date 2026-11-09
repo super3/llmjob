@@ -86,6 +86,8 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "log_overlap_min": 10,
                # The Solana wallet that tops up Salad's credit: SafeTrade withdrawals to it are "to Salad", not bank.
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
+               # The Clore business account's deposit address (USDT/USDC on Ethereum): withdrawals to it are "to Clore".
+               "clore_wallet": "0xE7D54591BAA19326a38b611831F5Bf5F5D04028b",
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
                "salad_orgs": [],
                # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
@@ -1164,7 +1166,10 @@ class W:
         # top-up wallet (salad_wallet) is keyed "<currency>>salad": it paid for credit and never reached the bank.
         # This month's (New York time) withdrawals to LLMJob's other accounts, for the report's Withdrawn row:
         # [amount, network fee] over every currency, each counted as dollars (they are USDT and USDC).
-        out, topup, month = {}, self.cfg.get("salad_wallet"), dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m")
+        # One to the Clore business account (clore_wallet, 9 November) is keyed "<currency>>clore" the same way.
+        out, month = {}, dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m")
+        dests = {str(self.cfg.get(k) or "").lower(): tag for k, tag in (("salad_wallet", "salad"), ("clore_wallet", "clore"))
+                 if self.cfg.get(k)}
         out_month = [0.0, 0.0]
         for page in range(1, 21):
             got = get(f"/account/withdraws?limit=100&page={page}")
@@ -1176,11 +1181,12 @@ class W:
                     continue
                 try:
                     cur = str(x.get("currency_id") or x.get("currency")).lower()
-                    o = out.setdefault(cur + (">salad" if topup and x.get("rid") == topup else ""), [0.0, 0.0])
+                    dest = dests.get(str(x.get("rid") or "").lower())
+                    o = out.setdefault(cur + (f">{dest}" if dest else ""), [0.0, 0.0])
                     o[0] += float(x.get("amount") or 0)
                     o[1] += float(x.get("fee") or 0)
                     when = x.get("created_at")
-                    if (not (topup and x.get("rid") == topup) and when
+                    if (not dest and when
                             and dt.datetime.fromtimestamp(parse_iso(when), NY).strftime("%Y-%m") == month):
                         out_month[0] += float(x.get("amount") or 0)
                         out_month[1] += float(x.get("fee") or 0)
@@ -3009,13 +3015,14 @@ class W:
             # Every withdrawal's fees count in the fee total: the network's fee and, for a stablecoin bought with
             # USDT, that trade's fee.
             for cur, (amt, wfee) in (sa.get("out") or {}).items():
-                if cur == "usdt" or cur.endswith(">salad"):
+                if cur == "usdt" or cur.endswith((">salad", ">clore")):
                     fees += round(wfee, 2)
                 elif cur in (sa.get("bought") or {}):
                     fees += round(sa["bought"][cur][1] + wfee, 2)
             for cur, (amt, wfee) in sorted((sa.get("out") or {}).items()):
-                if cur.endswith(">salad"):
-                    rows.append(f"| {cur.split('>')[0].upper()} to Salad | | | | | ${wfee:.2f} | −${amt:.2f} |")
+                if cur.endswith((">salad", ">clore")):
+                    coin, dest = cur.split(">")
+                    rows.append(f"| {coin.upper()} to {dest.capitalize()} | | | | | ${wfee:.2f} | −${amt:.2f} |")
             wm, wf = sa.get("out_month") or [0.0, 0.0]
             rows.append(f"| Withdrawn in {dt.datetime.fromtimestamp(t, NY):%b} | | | | | ${wf:.2f} | "
                         + (f"−${wm:.2f}" if wm else "$0.00") + " |")
