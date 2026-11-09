@@ -10,7 +10,7 @@
 // release publishes.
 
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, readFileSync, writeFileSync, chmodSync, rmSync, existsSync } from 'node:fs';
+import { mkdirSync, copyFileSync, readFileSync, writeFileSync, chmodSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -101,6 +101,22 @@ if (existsSync(hip)) {
   chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644);
 } else {
   console.error('warning: no pearl_core_hip.node — this package cannot mine on AMD cards');
+}
+
+// The ROCm 7 HIP runtime that core loads, in rocm/ beside it (scripts/fetch-hip-runtime.sh),
+// since HiveOS has none and its Ubuntu 20.04 image can't install ROCm 7. The core looks in
+// /opt/rocm/lib first, so a rig that installed ROCm uses its own. Optional: without it the AMD
+// core needs the rig to install the runtime, as before 9 November.
+const hipRuntime = join(root, 'vendor', 'hip-runtime');
+if (existsSync(hip) && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
+  const rocmDir = join(pkgDir, 'rocm');
+  mkdirSync(rocmDir);
+  for (const f of readdirSync(hipRuntime)) {
+    copyFileSync(join(hipRuntime, f), join(rocmDir, f));
+    chmodSync(join(rocmDir, f), 0o644);
+  }
+} else if (existsSync(hip)) {
+  console.error('warning: no vendor/hip-runtime — AMD rigs need ROCm 7 installed to mine');
 }
 
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the

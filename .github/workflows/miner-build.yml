@@ -247,6 +247,18 @@ jobs:
       # every self-updating rig needs, and that step fails when the package is
       # missing. On a PR or a push to main a break fails the job here, and is
       # caught before a release.
+      # The ROCm 7 HIP runtime for the package's AMD core, in rocm/ beside it: HiveOS has none,
+      # and its Ubuntu 20.04 image can't install ROCm 7 (an RX 6700 XT rig, 9 November). AMD's
+      # RHEL 8 packages, pinned by checksum (scripts/fetch-hip-runtime.sh). Optional like the
+      # AMD core: without it the package still mines on NVIDIA, and AMD rigs need ROCm installed.
+      - name: Stage the HIP runtime for the HiveOS package (Linux)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq rpm2cpio cpio > /dev/null
+          bash scripts/fetch-hip-runtime.sh vendor/hip-runtime
+
       - name: Package HiveOS custom miner (Linux)
         id: hiveos
         if: runner.os == 'Linux'

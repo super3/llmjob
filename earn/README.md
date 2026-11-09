@@ -249,11 +249,14 @@ does the same as the variable and wins over it.
 Releases also carry `pearl_core_hip.node`, a core for AMD cards (`native/amd`):
 
 - **Linux**, from v0.6.8: built with ROCm 7.2, in the AppImage, beside the CLI
-  binary and in the HiveOS package. The rig needs ROCm 7's HIP runtime
-  (`libamdhip64.so.7`, from `rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on
-  `LD_LIBRARY_PATH`), which the release does not carry, and which AMD's normal
-  `amdgpu` driver doesn't include. Without it the log says the core would not
-  load and names the missing library.
+  binary and in the HiveOS package. It needs ROCm 7's HIP runtime
+  (`libamdhip64.so.7`), which AMD's normal `amdgpu` driver doesn't include. The
+  HiveOS package carries it, in `rocm/` beside the core: AMD's ROCm 7.2.0
+  packages for RHEL 8, so it loads on HiveOS's Ubuntu 20.04 image too
+  (`scripts/fetch-hip-runtime.sh`). Elsewhere the rig installs it
+  (`rocm-hip-runtime` 7.x, in `/opt/rocm/lib` or on `LD_LIBRARY_PATH`). The core
+  looks in `/opt/rocm/lib` first, then in `rocm/`. Without either the log says
+  the core would not load and names the missing library.
 - **Windows**: built with AMD's HIP SDK 7.2 for the Radeon cards, in the
   installer. Its runtime, `amdhip64_7.dll`, comes with a current Adrenalin
   driver, so nothing else needs installing. A driver too old to have it can't
@@ -599,8 +602,10 @@ defaults. The ones that make sense on a rig:
   [Monero on the CPU](#monero-on-the-cpu-opt-in)).
 - On an AMD rig the package's `pearl_core_hip.node` mines once nvidia-smi
   lists no NVIDIA card, and `--core amd` asks for it on a rig that has NVIDIA
-  cards too (see [The AMD core](#the-amd-core-radeon-and-instinct)). The rig
-  needs ROCm 7's HIP runtime, and this has not been tried on HiveOS yet.
+  cards too (see [The AMD core](#the-amd-core-radeon-and-instinct)). The
+  package carries ROCm 7's HIP runtime in `rocm/`, so the rig needn't install
+  ROCm. That runtime is about 60 MB of the package. No AMD rig has mined on
+  HiveOS yet.
 
 `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
 makes it exit at once, HiveOS restarts it every few seconds, and the rig's page
