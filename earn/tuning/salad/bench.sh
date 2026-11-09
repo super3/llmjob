@@ -92,8 +92,14 @@ amd_ours() {
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
 }
 
-# WildRig loads libOpenCL even on NVIDIA, and Salad's CUDA image has no OpenCL loader (9 November: "libOpenCL.so.1:
-# cannot open shared object file"). The ICD file points the loader at the driver's OpenCL library.
+# WildRig mines NVIDIA cards through OpenCL. Salad's PCs run containers in WSL2, whose NVIDIA driver has no OpenCL
+# library, so there it finds the card, logs "Failed to find OpenCL platform" and hashes 0 (a 3090 Ti, 9 November).
+# A box without the driver's OpenCL library leaves it out rather than spend 5 minutes on a 0. One that has it gets
+# the OpenCL loader, which Salad's CUDA image lacks, pointed at that library.
+if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
+    /usr/lib/wsl/lib/libnvidia-opencl.so* >/dev/null 2>&1; then
+  drop wild "no OpenCL"
+fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
   ${AMD:+clinfo} ${TAP:+python3} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"

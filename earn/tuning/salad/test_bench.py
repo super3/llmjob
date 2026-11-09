@@ -1058,8 +1058,29 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"], mean_after=60), (93.8, None))
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["srb"]), (80.0, None))
 
+    # Where the driver's OpenCL library is (here /bin/sh stands in for it), WildRig runs.
+    OPENCL = "/usr/lib/wsl/lib/libnvidia-opencl.so*"
+    NO_OPENCL = [("/usr/lib/x86_64-linux-gnu/libnvidia-opencl.so*", "/nonexistent/a"),
+                 ("/usr/lib64/libnvidia-opencl.so*", "/nonexistent/b"), (OPENCL, "/nonexistent/c")]
+
+    def without_opencl(self):
+        src = self.SRC
+        for a, b in self.NO_OPENCL:
+            src = src.replace(a, b)
+        return src
+
+    def test_an_nvidia_box_without_opencl_leaves_wildrig_out(self):
+        # Salad's PCs run containers in WSL2, whose NVIDIA driver has no OpenCL (a 3090 Ti, 9 November).
+        out, calls = dry_run(self.without_opencl(), amd=False, env={"ORDER": "ours,peak,srb,wild,ozm"})
+        self.assertNotIn("wildrig", calls)
+        bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
+        self.assertIn("skip wild: no OpenCL", bodies)
+        self.assertNotIn("start wild 300s", bodies)
+        self.assertEqual(b.parse(self.bench_lines(out))["skipped"], {"wild": "no OpenCL"})
+
     def test_an_nvidia_box_runs_wildrig_and_onezerominer_when_the_order_names_them(self):
-        out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
+        src = self.without_opencl().replace("/nonexistent/c", "/bin/sh")
+        out, calls = dry_run(src, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
         self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.51.9/"
                       "wildrig-multi-linux-0.51.9.tar.gz -> wild.tgz", calls)
         self.assertIn("curl https://github.com/OneZeroMiner/onezerominer/releases/download/v1.8.5/"

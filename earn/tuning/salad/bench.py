@@ -526,7 +526,9 @@ class Bench:
         seen = set(self.st["lines"])
         for it in items:
             mach = ((it.get("resource") or {}).get("labels") or {}).get("machine_id")
-            text = it.get("text_log") or ""
+            # Salad files some lines as JSON with the text in json_log.message: WildRig's "end" and "diag" lines,
+            # read as blank until 9 November.
+            text = it.get("text_log") or ((it.get("json_log") or {}).get("message") if isinstance(it.get("json_log"), dict) else "") or ""
             if "[bench]" in text and (not self.st.get("machine") or mach == self.st["machine"]):
                 key = f"{it.get('time')}|{text.strip()}"
                 if key not in seen:
@@ -622,6 +624,9 @@ class Bench:
                     res["ours"] = (None, r["skipped"]["ours"])
                     # bench.sh left ours out of the order too, so SRBMiner went first.
                     res["order"] = ",".join(x for x in (res["order"] or "").split(",") if x and x != "ours") or None
+            for k in COMPETITORS:        # a competitor the box left out, and why ("skip wild: no OpenCL")
+                if res[k][0] is None and r["skipped"].get(k):
+                    res[k] = (None, r["skipped"][k])
             if ours != 90 and all(res[k][0] is None for k in ("ours",) + COMPETITORS):
                 # Where our release has a build, a PC on which no miner gets work points at its network, not the
                 # card: try another PC instead of filling the row with it.
