@@ -15,15 +15,17 @@
 #   - unpacks the package where HiveOS's custom-get puts it, /hive/miners/custom/llmjob-earn
 #   - checks the files, their modes and the version
 #   - lists each core's libraries with ldd. A glibc or libstdc++ version the system lacks fails,
-#     and so does a library it lacks, other than ROCm's for the AMD core (README: the rig
-#     installs ROCm itself). The AMD core is held to Ubuntu 22.04 and newer, which ROCm 7 needs
+#     and so does a library it lacks. A package with rocm/ (the HIP runtime, from 9 November)
+#     must resolve every library the AMD core needs, on every image; one without it is let off
+#     ROCm's own libraries, and its AMD core is held to Ubuntu 22.04 and newer
 #   - with a wallet that isn't a Pearl address, checks the CLI posts that to the HiveOS
 #     dashboard through HiveOS's `message` command (a stand-in here)
 #   - writes the argument line with h-config.sh from a sample flight sheet, starts h-run.sh, and
 #     waits for the CUDA 12.8 core to load and ask for a GPU. There is none, so the miner then
 #     stops, as it does on a rig without an NVIDIA driver
-#   - does the same with --core cu13 for the CUDA 13 core, and checks that --core amd says why
-#     the AMD core won't load: ROCm is missing (the container has none), or on 20.04 the system
+#   - does the same with --core cu13 for the CUDA 13 core. With rocm/, --core amd must load the
+#     AMD core; without it, the miner must say why it won't load: ROCm is missing (the container
+#     has none), or on 20.04 the system
 #   - with every GPU turned off in HiveOS (CUDA_VISIBLE_DEVICES=" "), mines Monero on the CPU,
 #     waits for the worker's self-test, reads the stats file through h-stats.sh as the HiveOS
 #     agent does, and stops the miner with Ctrl+C, as `miner stop` does, checking its shutdown
@@ -96,7 +98,7 @@ for f in h-manifest.conf h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux p
   [ -f "$f" ] || fail "the package has no $f"
 done
 # The optional files: a build can ship without each, and says so in its own run summary.
-for f in pearl_core_cu13.node pearl_core_hip.node llmjob-xmr-worker; do
+for f in pearl_core_cu13.node pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7; do
   [ -f "$f" ] || echo "::warning::$image: the package has no $f, so it isn't tested"
 done
 mode_is() {
@@ -119,10 +121,11 @@ for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
   # "./x.node: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.38' not found (required by …)"
   versions=$(grep -F "version \`" <<< "$deps" || true)
   missing=$(grep -F '=> not found' <<< "$deps" | awk '{print $1}' || true)
-  if [ "$core" = pearl_core_hip.node ]; then
+  # The bundled runtime is found through the core's runpath ($ORIGIN/rocm), so ldd resolves it.
+  if [ "$core" = pearl_core_hip.node ] && [ ! -d rocm ]; then
     missing=$(grep -vE '^lib(amdhip64|hsa-runtime64|amd_comgr|rocprofiler-register)\.' <<< "$missing" || true)
   fi
-  if [ "$core" = pearl_core_hip.node ] && [ "$amd_system" = no ]; then
+  if [ "$core" = pearl_core_hip.node ] && [ ! -d rocm ] && [ "$amd_system" = no ]; then
     echo "  (not checked: ROCm 7 needs Ubuntu 22.04 or newer, and this is $VERSION_ID)"
     continue
   fi
@@ -219,6 +222,14 @@ done
 [[ $conf != *" --no-update "* ]] || fail "the argument line turns updates off:$conf"
 start
 wait_for "LLMJob Earn CLI v$version" 60
+if [ -d rocm ]; then
+  # There's no nvidia-smi here, so the miner tries the AMD core first, and with the runtime in
+  # rocm/ it loads (a rig with NVIDIA cards has nvidia-smi and doesn't). Then the CUDA core by name.
+  wait_for "Pearl core: AMD build (ROCm)" 60
+  wait_exit 60
+  configure "--region us --core cu12"
+  start
+fi
 wait_for "Pearl core: CUDA 12.8 build" 60
 wait_for "$no_gpu" 60
 wait_exit 60
@@ -235,7 +246,19 @@ fi
 # 3. The AMD core. Without ROCm it can't load, so the miner exits, says why, and the dashboard
 #    says it can't mine. On 22.04 and newer the reason must be ROCm, not something about the
 #    system. 20.04 can't have ROCm 7, so there either is.
-if [ -f pearl_core_hip.node ]; then
+if [ -f pearl_core_hip.node ] && [ -d rocm ]; then
+  # With the bundled runtime the core loads here too. There's no card for it (no /dev/kfd), so
+  # it can't start, but no library may be missing. Up to 30 s, then it's stopped either way.
+  configure "--region us --core amd"
+  start
+  for ((i = 0; i < 30; i++)); do kill -0 "$run" 2>/dev/null || break; sleep 1; done
+  kill -KILL -- "-$run" 2>/dev/null || true
+  wait "$run" 2>/dev/null || true
+  echo "--core amd with rocm/:"
+  run_log | sed 's/^/  /' | tail -n 20
+  grep -qE 'cannot open shared object file|libamdhip64\.so\.7' <<< "$(run_log)"     && fail "with rocm/ beside it the AMD core still couldn't find a library"
+  grep -q 'AMD' <<< "$(run_log)" || fail "with --core amd the miner said nothing about the AMD core"
+elif [ -f pearl_core_hip.node ]; then
   configure "--region us --core amd"
   start
   wait_exit 60

@@ -257,8 +257,14 @@ case "$mode" in
     $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
     # --allow-shlib-undefined: libamdhip64 needs the rest of the ROCm runtime, which a build
     # box without a GPU may not have. The user's machine has it (README.md).
+    # The runtime is looked for in /opt/rocm/lib first, a ROCm the rig installed, then in rocm/
+    # beside this file, where the HiveOS package carries one (scripts/fetch-hip-runtime.sh).
+    # The core is held to Ubuntu 20.04's glibc and libstdc++ (HiveOS's image; native-core.yml):
+    # pearl_host_hip.cpp defines the one GCC 11 libstdc++ function it would otherwise need.
+    # Linking libstdc++ in statically doesn't do it: this image's static libstdc++ needs glibc
+    # 2.38 itself.
     $cc -shared -fPIC -o "$OUT/pearl_core_hip.node" "$OUT/gpu/pearl_host_hip.o" "$OUT/gpu/pearl_core.o" \
-      -L"$rocm/lib" -lamdhip64 -Wl,-rpath,/opt/rocm/lib -Wl,--allow-shlib-undefined
+      -L"$rocm/lib" -lamdhip64 -Wl,-rpath,/opt/rocm/lib -Wl,-rpath,'$ORIGIN/rocm' -Wl,--allow-shlib-undefined
     echo "gpu: fold check"
     $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $inc -c "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/gpu/pearl_amd_foldtest.o"
     $cc -o "$OUT/pearl_amd_foldtest" "$OUT/gpu/pearl_amd_foldtest.o" \

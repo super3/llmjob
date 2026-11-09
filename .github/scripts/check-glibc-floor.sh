@@ -11,8 +11,9 @@
 # HiveOS's Ubuntu 20.04 image.
 #
 # The CUDA cores are built on Rocky Linux 8 (glibc 2.28) and held to Ubuntu 20.04's limits,
-# so they load on every HiveOS image from 20.04 up. The AMD core is held to 22.04's: ROCm 7,
-# which it needs, supports no older Ubuntu. 22.04 is the default.
+# so they load on every HiveOS image from 20.04 up. The AMD core is held to 20.04's too since
+# 9 November: the HiveOS package carries a ROCm 7 runtime built for RHEL 8, so the rig needn't
+# install one, and the core links libstdc++ in. 22.04 is the default.
 set -euo pipefail
 
 release=22.04

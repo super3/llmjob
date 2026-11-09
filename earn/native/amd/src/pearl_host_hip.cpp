@@ -41,6 +41,17 @@
 
 #include "pearl_amd_kernels.h"
 
+// GCC 11's libstdc++ headers make `new T[n]` and std::allocator call
+// std::__throw_bad_array_new_length, which is GLIBCXX_3.4.29, so the Linux core built with them
+// wouldn't load on Ubuntu 20.04 (GCC 10's libstdc++, 3.4.28), HiveOS's image: an RX 6700 XT rig
+// on 9 November. Defined here, hidden, the core doesn't ask the system's libstdc++ for it. It
+// runs only for an array size that overflows, which the core never asks for.
+#if defined(__linux__) && defined(_GLIBCXX_RELEASE) && _GLIBCXX_RELEASE >= 11
+namespace std {
+__attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_length() { abort(); }
+}
+#endif
+
 // How many column offsets one batch covers at most. Each pipeline slot keeps a transcript
 // buffer of col_batch x (m / 16) regions x 64 bytes: 128 MiB at 256 and the mainnet m.
 // -DPEARL_AMD_COL_BATCH=N sets another width; the host narrows it further if it has to.

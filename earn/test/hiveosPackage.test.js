@@ -105,6 +105,13 @@ const tarOk = process.platform === 'linux'
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
     }
+    // The HIP runtime scripts/fetch-hip-runtime.sh stages for the AMD core.
+    fs.mkdirSync(path.join(tmp, 'vendor', 'hip-runtime'), { recursive: true });
+    for (const f of ['libamdhip64.so.7', 'libamd_comgr.so.3', 'NOTICE.txt']) {
+      const p = path.join(tmp, 'vendor', 'hip-runtime', f);
+      fs.writeFileSync(p, 'stand-in ' + f + '\n');
+      fs.chmodSync(p, 0o666);
+    }
   });
   afterEach(() => {
     fs.rmSync(tmp, { recursive: true, force: true });
@@ -143,6 +150,10 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_hip.node': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
+      'llmjob-earn/rocm/': expect.stringMatching(/^d/),
+      'llmjob-earn/rocm/libamdhip64.so.7': '-rw-r--r--',
+      'llmjob-earn/rocm/libamd_comgr.so.3': '-rw-r--r--',
+      'llmjob-earn/rocm/NOTICE.txt': '-rw-r--r--',
     });
 
     const manifest = spawnSync('tar', ['-xzOf', out, 'llmjob-earn/h-manifest.conf'],
@@ -168,6 +179,16 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no llmjob-xmr-worker');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('llmjob-xmr-worker');
+  });
+
+  // Without the HIP runtime staged, the AMD core needs ROCm on the rig, as before 9 November.
+  test('a missing HIP runtime still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'vendor'), { recursive: true });
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no vendor/hip-runtime');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('rocm/');
   });
 
   // The AMD core is for --core amd only; without it the rig mines on NVIDIA.
