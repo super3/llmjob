@@ -1,5 +1,5 @@
 # Tests for watcher.py's rules, with Salad, the pool and the clock faked.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import importlib.util, io, json, os, re, shutil, tempfile, time, unittest
 from unittest import mock
 

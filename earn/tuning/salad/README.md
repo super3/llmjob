@@ -17,11 +17,11 @@ directory:
 ```sh
 export PRL_WALLET=prl1...            # payout address
 export SALAD_API_KEY=...             # not needed in a Claude cloud session: its proxy adds the key
-export SALAD_MINE_DIR=/some/dir      # default: tuning/salad/run/ (gitignored)
+export SALAD_MINE_DIR=/some/dir      # default: earn/tuning/salad/run/ (gitignored)
 export SAFETRADE_API_KEY=... SAFETRADE_API_SECRET=...   # optional: the report's SafeTrade rows
 export SALAD_USER=... SALAD_PASS=...   # optional: the portal login, for Salad's own credit balance
-cp tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
-setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
+cp earn/tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
+setsid nohup bash earn/tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
 ```
 

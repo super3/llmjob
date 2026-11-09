@@ -1,5 +1,5 @@
 # Tests for salad_ledger.py's matching of Salad's daily usage to its invoice lines, with no Salad calls.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import importlib.util, os, unittest
 
 spec = importlib.util.spec_from_file_location("salad_ledger", os.path.join(os.path.dirname(os.path.abspath(__file__)), "salad_ledger.py"))
