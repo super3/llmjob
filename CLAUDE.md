@@ -45,7 +45,7 @@ benchmark tools), its bugs are part of the job, not extra work to ask about.
   spending, what to mine. Ask once, in a message of its own, with what it costs a
   day and what you'll do if I don't answer ("I'll do X at 9 pm unless you say
   no"). Never put a question in a report's notes.
-- **Keep every known problem in `tuning/salad/OPEN.md`,** with a number that's never
+- **Keep every known problem in `earn/tuning/salad/OPEN.md`,** with a number that's never
   reused, when it was found, what it costs a day, and how it'll be fixed. An item
   leaves only with a fix commit or my decision. Show me the list when it changes.
 - **Give every problem its cost:** dollars a day, moves, boxes or slot-hours, with
@@ -61,8 +61,8 @@ app. The job isn't done until every test passes.
 
 ## Benchmarks
 
-Follow "Keeping this file current" in `tuning/benchmark.md`. A re-measure goes into
-`tuning/benchmark.md` in the same PR, and the file is checked before every release.
+Follow "Keeping this file current" in `earn/tuning/benchmark.md`. A re-measure goes into
+`earn/tuning/benchmark.md` in the same PR, and the file is checked before every release.
 
 ## Git
 

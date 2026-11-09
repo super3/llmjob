@@ -478,7 +478,7 @@ jobs:
 
       # GTX 16 cards (sm_75 without tensor cores) run Pascal's dp4a fold
       # (PEARL_DP4A_TURING in pearl_config.h, on by default: raced on Salad
-      # against the tensor fold, tuning/benchmark.md). The switch must not touch
+      # against the tensor fold, earn/tuning/benchmark.md). The switch must not touch
       # what the RTX 20 cards and the T4 run. So the sm_75 half is compiled again
       # with it off, into a scratch directory no later step reads, and every
       # sm_75 kernel's machine code but the dp4a fold's (the md5 of its .text
@@ -716,8 +716,8 @@ jobs:
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct
   # cards on Linux. It ships in the Linux release from v0.6.8 and loads only when a rig asks
   # for it (--core amd, or PEARL_CORE_VARIANT=amd). Built in the image the Salad tests built
-  # it in (tuning/salad/amdtest.py's IMAGE), pinned by digest, so the release's code is the
-  # compiler output the hardware rows in tuning/benchmark.md were measured on: ROCm 7.2.0's
+  # it in (earn/tuning/salad/amdtest.py's IMAGE), pinned by digest, so the release's code is the
+  # compiler output the hardware rows in earn/tuning/benchmark.md were measured on: ROCm 7.2.0's
   # hip-clang, all 14 targets.
   #
   # Non-blocking, for the CUDA 13 build's reason: a failure here must not fail the run, or
@@ -820,7 +820,7 @@ jobs:
   #
   # The SDK's compiler is not the Linux image's: SDK 7.2 ships clang 21.0.0git, where
   # ROCm 7.2.0 on Linux has AMD clang 22.0.0git. So this core's code is not the code the
-  # Salad rows in tuning/benchmark.md measured, and no Windows Radeon has run it.
+  # Salad rows in earn/tuning/benchmark.md measured, and no Windows Radeon has run it.
   #
   # Non-blocking, like the Linux AMD job, and for the same reason.
   amd-windows:

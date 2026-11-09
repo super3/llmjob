@@ -1,7 +1,7 @@
 'use strict';
 
 // The AMD host's batch width (amd_col_batch in earn/native/amd/src/pearl_host_hip.cpp): 128 column offsets on
-// gfx1100 and gfx1101, where 128 was faster in the miner's own loop (tuning/benchmark.md, AMD, item 13), and 256
+// gfx1100 and gfx1101, where 128 was faster in the miner's own loop (earn/tuning/benchmark.md, AMD, item 13), and 256
 // elsewhere. No HIP compiler runs here, so the function is read out of the source and run as JS: the same
 // statements, with C's strncmp and getenv standing in. A build that sets PEARL_AMD_COL_BATCH keeps exactly its
 // own cap, so a sweep can still race 256 against 128.

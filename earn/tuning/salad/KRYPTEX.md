@@ -9,13 +9,13 @@ from its accepted shares. Work on PR #261, branch `claude/amazing-newton-mu7lgq`
 **Done.** Release v0.6.1 has `--pool`, and the watcher uses it: Kryptex boxes run v0.6.1 or later with
 `--pool prl-us.kryptex.network:7048` in box.sh's flags, and `kryptex_groups` is 1. The release session's
 test reached Kryptex and was paid for every share. The rest of this file is the plan as it was written
-before that, kept as the record; where it differs from the code, `tuning/salad/README.md` ("Kryptex
+before that, kept as the record; where it differs from the code, `earn/tuning/salad/README.md` ("Kryptex
 (PPS+)") is current. In particular the watcher no longer calls `/v1/pool/info`, and it reads a worker's
 `avg_hashrate_30m`, since the rows have no `hashrate` field.
 
-- The watcher side is built and tested (`tuning/salad/watcher.py`, `KX_API`, `kx_sync`, `kx_switch`,
+- The watcher side is built and tested (`earn/tuning/salad/watcher.py`, `KX_API`, `kx_sync`, `kx_switch`,
   `kx_failed`, `kx_pool`, the `(K)` mark, PRL counted per pool as `prl_kx`). It is switched off live:
-  config `kryptex_groups` is 0. See "Kryptex (PPS+)" in `tuning/salad/README.md`.
+  config `kryptex_groups` is 0. See "Kryptex (PPS+)" in `earn/tuning/salad/README.md`.
 - What blocks it: the miner can't be pointed at Kryptex on a Salad box.
   - The CLI only takes a HeroMiners region (`--region`, `earn/src/shared/config.js` `REGIONS`).
   - The watcher tried to redirect the HeroMiners names with `/etc/hosts` and a local `socat` forward.
@@ -54,7 +54,7 @@ before that, kept as the record; where it differs from the code, `tuning/salad/R
 On the GPU machine:
 
 ```sh
-W=<the PRL wallet, from PRL_WALLET or tuning/salad config>
+W=<the PRL wallet, from PRL_WALLET or earn/tuning/salad config>
 printf '{"id":1,"method":"mining.authorize","params":{"wallet":"%s","worker":"probe"}}\n' "$W" \
   | timeout 15 nc prl-us.kryptex.network 7048
 printf '{"id":1,"method":"mining.authorize","params":{"wallet":"%s/probe","worker":"probe"}}\n' "$W" \
@@ -110,16 +110,16 @@ cd earn && node src/cli/earn-cli.js -a "$W" -w kx-test --mode mining --no-serve 
 ## Step 4: release, then switch the watcher over
 
 1. Release v0.6.1 the repo's usual way (version in `earn/package.json`, a `v0.6.1` tag, which runs
-   `.github/workflows/miner-build.yml`; check `tuning/benchmark.md` first, per `CLAUDE.md`). Ask the user
+   `.github/workflows/miner-build.yml`; check `earn/tuning/benchmark.md` first, per `CLAUDE.md`). Ask the user
    before tagging: a release reaches every user.
-2. In `tuning/salad/watcher.py`, replace the `/etc/hosts` + `socat` redirect in `cmd_for(...,
+2. In `earn/tuning/salad/watcher.py`, replace the `/etc/hosts` + `socat` redirect in `cmd_for(...,
    kryptex=...)` with a `--pool` flag, the same way Monero adds `--xmr-address`: a `sed` edit that puts
    `--pool <kryptex_host>` into box.sh's default `"flags"`. Remove `HM_REGIONS` and the socat install.
    Kryptex boxes need the new release: when `kx` is on, use at least v0.6.1, the way `box()` bumps the
    version for Monero (`xmr_ver`).
-3. Update the tests in `TestKryptex` (`tuning/salad/test_watcher.py`): the command test should check
+3. Update the tests in `TestKryptex` (`earn/tuning/salad/test_watcher.py`): the command test should check
    for `--pool prl-us.kryptex.network:7048` and no socat or hosts file. Run
-   `python3 -m unittest discover -s tuning/salad` (all must pass).
+   `python3 -m unittest discover -s earn/tuning/salad` (all must pass).
 4. Turn it on in the live config with `kryptex_groups: 1`. The watcher switches the weakest-earning
    HeroMiners box: it updates the command and moves the box to a new PC (Salad's instance restart
    doesn't restart anything). Watch for `KRYPTEX ON`, the box's `[minerlog g0]` lines, and its first

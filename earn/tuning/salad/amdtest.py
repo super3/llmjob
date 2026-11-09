@@ -61,13 +61,16 @@ NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080
 NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
+# The script lives in earn/tuning/salad, and lived in tuning/salad before 7 November, so a commit from before then
+# is fetched from the old path.
 BOOT = r"""say() { echo "[amdtest] $(date -u +%T) $*"; }
 say "boot container started"
 if [ -z "$BASE_SHA" ]; then say "boot no BASE_SHA; idle"; exec sleep infinity; fi
 command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates >/dev/null 2>&1; }
-u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh"
+u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh"
+o="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh"
 n=0
-until curl -fsSL "$u" -o /root/amdtest.sh; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
+until curl -fsSL "$u" -o /root/amdtest.sh || curl -fsSL "$o" -o /root/amdtest.sh; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
 bash /root/amdtest.sh 2>&1 | tee -a /root/amdtest.log
 say "boot amdtest.sh exited"
 exec sleep infinity"""
@@ -127,6 +130,28 @@ def body(name, class_id, env, cpu=4, mem=8192, storage_gb=10, priority="high"):
                           "resources": {"cpu": cpu, "memory": mem, "gpu_classes": [class_id],
                                         "storage_amount": storage_gb * 1024 ** 3},
                           "command": ["/bin/sh", "-c", NV_BOOT if nv else BOOT], "environment_variables": env}}
+
+
+REPO = os.path.normpath(os.path.join(HERE, "..", "..", ".."))
+
+
+def moved(sha, repo=REPO):
+    """True when sha keeps the Salad tools in earn/tuning/salad, False when in tuning/salad (before they moved on
+    7 November), None when this checkout doesn't have the commit."""
+    for path, new in (("earn/tuning/salad/amdtest.sh", True), ("tuning/salad/amdtest.sh", False)):
+        try:
+            r = subprocess.run(["git", "-C", repo, "cat-file", "-e", f"{sha}:{path}"], capture_output=True)
+        except OSError:
+            return None
+        if r.returncode == 0:
+            return new
+    return None
+
+
+def old_boot(g):
+    """A box created before the move: its fixed boot command fetches the script from tuning/salad only."""
+    cmd = " ".join(((g or {}).get("container") or {}).get("command") or [])
+    return "/tuning/salad/" in cmd and "/earn/tuning/salad/" not in cmd
 
 
 def env_patch(current, sets, unsets):
@@ -314,6 +339,16 @@ def cmd_set_env(a):
         print(f"patch: {len(diff)} bytes against {base[:12]}, {len(sets['PATCH_GZ_B64'])} chars as gzip+base64")
     elif a.no_patch:
         unsets.append("PATCH_GZ_B64")
+    # A box created before the move can't run a commit from after it: its boot command can't find the new script,
+    # and the old script hands over to a path the new commit doesn't have. It would sit on a billed PC doing
+    # nothing, so say so instead. (nvtest.sh doesn't hand over, so only its script's commit matters.)
+    if old_boot(g):
+        env = {k: v for k, v in cur.items() if k not in unsets}
+        env.update(sets)
+        script, base = env.get("SCRIPT_SHA") or env.get("BASE_SHA"), env.get("BASE_SHA")
+        if (script and moved(script)) or (not is_nv(name) and base and moved(base)):
+            sys.exit(f"{name} was created before the Salad tools moved to earn/tuning/salad (7 November), so it "
+                     f"can't run a commit from after that. Delete it and create a new box.")
     # A value that is already set doesn't make a new version, and Salad wouldn't restart the box, so a run can
     # always be repeated: RUN_ID changes every time.
     sets["RUN_ID"] = str(int(time.time()))

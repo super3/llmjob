@@ -1,6 +1,6 @@
 # Tests for bench.py's parsing and table, with no Salad calls, and for bench.sh: its helpers on their own, and the
 # whole script in a dry run with every box command stubbed.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import importlib.util, json, os, shutil, signal, subprocess, sys, tempfile, unittest
 from unittest import mock
 
@@ -442,7 +442,7 @@ class TestBenchRTX(unittest.TestCase):
 
     def test_a_tap_run_fetches_sharetap_and_sets_tap_and_a_plain_run_does_not(self):
         t = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_TAP="1")
-        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/tuning/salad"
+        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/earn/tuning/salad"
         cmd = self.bench(t).command(300, "ours,peak,srb")
         self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/sharetap.py -o "
                       "/root/sharetap.py && W=prl1x ORDER=ours,peak,srb OURS_SECS=300 TAP=1 bash /root/bench.sh", cmd)
@@ -529,7 +529,7 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual(c["resources"], {"cpu": 4, "memory": 8192, "gpu_classes": ["c0"],
                                           "storage_amount": 10737418240})
         cmd = c["command"][2]
-        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/tuning/salad"
+        raw = "https://raw.githubusercontent.com/super3/llmjob/c0ffee/earn/tuning/salad"
         self.assertIn(f"curl -fsSL {raw}/bench.sh -o /root/bench.sh && curl -fsSL {raw}/amdtest.sh -o "
                       "/root/amdtest.sh && W=prl1x ORDER=ours,srb OURS_SECS=300 BASE_SHA=beef VERIFY_SECS=900 "
                       "bash /root/bench.sh", cmd)
@@ -795,7 +795,7 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual(body["container"]["resources"]["memory"], 4096)
         self.assertEqual(body["container"]["command"][2],
                          "apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null "
-                         f"2>&1 && curl -fsSL https://raw.githubusercontent.com/super3/llmjob/{b.COMMIT}/tuning/salad/"
+                         f"2>&1 && curl -fsSL https://raw.githubusercontent.com/super3/llmjob/{b.COMMIT}/earn/tuning/salad/"
                          "bench.sh -o /root/bench.sh && W=prl1x ORDER=srb,peak,ours OURS_SECS=300 bash /root/bench.sh "
                          "2>&1 | tee -a /root/bench.log")
 
@@ -914,7 +914,7 @@ esac''',
     "git": r'''[ "$1" = -C ] && { cd "$2"; shift 2; }
 echo "git $*" >> "$CALLS"
 case "$1" in
-  checkout) mkdir -p earn/native/amd tuning/salad && : > tuning/salad/amdtest_hip.cpp
+  checkout) mkdir -p earn/native/amd earn/tuning/salad && : > earn/tuning/salad/amdtest_hip.cpp
     printf '#!/bin/bash\necho "build-amd.sh $*"\n[ "${FAKE_BUILD_RC:-0}" = 0 ] || { echo "error: fake"; exit 1; }\nmkdir -p build && : > build/pearl_core_hip.node\n' > earn/native/amd/build-amd.sh
     chmod +x earn/native/amd/build-amd.sh ;;
   rev-parse) echo 0123456789ab ;;
@@ -1085,6 +1085,23 @@ class TestBenchShDryRun(unittest.TestCase):
         out, _ = dry_run(self.SRC, amd=True, env={"ORDER": "ours,srb"})
         bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
         self.assertEqual(bodies[-2:], ["FAIL no BASE_SHA", "all done"])
+
+
+class TestBenchToolsMoved(unittest.TestCase):
+    """The tools moved from tuning/salad to earn/tuning/salad on 7 November; a BENCH_COMMIT from before then is
+    fetched from the old folder."""
+
+    def test_salad_dir(self):
+        b = load_bench(BENCH_COMMIT="c0ffee")
+        self.assertEqual(b.salad_dir(""), "earn/tuning/salad")
+        self.assertEqual(b.salad_dir("0" * 40), "earn/tuning/salad")      # a commit this checkout doesn't have
+        repo = os.path.join(HERE, "..", "..", "..")
+        has = lambda rev: subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "-q", rev + "^{commit}"],
+                                         capture_output=True).returncode == 0
+        if has("HEAD"):
+            self.assertEqual(b.salad_dir("HEAD"), "earn/tuning/salad")
+        if has("v0.6.13"):                                                   # the last release before the move
+            self.assertEqual(b.salad_dir("v0.6.13"), "tuning/salad")
 
 
 if __name__ == "__main__":

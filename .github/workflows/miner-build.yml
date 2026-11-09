@@ -9,7 +9,8 @@ on:
     branches: [ main ]
     tags: [ 'v*' ]
   pull_request:
-    paths: [ 'earn/**', '.github/workflows/miner-build.yml', '.github/scripts/pick-core-run.sh', '.github/scripts/hiveos-smoke.sh' ]
+    # earn/tuning/ holds benchmark notes and Salad test tools, not app code: no installer build for them.
+    paths: [ 'earn/**', '!earn/tuning/**', '.github/workflows/miner-build.yml', '.github/scripts/pick-core-run.sh', '.github/scripts/hiveos-smoke.sh' ]
   workflow_dispatch:
     inputs:
       publish:

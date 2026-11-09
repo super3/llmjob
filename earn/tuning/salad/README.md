@@ -17,9 +17,9 @@ directory:
 ```sh
 export PRL_WALLET=prl1...            # payout address
 export SALAD_API_KEY=...             # not needed in a Claude cloud session: its proxy adds the key
-export SALAD_MINE_DIR=/some/dir      # default: tuning/salad/run/ (gitignored)
-cp tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
-setsid nohup bash tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
+export SALAD_MINE_DIR=/some/dir      # default: earn/tuning/salad/run/ (gitignored)
+cp earn/tuning/salad/config.example.json "$SALAD_MINE_DIR/config.json"
+setsid nohup bash earn/tuning/salad/keeper.sh >/dev/null 2>&1 </dev/null &
 tail -F "$SALAD_MINE_DIR/events.log"
 ```
 
@@ -63,7 +63,7 @@ Config keys:
 | `kx_in_place` | While fewer than `kryptex_groups` are on Kryptex, also switch boxes that are mining on HeroMiners, by updating their command: Salad usually restarts each one on the same PC (see [Kryptex](#kryptex-pps)). `false`: a mining box keeps its pool until its next PC. |
 | `llm`, `llm_ver` | Gemma beside mining on every box (see [Gemma](#gemma-beside-mining)), with release `llm_ver` (v0.6.5) or later. `false`: mining only, and every command is as before. |
 
-Tests: `python3 -m unittest discover -s tuning/salad`. They fake Salad, the pool and the clock.
+Tests: `python3 -m unittest discover -s earn/tuning/salad`. They fake Salad, the pool and the clock.
 
 ## Rules
 
@@ -432,18 +432,24 @@ manages only the groups `amdtest-rdna3` and `amdtest-rdna4`, or those with `-2` 
 git, Node 22 and node-addon-api, fetches the repo at `BASE_SHA`, applies `PATCH_GZ_B64` if set, runs the tasks
 in `TASKS`, prints `[amdtest] HH:MM:SS <tag> ...` lines and sleeps. The tasks are listed at the top of
 `amdtest.sh` (card, hip, check, build, foldtest, verify, profile, hashrate, mine, srb, duel, cpuchecks, run).
-`duel` is tuning/benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
+`duel` is earn/tuning/benchmark.md's AMD method on the box's PC: the first miner warms the card for 60 s, then ours (the
 CLI) and SRBMiner 3.8.2 run 5 minutes each on Kryptex; it ends with ours' mean after the first minute and
 SRBMiner's own last figure, the two numbers the table compares. A task can carry its own settings, so one run
 can compare them on one PC: `hashrate+PEARL_AMD_TRACE=1+PEARL_AMD_COL_BATCH=128:60:10`.
 
+These tools were in `tuning/salad` until 7 November, when they moved to `earn/tuning/salad`. A box created since
+then runs commits from either side of the move: its boot command tries the new path and then the old one, and
+`amdtest.sh` finds its own folder in either layout of the checkout. A box created before then can't run a commit
+from after it (its fixed command fetches the old path only), and `set-env` refuses to point it at one rather
+than leave it idle on a billed PC: delete it and create a new one under another name.
+
 ```sh
-python3 tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
-python3 tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,verify:120,hashrate:60:10   # next run, same PC
-python3 tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,duel:srb   # SRBMiner first, then ours
-python3 tuning/salad/amdtest.py wait amdtest-rdna3 --until 'all done' --since 14:05
-python3 tuning/salad/amdtest.py logs amdtest-rdna3 --since 30m
-python3 tuning/salad/amdtest.py status amdtest-rdna3
+python3 earn/tuning/salad/amdtest.py create amdtest-rdna3 7900xtx --sha <pushed sha> --tasks card,hip,build,foldtest
+python3 earn/tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,verify:120,hashrate:60:10   # next run, same PC
+python3 earn/tuning/salad/amdtest.py set-env amdtest-rdna3 --tasks build,duel:srb   # SRBMiner first, then ours
+python3 earn/tuning/salad/amdtest.py wait amdtest-rdna3 --until 'all done' --since 14:05
+python3 earn/tuning/salad/amdtest.py logs amdtest-rdna3 --since 30m
+python3 earn/tuning/salad/amdtest.py status amdtest-rdna3
 ```
 
 What it found on 22 October:
@@ -501,11 +507,11 @@ RTX 50 rigs' cu13 core ships with (it needs driver 580 or newer). During the rac
 the SM clock, power draw and power limit every 5 s (`SMI_EVERY`), to tell clock-held cards from power-capped ones.
 
 ```sh
-python3 tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \
+python3 earn/tuning/salad/amdtest.py create nvtest-rtx3090 3090 --sha <pushed sha> \
   --env "VARIANTS_SPEC=base|;ctr|-DPEARL_TALL_CTR=1" ROUNDS=4 BENCH_SECS=45 HR_BEST=ctr
-python3 tuning/salad/amdtest.py wait nvtest-rtx3090 --until 'all done|FAIL' --since 30m
-python3 tuning/salad/amdtest.py logs nvtest-rtx3090 --since 2h
-python3 tuning/salad/amdtest.py delete nvtest-rtx3090
+python3 earn/tuning/salad/amdtest.py wait nvtest-rtx3090 --until 'all done|FAIL' --since 30m
+python3 earn/tuning/salad/amdtest.py logs nvtest-rtx3090 --since 2h
+python3 earn/tuning/salad/amdtest.py delete nvtest-rtx3090
 ```
 
 GTX 16 boxes (`nvtest-gtx1650`, `nvtest-gtx1660`, `nvtest-gtx1660super`, classes `1650`, `1660`, `1660super`) race
@@ -518,7 +524,7 @@ quota.
 
 ## AMD benchmark (bench.py)
 
-`BENCH_SET=amd` fills tuning/benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
+`BENCH_SET=amd` fills earn/tuning/benchmark.md's AMD Radeon table: two PCs per class, our miner and SRBMiner on the same
 PC, 5 minutes each after a 60 s warm-up, on `us.pearl.herominers.com:1200`. PeakMiner has no Pearl kernel for
 AMD and isn't run, so its column reads "not run" and "% of best" is ours against SRBMiner. No release has an AMD
 build, so each box (`bench.sh` on the ROCm image, high priority, 4 vCPU, 8 GB) uses `amdtest.sh`'s setup to
@@ -542,10 +548,10 @@ lanes must stay within Salad's quota, and lowering `max_active` doesn't end a gr
 
 ```sh
 export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=amd BENCH_COMMIT=$(git rev-parse HEAD)
-BENCH_LANE=a nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
-BENCH_LANE=b nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
-BENCH_LANE=c nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-c.out 2>&1 &
-python3 tuning/salad/bench.py table      # every lane's rows, in tuning/benchmark.md's shape
+BENCH_LANE=a nohup python3 earn/tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-a.out 2>&1 &
+BENCH_LANE=b nohup python3 earn/tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-b.out 2>&1 &
+BENCH_LANE=c nohup python3 earn/tuning/salad/bench.py > $SALAD_MINE_DIR/bench-amd-c.out 2>&1 &
+python3 earn/tuning/salad/bench.py table      # every lane's rows, in earn/tuning/benchmark.md's shape
 ```
 
 Each status file has the lane's table and, under it, a line per PC: its copy rate, the hit check, and hits a
@@ -553,7 +559,7 @@ salt (hits / salts; the check's target makes 8).
 
 ## RTX 20 and 30 rerun (bench.py)
 
-`BENCH_SET=rtx` reruns tuning/benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
+`BENCH_SET=rtx` reruns earn/tuning/benchmark.md's RTX 20- and 30-series rows on Salad PCs, with every miner at its newest:
 our release v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.0 (`bench.sh` pins all three, by commit). Lane `20` takes
 the 2080 Ti, 2080, 2070 and 2060 classes, lane `30` the eight RTX 30 classes from the 3090 Ti to the 3060 (12 GB),
 one Salad slot each. Two PCs per class, each in a group of its own (`bench-20-rtx2080ti-1`, ...), the first with
@@ -564,9 +570,9 @@ users get them, and the pool's accepted and rejected shares are in each box's li
 
 ```sh
 export SALAD_MINE_DIR=<a folder for the runs> PRL_WALLET=<prl1...> BENCH_SET=rtx BENCH_COMMIT=$(git rev-parse HEAD)
-BENCH_LANE=20 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-20.out 2>&1 &
-BENCH_LANE=30 nohup python3 tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-30.out 2>&1 &
-python3 tuning/salad/bench.py table      # both lanes' rows
+BENCH_LANE=20 nohup python3 earn/tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-20.out 2>&1 &
+BENCH_LANE=30 nohup python3 earn/tuning/salad/bench.py > $SALAD_MINE_DIR/bench-rtx-30.out 2>&1 &
+python3 earn/tuning/salad/bench.py table      # both lanes' rows
 ```
 
 ## The container
@@ -720,13 +726,13 @@ nothing is watching. Stopping is reversible. Run it
 hourly (`--dry-run` only reports):
 
 ```sh
-PRL_WALLET=prl1... python3 -I tuning/salad/guard.py
+PRL_WALLET=prl1... python3 -I earn/tuning/salad/guard.py
 ```
 
 It isn't running on a schedule yet. Two tries with a Claude Routine failed: a fresh session without
 the repo had to download the script, which its permission check blocks, and a Routine bound to a
 session with the repo fired into a new empty session instead. The Routine is paused. The better home
-is a Railway cron service next to the trader: Root Directory `/tuning/salad`, start command
+is a Railway cron service next to the trader: Root Directory `/earn/tuning/salad`, start command
 `python3 guard.py`, hourly, with `SALAD_API_KEY` and `PRL_WALLET` set.
 
 ## Money
@@ -771,7 +777,7 @@ PC.
 
 Batch rarely gets a PC for 40- and 50-series cards; low works for older cards. The same class varies
 about ±15% between PCs, because owners cap the card's power. Salad has AMD classes, but the miner is
-CUDA-only. SRBMiner mines Pearl on them at 32–85 TH/s (tuning/benchmark.md's AMD section).
+CUDA-only. SRBMiner mines Pearl on them at 32–85 TH/s (earn/tuning/benchmark.md's AMD section).
 
 What went wrong on the first account:
 

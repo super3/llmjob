@@ -102,7 +102,10 @@
   .ap-foot { display: flex; align-items: center; justify-content: space-between; margin-top: 20px; padding-top: 14px; border-top: 1px solid #f0ede5; font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
 
   /* three steps */
-  .steps { margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 36px; }
+  /* Three across or one under another, as above. Each step has a sample box, so they need
+     900px to go three across without squeezing it. */
+  .steps { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
+  @media (min-width: 900px) { .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .step-n { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-weight: 700; font-size: 14px; display: grid; place-items: center; margin-bottom: 14px; }
   .step-t { font-weight: 700; font-size: 19px; letter-spacing: -.01em; }
   .step p { margin-top: 6px; font-size: 15px; line-height: 1.5; color: var(--muted); }
@@ -113,7 +116,9 @@
   .mini .key { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-weight: 600; }
 
   /* value props */
-  .props { border: 1px solid var(--line-card); border-radius: 16px; background: #fff; padding: clamp(24px, 4vw, 36px); display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 28px 48px; }
+  /* Three across or one under another: an auto-fit grid left the third alone on a tablet. */
+  .props { border: 1px solid var(--line-card); border-radius: 16px; background: #fff; padding: clamp(24px, 4vw, 36px); display: grid; grid-template-columns: minmax(0, 1fr); gap: 28px 48px; }
+  @media (min-width: 760px) { .props { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .props p { margin-top: 6px; font-size: 15px; line-height: 1.55; color: var(--muted); }
 
   /* closing card */

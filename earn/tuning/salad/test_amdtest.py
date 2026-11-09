@@ -1,6 +1,6 @@
 # Tests for amdtest.py's pure parts: names, classes, the create and update bodies, time parsing, log lines and
 # the patch it sends, with no Salad calls. Also checks amdtest.sh's syntax and the task line parsing.
-# Run: python3 -m unittest discover -s tuning/salad
+# Run: python3 -m unittest discover -s earn/tuning/salad
 import base64, contextlib, gzip, importlib.util, io, os, shutil, subprocess, sys, tempfile, time, unittest
 
 os.environ["SALAD_MINE_DIR"] = tempfile.mkdtemp()     # never an exported folder, where live files may be
@@ -69,7 +69,7 @@ class TestAmdtest(unittest.TestCase):
         self.assertEqual(c["resources"], {"cpu": 4, "memory": 8192, "gpu_classes": ["cid"],
                                           "storage_amount": 10 * 1024 ** 3})
         self.assertEqual(c["command"][:2], ["/bin/sh", "-c"])
-        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh", c["command"][2])
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh", c["command"][2])
         self.assertEqual(c["environment_variables"]["TASKS"], "card,hip")
 
     def test_boot_command_is_valid_sh(self):
@@ -272,7 +272,7 @@ class TestAmdtest(unittest.TestCase):
     def test_nvtest_create_body_runs_nvtest_sh_on_the_fleet_image(self):
         c = a.body("nvtest-rtx3090", "cid", {"BASE_SHA": "abc"})["container"]
         self.assertEqual(c["image"], a.w.IMAGE)
-        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/nvtest.sh", c["command"][2])
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/nvtest.sh", c["command"][2])
         self.assertNotIn("amdtest", c["command"][2])
         self.assertEqual(c["resources"]["gpu_classes"], ["cid"])
         self.assertEqual(a.body("amdtest-rdna3", "cid", {})["container"]["image"], a.IMAGE)
@@ -475,7 +475,7 @@ class TestCompilersMemoryReadings(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.SRC = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "turing", "compilers.sh"))
+        cls.SRC = read(os.path.join(HERE, "..", "..", "native", "probes", "turing", "compilers.sh"))
 
     def script(self, name):
         start = self.SRC.index(f'cat > "$OUT/{name}" <<\'EOF\'\n') + len(f'cat > "$OUT/{name}" <<\'EOF\'\n')
@@ -544,7 +544,7 @@ class TestCompilersRace(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        native = os.path.join(HERE, "..", "..", "earn", "native")
+        native = os.path.join(HERE, "..", "..", "native")
         cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
         cls.RACE = read(os.path.join(native, "probes", "race.cu"))
 
@@ -611,7 +611,7 @@ class TestCompilersK(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        native = os.path.join(HERE, "..", "..", "earn", "native")
+        native = os.path.join(HERE, "..", "..", "native")
         cls.SRC = read(os.path.join(native, "probes", "turing", "compilers.sh"))
         cls.SWEEP = read(os.path.join(native, "amd", "test", "sweep.sh"))
 
@@ -665,7 +665,7 @@ class TestCompilersK(unittest.TestCase):
     def test_a_build_whose_k_is_not_the_one_read_from_its_flags_fails(self):
         """bench.cu is built with the k kof read as PEARL_BENCH_K, and does not compile if the build mines another k:
         -D PEARL_FOLD_K=4096 (read as 2048) or a second -DPEARL_FOLD_K. nvcc 12.6 refused both (1 November)."""
-        bench = read(os.path.join(HERE, "..", "..", "earn", "native", "probes", "bench.cu"))
+        bench = read(os.path.join(HERE, "..", "..", "native", "probes", "bench.cu"))
         self.assertIn("#ifdef PEARL_BENCH_K\nstatic_assert(PEARL_FOLD_K == PEARL_BENCH_K,", bench)
         cmd = self.part('nvcc -O3 -std=c++17 -cudart static $GC $flags -DPEARL_BENCH_K=', 'say "build $name FAIL: bench:')
         out = tempfile.mkdtemp().replace("\\", "/")
@@ -857,6 +857,115 @@ class TestCompilersK(unittest.TestCase):
                                ("V13.3.73", "V12.8.93", "WARN: nvcc V12.8.93 is not the V13.3.73 asked for (NVCC_VER)")):
             r = self.bash('say() { echo "$*"; }\n' + check, NVCC_VER=want, nv=nv)
             self.assertEqual(r.stdout.strip(), line, (want, nv, r.stderr))
+
+
+def git_has(rev):
+    try:
+        return subprocess.run(["git", "-C", a.REPO, "rev-parse", "--verify", "-q", rev + "^{commit}"],
+                              capture_output=True).returncode == 0
+    except OSError:
+        return False
+
+
+class TestToolsMoved(unittest.TestCase):
+    """The tools moved from tuning/salad to earn/tuning/salad on 7 November. Boxes and commits from either side
+    of the move still have to work together, or fail before they sit on a billed PC."""
+    OLD_BOOT = a.BOOT.replace("/earn/tuning/salad/", "/tuning/salad/")
+
+    def boot(self, script, fail_new):
+        # BOOT with a fake curl that fails the new path (as GitHub does for a commit from before the move) and
+        # serves `script` from the old one, and /root swapped for a temp folder.
+        d = tempfile.mkdtemp().replace("\\", "/")
+        os.makedirs(os.path.join(d, "bin"))
+        with open(os.path.join(d, "bin", "curl"), "w", newline="\n") as f:
+            f.write('#!/bin/sh\nfor x; do case "$x" in http*) u="$x";; esac; done\n'
+                    'out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done\n'
+                    f'case "$u" in */earn/tuning/salad/*) [ "{int(fail_new)}" = 1 ] && exit 22;; esac\n'
+                    f'echo "echo ran {script} from $u" > "$out"\n')
+        os.chmod(os.path.join(d, "bin", "curl"), 0o755)
+        boot = (a.BOOT.replace("/root/", d + "/").replace("exec sleep infinity", "exit 0")
+                .replace("sleep 20", ":"))
+        return subprocess.run(["bash", "-c", boot], capture_output=True, text=True,
+                              env={"PATH": d + "/bin:" + os.environ["PATH"], "BASE_SHA": "abc"}).stdout
+
+    def test_boot_fetches_from_the_new_path(self):
+        out = self.boot("new", fail_new=False)
+        self.assertIn("ran new from https://raw.githubusercontent.com/super3/llmjob/abc/earn/tuning/salad/amdtest.sh",
+                      out)
+
+    def test_boot_falls_back_to_the_old_path_for_an_older_commit(self):
+        out = self.boot("old", fail_new=True)
+        self.assertIn("ran old from https://raw.githubusercontent.com/super3/llmjob/abc/tuning/salad/amdtest.sh", out)
+        self.assertNotIn("FAIL fetch", out)
+
+    def test_nv_boot_falls_back_too(self):
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/nvtest.sh", a.NV_BOOT)
+        self.assertIn("${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/nvtest.sh", a.NV_BOOT)
+
+    def test_old_boot_tells_a_box_from_before_the_move(self):
+        self.assertTrue(a.old_boot({"container": {"command": ["/bin/sh", "-c", self.OLD_BOOT]}}))
+        self.assertFalse(a.old_boot({"container": {"command": ["/bin/sh", "-c", a.BOOT]}}))
+        self.assertFalse(a.old_boot({"container": {"command": ["/bin/sh", "-c", a.NV_BOOT]}}))
+        self.assertFalse(a.old_boot(None))
+
+    def set_env(self, name, command, cur, sha=None, unset=()):
+        calls = []
+        g = {"container": {"command": ["/bin/sh", "-c", command], "environment_variables": cur}}
+        args = type("A", (), {"name": name, "env": [], "sha": sha, "tasks": None, "unset": list(unset),
+                              "patch_from": None, "no_patch": False, "restart": False})()
+        old = (a.group, a.moved, a.w.http)
+        a.group = lambda n: g
+        a.moved = lambda s, repo=None: {"new": True, "old": False}.get(s)
+        a.w.http = lambda *x, **k: calls.append(x) or (200, {"container": {"environment_variables": {}}})
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                a.cmd_set_env(args)
+        finally:
+            a.group, a.moved, a.w.http = old
+        return calls
+
+    def test_set_env_refuses_to_point_an_old_box_at_a_new_commit(self):
+        for cur, sha in (({"BASE_SHA": "old"}, "new"), ({"BASE_SHA": "old", "SCRIPT_SHA": "new"}, None),
+                         ({"BASE_SHA": "new", "SCRIPT_SHA": "old"}, None)):
+            with self.assertRaises(SystemExit) as e:
+                self.set_env("amdtest-rdna4-2", self.OLD_BOOT, cur, sha=sha)
+            self.assertIn("Delete it and create a new box", str(e.exception))
+
+    def test_set_env_still_runs_an_old_box_on_old_commits_and_any_new_box(self):
+        self.assertEqual(len(self.set_env("amdtest-rdna4-2", self.OLD_BOOT, {"BASE_SHA": "x"}, sha="old")), 1)
+        self.assertEqual(len(self.set_env("amdtest-rdna4-2", a.BOOT, {"BASE_SHA": "old"}, sha="new")), 1)
+        # A commit this checkout doesn't know isn't refused: it may be newer than the checkout.
+        self.assertEqual(len(self.set_env("amdtest-rdna4-2", self.OLD_BOOT, {"BASE_SHA": "x"}, sha="unknown")), 1)
+        # An unset SCRIPT_SHA no longer counts.
+        self.assertEqual(len(self.set_env("amdtest-rdna4-2", self.OLD_BOOT, {"BASE_SHA": "old", "SCRIPT_SHA": "new"},
+                                          unset=["SCRIPT_SHA"])), 1)
+
+    def test_an_old_nvtest_box_may_run_a_new_base_with_an_old_script(self):
+        # nvtest.sh never hands over to the checkout's copy, so only the script's own commit matters.
+        old_nv = a.NV_BOOT.replace("/earn/tuning/salad/", "/tuning/salad/").replace(
+            ' || curl -fsSL "$o" -o /root/nvtest.sh', "")
+        self.assertEqual(len(self.set_env("nvtest-rtx3090", old_nv, {"BASE_SHA": "new", "SCRIPT_SHA": "old"})), 1)
+        with self.assertRaises(SystemExit):
+            self.set_env("nvtest-rtx3090", old_nv, {"BASE_SHA": "new"})
+
+    @unittest.skipUnless(git_has("HEAD"), "needs this checkout's git history")
+    def test_moved_reads_the_commit(self):
+        self.assertTrue(a.moved("HEAD"))
+        self.assertIsNone(a.moved("0" * 40))
+        if git_has("v0.6.13"):          # the last release before the move
+            self.assertFalse(a.moved("v0.6.13"))
+
+    def test_script_finds_its_folder_in_either_layout(self):
+        sh = os.path.join(HERE, "amdtest.sh").replace("\\", "/")
+        for sub in ("earn/tuning/salad", "tuning/salad"):
+            root = tempfile.mkdtemp().replace("\\", "/")
+            os.makedirs(os.path.join(root, *sub.split("/")))
+            r = subprocess.run(["bash", "-c", f"AMDTEST_STAGE=lib . {sh}; tdir"], capture_output=True, text=True,
+                               env={"PATH": os.environ["PATH"], "BASE_SHA": "abc", "AMDTEST_ROOT": root})
+            self.assertEqual(r.stdout.strip(), f"{root}/{sub}")
+        # Every use goes through tdir: no line but its own names either folder.
+        rest = [l for l in read(os.path.join(HERE, "amdtest.sh")).splitlines() if not l.startswith("tdir() {")]
+        self.assertEqual([l for l in rest if "$R/earn/tuning/salad" in l or "$R/tuning/salad" in l], [])
 
 
 if __name__ == "__main__":

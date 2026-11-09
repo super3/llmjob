@@ -80,6 +80,13 @@
 
   /* ---- hero ---- */
   .hero { padding: 80px var(--pad-x) 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 440px), 1fr)); gap: 56px; align-items: center; }
+  /* Just above where the hero stacks, two equal columns leave the text side too narrow for
+     both buttons on one row (they need 477px). Give the text at least 480px and the app picture
+     the rest, up to 420px. From 1040px: the auto-fit grid goes two-column there without a
+     scrollbar, and with a 15-17px one this keeps it two-column with room for the buttons. */
+  @media (min-width: 1040px) and (max-width: 1199px) {
+    .hero { grid-template-columns: minmax(480px, 1fr) minmax(0, 420px); gap: 40px; }
+  }
   .hero h1 { font-weight: 800; font-size: clamp(38px, 7vw, 58px); line-height: 1.02; letter-spacing: -.04em; }
   .hero .lede { font-size: 19px; line-height: 1.5; color: var(--muted); margin-top: 22px; max-width: 27em; }
   .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; margin-top: 32px; }
@@ -122,13 +129,34 @@
   .ap-tab { display: inline-flex; align-items: center; font-size: 14px; font-weight: 500; color: var(--muted-2); }
   .ap-tabs .sp { flex: 1; }
   .ap-gear { align-self: center; display: grid; place-items: center; width: 32px; height: 32px; background: #fff; border: 1px solid var(--line-ctl); border-radius: 9px; flex: none; }
-  .ap-label { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; margin-bottom: 7px; }
+  /* "Payout address" and the balance share one line. When it runs short, the word "Balance"
+     goes first, then the dollar estimate. The full line needs about 292px, and each step
+     leaves room for the estimate to grow a digit. */
+  .ap-addr { container-type: inline-size; }
+  .ap-label { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 10px; margin-bottom: 7px; }
+  .ap-label .lbl { white-space: nowrap; }
   .ap-bal { font-size: 12.5px; color: var(--muted-2); white-space: nowrap; }
   .ap-bal b { color: var(--ink); font-family: "IBM Plex Mono", monospace; }
-  .ap-bal span { color: var(--muted-3); }
+  .ap-bal-est { color: var(--muted-3); }
+  @container (width < 312px) { .ap-bal-w { display: none; } }
+  @container (width < 258px) { .ap-bal-est { display: none; } }
   .ap-field { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 11px 13px; font-family: "IBM Plex Mono", monospace; font-size: 12.5px; color: var(--body-app); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ap-card { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 14px; }
-  .ap-reads { display: grid; grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 12px 8px; }
+  .ap-card { border: 1px solid var(--line-field); background: var(--field); border-radius: 9px; padding: 14px; container-type: inline-size; }
+  /* Four readings in a row when the card has room, else two by two. An auto-fit grid
+     put three in a row and left "$ per day" alone on a second one. */
+  .ap-reads { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; }
+  /* Two by two, the right column sits flush right, Monero as well as "$ per day", so the
+     two readings in it line up. */
+  @container (width < 330px) {
+    .ap-reads > :nth-child(2) { text-align: right; }
+  }
+  @container (min-width: 330px) {
+    .ap-reads { grid-template-columns: repeat(4, auto); justify-content: space-between; }
+  }
+  /* Room for four equal cells, as on desktop before. */
+  @container (min-width: 424px) {
+    .ap-reads { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
   .ap-v { font-weight: 800; font-size: 19px; letter-spacing: -.02em; white-space: nowrap; }
   .ap-v small { font-size: 12px; color: #9a9ea6; font-weight: 600; }
   .ap-k { font-size: 12px; color: var(--muted); font-weight: 600; }
@@ -139,7 +167,12 @@
   .ap-foot { display: flex; justify-content: space-between; margin-top: 4px; padding-top: 14px; border-top: 1px solid var(--line-div); font-size: 11.5px; font-weight: 600; letter-spacing: .04em; color: var(--accent); }
 
   /* ---- three steps ---- */
-  .steps { margin-top: 36px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: 36px; }
+  /* Three across or one under another: an auto-fit grid put two in a row on a tablet and
+     left the third alone under them. */
+  .steps { margin-top: 36px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 36px; }
+  @media (min-width: 700px) {
+    .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
   .step-n { width: 30px; height: 30px; border-radius: 50%; background: var(--accent-tint); color: var(--accent); font-weight: 700; font-size: 14px; display: grid; place-items: center; margin-bottom: 14px; }
   .step-t { font-weight: 700; font-size: 19px; letter-spacing: -.01em; }
   .step p { margin-top: 6px; font-size: 15px; line-height: 1.5; color: var(--muted); }
@@ -148,8 +181,13 @@
   .calc-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 20px; margin-bottom: 24px; }
   .calc-note { font-size: 13px; color: var(--muted-3); }
   .calc { border: 1px solid var(--line-card); border-radius: 16px; background: #fff; padding: 26px; display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 28px; }
-  .calc-in { display: flex; flex-direction: column; gap: 16px; }
-  .chips { display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr)); gap: 7px; margin-top: -6px; }
+  .calc-in { display: flex; flex-direction: column; gap: 16px; container-type: inline-size; }
+  /* Ten cards: two rows of five, or five rows of two on a phone. An auto-fill grid left
+     one card alone on its last row at most widths. */
+  .chips { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: -6px; }
+  @container (min-width: 500px) {
+    .chips { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  }
   .chip { font-size: 13px; font-weight: 600; white-space: nowrap; border-radius: 9px; padding: 9px 4px; cursor: pointer; border: 1px solid var(--line-ctl); background: #fff; color: var(--body-app); transition: border-color .12s; }
   .chip:hover { border-color: var(--accent); }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -241,6 +279,18 @@
     #hiveos .hive-val code { flex-basis: 100%; }
     .hive-copy { margin-left: auto; }
     .out-big { font-size: 46px; }
+    .calc { padding: 18px; }
+    .calc-out { padding: 22px; }
+  }
+  /* Phones: the download and HiveOS buttons take the full width, one under the other,
+     instead of two different widths with a ragged edge. */
+  @media (max-width: 520px) {
+    .cta-row .dl-wrap, .cta-row .btn-sec { width: 100%; }
+    .cta-row .btn-dl { flex: 1; justify-content: center; }
+    .cta-row .btn-sec { justify-content: center; }
+    .closing .dl-wrap { width: 100%; }
+    .closing .btn-dl { flex: 1; justify-content: center; }
+    .hero { padding-top: 48px; }
   }
 </style>
 {{> shell-style}}
@@ -291,8 +341,8 @@
         <span class="sp"></span>
         <span class="ap-gear"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></span>
       </div>
-      <div>
-        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal">Balance <b>128.41 PRL</b> <span id="pv-bal">≈ $146.39</span></span></div>
+      <div class="ap-addr">
+        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal"><span class="ap-bal-w">Balance </span><b>128.41 PRL</b><span class="ap-bal-est" id="pv-bal"> ≈ $146.39</span></span></div>
         <div class="ap-field">prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c</div>
       </div>
       <div class="ap-card">
@@ -600,7 +650,7 @@
 
   /* ---- Calculator ---- */
   (function () {
-    // Our miner's rate on each card, in TH/s, from tuning/benchmark.md.
+    // Our miner's rate on each card, in TH/s, from earn/tuning/benchmark.md.
     const CARDS = [
       ["H100 SXM 80 GB", 682.8, "NVIDIA · Data center"],
       ["H100 NVL 94 GB", 536.5, "NVIDIA · Data center"],
@@ -782,7 +832,7 @@
       const th = pick.card.th * pick.qty;
       elTh.textContent = fmt(th * mult[mult.length - 1], 1);
       elDay.textContent = money(usdPerDay(th));
-      elBal.textContent = '≈ ' + money(128.41 * est.PRICE);
+      elBal.textContent = ' ≈ ' + money(128.41 * est.PRICE);
       const step = W / (mult.length - 1);
       const xy = mult.map((v, i) => [+(i * step).toFixed(1), +(H - ((v - LO) / (HI - LO)) * H).toFixed(1)]);
       elLine.setAttribute('d', xy.map((p, i) => (i ? 'L' : 'M') + p[0] + ' ' + p[1]).join(' '));

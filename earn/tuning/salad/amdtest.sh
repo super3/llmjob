@@ -41,7 +41,7 @@
 #     refverify[:file...]     builds earn/native/probes/refverify.rs against the spec at PEARL_SPEC_SHA (Rust
 #                             from rustup) and runs it on the files given, or on every /root/shares/*.jsonl
 #     srb[:secs:warm]         SRBMiner 3.8.2 on DUEL_POOL for secs [300] after a warm-up of its own [60]
-#     duel[:first:secs:warm]  tuning/benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
+#     duel[:first:secs:warm]  earn/tuning/benchmark.md's AMD method on this PC: first (ours or srb) [ours] warms the card for
 #                             warm [60], then each runs secs [300]; ends with "duel <name> result ..." for each
 #     cpuchecks               build-amd.sh cpu and test/run-cpu-checks.sh on this box's CPU (HIP-CPU, TBB); the
 #                             k 4096 runs' shares go to /root/shares/cpu/ for refverify
@@ -58,6 +58,8 @@
 export DEBIAN_FRONTEND=noninteractive
 R=${AMDTEST_ROOT:-/opt/llmjob}   # AMDTEST_ROOT and AMDTEST_NM: for trying the script off a box
 A=$R/earn/native/amd
+# This folder, in the checkout. It was tuning/salad before 7 November, so a run on an older BASE_SHA finds it there.
+tdir() { if [ -d "$R/earn/tuning/salad" ]; then echo "$R/earn/tuning/salad"; else echo "$R/tuning/salad"; fi; }
 NM=${AMDTEST_NM:-/opt/nm}
 NODE_VER=v22.22.0
 CLANG=/opt/rocm/lib/llvm/bin/clang++
@@ -163,7 +165,7 @@ t_hip() {
   local arch=${ARCH:-$(target)} bin=/root/amdtest_hip
   [ -n "$arch" ] || { say "hip FAIL no gfx target from rocminfo"; return 1; }
   [ -x $CLANG ] || { say "hip FAIL no hip-clang at $CLANG"; return 1; }
-  $CLANG -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O2 "$R/tuning/salad/amdtest_hip.cpp" \
+  $CLANG -x hip --offload-arch=$arch --rocm-path=/opt/rocm -std=c++17 -O2 "$(tdir)/amdtest_hip.cpp" \
     -o $bin -L/opt/rocm/lib -lamdhip64 -Wl,-rpath,/opt/rocm/lib > /root/hipcc.log 2>&1 \
     || { tail -20 /root/hipcc.log | emit hip; say "hip FAIL compile"; return 1; }
   ldd $bin | grep -E 'amdhip|hsa|dxg|rocprof|not found' | sed 's/ (0x[0-9a-f]*)//' | emit hip
@@ -251,7 +253,7 @@ tap_start() {
   command -v python3 >/dev/null || apt-get install -y -qq --no-install-recommends python3 > /root/apt3.log 2>&1 \
     || { say "mine FAIL TAP=1 needs python3"; return 1; }
   rm -f /root/tap.jsonl
-  python3 $R/tuning/salad/sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl > /root/tap.log 2>&1 &
+  python3 $(tdir)/sharetap.py tap "$port" "$host" "$port" /root/tap.jsonl > /root/tap.log 2>&1 &
   TAP_PID=$!
   sleep 3
   grep -q listening /root/tap.log || { say "mine FAIL sharetap: $(tail -c 200 /root/tap.log)"; return 1; }
@@ -274,9 +276,9 @@ JS
 tap_end() {
   kill $TAP_PID 2>/dev/null
   mkdir -p /root/shares
-  python3 $R/tuning/salad/sharetap.py decode /root/tap.jsonl --since "$1" --max 2 2>&1 | emit share
-  python3 $R/tuning/salad/sharetap.py jobs /root/tap.jsonl --since "$1" 2>&1 | emit share
-  python3 $R/tuning/salad/sharetap.py shares /root/tap.jsonl --since "$1" > "/root/shares/mine-$WORKER.jsonl" 2>&1
+  python3 $(tdir)/sharetap.py decode /root/tap.jsonl --since "$1" --max 2 2>&1 | emit share
+  python3 $(tdir)/sharetap.py jobs /root/tap.jsonl --since "$1" 2>&1 | emit share
+  python3 $(tdir)/sharetap.py shares /root/tap.jsonl --since "$1" > "/root/shares/mine-$WORKER.jsonl" 2>&1
   tail -n 1 "/root/shares/mine-$WORKER.jsonl" | emit share
 }
 
@@ -379,7 +381,7 @@ srb_get() {
   echo "9f64784a9894067b7bc3811b4912dd81  srb.tgz" | md5sum -c --quiet || { say "srb FAIL checksum"; return 1; }
   tar xzf srb.tgz && cp "$(ls -d $SRB_DIR/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI" $SRB_DIR/ || { say "srb FAIL unpack"; return 1; }
 }
-# Both miners mine on DUEL_POOL in srb and duel, as tuning/benchmark.md's AMD table did (bench.sh's pool).
+# Both miners mine on DUEL_POOL in srb and duel, as earn/tuning/benchmark.md's AMD table did (bench.sh's pool).
 DUEL_POOL=${DUEL_POOL:-prl-us.kryptex.network:7048}
 srb_cli() {
   cd $SRB_DIR && exec ./SRBMiner-MULTI --algorithm-gpu pearlhash --pool "$DUEL_POOL" --wallet "$WALLET" \
@@ -397,7 +399,7 @@ sample_ours() {
 }
 # run_miner NAME SECS MEASURED: runs ours or srb for SECS. Measured, it samples every 10 s, prints a line a minute,
 # and ends with "NAME result ...": the mean of the samples after the first minute, and the miner's last figure,
-# which is what tuning/benchmark.md's table takes for SRBMiner ("its own figure at the end").
+# which is what earn/tuning/benchmark.md's table takes for SRBMiner ("its own figure at the end").
 run_miner() {
   local name=$1 secs=$2 measured=$3 pid t0 t s th acc rej n=0 sum=0 last="" fails=0
   say "duel $name start ${secs}s$([ "$measured" = 1 ] || echo ' (warm-up, not measured)')"
@@ -439,7 +441,7 @@ t_srb() {
   run_miner srb "$secs" 1
 }
 
-# tuning/benchmark.md's AMD method on one PC: the first miner warms the card for WARM seconds, unmeasured, then each
+# earn/tuning/benchmark.md's AMD method on one PC: the first miner warms the card for WARM seconds, unmeasured, then each
 # runs SECS seconds. FIRST is ours or srb. Ours is the CLI with this core (needs build first).
 t_duel() {
   local first=${1:-ours} secs=${2:-300} warm=${3:-60} second rc=0
@@ -480,9 +482,9 @@ if [ "${AMDTEST_STAGE:-}" != repo ]; then
   setup
   fetch
   # A patch that changes this script hands over to the patched copy, which skips what is done.
-  if ! cmp -s "$0" "$R/tuning/salad/amdtest.sh"; then
+  if ! cmp -s "$0" "$(tdir)/amdtest.sh"; then
     say "patched amdtest.sh takes over"
-    AMDTEST_STAGE=repo exec bash "$R/tuning/salad/amdtest.sh"
+    AMDTEST_STAGE=repo exec bash "$(tdir)/amdtest.sh"
   fi
 fi
 
