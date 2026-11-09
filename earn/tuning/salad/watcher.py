@@ -3039,12 +3039,10 @@ class W:
         if runway is not None:
             head += " + ".join(f"{o} ${bal:.2f} ({short_lasts(h)}" + (" idle" if idle else "") + ")"
                                for o, h, idle, bal in runway)
-            # Their sum too (founder, 9 November): "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84 (76d)", the
-            # days at both orgs' spend together. An idle org adds credit but no spend.
+            # Their sum too (founder, 9 November): "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84", the credit
+            # in all. No days on the sum: "Don't add the days though".
             if len(runway) > 1:
-                total = sum(bal for _, _, _, bal in runway)
-                rate = sum(bal / h for _, h, idle, bal in runway if not idle and h > 0)
-                head += f" = ${total:.2f}" + (f" ({short_lasts(total / rate)})" if rate > 0 else "")
+                head += f" = ${sum(bal for _, _, _, bal in runway):.2f}"
         else:
             head += f"Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
