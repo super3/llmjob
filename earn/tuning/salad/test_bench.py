@@ -630,20 +630,20 @@ class TestBenchAMD(unittest.TestCase):
         self.assertFalse(h["hitcheck"]["pass"])
         self.assertNotIn("83151dba", " ".join(x.st["notes"]))   # a result, not a failed PC
 
-    def test_render_has_peakminer_not_run_percent_of_srbminer_and_a_line_for_each_pc(self):
+    def test_render_has_peakminer_and_onezerominer_at_0_percent_of_srbminer_and_a_line_for_each_pc(self):
         x, _ = self.done(self.la, AMD_LINES)
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
         x2, _ = self.done(self.la, lines, order="srb,ours")
         x.st["results"]["RX 9070 XT"].append(dict(x2.st["results"]["RX 9070 XT"][0], machine="3d6cb276-yy"))
         text = self.la.render(x.st)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | not run | 80.0 | not run | 118% |", text)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | not run | 80.0 | not run | — |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | not run | 0 | 118% |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | not run | 0 | — |", text)
         self.assertIn("- `83151dba` (RX 9070 XT): copy 564 GB/s; hit check PASS, 400 of 2202 hits verified, 0 failed, "
                       "277 salts in 600 s, 7.95 hits a salt; ours ran first.", text)
         self.assertIn("- `3d6cb276` (RX 9070 XT): copy 564 GB/s; hit check FAIL, 400 of 410 hits verified, 2 failed, "
                       "60 salts in 600 s, 6.83 hits a salt (jackpot hash mismatch (fold/transcript)); "
                       "SRBMiner ran first.", text)
-        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | not run | not run | not run | — |", text)
+        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | 0 | not run | not run | 0 | — |", text)
         self.assertNotIn("RX 7900", text)                 # lane b's rows
         self.assertNotIn("RX 7800", text)                 # lane c's
         self.assertNotIn("hits a salt", b.render({"results": {}}))
@@ -658,8 +658,8 @@ class TestBenchAMD(unittest.TestCase):
         text = self.la.table([os.path.join(d, "a.json"), os.path.join(d, "b.json"), os.path.join(d, "none.json")])
         rows = [l for l in text.splitlines() if l.startswith("| RX")]
         self.assertEqual(len(rows), 10)
-        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | not run | 79.4 | not run | 118% |")
-        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | not run | 52.8 | not run | 95% |")
+        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | 0 | 79.4 | not run | 0 | 118% |")
+        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | 0 | 52.8 | not run | 0 | 95% |")
         self.assertIn("- `aaaa1111` (RX 9070 XT): copy 564 GB/s; no hit check.", text)
 
     def test_a_failed_check_on_the_pc_meant_to_go_first_says_srbminer_went_first(self):

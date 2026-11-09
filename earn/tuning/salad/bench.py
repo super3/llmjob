@@ -247,8 +247,11 @@ def quota_refused(s, j):
 
 
 # The competitors, in the tables' column order. WildRig Multi and OneZeroMiner joined the RTX and AMD sets on 9
-# November; a result from before then has no figure for them and shows "not run". OneZeroMiner has no AMD support.
-COMPETITORS = {"gtx": ("peak", "srb"), "amd": ("peak", "srb", "wild")}.get(SET, ("peak", "srb", "wild", "ozm"))
+# November; a result from before then has no figure for them and shows "not run".
+COMPETITORS = {"gtx": ("peak", "srb")}.get(SET, ("peak", "srb", "wild", "ozm"))
+# Miners with no Pearl kernel for the set's cards: they mine nothing there, so their cells say 0 rather than
+# "not run" (the founder, 9 November). PeakMiner has no AMD kernel and OneZeroMiner no AMD support.
+UNSUPPORTED = {"amd": ("peak", "ozm")}.get(SET, ())
 NAMES = {"peak": "PeakMiner", "srb": "SRBMiner", "wild": "WildRig", "ozm": "OneZeroMiner"}
 
 
@@ -279,8 +282,9 @@ def pc_note(row, h):
 
 
 def render(st, sections=None):
-    """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner isn't run, so "% of best"
-    is ours against SRBMiner, and a line for each PC under the table gives its copy rate and hit check."""
+    """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner and OneZeroMiner
+    aren't run and show 0, so "% of best" is ours against SRBMiner and WildRig, and a line for each PC under the table
+    gives its copy rate and hit check."""
     out = []
     for title, rows in sections or SECTIONS:
         out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | "
@@ -293,7 +297,8 @@ def render(st, sections=None):
             for i in range(len(hosts) if extra else HOSTS):    # a card no class is for: only the hosts it had
                 mem = f", {MEM[r]}" if r in MEM else ""
                 if i >= len(hosts):
-                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | " + "not run | " * len(COMPETITORS) + "— |")
+                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | "
+                               + "".join("0 | " if k in UNSUPPORTED else "not run | " for k in COMPETITORS) + "— |")
                     continue
                 h = hosts[i]
                 # nvidia-smi says "[N/A]" on a PC whose driver doesn't report a power limit.
@@ -303,7 +308,8 @@ def render(st, sections=None):
                 best = max([v for v, _ in theirs if v] or [0])
                 pct = f"{o / best * 100:.0f}%" if o and best else "—"
                 out.append(f"| {r} | Salad ({p}{mem}) | {h['machine'][:8]} | {cell(o, ow)} | "
-                           + " | ".join(cell(*x) for x in theirs) + f" | {pct} |")
+                           + " | ".join("0" if k in UNSUPPORTED else cell(*x) for k, x in zip(COMPETITORS, theirs))
+                           + f" | {pct} |")
         out.append("")
         if notes:
             out += notes + [""]
