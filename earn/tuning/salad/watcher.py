@@ -298,6 +298,19 @@ def parse_iso(s):
     return dt.datetime.fromisoformat(base + tz).timestamp() + (float(frac) if frac else 0)
 
 
+def user_env(name):
+    """An environment variable as the user's saved settings have it now (on Windows, the HKCU Environment key), else as this
+    process got it."""
+    if sys.platform == "win32":
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as k:
+                return winreg.QueryValueEx(k, name)[0] or None
+        except OSError:
+            pass
+    return os.environ.get(name) or None
+
+
 def http(method, url, body=None, ctype="application/json", timeout=60, headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -987,6 +1000,27 @@ class W:
             st["salad_bought"] = paid
         st["bal_warned"] = False
         self.mark_report_read("bal", t)
+
+    def clore_balance(self):
+        """The Clore business account's USD balance, read once a report when $CLORE_API_KEY is set. On Windows the key
+        comes from the user's saved environment, not the process's: the keeper starts at logon and passes on what it
+        had then, and on 9 November the key was swapped from the founder's personal account to the business one
+        while it ran. A failed read warns once and keeps the last."""
+        st, t = self.st, now()
+        key = user_env("CLORE_API_KEY")
+        if not key or not self.report_read_due("clore", t):
+            return
+        s, r = http("GET", "https://api.clore.ai/v1/wallets", headers={"auth": key}, timeout=30)
+        usd = next((w.get("balance") for w in (r or {}).get("wallets") or [] if isinstance(w, dict)
+                    and w.get("name") == "USD-Blockchain"), None) if s == 200 and isinstance(r, dict) else None
+        if not isinstance(usd, (int, float)):
+            if not st.get("clore_warned"):
+                st["clore_warned"] = True
+                event(f"WARN can't read Clore's balance: HTTP {s} {str(r)[:150]}")
+            return
+        st["clore_bal"] = {"t": t, "usd": float(usd)}
+        st["clore_warned"] = False
+        self.mark_report_read("clore", t)
 
     def st_call(self, method, path, body=None, signed=True):
         """A SafeTrade call under /api/v2/trade, signed with $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET: HMAC-SHA256
@@ -2208,6 +2242,7 @@ class W:
         self.safetrade()
         self.sell(now())
         self.salad_balance()
+        self.clore_balance()
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -3044,18 +3079,30 @@ class W:
         # days)", which wrapped; for one round "9:01 am · ... · $164 left · 19d · 78d²", which was too terse.
         # With two orgs, each org's own credit and days (founder, 3 November): "llmjob $114.37 (16d)", not one total.
         d = dt.datetime.fromtimestamp(t, NY)
-        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining · "
+        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining"
+        # With two Salad orgs, or a Clore read, the credit is its own table under the boxes (founder, 9 November:
+        # "Since we have three orgs now ... make a new table with them and Clore"): each org's credit and how long it
+        # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the
+        # heading ended "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84". One Salad org and no Clore read keep
+        # the old ending, "Salad $228.65 left · 9d".
+        cb, credit_rows = st.get("clore_bal"), []
         if runway is not None:
-            head += " + ".join(f"{o} ${bal:.2f} ({short_lasts(h)}" + (" idle" if idle else "") + ")"
-                               for o, h, idle, bal in runway)
-            # Their sum too (founder, 9 November): "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84", the credit
-            # in all. No days on the sum: "Don't add the days though".
-            if len(runway) > 1:
-                head += f" = ${sum(bal for _, _, _, bal in runway):.2f}"
+            credit_rows = [(o, bal, short_lasts(h) + (" idle" if idle else "")) for o, h, idle, bal in runway]
+        elif cb:
+            credit_rows = [("Salad", credit, short_lasts(hours, cmark) if hours is not None else "")]
         else:
-            head += f"Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
+            head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
+        if cb:
+            credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], ""))
+        if credit_rows:
+            credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
+                          *(f"| {o} | ${bal:.2f}{cmark if o == 'Salad' else ''} | {lasts} |" for o, bal, lasts in credit_rows)]
+            if len(credit_rows) > 1:
+                credit_tab.append(f"| **All** | **${sum(bal for _, bal, _ in credit_rows):.2f}** | |")
+        else:
+            credit_tab = []
         cols = ["Box", "TH/s"] + (["kH/s"] if xon else []) + ["$/hr", "Profit/hr (margin)", "PRL"] + (["XMR"] if xon else [])
-        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *pool]
+        lines = [head, "", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols), *lines, *credit_tab, *pool]
         if st["credits_out"] == [ORG] and len(self.orgs()) == 1:
             lines += ["", "⚠️ Credit ran out: Salad stopped the groups. They restart after a top-up."]
         elif st["credits_out"]:

@@ -2718,6 +2718,38 @@ class TestSaladBalance(Base):
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             return f.readline()
 
+    def report(self):
+        self.x.write_report()
+        with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
+            return f.read()
+
+    def test_clore_joins_the_credit_table(self):
+        # 9 November: $50 sent to the Clore business account. One Salad org: its credit moves into the table too.
+        real, asked = w.http, []
+        w.http = lambda m, u, body=None, headers=None, timeout=60, **k: asked.append((u, headers)) or (200, {"code": 0, "wallets": [
+            {"name": "bitcoin", "balance": 0}, {"name": "USD-Blockchain", "balance": 50}]})
+        self.addCleanup(setattr, w, "http", real)
+        real_env = w.user_env
+        w.user_env = lambda n: "ck" if n == "CLORE_API_KEY" else real_env(n)
+        self.addCleanup(setattr, w, "user_env", real_env)
+        self.x.salad_balance()
+        self.x.clore_balance()
+        self.assertEqual(asked, [("https://api.clore.ai/v1/wallets", {"auth": "ck"})])
+        self.assertNotIn("Salad $", self.head())
+        rep = self.report()
+        self.assertIn("| Salad | $228.65 | ", rep)
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 |  |\n| **All** | **$278.65** | |\n", rep)
+        # Once a report: a second read in the same quarter hour asks nothing.
+        self.x.clore_balance()
+        self.assertEqual(len(asked), 1)
+        # A failed read warns once and keeps the last balance.
+        w.http = lambda *a, **k: (401, {"code": 3})
+        for _ in range(2):
+            self.clock[0] += 900
+            self.x.clore_balance()
+        self.assertEqual(self.events().count("WARN can't read Clore's balance"), 1)
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 |", self.report())
+
     def test_salads_own_balance_shows_without_a_star(self):
         self.x.salad_balance()
         self.assertEqual(self.reads, [("u@x", "pw")])
@@ -2802,29 +2834,30 @@ class TestSaladBalance(Base):
         g = self.group()
         self.step(g, 1, "m1")
         self.two_orgs([(175.0, 10.0, 10.0)] * 9)
-        head = self.head()
-        self.assertIn(" mining · llmjob $175.00 (", head)
+        self.assertTrue(self.head().endswith(" mining\n"))      # the credit is its own table now (9 November)
+        rep = self.report()
+        self.assertIn("| 💳 Credit | Left | Lasts |\n|---|---|---|\n| llmjob | $175.00 | ", rep)
         cost = g["price"]
-        self.assertIn(f" + llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle) = $185.00\n", head)   # idle: credit in the sum
+        self.assertIn(f"| llmjob2 | $10.00 | {w.short_lasts(10.0 / cost)} idle |\n| **All** | **$185.00** | |\n", rep)
         self.assertNotIn("ALERT llmjob2", self.events())
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
-        self.assertIn(" + llmjob2 $10.00 (20h idle) = $185.00\n", self.head())
+        self.assertIn("| llmjob2 | $10.00 | 20h idle |", self.report())
         # A box of its own waiting for a PC spends nothing: still idle, not timed at a measured trickle (3 November:
         # "597d" with a 2070 waiting in llmjob2).
         self.group(cls="RTX 2060 (6 GB)")["org"] = "llmjob2"
         self.x.org_burn = lambda o, t: 0.001
-        self.assertIn(" + llmjob2 $10.00 (20h idle) = $185.00\n", self.head())
+        self.assertIn("| llmjob2 | $10.00 | 20h idle |", self.report())
         # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
         self.x.st["org_rate"]["llmjob2"] = 0.003
-        self.assertIn(f" + llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle) = $185.00\n", self.head())
+        self.assertIn(f"| llmjob2 | $10.00 | {w.short_lasts(10.0 / cost)} idle |", self.report())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
         steps = [(175.0, 10.0 - 0.25 * i + (10.0 if i >= 8 else 0.0), 10.0 + (10.0 if i >= 8 else 0.0)) for i in range(12)]
         self.two_orgs(steps)
         self.assertAlmostEqual(self.x.org_burn("llmjob2", self.clock[0]), 1.0)
-        self.assertIn(" · llmjob2 $17.25 (17h)\n", self.head())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
+        self.assertIn("| llmjob2 | $17.25 | 17h |", self.report())          # $17.25 at $1/hr; the fleet here has no box, so no llmjob
         # And it warns once it's under 12 h, for that org.
         self.x.st["org_bal"] = {}
         self.two_orgs([(175.0, 9.0 - 0.25 * i, 20.0) for i in range(12)])
@@ -2834,7 +2867,7 @@ class TestSaladBalance(Base):
     def test_an_org_at_no_credit_gets_no_runway_alert(self):
         # 30 October: llmjob2 spent down to $0.00 and the alert's $/hr (balance / hours) divided by zero.
         self.two_orgs([(175.0, 0.25 * (11 - i), 20.0) for i in range(12)])
-        self.assertIn(" · llmjob2 $0.00 (0h)\n", self.head())
+        self.assertIn("| llmjob2 | $0.00 | 0h |", self.report())
         self.assertNotIn("ALERT llmjob2", self.events())
 
     def test_an_org_with_boxes_of_ours_lasts_at_their_cost(self):
@@ -2848,7 +2881,7 @@ class TestSaladBalance(Base):
         self.step(g2, 1, "m2")
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
         # $11 at $0.11/hr, $1 at $0.02/hr; $12 in all.
-        self.assertIn(" mining · llmjob $11.00 (4d) + llmjob2 $1.00 (2d) = $12.00\n", self.head())
+        self.assertIn("| llmjob | $11.00 | 4d |\n| llmjob2 | $1.00 | 2d |\n| **All** | **$12.00** | |\n", self.report())
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"2060{w.NB}bat.² |", f.read())       # the box says which org it's in, short
 
