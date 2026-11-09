@@ -2789,19 +2789,19 @@ class TestSaladBalance(Base):
         head = self.head()
         self.assertIn(" mining · llmjob $175.00 (", head)
         cost = g["price"]
-        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", head)
+        self.assertIn(f" + llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle) = $185.00 (", head)   # idle: no spend in the sum
         self.assertNotIn("ALERT llmjob2", self.events())
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
-        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        self.assertIn(" + llmjob2 $10.00 (20h idle) = $185.00 (", self.head())
         # A box of its own waiting for a PC spends nothing: still idle, not timed at a measured trickle (3 November:
         # "597d" with a 2070 waiting in llmjob2).
         self.group(cls="RTX 2060 (6 GB)")["org"] = "llmjob2"
         self.x.org_burn = lambda o, t: 0.001
-        self.assertIn(" · llmjob2 $10.00 (20h idle)\n", self.head())
+        self.assertIn(" + llmjob2 $10.00 (20h idle) = $185.00 (", self.head())
         # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
         self.x.st["org_rate"]["llmjob2"] = 0.003
-        self.assertIn(f" · llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle)\n", self.head())
+        self.assertIn(f" + llmjob2 $10.00 ({w.short_lasts(10.0 / cost)} idle) = $185.00 (", self.head())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.
@@ -2831,7 +2831,8 @@ class TestSaladBalance(Base):
         g2["status"] = "running"
         self.step(g2, 1, "m2")
         self.two_orgs([(11.0, 1.0, 10.0)] * 9)
-        self.assertIn(" mining · llmjob $11.00 (4d) · llmjob2 $1.00 (2d)\n", self.head())   # $11 at $0.11/hr, $1 at $0.02/hr
+        # $11 at $0.11/hr, $1 at $0.02/hr; together $12 at $0.13/hr.
+        self.assertIn(" mining · llmjob $11.00 (4d) + llmjob2 $1.00 (2d) = $12.00 (4d)\n", self.head())
         with open(os.path.join(TMP, "report.md"), encoding="utf-8") as f:
             self.assertIn(f"2060{w.NB}bat.² |", f.read())       # the box says which org it's in, short
 
