@@ -600,7 +600,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   if (warp < 8u) {
 #endif
 #pragma unroll
-  for (uint32_t s = 0; s < SPC + ((PEARL_GATE_NOCOPY && !PEARL_GATE_SHAM) ? 1u : 0u); s++) {
+  for (uint32_t s = 0; s < SPC + ((PEARL_GATE_NOCOPY && (!PEARL_GATE_SHAM || PEARL_GATE_SHAM_ALU)) ? 1u : 0u); s++) {
     const uint32_t ib = sbase + s * STRIDE;
 #pragma unroll
     for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, s, p)
@@ -616,6 +616,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   __syncthreads();
 #endif
 #if PEARL_GATE_SHAM
+  // One ALU step of the interleaved shams, each its own asm so the PTX keeps their order:
+  // w ^= y & m (one LOP3), or w rotated right by n bits (one SHF).
+#define PEARL_SHAM_XOR(w, y, m)                                                                  \
+  asm volatile("{\n .reg .b32 t;\n and.b32 t, %1, " #m ";\n xor.b32 %0, %0, t;\n}" : "+r"(w) : "r"(y));
+#define PEARL_SHAM_ROT(w, n) asm volatile("shf.r.wrap.b32 %0, %0, %0, " #n ";" : "+r"(w));
+  constexpr uint32_t SHAM_OPS = PEARL_GATE_SHAM == 1 ? 4u : (PEARL_GATE_SHAM == 2 ? 11u : 24u);
+  (void)SHAM_OPS;
   // One sham unit (PEARL_GATE_SHAM, timing only): 16 bytes of the buffer a stage refills,
   // made from two 16-byte loads of the buffer being read. Every step keeps each byte in
   // 0 .. 127, as A' and B' are: a byte rotation inside a word, or an XOR of one low bit.
@@ -1080,7 +1087,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
       asm volatile("" : "+r"(sg0));
 #endif  // !PEARL_GATE_NOCOPY
+#if PEARL_GATE_S_ROLL
+      // Timing only (PEARL_GATE_S_ROLL): the two stages as a loop, one stage body. cicc left
+      // it rolled by itself in the largest sham build, and ptxas then fitted that one with no
+      // spill where the unrolled ones spilled; this asks for the same shape in every arm.
+#pragma unroll 1
+#else
 #pragma unroll
+#endif
       for (uint32_t s = 0; s < SPC; s++) {
         // Stage 0 reads A and refills C, which the stage before it read; stage 1 reads B
         // and refills A. A refill waits for its buffer's previous use to be released: C's
@@ -1100,6 +1114,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // output is meaningless.
         pearl_mbar_wait(so + STAGE, rpar);
 #endif
+#if PEARL_GATE_SHAM_ALU
+        // The ALU-only sham's word and its mask source: one word each of this thread's first
+        // A and B units of the buffer being read.
+        uint32_t sr, sq;
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(sr) : "r"(so + adst0) : "memory");
+        asm volatile("ld.shared.u32 %0, [%1];" : "=r"(sq) : "r"(so + bdst0) : "memory");
+#endif
 #pragma unroll
         for (uint32_t t = 0; t < KS; t++) {
           const uint32_t kt = t * 32u;
@@ -1112,11 +1133,69 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
             pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+#if PEARL_GATE_SHAM_MMA
+            // The sham draw between the mma (PEARL_GATE_SHAM_AT 2): one 16-byte unit an m16
+            // tile, in tiles 4 to 10 of the stage, behind the EMPTY wait of tile 3. Its first
+            // load goes out before the tile's first mma, its second after it, its ALU steps
+            // after mma 1 to 6 and its store after the last. Every step is its own asm, so
+            // the PTX keeps this order; ptxas schedules from there. No branch around it: in a
+            // launch's last chunk it writes a buffer nothing reads again.
+            const uint32_t spt = t * MT + mb;
+            constexpr uint32_t SHAM_PT0 = PEARL_TALL_APT + 1u;
+            static_assert(SHAM_PT0 + ASLOTS + BSLOTS <= KS * MT, "seven units fit the stage");
+            const bool sham_on = spt >= SHAM_PT0 && spt < SHAM_PT0 + ASLOTS + BSLOTS;
+            const uint32_t su = spt - SHAM_PT0;
+            const uint32_t so1 =
+                su < ASLOTS ? adst0 + su * aStep * SK : bdst0 + (su - ASLOTS) * bStep * SK;
+            const uint32_t so2 = su < ASLOTS ? adst0 + ((su + 1u) % ASLOTS) * aStep * SK
+                                             : bdst0 + ((su - ASLOTS + 1u) % BSLOTS) * bStep * SK;
+            uint32_t sx[4] = {0u, 0u, 0u, 0u}, sy[4] = {0u, 0u, 0u, 0u};
+            if (sham_on)
+              asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                           : "=r"(sx[0]), "=r"(sx[1]), "=r"(sx[2]), "=r"(sx[3]) : "r"(so + so1) : "memory");
+#endif
 #pragma unroll
-            for (uint32_t nb = 0; nb < NB; nb++)
+            for (uint32_t nb = 0; nb < NB; nb++) {
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
                                  a0, a1, a2, a3, bfr[nb / 2u][(nb & 1u) * 2u],
                                  bfr[nb / 2u][(nb & 1u) * 2u + 1u]);
+#if PEARL_GATE_SHAM_MMA
+              if (sham_on) {
+                if (nb == 0u) {
+                  asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                               : "=r"(sy[0]), "=r"(sy[1]), "=r"(sy[2]), "=r"(sy[3]) : "r"(so + so2) : "memory");
+                } else if (nb + 1u < NB) {
+                  // ALU steps k of SHAM_OPS, an even share after each of mma 1 to 6: step k / 4
+                  // on word k % 4. Steps 0, 2, 4 XOR in one low bit a byte from the second
+                  // load; steps 1, 3, 5 rotate the word by whole bytes.
+#pragma unroll
+                  for (uint32_t k = (nb - 1u) * SHAM_OPS / (NB - 2u); k < nb * SHAM_OPS / (NB - 2u); k++) {
+                    const uint32_t w = k & 3u, st = k >> 2;
+                    if (st == 0u) PEARL_SHAM_XOR(sx[w], sy[w], 0x01010101)
+                    if (st == 1u) PEARL_SHAM_ROT(sx[w], 8)
+                    if (st == 2u) PEARL_SHAM_XOR(sx[w], sy[w], 0x01000100)
+                    if (st == 3u) PEARL_SHAM_ROT(sx[w], 16)
+                    if (st == 4u) PEARL_SHAM_XOR(sx[w], sy[w], 0x00010001)
+                    if (st == 5u) PEARL_SHAM_ROT(sx[w], 8)
+                  }
+                } else {
+                  asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                               ::"r"(ib + so1), "r"(sx[0]), "r"(sx[1]), "r"(sx[2]), "r"(sx[3]) : "memory");
+                }
+              }
+#elif PEARL_GATE_SHAM_ALU
+              // ALU only (PEARL_GATE_SHAM_AT 3): one, two or four steps on one carried word
+              // after every mma (one after every second at level 1), with no load or store
+              // but the word's own, once a stage. Prices instructions in the mma stream alone.
+#pragma unroll
+              for (uint32_t k = 0; k < (PEARL_GATE_SHAM == 1 ? (nb & 1u) : PEARL_GATE_SHAM / 2u); k++) {
+                // XOR and rotation take turns down the stream, so no two fold into one.
+                const uint32_t g = (PEARL_GATE_SHAM == 1 ? (nb >> 1) : nb * (PEARL_GATE_SHAM / 2u)) + k;
+                if (g & 1u) PEARL_SHAM_ROT(sr, 8)
+                else PEARL_SHAM_XOR(sr, sq, 0x01010101)
+              }
+#endif
+            }
             // The next chunk's copies for this stage (see PEARL_TALL_APT): A after m16
             // tile 3 of k-step 0, behind the EMPTY wait; B after tile 2 of k-step 1, then
             // the arrival that counts them.
@@ -1173,7 +1252,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
                 pearl_mbar_arrive(ib + STAGE);
               }
             }
-#else
+#elif PEARL_GATE_SHAM_AT == 1
             // Spread: after m16 tiles 3, 5, 7, 9 and 11 of the stage, two units, one, one,
             // one and two.
             static_assert(PEARL_TALL_APT <= 3u, "the EMPTY wait comes before the first unit");
@@ -1227,6 +1306,14 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // and an arrive a stage) go too. Prices them; the output is meaningless.
 #else
         // This thread is done reading the stage: a release (see the ring above).
+#if PEARL_GATE_SHAM_ALU
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(ib + adst0), "r"(sr) : "memory");
+#endif
+#if PEARL_GATE_SHAM_MMA || PEARL_GATE_SHAM_ALU
+        // The sham's FULL arrival for the buffer it wrote, at the stage's end beside the EMPTY
+        // release, every stage: the buffer is read a stage later.
+        pearl_mbar_arrive(ib + STAGE);
+#endif
         pearl_mbar_arrive(so + STAGE + 8u);
 #endif
       }
@@ -1529,6 +1616,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #undef PEARL_TALL_LOOP_A
 #undef PEARL_TALL_LOOP_B
 #undef PEARL_TALL_PGATE
+#undef PEARL_SHAM_XOR
+#undef PEARL_SHAM_ROT
 #undef PEARL_TALL_NEXT
 #else
   (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;

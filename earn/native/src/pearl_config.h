@@ -2758,8 +2758,15 @@ typedef struct {
 //       instructions an IMMA. Each thread rebuilds its seven 16-byte units of the buffer the
 //       stage refills, a stage ahead of their use: two 16-byte loads from the buffer being read,
 //       an ALU chain, one 16-byte store, then the FULL arrival. Values stay in A' and B''s range.
-//   PEARL_GATE_SHAM_AT=0|1 where the sham sits in the MMA warps: 0 at the two k-step ends of a
-//       stage (B's fragment registers are dead there), 1 after every other m16 tile.
+//   PEARL_GATE_SHAM_AT=0|1|2|3 where the sham sits in the MMA warps:
+//       0  at the two k-step ends of a stage (B's fragment registers are dead there), four
+//          units then three, each a run of load, load, ALU, store behind a branch;
+//       1  after m16 tiles 3, 5, 7, 9 and 11, one or two units each, the same runs;
+//       2  between the mma: one unit an m16 tile, its loads around the tile's first mma, its
+//          ALU steps after mma 1 to 6, its store after the last, with no branch around it;
+//       3  ALU only: one, two or four steps after every mma (one after every second at
+//          level 1) on a carried word, loaded and stored once a stage. No operand is built:
+//          it prices instructions in the mma stream with no load latency.
 //   PEARL_GATE_WARP9=1 (needs SHAM): a ninth warp does the whole block's sham instead, so no
 //       sham instruction sits in an MMA warp. 288 threads, so ptxas gets 227 registers.
 //   PEARL_GATE_PHANTOM=1 (needs PEARL_ABLATE_DRAM): the host stores only the two tiles of A'
@@ -2780,6 +2787,10 @@ typedef struct {
 #ifndef PEARL_GATE_PHANTOM
 #define PEARL_GATE_PHANTOM 0
 #endif
+//   PEARL_GATE_S_ROLL=1 (cp.async ring): a chunk's two stages as a loop instead of unrolled.
+#ifndef PEARL_GATE_S_ROLL
+#define PEARL_GATE_S_ROLL 0
+#endif
 #if PEARL_GATE_SHAM && !PEARL_GATE_NOCOPY
 #error "PEARL_GATE_SHAM stands in for the copies: build it with PEARL_GATE_NOCOPY=1"
 #endif
@@ -2798,8 +2809,14 @@ typedef struct {
 #if PEARL_GATE_PHANTOM && !defined(PEARL_ABLATE_DRAM)
 #error "PEARL_GATE_PHANTOM stores what PEARL_ABLATE_DRAM reads: build it with -DPEARL_ABLATE_DRAM"
 #endif
+#if PEARL_GATE_SHAM_AT < 0 || PEARL_GATE_SHAM_AT > 3
+#error "PEARL_GATE_SHAM_AT is 0, 1, 2 or 3"
+#endif
 // Any of them makes a timing-only build: the host refuses every target but zero.
 #define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM)
+// The two shams that sit between the mma (PEARL_GATE_SHAM_AT 2 and 3).
+#define PEARL_GATE_SHAM_MMA (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 2)
+#define PEARL_GATE_SHAM_ALU (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 3)
 
 // The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
 // default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b
