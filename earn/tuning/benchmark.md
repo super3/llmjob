@@ -233,6 +233,32 @@ Where power limits match Vast, the competitors got 4–7% faster and ours didn't
 Our gap widens as the power limit drops: 87% on the 400 W 4090 against 93% at 450 W, 88% on the 256 W 4080 Super
 against 93% at 320 W.
 
+### rig01, native Windows, 10 November (v0.6.14; PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5)
+
+Every Salad row runs in WSL2; our users run Windows. This is rig01's RTX 4090 (450 W, driver 610.88) on Windows 11,
+with the installed app stopped. Each miner mined 5 minutes on Kryptex (prl-us:7048) after a 60 s warm-up, two
+rounds, the second in reverse order (PeakMiner, SRBMiner, OneZeroMiner, ours, then back). TH/s is each miner's own
+figure, as bench.sh reads it: the competitors' API at the end of the run, ours the mean of its status line after the
+first minute. The power, SM clock and temperature columns are nvidia-smi means after the first minute.
+
+| Miner | Round 1 | Round 2 | Mean | Power | SM clock | Temp | Shares (acc/rej) |
+|---|---|---|---|---|---|---|---|
+| Ours (v0.6.14 CLI, the installed app's runtime and cores) | 317.3 | 317.6 | 317.5 | 449 W | 2531 MHz | 77 °C | 21/0 |
+| PeakMiner 2.20.7 | 339.1 | 339.1 | 339.1 | 450 W | 2624 MHz | 77 °C | 27/0 |
+| SRBMiner 3.8.2 | 339.3 | 337.9 | 338.6 | 445 W | 2619 MHz | 77 °C | 24/0 |
+| OneZeroMiner 1.8.5 | 341.9 | 341.8 | 341.9 | 450 W | 2625 MHz | 77 °C | 20/0 |
+
+Ours is 92.9% of the best, the same gap as Salad's 450 W 4090 (c1e9408c, 92.5%), so WSL2 doesn't explain it.
+The competitors also land within 1% of that box. All four hold the 450 W cap with the memory at 10251 MHz, but
+ours runs about 90 MHz lower on the SM clock (2531 against 2619–2625): it spends more power per clock. Per MHz it
+does 0.1254 TH/s against OneZeroMiner's 0.1302, so the gap splits about evenly between clock (3.6%) and work per
+clock (3.7%). SRBMiner's own rate dipped to 239 and 291 TH/s for two samples early in round 1; its end figure
+didn't. No miner rejected a share.
+
+Downloads were checked against the SHA-256 digests GitHub lists for each release asset, and SRBMiner's zip also
+against its published .md5. Windows Defender quarantines SRBMiner on download, so the competitors ran from
+`C:\miners\item16-1110`, rig01's excluded folder. A short Python script ran bench.sh's method, as Git Bash has no jq.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
