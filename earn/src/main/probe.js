@@ -96,6 +96,21 @@ const PCI_IDS_FILES = ['/usr/share/misc/pci.ids', '/usr/share/hwdata/pci.ids', '
 // there is no /sys/class/drm or no AMD card we name. `opts` ({ fs, root,
 // pciIds }) is for tests. Never throws.
 function detectAmdGpus(opts) {
+  return amdCards(opts).map((c, index) => ({ index, name: c.name, usedMb: c.usedMb, totalMb: c.totalMb }));
+}
+
+// The AMD cards' PCI bus ids, { index: "0000:04:00.0" }, by detectAmdGpus's index. A card
+// whose sysfs path couldn't be resolved to its PCI address has none. Never throws.
+function detectAmdBusIds(opts) {
+  const ids = {};
+  amdCards(opts).forEach((c, index) => {
+    if (/^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/i.test(c.bus)) ids[index] = c.bus;
+  });
+  return ids;
+}
+
+// detectAmdGpus's cards with their sysfs bus, in PCI bus order.
+function amdCards(opts) {
   const o = opts || {};
   const fsx = o.fs || fs;
   const root = o.root || '/sys/class/drm';
@@ -124,7 +139,7 @@ function detectAmdGpus(opts) {
     found.push({ bus, name, usedMb: mb('mem_info_vram_used'), totalMb: mb('mem_info_vram_total') });
   }
   found.sort((a, b) => a.bus.localeCompare(b.bus));
-  return found.map((c, index) => ({ index, name: c.name, usedMb: c.usedMb, totalMb: c.totalMb }));
+  return found;
 }
 
 // The cards for the network board's rows: nvidia-smi's, or on Linux with none,
@@ -199,11 +214,19 @@ function detectCudaCards() {
 // Each card's PCI bus id, as { index: '00000000:01:00.0' }, for the stats file
 // HiveOS reads (see shared/gpu.parsePciBusIds). Resolves {} when nvidia-smi
 // fails. Never rejects.
-function detectPciBusIds() {
+// On Linux with no NVIDIA card, the AMD cards' bus ids from sysfs, by the same index
+// the AMD core numbers them with (detectAmdBusIds). Without them HiveOS's h-stats.sh
+// couldn't match an AMD card to its temperature and fan, and showed 0 for both
+// (7x RX 6700 XT, 9 November). `opts` is detectAmdGpus's, for tests.
+function detectPciBusIds(opts) {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=index,pci.bus_id', '--format=csv,noheader'],
       { timeout: 5000 },
-      (err, stdout) => resolve(err ? {} : parsePciBusIds(stdout)));
+      (err, stdout) => {
+        const ids = err ? {} : parsePciBusIds(stdout);
+        if (Object.keys(ids).length || process.platform !== 'linux') return resolve(ids);
+        resolve(detectAmdBusIds(opts));
+      });
   });
 }
 
@@ -400,6 +423,7 @@ module.exports = {
   detectGpuTemps,
   detectCudaCards,
   detectPciBusIds,
+  detectAmdBusIds,
   detectLlmDevices,
   detectLlmBusIds,
   postMinerReport,

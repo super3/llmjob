@@ -597,6 +597,26 @@ describe('AMD cards from sysfs', () => {
     });
   });
 
+  // HiveOS matches each card to its temperature and fan by bus (h-stats.sh). An AMD rig has no
+  // nvidia-smi, so the bus ids come from sysfs, by the AMD core's index.
+  it('gives AMD cards\' bus ids on Linux when nvidia-smi lists none', async () => {
+    execCb(new Error('ENOENT'));
+    await withPlatform('linux', async () => {
+      expect(await probe.detectPciBusIds(opts)).toEqual({ 0: '0000:01:00.0', 1: '0000:03:00.0' });
+      // A card whose sysfs path didn't resolve to a PCI address gets none.
+      expect(await probe.detectPciBusIds({ fs: fakeFs(files, {}, ['card1']), root: '/d', pciIds: ['/ids'] }))
+        .toEqual({});
+    });
+    await withPlatform('win32', async () => {
+      expect(await probe.detectPciBusIds(opts)).toEqual({});
+    });
+    execCb(null, '0, 00000000:01:00.0\n');
+    await withPlatform('linux', async () => {
+      expect(await probe.detectPciBusIds(opts)).toEqual({ 0: '00000000:01:00.0' });
+    });
+    expect(probe.detectAmdBusIds()).toEqual(expect.any(Object));
+  });
+
   it('gives the board nvidia-smi\'s cards, else the AMD ones on Linux', async () => {
     execCb(null, '0, NVIDIA GeForce RTX 4090, 1000, 24564\n');
     expect((await probe.detectBoardGpus(opts))[0].name).toBe('NVIDIA GeForce RTX 4090');
