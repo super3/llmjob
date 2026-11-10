@@ -294,7 +294,8 @@ card still makes 86% of its 450 W rate on two-thirds of the power.
 
 A core clock lock does nothing here (item 6). `nvidia-smi -lgc 2600,2600` and `2700,2700` on top of the memory lock
 gave 319.7 and 319.8 TH/s with the SM clock still at 2549–2552 MHz, and `-lgc 2600,2600` alone gave 317.4. The power
-limit sets the clock, not the lock. nvidia-smi has no voltage control, so an undervolt was not tried.
+limit sets the clock, not the lock. nvidia-smi has no voltage control; a clock offset through NVML does the
+job and was run later the same day (next section).
 
 `verify-hits.js` under the 5001 MHz lock: 400 of 400 hits verified.
 
@@ -308,6 +309,40 @@ locked in turn, and keeps the lock only if it was 0.3% faster and ahead in every
 this branch's CLI on Kryptex: the trial measured 320.0 TH/s locked against 317.4 (+0.8%) and kept the lock, with 8
 shares accepted and none rejected in under six minutes. The lock is dropped when an LLM co-runs on the card, as
 every memory clock lock is.
+
+### rig01, 10 November: core clock offset on the RTX 4090 (item 6, second pass)
+
+Item 6's first pass tried a core clock lock (`nvidia-smi -lgc`), which changed nothing: a lock can't change the
+volts the card needs for a clock, and the power limit sets the clock. A clock offset can. nvidia-smi has no
+switch for it, but NVML does (`nvmlDeviceSetClockOffsets`, GPU clock, P-state 0; this card allows −1000 to
++1000 MHz), and PeakMiner (`--gpu-core`) and SRBMiner (`--gpu-coffset`) both expose it. The RTX 40 review of
+10 November pointed this out.
+
+Same method as the memory clock sweep: our v0.6.16 CI core, `hashrate.js` for 90 s after 20 s of warm-up, a stock
+run between every setting, 450 W limit, native Windows, driver 610.88, Administrator. Each offset first ran
+`verify-hits.js`; every one verified 400 of 400 hits. The offset was set back to 0 afterwards.
+
+| Setting | TH/s | Against stock | SM clock | Power |
+|---|---|---|---|---|
+| Stock (five runs) | 317.3–317.5 | — | 2530–2533 MHz | 449 W |
+| +50 MHz | 320.9 | +1.1% | 2559 MHz | 450 W |
+| +100 MHz | 325.3 | +2.5% | 2593 MHz | 449 W |
+| +150 MHz | 331.2 | +4.3% | 2640 MHz | 449 W |
+| +150 MHz and the 5001 MHz memory lock | 333.3 | +5.0% | 2660 MHz | 450 W |
+| 5001 MHz memory lock alone | 319.9 | +0.8% | 2554 MHz | 449 W |
+
+A sixth stock run, the first of the sweep, read 307.4 TH/s with a dip in it (sd 41); it is left out.
+
+About 70% of each offset step comes back as clock at the same watts (+107 MHz for +150), and the gain was still
+rising at +150 MHz, where the sweep stopped by choice. With the offset and the memory lock together this card runs
+at 97.5–98.4% of what the three competitors did on it at stock settings on 10 November (338.6–341.9 TH/s), up from
+92.9%.
+
+What it does not show. It is one card: how far a card can be offset before it computes wrong differs card to
+card, so a shipped version would have to step up and hit-check each step, as the memory clock trial does. No
+long run was made, so stability over hours at +150 MHz is not known. It needs Administrator or root, so it moves
+no Salad or Vast row. And the competitors have the same switch: against a competitor tuned the same way it keeps
+pace, it does not pass. Nothing is built into the app.
 
 ## RTX 50-series
 
