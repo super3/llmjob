@@ -1,6 +1,6 @@
 # job 1: SRBMiner pick, builds, fold shapes, stamps, then the launch-boundary race (hash-queue zero and wait, 4 strips)
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=9279ec6292b231ffbc31683938fb4e7b78779b2f
+G_CODE=8066eac1c037daef4e7a867ffcc36c5093e72383
 G_PARTS=srb\ build\ fold\ stamps\ hash
 G_VARIANTS=base\ twin\ hq0\ hz\ hzw\ s4\ s4z
 G_HROUNDS=4
