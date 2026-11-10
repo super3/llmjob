@@ -311,6 +311,18 @@ struct Ctx {
   // pearl_host_race_enter sets the slice again.
   int l2Bytes = 0, l2MaxSlice = 0;
   size_t l2Slice = 0, l2Granted = 0;
+  // RTX 30's launch shapes this card can run (pearl_host_shape_count): [0] is the rule's
+  // pick, the rest the alternatives a startup trial times against it. Empty elsewhere.
+  struct Shape {
+    uint32_t colBatch;
+    uint32_t band;
+    bool pinB;
+    size_t slice;
+  };
+  static constexpr int kMaxShapes = 3;
+  Shape shapes[kMaxShapes] = {};
+  int shapeCount = 0;
+  int shapeNow = 0;
   // Whether it is Ada's cp.async build (binaryVersion 89), whose batch width the host
   // picks from the L2 (pearl_ada_col_batch).
   bool foldAda = false;
@@ -1534,6 +1546,19 @@ uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // reads B' again every band, and A' once a batch; the flip holds B' and reads A' once a
 // batch. RTX 3090 (4.1 MiB slice, band 8): 128 offsets, 2.1 MB against 3.3 MB, so 63%.
 // RTX 3080 10 GB (3.4 MiB, band 8): 64 offsets, 4.2 MB against 3.3 MB, so not taken.
+// The flip's batch width on its own, before the model's test: the widest power-of-two
+// number of tiles' offsets whose B' fits the slice, narrower than colBatch and dividing
+// the valid offsets; 0 if none. The startup trial (pearl_host_shape_count) times this
+// width on cards where the model turns the flip down.
+uint32_t pearl_ampere_flip_width(uint32_t k, uint32_t colBatch, uint32_t colsValid,
+                                 uint64_t maxSlice) {
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  uint32_t width = 0u;
+  for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
+    if (colsValid % c == 0u) width = c;
+  return width;
+}
+
 uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, uint32_t colBatch,
                                uint32_t colsValid, uint64_t maxSlice) {
   // A forced band depth (-DPEARL_AMPERE_BAND) is a tuning build of the band walk: no flip.
@@ -1543,9 +1568,7 @@ uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, ui
 #else
   if (!PEARL_AMPERE_FLIP || band == 0u || maxSlice == 0u) return 0u;
   const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
-  uint32_t width = 0u;
-  for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
-    if (colsValid % c == 0u) width = c;
+  const uint32_t width = pearl_ampere_flip_width(k, colBatch, colsValid, maxSlice);
   if (width == 0u) return 0u;
   const uint64_t aBytes = (uint64_t)rowGroups * PEARL_TALL_BM * k;
   const uint64_t bandWalk = (uint64_t)((rowGroups + band - 1u) / band) * colBytes + aBytes / colBatch;
@@ -2023,6 +2046,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     if (ctx->foldPersistA && PEARL_TALL_PIN_B_ARCH(ctx->tallArch * 10) && !ctx->foldUnfused) {
       const uint32_t rowGroups =
           (ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
+      const uint32_t walkBatch = ctx->colBatch, walkBand = ctx->tallBand;
       const uint32_t w = pearl_ampere_flip_for(profile->k, rowGroups, ctx->tallBand, ctx->colBatch,
                                                ctx->colsValid, maxp > 0 ? (uint64_t)maxp : 0u);
       if (w != 0u) {
@@ -2031,6 +2055,33 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
         ctx->batch = ctx->colBatch * ctx->rowsValid;
         ctx->tallBand = 1u;
       }
+#ifndef PEARL_AMPERE_BAND
+      // The shapes a startup trial may time (pearl_host_shape_count): the rule's pick first,
+      // then the other of flip and band walk, then the band walk at the other depth. The
+      // rule picks from the L2 alone, and the best one moves with the PC: the 3080 Ti's flip
+      // read -0.14% on a 400 W PC and +1.63% on a 350 W one (benchmark.md, #287 item 3).
+      auto slice = [&](bool pinB, uint32_t cb, uint32_t band) -> size_t {
+        if (maxp <= 0 || !(PEARL_AMPERE_PERSIST_A || pinB)) return 0u;
+        size_t s = pinB ? (size_t)cb * PEARL_COLS_COUNT * profile->k
+                        : (size_t)band * PEARL_TALL_BM * profile->k;
+        return s > (size_t)maxp ? (size_t)maxp : s;
+      };
+      const uint32_t fw = PEARL_AMPERE_FLIP
+          ? pearl_ampere_flip_width(profile->k, walkBatch, ctx->colsValid,
+                                    maxp > 0 ? (uint64_t)maxp : 0u)
+          : 0u;
+      const uint32_t altBand = walkBand <= 4u ? 8u : walkBand / 2u;
+      Ctx::Shape walk = {walkBatch, walkBand, false, slice(false, walkBatch, walkBand)};
+      Ctx::Shape flip = {fw, 1u, true, slice(true, fw, 1u)};
+      Ctx::Shape alt = {walkBatch, altBand, false, slice(false, walkBatch, altBand)};
+      int n = 0;
+      ctx->shapes[n++] = ctx->foldPinB ? flip : walk;
+      if (ctx->foldPinB) ctx->shapes[n++] = walk;
+      else if (fw != 0u) ctx->shapes[n++] = flip;
+      ctx->shapes[n++] = alt;
+      ctx->shapeCount = n;
+      ctx->shapeNow = 0;
+#endif
     }
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
@@ -2188,6 +2239,69 @@ extern "C" void pearl_host_race_enter(void *handle) {
   if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, ctx->l2Slice) != cudaSuccess)
     (void)cudaGetLastError();
   if (cudaCtxResetPersistingL2Cache() != cudaSuccess) (void)cudaGetLastError();
+}
+
+// RTX 30's launch shapes (Ctx::shapes): how many this card can run, 0 where there is
+// nothing to choose (every other fold, and the forced-band tuning builds). Shape 0 is the
+// rule's pick, which a new context runs.
+extern "C" int pearl_host_shape_count(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  return ctx && ctx->shapeCount > 1 ? ctx->shapeCount : 0;
+}
+
+// A shape's name for the log and the app's cache: "flip 128" or "band 8 x 512".
+extern "C" void pearl_host_shape_name(void *handle, int i, char *buf, size_t len) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!buf || !len) return;
+  if (!ctx || i < 0 || i >= ctx->shapeCount) {
+    snprintf(buf, len, "none");
+    return;
+  }
+  const Ctx::Shape &s = ctx->shapes[i];
+  if (s.pinB) snprintf(buf, len, "flip %u", s.colBatch);
+  else snprintf(buf, len, "band %u x %u", s.band, s.colBatch);
+}
+
+// Switch to shape i. Only with no batch queued: a queued batch's hits are read back with the
+// width it ran at. The fold reads the band from the device word, the launch takes the width
+// and kernel from the context, and the persisting slice is set again. Returns false for a
+// shape this context does not have.
+extern "C" bool pearl_host_set_shape(void *handle, int i) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || i < 0 || i >= ctx->shapeCount) return false;
+  if (i == ctx->shapeNow) return true;
+  DeviceScope scope(ctx->device);
+  const Ctx::Shape &s = ctx->shapes[i];
+  const uint32_t bands[Ctx::kSlots] = {s.band, s.band};
+  if (cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
+                 cudaMemcpyHostToDevice) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  // The kernel changes with the flip: its shared-memory opt-in and resident count are asked
+  // again at the next launch.
+  if (s.pinB != ctx->foldPinB) {
+    ctx->smemOptedIn = false;
+    ctx->foldResident = 0;
+  }
+  ctx->foldPinB = s.pinB;
+  ctx->colBatch = s.colBatch;
+  ctx->batch = ctx->colBatch * ctx->rowsValid;
+  ctx->tallBand = s.band;
+  ctx->l2Slice = s.slice;
+  if (ctx->l2MaxSlice > 0) {
+    if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, s.slice) != cudaSuccess)
+      (void)cudaGetLastError();
+    if (cudaCtxResetPersistingL2Cache() != cudaSuccess) (void)cudaGetLastError();
+    size_t granted = 0;
+    if (cudaDeviceGetLimit(&granted, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
+      (void)cudaGetLastError();
+      granted = 0;
+    }
+    ctx->l2Granted = granted;
+  }
+  ctx->shapeNow = i;
+  return true;
 }
 
 extern "C" void pearl_host_destroy(void *handle) {

@@ -39,7 +39,9 @@
 
 #include <napi.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <cstring>
 #include <chrono>
 #include <deque>
@@ -133,6 +135,11 @@ int pearl_host_pending(void *ctx);
 bool pearl_host_next_hit(void *ctx, PearlSearchResult *out);
 // Which fold this card runs, in words ("unresolved" without a context).
 const char *pearl_host_fold_name(void *ctx);
+// RTX 30's launch shapes (pearl_host.cu): how many (0: nothing to choose), a shape's name,
+// and switching to one with no batch queued.
+int pearl_host_shape_count(void *ctx);
+void pearl_host_shape_name(void *ctx, int i, char *buf, size_t len);
+bool pearl_host_set_shape(void *ctx, int i);
 }
 
 namespace {
@@ -151,11 +158,15 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::Value GetK(const Napi::CallbackInfo &info);
   Napi::Value GetKNote(const Napi::CallbackInfo &info);
   Napi::Value GetUntested(const Napi::CallbackInfo &info);
+  Napi::Value GetShapes(const Napi::CallbackInfo &info);
+  Napi::Value GetShape(const Napi::CallbackInfo &info);
 
   void SearchLoop();
   void EmitHit(const PearlSearchResult &r, const std::string &job_id);
   void EmitHashrate(double th_per_sec);
   void EmitError(const std::string &msg);
+  void EmitShape(const std::string &json);
+  std::string ShapeName(int i) const;
 
   PearlProfile profile_ = PEARL_MAINNET_PROFILE;
   // Hashrate averaging window. The emitted value is a RATE, so it needs both a
@@ -180,6 +191,10 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   // (0, 1) are the single-card walk 0, 1, 2, 3 that shipped before.
   uint64_t salt_base_ = 0;
   uint64_t salt_stride_ = 1;
+  // The startup trial of RTX 30's launch shapes (shapeTrialSecs): about how long it runs,
+  // 0 for none. And the shape this core runs now, which a cached pick (shape) sets at create.
+  uint32_t shape_trial_secs_ = 0;
+  std::atomic<int> shape_now_{0};
   std::thread worker_;
   std::atomic<bool> running_{false};
   // Set by the search thread when a search fails, before it clears running_ and
@@ -200,6 +215,7 @@ class PearlCore : public Napi::ObjectWrap<PearlCore> {
   Napi::ThreadSafeFunction on_hit_;
   Napi::ThreadSafeFunction on_hashrate_;
   Napi::ThreadSafeFunction on_error_;
+  Napi::ThreadSafeFunction on_shape_;
 };
 
 PearlCore::PearlCore(const Napi::CallbackInfo &info)
@@ -265,6 +281,15 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
       // than an error the host could see. Keep the single-card default instead.
       if (v2 > 0) salt_stride_ = (uint64_t)v2;
     }
+    Napi::Value tr = o.Get("shapeTrialSecs");
+    if (tr.IsNumber() && tr.As<Napi::Number>().DoubleValue() > 0)
+      shape_trial_secs_ = tr.As<Napi::Number>().Uint32Value();
+  }
+  // A cached pick by name (shape), applied once the context exists, below.
+  std::string want_shape;
+  if (info.Length() > 1 && info[1].IsObject()) {
+    Napi::Value sh = info[1].As<Napi::Object>().Get("shape");
+    if (sh.IsString()) want_shape = sh.As<Napi::String>().Utf8Value();
   }
 
   char err[256] = {0};
@@ -298,7 +323,18 @@ PearlCore::PearlCore(const Napi::CallbackInfo &info)
     // reports that the engine is unavailable on this machine.
     Napi::Error::New(env, err[0] ? err : "failed to initialise the Pearl CUDA core")
         .ThrowAsJavaScriptException();
+    return;
   }
+  // The app's cached pick for this card. A name this build doesn't have (the shapes
+  // changed, or the card did) keeps the rule's shape.
+  for (int i = 0; !want_shape.empty() && i < pearl_host_shape_count(ctx_); i++)
+    if (ShapeName(i) == want_shape && pearl_host_set_shape(ctx_, i)) shape_now_ = i;
+}
+
+std::string PearlCore::ShapeName(int i) const {
+  char buf[64] = {0};
+  pearl_host_shape_name(ctx_, i, buf, sizeof buf);
+  return buf;
 }
 
 PearlCore::~PearlCore() {
@@ -385,6 +421,7 @@ Napi::Value PearlCore::Stop(const Napi::CallbackInfo &info) {
   release_tsfn(on_hit_);
   release_tsfn(on_hashrate_);
   release_tsfn(on_error_);
+  release_tsfn(on_shape_);
   // Free the device context HERE, not only in the destructor.
   //
   // The destructor runs when V8 finalises the wrapper, which is whenever it next
@@ -410,6 +447,7 @@ Napi::Value PearlCore::On(const Napi::CallbackInfo &info) {
   if (ev == "hit") on_hit_ = tsfn;
   else if (ev == "hashrate") on_hashrate_ = tsfn;
   else if (ev == "error") on_error_ = tsfn;
+  else if (ev == "shape") on_shape_ = tsfn;
   else tsfn.Release();
   return env.Undefined();
 }
@@ -451,6 +489,26 @@ void PearlCore::SearchLoop() {
   std::string job_id;
   bool drawn = false;
 
+  // The startup trial of RTX 30's launch shapes (shapeTrialSecs). Each shape gets turns of
+  // at least LEG seconds, ended on a whole salt, one turn a round, in an order that reverses
+  // each round, as probes/race.cu races builds: what drifts (clock, heat) drifts for all.
+  // A turn starts and ends with nothing queued, so every batch it counts ran in its shape,
+  // and its rate is that work over the turn's time. Hits found during the trial are sent
+  // as usual: every shape searches the same regions. At the end the core keeps the shape
+  // that beat the rule's (shape 0) by TRIAL_MIN_GAIN on average and in at least two
+  // thirds of the rounds, else the rule's, and says so in a 'shape' event.
+  const double LEG = 4.0;
+  const double TRIAL_MIN_GAIN = 0.003;
+  const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;
+  bool trial = nShapes > 1;
+  const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / (LEG * nShapes))) : 0;
+  std::vector<std::vector<double>> legRates(trial ? nShapes : 0);
+  int round = 0, turn = 0;
+  auto turnShape = [&](int r, int t) { return r % 2 == 0 ? t : nShapes - 1 - t; };
+  std::chrono::steady_clock::time_point legStart = std::chrono::steady_clock::now();
+  double legWork = 0.0;
+  if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
+
   // Read the oldest queued batch: count its work toward the hashrate and report a hit.
   auto collect = [&](bool report) -> bool {
     PearlSearchResult r;
@@ -484,6 +542,7 @@ void PearlCore::SearchLoop() {
     if (attempts > 0) {
       const auto now = std::chrono::steady_clock::now();
       win_work_ += (double)attempts * PEARL_DAF(profile_);
+      legWork += (double)attempts * PEARL_DAF(profile_);
       const double win = std::chrono::duration<double>(now - win_start_).count();
       if (win >= 0.5) {
         EmitHashrate(win_work_ / win / 1e12);
@@ -530,6 +589,9 @@ void PearlCore::SearchLoop() {
       job_id = fresh_id;
       drawn = true;
       nonce = 0;
+      // A trial turn starts again after a new job's draw: the draw is not the shape's.
+      legStart = std::chrono::steady_clock::now();
+      legWork = 0.0;
     }
     if (!drawn) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -550,6 +612,54 @@ void PearlCore::SearchLoop() {
     // Advance by what the batch covers. (A hit no longer ends a batch early: the
     // fold searches the whole batch and lists its hits.)
     nonce += regions;
+    if (nonce >= span && trial
+        && std::chrono::duration<double>(std::chrono::steady_clock::now() - legStart).count()
+               >= LEG) {
+      // The end of a trial turn: finish its batches, then time it.
+      while (!queued.empty())
+        if (!collect(true)) return;
+      const auto now = std::chrono::steady_clock::now();
+      const double secs = std::chrono::duration<double>(now - legStart).count();
+      legRates[turnShape(round, turn)].push_back(secs > 0 ? legWork / secs : 0.0);
+      if (++turn == nShapes) {
+        turn = 0;
+        round++;
+      }
+      int next;
+      if (round < rounds) {
+        next = turnShape(round, turn);
+      } else {
+        trial = false;
+        next = 0;
+        double bestGain = TRIAL_MIN_GAIN;
+        std::string rows;
+        for (int i = 1; i < nShapes; i++) {
+          double sum = 0.0;
+          int ahead = 0, n = 0;
+          for (size_t r = 0; r < legRates[i].size() && r < legRates[0].size(); r++) {
+            if (legRates[0][r] <= 0) continue;
+            const double ratio = legRates[i][r] / legRates[0][r];
+            sum += ratio - 1.0;
+            ahead += ratio > 1.0;
+            n++;
+          }
+          const double gain = n ? sum / n : 0.0;
+          if (n && gain > bestGain && ahead * 3 >= n * 2) {
+            bestGain = gain;
+            next = i;
+          }
+          char row[160];
+          snprintf(row, sizeof row, "%s{\"shape\":\"%s\",\"pct\":%.3f,\"ahead\":%d,\"rounds\":%d}",
+                   rows.empty() ? "" : ",", ShapeName(i).c_str(), gain * 100.0, ahead, n);
+          rows += row;
+        }
+        EmitShape("{\"shape\":\"" + ShapeName(next) + "\",\"rule\":\"" + ShapeName(0)
+                  + "\",\"trial\":[" + rows + "]}");
+      }
+      if (pearl_host_set_shape(ctx_, next)) shape_now_ = next;
+      legStart = std::chrono::steady_clock::now();
+      legWork = 0.0;
+    }
     if (nonce >= span) {
       // The next salt THIS core owns, not simply the next one: on a multi-card
       // rig the stride is the card count, so the cards never collide. The redraw
@@ -634,6 +744,19 @@ void PearlCore::EmitHashrate(double th) {
   if (st != napi_ok) delete v;  // dropped: free what the callback would have
 }
 
+// The trial's outcome, as JSON: the shape kept, the rule's, and each other shape's mean
+// change against the rule's in percent, the rounds it led and the rounds counted. The app
+// caches the pick for this card.
+void PearlCore::EmitShape(const std::string &json) {
+  if (!on_shape_) return;
+  std::string *m = new std::string(json);
+  napi_status st = on_shape_.NonBlockingCall(m, [](Napi::Env env, Napi::Function cb, std::string *s) {
+    cb.Call({Napi::String::New(env, *s)});
+    delete s;
+  });
+  if (st != napi_ok) delete m;
+}
+
 // Every error names the card: on a multi-card rig "misaligned address" alone
 // does not say which GPU stopped.
 void PearlCore::EmitError(const std::string &msg) {
@@ -675,6 +798,23 @@ Napi::Value PearlCore::GetUntested(const Napi::CallbackInfo &info) {
   return Napi::Boolean::New(info.Env(), untested_);
 }
 
+// The names of the launch shapes this card can run, the rule's first; [] where there is
+// nothing to choose.
+Napi::Value PearlCore::GetShapes(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  const int n = ctx_ ? pearl_host_shape_count(ctx_) : 0;
+  Napi::Array out = Napi::Array::New(env, n);
+  for (int i = 0; i < n; i++) out.Set((uint32_t)i, Napi::String::New(env, ShapeName(i)));
+  return out;
+}
+
+// The shape this card runs now, or "" where there is nothing to choose.
+Napi::Value PearlCore::GetShape(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  if (!ctx_ || pearl_host_shape_count(ctx_) == 0) return Napi::String::New(env, "");
+  return Napi::String::New(env, ShapeName(shape_now_));
+}
+
 Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
   Napi::Function func =
       DefineClass(env, "PearlCore",
@@ -684,7 +824,9 @@ Napi::Object PearlCore::Init(Napi::Env env, Napi::Object exports) {
                    InstanceAccessor("device", &PearlCore::GetDevice, nullptr),
                    InstanceAccessor("k", &PearlCore::GetK, nullptr),
                    InstanceAccessor("kNote", &PearlCore::GetKNote, nullptr),
-                   InstanceAccessor("untested", &PearlCore::GetUntested, nullptr)});
+                   InstanceAccessor("untested", &PearlCore::GetUntested, nullptr),
+                   InstanceAccessor("shapes", &PearlCore::GetShapes, nullptr),
+                   InstanceAccessor("shape", &PearlCore::GetShape, nullptr)});
   exports.Set("PearlCore", func);
   return exports;
 }

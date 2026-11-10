@@ -49,7 +49,13 @@ const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
 const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-const core = addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true });
+// PEARL_SHAPE_TRIAL and PEARL_SHAPE as in hashrate.js: the hits of every shape the trial
+// switches through are checked.
+const shapeOpts = {};
+if (process.env.PEARL_SHAPE_TRIAL) shapeOpts.shapeTrialSecs = Number(process.env.PEARL_SHAPE_TRIAL);
+if (process.env.PEARL_SHAPE) shapeOpts.shape = process.env.PEARL_SHAPE;
+const core = addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : { cardK: true, checkHits: true, ...shapeOpts });
+core.on('shape', (s) => console.error('shape ' + s));
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
 const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
 if (!PROFILE) {
