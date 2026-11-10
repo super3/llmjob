@@ -2823,7 +2823,16 @@ class TestSaladBalance(Base):
         self.assertNotIn("Salad $", self.head())
         rep = self.report()
         self.assertIn("| [Salad](https://portal.salad.com) | $228.65 | ", rep)
-        self.assertIn("| [Clore](https://clore.ai) | $50.00 |  |\n| **All** | **$278.65** | |\n", rep)
+        # How long it lasts (10 November): none running yet, so idle at the $10 a day cap, 5 days.
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 | 5d idle |\n| **All** | **$278.65** | |\n", rep)
+        # A box running at $0.25/hr: 200 h, 8 days; once it ends, idle at that rate.
+        self.x.st.setdefault("clore", {})["orders"] = {"7": {
+            "id": "7", "name": "clore-7", "server": 5, "kind": "on-demand", "price_day": 6.0, "price_hr": 0.25,
+            "label": "4080", "threads": 32, "desc": "4080, US, server 5", "created": self.clock[0], "readings": [],
+            "prl": 0.0, "prl_kx": 0.0, "xmr_coins": 0.0, "spend": 0.0, "setup_tries": 0}}
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 | 8d |", self.report())
+        self.x.st["clore"]["orders"]["7"]["ended"] = self.clock[0]
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 | 8d idle |", self.report())
         # Once a report: a second read in the same quarter hour asks nothing.
         self.x.clore_balance()
         self.assertEqual(len(asked), 1)
