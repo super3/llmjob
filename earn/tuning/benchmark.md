@@ -555,6 +555,25 @@ PeakMiner and OneZeroMiner don't mine on AMD.
 Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt. The 7900 XTX is the one
 AMD card where SRBMiner leads, on both PCs and in both run orders.
 
+Rerun on the first of those PCs (`6f96bc89`), 10 November (item 7), with v0.6.13's AMD kernel (the same fold code,
+built at 1c78804b): the duel (ours first, then SRBMiner, 5 minutes each on Kryptex, after a 30-minute sweep had
+warmed the card) read ours 54.37 TH/s, mean after the first minute, and SRBMiner 54.40, its last figure (mean 53.89).
+That is 99.9%, not the row's 92%. `hashrate.js` read 53.48 to 54.35 in three rounds, and the CLI's trace shows the
+fold at 99% of each batch (10.07 of 10.17 ms; hash 0.8%, idle 0.2%). So the row's 49.8 was a low reading of this
+PC, not a gap in the kernel. The row stays until a full rerun (see "Keeping this file current"). What off-chip
+operand traffic costs here, from the same sweep (each build in turn, three rounds of `hashrate.js`, four of the
+fold alone):
+
+| Build | `hashrate.js` TH/s | Fold alone | Clock (stamps) |
+|---|---|---|---|
+| v0.6.13 | 53.48, 54.27, 54.35 | 54.8-57.3 TMAC/s | 2564 MHz |
+| Operands held in the L2 (`PEARL_AMD_ABLATE=16`, timing only) | 55.59, 55.94, 55.93 (+3.3%) | +2.3 to +3.4% | 2640 MHz (+3.0%) |
+| No slab staging at all (`PEARL_AMD_ABLATE=32`, timing only) | 57.19, 56.83, 56.79 (+5.4%) | +1.3 to +4.4% | 2698 MHz (+5.2%) |
+
+Cycles a slab are the same in all three (6,699-6,745); waves wait 30-31% of the slab loop at the barrier and 0.7% on
+memory. So on the 7900 XTX operands from memory cost about 3% of clock, and a kernel that drew them on chip could get
+at most that, less what the draw costs.
+
 RDNA 3's buffer loads (`PEARL_AMD_RDNA3_BUFLD`, on by default on gfx1100 and gfx1101; issue #287, item 2), 7 November:
 the release and the new build taking turns on one PC, order rotating, rounds 2-5. The twin is a second copy of the
 release, for the noise.
