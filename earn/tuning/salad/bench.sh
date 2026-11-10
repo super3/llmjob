@@ -37,7 +37,7 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # and SRBMiner 3.7.1 (the GTX and AMD tables); until 9 November: v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.2.
 # PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
 # on 9 November.
-VER=v0.6.13
+VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
 PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
 # SRBMiner stays at 3.8.2: on Salad 3.8.6 exited 73 within seconds and printed only its interactive setup prompt
 # ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two 2080 Tis, 9 November).
@@ -189,6 +189,14 @@ if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
   grep -q listening /opt/b/vp.err || fail "verify-pool: $(tail -c 200 /opt/b/vp.err)"
   say "$(grep -m1 listening /opt/b/vp.err) (commit ${BASE_SHA:0:12})"
   POOL_HOST=127.0.0.1; POOL_PORT=3334
+  # VERIFY_SECS with VPOOL: the hit check (verify-hits.js) on each of the release's cores this card can load, first.
+  if [ -n "${VERIFY_SECS:-}" ] && has ours; then
+    for c in pearl_core_cu13.node pearl_core.node; do
+      say "start hitcheck $c ${VERIFY_SECS}s"
+      timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
+      hitcheck /opt/b/verify.log; say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
+    done
+  fi
 fi
 # credit NAME T0 T1: the stand-in's shares in [T0, T1) (epoch seconds), as one line: accepted, duplicates, other
 # rejects, the rate the accepted ones prove over the window and over the window less its first 60 s, accepted a
