@@ -5,6 +5,7 @@ const { createRequire } = require('module');
 const {
   CU12, CU13, AMD, FILES, LABELS, pickCoreVariant, isRuntimeError,
 } = require('../shared/coreVariant');
+const { clockOffsets } = require('./gpuClockOffset');
 
 // Loads the native PearlHash core (earn/native → a compiled `pearl_core.node`
 // N-API addon) and adapts it to the small event interface the host drives:
@@ -24,6 +25,11 @@ const {
 // 6000 or Instinct card), and says so in core.untested; PearlMiner checks each
 // of its hits before sending it. Every wrapper below passes the options through
 // as they are, so both reach the addon.
+//
+// The CUDA builds of the addon also export the two calls that read and set a
+// card's core clock offset (main/gpuClockOffset). They go to the miner with the
+// factory: every createCore this returns carries `clockOffsets`, bound to the
+// addon its cores come from.
 //
 // Returns null when the addon is not present. That is the EXPECTED state on any
 // machine without a CUDA build of the core (including this dev box and, until the
@@ -146,6 +152,15 @@ function errText(e) {
   return (e && e.message) || String(e);
 }
 
+// Hand a createCore the core clock offset calls of the addon its cores come
+// from (main/gpuClockOffset). `current` returns that addon, and is asked on
+// every call: the factories with a fallback change addon after their first
+// card, and the offset calls must follow.
+function withOffsets(createCore, current) {
+  createCore.clockOffsets = clockOffsets(current);
+  return createCore;
+}
+
 // A factory the host calls to get a running core, or null when the addon is
 // unavailable. The host depends only on this small surface
 // (`createCore(profile, opts) -> core | null`), which a test can fake with a
@@ -167,7 +182,7 @@ function coreFactory(opts = {}) {
   const env = opts.env || process.env;
   const log = typeof opts.log === 'function' ? opts.log : () => {};
   const say = (level, variant, why) => log(level, 'Pearl core: ' + LABELS[variant] + ' · ' + why);
-  const wrap = (addon) => (profile, coreOpts) => addon.createCore(profile, coreOpts || {});
+  const wrap = (addon) => withOffsets((profile, coreOpts) => addon.createCore(profile, coreOpts || {}), () => addon);
 
   if (env.PEARL_CORE_PATH) {
     // With PEARL_CORE_VARIANT=amd the named file is the only one tried: every
@@ -260,7 +275,7 @@ function coreFactory(opts = {}) {
   // has two CUDA runtimes in one process.
   let addon = cu13.addon;
   let settled = false;
-  return (profile, coreOpts) => {
+  return withOffsets((profile, coreOpts) => {
     const o = coreOpts || {};
     if (settled) return addon.createCore(profile, o);
     try {
@@ -275,7 +290,7 @@ function coreFactory(opts = {}) {
       settled = true;
       return addon.createCore(profile, o);
     }
-  };
+  }, () => addon);
 }
 
 // The AMD core picked because nvidia-smi listed no NVIDIA card. Its first card
@@ -289,7 +304,7 @@ function coreFactory(opts = {}) {
 function amdFirst(amdAddon, opts, say) {
   let addon = amdAddon;
   let settled = false;
-  return (profile, coreOpts) => {
+  return withOffsets((profile, coreOpts) => {
     const o = coreOpts || {};
     if (settled) return addon.createCore(profile, o);
     try {
@@ -310,7 +325,7 @@ function amdFirst(amdAddon, opts, say) {
       settled = true;
       return core;
     }
-  };
+  }, () => addon);
 }
 
 // The 12.8 build standing in for an AMD core that would not load. nvidia-smi
@@ -321,7 +336,7 @@ function amdFirst(amdAddon, opts, say) {
 // start can tell; once a core has started the CUDA build plainly works here.
 function cudaAfterAmd(addon, amdWhy) {
   let settled = false;
-  return (profile, coreOpts) => {
+  return withOffsets((profile, coreOpts) => {
     const o = coreOpts || {};
     if (settled) return addon.createCore(profile, o);
     try {
@@ -334,7 +349,7 @@ function cudaAfterAmd(addon, amdWhy) {
       // runner with no GPU, waits for those words as proof a core loaded.
       throw new Error('no CUDA device found, and the AMD core would not load: ' + amdWhy);
     }
-  };
+  }, () => addon);
 }
 
 module.exports = { coreFactory };

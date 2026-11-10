@@ -36,6 +36,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `xmr/` — Monero on the CPU ([below](#monero-on-the-cpu-opt-in)): its Stratum, address check (Keccak-256), thread plan, and the worker's line protocol.
   - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
   - `memClock.js` — which mining cards get their memory clock locked, and at what.
+  - `coreOffset.js` / `coreOffsetTrial.js` — which mining cards try a core clock offset, and the trial that decides what each keeps.
   - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
   - `earnings.js` — PRL/USD per-day estimates.
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
@@ -52,6 +53,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `xmrEngine.js` — the Monero CPU miner: the pool connection and the RandomX worker process (built from [`xmr-worker/`](xmr-worker)); `xmrWorker.js` finds the worker, `cpuFacts.js` reads the CPUs, cgroup limit, memory and L3 the thread plan needs.
   - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
   - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
+  - `gpuClockOffset.js` — reads and sets a card's core clock offset, through the mining core.
   - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
   - `lanShare.js` — shares the local LLM on the network when Settings asks (see [below](#sharing-the-local-llm-on-your-network)).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
@@ -596,6 +598,9 @@ defaults. The ones that make sense on a rig:
 - `--no-update` keeps the rig on the version it has.
 - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
   the RTX 5090 default (see below).
+- `--mine-core-offset auto` tries a core clock offset on each RTX card and
+  keeps it only if the card still computes right and mines faster. Off unless
+  you ask; read [what it risks](#try-a-core-clock-offset-while-mining---mine-core-offset-auto) first.
 - `--mode auto` also serves a local LLM (below).
 - `--no-report` keeps the rig off the public network board.
 - `--xmr-address 4…` also mines Monero on the CPU (see
@@ -880,6 +885,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; auto
                            tries a lock and keeps it if faster; see below)
+      --mine-core-offset <auto|0>  auto tries a core clock offset on each RTX
+                           card, up to +150 MHz, and keeps the highest step that
+                           computes right and is faster (default: 0, off; it
+                           overclocks the card; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
                            HeroMiners, such as xmr-us.kryptex.network:7029
@@ -1012,6 +1021,97 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # try a 
 - **A hard kill can't release it.** After a SIGKILL or a crash, in either shell,
   run `sudo nvidia-smi -i <index> -rmc` (on Windows `nvidia-smi -i <index> -rmc`
   as administrator; a reboot clears it too).
+
+### Try a core clock offset while mining (`--mine-core-offset auto`)
+
+**This overclocks the card.** A core clock offset moves a card's whole
+clock-to-voltage curve: at +100 MHz it runs each voltage 100 MHz faster than its
+maker set it. Read the risks below before you turn it on. It is off unless you
+ask for it.
+
+Why a miner would want it: on a card at its power limit the fold is limited by
+watts, and an offset buys more clock for the same watts. Measured on one RTX
+4090 at its 450 W limit, with a run at offset 0 between every setting
+(`tuning/benchmark.md`, "rig01, 10 November: core clock offset on the RTX 4090"):
+
+| Core clock offset | SM clock | TH/s | Against 0 |
+|---|---|---|---|
+| 0 | 2530–2533 MHz | 317.3–317.5 | — |
+| +50 MHz | 2559 MHz | 320.9 | +1.1% |
+| +100 MHz | 2593 MHz | 325.3 | +2.5% |
+| +150 MHz | 2640 MHz | 331.2 | +4.3% |
+| +150 MHz and `--mine-mem-clock 5001` | 2660 MHz | 333.3 | +5.0% |
+
+That is the only card measured. How far a card goes before it computes wrong
+differs from card to card and with heat, and a card past that point does not
+stop: it finds wrong hashes that still meet the target, and every share it sent
+would be rejected. So there is no offset to ask for by number. `auto` makes each
+card show what it can do:
+
+```bash
+llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto
+llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto --mine-mem-clock auto
+```
+
+- **Which cards.** NVIDIA RTX 20, 30, 40 and 50 cards (told by compute
+  capability, so the other cards of those generations are tried too). Not AMD
+  cards, and not when the AMD core mines.
+- **The trial.** Each card mines 75 seconds at offset 0, then at +50, +100 and
+  +150 MHz, then at 0 again, with the first 15 seconds of each turn left out.
+  +150 MHz is as far as it goes: nothing above it has been measured. The card
+  mines the whole time, and the trial takes about six and a half minutes.
+- **Every step is checked before it counts.** A share is too rare to show that
+  a step computes right, so at the start of each step the miner gives the card
+  a job of its own with an easy target and recomputes 100 of the hits it finds,
+  the way a pool's verifier would. That takes three or four seconds; those hits
+  are never sent anywhere. One wrong hit fails the step, and the card climbs no
+  further.
+- **What it keeps.** The highest step that passed its check, was at least 0.3%
+  faster than the step before it, and at least 0.3% faster than offset 0 (the
+  mean of the two turns at 0). If no step does, the card stays at 0. The log
+  says what was measured at each step and what was kept.
+- **After the trial**, every share a card finds while it has an offset is
+  recomputed before it is sent. If one comes out wrong it is not sent, the card
+  goes back to offset 0 at once and stays there for the rest of the run, and
+  the log says so in an error line. A card whose core fails and restarts also
+  comes back at offset 0 for the rest of the run.
+- **With `--mine-mem-clock auto`** the memory clock trial runs first and the
+  offset trial starts when it has its answer, so the two never overlap. A lock
+  the first one kept stays in place.
+- **Never while an LLM shares the card.** When `auto` co-runs the LLM with the
+  miner the request is dropped, and the log says so. Demand mode puts the card
+  back at offset 0 before the model starts, and the desktop app does the same
+  the moment START LLM joins a running miner. Nothing checks what a model
+  computes, so a model is never served from a card with an offset.
+- **Needs root, or administrator rights on Windows.** The call goes to NVML
+  from the miner itself, not through `nvidia-smi`, so a sudoers rule for
+  `nvidia-smi` does not cover it: the CLI or the app has to run as root (as
+  administrator on Windows). Without the rights it mines at the card's own
+  clock and says so in one warning per card. It also needs the CUDA mining core
+  of this release or later, and an NVIDIA driver recent enough to have NVML's
+  clock offset calls.
+- **Set back to 0 whenever the miner stops**, for the cards it changed and only
+  those, before anything else happens. The trial starts from offset 0: an
+  offset already on the card when mining starts, from an earlier run or from
+  another tool such as MSI Afterburner, is replaced, and the log says what it
+  was.
+- **A hard kill can't put it back.** After a SIGKILL, a crash or a power cut
+  while a card has an offset, it stays until the next start with
+  `--mine-core-offset auto` (which starts from 0), a driver reload or a reboot.
+  `nvidia-smi` has no switch for it.
+- **The desktop app** has no setting for it in its window. Its switch is the
+  environment variable `LLMJOB_MINE_CORE_OFFSET=auto`, read on every start, set
+  the way `LLMJOB_MINE_MEM_CLOCK` is.
+
+**The risks, plainly.** It runs the card faster than its maker set it, and only
+one RTX 4090 has been measured. The checks catch a card that computes wrong;
+they cannot catch a step so unstable that it crashes the graphics driver or
+the PC before any check runs, and a crash can lose unsaved work in other
+programs. Nothing longer than a few minutes at an offset has been measured, so
+stability over hours is not known: a card that passes at start can fail later
+as it warms up, which the check on every share is there for. Running a card
+outside its maker's settings may also affect its warranty. If a rig becomes
+unstable with this on, turn it off.
 
 ## Develop
 

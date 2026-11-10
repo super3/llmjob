@@ -53,7 +53,7 @@ function trialLine(t) {
 // coreFactory's answer as it is.
 function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Date.now, env = process.env } = {}) {
   if (typeof createCore !== 'function') return null;
-  return (profile, coreOpts) => {
+  const wrapped = (profile, coreOpts) => {
     const opts = Object.assign({}, coreOpts);
     const key = shapeKey(opts, gpus);
     const forced = env.PEARL_SHAPE ? String(env.PEARL_SHAPE) : '';
@@ -91,6 +91,9 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     });
     return core;
   };
+  // The factory's core clock offset calls (main/pearlCore) go to the miner with it.
+  wrapped.clockOffsets = createCore.clockOffsets;
+  return wrapped;
 }
 
 // The cache as a JSON file, { key: { shape, at } }, read once and written whole on each

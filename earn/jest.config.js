@@ -51,6 +51,10 @@ module.exports = {
     // Releasing the lock is what keeps a served LLM off a card with its memory
     // clock cut, so it is held to the gate like the miner is.
     'src/main/gpuClocks.js',
+    // The core clock offset calls (--mine-core-offset auto). They run a card
+    // above the clock its maker set, so what they answer when the addon has no
+    // such calls, refuses or throws is held to the gate too.
+    'src/main/gpuClockOffset.js',
     // The Monero CPU miner's host: the pool socket and the worker process it
     // drives. The worker itself is C++ (earn/xmr-worker) and checks itself
     // against RandomX's test vectors, so the JS side is held to the gate.

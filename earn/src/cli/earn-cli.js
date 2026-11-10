@@ -63,6 +63,7 @@ const {
   describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
+const { planCoreOffsets } = require('../shared/coreOffset');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -1236,22 +1237,27 @@ async function run(argv) {
   // card beside the AMD ones it would lock that idle card's memory clock.
   // An AMD core the CLI picked itself (HiveOS passes no --core) mines the AMD
   // plan, which is no NVIDIA card: an empty list says "NVIDIA-only".
+  //
+  // The core clock offset trial (--mine-core-offset auto, shared/coreOffset) is
+  // planned beside it and by the same rules: NVIDIA cards only, so never on an
+  // AMD core, and never while an LLM co-runs. In demand mode the miner's stop()
+  // puts every card back at offset 0 before the gate starts llama-server.
   if (miner && wantsAmdCore()) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
     settings.mineMemClockTrial = [];
+    settings.mineCoreOffsetTrial = [];
   } else if (miner) {
-    const memPlan = planMemClocks({
-      requestedMhz: settings.mineMemClockMhz,
-      cards: cudaCards,
-      gpus: amdGpus.length ? [] : settings.gpus,
-      llmCoRuns: !!(plan.llm && !demand),
-    });
+    const nvidia = { cards: cudaCards, gpus: amdGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
+    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
     // The cards that have to earn their lock (--mine-mem-clock auto); none otherwise.
     settings.mineMemClockTrial = memPlan.trial;
     if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
+    const offsetPlan = planCoreOffsets({ requested: settings.mineCoreOffset, ...nvidia });
+    settings.mineCoreOffsetTrial = offsetPlan.trial;
+    if (offsetPlan.reason) log(offsetPlan.reason, offsetPlan.dropped ? process.stderr : process.stdout);
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand

@@ -65,6 +65,7 @@ const {
   planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -762,6 +763,18 @@ async function startMining(settings, llmCoRuns) {
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
+  // Which cards try a core clock offset (shared/coreOffset): none unless
+  // LLMJOB_MINE_CORE_OFFSET=auto is in the app's environment, the GUI's one
+  // switch for it, read on every start like the memory clock's. The same rules:
+  // nvidia-smi's cards only, and not while the LLM co-runs.
+  const offsetRequest = readCoreOffsetEnv(process.env);
+  if (offsetRequest.warning) send('miner:log', { level: 'warn', line: offsetRequest.warning });
+  const offsetPlan = planCoreOffsets({
+    requested: offsetRequest.offset, requestName: GUI_CORE_OFFSET_ENV,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
+  });
+  if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
+
   const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
@@ -790,7 +803,7 @@ async function startMining(settings, llmCoRuns) {
     miner.start(Object.assign({}, settings, {
       endpoint, gpus, gpu: settings.gpu || null,
       mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
-      mineMemClockTrial: memPlan.trial,
+      mineMemClockTrial: memPlan.trial, mineCoreOffsetTrial: offsetPlan.trial,
     }));
   } catch (e) {
     reportLaunchFailure(e);

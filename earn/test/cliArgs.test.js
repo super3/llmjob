@@ -470,6 +470,53 @@ describe('--mine-mem-clock', () => {
   });
 });
 
+// The core clock offset trial (shared/coreOffset). Its one value is auto: an
+// offset is only set once the trial has checked it on that card.
+describe('--mine-core-offset', () => {
+  const errs = () => [];
+
+  // Off unless asked for.
+  test('is null unless given', () => {
+    expect(buildSettings({}, errs(), true, false).mineCoreOffset).toBeNull();
+    expect(parseCliArgs(['-a', ADDR]).settings.mineCoreOffset).toBeNull();
+  });
+
+  test('takes auto, in any case, and 0 for off', () => {
+    expect(buildSettings({ '--mine-core-offset': 'auto' }, errs(), true, false).mineCoreOffset).toBe('auto');
+    expect(buildSettings({ '--mine-core-offset': ' AUTO ' }, errs(), true, false).mineCoreOffset).toBe('auto');
+    expect(buildSettings({ '--mine-core-offset': '0' }, errs(), true, false).mineCoreOffset).toBe(0);
+  });
+
+  test('refuses a number of MHz, and anything else', () => {
+    for (const bad of ['', '150', '+100', '50', 'on']) {
+      const errors = [];
+      const s = buildSettings({ '--mine-core-offset': bad }, errors, true, false);
+      expect(errors).toContain('invalid --mine-core-offset: ' + bad + ' (must be auto or 0)');
+      expect(s.mineCoreOffset).toBeNull();
+    }
+  });
+
+  test('takes a value, in either form', () => {
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset', 'auto', '--no-report']).settings.mineCoreOffset).toBe('auto');
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset=auto']).settings.mineCoreOffset).toBe('auto');
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset']).errors).toContain('missing value for --mine-core-offset');
+  });
+
+  // The help has to say what it does to the card and how little was measured:
+  // nobody reads a README before a flight sheet.
+  test('is documented with its steps, its default, what was measured, the rights and the risk', () => {
+    expect(VALUE_FLAGS.has('--mine-core-offset')).toBe(true);
+    expect(USAGE).toContain('--mine-core-offset <auto|0>');
+    expect(USAGE).toMatch(/\+50,\s+\+100, then \+150 MHz/);
+    expect(USAGE).toMatch(/Default: 0, off/);
+    expect(USAGE).toMatch(/only one RTX 4090 has\s+been measured/);
+    expect(USAGE).toMatch(/above the\s+clock its maker set/);
+    expect(USAGE).toMatch(/can crash the driver or the PC/);
+    expect(USAGE).toMatch(/Needs root, or\s+administrator rights on Windows/);
+    expect(USAGE).toMatch(/skipped while an LLM\s+co-runs with it/);
+  });
+});
+
 // Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
 // there, so a bad value has to be loud, not read as "every card".
 // Which core loads; HiveOS's Extra config takes flags, not environment variables.
