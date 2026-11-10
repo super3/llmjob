@@ -5320,5 +5320,221 @@ class TestFilesAreUtf8(Base):
             self.assertIn("⏳", f.read())
 
 
+class TestClore(Base):
+    """Renting Clore servers (founder, 10 November, with a $10/day cap)."""
+    def setUp(self):
+        super().setUp()
+        real_pause, real_env, real_ssh = w.clore_pause, w.user_env, w.ssh_run
+        w.clore_pause = lambda: None
+        w.user_env = lambda n: "ck" if n == "CLORE_API_KEY" else real_env(n)
+        self.ssh = []
+
+        class Proc:
+            def __init__(self, rc):
+                self.returncode = rc
+
+            def poll(self):
+                return self.returncode
+        self.rc = 0
+        w.ssh_run = lambda args: self.ssh.append(args) or Proc(self.rc)
+        self.addCleanup(setattr, w, "clore_pause", real_pause)
+        self.addCleanup(setattr, w, "user_env", real_env)
+        self.addCleanup(setattr, w, "ssh_run", real_ssh)
+        self.key = os.path.join(TMP, "clore_id")
+        for f, text in ((self.key, "private"), (self.key + ".pub", "ssh-ed25519 AAAA test")):
+            with open(f, "w") as fh:
+                fh.write(text)
+        self.x.cfg.update(clore=True, clore_key_file=self.key, min_margin=0.05, keep_margin=0.02)
+        self.x.st["xmr_mkt"] = {"t": T0, "price": 550.0, "per_hash": 1e-13, "usd_khs_hr": 0.0005}
+        self.board = []
+        self.http.on("GET", r"/api/miners", lambda b: (200, {"miners": self.board}))
+
+    @staticmethod
+    def server(sid, gpu="1x NVIDIA GeForce RTX 4080", od=None, spot=None, cc="US", rented=False, cpus="16/32"):
+        return {"id": sid, "rented": rented, "mrl": 6, "specs": {"gpu": gpu, "net": {"cc": cc}, "cpus": cpus},
+                "price": {"on_demand": {"USD-Blockchain": od} if od else {"bitcoin": 0.0001},
+                          "spot": {"USD-Blockchain": spot} if spot else {}}}
+
+    def market(self, *servers):
+        self.http.on("GET", r"clore\.ai/v1/marketplace", (200, {"code": 0, "servers": list(servers)}))
+
+    def creates(self):
+        return [c[2] for c in self.http.made("POST", r"clore\.ai/v1/create_order")]
+
+    def live(self, oid="77", price_day=3.0, **o):
+        """A live order of ours on server 5 and its my_orders entry."""
+        rec = {"id": oid, "name": f"clore-{oid}", "server": 5, "kind": "on-demand", "price_day": price_day,
+               "price_hr": price_day / 24, "label": "4080", "threads": 32, "desc": "4080, US, server 5",
+               "created": self.clock[0], "readings": [], "prl": 0.0, "prl_kx": 0.0, "xmr_coins": 0.0, "spend": 0.0,
+               "setup_tries": 0}
+        self.x.st.setdefault("clore", {}).setdefault("orders", {})[oid] = rec
+        order = dict({"id": int(oid), "si": 5, "price": price_day, "spend": 0.0, "online": True, "paused": False,
+                      "pub_cluster": ["n1.de.clorecloud.net"], "tcp_ports": ["22:2773"]}, **o)
+        self.http.on("GET", r"clore\.ai/v1/my_orders", lambda b: (200, {"code": 0, "orders": [order]}))
+        return rec, order
+
+    def tick(self, minutes=1, ths=None):
+        for _ in range(minutes):
+            self.clock[0] += 60
+            if ths is not None:
+                self.board = [{"addr": self.x.cfg["wallet"], "worker": "clore-77-g0", "hash": ths, "xmrHashrate": 0}]
+            self.x.clore_round(self.clock[0])
+
+    def test_off_by_default(self):
+        self.x.cfg["clore"] = w.DEFAULT_CFG["clore"]
+        self.market(self.server(5, od=3.0))
+        self.x.clore_round(self.clock[0])
+        self.assertFalse(w.DEFAULT_CFG["clore"])
+        self.assertEqual(self.http.made("GET", r"clore\.ai"), [])
+
+    def test_search_rents_the_best_on_demand_server_that_clears_and_skips_the_rest(self):
+        self.x.st["clore"] = {"bad": {"9": {"t": self.clock[0], "why": "no mining reading", "ths": None}}}
+        self.market(self.server(1, od=1.0, cc="RU"),                                 # Russia: unreachable
+                    self.server(2, od=None),                                         # no USD price
+                    self.server(3, gpu="1x NVIDIA GeForce RTX 3090", od=1.0),        # no measured rate
+                    self.server(4, gpu="2x NVIDIA GeForce RTX 4080", od=1.0, rented=True),
+                    self.server(9, od=1.0),                                          # cancelled lately
+                    self.server(6, od=4.5),                                          # clears, but makes less
+                    self.server(5, od=3.0))
+        self.x.clore_round(self.clock[0])
+        body = self.creates()[0]
+        self.assertEqual((body["renting_server"], body["type"], body["required_price"], body["rental_hours"]),
+                         (5, "on-demand", 3.0, 6))
+        self.assertEqual(body["ssh_key"], "ssh-ed25519 AAAA test")
+        self.assertIn("5", self.x.st["clore"]["pending"])
+        self.x.clore_round(self.clock[0] + 60)   # searches at most every 10 min
+        self.assertEqual(len(self.creates()), 1)
+
+    def test_nothing_clears_the_bar_rents_nothing(self):
+        self.market(self.server(5, od=5.5))   # 4080 earns about $5.3 a day
+        self.x.clore_round(self.clock[0])
+        self.assertEqual(self.creates(), [])
+
+    def test_the_day_cap_blocks_a_rental(self):
+        day = w.dt.datetime.fromtimestamp(self.clock[0], w.NY).strftime("%Y-%m-%d")
+        self.x.st["clore"] = {"day": {day: 10.0}}
+        self.market(self.server(5, od=3.0))
+        self.x.clore_round(self.clock[0])
+        self.assertEqual(self.http.made("GET", r"marketplace"), [])
+        self.x.st["clore"]["day"] = {day: 0.0}
+        self.x.cfg["clore_day_cap"] = 2.0       # a box at $3 a day would cost more than the cap
+        self.x.clore_round(self.clock[0])
+        self.assertEqual(self.creates(), [])
+
+    def test_a_spot_bid_raises_once_to_the_least_clore_takes_if_that_still_clears(self):
+        self.market(self.server(5, spot=2.0))
+        answers = [(200, {"error": "below_min_raise_step", "min_price": 3.2, "code": 6}), (200, {"code": 0})]
+        self.http.on("POST", r"create_order", lambda b: answers.pop(0))
+        self.x.clore_round(self.clock[0])
+        self.assertEqual([(b["type"], b["spotprice"]) for b in self.creates()], [("spot", 2.0), ("spot", 3.2)])
+        self.assertEqual(self.x.st["clore"]["pending"]["5"]["price_day"], 3.2)
+
+    def test_a_spot_bid_that_would_not_clear_is_not_raised(self):
+        self.market(self.server(5, spot=2.0))
+        self.http.on("POST", r"create_order", (200, {"error": "below_min_raise_step", "min_price": 5.4, "code": 6}))
+        self.x.clore_round(self.clock[0])
+        self.assertEqual(len(self.creates()), 1)
+        self.assertIn("spot needs $5.40/day, which doesn't clear 5%", self.events())
+
+    def test_the_new_order_is_adopted_and_started_once_over_ssh(self):
+        self.x.cfg["xmr_wallet"] = "8" + "a" * 94
+        self.market(self.server(5, od=3.0, cpus="16/32"))
+        self.x.clore_round(self.clock[0])
+        order = {"id": 77, "si": 5, "price": 3.0, "spend": 0.0, "online": True, "paused": False,
+                 "pub_cluster": ["n1.de.clorecloud.net"], "tcp_ports": ["22:2773"]}
+        self.http.on("GET", r"clore\.ai/v1/my_orders", (200, {"code": 0, "orders": [order]}))
+        self.tick()
+        self.assertIn("CREATED clore-77 on Clore: 4080, US, server 5, on demand at $0.125/hr", self.events())
+        self.assertEqual(len(self.ssh), 1)
+        args = self.ssh[0]
+        self.assertEqual(args[args.index("-p") + 1], "2773")
+        self.assertIn("root@n1.de.clorecloud.net", args)
+        script = w.base64.b64decode(re.search(r"echo (\S+) \| base64 -d", args[-1]).group(1)).decode()
+        self.assertIn('curl -fsSL --http1.1 -C - --connect-timeout 20 -o $D/rel/$f "$REL/$f"', script)
+        self.assertIn("touch $D/setup", script)
+        self.assertIn("s/^WORKER=__WORKER__$/WORKER=clore-77/", script)
+        self.assertIn("--cpu-threads 8", script)                    # 32 threads: Monero on 8
+        self.tick(10)
+        self.assertEqual(len(self.ssh), 1)                          # started once
+
+    def test_a_failed_start_is_tried_again_in_5_min_up_to_3_times(self):
+        self.rc = 255
+        self.live()
+        self.tick(30)
+        self.assertEqual(len(self.ssh), 3)
+
+    def test_no_monero_under_8_cpu_threads(self):
+        rec, _ = self.live()
+        rec["threads"] = 4
+        self.x.cfg["xmr_wallet"] = "8" + "a" * 94
+        self.tick()
+        self.assertNotIn("--xmr-address", w.base64.b64decode(re.search(r"echo (\S+) \|", self.ssh[0][-1]).group(1)).decode())
+
+    def test_a_box_under_the_keep_bar_after_10_min_of_readings_is_cancelled_and_listed(self):
+        self.live()
+        self.http.on("POST", r"cancel_order", (200, {"code": 0}))
+        self.tick(10, ths=199)
+        self.assertEqual(self.http.made("POST", r"cancel_order"), [])
+        self.tick(12, ths=90)                                       # its last 10 min at 90 TH/s: a loss
+        self.assertEqual(self.http.made("POST", r"cancel_order")[0][2], {"id": 77})
+        rec = self.x.st["clore"]["orders"]["77"]
+        self.assertTrue(rec["ended"])
+        self.assertLess(self.x.st["clore"]["bad"]["5"]["ths"], 120)   # judged on its last 10 min
+        self.assertIn("CANCELLED clore-77 on Clore (4080, US, server 5): earns", self.events())
+        self.assertGreater(rec["prl"], 0)
+
+    def test_a_box_that_clears_the_keep_bar_stays(self):
+        self.live()
+        self.tick(30, ths=199)
+        self.assertEqual(self.http.made("POST", r"cancel_order"), [])
+
+    def test_no_reading_40_min_after_it_came_online_cancels(self):
+        self.live()
+        self.http.on("POST", r"cancel_order", (200, {"code": 0}))
+        self.tick(40)                                               # online from the first round: 39 min
+        self.assertEqual(self.http.made("POST", r"cancel_order"), [])
+        self.tick(1)
+        self.assertIn("no mining reading 40 min after it came online", self.events())
+        self.assertIsNone(self.x.st["clore"]["bad"]["5"]["ths"])
+
+    def test_a_spot_order_outbid_for_15_min_is_cancelled(self):
+        self.live(paused=True, tcp_ports=None, pub_cluster=None)
+        self.http.on("POST", r"cancel_order", (200, {"code": 0}))
+        self.tick(15)                                               # paused from the first round: 14 min
+        self.assertEqual(self.http.made("POST", r"cancel_order"), [])
+        self.tick(1)
+        self.assertIn("outbid on spot for 15 min", self.events())
+
+    def test_an_order_gone_from_clore_ends(self):
+        rec, _ = self.live()
+        self.http.on("GET", r"clore\.ai/v1/my_orders", (200, {"code": 0, "orders": []}))
+        self.tick()
+        self.assertTrue(rec["ended"])
+
+    def test_spend_is_counted_per_day(self):
+        rec, order = self.live()
+        order["spend"] = 0.4
+        self.tick()
+        order["spend"] = 0.7
+        self.tick()
+        day = w.dt.datetime.fromtimestamp(self.clock[0], w.NY).strftime("%Y-%m-%d")
+        self.assertAlmostEqual(self.x.st["clore"]["day"][day], 0.7)
+
+    def test_the_report_shows_a_clore_box_and_counts_it_in_the_all_row(self):
+        rec, _ = self.live()
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        self.assertIn(f"| ☁️{w.NB}4080{w.NB}Clore | ⏳ | 0.12 | — |", report)   # waiting for its first reading
+        self.tick(5, ths=199)
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        self.assertIn(f"| ☁️{w.NB}4080{w.NB}Clore | 199 | 0.12 |", report)
+        self.assertIn("| **All** | **199** | **0.12** |", report)
+        rec["ended"] = self.clock[0]
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        self.assertIn(f"| Ended{w.NB}×1 |", report)                            # it joins the Ended row
+
+
 if __name__ == "__main__":
     unittest.main()

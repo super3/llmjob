@@ -452,6 +452,30 @@ HeroMiners (since every box went to Kryptex on 20 October, the mark told nothing
   not an hour's average; a box that just switched counts once Kryptex has a row for it), and a line saying what it has credited against its boxes' estimate.
 - **The hourly drift check** compares HeroMiners only with the PRL mined there.
 
+## Clore servers
+
+Since 10 November the watcher can rent [Clore](https://clore.ai) servers as well as Salad PCs (config `clore`, off
+by default; the founder approved it with a $10 a day cap). It uses the business account's key ($CLORE_API_KEY, read
+from the user's saved environment) and pays in USD from its Clore balance.
+
+- **Search**, every 10 min while fewer than `clore_max` (2) boxes run: on-demand and spot servers that aren't rented,
+  take USD, aren't in Russia (rig01 can't reach Russian hosts) and have every GPU one model in `KNOWN`. A server is
+  priced at `KNOWN`'s TH/s a card, Pearl only, and rented when it clears `min_margin`, the one that makes most an
+  hour first. No guessed rates: on 10 November a 3090 box priced at a guessed 140 TH/s a card mined 85 and lost 35%.
+  On demand it rents for the server's limit, up to 24 h. On spot it bids the least; if another bid is in, it raises
+  once to the least Clore takes, only if that still clears.
+- **Cap**: no new box once the New York day's spend reaches `clore_day_cap` ($10), or when the live boxes' price a day
+  plus the new one's would pass it.
+- **Start**: one SSH call with `clore_key_file`, the script passed base64 in the command line (piping it in, and scp,
+  failed from rig01). The box installs curl, downloads the release with a download that resumes (GitHub dropped a box
+  in Japan at 21 MB again and again), then runs box.sh as on Salad, as worker `clore-<order id>`, with Monero on 8
+  threads when the server has 8 or more. A failed SSH is tried again every 5 min, 3 times.
+- **Rules**: readings from the LLMJob miner board, one a round. Under the keep bar over 10 min of readings, no reading
+  40 min after the order came online, or outbid on spot for 15 min: cancelled, and the server listed for `rate_days`
+  (not rented again at a price its measured rate doesn't clear; never, for one that didn't mine).
+- **Report**: a ☁️ row each ("☁️ 4080 Clore"), with Clore's price and its margin, in the All row's totals; an ended one
+  joins Ended. Only orders the watcher made are touched; one rented by hand is left alone.
+
 ## Salad API notes
 
 Base `https://api.salad.com/api/public/organizations/<org>`, key in the `Salad-Api-Key` header.

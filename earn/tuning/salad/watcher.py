@@ -38,6 +38,48 @@ IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
 # core ships from v0.6.8, so an AMD box runs that release or a later one.
 AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
+CLORE = "https://api.clore.ai/v1/"
+BOARD = "https://llmjob-production.up.railway.app/api/miners"   # each CLI's own hashrate, about once a minute
+RELEASES = "https://github.com/super3/llmjob/releases/download"
+
+
+def ssh_run(args):
+    """Start a command over SSH in the background (no waiting): the Popen, whose poll() says how it ended."""
+    import subprocess
+    return subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def clore_pause():
+    """A few seconds between Clore calls: it answered 429 (too many requests) to calls a second apart on 10 November."""
+    time.sleep(3)
+
+
+def clore_gpu(gpu):
+    """A Clore server's GPUs ("2x NVIDIA GeForce RTX 3060") as (count, KNOWN class, short name), or None when the cards
+    aren't all one model we have a measured rate for: no guessed rates (on 10 November a 3090 box priced at a guessed
+    140 TH/s a card mined 85 and lost 35%)."""
+    m = re.match(r"\s*(\d+)\s*x\s+(?:NVIDIA\s+)?(?:GeForce\s+)?(.+?)\s*$", gpu or "")
+    if not m:
+        return None
+    model = m.group(2)
+    cls = next((c for c in KNOWN if c.split(" (")[0] == model), None)
+    if cls is None:
+        return None
+    return int(m.group(1)), cls, re.sub(r"^RTX\s*", "", model).replace(" ", "").lower()
+
+
+def clore_start_script(ver, cmd):
+    """The script a Clore box runs: curl, then the release's files with a download that resumes (GitHub's file server
+    dropped a box in Japan at 21 MB of the 125 MB CLI, again and again, on 10 November, and box.sh's own download
+    starts over each time), then box.sh skipping its own download (/opt/m/setup), as on Salad."""
+    return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1\n"
+            f"D=/opt/m; mkdir -p $D/rel; REL={RELEASES}/{ver}\n"
+            "if [ ! -f $D/setup ]; then\n"
+            "  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node llmjob-xmr-worker; do\n"
+            "    for i in $(seq 1 200); do curl -fsSL --http1.1 -C - --connect-timeout 20 -o $D/rel/$f \"$REL/$f\" && break; sleep 5; done\n"
+            "  done\n"
+            "  mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli && touch $D/setup\n"
+            "fi\n" + cmd + "\n")
 PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
@@ -88,6 +130,11 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                "salad_wallet": "3v3e89FeHu2wUFdqAwN5MFeMUB6roQrxGJzQis5Qqy9d",
                # The Clore business account's deposit address (USDT/USDC on Ethereum): withdrawals to it are "to Clore".
                "clore_wallet": "0xE7D54591BAA19326a38b611831F5Bf5F5D04028b",
+               # Renting Clore servers as well as Salad PCs (founder, 10 November, approved with a $10/day cap): off
+               # until config turns it on. clore_day_cap is the most spent a New York day and the most the live
+               # boxes may cost a day; clore_max the most boxes at once; clore_key_file the SSH private key the boxes
+               # are started with (the .pub beside it goes on each order).
+               "clore": False, "clore_day_cap": 10.0, "clore_max": 2, "clore_key_file": "",
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
                "salad_orgs": [],
                # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
@@ -1030,6 +1077,300 @@ class W:
         st["clore_bal"] = {"t": t, "usd": float(usd)}
         st["clore_warned"] = False
         self.mark_report_read("clore", t)
+
+    def clore_call(self, method, path, body=None):
+        """A Clore API call with the business account's key, a few seconds after the last. (status, JSON); a 429 holds
+        every Clore call for 2 minutes."""
+        c = self.st.setdefault("clore", {})
+        if now() < c.get("hold", 0):
+            return 429, None
+        clore_pause()
+        s, j = http(method, CLORE + path, body, timeout=60, headers={"auth": self._clore_key})
+        if s == 429:
+            c["hold"] = now() + 120
+        return s, j
+
+    def clore_round(self, t):
+        """Rents, starts, judges and cancels Clore servers as the Salad rules do PCs (config "clore", off by default).
+        Only orders this watcher made are touched (st clore.orders); one rented by hand is left alone."""
+        if not self.cfg.get("clore"):
+            return
+        key = user_env("CLORE_API_KEY")
+        if not key:
+            return
+        self._clore_key = key
+        c = self.st.setdefault("clore", {})
+        orders, bad = c.setdefault("orders", {}), c.setdefault("bad", {})
+        for sid in [k for k, b in bad.items() if t - b["t"] >= 86400 * self.cfg["rate_days"]]:
+            del bad[sid]
+        live = {k: o for k, o in orders.items() if not o.get("ended")}
+        if live or c.get("pending"):
+            s, j = self.clore_call("GET", "my_orders")
+            if s != 200 or not isinstance(j, dict) or j.get("code") not in (0, None):
+                return
+            mine = {str(o["id"]): o for o in j.get("orders") or [] if isinstance(o, dict) and "id" in o}
+            self.clore_adopt(mine, t)
+            for k, o in list(orders.items()):
+                if not o.get("ended"):
+                    self.clore_sync(o, mine.get(k), t)
+        self.clore_search(t)
+
+    def clore_adopt(self, mine, t):
+        """An order this watcher placed shows in my_orders a moment later, without its id in create_order's answer: it
+        is the new order on the server it asked for."""
+        c = self.st["clore"]
+        for sid, p in list((c.get("pending") or {}).items()):
+            o = next((o for k, o in mine.items() if str(o.get("si")) == sid and k not in c["orders"]), None)
+            if o is None:
+                if t - p["t"] > 10 * MIN:
+                    del c["pending"][sid]   # never came up: the server was taken, or the order refused
+                continue
+            del c["pending"][sid]
+            rec = dict(p, id=str(o["id"]), name=f"clore-{o['id']}", created=t, readings=[], prl=0.0, prl_kx=0.0,
+                       xmr_coins=0.0, spend=0.0, setup_tries=0)
+            c["orders"][rec["id"]] = rec
+            event(f"CREATED {rec['name']} on Clore: {rec['desc']}")
+
+    def clore_sync(self, rec, o, t):
+        """One order: its spend, setup, readings and the rules."""
+        c = self.st["clore"]
+        if o is None:
+            # Gone from my_orders: an on-demand rental's hours ran out, or Clore ended it.
+            rec.update(ended=t, end_reason="its order ended on Clore")
+            event(f"ENDED {rec['name']} on Clore: the order is no longer listed")
+            return
+        day = dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        spent = float(o.get("spend") or 0.0)
+        c.setdefault("day", {})
+        c["day"] = {day: c["day"].get(day, 0.0) + max(0.0, spent - rec["spend"])}
+        rec["spend"] = spent
+        rec["price_hr"] = float(o.get("price") or rec["price_day"]) / 24
+        if o.get("paused"):
+            # A spot order someone outbid: Clore stops it and bills nothing; when it comes back it's a new container.
+            if rec.get("paused_since") is None:
+                rec["paused_since"] = t
+            rec.update(setup_t=None, setup_tries=0, setup_ok=False, online_t=None)
+            if t - rec["paused_since"] >= 15 * MIN:
+                self.clore_cancel(rec, t, "outbid on spot for 15 min")
+            return
+        rec["paused_since"] = None
+        ports = [p.split(":")[1] for p in o.get("tcp_ports") or [] if str(p).startswith("22:")]
+        host = (o.get("pub_cluster") or [None])[0]
+        if not (ports and host):
+            return
+        rec.setdefault("online_t", None)
+        if rec["online_t"] is None:
+            rec["online_t"] = t
+        self.clore_setup(rec, host, ports[0], t)
+        self.clore_read(rec, t)
+        self.clore_judge(rec, t)
+
+    def clore_setup(self, rec, host, port, t):
+        """Starts the box with one SSH call in the background, as soon as Clore gives it a port: the script goes in
+        the command line, base64. Piping it on SSH's input left an empty file and scp failed from rig01 (10 Nov)."""
+        procs = self.__dict__.setdefault("_clore_procs", {})
+        p = procs.get(rec["id"])
+        if p is not None:
+            if p.poll() is None:
+                return   # still connecting
+            del procs[rec["id"]]
+            if p.returncode == 0:
+                rec["setup_ok"] = True
+            else:   # tried again in 5 min, up to 3 times (an SSH that couldn't connect yet, say)
+                event(f"WARN starting {rec['name']} on Clore: SSH exited {p.returncode}")
+        if rec.get("setup_ok") or rec.get("setup_tries", 0) >= 3:
+            return
+        if rec.get("setup_t") and t - rec["setup_t"] < 5 * MIN:
+            return
+        keyf = self.cfg.get("clore_key_file") or ""
+        if not keyf:
+            return
+        ver = self.cfg["box_ver"]
+        xmr = rec.get("threads", 0) >= 8 and self.cfg.get("xmr_wallet")
+        cmd = cmd_for(rec["name"], self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
+                      self.cfg["kryptex_host"], xmr_pool=self.cfg["xmr_kx_host"] if xmr else None)
+        b64 = base64.b64encode(clore_start_script(ver, cmd).encode()).decode()
+        remote = (f"echo {b64} | base64 -d > /root/start.sh; "
+                  "nohup bash /root/start.sh > /root/start.log 2>&1 < /dev/null &")
+        args = ["ssh", "-i", keyf, "-p", str(port), "-o", "StrictHostKeyChecking=accept-new",
+                "-o", f"UserKnownHostsFile={os.path.join(D, 'clore_known_hosts')}", "-o", "ConnectTimeout=30",
+                "-o", "BatchMode=yes", f"root@{host}", remote]
+        procs[rec["id"]] = ssh_run(args)
+        rec["setup_t"] = t
+        rec["setup_tries"] = rec.get("setup_tries", 0) + 1
+        event(f"STARTING {rec['name']} on Clore: SSH to {host}:{port}, release {ver}"
+              + (", Monero on 8 threads" if xmr else ", no Monero (under 8 CPU threads)"))
+
+    def clore_read(self, rec, t):
+        """The box's readings from the LLMJob miner board (its CLIs, one a GPU: clore-<id>-g0, -g1, ...), summed, one
+        a round; and the coins they mined, at the rates the Salad boxes' readings use."""
+        b = self.__dict__.get("_board")
+        if b is None or b[0] != t:
+            s, j = http("GET", BOARD, timeout=30)
+            b = (t, (j or {}).get("miners") or [] if s == 200 and isinstance(j, dict) else [])
+            self._board = b
+        mine = [m for m in b[1] if m.get("addr") == self.cfg["wallet"]
+                and re.fullmatch(re.escape(rec["name"]) + r"(-g\d+)?", str(m.get("worker", "")))]
+        ths = sum(float(m.get("hash") or 0) for m in mine)
+        khs = sum(float(m.get("xmrHashrate") or 0) for m in mine) / 1000
+        if ths <= 0:
+            return
+        r = rec["readings"]
+        if r:
+            hrs = min(t - r[-1][0], 15 * MIN) / 3600
+            gained = ths * hrs * self.st["mkt"]["prl_th_hr"]
+            rec["prl"] += gained
+            rec["prl_kx"] += gained
+            per = (self.st.get("xmr_mkt") or {}).get("per_hash", 0.0)
+            rec["xmr_coins"] += khs * 1000 * hrs * 3600 * per * self.cfg["kryptex_xmr_pay"]
+        r.append([t, ths, khs])
+        rec["readings"] = [x for x in r if t - x[0] < 7200]
+        rec.setdefault("first_read", t)
+
+    def clore_earn(self, rec, t, window=10 * MIN):
+        """$/hr a box earned over the last `window` of readings (Pearl at Kryptex's pay, Monero at the pools'), and
+        its average TH/s and kH/s."""
+        cur = [r for r in rec["readings"] if t - r[0] <= window]
+        if not cur:
+            return 0.0, 0.0, 0.0
+        ths, khs = sum(r[1] for r in cur) / len(cur), sum(r[2] for r in cur) / len(cur)
+        xusd = (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
+        return ths * self.usd(True) + khs * xusd, ths, khs
+
+    def clore_judge(self, rec, t):
+        """The Salad rules for a Clore box: under the keep bar over 10 min of readings, or no reading 40 min after the
+        order came online (setup with a resuming download took 40 minutes in Japan on 10 November), it's cancelled."""
+        if rec.get("first_read") is None:
+            if t - rec["online_t"] >= 40 * MIN:
+                self.clore_cancel(rec, t, f"no mining reading {(t - rec['online_t']) / 60:.0f} min after it came online")
+            return
+        if t - rec["first_read"] < 10 * MIN:
+            return
+        earn, ths, _ = self.clore_earn(rec, t)
+        bar = self.keep_bar()
+        mg = margin_of(earn, rec["price_hr"])
+        if mg < bar:
+            self.clore_cancel(rec, t, f"earns ${earn:.3f}/hr at {ths:.0f} TH/s against its ${rec['price_hr']:.3f}/hr "
+                                      f"({under(mg, bar)}, under {bar:.0%})", ths)
+
+    def clore_cancel(self, rec, t, why, ths=None):
+        s, j = self.clore_call("POST", "cancel_order", {"id": int(rec["id"])})
+        if s != 200 or not isinstance(j, dict) or j.get("code") not in (0, None):
+            event(f"WARN cancelling {rec['name']} on Clore failed: HTTP {s} {str(j)[:150]}")
+            return
+        rec.update(ended=t, end_reason=why)
+        self.st["clore"]["bad"][str(rec["server"])] = {"t": t, "why": why, "ths": ths}
+        event(f"CANCELLED {rec['name']} on Clore ({rec['desc']}): {why}")
+
+    def clore_search(self, t):
+        """Rents the Clore server that makes the most an hour while clearing min_margin, every 10 min while there's room
+        (clore_max) and money (clore_day_cap, for the day so far and for the live boxes' day)."""
+        c = self.st["clore"]
+        if t - c.get("search_t", 0) < 10 * MIN:
+            return
+        live = [o for o in c["orders"].values() if not o.get("ended")]
+        if len(live) + len(c.get("pending") or {}) >= self.cfg["clore_max"]:
+            return
+        cap, day = self.cfg["clore_day_cap"], dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        burn = sum(o.get("price_hr") or o["price_day"] / 24 for o in live) * 24
+        if (c.get("day") or {}).get(day, 0.0) >= cap or burn >= cap:
+            return
+        keyf = self.cfg.get("clore_key_file") or ""
+        if not keyf or not os.path.exists(keyf + ".pub"):
+            return
+        c["search_t"] = t
+        s, j = self.clore_call("GET", "marketplace")
+        if s != 200 or not isinstance(j, dict):
+            return
+        best = None
+        for sv in j.get("servers") or []:
+            for kind, price_day, ths, desc in self.clore_offers(sv):
+                if burn + price_day > cap:
+                    continue
+                earn = ths * self.usd(True)
+                mg = margin_of(earn, price_day / 24)
+                if mg < self.cfg["min_margin"]:
+                    continue
+                if best is None or earn - price_day / 24 > best[0]:
+                    best = (earn - price_day / 24, sv, kind, price_day, ths, desc, mg)
+        if best is None:
+            return
+        _, sv, kind, price_day, ths, desc, mg = best
+        pub = open(keyf + ".pub", encoding="utf-8").read().strip()
+        body = {"currency": "USD-Blockchain", "image": "cloreai/jupyter:ubuntu24.04-v2", "renting_server": sv["id"],
+                "type": kind, "ports": {"22": "tcp", "8888": "http"}, "ssh_key": pub}
+        if kind == "spot":
+            body["spotprice"] = price_day
+        else:
+            body["required_price"] = price_day
+            body["rental_hours"] = max(1, min(24, int(sv.get("mrl") or 24)))
+        s, r = self.clore_call("POST", "create_order", body)
+        if kind == "spot" and isinstance(r, dict) and r.get("error") == "below_min_raise_step" and r.get("min_price"):
+            # Another bid is in: raise once to the least Clore takes, if that still clears.
+            price_day = float(r["min_price"])
+            if margin_of(ths * self.usd(True), price_day / 24) < self.cfg["min_margin"] or burn + price_day > cap:
+                event(f"NOTE Clore server {sv['id']} ({desc}): spot needs ${price_day:.2f}/day, which doesn't clear "
+                      f"{self.cfg['min_margin']:.0%}")
+                return
+            body = dict(body, spotprice=price_day)
+            s, r = self.clore_call("POST", "create_order", body)
+        if s != 200 or not isinstance(r, dict) or r.get("code") not in (0, None):
+            event(f"WARN renting Clore server {sv['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
+            return
+        mg = margin_of(ths * self.usd(True), price_day / 24)
+        cpus = str((sv.get("specs") or {}).get("cpus") or "")
+        threads = int(cpus.split("/")[-1]) if re.fullmatch(r"\d+(/\d+)?", cpus) else 0
+        c.setdefault("pending", {})[str(sv["id"])] = {
+            "t": t, "server": sv["id"], "kind": kind, "price_day": price_day, "price_hr": price_day / 24,
+            "label": desc.split(",")[0], "threads": threads,
+            "desc": f"{desc}, {'on demand' if kind == 'on-demand' else 'spot'} at ${price_day / 24:.3f}/hr "
+                    f"({mg:+.0%} margin at {ths:.0f} TH/s)"}
+
+    def clore_offers(self, sv):
+        """What a marketplace server could be rented as: [(kind, $/day, TH/s, description)]. None for a server that's
+        rented, can't take USD, is in Russia (rig01 can't reach Russian hosts at all), isn't all one GPU we have a
+        measured rate for, or was cancelled lately at a rate that doesn't clear at that price."""
+        sp = sv.get("specs") or {}
+        if sv.get("rented") or (sp.get("net") or {}).get("cc") == "RU":
+            return []
+        g = clore_gpu(sp.get("gpu"))
+        if g is None:
+            return []
+        n, cls, short = g
+        ths = n * KNOWN[cls][0]
+        b = self.st["clore"]["bad"].get(str(sv["id"]))
+        if b and b.get("ths") is None:
+            return []
+        label = (f"{n}×" if n > 1 else "") + short
+        desc = f"{label}, {(sp.get('net') or {}).get('cc', '?')}, server {sv['id']}"
+        out = []
+        for kind, key in (("on-demand", "on_demand"), ("spot", "spot")):
+            usd = ((sv.get("price") or {}).get(key) or {}).get("USD-Blockchain")
+            if not isinstance(usd, (int, float)) or usd <= 0:
+                continue
+            if b and margin_of(b["ths"] * self.usd(True), usd / 24) < self.cfg["min_margin"]:
+                continue
+            out.append((kind, float(usd), ths, desc))
+        return out
+
+    def clore_rows(self, t, xon, prl_cell, xmr_cell):
+        """The report's rows for the live Clore boxes, marked ☁️: [(profit, row, ths, khs, cost, earn)]."""
+        out = []
+        for rec in (self.st.get("clore") or {}).get("orders", {}).values():
+            if rec.get("ended"):
+                continue
+            earn, ths, khs = self.clore_earn(rec, t)
+            cost = 0.0 if rec.get("paused_since") else rec.get("price_hr") or rec["price_day"] / 24
+            name = f"☁️{NB}{rec['label']}{NB}Clore"
+            if ths <= 0:
+                cells = ["⏳"] + (["⏳"] if xon else []) + [f"{cost:.2f}", "—"]
+                profit = 0.0
+            else:
+                cells = [f"{ths:.0f}"] + ([f"{khs:.1f}"] if xon else []) + [f"{cost:.2f}", with_margin(earn - cost, earn)]
+                profit = earn - cost
+            cells = " | ".join(cells + [prl_cell([rec])] + xmr_cell([rec]))
+            out.append((profit, f"| {name} | {cells} |", ths, khs, cost, earn if ths > 0 else 0.0))
+        return out
 
     def st_call(self, method, path, body=None, signed=True):
         """A SafeTrade call under /api/v2/trade, signed with $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET: HMAC-SHA256
@@ -2271,6 +2612,7 @@ class W:
         self.sell(now())
         self.salad_balance()
         self.clore_balance()
+        self.clore_round(t)
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -2988,6 +3330,12 @@ class W:
                 cells = [f"{ths:.0f}"] + kc + [f"{cost:.2f}", with_margin(earn - cost, earn if ths > 0 else 0)]
             cells = " | ".join(cells + [prl_cell([g])] + xmr_cell([g]))
             rows.append((0.0 if start or not g["has_pc"] else earn - cost, f"| {box} | {cells} |"))
+        # Clore boxes (☁️) among them, with their bill and earnings in the All row.
+        for profit, row, c_ths, c_khs, c_cost, c_earn in self.clore_rows(t, xon, prl_cell, xmr_cell):
+            rows.append((profit, row))
+            all_ths += c_ths; all_khs += c_khs; all_cost += c_cost; all_earn += c_earn
+            run_cost += c_cost if c_earn > 0 else 0.0   # the heading's "mining" counts Salad's slots alone
+        clores = list((st.get("clore") or {}).get("orders", {}).values())
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
         # The slots the search couldn't fill, so they show instead of vanishing: one row with their count, as the
@@ -2996,7 +3344,7 @@ class W:
         empty = slots - len(live)
         if empty:
             lines.append(f"| ⬜{NB}empty{NB}×{empty} |" + " — |" * (6 if xon else 4))
-        ended = [g for g in groups if g["ended"]]
+        ended = [g for g in groups if g["ended"]] + [o for o in clores if o.get("ended")]
         if ended:
             # Groups that have ended, as one row with their count and what they earned; the events say which were
             # released or failed. Called "Others" until 24 October, which read like other people's miners (OPEN.md #71).
@@ -3005,7 +3353,7 @@ class W:
         hr_all = all_earn - run_cost
         lines.append(f"| **All** | {bold(f'{all_ths:.0f}')} |" + (f" {bold(f'{all_khs:.1f}')} |" if xon else "")
                      + f" {bold(f'{all_cost:.2f}')} | {bold(with_margin(hr_all, all_earn))} | "
-                     + " | ".join([prl_cell(groups, bold)] + xmr_cell(groups, bold)) + " |")
+                     + " | ".join([prl_cell(groups + clores, bold)] + xmr_cell(groups + clores, bold)) + " |")
         # Salad's own balance when it was read in the last hour (no star), else our count (starred).
         sb = st.get("salad_bal")
         credit, cmark = (sb["usd"], "") if sb and t - sb["t"] < 3600 else (self.credit_count(), EST)
