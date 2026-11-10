@@ -901,6 +901,40 @@ through `sharetap.py`, so every share was checked and decoded. 2.5 minutes a rel
   no longer needs DRAM.
 - 2.20.7 offers zstd at login (`"encoding": ["zstd", "gzip"]`) and sends gzip when the pool says only `"type":"v2"`.
 
+**Picking RTX 30's launch shape on each PC at startup (item 5, 10 November, Salad)**
+
+What the miner can choose between at run time today: the CUDA 12.8 or CUDA 13 core (`PEARL_CORE_VARIANT`; picked by
+itself only for RTX 50), and, on RTX 30 alone, the launch shape. RTX 30 has one core (12.8). Its shape is chosen on the
+host from the card's L2 size: the flip (B' held in the L2 slice, a 128-offset batch; the 3060 Ti and the 6 MB cards) or
+the band walk (A' held, band 8 or 4, a 512-offset batch). The kernel reads the band at run time and the rest is host
+state, so a core can switch shapes between batches with no new build. Every other card has one fixed launch.
+
+Race mode, the rule's shape (flip 128) against the band walk, on four RTX 3090 Ti PCs (`nvtest`, 600–900 s):
+
+| PC | Power, driver | Band 8 x 512 | Band 4 x 512 | Memory busy, flip / walk |
+|---|---|---|---|---|
+| efd04f2b | 450 W, 621.14 | −0.58% (0 of 36 rounds ahead) | −1.30% (0/36) | 11% / 18% |
+| daa97471 | 450 W, 591.59 | −3.23% (0/34) | −3.92% (0/34) | 12% / 52% |
+| b659e537 | 480 W, 617.42 | +0.02% (15/29; A/A sd 2.8%) | −0.76% (4/29) | 11% / 19% |
+| c1a87da3 | 480 W, 621.14 | **+0.39% (25/28)** | −0.06% (10/28) | 12% / 23% |
+
+On efd04f2b, batch 1024 read −0.43% and the walk without its L2 slice −0.68%; on daa97471 −3.79% and −3.39%. So the
+same card's best shape moves by PC, from flip ahead by 3.2% to the walk ahead by 0.4%. The rule's pick lost on one PC
+of four, by 0.4%. That is the size of what a per-PC pick can win on a 3090 Ti; it doesn't explain the 85% vs 95% PCs
+in the 9–10 November table.
+
+Built (commits on item/5): with `shapeTrialSecs` the core races its shapes while it mines, in 4 s turns ended on a
+whole salt with the first second uncounted, the order reversing each round, as race.cu does. It keeps another shape
+only when that beats the rule's by 0.3% on average and in two thirds of the rounds. The app runs a 150 s trial the
+first time a card opens and caches the pick per card for a week (`launch-shapes.json`); `PEARL_SHAPE_TRIAL=0` turns it
+off and `PEARL_SHAPE` forces one. Hits found during the trial are sent as usual.
+
+The trial against the race, same PC: c1a87da3 picked band 8 x 512 in both runs (+0.76% and +0.43%, ahead in 10 of 10
+rounds each); b659e537 kept flip 128 (band 8 −0.15% and −0.33%). verify-hits with the trial switching shapes: 400 of
+400 on each of three builds (hits from flip, band 8 and band 4). A first version counted each turn from the switch,
+while the clock was still settling, and read daa97471's −3.23% as −0.25%; the warm-up fixed it. The trial costs about
+a third of 150 s at the worse shapes' rate, once a week.
+
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
