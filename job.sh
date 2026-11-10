@@ -1,13 +1,9 @@
-# job 3: the duel on this PC (PR head against SRBMiner 3.8.6, 2 turns each, a clock turn each, one turn of 3.8.2), then stamps of the miner's own launches with the hash queue on and off
+# job 3: stamps of the miner's own launches, with the hash queue on and off, and with the core's ticker
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_CODE=33f848084160d3132719e3bdd43ac1fb65dd5f97
-G_PARTS=duel\ build\ mstamps
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_SRB_ALSO=3.8.2
-G_VDEF=msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0
-G_MST=msq1\ msq0
+G_PARTS=build\ mstamps
+G_VDEF=msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq0tk=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=2000
+G_MST=msq1\ msq0\ msq0tk
 G_MSN=8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
