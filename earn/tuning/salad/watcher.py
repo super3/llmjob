@@ -2858,6 +2858,17 @@ class W:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: it mined {own:.0f} TH/s there in the last 30 min, "
                               f"so {bad['group']}'s mark ({bad['why'][:80]}) is dropped")
                         bad = None
+                # A rate measured on this PC after the mark, by any group of this class, outweighs it too: on 10
+                # November 9070xt-68 mined 7d460310 at 135 TH/s until 20:51Z, yet 9070xt-71 was moved off it at 23:02Z
+                # for 9070xt-56's 35 TH/s mark from 13:08Z, the third 9070 XT turned away there. A blocked port stands.
+                rate = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
+                if (bad and rate and rate[1] > bad["t"] and self.bad_ports(bad) is None
+                        and margin_of(rate[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
+                        >= self.keep_bar()):
+                    st["bad_pcs"].pop(mach, None)
+                    event(f"NOTE {g['name']} keeps PC {mach[:8]}: it made {rate[0]:.0f} TH/s there at {past(rate[1])}, "
+                          f"after {bad['group']}'s mark ({bad['why'][:80]}), so the mark is dropped")
+                    bad = None
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
                     ths, bar = self.bad_ths(bad), self.keep_bar()

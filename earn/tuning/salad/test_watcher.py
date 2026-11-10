@@ -1311,6 +1311,27 @@ class TestRule6PortBlocked(Base):
         self.assertEqual(self.x.st["pc_rates"]["RTX 4080 (16 GB)"]["m1"][0], 200.0)
         self.assertIn("keeps PC m1: it mined 200 TH/s there in the last 30 min", self.events())
 
+    def test_a_good_rate_another_box_measured_after_a_mark_outweighs_it(self):
+        # 10 November: 9070xt-68 mined 7d460310 at 135 TH/s until 20:51Z; 9070xt-71 was still moved off it at 23:02Z
+        # for a 35 TH/s mark from 13:08Z.
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0] - 7200, "group": "biz-rtx4080-9",
+                                                      "why": "earns $0.03/hr at 35 TH/s", "ths": 35.0}
+        self.x.st.setdefault("pc_rates", {}).setdefault("RTX 4080 (16 GB)", {})["m1"] = [200.0, self.clock[0] - 3600]
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.assertEqual(g["machine"], "m1")
+        self.assertNotIn("m1", self.x.st["bad_pcs"])
+        self.assertIn("keeps PC m1: it made 200 TH/s there", self.events())
+
+    def test_a_good_rate_from_before_the_mark_doesnt_outweigh_it(self):
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0] - 3600, "group": "biz-rtx4080-9",
+                                                      "why": "earns $0.03/hr at 35 TH/s", "ths": 35.0}
+        self.x.st.setdefault("pc_rates", {}).setdefault("RTX 4080 (16 GB)", {})["m1"] = [200.0, self.clock[0] - 7200]
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.assertIsNone(g["machine"])
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
     def test_a_share_from_a_pc_the_box_lost_doesnt_count(self):
         # 10 November: 3070-258 lost 3bfd17f1, and its last share there kept d9f81543, marked for no reading.
         self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
