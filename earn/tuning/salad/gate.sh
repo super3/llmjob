@@ -26,7 +26,9 @@ export DEBIAN_FRONTEND=noninteractive
 { apt-get update -qq && apt-get install -y -qq --no-install-recommends git curl ca-certificates xz-utils g++ make \
     python3 jq procps; } > /root/apt0.log 2>&1 || gsay "WARN apt-get: $(tail -1 /root/apt0.log)"
 if [ -n "${GATE_BENCH:-}" ]; then
-  ( W=${W:-gate} ORDER=${ORDER:-peak,srb,ozm,ours} VPOOL=${VPOOL:-210} SECS=${SECS:-240} WARM=${WARM:-60} \
+  # W: a payout address in form only (prl1p and 58 characters), which is all our CLI checks. The stand-in pool
+  # pays nobody, so no real address goes on the box. The first boxes passed "gate" and our CLI refused it.
+  ( W=${W:-prl1pgate00000000000000000000000000000000000000000000000000000} ORDER=${ORDER:-peak,srb,ozm,ours} VPOOL=${VPOOL:-210} SECS=${SECS:-240} WARM=${WARM:-60} \
       OURS_SECS=${OURS_SECS:-240} bash /root/bench.sh 2>&1 | tee -a /root/bench.log \
       | sed -u 's/^\[bench\]/[nvtest] [bench]/' ) &
 else
@@ -35,6 +37,14 @@ fi
 # nvtest.sh's functions and settings, without its run.
 export NVTEST_ROOT=/opt/gate
 NVTEST_STAGE=lib . /root/nvtest.sh
+# GATE_ONLY_BENCH=1: the miners alone, no builds and no race (to add a miner's figure on a PC already raced).
+if [ -n "${GATE_ONLY_BENCH:-}" ]; then
+  n=0
+  until grep -q 'all done' /root/bench.log; do n=$((n + 1)); [ $n -gt 360 ] && break; sleep 10; done
+  gsay "card after the miners $(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit,temperature.gpu,memory.used,utilization.gpu --format=csv,noheader 2>&1 | head -1)"
+  say "all done"
+  idle "until deleted"
+fi
 [ -n "$NVCC_VER" ] || fail "CUDA_VER must be 12.8 or 13.3, not $CUDA_VER"
 driver_ok || fail "CUDA_VER=$CUDA_VER needs driver 580 or newer, and this card's is older"
 setup
