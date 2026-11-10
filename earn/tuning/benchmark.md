@@ -951,7 +951,7 @@ a third of 150 s at the worse shapes' rate, once a week.
   length equals the rank (128), so the dense work is the same and the sums leave int8. Item 7's on-chip draws on an
   RTX 3090 lost 3.6-5.6% for the same reason. Closed without the re-race; the sham rebased onto f7ccb357 is on branch
   item/8 (be35e42b) if anyone wants it. The 5090 lead to follow instead is long k (item 7: +2.80% on a 3090 at
-  k 16384 with operands in L2), which needs the cp.async fold's 32-bit tile offsets widened past k 16384.
+  k 16384 with operands in L2). Item 21 (below) raced it: long k loses on the 5090 with stored operands.
 - RTX 30 B' held at a width that fills the L2 slice (#287 item 3, 6 November, race mode, `PEARL_AMPERE_FLIP_FILL` on
   exp/287-3). On an RTX 3080 10 GB it lost to the band walk: −0.44% (±0.07, 0 of 46 rounds ahead) on a 320 W PC and
   −0.55% (±0.20, 2 of 45) on a 309 W PC. Memory busy fell from 21–23% to 13–14% and the clock rose 1.1%, but TH/s per
@@ -1042,13 +1042,42 @@ a third of 150 s at the worse shapes' rate, once a week.
     k 16384 with operands in the L2 (DRAM ablation) +2.80%. So on this PC a DRAM-free, long-k kernel could gain at
     most 2.8%, and E4's draw alone costs 4.5-6.4% against its own data path. PeakMiner's +6.6% (item 2) was on a
     3060 whose memory was 39-65% busy.
-    The cp.async fold's tile offsets are 32-bit and overflow past k 16384, so k 65536 needs that fixed first.
+    The cp.async fold's tile offsets were 32-bit and overflowed past k 16384; item 21 (below) widened them.
   - RTX 3060 ceiling (item 7b, same builds at 1c78804b, nvtest-rtx3060-72, 170 W cap, 16 rounds, twin −0.02%):
     DRAM ablation +2.82% (±0.12, 16 of 16 ahead), memory 28.7% → 0.2% busy, 1777 → 1828 MHz; the whole gain is
     clock, TH/s per MHz unchanged. k 16384 with operands in the L2 +4.05% (±0.17, 16 of 16), 1824 MHz (+1.4% a
     clock from the long k). So the 3060's ceiling is 4.05%, higher than the 3090's 2.80%, but a draw would have to
     cost under 4% to win, and E4's draw cost 4.5-6.4% against its own data path on the 3090. Dropped on the 3060 too.
     This PC's memory was 29% busy, not PeakMiner's 39-65%; a busier 3060 could sit higher.
+- Long k on NVIDIA (PR #290 research item 21, 10 November, race mode at `9ac40341`, branch item/21). Every
+  competitor mines k 65536; we mine 2048. The tall fold now builds for any k from 2048 to 65536 with
+  `-DPEARL_FOLD_K=K` alone (64-bit cp.async offsets past k 16384, PREGUARD off past 2048, and the DRAM ablation on
+  the TMA fold too). Operands at the mainnet m and n, so A' and B' grow with k (24 GB at 65536). Against the release:
+
+  | Card | PC | Arm | vs release | Ahead | Memory busy | Clock |
+  |---|---|---|---|---|---|---|
+  | RTX 5090 (570 W) | a11172a9 | k 8192 stored | −0.46% ±0.10 | 1/24 | 2.3% → 7.0% | 2600 → 2543 MHz |
+  | RTX 5090 | a11172a9 | k 16384 stored | −3.53% ±0.11 | 0/24 | 20.8% | 2457 MHz |
+  | RTX 5090 | a11172a9 | k 65536 stored | −13.0% ±1.0 | 0/21 | 3.2% → 68.7% | 2623 → 2229 MHz |
+  | RTX 5090 | a11172a9 | k 2048, operands in L2 | +0.73% ±0.08 | 24/24 | 0.0% | 2618 MHz |
+  | RTX 5090 | a11172a9 | k 16384, operands in L2 | +1.87% ±0.09 | 24/24 | 0.2% | 2594 MHz |
+  | RTX 5090 | a11172a9 | k 65536, operands in L2 | +1.33% ±0.05 | 24/24 | 0.4% | 2612 → 2593 MHz |
+  | RTX 3060 (185 W) | b1785794 | k 16384 stored | −2.18% ±0.12 | 0/17 | 39.5% → 96.2% | 1904 → 1840 MHz |
+  | RTX 4090 (~550 W) | bdcb5688 | k 32768 stored | −29.0% ±0.02 | 0/25 | 3.0% → 100% | 2670 MHz both |
+
+  - **Dropped:** with stored operands long k loses on both cards, more the longer k gets. A launch's B' must stay
+    in the L2, so the batch narrows as k grows (2048 → 64 column offsets on the 5090) and all of A' is read once a
+    launch: DRAM traffic grows with k, and at the power cap it comes out of the clock.
+  - Long k's own gain is about +2.1% a clock on the 5090 (k 16384 and 65536 alike, operands in L2) and +1.2% on the
+    3060 (stored). So a kernel that made its operands on chip could gain at most about 1.9% on the 5090, against
+    item 8's finding that drawing B' on the SM can't pay there. The 5090's gap to PeakMiner and SRBMiner is not k.
+  - **Correctness:** verify-hits passed at k 8192 (400/400), 16384 (400/400) and 65536 (309/309) on the 5090's TMA
+    fold, at k 16384 (167/167) on the 3060's cp.async fold, and at k 32768 (400/400) on the 4090's, the first run
+    of the 64-bit offsets (B' is 8 GB there). The 4090 at k 32768 is DRAM-bound: its batch narrows to 16 offsets. The k ≤ 16384 cubins for sm_89 and sm_120 are
+    byte-identical to before. The copy of the release read +0.01% (5090) and −0.01% (3060).
+  - The first 3060 box (609fef99) had another job on its GPU (100% busy, 6 GB in use before we started) and read
+    16 TH/s; discarded.
+  - Cost: Salad boxes, about 2 hours in all, about $1. A fourth (4090) checked k 32768.
 - Shared-memory layout and fragment loads on RTX 40 and 50 (suggestion list item 6, 6 November, no GPU run). The tall fold's 64-byte
   stage rows with unit q at q ^ ((r >> 1) & 3) (SWIZZLE_64B under TMA) give conflict-free `ldmatrix` and `cp.async`.
   It loads only `LDSM.x4`, 40 a chunk a warp, 106.7 shared bytes an IMMA: the least a 96x64 warp tile can read. Its
