@@ -186,6 +186,11 @@ struct Ctx {
 #if PEARL_AMD_STAMP
   bool stamp = false;           // a PEARL_AMD_CAP_STAMP build: the folds store clock stamps (pearl_amd_fold.h)
   uint32_t *dStamps = nullptr;  // where they go: PEARL_AMD_STAMP_WORDS words for each wave of a batch
+  // PEARL_AMD_STAMP_DUMP=file with PEARL_AMD_STAMP_DUMP_AT=n: once n batches have been collected, the search waits
+  // for what is queued and writes the stamps of the last launch to the file, in the fold test's format, for
+  // test/stamp-summary.js. It is how the miner's own launches are read (the fold test's run back to back on one queue).
+  size_t stampBlocks = 0;
+  uint64_t stampSeen = 0, stampAt = 0;
 #endif
   char foldErr[512] = {0};
   char foldName[320] = {0};
@@ -1181,6 +1186,10 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
            "allocating the clock stamps");
     HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &ctx->dStamps, sizeof ctx->dStamps),
            "pointing the folds at the clock stamps");
+    ctx->stampBlocks = blocks;
+    const char *at = getenv("PEARL_AMD_STAMP_DUMP_AT");
+    for (const char *q = at; q && *q >= '0' && *q <= '9' && ctx->stampAt < 100000000u; q++)
+      ctx->stampAt = ctx->stampAt * 10u + (uint64_t)(*q - '0');
   }
 #endif
 #if !defined(__HIP_CPU_RT__)   // a GPU only
@@ -1777,6 +1786,29 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
       (void)hipGetLastError();
     }
   }
+#if PEARL_AMD_STAMP
+  if (ctx->stamp && ctx->stampAt && ++ctx->stampSeen == ctx->stampAt) {
+    const char *path = getenv("PEARL_AMD_STAMP_DUMP");
+    const size_t words = ctx->stampBlocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS;
+    std::vector<uint32_t> w(words);
+    int wallKhz = 0;
+    if (hipDeviceGetAttribute(&wallKhz, hipDeviceAttributeWallClockRate, ctx->device) != hipSuccess) wallKhz = 0;
+    FILE *fp = path && path[0] ? fopen(path, "wb") : nullptr;
+    // Every queued fold ends first, so the stamps are one whole launch's: the last one's.
+    if (fp && hipStreamSynchronize(ctx->work) == hipSuccess
+        && hipMemcpy(w.data(), ctx->dStamps, words * 4, hipMemcpyDeviceToHost) == hipSuccess) {
+      const FoldInfo &sf = kFolds[ctx->fold];
+      const uint32_t head[16] = {0x31545350u, PEARL_AMD_STAMP_WORDS, PEARL_AMD_THREADS / 32u, (uint32_t)ctx->stampBlocks,
+                                 ctx->colBatch * PEARL_COLS_COUNT / sf.bn, (uint32_t)wallKhz, ctx->profile.k,
+                                 (uint32_t)ctx->stampSeen, ctx->profile.m, ctx->colBatch * PEARL_COLS_COUNT,
+                                 0, 0, 0, 0, 0, 0};
+      fwrite(head, 4, 16, fp);
+      fwrite(w.data(), 4, words, fp);
+    }
+    if (fp) fclose(fp);
+    (void)hipGetLastError();
+  }
+#endif
   const uint32_t hits = ctx->hSlotCount[slot];
   if (attempts) *attempts = p.regions;
   ctx->extraHits.clear();
