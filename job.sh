@@ -1,7 +1,16 @@
-# job 6: ours alone on the pool for 10 minutes: how many seconds read low?
+# xt job 1 (RX 7900 XT): stamps of the fold alone (is this PC one that stops a queue?), the hash queue on against off with a twin, 6 rounds, then stamps of the miner's own launches
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=watch
-G_WSECS=600
+G_CODE=95f0817e0c37009943f48380e2dcf35e27e14180
+G_PARTS=build\ stamps\ hash\ mstamps
+G_SROUNDS=1
+G_STSHAPES=sbase:131072:2048:400\ sw:131072:32768:25
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1\;sw=-DPEARL_AMD_STAMP=1\ -DPEARL_AMD_WALK=1\ -DPEARL_AMD_WALK_W=8\ -DPEARL_AMD_WALK_H=1024
+G_VDEF=hq0tk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=2000\;msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0
+G_VARIANTS=base\ twin\ hq0\ hq0tk
+G_HROUNDS=6
+G_HASH=45:12
+G_MST=msq1\ msq0
+G_MSN=6
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
