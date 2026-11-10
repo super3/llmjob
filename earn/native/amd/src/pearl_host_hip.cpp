@@ -65,6 +65,26 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #if PEARL_AMD_HASHQ != 0 && PEARL_AMD_HASHQ != 1 && PEARL_AMD_HASHQ != 2
 #error "PEARL_AMD_HASHQ is 0, 1 or 2"
 #endif
+// PEARL_AMD_HASHQ_ZERO: with the hash on its own queue, the hit count is zeroed there too, just before the hash, and
+// not before the fold (hipMemsetAsync is a kernel of its own, so it sat between every two folds). PEARL_AMD_HASHQ_WAIT:
+// the fold's queue waits for the slot's last hash before the fold (hipStreamWaitEvent). The host frees a slot only in
+// pearl_host_collect, which has waited for that hash, so the wait is a second check; 0 leaves it out. The environment
+// variables of the same names (0 or 1) override both at run time, to race them on one build.
+#ifndef PEARL_AMD_HASHQ_ZERO
+#define PEARL_AMD_HASHQ_ZERO 0
+#endif
+#ifndef PEARL_AMD_HASHQ_WAIT
+#define PEARL_AMD_HASHQ_WAIT 1
+#endif
+// PEARL_AMD_STRIPS: how many batches of the card's width one launch folds, side by side (Ctx::strips), on a card whose
+// code object takes such a launch (PEARL_AMD_CAP_STRIP, pearl_amd_fold.h). 1 is a launch a batch. The environment
+// variable of the same name (1 to 16) overrides it at run time.
+#ifndef PEARL_AMD_STRIPS
+#define PEARL_AMD_STRIPS 1
+#endif
+#if PEARL_AMD_STRIPS < 1 || PEARL_AMD_STRIPS > 16
+#error "PEARL_AMD_STRIPS is 1 to 16"
+#endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #define PEARL_AMD_COL_BATCH_BY_ARCH 1
@@ -241,6 +261,14 @@ struct Ctx {
   // only. No RX 7900 XT or GRE has run it (benchmark.md, PR #290 item 23).
   hipStream_t hashq = nullptr;
   hipEvent_t foldDone[kSlots] = {};
+  bool hashqZero = false;   // PEARL_AMD_HASHQ_ZERO: the hit count is zeroed on the hash queue
+  bool hashqWait = true;    // PEARL_AMD_HASHQ_WAIT: the fold's queue waits for the slot's last hash
+  // PEARL_AMD_STRIPS: a launch folds `strips` batches of stripBatch column offsets, each a strip of the grid's z
+  // (colBatch = strips x stripBatch). The blocks of one strip run before the next strip's, so the B' in use at any
+  // time is one strip's, as in a launch of one batch.
+  bool stripCap = false;    // the card's code object takes such a launch (PEARL_AMD_CAP_STRIP)
+  uint32_t strips = 1;
+  uint32_t stripBatch = 1;
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -330,6 +358,22 @@ uint32_t amd_col_batch(const PearlProfile *profile, const char *arch) {
   if (cb > limit) cb = limit;
   while (cb > 1u && colsValid % cb != 0u) cb /= 2u;
   return cb;
+}
+
+// How many batches of the card's width (ctx->stripBatch) one launch folds: PEARL_AMD_STRIPS, or the environment's, on
+// a card whose code object takes strips and runs a matrix fold or dot4; 1 on any other. A power of two, halved until
+// the launch divides the valid column offsets, as a batch must.
+uint32_t amd_strips(const Ctx *ctx) {
+  if (!ctx->stripCap || ctx->fold < 0 || kFolds[ctx->fold].cap == PEARL_AMD_CAP_REF) return 1u;
+  // A strip is whole tiles of the fold.
+  if ((ctx->stripBatch * PEARL_COLS_COUNT) % kFolds[ctx->fold].bn != 0u) return 1u;
+  uint32_t n = PEARL_AMD_STRIPS;
+  const char *env = getenv("PEARL_AMD_STRIPS");
+  uint32_t want = 0;
+  for (const char *p = env; p && *p >= '0' && *p <= '9' && want < 16u; p++) want = want * 10u + (uint32_t)(*p - '0');
+  if (want >= 1u && want <= 16u) n = want;
+  while (n > 1u && ((n & (n - 1u)) != 0u || ctx->colsValid % (ctx->stripBatch * n) != 0u)) n--;
+  return n;
 }
 
 // What one instance of `profile` costs on a card, in bytes: pearl_host.cu's needed_bytes
@@ -762,6 +806,7 @@ void resolve_fold(Ctx *ctx) {
   ctx->kwrap = (caps[0] & PEARL_AMD_CAP_KWRAP) != 0;
   ctx->rank128 = (caps[0] & PEARL_AMD_CAP_RANK) != 0;
   ctx->fuse = (caps[0] & PEARL_AMD_CAP_FUSE) != 0;
+  ctx->stripCap = (caps[0] & PEARL_AMD_CAP_STRIP) != 0;
 #if PEARL_AMD_STAMP
   ctx->stamp = (caps[0] & PEARL_AMD_CAP_STAMP) != 0;
 #endif
@@ -1032,6 +1077,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = amd_col_batch(profile, ctx->arch);
+  ctx->stripBatch = ctx->colBatch;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
   const size_t S = Ctx::kSlots;
@@ -1057,6 +1103,12 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       HIP_OK(hipStreamCreateWithFlags(&ctx->hashq, hipStreamDefault), "creating the hash stream");
       for (int i = 0; i < Ctx::kSlots; i++)
         HIP_OK(hipEventCreateWithFlags(&ctx->foldDone[i], hipEventDisableTiming), "creating the fold events");
+      ctx->hashqZero = PEARL_AMD_HASHQ_ZERO != 0;
+      ctx->hashqWait = PEARL_AMD_HASHQ_WAIT != 0;
+      const char *hz = getenv("PEARL_AMD_HASHQ_ZERO");
+      if (hz && (!strcmp(hz, "0") || !strcmp(hz, "1"))) ctx->hashqZero = hz[0] == '1';
+      const char *hw = getenv("PEARL_AMD_HASHQ_WAIT");
+      if (hw && (!strcmp(hw, "0") || !strcmp(hw, "1"))) ctx->hashqWait = hw[0] == '1';
     }
   }
 #endif
@@ -1071,9 +1123,6 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       }
     }
   }
-  for (int i = 0; i < Ctx::kSlots; i++)
-    HIP_OK(hipMalloc(&ctx->dTr[i], (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
-           "allocating the transcript buffers");
   HIP_OK(hipMalloc(&ctx->dJobKey, 8 * sizeof(uint32_t)), "allocating job_key");
   HIP_OK(hipMalloc(&ctx->dASeed, 8 * sizeof(uint32_t)), "allocating a_seed");
   HIP_OK(hipMalloc(&ctx->dBSeed, 8 * sizeof(uint32_t)), "allocating b_seed");
@@ -1099,6 +1148,14 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     pearl_host_destroy(ctx);
     return nullptr;
   }
+  // The launch's width, now that the card's code object has said whether it takes strips, and then the transcript
+  // buffers, which are as wide.
+  ctx->strips = amd_strips(ctx);
+  ctx->colBatch = ctx->stripBatch * ctx->strips;
+  ctx->batch = ctx->colBatch * ctx->rowsValid;
+  for (int i = 0; i < Ctx::kSlots; i++)
+    HIP_OK(hipMalloc(&ctx->dTr[i], (size_t)ctx->batch * PEARL_JACKPOT_BUCKETS * sizeof(uint32_t)),
+           "allocating the transcript buffers");
 #if PEARL_AMD_STAMP
   // A PEARL_AMD_STAMP build's folds store clock stamps, each wave of a block its own. They get room for a
   // whole batch, so a hashrate.js run times the same stores as the fold test; nothing here reads them.
@@ -1561,11 +1618,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const bool fusedQ = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
   // PEARL_AMD_HASHQ (Ctx): this slot's last hash read its transcripts and counted into its hit list; wait for it.
   const bool hashq = ctx->hashq && !fusedQ;
-  if (hashq) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);
-  hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
+  if (hashq && ctx->hashqWait) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);
+  // PEARL_AMD_HASHQ_ZERO: only the hash kernel counts into the list, so with the hash on its own queue the count is
+  // zeroed there, and nothing sits between this fold and the last.
+  const bool zeroLate = hashq && ctx->hashqZero;
+  if (!zeroLate) hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
-  const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);
+  // PEARL_AMD_STRIPS: the grid's z is the strips, each a batch of the card's width (grid.x column tiles).
+  const dim3 grid(batchCols / f.bn / ctx->strips, ctx->profile.m / f.bm, ctx->strips), block(PEARL_AMD_THREADS);
   const int8_t *ap = ctx->dAp, *bp = ctx->dBp;
   const uint32_t rv = ctx->rowsValid;
   uint32_t *tr = ctx->dTr[slot];
@@ -1599,6 +1660,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     hipEventRecord(ctx->foldDone[slot], st);
     st = ctx->hashq;
     hipStreamWaitEvent(st, ctx->foldDone[slot], 0);
+    if (zeroLate) hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   }
   if (!fused)
     hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
@@ -1726,8 +1788,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || ctx->fold < 0) return "unresolved";
   const bool fused = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
-  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, %s, batch %u column offsets, k %u%s%s%s%s",
-           kFolds[ctx->fold].text, fused ? "hash in the fold" : "hash in its own kernel", ctx->colBatch,
+  char strips[48] = {0};
+  if (ctx->strips > 1u) snprintf(strips, sizeof strips, " in %u strips of %u", ctx->strips, ctx->stripBatch);
+  snprintf(ctx->foldName, sizeof ctx->foldName, "%s, %s, batch %u column offsets%s, k %u%s%s%s%s",
+           kFolds[ctx->fold].text, fused ? "hash in the fold" : "hash in its own kernel", ctx->colBatch, strips,
            ctx->profile.k, ctx->kwrap ? ", wrap readout" : "",
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;

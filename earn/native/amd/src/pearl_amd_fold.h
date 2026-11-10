@@ -124,6 +124,7 @@
 #define PEARL_AMD_CAP_STAMP 0x1000u    // a PEARL_AMD_STAMP build: clock stamps (pearl_amd_stamps); TIMING too
 #define PEARL_AMD_CAP_RANK 0x2000u     // PEARL_AMD_CRANK: the matrix fold takes rank PEARL_FOLD_RANK only
 #define PEARL_AMD_CAP_FUSE 0x4000u     // PEARL_AMD_FUSE: the matrix folds and dot4 hash their own transcripts
+#define PEARL_AMD_CAP_STRIP 0x8000u    // PEARL_AMD_STRIP: the matrix folds and dot4 take a launch of several strips
 
 // Every fold is 256 threads a block.
 #define PEARL_AMD_THREADS 256u
@@ -240,6 +241,21 @@
 #endif
 // Whether this pass remaps its tiles: the walk asked for, and a shape for this target.
 #define PEARL_AMD_WALK_ON (PEARL_AMD_WALK != 0 && PEARL_AMD_WALK_W > 0)
+
+// PEARL_AMD_STRIP: the matrix folds and dot4 take a launch of several batches side by side, as strips of the grid's
+// z: strip blockIdx.z folds the gridDim.x column tiles after the strip before it. Blocks are handed out x fastest and
+// z slowest, so one strip's blocks run before the next strip's, and the B' the card reads at any time is one
+// batch's, as in a launch of one batch. A launch of one strip is the launch without it. The host learns from the
+// card's caps (PEARL_AMD_CAP_STRIP) that it may launch strips, and how many is its choice (PEARL_AMD_STRIPS,
+// pearl_host_hip.cpp). Not with PEARL_AMD_WALK, which orders one batch its own way: a pass with the walk on has no
+// strips, and its caps say so.
+#ifndef PEARL_AMD_STRIP
+#define PEARL_AMD_STRIP 0
+#endif
+#if PEARL_AMD_STRIP != 0 && PEARL_AMD_STRIP != 1
+#error "PEARL_AMD_STRIP is 0 or 1"
+#endif
+#define PEARL_AMD_STRIP_ON (PEARL_AMD_STRIP != 0 && !PEARL_AMD_WALK_ON)
 
 typedef int32_t pearl_amd_v16i __attribute__((ext_vector_type(16)));
 typedef int32_t pearl_amd_v8i __attribute__((ext_vector_type(8)));
@@ -1298,6 +1314,10 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   pearl_amd_walk(blockIdx.x, blockIdx.y, gridDim.x, gridDim.y, tileX, tileY);
   const uint32_t tileRow = tileY * (uint32_t)BM;
   const uint32_t tileCol = tileX * (uint32_t)BN;
+#elif PEARL_AMD_STRIP_ON
+  // PEARL_AMD_STRIP (above): this block's strip starts gridDim.x column tiles after the strip before it.
+  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;
+  const uint32_t tileCol = (blockIdx.z * gridDim.x + blockIdx.x) * (uint32_t)BN;
 #else
   const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A' row of the tile
   const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch
@@ -2039,7 +2059,11 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t hw = pearl_amd_sgpr(pearl_amd_hw_id1());
     uint32_t *const out = pearl_amd_stamps;   // constant memory: a scalar load
     if (out && lane == 0) {
+#if PEARL_AMD_STRIP_ON
+      const uint32_t block = (blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
+#else
       const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;
+#endif
       // Word 1: the wave (bits 7:0), the counter's bits (13:8), the crossings seen (15:14) and the block's low
       // 16 bits, which the summary checks against the record's place.
       const uint32_t v[PEARL_AMD_STAMP_WORDS] = {
@@ -2225,6 +2249,7 @@ extern "C" __global__ void pearl_amd_caps(uint32_t *out) {
   if (PEARL_AMD_READOUT_DROP) out[0] |= PEARL_AMD_CAP_DROP;
   if (PEARL_AMD_CRANK && PEARL_AMD_PF2) out[0] |= PEARL_AMD_CAP_RANK;
   if (PEARL_AMD_FUSE) out[0] |= PEARL_AMD_CAP_FUSE;
+  if (PEARL_AMD_STRIP_ON) out[0] |= PEARL_AMD_CAP_STRIP;
   if (PEARL_AMD_KWRAP) out[0] |= PEARL_AMD_CAP_KWRAP;
 #if PEARL_AMD_ABLATE
   out[0] |= PEARL_AMD_CAP_TIMING;
