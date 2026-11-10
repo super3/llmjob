@@ -5621,6 +5621,27 @@ class TestClore(Base):
         report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
         self.assertIn(f"| Ended{w.NB}×1 |", report)                            # it joins the Ended row
 
+    def test_a_clore_boxs_prl_comes_from_kryptex_once_its_chart_shows_work(self):
+        # 10 November: the founder asked why the Clore row's PRL and XMR were starred; the Salad boxes show Kryptex's.
+        rec, _ = self.live()
+        self.tick(5, ths=199)
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        row = [l for l in report.splitlines() if "Clore |" in l][0]
+        self.assertTrue(row.rstrip(" |").endswith("*"))                         # the estimate, until Kryptex counts
+        asked = []
+        self.http.on("GET", r"prl/api/v1/miner/chart/.*/clore-77-g0",
+                     lambda b: asked.append(1) or (200, [{"timestamp": 1000, "valid": 4}, {"timestamp": 2000, "valid": 6}]))
+        self.clock[0] += 300
+        self.x.clore_kx(self.clock[0])
+        self.assertEqual(asked, [1])
+        per_share = self.x.prl_unit() * 2 ** 21
+        self.assertAlmostEqual(rec["kx_gross"], 10 * per_share)
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        row = [l for l in report.splitlines() if "Clore |" in l][0]
+        self.assertTrue(row.endswith(f"| {10 * per_share * self.x.cfg['kryptex_pay']:.3f} |"))   # Kryptex's count, no star
+
 
 if __name__ == "__main__":
     unittest.main()

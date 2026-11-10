@@ -1147,6 +1147,49 @@ class W:
                 if not o.get("ended"):
                     self.clore_sync(o, mine.get(k), t)
         self.clore_search(t)
+        self.clore_kx(t)
+
+    def clore_kx(self, t):
+        """Each Clore box's PRL and XMR by Kryptex's own count (founder, 10 November: the table starred them as our
+        estimate, where the Salad boxes show the pool's): its workers' charts (clore-<id>-gN, a GPU each), PRL shares
+        at what Kryptex pays a share and XMR work at what it pays a hash, as kx_count and the Monero read do for Salad.
+        Every 5 min, for boxes live or ended in the last 2 hours. Until a chart shows work, the estimate from readings
+        stands, starred."""
+        c, mk, xm = self.st["clore"], self.st.get("mkt"), self.st.get("xmr_mkt")
+        if t - c.get("kx_t", 0) < 5 * MIN or not mk:
+            return
+        c["kx_t"] = t
+        per_share = self.prl_unit() * 2 ** 21
+        per_hash = xm["per_hash"] / (1 - XMR_FEE) if xm else None
+        for rec in c.get("orders", {}).values():
+            if rec.get("ended") and t - rec["ended"] > 7200:
+                continue
+            n = int(m.group(1)) if (m := re.match(r"(\d+)×", rec.get("label", ""))) else 1
+            pb, xb = rec.setdefault("kx_b", {}), rec.setdefault("kxx_b", {})
+            for i in range(n):
+                w = f"{rec['name']}-g{i}"
+                s, ch = http("GET", f"{KX_API}/v1/miner/chart/{self.cfg['wallet']}/{w}?days=2", timeout=30)
+                for p in ch if s == 200 and isinstance(ch, list) else []:
+                    try:
+                        k, v = f"{i}:{int(p['timestamp'])}", int(p.get("valid") or 0)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if v > pb.get(k, [0])[0]:
+                        pb[k] = [v, pb[k][1] if k in pb else per_share]
+                if per_hash and self.cfg.get("xmr_wallet") and rec.get("threads", 0) >= 8:
+                    s, ch = http("GET", f"{KXX_API}/v1/miner/chart/{self.cfg['xmr_wallet']}/{w}?days=2", timeout=30)
+                    for p in ch if s == 200 and isinstance(ch, list) else []:
+                        try:
+                            k, h = f"{i}:{int(p['timestamp'])}", float(p.get("hashrate") or 0) * 600
+                        except (KeyError, TypeError, ValueError):
+                            continue
+                        if h > xb.get(k, [0])[0]:
+                            xb[k] = [h, xb[k][1] if k in xb else per_hash]
+            if any(v for v, _ in pb.values()):
+                rec["kx_gross"] = sum(v * ps for v, ps in pb.values())
+            if any(h for h, _ in xb.values()):
+                rec["kxx_gross"] = sum(h * ph for h, ph in xb.values())
+                rec["xmr_coins"] = 0.0   # Kryptex's count replaces the estimate (xmr_coins is starred)
 
     def clore_adopt(self, mine, t):
         """An order this watcher placed shows in my_orders a moment later, without its id in create_order's answer: it
@@ -1255,7 +1298,8 @@ class W:
             rec["prl"] += gained
             rec["prl_kx"] += gained
             per = (self.st.get("xmr_mkt") or {}).get("per_hash", 0.0)
-            rec["xmr_coins"] += khs * 1000 * hrs * 3600 * per * self.cfg["kryptex_xmr_pay"]
+            if "kxx_gross" not in rec:   # Kryptex's own count, once it has one, replaces this estimate
+                rec["xmr_coins"] += khs * 1000 * hrs * 3600 * per * self.cfg["kryptex_xmr_pay"]
         r.append([t, ths, khs])
         rec["readings"] = [x for x in r if t - x[0] < 7200]
         rec.setdefault("first_read", t)
