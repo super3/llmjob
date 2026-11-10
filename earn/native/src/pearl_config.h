@@ -2824,6 +2824,11 @@ typedef struct {
 //   PEARL_GATE_SHAM_Y1=1 (with PEARL_GATE_SHAM_AT=2): a unit's second load is one word, not
 //       sixteen bytes, so it holds five registers in flight instead of eight. The same count
 //       of instructions. Probes how many spare registers the interleaved sham needs.
+//   PEARL_GATE_BSTREAM=1 (cp.async ring): B fragments loaded a pair at a time inside each m16
+//       tile instead of held for the k-step: 12 registers fewer, 20 more ldmatrix a k-step.
+#ifndef PEARL_GATE_BSTREAM
+#define PEARL_GATE_BSTREAM 0
+#endif
 #ifndef PEARL_GATE_SHAM_Y1
 #define PEARL_GATE_SHAM_Y1 0
 #endif

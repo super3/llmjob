@@ -1132,10 +1132,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         for (uint32_t t = 0; t < KS; t++) {
           const uint32_t kt = t * 32u;
           uint32_t bfr[NB / 2u][4];
+#if !PEARL_GATE_BSTREAM
 #pragma unroll
           for (uint32_t nb2 = 0; nb2 < NB / 2u; nb2++)
             pearl_ldmatrix_x4(bfr[nb2][0], bfr[nb2][1], bfr[nb2][2], bfr[nb2][3],
                               ((bLane0 + so) ^ kt) + nb2 * 16u * SK);
+#endif
 #pragma unroll
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
@@ -1163,9 +1165,21 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
 #pragma unroll
             for (uint32_t nb = 0; nb < NB; nb++) {
+#if PEARL_GATE_BSTREAM
+              // The register-light body (PEARL_GATE_BSTREAM, timing only but correct): a B pair
+              // is loaded right before the two mma of each m16 tile that read it, so four
+              // registers hold B, not sixteen, at 24 B ldmatrix a k-step in place of 4. It is
+              // what the fold would have to give up to fit a ninth warp's 227 registers.
+              if ((nb & 1u) == 0u)
+                pearl_ldmatrix_x4(bfr[0][0], bfr[0][1], bfr[0][2], bfr[0][3],
+                                  ((bLane0 + so) ^ kt) + (nb / 2u) * 16u * SK);
+              pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
+                                 a0, a1, a2, a3, bfr[0][(nb & 1u) * 2u], bfr[0][(nb & 1u) * 2u + 1u]);
+#else
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
                                  a0, a1, a2, a3, bfr[nb / 2u][(nb & 1u) * 2u],
                                  bfr[nb / 2u][(nb & 1u) * 2u + 1u]);
+#endif
 #if PEARL_GATE_SHAM_MMA
               if (sham_on) {
                 if (nb == 0u) {
