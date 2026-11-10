@@ -1038,8 +1038,14 @@ a third of 150 s at the worse shapes' rate, once a week.
   - Long k, second race on the same PC (24 rounds): k 8192 with stored operands −2.71% (memory 36% busy, 1530 MHz);
     k 16384 with operands in the L2 (DRAM ablation) +2.80%. So on this PC a DRAM-free, long-k kernel could gain at
     most 2.8%, and E4's draw alone costs 4.5-6.4% against its own data path. PeakMiner's +6.6% (item 2) was on a
-    3060 whose memory was 39-65% busy; that card's ceiling wasn't measured (the box was stopped before its race).
+    3060 whose memory was 39-65% busy.
     The cp.async fold's tile offsets are 32-bit and overflow past k 16384, so k 65536 needs that fixed first.
+  - RTX 3060 ceiling (item 7b, same builds at 1c78804b, nvtest-rtx3060-72, 170 W cap, 16 rounds, twin −0.02%):
+    DRAM ablation +2.82% (±0.12, 16 of 16 ahead), memory 28.7% → 0.2% busy, 1777 → 1828 MHz; the whole gain is
+    clock, TH/s per MHz unchanged. k 16384 with operands in the L2 +4.05% (±0.17, 16 of 16), 1824 MHz (+1.4% a
+    clock from the long k). So the 3060's ceiling is 4.05%, higher than the 3090's 2.80%, but a draw would have to
+    cost under 4% to win, and E4's draw cost 4.5-6.4% against its own data path on the 3090. Dropped on the 3060 too.
+    This PC's memory was 29% busy, not PeakMiner's 39-65%; a busier 3060 could sit higher.
 - Shared-memory layout and fragment loads on RTX 40 and 50 (suggestion list item 6, 6 November, no GPU run). The tall fold's 64-byte
   stage rows with unit q at q ^ ((r >> 1) & 3) (SWIZZLE_64B under TMA) give conflict-free `ldmatrix` and `cp.async`.
   It loads only `LDSM.x4`, 40 a chunk a warp, 106.7 shared bytes an IMMA: the least a 96x64 warp tile can read. Its
