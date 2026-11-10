@@ -485,6 +485,73 @@ long run was made, so stability over hours at +150 MHz is not known. It needs Ad
 no Salad or Vast row. And the competitors have the same switch: against a competitor tuned the same way it keeps
 pace, it does not pass. Nothing is built into the app.
 
+### rig01, 10 November: `--mine-core-offset auto`, the offset trial run in the miner
+
+The sweep above as a switch in the miner, built on branch `goal/offset` and not yet in a release:
+`--mine-core-offset auto` (`LLMJOB_MINE_CORE_OFFSET=auto` in the desktop app). Each RTX 20, 30, 40 or 50 card
+mines 75 s at offset 0, at +50, +100 and +150 MHz, and at 0 again. Before a step's turn counts the card is handed
+a job with an easy target and 100 of its hits are recomputed in JS; one wrong hit ends the climb. It keeps the
+highest step that passed, beat the step before it by 0.3% and beat offset 0 by 0.3%. Off unless asked for. The
+earn README has the rest.
+
+Run on rig01's RTX 4090: the branch's CLI on the Kryptex pool, mining only, with the core CI built from the
+branch (`native core` run 42904856120), 450 W limit, native Windows, driver 610.88, Administrator. The rates are
+the trial's own turn means; clock, power and temperature are nvidia-smi's, read every 5 s.
+
+Run 1, `--mine-core-offset auto` alone:
+
+| Turn | TH/s | Against 0 | SM clock | Power | Temperature |
+|---|---|---|---|---|---|
+| 0 (two turns) | 317.4 | — | 2533–2535 MHz | 449 W | 76 °C |
+| +50 MHz | 320.7 | +1.0% | 2554 MHz | 450 W | 78 °C |
+| +100 MHz | 325.2 | +2.5% | 2592 MHz | 450 W | 77 °C |
+| +150 MHz | 331.2 | +4.3% | 2641 MHz | 449 W | 76 °C |
+
+It kept +150 MHz, the step the sweep found best, and the rates agree with the sweep's to 0.2 TH/s. The miner's
+line: `core clock offset kept at +150 MHz on GPU 0 while mining (+4.4%): 317.4 TH/s at 0, 320.7 at +50 MHz,
+325.2 at +100 MHz, 331.2 at +150 MHz` (its 4.4% is from the unrounded means). The verdict came 6 min 27 s after
+the start: five turns and about 11 s of hit checks in all. After it the card mined at 331.3 TH/s with NVML
+reading offset 150 MHz, at 2640 MHz and 450 W. 13 shares accepted, none rejected; 10 of them were found with the
+card above offset 0, so each was recomputed before it was sent. Stopped with Ctrl+C, the miner logged `core clock
+offset back to 0 on GPU 0` and exited 0, and NVML then read offset 0.
+
+Run 2, with `--mine-mem-clock auto` as well. The memory clock trial ran first and kept its lock (319.9 TH/s at
+5001 MHz against 317.6, +0.7%). The offset trial started on the sample that ended it and ran with the lock in
+place:
+
+| Turn, memory locked at 5001 MHz | TH/s | Against 0 | SM clock | Power |
+|---|---|---|---|---|
+| 0 (two turns) | 320.0 | — | 2553–2555 MHz | 449 W |
+| +50 MHz | 324.0 | +1.3% | 2586 MHz | 449 W |
+| +100 MHz | 328.4 | +2.6% | 2624 MHz | 449 W |
+| +150 MHz | 333.6 | +4.3% | 2662 MHz | 449 W |
+
+It kept +150 MHz again (the miner's line says +4.2%, from the unrounded means): 333.6 TH/s, +5.0% on the
+317.6 TH/s the run began at, the same as the sweep's 333.3 for the two together. 29 shares accepted, none
+rejected, 16 of them with the card above offset 0. Stopped with Ctrl+C:
+`memory clock released on GPU 0`, `core clock offset back to 0 on GPU 0`, exit 0, and NVML read offset 0.
+
+The hit check on its own, run as the miner runs it (the card's rate first, then the check's job with the bound
+set for 30 hits a second: 2^231.7 at 317.8 TH/s): 100 hits in 3.2 and 3.3 s (31.4 and 30.0 a second), all 100
+right both times. Recomputing a hit took 4.3 to 4.4 ms, so one check is 0.43 s of the miner's event loop.
+
+Also checked on this card:
+
+- `verify-hits.js` on the new core at offset 0: 400 of 400, from 1,397 hits over 177 salts. The core mines as
+  before.
+- The core's read answers offset 0 and a range of −1000 to +1000 MHz, as pynvml does. It takes 35 ms the first
+  time and 12 to 16 ms after, and works without administrator rights. Its set, from a process without them,
+  answers `Insufficient Permissions` (NVML code 4), and the miner then says the trial needs root or administrator
+  rights and mines on at the card's own clock.
+- Started with +50 MHz already on the card, as a run killed hard leaves it: the miner said so and the trial
+  started from 0. The miner killed hard at +50 MHz left the card at +50 MHz (NVML read it), as the README warns.
+
+What it does not show. It is still one card, and no card that fails a step has been run, so the failing paths
+are covered by the unit tests only. Each run spent about two minutes at +150 MHz, so stability over hours is not
+known. A check of 100 hits catches a card that computes a few percent of its results wrong; a card wrong once in
+several hundred passes it, and is caught later by the check on each share it sends. The trial takes six and a
+half minutes of every start.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).

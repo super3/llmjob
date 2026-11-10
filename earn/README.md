@@ -1069,7 +1069,12 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto --mine-
 - **What it keeps.** The highest step that passed its check, was at least 0.3%
   faster than the step before it, and at least 0.3% faster than offset 0 (the
   mean of the two turns at 0). If no step does, the card stays at 0. The log
-  says what was measured at each step and what was kept.
+  says what was measured at each step and what was kept. On the RTX 4090 above
+  the trial measured 317.4 TH/s at 0 and 320.7, 325.2 and 331.2 at the three
+  steps, and kept +150 MHz (+4.4%). With `--mine-mem-clock auto` as well it
+  ended at 333.6 TH/s, +5.0%. The two runs had 42 shares accepted and none
+  rejected (`tuning/benchmark.md`, "rig01, 10 November: `--mine-core-offset
+  auto`").
 - **After the trial**, every share a card finds while it has an offset is
   recomputed before it is sent. If one comes out wrong it is not sent, the card
   goes back to offset 0 at once and stays there for the rest of the run, and

@@ -50,7 +50,15 @@ const MIN_SAMPLES = 20;
 // (checkBound), so it takes three or four seconds on any card. After CHECK_MS
 // it ends anyway, and passes only with CHECK_MIN_HITS or more. Recomputing a
 // hit costs the miner's event loop 4.6 ms (shared/miner/checkHit), so a whole
-// check is about half a second of it.
+// check is about half a second of it. On rig01's RTX 4090 a check took 3.2 to
+// 3.3 s for its 100 hits, at 4.3 to 4.4 ms a hit (tuning/benchmark.md,
+// "rig01, 10 November: --mine-core-offset auto").
+//
+// What 100 hits show: a card that computes a few percent of its results wrong
+// fails with near certainty, since a wrong result is as likely to meet the
+// easy target as a right one. A card wrong once in several hundred passes.
+// That is what the miner's check on every share from a card with an offset is
+// for (main/pearlMiner, _offsetHitRight).
 const CHECK_HITS = 100;
 const CHECK_HITS_PER_S = 30;
 const CHECK_MS = 10 * 1000;
