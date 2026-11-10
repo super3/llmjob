@@ -82,8 +82,10 @@ def clore_gpu(gpu):
 def clore_start_script(ver, cmd):
     """The script a Clore box runs: curl, then the release's files with a download that resumes (GitHub's file server
     dropped a box in Japan at 21 MB of the 125 MB CLI, again and again, on 10 November, and box.sh's own download
-    starts over each time), then box.sh skipping its own download (/opt/m/setup), as on Salad."""
-    return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1\n"
+    starts over each time), then box.sh skipping its own download (/opt/m/setup), as on Salad. Skipping that step
+    skips its packages too, so they're installed here: without jq box.sh reads no core for a GPU and copies none, and
+    the first Clore box's miner (a 3080 in Libya, 10 November) exited on start for 13 minutes until jq went in."""
+    return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates procps jq >/dev/null 2>&1\n"
             f"D=/opt/m; mkdir -p $D/rel; REL={RELEASES}/{ver}\n"
             "if [ ! -f $D/setup ]; then\n"
             "  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node llmjob-xmr-worker; do\n"

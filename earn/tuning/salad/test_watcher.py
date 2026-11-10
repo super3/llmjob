@@ -5480,6 +5480,7 @@ class TestClore(Base):
         script = w.base64.b64decode(re.search(r"echo (\S+) \| base64 -d", args[-1]).group(1)).decode()
         self.assertIn('curl -fsSL --http1.1 -C - --connect-timeout 20 -o $D/rel/$f "$REL/$f"', script)
         self.assertIn("touch $D/setup", script)
+        self.assertIn("apt-get install -y -qq curl ca-certificates procps jq", script)   # box.sh needs jq for a core
         self.assertIn("s/^WORKER=__WORKER__$/WORKER=clore-77/", script)
         self.assertIn("--cpu-threads 8", script)                    # 32 threads: Monero on 8
         self.tick(10)
