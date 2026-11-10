@@ -3427,6 +3427,44 @@ __device__ __forceinline__ void pearl_e4_draw(uint32_t j, uint32_t g, uint32_t l
                       + (lane & 15u) * 4u;
   *reinterpret_cast<uint32_t *>(dst) = (d0 + 0xB0B0B0B0u - d1) ^ 0x80808080u;
 }
+#ifdef PEARL_E4_DRAWT
+// E4's draw from a transposed table (item 7, 10 November; bench only, -DPEARL_E4_DRAWT on top of
+// PEARL_E4_GENLOAD). pearl_e4_draw spends 8 shuffles and 6 byte selects on a word, because the row
+// is held k-packed in a lane. Here the dense table is held the other way round: word (p, q) is
+// byte p of rows 4q .. 4q + 3. A k index's noise for four rows is then two word loads and one add,
+// with no carries: biased bytes x, y in 0 .. 63 give x + 0x3F3F3F3F - y = 63 + d0 - d1 a byte, which
+// is fill 63's A' (0 .. 126). Four k indexes are turned into the ring's k-packed rows by 8 byte
+// selects. The perm table holds each k index's two word offsets, ready to add. With PEARL_E4_C 8 a
+// block draws 24 rows: 6 row quads x 32 k quads a chunk. Warp w < 6 draws row quad w, a k quad a lane,
+// once a chunk; warps 6 and 7 draw nothing (pearl_e4_draw: every warp, 3 words a lane, at three k-step ends).
+static_assert(PEARL_E4_C == 8u, "PEARL_E4_DRAWT is laid out for PEARL_E4_C 8 (24 rows a block)");
+#define PEARL_E4_RQ (PEARL_E4_RROWS / 4u)
+__device__ __align__(16) uint32_t pearl_e4_denseT[PEARL_E4_MAX_BLOCKS * 128u * PEARL_E4_RQ];
+__device__ __align__(16) uint4 pearl_e4_permT[16u * 32u * 2u];
+__device__ __forceinline__ void pearl_e4_drawt(uint32_t g, uint32_t lane, uint32_t warp) {
+  if (warp >= PEARL_E4_RQ) return;
+  const uint32_t rq = warp, kq = lane;
+  // Opaque, so each lookup is one IMAD.WIDE on it rather than 64-bit adds from the symbol.
+  const uint32_t *T = pearl_e4_denseT + blockIdx.x * (128u * PEARL_E4_RQ) + rq;
+  asm volatile("" : "+l"(T));
+  const uint4 *const pp = pearl_e4_permT + ((g & 15u) * 32u + kq) * 2u;
+  const uint4 e0 = pp[0], e1 = pp[1];
+  const uint32_t w0 = T[e0.x] + 0x3F3F3F3Fu - T[e1.x];
+  const uint32_t w1 = T[e0.y] + 0x3F3F3F3Fu - T[e1.y];
+  const uint32_t w2 = T[e0.z] + 0x3F3F3F3Fu - T[e1.z];
+  const uint32_t w3 = T[e0.w] + 0x3F3F3F3Fu - T[e1.w];
+  const uint32_t t0 = __byte_perm(w0, w1, 0x5140u), t1 = __byte_perm(w2, w3, 0x5140u);
+  const uint32_t t2 = __byte_perm(w0, w1, 0x7362u), t3 = __byte_perm(w2, w3, 0x7362u);
+  uint32_t *const dst = reinterpret_cast<uint32_t *>(
+      pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB + (g % 3u) * PEARL_E4_SLAB
+      + (kq >> 4) * (PEARL_TALL_BM * PEARL_TALL_STAGE_K)
+      + ((blockIdx.x % PEARL_E4_C) * PEARL_E4_RROWS + rq * 4u) * PEARL_TALL_STAGE_K + (kq & 15u) * 4u);
+  dst[0] = __byte_perm(t0, t1, 0x5410u);
+  dst[PEARL_TALL_STAGE_K / 4u] = __byte_perm(t0, t1, 0x7632u);
+  dst[PEARL_TALL_STAGE_K / 2u] = __byte_perm(t2, t3, 0x5410u);
+  dst[3u * PEARL_TALL_STAGE_K / 4u] = __byte_perm(t2, t3, 0x7632u);
+}
+#endif
 #define PEARL_E4_ABASE (pearl_e4_ring + (blockIdx.x / PEARL_E4_C) * 3u * PEARL_E4_SLAB)
 #else
 #define PEARL_E4_ABASE Aprime

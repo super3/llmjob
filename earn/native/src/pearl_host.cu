@@ -3456,6 +3456,8 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 #define PEARL_E4_STR(x) PEARL_E4_STR2(x)
 #ifdef PEARL_E4_NOGEN
 static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 path C=" PEARL_E4_STR(PEARL_E4_C) " (no draw)";
+#elif defined(PEARL_E4_DRAWT)
+static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw T C=" PEARL_E4_STR(PEARL_E4_C);
 #else
 static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw C=" PEARL_E4_STR(PEARL_E4_C);
 #endif
