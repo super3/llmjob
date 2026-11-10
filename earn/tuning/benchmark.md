@@ -1060,8 +1060,19 @@ through `sharetap.py`, so every share was checked and decoded. 2.5 minutes a rel
   fill changes no share's credit: the target and the work a share stands for (tile * k) don't read it. At 64, A'
   sits in [1, 127], so like 63 it never flips the sign bit; the bit-flip model gives both 3.500 toggles a byte
   (48: 3.489) and 64 a popcount of 3.508 against 63's 3.492. 63 measured level with 48 (-0.23% on the 4090), so
-  64 is expected level too. The build that allows 64 (`PEARL_OPERAND_FILL` and checkHit.js opened to [-64, 64])
-  is on branch item/3 for a race.
+  64 is expected level too. Raced on Salad, 10 November (`race` stage, base = fill 48, an A/A twin, turns of 4 s
+  for 600 s; builds 3df81e61 and b120b72e on branch item/3, which open `PEARL_OPERAND_FILL` and checkHit.js to
+  [-64, 64]):
+
+  | PC | rounds | aa (twin) | fill 63 | fill 64 |
+  |---|---|---|---|---|
+  | RTX 3080, 104.1 TH/s | 36 | −0.00% ±0.48 | +0.04% ±0.55 | −0.39% ±0.81 |
+  | RTX 4080 SUPER, 208.0 TH/s | 37 | −0.01% ±0.02 | −0.21% ±0.02, led 0/37 | −0.29% ±0.02, led 0/37 |
+  | RTX 5080, 212.3 TH/s | 35 | −0.00% ±0.01 | −0.03% ±0.03 | −0.02% ±0.04 |
+
+  (± is the 95% interval.) verify-hits passed 400 of 400 for fill 63 and 64 on all three. Fill 64 is level on the
+  3080 and 5080 and a clear −0.29% on the 4080 SUPER; the 5080 drew 2 W more at 63 and 64. Fill 48 stays, the
+  [-63, 63] limit stays in the code, and nothing above 64 is legal. Dropped.
 - The hash in the fold on gfx1201 (#287 item 6): −0.50% on an RX 9070 XT at k 8192 (a68b3382, both scored rounds, copies
   within 0.06%). RDNA 3 hasn't raced it; its hash kernel is a smaller share (0.8% on a 7900 XTX) and its DRAM faster.
 - Stale shares (PR #290 item 9, 10 November, pool data only). HeroMiners' lifetime counts for our wallet: 121 stale and
