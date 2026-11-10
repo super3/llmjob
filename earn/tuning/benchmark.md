@@ -259,6 +259,49 @@ Downloads were checked against the SHA-256 digests GitHub lists for each release
 against its published .md5. Windows Defender quarantines SRBMiner on download, so the competitors ran from
 `C:\miners\item16-1110`, rig01's excluded folder. A short Python script ran bench.sh's method, as Git Bash has no jq.
 
+### rig01, 10 November: memory clock, core clock and power limit on the RTX 4090 (PR #290 items 1 and 6)
+
+An elevated session on rig01 could set clocks, so the sweep that #287 item 11 couldn't run was run. Our v0.6.16 CI
+core (`pearl_core.node`), `hashrate.js` for 90 s after 20 s of warm-up, native Windows, driver 610.88. Each locked run
+had a stock run before and after it; stock stayed within 317.0–317.9 TH/s all afternoon.
+
+The card has four memory speeds. A lock at 1000, 1200, 1500, 2000, 3000 or 5001 MHz runs at 5001 MHz; a lock at
+6000, 7001 or 9000 MHz stays at 10251 MHz and changes nothing.
+
+| Memory speed the card ran | TH/s | Against stock | SM clock | Power | Memory busy |
+|---|---|---|---|---|---|
+| 10251 MHz (stock) | 317.0–317.9 | — | 2525–2536 MHz | 449 W | 3% |
+| 5001 MHz | 320.0–320.3 (six runs) | +0.8% | 2552–2554 MHz | 449 W | 5% |
+| 810 MHz | 283.1 | −11% | 2640 MHz | 437 W | 32% |
+| 405 MHz | 78.5 | −75% | 645 MHz | 93 W | 20% |
+
+The lock frees power for the SM clock, as guessed, but only 5001 MHz is usable: at 810 MHz the fold's DRAM reads
+become the limit, and at 405 MHz the whole card drops to a low power state. PeakMiner tunes for 405 and 810 MHz
+because its kernel no longer reads DRAM (item 2); ours does.
+
+The lock gains more under a lower power limit. Two runs of each, alternating; repeats agreed within 0.1%:
+
+| Power limit | Stock memory | 5001 MHz lock | Gain | SM clock, stock → locked |
+|---|---|---|---|---|
+| 480 W (draws 451–463 W) | 319.7, 320.2 | 321.7, 321.7 | +0.5% | 2546–2550 → 2565 MHz |
+| 450 W | 317.5 | 320.2 | +0.8% | 2531 → 2553 MHz |
+| 400 W | 304.8, 304.8 | 309.1, 309.3 | +1.4% | 2427 → 2468 MHz |
+| 350 W | 290.1, 290.1 | 294.1, 294.0 | +1.3% | 2310 → 2345 MHz |
+| 300 W | 272.2, 272.2 | 276.9 (one run) | +1.7% | 2168 → 2210 MHz |
+
+At 480 W the card stops at about 460 W, so it is no longer power capped and the lock has less to give. At 300 W the
+card still makes 86% of its 450 W rate on two-thirds of the power.
+
+A core clock lock does nothing here (item 6). `nvidia-smi -lgc 2600,2600` and `2700,2700` on top of the memory lock
+gave 319.7 and 319.8 TH/s with the SM clock still at 2549–2552 MHz, and `-lgc 2600,2600` alone gave 317.4. The power
+limit sets the clock, not the lock. nvidia-smi has no voltage control, so an undervolt was not tried.
+
+`verify-hits.js` under the 5001 MHz lock: 400 of 400 hits verified.
+
+What it means: where the miner can set clocks (it needs Administrator on Windows or root on Linux, so HiveOS and
+mining rigs, not Salad or Vast containers), a 5001 MHz memory lock is worth about +0.8% on a 4090 at its stock limit
+and up to +1.7% on a power-limited one. It is measured on one 4090 only. Not built into the app yet.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
@@ -827,8 +870,9 @@ What future speed work needs: how to measure, the limits found, and what has alr
   an Administrator (nvidia-smi -lmc, -lgc and -pl exit 4), and Vast and Salad containers can't set clocks. At stock
   the core ran 315.9 TH/s over 8 legs (0.30% spread) at 2519 MHz and 449 of 450 W, power capped in every sample, with
   memory at 10251 MHz and 2-3% busy. TH/s follows the SM clock (125.1-125.8 TH/s per GHz), and the memory clock is
-  worth at most 40 W, so a lower one might give +0.5-1.5%. That is a guess until someone with admin rights runs a
-  sweep (exp/287-11 has `memclock-sweep.js`, about 20 minutes).
+  worth at most 40 W, so a lower one might give +0.5-1.5%. That was a guess then. The sweep ran on 10 November with
+  admin rights: a 5001 MHz lock gives +0.8% at 450 W and up to +1.7% under a lower power limit, and 810 and 405 MHz
+  lose (see "rig01, 10 November: memory clock, core clock and power limit" under RTX 40-series).
 - RDNA 2 (`dot4`, a fold for RDNA 2) is a projection, not a measurement: 14.0–41.0 TH/s, half that if its `v_dot4`
   runs at half rate. No RDNA 2 card has run it, and none can be rented: Salad has no RDNA 2 class and Vast had 0
   offers for every RX 6600 to 6950, V620 and W6800 (#287 item 10, 6 November). The only rental found is Azure's
