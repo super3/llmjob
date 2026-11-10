@@ -982,6 +982,20 @@ through `sharetap.py`, so every share was checked and decoded. 2.5 minutes a rel
   cycles an instruction (E4 on a 3090, item 16's sham draw), so even at half a staged byte's energy a full draw nets
   −1.3 to −3.5%, and a tile's 57 KB of tables don't fit beside the ring (2.7 KB free). Rechecked on 6 November for
   suggestion list item 1, no GPU time.
+- RTX 30: a cheaper in-fold A' draw, and a long k (item 7, 10 November, race mode, RTX 3090 `9b482f0a` at 350 W,
+  memory 10% busy under the release). `-DPEARL_E4_DRAWT` (branch exp/item7-gen, bench only) holds E4's dense table
+  transposed, so four rows of one k index are two loads and one add, and 8 byte selects make the ring's rows: 72
+  instructions a chunk a warp against E4's 134, 252 registers, no spill. Against the release (35 rounds, copy of the
+  release −0.002%):
+  - DRAM ablation +1.75% (1592 → 1618 MHz); E4's data path with no draw +0.88%.
+  - E4's draw −3.59% (1587 MHz); the transposed draw −5.57% (1613 MHz, so it saved energy, but did less work a
+    clock). Fewer instructions didn't help: its table loads are long-latency and sit in the MMA warps' stream, and
+    only 6 of 8 warps draw. There are 3 registers left to load them earlier.
+  - Long k, second race on the same PC (24 rounds): k 8192 with stored operands −2.71% (memory 36% busy, 1530 MHz);
+    k 16384 with operands in the L2 (DRAM ablation) +2.80%. So on this PC a DRAM-free, long-k kernel could gain at
+    most 2.8%, and E4's draw alone costs 4.5-6.4% against its own data path. PeakMiner's +6.6% (item 2) was on a
+    3060 whose memory was 39-65% busy; that card's ceiling wasn't measured (the box was stopped before its race).
+    The cp.async fold's tile offsets are 32-bit and overflow past k 16384, so k 65536 needs that fixed first.
 - Shared-memory layout and fragment loads on RTX 40 and 50 (suggestion list item 6, 6 November, no GPU run). The tall fold's 64-byte
   stage rows with unit q at q ^ ((r >> 1) & 3) (SWIZZLE_64B under TMA) give conflict-free `ldmatrix` and `cp.async`.
   It loads only `LDSM.x4`, 40 a chunk a warp, 106.7 shared bytes an IMMA: the least a 96x64 warp tile can read. Its
