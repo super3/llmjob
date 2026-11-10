@@ -288,8 +288,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     tile_coords(v, rbg_, cbg_);
 #ifdef PEARL_ABLATE_DRAM
     // Diagnostic only, as in the cp.async walk's tile_srcs: every tile reads row groups 0
-    // and 1 of A' and the first two column groups of B', and (in tma_fill) the first 32
-    // k-blocks of each, so at any k the boxes come from 1.75 MB that stays in the L2. The
+    // and 1 of A' and the first two column groups of B', and (cn, below) the first 16
+    // chunks of each, so at any k the boxes come from 1.75 MB that stays in the L2. The
     // same boxes and mma; the output is meaningless. The hash still names the real regions.
     rbg_ &= 1u;
     cbg_ &= 1u;
@@ -299,15 +299,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
     arow_ = rbg_ * BM;
   };
-  // The k-block a fill of k bytes [kofs, kofs + SK) reads: under the DRAM ablation, the
-  // first 32 (2048 of k) over again.
-#ifdef PEARL_ABLATE_DRAM
-#define PEARL_TALL_KBLOCK(kofs) (((kofs) / SK) & 31u)
-#else
-#define PEARL_TALL_KBLOCK(kofs) ((kofs) / SK)
-#endif
   // Fill buffer bi with k bytes [kofs, kofs + SK) of the tile at (boxB, boxA): its
-  // k-block (PEARL_TALL_KBLOCK), whole (the host blocks A' and B' by exactly one stage). Both
+  // k-block kofs / SK, whole (the host blocks A' and B' by exactly one stage). Both
   // boxes count their full size toward FULL's transaction, the rows past m that TMA
   // zero-fills included.
 #if PEARL_TALL_AB_SKIP
@@ -333,8 +326,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         pearl_mbar_arrive(full);
       } else {
         pearl_mbar_expect_tx(full, (skipB ? 0u : BN * SK) + (skipA ? 0u : BM * SK));
-        if (!skipB) pearl_tma_3d(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full);
-        if (!skipA) pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, PEARL_TALL_KBLOCK(kofs), full);
+        if (!skipB) pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
+        if (!skipA) pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
       }
       return;
     }
@@ -348,12 +341,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // complete before the expect_tx's arrival, so it is how CUTLASS's multicast
     // pipelines run too. Each CTA's own A box follows, as before.
     if (pearl_cluster_ctarank() == 0u)
-      pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full,
+      pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, kofs / SK, full,
                              (uint16_t)((1u << CLUSTER) - 1u));
 #else
-    pearl_tma_3d(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full);
+    pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
 #endif
-    pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, PEARL_TALL_KBLOCK(kofs), full);
+    pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
   };
 #endif
 
@@ -634,7 +627,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         boxB = nextB;
         boxA = nextA;
       }
+#ifdef PEARL_ABLATE_DRAM
+      // The DRAM ablation (see tile_box) wraps every 16 chunks, so past k 2048 its boxes
+      // stay in the same 1.75 MB.
+      const uint32_t cn = (last ? 0u : chunk + 1u) & 15u;
+#else
       const uint32_t cn = last ? 0u : chunk + 1u;
+#endif
 #pragma unroll
       for (uint32_t s = 0; s < SPC; s++) {
 #if PEARL_TALL_TMA_ROLES
