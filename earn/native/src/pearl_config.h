@@ -2808,6 +2808,9 @@ typedef struct {
 #ifndef PEARL_GATE_SPIN_CYCLES
 #define PEARL_GATE_SPIN_CYCLES 3200
 #endif
+#ifndef PEARL_GATE_SPIN_IDLE
+#define PEARL_GATE_SPIN_IDLE 1
+#endif
 #ifndef PEARL_GATE_SPIN_THREADS
 #define PEARL_GATE_SPIN_THREADS 32
 #endif

@@ -99,7 +99,8 @@ extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *base,
                                                         uint32_t rank, uint32_t kb_log2,
                                                         uint64_t read_vecs, uint32_t fill_word);
 #if PEARL_GATE_SPIN
-extern "C" __global__ void pearl_gate_spin(uint32_t periods, uint32_t units, uint32_t cycles);
+extern "C" __global__ void pearl_gate_spin(uint32_t periods, uint32_t units, uint32_t cycles,
+                                           unsigned long long *done);
 #endif
 extern "C" __global__ void pearl_materialize16_tiled(const int8_t *base,
                                                      const int8_t *dense,
@@ -505,6 +506,10 @@ struct Ctx {
   cudaEvent_t gateSpinEv[2] = {nullptr, nullptr};
   unsigned gateSpinN = 0;
   int gateSms = 0;
+  // The units a lane of every finished spin block did, summed (device), and when the first
+  // launch was made, for the SPIN lines.
+  unsigned long long *dGateSpinDone = nullptr;
+  std::chrono::steady_clock::time_point gateSpinT0;
   // Batches to submit since a queued redraw (see pearl_host_reseed). Both batches queued
   // behind a redraw wait for it, so when it finishes they start together and share the
   // SMs: each takes two batch periods and they finish within ~0.1 ms of each other. The
@@ -3600,6 +3605,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       cudaEventCreateWithFlags(&ctx->gateSpinEv[0], cudaEventDisableTiming);
       cudaEventCreateWithFlags(&ctx->gateSpinEv[1], cudaEventDisableTiming);
       cudaDeviceGetAttribute(&ctx->gateSms, cudaDevAttrMultiProcessorCount, ctx->device);
+      cudaMalloc(&ctx->dGateSpinDone, sizeof(unsigned long long));
+      cudaMemset(ctx->dGateSpinDone, 0, sizeof(unsigned long long));
+      ctx->gateSpinT0 = std::chrono::steady_clock::now();
     }
     const unsigned older = ctx->gateSpinN & 1u;
     bool go = ctx->gateSpinN < 2u;
@@ -3610,9 +3618,22 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     if (go && ctx->gateSms > 0) {
       pearl_gate_spin<<<(unsigned)ctx->gateSms, PEARL_GATE_SPIN_THREADS, 0, ctx->gateSpinStream>>>(
           (uint32_t)PEARL_GATE_SPIN_PERIODS, (uint32_t)PEARL_GATE_SPIN_UNITS,
-          (uint32_t)PEARL_GATE_SPIN_CYCLES);
+          (uint32_t)PEARL_GATE_SPIN_CYCLES, ctx->dGateSpinDone);
       cudaEventRecord(ctx->gateSpinEv[older], ctx->gateSpinStream);
       ctx->gateSpinN++;
+      // Three times in a context's life, what the spin blocks have done: units a lane a
+      // block, summed over the blocks that have ended, and the seconds since the first
+      // launch. Units a lane a second a block is the first over (the second times the SMs);
+      // a whole stage's draw is 56 a lane a stage.
+      if (ctx->gateSpinN == 8u || ctx->gateSpinN == 16u || ctx->gateSpinN == 32u) {
+        unsigned long long u = 0;
+        cudaMemcpy(&u, ctx->dGateSpinDone, sizeof u, cudaMemcpyDeviceToHost);
+        const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now()
+                                                           - ctx->gateSpinT0).count();
+        fprintf(stderr, "SPIN launches=%u sms=%d units_lane_sum=%llu secs=%.3f periods=%u units=%u alu=%u\n",
+                ctx->gateSpinN, ctx->gateSms, u, secs, (unsigned)PEARL_GATE_SPIN_PERIODS,
+                (unsigned)PEARL_GATE_SPIN_UNITS, (unsigned)PEARL_GATE_SPIN_ALU);
+      }
     }
   }
 #endif

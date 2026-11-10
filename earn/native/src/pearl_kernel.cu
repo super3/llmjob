@@ -3501,10 +3501,20 @@ __device__ __forceinline__ void pearl_e4_drawt(uint32_t g, uint32_t lane, uint32
 // PEARL_GATE_SPIN_THREADS: the block's threads, 32 or more. Only the first warp works; the
 // others sleep, and are there for their registers alone: sm_120's fold leaves an SM 3,072
 // registers, where five one-warp blocks of 18 would fit and three warps make it one.
+// How it idles (PEARL_GATE_SPIN_IDLE). 1, the default: as a producer warp of the ring would,
+// on a barrier of its own that nobody arrives on -- a try_wait on sm_90 and later, which
+// suspends the thread in hardware for a while, and a test_wait elsewhere, which is a spin.
+// 0: __nanosleep(250). On an RTX 5090 that one was no control at all: blocks that only slept
+// took 36% off the fold beside them (10 November), and blocks that never slept took nothing
+// like it.
+// Each block adds the units a lane did to *done as it ends; the host prints the count.
 extern "C" __global__ __launch_bounds__(PEARL_GATE_SPIN_THREADS) void pearl_gate_spin(
-    uint32_t periods, uint32_t units, uint32_t cycles) {
-  __shared__ __align__(16) uint32_t sb[2 * 32 * 4];   // two rows of 16 bytes a lane
+    uint32_t periods, uint32_t units, uint32_t cycles, unsigned long long *done) {
+  __shared__ __align__(16) uint32_t sb[2 * 32 * 4 + 4];   // two rows of 16 bytes a lane, a barrier
+  const uint32_t bar = (uint32_t)__cvta_generic_to_shared(sb) + 1024u;
+  if (threadIdx.x == 0u) asm volatile("mbarrier.init.shared.b64 [%0], %1;" ::"r"(bar), "r"(1u) : "memory");
   if (threadIdx.x >= 32u) units = 0u;
+  uint32_t ndone = 0u;
   const uint32_t lane = threadIdx.x & 31u;
   if (threadIdx.x < 32u) {
 #pragma unroll
@@ -3537,8 +3547,20 @@ extern "C" __global__ __launch_bounds__(PEARL_GATE_SPIN_THREADS) void pearl_gate
       asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                    ::"r"(b), "r"(x[0]), "r"(x[1]), "r"(x[2]), "r"(x[3]) : "memory");
     }
-    while ((uint64_t)(clock64() - t0) < (uint64_t)cycles) __nanosleep(250u);
+    ndone += units;
+    while ((uint64_t)(clock64() - t0) < (uint64_t)cycles) {
+#if PEARL_GATE_SPIN_IDLE == 0
+      __nanosleep(250u);
+#elif __CUDA_ARCH__ >= 900
+      asm volatile("{\n .reg .pred d;\n mbarrier.try_wait.parity.shared::cta.b64 d, [%0], %1;\n}"
+                   ::"r"(bar), "r"(0u) : "memory");
+#else
+      asm volatile("{\n .reg .pred d;\n mbarrier.test_wait.parity.shared.b64 d, [%0], %1;\n}"
+                   ::"r"(bar), "r"(0u) : "memory");
+#endif
+    }
   }
+  if (threadIdx.x == 0u) atomicAdd(done, (unsigned long long)ndone);
 }
 #undef PEARL_SPIN_XOR
 #undef PEARL_SPIN_ROT
