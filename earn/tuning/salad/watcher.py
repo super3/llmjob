@@ -54,6 +54,17 @@ def clore_pause():
     time.sleep(3)
 
 
+# Each class's stock power limit (watts), for a Clore server's own setting (its listing's "pl", a card). A host can set
+# it far under: on 10 November the 5×3090 box ran 180 W a card (stock 350) at 85 TH/s and the 5080 250 W (stock 360)
+# at 197, both losing money at prices that cleared on the full-power rate. AMD cards Clore lists are left out.
+FULL_W = {"RTX 2060 (6 GB)": 160, "RTX 2070 (8 GB)": 175, "RTX 2080 (8 GB)": 215, "RTX 2080 Ti (11 GB)": 250,
+          "RTX 3060 (12 GB)": 170, "RTX 3060 Ti (8 GB)": 200, "RTX 3070 (8 GB)": 220, "RTX 3080 (10 GB)": 320,
+          "RTX 3090 Ti (24 GB)": 450, "RTX 4060 (8 GB)": 115, "RTX 4060 Ti (16 GB)": 165, "RTX 4070 (12 GB)": 200,
+          "RTX 4070 Ti (12 GB)": 285, "RTX 4080 (16 GB)": 320, "RTX 4090 (24 GB)": 450, "RTX 5060 (8 GB)": 145,
+          "RTX 5060 Ti (16 GB)": 180, "RTX 5070 (12 GB)": 250, "RTX 5070 Ti (16 GB)": 300, "RTX 5080 (16 GB)": 360,
+          "RTX 5090 (32 GB)": 575}
+
+
 def clore_gpu(gpu):
     """A Clore server's GPUs ("2x NVIDIA GeForce RTX 3060") as (count, KNOWN class, short name), or None when the cards
     aren't all one model we have a measured rate for: no guessed rates (on 10 November a 3090 box priced at a guessed
@@ -1337,6 +1348,10 @@ class W:
         if g is None:
             return []
         n, cls, short = g
+        # A card set under 90% of its stock power limit won't make its measured rate (FULL_W).
+        pl = [w for w in (sp.get("pl") or []) if isinstance(w, (int, float))]
+        if cls in FULL_W and pl and min(pl) < 0.9 * FULL_W[cls]:
+            return []
         ths = n * KNOWN[cls][0]
         b = self.st["clore"]["bad"].get(str(sv["id"]))
         if b and b.get("ths") is None:

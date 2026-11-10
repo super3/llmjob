@@ -5405,6 +5405,14 @@ class TestClore(Base):
         self.x.clore_round(self.clock[0] + 60)   # searches at most every 10 min
         self.assertEqual(len(self.creates()), 1)
 
+    def test_a_server_whose_cards_are_power_capped_is_skipped(self):
+        # 10 November: the 5080 on server 122420 was set to 250 W (stock 360) and mined 197 TH/s, not 223.
+        capped, full = self.server(5, od=3.0), self.server(6, od=3.2)
+        capped["specs"]["pl"], full["specs"]["pl"] = [250], [320]   # a 4080's stock limit is 320 W
+        self.market(capped, full)
+        self.x.clore_round(self.clock[0])
+        self.assertEqual([b["renting_server"] for b in self.creates()], [6])
+
     def test_nothing_clears_the_bar_rents_nothing(self):
         self.market(self.server(5, od=5.5))   # 4080 earns about $5.3 a day
         self.x.clore_round(self.clock[0])

@@ -462,6 +462,8 @@ from the user's saved environment) and pays in USD from its Clore balance.
   take USD, aren't in Russia (rig01 can't reach Russian hosts) and have every GPU one model in `KNOWN`. A server is
   priced at `KNOWN`'s TH/s a card, Pearl only, and rented when it clears `min_margin`, the one that makes most an
   hour first. No guessed rates: on 10 November a 3090 box priced at a guessed 140 TH/s a card mined 85 and lost 35%.
+  A server whose cards are set under 90% of their stock power limit (the listing's `pl`, against `FULL_W`) is
+  skipped too: that 3090 box ran 180 W a card (stock 350), and the 5080 tried after it 250 W (stock 360), 197 TH/s.
   On demand it rents for the server's limit, up to 24 h. On spot it bids the least; if another bid is in, it raises
   once to the least Clore takes, only if that still clears.
 - **Cap**: no new box once the New York day's spend reaches `clore_day_cap` ($10), or when the live boxes' price a day
