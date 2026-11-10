@@ -4,13 +4,21 @@ A first version of the Pearl mining core for Intel GPUs, written in SYCL. It
 builds into `pearl_core_sycl.node`, which the app and the CLI load through the
 existing `PEARL_CORE_PATH` opt-in. The N-API layer is `../src/pearl_core.cc`,
 compiled unchanged; this folder replaces only what sits under it
-(`pearl_host.cu` and `pearl_kernel.cu`). Nothing here changes the CUDA build or
-what the app does on NVIDIA.
+(`pearl_host.cu` and `pearl_kernel.cu`). Nothing here changes the CUDA or AMD
+builds or what the app does on those cards, and no installer includes this
+folder or its core.
 
 It has not run on an Intel GPU yet. It has run on the SYCL CPU device, where
 every hit it found was checked against the JS reference, and it compiles for
-every Intel GPU target listed below. See "On an Intel box" and "Test plan" for
-the first hardware run.
+every Intel GPU target listed below. Until a kind of card has passed the steps
+below, every GPU mines with each hit checked before it is sent ("Untested
+cards"). The first hardware is a rig of six Arc A750 cards on HiveOS: see
+"First run on an Arc A750 rig". "On an Intel box" and "Test plan" are the same
+steps for any other Intel box.
+
+It was written in October 2026, against the app as it was then, and brought up
+to the app's core API as of v0.6.16 on 10 November ("Kept up with the CUDA
+host").
 
 ## Status
 
@@ -22,6 +30,8 @@ the first hardware run.
 | XMX fold, sub-group 8 (`xmx8`): Arc A770/A750/A580/A380/A310, Arc Pro A-series, Flex | written; same checks; compiles to DPAS, 128 GRF, no spill |
 | Two-batch pipeline, all hits a batch, share proofs carried with each hit | written; checked on the CPU device |
 | Device choice: Level Zero GPUs ranked by compute units x clock, `PEARL_GPU_INDEX` pins | written; untested on a GPU |
+| Untested cards: a GPU opens only for an opener that checks every hit, and says so in `core.untested` | written; the rule is run in JS by `earn/test/syclCore.test.js`; untested on a GPU |
+| Per-card k, launch shapes and their startup trial (the CUDA host's) | not here: the profile's k, no shapes ("Kept up with the CUDA host") |
 | Runs on an Intel GPU | **not yet** |
 | Speed | **unknown** until it runs on a GPU |
 | Windows build | not written (`build.sh` is Linux only) |
@@ -79,17 +89,70 @@ The plain fold builds without a spill on every target too. The default build
 CPU device, and takes about a minute here. Not built: `intel_gpu_arl_h` (Arrow
 Lake-H); this ocloc cannot target it.
 
+## Results on 10 November 2026
+
+The port on the app as of v0.6.16: that day's `pearl_core.cc` and
+`pearl_config.h`, unchanged, against the updated host. Again no Intel GPU: an
+Ubuntu 24.04 container on a rented PC (AMD Ryzen 5 2600, 12 threads), the SYCL
+CPU device, DPC++ 2026.1.1, ocloc 26.40.40196.15, IGC 2.42.14.
+
+| Check | Result |
+|---|---|
+| `./install-toolchain.sh --ocloc` | installs, in about 4 minutes; 2.5 GB. Before its fix it stopped with a 404 ("Compiler") |
+| `./build.sh`: ten targets, the addon and the check tool | builds, 85 s. The addon linking is what shows the host has every function `pearl_core.cc` calls |
+| `PEARL_SYCL_DEVICE=cpu ./verify.sh` | PASS, 105 s |
+| its fold check, m = n = 1024: dot, xmx16, xmx8 | 4,096 of 4,096 transcripts match each; 20 of 20 hits |
+| its fold check at the mainnet m and n, the last column batch: dot, xmx16 | 32,768 of 32,768 match each; 46 of 46 hits, as in October |
+| its verify-hits.js runs, now with the app's own check (`checkHit.js`), m = n = 4096: dot, xmx16, xmx8 | 400 of 400 hits verified each, from 6 salts each; hit ratios 1.04, 1.07 and 1.03 |
+| `PEARL_SYCL_DEVICE=cpu ./verify.sh --quick` | PASS, 62 s: 100 of 100 hits each, from 3 salts each; hit ratios 1.02, 1.02 and 1.06. It could not pass before (the end of "Kept up with the CUDA host") |
+| the addon opened as the app opens it (`cardK`, `checkHits`, a shape trial asked for, a slice of the salts) | k 2048, no note, no shapes, no trial; the first hit is from the slice's first salt; `core.device.fold` names the fold |
+| `pearl_sycl_check --list`, `PEARL_GPU_INDEX`, `ONEAPI_DEVICE_SELECTOR` | the list has the CPU device as index 0; index 5 is refused with the list's size; a selector that leaves no device leaves none |
+| `bench.js`, m = n = 4096 | runs: about 0.013 TH/s on that CPU, which says nothing about a GPU |
+| `./compile-gate.sh` | passes (table below) |
+| `./build.sh --targets intel_gpu_acm_g10,spir64_x86_64`, the A750's build, and the fold check with it | builds in 45 s, its largest process at 360 MB; 4,096 of 4,096 each |
+| `./build.sh --jit` and the fold check with it | builds in 12 s; 4,096 of 4,096 each |
+| Intel's driver packages installed beside it (`libze-intel-gpu1`, `libze1`, `intel-opencl-icd`, all 26.40.40196.15) | they install in the container, and the fold check still passes |
+| `pool-run.sh` with no address | gets as far as it can: Node check, the CLI's two packages, the CLI starting and refusing the address |
+
+Not checked, because each needs a GPU: Level Zero, the hardware DPAS, the
+refusal of a GPU for an opener that checks nothing (its rule is run in JS by
+`earn/test/syclCore.test.js`), `core.untested` being true, and speed. Not
+checked either: a run on a pool.
+
+The toolchain's `sycl-ls` printed nothing there, though the CPU device was
+found by everything else. So the steps below list devices with `clinfo -l` and
+`pearl_sycl_check --list`, not with `sycl-ls`.
+
+Compile gate with ocloc 26.40.40196.15 and IGC 2.42.14. Hardware XMX fold of
+each target. The DPAS counts are the same as in October, and again nothing
+spills.
+
+| Targets | Platform | Fold | SIMD | GRF | DPAS | Spill | Instructions |
+|---|---|---|---|---|---|---|---|
+| intel_gpu_bmg_g21, bmg_g31, lnl_m | Xe2 | xmx16 | 16 | 128 | 32 | 0 | 1,584 |
+| intel_gpu_ptl_h, ptl_u | Xe3 | xmx16 | 16 | 128 | 32 | 0 | 1,549 |
+| intel_gpu_pvc | Xe-HPC | xmx16 | 16 | 128 | 32 | 0 | 2,425 |
+| intel_gpu_acm_g10, acm_g11, acm_g12 | Xe-HPG | xmx8 | 8 | 128 | 17 | 0 | 1,563 |
+
+The plain fold has no spill on any target either.
+
 ## On an Intel box
 
-Linux with an Intel GPU, Node 18 or later, and this repository. None of the
-steps below has been run on a GPU yet. The driver steps follow Intel's install
-guides at dgpu-docs.intel.com (read on 2026-10-09). The compiler and build steps
-were run in a container with no GPU, using Ubuntu 24.04 packages.
+Linux with an Intel GPU, Node 22 or later (what the CLI is built and tested
+on), and this repository. None of the steps below has been run on a GPU yet.
+The driver steps follow Intel's install guides at dgpu-docs.intel.com (read on
+2026-10-09). The compiler and build steps were run in a container with no GPU,
+using Ubuntu 24.04 packages.
+
+Intel builds its driver packages and ocloc for Ubuntu 24.04 and 26.04, and they
+need glibc 2.38 or newer. On an older system, such as HiveOS's Ubuntu 20.04
+image, run everything in an Ubuntu 24.04 container that is given `/dev/dri`:
+"First run on an Arc A750 rig" has the commands.
 
 ### 1. Driver
 
 First check that the kernel is new enough for the card. Without that, the card
-is not driven, and `clinfo` and `sycl-ls` list nothing.
+is not driven, and `clinfo` lists nothing.
 
 ```
 lspci -nn | grep -Ei 'VGA|DISPLAY'    # the card and its PCI id
@@ -150,16 +213,22 @@ group (log out and back in), or, on Max and Flex, the i915 module from
 
 ### 2. Compiler
 
-The default build was compiled with DPC++ 2026.1.1 and ocloc 26.31 (IGC
-2.40.13). `install-toolchain.sh --ocloc` installs exactly those, without root
-and without touching the driver, so it is the safe choice on any box:
+`install-toolchain.sh --ocloc` installs DPC++ 2026.1.1 from conda-forge, and
+the ocloc and IGC that Intel's PPA has that day for the box's Ubuntu release
+(24.04 or 26.04), without root and without touching the driver:
 
 ```
 cd earn/native/sycl
-./install-toolchain.sh --ocloc    # into ./toolchain, ~2.4 GB on disk
+./install-toolchain.sh --ocloc    # into ./toolchain, 2.5 GB on disk
 . ./toolchain/envrc.sh
-sycl-ls                           # should show [level_zero:gpu] for the card
 ```
+
+It prints the ocloc packages it took. On 10 November 2026 those were ocloc
+26.40.40196.15 and IGC 2.42.14, the same versions the driver packages of step
+1 had that day. October's builds were made with ocloc 26.31 and IGC 2.40.13,
+which the script then asked for by file name. The PPA keeps only its newest
+builds, so a month later those files were gone and the script stopped with a
+404. It now reads the PPA's package index instead.
 
 oneAPI works too (`source /opt/intel/oneapi/setvars.sh`), with ocloc from the
 driver packages. But an older compiler or ocloc may not know `bmg_g31`, `ptl_h`
@@ -200,7 +269,8 @@ for the CPU device). If unsure which entry is yours, build them all.
 one per stack, and one core mines one stack. `verify.sh` and `bench.sh` measure
 one stack; the card is about twice that. To mine both, give the CLI both:
 `PEARL_GPU_INDEX=0,1 ./pool-run.sh <address> 300`. The Max 1100 is one stack.
-The same goes for a box with several Intel cards.
+The same goes for a box with several Intel cards: `./build/pearl_sycl_check
+--list` numbers them, and `PEARL_GPU_INDEX=N ./verify.sh` checks card N.
 
 ### 3. The four commands
 
@@ -219,11 +289,12 @@ Run them in that order and stop at the first failure.
 
 1. **Build.** `./build.sh 2>&1 | tail -20`. If it fails, send the output, then
    try your card's target alone (see "Which build").
-2. **See the device.** `sycl-ls` and
+2. **See the device.** `./build/pearl_sycl_check --list` and
    `PEARL_SYCL_VERBOSE=1 ./build/pearl_sycl_check --m 1024 --n 1024 --batches 1 --folds auto`.
-   The second prints the card, the fold it picked (`xmx16 ... (hardware)` on
+   The first lists the cards the core may open, each with its index. The
+   second prints the card, the fold it picked (`xmx16 ... (hardware)` on
    Battlemage and Max, `xmx8 ... (hardware)` on Alchemist), the batch width and
-   the band. If `sycl-ls` shows no `level_zero:gpu`, go back to "Driver".
+   the band. If the list is empty, go back to "Driver".
 3. **Correctness.** `./verify.sh 2>&1 | tee verify.log`. What each part means:
    - fold check, `dot`: the plain fold on the GPU against the host. If it
      fails, the problem is in the port, not in XMX.
@@ -244,14 +315,149 @@ Run them in that order and stop at the first failure.
    `pool-run.log` and `pool-run-stats.json`.
 
 Send back: the card's name, `uname -r`, the driver package versions
-(`dpkg -l | grep -E 'libze|intel-opencl|ocloc|libigc|i915'`), `sycl-ls`, and
-`verify.log`, `bench.log`, `pool-run.log` and `pool-run-stats.json`. With those,
+(`dpkg -l | grep -E 'libze|intel-opencl|ocloc|libigc|i915'`), the `--list`
+output, and `verify.log`, `bench.log`, `pool-run.log` and `pool-run-stats.json`. With those,
 the next round can target the right bottleneck.
 
 For comparison: ARC-miner's release notes give 36.6 TH/s on a B580. That figure
 is self-reported, and its repository has returned 404 since October 2026, so it
 could not be checked. The B580's int8 XMX ceiling is about 116 T-MAC/s
 (233 TOPS / 2).
+
+## First run on an Arc A750 rig (HiveOS)
+
+For the first hardware: six Arc A750 cards (Alchemist: target
+`intel_gpu_acm_g10`, fold `xmx8`) on HiveOS with kernel 6.12. Nobody has run
+these steps on a GPU. The same packages, compiler, build and checks ran on 10
+November in an Ubuntu 24.04 container with no GPU, on the CPU device ("Results
+on 10 November 2026"). The Docker commands, and everything that touches a
+card, have not been run by anyone.
+
+HiveOS's image is Ubuntu 20.04 as far as we know (step 0 reads it), and Intel's
+driver packages, ocloc and this build all need Ubuntu 24.04's glibc. So
+everything runs in an Ubuntu 24.04 container that is given the cards' device
+nodes. It uses the host's kernel driver and nothing else of the host's, and
+removing the container undoes it.
+
+**0. On the rig, as root: stop the miner and write down what the rig is.**
+
+```sh
+miner stop          # HiveOS: the cards must be idle. `miner start` when done
+( uname -r; . /etc/os-release; echo "$PRETTY_NAME"; ldd --version | head -1
+  lspci -nnk | grep -A3 -Ei 'vga|display'
+  ls -l /dev/dri; df -h /; free -g | head -2; nproc; grep -m1 'model name' /proc/cpuinfo
+  grep -H . /sys/class/drm/card*/engine/*/preempt_timeout_ms
+) 2>&1 | tee /root/arc-facts.txt
+```
+
+It needs six `[8086:56a1]` cards with `Kernel driver in use: i915`, a
+`renderD` entry for each under `/dev/dri`, 8 GB free on `/` and 4 GB of RAM.
+If HiveOS's hashrate watchdog is on for this worker, turn it off for the test,
+so it does not restart the miner. If something is missing, send
+`arc-facts.txt` and stop here.
+
+**1. The container.**
+
+```sh
+apt-get update && apt-get install -y docker.io
+mkdir -p /root/arc/out
+docker run -d --name arc --network host --device /dev/dri -v /root/arc:/work ubuntu:24.04 sleep infinity
+docker exec -it arc bash
+```
+
+Every later step runs in that shell. After a dropped SSH session, run the
+last line again, then the three lines marked "each new shell".
+
+**2. In the container: Intel's driver, Node, this repository, the compiler.**
+
+```sh
+export DEBIAN_FRONTEND=noninteractive
+apt-get update && apt-get install -y --no-install-recommends software-properties-common gpg-agent \
+  ca-certificates curl bzip2 xz-utils git g++ make pciutils
+add-apt-repository -y ppa:kobuk-team/intel-graphics
+apt-get install -y --no-install-recommends libze-intel-gpu1 libze1 intel-opencl-icd clinfo
+clinfo -l                                   # must list six Intel(R) Arc(TM) A750 Graphics
+mkdir -p /opt/node && curl -fsSL https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
+  | tar xz -C /opt/node --strip-components=1
+cd /work && git clone --depth 1 https://github.com/super3/llmjob.git
+export PATH=/opt/node/bin:$PATH             # each new shell
+cd /work/llmjob/earn/native/sycl            # each new shell
+./install-toolchain.sh --ocloc 2>&1 | tail -8
+. ./toolchain/envrc.sh                      # each new shell
+```
+
+**3. Build for the A750 and check every card.**
+
+```sh
+./build.sh --targets intel_gpu_acm_g10,spir64_x86_64 2>&1 | tail -4
+./build/pearl_sycl_check --list | tee /work/out/devices.txt
+for i in 0 1 2 3 4 5; do PEARL_GPU_INDEX=$i ./verify.sh --quick 2>&1 | tee /work/out/verify-$i.log; done
+grep -c '== PASS' /work/out/verify-?.log    # 1 for each card
+```
+
+`--list` prints the cards the core may open, each with the index the loop
+uses: six lines like `0: Intel(R) Arc(TM) A750 Graphics [level_zero], auto fold
+xmx8 (hardware DPAS)`. If there is another Intel GPU in the list (a
+motherboard's own graphics), leave its index out of the loops.
+
+Each log starts by naming the card and its fold, which must read
+`xmx8 (DPAS 8x8x32, sub-group 8) (hardware)`. Then comes one JSON line a
+check, each with `"PASS":true`: the plain fold, the hardware DPAS and the
+reference code of it, each against the host, at a small size and at the
+mainnet size; then 100 hits recomputed in JS, with each of two folds.
+
+How long a card takes is not known, because the folds' speed on an A750 is
+not. After a line starting `== fold check`, five minutes with no output is a
+hang: stop it with Ctrl-C and see the table below. After a line starting
+`== 100 hits` there may be no output for up to 30 minutes, and the run ends by
+itself. If card 0 takes that long with the plain fold, say so and run the
+other cards later: its JSON lines are what we need first.
+
+**4. Speed, on one card.**
+
+```sh
+PEARL_GPU_INDEX=0 ./bench.sh 2>&1 | tee /work/out/bench-0.log
+```
+
+**5. Five minutes on the pool, with the cards that passed step 3.** List only
+those.
+
+```sh
+PEARL_GPU_INDEX=0,1,2,3,4,5 ./pool-run.sh <prl1p... address> 300
+cp pool-run.log pool-run-stats.json /work/out/
+```
+
+The log should name each card (`mining on GPU 0 · Intel(R) Arc(TM) A750
+Graphics`), say once a card that its hits are checked before they are sent and
+that the first was right, and count accepted shares. A wrong hit is never
+sent: the CLI turns that card off and logs why.
+
+**6. Send back, from the rig:**
+
+```sh
+dmesg | grep -iE 'i915|drm| xe ' | tail -80 > /root/arc/out/dmesg.txt
+tar czf /root/arc-first-run.tgz -C /root arc-facts.txt arc/out
+```
+
+Then `docker rm -f arc` and `miner start`. `/root/arc` (3 GB) can go too.
+
+What is most likely to go wrong, most likely first:
+
+| What you see | What it probably is | What to do |
+|---|---|---|
+| Step 0 shows another Ubuntu, driver `xe`, or little disk | not the rig these steps assume | send `arc-facts.txt` before going on |
+| `docker` will not install or start | HiveOS's kernel or image lacks something Docker needs | send the error; the steps need only an Ubuntu 24.04 userland with `/dev/dri`, however it is made |
+| `clinfo -l` lists no A750 | the container cannot reach the cards, or Intel's runtime does not accept this kernel's driver | `ls -l /dev/dri` in the container; send it with the facts |
+| `--list` says `[opencl]`, not `[level_zero]` | the Level Zero driver did not load | go on: the core takes the cards through OpenCL. Say so in the report |
+| `--list` says `auto fold dot` for an A750 | the runtime could not tell the card's architecture, so the core would not use DPAS | send `devices.txt`. Step 3 then checks the plain fold only |
+| "this build has no kernels for ...", or a "SYCL error" at the first check | the index is another GPU, or the driver will not take the prebuilt kernels | check the index against `--list`. Else `./build.sh --jit --out build-jit`, then step 3's loop with `PEARL_SYCL_BUILD=$PWD/build-jit` in front of `./verify.sh`: the driver compiles the kernels itself, and the plain fold is checked, which still tells us whether the port runs on the card |
+| a fold check prints nothing for five minutes | Level Zero compute has hung on an A750 with some kernels from 6.6 on (drm/i915 issue 10955) | Ctrl-C, then the same command with `ONEAPI_DEVICE_SELECTOR=opencl:gpu` in front |
+| "SYCL error", a lost device, or `GPU HANG` in dmesg, during the plain fold or `bench.sh` | a batch ran longer than the driver's preempt timeout (7.5 s on i915 by default; step 0 printed it) | `PEARL_SYCL_COL_BATCH=32` in front of the command |
+| `"fold":"xmx8"` fails while `xmx8-emu` and `dot` pass | the hardware DPAS does not lay its registers out as the reference code does | the failure this run exists to find. Send the log. Do not run step 5 |
+| `dot` fails | the port itself is wrong on this driver | send the log. Do not run step 5 |
+| `hitRatio` well under 0.85 | hits are being lost | send the log. Do not run step 5 |
+| step 5: "a hit came out wrong" | the fold is wrong on that card, and the app caught it | send `pool-run.log` |
+| step 5: rejected shares | not the fold, since every hit sent was checked | send `pool-run.log` and `pool-run-stats.json` |
 
 ## Switches
 
@@ -263,7 +469,9 @@ could not be checked. The B580's int8 XMX ceiling is about 116 T-MAC/s
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
 | `PEARL_SYCL_BAND` | from the L2 | row windows walked together, so their A' stays in the L2 |
 | `PEARL_SYCL_VERBOSE` | | print the device, fold, batch width and band when a core starts |
-| `PEARL_GPU_INDEX` | | pin a card by its index in SYCL's GPU list (Level Zero order) |
+| `PEARL_SYCL_UNTESTED` | | `1` opens a GPU for an opener that checks no hits and sends no shares (`bench.js`). It turns no check off ("Untested cards") |
+| `PEARL_GPU_INDEX` | | the app's and the CLI's: the cards to mine on, by index in the core's device list (`pearl_sycl_check --list` prints it), such as `0,1,2,3,4,5`. As one number it also pins the card for `verify.sh`, `bench.sh` and the tools under them |
+| `ONEAPI_DEVICE_SELECTOR` | | the SYCL runtime's own: `opencl:gpu` hides the Level Zero driver, so the core takes the cards through OpenCL |
 
 `./build.sh --jit` builds one SPIR-V image that the driver compiles at first
 run. It runs on any Intel GPU, including ones without XMX (Iris Xe, Arc in
@@ -279,12 +487,12 @@ Files:
 | `pearl_sycl_host.cpp` | the `pearl_host_*` API on SYCL: device choice, memory, the draw, the pipeline, share proofs |
 | `pearl_sycl_kernels.hpp` | the kernels: draw ports of `pearl_kernel.cu`, and both folds |
 | `pearl_sycl_blake3.h` | BLAKE3, one copy for the host and the device |
-| `pearl_sycl_check.cpp` | fold check and fold bench, no Node |
+| `pearl_sycl_check.cpp` | fold check, fold bench and device list (`--list`), no Node |
 | `verify-hits.js` | `probes/verify-hits.js` for any core, m and n |
 | `bench.js` | the full miner loop's rate |
 | `build.sh`, `verify.sh`, `bench.sh`, `pool-run.sh` | the four commands |
 | `compile-gate.sh`, `isa-report.js` | per-target compile and IGC assembly report |
-| `install-toolchain.sh` | DPC++ from conda-forge, no root |
+| `install-toolchain.sh` | DPC++ from conda-forge and, with `--ocloc`, ocloc from Intel's PPA; no root |
 
 The draw is the CUDA core's: the same job_key, fills, stamp, trees, seeds and
 noise, kernel for kernel. Two things are simpler than `pearl_host.cu`, on
@@ -314,6 +522,63 @@ mainnet), walked in bands of row windows so the band's A' stays in the L2.
   the kernel with `if_architecture_is`, and the specification's reference code
   everywhere else. That reference code is what the CPU device checks.
 
+## Untested cards
+
+Every Intel GPU is an untested card: no fold here has run on one. The folds
+were checked on the CPU device, where DPAS is reference code. If a real card
+differs, every hash it reports is wrong, and every one still meets the target,
+so every share would be sent and rejected, and a pool can ban the address for
+that. So the host follows the AMD host's rule for its own untested cards
+(`../amd/README.md`):
+
+- A GPU opens only for an opener that checks every hit before sending it
+  (createCore's `checkHits`). The app and the CLI pass it, and so do
+  `verify-hits.js` and `pearl_sycl_check`, which check everything themselves.
+- The core then reports `core.untested`, and the miner recomputes each of that
+  card's hits with `../../src/shared/miner/checkHit.js` (4.6 ms a hit). At the
+  first wrong one it sends nothing, turns that card off for the run and logs a
+  line asking for a report. That line names the AMD README and an "unknown
+  architecture", since the app reads a `gfx` name out of the fold's
+  description; the card's name in it is right.
+- `PEARL_SYCL_UNTESTED=1` does not turn the check off. It only lets an opener
+  that checks nothing open a GPU, which is for `bench.js`: it sends no shares.
+  `bench.sh` sets it for that one line.
+- The CPU device is not gated. Nobody mines on it.
+
+A kind of card leaves the gate by a change to `pearl_host_create_checked` in
+`pearl_sycl_host.cpp`, once one has passed "First run on an Arc A750 rig".
+
+## Kept up with the CUDA host
+
+`pearl_core.cc` calls six host functions that did not exist when this port was
+written. The host defines them now, each with the answer that changes nothing,
+because no Intel GPU has been timed and there is nothing to choose from:
+
+| The CUDA host | Here |
+|---|---|
+| `pearl_host_card_k`: a larger k on cards whose fold is faster there (the AMD host: RDNA 4) | the profile's k. Both folds are built for k 2048, and create refuses any other |
+| Launch shapes, and the startup trial `pearl_core.cc` races them in (RTX 30) | no shapes, so no trial runs and the app caches no pick. The batch width and band come from the profile, the device's cache size, or `PEARL_SYCL_COL_BATCH` and `PEARL_SYCL_BAND` |
+| `pearl_host_create_checked`: no NVIDIA card is untested | every GPU is ("Untested cards") |
+| `pearl_host_fold_name`, shown as `core.device.fold` | the fold, whether DPAS is the hardware instruction, the batch width, the band and k |
+
+Not ported, and not needed for the API: the CUDA host's restamp records (a
+same-job redraw here still rebuilds A's tree and waits, see "How it works"),
+its per-card batch and band rules, and its persistent L2 settings.
+`earn/test/syclCore.test.js` compares the host's functions with
+`pearl_core.cc`'s declarations type for type, so the next API change fails
+that test rather than the link.
+
+Three faults in the port's own scripts turned up on the way, and are fixed:
+
+- `install-toolchain.sh --ocloc` asked Intel's PPA for ocloc and IGC by
+  version, and those builds were gone a month later ("Compiler").
+- `verify.sh --quick` could not pass: its 100 hits came from 2 salts, and
+  verify-hits.js wants 3. It now halves the bound, so they come from 3 or 4.
+- `verify-hits.js` checked each hit inside its event. On the CPU device, with
+  hits arriving as fast as they were checked, the rate events waited behind
+  them, and a run ended with no rate and so no hit ratio. A hit is now checked
+  in a turn of the event loop of its own.
+
 ## Not done
 
 - Nothing has run on an Intel GPU.
@@ -325,9 +590,17 @@ mainnet), walked in bands of row windows so the band's A' stays in the L2.
   memory.
 - The restamp is the slow form described above (fine for a first version).
 - Windows build, packaging the SYCL runtime beside the addon, and a CI job.
+  The addon needs glibc 2.38 as built here, and Intel's driver for Arc needs
+  Ubuntu 24.04 or newer, so on HiveOS's own userland neither loads: the
+  HiveOS package (`earn/hiveos`) cannot carry this core as it is.
+- The app does not look for this core. `PEARL_CORE_PATH` is the only way in;
+  without it, on an Intel rig, the app tries its AMD and CUDA cores and
+  reports that neither found a card.
 - The app's GPU list, VRAM and temperature readings use nvidia-smi, so on an
   Intel rig they are empty. A rig with several Intel cards, or a Max 1550
   (two stacks, two devices), runs one core unless `PEARL_GPU_INDEX` is set.
+- Per-card k, launch shapes, and the CUDA host's batch and band rules ("Kept
+  up with the CUDA host"). Each waits for a card to time it on.
 - Arrow Lake-H (XMX at sub-group 8) is not a build target; it needs `--jit`
   and mines with `dot`.
 
@@ -337,8 +610,19 @@ mainnet), walked in bands of row windows so the band's A' stays in the L2.
   register layout. `verify.sh`'s `auto` against `auto-emu` finds that in the
   first minute.
 - Sustained XMX clock and power under Pearl are unknown.
-- IGC versions differ in code generation. The numbers above are IGC 2.40.13.
+- IGC versions differ in code generation, and `install-toolchain.sh --ocloc`
+  takes the version Intel's PPA has that day. The compile gate passed with IGC
+  2.40.13 in October and 2.42.14 in November; `./compile-gate.sh` says what a
+  later one makes of the folds.
+- A driver whose IGC is not the ocloc's may refuse the prebuilt kernels. A
+  `--jit` build, which the driver compiles itself, is the way round, with the
+  plain fold only.
 - Older compilers and ocloc may not know every default target (see "Compiler").
-- A batch longer than the driver's job timeout would be killed. The default
-  batch is short (0.2 s at 5 TH/s at mainnet); `PEARL_SYCL_COL_BATCH` changes it.
+- A batch longer than the driver's job timeout would be killed. On i915 the
+  preempt timeout for compute is 7.5 s by default
+  (`/sys/class/drm/card*/engine/*/preempt_timeout_ms`). The default batch is
+  short (0.2 s at 5 TH/s at mainnet); `PEARL_SYCL_COL_BATCH` changes it.
+- Level Zero compute has hung on an A750 with some kernels from 6.6 on
+  (drm/i915 issue 10955, not checked here). The core falls back to OpenCL when
+  Level Zero lists no GPU, and `ONEAPI_DEVICE_SELECTOR=opencl:gpu` makes it.
 - Most Arc owners use Windows, which this build does not cover yet.
