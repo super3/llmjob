@@ -697,6 +697,56 @@ What future speed work needs: how to measure, the limits found, and what has alr
   of 400, 3 Kryptex shares in 10 minutes, none rejected. On 7 November, on top of #287 items 4 and 5, it lost 0.47% on a
   9060 XT and read level on a second, too noisy to settle (the combined race above), so it is off by default.
 
+**Pool credit against our hashrate, by cause (item 17, 10 November, pool data and logs only)**
+
+The fleet's credit ratios, 0.97–0.98 on Kryptex and 0.93 on HeroMiners, are the pools' pay and luck, not shares we
+lose. The credited work matches the hashrate we show to about 1%. A share at either pool is 2^53 MACs (difficulty
+2,097,152 × 2^32), so a card showing R TH/s should send R × 10^12 / 2^53 shares a second.
+
+| Cause | Kryptex | HeroMiners | How measured |
+|---|---|---|---|
+| Pool pay (fee, PPS+ terms) | 0.956 of share value | fee 0 (PROP) | Kryptex: credited ÷ ledger 0.982 (to 4 Nov, before other workers joined the wallet) ÷ work 1.027 below |
+| Pool luck | none (PPS+) | 0.945 ±0.086 | HeroMiners' blocks 13–20 Oct, our mining there: 134 blocks, Σ difficulty ÷ Σ round shares |
+| Orphaned blocks | none | −0.7% | 1 of 135 in that window |
+| Work credited ÷ work counted | 1.023 (ledger), 1.000 ±0.020 (shown rate) | ~1.00 (0.937 ÷ 0.945 ÷ 0.993) | 125,435 Kryptex shares of 613 Salad groups against the watcher's ledger; 2,497 accepted against 2,497 expected from the boxes' own minute lines (80 box-hours, 9–10 Nov) |
+| Stale shares | 0.14% fleet, 0.06% dev4090, ~0.3% Salad | penalty from 2% stale | Kryptex worker list: 13 stale of 9,213 in 24 h; dev4090 10 of 16,130 in 7 days |
+| Rejected or invalid | 0 | — | 0 invalid of 9,213 in 24 h; 5 rejected of 2,502 in the Salad lines, 4 on one RX 9060 XT PC |
+| Vardiff and target rounding | 0 | 0.0015% | both pools hold 2,097,152; HeroMiners' target is 0x7fff8… (1 − 2^−16 of 2^203) |
+| Reconnects | ~0.03% | — | 3 reopened connections in 6.1 online worker-hours (two were bench workers), ~6 s each |
+| Hits dropped at a job switch | 0.1–0.9% by card (estimate) | more: jobs every 35 s | from the code, below |
+
+- **dev4090**, the one long run: Kryptex credited 9,049 shares on 5, 8 and 9 November, 314.5 TH/s ±1.1%, against
+  316–317 shown. On Salad the ledger reads 2–3% under what Kryptex credits in every class (missed minute lines and
+  each box's first minutes), so it can't see a 1% loss; the boxes' minute lines can (above).
+- **The job switch.** Jobs came 81 an hour on Kryptex (33 in 25 min; 24 of them at the same height) and 122 an hour
+  on HeroMiners (every 35 s; 23 of 30 at the same height), probed from rig01 on 10 November. When a job arrives the
+  core finishes the batch it is waiting on and the one queued behind it, and the miner drops their hits
+  (`hit.jobId !== job.jobId` in `_onHit`). The shown rate counts that work. A batch is col_batch × 8192 regions ×
+  2^19 MACs, so about 2 batches a switch is 0.13% on a 4090 (28 ms batches), 0.17–0.21% on a 4060 or 3060 (37, 46 ms),
+  0.10% on a 5060 Ti, and 0.4–0.9% on RTX 20 (Turing's col_batch 2048: 84–195 ms) at Kryptex's rate; half again at
+  HeroMiners'. The batch times are from the code, not timed; the drop is now logged (below) so a box can count it.
+- **RTX 5060 Ti on 10 November: 0.73 ±0.07.** Three boxes on v0.6.14 (cu13 core, drivers 610, 617, 621, four PCs)
+  showed 95–100 TH/s and Kryptex credited 149 shares against 204 expected in 5.3 hours, steady through each run
+  (368: 38 in 90 min against 57). Kryptex's counts match the miners'. The watcher already judged one at the pool's
+  53 TH/s. No NVIDIA code changed between v0.6.13 and v0.6.14, and earlier cu13 5060 Ti boxes read about 0.95
+  (329: 0.946 over 341 shares). Every other class was within its noise (RTX 2060 0.985 ±0.043, RX 9070 XT 1.014 ±0.041,
+  4070 Ti 1.051 ±0.045). Not explained yet.
+
+Fixes, by expected gain:
+1. Find the 5060 Ti shortfall: on a 5060 Ti box, verify-hits plus a low-difficulty share count through verifypool
+   (item 10's tool) against the shown rate. If a fold misses hits, it is up to 27% on that class; nothing else here
+   is above 1%.
+2. Send same-height hits from the replaced job. HeroMiners runs a cryptonote-nodejs-pool fork (v1.3.439), which usually keeps recent jobs and
+   rejects only a changed height; Kryptex is untested. 73–77% of switches are same-height, so it gets back most of
+   the switch loss: about 0.1% on RTX 30/40/50 and 0.3–0.7% on RTX 20. Test first on one Kryptex box: HeroMiners
+   penalises 50% of pay at 2–5% stale, so a pool that turns them down must not get them.
+3. Shorter batches on Turing (col_batch 2048 → 512) to cut its switch loss 4×, if a race shows no launch cost.
+4. A Pearl pool watchdog like Monero's ("no word from the pool in 5 minutes; reconnecting": 131 of them on Monero in
+   six days on Salad). No Pearl silence was seen, so this is insurance, under 0.1%.
+
+Changed: the miner now logs "dropping a hit for the job replaced N ms ago (same block | new block)" instead of
+dropping it silently, so the switch loss can be counted on a box. Nothing it sends changed.
+
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
