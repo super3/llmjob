@@ -52,6 +52,19 @@ crun() {   # $1 = compilers.sh's stages
   [ "$rc" = 0 ] || grep -av '^\[compilers\]' "/root/compilers.$t0.log" | tail -n 8 | emit
 }
 crun "setup build"
+# What got built, in this script's own words: one line of name:registers:spill for every arm with a library, and
+# a line for each arm without one. (The first box's build lines never reached Salad's logs.)
+sum=""
+for d in "$OUT"/v/*/; do
+  a=$(basename "$d")
+  st=$(awk "/Compiling entry function .$FOLD. for /{f=1;next} f&&/Compiling entry/{f=0} f" "$d/ptxas.txt" 2> /dev/null | tr '\n' ' ')
+  if [ -f "$d/libpearl.so" ]; then
+    sum="$sum $a:$(echo "$st" | grep -oE 'Used [0-9]+' | grep -oE '[0-9]+'):$(echo "$st" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')"
+  else
+    gsay "not built: $a: $(grep -m1 -iE 'error' "$d/ptxas.txt" "$d/host.txt" "$d/so-build.txt" 2> /dev/null | cut -c1-240)"
+  fi
+done
+gsay "built $(ls "$OUT"/v/*/libpearl.so 2> /dev/null | wc -l) libraries (name:registers:spill bytes):$sum"
 n=0
 until grep -q 'all done' /root/bench.log; do
   n=$((n + 1)); [ $n -gt 360 ] && { gsay "bench.sh still running after an hour; racing anyway"; break; }
