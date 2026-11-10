@@ -1,14 +1,13 @@
-# job 1: SRBMiner pick, builds, fold shapes, stamps, then the launch-boundary race (hash-queue zero and wait, 4 strips)
+# job 2: the fold alone beside a ticker, stamps of long launches (stalls, moved waves), then the miner beside a ticker
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=8066eac1c037daef4e7a867ffcc36c5093e72383
-G_PARTS=srb\ build\ fold\ stamps\ hash
-G_VARIANTS=base\ twin\ hq0\ hz\ hzw\ s4\ s4z
-G_HROUNDS=4
+G_PARTS=tick\ stamps\ hash
+G_TICKS=0\ 0.010\ 0.002
+G_TROUNDS=3
+G_SROUNDS=1
+G_STSHAPES=sbase:131072:2048:400\ sbase:524288:2048:100\ sw:131072:16384:50\ sw:131072:32768:25
+G_VARIANTS=base\ twin\ bt10\ bt2\ bt1\ hq0\ hq0t2
+G_HROUNDS=3
 G_HASH=45:12
-G_DIAG=base\ hz\ s4z
-G_FROUNDS=3
-G_SROUNDS=2
-G_STSHAPES=sbase:131072:2048:400\ sbase:524288:2048:100\ sbase:131072:4096:200\ sbase:131072:8192:100\ sw:131072:8192:100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -38,7 +37,7 @@ WSTRIP="-DPEARL_AMD_WALK=1 -DPEARL_AMD_WALK_W=8 -DPEARL_AMD_WALK_H=1024"
 SWEEPV=${G_SWEEP:-base=;twin=-DPEARL_AMD_GOALTWIN=1;strip=-DPEARL_AMD_STRIP=1;cb256=-DPEARL_AMD_COL_BATCH=256;cb512=-DPEARL_AMD_COL_BATCH=512;w512=$WSTRIP -DPEARL_AMD_COL_BATCH=512;sbase=-DPEARL_AMD_STAMP=1;sw=-DPEARL_AMD_STAMP=1 $WSTRIP}
 # A variant is a build and the environment it runs in: "name=build K=V ...;...". One not named here is the build of
 # its name.
-VDEF="hq0=base PEARL_AMD_HASHQ=0;hq0t=twin PEARL_AMD_HASHQ=0;hz=base PEARL_AMD_HASHQ_ZERO=1;hzw=base PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;hw=base PEARL_AMD_HASHQ_WAIT=0;s1=strip PEARL_AMD_STRIPS=1;s2=strip PEARL_AMD_STRIPS=2;s4=strip PEARL_AMD_STRIPS=4;s8=strip PEARL_AMD_STRIPS=8;s16=strip PEARL_AMD_STRIPS=16;s4z=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s8z=strip PEARL_AMD_STRIPS=8 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s2z=strip PEARL_AMD_STRIPS=2 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s4q0=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ=0;${G_VDEF:-}"
+VDEF="hq0=base PEARL_AMD_HASHQ=0;hq0t=twin PEARL_AMD_HASHQ=0;hz=base PEARL_AMD_HASHQ_ZERO=1;hzw=base PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;hw=base PEARL_AMD_HASHQ_WAIT=0;s1=strip PEARL_AMD_STRIPS=1;s2=strip PEARL_AMD_STRIPS=2;s4=strip PEARL_AMD_STRIPS=4;s8=strip PEARL_AMD_STRIPS=8;s16=strip PEARL_AMD_STRIPS=16;s4z=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s8z=strip PEARL_AMD_STRIPS=8 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s2z=strip PEARL_AMD_STRIPS=2 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s4q0=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ=0;bt2=base TICK=0.002;bt10=base TICK=0.010;bt1=base TICK=0.001;hq0t2=base PEARL_AMD_HASHQ=0 TICK=0.002;s4t2=strip PEARL_AMD_STRIPS=4 TICK=0.002;${G_VDEF:-}"
 ARCHX=${ARCH:-$(target)}
 FOLD=$(case "$ARCHX" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; *) echo ref ;; esac)
 SW=/root/sw
@@ -308,6 +307,23 @@ if has build; then
   say "builds at $(git -C $R rev-parse --short=12 HEAD): $(for d in $SW/var/*/; do echo "$(basename $d) $(md5sum $d/pearl_core_hip.node | cut -c1-6)"; done | tr '\n' ' ')"
 fi
 
+# The fold alone (one queue, launches back to back) beside a ticker: the clock probe's kernel from another process
+# every G_TICKS seconds (0: no ticker). Does a second busy queue change what the fold's queue gets?
+if has tick && [ -x /root/clkprobe ] && [ -x $SW/var/base/pearl_amd_foldtest ]; then
+  for ((i = 1; i <= ${G_TROUNDS:-3}; i++)); do
+    line=""
+    for tk in ${G_TICKS:-0 0.010 0.002}; do
+      cp=""
+      if [ "$tk" != 0 ]; then ( exec /root/clkprobe "$tk" 100000000 ) > /root/tick.log 2>&1 & cp=$!; sleep 1; fi
+      r=$(timeout 900 $SW/var/base/pearl_amd_foldtest ${G_TICKSHAPE:-131072 2048 1 400} 0 "$FOLD" 0 miner 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
+      n=""
+      if [ -n "$cp" ]; then kill $cp 2>/dev/null; wait $cp 2>/dev/null; n=", $(grep -c '^clk ' /root/tick.log) ticks, last $(grep '^clk ' /root/tick.log | tail -n 1 | cut -c1-60)"; fi
+      line="$line; every ${tk}s: $(printf '%s\n' "$r" | sed -nE 's/.* ([0-9.]+) TMAC\/s$/\1/p') TMAC/s$n"
+    done
+    say "tick round $i$line"
+  done
+fi
+
 # The fold alone. Shapes are m:cols:launches, the same MACs each: the miner's launch (8 tiles wide, 128 column
 # offsets), 2 and 4 of them in one launch (taller: B' is the same 4 MiB), and 16 and 32 tiles wide (batch 256, 512).
 SHAPES=${G_SHAPES:-base:131072:2048:400 base:262144:2048:200 base:524288:2048:100 base:131072:4096:200 base:131072:8192:100 w512:131072:4096:200 w512:131072:8192:100}
@@ -373,6 +389,98 @@ console.log('tl: ' + lead.length + ' blocks, ' + peak + ' at once; launch ' + f(
   + f(100 * steady, 2) + '%; block ' + f(durs[durs.length >> 1], 4)
   + ' ms median; ' + (r.mhz ? Math.round(r.mhz.med) + ' MHz, slab ' + Math.round(r.slab.med) + ' cycles' : ''));
 EOF_TL
+cat > /root/tl2.js <<'EOF_TL2'
+'use strict';
+// tl2.js <stamp-summary.js> <stamps file>: where a launch's slot time went, from every wave's start and end on
+// REALTIME (pearl_amd_foldtest's stamps file, the last launch).
+//   stalls  periods with no block starting although blocks remained: how many, how long, when
+//   moved   waves whose HW_ID1 changed between start and end (the wave was taken off its SIMD and put back)
+//   use     the share of the span at full, part and no occupancy, and the busiest and idlest WGP
+const fs = require('fs');
+const ss = require(process.argv[2]);
+const data = ss.load(fs.readFileSync(process.argv[3]));
+const tickMhz = (data.head.wallKhz || 100000) / 1000;
+const ms = (ticks) => ticks / (tickMhz * 1e3);
+const all = data.waves.filter((w) => w.bits > 0);
+if (!all.length) { console.log('tl2: no waves'); process.exit(0); }
+const ref = all[0].rt0;
+for (const w of all) {
+  w.s = (w.rt0 - ref) | 0;
+  w.e = w.s + ((w.rt1 - w.rt0) >>> 0);
+}
+const base = all.reduce((m, w) => Math.min(m, w.s), Infinity);
+for (const w of all) { w.s -= base; w.e -= base; }
+const lead = all.filter((w) => w.wave === 0).sort((a, b) => a.s - b.s);
+const span = lead.reduce((m, w) => Math.max(m, w.e), 0);
+const f = (x, d = 3) => (Number.isFinite(x) ? x.toFixed(d) : '-');
+const q = (v, p) => (v.length ? v[Math.min(v.length - 1, Math.round(p * (v.length - 1)))] : NaN);
+
+// Stalls: gaps with no block starting and none ending. Blocks start and end about every 0.001 ms when the card is
+// full and nothing holds it up.
+const STALL = 0.05;   // ms
+const times = [];
+for (const w of lead) times.push(w.s, w.e);
+times.sort((x, y) => x - y);
+const gaps = [];
+for (let i = 1; i < times.length; i++) {
+  const g = ms(times[i] - times[i - 1]);
+  if (g >= STALL) gaps.push({ at: ms(times[i - 1]), g });
+}
+const stallMs = gaps.reduce((s, x) => s + x.g, 0);
+const long = gaps.filter((x) => x.g >= 0.3);
+console.log('tl2 stalls: ' + lead.length + ' blocks over ' + f(ms(span)) + ' ms; ' + gaps.length + ' gaps of ' + STALL
+  + ' ms or more with no block starting or ending, ' + f(stallMs) + ' ms in all (' + f(100 * stallMs / ms(span), 1) + '% of the span); '
+  + long.length + ' of 0.3 ms or more: ' + long.slice(0, 14).map((x) => f(x.g, 2) + ' ms at ' + f(x.at, 1)).join(', '));
+if (long.length > 1) {
+  const between = [];
+  for (let i = 1; i < long.length; i++) between.push(long[i].at - long[i - 1].at);
+  between.sort((a, b) => a - b);
+  console.log('tl2 stalls: from one long gap to the next ' + f(q(between, 0.5), 2) + ' ms median (min ' + f(between[0], 2)
+    + ', max ' + f(between[between.length - 1], 2) + '): ' + f(1000 / q(between, 0.5), 0) + ' a second; a long gap is '
+    + f(q(long.map((x) => x.g).sort((a, b) => a - b), 0.5), 2) + ' ms median');
+}
+
+// Moved waves.
+const moved = all.filter((w) => w.hw0 !== w.hw1);
+const stay = all.filter((w) => w.hw0 === w.hw1);
+const dur = (v) => v.map((w) => ms(w.e - w.s)).sort((a, b) => a - b);
+const dm = dur(moved), dsv = dur(stay);
+const movedBlocks = new Set(moved.map((w) => w.block)).size;
+// When the moved waves ended, in clusters 0.2 ms apart or more.
+const ends = moved.map((w) => ms(w.e)).sort((a, b) => a - b);
+const clusters = [];
+for (const t of ends) {
+  const c = clusters[clusters.length - 1];
+  if (c && t - c.last < 0.2) { c.last = t; c.n++; } else clusters.push({ first: t, last: t, n: 1 });
+}
+console.log('tl2 moved: ' + moved.length + ' of ' + all.length + ' waves changed HW_ID1 (' + movedBlocks + ' blocks); they ran '
+  + f(q(dm, 0.5)) + ' ms median (max ' + f(dm[dm.length - 1]) + '), the others ' + f(q(dsv, 0.5)) + ' (p99 ' + f(q(dsv, 0.99))
+  + ', max ' + f(dsv[dsv.length - 1]) + '); ' + clusters.length + ' groups of them, ending at '
+  + clusters.slice(0, 12).map((c) => f(c.first, 1) + ' (' + c.n + ')').join(', '));
+
+// Occupancy over time, from every block's lead wave.
+const ev = [];
+for (const w of lead) ev.push([w.s, 1], [w.e, -1]);
+ev.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+let c = 0, peak = 0;
+for (const e of ev) { c += e[1]; if (c > peak) peak = c; }
+const share = { full: 0, part: 0, low: 0, none: 0 };
+c = 0;
+let last = 0;
+for (const e of ev) {
+  const dt = e[0] - last;
+  if (c >= 0.97 * peak) share.full += dt; else if (c >= 0.5 * peak) share.part += dt; else if (c > 0) share.low += dt; else share.none += dt;
+  c += e[1]; last = e[0];
+}
+const wgpOf = (h) => (((h >>> 18) & 7) << 5) | (((h >>> 16) & 1) << 4) | ((h >>> 10) & 15);
+const busy = new Map();
+for (const w of lead) busy.set(wgpOf(w.hw0), (busy.get(wgpOf(w.hw0)) || 0) + (w.e - w.s));
+const per = [...busy.values()].map((b) => b / span / 3).sort((a, b) => a - b);
+console.log('tl2 use: ' + peak + ' blocks at once at most; of the span ' + f(100 * share.full / span, 1) + '% at 97% of that or more, '
+  + f(100 * share.part / span, 1) + '% at 50-97%, ' + f(100 * share.low / span, 1) + '% under 50%, ' + f(100 * share.none / span, 1)
+  + '% with no block running; ' + per.length + ' WGPs, each 3 blocks: in use ' + f(100 * per[0], 1) + '% (the idlest), '
+  + f(100 * q(per, 0.5), 1) + '% (median), ' + f(100 * per[per.length - 1], 1) + '% (the busiest)');
+EOF_TL2
 STSHAPES=${G_STSHAPES:-sbase:131072:2048:400 sbase:524288:2048:100 sbase:131072:4096:200 sw:131072:8192:100}
 if has stamps; then
   for ((i = 1; i <= ${G_SROUNDS:-2}; i++)); do
@@ -386,6 +494,7 @@ if has stamps; then
       [ -s /root/st.bin ] || { say "stamp r$i $FV ${FM}x${FC}: no stamps written: $(printf '%s\n' "$r" | tail -n 2 | tr '\n' '|' | cut -c1-200)"; continue; }
       node test/stamp-summary.js summary /root/st.bin 2>&1 | grep -E '^(first|rest)' | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:330}"; done
       node /root/tl.js "$A/test/stamp-summary.js" /root/st.bin "${ms:-0}" 2>&1 | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:380}"; done
+      node /root/tl2.js "$A/test/stamp-summary.js" /root/st.bin 2>&1 | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:390}"; done
     done
   done
 fi
@@ -407,8 +516,13 @@ hr() {
   local label=$1 v=$2 core envs log r; shift 2
   vdef "$v"; core=$VCORE; envs=("${VENV[@]}")
   [ -n "${G_JOBEVERY:-}" ] && envs+=("PEARL_JOB_EVERY=$G_JOBEVERY")
+  # TICK=secs in a variant's settings: the ticker (the clock probe's kernel from another process) runs beside it.
+  local tk="" tp="" e
+  for e in "${envs[@]}"; do case $e in TICK=*) tk=${e#TICK=} ;; esac; done
+  if [ -n "$tk" ] && [ -x /root/clkprobe ]; then ( exec /root/clkprobe "$tk" 100000000 ) > /root/tick.log 2>&1 & tp=$!; fi
   [ -f $SW/var/$core/pearl_core_hip.node ] || { say "hash $label $v: no build"; return; }
   log=$(env PEARL_AMD_UNTESTED=1 "${envs[@]}" "$@" timeout 600 node ../probes/hashrate.js $SW/var/$core/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi)
+  if [ -n "$tp" ]; then kill $tp 2>/dev/null; wait $tp 2>/dev/null; fi
   r=$(printf '%s\n' "$log" | grep -E '"th"' | tail -n 1 | sed -nE 's/.*"th":([0-9.]+),"sd":([0-9.]+),"n":([0-9]+).*/th=\1 sd=\2 n=\3/p')
   [ -n "$r" ] || r="FAIL $(printf '%s\n' "$log" | tail -n 2 | tr '\n' '|' | cut -c1-240)"
   say "hash $label $v $r"
