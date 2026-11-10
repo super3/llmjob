@@ -470,6 +470,44 @@ GTX 10 and GTX 16 cards mine on), run by `earn/native/probes/turing/pool.sh`. No
   card-day. At 29 TH/s a V100 earns about $0.02 an hour, so like the CMP 90HX it doesn't pay to rent; it's for owners.
   Until this branch our core had no sm_70 code at all, so a V100 couldn't mine on it.
 
+### The fp16 tensor-core fold, 10 November (PR #290 item 20)
+
+Same Vast machine (155858, V100 SXM2 32 GB, 300 W). `pearl_tile_fold_hmma` is the dp4a fold's 128x128 tile on the
+fp16 tensor cores: A' and B' converted to fp16 as they are staged, `mma.sync` m8n8k4 into fp32 accumulators. Each
+build was raced against the dp4a fold (`-DPEARL_VOLTA_HMMA=0`) in one process (`compilers.sh` race stage, 4 s turns),
+then checked with verify-hits.
+
+| Build | TH/s | vs dp4a | SM clock | Power | verify-hits |
+|---|---|---|---|---|---|
+| dp4a fold (item 9) | 29.71 | — | 1530 MHz | 291 W | 248/248 (item 9) |
+| wmma 16x16x16 | 35.30 | +19.2% | 1523 MHz | 295 W | 314/314 |
+| m8n8k4, k outermost | 40.45 | +36.0% | 1500 MHz | 299 W | 359/359 |
+| + no bank conflicts on A' | 41.45 | +39.6% | 1485 MHz | 299 W | 232/232 |
+| + accumulators start at 2^23 (shipped) | 43.84 | +47.9% | 1477 MHz | 298 W | 400 verified, 0 failed |
+
+- The shipped build's race ran 32 rounds, 32 ahead, ci95 0.2%; a copy of the dp4a build ran +0.000%. On Kryptex (`probes/turing/pool.sh`, prl-us), 20 minutes measured after a minute's warm-up: 43.85 TH/s, 3 shares accepted and 0 rejected, 1477 MHz, 299 W; its verify-hits passed 398 of 398. The box cost about $0.20 for two hours.
+- 43.8 TH/s is 87% of OneZeroMiner's 50.6 here (was 58%), and ahead of SRBMiner's 40.0.
+- Exactness: fp16 holds every int8, and fp32 sums of integers are exact below 2^24. (The note above that |A'| and
+  |B'| stay under 64 was wrong: at fill 48 they reach 111. The sums are what matter.) The accumulators start at 2^23,
+  so the readout takes the float's bits as the integer, which needs each one in [0, 2^23) at every chunk's end. At
+  fill 48 the nearest end is 14 sd away (chunk 0); `pearl_config.h` has the numbers. `probes/hmma-check.cc` runs the
+  fold's layout and readout on the CPU against a plain fold.
+- What each step did. wmma's 16x16x16 runs its four k-steps of an 8x8 tile back to back, each waiting on the last;
+  m8n8k4 with k outermost puts 16 other mma between them. A' rows 32 apart sat on the same banks, so every 16-byte
+  load of A' was a 2-way conflict; swapping rows 0-3 and 4-7 of every other quad pair's tile fixes it (+3.0%). The
+  readout first added a magic constant and subtracted it again (2 ops an accumulator); starting the accumulators at
+  2^23 leaves only XORs (+6.0%), and 45 fewer registers (210).
+- Ablations on the 41.45 build (timing only, wrong results): mma and shared loads alone 58.4 TH/s, 487 MAC an SM a
+  clock, 95% of the tensor cores' 512. Without the int8-to-fp16 staging +12.0%, without the old readout +10.5%,
+  without the global loads +8.7% (and the clock rises to 1530), without the barriers -3.2%.
+- Tried and dropped (each against the shipped build, same race): converting and storing half the next stage between
+  the two k-steps -7%; loading two stages ahead +0.3%; fragment loads of 8 or 4 halfs at a time +0.2%; tile walk
+  band 4 -0.1%; 1024 column offsets a batch +0.4%. All inside the noise or worse.
+- What's left: the card holds its 300 W cap at 1477 MHz, 371 MAC an SM a clock (72% of peak) against OneZeroMiner's
+  ~449 at 1410 MHz. The staging (conversion and shared stores) and the global loads are the remaining ~20%. A
+  128x256 tile would cut both by a quarter but fits only one block an SM; fp16 operands in global memory would drop
+  the conversion but double the bytes loaded. Neither is tried.
+
 ## GTX 10-series (Pascal, sm_61, on Salad)
 
 | Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |
