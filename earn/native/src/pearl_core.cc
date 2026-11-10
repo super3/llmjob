@@ -40,8 +40,8 @@
 //
 // They read and set a card's core clock offset through NVML, for the host's
 // offset trial (see "The core clock offset" below, and main/gpuClockOffset.js).
-// The AMD build has neither: PEARL_NVML_OFFSETS is defined only for CUDA
-// (binding.gyp).
+// The AMD and Intel builds have neither: PEARL_NVML_OFFSETS is defined only
+// for CUDA (binding.gyp).
 //
 // Independent implementation against the ISC-licensed pearl-research-labs
 // specification. No dev fee, no fee address, nothing to disclose — see

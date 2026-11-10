@@ -327,4 +327,4 @@ same on a machine without NVML. Neither function throws: `error` is NVML's own
 words and `code` its return code (4 is "no permission": setting needs root or
 administrator rights). The code is compiled only when `PEARL_NVML_OFFSETS` is
 defined, which `binding.gyp` does for the CUDA builds and nothing does for the
-AMD core.
+AMD core or the Intel port.
