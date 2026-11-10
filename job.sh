@@ -1,10 +1,14 @@
-# job 3: the duel on this PC: the PR head's core against SRBMiner 3.8.6, 2 turns each, a clock turn each, then one turn of SRBMiner 3.8.2
+# job 3: the duel on this PC (PR head against SRBMiner 3.8.6, 2 turns each, a clock turn each, one turn of 3.8.2), then stamps of the miner's own launches with the hash queue on and off
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=duel
+G_CODE=33f848084160d3132719e3bdd43ac1fb65dd5f97
+G_PARTS=duel\ build\ mstamps
 G_TURNS=2
 G_DSECS=300
 G_CLKSECS=180
 G_SRB_ALSO=3.8.2
+G_VDEF=msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0
+G_MST=msq1\ msq0
+G_MSN=8
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -565,6 +569,26 @@ if has hash; then
   say "hash probe-only base clock MHz: $(clk_of /root/hr.clk)"
   hr plain base
   fi
+fi
+
+# The miner's own launches, stamped: hashrate.js on a stamp build writes the stamps of one launch, the one after
+# batch N (PEARL_AMD_STAMP_DUMP, pearl_host_hip.cpp), G_MSN times for each variant in G_MST, and tl2.js reads each:
+# did the queue stop in that launch, and were waves moved?
+if has mstamps; then
+  for v in ${G_MST:-msq1 msq0}; do
+    vdef "$v"
+    [ -f $SW/var/$VCORE/pearl_core_hip.node ] || { say "mst $v: no build"; continue; }
+    for ((i = 1; i <= ${G_MSN:-6}; i++)); do
+      rm -f /root/mst.bin
+      env PEARL_AMD_UNTESTED=1 PEARL_AMD_STAMP_DUMP=/root/mst.bin PEARL_AMD_STAMP_DUMP_AT=$((400 + 61 * i)) "${VENV[@]}" \
+        timeout 120 node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 8 2 > /root/mst.log 2>&1
+      if [ -s /root/mst.bin ]; then
+        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved)' | while IFS= read -r l; do say "mst $v $i ${l:0:330}"; done
+      else
+        say "mst $v $i: no stamps written: $(grep -v nvidia-smi /root/mst.log | tail -n 2 | tr '\n' '|' | cut -c1-240)"
+      fi
+    done
+  done
 fi
 
 # verify-hits.js on a variant: the pool's check of every hit, 400 of them.
