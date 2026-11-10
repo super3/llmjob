@@ -745,6 +745,47 @@ What future speed work needs: how to measure, the limits found, and what has alr
   of 400, 3 Kryptex shares in 10 minutes, none rejected. On 7 November, on top of #287 items 4 and 5, it lost 0.47% on a
   9060 XT and read level on a second, too noisy to settle (the combined race above), so it is off by default.
 
+**Credited against shown rate, all four miners (item 10, 10 November, stand-in pool)**
+
+Each miner mined 10 minutes on the stand-in pool (`earn/native/probes/verify-pool.js`, run by `bench.sh` with
+`VPOOL=BITS`). The stand-in checks every share as the spec's verifier does and refuses duplicates. Credited is
+accepted shares × 2^(256−BITS) MACs over the run, less its first minute. Shown is the mean of the miner's own figure
+after the first minute (PeakMiner: its API). Every share was accepted: 0 rejected, 0 duplicates, all miners.
+
+| PC | Target | Miner | Shown | Credited | Shares | Credited ÷ shown |
+|---|---|---|---|---|---|---|
+| RTX 4090, 450 W (`1d80ae90`) | 2^210 | ours v0.6.13 | 331.4 | 346.5 | 2,945 | 1.05 ±0.02 |
+| | 2^210 | PeakMiner 2.20.7 | ~355 | 334.1 | 2,836 | 0.94 |
+| | 2^210 | SRBMiner 3.8.2 | 350.4 | 349.1 | 2,926 | 1.00 ±0.02 |
+| | 2^210 | OneZeroMiner 1.8.5 | 351.9 | 259.6 | 2,157 | 0.74 |
+| RTX 5090, 477 W (`ad3451c9`) | 2^210 | ours v0.6.13 | 346.7 | 334.7 | 2,857 | 0.97 ±0.02 |
+| | 2^210 | PeakMiner | 405.2 | 379.9 | 3,251 | 0.94 |
+| | 2^210 | SRBMiner | 407.1 | 399.1 | 3,343 | 0.98 ±0.02 |
+| | 2^210 | OneZeroMiner | 400.7 | 272.5 | 2,295 | 0.68 |
+| RTX 5090, 575 W (`756d361b`) | 2^207 | OneZeroMiner | 424.3 | 436.2 | 461 | 1.03 ±0.05 |
+| | 2^207 | PeakMiner | 424.7 | 415.2 | 446 | 0.98 ±0.05 |
+| | 2^207 | SRBMiner | 420.5 | 445.6 | 462 | 1.06 ±0.05 |
+| RTX 5060 Ti (`a668f722`, driver 610) | 2^210 | ours v0.6.14, CUDA 13 core | 98.4 | 100.6 | 842 | 1.02 ±0.035 |
+
+- The competitors' figures are honest. At a target near the pools' (2^207 is 64 times easier than Kryptex's 2^203)
+  all three are credited what they show, within the share count's noise. SRBMiner matched at 2^210 too.
+- The easy target cost OneZeroMiner a quarter of its shares and PeakMiner about 6%. At 2^210 a share comes about
+  5 times a second. OneZeroMiner's own accepted count equalled the stand-in's, so it sent everything it found but
+  found less. PeakMiner reported a submit latency of 1.3 s at 2^210 against 84 ms at 2^207, so its shares queue.
+  That is a test artifact, not a pool loss: on Kryptex a 4090 finds a share every 26 s. Don't run this test above
+  2^207 for them.
+- PeakMiner, SRBMiner and OneZeroMiner all mine k = 65536, the most the spec allows at rank 128 (k ≤ 4r²). We mine
+  k = 2048. A share pays the same per MAC at any k, so this costs us nothing in credit. It can matter for speed: work
+  done once per region (finalize and the transcript hash) is spread over 32 times as many MACs.
+- 342–345 TH/s on a 450 W 4090 is real work. The ~340 pure-IMMA ceiling was measured on rig01 at 2715 MHz in
+  September. These Salad 4090s ran at 2664–2754 MHz, so their ceiling is about the same or higher. SRBMiner was
+  credited 349 at 2750 MHz.
+- Our own figure is honest too: 1.05, 0.97 and 1.02 on three cards, mean 1.01.
+- RTX 5060 Ti (item 17's 0.73 on Kryptex): on v0.6.14 with the CUDA 13 core, the hit check passed on both cores
+  (400 of 400 hits verified; cu13 1,298 hits and cu12.8 1,262 in 120 s), and the stand-in credited 1.02 of the shown
+  rate. On this PC the core finds every hit and the shares carry the full rate. So the Kryptex shortfall is not in
+  the core or the shares. It is somewhere between the box and the pool, or particular to the fleet's PCs.
+
 **Pool credit against our hashrate, by cause (item 17, 10 November, pool data and logs only)**
 
 The fleet's credit ratios, 0.97–0.98 on Kryptex and 0.93 on HeroMiners, are the pools' pay and luck, not shares we
@@ -784,6 +825,8 @@ Fixes, by expected gain:
 1. Find the 5060 Ti shortfall: on a 5060 Ti box, verify-hits plus a low-difficulty share count through verifypool
    (item 10's tool) against the shown rate. If a fold misses hits, it is up to 27% on that class; nothing else here
    is above 1%.
+   Done on one PC (item 10, above): hits and shares were whole there (1.02 credited ÷ shown), so look between the
+   box and Kryptex next.
 2. Send same-height hits from the replaced job. HeroMiners runs a cryptonote-nodejs-pool fork (v1.3.439), which usually keeps recent jobs and
    rejects only a changed height; Kryptex is untested. 73–77% of switches are same-height, so it gets back most of
    the switch loss: about 0.1% on RTX 30/40/50 and 0.3–0.7% on RTX 20. Test first on one Kryptex box: HeroMiners
