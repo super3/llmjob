@@ -277,6 +277,9 @@ build_variant() {   # name flags expect [patch list]
     say "build $name FAIL: host: $(grep -m2 -iE 'error' "$K/host.txt" | tr '\n' ' ')"; return 1
   fi
   ar rcs "$K/cuda-build/libpearl_cuda.a" "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o"
+  # RACE_ONLY=1 (branch goal/gate): only the race stage follows, so the addon and bench are not
+  # built (most of a build's minutes), and the fold's hash is read from the kernel object.
+  if [ -z "${RACE_ONLY:-}" ]; then
   (cd "$K" && ln -s "$OUT/gyp/node_modules" node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA_HOME ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) ||
     { say "build $name FAIL: node-gyp: $(grep -m2 -iE 'error' "$K/gyp.log" | tr '\n' ' ')"; return 1; }
@@ -286,6 +289,7 @@ build_variant() {   # name flags expect [patch list]
   nvcc -O3 -std=c++17 -cudart static $GC $flags -DPEARL_BENCH_K="$(kof "$name")" -I"$K/src" "$NATIVE/probes/bench.cu" \
     "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" -o "$K/bench" > "$K/bench-build.txt" 2>&1 ||
     { say "build $name FAIL: bench: $(grep -m1 -i error "$K/bench-build.txt")"; return 1; }
+  fi
   # The same two objects as a library for the race stage. -Bsymbolic: its calls stay
   # inside it when other builds with the same symbols are loaded beside it.
   nvcc -shared -cudart static -Xlinker -Bsymbolic -o "$K/libpearl.so" "$K/cuda-build/pearl_kernel.o" \
@@ -310,7 +314,8 @@ build_variant() {   # name flags expect [patch list]
     *) runs='rg_if_L2>=4MB' ;;
   esac
   [ "$rg" = rg=none ] && runs=fold
-  h=$(fold_hash "$K/build/Release/pearl_core.node")
+  if [ -z "${RACE_ONLY:-}" ]; then h=$(fold_hash "$K/build/Release/pearl_core.node")
+  else h=$(fold_hash "$K/cuda-build/pearl_kernel.o"); fi
   echo "$h" > "$K/fold.hash"
   # The addon and bench must carry the patched fold: a build that lost the patch is base.
   if [ -n "$patch" ] && { [ "$h" != "$after" ] || [ "$(fold_hash "$K/bench")" != "$after" ]; }; then

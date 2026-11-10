@@ -1567,7 +1567,13 @@ typedef struct {
 #define PEARL_TALL_TMA_ARCH(v) PEARL_TMA_BODY_ARCH((v) * 10)
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
+// (PEARL_GATE_WARP9, timing only, branch goal/gate: a ninth warp beside the eight that fold.)
+#if defined(PEARL_GATE_WARP9) && PEARL_GATE_WARP9
+#define PEARL_TALL_THREADS 288u
+#else
 #define PEARL_TALL_THREADS 256u
+#endif
+#define PEARL_TALL_MMA_THREADS 256u   // the eight warps that fold
 #define PEARL_TALL_ROW_TILES 6u
 #define PEARL_TALL_BM (2u * PEARL_TALL_ROW_TILES * 16u)          // 192 rows of A
 #define PEARL_TALL_BN (4u * 64u)                                 // 256 columns of B
@@ -2738,9 +2744,62 @@ typedef struct {
 #if PEARL_TALL_AB_SKIP && (PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU)
 #error "PEARL_TALL_AB_SKIP and the hash stubs time different folds: build one or the other"
 #endif
-#if PEARL_TALL_AB_SKIP && defined(__CUDA_ARCH__) && !PEARL_TALL_TMA_BODY
-#error "PEARL_TALL_AB_SKIP skips the TMA ring's boxes: build it for sm_120 or sm_100 alone, with PEARL_TALL_TMA on"
+// On the cp.async ring (sm_86, sm_89, and sm_120 with PEARL_TALL_TMA=0) the same mask, branch
+// goal/gate, 10 November: every copy instruction stays where it is, behind a predicate that is
+// true only in the block's first tile, so the instruction stream is the release's and only the
+// bytes stop moving. The arrive that counts a thread's copies fires at once when none is out.
+
+// The gate's other timing-only switches (branch goal/gate, 10 November; never ship one). They
+// price a fold whose operands are built on the SM instead of copied from the L2.
+//   PEARL_GATE_NOCOPY=1   cp.async ring: the copy instructions are compiled out of the chunk
+//       loop. The prologue fills all three ring buffers, and every tile folds those. The ring's
+//       waits and arrivals stay.
+//   PEARL_GATE_SHAM=1|2|4 (needs NOCOPY): a stand-in for a draw at about 0.5, 1 and 2 extra
+//       instructions an IMMA. Each thread rebuilds its seven 16-byte units of the buffer the
+//       stage refills, a stage ahead of their use: two 16-byte loads from the buffer being read,
+//       an ALU chain, one 16-byte store, then the FULL arrival. Values stay in A' and B''s range.
+//   PEARL_GATE_SHAM_AT=0|1 where the sham sits in the MMA warps: 0 at the two k-step ends of a
+//       stage (B's fragment registers are dead there), 1 after every other m16 tile.
+//   PEARL_GATE_WARP9=1 (needs SHAM): a ninth warp does the whole block's sham instead, so no
+//       sham instruction sits in an MMA warp. 288 threads, so ptxas gets 227 registers.
+//   PEARL_GATE_PHANTOM=1 (needs PEARL_ABLATE_DRAM): the host stores only the two tiles of A'
+//       and B' the ablation reads, at any k, and a new salt redraws the noise tables but no
+//       operand. So long k fits any card, and the restamp's materialise is priced too.
+#ifndef PEARL_GATE_NOCOPY
+#define PEARL_GATE_NOCOPY 0
 #endif
+#ifndef PEARL_GATE_SHAM
+#define PEARL_GATE_SHAM 0
+#endif
+#ifndef PEARL_GATE_SHAM_AT
+#define PEARL_GATE_SHAM_AT 0
+#endif
+#ifndef PEARL_GATE_WARP9
+#define PEARL_GATE_WARP9 0
+#endif
+#ifndef PEARL_GATE_PHANTOM
+#define PEARL_GATE_PHANTOM 0
+#endif
+#if PEARL_GATE_SHAM && !PEARL_GATE_NOCOPY
+#error "PEARL_GATE_SHAM stands in for the copies: build it with PEARL_GATE_NOCOPY=1"
+#endif
+#if PEARL_GATE_SHAM != 0 && PEARL_GATE_SHAM != 1 && PEARL_GATE_SHAM != 2 && PEARL_GATE_SHAM != 4
+#error "PEARL_GATE_SHAM is 1, 2 or 4: about 0.5, 1 and 2 extra instructions an IMMA"
+#endif
+#if PEARL_GATE_WARP9 && !PEARL_GATE_NOCOPY
+#error "PEARL_GATE_WARP9 moves the sham to a ninth warp: build it with PEARL_GATE_NOCOPY=1"
+#endif
+#if PEARL_GATE_NOCOPY && PEARL_TALL_AB_SKIP
+#error "PEARL_GATE_NOCOPY and PEARL_TALL_AB_SKIP are two forms of one arm: build one"
+#endif
+#if PEARL_GATE_NOCOPY && defined(__CUDA_ARCH__) && PEARL_TALL_TMA_BODY
+#error "PEARL_GATE_NOCOPY is for the cp.async ring: build sm_120 with -DPEARL_TALL_TMA=0"
+#endif
+#if PEARL_GATE_PHANTOM && !defined(PEARL_ABLATE_DRAM)
+#error "PEARL_GATE_PHANTOM stores what PEARL_ABLATE_DRAM reads: build it with -DPEARL_ABLATE_DRAM"
+#endif
+// Any of them makes a timing-only build: the host refuses every target but zero.
+#define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM)
 
 // The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
 // default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b

@@ -942,6 +942,19 @@ static size_t unfused_transcript_bytes(const PearlProfile *profile) {
 //
 // The terms moved here wholesale from that pre-flight, comments and all; each
 // one is a thing that was got wrong once.
+// PEARL_GATE_PHANTOM (timing only, branch goal/gate): the rows of a noised operand the host
+// stores and draws. The DRAM ablation's fold reads only the first two tiles of each (384 rows
+// of A', 512 columns of B'), so that is all a phantom build keeps, at any k. Off, every row.
+static inline uint64_t gate_rows(uint64_t rows, bool isA) {
+#if PEARL_GATE_PHANTOM
+  const uint64_t cap = isA ? 2u * PEARL_TALL_BM : 2u * PEARL_TALL_BN;
+  return rows < cap ? rows : cap;
+#else
+  (void)isA;
+  return rows;
+#endif
+}
+
 size_t needed_bytes(const PearlProfile *profile, bool unfused) {
   const size_t k = profile->k;
   const size_t rank = profile->rank;
@@ -955,7 +968,12 @@ size_t needed_bytes(const PearlProfile *profile, bool unfused) {
   // int32 while the noise was (wrongly) reconstructed at full rank, which cost
   // 2 GiB at mainnet on top of the 1 GiB of sources. The noised A has the tall
   // fold's padding rows on the end (PEARL_TALL_A_ROWS): 128 KB at mainnet.
+#if PEARL_GATE_PHANTOM
+  const size_t primeBytes =
+      (size_t)(gate_rows(profile->m, true) + gate_rows(profile->n, false)) * k;
+#else
   const size_t primeBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k + bBytes;
+#endif
   // What a batch costs now: nothing per region, except on GA100 (trBytes below).
   // The fold hashes its own transcripts, so only a hit's transcript, hash and
   // index are stored, in a fixed PEARL_MAX_HITS list. This term used to be a
@@ -1312,13 +1330,15 @@ void resolve_fold(Ctx *ctx) {
   }
 #endif
   if ((ctx->foldTma || (ctx->foldHopper && !ctx->foldTiled))
-      && (!pearl_encode_operand(&ctx->tmA, ctx->dAp, ctx->profile.m, ctx->profile.k,
+      && (!pearl_encode_operand(&ctx->tmA, ctx->dAp,
+                                (uint32_t)gate_rows(ctx->profile.m, true), ctx->profile.k,
                                 PEARL_TALL_STAGE_K,
 #if PEARL_HOPPER_WGMMA
                                 ctx->foldHopper ? PEARL_HOPPER_BM :
 #endif
                                 PEARL_TALL_BM)
-          || !pearl_encode_operand(&ctx->tmB, ctx->dBp, ctx->profile.n, ctx->profile.k,
+          || !pearl_encode_operand(&ctx->tmB, ctx->dBp,
+                                   (uint32_t)gate_rows(ctx->profile.n, false), ctx->profile.k,
                                    PEARL_TALL_STAGE_K,
 #if PEARL_HOPPER_WGMMA
                                    ctx->foldHopper && PEARL_HOPPER_CLUSTER ? PEARL_TALL_BN / 2u :
@@ -1844,12 +1864,18 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // PEARL_TALL_A_ROWS): the cp.async build (Ada and Ampere) up to 64 rows past the
   // end of the last k-block. Nothing generates the bytes past m * k; they are zeroed
   // once so the fold reads defined bytes there, and it hashes no region from them.
+#if PEARL_GATE_PHANTOM
+  // Timing only: two tiles of each noised operand (gate_rows).
+  CUDA_OK(cudaMalloc(&ctx->dAp, (size_t)gate_rows(profile->m, true) * k), "allocating the noised A");
+  CUDA_OK(cudaMalloc(&ctx->dBp, (size_t)gate_rows(profile->n, false) * k), "allocating the noised B");
+#else
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
     CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
     if (apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
   }
   CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
+#endif
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
   CUDA_OK(cudaMalloc(&ctx->dPermA, k * 2 * sizeof(uint32_t)), "allocating E_AR");
@@ -1886,6 +1912,12 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   ctx->colBatch = profile->col_batch ? profile->col_batch : 1u;
+#ifdef PEARL_GATE_COL_BATCH
+  // Timing only (branch goal/gate): the width a launch starts from, in place of the
+  // profile's, so a long-k arm's launch holds the MACs a k 2048 launch does. Each fold's own
+  // rule can still narrow it.
+  ctx->colBatch = (uint32_t)PEARL_GATE_COL_BATCH;
+#endif
   if (ctx->colBatch > ctx->colsValid) ctx->colBatch = ctx->colsValid;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   ctx->hHitIndex.resize(PEARL_MAX_HITS);
@@ -2217,7 +2249,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // In per-tile order A's padding rows sit inside every slab of its last block, not
   // after m * k, so the whole noised A is zeroed once.
   if (ctx->foldTiled)
+#if PEARL_GATE_PHANTOM
+    cudaMemset(ctx->dAp, 0, (size_t)gate_rows(profile->m, true) * profile->k);
+#else
     cudaMemset(ctx->dAp, 0, (size_t)PEARL_TALL_A_ROWS(profile->m) * profile->k);
+#endif
 
   return ctx;
 }
@@ -2510,7 +2546,11 @@ void derive_seeds(Ctx *ctx, bool withB) {
 void draw_noise(Ctx *ctx, bool isA) {
   const uint32_t rank = ctx->profile.rank;
   const uint32_t k = ctx->profile.k;
-  const uint32_t rows = isA ? ctx->profile.m : ctx->profile.n;
+  const uint32_t allRows = isA ? ctx->profile.m : ctx->profile.n;
+  // PEARL_GATE_PHANTOM (timing only): the operand is drawn for its first two tiles alone
+  // (gate_rows), which is all the fold reads; the dense factor below still covers every row,
+  // as the tables of a fold that built its operands on the SM would.
+  const uint32_t rows = (uint32_t)gate_rows(allRows, isA);
   const uint32_t *seed = isA ? ctx->dASeed : ctx->dBSeed;
   const uint8_t *label = isA ? ctx->dLabelA : ctx->dLabelB;
   int8_t *dense = isA ? ctx->dEAL : ctx->dEBR;
@@ -2536,9 +2576,9 @@ void draw_noise(Ctx *ctx, bool isA) {
   const bool fused = tallLayout && k >= 64u && k <= 4096u && rank % 32u == 0u && rank <= 128u
                      && rows % 32u == 0u;
 
-  if (!fused)
-    pearl_gen_dense<<<draw_blocks((size_t)rows * (rank / 32)), kDrawThreads>>>(
-        seed, label, nullptr, dense, rows, rank);
+  if (!fused || PEARL_GATE_PHANTOM)
+    pearl_gen_dense<<<draw_blocks((size_t)allRows * (rank / 32)), kDrawThreads>>>(
+        seed, label, nullptr, dense, allRows, rank);
   pearl_gen_perm<<<draw_blocks((k + 7) / 8), kDrawThreads>>>(seed, label, perm, k, rank);
   PEARL_LAP(2);
   // The cp.async fold (Ada, and Ampere) reads them in per-tile order (foldTiled,
@@ -3132,7 +3172,8 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (regions_out) *regions_out = 0;
   if (!ctx || !ctx->haveJob) return false;
-#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC || PEARL_TALL_TR_NOZERO
+#if PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU || PEARL_TALL_AB_SKIP || PEARL_TALL_HASHCYC || PEARL_TALL_TR_NOZERO || PEARL_GATE_TIMING
+  // (So does every arm of the gate, PEARL_GATE_*: stale or stand-in operands.)
   // A PEARL_TALL_STUB_SPIN or _ALU build (pearl_config.h) puts a stand-in where the tall
   // fold's hash was and reports no hit. A PEARL_TALL_AB_SKIP build folds stale operands, so
   // its transcripts are wrong. A PEARL_TALL_TR_NOZERO build never zeroes the transcripts,
@@ -3146,7 +3187,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     for (int i = 0; i < PEARL_HASH_BYTES; i++) zero = zero && ctx->target[i] == 0;
     if (!zero) {
       if (err && err_len)
-#if PEARL_TALL_AB_SKIP
+#if PEARL_GATE_TIMING
+        snprintf(err, err_len, "tall-fold gate build (PEARL_GATE_*) is timing-only: it runs "
+                 "only at target 0 (hashrate.js, race.cu), never on a job");
+#elif PEARL_TALL_AB_SKIP
         snprintf(err, err_len, "tall-fold operand-skip build is timing-only: it runs only at "
                  "target 0 (hashrate.js, race.cu), never on a job; build without "
                  "PEARL_TALL_AB_SKIP to mine");
@@ -3730,6 +3774,18 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
              ctx->foldPinB ? ", B' held" : "",
              ctx->foldUnfused ? ", hash in its own kernel" : "",
              PEARL_TALL_CTR ? ", tiles from a counter" : "", kAblateDramTag);
+#if PEARL_TALL_AB_SKIP || PEARL_GATE_TIMING
+    // The gate's timing-only arms (branch goal/gate) say what they are, so no reading of
+    // one is taken for the fold's.
+    {
+      Ctx *c = const_cast<Ctx *>(ctx);
+      const size_t n = strlen(c->foldName);
+      snprintf(c->foldName + n, sizeof c->foldName - n,
+               ", GATE skip=%d nocopy=%d sham=%d at=%d warp9=%d phantom=%d (timing only)",
+               (int)PEARL_TALL_AB_SKIP, (int)PEARL_GATE_NOCOPY, (int)PEARL_GATE_SHAM,
+               (int)PEARL_GATE_SHAM_AT, (int)PEARL_GATE_WARP9, (int)PEARL_GATE_PHANTOM);
+    }
+#endif
 #if PEARL_TALL_TAGGED
     {
       Ctx *c = const_cast<Ctx *>(ctx);

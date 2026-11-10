@@ -240,6 +240,19 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   constexpr uint32_t BMID = BSLOTS / 2u * bStep * SK;   // B's pointer, from its slot 0
   // Stage sg of the tile (0 .. 2 * chunks - 1: its slab, or its k-block), slot p, into
   // the buffer at ib.
+  // Timing only (PEARL_TALL_AB_SKIP on this ring): a masked operand's copies in the chunk loop
+  // sit behind the predicate PEARL_TALL_PGATE, which holds only in the block's first tile (v
+  // below the grid stride), so the instruction is issued and does nothing after it. One PTX
+  // predicate for the whole kernel, declared here and set once a tile: a predicate made in
+  // each copy's own asm cost 31 more instructions a chunk (sm_89, ptxas 12.6).
+#if PEARL_TALL_AB_SKIP
+#if PEARL_TALL_PIN_B
+#define PEARL_TALL_PGATE "pearl_gate_pinb"
+#else
+#define PEARL_TALL_PGATE "pearl_gate"
+#endif
+  asm volatile(".reg .pred " PEARL_TALL_PGATE ";" ::: "memory");
+#endif
 #if PEARL_AMPERE_PERSIST_A && !PEARL_TALL_PIN_B && defined(__CUDA_ARCH__) && PEARL_AMPERE_PERSIST_ARCH(__CUDA_ARCH__)
   // Ampere: A's copies evict_last, so they land in the persisting L2 slice the host set
   // aside for the band's A' (PEARL_AMPERE_PERSIST_A).
@@ -249,9 +262,18 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   asm volatile("cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"          \
                ::"r"((ib) + adst0 + (p) * aStep * SK),                                  \
                "l"(aP + (sg) * aKB + (p) * aStep * SK), "l"(polA));
+#define PEARL_TALL_ISSUE_A_GATED(ib, sg, p)                                            \
+  asm volatile("@" PEARL_TALL_PGATE                                                     \
+               " cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"         \
+               ::"r"((ib) + adst0 + (p) * aStep * SK),                                  \
+               "l"(aP + (sg) * aKB + (p) * aStep * SK), "l"(polA));
 #else
 #define PEARL_TALL_ISSUE_A(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + adst0 + (p) * aStep * SK, aP + (sg) * aKB + (p) * aStep * SK);
+#define PEARL_TALL_ISSUE_A_GATED(ib, sg, p)                                            \
+  asm volatile("@" PEARL_TALL_PGATE " cp.async.cg.shared.global [%0], [%1], 16;"       \
+               ::"r"((ib) + adst0 + (p) * aStep * SK),                                  \
+               "l"(aP + (sg) * aKB + (p) * aStep * SK));
 #endif
 #if PEARL_TALL_PIN_B && defined(__CUDA_ARCH__) && PEARL_TALL_PIN_B_ARCH(__CUDA_ARCH__)
   // The flip (pearl_tile_fold_tall_pinb, PEARL_AMPERE_FLIP): B's copies evict_last instead,
@@ -262,10 +284,30 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   asm volatile("cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"    \
                ::"r"((ib) + bdst0 + (p) * bStep * SK),                           \
                "l"(bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID), "l"(polB));
+#define PEARL_TALL_ISSUE_B_GATED(ib, sg, p)                                            \
+  asm volatile("@" PEARL_TALL_PGATE                                                     \
+               " cp.async.cg.shared.global.L2::cache_hint [%0], [%1], 16, %2;"         \
+               ::"r"((ib) + bdst0 + (p) * bStep * SK),                                  \
+               "l"(bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID), "l"(polB));
 #else
 #define PEARL_TALL_ISSUE_B(ib, sg, p)                                                  \
   pearl_cp_async16((ib) + bdst0 + (p) * bStep * SK,                                    \
                    bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID);
+#define PEARL_TALL_ISSUE_B_GATED(ib, sg, p)                                            \
+  asm volatile("@" PEARL_TALL_PGATE " cp.async.cg.shared.global [%0], [%1], 16;"       \
+               ::"r"((ib) + bdst0 + (p) * bStep * SK),                                  \
+               "l"(bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID));
+#endif
+  // The chunk loop's copies: gated for a masked operand, the release's otherwise.
+#if (PEARL_TALL_AB_SKIP & 1)
+#define PEARL_TALL_LOOP_A(ib, sg, p) PEARL_TALL_ISSUE_A_GATED(ib, sg, p)
+#else
+#define PEARL_TALL_LOOP_A(ib, sg, p) PEARL_TALL_ISSUE_A(ib, sg, p)
+#endif
+#if (PEARL_TALL_AB_SKIP & 2)
+#define PEARL_TALL_LOOP_B(ib, sg, p) PEARL_TALL_ISSUE_B_GATED(ib, sg, p)
+#else
+#define PEARL_TALL_LOOP_B(ib, sg, p) PEARL_TALL_ISSUE_B(ib, sg, p)
 #endif
 #else
   // TMA staging (PEARL_TALL_TMA). The producer is lane 0 of warp 4: row slot 1, so it
@@ -435,8 +477,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     asm volatile("fence.mbarrier_init.release.cluster;" ::: "memory");
 #else
     // FULL at +STAGE, EMPTY at +STAGE + 8: every thread arrives on both.
-    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, PEARL_TALL_THREADS);
-    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_THREADS);
+    // (PEARL_GATE_WARP9, timing only: FULL takes the ninth warp's 32 arrivals, and EMPTY
+    // the 256 of the warps that fold.)
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE,
+                    PEARL_GATE_WARP9 ? 32u : PEARL_TALL_MMA_THREADS);
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_MMA_THREADS);
 #endif
   }
 #if PEARL_TALL_RED_ON
@@ -546,21 +591,127 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   tile_srcs(tile_first, bsrc0, asrc0);
   const int8_t *aP = PEARL_E4_ABASE + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.
+  // (PEARL_GATE_NOCOPY, timing only: stage 2 into buffer 2 as well, since the chunk loop
+  // copies nothing. Its FULL arrival stays where the loop makes it, in the first stage.)
+  // (With the sham draw the first stage writes buffer 2 itself, from buffer 0.)
+  // (PEARL_GATE_WARP9: only the eight warps that fold copy. They wait for their copies, the
+  // block meets, and the ninth warp makes the FULL arrivals, below.)
+#if PEARL_GATE_WARP9
+  if (warp < 8u) {
+#endif
 #pragma unroll
-  for (uint32_t s = 0; s < SPC; s++) {
+  for (uint32_t s = 0; s < SPC + ((PEARL_GATE_NOCOPY && !PEARL_GATE_SHAM) ? 1u : 0u); s++) {
     const uint32_t ib = sbase + s * STRIDE;
 #pragma unroll
     for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, s, p)
 #pragma unroll
     for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, s, p)
-    pearl_mbar_arrive_copies(ib + STAGE);
+#if !PEARL_GATE_WARP9
+    if (s < SPC) pearl_mbar_arrive_copies(ib + STAGE);
+#endif
   }
+#if PEARL_GATE_WARP9
+    pearl_cp_async_wait();
+  }
+  __syncthreads();
+#endif
+#if PEARL_GATE_SHAM
+  // One sham unit (PEARL_GATE_SHAM, timing only): 16 bytes of the buffer a stage refills,
+  // made from two 16-byte loads of the buffer being read. Every step keeps each byte in
+  // 0 .. 127, as A' and B' are: a byte rotation inside a word, or an XOR of one low bit.
+  // 4, 11 and 24 ALU instructions a unit at levels 1, 2 and 4, with 2 loads and 1 store.
+  auto sham_unit = [&](uint32_t dst, uint32_t s1, uint32_t s2) {
+    uint32_t x[4], y[4];
+    asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(x[0]), "=r"(x[1]), "=r"(x[2]), "=r"(x[3]) : "r"(s1) : "memory");
+    asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                 : "=r"(y[0]), "=r"(y[1]), "=r"(y[2]), "=r"(y[3]) : "r"(s2) : "memory");
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++) {
+      uint32_t w = x[i] ^ (y[i] & 0x01010101u);
+#if PEARL_GATE_SHAM >= 2
+      w = __funnelshift_r(w, w, 8);
+      if (PEARL_GATE_SHAM >= 4 || i < 3u) w ^= y[i] & 0x01000100u;
+#endif
+#if PEARL_GATE_SHAM >= 4
+      w = __funnelshift_r(w, w, 16);
+      w ^= y[i] & 0x00010001u;
+      w = __funnelshift_r(w, w, 8);
+#endif
+      x[i] = w;
+    }
+    asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                 ::"r"(dst), "r"(x[0]), "r"(x[1]), "r"(x[2]), "r"(x[3]) : "memory");
+  };
+  // Unit u of a thread's seven: its three A slots, then its four B slots, each at the
+  // address the copy wrote, read from the same slot and the next one of the buffer at so.
+  auto sham_units = [&](uint32_t ib, uint32_t so, uint32_t u0, uint32_t u1) {
+#pragma unroll
+    for (uint32_t u = u0; u < u1; u++) {
+      if (u < ASLOTS) {
+        const uint32_t o = adst0 + u * aStep * SK, o2 = adst0 + ((u + 1u) % ASLOTS) * aStep * SK;
+        sham_unit(ib + o, so + o, so + o2);
+      } else {
+        const uint32_t p = u - ASLOTS;
+        const uint32_t o = bdst0 + p * bStep * SK, o2 = bdst0 + ((p + 1u) % BSLOTS) * bStep * SK;
+        sham_unit(ib + o, so + o, so + o2);
+      }
+    }
+  };
+#endif
 
   // The ring's roles, each a buffer (with sbase) and the parity of its next FULL phase:
   // A is read by the chunk's stage 0, B by its stage 1, and C is refilled by stage 0. At
   // the kernel's start they are buffers 0, 1 and 2, all at phase 0.
   uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
   uint32_t pA = 0u, pB = 0u, pC = 0u;
+#if PEARL_GATE_WARP9
+  // The ninth warp (PEARL_GATE_WARP9, timing only): the ring's producer. It makes the FULL
+  // arrivals for the prologue's two stages (their copies landed before the block met), then
+  // walks the same tiles, chunks, stages and roles as the warps that fold. A stage: wait for
+  // the 256 readers to release the buffer it refills, write all of that buffer's 1,792 units
+  // as the sham draw does (56 a lane, from the buffer being read), and arrive on its FULL.
+  // With no sham it only waits and arrives. It never folds, hashes or meets the hand-off.
+  if (warp == 8u) {
+    pearl_mbar_arrive(sbase + STAGE);
+    pearl_mbar_arrive(sbase + STRIDE + STAGE);
+    for (uint32_t v = tile_first; v < tiles; v += tile_stride) {
+      const bool has_next = v + tile_stride < tiles;
+      for (uint32_t chunk = 0; chunk < chunks; chunk++) {
+        const bool stage_next = chunk + 1u != chunks || has_next;
+#pragma unroll
+        for (uint32_t s = 0; s < SPC; s++) {
+          const uint32_t so = s == 0u ? soA : soB;
+          const uint32_t ib = s == 0u ? soC : soA;
+          const uint32_t epar = s == 0u ? (pC ^ 1u) : pA;
+          if (stage_next) {
+            pearl_mbar_wait(ib + STAGE + 8u, epar);
+#if PEARL_GATE_SHAM
+            constexpr uint32_t UNITS = STAGE / (32u * 16u);   // 56 a lane
+#pragma unroll 4
+            for (uint32_t j = 0; j < UNITS; j++) {
+              const uint32_t o = (j * 32u + lane) * 16u;
+              const uint32_t o2 = j + 1u < UNITS ? o + 512u : lane * 16u;
+              sham_unit(ib + o, so + o, so + o2);
+            }
+#else
+            (void)so;
+#endif
+            pearl_mbar_arrive(ib + STAGE);
+          }
+        }
+        const uint32_t tso = soC, tpar = pC;
+        soC = soB;
+        pC = pB ^ 1u;
+        soB = soA;
+        pB = pA ^ 1u;
+        soA = tso;
+        pA = tpar;
+      }
+    }
+    return;
+  }
+#endif
 #endif
 #if PEARL_TALL_CTR_ON
   // Tiles from the slot's counter (PEARL_TALL_CTR): the next tile is the word below,
@@ -582,6 +733,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // (In the cluster build v, tile_stride, has_next and so every stage_next and cn below
   // are cluster-level, never from blockIdx.x: the pair must agree on all of them.)
   for (uint32_t v = tile_first; v < tiles; v = PEARL_TALL_NEXT) {
+#if PEARL_TALL_AB_SKIP && !PEARL_TALL_TMA_BODY
+    // The copies' gate (see PEARL_TALL_PGATE): open in the block's first tile only, whose
+    // refills carry its own chunks and the next tile's first.
+    asm volatile("setp.lt.u32 " PEARL_TALL_PGATE ", %0, %1;" ::"r"(v), "r"(tile_stride) : "memory");
+#endif
 #if !PEARL_TALL_CTR_ON
     const bool has_next = v + tile_stride < tiles;
 #if defined(PEARL_TALL_CYC) && !PEARL_TALL_TMA_BODY
@@ -893,6 +1049,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         pearl_mbar_wait(barEmpty + 8u * (fb == 2u ? 0u : fb + 1u), fb == 2u ? fpar : fpar ^ 1u);
 #endif
 #else
+#if PEARL_GATE_NOCOPY
+      // Timing only (PEARL_GATE_NOCOPY): the chunk loop copies nothing, so it needs no
+      // sources. Everything from here to the stage loop is the copies' and is left out.
+      (void)aP;
+      (void)bP;
+#else
 #if PEARL_TALL_CTR_ON
       if (last && stage_next) {
 #else
@@ -917,6 +1079,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       uint32_t sg0 = (last ? 0u : chunk + 1u) * SPC;
 #endif
       asm volatile("" : "+r"(sg0));
+#endif  // !PEARL_GATE_NOCOPY
 #pragma unroll
       for (uint32_t s = 0; s < SPC; s++) {
         // Stage 0 reads A and refills C, which the stage before it read; stage 1 reads B
@@ -928,7 +1091,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         const uint32_t ib = s == 0u ? soC : soA;
         const uint32_t rpar = s == 0u ? pA : pB;
         const uint32_t epar = s == 0u ? (pC ^ 1u) : pA;
+#if !PEARL_GATE_NOCOPY
         const uint32_t sg = sg0 + s;   // the stage the refill carries
+#endif
 #ifndef PEARL_ABLATE_RING
         // Diagnostic only when defined: no ring waits, so warps read stages that may not
         // have landed and refill ones still being read. Prices the synchronisation; the
@@ -975,14 +1140,55 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
                 __syncwarp();
               }
 #endif
+#if !PEARL_GATE_NOCOPY
 #pragma unroll
-              for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, sg, p)
+              for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_LOOP_A(ib, sg, p)
+#endif
             }
+#if !PEARL_GATE_NOCOPY
             if (pt == PEARL_TALL_BPT && stage_next) {
 #pragma unroll
-              for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, sg, p)
+              for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_LOOP_B(ib, sg, p)
               pearl_mbar_arrive_copies(ib + STAGE);
             }
+#elif !PEARL_GATE_SHAM && !PEARL_GATE_WARP9
+            // No copies (PEARL_GATE_NOCOPY): the same arrival at the same point. With none of
+            // this thread's copies out it fires at once; in the kernel's first stage it waits
+            // for the prologue's copies into buffer 2.
+            if (pt == PEARL_TALL_BPT && stage_next) pearl_mbar_arrive_copies(ib + STAGE);
+#elif !PEARL_GATE_WARP9
+            // The sham draw in the MMA warps (PEARL_GATE_SHAM): this thread's seven units of
+            // the buffer the stage refills, behind the EMPTY wait above, then its FULL
+            // arrival, a release: the stores are ordered before it. The buffer is read two
+            // stages on, so the units are written a stage ahead of their use.
+#if PEARL_GATE_SHAM_AT == 0
+            // At the two k-step ends, where the step's B fragments are dead: four units,
+            // then three.
+            static_assert(PEARL_TALL_APT < MT, "the EMPTY wait comes before the first unit");
+            if (mb + 1u == MT && stage_next) {
+              if (t == 0u) {
+                sham_units(ib, so, 0u, 4u);
+              } else {
+                sham_units(ib, so, 4u, ASLOTS + BSLOTS);
+                pearl_mbar_arrive(ib + STAGE);
+              }
+            }
+#else
+            // Spread: after m16 tiles 3, 5, 7, 9 and 11 of the stage, two units, one, one,
+            // one and two.
+            static_assert(PEARL_TALL_APT <= 3u, "the EMPTY wait comes before the first unit");
+            if (stage_next) {
+              if (pt == 3u) sham_units(ib, so, 0u, 2u);
+              if (pt == 5u) sham_units(ib, so, 2u, 3u);
+              if (pt == 7u) sham_units(ib, so, 3u, 4u);
+              if (pt == 9u) sham_units(ib, so, 4u, 5u);
+              if (pt == 11u) {
+                sham_units(ib, so, 5u, ASLOTS + BSLOTS);
+                pearl_mbar_arrive(ib + STAGE);
+              }
+            }
+#endif
+#endif
 #if defined(PEARL_E4_GENLOAD) && !defined(PEARL_E4_NOGEN)
             // E4's draw, two chunks ahead: this thread's words of the chunk spread over the
             // chunk's four k-step ends, where the step's B fragments are dead.
@@ -1318,6 +1524,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
 #undef PEARL_TALL_ISSUE_A
 #undef PEARL_TALL_ISSUE_B
+#undef PEARL_TALL_ISSUE_A_GATED
+#undef PEARL_TALL_ISSUE_B_GATED
+#undef PEARL_TALL_LOOP_A
+#undef PEARL_TALL_LOOP_B
+#undef PEARL_TALL_PGATE
 #undef PEARL_TALL_NEXT
 #else
   (void)Aprime; (void)Bprime; (void)m; (void)n; (void)k_arg; (void)rank_arg; (void)chunks_arg;
