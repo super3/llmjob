@@ -57,10 +57,10 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 // -DPEARL_AMD_COL_BATCH=N sets another width; the host narrows it further if it has to.
 // Without it the host also picks a narrower width for the cards measured faster there
 // (amd_col_batch); a build that sets it gets exactly that cap, so a sweep can still race 256.
-// PEARL_AMD_HASHQ: the hash kernel on a queue of its own (Ctx::hashq). 0, the default, on no card; 1 on every card;
-// 2 on RDNA 3's gfx1100 (RX 7900) only. The environment variable of the same name (0 or 1) overrides it at run time.
+// PEARL_AMD_HASHQ: the hash kernel on a queue of its own (Ctx::hashq). 0 on no card; 1 on every card; 2, the default,
+// on RDNA 3's gfx1100 (RX 7900) only. The environment variable of the same name (0 or 1) overrides it at run time.
 #ifndef PEARL_AMD_HASHQ
-#define PEARL_AMD_HASHQ 0
+#define PEARL_AMD_HASHQ 2
 #endif
 #if PEARL_AMD_HASHQ != 0 && PEARL_AMD_HASHQ != 1 && PEARL_AMD_HASHQ != 2
 #error "PEARL_AMD_HASHQ is 0, 1 or 2"
@@ -236,8 +236,9 @@ struct Ctx {
   // rose 3.5% (51.39-51.64 to 53.22-53.28 TH/s, 5 rounds, a twin within 0.2%): the fold itself ran 10.57 -> 10.31 ms,
   // more than the 0.084 ms hash it no longer waits for. A second run on that PC read +3.4%. On two RX 7800 XTs it was
   // level (72dd708c, within 0.03%) and behind (16f1685c, -0.03 to -0.27%): the fold got 0.1 ms slower with the hash
-  // beside it. On an RX 9060 XT (8c96a2a7, k 4096) it lost 0.21-0.36% in 6 of 6 rounds. One PC isn't enough to ship
-  // it, so it is off by default until a second RX 7900 XTX PC confirms (benchmark.md, PR #290 item 23).
+  // beside it. On an RX 9060 XT (8c96a2a7, k 4096) it lost 0.21-0.36% in 6 of 6 rounds. A second RX 7900 XTX
+  // (3bf70206) read +0.2 to +1.0% in 10 of 10 rounds (56.2 to 56.4 TH/s, a twin level), so it is on for gfx1100
+  // only. No RX 7900 XT or GRE has run it (benchmark.md, PR #290 item 23).
   hipStream_t hashq = nullptr;
   hipEvent_t foldDone[kSlots] = {};
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region

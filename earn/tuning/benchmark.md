@@ -740,6 +740,8 @@ release (an unused flag) for the noise. Not rows: no competitor ran.
 |---|---|---|---|---|---|
 | RX 7900 XTX, 2048 | `44d3716f` (run 1) | 51.39–51.64 | −0.15 to +0.06% | **+3.06 to +3.62%** (5 of 5) | −0.18 to −0.52% (5 of 5 behind) |
 | RX 7900 XTX, 2048 | `44d3716f` (run 2, Salad gave the same PC) | 51.46–51.75 | −0.35 to +0.10% | **+2.99 to +3.71%** (6 of 6) | — |
+| RX 7900 XTX, 2048 | `3bf70206` (4 rounds, then the PC restarted the container) | 55.97–56.72 | −0.13 to −0.29% | **+0.73 to +1.00%** (4 of 4) | — |
+| RX 7900 XTX, 2048 | `3bf70206` (6 rounds) | 55.09–56.30 | −0.76 to +0.25% | **+0.21 to +0.62%**, first round +1.92% (6 of 6) | — |
 | RX 7800 XT, 2048 | `72dd708c` | 32.62–32.66 | 0.00 to −0.03% | −0.06 to +0.03% | — |
 | RX 7800 XT, 2048 | `16f1685c` | 32.84–33.01 | −0.18 to 0.00% | −0.03 to −0.27% (6 of 6 behind) | — |
 | RX 9060 XT, 4096 | `8c96a2a7` | 73.14–73.23 | −0.03 to +0.04% | −0.21 to −0.36% (6 of 6 behind) | (gfx12 has RDTREE) |
@@ -748,16 +750,19 @@ release (an unused flag) for the noise. Not rows: no competitor ran.
   10.57 and the hash 0.084. With the hash on its own queue the batch is 10.33 ms and the fold itself 10.29–10.31 ms.
   That is 0.26 ms a batch from the fold, three times the hash it no longer waits for. On both 7800 XTs and the 9060 XT
   the fold got 0.1 ms slower with the hash beside it, which ate what the hash saved. This XTX runs the release at
-  51.5 TH/s where item 7's XTX ran 54.4, so the gain may be this PC's, not the card's: a second XTX PC decides.
+  51.5 TH/s where item 7's XTX ran 54.4, so the size of the gain is this PC's, not the card's. The second XTX (`3bf70206`, 56.2 TH/s on the release) gained
+  +0.2 to +1.0%: ahead of the release and of the twin in all 10 rounds, but its fold didn't get faster (9.68 ms either
+  way); the batch lost about the hash's 0.08 ms and no more.
 - **Checks.** Every build's fold bit-exact. verify-hits with the hash on its own queue: 400 of 400 on the XTX twice
-  (3,646 and 3,655 hits, 8.0 a salt), 0 failed. On Kryptex the XTX got 6 accepted shares and 0 rejected in 10 minutes
+  (3,646 and 3,655 hits, 8.0 a salt) and 400 of 400 on the second XTX (3,836 hits, 480 salts), 0 failed. On Kryptex the XTX got 6 accepted shares and 0 rejected in 10 minutes
   at 53.3 TH/s.
 - **RDTREE11 loses** in the fold alone too (−0.25 to −0.59% a round, twin ±0.3%). RDNA 3's readout is a quarter of
   RDNA 4's share of a chunk (its WMMA is a quarter as fast), and the three chains' extra live registers cost more.
   Dropped; not in the code.
-- **Shipped:** `PEARL_AMD_HASHQ` stays in the code, off by default. `-DPEARL_AMD_HASHQ=1` turns it on for every card,
-  `=2` for gfx1100 only, and the environment variable `PEARL_AMD_HASHQ=1` (or `0`) overrides the build at run time.
-- **Cost:** four boxes (one moved by Salad mid-run), about 3 box-hours, high priority.
+- **Shipped:** `PEARL_AMD_HASHQ` is on for gfx1100 (RX 7900) only: the default is 2. Two XTX PCs gained (+3% and
+  +0.2 to +1.0%), 21 of 21 rounds ahead. No RX 7900 XT or GRE has run it. gfx1101 (RX 7800 XT, 7700 XT) and RDNA 4
+  stay off. `-DPEARL_AMD_HASHQ=1` turns it on for every card, `=0` for none, and the environment variable `PEARL_AMD_HASHQ=1` (or `0`) overrides the build at run time.
+- **Cost:** five boxes (one moved by Salad mid-run), about 4.5 box-hours, high priority.
 
 ## Research notes
 
@@ -1021,7 +1026,7 @@ the WMMAs (work a clock) can pay. Item 7 put RDNA 3's whole operand staging at +
 
 | NVIDIA change (gain there) | AMD today | Left for RDNA 2 / 3 / 4 |
 |---|---|---|
-| Hash out of the fold's way: in the fold, 1.5 regions a lane, the paired hash (+0.14-0.22% RTX 30), "keep the GPU fed" (+0.7%) | separate hash kernel, 0.7-1.4% of a batch; in the fold (`FUSE`) lost | **raced** as `PEARL_AMD_HASHQ` (above): +3.0-3.7% on one XTX PC, level or behind on two 7800 XTs and a 9060 XT. Off by default; a second XTX PC decides |
+| Hash out of the fold's way: in the fold, 1.5 regions a lane, the paired hash (+0.14-0.22% RTX 30), "keep the GPU fed" (+0.7%) | separate hash kernel, 0.7-1.4% of a batch; in the fold (`FUSE`) lost | **raced** as `PEARL_AMD_HASHQ` (above): +3.0-3.7% on one XTX PC and +0.2-1.0% on a second, level or behind on two 7800 XTs and a 9060 XT. On for gfx1100 only |
 | Readout off the matrix path: shared-XOR readout, readout before the chunk-0 guard | RDNA 4: `RDLATE` + `RDTREE` (+1.4-1.7%) | RDNA 3: **raced** `RDTREE11`, −0.2 to −0.5%. `RDLATE` needs the wrap readout and KPAIR, which RDNA 3 doesn't run; item 13 put k 4096 under +0.3% |
 | Newer compiler: ptxas 13 (+3.2% on the 5090, nothing on sm_86 or sm_75) | ROCm 7.2.0 pinned (Linux CI image), HIP SDK 7.2 on Windows | ROCm 7.2.4, 7.14 and 10.1 exist (`rocm/dev-ubuntu-24.04` tags; 7.14 and 10.x images are 8-9 GB). No code; the fold's asm pins and sched_barriers were tuned on clang 22, so it can lose too. Guess −1 to +2%, 2-3 h of box plumbing. **Next to try** |
 | Per-PC launch-shape trial at startup (item 5: up to +0.4-0.8% on some RTX 3090 Ti PCs) | fixed per arch: batch 128 (RDNA 3) or 256, `WALK` on gfx12, k 4096/8192 by CU count | RDNA 4's `WALK` read +0.38 to +1.85% by PC and k 8192 pays only on big gfx1201, so a trial could pick per PC. Guess +0.2-0.5%, 2-4 h (host shapes for `pearl_core.cc`'s trial). After the compiler |
@@ -1195,7 +1200,7 @@ full rate on RDNA 2 (the projection is 14-41 TH/s).
 - RDNA 3's readout as three XOR chains a region (`PEARL_AMD_RDTREE11`, PR #290 item 23, 10 November): −0.18 to
   −0.52% in `hashrate.js` and −0.25 to −0.59% in the fold alone on an RX 7900 XTX (`44d3716f`), behind in every round.
   Removed from the code. The hash on its own queue (`PEARL_AMD_HASHQ`) on RDNA 4: −0.21 to −0.36% on an RX 9060 XT
-  (6 of 6 rounds); on RX 7800 XTs level or −0.03 to −0.27%. It stays in the code, off (see the AMD section).
+  (6 of 6 rounds); on RX 7800 XTs level or −0.03 to −0.27%. It is on for gfx1100 only (see the AMD section).
 - RDNA 3 (item 13): k 4096 gained under +0.3%. Batch 128 shipped on gfx1100 and gfx1101 (+0.1 to +1.8% a round, and 64
   was slower on both chips); RDNA 4 was level at 128 and keeps 256.
 - RDNA 3 load scheduling (#287 item 8, 7 November): the loads pinned two slabs ahead (`PEARL_AMD_PF2PIN`, an empty

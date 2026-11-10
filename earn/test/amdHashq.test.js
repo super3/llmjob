@@ -1,5 +1,5 @@
 // PEARL_AMD_HASHQ (earn/native/amd/src/pearl_host_hip.cpp, PR #290 research item 23): the hash kernel on a queue of
-// its own (off by default; 2 is RX 7900 only), so the next batch's fold follows this one with no hash between them.
+// its own (2, the default, is RX 7900 only), so the next batch's fold follows this one with no hash between them.
 // These check the source: where it is on, and that a slot's fold can't rewrite transcripts or a hit list its last
 // hash still reads.
 const fs = require('fs');
@@ -16,8 +16,8 @@ function slice(s, from, to) {
 }
 
 describe('the hash on its own queue (PEARL_AMD_HASHQ)', () => {
-  it('is off by default, 2 turns it on for gfx1100 only, and 0 or 1 in the environment overrides the build', () => {
-    expect(HOST).toContain('#ifndef PEARL_AMD_HASHQ\n#define PEARL_AMD_HASHQ 0\n#endif\n');
+  it('is on for gfx1100 only by default (2), and 0 or 1 in the environment overrides the build', () => {
+    expect(HOST).toContain('#ifndef PEARL_AMD_HASHQ\n#define PEARL_AMD_HASHQ 2\n#endif\n');
     const create = slice(HOST, '#if !defined(__HIP_CPU_RT__)   // a GPU only', '#endif');
     expect(create).toContain('PEARL_AMD_HASHQ == 1 || (PEARL_AMD_HASHQ == 2 && !strncmp(ctx->arch, "gfx1100", 7))');
     expect(create).toContain('getenv("PEARL_AMD_HASHQ")');
