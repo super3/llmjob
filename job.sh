@@ -1,12 +1,12 @@
-# job 5: the hash queue off with a slow ticker (every 10, 20, 30, 50 ms), and 2 batches a launch, against the default; then stamps of the miner's launches with the slow tickers
+# job 5: the hash queue off with a slow ticker (every 10, 20, 30, 50 ms), and 2 batches a launch, against the default; then stamps of the miner's launches, each gap listed
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_PARTS=hash\ mstamps
-G_VDEF=hq0t10=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=10000\;hq0t20=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;hq0t30=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=30000\;hq0t50=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000\;msq0t20=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;msq0t50=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000
+G_VDEF=hq0t10=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=10000\;hq0t20=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;hq0t30=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=30000\;hq0t50=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000\;msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq0t20=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;msq0t50=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000
 G_VARIANTS=base\ twin\ hq0t10\ hq0t20\ hq0t30\ hq0t50\ s2
 G_HROUNDS=3
 G_HASH=45:12
-G_MST=msq0t20\ msq0t50
-G_MSN=8
+G_MST=msq1\ msq0\ msq0t20\ msq0t50
+G_MSN=5
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -454,6 +454,10 @@ const long = gaps.filter((x) => x.g >= 0.3);
 console.log('tl2 stalls: ' + lead.length + ' blocks over ' + f(ms(span)) + ' ms; ' + gaps.length + ' gaps of ' + STALL
   + ' ms or more with no block starting or ending, ' + f(stallMs) + ' ms in all (' + f(100 * stallMs / ms(span), 1) + '% of the span); '
   + long.length + ' of 0.3 ms or more: ' + long.slice(0, 14).map((x) => f(x.g, 2) + ' ms at ' + f(x.at, 1)).join(', '));
+// Every gap, as its length at its time in the launch (ms), the first 24: is there a pattern?
+if (process.argv[4] === 'gaps') {
+  console.log('tl2 gaps: ' + gaps.slice(0, 24).map((x) => f(x.g, 3) + '@' + f(x.at, 2)).join(' '));
+}
 if (long.length > 1) {
   const between = [];
   for (let i = 1; i < long.length; i++) between.push(long[i].at - long[i - 1].at);
@@ -581,7 +585,7 @@ if has mstamps; then
       env PEARL_AMD_UNTESTED=1 PEARL_AMD_STAMP_DUMP=/root/mst.bin PEARL_AMD_STAMP_DUMP_AT=$((400 + 61 * i)) "${VENV[@]}" \
         timeout 120 node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 8 2 > /root/mst.log 2>&1
       if [ -s /root/mst.bin ]; then
-        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved)' | while IFS= read -r l; do say "mst $v $i ${l:0:330}"; done
+        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin gaps 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved|gaps)' | sed -E 's/; they ran .*//; s/ with no block starting or ending//' | while IFS= read -r l; do say "mst $v $i ${l:0:390}"; done
       else
         say "mst $v $i: no stamps written: $(grep -v nvidia-smi /root/mst.log | tail -n 2 | tr '\n' '|' | cut -c1-240)"
       fi
