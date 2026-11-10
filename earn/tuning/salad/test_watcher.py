@@ -1297,6 +1297,20 @@ class TestRule6PortBlocked(Base):
         self.step(g, 1, "m1")
         self.assertEqual(g["machine"], "m1")
 
+    def test_a_box_handed_back_a_pc_it_mined_well_on_keeps_it_over_an_old_rate_mark(self):
+        # 10 November: 9070xt-68 mined 125-136 TH/s on 7d460310 for an hour, lost it, got it back 3 min later, and was
+        # moved off for a 35 TH/s mark another 9070 XT had left there that morning.
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
+                                                      "why": "earns $0.03/hr at 35 TH/s", "ths": 35.0}
+        self.x.st.setdefault("pc_rates", {}).setdefault("RTX 4080 (16 GB)", {})["m1"] = [35.0, self.clock[0]]
+        g = self.group()
+        g["readings"] += [[self.clock[0] - 60 * i, "m1", 200.0, 1, "1h", [0]] for i in range(5, 10)]
+        self.step(g, 1, "m1")
+        self.assertEqual(g["machine"], "m1")
+        self.assertNotIn("m1", self.x.st["bad_pcs"])
+        self.assertEqual(self.x.st["pc_rates"]["RTX 4080 (16 GB)"]["m1"][0], 200.0)
+        self.assertIn("keeps PC m1: it mined 200 TH/s there in the last 30 min", self.events())
+
     def test_a_share_from_a_pc_the_box_lost_doesnt_count(self):
         # 10 November: 3070-258 lost 3bfd17f1, and its last share there kept d9f81543, marked for no reading.
         self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",

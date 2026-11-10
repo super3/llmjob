@@ -2799,6 +2799,21 @@ class W:
                 # left for its rate and that rate clears the margin at this group's price and pool: until 22 October
                 # a PC left at high was refused at a cheaper priority too: 21 of 681 bad-list moves to 23 October.
                 bad = st.setdefault("bad_pcs", {}).get(mach)
+                # This group's own readings on this PC in the last 30 min, when Salad hands back a PC it just lost:
+                # they outweigh what an earlier group measured there. On 10 November 9070xt-68 mined 125-136 TH/s on
+                # 7d460310 for an hour, lost it, got it back 3 min later, and was moved off for a 35 TH/s mark another
+                # 9070 XT left that morning.
+                mine = [r[2] for r in g["readings"] if r[1] == mach and r[2] > 0 and t - r[0] < 30 * MIN]
+                own = sum(mine) / len(mine) if len(mine) >= 3 else None
+                own_ok = own is not None and margin_of(own * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g),
+                                                       g["price"]) >= self.keep_bar()
+                if own_ok:
+                    self.st.setdefault("pc_rates", {}).setdefault(g["class"], {})[mach] = [own, t]
+                    if bad and self.bad_ports(bad) is None:
+                        st["bad_pcs"].pop(mach, None)
+                        event(f"NOTE {g['name']} keeps PC {mach[:8]}: it mined {own:.0f} TH/s there in the last 30 min, "
+                              f"so {bad['group']}'s mark ({bad['why'][:80]}) is dropped")
+                        bad = None
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
                     ths, bar = self.bad_ths(bad), self.keep_bar()
@@ -2825,7 +2840,7 @@ class W:
                 # whose rate there fails the margin at this group's price and pool is left too, the same way.
                 else:
                     seen = st.get("pc_rates", {}).get(g["class"], {}).get(mach)
-                    if seen and t - seen[1] < 86400 * self.cfg["rate_days"]:
+                    if seen and t - seen[1] < 86400 * self.cfg["rate_days"] and not own_ok:
                         bar = self.keep_bar()
                         mg = margin_of(seen[0] * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"])
                         if mg < bar:
