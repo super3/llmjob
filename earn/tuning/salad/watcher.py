@@ -3523,15 +3523,12 @@ class W:
         else:
             head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
         if cb:
-            # How long Clore's balance lasts, as the Salad orgs' does (founder, 10 November): at the live boxes' $/hr,
-            # or with none running "idle", at the last $/hr it spent, or the day cap's before it has spent any.
+            # How long Clore's balance lasts at the live boxes' $/hr (founder, 10 November), and just "idle" with none
+            # running: a time with nothing spending it read as a contradiction ("Should be a time or idle, right?").
             cl = st.get("clore") or {}
             burn = sum(o.get("price_hr") or o.get("price_day", 0) / 24 for o in (cl.get("orders") or {}).values()
                        if not o.get("ended"))
-            if burn > 0:
-                cl["last_burn"] = burn
-            rate = burn or cl.get("last_burn") or self.cfg["clore_day_cap"] / 24
-            lasts = (short_lasts(cb["usd"] / rate) + ("" if burn else " idle")) if rate > 0 else ""
+            lasts = short_lasts(cb["usd"] / burn) if burn > 0 else "idle"
             credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], lasts))
         if credit_rows:
             credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
