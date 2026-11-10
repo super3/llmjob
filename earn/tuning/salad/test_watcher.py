@@ -2831,6 +2831,9 @@ class TestSaladBalance(Base):
             "label": "4080", "threads": 32, "desc": "4080, US, server 5", "created": self.clock[0], "readings": [],
             "prl": 0.0, "prl_kx": 0.0, "xmr_coins": 0.0, "spend": 0.0, "setup_tries": 0}}
         self.assertIn("| [Clore](https://clore.ai) | $50.00 | 8d |", self.report())
+        self.x.st["clore"]["orders"]["7"]["paused_since"] = self.clock[0]   # outbid on spot: nothing billed
+        self.assertIn("| [Clore](https://clore.ai) | $50.00 | idle |", self.report())
+        self.x.st["clore"]["orders"]["7"]["paused_since"] = None
         self.x.st["clore"]["orders"]["7"]["ended"] = self.clock[0]
         self.assertIn("| [Clore](https://clore.ai) | $50.00 | idle |", self.report())
         # Once a report: a second read in the same quarter hour asks nothing.
@@ -5473,6 +5476,15 @@ class TestClore(Base):
         self.x.clore_round(self.clock[0])
         self.assertEqual(len(self.creates()), 1)
         self.assertIn("spot needs $5.40/day, which doesn't clear 5%", self.events())
+
+    def test_a_server_we_already_have_an_order_on_is_not_rented_again(self):
+        # 10 November: a paused spot order of ours on 114311 was bid on again; Clore said you_already_have_spot_order.
+        self.live(oid="77", kind="spot")                       # our order on server 5
+        self.x.st["clore"]["orders"]["77"]["paused_since"] = self.clock[0]
+        self.market(self.server(5, spot=1.0), self.server(6, gpu="1x NVIDIA GeForce RTX 3080", od=1.5))
+        self.x.cfg["clore_max"] = 3
+        self.x.clore_round(self.clock[0])
+        self.assertEqual([b["renting_server"] for b in self.creates()], [6])
 
     def test_an_outbid_spot_server_is_set_aside_and_the_next_offer_rented(self):
         # 10 November: the first live search tried only a 4070 Ti outbid above what cleared, and would have tried it

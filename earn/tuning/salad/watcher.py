@@ -1320,9 +1320,12 @@ class W:
         # a 4070 Ti outbid at $2.76/day, and would have tried it again every 10 min, never reaching the 3080 behind it.
         out = {k: v for k, v in (c.get("outbid") or {}).items() if t - v < 3600}
         c["outbid"] = out
+        # Nor a server we already have an order on: on 10 November a paused spot order on 114311 was bid on again,
+        # and Clore answered you_already_have_spot_order.
+        ours = {str(o.get("server")) for o in live} | set((c.get("pending") or {}).keys())
         offers = []
         for sv in j.get("servers") or []:
-            if str(sv.get("id")) in out:
+            if str(sv.get("id")) in out or str(sv.get("id")) in ours:
                 continue
             for kind, price_day, ths, desc in self.clore_offers(sv):
                 if burn + price_day > cap:
@@ -3549,7 +3552,7 @@ class W:
             # running: a time with nothing spending it read as a contradiction ("Should be a time or idle, right?").
             cl = st.get("clore") or {}
             burn = sum(o.get("price_hr") or o.get("price_day", 0) / 24 for o in (cl.get("orders") or {}).values()
-                       if not o.get("ended"))
+                       if not o.get("ended") and not o.get("paused_since"))   # an outbid spot order isn't billed
             lasts = short_lasts(cb["usd"] / burn) if burn > 0 else "idle"
             credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], lasts))
         if vb:
