@@ -61,6 +61,8 @@ NV_CLASSES = {"3090ti": "RTX 3090 Ti (24 GB)", "3090": "RTX 3090 (24 GB)", "3080
 NV_TAG = "[nvtest]"
 
 # The container command. It never changes; the environment says what to run. dash, not bash.
+# Salad refuses a command with "|| curl" or "; curl" in it (HTTP 400, container_group_update_exception; found
+# 10 November), so the fetch goes through a function.
 # The script lives in earn/tuning/salad, and lived in tuning/salad before 7 November, so a commit from before then
 # is fetched from the old path.
 BOOT = r"""say() { echo "[amdtest] $(date -u +%T) $*"; }
@@ -70,7 +72,8 @@ command -v curl >/dev/null 2>&1 || { apt-get update -qq >/dev/null 2>&1; apt-get
 u="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/earn/tuning/salad/amdtest.sh"
 o="https://raw.githubusercontent.com/super3/llmjob/${SCRIPT_SHA:-$BASE_SHA}/tuning/salad/amdtest.sh"
 n=0
-until curl -fsSL "$u" -o /root/amdtest.sh || curl -fsSL "$o" -o /root/amdtest.sh; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
+get() { curl -fsSL "$1" -o /root/amdtest.sh; }
+until get "$u" || get "$o"; do n=$((n+1)); if [ $n -ge 5 ]; then say "boot FAIL fetch $u"; exec sleep infinity; fi; sleep 20; done
 bash /root/amdtest.sh 2>&1 | tee -a /root/amdtest.log
 say "boot amdtest.sh exited"
 exec sleep infinity"""
