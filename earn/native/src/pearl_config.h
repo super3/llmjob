@@ -2787,9 +2787,39 @@ typedef struct {
 #ifndef PEARL_GATE_PHANTOM
 #define PEARL_GATE_PHANTOM 0
 #endif
+//   PEARL_GATE_SPIN=1: the sham draw in a warp of its own, as a second kernel beside the fold
+//       (pearl_gate_spin in pearl_kernel.cu): one block of one warp an SM. PEARL_GATE_SPIN_UNITS
+//       units a lane a period (56 is a whole stage's draw; 0 only sleeps, the control),
+//       PEARL_GATE_SPIN_ALU ALU steps a unit (4, 11, 24 as the sham's levels), a period of
+//       PEARL_GATE_SPIN_CYCLES SM clocks (about a stage), PEARL_GATE_SPIN_PERIODS periods a
+//       launch (about a quarter of a second). For a fold of 253 registers or fewer.
+#ifndef PEARL_GATE_SPIN
+#define PEARL_GATE_SPIN 0
+#endif
+#ifndef PEARL_GATE_SPIN_UNITS
+#define PEARL_GATE_SPIN_UNITS 56
+#endif
+#ifndef PEARL_GATE_SPIN_ALU
+#define PEARL_GATE_SPIN_ALU 11
+#endif
+#ifndef PEARL_GATE_SPIN_CYCLES
+#define PEARL_GATE_SPIN_CYCLES 3200
+#endif
+#ifndef PEARL_GATE_SPIN_THREADS
+#define PEARL_GATE_SPIN_THREADS 32
+#endif
+#ifndef PEARL_GATE_SPIN_PERIODS
+#define PEARL_GATE_SPIN_PERIODS 200000
+#endif
 //   PEARL_GATE_S_ROLL=1 (cp.async ring): a chunk's two stages as a loop instead of unrolled.
 #ifndef PEARL_GATE_S_ROLL
 #define PEARL_GATE_S_ROLL 0
+#endif
+//   PEARL_GATE_SHAM_Y1=1 (with PEARL_GATE_SHAM_AT=2): a unit's second load is one word, not
+//       sixteen bytes, so it holds five registers in flight instead of eight. The same count
+//       of instructions. Probes how many spare registers the interleaved sham needs.
+#ifndef PEARL_GATE_SHAM_Y1
+#define PEARL_GATE_SHAM_Y1 0
 #endif
 #if PEARL_GATE_SHAM && !PEARL_GATE_NOCOPY
 #error "PEARL_GATE_SHAM stands in for the copies: build it with PEARL_GATE_NOCOPY=1"
@@ -2813,7 +2843,7 @@ typedef struct {
 #error "PEARL_GATE_SHAM_AT is 0, 1, 2 or 3"
 #endif
 // Any of them makes a timing-only build: the host refuses every target but zero.
-#define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM)
+#define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM || PEARL_GATE_SPIN)
 // The two shams that sit between the mma (PEARL_GATE_SHAM_AT 2 and 3).
 #define PEARL_GATE_SHAM_MMA (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 2)
 #define PEARL_GATE_SHAM_ALU (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 3)

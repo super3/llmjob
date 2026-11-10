@@ -3484,6 +3484,66 @@ __device__ __forceinline__ void pearl_e4_drawt(uint32_t g, uint32_t lane, uint32
 #undef PEARL_TALL_FN
 #undef PEARL_TALL_PIN_B
 
+#if PEARL_GATE_SPIN
+// The gate's spin kernel (PEARL_GATE_SPIN, timing only, branch goal/gate): a draw's work in a
+// warp of its own. One block of one warp an SM, launched beside the fold, which leaves it the
+// registers (a fold of 253 registers leaves an SM 768) and 2 KB of shared memory. Each period
+// of `cycles` SM clocks, about a stage of the fold, every lane does `units` sham units as the
+// fold's sham does (two 16-byte shared loads, PEARL_GATE_SPIN_ALU ALU steps, one 16-byte
+// store), then sleeps the period out. 56 units a lane is a whole stage's 1,792. With 0 units
+// it only sleeps: the control for where the blocks land. It ends after `periods`; the host
+// keeps one running and one queued. It shares nothing with the fold but the SM.
+// It must hold 13 to 24 registers, so that one of it fits beside a 253-register fold and two
+// do not: check ptxas's line for it.
+#define PEARL_SPIN_XOR(w, y, m)                                                                  \
+  asm volatile("{\n .reg .b32 t;\n and.b32 t, %1, " #m ";\n xor.b32 %0, %0, t;\n}" : "+r"(w) : "r"(y));
+#define PEARL_SPIN_ROT(w, n) asm volatile("shf.r.wrap.b32 %0, %0, %0, " #n ";" : "+r"(w));
+// PEARL_GATE_SPIN_THREADS: the block's threads, 32 or more. Only the first warp works; the
+// others sleep, and are there for their registers alone: sm_120's fold leaves an SM 3,072
+// registers, where five one-warp blocks of 18 would fit and three warps make it one.
+extern "C" __global__ __launch_bounds__(PEARL_GATE_SPIN_THREADS) void pearl_gate_spin(
+    uint32_t periods, uint32_t units, uint32_t cycles) {
+  __shared__ __align__(16) uint32_t sb[2 * 32 * 4];   // two rows of 16 bytes a lane
+  if (threadIdx.x >= 32u) units = 0u;
+  const uint32_t lane = threadIdx.x & 31u;
+  if (threadIdx.x < 32u) {
+#pragma unroll
+    for (uint32_t i = 0; i < 4u; i++) {
+      sb[lane * 4u + i] = 0x40404040u ^ ((lane * 0x01010101u + i * 0x00010001u) & 0x1f1f1f1fu);
+      sb[128u + lane * 4u + i] = 0x40404040u ^ ((lane * 0x00010100u + i * 0x01000001u) & 0x1f1f1f1fu);
+    }
+  }
+  __syncthreads();
+  const uint32_t s0 = (uint32_t)__cvta_generic_to_shared(sb) + lane * 16u;
+  for (uint32_t p = 0; p < periods; p++) {
+    const long long t0 = clock64();
+    for (uint32_t j = 0; j < units; j++) {
+      const uint32_t a = s0 + (j & 1u) * 512u, b = s0 + ((j + 1u) & 1u) * 512u;
+      uint32_t x[4], y[4];
+      asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                   : "=r"(x[0]), "=r"(x[1]), "=r"(x[2]), "=r"(x[3]) : "r"(a) : "memory");
+      asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                   : "=r"(y[0]), "=r"(y[1]), "=r"(y[2]), "=r"(y[3]) : "r"(b) : "memory");
+#pragma unroll
+      for (uint32_t k = 0; k < (uint32_t)PEARL_GATE_SPIN_ALU; k++) {
+        const uint32_t w = k & 3u, st = k >> 2;
+        if (st == 0u) PEARL_SPIN_XOR(x[w], y[w], 0x01010101)
+        if (st == 1u) PEARL_SPIN_ROT(x[w], 8)
+        if (st == 2u) PEARL_SPIN_XOR(x[w], y[w], 0x01000100)
+        if (st == 3u) PEARL_SPIN_ROT(x[w], 16)
+        if (st == 4u) PEARL_SPIN_XOR(x[w], y[w], 0x00010001)
+        if (st == 5u) PEARL_SPIN_ROT(x[w], 8)
+      }
+      asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                   ::"r"(b), "r"(x[0]), "r"(x[1]), "r"(x[2]), "r"(x[3]) : "memory");
+    }
+    while ((uint64_t)(clock64() - t0) < (uint64_t)cycles) __nanosleep(250u);
+  }
+}
+#undef PEARL_SPIN_XOR
+#undef PEARL_SPIN_ROT
+#endif
+
 #ifdef PEARL_TALL_CYC
 // The tall fold's cycles and tiles since the last call (see pearl_tall_cyc), then zeroes
 // them. Waits for the device first, so every launch made before it is counted.

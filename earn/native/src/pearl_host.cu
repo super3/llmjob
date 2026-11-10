@@ -98,6 +98,9 @@ extern "C" __global__ void pearl_materialize16_kblocked(const int8_t *base,
                                                         uint32_t rows, uint32_t k_log2,
                                                         uint32_t rank, uint32_t kb_log2,
                                                         uint64_t read_vecs, uint32_t fill_word);
+#if PEARL_GATE_SPIN
+extern "C" __global__ void pearl_gate_spin(uint32_t periods, uint32_t units, uint32_t cycles);
+#endif
 extern "C" __global__ void pearl_materialize16_tiled(const int8_t *base,
                                                      const int8_t *dense,
                                                      const uint32_t *perm, int8_t *out,
@@ -496,6 +499,12 @@ struct Ctx {
   // batch waits for it; two batches of one salt may overlap. With PEARL_FOLD_STREAMS 0
   // both are the default stream and batches run strictly one after another.
   cudaStream_t foldStream[kSlots] = {};
+  // PEARL_GATE_SPIN (timing only): the spin kernel's own stream, the events of its last two
+  // launches, how many were made, and the card's SMs.
+  cudaStream_t gateSpinStream = nullptr;
+  cudaEvent_t gateSpinEv[2] = {nullptr, nullptr};
+  unsigned gateSpinN = 0;
+  int gateSms = 0;
   // Batches to submit since a queued redraw (see pearl_host_reseed). Both batches queued
   // behind a redraw wait for it, so when it finishes they start together and share the
   // SMs: each takes two batch periods and they finish within ~0.1 ms of each other. The
@@ -3580,6 +3589,33 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
 
+#if PEARL_GATE_SPIN
+  // The spin kernel beside the tall fold (PEARL_GATE_SPIN, timing only): one running and one
+  // queued behind it on a stream of its own, a non-blocking one, so no draw or batch waits for
+  // it. A launch is made once the one before the last has ended; each records an event for
+  // that. When the submits stop, the last two run out, about half a second.
+  if (ctx->foldTall) {
+    if (!ctx->gateSpinStream) {
+      cudaStreamCreateWithFlags(&ctx->gateSpinStream, cudaStreamNonBlocking);
+      cudaEventCreateWithFlags(&ctx->gateSpinEv[0], cudaEventDisableTiming);
+      cudaEventCreateWithFlags(&ctx->gateSpinEv[1], cudaEventDisableTiming);
+      cudaDeviceGetAttribute(&ctx->gateSms, cudaDevAttrMultiProcessorCount, ctx->device);
+    }
+    const unsigned older = ctx->gateSpinN & 1u;
+    bool go = ctx->gateSpinN < 2u;
+    if (!go) {
+      go = cudaEventQuery(ctx->gateSpinEv[older]) == cudaSuccess;
+      if (!go) (void)cudaGetLastError();   // not ready is no error of the search's
+    }
+    if (go && ctx->gateSms > 0) {
+      pearl_gate_spin<<<(unsigned)ctx->gateSms, PEARL_GATE_SPIN_THREADS, 0, ctx->gateSpinStream>>>(
+          (uint32_t)PEARL_GATE_SPIN_PERIODS, (uint32_t)PEARL_GATE_SPIN_UNITS,
+          (uint32_t)PEARL_GATE_SPIN_CYCLES);
+      cudaEventRecord(ctx->gateSpinEv[older], ctx->gateSpinStream);
+      ctx->gateSpinN++;
+    }
+  }
+#endif
   return pearl_queue_batch(ctx, slot, st, nonce_base, regions, regions_out, err, err_len);
 }
 
@@ -3781,9 +3817,11 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       Ctx *c = const_cast<Ctx *>(ctx);
       const size_t n = strlen(c->foldName);
       snprintf(c->foldName + n, sizeof c->foldName - n,
-               ", GATE skip=%d nocopy=%d sham=%d at=%d warp9=%d phantom=%d (timing only)",
+               ", GATE skip=%d nocopy=%d sham=%d at=%d roll=%d phantom=%d spin=%d/%d/%d "
+               "(timing only)",
                (int)PEARL_TALL_AB_SKIP, (int)PEARL_GATE_NOCOPY, (int)PEARL_GATE_SHAM,
-               (int)PEARL_GATE_SHAM_AT, (int)PEARL_GATE_WARP9, (int)PEARL_GATE_PHANTOM);
+               (int)PEARL_GATE_SHAM_AT, (int)PEARL_GATE_S_ROLL, (int)PEARL_GATE_PHANTOM,
+               (int)PEARL_GATE_SPIN, (int)PEARL_GATE_SPIN_UNITS, (int)PEARL_GATE_SPIN_ALU);
     }
 #endif
 #if PEARL_TALL_TAGGED

@@ -74,7 +74,14 @@ pkill -f /root/bench.sh 2> /dev/null
 pkill -f 'peak -o' 2> /dev/null; pkill -f SRBMiner-MULTI 2> /dev/null; pkill -f onezerominer 2> /dev/null; pkill -f 'cli -a' 2> /dev/null
 sleep 5
 gsay "card before the race $(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit,temperature.gpu,memory.used,utilization.gpu --format=csv,noheader 2>&1 | head -1)"
-crun "race"
+# GATE_RACE1: the arms of the main race (compilers.sh's ONLY; unset, every arm). GATE_RACE2: arms for a second,
+# shorter race after it (RACE2_SECS, default 900; RACE2_WARM, default 2), for arms that could take the first
+# race down with them or that leave work running into the next turn (the spin kernel's last launches).
+if [ -n "${GATE_RACE1:-}" ]; then ONLY="$GATE_RACE1" crun "race"; else crun "race"; fi
+if [ -n "${GATE_RACE2:-}" ]; then
+  gsay "card before race 2 $(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit,temperature.gpu,memory.used,utilization.gpu --format=csv,noheader 2>&1 | head -1)"
+  ONLY="$GATE_RACE2" RACE_SECS="${RACE2_SECS:-900}" RACE_WARM="${RACE2_WARM:-2}" crun "race"
+fi
 gsay "card after the race $(nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit,temperature.gpu,memory.used,utilization.gpu --format=csv,noheader 2>&1 | head -1)"
 say "all done"
 idle "until deleted"

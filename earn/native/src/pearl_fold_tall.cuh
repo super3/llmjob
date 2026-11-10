@@ -1162,20 +1162,26 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #if PEARL_GATE_SHAM_MMA
               if (sham_on) {
                 if (nb == 0u) {
+#if PEARL_GATE_SHAM_Y1
+                  // (PEARL_GATE_SHAM_Y1: the second load is one word, used for all four, so
+                  // a unit holds five registers in flight, not eight.)
+                  asm volatile("ld.shared.u32 %0, [%1];" : "=r"(sy[0]) : "r"(so + so2) : "memory");
+#else
                   asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                                : "=r"(sy[0]), "=r"(sy[1]), "=r"(sy[2]), "=r"(sy[3]) : "r"(so + so2) : "memory");
+#endif
                 } else if (nb + 1u < NB) {
                   // ALU steps k of SHAM_OPS, an even share after each of mma 1 to 6: step k / 4
                   // on word k % 4. Steps 0, 2, 4 XOR in one low bit a byte from the second
                   // load; steps 1, 3, 5 rotate the word by whole bytes.
 #pragma unroll
                   for (uint32_t k = (nb - 1u) * SHAM_OPS / (NB - 2u); k < nb * SHAM_OPS / (NB - 2u); k++) {
-                    const uint32_t w = k & 3u, st = k >> 2;
-                    if (st == 0u) PEARL_SHAM_XOR(sx[w], sy[w], 0x01010101)
+                    const uint32_t w = k & 3u, st = k >> 2, yw = PEARL_GATE_SHAM_Y1 ? 0u : w;
+                    if (st == 0u) PEARL_SHAM_XOR(sx[w], sy[yw], 0x01010101)
                     if (st == 1u) PEARL_SHAM_ROT(sx[w], 8)
-                    if (st == 2u) PEARL_SHAM_XOR(sx[w], sy[w], 0x01000100)
+                    if (st == 2u) PEARL_SHAM_XOR(sx[w], sy[yw], 0x01000100)
                     if (st == 3u) PEARL_SHAM_ROT(sx[w], 16)
-                    if (st == 4u) PEARL_SHAM_XOR(sx[w], sy[w], 0x00010001)
+                    if (st == 4u) PEARL_SHAM_XOR(sx[w], sy[yw], 0x00010001)
                     if (st == 5u) PEARL_SHAM_ROT(sx[w], 8)
                   }
                 } else {
