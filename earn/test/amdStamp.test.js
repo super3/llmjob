@@ -455,6 +455,29 @@ describe('the AMD host with a stamp build', () => {
     expect(caps(at(FOLD, { PEARL_AMD_STAMP: 1 }))).toContain('PEARL_AMD_CAP_TIMING | PEARL_AMD_CAP_STAMP');
   });
 
+  it('can write one of the miner\'s own launches to a file the summary reads (PEARL_AMD_STAMP_DUMP)', () => {
+    const create = slice(host, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
+    expect(create).toContain('    ctx->stampBlocks = blocks;\n    const char *at = getenv("PEARL_AMD_STAMP_DUMP_AT");');
+    const collect = slice(host, 'extern "C" bool pearl_host_collect(', '\n}\n');
+    // Once, when that many batches have been collected, and only with a file to write.
+    expect(collect).toContain('if (ctx->stamp && ctx->stampAt && ++ctx->stampSeen == ctx->stampAt) {');
+    expect(collect).toContain('const char *path = getenv("PEARL_AMD_STAMP_DUMP");');
+    expect(collect).toContain('FILE *fp = path && path[0] ? fopen(path, "wb") : nullptr;');
+    // Every queued fold ends before the copy, so the file holds one whole launch.
+    const wait = collect.indexOf('if (fp && hipStreamSynchronize(ctx->work) == hipSuccess');
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThan(collect.indexOf('hipMemcpy(w.data(), ctx->dStamps, words * 4, hipMemcpyDeviceToHost)'));
+    // The fold test's header (write_stamps), word for word: the summary reads both.
+    const head = /const uint32_t head\[16\] = \{([^}]*)\};/.exec(collect)[1].split(',').map((x) => x.trim().replace(/\s+/g, ' '));
+    expect(head).toEqual(['0x31545350u', 'PEARL_AMD_STAMP_WORDS', 'PEARL_AMD_THREADS / 32u', '(uint32_t)ctx->stampBlocks',
+      'ctx->colBatch * PEARL_COLS_COUNT / sf.bn', '(uint32_t)wallKhz', 'ctx->profile.k', '(uint32_t)ctx->stampSeen',
+      'ctx->profile.m', 'ctx->colBatch * PEARL_COLS_COUNT', '0', '0', '0', '0', '0', '0']);
+    expect(collect).toContain('const size_t words = ctx->stampBlocks * (PEARL_AMD_THREADS / 32u) * PEARL_AMD_STAMP_WORDS;');
+    expect(collect.indexOf('fwrite(head, 4, 16, fp);')).toBeLessThan(collect.indexOf('fwrite(w.data(), 4, words, fp);'));
+    // A build without stamps has none of it.
+    expect(slice(at(HOST, { PEARL_AMD_STAMP: 0 }), 'extern "C" bool pearl_host_collect(', '\n}\n')).not.toContain('STAMP_DUMP');
+  });
+
   it('mines the k a release would (the cap that picks it is untouched)', () => {
     expect(slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n')).not.toMatch(/STAMP|TIMING/);
   });
