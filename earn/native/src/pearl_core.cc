@@ -492,21 +492,26 @@ void PearlCore::SearchLoop() {
   // The startup trial of RTX 30's launch shapes (shapeTrialSecs). Each shape gets turns of
   // at least LEG seconds, ended on a whole salt, one turn a round, in an order that reverses
   // each round, as probes/race.cu races builds: what drifts (clock, heat) drifts for all.
+  // The first WARM seconds of a turn are not counted, as the race's are not: the card's
+  // clock takes a moment to settle at a shape's power. Without it, on a 3090 Ti where the
+  // race had the band walk 3.2% behind the flip, the trial read it 0.25% behind.
   // A turn starts and ends with nothing queued, so every batch it counts ran in its shape,
   // and its rate is that work over the turn's time. Hits found during the trial are sent
   // as usual: every shape searches the same regions. At the end the core keeps the shape
   // that beat the rule's (shape 0) by TRIAL_MIN_GAIN on average and in at least two
   // thirds of the rounds, else the rule's, and says so in a 'shape' event.
   const double LEG = 4.0;
+  const double WARM = 1.0;
   const double TRIAL_MIN_GAIN = 0.003;
   const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;
   bool trial = nShapes > 1;
-  const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / (LEG * nShapes))) : 0;
+  const int rounds = trial ? std::max(3, (int)(shape_trial_secs_ / ((LEG + WARM) * nShapes))) : 0;
   std::vector<std::vector<double>> legRates(trial ? nShapes : 0);
   int round = 0, turn = 0;
   auto turnShape = [&](int r, int t) { return r % 2 == 0 ? t : nShapes - 1 - t; };
   std::chrono::steady_clock::time_point legStart = std::chrono::steady_clock::now();
   double legWork = 0.0;
+  bool legWarm = true;
   if (trial && pearl_host_set_shape(ctx_, turnShape(0, 0))) shape_now_ = turnShape(0, 0);
 
   // Read the oldest queued batch: count its work toward the hashrate and report a hit.
@@ -592,6 +597,7 @@ void PearlCore::SearchLoop() {
       // A trial turn starts again after a new job's draw: the draw is not the shape's.
       legStart = std::chrono::steady_clock::now();
       legWork = 0.0;
+      legWarm = true;
     }
     if (!drawn) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -612,9 +618,17 @@ void PearlCore::SearchLoop() {
     // Advance by what the batch covers. (A hit no longer ends a batch early: the
     // fold searches the whole batch and lists its hits.)
     nonce += regions;
-    if (nonce >= span && trial
-        && std::chrono::duration<double>(std::chrono::steady_clock::now() - legStart).count()
-               >= LEG) {
+    const double legSecs =
+        trial ? std::chrono::duration<double>(std::chrono::steady_clock::now() - legStart).count()
+              : 0.0;
+    if (nonce >= span && trial && legWarm && legSecs >= WARM) {
+      // The end of a turn's warm-up: finish its batches, then start counting.
+      while (!queued.empty())
+        if (!collect(true)) return;
+      legStart = std::chrono::steady_clock::now();
+      legWork = 0.0;
+      legWarm = false;
+    } else if (nonce >= span && trial && !legWarm && legSecs >= LEG) {
       // The end of a trial turn: finish its batches, then time it.
       while (!queued.empty())
         if (!collect(true)) return;
@@ -659,6 +673,7 @@ void PearlCore::SearchLoop() {
       if (pearl_host_set_shape(ctx_, next)) shape_now_ = next;
       legStart = std::chrono::steady_clock::now();
       legWork = 0.0;
+      legWarm = true;
     }
     if (nonce >= span) {
       // The next salt THIS core owns, not simply the next one: on a multi-card
