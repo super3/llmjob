@@ -1,6 +1,6 @@
 # job 1: SRBMiner 3.8.6 with wget and a terminal, then the duel, 2 turns each and a clock turn
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=f9ddc2965a1b6ff53a53cbcf113d114d59aa3348
+G_CODE=9279ec6292b231ffbc31683938fb4e7b78779b2f
 G_PARTS=srb\ duel
 G_TURNS=2
 G_DSECS=300
