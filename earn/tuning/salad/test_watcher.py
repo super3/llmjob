@@ -5444,6 +5444,17 @@ class TestClore(Base):
         self.assertEqual(len(self.creates()), 1)
         self.assertIn("spot needs $5.40/day, which doesn't clear 5%", self.events())
 
+    def test_an_outbid_spot_server_is_set_aside_and_the_next_offer_rented(self):
+        # 10 November: the first live search tried only a 4070 Ti outbid above what cleared, and would have tried it
+        # again every 10 min, never reaching the 3080 behind it.
+        self.market(self.server(5, spot=2.0), self.server(6, gpu="1x NVIDIA GeForce RTX 3080", od=1.5))
+        self.http.on("POST", r"create_order", lambda b: (200, {"error": "below_min_raise_step", "min_price": 5.4,
+                                                               "code": 6}) if b["renting_server"] == 5 else (200, {"code": 0}))
+        self.x.clore_round(self.clock[0])
+        self.assertEqual([b["renting_server"] for b in self.creates()], [5, 6])
+        self.assertIn("6", self.x.st["clore"]["pending"])
+        self.assertIn("5", self.x.st["clore"]["outbid"])
+
     def test_the_new_order_is_adopted_and_started_once_over_ssh(self):
         self.x.cfg["xmr_wallet"] = "8" + "a" * 94
         self.market(self.server(5, od=3.0, cpus="16/32"))

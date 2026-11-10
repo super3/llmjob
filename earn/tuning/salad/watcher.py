@@ -1293,20 +1293,36 @@ class W:
         s, j = self.clore_call("GET", "marketplace")
         if s != 200 or not isinstance(j, dict):
             return
-        best = None
+        # Every offer that clears, most profit an hour first. A spot server another bid holds above what clears is set
+        # aside for an hour (outbid) and the next offer tried: on 10 November the first search tried only the best,
+        # a 4070 Ti outbid at $2.76/day, and would have tried it again every 10 min, never reaching the 3080 behind it.
+        out = {k: v for k, v in (c.get("outbid") or {}).items() if t - v < 3600}
+        c["outbid"] = out
+        offers = []
         for sv in j.get("servers") or []:
+            if str(sv.get("id")) in out:
+                continue
             for kind, price_day, ths, desc in self.clore_offers(sv):
                 if burn + price_day > cap:
                     continue
                 earn = ths * self.usd(True)
                 mg = margin_of(earn, price_day / 24)
-                if mg < self.cfg["min_margin"]:
-                    continue
-                if best is None or earn - price_day / 24 > best[0]:
-                    best = (earn - price_day / 24, sv, kind, price_day, ths, desc, mg)
-        if best is None:
-            return
-        _, sv, kind, price_day, ths, desc, mg = best
+                if mg >= self.cfg["min_margin"]:
+                    offers.append((earn - price_day / 24, sv, kind, price_day, ths, desc))
+        offers.sort(key=lambda o: -o[0])
+        tried = set()
+        for _, sv, kind, price_day, ths, desc in offers[:6]:
+            if sv["id"] in tried:
+                continue
+            tried.add(sv["id"])
+            done = self.clore_rent(t, sv, kind, price_day, ths, desc, keyf, burn, cap)
+            if done != "outbid":
+                return
+
+    def clore_rent(self, t, sv, kind, price_day, ths, desc, keyf, burn, cap):
+        """Rents one marketplace offer. "outbid" when a spot bid above what clears holds it, so the search tries the
+        next; anything else ends the search."""
+        c = self.st["clore"]
         pub = open(keyf + ".pub", encoding="utf-8").read().strip()
         body = {"currency": "USD-Blockchain", "image": "cloreai/jupyter:ubuntu24.04-v2", "renting_server": sv["id"],
                 "type": kind, "ports": {"22": "tcp", "8888": "http"}, "ssh_key": pub}
@@ -1321,8 +1337,9 @@ class W:
             price_day = float(r["min_price"])
             if margin_of(ths * self.usd(True), price_day / 24) < self.cfg["min_margin"] or burn + price_day > cap:
                 event(f"NOTE Clore server {sv['id']} ({desc}): spot needs ${price_day:.2f}/day, which doesn't clear "
-                      f"{self.cfg['min_margin']:.0%}")
-                return
+                      f"{self.cfg['min_margin']:.0%}; set aside for an hour")
+                c.setdefault("outbid", {})[str(sv["id"])] = t
+                return "outbid"
             body = dict(body, spotprice=price_day)
             s, r = self.clore_call("POST", "create_order", body)
         if s != 200 or not isinstance(r, dict) or r.get("code") not in (0, None):
