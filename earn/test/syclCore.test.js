@@ -8,6 +8,11 @@
 // protocol's regionToTile. They also run the harness scripts that need no
 // device. Whether the folds compute the right transcripts is checked by
 // running them (pearl_sycl_check and verify-hits.js on the SYCL CPU device).
+//
+// pearl_core.cc's API has grown since the port was written (per-card k, the
+// checked create, the fold's name, launch shapes). The port answers each
+// plainly, and the second half of this file pins those answers: above all that
+// a GPU, which no fold here has run on yet, mines only with every hit checked.
 
 const fs = require('fs');
 const os = require('os');
@@ -23,6 +28,19 @@ const read = (...p) => fs.readFileSync(path.join(...p), 'utf8').replace(/\r\n/g,
 const CORE = read(NATIVE, 'src', 'pearl_core.cc');
 const HOST = read(SYCL, 'pearl_sycl_host.cpp');
 const KERNELS = read(SYCL, 'pearl_sycl_kernels.hpp');
+const CHECK = read(SYCL, 'pearl_sycl_check.cpp');
+const HELPER = path.join(__dirname, 'helpers', 'pearlHit.js');
+
+// The text from `from` to the first `to` after it, both included.
+function slice(text, from, to) {
+  const i = text.indexOf(from);
+  if (i < 0) throw new Error('not found: ' + from);
+  const j = text.indexOf(to, i + from.length);
+  if (j < 0) throw new Error('not found after it: ' + to);
+  return text.slice(i, j + to.length);
+}
+// A body's statements, trimmed, without comments or blank lines.
+const statements = (body) => body.split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('//'));
 
 const stripComments = (src) => src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
@@ -255,5 +273,249 @@ describe('SYCL harness scripts', () => {
       expect(r.status).not.toBe(0);
       expect(r.stderr).toMatch(/usage/);
     }
+  });
+});
+
+// pearl_host.cu chooses a k per card, has launch shapes for RTX 30 that the
+// binding races at startup, and names its fold. No Intel GPU has run this port,
+// so there is nothing measured to choose from: the host gives the answer that
+// changes nothing.
+describe('what the host answers where pearl_host.cu has more', () => {
+  test('per-card k: the profile\'s, with no note', () => {
+    const body = statements(slice(HOST, 'extern "C" uint32_t pearl_host_card_k(', '\n}\n'));
+    expect(body.slice(1)).toEqual([
+      "if (note && note_len) note[0] = '\\0';", 'return profile ? profile->k : 0;', '}',
+    ]);
+    // Create still refuses any other k, so a profile cannot ask for one either.
+    expect(HOST).toContain('if (k != PEARL_FOLD_K || rank != PEARL_FOLD_RANK) {');
+  });
+
+  test('launch shapes: none, so pearl_core.cc runs no trial and names no shape', () => {
+    expect(HOST).toContain('extern "C" int pearl_host_shape_count(void *) { return 0; }');
+    expect(HOST).toContain('extern "C" bool pearl_host_set_shape(void *, int) { return false; }');
+    expect(statements(slice(HOST, 'extern "C" void pearl_host_shape_name(', '\n}\n')).slice(1))
+      .toEqual(['if (buf && len) snprintf(buf, len, "none");', '}']);
+    // What makes "0 shapes" mean "no trial" in the binding.
+    expect(CORE).toContain('const int nShapes = shape_trial_secs_ > 0 ? pearl_host_shape_count(ctx_) : 0;');
+    expect(CORE).toContain('bool trial = nShapes > 1;');
+  });
+
+  test('the fold name: written once at create, and "unresolved" without a context', () => {
+    const body = statements(slice(HOST, 'extern "C" const char *pearl_host_fold_name(', '\n}\n'));
+    expect(body.slice(1)).toEqual([
+      'const Ctx *ctx = static_cast<const Ctx *>(handle);',
+      'return ctx && !ctx->foldName.empty() ? ctx->foldName.c_str() : "unresolved";', '}',
+    ]);
+    expect(HOST.match(/ctx->foldName = /g)).toHaveLength(1);
+    // pearl_core.cc asks on every read of core.device, after stop() too.
+    expect(CORE).toContain('out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));');
+  });
+});
+
+// The folds were checked on the SYCL CPU device, where DPAS is reference code.
+// A fold that is wrong on a real card makes every hash wrong, and every one
+// still meets the target, so every share would be sent and rejected. So a GPU
+// opens only for an opener that checks each hit first (createCore's checkHits,
+// which the app passes), and the core says so in core.untested. The same rule
+// as the AMD host's for its untested cards (amdCheckHits.test.js).
+describe('every Intel GPU mines with every hit checked', () => {
+  const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
+  const lines = statements(create);
+
+  test('the checked create is the one pearl_core.cc calls, and it tells the opener what it got', () => {
+    expect(CORE).toContain('ctx_ = pearl_host_create_checked(&profile, check_hits, &untested_, err, sizeof(err));');
+    const at = (s) => {
+      const i = lines.indexOf(s);
+      expect([s, i >= 0]).toEqual([s, true]);
+      return i;
+    };
+    expect(at('if (untested) *untested = false;')).toBe(2);
+    const made = at('Ctx *ctx = new Ctx();');
+    const kind = at('ctx->isGpu = ctx->dev.is_gpu();');
+    const gate = at('const char *unchecked = getenv("PEARL_SYCL_UNTESTED");');
+    const told = at('if (untested) *untested = ctx->untested;');
+    expect([made < kind, kind < gate, gate < told]).toEqual([true, true, true]);
+    expect(lines.slice(-2)).toEqual(['return ctx;', '}']);
+    expect(HOST.match(/ctx->untested = /g)).toHaveLength(1);
+  });
+
+  test('pearl_host_create is the checked create for an opener that checks nothing', () => {
+    const body = statements(slice(HOST, 'extern "C" void *pearl_host_create(', '\n}\n'));
+    expect(body.slice(1)).toEqual(['return pearl_host_create_checked(profile, false, nullptr, err, err_len);', '}']);
+  });
+
+  // The gate, from the read of PEARL_SYCL_UNTESTED to the first line after it,
+  // run in JS: what an opener gets.
+  const gate = slice(create, '  const char *unchecked = getenv("PEARL_SYCL_UNTESTED");', '  sycl::queue &q = *ctx->q;');
+  const js = gate
+    .replace('const char *unchecked = getenv("PEARL_SYCL_UNTESTED");', 'const unchecked = env;')
+    .replace(/ctx->/g, 'ctx.')
+    .replace(/fail\(err, err_len,[\s\S]*?\);\n\s*pearl_host_destroy\(ctx\);\n\s*return nullptr;/, "return 'refused';")
+    .replace('sycl::queue &q = *ctx.q;', "return ctx.untested ? 'checked' : 'opens';");
+  const strcmp = (a, b) => (a === b ? 0 : 1);
+  const run = new Function('ctx', 'check_hits', 'env', 'strcmp', js);
+  const open = ({ gpu = true, checkHits = false, env } = {}) => run({ isGpu: gpu, untested: false }, checkHits, env, strcmp);
+
+  test('the gate reads as JS', () => {
+    expect(js).not.toMatch(/->|fail\(|const char|nullptr|sycl::/);
+    expect(js).toContain("return 'refused';");
+  });
+
+  test('a GPU is refused unless the opener checks hits, and checked when it does', () => {
+    expect([open(), open({ checkHits: true })]).toEqual(['refused', 'checked']);
+    for (const env of ['0', 'yes', '', undefined]) {
+      expect([env, open({ env }), open({ env, checkHits: true })]).toEqual([env, 'refused', 'checked']);
+    }
+    // PEARL_SYCL_UNTESTED=1, and only that, opens a GPU for an opener that
+    // checks nothing (bench.js). It never turns the check off.
+    expect([open({ env: '1' }), open({ env: '1', checkHits: true })]).toEqual(['opens', 'checked']);
+  });
+
+  test('the SYCL CPU device, where the folds are checked, is never gated', () => {
+    for (const checkHits of [false, true]) {
+      for (const env of [undefined, '0', '1']) {
+        expect([checkHits, env, open({ gpu: false, checkHits, env })]).toEqual([checkHits, env, 'opens']);
+      }
+    }
+  });
+
+  test('the refusal fits the buffer pearl_core.cc gives it, and says what to do', () => {
+    const literals = /fail\(err, err_len,\s*((?:"[^"]*"\s*)+)\);/.exec(gate)[1];
+    const msg = literals.split('\n').map((l) => l.trim().replace(/^"|"$/g, '')).join('');
+    expect(CORE).toContain('char err[256] = {0};');
+    expect(msg.length).toBeLessThan(256);
+    expect(msg).toMatch(/^no Intel GPU has run this core yet/);
+    expect(msg).toContain('PEARL_SYCL_UNTESTED=1');
+    expect(msg).toContain('earn/native/sycl/README.md');
+  });
+
+  test('the tools that check hits open the core that way, and the one that checks none is told to', () => {
+    expect(CHECK).toContain('void *ctx = pearl_host_create_checked(&p, true, &untested, err, sizeof err);');
+    expect(CHECK).not.toMatch(/pearl_host_create\(/);
+    const verify = read(SYCL, 'verify-hits.js');
+    expect(verify).toContain('const coreOpts = { checkHits: true };');
+    expect(verify).toContain("const { checkHit } = require(R + 'checkHit');");
+    // bench.js sends no shares. Only the line that runs it gets the override.
+    const uses = (f) => read(SYCL, f).split('\n').filter((l) => !l.startsWith('#') && l.includes('PEARL_SYCL_UNTESTED'));
+    expect(uses('bench.sh')).toEqual([
+      'PEARL_SYCL_UNTESTED=1 node "$HERE/bench.js" "$B/pearl_core_sycl.node" --seconds 60 --warmup 10',
+    ]);
+    for (const f of ['verify.sh', 'pool-run.sh', 'build.sh', 'compile-gate.sh']) expect([f, uses(f)]).toEqual([f, []]);
+  });
+
+  // A rig has several cards, and PEARL_GPU_INDEX names one by its place in the
+  // core's own list. The list the check tool prints must be that same list.
+  test('pearl_sycl_check --list numbers the cards as the core does', () => {
+    const own = 'const std::vector<sycl::device> devs = list_devices();';
+    for (const fn of ['extern "C" int pearl_host_select_device(', 'extern "C" void *pearl_host_create_checked(',
+      'extern "C" int pearl_sycl_list_devices(']) {
+      expect([fn, slice(HOST, fn, '\n}\n').includes(own)]).toEqual([fn, true]);
+    }
+    expect(CHECK).toContain('const int n = pearl_sycl_list_devices(list, sizeof list);');
+    expect(CHECK).toContain('if (pearl_host_select_device(&p, requested, name, sizeof name, err, sizeof err) < 0) {');
+  });
+});
+
+// A stand-in addon: it prints the options it was opened with, and on setJob
+// reports 20 genuine hits built in JS, each with one transcript word changed
+// when STUB_WRONG is set, as a card whose fold is wrong would report them.
+const STUB = `
+const { EventEmitter } = require('events');
+const { hitFor } = require(${JSON.stringify(HELPER)});
+module.exports = { createCore(profile, opts = {}) {
+  console.log('OPTS ' + JSON.stringify(opts));
+  if (process.env.STUB_REFUSE) throw new Error(process.env.STUB_REFUSE);
+  const c = new EventEmitter();
+  c.k = profile.k;
+  c.untested = true;
+  c.device = { index: opts.deviceIndex || 0, name: 'stand-in', fold: 'js' };
+  const tamper = process.env.STUB_WRONG ? (jp) => { jp[9] ^= 1; } : undefined;
+  c.setJob = (job) => setImmediate(() => {
+    const h = hitFor(profile, job.header, { bound: job.target, jobId: job.jobId, tamper });
+    for (let s = 0; s < 20; s++) c.emit('hit', { ...h, salt: s });
+    c.emit('hashrate', 0.25);
+  });
+  c.stop = () => {};
+  return c;
+} };
+`;
+
+describe('verify-hits.js, with the check the app runs', () => {
+  let tmp;
+  beforeAll(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sycl-verify-'));
+    fs.writeFileSync(path.join(tmp, 'stub.js'), STUB);
+  });
+  afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
+  const run = (env) => {
+    const e = { ...process.env, ...env };
+    for (const k of ['PEARL_GPU_INDEX', 'PEARL_SYCL_FOLD', 'STUB_WRONG', 'STUB_REFUSE']) if (!(k in env)) delete e[k];
+    const r = spawnSync(process.execPath, [path.join(SYCL, 'verify-hits.js'), path.join(tmp, 'stub.js'),
+      '--hits', '20', '--seconds', '30', '--bits', '256', '--m', '64', '--n', '64'], { env: e, encoding: 'utf8' });
+    const out = r.stdout.trim().split('\n');
+    return { status: r.status, opts: JSON.parse(out.find((l) => l.startsWith('OPTS ')).slice(5)), json: JSON.parse(out.pop()) };
+  };
+
+  test('opens the core with checkHits, passes right hits and says what the core answered', () => {
+    const ok = run({});
+    expect(ok.opts).toEqual({ checkHits: true });
+    expect(ok.json).toMatchObject({
+      hits: 20, verified: 20, failed: 0, salts: 20, PASS: true, untested: true, m: 64, n: 64,
+      device: { index: 0, name: 'stand-in', fold: 'js' },
+      // The rate event that came behind the 20 hits was heard: a hit is checked
+      // in a turn of its own, so the events behind it do not wait for the checks.
+      meanThs: 0.25,
+    });
+    expect(ok.status).toBe(0);
+  }, 60000);
+
+  test('says why in one JSON line when the core will not open', () => {
+    const why = 'GPU 5 was asked for but SYCL lists 1: valid indices are 0..0';
+    const r = run({ PEARL_GPU_INDEX: '5', STUB_REFUSE: why });
+    expect(r.opts).toEqual({ checkHits: true, deviceIndex: 5 });
+    expect(r.json).toEqual({ error: why });
+    expect(r.status).toBe(2);
+  }, 60000);
+
+  test('fails wrong hits with the check\'s reason', () => {
+    const bad = run({ STUB_WRONG: '1' });
+    expect(bad.json).toMatchObject({ verified: 0, failed: 20, PASS: false });
+    expect(bad.json.fails[0].why).toBe('jackpot hash mismatch (fold/transcript)');
+    expect(bad.status).toBe(1);
+  }, 60000);
+
+  test('PEARL_GPU_INDEX pins the card when it is one number, and not when it is the CLI\'s list', () => {
+    expect(run({ PEARL_GPU_INDEX: '3' }).opts).toEqual({ checkHits: true, deviceIndex: 3 });
+    expect(run({ PEARL_GPU_INDEX: '0,1' }).opts).toEqual({ checkHits: true });
+  }, 60000);
+});
+
+// The port is not shipped: the app loads it only when PEARL_CORE_PATH names a
+// build of it. These pin that, so adding the folder cannot change an installer.
+describe('the installer leaves the port out', () => {
+  const EARN = path.join(__dirname, '..');
+  const pkg = JSON.parse(read(EARN, 'package.json'));
+
+  test('electron-builder packs only src, package.json and what CI stages in vendor', () => {
+    expect(pkg.build.files.length).toBeGreaterThan(0);
+    for (const pattern of pkg.build.files) {
+      expect([pattern, pattern === 'package.json' || pattern.startsWith('src/')]).toEqual([pattern, true]);
+    }
+    const extra = Object.values(pkg.build).flatMap((v) => (v && Array.isArray(v.extraResources) ? v.extraResources : []));
+    expect(extra.length).toBeGreaterThan(0);
+    for (const r of extra) expect([r.from, r.from.startsWith('vendor/')]).toEqual([r.from, true]);
+    // From vendor/native, only addons and the Monero worker: no script, source or library.
+    for (const r of extra.filter((x) => x.to === 'native')) {
+      expect(r.filter).toEqual(['**/*.node', 'llmjob-xmr-worker', 'llmjob-xmr-worker.exe']);
+    }
+  });
+
+  test('nothing that builds or loads a release names the SYCL core', () => {
+    for (const f of [['scripts', 'build-cli.mjs'], ['scripts', 'build-hiveos.mjs'],
+      ['src', 'shared', 'coreVariant.js'], ['src', 'main', 'pearlCore.js']]) {
+      expect([f.join('/'), /sycl/i.test(read(EARN, ...f))]).toEqual([f.join('/'), false]);
+    }
+    const workflows = path.join(EARN, '..', '.github', 'workflows');
+    for (const f of fs.readdirSync(workflows)) expect([f, /sycl/i.test(read(workflows, f))]).toEqual([f, false]);
   });
 });

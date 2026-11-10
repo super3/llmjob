@@ -3,6 +3,10 @@
 //   pearl_sycl_check [--m M] [--n N] [--col-batch C] [--batches B] [--first F]
 //                    [--folds LIST] [--bits T] [--salt S] [--bench SECONDS]
 //                    [--no-ref] [--hashed]
+//   pearl_sycl_check --list
+//
+// --list prints every device the core may open, one line each: the index
+// PEARL_GPU_INDEX takes, the name, the backend and the fold it would get.
 //
 // Check (the default): draws a job's operands on the device, runs B batches (from
 // batch F, default 0) with
@@ -25,6 +29,11 @@
 // with XMX, auto against auto-emu is the hardware self-check: the same fold with
 // the hardware instruction and with the specification's reference code. Prints
 // one JSON line per fold and exits non-zero if any check failed.
+//
+// The card: the one the core picks, or the one PEARL_GPU_INDEX names when it is
+// a single number, so each card of a rig can be checked in turn. This tool sends
+// no shares and compares every transcript itself, so it opens a GPU the way an
+// opener that checks its hits does (pearl_host_create_checked).
 
 #include <stdint.h>
 #include <stdio.h>
@@ -43,9 +52,12 @@
 extern "C" {
 int pearl_host_select_device(const PearlProfile *profile, int requested, char *name, size_t name_len,
                              char *err, size_t err_len);
-void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len);
+void *pearl_host_create_checked(const PearlProfile *profile, bool check_hits, bool *untested, char *err,
+                                size_t err_len);
 void pearl_host_destroy(void *ctx);
 void pearl_host_set_job_salted(void *ctx, const uint8_t *header, const uint8_t *target, uint64_t salt);
+const char *pearl_host_fold_name(void *ctx);
+int pearl_sycl_list_devices(char *buf, size_t len);
 const char *pearl_sycl_fold_name(void *ctx);
 int pearl_sycl_fold_code(void *ctx);
 int pearl_sycl_fold_is_hw(void *ctx);
@@ -119,8 +131,16 @@ int main(int argc, char **argv) {
     else if (a == "--bench" && v) { bench = true; benchSecs = atof(v); i++; }
     else if (a == "--no-ref") { ref = false; }
     else if (a == "--hashed") { p.operand_fill = PEARL_OPERAND_HASHED; }
+    else if (a == "--list") {
+      // The devices the core may open, by the index PEARL_GPU_INDEX takes.
+      char list[4096] = {0};
+      const int n = pearl_sycl_list_devices(list, sizeof list);
+      printf("%s", list);
+      if (n == 0) fprintf(stderr, "no device: no Intel GPU through Level Zero or OpenCL (or, with PEARL_SYCL_DEVICE=cpu, no CPU device)\n");
+      return n > 0 ? 0 : 2;
+    }
     else {
-      fprintf(stderr, "usage: %s [--m M] [--n N] [--col-batch C] [--batches B] [--folds LIST] "
+      fprintf(stderr, "usage: %s [--list] [--m M] [--n N] [--col-batch C] [--batches B] [--folds LIST] "
                       "[--bits T] [--salt S] [--first B] [--bench SECONDS] [--no-ref] [--hashed]\n", argv[0]);
       return 2;
     }
@@ -129,12 +149,21 @@ int main(int argc, char **argv) {
   if (!bench && !mSet) { p.m = 1024; p.n = 1024; p.col_batch = 16; }
   if (bench) ref = false;
 
+  // PEARL_GPU_INDEX as one number pins the card. A list (the CLI takes one) or
+  // nothing leaves the choice to the core.
+  int requested = -1;
+  if (const char *g = getenv("PEARL_GPU_INDEX")) {
+    char *end = nullptr;
+    const long v = strtol(g, &end, 10);
+    if (end != g && *end == 0 && v >= 0 && v < 1024) requested = (int)v;
+  }
   char err[512] = {0}, name[256] = {0};
-  if (pearl_host_select_device(&p, -1, name, sizeof name, err, sizeof err) < 0) {
+  if (pearl_host_select_device(&p, requested, name, sizeof name, err, sizeof err) < 0) {
     fprintf(stderr, "select: %s\n", err);
     return 2;
   }
-  void *ctx = pearl_host_create(&p, err, sizeof err);
+  bool untested = false;
+  void *ctx = pearl_host_create_checked(&p, true, &untested, err, sizeof err);
   if (!ctx) { fprintf(stderr, "create: %s\n", err); return 2; }
   uint8_t header[PEARL_HEADER_BYTES];
   memset(header, 0x5A, sizeof header);
@@ -151,6 +180,8 @@ int main(int argc, char **argv) {
   fprintf(stderr, "device: %s; m %u n %u; %u regions a batch; default fold %s%s\n",
           pearl_sycl_device_name(ctx), p.m, p.n, regions, pearl_sycl_fold_name(ctx),
           pearl_sycl_fold_is_hw(ctx) ? " (hardware)" : "");
+  fprintf(stderr, "core.device.fold: %s%s\n", pearl_host_fold_name(ctx),
+          untested ? "; an untested kind of card, so the app checks each of its hits before sending it" : "");
 
   std::vector<int8_t> Ap, Bp;
   uint8_t aSeed[32];

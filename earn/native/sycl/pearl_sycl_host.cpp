@@ -17,6 +17,17 @@
 //   - Both pipeline slots run on one in-order queue. Proof reads go on a second
 //     queue so they do not wait behind the next batch.
 //
+// What pearl_host.cu has that this host answers plainly, because no Intel GPU
+// has run it and there is nothing measured to choose from:
+//
+//   - k: the folds are built for PEARL_FOLD_K only, so pearl_host_card_k gives
+//     the profile's k back.
+//   - Launch shapes: none, so pearl_core.cc runs no startup trial.
+//   - Untested cards: every GPU is one. It mines only for an opener that
+//     checks each hit before sending it (pearl_host_create_checked), and tells
+//     that opener so. PEARL_SYCL_UNTESTED=1 opens it for an opener that sends
+//     nothing (bench.js).
+//
 // Device choice: Level Zero GPUs, else OpenCL GPUs, ranked by compute units x
 // clock. PEARL_SYCL_DEVICE=cpu takes the SYCL CPU device instead, which is how
 // the correctness gate runs without an Intel GPU. See README.md for the other
@@ -109,6 +120,9 @@ struct Ctx {
   std::string deviceName;
   int fold = kDot;
   bool xmxHw = false;  // the fold runs the hardware instruction
+  bool isGpu = false;  // a GPU, not the SYCL CPU device
+  bool untested = false;  // a GPU, which no fold has run on yet, opened because its opener checks every hit
+  std::string foldName;   // pearl_host_fold_name's answer, written once at create
   uint32_t band = 1;
   bool compact = false;
 
@@ -269,7 +283,7 @@ void free_all(Ctx *ctx) {
   if (!ctx->q) return;
   try {
     ctx->q->wait();
-    ctx->side->wait();
+    if (ctx->side) ctx->side->wait();  // null when the second queue could not be made
   } catch (...) {
   }
   void *ps[] = {ctx->dA, ctx->dB, ctx->dAp, ctx->dBp, ctx->dEAL, ctx->dEBR, ctx->dPermA,
@@ -615,6 +629,15 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   return chosen;
 }
 
+// The k a card mines when the miner lets the core choose (pearl_core.cc's cardK).
+// Both folds are built for one k (PEARL_FOLD_K, which pearl_host_create_checked
+// checks), so a card mines the profile's, as on the CUDA host. No Intel GPU has
+// been timed at any k, so there is no larger one to prefer.
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int, char *note, size_t note_len) {
+  if (note && note_len) note[0] = '\0';
+  return profile ? profile->k : 0;
+}
+
 // SYCL queues are bound to their device, so there is nothing to do per thread.
 extern "C" void pearl_host_bind_thread(void *) {}
 
@@ -625,7 +648,13 @@ extern "C" void pearl_host_destroy(void *handle) {
   delete ctx;
 }
 
-extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len) {
+// The create pearl_core.cc calls, with whether the opener recomputes every hit
+// before it sends it (check_hits: the app's PearlMiner, verify-hits.js). Such an
+// opener gets a GPU, and *untested tells it to check that card's hits.
+// pearl_host_create is this with neither.
+extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool check_hits, bool *untested,
+                                           char *err, size_t err_len) {
+  if (untested) *untested = false;
   if (!profile) { fail(err, err_len, "no profile supplied"); return nullptr; }
   const uint32_t k = profile->k, rank = profile->rank;
   if (k != PEARL_FOLD_K || rank != PEARL_FOLD_RANK) {
@@ -654,6 +683,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   ctx->profile = *profile;
   ctx->dev = devs[idx];
   ctx->deviceIndex = idx;
+  ctx->isGpu = ctx->dev.is_gpu();
   try {
     ctx->deviceName = ctx->dev.get_info<sycl::info::device::name>();
     const size_t need = needed_bytes(profile);
@@ -671,7 +701,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
     ctx->side = new sycl::queue(sctx, ctx->dev, handler, sycl::property::queue::in_order());
   } catch (const std::exception &e) {
     fail(err, err_len, std::string("could not open the SYCL device: ") + e.what());
-    delete ctx;
+    pearl_host_destroy(ctx);  // not a bare delete: the first queue may exist
     return nullptr;
   }
   // A build carries kernels only for its own targets (build.sh). On any other
@@ -692,6 +722,30 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
   if (!pick_fold(ctx, err, err_len)) {
     pearl_host_destroy(ctx);
     return nullptr;
+  }
+  // No Intel GPU has run either fold: they were checked on the SYCL CPU device,
+  // where DPAS is the specification's reference code. If the hardware differs,
+  // every hash is wrong yet meets the target, so every share is sent and
+  // rejected, and a pool can ban the address for that. So a GPU mines only
+  // with every hit checked: its opener recomputes each hit in JS before sending
+  // it (checkHits, pearlMiner.js), and ctx->untested tells it to.
+  // PEARL_SYCL_UNTESTED=1 does not change that. It only opens a GPU for an
+  // opener that checks nothing, which is for bench.js: it sends no shares. A
+  // kind of card leaves this gate by a change here, once one has passed the
+  // steps in README.md ("First run on an Arc A750 rig"). The CPU device is not
+  // gated: it is how the folds are checked, and nobody mines on it.
+  const char *unchecked = getenv("PEARL_SYCL_UNTESTED");
+  if (ctx->isGpu) {
+    if (check_hits) {
+      ctx->untested = true;
+    } else if (!(unchecked && !strcmp(unchecked, "1"))) {
+      fail(err, err_len,
+           "no Intel GPU has run this core yet, so every share could be rejected: it mines only with "
+           "every hit checked, as the app and verify-hits.js do. For an opener that sends no shares, "
+           "set PEARL_SYCL_UNTESTED=1 (earn/native/sycl/README.md)");
+      pearl_host_destroy(ctx);
+      return nullptr;
+    }
   }
 
   sycl::queue &q = *ctx->q;
@@ -766,11 +820,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);
   }
+  // What pearl_host_fold_name says, for core.device.fold and the logs. Written
+  // here, once: the search thread and the JS thread both read it. xmx16 and
+  // xmx8 say whether they got the hardware instruction or the reference code.
+  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8;
+  ctx->foldName = std::string(fold_label(ctx->fold))
+                  + (!namedXmx ? "" : ctx->xmxHw ? ", hardware DPAS" : ", DPAS reference code")
+                  + ", col_batch " + std::to_string(ctx->colBatch) + ", band " + std::to_string(ctx->band)
+                  + " row windows, k " + std::to_string(k) + (ctx->isGpu ? "" : ", SYCL CPU device");
   if (getenv("PEARL_SYCL_VERBOSE"))
     fprintf(stderr, "[pearl-sycl] %s: fold %s%s, col_batch %u, band %u row windows\n",
             ctx->deviceName.c_str(), fold_label(ctx->fold), ctx->xmxHw ? " (hardware)" : "",
             ctx->colBatch, ctx->band);
+  if (untested) *untested = ctx->untested;
   return ctx;
+}
+
+// For an opener that does not check its hits. A GPU is refused, unless
+// PEARL_SYCL_UNTESTED=1 (see the gate in pearl_host_create_checked).
+extern "C" void *pearl_host_create(const PearlProfile *profile, char *err, size_t err_len) {
+  return pearl_host_create_checked(profile, false, nullptr, err, err_len);
 }
 
 extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
@@ -893,9 +962,49 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
   return pearl_host_collect(handle, out, attempts, err, err_len);
 }
 
+// Which fold this context runs, in words, for core.device.fold and the logs
+// ("unresolved" without a context: pearl_core.cc asks after stop() too).
+extern "C" const char *pearl_host_fold_name(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  return ctx && !ctx->foldName.empty() ? ctx->foldName.c_str() : "unresolved";
+}
+
+// RTX 30's launch shapes (pearl_host.cu): this host has one way to launch a
+// fold, so there is nothing to choose, pearl_core.cc runs no startup trial and
+// the app caches no pick. The batch width and band come from the profile, the
+// device's cache size, or PEARL_SYCL_COL_BATCH and PEARL_SYCL_BAND.
+extern "C" int pearl_host_shape_count(void *) { return 0; }
+extern "C" void pearl_host_shape_name(void *, int, char *buf, size_t len) {
+  if (buf && len) snprintf(buf, len, "none");
+}
+extern "C" bool pearl_host_set_shape(void *, int) { return false; }
+
 // ---------------------------------------------------------------------------
 // For the check and bench tool (pearl_sycl_check.cpp), not for the addon.
 // ---------------------------------------------------------------------------
+
+// Every device this core may open, one line each: its index (the number
+// PEARL_GPU_INDEX and deviceIndex take), its name, the backend it comes through
+// and the fold `auto` gives it in this build. Returns how many there are. On a
+// rig this is how to tell which index is which card, in the core's own order.
+extern "C" int pearl_sycl_list_devices(char *buf, size_t len) {
+  const std::vector<sycl::device> devs = list_devices();
+  std::string out;
+  for (size_t i = 0; i < devs.size(); i++) {
+    std::string name = "?", via = "?";
+    try {
+      name = devs[i].get_info<sycl::info::device::name>();
+      const sycl::backend be = devs[i].get_backend();
+      via = be == sycl::backend::ext_oneapi_level_zero ? "level_zero" : be == sycl::backend::opencl ? "opencl" : "other";
+    } catch (const std::exception &) {
+    }
+    const int sg = xmx_sg(devs[i]);
+    out += std::to_string(i) + ": " + name + " [" + via + "], auto fold "
+           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8 (hardware DPAS)" : "dot") + "\n";
+  }
+  if (buf && len) snprintf(buf, len, "%s", out.c_str());
+  return (int)devs.size();
+}
 
 // The fold this context runs, and its label.
 extern "C" const char *pearl_sycl_fold_name(void *handle) {

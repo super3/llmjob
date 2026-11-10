@@ -9,6 +9,14 @@
 # to pool-run-stats.json, and prints the last stats at the end: accepted and
 # rejected shares and the rate. Regions: us us2 ca br de fi fr tr sg hk kr au
 # (default: the CLI picks the fastest).
+#
+# One card mines unless PEARL_GPU_INDEX lists more: PEARL_GPU_INDEX=0,1,2,3,4,5
+# for a rig of six. The CLI finds cards with nvidia-smi, which lists no Intel
+# card, so it cannot count them itself.
+#
+# Every Intel GPU is an untested kind of card, so the CLI recomputes each hit
+# before it sends it and turns a card off at its first wrong one (README.md,
+# "Untested cards"). The log says so at the first hit.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 B=${PEARL_SYCL_BUILD:-$HERE/build}
@@ -16,6 +24,9 @@ EARN=$(cd "$HERE/../.." && pwd)
 ADDR=${1:?usage: ./pool-run.sh <prl1p...address> [seconds=300] [region]}
 SECS=${2:-300}
 REGION=${3:-}
+# The CLI is built and tested on Node 22 (earn/package.json's engines).
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' \
+  || { echo "the CLI needs Node 22 or newer; this is $(node -v)" >&2; exit 1; }
 # The CLI needs two small packages, tweetnacl and tweetnacl-util. A checkout
 # without them gets them in build/cli-deps, through NODE_PATH: npm install in
 # earn/ would install every package the desktop app uses, Electron among them.

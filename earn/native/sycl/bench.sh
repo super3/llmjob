@@ -7,6 +7,11 @@
 #
 # Prints JSON lines. TH/s is MACs a second / 1e12, the unit the pool and the app
 # use, so it compares directly with benchmark.md and with other miners.
+#
+# PEARL_GPU_INDEX=N times card N of a rig (one number; default: the core's pick).
+# bench.js checks no hits and sends no shares, so it is given
+# PEARL_SYCL_UNTESTED=1, without which the core opens no GPU for it. That turns
+# no check off: the app and verify-hits.js still check every hit.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 B=${PEARL_SYCL_BUILD:-$HERE/build}
@@ -24,4 +29,4 @@ if [ "${1:-}" = "--sweep" ]; then
   done
 fi
 echo "== the full miner loop, 60 s after 10 s of warm-up"
-node "$HERE/bench.js" "$B/pearl_core_sycl.node" --seconds 60 --warmup 10
+PEARL_SYCL_UNTESTED=1 node "$HERE/bench.js" "$B/pearl_core_sycl.node" --seconds 60 --warmup 10
