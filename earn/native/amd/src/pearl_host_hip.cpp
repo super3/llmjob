@@ -33,10 +33,12 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pearl_amd_kernels.h"
@@ -84,6 +86,13 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #endif
 #if PEARL_AMD_STRIPS < 1 || PEARL_AMD_STRIPS > 16
 #error "PEARL_AMD_STRIPS is 1 to 16"
+#endif
+// PEARL_AMD_TICK_US: a thread launches a one-thread kernel on a queue of its own every that many microseconds
+// (Ctx::ticker), 0 for none. On an RX 7900 XTX PC where the fold's queue was held up (its slots in use 86-88% of the
+// time, on one queue), the hash queue's launch every batch got most of that back; this asks whether a faster tick
+// gets the rest. The environment variable of the same name (0, or 100 to 100000) overrides it at run time.
+#ifndef PEARL_AMD_TICK_US
+#define PEARL_AMD_TICK_US 0
 #endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
@@ -266,6 +275,12 @@ struct Ctx {
   // PEARL_AMD_STRIPS: a launch folds `strips` batches of stripBatch column offsets, each a strip of the grid's z
   // (colBatch = strips x stripBatch). The blocks of one strip run before the next strip's, so the B' in use at any
   // time is one strip's, as in a launch of one batch.
+  // PEARL_AMD_TICK_US (above): the ticker, its queue and the two words its kernel writes.
+  std::thread ticker;
+  std::atomic<bool> tickStop{false};
+  hipStream_t tickq = nullptr;
+  uint32_t *dTick = nullptr;
+  uint32_t tickUs = 0;
   bool stripCap = false;    // the card's code object takes such a launch (PEARL_AMD_CAP_STRIP)
   uint32_t strips = 1;
   uint32_t stripBatch = 1;
@@ -1168,6 +1183,31 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
            "pointing the folds at the clock stamps");
   }
 #endif
+#if !defined(__HIP_CPU_RT__)   // a GPU only
+  {
+    uint32_t us = PEARL_AMD_TICK_US;
+    const char *env = getenv("PEARL_AMD_TICK_US");
+    if (env && env[0] >= '0' && env[0] <= '9') {
+      us = 0;
+      for (const char *p = env; *p >= '0' && *p <= '9' && us <= 100000u; p++) us = us * 10u + (uint32_t)(*p - '0');
+    }
+    if (us >= 100u && us <= 100000u) {
+      HIP_OK(hipStreamCreateWithFlags(&ctx->tickq, hipStreamDefault), "creating the ticker's stream");
+      HIP_OK(hipMalloc(&ctx->dTick, 2 * sizeof(uint32_t)), "allocating the ticker's words");
+      ctx->tickUs = us;
+      Ctx *c = ctx;
+      ctx->ticker = std::thread([c] {
+        hipSetDevice(c->device);
+        while (!c->tickStop.load(std::memory_order_relaxed)) {
+          hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
+          (void)hipStreamSynchronize(c->tickq);
+          (void)hipGetLastError();
+          std::this_thread::sleep_for(std::chrono::microseconds(c->tickUs));
+        }
+      });
+    }
+  }
+#endif
   if (untested) *untested = ctx->untested;
   return ctx;
 }
@@ -1187,8 +1227,13 @@ extern "C" void pearl_host_bind_thread(void *handle) {
 extern "C" void pearl_host_destroy(void *handle) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
+  // The ticker first: it launches on this context's device until it is told to stop.
+  ctx->tickStop.store(true);
+  if (ctx->ticker.joinable()) ctx->ticker.join();
   DeviceScope scope(ctx->device);
   hipDeviceSynchronize();
+  if (ctx->tickq) hipStreamDestroy(ctx->tickq);
+  hipFree(ctx->dTick);
   hipFree(ctx->dA); hipFree(ctx->dB);
   hipFree(ctx->dAp); hipFree(ctx->dBp);
   hipFree(ctx->dEAL); hipFree(ctx->dEBR);
