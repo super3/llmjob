@@ -909,7 +909,8 @@ host from the card's L2 size: the flip (B' held in the L2 slice, a 128-offset ba
 the band walk (A' held, band 8 or 4, a 512-offset batch). The kernel reads the band at run time and the rest is host
 state, so a core can switch shapes between batches with no new build. Every other card has one fixed launch.
 
-Race mode, the rule's shape (flip 128) against the band walk, on four RTX 3090 Ti PCs (`nvtest`, 600–900 s):
+Race mode, the rule's shape (flip 128) against the band walk, on four RTX 3090 Ti PCs and an RTX 3080 Ti
+(`nvtest`, 600–900 s):
 
 | PC | Power, driver | Band 8 x 512 | Band 4 x 512 | Memory busy, flip / walk |
 |---|---|---|---|---|
@@ -917,6 +918,7 @@ Race mode, the rule's shape (flip 128) against the band walk, on four RTX 3090 T
 | daa97471 | 450 W, 591.59 | −3.23% (0/34) | −3.92% (0/34) | 12% / 52% |
 | b659e537 | 480 W, 617.42 | +0.02% (15/29; A/A sd 2.8%) | −0.76% (4/29) | 11% / 19% |
 | c1a87da3 | 480 W, 621.14 | **+0.39% (25/28)** | −0.06% (10/28) | 12% / 23% |
+| 594fad00 (RTX 3080 Ti) | 350 W, 617.14 | −0.53% (1/27) | −1.40% (1/27) | 9% / 17% |
 
 On efd04f2b, batch 1024 read −0.43% and the walk without its L2 slice −0.68%; on daa97471 −3.79% and −3.39%. So the
 same card's best shape moves by PC, from flip ahead by 3.2% to the walk ahead by 0.4%. The rule's pick lost on one PC
@@ -930,7 +932,8 @@ first time a card opens and caches the pick per card for a week (`launch-shapes.
 off and `PEARL_SHAPE` forces one. Hits found during the trial are sent as usual.
 
 The trial against the race, same PC: c1a87da3 picked band 8 x 512 in both runs (+0.76% and +0.43%, ahead in 10 of 10
-rounds each); b659e537 kept flip 128 (band 8 −0.15% and −0.33%). verify-hits with the trial switching shapes: 400 of
+rounds each); b659e537 kept flip 128 (band 8 −0.15% and −0.33%); the 3080 Ti kept flip 128 and read band 8 −0.47% and
+band 4 −1.37%, against the race's −0.53% and −1.40%. verify-hits with the trial switching shapes: 400 of
 400 on each of three builds (hits from flip, band 8 and band 4). A first version counted each turn from the switch,
 while the clock was still settling, and read daa97471's −3.23% as −0.25%; the warm-up fixed it. The trial costs about
 a third of 150 s at the worse shapes' rate, once a week.
