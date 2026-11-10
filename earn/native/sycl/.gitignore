@@ -1,4 +1,5 @@
 build/
+build-*/
 toolchain/
 pool-run.log
 pool-run-stats.json

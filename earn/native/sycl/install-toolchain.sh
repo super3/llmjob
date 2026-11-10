@@ -7,11 +7,15 @@
 #
 #   ./install-toolchain.sh [DIR] [--ocloc]
 #
-# --ocloc also extracts ocloc 26.31 and IGC 2.40.13 from the kobuk-team PPA
-# (Ubuntu 24.04 packages, 228 MB), the versions the default targets were built
-# with. AOT for GPU targets needs an ocloc; a driver's own may be too old to know
-# every default target (README.md, "Compiler"). Nothing is installed system-wide,
-# and the driver keeps its own IGC: only ocloc runs with these libraries.
+# --ocloc also extracts ocloc and IGC from the kobuk-team PPA, for this Ubuntu
+# release (24.04 or 26.04; PEARL_OCLOC_SERIES=noble or resolute picks one). It
+# takes the versions the PPA has today and prints them: the PPA keeps only its
+# newest build of each package, so the 26.31 and 2.40.13 this script named in
+# October were gone a month later and it stopped with a 404. They are also the
+# versions the driver from the same PPA is built from. AOT for GPU targets needs
+# an ocloc; a driver's own may be too old to know every default target
+# (README.md, "Compiler"). Nothing is installed system-wide, and the driver
+# keeps its own IGC: only ocloc runs with these libraries.
 #
 # If oneAPI is installed already (source /opt/intel/oneapi/setvars.sh), none of
 # this is needed: build.sh uses whatever icpx is on PATH.
@@ -41,27 +45,57 @@ if cmp -s "$E/lib/libsycl-jit.so" "$E/lib/libsycl-jit.so.22.1"; then rm "$E/lib/
 rm -f "$E"/bin/compiler/{clang-tidy,clangd,clang-include-fixer,modularize,llvm-dwp,llvm-profgen,llvm-ml,llvm-cov,llvm-profdata,clang-format} \
   "$E"/lib/libsycl-preview.so*
 if [ "$OCLOC" = 1 ]; then
-  P=https://ppa.launchpadcontent.net/kobuk-team/intel-graphics/ubuntu/pool/main
+  # Whatever the PPA has now for this Ubuntu release, read from its package
+  # index. A file name with a version in it is gone from the PPA's pool a few
+  # weeks after the next build is published.
+  PPA=https://ppa.launchpadcontent.net/kobuk-team/intel-graphics/ubuntu
+  SERIES=${PEARL_OCLOC_SERIES:-$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-noble}")}
   mkdir -p gpudl gpu
-  for f in i/intel-compute-runtime/intel-ocloc_26.31.39395.14-1~24.04~ppa1_amd64.deb \
-           i/intel-graphics-compiler/libigc2_2.40.13+ds1-1~24.04_amd64.deb \
-           i/intel-graphics-compiler/libigdfcl2_2.40.13+ds1-1~24.04_amd64.deb \
-           i/intel-gmmlib/libigdgmm12_22.10.1-1~24.04~ppa1_amd64.deb; do
-    curl -fsS -o "gpudl/$(basename "$f")" "$P/$f"
+  curl -fsSL "$PPA/dists/$SERIES/main/binary-amd64/Packages.gz" | gunzip > gpudl/Packages || {
+    echo "the kobuk-team PPA has no package index for Ubuntu '$SERIES': it builds for noble (24.04) and" >&2
+    echo "resolute (26.04). Set PEARL_OCLOC_SERIES to the one whose glibc this box can run." >&2
+    exit 1
+  }
+  for pkg in intel-ocloc libigc2 libigdfcl2 libigdgmm12; do
+    f=$(awk -v p="$pkg" '$1 == "Package:" { ok = ($2 == p) } ok && $1 == "Filename:" { print $2 }' gpudl/Packages \
+        | sort -V | tail -1)
+    [ -n "$f" ] || { echo "the PPA's $SERIES index has no $pkg" >&2; exit 1; }
+    echo "ocloc toolchain: ${f##*/}"
+    curl -fsS -o "gpudl/${f##*/}" "$PPA/$f"
   done
   for d in gpudl/*.deb; do dpkg-deb -x "$d" gpu; done
   rm -rf gpudl
   L=gpu/usr/lib/x86_64-linux-gnu
-  for l in libigc libigdfcl libiga64; do ln -sf "$l.so.2.40.13+0" "$L/$l.so.2"; done
+  # A package carries each library under its full version (libigc.so.2.42.14+0)
+  # and leaves the name the loader asks for (libigc.so.2) to ldconfig, which
+  # does not run here.
+  for f in "$L"/lib*.so.*; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      b=${f##*/}
+      so=${b%%.so.*}.so.$(printf '%s' "${b#*.so.}" | cut -d. -f1)
+      [ -e "$L/$so" ] || ln -s "$b" "$L/$so"
+    fi
+  done
+  OCLOC_BIN=$(find "$DIR/gpu/usr/bin" -maxdepth 1 -name 'ocloc-*' 2>/dev/null | sort | head -1) || true
+  [ -n "$OCLOC_BIN" ] || { echo "the intel-ocloc package has no usr/bin/ocloc-* in it" >&2; exit 1; }
   # ocloc gets these IGC libraries through a wrapper, not through envrc.sh's
   # LD_LIBRARY_PATH: on a box with an Intel driver, the driver must keep
   # loading its own IGC in that shell.
   mkdir -p gpu/bin
   cat > gpu/bin/ocloc <<OCLOC
 #!/bin/sh
-LD_LIBRARY_PATH="$DIR/$L\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}" exec "$DIR/gpu/usr/bin/ocloc-26.31.1" "\$@"
+LD_LIBRARY_PATH="$DIR/$L\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}" exec "$OCLOC_BIN" "\$@"
 OCLOC
   chmod +x gpu/bin/ocloc
+  # These are Ubuntu 24.04 or 26.04 binaries. On an older glibc the loader
+  # refuses them; say so here, not as a failed target in build.sh.
+  out=$(gpu/bin/ocloc --help 2>&1 || true)
+  case "$out" in
+    *"error while loading shared libraries"*|*"version \`GLIBC"*)
+      echo "the extracted ocloc does not run on this box (it is built for Ubuntu $SERIES):" >&2
+      printf '%s\n' "$out" | head -3 >&2
+      exit 1 ;;
+  esac
 fi
 # OCL_ICD_VENDORS replaces the system's list of OpenCL drivers, so pointing it
 # at the CPU runtime alone hid the GPU from clinfo and sycl-ls in that shell.

@@ -5,7 +5,7 @@
 #   ./verify.sh            fold check, then 400 hits through the addon with the
 #                          core's own fold and 400 with the plain fold (on the
 #                          CPU device: the plain fold and both XMX folds)
-#   ./verify.sh --quick    100 hits each
+#   ./verify.sh --quick    100 hits each, at half the bound, for half the batches
 #
 # 1. pearl_sycl_check: every region of 4 batches, with the plain fold, the core's
 #    own fold and (on an XMX GPU) the reference code of that fold, against a
@@ -20,28 +20,42 @@
 #    Its expectedHits and hitRatio are a rough check that none go missing.
 #
 # Exits non-zero on the first failure. PEARL_SYCL_BUILD names the build
-# directory (default ./build).
+# directory (default ./build). PEARL_GPU_INDEX=N checks card N of a rig (one
+# number; default: the core's pick), so a rig runs this once a card.
+#
+# Both tools check what the core gives them and send nothing, so the core opens
+# a GPU for them (README.md, "Untested cards").
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 B=${PEARL_SYCL_BUILD:-$HERE/build}
 HITS=400
-[ "${1:-}" = "--quick" ] && HITS=100
+QUICK=0
+if [ "${1:-}" = "--quick" ]; then HITS=100; QUICK=1; fi
 # The mainnet m and n, 4 column offsets a batch, and the last of the 4096
 # batches: 32,768 regions with the largest row and column offsets.
 MAIN=(--m 131072 --n 262144 --col-batch 4 --first 4095 --batches 1 --bits 247)
+# The bound for verify-hits (--bits) gives about 64 hits a salt at either
+# size below: 400 hits come from 6 salts, and it wants at least 3.
 if [ "${PEARL_SYCL_DEVICE:-gpu}" = "cpu" ]; then
   # The CPU device has no XMX, so its own fold is the plain one; the XMX folds
   # (the specification's reference code there) are asked for by name.
   CHECK=(--m 1024 --n 1024 --col-batch 16 --batches 4 --bits 248 --folds dot,xmx16,xmx8)
   MAIN+=(--folds dot,xmx16)
-  HITARGS=(--m 4096 --n 4096 --col-batch 64 --bits 246)
+  HITARGS=(--m 4096 --n 4096 --col-batch 64)
+  BITS=246
   FOLDS=(dot xmx16 xmx8)
 else
   CHECK=(--m 2048 --n 2048 --col-batch 32 --batches 4 --bits 247 --folds dot,auto,auto-emu)
   MAIN+=(--folds dot,auto,auto-emu)
-  HITARGS=(--bits 235)
+  HITARGS=()
+  BITS=235
   FOLDS=(auto dot)
 fi
+# --quick's 100 hits would come from 2 salts at that bound, one short of the
+# rule, so it could not pass. At half the bound a salt gives 32, so they come
+# from 3 or 4 salts, in half the batches 400 take.
+if [ "$QUICK" = 1 ]; then BITS=$((BITS - 1)); fi
+HITARGS+=(--bits "$BITS")
 echo "== fold check: pearl_sycl_check ${CHECK[*]}"
 "$B/pearl_sycl_check" "${CHECK[@]}"
 echo "== fold check at the mainnet m and n: pearl_sycl_check ${MAIN[*]}"
