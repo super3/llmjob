@@ -1,4 +1,4 @@
-# job 2: the fold alone beside a ticker, stamps of long launches (stalls, moved waves), then the miner with a ticker (another process's, and the core's own)
+# job 2: the fold alone beside a ticker, stamps of long launches (stalls, moved waves), then the miner with a ticker (another process's, and the core's own) and at half the batch
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_CODE=32767abfa40375ee5b0c25cce278fc91c3d9e930
 G_PARTS=build\ tick\ stamps\ hash
@@ -6,8 +6,8 @@ G_TICKS=0\ 0.010\ 0.002
 G_TROUNDS=3
 G_SROUNDS=1
 G_STSHAPES=sbase:131072:2048:400\ sbase:524288:2048:100\ sw:131072:16384:50\ sw:131072:32768:25
-G_VDEF=tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq0tk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=2000\;s4tk=strip\ PEARL_AMD_STRIPS=4\ PEARL_AMD_TICK_US=2000
-G_VARIANTS=base\ twin\ bt2\ tk2\ tk05\ hq0tk\ s4tk
+G_VDEF=tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq0tk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=2000\;s4tk=strip\ PEARL_AMD_STRIPS=4\ PEARL_AMD_TICK_US=2000\;cb64=base\ PEARL_AMD_COL_BATCH=64\;cb32=base\ PEARL_AMD_COL_BATCH=32
+G_VARIANTS=base\ twin\ bt2\ tk2\ tk05\ hq0tk\ s4tk\ cb64
 G_HROUNDS=3
 G_HASH=45:12
 G_DIAG=base\ tk2
