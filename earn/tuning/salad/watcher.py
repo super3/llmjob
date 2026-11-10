@@ -1324,6 +1324,7 @@ class W:
         s, j = http("POST", gurl(g, f"/instances/{g['instance']}/reallocate"))
         if 200 <= s < 300 or (gone_ok and s == 404):
             g["reallocs"] += 1 if count else 0
+            g["last_move"] = {"pc": g["machine"], "t": now(), "counted": bool(count)}
             g.setdefault("left", []).append(g["machine"])
             g["left_t"] = now()
             event(f"REALLOCATED {g['name']} off PC {(g['machine'] or '')[:8]} ({reason}); "
@@ -2198,6 +2199,17 @@ class W:
                         g["blocked"].append(mach)
                         g.setdefault("blocked_port", {})[mach] = int(blocked.group(1))   # which pool's port it tried
                         event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:120]}")
+                        # The line can come in after the box already left the PC for "no mining reading", a move
+                        # that used one of its 3. A blocked port is the PC's fault (rule 6), so that move is given
+                        # back. On 10 November 9060xt-47 used its second move this way, a minute before the line.
+                        lm = g.get("last_move") or {}
+                        if (mach and mach != g.get("machine") and lm.get("pc") == mach and lm.get("counted")
+                                and g["reallocs"] > 0 and g.get("port_moves", 0) < 6):
+                            g["reallocs"] -= 1
+                            g["port_moves"] = g.get("port_moves", 0) + 1
+                            lm["counted"] = False
+                            event(f"MOVE BACK {name}: PC {mach[:8]} blocks outbound port {blocked.group(1)}, which its "
+                                  f"log showed only after the move; that move doesn't count ({g['reallocs']} of 3 used)")
                 elif text.startswith("[card]") and mach not in g["cards"]:
                     g["cards"].append(mach)
                     event(f"CARD {name} PC {(mach or '')[:8]}: {text.strip()[7:160]}")

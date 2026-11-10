@@ -3753,6 +3753,25 @@ class TestKryptex(Base):
         self.assertEqual(g["blocked_port"], {"m1": 7048})
         self.assertIn("PORT BLOCKED biz-rtx4080 on PC m1: [run] FAIL: outbound port 7048 blocked", self.events())
 
+    def test_a_blocked_port_seen_only_after_a_counted_move_gives_that_move_back(self):
+        # 10 Nov 03:21Z: 9060xt-47 left PC 2c06d261 for "no mining reading 10 min", using its second move. The
+        # PC's "port 7048 blocked" line came in a minute later. A blocked port is the PC's fault: no move used.
+        self.config_file()
+        g = self.group(kx=True)
+        g.update(reallocs=1, left=["m1"], last_move={"pc": "m1", "t": self.clock[0], "counted": True})
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m2", "state": "running"}]}))
+        items = [{"text_log": "[run] FAIL: outbound port 7048 blocked", "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m1"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertEqual((g["reallocs"], g["port_moves"]), (0, 1))
+        self.assertIn("MOVE BACK biz-rtx4080: PC m1 blocks outbound port 7048", self.events())
+        self.clock[0] += 120                                    # the same line again doesn't give back another
+        self.x.round()
+        self.assertEqual(g["reallocs"], 0)
+
     def blocked_on_kryptex(self, works=True):
         """A Kryptex box on m1 that found Kryptex's port blocked; `works`: another box's work reached Kryptex lately."""
         if works:
