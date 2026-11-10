@@ -550,6 +550,37 @@ describe('the stand-in pool (verify-pool.js)', () => {
     expect(r.stdout + r.stderr).not.toContain('prl1pstandin');
   }, 60000);
 
+  // A competitor's miner over a bare socket: a handshake method the live pools refuse, then the same share twice.
+  it('refuses a duplicate share and an unknown method as the live pools do, and reports every share', async () => {
+    const seen = [];
+    const pool = VERIFY_POOL.servePool({ port: 0, target, jobEvery: 0, onShare: (e) => seen.push(e) });
+    await new Promise((res) => pool.server.on('listening', res));
+    const sock = net.connect({ host: '127.0.0.1', port: pool.server.address().port });
+    const lines = [];
+    let buf = '';
+    sock.on('data', (c) => { buf += c; let i; while ((i = buf.indexOf('\n')) >= 0) { lines.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } });
+    const until = async (n) => { for (let i = 0; i < 200 && lines.length < n; i++) await new Promise((res) => setTimeout(res, 25)); };
+    const send = (m) => sock.write(JSON.stringify(m) + '\n');
+    send({ id: 1, method: 'mining.subscribe', params: [] });
+    send({ id: 2, method: 'mining.authorize', params: { wallet: 'prl1pstandin', worker: 'w', agent: 'test/1' } });
+    await until(3);
+    const job = lines.find((l) => l.method === 'mining.notify').params;
+    expect(job.job_id).toMatch(/^00000001_\d+$/);
+    const h = Buffer.from(job.header, 'hex');
+    const f = buildShareProof(hitFor(K4, h), hash(Buffer.concat([h, buildConfig52(K4)])), K4, { gzip: false });
+    send({ id: 3, method: 'mining.submit', params: { job_id: job.job_id, plain_proof: f, hs: 5 } });
+    send({ id: 4, method: 'mining.submit', params: { job_id: job.job_id, plain_proof: f } });
+    await until(5);
+    sock.destroy();
+    pool.close();
+    expect(lines.find((l) => l.id === 1).error).toEqual([20, 'Undefined stratum']);
+    expect(lines.find((l) => l.id === 3)).toMatchObject({ result: true, error: null });
+    expect(lines.find((l) => l.id === 4).error).toEqual([23, 'duplicate share']);
+    expect(seen.map((e) => [e.conn, e.k, e.why, e.hs])).toEqual([[1, 4096, null, 5], [1, 4096, 'duplicate share', null]]);
+    expect(pool.stats.logins).toEqual([{ conn: 1, agent: 'test/1', type: null, params: 'wallet,worker,agent' }]);
+    expect(pool.stats.methods).toEqual({ 'mining.subscribe': 1 });
+  }, 30000);
+
   it('serve mode sums up what it saw when its time is up, and fails a run that sent nothing', () => {
     // Port 0 is no port a CLI could be given: this only shows the end of a run.
     const r = spawnSync(process.execPath, [path.join(PROBES, 'verify-pool.js'), 'serve', '0', '1', '235', 'plain'],

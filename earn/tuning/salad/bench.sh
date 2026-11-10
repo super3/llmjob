@@ -24,8 +24,14 @@
 # records each stratum line, and each measured run ends with that miner's shares decoded ("share ..." lines): m, n,
 # k and rank, the tile's rows, and the operand bytes the proof carries. bench.py's command fetches sharetap.py at
 # the same commit.
+#
+# VPOOL=BITS (NVIDIA only, with BASE_SHA): every miner mines on the stand-in pool (earn/native/probes/verify-pool.js
+# at BASE_SHA, run here under Node 22) at the target 2^BITS instead of on Kryptex. It checks each share as the spec's
+# verifier does and refuses duplicates, so each measured run ends with a "credit" line: the shares it accepted in
+# the run's window, and the rate they prove, accepted x 2^(256-BITS) MACs over the window (TH/s), beside the miner's
+# own figure. SECS and WARM set the run and warm-up lengths (300 and 60).
 export DEBIAN_FRONTEND=noninteractive
-POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=300; WARM=60
+POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM:-60}
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
 # this file by commit, so a run keeps the versions it started with. Until 28 October: v0.6.0, PeakMiner 2.17.6
 # and SRBMiner 3.7.1 (the GTX and AMD tables); until 9 November: v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.2.
@@ -102,7 +108,7 @@ if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.
 fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
-  ${AMD:+clinfo} ${TAP:+python3} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
+  ${AMD:+clinfo} ${TAP:+python3} ${VPOOL:+git} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
 if [ -n "$OCL" ] && [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
   mkdir -p /etc/OpenCL/vendors && echo libnvidia-opencl.so.1 > /etc/OpenCL/vendors/nvidia.icd
 fi
@@ -166,6 +172,44 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
     amd_ours
   fi ;;
 esac
+# VPOOL: the stand-in pool on 127.0.0.1:3334, for the whole box. Its share log has a line per share:
+# "<ms> <connection> <k> ok|<reason> <hs>".
+if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
+  [ -n "${BASE_SHA:-}" ] || fail "VPOOL needs BASE_SHA"
+  mkdir -p /opt/node && curl -fsSL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
+    | tar xz -C /opt/node --strip-components=1 || fail "node download"
+  { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
+      && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
+      && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  cd /opt/b
+  PEARL_SHARE_LOG=/opt/b/vp.shares /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-pool.js serve 3334 864000 \
+    "$VPOOL" > /opt/b/vp.out 2> /opt/b/vp.err &
+  VP_PID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q listening /opt/b/vp.err && break; sleep 1; done
+  grep -q listening /opt/b/vp.err || fail "verify-pool: $(tail -c 200 /opt/b/vp.err)"
+  say "$(grep -m1 listening /opt/b/vp.err) (commit ${BASE_SHA:0:12})"
+  POOL_HOST=127.0.0.1; POOL_PORT=3334
+fi
+# credit NAME T0 T1: the stand-in's shares in [T0, T1) (epoch seconds), as one line: accepted, duplicates, other
+# rejects, the rate the accepted ones prove over the window and over the window less its first 60 s, accepted a
+# minute, and the mean hs (the hashrate a miner puts in its submits, if it does).
+credit() {
+  awk -v n="$1" -v a="$2" -v b="$3" -v bits="$VPOOL" '
+    BEGIN { a *= 1000; b *= 1000; w = 2 ^ (256 - bits) }
+    $1 >= a && $1 < b {
+      if ($4 == "ok") { ok++; if ($1 >= a + 60000) ok60++; m = int(($1 - a) / 60000); pm[m]++ }
+      else if ($4 == "\"duplicate_share\"") dup++
+      else { rej++; why = $4 }
+      if ($5 != "null") { hs += $5; nhs++ }
+    }
+    END {
+      s = (b - a) / 1000; mins = ""
+      for (i = 0; i < int(s / 60 + 0.999); i++) mins = mins (i ? "," : "") (pm[i] + 0)
+      printf "credit %s secs=%d bits=%d ok=%d dup=%d rej=%d ths=%.2f ths60=%.2f hs=%s permin=%s%s\n", n, s, bits, ok,
+        dup, rej, ok * w / s / 1e12, (s > 60 ? ok60 * w / (s - 60) / 1e12 : 0), (nhs ? sprintf("%.4g", hs / nhs) : "none"),
+        mins, (rej ? " why=" substr(why, 1, 120) : "")
+    }' /opt/b/vp.shares 2>/dev/null
+}
 # TAP=1: the miners connect to the relay, which passes everything on to the pool and records it.
 if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
   [ -f /root/sharetap.py ] || fail "no sharetap.py beside bench.sh"
@@ -239,6 +283,7 @@ run() {
   while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do
     sleep 15; local t=$(( $(date +%s) - t0 ))
     if ! kill -0 $pid 2>/dev/null; then
+      [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
       say "exited $name t=$t: rc=$(cat "/opt/b/$name.rc" 2>/dev/null || echo '?') $(tr '\r\n' '  ' < "/opt/b/$name.log" | tail -c 300)"
       # SRBMiner 3.8.6 quit in its first seconds with no output on a 2080 Ti (9 November): say what it says about
       # itself, and any library it can't find.
@@ -258,6 +303,7 @@ run() {
   if [ "$name" = wild ]; then
     say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -a -v '^\s*$' | grep -a -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 400)"
   fi
+  [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
   kill $pid 2>/dev/null; stop_all
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
@@ -269,5 +315,11 @@ run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get 
 for m in "${MINERS[@]}"; do
   if [ "$m" = ours ]; then run ours "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
 done
+if [ -n "${VP_PID:-}" ]; then
+  # The stand-in's summary: logins (agent and type, never a wallet), methods it refused, reasons, in 400-char pieces.
+  kill -TERM "$VP_PID"; wait "$VP_PID" 2>/dev/null
+  tail -n 1 /opt/b/vp.out | jq -c '{connections, jobs, byK, reasons, methods, logins}' 2>/dev/null | fold -w 400 \
+    | while IFS= read -r l; do say "vpool $l"; done
+fi
 say "all done"
 sleep infinity
