@@ -1626,6 +1626,108 @@ describe('mining', () => {
     });
   });
 
+  // The core clock offset trial: the plan is shared/coreOffset's
+  // (coreOffset.test.js) and the trial is PearlMiner's. The GUI's part is the
+  // same as for the memory clock, and its one switch is LLMJOB_MINE_CORE_OFFSET
+  // in the app's environment. Off unless that says auto.
+  describe('the core clock offset', () => {
+    const RTX4090 = { index: 0, major: 8, minor: 9, driverMajor: 610 };
+    const oneCard = (ctx) => {
+      ctx.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+      ctx.probe.detectCudaCards.mockResolvedValue([RTX4090]);
+    };
+    const logged = (ctx) => ctx.sent('miner:log').filter((l) => /core clock offset|CORE_OFFSET/.test(l.line));
+    const ENV = 'LLMJOB_MINE_CORE_OFFSET';
+    let hadEnv, envBefore;
+    beforeEach(() => {
+      hadEnv = Object.prototype.hasOwnProperty.call(process.env, ENV);
+      envBefore = process.env[ENV];
+      delete process.env[ENV];
+    });
+    afterEach(() => {
+      if (hadEnv) process.env[ENV] = envBefore;
+      else delete process.env[ENV];
+    });
+
+    it('is not tried unless asked for, with nothing in the log', async () => {
+      const ctx = await boot();
+      oneCard(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mineCoreOffsetTrial: [] }));
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('is tried with LLMJOB_MINE_CORE_OFFSET=auto, and the log says how little was measured', async () => {
+      process.env[ENV] = 'auto';
+      const ctx = await boot();
+      oneCard(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mineCoreOffsetTrial: [0] }));
+      expect(logged(ctx)).toEqual([{
+        level: 'info',
+        line: 'LLMJOB_MINE_CORE_OFFSET=auto: trying core clock offsets on GPU 0, each step kept only if the card '
+          + 'still computes right and mines faster (measured on one RTX 4090 only; it runs a card above the clock '
+          + 'its maker set)',
+      }]);
+      // Like the memory clock's, the plan rides on the start call and is never saved.
+      for (const c of ctx.fs.writeFileSync.mock.calls.filter((w) => w[0] === SETTINGS_PATH)) {
+        expect(String(c[1])).not.toContain('mineCoreOffset');
+      }
+    });
+
+    // 'auto' mode co-runs the LLM in the GUI, always.
+    it('is dropped with a warning when the LLM co-runs', async () => {
+      process.env[ENV] = 'auto';
+      const ctx = await boot();
+      oneCard(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mineCoreOffsetTrial: [] }));
+      expect(logged(ctx)).toEqual([{
+        level: 'warn',
+        line: 'LLMJOB_MINE_CORE_OFFSET ignored: the LLM co-runs with the miner, and a model is never served '
+          + 'from a card running above its own clock',
+      }]);
+    });
+
+    it('ignores a bad LLMJOB_MINE_CORE_OFFSET with a warning, and tries nothing', async () => {
+      process.env[ENV] = '150';
+      const ctx = await boot();
+      oneCard(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ mineCoreOffsetTrial: [] }));
+      expect(logged(ctx)).toEqual([{
+        level: 'warn',
+        line: 'LLMJOB_MINE_CORE_OFFSET=150 ignored (must be auto or 0); no core clock offset is tried',
+      }]);
+    });
+
+    // START LLM while mining-only runs: the miner is kept, and the one call
+    // that releases its memory clocks also ends its offset trial and puts its
+    // cards back at 0 (PearlMiner.releaseMemClocks), before the model starts.
+    it('is ended when START LLM joins a running miner, by the call that releases the memory clocks', async () => {
+      process.env[ENV] = 'auto';
+      const ctx = await boot();
+      wireHealth(ctx, (cb, req) => req.emit('error', new Error('down')));
+      ctx.probe.detectVram.mockResolvedValue({ totalMb: 24000, usedMb: 1000 });
+      oneCard(ctx);
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const miner = ctx.PearlEngine.instances[0];
+      expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ mineCoreOffsetTrial: [0] }));
+      let llmsAtRelease = null;
+      miner.releaseMemClocks.mockImplementation(() => { llmsAtRelease = ctx.LlmManager.instances.length; });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'auto' });
+      await flush();
+      expect(miner.releaseMemClocks).toHaveBeenCalledTimes(1);
+      expect(llmsAtRelease).toBe(0);
+      expect(ctx.PearlEngine.instances).toHaveLength(1);
+    });
+  });
+
   // Which build of the core loads is the factory's call (pearlCore.test.js); the
   // GUI hands it the mining cards and nvidia-smi's compute capabilities, and
   // puts what it says in the miner log.

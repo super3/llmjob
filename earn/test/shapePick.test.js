@@ -61,6 +61,15 @@ describe('withShapePick', () => {
     expect(withShapePick(undefined)).toBeNull();
   });
 
+  // main/pearlCore hangs the addon's core clock offset calls on the factory it
+  // returns, and the miner reads them off the factory it is given.
+  test('keeps the factory\'s core clock offset calls on the factory it returns', () => {
+    const create = () => null;
+    create.clockOffsets = { readCoreOffset: () => ({ ok: true }), setCoreOffset: () => ({ ok: true }) };
+    expect(withShapePick(create, { store: memStore(), env: {} }).clockOffsets).toBe(create.clockOffsets);
+    expect(withShapePick(() => null, { store: memStore(), env: {} }).clockOffsets).toBeUndefined();
+  });
+
   test('first start: asks for a trial, caches the pick and logs it', () => {
     const store = memStore();
     const lines = [];

@@ -5,7 +5,7 @@ const {
   buildAuthorize, buildSubmit, encode, parseMessage, isKryptexHost,
 } = require('../shared/miner/stratum');
 const {
-  PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52, profileForK,
+  PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52, profileForK, difficultyAdjustmentFactor,
 } = require('../shared/miner/pearlhash');
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
@@ -13,7 +13,10 @@ const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
+const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
+const coreOffsetTrial = require('../shared/coreOffsetTrial');
+const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -21,9 +24,9 @@ const memClockTrial = require('../shared/memClockTrial');
 // here is protocol, bookkeeping and safety; none of it touches the GPU directly.
 //
 // Everything IO is injected (connect → a duplex-ish socket, createCore → the
-// native core factory, clocks → gpuClocks' nvidia-smi calls) so the entire state
-// machine is unit-testable against a fake socket and a fake core, with no
-// network and no GPU.
+// native core factory, clocks → gpuClocks' nvidia-smi calls, offsets → the
+// addon's core clock offset calls) so the entire state machine is unit-testable
+// against a fake socket and a fake core, with no network and no GPU.
 //
 // Emits, for PearlEngine to translate into the events the app shows:
 //   log            { level, line }
@@ -89,6 +92,33 @@ const SALT_RUN = 2 ** 32;
 // (native/src/pearl_host.cu, pearl_host_create's pre-flight).
 const NO_VRAM_RE = /not enough free VRAM/i;
 
+// The job a card searches while a step of its core clock offset trial is
+// checked (see _startOffsetCheck). Its ids start with OFFSET_CHECK_JOB, and its
+// header is no block's, so nothing found for it could be a share.
+const OFFSET_CHECK_JOB = 'offset-check-';
+const OFFSET_CHECK_HEADER = Buffer.alloc(76, 0x5a);
+// Each card's offset trial starts this long after the one planned before it. A
+// hit check recomputes about 30 hits a second on the miner's event loop for a
+// few seconds, 10 at most, and every card of a rig would otherwise check at the
+// same moment.
+const OFFSET_STAGGER_MS = 15 * 1000;
+// An RTX 30 card may spend its first minutes timing its launch shapes against
+// each other (shared/shapePick), a new shape every few seconds. Its offset
+// trial waits until that is over, or the two would read each other's changes.
+const OFFSET_SHAPE_WAIT_MS = (SHAPE_TRIAL_SECS + 30) * 1000;
+
+// An offset as the log says it: +50 MHz.
+function plusMhz(mhz) {
+  return (mhz > 0 ? '+' : '') + mhz + ' MHz';
+}
+
+// What to add to a line about an offset call NVML refused for want of rights
+// (`r` is main/gpuClockOffset's answer). No sudo is named: the call is made by
+// this process, so it is the process that needs them.
+function rightsNote(r) {
+  return r.noRights ? ': setting a clock offset needs root or administrator rights' : '';
+}
+
 // The card a core opened, as { index, name }, or null when it won't say.
 //
 // A core built before the device choice existed has no `device` at all, and the
@@ -111,14 +141,18 @@ function archOf(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, restartMs, clocks, agent, now } = {}) {
+  constructor({ connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
     this.restartMs = restartMs == null ? RESTART_MS : restartMs;
     this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
-    this.now = now || Date.now;             // the memory clock trial's clock
+    // { readCoreOffset, setCoreOffset }: the core clock offset calls of the addon
+    // the cores come from, which main/pearlCore hangs on the createCore it
+    // returns. A createCore without them is one whose core has no such calls.
+    this.offsets = offsets || (createCore && createCore.clockOffsets) || gpuClockOffset.NO_OFFSETS;
+    this.now = now || Date.now;             // the clock trials' clock
     this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
     this.restartTimers = new Set();
@@ -193,6 +227,19 @@ class PearlMiner extends EventEmitter {
     // ones this run has finished, as card index -> kept (see _startMemClockTrial).
     this.memClockTrials = new Map();
     this.memClockVerdicts = new Map();
+    // Core clock offsets (see _planCoreOffset). `coreOffsetSet` is card index ->
+    // the MHz this run has that card at, for the cards it has above 0, so stop()
+    // puts back exactly those. Like memClockLocked, start() does not clear it.
+    this.coreOffsetSet = new Map();
+    // Offset trials waiting or under way, as card index -> { steps, notBefore,
+    // trial, mhz, check }; the cards whose trial is over or will not run, as
+    // card index -> the MHz kept (0 for none); and the cards this run has had
+    // above 0, whose hits are recomputed before they are sent (see _onHit).
+    this.coreOffsetTrials = new Map();
+    this.coreOffsetVerdicts = new Map();
+    this.coreOffsetChecked = new Set();
+    // Hit checks started, which numbers their jobs.
+    this.offsetChecks = 0;
     // Cards set aside while the local LLM answers a prompt on them, as
     // slot -> device (see pauseCards). Not in `cores`, so jobs, hashrate ticks
     // and stop() pass them by, but still this run's cards.
@@ -236,6 +283,10 @@ class PearlMiner extends EventEmitter {
     // Each run tries its cards' locks afresh: the power limit may have changed.
     this.memClockTrials = new Map();
     this.memClockVerdicts = new Map();
+    // And their core clock offsets: what a card can do changes with heat.
+    this.coreOffsetTrials = new Map();
+    this.coreOffsetVerdicts = new Map();
+    this.coreOffsetChecked = new Set();
     // A new run asks for compressed proofs again, whatever the last one found.
     this.askGzip = true;
     this.gzipRejects = 0;
@@ -440,6 +491,7 @@ class PearlMiner extends EventEmitter {
         }
       }
     }
+    this._planCoreOffset(core, device);
     return entry;
   }
 
@@ -580,9 +632,15 @@ class PearlMiner extends EventEmitter {
   // wrong. Idempotent, and a later stop() finds nothing left to release. A card
   // restarted after this does not lock again (see _openCore); the next start
   // plans the locks afresh.
+  //
+  // The same goes for core clock offsets, and more so: every trial ends, and
+  // every card goes back to offset 0 and stays there for the run. An offset is
+  // only kept while this miner checks what the card computes, and nothing
+  // checks what a model computes.
   releaseMemClocks() {
     this.memClocksReleased = true;
     this._releaseMemClocks();
+    this._releaseCoreOffsets();
   }
 
   // Release one card's lock, if this run holds it. Also used when a single core
@@ -610,6 +668,287 @@ class PearlMiner extends EventEmitter {
       level: 'error',
       line: 'could not release the memory clock on GPU ' + index + ' (' + r.error + '). '
         + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i ' + index + ' -rmc',
+    });
+    return false;
+  }
+
+  // A card has opened. If the plan names it, it gets a core clock offset trial:
+  // it mines turns at offset 0 and at each step up, every step first having its
+  // hits recomputed, and keeps the highest step that is right and faster
+  // (shared/coreOffsetTrial has the method and the reasons). The plan is
+  // settings.mineCoreOffsetTrial, the card indices from shared/coreOffset's
+  // planCoreOffsets, which the shells run: like the memory clock's plan, it
+  // needs the compute capabilities, the request and whether an LLM co-runs,
+  // none of which the miner can see.
+  //
+  // Once a run for each card, and only on the card's first opening. A card
+  // opened again, after a fault or a pause, comes back at offset 0 and stays
+  // there: whatever closed its core ended its trial and took its offset off
+  // (see _closedCoreOffset), and a card that has just faulted is no card to
+  // run above its own clock. Nor does any card start a trial once
+  // releaseMemClocks() has run: an LLM is on the cards.
+  //
+  // A rig that did not ask is not touched: with no card in the plan, NVML is
+  // never called.
+  //
+  // These lines reach both shells, like the memory clock's, so they name no
+  // flag. The shell's plan line says what was asked for.
+  _planCoreOffset(core, device) {
+    const planned = (!this.memClocksReleased && this.settings.mineCoreOffsetTrial) || [];
+    if (!planned.length) return;
+    // A core that does not say which card it opened ignores the card it was
+    // asked for, so its index is a guess (see _lockMemClock).
+    if (!device) {
+      this.emit('log', {
+        level: 'warn',
+        line: 'core clock offset not tried: this pearl_core.node does not say which GPU it opened',
+      });
+      return;
+    }
+    const { index } = device;
+    if (!planned.includes(index) || this.coreOffsetVerdicts.has(index)) return;
+    // The trial was asked for, so not running it is a warning, once a card.
+    const notRun = (why) => {
+      this.coreOffsetVerdicts.set(index, 0);
+      this.emit('log', {
+        level: 'warn',
+        line: 'core clock offset trial not run on GPU ' + index + why + '. Mining continues at the card\'s own clock.',
+      });
+    };
+    const at = this.offsets.readCoreOffset(index);
+    if (!at.ok) { notRun(' (' + at.error + ')' + rightsNote(at)); return; }
+    const steps = coreOffsetTrial.stepsFor(at.max);
+    if (!steps.length) {
+      notRun(': its driver allows at most ' + plusMhz(at.max) + ', less than the first step of '
+        + plusMhz(coreOffsetTrial.STEPS_MHZ[0]));
+      return;
+    }
+    // The trial starts from offset 0, whatever the card was left at. Setting it
+    // here is also how a rig without the rights for it hears so at the start,
+    // not a turn in.
+    const zero = this.offsets.setCoreOffset(index, 0);
+    if (!zero.ok) {
+      notRun(' (' + zero.error + ')' + rightsNote(zero));
+      return;
+    }
+    if (at.mhz !== 0) {
+      this.emit('log', {
+        level: 'info',
+        line: 'GPU ' + index + ' had a core clock offset of ' + plusMhz(at.mhz) + ', left by an earlier run or '
+          + 'set by another tool; its trial starts from 0',
+      });
+    }
+    // When the trial may start: after its turn in the stagger, and after the
+    // launch shape trial of a card that has shapes to time.
+    const shapes = Array.isArray(core.shapes) && core.shapes.length > 1;
+    const notBefore = this.now() + OFFSET_STAGGER_MS * this.coreOffsetTrials.size
+      + (shapes ? OFFSET_SHAPE_WAIT_MS : 0);
+    this.coreOffsetTrials.set(index, { steps, notBefore, trial: null, mhz: 0, check: null });
+    this.emit('log', {
+      level: 'info',
+      line: 'core clock offset trial on GPU ' + index + ': mining ' + coreOffsetTrial.TURN_MS / 1000
+        + ' s at each of 0, ' + steps.map((mhz) => '+' + mhz).join(', ') + ' MHz and 0 again'
+        + (this.memClockTrials.has(index) ? ', once the memory clock trial is over' : '') + '; each step first has '
+        + coreOffsetTrial.CHECK_HITS + ' of its hits recomputed, and the highest step that is right and faster is kept',
+    });
+  }
+
+  // One hashrate sample from a card. Moves its offset trial on, if it has one.
+  _feedCoreOffsetTrial(index, th) {
+    const t = this.coreOffsetTrials.get(index);
+    if (!t) return;
+    const now = this.now();
+    if (!t.trial) {
+      // The memory clock trial goes first, so the two never overlap: each would
+      // read the other's changes as its own. The lock it kept stays in place.
+      // The trial's first turn then starts on a sample, with the card mining.
+      if (this.memClockTrials.has(index) || now < t.notBefore) return;
+      t.trial = coreOffsetTrial.createTrial(now, t.steps);
+      return;
+    }
+    this._stepCoreOffset(index, t, coreOffsetTrial.feed(t.trial, th, now));
+  }
+
+  // Do what the trial says next (see coreOffsetTrial.feed): move the offset,
+  // start a step's hit check or end one, and at the end keep the step it chose.
+  // The order matters. The offset goes up before the check's job goes out, and
+  // comes down before the pool's job comes back.
+  _stepCoreOffset(index, t, step) {
+    if (!step) return;
+    const entry = this.cores.find((c) => c.device && c.device.index === index);
+    // Whatever closes a card's core ends its trial first (see
+    // _closedCoreOffset), so a card on trial is mining. Should one ever not
+    // be, its trial ends here, at offset 0, and not with a throw in an event
+    // handler.
+    if (!entry) {
+      this._dropCoreOffset(index, false);
+      return;
+    }
+    const moved = step.offset === t.mhz || this._moveCoreOffset(index, t, step.offset);
+    if (moved && step.check) {
+      this._startOffsetCheck(index, t, entry);
+      return;
+    }
+    // The check is over, passed or failed: back to the pool's job, whichever is
+    // current by now.
+    if (t.check) {
+      t.check = null;
+      this._giveJob(entry);
+    }
+    if (moved && step.done) this._endCoreOffsetTrial(index, step);
+  }
+
+  // Set a card on trial to `mhz`. True when it is there. False ends the trial:
+  // NVML refused, which it does not do halfway through a trial without a
+  // reason, so the card goes back to 0 and stays there.
+  _moveCoreOffset(index, t, mhz) {
+    let said = false;
+    if (mhz !== 0) {
+      const r = this.offsets.setCoreOffset(index, mhz);
+      if (r.ok) {
+        this.coreOffsetSet.set(index, mhz);
+        // From here every hit this card sends is recomputed first (see _onHit).
+        this.coreOffsetChecked.add(index);
+        t.mhz = mhz;
+        return true;
+      }
+      said = true;
+      this.emit('log', {
+        level: 'warn',
+        line: 'core clock offset trial ended on GPU ' + index + ' (' + plusMhz(mhz) + ': ' + r.error + ')'
+          + rightsNote(r) + '. Mining continues at the card\'s own clock.',
+      });
+    }
+    // Back to 0: asked for by the trial, or because a step could not be set. A
+    // reset that fails has said so itself (see _resetCoreOffset).
+    if (this._resetCoreOffset(index, true) && !said) {
+      t.mhz = 0;
+      return true;
+    }
+    this.coreOffsetTrials.delete(index);
+    this.coreOffsetVerdicts.set(index, 0);
+    return false;
+  }
+
+  // Check a step: hand the card a job of the miner's own with a target easy
+  // enough to hit about 30 times a second (coreOffsetTrial.checkBound, from the
+  // card's rate), as native/probes/verify-hits.js does. Its hits come back
+  // through _onHit, which sends them to _onOffsetCheckHit and never to the
+  // pool. A job the pool sends meanwhile is kept as the current job, as ever,
+  // and this card is handed it when the check ends (see _giveJob).
+  _startOffsetCheck(index, t, entry) {
+    const { profile } = entry;
+    this.offsetChecks += 1;
+    const jobId = OFFSET_CHECK_JOB + this.offsetChecks;
+    const bound = coreOffsetTrial.checkBound(this.hashrates.get(index), difficultyAdjustmentFactor(profile));
+    t.check = {
+      jobId, bound, profile, jobKey: hash(Buffer.concat([OFFSET_CHECK_HEADER, buildConfig52(profile)])),
+    };
+    entry.core.setJob({ header: OFFSET_CHECK_HEADER, target: bound, jobId });
+  }
+
+  // A hit of a check's job, recomputed from scratch as a pool's verifier would
+  // (shared/miner/checkHit). One that is for no check under way is dropped: the
+  // core finishes the batches it had queued after its job changes, so a few
+  // arrive once their check is over.
+  _onOffsetCheckHit(hit, device) {
+    const t = device && this.coreOffsetTrials.get(device.index);
+    if (!t || !t.check || t.check.jobId !== hit.jobId) return;
+    const { jobKey, profile, bound } = t.check;
+    const why = checkHit(hit, jobKey, profile)
+      || (meetsTarget(hit.jackpotHash, bound) ? null : 'the hash does not meet the check\'s target');
+    this._stepCoreOffset(device.index, t, coreOffsetTrial.hit(t.trial, why, this.now()));
+  }
+
+  // The trial is over, and the card is at the offset it kept. Say what was
+  // measured: the rate at 0 and at each step that had a turn, and the step that
+  // failed its check, if one did.
+  _endCoreOffsetTrial(index, v) {
+    this.coreOffsetTrials.delete(index);
+    this.coreOffsetVerdicts.set(index, v.offset);
+    const rates = v.baseTh == null ? ''
+      : ': ' + v.baseTh.toFixed(1) + ' TH/s at 0' + v.rates.map((r) => ', '
+        + (r.th == null ? 'no reading' : r.th.toFixed(1)) + ' at ' + plusMhz(r.mhz)).join('');
+    const failed = v.failed ? '; ' + plusMhz(v.failed.mhz) + ' failed its hit check (' + v.failed.why + ')' : '';
+    this.emit('log', {
+      level: 'info',
+      line: (v.offset
+        ? 'core clock offset kept at ' + plusMhz(v.offset) + ' on GPU ' + index + ' while mining (+'
+          + (v.gain * 100).toFixed(1) + '%)'
+        : 'core clock offset left at 0 on GPU ' + index + ' (' + v.reason + ')') + rates + failed,
+    });
+  }
+
+  // Put one card back at offset 0, if this run has it above. True unless the
+  // reset failed. `quiet` leaves out the line for a reset that worked: the
+  // trial goes back to 0 for its last turn, and says what it found at the end.
+  _resetCoreOffset(index, quiet) {
+    const mhz = this.coreOffsetSet.get(index);
+    if (!this.coreOffsetSet.delete(index)) return true;
+    const r = this.offsets.setCoreOffset(index, 0);
+    if (r.ok) {
+      if (!quiet) this.emit('log', { level: 'info', line: 'core clock offset back to 0 on GPU ' + index });
+      return true;
+    }
+    // nvidia-smi has no switch for an offset, so there is no command to give.
+    this.emit('log', {
+      level: 'error',
+      line: 'could not set the core clock offset back to 0 on GPU ' + index + ' (' + r.error + '). The card '
+        + 'stays at ' + plusMhz(mhz) + ' until the PC restarts or the NVIDIA driver reloads, or until mining '
+        + 'next starts with the offset trial on, with the rights to set it.',
+    });
+    return false;
+  }
+
+  // End one card's offset for the rest of the run: its trial, if one is waiting
+  // or under way, and the offset it has, back to 0. True when there was either.
+  // A card whose hit check this cuts short goes back to the pool's job, if it
+  // is still mining.
+  _dropCoreOffset(index, quiet) {
+    const t = this.coreOffsetTrials.get(index);
+    if (!t && !this.coreOffsetSet.has(index)) return false;
+    this.coreOffsetTrials.delete(index);
+    this.coreOffsetVerdicts.set(index, 0);
+    this._resetCoreOffset(index, quiet);
+    const entry = t && t.check && this.running && this.cores.find((c) => c.device && c.device.index === index);
+    if (entry) this._giveJob(entry);
+    return true;
+  }
+
+  // A card's core has closed mid-run: it failed, or was set aside for a
+  // prompt. Its offset goes with it, at once and not when the card next opens:
+  // whatever uses the card meanwhile must find it at its own clock. And for
+  // the rest of the run (see _planCoreOffset).
+  _closedCoreOffset(index) {
+    if (!this._dropCoreOffset(index, true)) return;
+    this.emit('log', {
+      level: 'info',
+      line: 'core clock offset ended on GPU ' + index + ': the card stopped mining, and it gets none for the '
+        + 'rest of this run',
+    });
+  }
+
+  // Put every card back at offset 0 and end every trial, before 'stopped' is
+  // emitted and before an LLM joins the cards (see releaseMemClocks).
+  _releaseCoreOffsets() {
+    for (const index of new Set([...this.coreOffsetTrials.keys(), ...this.coreOffsetSet.keys()])) {
+      this._dropCoreOffset(index, false);
+    }
+  }
+
+  // A hit about to be sent from a card this run has had above its own clock,
+  // recomputed first (shared/miner/checkHit: 4.6 ms). True when it is right. A
+  // wrong one is not sent, and the card goes back to offset 0 for the rest of
+  // the run: a step that passed its check has since stopped computing right,
+  // as a card can when it warms up.
+  _offsetHitRight(hit, jobKey, profile, device) {
+    const why = checkHit(hit, jobKey, profile);
+    if (!why) return true;
+    const ended = this._dropCoreOffset(device.index, true);
+    this.emit('log', {
+      level: 'error',
+      line: cardName(device) + ': a hit came out wrong (' + why + '). No share was sent'
+        + (ended ? ', and this card gets no core clock offset for the rest of this run.' : '.'),
     });
     return false;
   }
@@ -783,7 +1122,11 @@ class PearlMiner extends EventEmitter {
       try { c.core.stop(); } catch (e) { /* already gone */ }
       // Its last figure, at k 4096, leaves the rig total until the new core
       // reports, and the board too if it does not open (as in _onCoreError).
-      if (c.device) this.hashrates.delete(c.device.index);
+      // Its core clock offset goes with its core, as for any card closed mid-run.
+      if (c.device) {
+        this.hashrates.delete(c.device.index);
+        this._closedCoreOffset(c.device.index);
+      }
       this.hashrate = this.totalHashrate();
       let entry;
       try {
@@ -903,7 +1246,10 @@ class PearlMiner extends EventEmitter {
       if (device) this.hashrates.set(device.index, th);
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', th, device);
-      if (device) this._feedMemClockTrial(device.index, th);
+      if (device) {
+        this._feedMemClockTrial(device.index, th);
+        this._feedCoreOffsetTrial(device.index, th);
+      }
     });
     core.on('error', (err) => this._onCoreError(core, device, err));
     // The profile is this core's, bound here: a hit still on its way from a
@@ -946,6 +1292,7 @@ class PearlMiner extends EventEmitter {
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', 0, device);
       this._releaseMemClock(device.index);
+      this._closedCoreOffset(device.index);
     } else {
       this.emit('log', { level: 'error', line: 'the GPU stopped: ' + message });
     }
@@ -1046,6 +1393,11 @@ class PearlMiner extends EventEmitter {
   _giveJob(entry) {
     const job = this.job;
     if (!job) return;
+    // A card in a hit check keeps the check's job (see _startOffsetCheck). It
+    // is handed the pool's job when the check ends, whichever is current then,
+    // so a job that arrives during a check is not lost.
+    const onTrial = entry.device && this.coreOffsetTrials.get(entry.device.index);
+    if (onTrial && onTrial.check) return;
     const bound = shareBound(job.target, entry.profile);
     if (bound == null) {
       if (!this.tooEasy.has(entry.profile.k)) {
@@ -1088,8 +1440,10 @@ class PearlMiner extends EventEmitter {
         this.hashrates.delete(index);
         this.hashrate = this.totalHashrate();
         this.emit('hashrate', 0, c.device);
-        // A model must never run on a locked card (see releaseMemClocks).
+        // A model must never run on a locked card (see releaseMemClocks), or
+        // on one above its own clock.
         this._releaseMemClock(index);
+        this._closedCoreOffset(index);
       }
       done.push(c.device);
     }
@@ -1182,6 +1536,12 @@ class PearlMiner extends EventEmitter {
   // mines: the bound, the job_key and the proof are all at its k. `check` is
   // set for a card whose hits are checked (see _openCore).
   _onHit(hit, wallet, worker, device, profile, check) {
+    // A hit of a hit check's job is the check's, and never goes to the pool
+    // (see _startOffsetCheck).
+    if (String(hit.jobId).startsWith(OFFSET_CHECK_JOB)) {
+      this._onOffsetCheckHit(hit, device);
+      return;
+    }
     // A card one of whose hits failed the check sends nothing more, not even a
     // hit already on its way from its stopped core (see _wrongHit).
     if (check && check.slot.wrongHit) return;
@@ -1232,6 +1592,10 @@ class PearlMiner extends EventEmitter {
     // buildShareProof checks, so a proof that does not verify stops the card
     // too, as a wrong tree or leaf readout on the card would give every hit.
     if (check && !this._checkedHit(check, hit, jobKey, profile, device)) return;
+    // So is a hit of a card this run has had above its own clock, at any time
+    // since: a batch computed at the offset can still report after it is gone.
+    if (!check && device && this.coreOffsetChecked.has(device.index)
+      && !this._offsetHitRight(hit, jobKey, profile, device)) return;
     const plainProof = buildShareProof(hit, jobKey, profile, { gzip });
     if (!plainProof) {
       this.emit('log', { level: 'error', line: 'dropping a hit whose proof does not verify locally' });
@@ -1308,6 +1672,7 @@ class PearlMiner extends EventEmitter {
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', 0, device);
       this._releaseMemClock(device.index);
+      this._closedCoreOffset(device.index);
     }
     // The last card going is the end of mining, as in _cardDown.
     if (this._outOfCards()) {
@@ -1374,6 +1739,7 @@ class PearlMiner extends EventEmitter {
       try { c.core.stop(); } catch (e) { /* that core is already gone */ }
     }
     this._releaseMemClocks();
+    this._releaseCoreOffsets();
     this.cores = [];
     this.paused.clear();
     this.hashrates.clear();
