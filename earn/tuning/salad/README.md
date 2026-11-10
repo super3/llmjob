@@ -130,7 +130,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    boxes (24 of the 277 margin leaves in 12.6 days whose readings were kept; on 20 October 5070-31 left a
    PC at 133 TH/s for one reading of 3 between two of 133). A PC that really slows shows it in 2 of 3
    readings a minute later. A PC with no mining reading 10 min after we got it is left too, and so is one
-   whose newest reading is 6 min old (its miner stopped). Readings come from Salad's log service, which
+   whose newest reading is 6 min old (its miner stopped). Since 10 November a box still printing box.sh's
+   setup lines (`[card]`, `[run] release ... ready`) gets 10 min from the newest one, up to 30 min on the
+   PC, and the "no share" rule waits for it the same way: 5060ti-370's setup lines came 15 min into a PC it
+   had already been moved off. Readings come from Salad's log service, which
    sometimes fails for minutes at a time (6 in a row once), so both clocks count only up to the last
    log read that worked, and neither leaves a PC the pool got a share from in the last 6 min. After 10
    min of failed reads there's one `WARN` event. A PC's lines can also reach the log service minutes late, so
@@ -154,7 +157,10 @@ With `yield: "auto"` the rules count on that credit ratio. On that day it would 
    round it ran: on 29 October one round read 2070-88 not running after 1 h 53 m mining, and the PC was
    left and bad-listed as if its image had never loaded.
 6. **"outbound port N blocked"** in the logs: reallocate, and put the PC on the bad list (below) for
-   boxes that check the same port. Before it starts, box.sh checks the port of the box's pool:
+   boxes that check the same port. Since 10 November a Kryptex box's FAIL line also says which of
+   Kryptex's TLS port 8048, 7048 and 443 on portquiz.net (which answers on every port) and the Monero pool's
+   port the PC lets out, to tell whether a relay on 443 would get round the block. Before it starts, box.sh
+   checks the port of the box's pool:
    HeroMiners' 1200, or Kryptex's own host and port (`kryptex_host`, 7048) on a Kryptex box. So a
    Kryptex box keeps a PC that blocks only 1200, and a HeroMiners box one that blocks only 7048. A PC
    found blocking both stays listed for both: on 19 October e8c084ab blocked 1200 for a HeroMiners box,
@@ -184,7 +190,9 @@ doesn't count toward its 3. (On 12 October one 2080 Ti
 PC that overheated to 66 TH/s was handed to a second group two hours later.) Since 23 October a PC left for
 its margin (rule 5) keeps the TH/s it was left at, and a group whose own price and pool that rate clears 10%
 at keeps it (a `NOTE ... keeps PC` event) and is judged on its own readings from there. Before, a PC left at
-high was refused at medium too. A PC off the bad list (after 24 h) is still left the same way, uncounted,
+high was refused at medium too. Since 10 November a group already mining on a PC that was listed only for
+not mining (a reading from it, or a share since it left its last PC, in the last 10 min) keeps it and the
+listing goes: 52f2bbd7 was refused twice that day by 5060 Tis that had just sent shares from it. A PC off the bad list (after 24 h) is still left the same way, uncounted,
 when the rate a group of the class last measured there in `rate_days` fails 10% at this group's price and
 pool: in the 12.2 days of events to 23 October, 114 of 558 margin leaves were off PCs a group of the class had
 left for its margin 1–7 days before, each one a counted move or a deletion. A PC Salad takes back isn't

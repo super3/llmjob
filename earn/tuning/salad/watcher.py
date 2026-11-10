@@ -449,8 +449,17 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
         # so it doesn't leave a PC that blocks only a port it never uses.
         host, port = kryptex.rsplit(":", 1)
         sed += (f" -e 's|for h in us us2 ca de; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h.pearl.herominers.com/1200\"|"
-                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'"
-                f" -e 's|outbound port 1200 blocked|outbound port {port} blocked|'")
+                f"for h in {host}; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/{port}\"|'")
+        # On a PC that blocks the pool port, which other ports it lets out (founder, 10 November: "could we solve
+        # this with a proxy?"). 7% of PCs blocked 7048 in the week to 10 November, and Kryptex answers on no other
+        # port but its TLS one (8048). portquiz.net answers on every port, so "portquiz.net:7048 open" with the pool's
+        # 7048 shut means the PC blocks the pool's address, not the port, and portquiz.net:443 says whether a relay on
+        # 443 would get through. The answers go on the FAIL line, which the watcher logs as PORT BLOCKED.
+        probes = ([f"{host}:8048"] if port == "7048" else []) + [f"portquiz.net:{port}", "portquiz.net:443"] \
+            + ([xmr_pool] if xmr_pool else [])
+        probe = (f"$(for x in {' '.join(probes)}; do if timeout 5 bash -c \"exec 3<>/dev/tcp/${{x%:*}}/${{x##*:}}\" "
+                 f"2>/dev/null; then printf \" %s open\" $x; else printf \" %s shut\" $x; fi; done)")
+        sed += f" -e 's~outbound port 1200 blocked~outbound port {port} blocked;{probe}~'"
     if xmr:
         # Monero: box.sh also downloads the release's CPU worker and puts it beside each GPU's CLI. --xmr-pool (release
         # v0.6.6 on) sends it to that pool instead of HeroMiners'; box.sh checks no Monero port.
@@ -2193,12 +2202,19 @@ class W:
                     g["acc"][key] = acc
                     continue
                 text = text.strip()
+                # box.sh's setup lines ([card], [run] setup, [run] release ... ready) say the box is still starting on
+                # this PC: the newest one's time starts the "no mining reading" rule's clock again (founder, 10
+                # November). On 10 November 5060ti-370 was left 12 min after getting cb7dd73c with no reading, and its
+                # card and "release v0.6.14 ready" lines came 3 min later: a slow start, not a dead PC.
+                if mach and re.match(r"\[(card|run)\]", text) and not text.startswith("[run] FAIL"):
+                    su = g.get("setup")
+                    g["setup"] = [mach, max(tm, su[1]) if su and su[0] == mach else tm]
                 blocked = re.search(r"outbound port (\d+) blocked", text)
                 if blocked:
                     if mach not in g["blocked"]:
                         g["blocked"].append(mach)
                         g.setdefault("blocked_port", {})[mach] = int(blocked.group(1))   # which pool's port it tried
-                        event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:120]}")
+                        event(f"PORT BLOCKED {name} on PC {(mach or '')[:8]}: {text.strip()[:300]}")
                         # The line can come in after the box already left the PC for "no mining reading", a move
                         # that used one of its 3. A blocked port is the PC's fault (rule 6), so that move is given
                         # back. On 10 November 9060xt-47 used its second move this way, a minute before the line.
@@ -2371,7 +2387,7 @@ class W:
             return
         if g["has_pc"]:
             if mach != g["machine"]:
-                first = not g["had_pc"]
+                first, prev_m = not g["had_pc"], g["machine"]
                 g.update(machine=mach, pc_since=t, run_since=None, lost_since=None, profit_fail=0, had_pc=True,
                          pause_since=None, paused_t=None, restart_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
@@ -2386,7 +2402,18 @@ class W:
                 if (bad and t - bad["t"] < 3600 * self.cfg["bad_pc_hold_h"]
                         and self.pool_port(g.get("kx")) in (self.bad_ports(bad) or [self.pool_port(g.get("kx"))])):
                     ths, bar = self.bad_ths(bad), self.keep_bar()
-                    if ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
+                    # Already mining here (a reading from this PC, or a share while it had no other PC, in the last
+                    # 10 min) outweighs a mark for not mining: on 10 November 52f2bbd7, marked when 5060ti-368 showed
+                    # no reading for 6 min, was left twice by 5060 Tis that had just sent it shares. A blocked port or
+                    # a measured rate is a fact about the PC, so those marks stand.
+                    works = (any(r[1] == mach and r[2] > 0 and t - r[0] < 10 * MIN for r in g["readings"])
+                             or (prev_m is None and t - (g["last_share"] or 0) < 10 * MIN
+                                 and (g["last_share"] or 0) > (g.get("left_t") or 0)))
+                    if works and ths is None and self.bad_ports(bad) is None:
+                        st["bad_pcs"].pop(mach, None)
+                        event(f"NOTE {g['name']} keeps PC {mach[:8]}: it already mines there, so {bad['group']}'s "
+                              f"mark ({bad['why'][:100]}) is dropped")
+                    elif ths is not None and margin_of(ths * self.usd(self.on_kx(g, mach, t)) + self.xmr_usd(g), g["price"]) >= bar:
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: {bad['group']} left it at {ths:.0f} TH/s, which "
                               f"clears {bar:.0%} at this group's ${g['price']:.3f}/hr")
                     else:
@@ -2497,7 +2524,10 @@ class W:
         # After a restart on this PC (restart_t) they run as on a new PC from then: earlier readings don't count.
         rs = g.get("restart_t") or 0
         cur = [r for r in cur if r[0] > rs]
-        if not cur and seen_to - max(start, pend, rs) >= 10 * MIN and not sharing:
+        # A box still printing setup lines on this PC gets 10 min from the newest one, up to 30 min on the PC in all.
+        su = g.get("setup")
+        setup = min(su[1], start + 20 * MIN) if su and su[0] == g["machine"] and su[1] >= g["pc_since"] else 0
+        if not cur and seen_to - max(start, pend, rs, setup) >= 10 * MIN and not sharing:
             self.leave(g, f"no mining reading {(t - rs) / 60:.0f} min after its restart on PC {g['machine'][:8]}" if rs
                        else f"no mining reading {on / 60:.0f} min after getting PC {g['machine'][:8]}" if start == g["pc_since"]
                        else f"no mining reading {on / 60:.0f} min after it started on PC {g['machine'][:8]} "
@@ -2515,7 +2545,7 @@ class W:
         if on >= 20 * MIN:
             gap = SHARE_UNITS / (g["rate"] / UNIT_TH)
             limit = max(10 * MIN, 8 * gap)
-            ref = max(start, g["last_share"] or 0, pend, rs)
+            ref = max(start, g["last_share"] or 0, pend, rs, setup)   # a box still setting up hasn't had a chance
             if t - ref >= limit:
                 self.leave(g, f"no share for {(t - ref) / 60:.0f} min on PC {g['machine'][:8]}")
                 return

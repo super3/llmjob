@@ -363,6 +363,52 @@ class TestNotMining(Base):
         self.step(g, 1, "m1")
         self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
 
+    def test_a_box_still_printing_setup_lines_gets_10_min_from_the_newest(self):
+        # 10 November: 5060ti-370 was left 12 min after getting cb7dd73c with no reading; its card and "release
+        # v0.6.14 ready" lines came 3 min later. A box still setting up isn't a dead PC.
+        g = self.group()
+        self.step(g, 1, "m1")
+        self.step(g, 8, "m1")
+        g["setup"] = ["m1", self.clock[0]]                      # "[run] release v0.6.14 ready" at minute 8
+        self.step(g, 2, "m1")
+        self.step(g, 7, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")                                   # 10 min after that line
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+    def test_setup_lines_hold_a_pc_30_min_at_most(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        for _ in range(28):
+            g["setup"] = ["m1", self.clock[0]]                  # still printing setup lines every minute
+            self.step(g, 1, "m1")
+        self.assertFalse(self.http.made("POST", "/reallocate"))
+        self.step(g, 1, "m1")
+        self.step(g, 1, "m1")                                   # 30 min on the PC
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+    def test_setup_lines_from_another_pc_dont_hold_this_one(self):
+        g = self.group()
+        self.step(g, 1, "m1")
+        g["setup"] = ["m0", self.clock[0] + 9 * 60]             # the PC it had before
+        self.step(g, 9, "m1")
+        self.step(g, 1, "m1")
+        self.assertTrue(self.http.made("POST", "/instances/inst-m1/reallocate"))
+
+    def test_the_round_reads_a_boxs_setup_lines(self):
+        g = self.group()
+        self.http.on("GET", "/containers/biz-rtx4080", (200, {"current_state": {"status": "running"}}))
+        self.http.on("GET", "/instances", (200, {"instances": [{"id": "i1", "machine_id": "m2", "state": "running"}]}))
+        items = [{"text_log": "[run] release v0.6.14 ready", "time": "2027-01-15T08:01:00Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m2"}}},
+                 {"text_log": "[run] FAIL: outbound port 7048 blocked", "time": "2027-01-15T08:01:30Z",
+                  "resource": {"labels": {"container_group_name": "biz-rtx4080", "machine_id": "m2"}}}]
+        self.http.on("POST", "/log-entries", (200, {"items": items}))
+        self.clock[0] += 120
+        self.x.round()
+        self.assertEqual(g["setup"][0], "m2")
+        self.assertEqual(w.hm(g["setup"][1]), "08:01")           # the release line; a FAIL line isn't progress
+
     def test_the_reading_clock_starts_when_the_container_runs(self):
         # 28 October: rx9060xt was left 10 minutes after getting a PC that was still downloading the 1.16 GB AMD image,
         # with no container output at all, and its class barred for a day as failed.
@@ -1225,6 +1271,42 @@ class TestRule6PortBlocked(Base):
         self.assertEqual(b["reallocs"], 0)         # moved off at once, without using one of its 3
         self.assertIn("(biz-rtx4080 left this PC at 08:02Z: PC blocks outbound port 1200); not counted toward its 3",
                       self.events())
+
+    def test_a_box_already_mining_on_a_pc_marked_for_not_mining_keeps_it(self):
+        # 10 November: 52f2bbd7 was marked when 5060ti-368 showed no reading for 6 min. Twice a 5060 Ti sent it a
+        # share and was moved off it at once for that mark.
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
+                                                      "why": "no mining reading for 6 min on PC m1"}
+        g = self.group()
+        g["readings"].append([self.clock[0], "m1", 100.0, 1, "1m", [0]])
+        self.step(g, 1, "m1")
+        self.assertEqual(g["machine"], "m1")
+        self.assertNotIn("m1", self.x.st["bad_pcs"])
+        self.assertIn("keeps PC m1: it already mines there, so biz-rtx4080-9's mark", self.events())
+
+    def test_a_share_counts_as_mining_only_when_it_came_after_the_box_left_its_last_pc(self):
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
+                                                      "why": "no mining reading for 6 min on PC m1"}
+        g = self.group()
+        g.update(last_share=self.clock[0] - 120, left_t=self.clock[0] - 60)   # a share on the PC it left
+        self.step(g, 1, "m1")
+        self.assertIsNone(g["machine"])
+        self.assertIn("m1", self.x.st["bad_pcs"])
+        g = self.group()
+        g.update(last_share=self.clock[0], left_t=self.clock[0] - 60)         # a share since: from this PC
+        self.step(g, 1, "m1")
+        self.assertEqual(g["machine"], "m1")
+
+    def test_a_blocked_port_mark_stands_even_for_a_box_that_mines(self):
+        a = self.group()
+        self.step(a, 1, "m1")
+        a["blocked"].append("m1")
+        self.step(a, 1, "m1")
+        b = self.group()
+        b["readings"].append([self.clock[0], "m1", 100.0, 1, "1m", [0]])
+        self.step(b, 1, "m1")
+        self.assertIsNone(b["machine"])
+        self.assertIn("m1", self.x.st["bad_pcs"])
 
     def test_a_pc_left_on_an_earlier_day_says_which_day(self):
         # At 15:04Z on 23 Oct an event said a PC was left "at 15:54Z": it was 15:54Z the day before.
@@ -3736,8 +3818,17 @@ class TestKryptex(Base):
     def test_a_kryptex_box_checks_kryptexs_port_and_others_check_1200_as_before(self):
         out = self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.1", XMR, 0, "prl-us.kryptex.network:7048"))
         self.assertIn("for h in prl-us.kryptex.network; do timeout 5 bash -c \"exec 3<>/dev/tcp/$h/7048\" 2>/dev/null", out)
-        self.assertIn("echo \"[run] FAIL: outbound port 7048 blocked\"", out)
+        # 10 November: and on a PC that blocks it, which other ports it lets out (Kryptex's TLS 8048, 7048 and 443
+        # anywhere, the Monero pool's port), for whether a relay on 443 would get through.
+        self.assertIn("echo \"[run] FAIL: outbound port 7048 blocked;$(for x in prl-us.kryptex.network:8048 "
+                      "portquiz.net:7048 portquiz.net:443; do if timeout 5 bash -c \"exec 3<>/dev/tcp/${x%:*}/${x##*:}\"", out)
         self.assertNotIn("1200", out)
+        import subprocess
+        self.assertEqual(subprocess.run(["bash", "-n"], input=out, capture_output=True, encoding="utf-8").returncode,
+                         0)   # it parses
+        both = w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.14", XMR, 0, "prl-us.kryptex.network:7048",
+                         xmr_pool="xmr-us.kryptex.network:7029")
+        self.assertIn("portquiz.net:443 xmr-us.kryptex.network:7029; do", self.port_check(both))
         self.assertEqual(self.port_check(w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR)), self.PORT_CHECK)
 
     def test_the_round_reads_which_port_a_box_found_blocked(self):
