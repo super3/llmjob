@@ -248,7 +248,8 @@
 // batch's, as in a launch of one batch. A launch of one strip is the launch without it. The host learns from the
 // card's caps (PEARL_AMD_CAP_STRIP) that it may launch strips, and how many is its choice (PEARL_AMD_STRIPS,
 // pearl_host_hip.cpp). Not with PEARL_AMD_WALK, which orders one batch its own way: a pass with the walk on has no
-// strips, and its caps say so.
+// strips, and its caps say so. A PEARL_AMD_STAMP build places its records by x and y alone, so in a launch of
+// several strips each strip writes over the last one's; the fold test, which reads them, launches one.
 #ifndef PEARL_AMD_STRIP
 #define PEARL_AMD_STRIP 0
 #endif
@@ -2059,11 +2060,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     const uint32_t hw = pearl_amd_sgpr(pearl_amd_hw_id1());
     uint32_t *const out = pearl_amd_stamps;   // constant memory: a scalar load
     if (out && lane == 0) {
-#if PEARL_AMD_STRIP_ON
-      const uint32_t block = (blockIdx.z * gridDim.y + blockIdx.y) * gridDim.x + blockIdx.x;
-#else
       const uint32_t block = blockIdx.y * gridDim.x + blockIdx.x;
-#endif
       // Word 1: the wave (bits 7:0), the counter's bits (13:8), the crossings seen (15:14) and the block's low
       // 16 bits, which the summary checks against the record's place.
       const uint32_t v[PEARL_AMD_STAMP_WORDS] = {
