@@ -1568,7 +1568,9 @@ uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, ui
 #else
   if (!PEARL_AMPERE_FLIP || band == 0u || maxSlice == 0u) return 0u;
   const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
-  const uint32_t width = pearl_ampere_flip_width(k, colBatch, colsValid, maxSlice);
+  uint32_t width = 0u;
+  for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
+    if (colsValid % c == 0u) width = c;
   if (width == 0u) return 0u;
   const uint64_t aBytes = (uint64_t)rowGroups * PEARL_TALL_BM * k;
   const uint64_t bandWalk = (uint64_t)((rowGroups + band - 1u) / band) * colBytes + aBytes / colBatch;

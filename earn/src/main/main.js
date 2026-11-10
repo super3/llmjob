@@ -24,6 +24,7 @@ const { XmrEngine } = require('./xmrEngine');
 const { findWorker, makeSpawnWorker } = require('./xmrWorker');
 const { readCpuFacts } = require('./cpuFacts');
 const { coreFactory } = require('./pearlCore');
+const { withShapePick, shapeFileStore } = require('../shared/shapePick');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
 const { detectRegion, detectGpusVram, postMinerReport } = require('./probe');
 const probe = require('./probe');
@@ -761,13 +762,21 @@ async function startMining(settings, llmCoRuns) {
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
+  const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
-    createCore: coreFactory({
+    // Each RTX 30 card's launch shape, timed once on this PC and cached in userData
+    // (shared/shapePick).
+    createCore: withShapePick(coreFactory({
       resourcesPath: process.resourcesPath,
       gpus,
       cards: cudaCards,
-      log: (level, line) => send('miner:log', { level, line }),
+      log: coreLog,
+    }), {
+      store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),
+        { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
+      log: coreLog,
+      gpus,
     }),
     // The card temperature the UI shows next to the GPU name. Our core has no
     // NVML reading of its own to forward the way alpha-miner did, so the engine

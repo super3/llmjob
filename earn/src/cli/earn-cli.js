@@ -29,6 +29,8 @@ const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
+const { withShapePick, shapeFileStore } = require('../shared/shapePick');
+const { readSettings, writeSettings } = require('../shared/settingsStore');
 const { extractLlamaZip } = require('../main/io');
 const {
   detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
@@ -1041,15 +1043,23 @@ async function run(argv) {
     // Set when the loader found a core that would not load. It has said why
     // (a missing library, too old a glibc), and "not found" would contradict it.
     let loadFailed = null;
-    const createCore = coreFactory({
+    const coreLog = (level, line) => {
+      if (line.includes(' is there but would not load: ')) loadFailed = line;
+      log(line, level === 'error' ? process.stderr : process.stdout);
+    };
+    // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
+    // (shared/shapePick).
+    const createCore = withShapePick(coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
       coreFlag: !!settings.core,
-      log: (level, line) => {
-        if (line.includes(' is there but would not load: ')) loadFailed = line;
-        log(line, level === 'error' ? process.stderr : process.stdout);
-      },
+      log: coreLog,
+    }), {
+      store: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'launch-shapes.json'),
+        { readSettings, writeSettings, fs, log }),
+      log: coreLog,
+      gpus: settings.gpus,
     });
     // A rig whose Blackwell cards the driver is too old for mines on the rest,
     // or on none, and the dashboard should say why. Not awaited.

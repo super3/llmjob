@@ -278,6 +278,15 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
       }
     }, 20000);
 
+    // PEARL_SHAPE_TRIAL and PEARL_SHAPE reach the core as its options (shared/shapePick has the app's side).
+    it(`${name}: passes the launch shape trial and a forced shape to the core`, () => {
+      const env = { ...process.env, PEARL_SHAPE_TRIAL: '150', PEARL_SHAPE: 'flip 128' };
+      delete env.PEARL_PROFILE_K;
+      const r = spawnSync(process.execPath, [script, stub, ...args], { env, encoding: 'utf8' });
+      const opts = r.stdout.split('\n').find((l) => l.startsWith('OPTS '));
+      expect(JSON.parse(opts.slice(5))).toEqual({ cardK: true, ...checks, shapeTrialSecs: 150, shape: 'flip 128' });
+    }, 20000);
+
     it(`${name}: refuses a k the protocol or the operand trees can't take, before making a core`, () => {
       for (const k of ['1024', '3072', '6144', '4096.5', 'abc', '-4096', '0']) {
         const r = run(script, args, k);
@@ -292,7 +301,7 @@ describe('PEARL_PROFILE_K in hashrate.js and verify-hits.js', () => {
     // MAINNET is named only where the profile asked for is chosen; the core's k makes PROFILE, and the job
     // key, proofs, noise and fold use PROFILE.
     expect(src.match(/\bMAINNET\b/g)).toHaveLength(3);
-    for (const use of ['addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true })',
+    for (const use of ['addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : { cardK: true, checkHits: true, ...shapeOpts })',
       'const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);', 'buildConfig52(PROFILE)',
       'const { k } = PROFILE;', 'buildShareProof(hit, jobKey, PROFILE)', 'checkHit(hit, jobKey, PROFILE)'])
       expect(src).toContain(use);

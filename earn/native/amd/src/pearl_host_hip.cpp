@@ -1690,6 +1690,14 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   return ctx->foldName;
 }
 
+// RTX 30's launch shapes (pearl_host.cu): an AMD card has none to choose, so the core runs no
+// trial and reports no shapes.
+extern "C" int pearl_host_shape_count(void *) { return 0; }
+extern "C" void pearl_host_shape_name(void *, int, char *buf, size_t len) {
+  if (buf && len) snprintf(buf, len, "none");
+}
+extern "C" bool pearl_host_set_shape(void *, int) { return false; }
+
 extern "C" bool pearl_host_leaf_chunks(void *handle, int isA, const uint32_t *leaf_indices,
                                        uint32_t count, uint8_t *out) {
   Ctx *ctx = static_cast<Ctx *>(handle);
