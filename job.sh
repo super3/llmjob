@@ -1,11 +1,11 @@
-# job 5: the hash queue off with a slow ticker (every 10, 20, 30, 50 ms), and 2 batches a launch, against the default; then stamps of the miner's launches, each gap listed
+# job 5: the hash queue off with a slow ticker (20, 50 ms), 2 batches a launch, and the default with another process idle on the card (the clock probe every 10 s), with and without the core's ticker; then stamps of the miner's launches, each gap listed
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_PARTS=hash\ mstamps
-G_VDEF=hq0t10=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=10000\;hq0t20=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;hq0t30=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=30000\;hq0t50=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000\;msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq0t20=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;msq0t50=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000
-G_VARIANTS=base\ twin\ hq0t10\ hq0t20\ hq0t30\ hq0t50\ s2
+G_VDEF=hq0t20=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;hq0t50=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000\;bI=base\ TICK=10\;tkI=base\ PEARL_AMD_TICK_US=2000\ TICK=10\;hq0I=base\ PEARL_AMD_HASHQ=0\ TICK=10\;msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq0t20=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000
+G_VARIANTS=base\ twin\ hq0t20\ hq0t50\ s2\ bI\ tkI\ hq0I
 G_HROUNDS=3
 G_HASH=45:12
-G_MST=msq1\ msq0\ msq0t20\ msq0t50
+G_MST=msq1\ msq0\ msq0t20
 G_MSN=5
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
