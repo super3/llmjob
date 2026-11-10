@@ -84,6 +84,147 @@ The rows over 100% are odd PCs: one swung between 207 and 266 W, one is capped a
 
 PeakMiner is fastest on every PC; OneZeroMiner is the slowest of the three here.
 
+Read again on 10 November from the boxes' own sample lines, which Salad's log service still held (the result files
+kept two PCs'), with the 94de741e and dbbceed1 PCs that the table above leaves out. Each miner is the mean of its
+samples from the first minute on; the tensor peak is the card's SMs × 1024 MAC a clock.
+
+| Card | Machine ID | Ours TH/s, MHz, W | PeakMiner TH/s, MHz, W | Ours, of the tensor peak | PeakMiner | Memory controller, ours and PeakMiner |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti | 1ff934b7 | 105.4, 1645, 292 | 105.8, 1649, 292 | 92.0% | 92.2% | 11% and 25% |
+| RTX 2080 Ti | 7e24f884 | 97.4, 1520, 254 | 97.9, 1524, 254 | 92.0% | 92.3% | 11% and 25% |
+| RTX 2080 | a5d2c787 | 79.0, 1812, 258 | 80.7, 1806, 255 | 92.5% | 94.8% | 19% and 31% |
+| RTX 2080 | c6b154db | 125.5, 1402, 166 | 128.8, 1406, 165 | 190% (two cards) | 195% | 15% and 23% |
+| RTX 2070 Super | ef050aaa | 64.7, 1707, 192 | 65.4, 1716, 188 | 92.5% | 93.0% | 15% and 21% |
+| RTX 2070 Super | 842bcd6e | 63.9, 1703, 197 | 64.8, 1706, 195 | 91.6% | 92.8% | 16% and 21% |
+| RTX 2070 | b6b2b0c9 | 51.1, 1546, 137 | 52.3, 1546, 137 | 89.7% | 91.8% | 11% and 18% |
+| RTX 2070 | 94de741e | 52.5, 1543, 112 | 53.4, 1541, 112 | 92.3% | 93.9% | 15% and 24% |
+| RTX 2060 | 67fbcdbf | 40.6, 1459, 125 | 42.0, 1430, 127 | 90.7% | 95.5% | 19% and 29% |
+| RTX 2060 | 92c0cd67 | 36.7, 1360, 100 | 37.6, 1346, 98 | 87.8% | 90.8% | 19% and 24% |
+| RTX 2070 Super | dbbceed1 | 65.9, 1759, 211 | 68.1, 1758, 212 | 91.4% | 94.6% | 16% and 25% |
+| RTX 2070 | f4e53154 | 53.5, 1578, 169 | 55.2, 1572, 172 | 91.9% | 95.2% | 13% and 19% |
+
+- Per clock we do 99.8% of PeakMiner's work on the two 2080 Tis and 97.4% (±0.45; 94.9–99.4%) on the nine other
+  single-card PCs. Its memory controller is busier than ours on every PC, and its VRAM use is ours plus 1,166 MiB on
+  every PC.
+- **`c6b154db` is not one RTX 2080.** OneZeroMiner's log on it reads `GPU 1 Share accepted`, and 125.5 TH/s is 190% of
+  what GPU 0's 46 SMs can do at the 1,402 MHz it ran at. The PC has at least two cards; every miner mined them all,
+  and `bench.sh` read the first card's power and clock. Its "% of best" stands, its TH/s and watts are not one card's.
+
+### Salad, 10 November: what PeakMiner changed on RTX 20 at 2.20.1, and our fold in its shape (PR #290 goal work)
+
+**The capture.** One RTX 2070 Super PC (`588f9e55`, 215 W, driver 616.92, 1.77 GB of VRAM held by its desktop). Each
+miner mined on the stand-in pool (`verify-pool.js serve`, target 2^211, a job every 44 s as Kryptex sends them)
+through `sharetap.py`, so every share was checked and decoded. Two passes, forward then reverse, 4 minutes a run with
+the first minute left out. Every figure is the mean of the miner's own samples: its rate every 5 s, the card every
+2 s. The two passes agreed to 0.2% for every miner. The scripts are in the session's scratchpad (`g20ctl/g20/`), not
+committed.
+
+| Miner | m | n | k | Tile | Fill | Memory controller | VRAM over idle | SM MHz | W | °C | TH/s | TH/s per GHz | Of the tensor peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PeakMiner 2.20.0 | 16384 | 65536 | 8192 | 8×16 | 64 | 35% | 1,193 MiB | 1749 | 213 | 73 | 65.01 | 37.17 | 90.7% |
+| PeakMiner 2.20.1 | 1024 | 245760 | 2048 | 8×16 | 64 | 22% | 2,153 MiB | 1750 | 212 | 73 | 67.80 | 38.75 | 94.6% |
+| PeakMiner 2.20.7 | 1024 | 245760 | 2048 | 8×16 | 64 | 23% | 2,153 MiB | 1748 | 212 | 73 | 68.19 | 39.01 | 95.2% |
+| Ours v0.6.15 | 131072 | 262144 | 2048 | 16×16 | 48 | 16% | 987 MiB | 1749 | 213 | 73 | 66.07 | 37.78 | 92.2% |
+
+The tensor peak is 40 SMs × 1024 MAC a clock. With `--gpu-lmem 810` (the lock fails on Salad) 2.20.7 ran the same:
+68.23 TH/s, the same shape, memory controller 24%.
+
+- **What 2.20.1 changed is in its shares: the shape.** A went from 16384 rows to 1024, k from 8192 to 2048, and B from
+  65536 columns to 245760. A' was 134 MB and is now 2 MB, which fits the card's 4 MB L2; B' is 503 MB. That came with
+  +4.3% work a clock on this card at the same clock and power, the memory controller 35% busy before and 22% after.
+  2.20.7 mines 2.20.1's shape and shows 0.6% more. Before 2.20.1 we were 1.6% ahead of it a clock; now we are 3.2%
+  behind.
+- Every release fills A and B with 64 and mines rank 128. It re-draws only A between salts, as we do: a share's root
+  of B is the same all job and its root of A is new almost every share (80–95 roots in a job's ~90 shares; ours 32–39
+  in ~77, a salt every 1.06 s). Its stamp is in A's first bytes, written as 63s and 64s.
+- Its tile is one thread's accumulators, 8 rows × 16 columns (128 sums); ours is 16×16 over four lanes. 2.20.1 moved
+  the tile's rows from every 16th to pairs 8 apart every 32. It hashes twice as often a MAC as we do.
+- **Ours is 96.9% of 2.20.7 here, all of it work a clock**: 1749 and 1748 MHz, 213 and 212 W, both 73 °C.
+- Shares against the shown rate, over all runs: the pool credited PeakMiner 1.01 ±0.02 of what it showed (2,369
+  shares in seven runs) and ours 0.97 ±0.04 (655 in two). One PeakMiner run had a 12 s gap in its shares, where every
+  other run's longest was 4 s: its dev fee, most likely. Without that run it read 1.03. So nothing here says its shown
+  rate is more than a user gets, and 3 minutes a run is too short to say more.
+
+**Our fold in PeakMiner's shape, same PC.** Race mode with an A/A twin, 17 to 20 rounds a race. A copy of `race.cu`
+was given per-build m, n, batch width and launch-sweep settings for this (in the scratchpad; the repo's file is
+unchanged), so one build of the release's core ran every arm but the row bands. Rates are MACs a second with re-draws
+counted.
+
+| Arm | Against the release shape | Twin | SM MHz | Memory controller |
+|---|---|---|---|---|
+| Release shape (m 131072, n 262144, column bands of 5) | 66.3 TH/s | | 1750 | 16% |
+| m 1024, n 262144, band 5 | −3.01% ±0.05 | +0.01% ±0.03 | 1728 | 34% |
+| m 1024, n 131072, band 5 | −4.64% ±0.05 | | 1743 | 33% |
+| m 1024, n 524288, band 5 | −2.30% ±0.08 | | 1720 | 36% |
+| m 2048, n 262144, band 5 | −1.51% ±0.04 | 0.00% ±0.03 | 1740 | 27% |
+| m 512, n 262144, band 5 | −5.21% ±0.06 | | 1721 | 43% |
+| m 1024, n 262144, band 5, batches of 2048 offsets (1 ms) | −6.70% ±0.10 | | 1746 | 38% |
+| m 1024, n 262144, band 1 | −1.91% ±0.04 | −0.05% ±0.07 | 1748 | 23% |
+| m 1024, n 262144, band 2 | −3.06% ±0.09 | | 1725 | 34% |
+| Our m and n, row bands of 8 (`-DPEARL_BD_WALK=0`) | −0.33% ±0.13 | | 1744 | 20% |
+| Our m and n, row bands of 6 | −1.10% ±0.05 | | 1725 | 26% |
+| Our m and n, row bands of 4 | −1.71% ±0.02 | | 1720 | 38% |
+
+- **PeakMiner's shape does not help our fold.** At m 1024 with a band of 1 our memory controller reads 23%, the same
+  as PeakMiner's, so this is very likely how it walks (inferred): A' resident, and each 256-column panel of B' read
+  from DRAM once by the eight blocks that share it. Our fold does the same work a clock that way as with B' resident:
+  row bands of 8 at our own m read −0.33%, all of it clock (0.3% lower, from the extra DRAM traffic).
+- m 1024 itself costs us 1.6% more. A salt lasts 8.6 ms there, and our re-draw between salts is queued kernels that
+  run with the fold stopped, about 0.14 ms. PeakMiner re-draws as often and shows no such loss.
+- So the shape is not what puts PeakMiner ahead of us. On this card it was behind us a clock at 2.20.0; with 2.20.1
+  it reached a walk as good as ours, and what it has beyond that is inside its loop, which its shares don't show.
+
+**Where our fold's last points go, same PC.** Timing-only builds (wrong results on purpose, never shipped) against the
+release build, 9 and 11 rounds, twins −0.02% ±0.04:
+
+| Switched off | TH/s | SM MHz | Per clock |
+|---|---|---|---|
+| The readout (`PEARL_ABLATE_READOUT`) | +1.96% ±0.10 | 1764 | +1.5% |
+| The readout and the hash | +2.37% ±0.11 | 1764 | +1.9% |
+| The readout's shuffles only | −2.88% ±0.05 | 1751 | −2.6% |
+| The hash only | −4.05% ±0.08 | 1741 | −3.3% |
+| B loaded once a tile (`PEARL_ABLATE_BLOAD`) | +4.12% ±0.05 | 1822 | +0.2% |
+| Every B load an L1 hit (`PEARL_ABLATE_BHIT`) | +3.18% ±0.05 | 1807 | +0.1% |
+| Readout, hash and B loads | +9.06% ±0.05 | 1830 | +4.5% |
+
+- Bringing B' from the L2 into the SMs costs this card about 4% of its clock at the power limit and almost no work a
+  clock. The readout and hash cost 1.9% of the work a clock. With all three free the fold would run at 96.6% of the
+  tensor peak and 1830 MHz, 9% above today.
+- PeakMiner is 3.2% ahead at our clock and our watts, so it spends less energy a MAC somewhere in those 9 points.
+  Turning off the shuffles or the hash alone makes our fold slower: its warps then drift apart and stop sharing B' in
+  L1 (memory controller 32% with the hash off), as October's rounds found.
+
+**The review's two cheap races, same PC** (16 rounds, twin −0.01% ±0.03): operand fill 56 −0.02% ±0.03 and fill 63
+−0.04% ±0.04 against the 48 that ships; band 4 −0.21% ±0.03 and band 6 −0.21% ±0.06 against the rule's 5. Nothing to
+change.
+
+**The same on an RTX 2060** (`59be6855`, 6 GB, 170 W, driver 617.42, 0.52 GB of VRAM held by its desktop), where
+PeakMiner's lead in the table above is largest. PeakMiner 2.20.7 and ours twice each, forward then reverse, 200 s a
+run with the first 50 s left out; 2.20.1 and 2.20.0 once, 100 s with the first 40 s left out. Target 2^213.
+
+| Miner | m | n | k | Tile | Fill | Memory controller | VRAM over idle | SM MHz | W | °C | TH/s | TH/s per GHz | Of the tensor peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PeakMiner 2.20.0 | 16384 | 393216 | 8192 | 8×16 | 64 | 51% | 4,177 MiB | 1692 | 167 | 70 | 48.54 | 28.69 | 93.4% |
+| PeakMiner 2.20.1 | 1024 | 245760 | 2048 | 8×16 | 64 | 30% | 2,135 MiB | 1696 | 163 | 69 | 49.71 | 29.31 | 95.4% |
+| PeakMiner 2.20.7 | 1024 | 245760 | 2048 | 8×16 | 64 | 31% | 2,135 MiB | 1691 | 162 | 70 | 49.41 | 29.23 | 95.1% |
+| Ours v0.6.15 | 131072 | 262144 | 2048 | 16×16 | 48 | 22% | 969 MiB | 1707 | 165 | 71 | 47.83 | 28.03 | 91.2% |
+
+- Ours is 96.8% of 2.20.7 on this card: 95.9% of its work a clock, at a 0.9% higher clock and 3 W more.
+- 2.20.1 made the same change here (m 1024, k 2048, the same tile), worth +2.2% a clock. But 2.20.0 was already 2.4%
+  ahead of us a clock on this card with its old shape, both operands in DRAM (B' was 3.2 GB) and the memory
+  controller 51% busy. So its lead does not come from the shape.
+- Over both PCs the pool credited PeakMiner 0.99 ±0.02 of its shown rate (4,011 shares) and ours 0.98 ±0.02 (2,264).
+- Our fold in PeakMiner's regime on this card's 3 MB L2 (race, 12 rounds, twin −0.03% ±0.07; the release shape ran
+  48.19 TH/s at 1705 MHz with the memory controller 22% busy): row bands of 8 −1.00% ±0.05, row bands of 4 −1.09%
+  ±0.14, m 1024 with a band of 1 −1.78% ±0.17, each at about 1690 MHz with the memory controller 37–40% busy
+  (PeakMiner: 31%). It costs us more here than on the 2070 Super.
+
+**What this leaves.** Nothing we can copy from PeakMiner's shares (m, n, k, the walk they imply, a higher fill) gains
+on our fold; the band rule and fill 48 hold. Its tile, one thread a region, is the one visible difference not
+tried. It would let every warp do the same work, where our fold has four warps hash and four not and loses up to 4%
+when they drift apart. Whether that is where its 3% comes from is a guess; building it is a new readout and hash for
+the Turing fold, and October's ROWPAIR build, which cut the readout's shuffles from six to one, read −0.4 to 0.0%.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
