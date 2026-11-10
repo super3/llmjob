@@ -301,8 +301,43 @@ __device__ __forceinline__ void pearl_transcript_hash(const uint32_t key[8],
 __device__ __forceinline__ uint32_t pearl_transcript_msw(const uint32_t key[8],
                                                          const uint32_t m[16],
                                                          int hash_big_endian) {
+#if PEARL_HASH_MSW_TRIM
+  // The trim written out (see pearl_hp_msw): the last round's diagonals 1 and 3 feed
+  // neither word.
+  uint32_t s[16], mm[16], out16[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i];
+  s[8] = BLAKE3_IV[0]; s[9] = BLAKE3_IV[1]; s[10] = BLAKE3_IV[2]; s[11] = BLAKE3_IV[3];
+  s[12] = 0u; s[13] = 0u; s[14] = 64u; s[15] = PEARL_TRANSCRIPT_FLAGS;
+#pragma unroll
+  for (int i = 0; i < 16; i++) mm[i] = m[i];
+#pragma unroll
+  for (int r = 0; r < 7; r++) {
+    g(s, 0, 4, 8, 12, mm[0], mm[1]);
+    g(s, 1, 5, 9, 13, mm[2], mm[3]);
+    g(s, 2, 6, 10, 14, mm[4], mm[5]);
+    g(s, 3, 7, 11, 15, mm[6], mm[7]);
+    g(s, 0, 5, 10, 15, mm[8], mm[9]);
+    if (r < 6) g(s, 1, 6, 11, 12, mm[10], mm[11]);
+    g(s, 2, 7, 8, 13, mm[12], mm[13]);
+    if (r < 6) g(s, 3, 4, 9, 14, mm[14], mm[15]);
+    if (r < 6) {
+      const uint32_t p0 = mm[2], p1 = mm[6], p2 = mm[3], p3 = mm[10];
+      const uint32_t p4 = mm[7], p5 = mm[0], p6 = mm[4], p7 = mm[13];
+      const uint32_t p8 = mm[1], p9 = mm[11], p10 = mm[12], p11 = mm[5];
+      const uint32_t p12 = mm[9], p13 = mm[14], p14 = mm[15], p15 = mm[8];
+      mm[0] = p0; mm[1] = p1; mm[2] = p2; mm[3] = p3;
+      mm[4] = p4; mm[5] = p5; mm[6] = p6; mm[7] = p7;
+      mm[8] = p8; mm[9] = p9; mm[10] = p10; mm[11] = p11;
+      mm[12] = p12; mm[13] = p13; mm[14] = p14; mm[15] = p15;
+    }
+  }
+  out16[0] = s[0] ^ s[8];
+  out16[7] = s[7] ^ s[15];
+#else
   uint32_t out16[16];
   blake3_compress(key, m, 0, 64, PEARL_TRANSCRIPT_FLAGS, out16);
+#endif
   return hash_big_endian ? pearl_bswap32(out16[0]) : out16[7];
 }
 
@@ -2964,10 +2999,13 @@ __device__ __forceinline__ uint32_t pearl_hp_msw(const uint32_t key[8], const ui
     pearl_hp_g(s[1], s[5], s[9], s[13], m[2], m[3]);
     pearl_hp_g(s[2], s[6], s[10], s[14], m[4], m[5]);
     pearl_hp_g(s[3], s[7], s[11], s[15], m[6], m[7]);
+    // PEARL_HASH_MSW_TRIM: the last round's diagonals 1 and 3 feed neither s0 ^ s8 nor
+    // s7 ^ s15, so they are left out by hand, not left to the compiler to find dead.
+    const bool hp_dead = PEARL_HASH_MSW_TRIM && r == 6;
     pearl_hp_g(s[0], s[5], s[10], s[15], m[8], m[9]);
-    pearl_hp_g(s[1], s[6], s[11], s[12], m[10], m[11]);
+    if (!hp_dead) pearl_hp_g(s[1], s[6], s[11], s[12], m[10], m[11]);
     pearl_hp_g(s[2], s[7], s[8], s[13], m[12], m[13]);
-    pearl_hp_g(s[3], s[4], s[9], s[14], m[14], m[15]);
+    if (!hp_dead) pearl_hp_g(s[3], s[4], s[9], s[14], m[14], m[15]);
     if (r < 6) PEARL_HP_PERM(m)
   }
   return hbe ? pearl_bswap32(s[0] ^ s[8]) : (s[7] ^ s[15]);
@@ -2995,6 +3033,24 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
 #pragma unroll
     for (int q = 0; q < 2; q++)
       pearl_hp_g(A[q], B[q], C[q], Dd[q], h ? m[4 + 2 * q] : m[2 * q], h ? m[5 + 2 * q] : m[2 * q + 1]);
+#if PEARL_HASH_MSW_TRIM
+    // Each half's second diagonal of the last round (diagonals 1 and 3) and its four
+    // shuffles feed neither word, so they are left out by hand. A separate copy: the same
+    // statements in this order compile to other code than the default's below even with
+    // nothing left out.
+    const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pD1 = __shfl_xor_sync(~0u, Dd[1], 1);
+    uint32_t a0 = A[0], b0 = B[1], c0 = pC0, d0 = pD1;
+    pearl_hp_g(a0, b0, c0, d0, h ? m[12] : m[8], h ? m[13] : m[9]);
+    A[0] = a0; B[1] = b0;
+    C[0] = __shfl_xor_sync(~0u, c0, 1); Dd[1] = __shfl_xor_sync(~0u, d0, 1);
+    if (r < 6) {
+      const uint32_t pC1 = __shfl_xor_sync(~0u, C[1], 1), pB0 = __shfl_xor_sync(~0u, B[0], 1);
+      uint32_t a1 = A[1], b1 = pB0, c1 = pC1, d1 = Dd[0];
+      pearl_hp_g(a1, b1, c1, d1, h ? m[14] : m[10], h ? m[15] : m[11]);
+      A[1] = a1; Dd[0] = d1;
+      C[1] = __shfl_xor_sync(~0u, c1, 1); B[0] = __shfl_xor_sync(~0u, b1, 1);
+    }
+#else
     const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pC1 = __shfl_xor_sync(~0u, C[1], 1);
     const uint32_t pD1 = __shfl_xor_sync(~0u, Dd[1], 1), pB0 = __shfl_xor_sync(~0u, B[0], 1);
     uint32_t a0 = A[0], b0 = B[1], c0 = pC0, d0 = pD1, a1 = A[1], b1 = pB0, c1 = pC1, d1 = Dd[0];
@@ -3003,6 +3059,7 @@ __device__ __forceinline__ uint32_t pearl_hp_msw_pair(const uint32_t key[8], con
     A[0] = a0; A[1] = a1; B[1] = b0; Dd[0] = d1;
     C[0] = __shfl_xor_sync(~0u, c0, 1); C[1] = __shfl_xor_sync(~0u, c1, 1);
     Dd[1] = __shfl_xor_sync(~0u, d0, 1); B[0] = __shfl_xor_sync(~0u, b1, 1);
+#endif
     if (r < 6) PEARL_HP_PERM(m)
   }
   return hbe ? pearl_bswap32(A[0] ^ C[0]) : (B[1] ^ Dd[1]);

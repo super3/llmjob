@@ -2104,6 +2104,16 @@ typedef struct {
 #if PEARL_TALL_HASHCYC_PRE && !PEARL_TALL_HASHCYC
 #error "PEARL_TALL_HASHCYC_PRE moves the stamps' reads: build it with -DPEARL_TALL_HASHCYC=1"
 #endif
+// PEARL_HASH_MSW_TRIM (0 by default): the top-word hashes (pearl_transcript_msw, pearl_hp_msw,
+// pearl_hp_msw_pair) leave the last round's diagonals 1 and 3 out by hand. Neither feeds the
+// word the target test reads (s7 ^ s15, or s0 ^ s8 under hash_big_endian). See benchmark.md,
+// item 19, for what it compiles to.
+#ifndef PEARL_HASH_MSW_TRIM
+#define PEARL_HASH_MSW_TRIM 0
+#endif
+#if PEARL_HASH_MSW_TRIM != 0 && PEARL_HASH_MSW_TRIM != 1
+#error "PEARL_HASH_MSW_TRIM is 0 or 1"
+#endif
 // PEARL_TALL_HASH_FMA and PEARL_TALL_HASH_ONE (0 by default): the pipe side of the tile hash.
 // With HASH_FMA=1 the paired hash's adds go to the FMA pipe as IMAD by a 1 ptxas cannot see
 // (hash_big_endian | 1, from the kernel's argument; the host passes hash_big_endian as 0 or 1

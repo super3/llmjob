@@ -249,6 +249,29 @@ describe('native target test', () => {
     }
   });
 
+  // PEARL_HASH_MSW_TRIM writes out what ptxas already does: the last round's
+  // diagonals 1 and 3 feed neither top word. Off by default, and with it off
+  // the paired hash is the code that ships, statement for statement (the same
+  // statements in another order compile to other code on sm_86 and sm_120).
+  test('the hand-written last-round trim is off by default and leaves out only diagonals 1 and 3', () => {
+    expect(defineOf('PEARL_HASH_MSW_TRIM')).toBe(0);
+    expect(HEADER).toContain('#error "PEARL_HASH_MSW_TRIM is 0 or 1"');
+    const whole = body(KERNEL, 'uint32_t pearl_hp_msw(');
+    expect(whole).toContain('const bool hp_dead = PEARL_HASH_MSW_TRIM && r == 6;');
+    expect(whole).toContain('pearl_hp_g(s[0], s[5], s[10], s[15], m[8], m[9]);');
+    expect(whole).toContain('if (!hp_dead) pearl_hp_g(s[1], s[6], s[11], s[12], m[10], m[11]);');
+    expect(whole).toContain('pearl_hp_g(s[2], s[7], s[8], s[13], m[12], m[13]);');
+    expect(whole).toContain('if (!hp_dead) pearl_hp_g(s[3], s[4], s[9], s[14], m[14], m[15]);');
+    const pair = body(KERNEL, 'uint32_t pearl_hp_msw_pair(');
+    const off = pair.slice(pair.indexOf('#else'), pair.indexOf('#endif'));
+    expect(off).toContain('const uint32_t pC0 = __shfl_xor_sync(~0u, C[0], 1), pC1 = __shfl_xor_sync(~0u, C[1], 1);');
+    expect(off).toContain('pearl_hp_g(a1, b1, c1, d1, h ? m[14] : m[10], h ? m[15] : m[11]);');
+    const msw = body(KERNEL, 'uint32_t pearl_transcript_msw(');
+    expect(msw).toContain('if (r < 6) g(s, 1, 6, 11, 12, mm[10], mm[11]);');
+    expect(msw).toContain('if (r < 6) g(s, 3, 4, 9, 14, mm[14], mm[15]);');
+    expect(msw).toContain('blake3_compress(key, m, 0, 64, PEARL_TRANSCRIPT_FLAGS, out16);');
+  });
+
   // The order pinned above, transcribed: hash bytes as little-endian words,
   // compared from word 7 against the target's big-endian words.
   function deviceMeets(hash, target) {
