@@ -2826,6 +2826,55 @@ typedef struct {
 #endif
 #endif
 
+// PEARL_TALL_SHAM_DRAW (0 by default): a timing-only arm on top of PEARL_TALL_AB_SKIP=2, for
+// the TMA tall fold (sm_120). Item 16, step 2, before any work on #6: a B' gather draw
+// would make each B fragment on the SM, 63 + U[p] - U[q] a byte, from two reads of a table
+// in shared memory and a subtract, where the release has one ldmatrix of the B' ring. This
+// prices those extra reads and that ALU at the power cap, before any draw is built:
+//   - B' is never loaded, not even in each block's first tile. The prologue writes the
+//     ring's three B' regions once with bytes uniform in [0, 63], the table's range.
+//   - Each B fragment's 512 bytes are read twice. The second read takes another pair's
+//     columns (pair q ^ 2's for pair q; table bytes too), never the pair's own, so b - b2 is
+//     not zero. The fold reads those bytes as well (one half is the rows of that pair's own
+//     matrices 2 and 3 at the same k-step), but shared memory has no cache: each ldmatrix
+//     pays its own wavefronts, conflict-free like the first, and asm volatile keeps it.
+//     It is two ldmatrix.x2, not one x4: the same bytes and shared-memory wavefronts, but an
+//     x4 needs four more live registers, and at the fold's 255 that spilled 260 bytes in every
+//     placement tried (ptxas 12.6, sm_90 stand-in); two at a time spilled none. A draw at this
+//     register count would read in halves too. It costs one more instruction a fragment.
+//   - One IADD3 a fragment register: b = 0x3F3F3F3F + b - b2. Both bytes are in [0, 63], so
+//     each byte is 63 + x - y, in [0, 126], and no carry or borrow crosses bytes. So the B
+//     operand takes the values a draw with B filled with 63 gives it, and those values move
+//     the power too (probes/README.md, "Operand values"). A' is the real one, loaded every
+//     stage.
+// The mma count and everything else are AB_SKIP=2's.
+// Left out: the draw's table load (32 KB a tile against B's 512 KB, about 6% of skip B's
+// bytes, so about 0.3% on a 5090), its bank conflicts (Gate 1), its index registers, and the
+// stall at each tile seam while the next tile's table loads. Those make it read high; the
+// extra ldmatrix a fragment makes it read a little low.
+// How to read it: race base, skipB (-DPEARL_TALL_AB_SKIP=2) and shamdraw (that and
+// -DPEARL_TALL_SHAM_DRAW=1) on a stock 5090 at its power limit, and decide on TH/s against
+// base, not the clock. Under +2.5% (half of skip B's +5.20% on 1 November) and the gather draw
+// cannot pay: drop #6. shamdraw against skipB is what the extra reads and IADD3 cost, with B
+// at 63 against skip B's 48 mixed in (B' is 63 + noise here, 48 + noise there): one session
+// read A = B = 63 0.23% below 48 (probes/README.md, "Operand values"), so up to about 0.3% of
+// that gap can be the values. The rule against base holds either way: a draw needs 63 too.
+// Check spill=0/0 for every arm first.
+// Timing only: the transcripts are wrong, so the host refuses any target but zero (as for
+// AB_SKIP) and names the arm in the fold's name. earn/test/tallShamDraw.test.js.
+#ifndef PEARL_TALL_SHAM_DRAW
+#define PEARL_TALL_SHAM_DRAW 0
+#endif
+#if PEARL_TALL_SHAM_DRAW != 0 && PEARL_TALL_SHAM_DRAW != 1
+#error "PEARL_TALL_SHAM_DRAW is 0 (off, what ships) or 1"
+#endif
+#if PEARL_TALL_SHAM_DRAW && PEARL_TALL_AB_SKIP != 2
+#error "PEARL_TALL_SHAM_DRAW times a B' draw on top of PEARL_TALL_AB_SKIP=2: build it with that"
+#endif
+#if PEARL_TALL_SHAM_DRAW && (!PEARL_TALL_FRAG_PIPE || !PEARL_TALL_TMA_ROLES)
+#error "PEARL_TALL_SHAM_DRAW reads twice in the streamed body on the ring's roles: build it with PEARL_TALL_FRAG_PIPE and PEARL_TALL_TMA_ROLES on"
+#endif
+
 // Blackwell's ring bookkeeping (sm_120, the TMA build): four A/B switches, all 0 by
 // default, which is the ring as it was measured on the RTX 5090 (see the fold). The
 // first two are Ada's trims from v0.5.8 (PEARL_FOLD_TALL); the other two only move the

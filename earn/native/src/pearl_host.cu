@@ -2980,9 +2980,15 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     if (!zero) {
       if (err && err_len)
 #if PEARL_TALL_AB_SKIP
+#if PEARL_TALL_SHAM_DRAW
+        snprintf(err, err_len, "tall-fold sham-draw build is timing-only: it runs only at "
+                 "target 0 (hashrate.js, race.cu), never on a job; build without "
+                 "PEARL_TALL_SHAM_DRAW and PEARL_TALL_AB_SKIP to mine");
+#else
         snprintf(err, err_len, "tall-fold operand-skip build is timing-only: it runs only at "
                  "target 0 (hashrate.js, race.cu), never on a job; build without "
                  "PEARL_TALL_AB_SKIP to mine");
+#endif
 #elif PEARL_TALL_STUB_SPIN || PEARL_TALL_STUB_ALU
         snprintf(err, err_len, "tall-fold stub build is timing-only: it runs only at target 0 "
                  "(hashrate.js, race.cu), never on a job; build without PEARL_TALL_STUB_SPIN "
@@ -3560,12 +3566,20 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   // line never credits its reading to the fold. (The cluster build refuses the switch, and
   // no other fold is built with it.)
   if (ctx->foldTall && ctx->foldTma) {
+#if PEARL_TALL_SHAM_DRAW
+    // The sham draw on top of the B' skip (PEARL_TALL_SHAM_DRAW) names itself too.
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands%s, AB_SKIP=2, "
+             "SHAM_DRAW=1: B' never loaded, each B fragment read twice and IADD3'd (timing only)",
+             PEARL_SM100_ARCH(ctx->tallArch * 10) ? ", sm_100 build of sm_120's fold" : "");
+#else
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands%s, AB_SKIP=%d: %s "
              "skipped after each block's first tile (timing only)",
              PEARL_SM100_ARCH(ctx->tallArch * 10) ? ", sm_100 build of sm_120's fold" : "",
              (int)PEARL_TALL_AB_SKIP,
              PEARL_TALL_AB_SKIP == 3 ? "A' and B'" : (PEARL_TALL_AB_SKIP == 1 ? "A'" : "B'"));
+#endif
     return ctx->foldName;
   }
 #endif
