@@ -905,6 +905,16 @@ through `sharetap.py`, so every share was checked and decoded. 2.5 minutes a rel
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RTX 5090 B' drawn on the SM (research item 8, 10 November, desk study, no card time). The "+1.81%" from 2 November
+  (b68b0399, 53ddd838, 87ba3d6e) was `PEARL_TALL_SHAM_DRAW`, a timing-only stand-in: it reads each B fragment from
+  shared memory again and adds one IADD3 a register, but skips the real draw's table loads and byte gathers (each B'
+  byte is 48 + T[col][p0] - T[col][p1], 8 one-byte lookups a register). So +1.81% is the ceiling (skipping B' entirely
+  read +7.65%). A real draw needs about 2.5x the sham's extra instructions (about 100 a warp a stage against 40), and a
+  tile's table is 32 KB with only 2.7 KB of shared memory free beside the ring. Rank space doesn't help: the chunk
+  length equals the rank (128), so the dense work is the same and the sums leave int8. Item 7's on-chip draws on an
+  RTX 3090 lost 3.6-5.6% for the same reason. Closed without the re-race; the sham rebased onto f7ccb357 is on branch
+  item/8 (be35e42b) if anyone wants it. The 5090 lead to follow instead is long k (item 7: +2.80% on a 3090 at
+  k 16384 with operands in L2), which needs the cp.async fold's 32-bit tile offsets widened past k 16384.
 - RTX 30 B' held at a width that fills the L2 slice (#287 item 3, 6 November, race mode, `PEARL_AMPERE_FLIP_FILL` on
   exp/287-3). On an RTX 3080 10 GB it lost to the band walk: −0.44% (±0.07, 0 of 46 rounds ahead) on a 320 W PC and
   −0.55% (±0.20, 2 of 45) on a 309 W PC. Memory busy fell from 21–23% to 13–14% and the clock rose 1.1%, but TH/s per
