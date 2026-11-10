@@ -2,7 +2,7 @@
 
 // A hit recomputed from scratch, the way the pool's verifier checks a share:
 // the Merkle proofs and the rows they cover, the seed chain from the two roots,
-// the operands' int7 range, the noise, the cumulative fold and the transcript
+// the operands' range ([-64, 64], as the spec checks), the noise, the cumulative fold and the transcript
 // hash, which must equal the core's jackpot hash byte for byte.
 //
 // buildShareProof checks only the first of those. A core whose fold is wrong on
@@ -70,7 +70,7 @@ function mismatch(hit, jobKey, p) {
   if (aSeed.toString('hex') !== hit.aSeed || bSeed.toString('hex') !== hit.bSeed) return 'seed chain mismatch';
   const A = gather(a, rows, k);
   const Bt = gather(bt, cols, k);
-  for (const op of [A, Bt]) for (const v of op) if (v < -63 || v > 63) return 'operand outside int7';
+  for (const op of [A, Bt]) for (const v of op) if (v < -64 || v > 64) return 'operand outside [-64, 64]';
   const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
   const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows: TILE, cols: TILE, k, rank });
   if (!keyedHash(aSeed, transcriptBytes(jackpot)).equals(Buffer.from(hit.jackpotHash))) {

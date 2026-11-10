@@ -75,11 +75,11 @@ describe('checkHit', () => {
     expect(checkHit(good, key, K4)).toBe('proof leaves are not the rows of the region');
   });
 
-  it('fails a hit whose operands are not int7, though everything else about it is right', () => {
+  it('fails a hit whose operands are outside [-64, 64], the range the spec checks, though everything else about it is right', () => {
     const A = Buffer.alloc(SMALL.m * SMALL.k, 5);
-    A[3 * SMALL.k + 100] = 64;
+    A[3 * SMALL.k + 100] = 65;
     const bad = hitFor(SMALL, HEADER, { A });
-    expect(checkHit(bad, key, SMALL)).toBe('operand outside int7');
+    expect(checkHit(bad, key, SMALL)).toBe('operand outside [-64, 64]');
     expect(checkHit(hitFor(SMALL, HEADER, { A: Buffer.alloc(SMALL.m * SMALL.k, 0xC1) }), key, SMALL)).toBeNull();
   });
 

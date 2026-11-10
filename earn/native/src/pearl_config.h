@@ -3094,8 +3094,10 @@ typedef struct {
 #ifndef PEARL_OPERAND_FILL
 #define PEARL_OPERAND_FILL 48
 #endif
-#if PEARL_OPERAND_FILL < -63 || PEARL_OPERAND_FILL > 63
-#error "PEARL_OPERAND_FILL must be in [-63, 63]: int7, as A and B are (noise.js)"
+// The spec's verify_plain_proof takes A and B values in [-64, 64] (zk-pow/src/api/verify.rs, "matching the ZK
+// circuit's IRANGE7P1 range check"), so 64 is legal; 65 and up are refused by every pool.
+#if PEARL_OPERAND_FILL < -64 || PEARL_OPERAND_FILL > 64
+#error "PEARL_OPERAND_FILL must be in [-64, 64]: the range the spec's verifier takes"
 #endif
 
 // blake3("pearl/cert-v3/noise-seed/A") and .../B. Hardcoded in the reference so
