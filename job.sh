@@ -1,11 +1,14 @@
-# job 1: SRBMiner 3.8.6 with wget and a terminal, then the duel, 2 turns each and a clock turn
+# job 1: SRBMiner pick, builds, fold shapes, stamps, then the launch-boundary race (hash-queue zero and wait, 4 strips)
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_CODE=9279ec6292b231ffbc31683938fb4e7b78779b2f
-G_PARTS=srb\ duel
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_SRB_ALSO=3.8.2
+G_PARTS=srb\ build\ fold\ stamps\ hash
+G_VARIANTS=base\ twin\ hq0\ hz\ hzw\ s4\ s4z
+G_HROUNDS=4
+G_HASH=45:12
+G_DIAG=base\ hz\ s4z
+G_FROUNDS=3
+G_SROUNDS=2
+G_STSHAPES=sbase:131072:2048:400\ sbase:524288:2048:100\ sbase:131072:4096:200\ sbase:131072:8192:100\ sw:131072:8192:100
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -352,13 +355,22 @@ for (const e of ev) {
   if (was >= need && c < need) full1 = e[0];
 }
 const span = (t1 - t0) * msPerTick, ideal = busy * msPerTick / peak;
+// Between the launch reaching full occupancy and leaving it for the last time: the share of slot time in use.
+let area = 0, last = null;
+c = 0;
+for (const e of ev) {
+  if (last !== null && e[0] > full0 && last < full1) area += c * (Math.min(e[0], full1) - Math.max(last, full0));
+  c += e[1]; last = e[0];
+}
+const steady = full1 > full0 ? area / (peak * (full1 - full0)) : NaN;
 const durs = lead.map((w) => (w.end - w.start) * msPerTick).sort((a, b) => a - b);
 const f = (x, d = 3) => (Number.isFinite(x) ? x.toFixed(d) : '-');
 const r = s.rest || {};
 console.log('tl: ' + lead.length + ' blocks, ' + peak + ' at once; launch ' + f(launchMs) + ' ms, its blocks span '
   + f(span) + ' ms, gap ' + f(launchMs - span) + ' ms (' + f(100 * (launchMs - span) / launchMs, 2) + '%); ramp '
   + f((full0 - t0) * msPerTick) + ' ms, tail ' + f((t1 - full1) * msPerTick) + ' ms; busy time over ' + peak + ' slots '
-  + f(ideal) + ' ms (' + f(100 * ideal / launchMs, 2) + '% of the launch); block ' + f(durs[durs.length >> 1], 4)
+  + f(ideal) + ' ms (' + f(100 * ideal / launchMs, 2) + '% of the launch); slots in use between ramp and tail '
+  + f(100 * steady, 2) + '%; block ' + f(durs[durs.length >> 1], 4)
   + ' ms median; ' + (r.mhz ? Math.round(r.mhz.med) + ' MHz, slab ' + Math.round(r.slab.med) + ' cycles' : ''));
 EOF_TL
 STSHAPES=${G_STSHAPES:-sbase:131072:2048:400 sbase:524288:2048:100 sbase:131072:4096:200 sw:131072:8192:100}
