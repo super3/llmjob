@@ -714,6 +714,16 @@ What future speed work needs: how to measure, the limits found, and what has alr
   +1.30% and +1.56% a clock at k 8192 and 16384 into +0.6% and +0.8% at the power cap. With today's operands depth
   loses (above), and no on-chip operand supply pays (compact tables, below), so it stops. The cp.async fold's
   `tile_srcs` offsets are 32-bit and overflow past k 16384.
+- CUDA 13's ptxas for RTX 30 (sm_86) and RTX 20 (sm_75) (PR #290 research item 14, 10 November, static, no GPU
+  run). The shipped `pearl_core_cu13.node` holds only sm_89 and sm_120 (cuobjdump of v0.6.14's), so RTX 30 and 20
+  mine on 12.8 code; the "CUDA 13 core" Vast rows are RTX 50 and RTX PRO only. Built `pearl_kernel.cu` on rig01 with
+  ptxas 12.8.93 and 13.3.73 from the same PTX, and with cicc 13.3 too. sm_75: all 24 kernels byte-identical under
+  both. sm_86: 20 of 24 identical; the tall fold differs only in register and predicate names, one NOP turned into a
+  no-op uniform add and one branch's sense: 3,056 instructions in the same order, 254 registers, 0 spill, 7,775
+  stall cycles in both, control bits different on 4 instructions. `pearl_blake3_chunk_cvs` and
+  `pearl_restamp_operand` save 2 stall cycles of 3,100 and 4,600. The 12.8 build's fold hash (35efb7e36535) is the
+  release's, so the comparison is against what ships. A race could only measure noise, so none was run. Ptxas 13's
+  gain is Blackwell's (+3.2% on the 5090); it doesn't reach Ampere or Turing.
 - RTX 20: a smaller transcript hash for the L0 instruction cache (item 11), at most +0.10%.
 - RTX 30/40: copy groups and readout fences (item 10); hash control bits, warp turn-taking (#18), IMMAs during the hash;
   a wider window (g6: costs 1,380 cycles a tile to free at most 355); Z6 (no clearing at all saves only 20 cycles);
