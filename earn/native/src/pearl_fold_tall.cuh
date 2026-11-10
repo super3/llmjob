@@ -188,7 +188,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // (k-blocked, [k / 64][rows][64]: the same runs, a stage a k-block on, m * 64 bytes of
   // A' and n * 64 of B'; the rows past m are the next k-block's first rows, or past the
   // last k-block the padding.)
-  auto tile_srcs = [&](uint32_t v, uint32_t &bsrc_, uint32_t &asrc_) {
+  // Offsets are 64-bit only past k 16384, where the mainnet m and n put A' and B' over
+  // 4 GB; at k 16384 and below the fold is what it was (PEARL_TALL_OFF).
+  auto tile_srcs = [&](uint32_t v, PEARL_TALL_OFF &bsrc_, PEARL_TALL_OFF &asrc_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
 #ifdef PEARL_ABLATE_DRAM
@@ -219,11 +221,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     const uint32_t coff = col_off;
 #endif
 #if PEARL_TALL_TILE_ORDER
-    bsrc_ = (coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
-    asrc_ = rbg_ * BM * k + arow * SK + aq * 16u;
+    bsrc_ = (PEARL_TALL_OFF)((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT) * k
+            + (bcol * SK + bq * 16u);
+    asrc_ = (PEARL_TALL_OFF)(rbg_ * BM) * k + (arow * SK + aq * 16u);
 #else
-    bsrc_ = ((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
-    asrc_ = (rbg_ * BM + arow) * SK + aq * 16u;
+    bsrc_ = (PEARL_TALL_OFF)((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK
+            + bq * 16u;
+    asrc_ = (PEARL_TALL_OFF)(rbg_ * BM + arow) * SK + aq * 16u;
 #endif
   };
 #if PEARL_TALL_TILE_ORDER
@@ -282,11 +286,28 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   auto tile_box = [&](uint32_t v, uint32_t &bcol_, uint32_t &arow_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
+#ifdef PEARL_ABLATE_DRAM
+    // Diagnostic only, as in the cp.async walk's tile_srcs: every tile reads row groups 0
+    // and 1 of A' and the first two column groups of B', and (in tma_fill) the first 32
+    // k-blocks of each, so at any k the boxes come from 1.75 MB that stays in the L2. The
+    // same boxes and mma; the output is meaningless. The hash still names the real regions.
+    rbg_ &= 1u;
+    cbg_ &= 1u;
+    bcol_ = cbg_ * PEARL_TALL_COL_OFFSETS * PEARL_COLS_COUNT;
+#else
     bcol_ = (col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT;
+#endif
     arow_ = rbg_ * BM;
   };
+  // The k-block a fill of k bytes [kofs, kofs + SK) reads: under the DRAM ablation, the
+  // first 32 (2048 of k) over again.
+#ifdef PEARL_ABLATE_DRAM
+#define PEARL_TALL_KBLOCK(kofs) (((kofs) / SK) & 31u)
+#else
+#define PEARL_TALL_KBLOCK(kofs) ((kofs) / SK)
+#endif
   // Fill buffer bi with k bytes [kofs, kofs + SK) of the tile at (boxB, boxA): its
-  // k-block kofs / SK, whole (the host blocks A' and B' by exactly one stage). Both
+  // k-block (PEARL_TALL_KBLOCK), whole (the host blocks A' and B' by exactly one stage). Both
   // boxes count their full size toward FULL's transaction, the rows past m that TMA
   // zero-fills included.
 #if PEARL_TALL_AB_SKIP
@@ -312,8 +333,8 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         pearl_mbar_arrive(full);
       } else {
         pearl_mbar_expect_tx(full, (skipB ? 0u : BN * SK) + (skipA ? 0u : BM * SK));
-        if (!skipB) pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
-        if (!skipA) pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
+        if (!skipB) pearl_tma_3d(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full);
+        if (!skipA) pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, PEARL_TALL_KBLOCK(kofs), full);
       }
       return;
     }
@@ -327,12 +348,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // complete before the expect_tx's arrival, so it is how CUTLASS's multicast
     // pipelines run too. Each CTA's own A box follows, as before.
     if (pearl_cluster_ctarank() == 0u)
-      pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, kofs / SK, full,
+      pearl_tma_3d_multicast(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full,
                              (uint16_t)((1u << CLUSTER) - 1u));
 #else
-    pearl_tma_3d(dst, &tmB, 0u, boxB, kofs / SK, full);
+    pearl_tma_3d(dst, &tmB, 0u, boxB, PEARL_TALL_KBLOCK(kofs), full);
 #endif
-    pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, kofs / SK, full);
+    pearl_tma_3d(dst + BN * SK, &tmA, 0u, boxA, PEARL_TALL_KBLOCK(kofs), full);
   };
 #endif
 
@@ -528,7 +549,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   uint32_t fb = 0u, fpar = 0u;
 #endif
 #else
-  uint32_t bsrc0, asrc0;
+  PEARL_TALL_OFF bsrc0, asrc0;
   tile_srcs(tile_first, bsrc0, asrc0);
   const int8_t *aP = PEARL_E4_ABASE + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.

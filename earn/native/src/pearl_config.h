@@ -464,6 +464,18 @@ typedef struct {
 #define PEARL_FOLD_K 2048u
 #endif
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
+#if PEARL_FOLD_K < 2048 || PEARL_FOLD_K > 65536 || (PEARL_FOLD_K & (PEARL_FOLD_K - 1))
+#error "PEARL_FOLD_K is a power of two from 2048 to 65536 (16 x rank to 4 x rank^2)"
+#endif
+// The tall fold's cp.async source offsets (tile_srcs). At the mainnet m and n, A' and B'
+// pass 4 GB past k 16384 (B' is n x k bytes), so those builds take 64-bit offsets; at
+// k 16384 and below they stay 32-bit and the fold is what it was. Blackwell's TMA fold
+// addresses by box coordinates, which never overflow.
+#if PEARL_FOLD_K > 16384
+#define PEARL_TALL_OFF uint64_t
+#else
+#define PEARL_TALL_OFF uint32_t
+#endif
 
 // Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in
 // place of sixteen 32x64 ones (512 threads).
@@ -2109,8 +2121,14 @@ typedef struct {
 // 468 -> 469 instructions (13.3; 12.8 634 -> 635). Same hit lists as without it over a
 // fixed job in both hash byte orders. The TMA build only (sm_120, and sm_100 on the
 // same code, unmeasured there); 0 turns it off.
+// Off by default in a build for k past 2048 (PEARL_FOLD_K): its readout writes chunk c's
+// words with no wrap, so it can't fold 16 chunks into a word, and it is worth under 0.1%.
 #ifndef PEARL_TALL_PREGUARD
+#if PEARL_FOLD_K > 2048
+#define PEARL_TALL_PREGUARD 0
+#else
 #define PEARL_TALL_PREGUARD 1
+#endif
 #endif
 // GA100 (sm_80): the tall fold leaves the transcript hash to a kernel of its own. At each
 // tile's end every warp copies its 24 regions' words from shared to a per-slot buffer in
