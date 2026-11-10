@@ -300,7 +300,14 @@ limit sets the clock, not the lock. nvidia-smi has no voltage control, so an und
 
 What it means: where the miner can set clocks (it needs Administrator on Windows or root on Linux, so HiveOS and
 mining rigs, not Salad or Vast containers), a 5001 MHz memory lock is worth about +0.8% on a 4090 at its stock limit
-and up to +1.7% on a power-limited one. It is measured on one 4090 only. Not built into the app yet.
+and up to +1.7% on a power-limited one. It is measured on one 4090 only.
+
+Built as `--mine-mem-clock auto` (`LLMJOB_MINE_MEM_CLOCK=auto` in the app), off unless asked for. A card with a
+lock to try (RTX 40 at 5001 MHz, RTX 50 other than the 5090 at 7001 MHz) mines four 75 s turns, driver's clock and
+locked in turn, and keeps the lock only if it was 0.3% faster and ahead in every turn. Run for real on rig01 from
+this branch's CLI on Kryptex: the trial measured 320.0 TH/s locked against 317.4 (+0.8%) and kept the lock, with 8
+shares accepted and none rejected in under six minutes. The lock is dropped when an LLM co-runs on the card, as
+every memory clock lock is.
 
 ## RTX 50-series
 

@@ -3049,3 +3049,257 @@ describe('PearlMiner — checking the hits of an untested card', () => {
     r.m.stop();
   });
 });
+
+// --mine-mem-clock auto: a card on trial mines four turns, with and without the
+// lock, and keeps the lock only if it was faster (shared/memClockTrial has the
+// method; the shells' plan says which cards are on trial).
+describe('PearlMiner — the memory clock trial', () => {
+  const { TURN_MS } = require('../src/shared/memClockTrial');
+  const GPU = [{ index: 0, name: 'NVIDIA GeForce RTX 4090' }];
+  const AUTO = { ...settings, gpus: GPU, mineMemClockByIndex: { 0: 5001 }, mineMemClockTrial: [0] };
+  const START_LINE = 'memory clock trial on GPU 0: mining 75 s at the driver\'s clock and '
+    + '75 s locked at 5001 MHz, twice; the lock is kept only if it is faster';
+
+  function rig(over = {}) {
+    const calls = [];
+    const t = { now: 0 };
+    const clocks = {
+      lockMemoryClock: jest.fn((index, mhz) => { calls.push(['lock', index, mhz]); return over.lock || { ok: true, error: null }; }),
+      resetMemoryClock: jest.fn((index) => { calls.push(['reset', index]); return over.reset || { ok: true, error: null }; }),
+    };
+    const made = [];
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      if (!over.silentDevice) c.device = { index: opts.deviceIndex, name: 'GPU' + opts.deviceIndex };
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => makeSocket(), createCore, reconnectMs: 0, clocks, now: () => t.now });
+    const logs = [];
+    m.on('log', (l) => logs.push(l));
+    m.on('stopped', () => calls.push(['stopped']));
+    m.on('error', () => {});
+    const clockLines = () => logs.map((l) => l.line).filter((l) => /memory clock/.test(l));
+    return { m, t, clocks, calls, logs, made, createCore, clockLines };
+  }
+
+  // One turn of the trial: the card reports `th` twice a second, and once more
+  // on the second the turn ends.
+  function turn(b, core, th) {
+    const end = b.t.now + TURN_MS;
+    while (b.t.now + 500 < end) {
+      b.t.now += 500;
+      core.emit('hashrate', th);
+    }
+    b.t.now = end;
+    core.emit('hashrate', th);
+  }
+  const trial = (b, core, rates) => rates.forEach((th) => turn(b, core, th));
+
+  test('a card on trial starts at the driver\'s clock and says what it will do', () => {
+    const b = rig();
+    b.m.start(AUTO);
+    expect(b.calls).toEqual([]);
+    expect(b.logs).toContainEqual({ level: 'info', line: START_LINE });
+    b.m.stop();
+    // Stopped in its first, unlocked turn: there is no lock to release.
+    expect(b.calls).toEqual([['stopped']]);
+  });
+
+  test('keeps a lock that was faster, says what it measured, and releases it on stop', () => {
+    const b = rig();
+    b.m.start(AUTO);
+    trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+    // Locked for the second and fourth turns, and still locked.
+    expect(b.calls).toEqual([['lock', 0, 5001], ['reset', 0], ['lock', 0, 5001]]);
+    expect(b.clockLines()).toEqual([
+      START_LINE,
+      'memory clock kept at 5001 MHz on GPU 0 while mining: 320.5 TH/s locked against 317.5 (+0.9%)',
+    ]);
+    // The trial is over: later samples change nothing.
+    turn(b, b.made[0], 100);
+    expect(b.calls).toHaveLength(3);
+
+    b.m.stop();
+    expect(b.calls.slice(3)).toEqual([['reset', 0], ['stopped']]);
+    expect(b.clockLines().pop()).toBe('memory clock released on GPU 0');
+  });
+
+  // The 810 MHz speed on rig01's RTX 4090.
+  test('gives back a lock that was slower, and leaves the card alone after', () => {
+    const b = rig();
+    b.m.start(AUTO);
+    trial(b, b.made[0], [317.5, 283.1, 317.5, 283.1]);
+    expect(b.calls).toEqual([['lock', 0, 5001], ['reset', 0], ['lock', 0, 5001], ['reset', 0]]);
+    expect(b.clockLines()).toEqual([
+      START_LINE,
+      'memory clock left to the driver on GPU 0 (the lock was not ahead by 0.3%): '
+        + '283.1 TH/s locked against 317.5 (-10.8%)',
+    ]);
+    b.m.stop();
+    expect(b.calls.slice(4)).toEqual([['stopped']]);
+  });
+
+  test('with too few samples to compare, leaves the clock to the driver and quotes no rates', () => {
+    const b = rig();
+    b.m.start(AUTO);
+    // One sample a turn: the one that ends it.
+    for (let i = 0; i < 4; i += 1) {
+      b.t.now += TURN_MS;
+      b.made[0].emit('hashrate', 317.5);
+    }
+    expect(b.clockLines().pop())
+      .toBe('memory clock left to the driver on GPU 0 (too few hashrate samples to compare)');
+    expect(b.calls.pop()).toEqual(['reset', 0]);
+    b.m.stop();
+  });
+
+  // The common case on a rig that asked for auto without the rights for it.
+  test('a lock that cannot be taken ends the trial with a warning, once', () => {
+    const b = rig({ lock: { ok: false, error: 'sudo: a password is required' } });
+    b.m.start(AUTO);
+    trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+    expect(b.calls).toEqual([['lock', 0, 5001]]);
+    expect(b.logs.filter((l) => l.level === 'warn')).toEqual([{
+      level: 'warn',
+      line: 'memory clock trial ended on GPU 0 (sudo: a password is required): setting the memory clock needs '
+        + 'root or administrator rights for nvidia-smi. Mining continues at the default memory clock.',
+    }]);
+    b.m.stop();
+    expect(b.calls.slice(1)).toEqual([['stopped']]);
+  });
+
+  test('a lock that will not come off between turns ends the trial, and the log names the fix', () => {
+    const b = rig({ reset: { ok: false, error: 'sudo: a password is required' } });
+    b.m.start(AUTO);
+    trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+    expect(b.calls).toEqual([['lock', 0, 5001], ['reset', 0]]);
+    expect(b.logs.filter((l) => l.level === 'error')).toEqual([{
+      level: 'error',
+      line: 'could not release the memory clock on GPU 0 (sudo: a password is required). '
+        + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i 0 -rmc',
+    }]);
+    b.m.stop();
+  });
+
+  test('stopping in a locked turn releases the lock before stopped', () => {
+    const b = rig();
+    b.m.start(AUTO);
+    turn(b, b.made[0], 317.5);
+    expect(b.calls).toEqual([['lock', 0, 5001]]);
+    b.m.stop();
+    expect(b.calls.slice(1)).toEqual([['reset', 0], ['stopped']]);
+  });
+
+  // START LLM while mining-only is up: a model is about to be served from the
+  // card, so the trial must not take the lock on its next turn.
+  test('releaseMemClocks() ends the trial, in a locked turn or an unlocked one', () => {
+    const locked = rig();
+    locked.m.start(AUTO);
+    turn(locked, locked.made[0], 317.5);
+    locked.m.releaseMemClocks();
+    expect(locked.calls).toEqual([['lock', 0, 5001], ['reset', 0]]);
+    trial(locked, locked.made[0], [320.5, 317.5, 320.5]);
+    expect(locked.calls).toHaveLength(2);
+    locked.m.stop();
+
+    const unlocked = rig();
+    unlocked.m.start(AUTO);
+    unlocked.m.releaseMemClocks();
+    trial(unlocked, unlocked.made[0], [317.5, 320.5, 317.5, 320.5]);
+    expect(unlocked.calls).toEqual([]);
+    unlocked.m.stop();
+  });
+
+  test('a card not on trial is locked outright beside one that is', () => {
+    const b = rig();
+    b.m.start({
+      ...settings,
+      gpus: [GPU[0], { index: 1, name: 'NVIDIA GeForce RTX 5090' }],
+      mineMemClockByIndex: { 0: 5001, 1: 7001 },
+      mineMemClockTrial: [0],
+    });
+    expect(b.calls).toEqual([['lock', 1, 7001]]);
+    // The 5090's samples move nobody's trial.
+    turn(b, b.made[1], 400);
+    expect(b.calls).toHaveLength(1);
+    b.m.stop();
+  });
+
+  test('a core that does not name its card gets no trial', () => {
+    const b = rig({ silentDevice: true });
+    b.m.start(AUTO);
+    expect(b.clockLines()).toEqual([
+      'memory clock left at default: this pearl_core.node does not say which GPU it opened',
+    ]);
+    expect(b.calls).toEqual([]);
+    b.m.stop();
+  });
+
+  test('times the trial by the wall clock unless a clock is injected', () => {
+    expect(new PearlMiner({}).now).toBe(Date.now);
+  });
+
+  describe('when the card is opened again in the same run', () => {
+    beforeEach(() => jest.useFakeTimers());
+    afterEach(() => {
+      jest.clearAllTimers();
+      jest.useRealTimers();
+    });
+    const fail = (b) => {
+      b.made[b.made.length - 1].emit('error', new Error('GPU 0: misaligned address'));
+      jest.advanceTimersByTime(RESTART_MS);
+    };
+
+    test('a trial cut short starts over', () => {
+      const b = rig();
+      b.m.start(AUTO);
+      turn(b, b.made[0], 317.5);
+      fail(b);
+      // The lock its second turn held is released with the card.
+      expect(b.calls).toEqual([['lock', 0, 5001], ['reset', 0]]);
+      expect(b.made).toHaveLength(2);
+      expect(b.clockLines().filter((l) => l === START_LINE)).toHaveLength(2);
+      // The dead core's trial is gone; the new one starts from its first turn.
+      trial(b, b.made[1], [317.5, 320.5, 317.5, 320.5]);
+      expect(b.clockLines().pop())
+        .toBe('memory clock kept at 5001 MHz on GPU 0 while mining: 320.5 TH/s locked against 317.5 (+0.9%)');
+      b.m.stop();
+    });
+
+    test('a kept lock is taken again at once, with no second trial', () => {
+      const b = rig();
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      fail(b);
+      expect(b.calls.slice(3)).toEqual([['reset', 0], ['lock', 0, 5001]]);
+      expect(b.clockLines().filter((l) => l === START_LINE)).toHaveLength(1);
+      expect(b.clockLines().pop()).toBe('memory clock locked at 5001 MHz on GPU 0 while mining');
+      b.m.stop();
+    });
+
+    test('a refused lock stays refused', () => {
+      const b = rig();
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 283.1, 317.5, 283.1]);
+      const before = b.calls.length;
+      fail(b);
+      expect(b.made).toHaveLength(2);
+      trial(b, b.made[1], [317.5, 320.5, 317.5, 320.5]);
+      expect(b.calls).toHaveLength(before);
+      expect(b.clockLines().filter((l) => l === START_LINE)).toHaveLength(1);
+      b.m.stop();
+    });
+
+    // The next start is a new run: the power limit may have changed.
+    test('the next start tries the card again', () => {
+      const b = rig();
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 283.1, 317.5, 283.1]);
+      b.m.stop();
+      b.m.start(AUTO);
+      expect(b.clockLines().filter((l) => l === START_LINE)).toHaveLength(2);
+      b.m.stop();
+    });
+  });
+});

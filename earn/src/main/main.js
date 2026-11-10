@@ -790,6 +790,7 @@ async function startMining(settings, llmCoRuns) {
     miner.start(Object.assign({}, settings, {
       endpoint, gpus, gpu: settings.gpu || null,
       mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
+      mineMemClockTrial: memPlan.trial,
     }));
   } catch (e) {
     reportLaunchFailure(e);

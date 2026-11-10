@@ -878,7 +878,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            build that fits the cards, or the AMD core first when
                            nvidia-smi lists none; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
-                           (default: 7001 on the RTX 5090; 0 turns it off; see below)
+                           (default: 7001 on the RTX 5090; 0 turns it off; auto
+                           tries a lock and keeps it if faster; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
                            HeroMiners, such as xmr-us.kryptex.network:7029
@@ -958,6 +959,7 @@ tie (native/probes/README.md). Measure your own card before and after.
 llmjob-earn-cli --address prl1p… --mode mining                        # RTX 5090: 7001 by default
 llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 7001  # any card: lock at 7001
 llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave the driver's clock
+llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # try a lock, keep it if faster
 ```
 
 - **On by default on the RTX 5090.** A mining RTX 5090 is locked at 7001 MHz,
@@ -966,6 +968,17 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock 0     # leave 
   same way, since they share the hard power cap and the power-bound fold, but
   they stay at the driver's clock until one has been measured. Pass the flag to
   lock any card.
+- **`--mine-mem-clock auto` tries a lock and keeps it only if it pays.** It
+  covers RTX 40 cards (tried at 5001 MHz) and the RTX 50 cards other than the
+  5090 (tried at 7001 MHz). Each card mines 75 seconds at the driver's clock and
+  75 seconds locked, twice, and keeps the lock for the rest of the run only if
+  it was at least 0.3% faster and ahead in every turn. The card mines the whole
+  time, and the log says what it measured. On an RTX 4090, 5001 MHz measured
+  +0.8% at a 450 W limit and +1.3 to +1.7% at 300 to 400 W; the next memory
+  speed down (810 MHz) lost 11%, which is why other cards are tried rather than
+  locked outright (`tuning/benchmark.md`, "rig01, 10 November"). Off unless you
+  ask for it. An RTX 5090 keeps its default under `auto`, and older cards are
+  left alone: no lock has been measured on them.
 - **`--mine-mem-clock 0` turns it off** in the CLI. Any other value replaces the
   default on every mining card. The desktop app has no setting for it in its
   window yet; its switch is the environment variable `LLMJOB_MINE_MEM_CLOCK`,

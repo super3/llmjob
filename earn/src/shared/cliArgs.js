@@ -86,7 +86,9 @@ const USAGE = [
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
   '                           while it mines. Default: 7001 on the RTX 5090,',
   '                           off on every other card; 0 leaves the driver\'s',
-  '                           clock everywhere. The fold barely touches DRAM,',
+  '                           clock everywhere; auto tries a lock on RTX 40',
+  '                           and RTX 50 cards and keeps it only where it is',
+  '                           faster. The fold barely touches DRAM,',
   '                           so a power-capped card spends the watts on its SM',
   '                           clock instead: 7001 took a 600 W RTX 5090 from',
   '                           95.7 to 103.4 TH/s (+8%). Only the',
@@ -313,7 +315,8 @@ function buildSettings(opts, errors, report, update, serve) {
   }
   // A memory clock to lock while mining, in MHz. Null (not given) means the
   // RTX 5090 default applies (shared/memClock); 0 turns that off and leaves
-  // every card at the driver's clock. The value's rules, and the GUI's
+  // every card at the driver's clock; 'auto' tries a lock on the cards that
+  // have one to try and keeps it where it is faster. The value's rules, and the GUI's
   // environment variable that takes the same values, are shared/memClock's.
   let mineMemClockMhz = null;
   if (opts['--mine-mem-clock'] != null) {

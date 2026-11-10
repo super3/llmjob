@@ -13,6 +13,7 @@ const { checkHit } = require('../shared/miner/checkHit');
 const { gzipSizes } = require('../shared/miner/plainProof');
 const { combinePayoutAddress, isValidMdlAddress, normalizeAddress } = require('../shared/address');
 const gpuClocks = require('./gpuClocks');
+const memClockTrial = require('../shared/memClockTrial');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
 // state machine, and drives a PearlCore (the CUDA addon) for the actual search.
@@ -110,13 +111,14 @@ function archOf(core) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, restartMs, clocks, agent } = {}) {
+  constructor({ connect, createCore, reconnectMs, restartMs, clocks, agent, now } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
     this.reconnectMs = reconnectMs == null ? RECONNECT_MS : reconnectMs;
     this.restartMs = restartMs == null ? RESTART_MS : restartMs;
     this.clocks = clocks || gpuClocks;      // { lockMemoryClock, resetMemoryClock }
+    this.now = now || Date.now;             // the memory clock trial's clock
     this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
     this.restartTimers = new Set();
@@ -187,6 +189,10 @@ class PearlMiner extends EventEmitter {
     // stop(), and a start that fails locks nothing, so start() never finds any
     // -- and if it somehow did, forgetting them would leave them locked.
     this.memClockLocked = new Set();
+    // Memory clock trials under way, as card index -> { mhz, trial }, and the
+    // ones this run has finished, as card index -> kept (see _startMemClockTrial).
+    this.memClockTrials = new Map();
+    this.memClockVerdicts = new Map();
     // Cards set aside while the local LLM answers a prompt on them, as
     // slot -> device (see pauseCards). Not in `cores`, so jobs, hashrate ticks
     // and stop() pass them by, but still this run's cards.
@@ -227,6 +233,9 @@ class PearlMiner extends EventEmitter {
     this.hashrates = new Map();   // card index -> its latest TH/s
     // Set by releaseMemClocks(): this run's cards stay at the driver's clock.
     this.memClocksReleased = false;
+    // Each run tries its cards' locks afresh: the power limit may have changed.
+    this.memClockTrials = new Map();
+    this.memClockVerdicts = new Map();
     // A new run asks for compressed proofs again, whatever the last one found.
     this.askGzip = true;
     this.gzipRejects = 0;
@@ -418,11 +427,86 @@ class PearlMiner extends EventEmitter {
     if (Object.keys(memClocks).length > 0) {
       const index = device ? device.index : null;
       if (index == null || memClocks[index]) {
-        this._lockMemClock(index, index == null ? null : memClocks[index],
-          !!this.settings.mineMemClockDefault);
+        // A card on trial (--mine-mem-clock auto) keeps the driver's clock for
+        // now and earns the lock. Opened again in the same run, it takes the
+        // trial's answer: the lock at once if it was kept, nothing if it was not.
+        const onTrial = index != null && (this.settings.mineMemClockTrial || []).includes(index);
+        const verdict = this.memClockVerdicts.get(index);
+        if (onTrial && verdict === undefined) {
+          this._startMemClockTrial(index, memClocks[index]);
+        } else if (!onTrial || verdict) {
+          this._lockMemClock(index, index == null ? null : memClocks[index],
+            !!this.settings.mineMemClockDefault);
+        }
       }
     }
     return entry;
+  }
+
+  // Start one card's memory clock trial (shared/memClockTrial has the method
+  // and the reasons). The card mines throughout; only its memory clock changes.
+  _startMemClockTrial(index, mhz) {
+    this.memClockTrials.set(index, { mhz, trial: memClockTrial.createTrial(this.now()) });
+    const secs = memClockTrial.TURN_MS / 1000;
+    this.emit('log', {
+      level: 'info',
+      line: 'memory clock trial on GPU ' + index + ': mining ' + secs + " s at the driver's clock and "
+        + secs + ' s locked at ' + mhz + ' MHz, twice; the lock is kept only if it is faster',
+    });
+  }
+
+  // One hashrate sample from a card. Moves its trial on, if it has one: takes
+  // or gives back the lock between turns, and after the last turn keeps the
+  // lock or releases it for the rest of the run.
+  _feedMemClockTrial(index, th) {
+    const t = this.memClockTrials.get(index);
+    if (!t) return;
+    const step = memClockTrial.feed(t.trial, th, this.now());
+    if (!step) return;
+    if (step.done) {
+      this.memClockTrials.delete(index);
+      this.memClockVerdicts.set(index, step.keep);
+      const rates = step.gain == null ? ''
+        : ': ' + step.onTh.toFixed(1) + ' TH/s locked against ' + step.offTh.toFixed(1) + ' ('
+          + (step.gain >= 0 ? '+' : '') + (step.gain * 100).toFixed(1) + '%)';
+      if (step.keep) {
+        this.emit('log', {
+          level: 'info',
+          line: 'memory clock kept at ' + t.mhz + ' MHz on GPU ' + index + ' while mining' + rates,
+        });
+        return;
+      }
+      this._resetMemClock(index, true);
+      this.emit('log', {
+        level: 'info',
+        line: 'memory clock left to the driver on GPU ' + index + ' (' + step.reason + ')' + rates,
+      });
+      return;
+    }
+    if (!step.lock) {
+      // A lock that will not come off ends the trial; _resetMemClock has said so.
+      if (!this._resetMemClock(index, true)) this._endMemClockTrial(index);
+      return;
+    }
+    const r = this.clocks.lockMemoryClock(index, t.mhz);
+    if (r.ok) {
+      this.memClockLocked.add(index);
+      return;
+    }
+    // No rights to set clocks is the common way to get here. The trial was
+    // asked for, so it is a warning, and the card is not tried again this run.
+    this._endMemClockTrial(index);
+    this.emit('log', {
+      level: 'warn',
+      line: 'memory clock trial ended on GPU ' + index + ' (' + r.error + '): setting the memory clock needs '
+        + 'root or administrator rights for nvidia-smi. Mining continues at the default memory clock.',
+    });
+  }
+
+  // Give up a card's trial without an answer in its favour.
+  _endMemClockTrial(index) {
+    this.memClockTrials.delete(index);
+    this.memClockVerdicts.set(index, false);
   }
 
   // Lock one mining card's memory clock (the RTX 5090 default, or
@@ -482,6 +566,9 @@ class PearlMiner extends EventEmitter {
   // came up?" is the question a slow LLM on this rig raises, and the log is
   // where it gets answered.
   _releaseMemClocks() {
+    // Trials end with the locks: a card in an unlocked turn holds none, and
+    // would otherwise take one on its next sample.
+    this.memClockTrials.clear();
     for (const index of this.memClockLocked) this._releaseMemClock(index);
   }
 
@@ -502,17 +589,29 @@ class PearlMiner extends EventEmitter {
   // fails mid-run: that card has stopped mining, and whatever runs on it next
   // should not be stuck at the mining clock until the whole rig stops.
   _releaseMemClock(index) {
-    if (!this.memClockLocked.delete(index)) return;
+    // The card is no longer mining, so its trial is over too. Not an answer:
+    // if the card is opened again this run, it is tried again.
+    this.memClockTrials.delete(index);
+    this._resetMemClock(index, false);
+  }
+
+  // Hand one card's memory clock back to the driver, if this run holds its
+  // lock. True unless the reset failed. `quiet` leaves out the line for a
+  // release that worked: a trial releases the lock between turns, and says what
+  // it found at the end.
+  _resetMemClock(index, quiet) {
+    if (!this.memClockLocked.delete(index)) return true;
     const r = this.clocks.resetMemoryClock(index);
     if (r.ok) {
-      this.emit('log', { level: 'info', line: 'memory clock released on GPU ' + index });
-      return;
+      if (!quiet) this.emit('log', { level: 'info', line: 'memory clock released on GPU ' + index });
+      return true;
     }
     this.emit('log', {
       level: 'error',
       line: 'could not release the memory clock on GPU ' + index + ' (' + r.error + '). '
         + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i ' + index + ' -rmc',
     });
+    return false;
   }
 
   _openSocket(host, port, wallet, worker) {
@@ -804,6 +903,7 @@ class PearlMiner extends EventEmitter {
       if (device) this.hashrates.set(device.index, th);
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', th, device);
+      if (device) this._feedMemClockTrial(device.index, th);
     });
     core.on('error', (err) => this._onCoreError(core, device, err));
     // The profile is this core's, bound here: a hit still on its way from a

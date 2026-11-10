@@ -1550,7 +1550,7 @@ describe('mining', () => {
       }));
       expect(ctx.sent('miner:log')).toContainEqual({
         level: 'warn',
-        line: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
+        line: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, auto, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
       });
     });
 

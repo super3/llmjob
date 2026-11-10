@@ -425,7 +425,7 @@ describe('--mine-mem-clock', () => {
     expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock=0']).settings.mineMemClockMhz).toBe(0);
     const errors = [];
     expect(buildSettings({ '--mine-mem-clock': '' }, errors, true, false).mineMemClockMhz).toBeNull();
-    expect(errors).toContain('invalid --mine-mem-clock:  (must be 0, or a whole number of MHz, 100-30000)');
+    expect(errors).toContain('invalid --mine-mem-clock:  (must be 0, auto, or a whole number of MHz, 100-30000)');
   });
 
   test('carries a clock in MHz through', () => {
@@ -439,7 +439,7 @@ describe('--mine-mem-clock', () => {
     for (const bad of ['', ' ', '7', '99', '30001', '7001000', '7001.5', '-7001', 'fast']) {
       const errors = [];
       const s = buildSettings({ '--mine-mem-clock': bad }, errors, true, false);
-      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be 0, or a whole number of MHz, 100-30000)');
+      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be 0, auto, or a whole number of MHz, 100-30000)');
       expect(s.mineMemClockMhz).toBeNull();
     }
   });

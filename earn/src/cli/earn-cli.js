@@ -1239,6 +1239,7 @@ async function run(argv) {
   if (miner && wantsAmdCore()) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
+    settings.mineMemClockTrial = [];
   } else if (miner) {
     const memPlan = planMemClocks({
       requestedMhz: settings.mineMemClockMhz,
@@ -1248,6 +1249,8 @@ async function run(argv) {
     });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
+    // The cards that have to earn their lock (--mine-mem-clock auto); none otherwise.
+    settings.mineMemClockTrial = memPlan.trial;
     if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
   }
 
