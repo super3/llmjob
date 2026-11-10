@@ -1183,6 +1183,40 @@ a third of 150 s at the worse shapes' rate, once a week.
   (± is the 95% interval.) verify-hits passed 400 of 400 for fill 63 and 64 on all three. Fill 64 is level on the
   3080 and 5080 and a clear −0.29% on the 4080 SUPER; the 5080 drew 2 W more at 63 and 64. Fill 48 stays, the
   [-63, 63] limit stays in the code, and nothing above 64 is legal. Dropped.
+- Our AMD work carried over to NVIDIA (PR #290 research item 22, 10 November). Every AMD change that gained speed
+  (git log on `earn/native/amd`, the AMD sections above), checked against the NVIDIA folds (the tall fold: TMA on
+  sm_120, cp.async on sm_89 and sm_86) and the sm_86 SASS of the release's chunk loop (192 IMMA, 40 LDSM, 117 LOP3,
+  14 LDGSTS, ~100 other instructions a chunk a warp). The AMD gains came from two things NVIDIA doesn't share:
+  on RDNA 4 a VALU next to the WMMAs costs about a WMMA cycle (3.5-5 chained on RDNA 3), while an NVIDIA scheduler
+  issues ALU work beside an IMMA that holds the tensor pipe ~16 cycles, so there an instruction costs only energy;
+  and AMD's fold started further from its peak (70% of WMMA on RDNA 4 in v0.6.11). By what each would give NVIDIA:
+  - Already in the NVIDIA folds, most of them first: the per-tile operand layout (AMD took
+    `pearl_materialize16_tiled` from the CUDA fold), loads kept in flight across the stage barrier (PF2, PFX: the
+    3-stage cp.async/TMA ring; its waits cost 0.46% a tile, all at the hash seam), one fragment load for two
+    k-steps (KPAIR: `ldmatrix.x4` is already 16 bytes a lane, the least a 96x64 warp tile can read), rank at compile
+    time (CRANK: no division in the chunk loop), the readout as a tree (RDTREE: 3-input LOP3 XORs), DPP lane moves
+    (shuffles and `red.shared.xor`), launch bounds (TID), the tile walk and batch width sized to the L2 (WALK and
+    RDNA 3's batch 128: Ampere's band, Ada's and Blackwell's width rules), and the hash inside the fold.
+  - Already tried on NVIDIA and dropped: the readout moved into the next chunk (RDLATE: −2.0% in September; tiles 4
+    and 5 moved, +265-293 cycles a tile), pinned lane bases (LDS32_PIN: +0.07% by estimate), k 4096 (long k is
+    item 21).
+  - Not built: fewer address instructions for the cp.async copies (BUFLD). On sm_86 a stage spends about 9 on
+    addresses, 6 of them for A's three copies (64-bit adds); about 8 a chunk could go, ~0.3% of a chunk's energy,
+    so about +0.1%. It sits in `tile_srcs`, which item 21 is widening for long k, so it waits for that.
+  - Dropped by estimate: the hash in its own kernel, AMD's default shape and what GA100 ships
+    (`PEARL_TALL_UNFUSED`, +2.2-4.8% there, where the fused hash cost 14% of a tile). On RTX 30/40 the
+    round trip is 64 bytes a region (2^19 MACs): on a 3090 about 2% of a batch to read it back, plus more DRAM
+    traffic on a card already 18-30% busy, against about 0.65% of TH/s the fused hash costs at the power cap.
+    Net about −1.5%.
+  - Raced: RDNA 4's tile order (WALK, every other row of supertiles backwards) as the serpentine walk on RTX 50
+    (`-DPEARL_FOLD_SERPENTINE=1`; flag only, no spill under ptxas 13.3, 8 more instructions in the fold). Measured
+    before only on a 5060 (+2.3% at width 2048, nothing at the 512 it runs). RTX 5090 (`8d8f5bf3`, 480 W cap,
+    driver 621.14, CUDA 13.3, width 2048, race mode, 74 rounds of 4 s): aa +0.262% (±0.092, a base-position offset,
+    ahead 53/74), serpentine +0.287% (±0.108, 53/74), so +0.03% against the twin: level. Memory busy 4.7 → 4.0%,
+    clock +3 MHz over the twin. verify-hits 400 of 400. Nothing to ship. Mid RTX 50 cards run width 1024 or 512,
+    where B' fits their L2 like the 5060's 512, so it wasn't raced there. Cost: one 5090 box, 19 minutes.
+  So nothing from the AMD side is left to give NVIDIA more than about 0.1%. The NVIDIA gap is the DRAM-free,
+  long-k kernel (items 2, 7, 21), which the AMD core doesn't have either.
 - The hash in the fold on gfx1201 (#287 item 6): −0.50% on an RX 9070 XT at k 8192 (a68b3382, both scored rounds, copies
   within 0.06%). RDNA 3 hasn't raced it; its hash kernel is a smaller share (0.8% on a 7900 XTX) and its DRAM faster.
 - Stale shares (PR #290 item 9, 10 November, pool data only). HeroMiners' lifetime counts for our wallet: 121 stale and
