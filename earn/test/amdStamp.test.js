@@ -423,7 +423,7 @@ describe('the AMD host with a stamp build', () => {
     expect(create).toContain('HIP_OK(hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &ctx->dStamps, sizeof ctx->dStamps),');
     // The same grid the fold is launched with.
     expect(submit).toContain('const uint32_t batchCols = ctx->colBatch * PEARL_COLS_COUNT;');
-    expect(submit).toContain('const dim3 grid(batchCols / f.bn, ctx->profile.m / f.bm), block(PEARL_AMD_THREADS);');
+    expect(submit).toContain('const dim3 grid(batchCols / f.bn / ctx->strips, ctx->profile.m / f.bm, ctx->strips), block(PEARL_AMD_THREADS);');
     const destroy = slice(host, 'extern "C" void pearl_host_destroy(void *handle) {', '\n}\n');
     const unset = destroy.indexOf('hipMemcpyToSymbol(HIP_SYMBOL(pearl_amd_stamps), &none, sizeof none);');
     expect(unset).toBeGreaterThan(destroy.indexOf('hipDeviceSynchronize();'));

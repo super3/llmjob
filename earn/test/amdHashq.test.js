@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 
 const HOST = fs.readFileSync(path.join(__dirname, '../native/amd/src/pearl_host_hip.cpp'), 'utf8').replace(/\r\n/g, '\n');
+// The build's defaults for the two switches below.
+const ZERO = 0, WAIT = 1;
 
 function slice(s, from, to) {
   const a = s.indexOf(from);
@@ -29,7 +31,7 @@ describe('the hash on its own queue (PEARL_AMD_HASHQ)', () => {
 
   it('waits for the slot\'s last hash before the fold rewrites its transcripts and hit list', () => {
     const submit = slice(HOST, 'extern "C" bool pearl_host_submit(', '\n}\n');
-    const wait = submit.indexOf('if (hashq) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);');
+    const wait = submit.indexOf('if (hashq && ctx->hashqWait) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);');
     expect(wait).toBeGreaterThan(0);
     expect(wait).toBeLessThan(submit.indexOf('hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);'));
     expect(wait).toBeLessThan(submit.indexOf('switch (f.cap)'));
@@ -44,6 +46,45 @@ describe('the hash on its own queue (PEARL_AMD_HASHQ)', () => {
     expect(move).toBeLessThan(submit.indexOf('hipEventRecord(ctx->slotDone[slot], st);'));
     // Not when the fold hashes its own transcripts.
     expect(submit).toContain('const bool hashq = ctx->hashq && !fusedQ;');
+  });
+
+  it('can zero the hit count on the hash queue, so no kernel sits between two folds (PEARL_AMD_HASHQ_ZERO)', () => {
+    expect(HOST).toContain('#ifndef PEARL_AMD_HASHQ_ZERO\n#define PEARL_AMD_HASHQ_ZERO ' + ZERO + '\n#endif\n');
+    const submit = slice(HOST, 'extern "C" bool pearl_host_submit(', '\n}\n');
+    // Only with the hash on its own queue: a fold that hashes its own transcripts counts into the list itself.
+    expect(submit).toContain('const bool zeroLate = hashq && ctx->hashqZero;');
+    const early = submit.indexOf('if (!zeroLate) hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);');
+    const late = submit.indexOf('    if (zeroLate) hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);');
+    expect(early).toBeGreaterThan(0);
+    expect(early).toBeLessThan(submit.indexOf('switch (f.cap)'));
+    // On the hash queue: after it has waited for the fold, before the hash that counts.
+    expect(late).toBeGreaterThan(submit.indexOf('hipStreamWaitEvent(st, ctx->foldDone[slot], 0);'));
+    expect(late).toBeLessThan(submit.indexOf('hipLaunchKernelGGL(pearl_amd_hash,'));
+    expect(submit.match(/hipMemsetAsync\(hitList\.count/g)).toHaveLength(2);
+  });
+
+  it('frees a slot only once its hash is done, which is why the fold queue\'s wait can go (PEARL_AMD_HASHQ_WAIT)', () => {
+    expect(HOST).toContain('#ifndef PEARL_AMD_HASHQ_WAIT\n#define PEARL_AMD_HASHQ_WAIT ' + WAIT + '\n#endif\n');
+    // A slot is taken in submit only while fewer than kSlots are pending, and given back only in collect, after
+    // the wait for its event, which the hash queue records last.
+    const submit = slice(HOST, 'extern "C" bool pearl_host_submit(', '\n}\n');
+    expect(submit).toContain('if (ctx->pendCount >= Ctx::kSlots) {');
+    expect(submit).toContain('const int slot = (ctx->pendHead + ctx->pendCount) % Ctx::kSlots;');
+    const collect = slice(HOST, 'extern "C" bool pearl_host_collect(', '\n}\n');
+    const waited = collect.indexOf('hipError_t e = hipEventSynchronize(ctx->slotDone[slot]);');
+    expect(waited).toBeGreaterThan(0);
+    expect(waited).toBeLessThan(collect.indexOf('ctx->pendCount--;'));
+    expect(HOST.match(/ctx->pendCount--/g)).toHaveLength(1);
+    expect(submit.lastIndexOf('hipEventRecord(ctx->slotDone[slot], st);')).toBeGreaterThan(submit.indexOf('st = ctx->hashq;'));
+  });
+
+  it('reads both from the environment too, 0 or 1, when the hash has its own queue', () => {
+    const create = slice(HOST, '#if !defined(__HIP_CPU_RT__)   // a GPU only', '#endif');
+    expect(create).toContain('ctx->hashqZero = PEARL_AMD_HASHQ_ZERO != 0;');
+    expect(create).toContain('ctx->hashqWait = PEARL_AMD_HASHQ_WAIT != 0;');
+    expect(create).toContain('getenv("PEARL_AMD_HASHQ_ZERO")');
+    expect(create).toContain('getenv("PEARL_AMD_HASHQ_WAIT")');
+    expect(create.indexOf('ctx->hashqZero = PEARL_AMD_HASHQ_ZERO != 0;')).toBeGreaterThan(create.indexOf('if (q) {'));
   });
 
   it('frees what it made', () => {

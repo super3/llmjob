@@ -118,7 +118,8 @@ describe('the supertile walk (PEARL_AMD_WALK)', () => {
     expect(FOLD).toContain('#ifndef PEARL_AMD_WALK_W\n#define PEARL_AMD_WALK_W 0\n#endif\n');
     expect(FOLD).toContain('#ifndef PEARL_AMD_WALK_SW\n#define PEARL_AMD_WALK_SW PEARL_AMD_WALK_W\n#endif\n');
     expect(FOLD).toContain('#ifndef PEARL_AMD_WALK_SH\n#define PEARL_AMD_WALK_SH PEARL_AMD_WALK_H\n#endif\n');
-    const off = preprocess(FOLD, { PEARL_AMD_WALK_ON: 0 });
+    // Without the strips either (PEARL_AMD_STRIP, amdStrips.test.js), which are the other way to place a tile.
+    const off = preprocess(FOLD, { PEARL_AMD_WALK_ON: 0, PEARL_AMD_STRIP_ON: 0 });
     expect(off).toContain('  const int wr = wave / P::kWC, wc = wave % P::kWC;\n'
       + '  const uint32_t tileRow = blockIdx.y * (uint32_t)BM;   // first A\' row of the tile\n'
       + '  const uint32_t tileCol = blockIdx.x * (uint32_t)BN;   // first column, within the batch\n');

@@ -222,7 +222,7 @@ describe('the AMD host (pearl_host_hip.cpp)', () => {
 
   it('names the k and the readout in the fold\'s description', () => {
     const name = slice(HOST, 'extern "C" const char *pearl_host_fold_name(void *handle) {', '\n}\n');
-    expect(name).toContain('"%s, %s, batch %u column offsets, k %u%s%s%s%s"');
+    expect(name).toContain('"%s, %s, batch %u column offsets%s, k %u%s%s%s%s"');
     expect(name).toContain('ctx->kwrap ? ", wrap readout" : ""');
   });
 

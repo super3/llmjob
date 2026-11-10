@@ -370,7 +370,7 @@ uint32_t amd_strips(const Ctx *ctx) {
   uint32_t n = PEARL_AMD_STRIPS;
   const char *env = getenv("PEARL_AMD_STRIPS");
   uint32_t want = 0;
-  for (const char *p = env; p && *p >= '0' && *p <= '9' && want < 16u; p++) want = want * 10u + (uint32_t)(*p - '0');
+  for (const char *p = env; p && *p >= '0' && *p <= '9' && want <= 16u; p++) want = want * 10u + (uint32_t)(*p - '0');
   if (want >= 1u && want <= 16u) n = want;
   while (n > 1u && ((n & (n - 1u)) != 0u || ctx->colsValid % (ctx->stripBatch * n) != 0u)) n--;
   return n;
