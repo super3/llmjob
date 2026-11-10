@@ -239,16 +239,17 @@ describe('resolve_fold and what follows a card it takes', () => {
     expect(HOST).toContain('  if (ctx->foldDp4a)' + NL + '    return pearl_submit_dp4a(');
   });
 
-  // Pascal's lines read as they did; a Turing card's say Turing.
+  // Pascal's lines read as they did; a Turing card's say Turing, and a V100's (7.0) Volta.
   test('the log line, the error tag and the fold name say which cards it runs on', () => {
-    expect(HOST).toContain(
-      'const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }');
+    expect(HOST).toContain('const char *pearl_dp4a_arch(const Ctx *ctx) {' + NL
+      + '  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? "Volta" : "Turing") : "Pascal";' + NL + '}');
     const arch = (major) => (major === 7 ? 'Turing' : 'Pascal');
     expect(HOST).toContain('"[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "' + NL
       + '            "blocks an SM\\n",' + NL
       + '            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);');
     expect(HOST).toContain('  if (!ctx->foldDp4a) return "";' + NL
-      + '  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";');
+      + '  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? " (Volta dp4a fold)" : " (Turing dp4a fold)")' + NL
+      + '                           : " (Pascal dp4a fold)";');
     expect(HOST).toContain('"%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",' + NL
       + '               pearl_dp4a_arch(ctx), ctx->ccMajor, ctx->ccMinor, tiles,');
     expect(HOST).toContain('"dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (%s)",' + NL

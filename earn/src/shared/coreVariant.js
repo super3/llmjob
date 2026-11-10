@@ -5,14 +5,14 @@
 //
 // A release ships two cores:
 //
-//   pearl_core.node       CUDA 12.8, sm_61/75/80/86/89/90a/100/120. Runs on every
-//                         card and every driver the app supports. What every rig
-//                         loaded before. sm_61 is Pascal (GTX 10), which mines on
-//                         its own dp4a fold.
+//   pearl_core.node       CUDA 12.8, sm_61/70/75/80/86/89/90a/100/120. Runs on
+//                         every card and every driver the app supports. What
+//                         every rig loaded before. sm_61 is Pascal (GTX 10) and
+//                         sm_70 Volta (V100), which mine on the dp4a fold.
 //   pearl_core_cu13.node  CUDA 13.x, sm_89 and sm_120 (Ada, compute 8.9, and
-//                         Blackwell RTX cards, compute 12.x). No sm_61, sm_80,
-//                         sm_86, sm_90a or sm_100. CUDA 13 cannot build Pascal at
-//                         all, so a GTX 10 card is always on the 12.8 build.
+//                         Blackwell RTX cards, compute 12.x). No sm_61, sm_70, sm_80,
+//                         sm_86, sm_90a or sm_100. CUDA 13 cannot build Pascal or
+//                         Volta, so a GTX 10 card or a V100 is always on the 12.8 build.
 //
 // The second exists because ptxas 13 compiles the sm_120 fold much better than
 // ptxas 12.8: 2.67-3.0 instructions per IMMA with 160/192 B operands reused,

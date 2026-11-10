@@ -20,6 +20,7 @@ const A100 = (index, drv) => card(index, '8.0', drv == null ? 610 : drv);
 const H100 = (index, drv) => card(index, '9.0', drv == null ? 610 : drv);
 const B200 = (index, drv) => card(index, '10.0', drv == null ? 610 : drv);
 const GTX1080TI = (index, drv) => card(index, '6.1', drv == null ? 580 : drv);
+const V100 = (index, drv) => card(index, '7.0', drv == null ? 580 : drv);
 
 describe('core file names', () => {
   // These are the release asset names too: the self-updater and the workflows
@@ -80,6 +81,13 @@ describe('cu13HasCodeFor / cu13AutoSelectsFor', () => {
     expect(cu13HasCodeFor(GTX1080TI(0))).toBe(false);
     expect(cu13AutoSelectsFor(GTX1080TI(0))).toBe(false);
   });
+
+  // 7.0 is Volta (V100). CUDA 13 cannot build it either, so its sm_70 code is in
+  // the 12.8 build only.
+  test('Volta has no code', () => {
+    expect(cu13HasCodeFor(V100(0))).toBe(false);
+    expect(cu13AutoSelectsFor(V100(0))).toBe(false);
+  });
 });
 
 // What each core is compiled for, read from the workflow that builds both
@@ -98,8 +106,8 @@ describe('the gencode lists the two cores are built from', () => {
   const of = (variant) => entries.filter((e) => e.variant === variant);
   // One card of each architecture the app mines on, and the code it runs.
   const fleet = [
-    [GTX1080TI(0), 'sm_61'], [RTX2080TI(0), 'sm_75'], [A100(0), 'sm_80'], [RTX3090(0), 'sm_86'],
-    [RTX4090(0), 'sm_89'], [H100(0), 'sm_90a'], [B200(0), 'sm_100'], [RTX5090(0), 'sm_120'],
+    [GTX1080TI(0), 'sm_61'], [V100(0), 'sm_70'], [RTX2080TI(0), 'sm_75'], [A100(0), 'sm_80'],
+    [RTX3090(0), 'sm_86'], [RTX4090(0), 'sm_89'], [H100(0), 'sm_90a'], [B200(0), 'sm_100'], [RTX5090(0), 'sm_120'],
   ];
 
   test('has the two 12.8 entries and the two CUDA 13 entries', () => {
@@ -120,6 +128,12 @@ describe('the gencode lists the two cores are built from', () => {
   test('sm_61 (Pascal) is in both 12.8 entries and neither CUDA 13 one', () => {
     for (const e of of('')) expect(e.codes).toContain('sm_61');
     for (const e of of('-cu13')) expect(e.codes).not.toContain('sm_61');
+  });
+
+  // The same for a V100: CUDA 13 dropped Volta too.
+  test('sm_70 (Volta) is in both 12.8 entries and neither CUDA 13 one', () => {
+    for (const e of of('')) expect(e.codes).toContain('sm_70');
+    for (const e of of('-cu13')) expect(e.codes).not.toContain('sm_70');
   });
 
   test('cu13HasCodeFor says what the CUDA 13 build was compiled for', () => {

@@ -161,7 +161,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_61/75/80/86/89/90a/100/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_61/70/75/80/86/89/90a/100/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -235,7 +235,7 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_61` Pascal, `sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
+(`sm_61` Pascal, `sm_70` Volta, `sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
 Ada, `sm_90a` Hopper, `sm_120` Blackwell). Hopper has to be `sm_90a`, not
 `sm_90`: a plain sm_90 build compiles and links, but it has no wgmma fold, so
 it mines on the slower cp.async tall fold.
@@ -251,7 +251,8 @@ has been checked: an sm_86-only build runs on a 4090 (compute 8.9 runs sm_86
 code), took the tall fold, and passed verify-hits 400/400 (probes/README.md).
 
 The sm_61 build (Pascal: GTX 10, Tesla P4 and P40) has no tensor cores, so it
-builds none of the folds above. It mines on `pearl_tile_fold_dp4a`, an int8
+builds none of the folds above. Nor does the sm_70 build (Volta: Tesla V100), whose
+tensor cores do fp16 only; both mine on the dp4a fold. It mines on `pearl_tile_fold_dp4a`, an int8
 GEMM on the `__dp4a` instruction over 128x128 tiles (`src/pearl_fold_dp4a.h`
 and `PEARL_DP4A_ARCH` in `src/pearl_config.h`). The result is bit-identical:
 the accumulators are exact int32 sums whatever adds them, and the fold reads

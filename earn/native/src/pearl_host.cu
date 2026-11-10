@@ -1055,9 +1055,12 @@ bool pearl_dp4a_turing_for(int sms, int force) {
   return sms > 0 && sms < PEARL_DP4A_TURING_SMS;
 }
 
-// Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's, or
-// Turing's (a GTX 16 card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
-const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }
+// Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's,
+// Volta's (a V100, compute 7.0, whose tensor cores do fp16 only), or Turing's (a GTX 16
+// card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
+const char *pearl_dp4a_arch(const Ctx *ctx) {
+  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? "Volta" : "Turing") : "Pascal";
+}
 
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
@@ -1726,8 +1729,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Whether this core has code for the card at all. A release core carries SASS for a
   // fixed list of architectures (native-core.yml) and no PTX, so a card outside it -- a
-  // P100 (6.0) or a V100 (7.0) on the CUDA 12.8 core, or a GTX 10 card on the CUDA 13
-  // core, which has no Pascal code -- cannot run one kernel. Asked before anything is
+  // P100 (6.0) on the CUDA 12.8 core, or a GTX 10 card or a V100 on the CUDA 13
+  // core, which has no Pascal or Volta code -- cannot run one kernel. Asked before anything is
   // allocated, so the card is refused here with its compute capability in the message,
   // rather than at its first search. "no GPU code for" is one of the phrases
   // shared/coreVariant.js retries on the 12.8 core. Any other failure here (the card
@@ -2863,11 +2866,12 @@ PearlHitList pearl_slot_hits(Ctx *ctx, int slot) {
   return hitList;
 }
 
-// What a search error says about the fold, so a log from a GTX 10 or GTX 16 card says
-// which fold failed. Empty for every other fold, whose messages are as they were.
+// What a search error says about the fold, so a log from a GTX 10, V100 or GTX 16 card
+// says which fold failed. Empty for every other fold, whose messages are as they were.
 const char *pearl_fold_tag(const Ctx *ctx) {
   if (!ctx->foldDp4a) return "";
-  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";
+  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? " (Volta dp4a fold)" : " (Turing dp4a fold)")
+                           : " (Pascal dp4a fold)";
 }
 
 // The end of every submit, once the batch's kernels are queued on `st`: the hit count

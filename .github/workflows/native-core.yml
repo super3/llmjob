@@ -38,7 +38,7 @@ on:
 jobs:
   build:
     # Two builds per OS. The first two entries are the core every rig has run
-    # (CUDA 12.8.1, sm_61/75/80/86/89/90a/100/120); their job names ("ubuntu-latest",
+    # (CUDA 12.8.1, sm_61/70/75/80/86/89/90a/100/120); their job names ("ubuntu-latest",
     # "windows-2022") and artifact names (pearl-core-<os>) are unchanged, and
     # miner-build.yml still downloads them by those names.
     #
@@ -85,8 +85,12 @@ jobs:
             # (pearl_config.h, PEARL_DP4A_ARCH). nvcc 12.8 warns that offline
             # compilation for architectures below sm_75 will be removed in a future
             # release; 12.8 still builds it.
+            # sm_70 is Volta (Tesla V100, Titan V, CMP 100-210), added 2026-11-10.
+            # Its tensor cores do fp16 only, so it too builds only the dp4a fold;
+            # PEARL_DP4A_ARCH already covered 7.0, and only this line was missing.
             gencode: >-
               -gencode arch=compute_61,code=sm_61
+              -gencode arch=compute_70,code=sm_70
               -gencode arch=compute_75,code=sm_75
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
@@ -131,6 +135,7 @@ jobs:
             subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump"]'
             gencode: >-
               -gencode arch=compute_61,code=sm_61
+              -gencode arch=compute_70,code=sm_70
               -gencode arch=compute_75,code=sm_75
               -gencode arch=compute_80,code=sm_80
               -gencode arch=compute_86,code=sm_86
@@ -282,8 +287,8 @@ jobs:
         working-directory: earn/native
         run: npm install --no-save node-addon-api node-gyp
 
-      # Compile the CUDA half into a static library. sm_61/75/80/86/89/90a/100/120
-      # covers Pascal (GTX 10), Turing, Ampere (GA100 and GA10x), Ada, Hopper and
+      # Compile the CUDA half into a static library. sm_61/70/75/80/86/89/90a/100/120
+      # covers Pascal (GTX 10), Volta (V100), Turing, Ampere (GA100 and GA10x), Ada, Hopper and
       # Blackwell (B200 and the RTX 50 and RTX PRO cards) — the cards the app
       # actually targets.
       # The CUDA 13 entries pass sm_89 and sm_120; every other flag is the same.
@@ -355,7 +360,7 @@ jobs:
       # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
       # sm_90a), for the transcript hash kernel (pearl_tall_hash80, a body only
       # on sm_80 and sm_90a), and for the dp4a fold (pearl_tile_fold_dp4a,
-      # a body only on sm_61 and sm_75), on
+      # a body only on sm_61, sm_70 and sm_75), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
       # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120
@@ -416,6 +421,7 @@ jobs:
           seen_dp4a=0
           dp4a_body=0
           dp4a_body_75=0
+          dp4a_body_70=0
           while read -r name arch regs stores loads; do
             case "$name" in
               pearl_tile_fold_tall) seen_tall=1 ;;
@@ -435,6 +441,10 @@ jobs:
             if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_75 ] \
                && [ "$regs" -ge 64 ] 2>/dev/null; then
               dp4a_body_75=1
+            fi
+            if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_70 ] \
+               && [ "$regs" -ge 64 ] 2>/dev/null; then
+              dp4a_body_70=1
             fi
             if [ "$name" = pearl_tile_fold_tall_pinb ] && [ "$arch" = sm_86 ]; then
               pinb_86=stub
@@ -460,6 +470,13 @@ jobs:
             *"code=sm_61 "*)
               if [ "$dp4a_body" != 1 ]; then
                 echo "::error::pearl_tile_fold_dp4a on sm_61 has no body (under 64 registers); GTX 10 cards would have no fold. Check PEARL_DP4A_ARCH in pearl_config.h"
+                bad=1
+              fi ;;
+          esac
+          case " ${{ matrix.gencode }} " in
+            *"code=sm_70 "*)
+              if [ "$dp4a_body_70" != 1 ]; then
+                echo "::error::pearl_tile_fold_dp4a on sm_70 has no body (under 64 registers); V100 cards would have no fold. Check PEARL_DP4A_ARCH in pearl_config.h"
                 bad=1
               fi ;;
           esac
