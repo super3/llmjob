@@ -181,7 +181,7 @@ def parse(lines):
     """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
     On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
     out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
-           "core": None, "skipped": {}}
+           "core": None, "loaded": None, "skipped": {}}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
@@ -196,6 +196,9 @@ def parse(lines):
             s = re.match(r"skip (\w+): (.*)", body)
             if s:
                 out["skipped"][s.group(1)] = s.group(2)
+        elif body.startswith("loaded "):
+            # Our CLI's "Pearl core:" line, e.g. "CUDA 13 build; driver 621, ...": the label before the ";".
+            out["loaded"] = body[7:].split(";")[0].strip() or None
         elif body.startswith("fetch ok "):
             out["core"] = body.split()[2]
         elif body.startswith("card "):
@@ -614,7 +617,7 @@ class Bench:
         if r["done"] and r["card"]:
             row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
             res = {"machine": self.st["machine"], "card": r["card"]["name"], "power": r["card"]["power"],
-                   "driver": r["card"]["driver"], "group": self.st["group"],
+                   "driver": r["card"]["driver"], "loaded": r["loaded"], "group": self.st["group"],
                    "ours": figure(r["miners"].get("ours"), mean_after=60),
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),

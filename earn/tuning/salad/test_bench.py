@@ -880,6 +880,40 @@ class TestBenchShPieces(unittest.TestCase):
         self.assertRegex(r.stdout, r"sample ours t=75 hs=93800000000000 acc=1234 rej=1 gpu=$")
 
 
+class TestBenchShLoaded(unittest.TestCase):
+    """bench.sh's "loaded" line: which core our CLI says it loaded. Needs only bash, sed and tr."""
+
+    def loaded(self, log_text):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "ours.log"), "w", encoding="utf-8", newline="") as f:
+            f.write(log_text)
+        part = bench_sh_part("say() {", "fail() {") + bench_sh_part("# Which core our CLI loaded", "run() {")
+        r = bash(part.replace("/opt/b/", d.replace(os.sep, "/") + "/") + "loaded", env={"LC_ALL": "C"})
+        shutil.rmtree(d, ignore_errors=True)
+        line = r.stdout.strip()
+        self.assertRegex(line, r"^\[bench\] \d\d:\d\d:\d\d loaded")
+        return line.split(" ", 2)[2]
+
+    def test_the_cuda_13_build(self):
+        # The lines as the CLI prints them (earn/test/earnCli.test.js), the rate line with a carriage return.
+        line = self.loaded("LLMJob Earn CLI v0.6.13\nPearl core: CUDA 13 build · driver 621, mining card is compute 12.0\n"
+                           "\r⛏  371.3 TH/s · 4 accepted · 0 rejected · up 01m 00s")
+        self.assertEqual(line, "loaded CUDA 13 build; driver 621, mining card is compute 12.0")
+        self.assertEqual(b.parse(["[bench] 12:00:00 " + line])["loaded"], "CUDA 13 build")
+
+    def test_a_cuda_13_build_that_could_not_start_counts_as_the_12_8_build(self):
+        line = self.loaded("Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0\n"
+                           "Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)\n")
+        self.assertEqual(line, "loaded CUDA 12.8 build; the CUDA 13 build could not start (x)")
+        self.assertEqual(b.parse(["[bench] 12:00:00 " + line])["loaded"], "CUDA 12.8 build")
+
+    def test_an_old_driver_and_a_log_with_no_core_line(self):
+        self.assertEqual(self.loaded("Pearl core: CUDA 12.8 build · driver 575 (the CUDA 13 build needs 580+)\n"),
+                         "loaded CUDA 12.8 build; driver 575 (the CUDA 13 build needs 580+)")
+        self.assertEqual(self.loaded("LLMJob Earn CLI v0.6.13\n"), "loaded")
+        self.assertIsNone(b.parse(["[bench] 12:00:00 loaded"])["loaded"])
+
+
 # A dry run of bench.sh: every command it runs on a box is a stub here (apt-get, curl, the miners, nvidia-smi or
 # rocminfo and amd-smi, git, npm, node, hip-clang), the box's folders are moved into a temporary one, and date
 # and sleep share a fake clock, so a whole run takes a few seconds. The stubs log what they were asked to CALLS.
@@ -907,7 +941,9 @@ case "$url" in
   *peakminer*|*llmjob-earn-cli-linux) cp "$STUBS/miner" "$out" ;;
   *) : > "$out" ;;
 esac''',
-    "miner": 'echo "$(basename "$0") $*" >> "$CALLS"\necho "⛏  30.0 TH/s · 1 accepted · 0 rejected · up 00m 05s"\n'
+    "miner": 'echo "$(basename "$0") $*" >> "$CALLS"\n'
+             '[ "$(basename "$0")" = cli ] && echo "[12:00:00] Pearl core: CUDA 13 build · driver 621, mining card is compute 12.0"\n'
+             'echo "⛏  30.0 TH/s · 1 accepted · 0 rejected · up 00m 05s"\n'
              'exec "$REAL_SLEEP" 30',
     "srbminer": 'echo "srbminer $*" >> "$CALLS"\ncase " $* " in *" --list-devices "*) echo "GPU0 Radeon"; exit 0 ;; esac\n'
                 'echo "SRBMiner-MULTI mining"; exec "$REAL_SLEEP" 30',
@@ -1028,6 +1064,9 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual(b.figure(r["miners"]["peak"]), (40.0, None))
         self.assertEqual(b.figure(r["miners"]["srb"]), (80.0, None))
         self.assertEqual(b.figure(r["miners"]["ours"], mean_after=60), (30.0, None))
+        # Which core our CLI loaded, from its own log, once ours has run.
+        self.assertIn("loaded CUDA 13 build; driver 621, mining card is compute 12.0", [l.split(" ", 2)[2] for l in lines])
+        self.assertEqual(r["loaded"], "CUDA 13 build")
 
     def test_an_amd_box_builds_and_checks_our_core_then_runs_it_and_srbminer(self):
         out, calls = dry_run(self.SRC, amd=True, env={"ORDER": "ours,srb", "OURS_SECS": "300",

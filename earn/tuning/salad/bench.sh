@@ -226,6 +226,12 @@ sample() {
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }
 
+# Which core our CLI loaded: its last "Pearl core:" line (a CUDA 13 build that fails to start is followed by the 12.8
+# one it fell back to). A driver under 580 gets the 12.8 build, 3.2% slower on a 5090; the bench logged only the driver
+# before 10 November, which left that to be worked out. The " · " after the label becomes "; " (ASCII only).
+loaded() { say "loaded $(tr '\r' '\n' < /opt/b/ours.log | grep -a 'Pearl core: ' | tail -1 \
+             | LC_ALL=C tr -cd ' -~' | sed 's/.*Pearl core: //; s/  /; /' | tail -c 300)"; }
+
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
@@ -239,11 +245,13 @@ run() {
       if [ "$name" = srb ]; then
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
       fi
+      [ "$name" = ours ] && [ -z "$AMD" ] && loaded
       stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
+  [ "$name" = ours ] && [ -z "$AMD" ] && loaded
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.

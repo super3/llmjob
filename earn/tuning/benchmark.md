@@ -307,6 +307,12 @@ Both 5070 Ti hosts lock the clock at 1342 MHz, far below a stock card.
 
 The 5090 trails most, as before.
 
+Which core ran (#290 item 15): every box here reported a driver of 580 or newer (595.97 to 621.14; the two 5090s
+621.01 and 621.14), so the app picked the CUDA 13 core on all twelve. None should have been on the CUDA 12.8 core,
+which is 3.2% slower on a 5090. The bench didn't log the core itself, so a CUDA 13 core that failed to start and fell
+back would not show; nothing points to that. So the 5090s' 86–87% is the CUDA 13 core's real gap on these boxes, not
+an old driver. bench.sh now logs our CLI's "Pearl core:" line as "loaded ...", and bench.py keeps it per row.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
