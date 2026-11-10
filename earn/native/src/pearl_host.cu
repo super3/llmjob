@@ -3245,12 +3245,20 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // PEARL_TALL_A_ROWS pads the noised A with, and the fold hashes none of those.
   if (ctx->foldTall && (col_groups % PEARL_TALL_COL_OFFSETS != 0
                         || (ctx->foldTiled && (col_off % PEARL_TALL_COL_OFFSETS != 0
-                                               || ctx->profile.n % PEARL_TALL_BN != 0))
-                        || (uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k
-                               > (uint64_t)0xFFFFFFFFu)) {
+                                               || ctx->profile.n % PEARL_TALL_BN != 0)))) {
     if (err && err_len)
       snprintf(err, err_len, "tall fold: col_batch %u is not a whole number of %u-column tiles",
                col_groups, (unsigned)PEARL_TALL_BN);
+    return false;
+  }
+  // The cp.async walk's source offsets are 32-bit up to k 16384 (PEARL_TALL_OFF), so each
+  // operand must fit 4 GB there. The TMA fold addresses by coordinates and has no limit.
+  if (ctx->foldTall && !ctx->foldTma && sizeof(PEARL_TALL_OFF) < 8
+      && ((uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k > (uint64_t)0x100000000ull
+          || (uint64_t)ctx->profile.n * k > (uint64_t)0x100000000ull)) {
+    if (err && err_len)
+      snprintf(err, err_len, "tall fold: A' or B' over 4 GB (m %u, n %u, k %u) needs a build "
+               "for k past 16384", ctx->profile.m, ctx->profile.n, k);
     return false;
   }
   // The cluster build (ctx->foldCluster) walks tiles of a row-group PAIR by a column
