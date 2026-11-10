@@ -646,7 +646,8 @@ async function startMining(settings, llmCoRuns) {
   // the model: a served model must never sit on a locked card. The other way
   // round -- the mode flipped back to mining-only mid-run -- takes no lock; the
   // card mines at the driver's clock until the next start, which is slower,
-  // never wrong.
+  // never wrong. The same call ends a core clock offset trial and puts every
+  // card back at offset 0 (shared/coreOffset).
   if (miner && miner.isRunning()) {
     if (llmCoRuns) miner.releaseMemClocks();
     persistSettings(settings);

@@ -358,7 +358,24 @@ describe('PearlMiner — the core clock offset trial', () => {
       };
       const at = firstSet(1);
       // The first card's trial starts on its first sample, the second's 15 s on.
-      expect(at).toEqual({ 0: 500 + TURN_MS, 1: 15000 + TURN_MS });
+      expect(at).toEqual({ 0: 500 + TURN_MS, 1: 500 + 15000 + TURN_MS });
+      b.m.stop();
+    });
+
+    // Counted from when nothing else is in a card's way, not from when it
+    // opened: memory clock trials on every card end on the same sample.
+    test('cards whose memory clock trials end together still start 15 seconds apart', () => {
+      const b = rig().start({
+        gpus: TWO, mineCoreOffsetTrial: [0, 1], mineMemClockByIndex: { 0: 5001, 1: 5001 }, mineMemClockTrial: [0, 1],
+      });
+      const at = { 0: null, 1: null };
+      for (let i = 0; i < 2000 && at[1] == null; i += 1) {
+        b.t.now += 500;
+        for (const c of b.made) c.emit('hashrate', 317.4);
+        for (const index of [0, 1]) if (at[index] == null && b.sets(index).includes(50)) at[index] = b.t.now;
+      }
+      expect(b.m.memClockTrials.size).toBe(0);
+      expect(at).toEqual({ 0: 4 * MEM_TURN_MS + TURN_MS, 1: 4 * MEM_TURN_MS + 15000 + TURN_MS });
       b.m.stop();
     });
 
@@ -369,7 +386,8 @@ describe('PearlMiner — the core clock offset trial', () => {
       const b = rig({ core: (c) => { c.shapes = ['flip 256', 'band walk 8']; } }).start();
       const core = b.made[0];
       while (!b.sets().includes(50)) tick(b, core, 95.5);
-      expect(b.t.now).toBe(180000 + TURN_MS);
+      // 180 s from its first sample, then the first turn.
+      expect(b.t.now).toBe(500 + 180000 + TURN_MS);
       b.m.stop();
       // One shape, or none, is nothing to wait for.
       for (const shapes of [['flip 256'], [], undefined, 'flip 256']) {
@@ -411,6 +429,13 @@ describe('PearlMiner — the core clock offset trial', () => {
         + '317.4 TH/s at 0, 320.9 at +50 MHz, 325.3 at +100 MHz, 325.4 at +150 MHz');
       b.m.stop();
       expect(b.calls.slice(-2)).toEqual([['set', 0, 0], ['stopped']]);
+
+      const first = rig().start();
+      mine(first, first.made[0], { ...RIG01, 100: 321.0, 150: 321.1 });
+      expect(first.sets()).toEqual([0, 50, 100, 150, 0, 50]);
+      expect(first.lines().pop()).toBe('core clock offset kept at +50 MHz on GPU 0 while mining (+1.1%): '
+        + '317.4 TH/s at 0, 320.9 at +50 MHz, 321.0 at +100 MHz, 321.1 at +150 MHz');
+      first.m.stop();
     });
 
     test('leaves the card at 0 when no step was faster, and has nothing to put back on stop', () => {

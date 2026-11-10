@@ -231,7 +231,7 @@ class PearlMiner extends EventEmitter {
     // the MHz this run has that card at, for the cards it has above 0, so stop()
     // puts back exactly those. Like memClockLocked, start() does not clear it.
     this.coreOffsetSet = new Map();
-    // Offset trials waiting or under way, as card index -> { steps, notBefore,
+    // Offset trials waiting or under way, as card index -> { steps, wait, from,
     // trial, mhz, check }; the cards whose trial is over or will not run, as
     // card index -> the MHz kept (0 for none); and the cards this run has had
     // above 0, whose hits are recomputed before they are sent (see _onHit).
@@ -738,12 +738,12 @@ class PearlMiner extends EventEmitter {
           + 'set by another tool; its trial starts from 0',
       });
     }
-    // When the trial may start: after its turn in the stagger, and after the
-    // launch shape trial of a card that has shapes to time.
+    // How long the trial waits once nothing else is in its way (see
+    // _feedCoreOffsetTrial): its turn in the stagger, and the launch shape
+    // trial of a card that has shapes to time.
     const shapes = Array.isArray(core.shapes) && core.shapes.length > 1;
-    const notBefore = this.now() + OFFSET_STAGGER_MS * this.coreOffsetTrials.size
-      + (shapes ? OFFSET_SHAPE_WAIT_MS : 0);
-    this.coreOffsetTrials.set(index, { steps, notBefore, trial: null, mhz: 0, check: null });
+    const wait = OFFSET_STAGGER_MS * this.coreOffsetTrials.size + (shapes ? OFFSET_SHAPE_WAIT_MS : 0);
+    this.coreOffsetTrials.set(index, { steps, wait, from: null, trial: null, mhz: 0, check: null });
     this.emit('log', {
       level: 'info',
       line: 'core clock offset trial on GPU ' + index + ': mining ' + coreOffsetTrial.TURN_MS / 1000
@@ -761,8 +761,13 @@ class PearlMiner extends EventEmitter {
     if (!t.trial) {
       // The memory clock trial goes first, so the two never overlap: each would
       // read the other's changes as its own. The lock it kept stays in place.
-      // The trial's first turn then starts on a sample, with the card mining.
-      if (this.memClockTrials.has(index) || now < t.notBefore) return;
+      if (this.memClockTrials.has(index)) return;
+      // Then the card's own wait, counted from here and not from when it
+      // opened: cards whose memory clock trials end on the same sample still
+      // start 15 seconds apart. The first turn starts on a sample, with the
+      // card mining.
+      if (t.from == null) t.from = now + t.wait;
+      if (now < t.from) return;
       t.trial = coreOffsetTrial.createTrial(now, t.steps);
       return;
     }
