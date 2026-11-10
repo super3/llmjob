@@ -145,6 +145,7 @@ class PearlMiner extends EventEmitter {
     this.poolFails = 0;
     this.lastSockError = null;
     this.job = null;          // the current parsed job the core is searching
+    this.prevJob = null;      // the job it replaced: { jobId, height, until } (see _onJob)
     // The current job's job_key for each mining configuration a card mines,
     // keyed by its config52: a card at k 4096 has its own. Filled when a hit
     // first needs one, and emptied by every new job. `tooEasy` is the k whose
@@ -759,6 +760,9 @@ class PearlMiner extends EventEmitter {
       });
       return;
     }
+    // The job this one replaces, so a hit the cores still find for it can say
+    // how it was lost (see _onHit).
+    this.prevJob = this.job ? { jobId: this.job.jobId, height: this.job.height, until: Date.now() } : null;
     this.job = job;
     // Each configuration's job_key is the new header's from here (see _jobKey).
     this.jobKeys = new Map();
@@ -1092,7 +1096,24 @@ class PearlMiner extends EventEmitter {
       return;
     }
     const job = this.job;
-    if (!job || hit.jobId !== job.jobId) return;
+    if (!job) return;
+    if (hit.jobId !== job.jobId) {
+      // A hit from the batches the core finishes after a new job arrives (see
+      // SearchLoop in native/src/pearl_core.cc). Said, with whether the block
+      // changed, because these are shares the pool never sees: the hashrate
+      // counts their work, the pool does not. One for a job at the same height
+      // is one a pool that keeps recent jobs might still take.
+      const prev = this.prevJob;
+      if (prev && hit.jobId === prev.jobId) {
+        const same = prev.height != null && prev.height === job.height;
+        this.emit('log', {
+          level: 'info',
+          line: 'dropping a hit for the job replaced ' + (Date.now() - prev.until) + ' ms ago ('
+            + (same ? 'same block' : 'new block') + ')',
+        });
+      }
+      return;
+    }
     if (!meetsTarget(hit.jackpotHash, shareBound(job.target, profile))) {
       this.emit('log', { level: 'info', line: 'dropping a hit that no longer meets target (vardiff moved)' });
       return;

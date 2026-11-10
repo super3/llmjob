@@ -452,6 +452,22 @@ describe('PearlMiner — shares', () => {
     expect(sock.written).toHaveLength(0);
   });
 
+  // Those hits are work the hashrate counts and the pool never sees, so each is
+  // said, with whether the block changed.
+  test('a dropped hit for the replaced job is logged with whether the block changed', () => {
+    const { core, sock, events } = withJob();
+    sock.emit('data', jobLine({ job_id: 'same_block' }));
+    core.emit('hit', goodHit('00000000_2097152'));
+    sock.emit('data', jobLine({ job_id: 'next_block', height: 999999 }));
+    core.emit('hit', goodHit('same_block'));
+    core.emit('hit', goodHit('long_gone'));
+    const lines = events.log.filter((l) => /dropping a hit for the job replaced/.test(l.line)).map((l) => l.line);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/ms ago \(same block\)$/);
+    expect(lines[1]).toMatch(/ms ago \(new block\)$/);
+    expect(sock.written).toHaveLength(0);
+  });
+
   // Re-verified in JS because vardiff can move the target under the core.
   test('a hit that no longer meets the target is dropped, not submitted', () => {
     const { core, sock, events } = withJob();
