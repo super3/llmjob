@@ -1017,6 +1017,34 @@ band 4 −1.37%, against the race's −0.53% and −1.40%. verify-hits with the 
 while the clock was still settling, and read daa97471's −3.23% as −0.25%; the warm-up fixed it. The trial costs about
 a third of 150 s at the worse shapes' rate, once a week.
 
+**RTX 30's band-walk cards: does the flip ever win, and does the trial pick right? (item 5b, 10 November, Salad)**
+
+On the RTX 3060, 3070, 3070 Ti and 3080 10 GB the rule picks the band walk. Each PC raced the rule against the flip
+forced on (`-DPEARL_AMPERE_FLIP_SHARE=1000`, the width the trial times) and both band depths (`-DPEARL_AMPERE_BAND`;
+the one equal to the rule's is a twin), plus a copy of the rule's build as a second twin (`nvtest` race mode, 900 s,
+4 s turns). Then hashrate.js twice and verify-hits.js with the 150 s trial on the rule's build.
+
+| PC | Card, power | Rule | Flip | Other band | Twins | Trial kept (flip, other band) |
+|---|---|---|---|---|---|---|
+| be2418c9 | 3060, 170 W | band 4 x 512 | flip 32 −1.74% (0/42) | band 8 −0.62% (1/42) | −0.02, −0.03% | band 4 twice (−1.76/−1.81, −0.66/−0.54) |
+| 60cdc4aa | 3070, 347 W | band 8 x 512 | flip 64 −0.58% (0/39) | band 4 −0.17% (2/39) | −0.04, −0.03% | band 8 twice (−0.60/−0.49, −0.27/−0.05) |
+| bb028be9 | 3070 Ti, 288 W | band 8 x 512 | flip 64 +0.04% (21/42) | band 4 −0.08% (11/42) | −0.01, −0.02% | band 8 twice (−0.07/+0.15, −0.09/−0.02) |
+| 95be0c9b | 3070 Ti, 230 W | band 8 x 512 | flip 64 +0.01% (16/40) | band 4 −0.11% (11/40) | +0.03, −0.01% | band 8 twice (−0.03/−0.18, −0.33/−0.37) |
+| 161a910f | 3080 10 GB, 320 W | band 8 x 512 | flip 64 −0.14% (0/40) | band 4 −0.88% (0/40) | −0.02, −0.03% | band 8 twice (−0.14/−0.15, −0.87/−0.88) |
+| db9aa4de | 3080 10 GB, 287 W | band 8 x 512 | flip 64 −0.65% (15/40) | band 4 −0.97% (14/40) | +0.04, +0.65% | band 8 twice (−0.46/−0.33, +0.17/−0.48) |
+
+The flip never won: it lost clearly on the 3060, 3070 and one 3080, and tied the walk on both 3070 Tis (within the
+twins' spread). db9aa4de was noisy (per-round sd 2.7–4.7%, a twin read +0.65%), so its row says little, except that
+the trial's +0.3% and two-thirds rule kept it from chasing the noise. On every PC the trial kept the race's winner (or
+the rule, where the race tied), and on the quiet PCs its figures came within about 0.1 point of the race's.
+verify-hits: 400 of 400 on every build on every PC, including the rule's build with the trial switching shapes.
+
+The rule stays as it is: on these cards it is right or tied everywhere, so the trial buys nothing on them beyond its
+cost (about a third of 150 s at up to 1.8% less, once a week). In the forced-flip build, where the flip is the
+rule, the verify runs' trial moved to the walk on the 3060 (race: walk 1.74% ahead) and on db9aa4de (0.65%, noisy),
+and kept the flip on the 3070 (walk 0.58% ahead), the 3070 Tis (tied) and 161a910f (0.14%). The default build never
+runs the flip on these cards, but it shows the 0.3% bar sits about where the smaller gaps are.
+
 **NVIDIA work on AMD (PR #290 item 23, 10 November, desk review, then two races)**
 
 Every NVIDIA change that gained speed, against what the AMD core (`earn/native/amd`) already does. Ranked by what
