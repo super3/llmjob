@@ -2787,7 +2787,7 @@ class W:
             return
         if g["has_pc"]:
             if mach != g["machine"]:
-                first, prev_m = not g["had_pc"], g["machine"]
+                first, prev_m, lost_t = not g["had_pc"], g["machine"], g.get("lost_since")
                 g.update(machine=mach, pc_since=t, run_since=None, lost_since=None, profit_fail=0, had_pc=True,
                          pause_since=None, paused_t=None, restart_t=None)
                 # A new box there starts on the group's command, whatever the box before it mined on.
@@ -2806,9 +2806,11 @@ class W:
                     # 10 min) outweighs a mark for not mining: on 10 November 52f2bbd7, marked when 5060ti-368 showed
                     # no reading for 6 min, was left twice by 5060 Tis that had just sent it shares. A blocked port or
                     # a measured rate is a fact about the PC, so those marks stand.
+                    # The share must be newer than the box's last PC, whether it left it or lost it: on 10
+                    # November 3070-258 lost 3bfd17f1, and its last share there kept a PC marked for no reading.
                     works = (any(r[1] == mach and r[2] > 0 and t - r[0] < 10 * MIN for r in g["readings"])
                              or (prev_m is None and t - (g["last_share"] or 0) < 10 * MIN
-                                 and (g["last_share"] or 0) > (g.get("left_t") or 0)))
+                                 and (g["last_share"] or 0) > max(g.get("left_t") or 0, lost_t or 0)))
                     if works and ths is None and self.bad_ports(bad) is None:
                         st["bad_pcs"].pop(mach, None)
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: it already mines there, so {bad['group']}'s "

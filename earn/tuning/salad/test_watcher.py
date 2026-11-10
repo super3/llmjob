@@ -1297,6 +1297,16 @@ class TestRule6PortBlocked(Base):
         self.step(g, 1, "m1")
         self.assertEqual(g["machine"], "m1")
 
+    def test_a_share_from_a_pc_the_box_lost_doesnt_count(self):
+        # 10 November: 3070-258 lost 3bfd17f1, and its last share there kept d9f81543, marked for no reading.
+        self.x.st.setdefault("bad_pcs", {})["m1"] = {"t": self.clock[0], "group": "biz-rtx4080-9",
+                                                      "why": "no mining reading 12 min after getting PC m1"}
+        g = self.group()
+        g.update(last_share=self.clock[0] - 60, left_t=self.clock[0] - 3600, lost_since=self.clock[0] - 30)
+        self.step(g, 1, "m1")
+        self.assertIsNone(g["machine"])
+        self.assertIn("m1", self.x.st["bad_pcs"])
+
     def test_a_blocked_port_mark_stands_even_for_a_box_that_mines(self):
         a = self.group()
         self.step(a, 1, "m1")
