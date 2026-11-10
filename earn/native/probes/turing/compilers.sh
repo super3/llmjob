@@ -537,6 +537,10 @@ if has hashrate && { [ -n "${HR_BEST:-}" ] || [ -f "$OUT/best" ]; } && [ -f "$OU
       mclk=$(echo "$j" | grep -oE '"memMhz":[0-9.]+' | cut -d: -f2)
       mhz=${mhz:-0}
       if [ -z "$th" ]; then say "hashrate r$r $name FAIL: $j"; continue; fi
+      # RTX 30's startup trial (PEARL_SHAPE_TRIAL): the shape the core ended in, and its report.
+      sh=$(echo "$j" | grep -oE '"shape":"[^"]*"' | head -1 | cut -d'"' -f4)
+      tr=$(echo "$j" | grep -oE '"trial":\{.*\]\}' | head -1)
+      [ -n "$sh$tr" ] && say "hashrate r$r $name shape ${sh:-?}${tr:+ $tr}"
       pg=$(python3 -c "print(round($th / ($mhz / 1000), 3) if '$mhz' and $mhz else 0)")
       # The 8th column is the clock again (hashrate.js's is already a mean), so the memory
       # readings sit where bench.tsv's do.
@@ -556,7 +560,7 @@ if has verify; then
     out=$(cd "$SRC/earn" && timeout -k 10 $((VERIFY_SECS + 120)) ${k:+env PEARL_PROFILE_K=$k} node native/probes/verify-hits.js "$OUT/v/$name/build/Release/pearl_core.node" "$VERIFY_SECS" 2>&1)
     j=$(echo "$out" | grep '^{' | tail -1)
     if [ -z "$j" ]; then say "verify $name FAIL: no result: $(echo "$out" | tail -3 | tr '\n' ' ')"; continue; fi
-    say "verify $name${k:+ k $k} $(echo "$j" | grep -oE '"(hits|verified|failed|salts|PASS)":[a-z0-9]+' | tr '\n' ' ')$(echo "$j" | grep -q '"PASS":true' || echo " FAILS: $(echo "$j" | grep -oE '"fails":.*' | cut -c1-300)")"
+    say "verify $name${k:+ k $k} $(echo "$j" | grep -oE '"(hits|verified|failed|salts|PASS)":[a-z0-9]+|"shape":"[^"]*"' | tr '\n' ' ')$(echo "$j" | grep -q '"PASS":true' || echo " FAILS: $(echo "$j" | grep -oE '"fails":.*' | cut -c1-300)")"
   done
 fi
 
