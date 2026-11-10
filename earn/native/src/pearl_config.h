@@ -2824,6 +2824,17 @@ typedef struct {
 #ifndef PEARL_GATE_SHAM_Y1
 #define PEARL_GATE_SHAM_Y1 0
 #endif
+//   PEARL_GATE_SHAM_BAR=0|1|2 (PEARL_GATE_SHAM_AT 2, 3, 4): how the sham says its buffer is
+//       full. 0 a release at the stage's end (a MEMBAR and an arrive, what a real draw
+//       needs); 1 the copies' arrival there (no MEMBAR); 2 the copies' arrival where the
+//       no-copy fold makes it. PEARL_GATE_SHAM_NOP=1: the sham with no ALU steps. Together
+//       they split the sham's cost into its arrival, its loads and stores, and its ALU.
+#ifndef PEARL_GATE_SHAM_BAR
+#define PEARL_GATE_SHAM_BAR 0
+#endif
+#ifndef PEARL_GATE_SHAM_NOP
+#define PEARL_GATE_SHAM_NOP 0
+#endif
 #if PEARL_GATE_SHAM && !PEARL_GATE_NOCOPY
 #error "PEARL_GATE_SHAM stands in for the copies: build it with PEARL_GATE_NOCOPY=1"
 #endif

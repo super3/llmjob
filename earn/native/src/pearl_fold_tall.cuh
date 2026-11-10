@@ -621,7 +621,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #define PEARL_SHAM_XOR(w, y, m)                                                                  \
   asm volatile("{\n .reg .b32 t;\n and.b32 t, %1, " #m ";\n xor.b32 %0, %0, t;\n}" : "+r"(w) : "r"(y));
 #define PEARL_SHAM_ROT(w, n) asm volatile("shf.r.wrap.b32 %0, %0, %0, " #n ";" : "+r"(w));
-  constexpr uint32_t SHAM_OPS = PEARL_GATE_SHAM == 1 ? 4u : (PEARL_GATE_SHAM == 2 ? 11u : 24u);
+  // (PEARL_GATE_SHAM_NOP: no ALU steps at all, the loads, stores and arrival alone.)
+  constexpr uint32_t SHAM_OPS =
+      PEARL_GATE_SHAM_NOP ? 0u : (PEARL_GATE_SHAM == 1 ? 4u : (PEARL_GATE_SHAM == 2 ? 11u : 24u));
   (void)SHAM_OPS;
   // One sham unit (PEARL_GATE_SHAM, timing only): 16 bytes of the buffer a stage refills,
   // made from two 16-byte loads of the buffer being read. Every step keeps each byte in
@@ -1199,7 +1201,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               // after every mma (one after every second at level 1), with no load or store
               // but the word's own, once a stage. Prices instructions in the mma stream alone.
 #pragma unroll
-              for (uint32_t k = 0; k < (PEARL_GATE_SHAM == 1 ? (nb & 1u) : PEARL_GATE_SHAM / 2u); k++) {
+              for (uint32_t k = 0; k < (PEARL_GATE_SHAM_NOP ? 0u : (PEARL_GATE_SHAM == 1 ? (nb & 1u) : PEARL_GATE_SHAM / 2u)); k++) {
                 // XOR and rotation take turns down the stream, so no two fold into one.
                 const uint32_t g = (PEARL_GATE_SHAM == 1 ? (nb >> 1) : nb * (PEARL_GATE_SHAM / 2u)) + k;
                 if (g & 1u) PEARL_SHAM_ROT(sr, 8)
@@ -1315,6 +1317,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
             }
 #endif
 #endif
+#if PEARL_GATE_SHAM && PEARL_GATE_SHAM_AT >= 2 && PEARL_GATE_SHAM_BAR == 2
+            if (pt == PEARL_TALL_BPT && stage_next) pearl_mbar_arrive_copies(ib + STAGE);
+#endif
 #if defined(PEARL_E4_GENLOAD) && !defined(PEARL_E4_NOGEN)
             // E4's draw, two chunks ahead: this thread's words of the chunk spread over the
             // chunk's four k-step ends, where the step's B fragments are dead.
@@ -1359,7 +1364,15 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #if PEARL_GATE_SHAM_MMA || PEARL_GATE_SHAM_ALU || PEARL_GATE_SHAM_TILE
         // The sham's FULL arrival for the buffer it wrote, at the stage's end beside the EMPTY
         // release, every stage: the buffer is read a stage later.
+        // (PEARL_GATE_SHAM_BAR, to price the arrival apart from the sham's work: 1 makes it
+        // the copies' arrival, which is no release and has no MEMBAR; 2 makes that arrival
+        // where the no-copy fold makes it, after the stage's eighth m16 tile, so the ring's
+        // instructions are that fold's exactly. Neither orders the stores: timing only.)
+#if PEARL_GATE_SHAM_BAR == 0
         pearl_mbar_arrive(ib + STAGE);
+#elif PEARL_GATE_SHAM_BAR == 1
+        pearl_mbar_arrive_copies(ib + STAGE);
+#endif
 #endif
         pearl_mbar_arrive(so + STAGE + 8u);
 #endif
