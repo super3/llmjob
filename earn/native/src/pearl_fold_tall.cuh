@@ -1114,6 +1114,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // output is meaningless.
         pearl_mbar_wait(so + STAGE, rpar);
 #endif
+#if PEARL_GATE_SHAM_TILE
+        // The between-tiles sham's unit in flight (PEARL_GATE_SHAM_AT 4): loaded after one m16
+        // tile, worked and stored after the next.
+        uint32_t tx[4] = {0u, 0u, 0u, 0u}, ty[4] = {0u, 0u, 0u, 0u};
+#endif
 #if PEARL_GATE_SHAM_ALU
         // The ALU-only sham's word and its mask source: one word each of this thread's first
         // A and B units of the buffer being read.
@@ -1236,6 +1241,42 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_LOOP_B(ib, sg, p)
               pearl_mbar_arrive_copies(ib + STAGE);
             }
+#elif PEARL_GATE_SHAM_TILE
+            // The sham between m16 tiles (PEARL_GATE_SHAM_AT 4), where the A fragment changes
+            // and no mma shares an operand with the next: after tile APT + 1 + u, unit u's ALU
+            // steps and its store; after tile APT + u, its two loads. So a unit's loads have a
+            // tile of eight mma to land under, and the eight mma of a tile stay together. No
+            // branch around it (see PEARL_GATE_SHAM_AT 2).
+            {
+              constexpr uint32_t UN = ASLOTS + BSLOTS;
+              static_assert(PEARL_TALL_APT + 1u + UN <= KS * MT, "seven units fit the stage");
+              auto uoff = [&](uint32_t u, uint32_t step) -> uint32_t {
+                return u < ASLOTS ? adst0 + ((u + step) % ASLOTS) * aStep * SK
+                                  : bdst0 + ((u - ASLOTS + step) % BSLOTS) * bStep * SK;
+              };
+              if (pt >= PEARL_TALL_APT + 1u && pt < PEARL_TALL_APT + 1u + UN) {
+                const uint32_t u = pt - (PEARL_TALL_APT + 1u);
+#pragma unroll
+                for (uint32_t k = 0; k < SHAM_OPS; k++) {
+                  const uint32_t w = k & 3u, st = k >> 2;
+                  if (st == 0u) PEARL_SHAM_XOR(tx[w], ty[w], 0x01010101)
+                  if (st == 1u) PEARL_SHAM_ROT(tx[w], 8)
+                  if (st == 2u) PEARL_SHAM_XOR(tx[w], ty[w], 0x01000100)
+                  if (st == 3u) PEARL_SHAM_ROT(tx[w], 16)
+                  if (st == 4u) PEARL_SHAM_XOR(tx[w], ty[w], 0x00010001)
+                  if (st == 5u) PEARL_SHAM_ROT(tx[w], 8)
+                }
+                asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                             ::"r"(ib + uoff(u, 0u)), "r"(tx[0]), "r"(tx[1]), "r"(tx[2]), "r"(tx[3]) : "memory");
+              }
+              if (pt >= PEARL_TALL_APT && pt < PEARL_TALL_APT + UN) {
+                const uint32_t u = pt - PEARL_TALL_APT;
+                asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(tx[0]), "=r"(tx[1]), "=r"(tx[2]), "=r"(tx[3]) : "r"(so + uoff(u, 0u)) : "memory");
+                asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                             : "=r"(ty[0]), "=r"(ty[1]), "=r"(ty[2]), "=r"(ty[3]) : "r"(so + uoff(u, 1u)) : "memory");
+              }
+            }
 #elif !PEARL_GATE_SHAM && !PEARL_GATE_WARP9
             // No copies (PEARL_GATE_NOCOPY): the same arrival at the same point. With none of
             // this thread's copies out it fires at once; in the kernel's first stage it waits
@@ -1315,7 +1356,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #if PEARL_GATE_SHAM_ALU
         asm volatile("st.shared.u32 [%0], %1;" ::"r"(ib + adst0), "r"(sr) : "memory");
 #endif
-#if PEARL_GATE_SHAM_MMA || PEARL_GATE_SHAM_ALU
+#if PEARL_GATE_SHAM_MMA || PEARL_GATE_SHAM_ALU || PEARL_GATE_SHAM_TILE
         // The sham's FULL arrival for the buffer it wrote, at the stage's end beside the EMPTY
         // release, every stage: the buffer is read a stage later.
         pearl_mbar_arrive(ib + STAGE);

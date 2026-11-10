@@ -2764,6 +2764,9 @@ typedef struct {
 //       1  after m16 tiles 3, 5, 7, 9 and 11, one or two units each, the same runs;
 //       2  between the mma: one unit an m16 tile, its loads around the tile's first mma, its
 //          ALU steps after mma 1 to 6, its store after the last, with no branch around it;
+//       4  between m16 tiles, where the A fragment changes: a unit's two loads after one
+//          tile, its ALU steps and store after the next, no branch around it. A tile's
+//          eight mma stay together and each load has a tile to land under;
 //       3  ALU only: one, two or four steps after every mma (one after every second at
 //          level 1) on a carried word, loaded and stored once a stage. No operand is built:
 //          it prices instructions in the mma stream with no load latency.
@@ -2839,14 +2842,15 @@ typedef struct {
 #if PEARL_GATE_PHANTOM && !defined(PEARL_ABLATE_DRAM)
 #error "PEARL_GATE_PHANTOM stores what PEARL_ABLATE_DRAM reads: build it with -DPEARL_ABLATE_DRAM"
 #endif
-#if PEARL_GATE_SHAM_AT < 0 || PEARL_GATE_SHAM_AT > 3
-#error "PEARL_GATE_SHAM_AT is 0, 1, 2 or 3"
+#if PEARL_GATE_SHAM_AT < 0 || PEARL_GATE_SHAM_AT > 4
+#error "PEARL_GATE_SHAM_AT is 0, 1, 2, 3 or 4"
 #endif
 // Any of them makes a timing-only build: the host refuses every target but zero.
 #define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM || PEARL_GATE_SPIN)
 // The two shams that sit between the mma (PEARL_GATE_SHAM_AT 2 and 3).
 #define PEARL_GATE_SHAM_MMA (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 2)
 #define PEARL_GATE_SHAM_ALU (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 3)
+#define PEARL_GATE_SHAM_TILE (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 4)
 
 // The cp.async tall fold's tile walk (Ampere and Ada; the TMA builds ignore it). 0, the
 // default: block b folds tiles b, b + grid, b + 2 grid, ... 1: block b starts on tile b
