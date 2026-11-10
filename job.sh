@@ -1,12 +1,7 @@
-# job 5: the hash queue off with a slow ticker (20, 50 ms), 2 batches a launch, and the default with another process idle on the card (the clock probe every 10 s), with and without the core's ticker; then stamps of the miner's launches, each gap listed
+# job 6: ours alone on the pool for 10 minutes: how many seconds read low?
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=hash\ mstamps
-G_VDEF=hq0t20=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000\;hq0t50=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=50000\;bI=base\ TICK=10\;tkI=base\ PEARL_AMD_TICK_US=2000\ TICK=10\;hq0I=base\ PEARL_AMD_HASHQ=0\ TICK=10\;msq1=sbase\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq0t20=sbase\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=20000
-G_VARIANTS=base\ twin\ hq0t20\ hq0t50\ s2\ bI\ tkI\ hq0I
-G_HROUNDS=3
-G_HASH=45:12
-G_MST=msq1\ msq0\ msq0t20
-G_MSN=5
+G_PARTS=watch
+G_WSECS=600
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -319,6 +314,15 @@ if has duel && [ -n "$SRBV" ]; then
     SRBV=$keep; SRBPTY=$keeppty
   fi
   tr '\r' '\n' < /root/duel-ours.log | grep -iE 'mining on|error|reject' | grep -v 'TH/s ·' | tail -n 4 | while IFS= read -r l; do say "duel ours | ${l:0:300}"; done
+fi
+
+# Ours alone on the pool for G_WSECS, to see how steady it is: every second's rate after the first minute, and how
+# many of them read under G_WLOW (a PC that stops the queue reads about 50 on an RX 7900 XTX).
+if has watch; then
+  turn ours watch "${G_WSECS:-600}" 0
+  if [ -s /root/duel-watch.all ]; then
+    say "watch: $(awk -v T="${G_WLOW:-52.5}" '{ n++; if ($1 < T) lo++ } END { printf "%d of %d seconds under %s TH/s", lo, n, T }' /root/duel-watch.all); by minute: $(awk '{ s += $1; if (NR % 60 == 0) { printf "%.1f ", s / 60; s = 0 } }' /root/duel-watch.all)"
+  fi
 fi
 
 # ---- our builds ------------------------------------------------------------------------------------------------
