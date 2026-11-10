@@ -453,6 +453,25 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     }
     pearl_e4_perm[i] = make_uint4(lx, ly, sx, sy);
   }
+#ifdef PEARL_E4_DRAWT
+  // The transposed tables (pearl_e4_drawt): word (p, q) holds byte p of rows 4q .. 4q + 3, and
+  // each k index's two word offsets p * PEARL_E4_RQ.
+  for (uint32_t i = threadIdx.x; i < 128u * PEARL_E4_RQ; i += PEARL_TALL_THREADS)
+    pearl_e4_denseT[blockIdx.x * 128u * PEARL_E4_RQ + i] =
+        pearl_e4_mix(blockIdx.x * 0x10000u + i) & 0x3F3F3F3Fu;
+  for (uint32_t i = threadIdx.x; i < 16u * 32u; i += PEARL_TALL_THREADS) {
+    uint32_t o0[4], o1[4];
+#pragma unroll
+    for (uint32_t jj = 0; jj < 4u; jj++) {
+      const uint32_t h = pearl_e4_mix(0x9E3779B9u + i * 4u + jj);
+      const uint32_t p0 = h & 127u, p1 = p0 ^ (1u + ((h >> 8) & 126u));
+      o0[jj] = p0 * PEARL_E4_RQ;
+      o1[jj] = p1 * PEARL_E4_RQ;
+    }
+    pearl_e4_permT[i * 2u] = make_uint4(o0[0], o0[1], o0[2], o0[3]);
+    pearl_e4_permT[i * 2u + 1u] = make_uint4(o1[0], o1[1], o1[2], o1[3]);
+  }
+#endif
 #endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
@@ -465,7 +484,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll 1
   for (uint32_t g = 0; g < 3u; g++)
 #pragma unroll 1
+#ifdef PEARL_E4_DRAWT
+    pearl_e4_drawt(g, lane, warp);
+#else
     for (uint32_t j = 0; j < PEARL_E4_WORDS; j++) pearl_e4_draw(j, g, lane, warp);
+#endif
 #endif
 #if PEARL_TALL_CLUSTER_BODY
   // And across the pair: the peer's barriers exist before this CTA arrives on them or
@@ -946,7 +969,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
             if (mb + 1u == MT) {
 #pragma unroll
               for (uint32_t j = 0; j < PEARL_E4_WORDS; j++)
-                if (j * 4u / PEARL_E4_WORDS == s * KS + t) pearl_e4_draw(j, chunk + 2u, lane, warp);
+                if (j * 4u / PEARL_E4_WORDS == s * KS + t) {
+#ifdef PEARL_E4_DRAWT
+                  if (j == 0u) pearl_e4_drawt(chunk + 2u, lane, warp);
+#else
+                  pearl_e4_draw(j, chunk + 2u, lane, warp);
+#endif
+                }
 #ifdef PEARL_E4_FLAGS
               // After this warp's last word of the chunk: its release on the slab's flag.
               if ((PEARL_E4_WORDS - 1u) * 4u / PEARL_E4_WORDS == s * KS + t) {
