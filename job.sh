@@ -272,6 +272,7 @@ turn() {
   fi
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
   clk_stop; stop_miners
+  tr '\r' '\n' < /root/duel-$name.log | sed 's/\x1b\[[0-9;]*m//g' | grep -iE 'reject|error|stale|invalid' | grep -v 'TH/s ·' | tail -n 3 | while IFS= read -r l; do say "duel $label | ${l:0:300}"; done
   say "duel $label result $(stats $f.samples) last=${last:-?} secs=$secs$([ -s $f.all ] && echo " | every line: $(stats $f.all)")$([ "$probe" = 1 ] && echo " | clock MHz: $(clk_of $f.clk)")"
 }
 if has duel && [ -n "$SRBV" ]; then
