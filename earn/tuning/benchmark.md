@@ -874,6 +874,16 @@ dropping it silently, so the switch loss can be counted on a box. Nothing it sen
   count, +3.2–3.5% with one count a job. That needs A fill 0 (B' fixed, A'' redrawn per stamp), and fill 48 was
   worth +3.6% on the 4090 by power, so the net is near zero on cards nobody rents. With fill 48 kept on B only
   balanced cycles work (3.7 a chunk, +1.8% on dp4a at best), and directed cycles for A fill 48 give 1.4. Dropped.
+- Operand fill 64 and higher (research item 3, 10 November, desk study). The spec's `verify_plain_proof`
+  (pearl-research-labs/pearl, `zk-pow/src/api/verify.rs`) takes A and B values in [-64, 64], "matching the ZK
+  circuit's IRANGE7P1 range check". So 64 is legal and 65 and up are refused by every pool ("Matrix value out of
+  range"). The 127 that measured +5.9% (probes/README.md, "Operand values") is out of reach: its gain came from
+  saturation, 127 plus any positive noise clamping to 127, and A + noise can't saturate once A is at most 64. The
+  fill changes no share's credit: the target and the work a share stands for (tile * k) don't read it. At 64, A'
+  sits in [1, 127], so like 63 it never flips the sign bit; the bit-flip model gives both 3.500 toggles a byte
+  (48: 3.489) and 64 a popcount of 3.508 against 63's 3.492. 63 measured level with 48 (-0.23% on the 4090), so
+  64 is expected level too. The build that allows 64 (`PEARL_OPERAND_FILL` and checkHit.js opened to [-64, 64])
+  is on branch item/3 for a race.
 - The hash in the fold on gfx1201 (#287 item 6): −0.50% on an RX 9070 XT at k 8192 (a68b3382, both scored rounds, copies
   within 0.06%). RDNA 3 hasn't raced it; its hash kernel is a smaller share (0.8% on a 7900 XTX) and its DRAM faster.
 - Stale shares (PR #290 item 9, 10 November, pool data only). HeroMiners' lifetime counts for our wallet: 121 stale and
