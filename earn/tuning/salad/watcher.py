@@ -2948,8 +2948,9 @@ class W:
             khs = sum(g.get(k, 0.0) for k, seen, ref in (("xmr_khs", "xmr_seen", t), ("kxx_khs", "kxx_seen", kref))
                       if g.get("xmr") and g["has_pc"] and ref - (g.get(seen) or 0) < 15 * MIN)
             earn = ths * mk["usd_th_hr"] * yg(g) + (self.box_khs(g, t) * xusd if g.get("xmr") and g["has_pc"] else 0.0)
-            state = ("⏹️" if g["status"] == "stopped" else ("🧠" if self.paused(g, t) else "⛏️") if g["has_pc"]
-                     else "⏳")
+            # No mark for a box that mines, and a waiting box's ⏳ in its speed cells, not its name (founder, 10
+            # November: "remove the mining emoji ... put the hour glass emoji TH/s and kH/s for the waiting ones").
+            state = "⏹️" if g["status"] == "stopped" else "🧠" if g["has_pc"] and self.paused(g, t) else ""
             # A box on a new PC with no reading yet is starting: billed, but left out of the profit total. So is one
             # paused for a prompt: Gemma's speed test on a new PC can take 10 minutes or more, and with only Monero
             # earning meanwhile its margin read -3180% on 22 October and turned the All row's margin negative.
@@ -2973,13 +2974,13 @@ class W:
                 pri += sub.translate(str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹"))
             tag = f"({org})"
             # An AMD box drops "rx" too (founder, 7 November): "9070xt bat.", not "rx9070xt bat.".
-            box = NB.join([state, re.sub(r"^biz-(rtx|rx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
+            box = NB.join(([state] if state else []) + [re.sub(r"^biz-(rtx|rx)?|-\d+$", "", g["name"]), pri] + (["(K)"] if kmark and g.get("kx") else [])
                           + ([tag] if org != ORG and not (sub and sub.isdigit()) else []))
             # Each coin's speed (Pearl on the GPU, Monero on the CPU), the bill, profit and margin, then each coin
             # earned so far.
             kc = [f"{khs:.1f}" if g.get("xmr") else "—"] if xon else []
             if not g["has_pc"]:
-                cells = ["—"] + (["—"] if xon else []) + ["—", "—"]
+                cells = ["⏳"] + (["⏳"] if xon else []) + ["—", "—"]
             elif start:
                 cells = ["0"] + kc + [f"{cost:.2f}", "—"]
             else:
@@ -3085,7 +3086,8 @@ class W:
                 r = (sa.get("recv") or {}).get(coin)
                 at = held[coin] + (max(0.0, paid[coin] - r) if r is not None else 0.0)
                 # PRL's price beside its name (founder, 9 November: "⛏️ PRL ($1.55)").
-                each = f" (${price:.2f})" if coin == "pearl" else ""
+                # XMR's too (founder, 10 November: "add the XMR price to the table"), whole dollars.
+                each = (f" (${price:.2f})" if coin == "pearl" else f" (${xm['price']:.0f})" if xm.get("price") else "")
                 rows.append(f"| {'⛏️' if coin == 'pearl' else '🪙'} [{coin_name(coin)}]({link[coin]}){each} | {at:.{dp}f} "
                             f"| {paid[coin]:.{dp}f} | {bl + lk:.{dp}f} | {n:.{dp}f} | ${fee:.2f} | +${usd:.2f} |")
                 fees += round(fee, 2)   # the shown cents, so the column adds up on screen
@@ -3121,7 +3123,9 @@ class W:
         # days)", which wrapped; for one round "9:01 am · ... · $164 left · 19d · 78d²", which was too terse.
         # With two orgs, each org's own credit and days (founder, 3 November): "llmjob $114.37 (16d)", not one total.
         d = dt.datetime.fromtimestamp(t, NY)
-        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · PRL ${price:.2f} · {mining}/{slots} mining"
+        # PRL's price left the heading on 10 November ("Don't need to put PRL $1.63 at the top"): it's on the
+        # SafeTrade table's PRL row.
+        head = f"**{clock(t).rsplit(' ', 1)[0]} {d:%a}** · {mining}/{slots} mining"
         # With two Salad orgs, or a Clore read, the credit is its own table under the boxes (founder, 9 November:
         # "Since we have three orgs now ... make a new table with them and Clore"): each org's credit and how long it
         # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the

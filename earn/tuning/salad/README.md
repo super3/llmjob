@@ -825,7 +825,8 @@ credited the wallet (Paid + Confirmed + Pending: 151.412 and about 5.95).
   coins; the credit ratios still set Profit/hr and the HeroMiners part of PRL, and are in the 15-minute notes when
   they move.
 - **The key** is here, not in the report (it was a line under the table, repeated every 15 minutes, until
-  20 October): ⛏️ mining · 🧠 mining paused while Gemma answers a prompt · ⏳ waiting for a PC · ⏹️ stopped ·
+  20 October): a box with no mark mines · 🧠 mining paused while Gemma answers a prompt · ⏳ in its TH/s and
+  kH/s cells: waiting for a PC (in its name until 10 November, with ⛏️ for mining) · ⏹️ stopped ·
   ⬜ empty slot · 💵 SafeTrade (its own table) · `*` our own count or estimate,
   or entered by hand (the rest comes from an API: Salad, the pools, prlscan, CoinGecko, SafeTrade)
   · (K) mines Pearl on Kryptex, the rest on HeroMiners (shown only while some box is on HeroMiners).
