@@ -78,7 +78,7 @@ The rows over 100% are odd PCs: one swung between 207 and 266 W, one is capped a
 | RTX 2070 Super | Salad (215 W) | ef050aaa | 64.7 | 65.4 | 64.8 | 62.2 | 99% |
 | RTX 2070 Super | Salad (215 W) | 842bcd6e | 63.9 | 65.3 | 65.2 | 61.5 | 98% |
 | RTX 2070 | Salad (140 W) | b6b2b0c9 | 51.1 | 52.5 | 51.4 | 50.3 | 97% |
-| RTX 2070 | Salad | 94de741e | 52.5 | 53.5 | 52.5 | 51.2 | 98% |
+| RTX 2070 | Salad (175 W) | f4e53154 | 53.5 | 55.1 | 53.5 | 52.0 | 97% |
 | RTX 2060 | Salad (160 W, 6 GB) | 67fbcdbf | 40.6 | 42.0 | 40.3 | 39.9 | 97% |
 | RTX 2060 | Salad (160 W, 6 GB) | 92c0cd67 | 36.7 | 37.4 | 36.7 | 37.4 | 98% |
 
