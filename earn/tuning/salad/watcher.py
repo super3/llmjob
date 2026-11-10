@@ -1091,6 +1091,26 @@ class W:
         st["clore_warned"] = False
         self.mark_report_read("clore", t)
 
+    def vast_balance(self):
+        """The Vast.ai account's credit, read once a report when $VAST_API_KEY is set (from the user's saved environment,
+        as Clore's key is), for the credit table (founder, 10 November: "add Vast to our credit table"). A failed read
+        warns once and keeps the last."""
+        st, t = self.st, now()
+        key = user_env("VAST_API_KEY")
+        if not key or not self.report_read_due("vast", t):
+            return
+        s, r = http("GET", "https://console.vast.ai/api/v0/users/current/", headers={"Authorization": f"Bearer {key}"},
+                    timeout=30)
+        usd = r.get("credit") if s == 200 and isinstance(r, dict) else None
+        if not isinstance(usd, (int, float)):
+            if not st.get("vast_warned"):
+                st["vast_warned"] = True
+                event(f"WARN can't read Vast's balance: HTTP {s} {str(r)[:150]}")
+            return
+        st["vast_bal"] = {"t": t, "usd": float(usd)}
+        st["vast_warned"] = False
+        self.mark_report_read("vast", t)
+
     def clore_call(self, method, path, body=None):
         """A Clore API call with the business account's key, a few seconds after the last. (status, JSON); a 429 holds
         every Clore call for 2 minutes."""
@@ -2646,6 +2666,7 @@ class W:
         self.sell(now())
         self.salad_balance()
         self.clore_balance()
+        self.vast_balance()
         self.clore_round(t)
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
@@ -3513,12 +3534,13 @@ class W:
         # lasts, Clore's USD balance, and the sum, with no days on it ("Don't add the days though"). Until then the
         # heading ended "llmjob $64.13 (79d) + llmjob2 $59.71 (73d) = $123.84". One Salad org and no Clore read keep
         # the old ending, "Salad $228.65 left · 9d".
-        cb, credit_rows, salad_link = st.get("clore_bal"), [], "[Salad](https://portal.salad.com)"
+        cb, vb = st.get("clore_bal"), st.get("vast_bal")
+        credit_rows, salad_link = [], "[Salad](https://portal.salad.com)"
         if runway is not None:
             # Each org named as Salad's (founder, 9 November: "label the credit for llmjob and llmjob2 as Salad").
             credit_rows = [(f"{salad_link} {o}", bal, short_lasts(h) + (" idle" if idle else ""))
                            for o, h, idle, bal in runway]
-        elif cb:
+        elif cb or vb:
             credit_rows = [(salad_link, credit, short_lasts(hours, cmark) if hours is not None else "")]
         else:
             head += f" · Salad ${credit:.2f}{cmark} left" + (f" · {short_lasts(hours, cmark)}" if hours is not None else "")
@@ -3530,6 +3552,9 @@ class W:
                        if not o.get("ended"))
             lasts = short_lasts(cb["usd"] / burn) if burn > 0 else "idle"
             credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], lasts))
+        if vb:
+            # Vast's credit too (10 November). The watcher rents nothing on Vast, so nothing spends it: idle.
+            credit_rows.append(("[Vast](https://vast.ai)", vb["usd"], "idle"))
         if credit_rows:
             credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
                           *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {lasts} |" for o, bal, lasts in credit_rows)]

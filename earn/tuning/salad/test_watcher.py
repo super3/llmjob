@@ -2844,6 +2844,27 @@ class TestSaladBalance(Base):
         self.assertEqual(self.events().count("WARN can't read Clore's balance"), 1)
         self.assertIn("| [Clore](https://clore.ai) | $50.00 |", self.report())
 
+    def test_vast_joins_the_credit_table(self):
+        # 10 November: the founder asked for Vast in the credit table too. Nothing rents there, so it's idle.
+        real, asked = w.http, []
+        w.http = lambda m, u, body=None, headers=None, timeout=60, **k: asked.append((u, headers)) or (
+            200, {"id": 1, "email": "x@y", "credit": 12.5})
+        self.addCleanup(setattr, w, "http", real)
+        real_env = w.user_env
+        w.user_env = lambda n: "vk" if n == "VAST_API_KEY" else None if n == "CLORE_API_KEY" else real_env(n)
+        self.addCleanup(setattr, w, "user_env", real_env)
+        self.x.salad_balance()
+        self.x.vast_balance()
+        self.assertEqual(asked, [("https://console.vast.ai/api/v0/users/current/", {"Authorization": "Bearer vk"})])
+        rep = self.report()
+        self.assertIn("| [Vast](https://vast.ai) | $12.50 | idle |\n| **All** | **$241.15** | |\n", rep)
+        w.http = lambda *a, **k: (401, {"error": "bad key"})
+        for _ in range(2):
+            self.clock[0] += 900
+            self.x.vast_balance()
+        self.assertEqual(self.events().count("WARN can't read Vast's balance"), 1)
+        self.assertIn("| [Vast](https://vast.ai) | $12.50 |", self.report())   # keeps the last
+
     def test_salads_own_balance_shows_without_a_star(self):
         self.x.salad_balance()
         self.assertEqual(self.reads, [("u@x", "pw")])
