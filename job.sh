@@ -1,16 +1,10 @@
-# job 2: the fold alone beside a ticker, stamps of long launches (stalls, moved waves), then the miner with a ticker (another process's, and the core's own) and at half the batch
+# job 3: the duel on this PC: the PR head's core against SRBMiner 3.8.6, 2 turns each, a clock turn each, then one turn of SRBMiner 3.8.2
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=32767abfa40375ee5b0c25cce278fc91c3d9e930
-G_PARTS=build\ tick\ stamps\ hash
-G_TICKS=0\ 0.010\ 0.002
-G_TROUNDS=3
-G_SROUNDS=1
-G_STSHAPES=sbase:131072:2048:400\ sbase:524288:2048:100\ sw:131072:16384:50\ sw:131072:32768:25
-G_VDEF=tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq0tk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_TICK_US=2000\;s4tk=strip\ PEARL_AMD_STRIPS=4\ PEARL_AMD_TICK_US=2000\;cb64=base\ PEARL_AMD_COL_BATCH=64\;cb32=base\ PEARL_AMD_COL_BATCH=32
-G_VARIANTS=base\ twin\ bt2\ tk2\ tk05\ hq0tk\ s4tk\ cb64
-G_HROUNDS=3
-G_HASH=45:12
-G_DIAG=base\ tk2
+G_PARTS=duel
+G_TURNS=2
+G_DSECS=300
+G_CLKSECS=180
+G_SRB_ALSO=3.8.2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -41,6 +35,17 @@ SWEEPV=${G_SWEEP:-base=;twin=-DPEARL_AMD_GOALTWIN=1;strip=-DPEARL_AMD_STRIP=1;cb
 # A variant is a build and the environment it runs in: "name=build K=V ...;...". One not named here is the build of
 # its name.
 VDEF="hq0=base PEARL_AMD_HASHQ=0;hq0t=twin PEARL_AMD_HASHQ=0;hz=base PEARL_AMD_HASHQ_ZERO=1;hzw=base PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;hw=base PEARL_AMD_HASHQ_WAIT=0;s1=strip PEARL_AMD_STRIPS=1;s2=strip PEARL_AMD_STRIPS=2;s4=strip PEARL_AMD_STRIPS=4;s8=strip PEARL_AMD_STRIPS=8;s16=strip PEARL_AMD_STRIPS=16;s4z=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s8z=strip PEARL_AMD_STRIPS=8 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s2z=strip PEARL_AMD_STRIPS=2 PEARL_AMD_HASHQ_ZERO=1 PEARL_AMD_HASHQ_WAIT=0;s4q0=strip PEARL_AMD_STRIPS=4 PEARL_AMD_HASHQ=0;bt2=base TICK=0.002;bt10=base TICK=0.010;bt1=base TICK=0.001;hq0t2=base PEARL_AMD_HASHQ=0 TICK=0.002;s4t2=strip PEARL_AMD_STRIPS=4 TICK=0.002;${G_VDEF:-}"
+# vdef NAME: sets VCORE and VENV from VDEF.
+vdef() {
+  local d; VCORE=$1; VENV=()
+  IFS=';' read -ra DS <<< "$VDEF"
+  for d in "${DS[@]}"; do
+    [ "${d%%=*}" = "$1" ] || continue
+    read -ra W <<< "${d#*=}"
+    VCORE=${W[0]}; VENV=("${W[@]:1}")
+    return 0
+  done
+}
 ARCHX=${ARCH:-$(target)}
 FOLD=$(case "$ARCHX" in gfx11*) echo wmma11 ;; gfx12*) echo wmma12 ;; *) echo ref ;; esac)
 SW=/root/sw
@@ -197,6 +202,13 @@ ours_start() {
     exec node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" -w "$WORKER-ours" \
       --no-report --no-serve --no-update
 }
+# A second build of ours in the duel (G_OURSX, a variant of VDEF): its core, with its settings.
+oursx_start() {
+  vdef "$G_OURSX"
+  cd $R/earn && exec env "${VENV[@]}" PEARL_CORE_VARIANT=amd PEARL_CORE_PATH=$SW/var/$VCORE/pearl_core_hip.node \
+    NODE_PATH=$NM/node_modules node src/cli/earn-cli.js --address "$WALLET" --mode mining --pool "$DUEL_POOL" \
+      -w "$WORKER-ours" --no-report --no-serve --no-update
+}
 stop_miners() {
   pkill -f SRBMiner-MULTI; pkill -f 'src/cli/earn-cli\.js'; sleep 8
   pkill -9 -f SRBMiner-MULTI 2>/dev/null; pkill -f 'tail -f /dev/null' 2>/dev/null
@@ -242,7 +254,12 @@ elif has srb || has duel; then
 fi
 
 # ---- the duel --------------------------------------------------------------------------------------------------
-ours_rates() { tr '\r' '\n' < /root/duel-ours.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted' | awk '{print $1}'; }
+# The rates the CLI printed in the running turn ($name is turn's: ours, or oursx for the second build of ours).
+ours_rates() { tr '\r' '\n' < /root/duel-$name.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted' | awk '{print $1}'; }
+sample_oursx() {
+  tr '\r' '\n' < /root/duel-oursx.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1 \
+    | awk '{gsub(",","",$4); gsub(",","",$7); print $1, $4, $7}'
+}
 # turn NAME LABEL SECS PROBE: one miner for SECS. PROBE 1: the clock probe runs beside it from 40 s on.
 # Ends with "duel LABEL result": the mean of the 10 s samples after the first 60 s. For ours, also the mean of
 # every line the CLI printed after then (one a second).
@@ -265,13 +282,13 @@ turn() {
       last="$th acc=$acc rej=$rej"
       if [ $t -gt 60 ]; then
         echo "$th" >> $f.samples
-        [ -z "$skip" ] && [ "$name" = ours ] && skip=$(ours_rates | wc -l)
+        [ -z "$skip" ] && [ "$name" != srb ] && skip=$(ours_rates | wc -l)
       fi
     fi
     [ $((t % 60)) -lt 10 ] && say "duel $label t=${t}s th=${th:-?} acc=${acc:-?} rej=${rej:-?}$([ -s $f.clk ] && echo " $(tail -n 1 $f.clk | cut -c1-40)")"
     [ $t -ge "$secs" ] && break
   done
-  [ "$name" = ours ] && [ -n "$skip" ] && ours_rates | tail -n +$((skip + 1)) > $f.all
+  [ "$name" != srb ] && [ -n "$skip" ] && ours_rates | tail -n +$((skip + 1)) > $f.all
   if [ "$name" = srb ]; then
     say "duel $label api: $(curl -s -m 3 http://127.0.0.1:21550 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s),a=j.algorithms[0];console.log(JSON.stringify({ver:j.miner_version,hashrate:a.hashrate,shares:a.shares}).slice(0,330))}catch(e){console.log("unreadable")}})')"
   fi
@@ -287,6 +304,7 @@ if has duel && [ -n "$SRBV" ]; then
   for ((i = 1; i <= TURNS; i++)); do
     turn ours ours$i "$DSECS" 0
     turn srb srb$i "$DSECS" 0
+    [ -n "${G_OURSX:-}" ] && turn oursx oursx$i "$DSECS" 0
   done
   if [ "$CLKSECS" -gt 0 ] && [ -x /root/clkprobe ]; then
     turn ours oursclk "$CLKSECS" 1
@@ -502,18 +520,7 @@ if has stamps; then
   done
 fi
 
-# hashrate.js on each variant (VDEF above).
-# vdef NAME: sets VCORE and VENV from VDEF.
-vdef() {
-  local d; VCORE=$1; VENV=()
-  IFS=';' read -ra DS <<< "$VDEF"
-  for d in "${DS[@]}"; do
-    [ "${d%%=*}" = "$1" ] || continue
-    read -ra W <<< "${d#*=}"
-    VCORE=${W[0]}; VENV=("${W[@]:1}")
-    return 0
-  done
-}
+# hashrate.js on each variant (VDEF and vdef above).
 # hr LABEL VARIANT [K=V ...]: one run; prints "hash LABEL VARIANT th=.. sd=.. n=..".
 hr() {
   local label=$1 v=$2 core envs log r; shift 2
