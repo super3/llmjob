@@ -1079,6 +1079,25 @@ full rate on RDNA 2 (the projection is 14-41 TH/s).
   `pearl_restamp_operand` save 2 stall cycles of 3,100 and 4,600. The 12.8 build's fold hash (35efb7e36535) is the
   release's, so the comparison is against what ships. A race could only measure noise, so none was run. Ptxas 13's
   gain is Blackwell's (+3.2% on the 5090); it doesn't reach Ampere or Turing.
+- Computing only the hash word the target test reads (PR #290 research item 19, 10 November). The kernel already
+  does this. Every fold hashes a region with `pearl_transcript_msw`, `pearl_hp_msw` or `pearl_hp_msw_pair`, which
+  return only the top word, and runs the full hash again only for the rare region that passes the first-word test.
+  What was left to try was writing the dead work out by hand: in the last BLAKE3 round, diagonals 1 and 3 don't
+  feed the word that is read. A test switch (`PEARL_HASH_MSW_TRIM`, on scratch branch `exp/290-19`, commit
+  546551c9) left them out. ptxas was already dropping them: the PTX loses 20 lines and 4 shuffles a tall fold, the
+  machine code loses one instruction. sm_75: all 25 kernels byte-identical. Tall fold on sm_86 3,042 → 3,041
+  instructions (stall cycles 7,775 → 7,778), sm_89 3,030 → 3,029 (7,704 → 7,699, same under ptxas 12.8 and 13.3),
+  sm_120 3,706 → 3,705 (9,679 → 9,645). Raced on Salad, 900 s, 4 s turns, with an A/A twin of the base:
+
+  | Card | Rounds | Base TH/s | Trim vs base | Twin vs base |
+  |---|---|---|---|---|
+  | RTX 3090 (420 W cap, CUDA 12.8) | 69 | 112.44 | +0.017% ± 0.040, ahead 38/69 | +0.038% ± 0.028, ahead 45/69 |
+  | RTX 5070 Ti (300 W, CUDA 13.3) | 74 | 190.44 | +0.021% ± 0.038, ahead 35/74 | +0.006% ± 0.027, ahead 36/74 |
+
+  The trim is inside the twin's spread on both. verify-hits passed 400/400 on both cards with 0 failed, and the hit
+  lists matched the base on all four completeness shapes. RTX 40 (sm_89) was not raced; its code changes by the
+  same one instruction. Dropped, and the switch is not on the PR: there is nothing left in the hash for the target
+  test to skip.
 - RTX 20: a smaller transcript hash for the L0 instruction cache (item 11), at most +0.10%.
 - RTX 30/40: copy groups and readout fences (item 10); hash control bits, warp turn-taking (#18), IMMAs during the hash;
   a wider window (g6: costs 1,380 cycles a tile to free at most 355); Z6 (no clearing at all saves only 20 cycles);
