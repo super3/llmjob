@@ -352,9 +352,12 @@ smi_start() {   # $1 = the stage
   (
     trap '[ -z "${!:-}" ] || kill "$!" 2> /dev/null; exit 0' TERM
     while :; do
-      nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit --format=csv,noheader,nounits > "$OUT/smi.$1" 2> /dev/null &
+      # (Branch goal/gate: also the temperature, GPU use and why the clock is held
+      # (clocks_event_reasons: 0x4 is the power cap), on drivers that report it.)
+      { nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit,temperature.gpu,utilization.gpu,clocks_event_reasons.active --format=csv,noheader,nounits > "$OUT/smi.$1" 2> /dev/null ||
+        nvidia-smi -i 0 --query-gpu=clocks.sm,power.draw,power.limit --format=csv,noheader,nounits > "$OUT/smi.$1" 2> /dev/null; } &
       wait $!
-      say "smi $1 $(head -1 "$OUT/smi.$1" | awk -F', *' '{printf "%s MHz %s/%s W", $1, $2, $3}')"
+      say "smi $1 $(head -1 "$OUT/smi.$1" | awk -F', *' '{printf "%s MHz %s/%s W", $1, $2, $3; if (NF >= 6) printf " %s C util %s reasons %s", $4, $5, $6}')"
       sleep "$SMI_EVERY" > /dev/null & wait $! || break
     done
   ) &
