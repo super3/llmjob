@@ -250,9 +250,18 @@ the band walk that keeps B resident on a 4090 will miss there. Its correctness
 has been checked: an sm_86-only build runs on a 4090 (compute 8.9 runs sm_86
 code), took the tall fold, and passed verify-hits 400/400 (probes/README.md).
 
+The sm_70 build (Volta: Tesla V100, Titan V) has tensor cores that multiply fp16
+only, so it builds none of the int8 folds above. It mines on
+`pearl_tile_fold_hmma` (`src/pearl_fold_hmma.h`, `PEARL_VOLTA_HMMA` in
+`src/pearl_config.h`): the dp4a fold's 128x128 tile, with A' and B' converted
+to fp16 as they are staged and multiplied by `mma.sync` m8n8k4 into fp32
+accumulators. fp16 holds every int8 and the sums stay exact integers below
+2^24, so the transcripts are the same. `probes/hmma-check.cc` runs its layout
+and readout on the CPU; `-DPEARL_VOLTA_HMMA=0` (or `PEARL_VOLTA_DP4A=1` at run
+time) puts a V100 back on the dp4a fold.
+
 The sm_61 build (Pascal: GTX 10, Tesla P4 and P40) has no tensor cores, so it
-builds none of the folds above. Nor does the sm_70 build (Volta: Tesla V100), whose
-tensor cores do fp16 only; both mine on the dp4a fold. It mines on `pearl_tile_fold_dp4a`, an int8
+builds none of the folds above. It mines on `pearl_tile_fold_dp4a`, an int8
 GEMM on the `__dp4a` instruction over 128x128 tiles (`src/pearl_fold_dp4a.h`
 and `PEARL_DP4A_ARCH` in `src/pearl_config.h`). The result is bit-identical:
 the accumulators are exact int32 sums whatever adds them, and the fold reads

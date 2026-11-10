@@ -37,6 +37,7 @@
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"  // the tall fold's TMA descriptors (sm_120)
 #include "pearl_fold_dp4a.h"   // Pascal's fold: its layout and inner loop
+#include "pearl_fold_hmma.h"   // Volta's fold: its layout, conversion and readout
 
 namespace {
 
@@ -4283,5 +4284,215 @@ extern "C" __global__ __launch_bounds__(PEARL_DP4A_THREADS, 2) void pearl_tile_f
   (void)Aprime; (void)Bprime; (void)a_rows; (void)b_rows; (void)k_arg; (void)rank_arg;
   (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)band;
   (void)test; (void)hits;
+#endif
+}
+
+// Volta's fold (PEARL_HMMA_BODY: sm_70, the V100): the dp4a fold's 128x128 tile on the
+// fp16 tensor cores. Why the integers come out identical: PEARL_VOLTA_HMMA in
+// pearl_config.h; the layout: pearl_fold_hmma.h.
+//
+// One block a tile, not persistent, 128 threads: 4 warps in a 2x2 grid of 64x64 warp
+// tiles, on mma.sync m8n8k4 (fp16 in, fp32 accumulate), 128 accumulators a lane. Two
+// blocks share an SM (44 KB of static shared each, at most 255 registers a thread).
+//
+// A stage is 32 bytes of k, as in the dp4a fold, and the copies go through registers
+// the same way (Volta has no cp.async): at its top each thread loads the NEXT stage's 32
+// bytes of its row of A' and its column of B' (four 16-byte loads); then the warps
+// multiply this stage out of shared; then each thread converts its copies to fp16 and
+// stores them into the other buffer, and one barrier publishes them. Each 16 of k, a
+// lane loads its 4 rows of A' and 4 columns of B' (two 16-byte loads each) and runs 64
+// mma, k outermost: an mma's accumulators are next read 16 mma later, not at once, as
+// wmma's 16x16x16 (four dependent m8n8k4 back to back) had it. That wmma fold measured
+// 35.30 TH/s against the dp4a fold's 29.71 on a V100 SXM2.
+//
+// Four stages are one chunk of rank (128) bytes. After the fourth, each lane reads its
+// 128 values as integers (pearl_hmma_bias) and XORs them into one word for each of its
+// quad pair's four regions, and three shuffles over the pair's lanes leave each region's
+// word in one lane (pearl_hmma_region). After the sixteenth chunk, threads 0-63 hash one
+// region each, as the dp4a fold's do.
+//
+// `bias` is what the accumulators start at (pearl_hmma_bias, from the fill), so that the
+// readout can take their bits as integers.
+extern "C" __global__ __launch_bounds__(PEARL_HMMA_THREADS, 2) void pearl_tile_fold_hmma(
+    const int8_t *__restrict__ Aprime, const int8_t *__restrict__ Bprime, uint32_t a_rows,
+    uint32_t b_rows, uint32_t k_arg, uint32_t rank_arg, uint32_t chunks_arg, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles, uint32_t band, uint32_t bias,
+    const PearlTranscriptTest test, const PearlHitList hits) {
+#if PEARL_HMMA_BODY
+  constexpr uint32_t k = PEARL_FOLD_K;
+  constexpr uint32_t chunks = PEARL_FOLD_CHUNKS;
+  constexpr uint32_t stages = k / PEARL_HMMA_STAGE_K;                         // 64
+  constexpr uint32_t per_chunk = PEARL_FOLD_RANK / PEARL_HMMA_STAGE_K;        // 4
+  constexpr uint32_t LDM = PEARL_HMMA_LDM;
+  static_assert(PEARL_FOLD_RANK % PEARL_HMMA_STAGE_K == 0u, "a chunk is whole stages");
+  static_assert(chunks == PEARL_JACKPOT_BUCKETS, "one transcript word a chunk, no rotation");
+  if (k_arg != k || rank_arg != PEARL_FOLD_RANK || chunks_arg != chunks) return;
+  if (blockDim.x != PEARL_HMMA_THREADS || blockIdx.x >= tiles || band == 0u) return;
+
+  __shared__ __align__(32) __half sA[2][128u * LDM];
+  __shared__ __align__(32) __half sB[2][128u * LDM];
+  __shared__ uint32_t sT[PEARL_DP4A_REGIONS * PEARL_DP4A_TR_STRIDE];
+
+  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
+  uint32_t R, C;
+  pearl_dp4a_tile(blockIdx.x, rows_valid / PEARL_DP4A_ROW_OFFSETS,
+                  col_groups / PEARL_DP4A_COL_OFFSETS, band, &R, &C);
+  const int8_t *srcA = Aprime + pearl_hmma_a_src(tid, R);
+  const int8_t *srcB = Bprime + pearl_hmma_b_src(tid, C, col_off);
+  const size_t stepA = (size_t)pearl_dp4a_stage_step(a_rows);
+  const size_t stepB = (size_t)pearl_dp4a_stage_step(b_rows);
+
+  // A thread's 32 bytes, as 32 halfs, into its row of a buffer: four 16-byte stores.
+  auto put = [&](__half *dst, const int4 &lo, const int4 &hi) {
+    const uint32_t w[8] = {(uint32_t)lo.x, (uint32_t)lo.y, (uint32_t)lo.z, (uint32_t)lo.w,
+                           (uint32_t)hi.x, (uint32_t)hi.y, (uint32_t)hi.z, (uint32_t)hi.w};
+    const uint32_t biasBits = PEARL_HMMA_BIAS2;
+    const __half2 bias = *reinterpret_cast<const __half2 *>(&biasBits);
+    uint32_t h[16];
+#pragma unroll
+    for (int i = 0; i < 8; i++) {
+#pragma unroll
+      for (uint32_t j = 0; j < 2; j++) {
+        const uint32_t b = pearl_hmma_biased(w[i], j);
+        const __half2 x = __hsub2(*reinterpret_cast<const __half2 *>(&b), bias);
+        h[2 * i + j] = *reinterpret_cast<const uint32_t *>(&x);
+      }
+    }
+    uint4 *d = reinterpret_cast<uint4 *>(dst);
+#pragma unroll
+    for (int q = 0; q < 4; q++)
+      d[q] = make_uint4(h[4 * q], h[4 * q + 1], h[4 * q + 2], h[4 * q + 3]);
+  };
+
+  float acc[4][4][8];
+#pragma unroll
+  for (int i = 0; i < 4; i++) {
+#pragma unroll
+    for (int j = 0; j < 4; j++) {
+#pragma unroll
+      for (int e = 0; e < 8; e++) acc[i][j][e] = (float)bias;
+    }
+  }
+  // This lane's first row of A' and column of B' in a buffer; mma tile i (j) is 8 rows
+  // (columns) further on.
+  const uint32_t aRow = pearl_hmma_a_row(warp, lane, 0u) * LDM;
+  const uint32_t bCol = pearl_hmma_b_col(warp, lane, 0u) * LDM;
+
+  int4 a0 = __ldg(reinterpret_cast<const int4 *>(srcA));
+  int4 a1 = __ldg(reinterpret_cast<const int4 *>(srcA) + 1);
+  int4 b0 = __ldg(reinterpret_cast<const int4 *>(srcB));
+  int4 b1 = __ldg(reinterpret_cast<const int4 *>(srcB) + 1);
+  put(sA[0] + tid * LDM, a0, a1);
+  put(sB[0] + tid * LDM, b0, b1);
+  __syncthreads();
+
+  for (uint32_t s = 0; s < stages; s++) {
+    const bool more = s + 1u < stages;
+    if (more) {
+      srcA += stepA;
+      srcB += stepB;
+      a0 = __ldg(reinterpret_cast<const int4 *>(srcA));
+      a1 = __ldg(reinterpret_cast<const int4 *>(srcA) + 1);
+      b0 = __ldg(reinterpret_cast<const int4 *>(srcB));
+      b1 = __ldg(reinterpret_cast<const int4 *>(srcB) + 1);
+    }
+    const __half *bufA = sA[s & 1u] + aRow;
+    const __half *bufB = sB[s & 1u] + bCol;
+#pragma unroll
+    for (uint32_t kk = 0; kk < PEARL_HMMA_STAGE_K; kk += 16u) {
+      // 16 halfs of k of each of this lane's 4 rows and 4 columns: 8 words each, k pair
+      // w in word w. (Loading 8 or 4 at a time instead raced the same.)
+      uint32_t fa[4][8], fb[4][8];
+#pragma unroll
+      for (uint32_t i = 0; i < 4; i++) {
+        const uint4 *pa = reinterpret_cast<const uint4 *>(bufA + 8u * i * LDM + kk);
+        const uint4 *pb = reinterpret_cast<const uint4 *>(bufB + 8u * i * LDM + kk);
+        const uint4 x = pa[0], y = pa[1], z = pb[0], w = pb[1];
+        fa[i][0] = x.x; fa[i][1] = x.y; fa[i][2] = x.z; fa[i][3] = x.w;
+        fa[i][4] = y.x; fa[i][5] = y.y; fa[i][6] = y.z; fa[i][7] = y.w;
+        fb[i][0] = z.x; fb[i][1] = z.y; fb[i][2] = z.z; fb[i][3] = z.w;
+        fb[i][4] = w.x; fb[i][5] = w.y; fb[i][6] = w.z; fb[i][7] = w.w;
+      }
+#pragma unroll
+      for (uint32_t t = 0; t < 4; t++) {
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+#pragma unroll
+          for (uint32_t j = 0; j < 4; j++) {
+            float *d = acc[i][j];
+            asm volatile(
+                "mma.sync.aligned.m8n8k4.row.col.f32.f16.f16.f32 "
+                "{%0,%1,%2,%3,%4,%5,%6,%7}, {%8,%9}, {%10,%11}, "
+                "{%0,%1,%2,%3,%4,%5,%6,%7};"
+                : "+f"(d[0]), "+f"(d[1]), "+f"(d[2]), "+f"(d[3]), "+f"(d[4]), "+f"(d[5]),
+                  "+f"(d[6]), "+f"(d[7])
+                : "r"(fa[i][2 * t]), "r"(fa[i][2 * t + 1]), "r"(fb[j][2 * t]),
+                  "r"(fb[j][2 * t + 1]));
+          }
+        }
+      }
+    }
+    // Chunk boundary: every accumulator as an integer, XORed into its region's word,
+    // then reduced over the quad pair. Uniform across the block.
+    if (s % per_chunk == per_chunk - 1u) {
+      const uint32_t c = s / per_chunk;
+      const uint32_t U = pearl_hmma_unbias(bias);
+      uint32_t v[4] = {0u, 0u, 0u, 0u};
+      if (bias == 8388608u) {   // U's low 23 bits are 0, and it cancels in pairs
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+#pragma unroll
+          for (uint32_t j = 0; j < 4; j++) {
+#pragma unroll
+            for (int e = 0; e < 8; e++) v[2u * (i >> 1) + (j >> 1)] ^= __float_as_uint(acc[i][j][e]);
+          }
+        }
+      } else {
+#pragma unroll
+        for (uint32_t i = 0; i < 4; i++) {
+#pragma unroll
+          for (uint32_t j = 0; j < 4; j++) {
+#pragma unroll
+            for (int e = 0; e < 8; e++) v[2u * (i >> 1) + (j >> 1)] ^= __float_as_uint(acc[i][j][e]) - U;
+          }
+        }
+      }
+      // Across lane bit 4 the pair splits by a, across bit 1 by b, then bit 0
+      // (pearl_hmma_region).
+      const bool upA = (lane & 16u) != 0u, upB = (lane & 2u) != 0u;
+      const uint32_t w0 = (upA ? v[2] : v[0]) ^ __shfl_xor_sync(0xffffffffu, upA ? v[0] : v[2], 16);
+      const uint32_t w1 = (upA ? v[3] : v[1]) ^ __shfl_xor_sync(0xffffffffu, upA ? v[1] : v[3], 16);
+      uint32_t x = (upB ? w1 : w0) ^ __shfl_xor_sync(0xffffffffu, upB ? w0 : w1, 2);
+      x ^= __shfl_xor_sync(0xffffffffu, x, 1);
+      if ((lane & 1u) == 0u) sT[pearl_hmma_region(warp, lane) * PEARL_DP4A_TR_STRIDE + c] = x;
+    }
+    if (more) {
+      put(sA[(s + 1u) & 1u] + tid * LDM, a0, a1);
+      put(sB[(s + 1u) & 1u] + tid * LDM, b0, b1);
+    }
+    __syncthreads();
+  }
+
+  // The last barrier above published chunk 15's words. Threads 0-63 hash a region
+  // each, as the dp4a fold's do.
+  if (tid >= PEARL_DP4A_REGIONS) return;
+  uint32_t tm[16];
+#pragma unroll
+  for (uint32_t w = 0; w < 16; w++) tm[w] = sT[tid * PEARL_DP4A_TR_STRIDE + w];
+  if (pearl_transcript_msw(test.key, tm, test.hash_big_endian) > test.target_w[0]) return;
+  uint32_t h[8];
+  pearl_transcript_hash_again(test.key, tm, h);
+  if (!pearl_hash_meets_words(h, test.target_w, test.hash_big_endian)) return;
+  const uint32_t slot = atomicAdd(hits.count, 1u);
+  if (slot >= PEARL_MAX_HITS) return;
+  hits.index[slot] = pearl_dp4a_region_index(R, C, tid, rows_valid);
+#pragma unroll
+  for (int i = 0; i < 8; i++) hits.hash[slot * 8u + i] = h[i];
+#pragma unroll
+  for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
+#else
+  (void)Aprime; (void)Bprime; (void)a_rows; (void)b_rows; (void)k_arg; (void)rank_arg;
+  (void)chunks_arg; (void)col_off; (void)rows_valid; (void)col_groups; (void)tiles; (void)band;
+  (void)bias; (void)test; (void)hits;
 #endif
 }

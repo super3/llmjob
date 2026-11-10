@@ -86,8 +86,9 @@ jobs:
             # compilation for architectures below sm_75 will be removed in a future
             # release; 12.8 still builds it.
             # sm_70 is Volta (Tesla V100, Titan V, CMP 100-210), added 2026-11-10.
-            # Its tensor cores do fp16 only, so it too builds only the dp4a fold;
-            # PEARL_DP4A_ARCH already covered 7.0, and only this line was missing.
+            # Its tensor cores do fp16 only, so it builds the dp4a fold and, since
+            # item 20 of PR #290, Volta's fp16 fold (pearl_tile_fold_hmma,
+            # PEARL_VOLTA_HMMA), which a V100 runs instead.
             gencode: >-
               -gencode arch=compute_61,code=sm_61
               -gencode arch=compute_70,code=sm_70
@@ -359,8 +360,9 @@ jobs:
       # (pearl_tile_fold_wmma_rg, PEARL_BD_RG_KERNEL; a body only on sm_75),
       # for Hopper's wgmma fold (pearl_tile_fold_hopper, a body only on
       # sm_90a), for the transcript hash kernel (pearl_tall_hash80, a body only
-      # on sm_80 and sm_90a), and for the dp4a fold (pearl_tile_fold_dp4a,
-      # a body only on sm_61, sm_70 and sm_75), on
+      # on sm_80 and sm_90a), for the dp4a fold (pearl_tile_fold_dp4a,
+      # a body only on sm_61, sm_70 and sm_75), and for Volta's fp16 fold
+      # (pearl_tile_fold_hmma, PEARL_VOLTA_HMMA; a body only on sm_70), on
       # every architecture and prints one row each. A spill fails the job on
       # the architectures in the entry's spill_fail_archs (the comment there
       # says why each is in it): sm_80, sm_86, sm_89, sm_90a, sm_100 and sm_120
@@ -372,7 +374,8 @@ jobs:
       # than a handful of registers (123 under 12.8), so fewer than 64 fails the
       # job. So does the sm_75 dp4a fold (127 registers, PEARL_DP4A_TURING):
       # without it GTX 16 cards fall back to the tensor fold at about an
-      # eighth of the rate. The same holds for the flip kernel on sm_86: the host launches it on
+      # eighth of the rate. So does the sm_70 fp16 fold: without it a V100
+      # quietly falls back to the dp4a fold. The same holds for the flip kernel on sm_86: the host launches it on
       # the RTX 3060 Ti and the 6 MB RTX 30 cards, which would search nothing. A failed cu13 job uploads no
       # pearl_core_cu13.node, and a failed ubuntu 12.8 job makes
       # miner-build.yml fall back to the previous run's core, which is the
@@ -419,6 +422,8 @@ jobs:
           seen_h80=0
           seen_hopper=0
           seen_dp4a=0
+          seen_hmma=0
+          hmma_body_70=0
           dp4a_body=0
           dp4a_body_75=0
           dp4a_body_70=0
@@ -431,6 +436,7 @@ jobs:
               pearl_tall_hash80) seen_h80=1 ;;
               pearl_tile_fold_hopper) seen_hopper=1 ;;
               pearl_tile_fold_dp4a) seen_dp4a=1 ;;
+              pearl_tile_fold_hmma) seen_hmma=1 ;;
               *) continue ;;
             esac
             echo "$arch $name: $regs registers, $stores bytes spill stores, $loads bytes spill loads"
@@ -445,6 +451,10 @@ jobs:
             if [ "$name" = pearl_tile_fold_dp4a ] && [ "$arch" = sm_70 ] \
                && [ "$regs" -ge 64 ] 2>/dev/null; then
               dp4a_body_70=1
+            fi
+            if [ "$name" = pearl_tile_fold_hmma ] && [ "$arch" = sm_70 ] \
+               && [ "$regs" -ge 64 ] 2>/dev/null; then
+              hmma_body_70=1
             fi
             if [ "$name" = pearl_tile_fold_tall_pinb ] && [ "$arch" = sm_86 ]; then
               pinb_86=stub
@@ -462,8 +472,8 @@ jobs:
           done <<< "$rows"
           # Nothing found is a failure, not a pass: the names changed, or ptxas
           # was not run with -v.
-          if [ "$seen_tall" != 1 ] || [ "$seen_tall_pinb" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_wmma_rg" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ] || [ "$seen_dp4a" != 1 ]; then
-            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_tall_pinb, pearl_tile_fold_wmma, pearl_tile_fold_wmma_rg, pearl_tall_hash80, pearl_tile_fold_hopper and pearl_tile_fold_dp4a; was pearl_kernel.cu compiled with -Xptxas -v?"
+          if [ "$seen_tall" != 1 ] || [ "$seen_tall_pinb" != 1 ] || [ "$seen_wmma" != 1 ] || [ "$seen_wmma_rg" != 1 ] || [ "$seen_h80" != 1 ] || [ "$seen_hopper" != 1 ] || [ "$seen_dp4a" != 1 ] || [ "$seen_hmma" != 1 ]; then
+            echo "::error::ptxas -v output has no entry for one of pearl_tile_fold_tall, pearl_tile_fold_tall_pinb, pearl_tile_fold_wmma, pearl_tile_fold_wmma_rg, pearl_tall_hash80, pearl_tile_fold_hopper, pearl_tile_fold_dp4a and pearl_tile_fold_hmma; was pearl_kernel.cu compiled with -Xptxas -v?"
             exit 1
           fi
           case " ${{ matrix.gencode }} " in
@@ -477,6 +487,10 @@ jobs:
             *"code=sm_70 "*)
               if [ "$dp4a_body_70" != 1 ]; then
                 echo "::error::pearl_tile_fold_dp4a on sm_70 has no body (under 64 registers); V100 cards would have no fold. Check PEARL_DP4A_ARCH in pearl_config.h"
+                bad=1
+              fi
+              if [ "$hmma_body_70" != 1 ]; then
+                echo "::error::pearl_tile_fold_hmma on sm_70 has no body (under 64 registers); V100 cards would fall back to the dp4a fold. Check PEARL_VOLTA_HMMA in pearl_config.h"
                 bad=1
               fi ;;
           esac

@@ -47,6 +47,7 @@
 
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
+#include "pearl_fold_hmma.h"   // Volta's fold: the readout's bias
 
 // How the search thread waits for a batch: spinning, as the synchronous copy it
 // replaced did. cudaEventBlockingSync, which sleeps instead, measured 0.4% slower on a
@@ -167,6 +168,12 @@ extern "C" __global__ void pearl_tile_fold_dp4a(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
     uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
     uint32_t tiles, uint32_t band, const PearlTranscriptTest test, const PearlHitList hits);
+// Volta's fp16 tensor-core fold (PEARL_VOLTA_HMMA; a body only in an sm_70 build).
+extern "C" __global__ void pearl_tile_fold_hmma(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
+    uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
+    uint32_t tiles, uint32_t band, uint32_t bias, const PearlTranscriptTest test,
+    const PearlHitList hits);
 #if PEARL_HOPPER_WGMMA
 // Hopper's wgmma fold (PEARL_HOPPER_WGMMA; a body only in an sm_90a build with the switch).
 extern "C" __global__ void pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg,
@@ -340,6 +347,10 @@ struct Ctx {
   // a tile. Read off that kernel's loaded binary (binaryVersion 61), or on a GTX 16 card
   // with PEARL_DP4A_TURING, its sm_75 body (resolve_fold). Set, no other fold flag is.
   bool foldDp4a = false;
+  // With foldDp4a, on a V100 (compute 7.0): pearl_tile_fold_hmma runs in its place, the
+  // same tiles on the fp16 tensor cores (PEARL_VOLTA_HMMA). Everything else is the dp4a
+  // fold's: the draw, the batch and the hit list.
+  bool foldHmma = false;
   // The card's compute capability, for the fold's name and its errors.
   int ccMajor = 0, ccMinor = 0;
   unsigned hopperBlocks = 0;
@@ -1074,6 +1085,24 @@ const char *pearl_dp4a_arch(const Ctx *ctx) {
   return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? "Volta" : "Turing") : "Pascal";
 }
 
+// Whether a card on the dp4a fold runs Volta's fp16 tensor-core fold in its place: a
+// compute 7.0 card whose loaded binary of pearl_tile_fold_hmma is the sm_70 one with its
+// body (the empty kernel has a handful of registers), unless PEARL_VOLTA_DP4A=1 asks for
+// the dp4a fold, for a race on one card. Never in a build without PEARL_VOLTA_HMMA.
+bool pearl_hmma_for(const Ctx *ctx) {
+  if (!PEARL_VOLTA_HMMA || ctx->ccMajor != 7 || ctx->ccMinor != 0) return false;
+  uint32_t v = 0;
+  if (pearl_bd_sweep_env("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;
+  cudaFuncAttributes fh;
+  if (cudaFuncGetAttributes(&fh, reinterpret_cast<const void *>(pearl_tile_fold_hmma))
+      != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  return fh.binaryVersion == 70 && fh.numRegs >= 64
+         && (uint32_t)fh.maxThreadsPerBlock >= PEARL_HMMA_THREADS;
+}
+
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
 // that runs. The Ada-layout builds of pearl_tile_fold_wmma (sm_89, and sm_86, which
@@ -1132,6 +1161,7 @@ void resolve_fold(Ctx *ctx) {
           && (uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS) {
         ctx->foldDp4a = true;
         ctx->foldKnown = true;
+        ctx->foldHmma = pearl_hmma_for(ctx);
         return;
       }
     } else {
@@ -1953,22 +1983,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     // blocks take 42 KB, so a Turing card asks for the larger shared part, as the RTX 20
     // fold does (PEARL_BD_A_DIRECT_CARVEOUT). The fold stages its operands in shared, so
     // it leans little on L1. Pascal's shared is its own.
+    // Volta's fp16 fold (Ctx::foldHmma) takes 44 KB a block, so two blocks need 88 KB of
+    // a V100's 96 KB shared part.
+    const void *fold = ctx->foldHmma ? reinterpret_cast<const void *>(pearl_tile_fold_hmma)
+                                     : reinterpret_cast<const void *>(pearl_tile_fold_dp4a);
+    const int threads = (int)(ctx->foldHmma ? PEARL_HMMA_THREADS : PEARL_DP4A_THREADS);
     if (ctx->ccMajor == 7
-        && cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),
-                                cudaFuncAttributePreferredSharedMemoryCarveout,
+        && cudaFuncSetAttribute(fold, cudaFuncAttributePreferredSharedMemoryCarveout,
                                 (int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)
       (void)cudaGetLastError();
     int perSm = 0;
-    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,
-        reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);
+    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, fold, threads, 0);
     if (oe != cudaSuccess) {
       (void)cudaGetLastError();
       perSm = 0;
     }
     fprintf(stderr,
-            "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "
+            "[pearl] GPU %d: compute %d.%d, %s %s fold, %u column offsets a batch, %d "
             "blocks an SM\n",
-            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);
+            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx),
+            ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->colBatch, perSm);
   }
   // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
   // sweeps fits the L2. See PEARL_TMA_L2_SHARE.
@@ -2986,6 +3020,7 @@ PearlHitList pearl_slot_hits(Ctx *ctx, int slot) {
 // says which fold failed. Empty for every other fold, whose messages are as they were.
 const char *pearl_fold_tag(const Ctx *ctx) {
   if (!ctx->foldDp4a) return "";
+  if (ctx->foldHmma) return " (Volta fp16 tensor fold)";
   return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? " (Volta dp4a fold)" : " (Turing dp4a fold)")
                            : " (Pascal dp4a fold)";
 }
@@ -3058,18 +3093,30 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   const PearlTranscriptTest test = pearl_slot_test(ctx);
   const PearlHitList hitList = pearl_slot_hits(ctx, slot);
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
-  pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(
-      ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
-      ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, test, hitList);
+  // Volta's fp16 fold starts its accumulators at a bias set by the mean product: the
+  // constant fill squared, or 0 under the hashed fill (pearl_fold_hmma.h).
+  const uint32_t bias = pearl_hmma_bias(
+      ctx->profile.operand_fill == PEARL_OPERAND_CONST
+          ? (int32_t)PEARL_OPERAND_FILL * (int32_t)PEARL_OPERAND_FILL
+          : 0);
+  if (ctx->foldHmma)
+    pearl_tile_fold_hmma<<<tiles, PEARL_HMMA_THREADS, 0, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
+        ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, bias, test, hitList);
+  else
+    pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
+        ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, test, hitList);
   // A launch the card refuses (too many registers or too much shared for it, say) is
   // known now; say what was launched, so a log alone shows why.
   const cudaError_t le = cudaGetLastError();
   if (le != cudaSuccess) {
     if (err && err_len)
       snprintf(err, err_len,
-               "%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
-               pearl_dp4a_arch(ctx), ctx->ccMajor, ctx->ccMinor, tiles,
-               (unsigned)PEARL_DP4A_THREADS,
+               "%s %s fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
+               pearl_dp4a_arch(ctx), ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->ccMajor,
+               ctx->ccMinor, tiles,
+               (unsigned)(ctx->foldHmma ? PEARL_HMMA_THREADS : PEARL_DP4A_THREADS),
                cudaGetErrorString(le));
     return false;
   }
@@ -3647,6 +3694,13 @@ static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->foldHmma) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "fp16 mma 128x128, 128 threads of 64x64 m8n8k4, a block a tile, band %u, "
+             "col_batch %u (Volta)",
+             (unsigned)PEARL_DP4A_BAND, ctx->colBatch);
+    return ctx->foldName;
+  }
   if (ctx->foldDp4a) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (%s)",
