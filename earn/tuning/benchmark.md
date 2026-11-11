@@ -16,7 +16,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
-| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card, 15% of the 113 T-MAC/s its matrix engines do alone. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card, 15% of the 113 T-MAC/s its matrix engines do alone; 10.2 on HiveOS's own 2024 driver. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -1335,6 +1335,30 @@ fold's, so they are estimates:
 - Past that the loads still limit: the best row leaves the matrix engines idle 62% of the time.
 - Card 3 gave the same 128-register rows within 2%. Not timed: staging B through local memory, another card
   model, a run over two minutes.
+
+### Arc rig, 10 November: the build a release would carry, on two Intel drivers (branch `goal/arc-ship`)
+
+The same fold in the form CI stages for a release (`earn/native/sycl/README.md`, "The build a release carries"):
+built with the open-source DPC++, its kernels compiled by the rig's own driver at first start, the hardware DPAS
+called as an OpenCL built-in. Ours only; no other miner ran. One card, fold alone for 15 s, unless a pool is named.
+
+| Where it ran | Intel driver | TH/s | |
+|---|---|---|---|
+| Ubuntu 24.04 container | Level Zero 26.40 | 16.81 | within 1% of the prebuilt kernels' 16.9 |
+| The same | OpenCL 26.40 | 16.78 | |
+| Ubuntu 22.04 container | OpenCL 24.35 | 10.13 | |
+| HiveOS's own userland (Ubuntu 22.04), no container | OpenCL 24.35, no Level Zero | 10.2 | the plain fold: 2.4 |
+| The same, six cards on Kryptex, 5 minutes | | 60.6 | 916 W; 2 shares accepted, 0 rejected |
+| The same, the CLI given no core path and no card list | | 60.6 | it found the six cards; 2 accepted, 0 rejected |
+| The same, the HiveOS package's own binary | | 60.6 | 1 accepted, 0 rejected |
+
+- **The driver is worth 40%.** HiveOS has Intel's 2024 OpenCL driver (24.35.30872, compiler 1.0.17537). Its
+  compiler sends about 8 load messages for each DPAS where the 2026 one sends 3, at the same power: six cards do
+  60.6 TH/s at 916 W here against 100.1 at 921 W in the container.
+- **No % of best for these rows.** IAminer's 13.6 TH/s was measured on the 2026 driver and it was not run on the
+  2024 one. On a HiveOS rig as it comes, ours at 10.2 is below that figure.
+- Nothing was installed on the host. The package's binary was run by hand from a folder under the user's home, not
+  through a HiveOS flight sheet.
 
 ## Research notes
 

@@ -6,8 +6,9 @@ lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 
 An AMD (HIP/ROCm) port, not yet run on an AMD card, is in `amd/`; see `amd/README.md`.
 
-An Intel (SYCL) port is in `sycl/`; see `sycl/README.md`. It has run on Arc A750 cards and is not
-in any release.
+The Intel (SYCL) core is in `sycl/`; see `sycl/README.md`. It has run on Arc A750 cards on Linux.
+CI builds it for Linux and Windows and the packages carry it as a folder, `sycl/`, beside the other
+cores; no release has shipped it yet.
 
 ## Why this exists
 

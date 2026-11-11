@@ -1,12 +1,15 @@
 # Pearl core for Intel GPUs (SYCL)
 
 A first version of the Pearl mining core for Intel GPUs, written in SYCL. It
-builds into `pearl_core_sycl.node`, which the app and the CLI load through the
-existing `PEARL_CORE_PATH` opt-in. The N-API layer is `../src/pearl_core.cc`,
+builds into `pearl_core_sycl.node`. The N-API layer is `../src/pearl_core.cc`,
 compiled unchanged; this folder replaces only what sits under it
 (`pearl_host.cu` and `pearl_kernel.cu`). Nothing here changes the CUDA or AMD
-builds or what the app does on those cards, and no installer includes this
-folder or its core.
+builds or what the app does on those cards.
+
+CI builds it for Linux and Windows and the packages carry it, in a folder of
+its own ("The build a release carries"). The app and the CLI load it on a rig
+of Intel Arc cards with no NVIDIA or AMD card, or with `--core intel`;
+`PEARL_CORE_PATH` still names a local build. No release has shipped it yet.
 
 It ran on Intel hardware for the first time on 10 November 2026: a rig of six
 Arc A750 cards (Alchemist). On every card the hardware DPAS fold matches a
@@ -37,7 +40,9 @@ host").
 | Per-card k, launch shapes and their startup trial (the CUDA host's) | not here: the profile's k, no shapes ("Kept up with the CUDA host") |
 | Runs on an Intel GPU | **yes, on Arc A750** (six cards, 10 November). Nothing else yet |
 | Speed | **16.9 TH/s on an A750** at 152 W; 100.1 TH/s for the six at 921 W. One setting tuned on the rig, the band; the rest is as written. The card's matrix engines do 113 T-MAC/s with nothing else in the loop, so the fold is at 15% ("The A750's ceiling") |
-| Windows build | not written (`build.sh` is Linux only) |
+| Windows build | written (`build-win.sh`), built in CI and checked on the SYCL CPU device. **No Intel card has run it** |
+| In a release | CI builds and stages it for Linux and Windows, and the installers, the Linux CLI and the HiveOS package carry it ("The build a release carries"). Not released yet |
+| HiveOS | **yes**: it mined on the rig's own HiveOS userland (Ubuntu 22.04, Intel OpenCL 24.35), six cards, 60.6 TH/s |
 
 ## Results on an Arc A750 rig (10 November 2026)
 
@@ -216,6 +221,111 @@ fold's, so they are estimates:
 Not measured: staging B through local memory, any other card, and a run longer
 than two minutes. The 2D block loads are Xe2 and Xe-HPC only.
 
+## The build a release carries
+
+A release carries this core as a folder, `sycl/`, beside its other cores: in
+the Windows installer and the AppImage (`resources/native/sycl`), beside the
+Linux CLI binary, in the HiveOS package, and on the release page as
+`pearl_core_sycl-linux.tar.gz`. `native-core.yml` builds it for Linux and for
+Windows; `miner-build.yml` stages it. It is the `--jit` form, built with the
+open-source DPC++.
+
+**Why that form.** The first hardware runs used kernels prebuilt by ocloc with
+Intel's oneAPI compiler. Three things in that cannot ship:
+
+- Prebuilt kernels are tied to the compiler of one driver release, there is no
+  ocloc on a Windows runner, and Intel builds ocloc for Ubuntu 24.04 and newer.
+  In the `--jit` form the kernels are SPIR-V, and the rig's own driver compiles
+  each the first time it is used (a few seconds at the first start).
+- The hardware DPAS was reached through a SPIR-V instruction that Intel's 24.35
+  driver, from 2024, refuses ("unknown extension"). It is now the OpenCL built-in
+  `intel_sub_group_i8_i8_matrix_mad_k32`, called by name, which Intel's
+  compiler resolves in old and new drivers alike. A hardware fold's kernel has
+  nothing else in it, so every kernel is a device image of its own and the
+  host launches a hardware fold only on a card whose architecture has XMX at
+  that sub-group size. The prebuilt form calls the same built-in and compiles
+  to the same code: the compile gate's rows did not change.
+- oneAPI's runtime libraries come under Intel's end user licence for developer
+  tools, and are not ours to hand out. See "Licences" below.
+
+**What is in the folder.**
+
+| File | Linux | Windows | Licence |
+|---|---|---|---|
+| `pearl_core_sycl.node`, the addon | 85 KB | 229 KB | ours (MIT) |
+| the host and kernels: `libpearl_sycl.so`, `pearl_sycl.dll` | 406 KB | 368 KB | ours |
+| `pearl_sycl_check`, to list the cards and check a fold by hand | 35 KB | 54 KB | ours |
+| the SYCL runtime: `libsycl.so.9`, `sycl9.dll` | 7.5 MB | 4.4 MB | Apache-2.0 with LLVM exceptions |
+| its Level Zero adapters (two): `libur_adapter_level_zero*.so.0`, `ur_adapter_level_zero*.dll` | 6.4 MB | 2.7 MB | the same |
+| `libumf.so.1` (Linux), `ur_win_proxy_loader.dll` (Windows) | 0.8 MB | 31 KB | the same |
+| `LICENSE-DPCPP.txt`, `THIRD-PARTY-DPCPP.txt`, `NOTICE.txt` | 26 KB | 26 KB | |
+| **Total** | **15 MB** (5.1 MB packed) | **7.6 MB** | |
+
+The OpenCL adapter is built into the runtime. On Linux each file finds the
+others beside itself (`$ORIGIN`); Windows looks beside a DLL by itself.
+`stage.sh` makes the folder and refuses one that names the build machine in a
+run path, needs a library it does not carry, or links oneAPI's libraries.
+
+**Licences.** What `stage.sh` copies comes from the open-source release of the
+DPC++ compiler, github.com/intel/llvm v7.2.0, fetched by SHA-256
+(`install-toolchain.sh --open`): the SYCL runtime, the Unified Runtime adapters
+and the Unified Memory Framework, all under the Apache License 2.0 with LLVM
+exceptions. Its text travels in the folder. That release builds other
+projects' code into those files: hwloc (BSD-3-Clause) in the memory framework,
+Zstandard (BSD-3-Clause), emhash (MIT) and LLVM's copy of xxHash
+(BSD-2-Clause) in the runtime, and the part of oneAPI Level Zero (MIT) an
+adapter uses to find the driver's loader. All may be handed on with their
+notices, which are in `THIRD-PARTY-DPCPP.txt`. The list was read from the
+files' symbols and the release's build scripts; Intel's release has no such
+list of its own. The Level Zero loader and the OpenCL loader are not carried:
+the runtime opens them by name and the driver brings them. Not carried, and
+not allowed to be: anything from Intel's oneAPI compiler (`libsvml`, `libimf`, `libirng`,
+`libintlc`, and its builds of the same runtime), which is under Intel's end
+user licence for developer tools. That compiler is still what the compile gate
+runs, since ocloc needs it; nothing it makes is staged. CI also uses Intel's
+OpenCL CPU runtime to check the folds, and does not stage that either. On
+Windows the core needs Microsoft's Visual C++ runtime, which is not carried.
+
+**What a rig needs.**
+
+| | Needs | Checked |
+|---|---|---|
+| Linux | glibc 2.27 and GCC 7's libstdc++ or newer: Ubuntu 18.04 and later. CI holds every file to Ubuntu 20.04's | built in Ubuntu 20.04, run on 22.04 and 24.04 |
+| Linux driver | Intel's compute runtime: Level Zero (`libze-intel-gpu1` with `libze1`) or OpenCL (`intel-opencl-icd`), and a user in the `render` group. The kernel's i915 or xe driver alone is not enough | Level Zero and OpenCL 26.40 (Ubuntu 24.04), and OpenCL 24.35 with no Level Zero, which is what the rig's Ubuntu 22.04 host has |
+| Windows | Intel's Arc graphics driver, and the Visual C++ runtime | **no Intel card has run it**: the SYCL CPU device only |
+
+**On the rig, 10 November.** Card 1 unless said; TH/s is the fold alone.
+
+| Where it ran | Driver | Result |
+|---|---|---|
+| Ubuntu 24.04 container | Level Zero 26.40 | `verify.sh --quick` PASS; 16.81 TH/s |
+| the same | OpenCL 26.40 | 16.78 TH/s |
+| Ubuntu 22.04 container | OpenCL 24.35 | hardware fold right on every region; 10.13 TH/s |
+| **the rig's own HiveOS userland, no container** | OpenCL 24.35, no Level Zero | `verify.sh --quick` PASS on card 0; 10.2 TH/s; plain fold 2.4 |
+| the same, six cards on a pool, 5 minutes | | 60.6 TH/s, 916 W, 2 shares accepted, 0 rejected |
+| the same, the CLI from source with no core path and no card list | | it named the rig "6x Intel Arc A750", started six cores: 60.6 TH/s, 2 accepted, 0 rejected |
+| the same, the HiveOS package built from this branch, its own binary, `sycl/` beside it | | 60.6 TH/s, 1 accepted, 0 rejected |
+
+- **A HiveOS Arc rig can run it as it is**, with the Intel OpenCL packages
+  HiveOS has. Nothing was installed on the host.
+- **The 2024 driver is 40% slower**, at the same power. Its compiler does not
+  merge the fold's loads: it sends 8 load messages for each DPAS where the
+  2026 one sends 3 ("The A750's ceiling"). The next fold's vector loads would
+  not depend on that. A rig that can run a 2026 driver should.
+- **The reference code is right with the old compiler** and wrong with the
+  new one (`xmx8-emu`, 16,384 of 16,384 with 24.35). So the mismatch in
+  "Results on an Arc A750 rig" is the newer compiler's doing. It still mines
+  nothing.
+- CI checks both systems' staged folders on the SYCL CPU device: every region
+  against the host, and 100 hits a fold recomputed in JS.
+
+In the app, the Intel core is tried only on a rig where nvidia-smi lists no
+NVIDIA card and the system lists Arc cards and no AMD card the AMD core mines
+on, or with `--core intel` (`PEARL_CORE_VARIANT=intel`). Every Intel card
+still mines with each hit checked ("Untested cards"). The app shows no
+temperature and no memory figure for an Arc card: the i915 and xe drivers
+publish neither where it looks.
+
 ## Results from the container (2026-10-09)
 
 No Intel GPU was available, so correctness was shown on the SYCL CPU device (the
@@ -329,6 +439,10 @@ Intel builds its driver packages and ocloc for Ubuntu 24.04 and 26.04, and they
 need glibc 2.38 or newer. On an older system, such as HiveOS's Ubuntu 20.04
 image, run everything in an Ubuntu 24.04 container that is given `/dev/dri`:
 "Running it on an Arc A750 rig" has the commands.
+
+All of this is for building the core here. The build a release carries needs
+no compiler, no ocloc and no container, and runs with an older driver ("The
+build a release carries").
 
 ### 1. Driver
 
@@ -516,7 +630,9 @@ written here.
 
 It runs in an Ubuntu 24.04 container. Intel's driver packages for Arc, ocloc
 and this build all need glibc 2.38, and HiveOS's own userland is older: its
-Intel OpenCL was 24.35, with no Level Zero. The container gets the cards'
+Intel OpenCL was 24.35, with no Level Zero. (The release's build has since
+mined on that userland as it is, at 60% of the container's speed: "The build
+a release carries".) The container gets the cards'
 device nodes and one work folder, and nothing else of the host's. It is not
 privileged. Removing it and the folder undoes everything. The login needs to
 be in the `docker` group, or root; Docker was already on the rig (29.1.3).
@@ -642,7 +758,8 @@ this one:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PEARL_CORE_PATH` | | the app's and the CLI's opt-in: point it at `build/pearl_core_sycl.node` |
+| `PEARL_CORE_PATH` | | names a local build to the app and the CLI: point it at `build/pearl_core_sycl.node`. Without it they look in the release's `sycl/` folder |
+| `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
 | `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx16-emu`, `xmx8-emu`. `auto` is the hardware DPAS where the build has it for the device, else `dot` |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
@@ -652,10 +769,10 @@ this one:
 | `PEARL_GPU_INDEX` | | the app's and the CLI's: the cards to mine on, by index in the core's device list (`pearl_sycl_check --list` prints it), such as `0,1,2,3,4,5`. As one number it also pins the card for `verify.sh`, `bench.sh` and the tools under them |
 | `ONEAPI_DEVICE_SELECTOR` | | the SYCL runtime's own: `opencl:gpu` hides the Level Zero driver, so the core takes the cards through OpenCL |
 
-`./build.sh --jit` builds one SPIR-V image that the driver compiles at first
-run. It runs on any Intel GPU, including ones without XMX (Iris Xe, Arc in
-Meteor Lake) and ones the default build has no kernels for, but its XMX folds
-are the reference code, so it mines with `dot`.
+`./build.sh --jit` builds SPIR-V that the driver compiles at first run, a
+device image a kernel. It is the form a release carries. It runs on any Intel
+GPU, with the hardware DPAS on the cards that have XMX and `dot` on the rest
+(Iris Xe, Arc in Meteor Lake).
 
 ## How it works
 
@@ -699,9 +816,13 @@ reports (see `PEARL_SYCL_BAND` under "Switches").
   holding 8 DPAS accumulators. Per chunk a lane XORs its accumulators into one
   word for each of its two regions, two (or one) lane shuffles gather a
   region's columns, and the sub-groups' words are XORed at the end. The DPAS
-  call is the hardware instruction on the targets that have it, selected inside
-  the kernel with `if_architecture_is`, and the specification's reference code
-  everywhere else. That reference code is what the CPU device checks.
+  call is the hardware instruction, reached through the OpenCL built-in
+  `intel_sub_group_i8_i8_matrix_mad_k32`, or the specification's reference
+  code. A prebuilt kernel chooses inside itself, with `if_architecture_is`. In
+  the `--jit` form a hardware fold is a kernel of its own, with no reference
+  code in it, and the host launches it only on a card whose architecture has
+  XMX at that sub-group size; every other device gets the reference kernel.
+  That reference code is what the CPU device checks.
 
 ## Untested cards
 
@@ -769,7 +890,9 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 ## Not done
 
 - Only the Arc A750 has run it. Battlemage and newer (`xmx16` with the
-  hardware instruction) have not, nor has any card on Windows.
+  hardware instruction) have not, nor has any card on Windows. The built-in
+  the hardware folds call has a sub-group 16 form that compiles for those
+  cards (the compile gate) and has never run.
 - Speed work. The fold is at 15% of what the A750's matrix engines do, and
   all of the rest is waiting for operand loads ("The A750's ceiling"). The
   next fold, in the order the probe's rows point: 16 rows a sub-group in the
@@ -779,16 +902,22 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
   2D block loads with L1 prefetch on Xe2 and Xe-HPC
   (`SPV_INTEL_2d_block_io`), which Alchemist does not have.
 - The restamp is the slow form described above (fine for a first version).
-- Windows build, packaging the SYCL runtime beside the addon, and a CI job.
-  The addon needs glibc 2.38 as built here, and Intel's driver for Arc needs
-  Ubuntu 24.04 or newer, so on HiveOS's own userland neither loads: the
-  HiveOS package (`earn/hiveos`) cannot carry this core as it is.
-- The app does not look for this core. `PEARL_CORE_PATH` is the only way in;
-  without it, on an Intel rig, the app tries its AMD and CUDA cores and
-  reports that neither found a card.
-- The app's GPU list, VRAM and temperature readings use nvidia-smi, so on an
-  Intel rig they are empty. A rig with several Intel cards, or a Max 1550
-  (two stacks, two devices), runs one core unless `PEARL_GPU_INDEX` is set.
+- A run on Windows with an Intel card. The Windows core is built and checked
+  on the CPU device only, and the app calls it experimental.
+- The CLI's self-updater does not fetch the folder. A rig on the HiveOS
+  package gets it with each package; a rig that downloaded the binary alone
+  unpacks `pearl_core_sycl-linux.tar.gz` beside it, and again after an update.
+- Temperature and memory readings for an Arc card. The app's come from
+  nvidia-smi and, for AMD, from sysfs files the Intel drivers do not have, so
+  it shows none. A Max 1550 (two stacks, two devices) is not counted by the
+  app, and runs one core unless `PEARL_GPU_INDEX` lists both.
+- `../src/pearl_core.cc` keeps its class in one global (`__pearl_exports`),
+  set by each addon as it loads. A process that has loaded two cores builds
+  the last one's core from either addon's `createCore`. The app always uses
+  the core it loaded last, except when it retries the first after both
+  failed to start (the AMD core's retries have the same fault). The loader
+  works round the one case it matters in for an Intel rig; the fix is to keep
+  the class with the addon.
 - Per-card k, launch shapes, and the CUDA host's batch and band rules ("Kept
   up with the CUDA host"). The A750 gave this host one band rule; the rest
   wait for a second kind of card to time them on.
@@ -800,9 +929,11 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 - The hardware DPAS at sub-group 16 (Battlemage and newer) has not run. The
   sub-group 8 one matched the host on the A750, which says nothing about the
   other's register layout. `verify.sh` finds a mismatch in the first minute.
-- The sub-group 8 reference code is wrong on the A750 and the cause is not
-  known. It mines nothing, but it means the reference code is no witness for
-  the hardware fold on that card: the host's scalar fold is.
+- The sub-group 8 reference code is wrong on the A750 with the 2026 driver's
+  compiler and right with the 2024 one's, so the fault is in how the newer
+  compiler builds it. Which part of it is not known. It mines nothing, but it
+  means the reference code is no witness for the hardware fold on that card:
+  the host's scalar fold is.
 - Clock and power under Pearl are known for the A750 only, and over five
   minutes: 2,000 MHz and about 150 W a card.
 - IGC versions differ in code generation, and `install-toolchain.sh --ocloc`
@@ -820,4 +951,7 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 - Level Zero compute has hung on an A750 with some kernels from 6.6 on
   (drm/i915 issue 10955, not checked here). The core falls back to OpenCL when
   Level Zero lists no GPU, and `ONEAPI_DEVICE_SELECTOR=opencl:gpu` makes it.
-- Most Arc owners use Windows, which this build does not cover yet.
+- Most Arc owners use Windows, where no Intel card has run this core.
+- A driver compiles the kernels itself, so a driver's compiler decides the
+  speed and could get a fold wrong. Every hit is checked before it is sent,
+  which catches the second. The first was 40% between two drivers on one card.

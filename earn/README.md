@@ -34,7 +34,7 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `miner/` — the Pearl protocol: Stratum messages, PearlHash, and the share proofs the pool checks.
   - `xmr/` — Monero on the CPU ([below](#monero-on-the-cpu-opt-in)): its Stratum, address check (Keccak-256), thread plan, and the worker's line protocol.
-  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
+  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8, CUDA 13, AMD or Intel).
   - `memClock.js` — which mining cards get their memory clock locked, and at what.
   - `coreOffset.js` / `coreOffsetTrial.js` — which mining cards try a core clock offset, and the trial that decides what each keeps.
   - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
@@ -42,16 +42,16 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
   - `minerReport.js` — the payload published to the public network board while mining.
   - `statsFile.js` — the stats JSON the CLI writes for HiveOS's `h-stats.sh`.
-  - `gpu.js` — reads `nvidia-smi`'s card list and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
+  - `gpu.js` — reads `nvidia-smi`'s card list, names AMD and Intel Arc cards, and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
   - `region.js` — picks the lowest-latency pool region.
   - `updateStatus.js` — formats the in-app auto-update banner.
   - `format.js` — uptime / hashrate / number formatting.
 - **`src/main/`** — Electron main process:
   - `pearlMiner.js` — the miner: one core per card, the pool connection, and share submission.
   - `pearlEngine.js` — wraps `pearlMiner.js` in the start/stop and event interface both shells drive.
-  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build.
+  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build, or the AMD or Intel core on a rig of those cards.
   - `xmrEngine.js` — the Monero CPU miner: the pool connection and the RandomX worker process (built from [`xmr-worker/`](xmr-worker)); `xmrWorker.js` finds the worker, `cpuFacts.js` reads the CPUs, cgroup limit, memory and L3 the thread plan needs.
-  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
+  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), finds AMD and Intel Arc cards from the system's own list, pings the pool regions, and posts the board report.
   - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
   - `gpuClockOffset.js` — reads and sets a card's core clock offset, through the mining core.
   - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
@@ -342,6 +342,65 @@ little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why
 `PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
 none, the miner mines k 2048 for the rest of the run.
 
+### The Intel core (Arc)
+
+A third core, for Intel Arc cards, is built from `native/sycl` and packed with
+the others. No release has carried it yet. It is a folder, `sycl/`, not one
+file: `pearl_core_sycl.node` with the open-source SYCL runtime it needs beside
+it (Apache-2.0 with LLVM exceptions; its licence text is in the folder). The
+folder is 15 MB on Linux and 7.6 MB on Windows.
+
+- **Linux**: in the AppImage, beside the CLI binary, in the HiveOS package, and
+  on the release page as `pearl_core_sycl-linux.tar.gz`. Six Arc A750 cards
+  have mined with it, on Ubuntu 24.04 and on HiveOS's own Ubuntu 22.04
+  userland. It needs glibc 2.27 (Ubuntu 18.04 or newer) and Intel's compute
+  runtime, which the kernel's graphics driver does not include: OpenCL
+  (`intel-opencl-icd`) or Level Zero (`libze-intel-gpu1` and `libze1`), with
+  the miner's user in the `render` group. A newer runtime is faster: an A750
+  does 16.8 TH/s with Intel's 2026 release and 10.2 with the 2024 one HiveOS
+  has.
+- **Windows**: in the installer, and **experimental**. CI builds it and checks
+  its folds on a CPU. No Intel card has run it. It needs Intel's Arc driver and
+  Microsoft's Visual C++ runtime, which the installer does not carry.
+
+It is tried only on a rig where `nvidia-smi` lists no NVIDIA card and the
+system lists Arc cards and no AMD card the AMD core mines on. Every other rig
+loads what it loaded before and never opens the folder, so a missing or broken
+one says nothing there. `--core intel` (or `PEARL_CORE_VARIANT=intel`) asks for
+it by name, with no fallback. On a rig of Arc cards the log reads:
+
+```
+gpu:        6× Intel Arc A750  (auto)
+mining on 6 Intel cards (GPU 0, 1, 2, 3, 4, 5), one core each; use --gpu-index to choose cards
+Pearl core: Intel build (SYCL) · nvidia-smi lists no NVIDIA card, and the system has 6 Intel Arc cards
+mining on GPU 0 · Intel(R) Arc(TM) A750 Graphics
+```
+
+- **Which cards.** Discrete Arc cards. On Linux the app knows the A770, A750,
+  A580, A380, A310, B580 and B570 by PCI id; on Windows it reads the adapter's
+  name. A processor's built-in graphics is not counted, and neither is an Arc
+  card it has no name for: `--core intel` mines on those. Every card the core
+  finds mines, one core each, and `--gpu-index` picks among them by the core's
+  own numbers.
+- **Every hit is checked.** No Intel card has mined in a release, so each one
+  mines the way an untested AMD card does: the miner checks every hit as the
+  pool would before sending it, and stops the card at the first wrong one. The
+  log says so once a card: `Intel xmx8 fold: this kind of card has not mined in
+  a release yet`.
+- **No driver.** When the system lists Arc cards and the core finds none, the
+  log says once which packages to install (on Windows, to update the Arc
+  driver). The CUDA build is tried after it, as on an AMD rig.
+- **What is not shown.** Temperature and VRAM for an Arc card: the app
+  has no source for them yet, so those fields stay empty. The memory clock
+  lock and the core clock offset are for NVIDIA cards and are left off. The
+  local LLM has not been tried on an Arc rig.
+- **Updates.** The CLI's self-updater does not fetch the folder yet. The
+  HiveOS package and the installers replace it with each release; a rig that
+  runs the bare binary unpacks the archive again after an update.
+
+`native/sycl/README.md` has the measurements, the licences and what is not
+done.
+
 ## Monero on the CPU (opt-in)
 
 The app can also mine Monero (**XMR**) on the CPU while the GPU mines Pearl.
@@ -566,7 +625,8 @@ each core loads, the hook scripts, and the stats HiveOS reads.
 22, which needs glibc 2.28. The CUDA cores need less: they are built on Rocky
 Linux 8 (`.github/workflows/native-core.yml`) and need glibc 2.17 and
 `GLIBCXX_3.4.22`. The AMD core also needs ROCm 7, which supports Ubuntu 22.04
-and newer. RTX 50-series and RTX PRO Blackwell cards need
+and newer. The Intel core needs glibc 2.27 and Intel's OpenCL or Level Zero
+driver. RTX 50-series and RTX PRO Blackwell cards need
 a newer NVIDIA driver than the stable image's 550: run `nvidia-driver-update`
 from Hive Shell.
 
@@ -611,6 +671,14 @@ defaults. The ones that make sense on a rig:
   package carries ROCm 7's HIP runtime in `rocm/`, so the rig needn't install
   ROCm. That runtime is about 60 MB of the package. No AMD rig has mined on
   HiveOS yet.
+- On a rig of Intel Arc cards the package's `sycl/` folder mines, with nothing
+  in Extra config, and `--core intel` asks for it on a mixed rig (see
+  [The Intel core](#the-intel-core-arc)). It is about 5 MB of the package. It
+  uses the Intel OpenCL driver HiveOS already has (`intel-opencl-icd` 24.35 on
+  the rig tried). On 10 November the package's binary mined on a HiveOS rig
+  of six Arc A750 cards, run by hand from a folder: 60.6 TH/s, about 10 a
+  card, shares accepted. It has not been installed through a flight sheet on
+  an Arc rig, so the hook scripts and HiveOS's stats are unproven there.
 
 `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
 makes it exit at once, HiveOS restarts it every few seconds, and the rig's page
@@ -664,7 +732,8 @@ restarted every few seconds. HiveOS reads the setting when the miner starts, so
 restart the miner after turning a card on or off. A `--gpu-index` in Extra
 config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
 it. With `--core amd` HiveOS's choice isn't passed on: its numbers are NVIDIA
-cards, and the AMD core would take them for AMD ones. To leave AMD cards out,
+cards, and the AMD core would take them for AMD ones (`--core intel` is the
+same). To leave AMD cards out,
 list the ones to mine on with `--gpu-index` in Extra config.
 
 `h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
@@ -821,7 +890,8 @@ only with `--xmr-address`) are separate files on the same release, and the
 binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
 580 or newer; on an AMD rig, add `-O $base/pearl_core_hip.node`, which loads
-when nvidia-smi lists no NVIDIA card):
+when nvidia-smi lists no NVIDIA card; on a rig of Intel Arc cards, unpack
+`pearl_core_sycl-linux.tar.gz` there too, which makes the `sycl/` folder):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
@@ -844,7 +914,8 @@ with a newer binary. The AMD core, `pearl_core_hip.node`, updates with them
 on a rig that runs `--core amd` or already has one, and is paired like the
 12.8 core: a failed download of it leaves the old install as it was. A rig that
 runs `--core amd` without one fetches it on its next start. A release without
-an AMD core leaves the old one in place. The CPU worker, `llmjob-xmr-worker`, updates with
+an AMD core leaves the old one in place. The Intel core's folder, `sycl/`, is
+not updated yet: unpack the new release's archive over it. The CPU worker, `llmjob-xmr-worker`, updates with
 it on a rig that mines Monero (`--xmr-address`) or already has one; a
 Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
 missing, not executable or from another release also fetches this release's
@@ -878,10 +949,12 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
                            0,2, or "none" (default: every GPU)
-      --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime), or
-                           cu12/cu13 to force a CUDA build (default: the CUDA
-                           build that fits the cards, or the AMD core first when
-                           nvidia-smi lists none; see above)
+      --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime),
+                           intel for Intel Arc cards (needs Intel's Level Zero
+                           or OpenCL driver), or cu12/cu13 to force a CUDA
+                           build (default: the CUDA build that fits the cards;
+                           when nvidia-smi lists none, the Intel core on a rig
+                           of Arc cards, else the AMD core first; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; auto
                            tries a lock and keeps it if faster; see below)
@@ -1143,7 +1216,7 @@ the Linux **AppImage** builds on Linux; the macOS **DMG** builds on macOS
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
 Release.
 
-The mining cores are bundled into the Windows and Linux builds only
+The mining cores, the Intel core's `sycl/` folder among them, are bundled into the Windows and Linux builds only
 (`build.win.extraResources` / `build.linux.extraResources`); the Mac build ships
 neither them nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
 is ad-hoc signed in an `afterPack` hook — see
