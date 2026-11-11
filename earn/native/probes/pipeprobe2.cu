@@ -579,6 +579,15 @@ int main(int argc, char **argv) {
     }
   } while (total < secs * 1000.0);
   cudaMemcpy(h, times, sizeof(long long) * blocks * 2 * WARPS, cudaMemcpyDeviceToHost);
+  // A checksum of every thread's result ("sums"), to tell whether a reordered kernel computed what the
+  // compiler's own order did.
+  unsigned sums = 2166136261u;
+  {
+    int *sk = (int *)malloc(sizeof(int) * blocks * THREADS);
+    cudaMemcpy(sk, sink, sizeof(int) * blocks * THREADS, cudaMemcpyDeviceToHost);
+    for (int i = 0; i < blocks * THREADS; i++) sums = (sums ^ (unsigned)sk[i]) * 16777619u;
+    free(sk);
+  }
   double use_sum = 0, use_min = 1e9, use_max = 0, cyc_sum = 0, own[WARPS] = {0};
   int nsched = 0;
   for (int bk = 0; bk < blocks; bk++) {
@@ -611,8 +620,8 @@ int main(int argc, char **argv) {
   const double macs = 4096.0 * (nlate ? nlate : launches) * blocks * running * chunks * 4.0 * ACC /
                       ((nlate ? late : total) / 1000.0);
   printf("%-26s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA %.0f ms x%d | %.2f T-MAC/s by count, counter %.0f MHz, "
-         "%d SMs, %d of %d warps\n", name, use * 100, use_min * 100, use_max * 100, 16.0 / use, ms, launches,
-         macs / 1e12, cyc_sum / nsched / (ms * 1000.0), blocks, running, WARPS);
+         "%d SMs, %d of %d warps, sums %08x\n", name, use * 100, use_min * 100, use_max * 100, 16.0 / use, ms, launches,
+         macs / 1e12, cyc_sum / nsched / (ms * 1000.0), blocks, running, WARPS, sums);
   if (argc > 4) {
     printf("%-26s own cycles an mma, by warp:", name);
     for (int w = 0; w < WARPS; w++)

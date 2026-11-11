@@ -541,10 +541,10 @@ case "${PP_SET:-}" in
       PP_PERMS="G2:o:*=orig G2d1:o:*=orig G2d1:v0:YLAS=every,2,1,0 G2d1:v1:YLAS=every,2,1,1 G2d1:sp:YLAS=spread G2d2:sp:YLAS=spread G2d2:v0:YLAS=every,2,2,0 G2d2:v1:YLAS=every,2,2,1 F1d1:sp:YLAS=spread F1d2:sp:YLAS=spread" ;;
   # c1: the watts on an RTX 5090, operand bytes like a real fold's: 30 s runs of the streams as compiled and
   # reordered. PP_BENCH=1 TAP=1 ORDER=peak,srb,ozm first runs the three miners on the same PC.
-  c1) PP_BUILD="base baseF F1F d1mF d2mF d4mF rd2aF rd4F G2F G2d1F G2d2F F1d1F"
-      PP_LONGS=${PP_LONGS:-baseF F1F G2F d1mF d2mF d4mF rd2aF rd4F G2d1F G2d2F}
-      PP_PLONGS=${PP_PLONGS:-d1mF.sp d2mF.sp G2d1F.v0 G2d1F.v1 G2d1F.sp G2d2F.sp F1d1F.sp baseF.o}
-      PP_PERMS="d1mF:sp:*=spread d2mF:sp:*=spread G2d1F:v0:YLAS=every,2,1,0 G2d1F:v1:YLAS=every,2,1,1 G2d1F:sp:YLAS=spread G2d2F:sp:YLAS=spread F1d1F:sp:YLAS=spread baseF:o:*=orig" ;;
+  c1) PP_BUILD="base baseF F1F G2F d1mF d2mF d4mF rd2aF rd4F G2d1F G2d2F"
+      PP_LONGS=${PP_LONGS:-baseF G2F d1mF d2mF d4mF rd2aF rd4F G2d1F G2d2F baseF}
+      PP_PLONGS=${PP_PLONGS:-d1mF.sp d2mF.sp}
+      PP_PERMS="baseF:o:*=orig d1mF:sp:*=spread d2mF:sp:*=spread G2d1F:sp:YLAS=spread" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
