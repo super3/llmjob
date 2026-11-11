@@ -1,12 +1,14 @@
-# xt job 3 (RX 7900 XT): the fold alone at 1, 2 and 4 batches a launch, then 2 and 4 batches a launch in the miner against the default and a twin
+# 9060xt class: is this PC a slow one? Stamps of the fold alone at the miner's launch and one four times as long, then one round of the default and of the hash on its own queue
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_CODE=95f0817e0c37009943f48380e2dcf35e27e14180
-G_PARTS=build\ fold\ hash
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;strip=-DPEARL_AMD_STRIP=1
-G_SHAPES=base:131072:2048:400\ base:262144:2048:200\ base:524288:2048:100
-G_FROUNDS=3
-G_VARIANTS=base\ twin\ s2\ s4
-G_HROUNDS=4
+G_PARTS=build\ stamps\ hash
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
+G_FOLDK=0
+G_STSHAPES=sbase:131072:4096:100\ sbase:131072:16384:25
+G_SROUNDS=1
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=128\;cbshq1=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=128\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1
+G_VARIANTS=base\ hq1
+G_HROUNDS=1
 G_HASH=45:12
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
@@ -304,13 +306,14 @@ if has duel && [ -n "$SRBV" ]; then
   say "duel pool $DUEL_POOL: ours (HIP core $(cut -c1-12 /root/core-pr/sha 2>/dev/null || git -C $R rev-parse --short=12 HEAD), the default build, md5 $(md5sum $OURS_CORE | cut -c1-8)) against SRBMiner $SRBV$([ "$SRBPTY" = 1 ] && echo ' (given a terminal)'), $TURNS turns each of ${DSECS}s"
   # The card warm first: ours for 60 s, not measured.
   ( ours_start ) > /root/duel-ours.log 2>&1 < /dev/null & wp=$!; sleep 60; kill $wp 2>/dev/null; wait $wp 2>/dev/null
+  # G_NO_OURS=1: the PR head's default sits out, so the turns are SRBMiner and the second build (G_OURSX) only.
   for ((i = 1; i <= TURNS; i++)); do
-    turn ours ours$i "$DSECS" 0
+    [ -n "${G_NO_OURS:-}" ] || turn ours ours$i "$DSECS" 0
     turn srb srb$i "$DSECS" 0
     [ -n "${G_OURSX:-}" ] && turn oursx oursx$i "$DSECS" 0
   done
   if [ "$CLKSECS" -gt 0 ] && [ -x /root/clkprobe ]; then
-    turn ours oursclk "$CLKSECS" 1
+    if [ -n "${G_NO_OURS:-}" ] && [ -n "${G_OURSX:-}" ]; then turn oursx oursxclk "$CLKSECS" 1; else turn ours oursclk "$CLKSECS" 1; fi
     turn srb srbclk "$CLKSECS" 1
   fi
   if [ -n "${G_SRB_ALSO:-}" ] && [ "$G_SRB_ALSO" != "$SRBV" ]; then
@@ -348,7 +351,7 @@ if has tick && [ -x /root/clkprobe ] && [ -x $SW/var/base/pearl_amd_foldtest ]; 
     for tk in ${G_TICKS:-0 0.010 0.002}; do
       cp=""
       if [ "$tk" != 0 ]; then ( exec /root/clkprobe "$tk" 100000000 ) > /root/tick.log 2>&1 & cp=$!; sleep 1; fi
-      r=$(timeout 900 $SW/var/base/pearl_amd_foldtest ${G_TICKSHAPE:-131072 2048 1 400} 0 "$FOLD" 0 miner 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
+      r=$(timeout 900 $SW/var/base/pearl_amd_foldtest ${G_TICKSHAPE:-131072 2048 1 400} 0 "$FOLD" "${G_FOLDK:-0}" miner 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
       n=""
       if [ -n "$cp" ]; then kill $cp 2>/dev/null; wait $cp 2>/dev/null; n=", $(grep -c '^clk ' /root/tick.log) ticks, last $(grep '^clk ' /root/tick.log | tail -n 1 | cut -c1-60)"; fi
       line="$line; every ${tk}s: $(printf '%s\n' "$r" | sed -nE 's/.* ([0-9.]+) TMAC\/s$/\1/p') TMAC/s$n"
@@ -366,7 +369,7 @@ if has fold && [ -x $SW/var/base/pearl_amd_foldtest ]; then
     for sh in $SHAPES; do
       IFS=: read -r FV FM FC FR <<< "$sh"
       [ -x $SW/var/$FV/pearl_amd_foldtest ] || continue
-      r=$(timeout 900 $SW/var/$FV/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" 0 miner 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
+      r=$(timeout 900 $SW/var/$FV/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" "${G_FOLDK:-0}" miner 2>&1 | grep -E "^$FOLD" | sed 's/  */ /g')
       t=$(printf '%s\n' "$r" | sed -nE 's/.* ([0-9]+) launches, ([0-9.]+) s, ([0-9.]+) TMAC\/s$/\3 TMAC\/s, \2 s \/ \1/p')
       ms=$(printf '%s\n' "$r" | sed -nE 's/.* ([0-9]+) launches, ([0-9.]+) s, .*/\1 \2/p' | awk '{printf "%.3f", 1000 * $2 / $1}')
       line="$line; $FV ${FM}x${FC}: ${t:-?} = ${ms:-?} ms a launch"
@@ -525,7 +528,7 @@ if has stamps; then
       IFS=: read -r FV FM FC FR <<< "$sh"
       [ -x $SW/var/$FV/pearl_amd_foldtest ] || continue
       rm -f /root/st.bin
-      r=$(timeout 900 $SW/var/$FV/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" 0 miner /root/st.bin 2>&1)
+      r=$(timeout 900 $SW/var/$FV/pearl_amd_foldtest "$FM" "$FC" 1 "$FR" 0 "$FOLD" "${G_FOLDK:-0}" miner /root/st.bin 2>&1)
       ms=$(printf '%s\n' "$r" | grep -E "^$FOLD" | sed -nE 's/.* ([0-9]+) launches, ([0-9.]+) s, .*/\1 \2/p' | awk '{printf "%.3f", 1000 * $2 / $1}')
       say "stamp r$i $FV ${FM}x${FC}: $(printf '%s\n' "$r" | grep -E "^$FOLD" | sed 's/  */ /g' | cut -c1-200)"
       [ -s /root/st.bin ] || { say "stamp r$i $FV ${FM}x${FC}: no stamps written: $(printf '%s\n' "$r" | tail -n 2 | tr '\n' '|' | cut -c1-200)"; continue; }
@@ -592,10 +595,10 @@ if has mstamps; then
     [ -f $SW/var/$VCORE/pearl_core_hip.node ] || { say "mst $v: no build"; continue; }
     for ((i = 1; i <= ${G_MSN:-6}; i++)); do
       rm -f /root/mst.bin
-      env PEARL_AMD_UNTESTED=1 PEARL_AMD_STAMP_DUMP=/root/mst.bin PEARL_AMD_STAMP_DUMP_AT=$((400 + 61 * i)) "${VENV[@]}" \
+      env PEARL_AMD_UNTESTED=1 PEARL_AMD_STAMP_DUMP=/root/mst.bin PEARL_AMD_STAMP_DUMP_AT=$((${G_MSAT:-400} + ${G_MSSTEP:-61} * i)) "${VENV[@]}" \
         timeout 120 node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 8 2 > /root/mst.log 2>&1
       if [ -s /root/mst.bin ]; then
-        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin gaps 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved|gaps)' | sed -E 's/; they ran .*//; s/ with no block starting or ending//' | while IFS= read -r l; do say "mst $v $i ${l:0:390}"; done
+        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin ${G_MSGAPS:+gaps} 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved|gaps)' | sed -E 's/; they ran .*//; s/ with no block starting or ending//' | while IFS= read -r l; do say "mst $v $i ${l:0:390}"; done
       else
         say "mst $v $i: no stamps written: $(grep -v nvidia-smi /root/mst.log | tail -n 2 | tr '\n' '|' | cut -c1-240)"
       fi
