@@ -25,6 +25,7 @@
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],
         ["OS=='win' and pearl_backend=='sycl'", {
+          "defines": [ "PEARL_HOST_MEM_INFO" ],
           "libraries": [ "<(module_root_dir)/sycl/build-win/pearl_sycl.lib" ],
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],

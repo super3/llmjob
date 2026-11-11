@@ -129,6 +129,8 @@ struct Ctx {
   bool isGpu = false;  // a GPU, not the SYCL CPU device
   bool untested = false;  // a GPU, which no fold has run on yet, opened because its opener checks every hit
   std::string foldName;   // pearl_host_fold_name's answer, written once at create
+  uint64_t memTotal = 0;  // the device's memory, bytes; this and memUsed are written once at create
+  uint64_t memUsed = 0;   // what this context allocated on the device, bytes
   uint32_t band = 1;
   bool compact = false;
 
@@ -727,6 +729,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     ctx->deviceName = ctx->dev.get_info<sycl::info::device::name>();
     const size_t need = needed_bytes(profile);
     const size_t have = ctx->dev.get_info<sycl::info::device::global_mem_size>();
+    ctx->memTotal = have;
     if (have < need) {
       fail(err, err_len, "not enough device memory for this profile: need ~"
                              + std::to_string(need >> 20) + " MiB, the device has "
@@ -796,6 +799,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   auto dev_alloc = [&](size_t n) -> void * {
     void *p = sycl::malloc_device(n, q);
     if (!p) ok = false;
+    else ctx->memUsed += n;
     return p;
   };
   ctx->dA = (int8_t *)dev_alloc(ctx->compact ? 2048 : aBytes);
@@ -1021,6 +1025,18 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   return ctx && !ctx->foldName.empty() ? ctx->foldName.c_str() : "unresolved";
+}
+
+// The device's memory and what this context allocated on it, in bytes, for
+// core.device (pearl_core.cc, PEARL_HOST_MEM_INFO). Both were written at
+// create, so the JS thread may read them while the search thread runs. False
+// without a context: pearl_core.cc asks after stop() too.
+extern "C" bool pearl_host_mem_info(void *handle, uint64_t *total_bytes, uint64_t *used_bytes) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->memTotal) return false;
+  if (total_bytes) *total_bytes = ctx->memTotal;
+  if (used_bytes) *used_bytes = ctx->memUsed;
+  return true;
 }
 
 // RTX 30's launch shapes (pearl_host.cu): this host has one way to launch a

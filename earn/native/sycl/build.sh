@@ -153,8 +153,10 @@ echo "[1/3] libpearl_sycl.so ($([ "$JIT" = 1 ] && echo "spir64, compiled by the 
 }
 
 # The addon has no SYCL of its own: it links the host library and nothing else.
+# PEARL_HOST_MEM_INFO: this host can say how much memory the card has, and the
+# app has no other source for an Arc card's (pearl_core.cc).
 echo "[2/3] pearl_core_sycl.node"
-"$CXX" -O2 -fPIC -std=c++17 "${GCC_FLAGS[@]}" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 \
+"$CXX" -O2 -fPIC -std=c++17 "${GCC_FLAGS[@]}" -DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -DPEARL_HOST_MEM_INFO \
   -I"$NODE_INC" -I"$NAPI_INC" -I"$SRC" -c "$SRC/pearl_core.cc" -o "$OUT/pearl_core.o"
 "$CXX" "${GCC_FLAGS[@]}" -shared "$OUT/pearl_core.o" -L"$OUT" -lpearl_sycl \
   -o "$OUT/pearl_core_sycl.node" "${RPATH[@]}"
