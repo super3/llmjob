@@ -1586,7 +1586,8 @@ class W:
         (vast_max) and money (vast_day_cap, for the day so far and for the live boxes' day). One GPU an offer, verified
         hosts over 95% reliable, cards at 90% or more of their stock power (Clore's 10 November lesson), a machine
         not judged lately at a rate that doesn't clear. The bid is 10% over Vast's least, so the next small bid
-        doesn't stop it at once, if that still clears."""
+        doesn't stop it at once, if that still clears. On-demand offers are weighed too (founder, 11 November: "and
+        also on demand if its profitable"), at their full price with the disk; on that day none cleared."""
         v = self.st["vast"]
         if t - v.get("search_t", 0) < 10 * MIN:
             return
@@ -1599,15 +1600,19 @@ class W:
             return
         v["search_t"] = t
         disk = self.cfg["vast_disk"]
-        q = {"num_gpus": {"eq": 1}, "verified": {"eq": True}, "rentable": {"eq": True}, "rented": {"eq": False},
-             "reliability2": {"gt": 0.95}, "type": "bid", "allocated_storage": disk, "limit": 1000,
-             "order": [["min_bid", "asc"]]}
-        s, j = self.vast_call("POST", "v0/bundles/", q)
-        if s != 200 or not isinstance(j, dict):
+        found = []
+        for kind in ("bid", "on-demand"):
+            q = {"num_gpus": {"eq": 1}, "verified": {"eq": True}, "rentable": {"eq": True}, "rented": {"eq": False},
+                 "reliability2": {"gt": 0.95}, "type": kind, "allocated_storage": disk, "limit": 1000,
+                 "order": [["min_bid" if kind == "bid" else "dph_total", "asc"]]}
+            s, j = self.vast_call("POST", "v0/bundles/", q)
+            if s == 200 and isinstance(j, dict):
+                found += [(kind, o) for o in j.get("offers") or [] if isinstance(o, dict)]
+        if not found:
             return
         ours = {str(r.get("machine")) for r in live}
         offers = []
-        for o in j.get("offers") or []:
+        for kind, o in found:
             g = vast_gpu(o.get("gpu_name"))
             if g is None or str(o.get("machine_id")) in ours:
                 continue
@@ -1615,31 +1620,38 @@ class W:
             pw = o.get("gpu_max_power")
             if cls in FULL_W and isinstance(pw, (int, float)) and pw < 0.9 * FULL_W[cls]:
                 continue
-            try:
-                least, disk_hr = float(o["min_bid"]), float(o.get("storage_total_cost") or 0.0)
-            except (KeyError, TypeError, ValueError):
-                continue
             ths = KNOWN[cls][0]
             earn = ths * self.usd(True)
-            bid = round(max(least * 1.1, least + 0.001), 4)
             ok = lambda b: margin_of(earn, b + disk_hr) >= self.cfg["min_margin"]
-            if not ok(bid):
-                bid = round(least + 0.001, 4)
-                if least <= 0 or not ok(bid):
-                    continue
+            try:
+                disk_hr = float(o.get("storage_total_cost") or 0.0)
+                if kind == "on-demand":
+                    # The full price, disk included: no bid. Kept as "bid" for the cost sums below.
+                    bid = float(o["dph_total"]) - disk_hr
+                    if not ok(bid):
+                        continue
+                else:
+                    least = float(o["min_bid"])
+                    bid = round(max(least * 1.1, least + 0.001), 4)
+                    if not ok(bid):
+                        bid = round(least + 0.001, 4)
+                        if least <= 0 or not ok(bid):
+                            continue
+            except (KeyError, TypeError, ValueError):
+                continue
             b = v["bad"].get(str(o.get("machine_id")))
             if b and (b.get("ths") is None or margin_of(b["ths"] * self.usd(True), bid + disk_hr) < self.cfg["min_margin"]):
                 continue
             if burn + (bid + disk_hr) * 24 > cap:
                 continue
-            offers.append((earn - bid - disk_hr, o, cls, short, ths, bid, disk_hr))
+            offers.append((earn - bid - disk_hr, kind, o, short, ths, bid, disk_hr))
         offers.sort(key=lambda x: -x[0])
-        for _, o, cls, short, ths, bid, disk_hr in offers[:3]:
-            if self.vast_rent(t, o, short, ths, bid, disk_hr, disk):
+        for _, kind, o, short, ths, bid, disk_hr in offers[:3]:
+            if self.vast_rent(t, o, short, ths, bid, disk_hr, disk, kind):
                 return
 
-    def vast_rent(self, t, o, short, ths, bid, disk_hr, disk):
-        """Bids on one offer; True when Vast made the instance."""
+    def vast_rent(self, t, o, short, ths, bid, disk_hr, disk, kind="bid"):
+        """Rents one offer, on a bid or on demand; True when Vast made the instance."""
         v = self.st["vast"]
         name = f"vast-{o['id']}"
         threads = int(o.get("cpu_cores_effective") or 0)
@@ -1647,17 +1659,20 @@ class W:
         ver = self.cfg["box_ver"]
         cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
                       self.cfg["kryptex_host"], xmr_pool=self.cfg["xmr_kx_host"] if xmr else None)
-        body = {"client_id": "me", "image": IMAGE, "disk": disk, "price": bid, "runtype": "ssh", "label": name,
+        body = {"client_id": "me", "image": IMAGE, "disk": disk, "runtype": "ssh", "label": name,
                 "onstart": vast_onstart(ver, cmd)}
+        if kind == "bid":
+            body["price"] = bid
         cc = str(o.get("geolocation") or "?").split(",")[-1].strip()
         mg = margin_of(ths * self.usd(True), bid + disk_hr)
-        desc = f"{short}, {cc}, machine {o.get('machine_id')}, spot at ${bid + disk_hr:.3f}/hr ({mg:+.0%} margin at {ths:.0f} TH/s)"
+        desc = (f"{short}, {cc}, machine {o.get('machine_id')}, {'spot' if kind == 'bid' else 'on demand'} at "
+                f"${bid + disk_hr:.3f}/hr ({mg:+.0%} margin at {ths:.0f} TH/s)")
         s, r = self.vast_call("PUT", f"v0/asks/{o['id']}/", body)
         if s != 200 or not isinstance(r, dict) or not r.get("success") or not r.get("new_contract"):
             event(f"WARN renting Vast offer {o['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
             return False
         iid = str(r["new_contract"])
-        v["inst"][iid] = {"id": iid, "name": name, "machine": o.get("machine_id"), "offer": o["id"], "bid": bid,
+        v["inst"][iid] = {"id": iid, "name": name, "machine": o.get("machine_id"), "offer": o["id"], "bid": bid, "kind": kind,
                           "price_hr": bid + disk_hr, "disk_hr": disk_hr, "label": short, "threads": threads,
                           "desc": desc, "created": t, "sync_t": t, "readings": [], "prl": 0.0, "prl_kx": 0.0,
                           "xmr_coins": 0.0, "spend": 0.0}

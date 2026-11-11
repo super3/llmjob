@@ -5750,6 +5750,26 @@ class TestVast(Base):
         self.x.vast_round(self.clock[0])
         self.assertEqual(self.bids()[0][1]["price"], 0.201)
 
+    def test_an_on_demand_offer_is_rented_when_it_makes_more_and_clears(self):
+        # Founder, 11 November: "and also on demand if its profitable".
+        od = dict(self.offer(7, gpu="RTX 4090", bid=0.0, power=450.0), dph_total=0.22)    # a 4090 at $0.22/hr clears, and makes more
+        self.http.on("POST", r"vast\.ai/api/v0/bundles/",
+                     lambda b: (200, {"offers": [self.offer(5)] if b["type"] == "bid" else [od]}))
+        self.x.vast_round(self.clock[0])
+        (oid, body), = self.bids()
+        self.assertEqual(oid, "7")
+        self.assertNotIn("price", body)                                      # no bid on demand
+        rec = self.x.st["vast"]["inst"]["900"]
+        self.assertEqual((rec["kind"], rec["price_hr"]), ("on-demand", 0.22))
+        self.assertIn("on demand at $0.220/hr", self.events())
+
+    def test_an_on_demand_offer_that_doesnt_clear_is_left(self):
+        od = dict(self.offer(7, gpu="RTX 4090", bid=0.0, power=450.0), dph_total=0.38)    # 11 November's cheapest 4090
+        self.http.on("POST", r"vast\.ai/api/v0/bundles/",
+                     lambda b: (200, {"offers": [] if b["type"] == "bid" else [od]}))
+        self.x.vast_round(self.clock[0])
+        self.assertEqual(self.bids(), [])
+
     def test_the_caps_hold(self):
         day = w.dt.datetime.fromtimestamp(self.clock[0], w.NY).strftime("%Y-%m-%d")
         self.x.st["vast"] = {"day": {day: 10.0}}
