@@ -10,6 +10,12 @@
 # rejected shares and the rate. Regions: us us2 ca br de fi fr tr sg hk kr au
 # (default: the CLI picks the fastest).
 #
+#   PEARL_POOL=host:port   another pool (the CLI's --pool), such as
+#                          prl-us.kryptex.network:7048; the region is then unused
+#   PEARL_WORKER=name      the worker name (the CLI's --worker)
+#   PEARL_ADDRESS=prl1p... the address, when the first argument is "-", so it
+#                          need not be typed on this script's command line
+#
 # One card mines unless PEARL_GPU_INDEX lists more: PEARL_GPU_INDEX=0,1,2,3,4,5
 # for a rig of six. The CLI finds cards with nvidia-smi, which lists no Intel
 # card, so it cannot count them itself.
@@ -22,6 +28,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 B=${PEARL_SYCL_BUILD:-$HERE/build}
 EARN=$(cd "$HERE/../.." && pwd)
 ADDR=${1:?usage: ./pool-run.sh <prl1p...address> [seconds=300] [region]}
+if [ "$ADDR" = "-" ]; then ADDR=${PEARL_ADDRESS:?the address is "-" but PEARL_ADDRESS is not set}; fi
 SECS=${2:-300}
 REGION=${3:-}
 # The CLI is built and tested on Node 22 (earn/package.json's engines).
@@ -39,7 +46,9 @@ fi
 STATS="$HERE/pool-run-stats.json"
 rm -f "$STATS"
 ARGS=(--address "$ADDR" --mode mining --no-report --no-serve --no-update --stats-file "$STATS")
-[ -n "$REGION" ] && ARGS+=(--region "$REGION")
+if [ -n "$REGION" ]; then ARGS+=(--region "$REGION"); fi
+if [ -n "${PEARL_POOL:-}" ]; then ARGS+=(--pool "$PEARL_POOL"); fi
+if [ -n "${PEARL_WORKER:-}" ]; then ARGS+=(--worker "$PEARL_WORKER"); fi
 echo "== $SECS s on the pool with $B/pearl_core_sycl.node"
 PEARL_CORE_PATH="$B/pearl_core_sycl.node" timeout --signal=INT "$SECS" \
   node "$EARN/src/cli/earn-cli.js" "${ARGS[@]}" 2>&1 | tee "$HERE/pool-run.log" || true

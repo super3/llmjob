@@ -16,8 +16,10 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 B=${PEARL_SYCL_BUILD:-$HERE/build}
 SECS=${BENCH_SECONDS:-20}
+# Each fold in a core that would mine with it: the band depends on the fold.
 echo "== each fold alone, ${SECS} s"
-"$B/pearl_sycl_check" --bench "$SECS" --folds dot,auto
+PEARL_SYCL_FOLD=dot "$B/pearl_sycl_check" --bench "$SECS" --folds dot
+"$B/pearl_sycl_check" --bench "$SECS" --folds auto
 if [ "${1:-}" = "--sweep" ]; then
   for cb in 64 128 512 1024; do
     echo "== PEARL_SYCL_COL_BATCH=$cb"

@@ -312,6 +312,37 @@ describe('what the host answers where pearl_host.cu has more', () => {
   });
 });
 
+// One setting comes from the first run on hardware (an Arc A750 rig, 10
+// November 2026) and not from a guess. It is pinned so that it is changed only
+// against a new measurement (native/sycl/README.md, "Results on an Arc A750 rig").
+describe('what the first run on hardware set', () => {
+  test('a band is the device cache\'s size for the XMX folds and a quarter of it for the plain fold', () => {
+    // On an A750 (16 MiB): xmx8 16.6 to 16.9 TH/s at 256 row windows against
+    // 15.2 to 15.5 at 64, the quarter that was the rule for both; dot 3.74 at
+    // 256 against 3.91 at 64.
+    const rule = slice(HOST, 'const uint64_t share =', 'ctx->band = floor_pow2(band);');
+    expect(statements(rule).slice(0, 2)).toEqual([
+      'const uint64_t share = ctx->fold == kDot ? 4 : 1;',
+      'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
+    ]);
+    // The fold is settled before the band is: pick_fold comes first in create.
+    const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
+    const picked = create.indexOf('if (!pick_fold(ctx, err, err_len)) {');
+    expect(picked).toBeGreaterThan(0);
+    expect(picked).toBeLessThan(create.indexOf('const uint64_t share ='));
+    // 16 MiB at the mainnet k: 32 rows of 2048 bytes a row window.
+    const windows = (share) => Math.floor((16 * 1024 * 1024) / share / (32 * PROFILE.k));
+    expect([windows(1), windows(4)]).toEqual([256, 64]);
+    // PEARL_SYCL_BAND still wins, so a rig can time another.
+    expect(rule).toContain('if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);');
+    // bench.sh times each fold in a core that would mine with it, so each
+    // fold is timed at its own band.
+    const bench = read(SYCL, 'bench.sh');
+    expect(bench).toContain('PEARL_SYCL_FOLD=dot "$B/pearl_sycl_check" --bench "$SECS" --folds dot');
+    expect(bench).toContain('"$B/pearl_sycl_check" --bench "$SECS" --folds auto\n');
+  });
+});
+
 // The folds were checked on the SYCL CPU device, where DPAS is reference code.
 // A fold that is wrong on a real card makes every hash wrong, and every one
 // still meets the target, so every share would be sent and rejected. So a GPU
@@ -384,7 +415,7 @@ describe('every Intel GPU mines with every hit checked', () => {
     const msg = literals.split('\n').map((l) => l.trim().replace(/^"|"$/g, '')).join('');
     expect(CORE).toContain('char err[256] = {0};');
     expect(msg.length).toBeLessThan(256);
-    expect(msg).toMatch(/^no Intel GPU has run this core yet/);
+    expect(msg).toMatch(/^no Intel GPU has mined with this core in a release yet/);
     expect(msg).toContain('PEARL_SYCL_UNTESTED=1');
     expect(msg).toContain('earn/native/sycl/README.md');
   });
@@ -517,5 +548,95 @@ describe('the installer leaves the port out', () => {
     }
     const workflows = path.join(EARN, '..', '.github', 'workflows');
     for (const f of fs.readdirSync(workflows)) expect([f, /sycl/i.test(read(workflows, f))]).toEqual([f, false]);
+  });
+});
+
+// verify.sh and pool-run.sh, run for real under bash against stand-ins for the
+// two programs they call: a pearl_sycl_check that prints its arguments and
+// fails for the folds named in FAIL_FOLDS, and a `node` that prints its
+// arguments. Skipped where there is no bash.
+const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status === 0;
+(hasBash ? describe : describe.skip)('verify.sh and pool-run.sh under bash', () => {
+  const ADDR = 'prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c';
+  let tmp;
+  beforeAll(() => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sycl-sh-'));
+    fs.mkdirSync(path.join(tmp, 'bin'));
+    fs.writeFileSync(path.join(tmp, 'pearl_sycl_check'), [
+      '#!/usr/bin/env bash',
+      'echo "CHECK $*"',
+      'folds=""; while [ $# -gt 0 ]; do if [ "$1" = "--folds" ]; then folds=$2; fi; shift; done',
+      'for f in ${FAIL_FOLDS//,/ }; do case ",$folds," in *",$f,"*) exit 1 ;; esac; done',
+      'exit 0', ''].join('\n'), { mode: 0o755 });
+    fs.writeFileSync(path.join(tmp, 'bin', 'node'), ['#!/usr/bin/env bash', 'echo "NODE $*"', 'exit 0', ''].join('\n'),
+      { mode: 0o755 });
+  });
+  afterAll(() => {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    // pool-run.sh writes its log beside itself.
+    for (const f of ['pool-run.log', 'pool-run-stats.json']) fs.rmSync(path.join(SYCL, f), { force: true });
+  });
+  const sh = (script, args, env = {}) => {
+    const e = { ...process.env, PATH: path.join(tmp, 'bin') + path.delimiter + process.env.PATH, PEARL_SYCL_BUILD: tmp, ...env };
+    for (const k of ['PEARL_SYCL_DEVICE', 'FAIL_FOLDS', 'PEARL_ADDRESS', 'PEARL_POOL', 'PEARL_WORKER', 'PEARL_GPU_INDEX']) {
+      if (!(k in env)) delete e[k];
+    }
+    const r = spawnSync('bash', [path.join(SYCL, script), ...args], { encoding: 'utf8', env: e });
+    const lines = r.stdout.split('\n');
+    return {
+      status: r.status, out: r.stdout, err: r.stderr,
+      checks: lines.filter((l) => l.startsWith('CHECK ')), nodes: lines.filter((l) => l.startsWith('NODE ')),
+    };
+  };
+  const folds = (r) => r.checks.map((l) => /--folds (\S+)/.exec(l)[1]);
+
+  // On an Arc A750 the hardware DPAS fold matches the host and the sub-group 8
+  // reference code does not. The reference code mines nothing, so it must not
+  // fail a card whose own folds are right.
+  test('on a GPU, verify.sh passes when only the reference-code fold is wrong, and says so', () => {
+    const r = sh('verify.sh', [], { FAIL_FOLDS: 'auto-emu' });
+    expect(r.status).toBe(0);
+    expect(folds(r)).toEqual(['dot,auto', 'auto-emu', 'dot,auto']);
+    expect(r.out).toContain('== for information, not part of PASS: the reference code of the core\'s fold');
+    expect(r.out).toContain('note: the reference code differs from the host on this device');
+    expect(r.out.trim().split('\n').pop()).toBe('== PASS');
+    // The hits: the core's own fold, then the plain one, 400 each at 2^235.
+    expect(r.nodes).toHaveLength(2);
+    for (const l of r.nodes) expect(l).toMatch(/verify-hits\.js \S*pearl_core_sycl\.node --hits 400 --seconds 1800 --bits 235$/);
+  });
+
+  test('on a GPU, verify.sh fails when a fold that mines is wrong', () => {
+    for (const bad of ['auto', 'dot']) {
+      const r = sh('verify.sh', [], { FAIL_FOLDS: bad });
+      expect([bad, r.status === 0, r.out.includes('== PASS')]).toEqual([bad, false, false]);
+      expect(r.nodes).toHaveLength(0);
+    }
+  });
+
+  test('--quick asks for 100 hits at half the bound, so they come from 3 salts or more', () => {
+    const gpu = sh('verify.sh', ['--quick']);
+    expect(gpu.status).toBe(0);
+    for (const l of gpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --bits 234$/);
+    const cpu = sh('verify.sh', ['--quick'], { PEARL_SYCL_DEVICE: 'cpu' });
+    expect(cpu.status).toBe(0);
+    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8', 'dot,xmx16']);
+    expect(cpu.nodes).toHaveLength(3);
+    for (const l of cpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --m 4096 --n 4096 --col-batch 64 --bits 245$/);
+    expect(cpu.out).not.toContain('not part of PASS');
+  });
+
+  test('pool-run.sh passes the pool and worker on, and takes the address from the environment for "-"', () => {
+    const r = sh('pool-run.sh', ['-', '1'], { PEARL_ADDRESS: ADDR, PEARL_POOL: 'prl-us.kryptex.network:7048', PEARL_WORKER: 'arc750' });
+    expect(r.status).toBe(0);
+    const cli = r.nodes.filter((l) => l.includes('earn-cli.js'));
+    expect(cli).toHaveLength(1);
+    expect(cli[0]).toMatch(new RegExp('earn-cli\\.js --address ' + ADDR + ' --mode mining --no-report --no-serve --no-update'
+      + ' --stats-file \\S+pool-run-stats\\.json --pool prl-us\\.kryptex\\.network:7048 --worker arc750$'));
+    const plain = sh('pool-run.sh', [ADDR, '1']);
+    expect(plain.nodes.filter((l) => l.includes('earn-cli.js'))[0]).toMatch(/--stats-file \S+pool-run-stats\.json$/);
+    const none = sh('pool-run.sh', ['-', '1']);
+    expect(none.status).not.toBe(0);
+    expect(none.err).toContain('PEARL_ADDRESS is not set');
+    expect(none.nodes.filter((l) => l.includes('earn-cli.js'))).toHaveLength(0);
   });
 });

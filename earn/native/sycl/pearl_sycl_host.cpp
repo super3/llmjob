@@ -17,16 +17,16 @@
 //   - Both pipeline slots run on one in-order queue. Proof reads go on a second
 //     queue so they do not wait behind the next batch.
 //
-// What pearl_host.cu has that this host answers plainly, because no Intel GPU
-// has run it and there is nothing measured to choose from:
+// What pearl_host.cu has that this host answers plainly. One kind of Intel card
+// has run it (Arc A750, on 10 November 2026), and nothing has been tuned on it:
 //
 //   - k: the folds are built for PEARL_FOLD_K only, so pearl_host_card_k gives
 //     the profile's k back.
 //   - Launch shapes: none, so pearl_core.cc runs no startup trial.
-//   - Untested cards: every GPU is one. It mines only for an opener that
-//     checks each hit before sending it (pearl_host_create_checked), and tells
-//     that opener so. PEARL_SYCL_UNTESTED=1 opens it for an opener that sends
-//     nothing (bench.js).
+//   - Untested cards: every GPU counts as one. It mines only for an opener
+//     that checks each hit before sending it (pearl_host_create_checked), and
+//     tells that opener so. PEARL_SYCL_UNTESTED=1 opens it for an opener that
+//     sends nothing (bench.js).
 //
 // Device choice: Level Zero GPUs, else OpenCL GPUs, ranked by compute units x
 // clock. PEARL_SYCL_DEVICE=cpu takes the SYCL CPU device instead, which is how
@@ -632,7 +632,7 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK).
 // Both folds are built for one k (PEARL_FOLD_K, which pearl_host_create_checked
 // checks), so a card mines the profile's, as on the CUDA host. No Intel GPU has
-// been timed at any k, so there is no larger one to prefer.
+// been timed at another k, so there is no larger one to prefer.
 extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int, char *note, size_t note_len) {
   if (note && note_len) note[0] = '\0';
   return profile ? profile->k : 0;
@@ -723,26 +723,28 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     pearl_host_destroy(ctx);
     return nullptr;
   }
-  // No Intel GPU has run either fold: they were checked on the SYCL CPU device,
-  // where DPAS is the specification's reference code. If the hardware differs,
-  // every hash is wrong yet meets the target, so every share is sent and
-  // rejected, and a pool can ban the address for that. So a GPU mines only
-  // with every hit checked: its opener recomputes each hit in JS before sending
-  // it (checkHits, pearlMiner.js), and ctx->untested tells it to.
-  // PEARL_SYCL_UNTESTED=1 does not change that. It only opens a GPU for an
-  // opener that checks nothing, which is for bench.js: it sends no shares. A
-  // kind of card leaves this gate by a change here, once one has passed the
-  // steps in README.md ("First run on an Arc A750 rig"). The CPU device is not
-  // gated: it is how the folds are checked, and nobody mines on it.
+  // No Intel GPU has mined with these folds in a release. They were written
+  // against the SYCL CPU device, where DPAS is the specification's reference
+  // code, and have run on one kind of card since: Arc A750, where the hardware
+  // fold was right and that reference code was not (README.md, "Results on an
+  // Arc A750 rig"). If a fold is wrong on a card, every hash is wrong yet meets
+  // the target, so every share is sent and rejected, and a pool can ban the
+  // address for that. So a GPU mines only with every hit checked: its opener
+  // recomputes each hit in JS before sending it (checkHits, pearlMiner.js),
+  // and ctx->untested tells it to. PEARL_SYCL_UNTESTED=1 does not change that.
+  // It only opens a GPU for an opener that checks nothing, which is for
+  // bench.js: it sends no shares. A kind of card leaves this gate by a change
+  // here, once it has passed README.md's "Test plan" and the founder says so.
+  // The CPU device is not gated: nobody mines on it.
   const char *unchecked = getenv("PEARL_SYCL_UNTESTED");
   if (ctx->isGpu) {
     if (check_hits) {
       ctx->untested = true;
     } else if (!(unchecked && !strcmp(unchecked, "1"))) {
       fail(err, err_len,
-           "no Intel GPU has run this core yet, so every share could be rejected: it mines only with "
-           "every hit checked, as the app and verify-hits.js do. For an opener that sends no shares, "
-           "set PEARL_SYCL_UNTESTED=1 (earn/native/sycl/README.md)");
+           "no Intel GPU has mined with this core in a release yet, so its shares could be rejected: it "
+           "mines only with every hit checked, as the app and verify-hits.js do. For an opener that sends "
+           "no shares, set PEARL_SYCL_UNTESTED=1 (earn/native/sycl/README.md)");
       pearl_host_destroy(ctx);
       return nullptr;
     }
@@ -805,15 +807,22 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // mainnet). Only a large PEARL_SYCL_COL_BATCH gets here.
   while ((uint64_t)ctx->colBatch * ctx->rowsValid > (1ull << 25) && ctx->colBatch > 4) ctx->colBatch /= 2;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
-  // Row windows a band: as many as keep a band's A' (32 rows of k bytes a window)
-  // within a quarter of the device's last-level cache. PEARL_SYCL_BAND forces it.
+  // Row windows a band: for the XMX folds as many as make a band's A' (32 rows
+  // of k bytes a window) the size of the device's last-level cache, for the
+  // plain fold a quarter of that. PEARL_SYCL_BAND forces it.
+  // Measured on an Arc A750, which reports 16 MB, so 256 and 64 (TH/s). xmx8,
+  // bench: 4 -> 14.1, 16 -> 14.3, 64 -> 15.2 to 15.5, 128 -> 16.3, 256 -> 16.6
+  // to 16.9, 512 -> 13.8, 1024 to 4096 -> 13.4 to 13.5. dot, 400 hits through
+  // the addon: 64 -> 3.91, 256 -> 3.74. A quarter was the rule for both, and
+  // not measured, until that run.
   {
     uint64_t cache = 0;
     try {
       cache = ctx->dev.get_info<sycl::info::device::global_mem_cache_size>();
     } catch (const std::exception &) {
     }
-    uint64_t band = cache ? cache / 4 / (32ull * k) : 16;
+    const uint64_t share = ctx->fold == kDot ? 4 : 1;
+    uint64_t band = cache ? cache / share / (32ull * k) : 16;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
     if (band < 1) band = 1;
