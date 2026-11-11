@@ -35,6 +35,7 @@ Registers: as gfold.py's, but R0 is the lane's place in the warp's own part of t
 word is worked in the scratch register. P2 is the warp's row band.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -310,27 +311,70 @@ def build(cfg):
     return pro + loop + ep, bad, most, G
 
 
+def expect(text, cfg, code):
+    """What the hand loop takes for granted about the compiled kernel, checked against its listing. Returns the
+    list of things that differ (empty when the loop fits). A toolkit whose ptxas compiles src/pearl_rot.cu
+    another way shows up here, and the cubin is then not written."""
+    out = []
+    regs, preds = asm89.clobbers(text)
+    used, consts = set(), set()
+    for ins in code:
+        consts.update(int(x, 16) for x in re.findall(r"c\[0x0\]\[0x([0-9a-f]+)\]", ins.text))
+        if "BRA" in ins.text or ins.text.startswith("ULDC"):
+            continue
+        _r, w, _k = fold.rw(ins.text)
+        used |= {x for x in w if not isinstance(x, str)}
+    if not used <= regs:
+        out.append("the loop writes registers the compiled function does not, so the kernel may keep values in "
+                   "them: R%s" % ", R".join(str(x) for x in sorted(used - regs)))
+    if len(preds) < 2:
+        out.append("the compiled function writes %d predicates and the loop needs two" % len(preds))
+    facts = asm89.loop_facts(text)
+    if facts["urs"] != {cfg["ur"]}:
+        out.append("the loop loads the address base into UR%d and the compiled function into %s" % (
+            cfg["ur"], ", ".join("UR%d" % u for u in sorted(facts["urs"])) or "no uniform register"))
+    if not consts <= facts["consts"]:
+        out.append("the loop reads kernel parameters the compiled function does not: %s" % ", ".join(
+            "c[0x0][0x%x]" % c for c in sorted(consts - facts["consts"])))
+    # The transcripts' place in shared memory: the kernel zeroes them at this address before the call.
+    tr = layout(cfg["mt"])["tr"]
+    if not re.search(r"STS\.128 \[R\d+\+0x%x\], RZ" % tr, text):
+        out.append("the kernel does not zero its transcripts at shared address 0x%x, where the loop keeps them" % tr)
+    if len(code) + 3 > facts["room"]:
+        out.append("the loop is %d instructions and the compiled function has room for %d" % (
+            len(code) + 3, facts["room"]))
+    return out
+
+
 def main():
     cubin, sass, nvd, out = sys.argv[1:5]
     cfg = dict(CFG)
+    given = set()
     for kv in sys.argv[5:]:
         k, v = kv.split("=")
         assert k in cfg, k
         cfg[k] = int(v, 0)
+        given.add(k)
+    text = asm89.read_text(sass)
+    # The address base goes into the uniform register pair the compiled function uses (UR4 under ptxas 12.6),
+    # unless a key names one.
+    urs = asm89.loop_facts(text)["urs"]
+    if "ur" not in given and len(urs) == 1 and urs != {cfg["ur"]}:
+        cfg["ur"] = next(iter(urs))
+        print("note: the compiled function keeps the address base in UR%d; the loop uses it too" % cfg["ur"])
     code, bad, most, G = build(cfg)
     plain = sum(len(x) for x in G)
     if bad:
         print("%d latency problems: not written" % bad)
         sys.exit(1)
-    text = asm89.read_text(sass)
+    print("latency check: every register is read late enough behind its writer")
     regs, preds = asm89.clobbers(text)
-    used = set()
-    for ins in code:
-        if "BRA" in ins.text or ins.text.startswith("ULDC"):
-            continue
-        _r, w, _k = fold.rw(ins.text)
-        used |= {x for x in w if not isinstance(x, str)}
-    assert used <= regs and len(preds) >= 2, "writes registers the kernel keeps: %s" % sorted(used - regs)
+    wrong = expect(text, cfg, code)
+    if wrong:
+        print("the compiled kernel is not what the hand loop expects: not written")
+        for w in wrong:
+            print("  - " + w)
+        sys.exit(1)
     # The loop's own predicate is P1 and the row band's P2 where the compiled function writes them; a build whose
     # function writes others gets those, since the kernel may keep the rest (with the hash in the probe's kernel
     # the function writes P0 and P2, in the miner's kernel, src/pearl_rot.cu, P0 and P1).
@@ -353,6 +397,13 @@ def main():
     n, room = asm89.patch(cubin, text, out, code, nvd)
     if cfg["band"]:
         asm89.set_barriers(out, 3)
+        have = asm89.barriers(asm89.disassemble(out, nvd))
+        if have != 3:
+            os.remove(out)
+            print("the cubin says %d barriers after the patch, not 3: not written" % have)
+            sys.exit(1)
+    print("registers: the loop writes only what the compiled function writes; predicates P%d (loop) and P%d (row "
+          "band); address base in UR%d; read back through nvdisasm: %d instructions as asked" % (lp, bp, cfg["ur"], n))
     tot = 32 * cfg["mt"]
     kinds = {}
     for g in G:

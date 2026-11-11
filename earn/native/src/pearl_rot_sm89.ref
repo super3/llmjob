@@ -1,0 +1,10 @@
+# The rotation fold's cubins that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# The hash is the cubin's sha256 with its string table zeroed (python probes/hand89/asm89.py hash <cubin>).
+# probes/hand89/build_rot.py refuses to write pearl_rot_sm89.cubin unless what it built is listed here for the
+# toolkit that built it. The loop in that file is written by hand, so a new line is added only after the file
+# it names has run on an RTX 40 card: probes/verify-hits.js 400 of 400 with the fold on, and shares accepted.
+
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090, 11 November 2026: verify-hits 400 of 400 three times,
+# Kryptex 24 shares accepted and none rejected.
+12.6 15817a7be9c5afdd443cc0aa52b1e14c8299b55d3ac350dacb63f3968a8e388e

@@ -3,6 +3,7 @@ such a loop into a compiled cubin in place of the loop function ptxas made (prob
 
   python asm89.py check <cubin> <sass>     every instruction of the listing that the assembler knows is assembled
                                            from its text and compared with the cubin's bytes
+  python asm89.py hash <cubin>             the cubin's sha256 with its string table zeroed (fold_hash)
 
 It assembles from the text nvdisasm prints, one instruction form at a time, each form copied from what ptxas 12.6
 wrote for sm_89 (the bits outside the operand fields are an example's). A patched cubin is disassembled again and
@@ -365,6 +366,50 @@ def clobbers(sass_text):
     return regs, preds
 
 
+def loop_facts(sass_text):
+    """What a hand loop takes from the compiled loop function besides its registers (clobbers): the uniform
+    register pairs it loads the global address base into (ULDC.64 URn, c[0x0][0x118]), the constant-bank
+    offsets it reads (the kernel's parameters are there), and how many instructions it has room for."""
+    rows, _labels, entry = listing(sass_text)
+    if entry is None:
+        raise RuntimeError("the listing has no loop function (a label with _loop in its name)")
+    urs, consts = set(), set()
+    for a, t in rows:
+        if not _in_loop(a, entry):
+            continue
+        m = re.search(r"ULDC\.64 UR(\d+), c\[0x0\]\[0x118\]", t)
+        if m:
+            urs.add(int(m[1]))
+        consts.update(int(x, 16) for x in re.findall(r"c\[0x0\]\[0x([0-9a-f]+)\]", t))
+    entry, ret, _back = region(sass_text)
+    return dict(urs=urs, consts=consts, room=(ret - entry) // 16)
+
+
+def barriers(sass_text, fn_sub="pearl"):
+    """The barrier count nvdisasm prints for the kernel's code section (SHF_BARRIERS), 0 when it prints none."""
+    inside, n = False, 0
+    for line in sass_text.splitlines():
+        if re.match(r"\s*\.section\s", line):
+            inside = ".text." in line and fn_sub in line
+        elif inside:
+            m = re.search(r"SHF_BARRIERS=(\d+)", line)
+            if m:
+                n = int(m[1])
+    return n
+
+
+def fold_hash(path):
+    """sha256 of a cubin with its .strtab zeroed. The string table holds the loop function's name, and nvcc puts
+    a hash of the source file's path into the name of a static function, so the whole file's hash differs from
+    one checkout folder to the next while every other byte (code, section headers, symbols, parameter info) is
+    the same. This is the hash src/pearl_rot_sm89.ref lists."""
+    import hashlib
+    b = bytearray(open(path, "rb").read())
+    off, size = sections(b)[".strtab"]
+    b[off:off + size] = bytes(size)
+    return hashlib.sha256(bytes(b)).hexdigest()
+
+
 def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
     """Writes cubin_out: cubin_in with the loop function's code replaced by `code` (a list of Ins), which must end
     by falling off its end: a move of the return address, a branch to the old RET and NOPs are added. Then
@@ -460,5 +505,8 @@ def check(cubin, sass):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "check":
         sys.exit(1 if check(sys.argv[2], sys.argv[3]) else 0)
+    if len(sys.argv) == 3 and sys.argv[1] == "hash":
+        print(fold_hash(sys.argv[2]))
+        sys.exit(0)
     print(__doc__)
     sys.exit(2)

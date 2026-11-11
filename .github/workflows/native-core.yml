@@ -133,7 +133,8 @@ jobs:
             file: pearl_core.node
             cuda: '12.8.1'
             release: '12.8'
-            subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump"]'
+            # nvdisasm for the rotation fold's cubin (the step after the addon is built).
+            subpackages: '["nvcc", "cudart", "nvrtc", "cuobjdump", "nvdisasm"]'
             gencode: >-
               -gencode arch=compute_61,code=sm_61
               -gencode arch=compute_70,code=sm_70
@@ -738,10 +739,65 @@ jobs:
         shell: bash
         run: bash ../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 "build/Release/${{ matrix.file }}"
 
+      # The rotation fold's cubin, pearl_rot_sm89.cubin: a second fold for RTX 40 cards that the
+      # host loads from beside the addon when a rig asks for it (--rotation-fold, or
+      # PEARL_FOLD_ROT=1; src/pearl_host_rot.inc). It is off by default. Its chunk loop is written
+      # by hand and put into a kernel this toolkit compiles, so probes/hand89/build_rot.py checks
+      # every step and writes the file only when all of them pass: its assembler against this
+      # ptxas's own bytes, the loop's latency checker, what the loop expects of the compiled
+      # function (registers, predicates, uniform register, parameters, room), a read-back through
+      # nvdisasm, and the result's hash against src/pearl_rot_sm89.ref, which lists the files
+      # that have mined on a card with every hit verified. A toolkit that compiles the kernel
+      # another way fails here and ships no cubin; nothing is patched on a guess.
+      #
+      # Built by the 12.8 jobs only: the host loads the one file whichever core is loaded.
+      # Non-blocking, for the CUDA 13 build's reason: the fold is an opt-in, and a failure here
+      # must not hold back the core every rig needs. Without the file a rig that asks for the
+      # fold says so in one line and mines on the release fold. The failure is an error
+      # annotation and a line in the run summary, and miner-build.yml warns that the file is
+      # missing.
+      - name: Build the rotation fold's cubin (RTX 40, opt-in, not blocking)
+        id: rot
+        if: matrix.variant == ''
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          # NVIDIA's image has nvdisasm with its command-line tools; installed if it does not.
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-12-8
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/pearl_rot_sm89.cubin ]; then
+            msg="no pearl_rot_sm89.cubin: build_rot.py failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cp rot-build/pearl_rot_sm89.cubin build/Release/pearl_rot_sm89.cubin
+          echo "built: $(ls -l build/Release/pearl_rot_sm89.cubin)"
+
+      # What build_rot.py made on the way, kept whether it passed or not: the compiled kernel, its
+      # listing, and a cubin whose hash is not listed yet (pearl_rot_sm89.cubin.unverified), which
+      # is the file to run on an RTX 40 card before its hash is added to the reference.
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.variant == ''
+        with:
+          name: pearl-rot-build-${{ matrix.os }}
+          path: earn/native/rot-build
+          if-no-files-found: warn
+
+      # The cubin rides in the core's artifact, beside the addon, when the step above made one.
       - uses: actions/upload-artifact@v4
         with:
           name: pearl-core${{ matrix.variant }}-${{ matrix.os }}
-          path: earn/native/build/Release/${{ matrix.file }}
+          path: |
+            earn/native/build/Release/${{ matrix.file }}
+            earn/native/build/Release/pearl_rot_sm89.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct
