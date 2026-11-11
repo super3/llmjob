@@ -32,6 +32,12 @@ same place, and the card then takes it from a latch without checking which regis
 reordered with its flags kept read a wrong address register and faulted. So every flag in a reordered stretch
 is cleared (bits 122 to 125 of the instruction), which costs the card a register read and changes no result.
 The rule R=clear clears them without moving anything (to price the flags alone), and R=keep leaves them set.
+
+BLOCK. In every loop ptxas built for sm_120, the instruction right after an IMMA never names a register in the
+aligned block of eight that holds the IMMA's four output registers; where one would, ptxas puts a never-taken
+uniform add in between. Reordered loops that broke this read wrong values (a draw's address register among
+them, which faults). So a step that would land there changes place with a later step of its gap, or goes to the
+end of the gap before, or to the next gap. B=free turns this off.
 """
 import collections
 import re
@@ -207,6 +213,15 @@ def main():
     def clash(i, j):
         return bool(touch[i] & touch[j]) or (mem[i] and mem[j] and mem[i] + mem[j] > 2)
 
+    def blk(i):   # the blocks of eight registers an instruction names
+        return {int(r[1:]) // 8 for r in touch[i] if r[0] == "R"}
+
+    def dblk(i):   # the block of eight that holds an IMMA's output
+        m = REG.search(texts[i].split(None, 1)[1])
+        return {int(m.group(2)) // 8, (int(m.group(2)) + 3) // 8}
+
+    block = rules.pop("B", "keep")
+    fixed = unfixed = 0
     # Stretches: runs of the body with no control instruction and no branch target inside.
     order, start, moved, stretches, held = list(range(len(ops))), im[0], 0, 0, 0
     bounds = [i for i in range(im[0], end + 1) if i == end or kinds[i] == "C" or (addrs[i] in labels and i > im[0])]
@@ -258,10 +273,32 @@ def main():
             assert lo[i] <= f <= hi[i] - 1, (i, lo[i], f, hi[i])
             final[i] = f
             held += f != want[i]
-        new = [i for i in others if final[i] < 0]
+        # The step right after an IMMA must not name a register in the block of eight that holds the IMMA's
+        # output (see BLOCK above). Such a step changes place with a later step of its gap that it does not
+        # depend on, or goes to the end of the gap before, or to the next gap.
+        gap = {q: [j for j in others if final[j] == q] for q in range(-1, n)}
+        if block == "keep":
+            for q in range(n):
+                tries = 0
+                while gap[q] and blk(gap[q][0]) & dblk(imma[q]) and tries < 64:
+                    tries += 1
+                    g, first = gap[q], gap[q][0]
+                    k = next((k for k in range(1, len(g)) if not blk(g[k]) & dblk(imma[q])
+                              and not any(clash(g[k], g[m]) for m in range(k))), None)
+                    if k is not None:
+                        g.insert(0, g.pop(k))
+                    elif lo[first] < q and not (not gap[q - 1] and q >= 1 and blk(first) & dblk(imma[q - 1])):
+                        gap[q - 1].append(g.pop(0))
+                    elif q + 1 < min(n, hi[first]) and len(g) == 1:
+                        gap[q + 1].insert(0, g.pop(0))
+                    else:
+                        unfixed += 1
+                        break
+                    fixed += 1
+        new = list(gap[-1])
         for q, i in enumerate(imma):
             new.append(i)
-            new += [j for j in others if final[j] == q]
+            new += gap[q]
         assert sorted(new) == seg
         for pos, src in zip(seg, new):
             order[pos] = src
@@ -290,8 +327,8 @@ def main():
             run += 1
     gaps = gaps[1:] + [run]
     hist = ",".join("%d:%d" % kv for kv in sorted(collections.Counter(gaps).items()))
-    print("perm %s: %d stretches, %d of %d moved, %d held by a dependency, %d reuse flags cleared, gaps=%s%s%s" % (
-        spec, stretches, moved, end - im[0], held, cleared, hist,
+    print("perm %s: %d stretches, %d of %d moved, %d held by a dependency, %d reuse flags cleared, %d moved off an "
+          "IMMA's block (%d left), gaps=%s%s%s" % (spec, stretches, moved, end - im[0], held, cleared, fixed, unfixed, hist,
         (" WARN nv.info names moved: " + " ".join(warn[:6])) if warn else "", (" unread: %s" % odd) if odd else ""))
 
 

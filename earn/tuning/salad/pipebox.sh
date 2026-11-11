@@ -545,6 +545,11 @@ case "${PP_SET:-}" in
       PP_LONGS=${PP_LONGS:-baseF G2F d1mF d2mF d4mF rd2aF rd4F G2d1F G2d2F baseF}
       PP_PLONGS=${PP_PLONGS:-d1mF.sp d2mF.sp}
       PP_PERMS="baseF:o:*=orig d1mF:sp:*=spread d2mF:sp:*=spread G2d1F:sp:YLAS=spread" ;;
+  # b7: the same reorderings with the step after an IMMA kept off the block of eight registers that holds the
+  # IMMA's output, and each result's checksum beside the compiler's own.
+  b7) PP_BUILD="base F1 G2 p2k0 rd2aN d1mN d2mN d3mN d4mN rd4N rd2N G2d1 G2d2"
+      PP_PTRACE="G2d1.v0 G2d1.v1 d4mN.sp"
+      PP_PERMS="d1mN:sp:*=spread d2mN:sp:*=spread d3mN:sp:*=spread d3mN:spf:*=spread/B=free d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:b:*=every,48,0,23 rd4N:sp:*=spread rd2N:sp:*=spread G2d1:v0:YLAS=every,2,1,0 G2d1:v1:YLAS=every,2,1,1 G2d1:sp:YLAS=spread G2d2:sp:YLAS=spread G2d2:v0:YLAS=every,2,2,0 G2d2:v1:YLAS=every,2,2,1 F1:n9:U=all,191 F1:n9f:U=all,191/B=free F1:x1:X=even,1,1/U=all,191 rd2aN:s1:X=seg,0:32:1,146:32:1,162:32:1 p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e4:A=even,4" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
