@@ -255,13 +255,26 @@ describe('SYCL harness scripts', () => {
       fs.writeFileSync(path.join(dir, 'OCL_asm2_simd8_entry_0002.asm'), [
         '//.kernel _ZTSZN10pearl_sycl8fold_dotERN4sycl', '//.platform DG2',
         '//.thread_config numGRF=128, numAcc=4', '//.spill size 192', '//.instCount 1983', ''].join('\n'));
+      // A row of the peak probe, with the load, store and send forms IGC
+      // writes for an A750: each is a message to another unit, and counted.
+      const peak = '_ZTSZZN12_GLOBAL__N_19peak_stepILi8ELi2ELi4ELi5ELi2ELi16EEEN4sycl3_V15eventERNS2_5queueE';
+      fs.writeFileSync(path.join(dir, 'OCL_asm3_simd8_entry_0003.asm'), [
+        '//.kernel ' + peak, '//.platform DG2', '//.thread_config numGRF=256, numAcc=8', '//.instCount 900',
+        '        load.ugm.d32x8.a64.ca.ca (8|M0)  r34:8  [r32:2]  {A@4,$2}',
+        '        load.slm.d32x4.a32.ca.ca (8|M0)  r40:4  bti[254][r8:1]  {$3}',
+        '        store.ugm.d32x1t.a64.wb.wb (1|M0)  [r2:1]  r5:1  {$4}',
+        '(W)     send.gtwy (1|M0)  null  r3  null:0  0x0  0x02000010  {EOT,A@1}',
+        '        sync.nop  null  {Compacted,$2.dst}',
+        '        dpas.8x8 (8|M0)  r58:d  r58:d  r34:b  r24.0:b  {$10}', ''].join('\n'));
       fs.writeFileSync(path.join(dir, 'notes.txt'), 'not assembly');
       const r = node([path.join(SYCL, 'isa-report.js'), dir]);
       expect(r.status).toBe(0);
       const rows = r.stdout.trim().split('\n').map((l) => l.trim().split(/\s+/));
-      expect(rows[0]).toEqual(['platform', 'kernel', 'simd', 'grf', 'dpas', 'spill', 'insts']);
-      expect(rows[1]).toEqual(['XE2', 'fold_xmx<sg16,rb2,hw>', '16', '128', '2', '0', '1618']);
-      expect(rows[2]).toEqual(['DG2', 'fold_dot', '8', '128', '0', '192', '1983']);
+      // compile-gate.sh reads the kernel, DPAS and spill columns by position.
+      expect(rows[0]).toEqual(['platform', 'kernel', 'simd', 'grf', 'dpas', 'spill', 'insts', 'sends']);
+      expect(rows[1]).toEqual(['XE2', 'fold_xmx<sg16,rb2,hw>', '16', '128', '2', '0', '1618', '0']);
+      expect(rows[2]).toEqual(['DG2', 'fold_dot', '8', '128', '0', '192', '1983', '0']);
+      expect(rows[3]).toEqual(['DG2', 'peak<sg8,rb2,a4,b5,rd2,acc16>', '8', '256', '1', '0', '900', '4']);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -519,6 +532,106 @@ describe('verify-hits.js, with the check the app runs', () => {
     expect(run({ PEARL_GPU_INDEX: '3' }).opts).toEqual({ checkHits: true, deviceIndex: 3 });
     expect(run({ PEARL_GPU_INDEX: '0,1' }).opts).toEqual({ checkHits: true });
   }, 60000);
+});
+
+// pearl_sycl_peak.cpp times the hardware DPAS with nothing in the way and then
+// puts the fold's parts back one at a time (README.md, "The A750's ceiling").
+// It is a timing tool: it checks nothing, nothing that checks or mines runs
+// it, and it is built only when asked for. Its rows mean something only while
+// the loads and the readout they time are the fold's own, so those are pinned
+// line for line against pearl_sycl_kernels.hpp.
+describe('the XMX peak probe', () => {
+  const PEAK = read(SYCL, 'pearl_sycl_peak.cpp');
+  const fold = slice(KERNELS, 'template <int SG, int RB, bool HW>\ninline void fold_xmx(', '\n}\n');
+  const step = slice(PEAK, 'inline sycl::event peak_step(', '\n}\n');
+  // `lines` appear in `text` as statements of their own, in that order.
+  const has = (text, lines) => {
+    const body = statements(stripComments(text));
+    let at = -1;
+    for (const l of lines) {
+      const i = body.indexOf(l, at + 1);
+      expect([l, i > at]).toEqual([l, true]);
+      at = i;
+    }
+  };
+
+  test('is built only by build.sh --peak, with the folds\' own compiler flags', () => {
+    const build = read(SYCL, 'build.sh');
+    expect(build).toContain('    --peak) PEAK=1; shift ;;');
+    const block = slice(build, 'if [ "$PEAK" = 1 ]; then', '\nfi\n');
+    expect(block).toContain('"$CXX" "${SYCL_FLAGS[@]}" "${GCC_FLAGS[@]}" "${PEAK_FLAGS[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_peak.cpp"');
+    // The rows for 16 rows a sub-group need the 256-register mode.
+    expect(block).toContain('[ "$LARGE_GRF" = 1 ] && PEAK_FLAGS=(-DPEARL_PEAK_LARGE_GRF)');
+    expect(PEAK).toContain('#if defined(PEARL_PEAK_LARGE_GRF)\n    add_rows<8, 2, false>(rows);');
+    expect(build.split('pearl_sycl_peak.cpp')).toHaveLength(2);
+    // Nothing that checks, times the miner or mines runs it.
+    for (const f of ['verify.sh', 'bench.sh', 'pool-run.sh', 'compile-gate.sh', 'verify-hits.js', 'bench.js']) {
+      expect([f, read(SYCL, f).includes('pearl_sycl_peak')]).toEqual([f, false]);
+    }
+    expect(PEAK).toContain('// It checks nothing. It is for timing; verify.sh checks the folds.');
+  });
+
+  test('its last word on the fold is the kernel the core mines with', () => {
+    expect(PEAK).toContain('#include "pearl_sycl_kernels.hpp"');
+    expect(slice(PEAK, 'v.push_back({"fold", "the kernel the core mines with"', '}});'))
+      .toContain('pearl_sycl::fold_xmx<SG, RB, true>(q, a.f, g);');
+    // And the hardware DPAS is the fold's own call, chosen the same way.
+    expect(step).toContain('c[rb][cb] = pearl_sycl::dpas<SG, true>(sg, af[rb], bf[i], c[rb][cb]);');
+    expect(fold).toContain('c[rb][BG * g + i] = dpas<SG, HW>(sg, af[rb], bf[i], c[rb][BG * g + i]);');
+  });
+
+  test('the loads and the readout it times are the fold\'s, line for line', () => {
+    // The fold's A load, B load and readout, as the fold has them.
+    const aLoad = ['af[rb][r] = *reinterpret_cast<const short *>(p + 2u * lane);', 'else',
+      'af[rb][r] = *reinterpret_cast<const int *>(p + 4u * lane);'];
+    const bLoad = ['for (int d = 0; d < 8; d++) bf[i][d] = (int)p[d];'];
+    const readout = [
+      'uint32_t x0 = 0, x1 = 0;',
+      'for (int r = 0; r < 4; r++) x0 ^= (uint32_t)c[rb][cb][r];',
+      'for (int r = 4; r < 8; r++) x1 ^= (uint32_t)c[rb][cb][r];',
+      'x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);',
+      'x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);',
+      'x0 ^= sycl::permute_group_by_xor(sg, x0, 8u);',
+      'x1 ^= sycl::permute_group_by_xor(sg, x1, 8u);',
+      'if (lane < 8u) part[(sgi * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;',
+      'sycl::group_barrier(it.get_group());',
+      'if (sgi == 0 && lane < 8u) {',
+      'for (int s = 0; s < S; s++) x ^= part[((uint32_t)s * 8u + qr) * 16u + (uint32_t)j];',
+      'const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));',
+    ];
+    for (const text of [fold, step]) {
+      has(text, aLoad);
+      has(text, bLoad);
+      has(text, readout);
+    }
+    expect(fold).toContain('region_epilogue(words, local, A.test, A.hits, A.allTr);');
+    expect(step).toContain('pearl_sycl::region_epilogue(words, local, A.test, A.hits, A.allTr);');
+    // The same grid: a work-group a window, the fold's walk, 64 k-steps of 32.
+    for (const text of [fold, step]) {
+      has(text, ['constexpr int S = 4 / RB;', 'constexpr int NCB = 64 / SG;', 'constexpr int WG = S * SG;']);
+      expect(text).toContain('for (uint32_t ch = 0; ch < 16u; ch++) {');
+      expect(text).toContain('for (uint32_t s = 0; s < 4u; s++) {');
+      expect(text).toContain('const uint32_t k0 = ch * 128u + s * 32u;');
+    }
+    expect(step).toContain('pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);');
+    // The band is the host's rule for the XMX folds.
+    expect(PEAK).toContain('uint64_t band = bandArg ? bandArg : (cache ? cache / (32ull * k) : 16);');
+  });
+
+  test('a row with DPAS taken out is counted as if they ran, and says so', () => {
+    // loads-1dpas runs 1 DPAS a k-step and is counted over all of them: the
+    // rate the loads would allow. Every other row counts what it ran.
+    const rows = PEAK.split('\n').filter((l) => l.trim().startsWith('PEAK_ROW("'))
+      .map((l) => /PEAK_ROW\("([^"]+)", "[^"]*", (\d), (\d), (\d), ([^,]+), ([^,]+), /.exec(l).slice(1));
+    expect(rows.length).toBeGreaterThan(25);
+    const odd = rows.filter((r) => r[4].trim() !== r[5].trim()).map((r) => r[0]);
+    expect(odd).toEqual(['loads-1dpas']);
+    expect(PEAK).toContain('const bool real = r.acc == r.counted;  // every DPAS counted was run');
+    expect(PEAK).toContain('if (real && eus && mhz > 0) printf(",\\"macEuClk\\":%.1f", rate * 1e12 / eus / (mhz * 1e6));');
+    // A window is 32 rows by 64 columns by 64 k-steps of 32, whatever the row.
+    expect(PEAK).toContain('const double macs = (double)groups * 32.0 * 64.0 * 64.0 * 32.0 * a.reps * r.counted / r.all;');
+    expect(32 * 64 * 64 * 32).toBe(8 * 256 * PROFILE.k);
+  });
 });
 
 // The port is not shipped: the app loads it only when PEARL_CORE_PATH names a

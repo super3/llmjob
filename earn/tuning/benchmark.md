@@ -16,7 +16,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
-| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card, 15% of the 113 T-MAC/s its matrix engines do alone. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -1290,6 +1290,52 @@ Other things this run found:
   73 on Salad may be the same two things.
 - Not tried: BzMiner, which Kryptex's miner page lists for Pearl on Intel Arc, and mo-miner, whose engine IAminer
   uses. Neither was on the list for this run.
+
+### Arc A750, 10 November: the XMX peak, and where the fold's time goes
+
+What the card's matrix engines do with nothing in the way, as `pearl_amd_peak` asked of AMD's. On paper: 448 EUs x
+128 int8 MACs a clock x 2.0 GHz, about 115 T-MAC/s. `earn/native/sycl/pearl_sycl_peak.cpp` runs the hardware DPAS
+in the fold's own grid and thread shape and puts the fold's parts back one at a time. Card 0 of the rig, 4 s a
+row; clock and watts are i915's counters; this kernel's i915 reports no temperature for Arc. The probe checks
+nothing: only the last row is a fold.
+
+| What runs | T-MAC/s | Clock, power |
+|---|---|---|
+| DPAS alone, operands in registers | **113.4** (126 MACs an EU a clock) | 2,012 MHz, 166 W |
+| The same for 120 s | 113.4, 113.2 to 113.5 each second | 2,000 MHz, 177 W |
+| On 1 of the 8 accumulators | 91.2 | 2,000 MHz, 165 W |
+| With the fold's thread starts (16 times as many) | 112.6 | 1,998 MHz, 170 W |
+| And the fold's readout, barrier, hash and test | 110.1 | 2,017 MHz, 177 W |
+| A' loaded as the fold loads it, from one window that stays in the cache | 104.5 | 1,924 MHz, 184 W |
+| B' the same way | 56.6 | 1,998 MHz, 185 W |
+| Both, from one window | 39.8 | 1,995 MHz, 166 W |
+| Both, from the fold's own addresses | 16.9 | 2,019 MHz, 148 W |
+| The same loads with 7 of every 8 DPAS taken out | 16.9 (counted as if all ran) | 2,019 MHz, 138 W |
+| The fold | **16.9** | 2,019 MHz, 151 W |
+
+- **The ceiling is 113 T-MAC/s, and the fold is at 15% of it.** Intel's paper figure holds.
+- **All of the gap is operand loads.** With 7 of every 8 DPAS taken out the rate is the same, so the matrix engines
+  are idle 85% of the time. Thread starts, the accumulator chain, the readout and the hash cost about 3% together.
+- **The loads cost twice.** The fold sends 3 load messages for each DPAS, which caps it at 39.8 even from memory
+  that never leaves the cache. From its own addresses it falls to 16.9: A' and B' together do not stay in the
+  card's 16 MB cache.
+
+What a different fold could reach, timed with the readout, hash and test in place. The bits of these rows are not a
+fold's, so they are estimates:
+
+| Loads | 8 rows a sub-group, 128 registers (today's shape) | 16 rows a sub-group, 256 registers |
+|---|---|---|
+| The fold's | 16.9 | 21.6 |
+| The fold's, at the addresses A' and B' would have in DPAS fragment order | 22.9 (31.4 at band 64) | 22.9 |
+| One vector load a fragment, B' where it is | 18.6 | 33.8 |
+| One vector load a fragment, both in fragment order | 22.8 | 38.0 (**42.7** at band 32 or 64) |
+
+- **The target for the next fold on this card is about 40 TH/s**, 2.5 times today's: 16 rows a sub-group in the
+  256-register mode (which costs nothing at the peak: 113.6), A' and B' stored in fragment order, one vector load a
+  fragment, and the band tuned again.
+- Past that the loads still limit: the best row leaves the matrix engines idle 62% of the time.
+- Card 3 gave the same 128-register rows within 2%. Not timed: staging B through local memory, another card
+  model, a run over two minutes.
 
 ## Research notes
 

@@ -15,6 +15,8 @@
 #   ./build.sh --dump DIR      also write IGC's assembly for every GPU kernel to
 #                              DIR (dpas count, GRF mode, spills)
 #   ./build.sh --large-grf     256-register mode on the GPU targets
+#   ./build.sh --peak          also build pearl_sycl_peak, the XMX peak probe
+#                              (timing only; README.md, "The A750's ceiling")
 #   ./build.sh --out DIR       output directory (default ./build)
 #
 # Writes, in the output directory:
@@ -36,14 +38,16 @@ TARGETS="intel_gpu_bmg_g21,intel_gpu_bmg_g31,intel_gpu_lnl_m,intel_gpu_ptl_h,int
 JIT=0
 DUMP=""
 LARGE_GRF=0
+PEAK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --targets) TARGETS="$2"; shift 2 ;;
     --jit) JIT=1; shift ;;
     --dump) DUMP="$2"; shift 2 ;;
     --large-grf) LARGE_GRF=1; shift ;;
+    --peak) PEAK=1; shift ;;
     --out) OUT="$2"; shift 2 ;;
-    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     *) echo "unknown option $1" >&2; exit 2 ;;
   esac
 done
@@ -127,4 +131,13 @@ echo "[3/3] pearl_sycl_check"
 "$CXX" -fsycl -O2 -std=c++17 "${GCC_FLAGS[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_check.cpp" \
   -L"$OUT" -lpearl_sycl -o "$OUT/pearl_sycl_check" "${RPATH[@]}" -lpthread
 rm -f "$OUT/pearl_core.o"
+if [ "$PEAK" = 1 ]; then
+  # Standalone: its own kernels and the fold's, with the same targets and flags.
+  # With --large-grf it also has the rows for 16 rows a sub-group (--rb 2).
+  PEAK_FLAGS=()
+  [ "$LARGE_GRF" = 1 ] && PEAK_FLAGS=(-DPEARL_PEAK_LARGE_GRF)
+  echo "[peak] pearl_sycl_peak"
+  "${DUMP_ENV[@]}" "$CXX" "${SYCL_FLAGS[@]}" "${GCC_FLAGS[@]}" "${PEAK_FLAGS[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_peak.cpp" \
+    -o "$OUT/pearl_sycl_peak" "${RPATH[@]}" -lpthread
+fi
 echo "done: $OUT"

@@ -36,7 +36,7 @@ host").
 | Untested cards: a GPU opens only for an opener that checks every hit, and says so in `core.untested` | written; on the rig the core reported it and the CLI checked each card's first hit |
 | Per-card k, launch shapes and their startup trial (the CUDA host's) | not here: the profile's k, no shapes ("Kept up with the CUDA host") |
 | Runs on an Intel GPU | **yes, on Arc A750** (six cards, 10 November). Nothing else yet |
-| Speed | **16.9 TH/s on an A750** at 152 W; 100.1 TH/s for the six at 921 W. One setting tuned on the rig, the band; the rest is as written |
+| Speed | **16.9 TH/s on an A750** at 152 W; 100.1 TH/s for the six at 921 W. One setting tuned on the rig, the band; the rest is as written. The card's matrix engines do 113 T-MAC/s with nothing else in the loop, so the fold is at 15% ("The A750's ceiling") |
 | Windows build | not written (`build.sh` is Linux only) |
 
 ## Results on an Arc A750 rig (10 November 2026)
@@ -130,6 +130,91 @@ What it shows:
 
 `earn/tuning/benchmark.md`, "Intel Arc", has the same card against the other
 Pearl miners that were tried on it. Only IAminer mined: 13.6 TH/s a card.
+
+## The A750's ceiling (10 November 2026)
+
+On paper an A750 does 448 EUs x 128 int8 MACs a clock x 2.0 GHz, about 115
+T-MAC/s (Intel's 229 TOPS, halved). The fold mines at 16.9, 15% of that.
+`pearl_sycl_peak` is a probe that times the hardware DPAS in the fold's own
+grid and thread shape with nothing else in the loop, then puts the fold's
+parts back one at a time. It checks nothing: only `fold-copy` and `fold` are
+real folds. Build it with `./build.sh --peak`; its header lists every row.
+
+Card 0 of the rig, 4 s a row, the default band (256). Clock and watts are
+i915's counters for the card, read while the row runs. i915 has no temperature
+for Arc on kernel 6.12, so there is none; the fan went from 900 to 2,000 rpm
+over a run.
+
+| Row | What runs | T-MAC/s | Clock, power |
+|---|---|---|---|
+| `regs` | DPAS alone, operands in registers | **113.4** | 2,012 MHz, 166 W |
+| `regs`, 120 s | the same, to see it hold | 113.4 (113.2 to 113.5 each second) | 2,000 MHz, 177 W |
+| `regs-one` | 1 of the 8 accumulators | 91.2 | 2,000 MHz, 165 W |
+| `regs-short` | one window a thread, as the fold has it (16 times the thread starts) | 112.6 | 1,998 MHz, 170 W |
+| `regs-rd` | and the fold's readout, barrier, hash and test | 110.1 | 2,017 MHz, 177 W |
+| `a-win0` | A' loaded as the fold loads it, from one window; B in registers | 104.5 | 1,924 MHz, 184 W |
+| `b-win0` | B' loaded as the fold loads it, from one window; A in registers | 56.6 | 1,998 MHz, 185 W |
+| `window0` | both, every window reading window 0 (192 KB that never leaves the cache) | 39.8 | 1,995 MHz, 166 W |
+| `load-a` | A' from the fold's own addresses, B in registers | 79.9 | 1,871 MHz, 184 W |
+| `own-a` | A' from the fold's own addresses, B' from window 0 | 22.7 | 2,019 MHz, 152 W |
+| `own-b` | B' from the fold's own addresses, A' from window 0 | 25.0 | 2,019 MHz, 150 W |
+| `loads` | both from the fold's own addresses, no readout | 16.9 | 2,019 MHz, 148 W |
+| `loads-1dpas` | the same loads with 7 of every 8 DPAS taken out | 16.9, counted as if all 8 ran | 2,019 MHz, 138 W |
+| `fold-copy` | the probe's copy of the fold | 16.9 | 2,038 MHz, 151 W |
+| `fold` | the kernel the core mines with | 16.9 | 2,019 MHz, 151 W |
+
+What it says:
+
+- **The paper figure is real.** DPAS alone runs at 113.4 T-MAC/s and holds it
+  for two minutes: 126 MACs an EU a clock, where Intel's figure is 128. The
+  card's top clock is 2,400 MHz; under DPAS it sat at 2,000 at every load,
+  with power to spare. Why is not known, and clocks were not touched.
+- **The fold leaves the matrix engines idle 85% of the time, waiting for
+  operands.** Take 7 of every 8 DPAS out and leave the loads in, and the rate
+  does not move. One accumulator alone gets 80% of the peak, thread starts
+  cost 1%, the readout, barrier and hash 2%.
+- **The loads cost twice.** Even from memory that never leaves the cache, the
+  fold's load instructions hold it to 39.8: it sends 3 load messages for each
+  DPAS (8 for an A fragment, 2 for each of 8 B fragments, a k-step of 8 DPAS),
+  and the card finishes 5.5 to 5.9e10 of them a second in every row that is
+  not held by the DPAS itself. From the fold's own addresses it falls again,
+  to 16.9. Either operand does most of that on its own (`own-a`, `own-b`),
+  though each is fast when the other is in registers. The likely reason: the
+  band fills the card's 16 MB cache with A', so the two together do not fit.
+
+What a different fold could reach. These rows are the fold with its loads
+changed, readout, barrier, hash and test included. Their bits are not a
+fold's, so they are estimates:
+
+| Loads | 8 rows a sub-group, 128 registers (as today) | 16 rows a sub-group, 256 registers (`--rb 2`) |
+|---|---|---|
+| the fold's (`fold-copy`) | 16.9 | 21.6 |
+| the fold's, at the addresses the bytes would have with A' and B' stored in DPAS fragment order (`frag-fold`) | 22.9; 31.4 at band 64 | 22.9 |
+| one vector load a fragment, B' where it is and A' in fragment order (`vec-fold`) | 18.6 | 33.8 |
+| one vector load a fragment, both in fragment order (`vecfrag-fold`) | 22.8 | 38.0; **42.7 at band 32 or 64** |
+
+- **16 rows a sub-group** needs the 256-register mode, which leaves an EU 4
+  threads instead of 8. That costs nothing: `regs` is 113.6 there. A B
+  fragment is then loaded once for two DPAS, and from memory that stays in the
+  cache the ceiling rises from 39.8 to 60.5.
+- **One vector load a fragment** is one message where the fold sends 2 (B) or
+  8 (A). For A it needs each lane's 8 rows stored together.
+- **Fragment order** puts the 8 lanes' 32 bytes of a B fragment side by side,
+  in 4 cache lines. Today they are 8 rows of B' 2,048 bytes apart.
+- The three together are 42.7 T-MAC/s, 2.5 times the fold and 38% of the peak.
+  That is the realistic target for the next fold on this card. Card 3 gave the
+  same 128-register rows within 2% (`fold` 16.6, `vecfrag-fold` 22.4, `regs`
+  113.7).
+- The band has to be tuned again with any of them: the best moved from 256 to
+  32 or 64, and the rows do not change smoothly with it (`frag-fold` at 64,
+  128, 256: 31.4, 18.2, 22.9).
+- Past that it is still the loads that limit, not the matrix engines: the
+  best row leaves them idle 62% of the time. No row here shows the way past
+  about 43 on this card. A thread cannot hold a larger tile: 16 accumulators
+  are half of the 256 registers, and the operands need most of the rest.
+
+Not measured: staging B through local memory, any other card, and a run longer
+than two minutes. The 2D block loads are Xe2 and Xe-HPC only.
 
 ## Results from the container (2026-10-09)
 
@@ -582,6 +667,7 @@ Files:
 | `pearl_sycl_kernels.hpp` | the kernels: draw ports of `pearl_kernel.cu`, and both folds |
 | `pearl_sycl_blake3.h` | BLAKE3, one copy for the host and the device |
 | `pearl_sycl_check.cpp` | fold check, fold bench and device list (`--list`), no Node |
+| `pearl_sycl_peak.cpp` | the XMX peak probe: DPAS with nothing in the way, then the fold's parts one at a time. Timing only (`./build.sh --peak`) |
 | `verify-hits.js` | `probes/verify-hits.js` for any core, m and n |
 | `bench.js` | the full miner loop's rate |
 | `build.sh`, `verify.sh`, `bench.sh`, `pool-run.sh` | the four commands |
@@ -684,12 +770,14 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
 
 - Only the Arc A750 has run it. Battlemage and newer (`xmx16` with the
   hardware instruction) have not, nor has any card on Windows.
-- Speed work. The XMX fold loads its operands with plain per-lane loads. The
-  likely next steps, in order: B' stored in DPAS fragment order (a fragment is
-  then 512 contiguous bytes instead of 16 half-used cache lines), 2D block
-  loads with L1 prefetch on Xe2 and Xe-HPC (`SPV_INTEL_2d_block_io`), larger
-  sub-group tiles in 256-GRF mode, and, for Alchemist, staging B through local
-  memory.
+- Speed work. The fold is at 15% of what the A750's matrix engines do, and
+  all of the rest is waiting for operand loads ("The A750's ceiling"). The
+  next fold, in the order the probe's rows point: 16 rows a sub-group in the
+  256-register mode, A' and B' stored in DPAS fragment order, one vector load
+  a fragment, and the band tuned again. Together they timed at 42.7 T-MAC/s on
+  an A750, 2.5 times the fold. Not timed: staging B through local memory, and
+  2D block loads with L1 prefetch on Xe2 and Xe-HPC
+  (`SPV_INTEL_2d_block_io`), which Alchemist does not have.
 - The restamp is the slow form described above (fine for a first version).
 - Windows build, packaging the SYCL runtime beside the addon, and a CI job.
   The addon needs glibc 2.38 as built here, and Intel's driver for Arc needs
