@@ -439,7 +439,18 @@ r4d1F|$Z1 -DRD=4 -DTRW=0 -DDRAW=1 -DDPOS=1 -DFILLRND=2
 r4d2F|$Z1 -DRD=4 -DTRW=0 -DDRAW=2 -DDPOS=1 -DFILLRND=2
 r4d3F|$Z1 -DRD=4 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2
 d2mF|$Z1 -DDRAW=2 -DDPOS=1 -DFILLRND=2
-d1mF|$Z1 -DDRAW=1 -DDPOS=1 -DFILLRND=2"
+d1mF|$Z1 -DDRAW=1 -DDPOS=1 -DFILLRND=2
+G2|$Z1 -DGX=1 -DGEV=2
+G2d1|$Z1 -DGX=1 -DGEV=2 -DDRAW=1 -DDPOS=1
+G2d2|$Z1 -DGX=1 -DGEV=2 -DDRAW=2 -DDPOS=1
+F1d1|$Z1 -DGX=1 -DDRAW=1 -DDPOS=1
+F1d2|$Z1 -DGX=1 -DDRAW=2 -DDPOS=1
+G2F|$Z1 -DGX=1 -DGEV=2 -DFILLRND=2
+G2d1F|$Z1 -DGX=1 -DGEV=2 -DDRAW=1 -DDPOS=1 -DFILLRND=2
+G2d2F|$Z1 -DGX=1 -DGEV=2 -DDRAW=2 -DDPOS=1 -DFILLRND=2
+F1d1F|$Z1 -DGX=1 -DDRAW=1 -DDPOS=1 -DFILLRND=2
+F1d2F|$Z1 -DGX=1 -DDRAW=2 -DDPOS=1 -DFILLRND=2
+F1F|$Z1 -DGX=1 -DFILLRND=2"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -522,6 +533,18 @@ case "${PP_SET:-}" in
       PP_DUMPS="d4mN:60:110 r4:0:24"
       PP_PTRACE="r4d2.d r4d1.d d4mN.sp"
       PP_PERMS="d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread d1mN:sp:*=spread rd4N:sp:*=spread rd2N:sp:*=spread r4:o:*=orig r4d1:d:YLAS=spread r4d2:d:YLAS=spread r4d3:d:YLAS=spread r4d1:s:*=spread r4d2:s:*=spread" ;;
+  # b6: a readout's count of XOR3 (one after every second IMMA, where the compiler puts them) with one or two
+  # draw units whose steps go one a gap into the other gaps, or over all gaps.
+  b6) PP_BUILD="base F1 G2 G2d1 G2d2 F1d1 F1d2"
+      PP_TRACES="G2 G2d1"
+      PP_PTRACE="G2d1.v0 G2d1.v1 G2d2.sp"
+      PP_PERMS="G2:o:*=orig G2d1:o:*=orig G2d1:v0:YLAS=every,2,1,0 G2d1:v1:YLAS=every,2,1,1 G2d1:sp:YLAS=spread G2d2:sp:YLAS=spread G2d2:v0:YLAS=every,2,2,0 G2d2:v1:YLAS=every,2,2,1 F1d1:sp:YLAS=spread F1d2:sp:YLAS=spread" ;;
+  # c1: the watts on an RTX 5090, operand bytes like a real fold's: 30 s runs of the streams as compiled and
+  # reordered. PP_BENCH=1 TAP=1 ORDER=peak,srb,ozm first runs the three miners on the same PC.
+  c1) PP_BUILD="base baseF F1F d1mF d2mF d4mF rd2aF rd4F G2F G2d1F G2d2F F1d1F"
+      PP_LONGS=${PP_LONGS:-baseF F1F G2F d1mF d2mF d4mF rd2aF rd4F G2d1F G2d2F}
+      PP_PLONGS=${PP_PLONGS:-d1mF.sp d2mF.sp G2d1F.v0 G2d1F.v1 G2d1F.sp G2d2F.sp F1d1F.sp baseF.o}
+      PP_PERMS="d1mF:sp:*=spread d2mF:sp:*=spread G2d1F:v0:YLAS=every,2,1,0 G2d1F:v1:YLAS=every,2,1,1 G2d1F:sp:YLAS=spread G2d2F:sp:YLAS=spread F1d1F:sp:YLAS=spread baseF:o:*=orig" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
