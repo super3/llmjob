@@ -30,7 +30,7 @@ from asm89 import Ins  # noqa: E402
 import fold  # noqa: E402
 from fold import addi, andi, mov, muladd, shr  # noqa: E402
 
-CFG = dict(mt=6, conf=1, noread=0, nold=0, pad=8, lead=2, py=1, iy=1, ly=1, bshift=0, ashift=0)
+CFG = dict(mt=6, conf=1, noread=0, nold=0, pad=8, lead=2, py=1, iy=1, ly=1, ru=0, ist=1, pol=0, bshift=0, ashift=0)
 AF, BF, ACC = [4, 8], 12, 28
 OQ, POFF, CNT, TRL = [240, 244], 248, 250, 251
 XR, W = [2, 3], 0
@@ -58,10 +58,13 @@ def build(cfg):
     for s in range(4):
         b = ni * s
         cur, nxt = OQ[s & 1], OQ[(s + 1) & 1]
-        if cfg["conf"]:
+        if cfg["conf"] in (1, 3):
             G[b + 2].append(Ins("LDG.E.128 R%d, [R%d.64+0x%x]" % (nxt, POFF, (s + 1) * 0x200), wsb=SB_OFF))
             for q in range(4):
                 G[b + 6 + q // 2].append(Ins(shr(nxt + q, nxt + q, 4), wait=(SB_OFF,) if q == 0 else ()))
+            if cfg["conf"] == 3:       # a check on the addresses: nothing over a group's 128 entries
+                for q in range(4):
+                    G[b + 8 + q // 2].append(Ins(andi(nxt + q, nxt + q, 0x7f0)))
         for m in range(1, mt):                         # tile m's fragments, during tile m - 1
             a = AF[(m + (mt & 1) * s) & 1]
             for h in range(2):
@@ -135,10 +138,47 @@ def build(cfg):
     c.append(Ins(muladd(S[0] + 3, S[0] + 1, 0x20, S[0])))
     c.append(Ins(muladd(S[0] + 3, S[0] + 3, 0x10)))
     c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (POFF, S[0] + 3, S[1])))
-    if cfg["conf"]:
+    if cfg["conf"] in (1, 3):
         c.append(Ins("LDG.E.128 R%d, [R%d.64]" % (OQ[0], POFF), wsb=SB_OFF))
         for q in range(4):
             c.append(Ins(shr(OQ[0] + q, OQ[0] + q, 4), wait=(SB_OFF,) if q == 0 else ()))
+        if cfg["conf"] == 3:
+            for q in range(4):
+                c.append(Ins(andi(OQ[0] + q, OQ[0] + q, 0x7f0)))
+    elif cfg["conf"] in (4, 5):
+        # Rank indices whose residues mod 8 are the lane's own row number, so a matrix's rows share no bank,
+        # except that row 7 (conf 4), or rows 6 and 7 (conf 5), take the residue of row 0 (and 1): one or two
+        # two-way collisions in every matrix. The searched order of k leaves about one row of 8 colliding.
+        nrow = 7 if cfg["conf"] == 4 else 6
+        c.append(Ins(andi(S[2], 0, 7)))
+        c.append(Ins("ISETP.GE.U32.AND P0, PT, R%d, 0x%x, PT" % (S[2], nrow), stall=13, yld=False))
+        c.append(Ins("@P0 " + addi(S[2], S[2], -nrow)))
+        for q in range(8):
+            c.append(Ins(addi(OQ[0] + q, 0, 256 * q + 1)))
+        for q in range(8):
+            c.append(Ins(muladd(OQ[0] + q, OQ[0] + q, 0x2545f491)))
+        for q in range(8):
+            c.append(Ins(shr(OQ[0] + q, OQ[0] + q, 23)))
+        for q in range(8):
+            c.append(Ins(andi(OQ[0] + q, OQ[0] + q, 0x78)))
+        for q in range(8):
+            c.append(Ins(muladd(OQ[0] + q, OQ[0] + q, 1, S[2])))
+        for q in range(8):
+            c.append(Ins(muladd(OQ[0] + q, OQ[0] + q, 0x10)))
+    elif cfg["conf"] == 2:
+        # No offsets table: every lane's eight rank indices made here from its thread number by a multiply,
+        # the same every k-step. Rows of a matrix collide in the banks as chance has it, and every address
+        # is inside its group's table whatever the probe's offsets hold.
+        for q in range(8):
+            c.append(Ins(addi(OQ[0] + q, 0, 256 * q + 1)))
+        for q in range(8):
+            c.append(Ins(muladd(OQ[0] + q, OQ[0] + q, 0x2545f491)))
+        for q in range(8):
+            c.append(Ins(shr(OQ[0] + q, OQ[0] + q, 23)))
+        for q in range(8):
+            c.append(Ins(andi(OQ[0] + q, OQ[0] + q, 0x7f)))
+        for q in range(8):
+            c.append(Ins(muladd(OQ[0] + q, OQ[0] + q, 0x10)))
     else:
         for q in range(8):
             c.append(Ins(muladd(OQ[0] + q, 0, 0x10)))
@@ -152,13 +192,24 @@ def build(cfg):
         s, i = divmod(g, ni)
         mb, nb = divmod(i, 8)
         items = G[g]
+        n = len(items)
+        # pol: where a gap's spare cycles go. 0: behind the last plain step (the IMMA's stall is key ist).
+        # 1: behind the IMMA, the steps at stall 1 (a two-register step issued 5 cycles behind its IMMA costs
+        # the pipe nothing; issued 1 to 4 behind it costs up to 2 cycles: measured). 2: the IMMA's stall is
+        # ist and nothing is added behind the steps.
+        if cfg["pol"] == 1:
+            ist_g, last_g = max(1, pad - n), 1
+        elif cfg["pol"] == 2:
+            ist_g, last_g = cfg["ist"], 1
+        else:
+            ist_g, last_g = cfg["ist"], max(1, pad - cfg["ist"] - (n - 1))
         loop.append(Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (
-            ACC + 4 * i, AF[(mb + (mt & 1) * s) & 1], BF + 2 * nb, ACC + 4 * i), stall=pad if not items else 1,
-            yld=bool(cfg["iy"]), label=".L0" if g == 0 else None))
+            ACC + 4 * i, AF[(mb + (mt & 1) * s) & 1], BF + 2 * nb, ACC + 4 * i), stall=pad if not items else ist_g,
+            yld=bool(cfg["iy"]), reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, ins in enumerate(items):
             ins = Ins(ins.text, ins.stall, bool(cfg["py"]), ins.wsb, ins.rsb, ins.wait)
             if k == len(items) - 1:
-                ins.stall = max(ins.stall, pad - 1 - (len(items) - 1))
+                ins.stall = max(ins.stall, last_g)
                 ins.yld = bool(cfg["ly"])
             loop.append(ins)
     loop.append(Ins("@P0 BRA .L0", stall=5))
