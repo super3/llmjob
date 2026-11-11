@@ -31,7 +31,7 @@
 // Device choice: Level Zero GPUs, else OpenCL GPUs, ranked by compute units x
 // clock. PEARL_SYCL_DEVICE=cpu takes the SYCL CPU device instead, which is how
 // the correctness gate runs without an Intel GPU. See README.md for the other
-// switches (PEARL_SYCL_FOLD, PEARL_SYCL_COL_BATCH, PEARL_SYCL_BAND).
+// switches (PEARL_SYCL_FOLD, PEARL_SYCL_COL_BATCH, PEARL_SYCL_BAND, PEARL_SYCL_DUTY).
 
 #include <sycl/sycl.hpp>
 
@@ -46,6 +46,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(PEARL_SYCL_XMX_HW) || defined(PEARL_SYCL_XMX_JIT)
@@ -122,6 +123,11 @@ struct Ctx {
   sycl::queue *q = nullptr;     // draws and folds, in order
   sycl::queue *side = nullptr;  // proof reads
   int deviceIndex = 0;
+  // PEARL_SYCL_DUTY, 10 to 100: the share of the time the card folds. Under 100 each batch waits for the one
+  // before it and then leaves the card idle for the rest, for a card that cannot shed the heat of a full load.
+  int dutyPct = 100;
+  bool dutyStarted = false;
+  std::chrono::steady_clock::time_point dutyMark;
   std::string deviceName;
   int fold = kDot;
   bool xmxHw = false;  // the fold runs the hardware instruction
@@ -878,6 +884,19 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);
   }
+  {
+    // One figure for every card, or a list by card index ("100,60,60"; a card past its end takes the last).
+    std::string dEnv = env_str("PEARL_SYCL_DUTY", "");
+    for (int i = 0; i < ctx->deviceIndex; i++) {
+      const size_t comma = dEnv.find(',');
+      if (comma == std::string::npos) break;
+      dEnv = dEnv.substr(comma + 1);
+    }
+    if (!dEnv.empty()) {
+      const int d = atoi(dEnv.c_str());
+      ctx->dutyPct = d < 10 ? 10 : d > 100 ? 100 : d;
+    }
+  }
   // What pearl_host_fold_name says, for core.device.fold and the logs. Written
   // here, once: the search thread and the JS thread both read it. xmx16 and
   // xmx8 say whether they got the hardware instruction or the reference code.
@@ -885,7 +904,8 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->foldName = std::string(fold_label(ctx->fold))
                   + (!namedXmx ? "" : ctx->xmxHw ? ", hardware DPAS" : ", DPAS reference code")
                   + ", col_batch " + std::to_string(ctx->colBatch) + ", band " + std::to_string(ctx->band)
-                  + " row windows, k " + std::to_string(k) + (ctx->isGpu ? "" : ", SYCL CPU device");
+                  + " row windows, k " + std::to_string(k) + (ctx->isGpu ? "" : ", SYCL CPU device")
+                  + (ctx->dutyPct < 100 ? ", duty " + std::to_string(ctx->dutyPct) + "%" : "");
   if (getenv("PEARL_SYCL_VERBOSE"))
     fprintf(stderr, "[pearl-sycl] %s: fold %s%s, col_batch %u, band %u row windows\n",
             ctx->deviceName.c_str(), fold_label(ctx->fold), ctx->xmxHw ? " (hardware)" : "",
@@ -947,6 +967,19 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   try {
     sycl::queue &q = *ctx->q;
     set_layout(ctx, fold_is_frag(ctx->fold));  // the check tool may have left the other one
+    if (ctx->dutyPct < 100) {
+      // Let the card finish what it has, then rest it in proportion to the time that took (2 s at most, so
+      // a wait for a job is not paid for twice).
+      q.wait();
+      const auto now = std::chrono::steady_clock::now();
+      if (ctx->dutyStarted) {
+        auto rest = (now - ctx->dutyMark) * (100 - ctx->dutyPct) / ctx->dutyPct;
+        if (rest > std::chrono::seconds(2)) rest = std::chrono::seconds(2);
+        std::this_thread::sleep_for(rest);
+      }
+      ctx->dutyMark = std::chrono::steady_clock::now();
+      ctx->dutyStarted = true;
+    }
     q.memset(&ctx->dHits[si]->count, 0, sizeof(uint32_t));
     launch_fold(ctx, ctx->fold, fold_args(ctx, nonce_base, si, nullptr), fold_groups(ctx));
     s.done = q.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
