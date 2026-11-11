@@ -3468,6 +3468,32 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   count, but only while a matrix's rows collide in the banks two at a time; by chance they cost 6.6 points.
   Tables: `earn/native/probes/README.md`, "The loop written by hand".
 
+- **The draw fold, sixth round: the gather fold and a direct fold built for real, neither beats the release, and
+  the reason is measured (11 November, rig01's RTX 4090, branch `goal/nv-kernel`).** No mining rate here: probe
+  figures at k 8192, "by count" = pipe use x clock x 0.13107, the release mines 317.3 TH/s (2531 MHz, 449 W).
+  (1) The gather fold (each warp builds its own fragments with `ldmatrix.trans` on static tables; no stage, no
+  barrier) is correct as compiled and as a loop written by hand: 16,384 of 16,384 lane transcripts over 64 tiles
+  against a CPU fold, in three orders of k. By hand it holds 88.9% of the pipe in the definition's order of k
+  (2.75 rows of a matrix's 8 collide in the banks), 95.4% with k ordered for B alone, 96.7% ordered for both sides
+  (1.0 collide), 97.4% with none (timing only). Over 60 s: 96.7% at 2520 MHz, 436 W, 319 by count; none collide
+  321. (2) The fifth round's "11 to 20 W under the limit" is not spare power. The same loop at a 480 W limit runs
+  2522 MHz and 432 W; with every operand byte constant it draws 318 W and still runs 2535 MHz. The clock has a
+  ceiling that falls with the loop's memory and ALU steps: IMMA alone 2715 MHz, with the readout 2700, with the
+  gathers' twenty LDSM a k-step 2638, the whole loop 2535 (all with constant operands, 215 to 319 W). (3) A fold
+  with no draw, timing only: ten LDSM a k-step and the readout hold 99.4% at 2685 MHz and 425 W, 350 by count;
+  four copy units a k-step more (a 16-byte global load and a 16-byte shared store each, about the least a
+  192 x 256 block can copy) 99.2% at 2626 to 2633 MHz, 341 to 342; eight 2565 MHz, 333; the release's count of
+  plain steps 2565 to 2571 MHz at 98.0%, 330. The four-copy row lands where the competitors measure (338 to 342
+  TH/s at 2600 to 2625 MHz): that is an inference from our own streams, not something established about their
+  programs. The release copies about twice that. (4) A direct fold (A' and B'
+  ready in global memory in the fragments' own layout, one 16-byte load a fragment, no stage and no barrier) is
+  correct compiled and by hand (16,384 of 16,384, nine runs); by hand with each fragment of the next k-step
+  loaded ahead it holds 99.0% of the pipe but runs 2476 MHz at 449 W, 321 by count, and 73.9% at 2387 MHz when
+  the operands (k 65536, 370 MB) do not fit the card's cache: global loads cost the clock more than LDSM do.
+  (5) So no draw on the chip clears +3%: gather 319, staged 319 (96.0% at 2536 MHz over 60 s), direct 321. What
+  is left is the release's own form with half its copies, written by hand. Nothing ships from this round.
+  Tables: `earn/native/probes/README.md`, "The gather fold, the direct fold, and what sets the clock".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
