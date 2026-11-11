@@ -2405,6 +2405,9 @@ one load of the pair offsets, four address adds, four 8-byte table loads, four s
 interleave two k indexes, one store. That is 1.3 instructions an IMMA on the 192x256 tile and 1.7 on the 128x256
 one. The one draw built so far (`pearl_e4_drawt`) is about 32 a unit: 2.3 and 3.0. Nothing has been built at 18.
 
+**Later the same day: the verdict below does not stand on its evidence. Its sham draw was chained; see the two probes
+after this entry.**
+
 **Verdict: the on-chip-draw route is closed for stock-power cards.** The line was +3% on the release at 450 W with
 the producer at a real draw's count. The best arrangement at 1.3 to 1.7 an IMMA is about 0% (the draw inside the
 folding warps of the 192x256 fold) or about −3% (the 128x256 fold with producer warps); no arrangement reaches +3% at
@@ -2414,6 +2417,76 @@ would have to change is known now: a fold that leaves room for producers and sti
 and nothing measured here says how to get them.
 
 The arms, the raw runs and the table script are on branch `goal/gate` (4014c732, `earn/tuning/gate`).
+
+**What fills the tensor pipe, and a draw that fits in it: two probes (11 November, rig01, RTX 4090)**
+
+The three other miners could not be studied from inside: all three ship protected and none runs under Nsight Compute.
+Their shares and the card's readings give the outline (two warps a scheduler, a proof tile that is one thread's sums,
+k 65536, no memory traffic, 449 W at 2600 to 2625 MHz). The rest here is our own: two probes that run the fold's
+instruction stream alone, one block an SM, each warp timed with the SM's cycle counter
+(`earn/native/probes/pipeprobe.cu` and `pipeprobe2.cu` on branch `goal/nv-kernel`). Pipe use is 16 cycles an IMMA over
+the cycles taken. Kernels of 0.05 s; clock and watts from 20 to 25 s of back-to-back launches at the 450 W limit.
+Timing only: the streams compute nothing real.
+
+| Stream (8 warps, two a scheduler, 48 IMMA a k-step, 4 k-steps a chunk) | Pipe use | Clock and watts, 450 W limit |
+|---|---|---|
+| IMMA only | 99.93% | |
+| + 4 ldmatrix after every k-step (kept in every row below) | 100.00% | 2687 to 2700 MHz, 292 to 373 W by the operand bytes loaded |
+| + readout as one run of 96 XOR3 at the chunk's end, word kept by a shared load and store | 98.72% | 2685 MHz, 399 W |
+| the same with a shared XOR | 97.91% | |
+| + readout as three runs of 32 XOR3, each after its tiles' last IMMA | 99.67% (99.71% with a shared XOR) | 2691 MHz, 318 W |
+| + readout as six runs of 16 | 99.68% | |
+| + 4 draw-shaped units a k-step (58 instructions), after the 24th IMMA | 99.61% | 2595 MHz, 449.5 W |
+| the same at the k-step's end | 99.52% | |
+| the same in two halves / one unit every 12 IMMA | 98.44% / 98.44% | |
+| the same with two units' steps grouped by kind | 97.68% | |
+| + 4 units that read their four table offsets first | 98.80% | 2670 MHz, 421 W |
+| loads, readout in three runs, 4 such units, and one shared add and test a k-step | 94.71% (95.15% without the add and test) | 2660 MHz, 438 W |
+| the same with 3 units a k-step | 96.97% | 2685 MHz, 418 W |
+| the same with the 4 units at the k-step's end | 96.50% | |
+
+| Stream (first probe, roles and counts set at run time) | Pipe use |
+|---|---|
+| One warp a scheduler, IMMA only | 91.0% (17.6 cycles between a warp's own IMMA) |
+| Two a scheduler | 99.5 to 99.6% |
+| Three a scheduler (12 warps, 32 IMMA a k-step) | 98.4 to 98.9% |
+| Four a scheduler (16 warps, 24 IMMA a k-step) | 99.5% |
+| Two folding, a third warp doing 1.1 to 1.7 instructions an IMMA beside them (ALU, loads, stores, draw units) | 95.0 to 96.6% |
+| One folding, one working beside it | 78.6 to 82.4% |
+| Two, one chained ALU step after every IMMA / two steps | 98.5% / 96.3% |
+| Two, a run of 96 chained ALU steps every 192 IMMA | 94.1% (warps staggered: 94.8%) |
+| Two, runs of 8 / 16 / 32 / 64 chained steps every 192 IMMA | 98.7 / 98.8 / 98.7 / 97.8% against 98.9% |
+| Two, readout runs: tested between IMMA segments at run time / not | 91.6% / 98.0% |
+| Three a scheduler, readout runs / four | 95.9% / 97.2% |
+
+The first probe's own run-time tests cost it pipe time (its two-warp IMMA-only figure fell from 99.6% to 98.7% as
+tests were added), so its rows compare with each other only.
+
+- **Two warps taking turns fill the pipe, and nothing else does.** One warp alone gets 91%: it cannot follow its own
+  IMMA in under 17.6 cycles. Three or four a scheduler add nothing. A third warp has no free issue slots: its
+  instructions cost the folding warps 0.44 cycle each, the same as work inside them.
+- **What costs is waiting and control, not the count of instructions.** Steps that each wait on the one before cost
+  1.4 to 1.9 cycles each in a long run and 0.2 to 0.3 one at a time. A run-time test between two IMMA segments costs
+  about 10 cycles (ptxas puts a fence before the next IMMA). Steps that depend on nothing recent, placed where ptxas
+  can weave them between the IMMA, are close to free: the readout cut in three runs costs 0.3%, and four draw-shaped
+  units a k-step (1.2 instructions an IMMA) cost 0.4%.
+- **The pieces do not simply add.** Loads, readout and draw each alone hold 98.8 to 100%; all three together fell to
+  94.7 to 97.0% as ptxas ordered them. So the order has to be pinned by hand and measured piece by piece.
+- **Watts follow the operand bytes and the draw.** The same IMMA stream drew 263 W on constant registers, 292 W on
+  mostly-zero loaded bytes and 373 W on random ones, all at the top clock. Four draw units a k-step added 77 to 130 W.
+  At 450 W the draw-only stream ran at 2595 MHz and 99.6%: 338.8 TH/s by count. The table's watts come from two
+  builds: random operand bytes (loads 373 W, one-run readout 399 W, the 58-instruction draw 449.5 W) and mostly-zero
+  ones (loads 292 W, three-run readout 318 W, the offset-reading draw 421 W, all together 438 W).
+- **The gate's verdict does not stand on its evidence.** Its sham draw chained 4 to 24 ALU steps on each word inside a
+  fold with a ring, and read 2 to 4% of the pipe for one instruction an IMMA. A draw's units are four steps deep and
+  independent of each other, and here they cost 0.4 to 1.2%. No real fold has been measured this way yet, so the route
+  is open again, not proven.
+- **Our fold's loss at long k is the readout's run.** The release fold has a predicated branch every 32 IMMA and holds
+  99.2% with the readout off; the readout as it stands costs 2.13%, three runs cost 0.3% in the probe.
+
+**Not verified.** Nothing here is a mining rate: 338.8 TH/s is pipe use times clock for a stream that computes
+nothing. The draw unit's offsets and tables are stand-ins of the right size. One card. One run a row (the 20 s rows
+repeat the short ones to 0.1 point). A real fold built this way has not been made.
 
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
