@@ -329,15 +329,17 @@ describe('what the host answers where pearl_host.cu has more', () => {
 // November 2026) and not from a guess. It is pinned so that it is changed only
 // against a new measurement (native/sycl/README.md, "Results on an Arc A750 rig").
 describe('what the first run on hardware set', () => {
-  test('a band is the device cache\'s size for the XMX folds and a quarter of it for the plain fold', () => {
+  test('a band is the device cache\'s size for fold_xmx, a quarter of it for the plain fold and the fragment fold', () => {
     // On an A750 (16 MiB): xmx8 16.6 to 16.9 TH/s at 256 row windows against
     // 15.2 to 15.5 at 64, the quarter that was the rule for both; dot 3.74 at
-    // 256 against 3.91 at 64.
+    // 256 against 3.91 at 64; xmx8f 64.2 at 64 against 60.6 at 32, 55.8 at 16
+    // and 44.1 at 128.
     const rule = slice(HOST, 'const uint64_t share =', 'ctx->band = floor_pow2(band);');
     expect(statements(rule).slice(0, 2)).toEqual([
-      'const uint64_t share = ctx->fold == kDot ? 4 : 1;',
+      'const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;',
       'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
     ]);
+    expect(HOST).toContain('bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu; }');
     // The fold is settled before the band is: pick_fold comes first in create.
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     const picked = create.indexOf('if (!pick_fold(ctx, err, err_len)) {');
@@ -705,8 +707,8 @@ const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status ===
     for (const l of gpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --bits 234$/);
     const cpu = sh('verify.sh', ['--quick'], { PEARL_SYCL_DEVICE: 'cpu' });
     expect(cpu.status).toBe(0);
-    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8', 'dot,xmx16']);
-    expect(cpu.nodes).toHaveLength(3);
+    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8,xmx8f', 'dot,xmx16,xmx8f']);
+    expect(cpu.nodes).toHaveLength(4);
     for (const l of cpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --m 4096 --n 4096 --col-batch 64 --bits 245$/);
     expect(cpu.out).not.toContain('not part of PASS');
   });
@@ -724,5 +726,74 @@ const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status ===
     expect(none.status).not.toBe(0);
     expect(none.err).toContain('PEARL_ADDRESS is not set');
     expect(none.nodes.filter((l) => l.includes('earn-cli.js'))).toHaveLength(0);
+  });
+});
+
+// core.device.memTotalMb and memUsedMb: the app has no other source for an Arc
+// card's memory (nvidia-smi lists no Intel card, and i915 and xe publish none
+// in sysfs), and the SYCL host knows both. Only the Intel builds compile it.
+describe('the card\'s memory, from the core', () => {
+  const GYP = read(NATIVE, 'binding.gyp');
+  const BUILD_SH = read(SYCL, 'build.sh');
+
+  test('pearl_core.cc declares and calls pearl_host_mem_info only under PEARL_HOST_MEM_INFO', () => {
+    const decl = '#ifdef PEARL_HOST_MEM_INFO\nextern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);\n#endif\n';
+    expect(CORE).toContain(decl);
+    // Before the block every host must define, so no other host is held to it.
+    expect(CORE.indexOf(decl)).toBeLessThan(CORE.indexOf('extern "C" {'));
+    expect(declaredApi().has('pearl_host_mem_info')).toBe(false);
+    // With the guarded blocks cut out, no code mentions it.
+    const bare = stripComments(CORE.replace(/#ifdef PEARL_HOST_MEM_INFO\n[\s\S]*?#endif\n/g, ''));
+    expect(bare).not.toMatch(/pearl_host_mem_info|memTotalMb|memUsedMb|mem_total|mem_used/);
+    expect(CORE.match(/#ifdef PEARL_HOST_MEM_INFO\n/g)).toHaveLength(2);
+  });
+
+  test('core.device gains whole MB, and nothing when the host does not know', () => {
+    const get = slice(CORE, 'Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {', '\n}\n');
+    expect(statements(slice(get, '#ifdef PEARL_HOST_MEM_INFO', '#endif'))).toEqual([
+      '#ifdef PEARL_HOST_MEM_INFO',
+      'uint64_t mem_total = 0, mem_used = 0;',
+      'if (pearl_host_mem_info(ctx_, &mem_total, &mem_used)) {',
+      'out.Set("memTotalMb", Napi::Number::New(env, (double)(mem_total >> 20)));',
+      'out.Set("memUsedMb", Napi::Number::New(env, (double)(mem_used >> 20)));',
+      '}',
+      '#endif',
+    ]);
+    // An A750 reports about 7.6 GiB, and a mainnet context allocates about 880 MiB.
+    const mb = (bytes) => Math.floor(bytes / 2 ** 20);
+    expect([mb(8096 * 2 ** 20 + 4095), mb(2 ** 20 - 1)]).toEqual([8096, 0]);
+  });
+
+  test('the SYCL host defines it with the same types, from figures written once at create', () => {
+    expect(definedApi().get('pearl_host_mem_info'))
+      .toBe(signature('bool', 'pearl_host_mem_info', 'void *ctx, uint64_t *total_bytes, uint64_t *used_bytes'));
+    const fn = slice(HOST, 'extern "C" bool pearl_host_mem_info(', '\n}\n');
+    expect(statements(fn).slice(1)).toEqual([
+      'const Ctx *ctx = static_cast<const Ctx *>(handle);',
+      'if (!ctx || !ctx->memTotal) return false;',
+      'if (total_bytes) *total_bytes = ctx->memTotal;',
+      'if (used_bytes) *used_bytes = ctx->memUsed;',
+      'return true;',
+      '}',
+    ]);
+    // Total: the device's own figure. Used: every device allocation the context makes.
+    const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
+    expect(create).toContain('const size_t have = ctx->dev.get_info<sycl::info::device::global_mem_size>();\n    ctx->memTotal = have;');
+    expect(create).toContain('void *p = sycl::malloc_device(n, q);\n    if (!p) ok = false;\n    else ctx->memUsed += n;');
+    expect(HOST.match(/ctx->memUsed \+= /g)).toHaveLength(1);
+    expect(HOST.match(/ctx->memTotal = /g)).toHaveLength(1);
+    // Nothing else allocates device memory for the context's life.
+    expect(create.match(/sycl::malloc_device\(/g)).toHaveLength(1);
+  });
+
+  test('only the Intel builds set the define', () => {
+    expect(BUILD_SH).toContain('-DNAPI_DISABLE_CPP_EXCEPTIONS -DNAPI_VERSION=8 -DPEARL_HOST_MEM_INFO \\\n');
+    const blocks = GYP.split(/\n\s*\["OS==/).slice(1);
+    expect(blocks).toHaveLength(4);
+    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_HOST_MEM_INFO" ]'))).toEqual([false, false, true, false]);
+    expect(blocks[2].startsWith('\'win\' and pearl_backend==\'sycl\'"')).toBe(true);
+    expect(read(NATIVE, 'amd', 'build-amd.sh')).not.toContain('PEARL_HOST_MEM_INFO');
+    // Windows: the DLL exports it for the addon node-gyp links.
+    expect(read(SYCL, 'pearl_sycl.def')).toContain('\n  pearl_host_mem_info\n');
   });
 });

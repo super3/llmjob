@@ -19,6 +19,7 @@ EXPORTS
   pearl_host_next_hit
   pearl_host_search
   pearl_host_fold_name
+  pearl_host_mem_info
   pearl_host_shape_count
   pearl_host_shape_name
   pearl_host_set_shape

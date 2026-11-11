@@ -18,6 +18,9 @@ if (!dir) { console.error('usage: node isa-report.js <dump-dir>'); process.exit(
 function shortName(k) {
   const x = /fold_xmxILi(\d+)ELi(\d+)ELb(\d)E/.exec(k);
   if (x) return 'fold_xmx<sg' + x[1] + ',rb' + x[2] + (x[3] === '1' ? ',hw>' : ',emu>');
+  // The fragment fold is a functor, so its kernel is named after its type.
+  const xf = /FoldXmxFILi(\d+)ELi(\d+)ELb(\d)E/.exec(k);
+  if (xf) return 'fold_xmxf<sg' + xf[1] + ',rb' + xf[2] + (xf[3] === '1' ? ',hw>' : ',emu>');
   // The peak probe's rows (pearl_sycl_peak.cpp): sub-group, where A and B come
   // from, the readout, accumulators that get a DPAS.
   const pk = /peak_stepILi(\d+)ELi(\d+)ELi(\d)ELi(\d)ELi(\d)ELi(\d+)E/.exec(k);

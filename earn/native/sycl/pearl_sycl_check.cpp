@@ -21,7 +21,7 @@
 // (default the mainnet m and n) and prints its rate in TH/s (MACs a second / 1e12,
 // the unit the pool and the app use). No host reference.
 //
-// Folds: dot, xmx16, xmx8, xmx16-emu, xmx8-emu, and auto (the fold the core
+// Folds: dot, xmx16, xmx8, xmx8f, xmx16-emu, xmx8-emu, xmx8f-emu, and auto (the fold the core
 // picks for this device) and auto-emu (the reference code of that fold). The
 // default is dot,auto,auto-emu. "xmx16" and "xmx8" are the hardware DPAS on a GPU
 // that has it in this build, the reference code anywhere else; a fold whose
@@ -70,18 +70,20 @@ bool pearl_sycl_read_operands(void *ctx, int8_t *Ap, int8_t *Bp, uint8_t a_seed[
 
 namespace {
 
-const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu"};
+const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xmx8f", "xmx8f-emu"};
 
 // A fold's code. "auto" is the context's own fold, "auto-emu" the reference code
 // of it (none when that is the plain fold: -3, skipped).
 int fold_code(const std::string &s, int own) {
   if (s == "auto") return own;
-  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : -3;
+  if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : -3;
   if (s == "dot") return 0;
   if (s == "xmx16") return 1;
   if (s == "xmx8") return 2;
   if (s == "xmx16-emu") return 3;
   if (s == "xmx8-emu") return 4;
+  if (s == "xmx8f") return 5;
+  if (s == "xmx8f-emu") return 6;
   return -2;
 }
 

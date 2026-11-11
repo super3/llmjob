@@ -84,7 +84,10 @@ namespace {
 using namespace pearl_sycl;
 
 // Which fold a context runs. See pearl_sycl_kernels.hpp.
-enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4 };
+enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6 };
+
+// The folds that read the noised operands in fragment order (pearl_sycl_kernels.hpp, Layout).
+bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu; }
 
 const char *fold_label(int f) {
   switch (f) {
@@ -93,6 +96,8 @@ const char *fold_label(int f) {
     case kXmx8: return "xmx8 (DPAS 8x8x32, sub-group 8)";
     case kXmx16Emu: return "xmx16-emu (DPAS reference code, sub-group 16)";
     case kXmx8Emu: return "xmx8-emu (DPAS reference code, sub-group 8)";
+    case kXmx8F: return "xmx8f (DPAS 8x8x32, sub-group 8, 16 rows a sub-group, operands in fragment order)";
+    case kXmx8FEmu: return "xmx8f-emu (DPAS reference code, sub-group 8, operands in fragment order)";
     default: return "?";
   }
 }
@@ -124,11 +129,15 @@ struct Ctx {
   bool isGpu = false;  // a GPU, not the SYCL CPU device
   bool untested = false;  // a GPU, which no fold has run on yet, opened because its opener checks every hit
   std::string foldName;   // pearl_host_fold_name's answer, written once at create
+  uint64_t memTotal = 0;  // the device's memory, bytes; this and memUsed are written once at create
+  uint64_t memUsed = 0;   // what this context allocated on the device, bytes
   uint32_t band = 1;
   bool compact = false;
 
   int8_t *dA = nullptr, *dB = nullptr;    // operands (compact: two chunks each)
-  int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major
+  int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major or in fragment order (frag)
+  bool frag = false;                      // how dAp and dBp are stored now
+  uint32_t aStride = 0, bStride = 0;      // fragment order: bytes a 16-row block of A', a 64-column block of B'
   int8_t *dEAL = nullptr, *dEBR = nullptr;
   uint32_t *dPermA = nullptr, *dPermB = nullptr;
   uint32_t *dTreeA = nullptr, *dTreeB = nullptr;  // levels end to end, 8 words a node
@@ -199,7 +208,7 @@ size_t needed_bytes(const PearlProfile *p) {
   const size_t aBytes = (size_t)p->m * k, bBytes = (size_t)p->n * k;
   const bool compact = p->operand_fill == PEARL_OPERAND_CONST;
   const size_t stored = compact ? 4096 : aBytes + bBytes;
-  const size_t primes = aBytes + bBytes;
+  const size_t primes = aBytes + bBytes;  // the fragment order's blocks have no gaps, so it is the same size
   const size_t noise = ((size_t)p->m + p->n) * rank + 4 * k * sizeof(uint32_t);
   const size_t trees = 2 * (aBytes / 1024 + bBytes / 1024) * 32;
   return stored + primes + noise + trees + kSlots * sizeof(HitBuf) + (1u << 20);
@@ -239,7 +248,7 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
   const std::string want = env_str("PEARL_SYCL_FOLD", "auto");
   const int sg = xmx_sg(ctx->dev);
   if (want == "auto") {
-    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8 : kDot;
+    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8F : kDot;
   } else if (want == "dot") {
     ctx->fold = kDot;
   } else if (want == "xmx16" || want == "xmx") {
@@ -250,12 +259,16 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
     ctx->fold = kXmx16Emu;
   } else if (want == "xmx8-emu") {
     ctx->fold = kXmx8Emu;
+  } else if (want == "xmx8f") {
+    ctx->fold = kXmx8F;
+  } else if (want == "xmx8f-emu") {
+    ctx->fold = kXmx8FEmu;
   } else {
-    return fail(err, err_len,
-                "PEARL_SYCL_FOLD=" + want + " is not one of auto, dot, xmx16, xmx8, xmx16-emu, xmx8-emu");
+    return fail(err, err_len, "PEARL_SYCL_FOLD=" + want
+                                  + " is not one of auto, dot, xmx16, xmx8, xmx8f, xmx16-emu, xmx8-emu, xmx8f-emu");
   }
   ctx->hwSg = sg;
-  ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || (ctx->fold == kXmx8 && sg == 8);
+  ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F) && sg == 8);
   return true;
 }
 
@@ -376,8 +389,21 @@ void draw_noise(Ctx *ctx, bool isA) {
   const bool constFill = ctx->profile.operand_fill == PEARL_OPERAND_CONST;
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : len / 16;
   const uint32_t fillWord = (uint32_t)(uint8_t)PEARL_OPERAND_FILL * 0x01010101u;
+  Layout lay{kRowMajor, 0};
+  if (ctx->frag) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   materialize16(q, isA ? ctx->dA : ctx->dB, dense, perm, isA ? ctx->dAp : ctx->dBp, rows, kLog2,
-                rank, readVecs, fillWord);
+                rank, readVecs, fillWord, lay);
+}
+
+// The noised operands stored the way `fold` reads them. A context draws them
+// for its own fold; only the check tool, which runs other folds on the same
+// context, ever changes it. Both are drawn again from the same seeds.
+void set_layout(Ctx *ctx, bool frag) {
+  if (ctx->frag == frag) return;
+  ctx->frag = frag;
+  if (!ctx->haveJob) return;
+  draw_noise(ctx, true);
+  draw_noise(ctx, false);
 }
 
 void a_seed_from_root(Ctx *ctx) {
@@ -559,7 +585,10 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   sycl::queue &q = *ctx->q;
   if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;
   if (fold == kXmx8 && ctx->hwSg != 8) fold = kXmx8Emu;
+  if (fold == kXmx8F && ctx->hwSg != 8) fold = kXmx8FEmu;
   switch (fold) {
+    case kXmx8F: fold_xmxf<8, 2, true>(q, a, groups); break;
+    case kXmx8FEmu: fold_xmxf<8, 2, false>(q, a, groups); break;
     case kXmx16: fold_xmx<16, 2, true>(q, a, groups); break;
     case kXmx8: fold_xmx<8, 1, true>(q, a, groups); break;
     case kXmx16Emu: fold_xmx<16, 2, false>(q, a, groups); break;
@@ -577,6 +606,9 @@ FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {
   a.colStart = (uint32_t)((nonce_base / ctx->rowsValid) % ctx->colsValid);
   a.colBatch = ctx->colBatch;
   a.band = ctx->band;
+  a.aStride = ctx->aStride;
+  a.bStride = ctx->bStride;
+  a.zero = 0;  // always: the fragment fold ORs (a loaded word & zero) into an operand to order its loads
   for (int i = 0; i < 8; i++) a.test.key[i] = pearl_b3::load_le32(ctx->aSeed + 4 * i);
   for (int i = 0; i < 8; i++) {
     const uint8_t *t = ctx->target + i * 4;
@@ -698,6 +730,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     ctx->deviceName = ctx->dev.get_info<sycl::info::device::name>();
     const size_t need = needed_bytes(profile);
     const size_t have = ctx->dev.get_info<sycl::info::device::global_mem_size>();
+    ctx->memTotal = have;
     if (have < need) {
       fail(err, err_len, "not enough device memory for this profile: need ~"
                              + std::to_string(need >> 20) + " MiB, the device has "
@@ -767,6 +800,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   auto dev_alloc = [&](size_t n) -> void * {
     void *p = sycl::malloc_device(n, q);
     if (!p) ok = false;
+    else ctx->memUsed += n;
     return p;
   };
   ctx->dA = (int8_t *)dev_alloc(ctx->compact ? 2048 : aBytes);
@@ -793,6 +827,9 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     return nullptr;
   }
 
+  ctx->frag = fold_is_frag(ctx->fold);
+  ctx->aStride = 16u * k;
+  ctx->bStride = 64u * k;
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
   ctx->colsValid = profile->n / PEARL_COLS_COUNT;
   // The batch width: the profile's, at most kMaxColBatch, or PEARL_SYCL_COL_BATCH;
@@ -817,21 +854,23 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // mainnet). Only a large PEARL_SYCL_COL_BATCH gets here.
   while ((uint64_t)ctx->colBatch * ctx->rowsValid > (1ull << 25) && ctx->colBatch > 4) ctx->colBatch /= 2;
   ctx->batch = ctx->colBatch * ctx->rowsValid;
-  // Row windows a band: for the XMX folds as many as make a band's A' (32 rows
-  // of k bytes a window) the size of the device's last-level cache, for the
-  // plain fold a quarter of that. PEARL_SYCL_BAND forces it.
+  // Row windows a band: for fold_xmx as many as make a band's A' (32 rows of k
+  // bytes a window) the size of the device's last-level cache, for the plain
+  // fold and the fragment fold a quarter of that. PEARL_SYCL_BAND forces it.
   // Measured on an Arc A750, which reports 16 MB, so 256 and 64 (TH/s). xmx8,
   // bench: 4 -> 14.1, 16 -> 14.3, 64 -> 15.2 to 15.5, 128 -> 16.3, 256 -> 16.6
   // to 16.9, 512 -> 13.8, 1024 to 4096 -> 13.4 to 13.5. dot, 400 hits through
   // the addon: 64 -> 3.91, 256 -> 3.74. A quarter was the rule for both, and
-  // not measured, until that run.
+  // not measured, until that run. xmx8f, bench, 11 November, with B' loaded
+  // in halves: 16 -> 55.8, 32 -> 60.6, 64 -> 64.2, 128 -> 44.1 (with one load
+  // a fragment it was 42.1 to 42.2 at 16, 32 and 64, 31.7 at 128, 35.4 at 256).
   {
     uint64_t cache = 0;
     try {
       cache = ctx->dev.get_info<sycl::info::device::global_mem_cache_size>();
     } catch (const std::exception &) {
     }
-    const uint64_t share = ctx->fold == kDot ? 4 : 1;
+    const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
     uint64_t band = cache ? cache / share / (32ull * k) : 16;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
@@ -842,7 +881,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // What pearl_host_fold_name says, for core.device.fold and the logs. Written
   // here, once: the search thread and the JS thread both read it. xmx16 and
   // xmx8 say whether they got the hardware instruction or the reference code.
-  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8;
+  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8 || ctx->fold == kXmx8F;
   ctx->foldName = std::string(fold_label(ctx->fold))
                   + (!namedXmx ? "" : ctx->xmxHw ? ", hardware DPAS" : ", DPAS reference code")
                   + ", col_batch " + std::to_string(ctx->colBatch) + ", band " + std::to_string(ctx->band)
@@ -907,6 +946,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Slot &s = ctx->slots[si];
   try {
     sycl::queue &q = *ctx->q;
+    set_layout(ctx, fold_is_frag(ctx->fold));  // the check tool may have left the other one
     q.memset(&ctx->dHits[si]->count, 0, sizeof(uint32_t));
     launch_fold(ctx, ctx->fold, fold_args(ctx, nonce_base, si, nullptr), fold_groups(ctx));
     s.done = q.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
@@ -988,6 +1028,18 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
   return ctx && !ctx->foldName.empty() ? ctx->foldName.c_str() : "unresolved";
 }
 
+// The device's memory and what this context allocated on it, in bytes, for
+// core.device (pearl_core.cc, PEARL_HOST_MEM_INFO). Both were written at
+// create, so the JS thread may read them while the search thread runs. False
+// without a context: pearl_core.cc asks after stop() too.
+extern "C" bool pearl_host_mem_info(void *handle, uint64_t *total_bytes, uint64_t *used_bytes) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->memTotal) return false;
+  if (total_bytes) *total_bytes = ctx->memTotal;
+  if (used_bytes) *used_bytes = ctx->memUsed;
+  return true;
+}
+
 // RTX 30's launch shapes (pearl_host.cu): this host has one way to launch a
 // fold, so there is nothing to choose, pearl_core.cc runs no startup trial and
 // the app caches no pick. The batch width and band come from the profile, the
@@ -1019,7 +1071,7 @@ extern "C" int pearl_sycl_list_devices(char *buf, size_t len) {
     }
     const int sg = xmx_sg(devs[i]);
     out += std::to_string(i) + ": " + name + " [" + via + "], auto fold "
-           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8 (hardware DPAS)" : "dot") + "\n";
+           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8f (hardware DPAS)" : "dot") + "\n";
   }
   if (buf && len) snprintf(buf, len, "%s", out.c_str());
   return (int)devs.size();
@@ -1031,7 +1083,8 @@ extern "C" const char *pearl_sycl_fold_name(void *handle) {
   return ctx ? fold_label(ctx->fold) : "none";
 }
 
-// The fold as a Fold value (0 dot, 1 xmx16, 2 xmx8, 3 xmx16-emu, 4 xmx8-emu).
+// The fold as a Fold value (0 dot, 1 xmx16, 2 xmx8, 3 xmx16-emu, 4 xmx8-emu,
+// 5 xmx8f, 6 xmx8f-emu).
 extern "C" int pearl_sycl_fold_code(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   return ctx ? ctx->fold : 0;
@@ -1069,6 +1122,8 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
       if (!dTr) return fail(err, err_len, "could not allocate the transcript buffer");
     }
     q.memset(&ctx->dHits[0]->count, 0, sizeof(uint32_t)).wait();
+    set_layout(ctx, fold_is_frag(fold < 0 ? ctx->fold : fold));
+    q.wait_and_throw();
     const auto t0 = std::chrono::steady_clock::now();
     launch_fold(ctx, fold < 0 ? ctx->fold : fold, fold_args(ctx, nonce_base, 0, dTr), fold_groups(ctx));
     q.wait_and_throw();
@@ -1089,12 +1144,15 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
   return true;
 }
 
-// The noised operands and the current a_seed, for a host-side reference fold.
+// The noised operands, row-major, and the current a_seed, for a host-side
+// reference fold. A context in fragment order draws them row-major for this;
+// the next batch of a fragment fold draws them back (set_layout).
 extern "C" bool pearl_sycl_read_operands(void *handle, int8_t *Ap, int8_t *Bp, uint8_t a_seed[32]) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx || !ctx->haveJob) return false;
   resolve_pending(ctx);
   try {
+    set_layout(ctx, false);
     ctx->q->wait();
     ctx->q->memcpy(Ap, ctx->dAp, (size_t)ctx->profile.m * ctx->profile.k).wait();
     ctx->q->memcpy(Bp, ctx->dBp, (size_t)ctx->profile.n * ctx->profile.k).wait();

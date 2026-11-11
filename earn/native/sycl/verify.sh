@@ -4,7 +4,7 @@
 #
 #   ./verify.sh            fold check, then 400 hits through the addon with the
 #                          core's own fold and 400 with the plain fold (on the
-#                          CPU device: the plain fold and both XMX folds)
+#                          CPU device: the plain fold and the three XMX folds)
 #   ./verify.sh --quick    100 hits each, at half the bound, for half the batches
 #
 # 1. pearl_sycl_check: every region of 4 batches, with the plain fold and the
@@ -41,11 +41,11 @@ MAIN=(--m 131072 --n 262144 --col-batch 4 --first 4095 --batches 1 --bits 247)
 if [ "${PEARL_SYCL_DEVICE:-gpu}" = "cpu" ]; then
   # The CPU device has no XMX, so its own fold is the plain one; the XMX folds
   # (the specification's reference code there) are asked for by name.
-  CHECK=(--m 1024 --n 1024 --col-batch 16 --batches 4 --bits 248 --folds dot,xmx16,xmx8)
-  MAIN+=(--folds dot,xmx16)
+  CHECK=(--m 1024 --n 1024 --col-batch 16 --batches 4 --bits 248 --folds dot,xmx16,xmx8,xmx8f)
+  MAIN+=(--folds dot,xmx16,xmx8f)
   HITARGS=(--m 4096 --n 4096 --col-batch 64)
   BITS=246
-  FOLDS=(dot xmx16 xmx8)
+  FOLDS=(dot xmx16 xmx8 xmx8f)
 else
   # The folds that mine, each against the host: the plain fold and the core's
   # own. The reference code of the core's fold is run too, but only reported
