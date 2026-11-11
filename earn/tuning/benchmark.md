@@ -2042,6 +2042,86 @@ compute wrong results on purpose, and none is a mining rate. Card 0, hot, 2 s a 
 - What is left is outside the kernel: the card holds 2,000 MHz under DPAS though its top is 2,400 (not touched),
   and a rig that sheds 190 W a card holds 64 TH/s where this one holds 54 to 58.
 
+### Arc rig, 11 November, evening: heat, a load cycle, and the sampler as a second way in (`goal/arc-next`)
+
+The rig froze at 16:38 UTC after three hours with five cards on the fold (267 TH/s), and its owner restarted it at
+19:04. This round mined again with less load and a guard beside the miner. Cards are numbered in PCI order: card 0
+(`03:00.0`, on the CPU's own port) is the one closest to the CPU, card 5 (`17:00.0`) the one furthest, with open
+air in front of its fans. Development ran on card 5, mining on cards 4 inward, card 0 stayed idle.
+
+**What the rig tells without root.** Each card's clock, the driver's throttle flags (thermal, PROCHOT, power
+limits, regulator alert), fan rpm, an energy counter and the 190 W power limit; the CPU's temperature. No card
+temperature in degrees: i915 on kernel 6.12 has no temp file for Arc, and HiveOS shows 0. The fans ran 1,600 to
+2,100 rpm under load (2,223 once), so the thermal flag is the only sign that a card is at its limit.
+
+**The fold at full load is more than an inner card can shed.** Kryptex, worker `arc750`, the verified head
+`900c154c`. Rate, clock, watts and fan are a card's, one sample a minute.
+
+| Cards mining (UTC) | Load | Rate | A card | What happened |
+|---|---|---|---|---|
+| 3 and 4 (19:14 to 19:21) | 100% | 127 TH/s falling to 122 | 63.2 and 63.3 at 2,000 MHz, 190 W, fans 2,100 and 2,040 | card 3 raised the thermal flag in minute 5 and fell to 1,880 MHz and 60.9; the guard stopped the miner |
+| 2 and 4, not neighbours (19:23 to 19:27) | 100% | 125 falling to 114 | 62.3 and 63.4 at 190 W | card 2 went to PROCHOT at minute 4.7: 1,230 MHz, 153 W, 40.3 TH/s; the guard stopped the miner |
+| 4 alone (19:30 to 19:33) | 100% | 63 | 63.5 at 1,970 to 2,000 MHz, 187 to 191 W, fan 2,080 | no flag in 3 minutes (10 with the two runs above) |
+| 3 and 4 (19:37 to 20:00) | 60% | 74.2 to 75.6 | 37.5 at 126 to 131 W; fans 1,940 to 2,020 and 1,600 to 1,720 | no flag in 23 minutes; 14 accepted, 1 rejected (stale) |
+| 2, 3 and 4 (20:00 to 20:21) | 60% | 111.9 to 113.3 | 37.5 at 127 to 133 W; fans 2,050, 1,900 to 1,990, 1,450 to 1,750 | no flag in 21 minutes; 12 accepted, 0 rejected |
+| 1, 2, 3 and 4 (20:21 to 20:41) | 60% | 148.6 to 151.2 | 37.5 at 127 to 132 W; fans 2,050 to 2,120, 2,030 to 2,090, 1,920 to 2,000, 1,650 to 1,800 | no flag in 20 minutes; 17 accepted, 0 rejected |
+
+The 60% is a new switch in the host, `PEARL_SYCL_DUTY`: each batch waits for the one before it, then the card
+rests for the remainder. The fold is the same one. It costs rate in proportion (37.5 TH/s is 60% of 63) and a
+little more per watt, because a resting card still draws 30 W: 0.29 TH/s a watt against 0.33 at full load. A power
+limit would do better, since a lower clock runs at a lower voltage: the cards that throttled by heat this morning
+did about 51 TH/s at 138 to 152 W, 0.35 a watt. The limit (`power1_max` in the card's hwmon folder) can only be
+written by root, which this login is not.
+
+**The guard** (a shell loop in the container, one line a card a minute to a log; it stops the miner and never
+starts one, and ends when the miner does): thermal flag in most of a minute's five samples for 2 minutes in a row;
+PROCHOT or the regulator's alert for one; CPU over 85 C; any reading missing. It tripped rightly at 19:21 and
+19:27, and wrongly at 19:35 on a clock rule that the load cycle fools, which is now off under a load cycle.
+
+**Card 5 copies wrong bytes back to the host when it is hot.** The fold check at the mainnet size (32,768
+regions against the host's reference) came out with 4 to 80 regions mismatched on card 5 in 6 of 21 runs at first,
+then in 0 of 10 with the card rested, then in 12 of 13 straight after 75 s at full load. The plain fold and the
+fragment fold were wrong by the same count each time, with the verified build as well as the new one. A test that
+fills 512 MB on the card, copies it to the host and compares, then compares again on the card, says where: rested,
+0 words wrong in 8 rounds; hot, 16 to 608 words wrong in the host's copy in 6 of 6 rounds (whole 64-byte lines, one
+of them all zeros) and none wrong on the card itself. So the card's memory and the folds are right, and it is the
+copy back to the host that fails, which is what the check builds its reference from. The driver showed no thermal
+flag on card 5 and its fan stayed at 900 to 1,600 rpm at 190 W, where the others run 2,100. Cards 1 to 4, tested
+the same way straight after 20 minutes of mining at 60%: 0 words wrong in 2 rounds each. Cards 0 and 1 rested:
+the check passed 18 of 18 and 8 of 8. For mining it matters little (a proof reads back a few KB a hit), but
+`verify.sh` on a hot card 5 can fail with nothing wrong in the fold. Check new folds on another card.
+
+**The sampler.** Each Xe-core has a sampler beside its data port. `pearl_sycl_peak --frag` got rows that read
+part of an operand as texels of an image (16 bytes a texel, 128 bytes a message, like a half-fragment load).
+Timing only, as above; card 5, 2 s a row; the image is a bindless one, filled from host memory and read back
+right (134,217,728 words, none wrong).
+
+| Row | Through the sampler | MACs an EU a clock | T-MAC/s, clock, power |
+|---|---|---|---|
+| `i-base` | nothing (the fold's loads) | 74.9 to 77.0 | 65.3 to 65.5, 1,900 to 1,945 MHz, 178 W |
+| `j-b1` | 1 of a k-step's 8 fragments of B' | 76.0 to 78.1 | 66.1 |
+| `j-b2` | 2 of the 8 | 80.8 to 82.5 | 67.4 to 67.7, 1,830 to 1,868 MHz, 176 to 192 W |
+| `j-b3` | 3 of the 8 | 77.6 to 78.9 | 64.5 |
+| `j-b4`, `j-b` | 4 of the 8; all 8 | 59.9; 21.5 | 51.7; 19.7 |
+| `j-a` | A', from its own texels | 71.2 to 73.1 | 60.2 |
+| `j-ab` | A' from texels every sub-group of a band shares (not a real A') | 97.7 to 100.1 | 80.7 to 80.9, 1,800 to 1,850 MHz, 176 to 178 W |
+
+- This is the first design timed above the built fold from its real addresses. The sampler takes about 4 fetches
+  a k-step for nearly nothing, but only of texels that many threads fetch at once: a column window's B', which the
+  128 sub-groups of a band read one after another. A third fragment loses the gain. A', a sub-group's own, is
+  slower through the sampler than through the data port, and small bands (where neighbours share A') are worse for
+  every row.
+- At the 190 W limit it is 3.5% more rate (67.6 T-MAC/s against 65.3 to 65.5 in each of four runs): the card does
+  more a clock and then runs at a lower clock. A fold with it needs a bindless image of a quarter of B' (128 MB)
+  refilled at every draw; the copy from host memory ran at 150 MB/s. Not built.
+- Rows on the old SYCL image class (`i-`) came out at 89 to 97 a clock, on images that could not be filled (a
+  kernel that writes one hangs the card). They are wrong for that reason and are not figures.
+- Tried in the fold itself and dropped, 12 s runs taking turns with the built fold on card 5 (62.7 to 62.9 TH/s
+  at 1,975 MHz, 189 W): every DPAS waiting for both halves of each B' fragment 60.0 to 60.2; for the second halves
+  only 60.6 to 60.8; for the first four fragments only 61.6 to 61.7.
+- A k-step's parts, as the time it takes (16 is the DPAS alone): A' 3.4, B' 8.2, and a k-step of 20 load messages
+  7.7 more than one of 18 (a thread has 16 in flight at most).
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
