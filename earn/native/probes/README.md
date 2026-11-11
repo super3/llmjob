@@ -2172,6 +2172,8 @@ Two probes that run the fold's instruction stream with nothing else in it, one b
 nvcc -arch=sm_89 -O3 -DRD=2 -DDRAW=4 -DDPOS=1 -o pp2 pipeprobe2.cu && ./pp2 name 20000 [seconds]
 ```
 
+Other cards (11 November): `pipeprobe2.cu` also takes `-DWARPS`/`-DACC` (one to four warps a scheduler), `-DWMASK` (which warps run, to read a card's warp-to-pipe map), `-DFILLRND` (hashed operand bytes, for the watts) and `-DPAD`/`-DPKIND` (one kind of step after every mma). `earn/tuning/salad/pipebox.sh` runs it on a Salad PC. RTX 30 and RTX 40 cards repeat the table below to a few hundredths of a point. RTX 50 cards do not: every plain instruction between the mma costs a third to a half of a cycle there. And one warp a scheduler holds 99.9% of an IMMA-only stream in this probe on sm_86 and sm_89, not the first probe's 91%. The figures are in `earn/tuning/benchmark.md`, "the tensor-pipe probe on RTX 30, 40 and 50 cards".
+
 | Stream (8 warps, two a scheduler, 48 IMMA a k-step, 4 k-steps a chunk) | Pipe use | Clock and watts, 450 W limit |
 |---|---|---|
 | IMMA only | 99.93% | |

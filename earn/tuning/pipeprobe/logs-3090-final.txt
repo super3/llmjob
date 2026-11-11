@@ -1,0 +1,154 @@
+71128c8f [nvtest] 05:24:55 [probe] card NVIDIA GeForce RTX 3090, 610.88, 8.6, 390.00 W, 390.00 W, 100.00 W, 480.00 W, 2130 MHz, 24576 MiB
+71128c8f [nvtest] 05:24:55 [probe] card idle 210 MHz, 53.73 W, 48, 0 %, 731 MiB gpus=1
+71128c8f [nvtest] 05:25:10 setup ok in 0s
+71128c8f [nvtest] [bench] 05:25:13 card NVIDIA GeForce RTX 3090, 610.88, 390.00 W, 390.00 W, 24576 MiB, 8.6
+71128c8f [nvtest] 05:25:19 cuda V12.8.93 in /opt/cuda, 9s
+71128c8f [nvtest] 05:25:19 fetch ok 9505132736c0
+71128c8f [nvtest] [bench] 05:25:22 [verify-pool] listening on 127.0.0.1:3334, compressed proofs offered, target 2^210 (commit 9505132736c0)
+71128c8f [nvtest] [bench] 05:25:22 ready PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5, ours v0.6.15
+71128c8f [nvtest] [bench] 05:25:22 start ozm 60s
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built base regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built baser regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4e regs=236 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4h regs=234 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4m regs=236 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4mg regs=242 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4mr regs=236 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4r regs=238 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built d4s regs=234 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built full regs=238 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built full3 regs=238 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built fulle regs=246 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built fullns regs=239 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m0 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m01 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m02 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m03 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m04 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m05 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m06 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built m07 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built pure regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd1 regs=223 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd1a regs=221 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd1r regs=223 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd2 regs=229 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd2a regs=229 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd2ar regs=229 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built rd3 regs=229 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w12 regs=152 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w12k regs=154 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w16 regs=120 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w16k regs=122 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w4 regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w4k regs=218 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w8a24 regs=120 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 built w8a32 regs=152 spill=0 no IMMA in 0 instructions
+71128c8f [nvtest] 05:25:44 [probe] nvcc12.8 builds done in 24 s with V12.8.93 for sm_86
+71128c8f [nvtest] [bench] 05:26:30 start ozm 180s
+71128c8f [nvtest] [bench] 05:26:45 sample ozm t=15 hs=136566720549193 acc=13 rej=0 gpu=388.30,1770,79,9501,98,1,1219
+71128c8f [nvtest] [bench] 05:27:00 sample ozm t=30 hs=141188881376586 acc=42 rej=0 gpu=389.68,1695,81,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:27:15 sample ozm t=45 hs=140136036118459 acc=72 rej=0 gpu=389.26,1695,83,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:27:30 sample ozm t=60 hs=140016593482529 acc=92 rej=0 gpu=388.82,1695,84,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:27:45 sample ozm t=75 hs=139761006909908 acc=120 rej=0 gpu=388.82,1695,85,9501,99,1,1219
+71128c8f [nvtest] [bench] 05:28:00 sample ozm t=90 hs=138699760755560 acc=149 rej=0 gpu=388.50,1680,86,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:28:15 sample ozm t=105 hs=138951990962723 acc=168 rej=0 gpu=385.50,1650,87,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:28:30 sample ozm t=120 hs=137478096073037 acc=194 rej=0 gpu=380.18,1665,87,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:28:46 sample ozm t=135 hs=136393249176296 acc=220 rej=0 gpu=373.01,1650,88,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:29:01 sample ozm t=151 hs=135315411331299 acc=252 rej=0 gpu=369.93,1620,88,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:29:16 sample ozm t=166 hs=134275164395597 acc=279 rej=0 gpu=365.73,1665,87,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:29:31 sample ozm t=181 hs=133746248349668 acc=301 rej=0 gpu=361.65,1605,88,9501,100,1,1219
+71128c8f [nvtest] [bench] 05:29:31 end ozm:  05:29:29  [32m[pearlhash] GPU 0 Share accepted (145 ms)[0m  05:29:30  [32m[pearlhash] GPU 0 Share accepted (149 ms)[0m
+71128c8f [nvtest] [bench] 05:29:31 credit ozm secs=181 bits=210 ok=301 dup=0 rej=0 ths=117.02 ths60=121.55 hs=none permin=92,100,108,1
+71128c8f [nvtest] [bench] 05:29:39 start ours 180s
+71128c8f [nvtest] [bench] 05:29:54 sample ours t=15 hs=129900000000000 acc=22 rej=0 gpu=389.34,1620,87,9501,100,11,1873
+71128c8f [nvtest] [bench] 05:30:09 sample ours t=30 hs=129300000000000 acc=54 rej=0 gpu=386.19,1590,87,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:30:24 sample ours t=45 hs=127400000000000 acc=86 rej=0 gpu=376.78,1590,88,9501,99,10,1873
+71128c8f [nvtest] [bench] 05:30:39 sample ours t=60 hs=126200000000000 acc=107 rej=0 gpu=371.16,1560,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:30:54 sample ours t=75 hs=125300000000000 acc=138 rej=0 gpu=367.46,1590,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:31:09 sample ours t=90 hs=124600000000000 acc=172 rej=0 gpu=365.24,1545,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:31:24 sample ours t=105 hs=124100000000000 acc=204 rej=0 gpu=362.91,1530,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:31:39 sample ours t=120 hs=124200000000000 acc=231 rej=0 gpu=361.61,1530,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:31:54 sample ours t=135 hs=124200000000000 acc=257 rej=0 gpu=359.66,1530,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:32:09 sample ours t=150 hs=123500000000000 acc=282 rej=0 gpu=361.02,1560,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:32:24 sample ours t=165 hs=123500000000000 acc=307 rej=0 gpu=359.70,1545,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:32:39 sample ours t=180 hs=123100000000000 acc=326 rej=0 gpu=358.52,1545,88,9501,100,10,1873
+71128c8f [nvtest] [bench] 05:32:39 loaded CUDA 12.8 build; GPU 0 is compute 8.6 (the CUDA 13 build has no code for it)
+71128c8f [nvtest] [bench] 05:32:39 end ours: share accepted   123.1 TH/s  326 accepted  0 rejected  up 02m 59s
+71128c8f [nvtest] [bench] 05:32:39 credit ours secs=180 bits=210 ok=326 dup=0 rej=0 ths=127.45 ths60=128.42 hs=1.246e+14 permin=107,123,96
+71128c8f [nvtest] [bench] 05:32:47 vpool {"connections":3,"jobs":15,"byK":{"2048":{"shares":326,"accepted":326,"rejected":0},"65536":{"shares":401,"accepted":401,"rejected":0}},"reasons":{},"methods":{},"logins":[{"conn":1,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"},{"conn":2,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"},
+71128c8f [nvtest] [bench] 05:32:47 vpool {"conn":3,"agent":"llmjob-earn/0.6.15","type":"v2","params":"wallet,worker,agent,type"}]}
+71128c8f [nvtest] [bench] 05:32:47 all done
+71128c8f [nvtest] 05:33:01 [probe] hashrate start v0.6.15 pearl_core.node 180 s after 20 s
+71128c8f [nvtest] 05:36:22 [probe] hashrate v0.6.15 pearl_core.node {"file":"rel/pearl_core.node","k":2048,"device":{"index":0,"name":"NVIDIA GeForce RTX 3090","fold":"unresolved"},"th":125.76,"sd":2.36,"n":359,"mhz":1571,"watts":370,"tempC":88,"memUtil":10,"memUsedMb":1873,"memMhz":9501}
+71128c8f [nvtest] 05:36:32 [probe] card before the probe 210 MHz, 68.39 W, 390.00 W, 69, 0 %, 731 MiB
+71128c8f [nvtest] 05:36:33 [probe] nvcc12.8 short m0                         pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 160 ms x7 | 40.06 T-MAC/s by count, counter 1920 MHz, 82 SMs, 1 of 8 warps
+71128c8f [nvtest] 05:36:33 [probe] nvcc12.8 short m0                         own cycles an mma, by warp: 0:16.01
+71128c8f [nvtest] 05:36:34 [probe] nvcc12.8 short m01                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 160 ms x7 | 80.45 T-MAC/s by count, counter 1919 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:34 [probe] nvcc12.8 short m01                        own cycles an mma, by warp: 0:16.01 1:16.01
+71128c8f [nvtest] 05:36:35 [probe] nvcc12.8 short m02                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 161 ms x7 | 79.87 T-MAC/s by count, counter 1905 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:35 [probe] nvcc12.8 short m02                        own cycles an mma, by warp: 0:16.01 2:16.01
+71128c8f [nvtest] 05:36:37 [probe] nvcc12.8 short m03                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 161 ms x7 | 79.93 T-MAC/s by count, counter 1905 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:37 [probe] nvcc12.8 short m03                        own cycles an mma, by warp: 0:16.01 3:16.01
+71128c8f [nvtest] 05:36:38 [probe] nvcc12.8 short m04                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 323 ms x4 | 39.96 T-MAC/s by count, counter 1906 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:38 [probe] nvcc12.8 short m04                        own cycles an mma, by warp: 0:32.02 4:32.02
+71128c8f [nvtest] 05:36:39 [probe] nvcc12.8 short m05                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 161 ms x7 | 79.87 T-MAC/s by count, counter 1905 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:39 [probe] nvcc12.8 short m05                        own cycles an mma, by warp: 0:16.01 5:16.01
+71128c8f [nvtest] 05:36:41 [probe] nvcc12.8 short m06                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 161 ms x7 | 79.88 T-MAC/s by count, counter 1905 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:41 [probe] nvcc12.8 short m06                        own cycles an mma, by warp: 0:16.01 6:16.01
+71128c8f [nvtest] 05:36:42 [probe] nvcc12.8 short m07                        pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 161 ms x7 | 79.88 T-MAC/s by count, counter 1905 MHz, 82 SMs, 2 of 8 warps
+71128c8f [nvtest] 05:36:42 [probe] nvcc12.8 short m07                        own cycles an mma, by warp: 0:16.01 7:16.01
+71128c8f [nvtest] 05:36:43 [probe] nvcc12.8 short w4                         pipe  99.78% (99.78-99.78) 16.035 cyc/IMMA 163 ms x7 | 158.61 T-MAC/s by count, counter 1890 MHz, 82 SMs, 4 of 4 warps
+71128c8f [nvtest] 05:36:43 [probe] nvcc12.8 short w4                         own cycles an mma, by warp: 0:16.03 1:16.03 2:16.03 3:16.03
+71128c8f [nvtest] 05:36:45 [probe] nvcc12.8 short pure                       pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 325 ms x4 | 158.68 T-MAC/s by count, counter 1890 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:45 [probe] nvcc12.8 short pure                       own cycles an mma, by warp: 0:32.02 1:32.02 2:32.02 3:32.02 4:32.02 5:32.02 6:32.02 7:32.02
+71128c8f [nvtest] 05:36:46 [probe] nvcc12.8 short w8a32                      pipe  99.90% (99.90-99.90) 16.016 cyc/IMMA 217 ms x5 | 158.51 T-MAC/s by count, counter 1890 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:46 [probe] nvcc12.8 short w8a32                      own cycles an mma, by warp: 0:32.03 1:32.03 2:32.03 3:32.03 4:32.03 5:32.03 6:32.03 7:32.03
+71128c8f [nvtest] 05:36:47 [probe] nvcc12.8 short w8a24                      pipe  99.87% (99.87-99.87) 16.021 cyc/IMMA 163 ms x7 | 158.23 T-MAC/s by count, counter 1890 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:47 [probe] nvcc12.8 short w8a24                      own cycles an mma, by warp: 0:32.04 1:32.04 2:32.04 3:32.04 4:32.04 5:32.04 6:32.04 7:32.04
+71128c8f [nvtest] 05:36:49 [probe] nvcc12.8 short w12                        pipe  99.90% (99.90-99.90) 16.015 cyc/IMMA 325 ms x4 | 158.68 T-MAC/s by count, counter 1890 MHz, 82 SMs, 12 of 12 warps
+71128c8f [nvtest] 05:36:49 [probe] nvcc12.8 short w12                        own cycles an mma, by warp: 0:48.05 1:48.05 2:48.05 3:48.05 4:35.69 5:35.69 6:35.69 7:35.69 8:32.43 9:32.43 10:32.43 11:32.43
+71128c8f [nvtest] 05:36:50 [probe] nvcc12.8 short w16                        pipe  99.87% (99.87-99.87) 16.020 cyc/IMMA 327 ms x4 | 158.29 T-MAC/s by count, counter 1884 MHz, 82 SMs, 16 of 16 warps
+71128c8f [nvtest] 05:36:50 [probe] nvcc12.8 short w16                        own cycles an mma, by warp: 0:64.08 1:64.08 2:64.08 3:64.08 4:63.21 5:63.21 6:63.21 7:63.21 8:36.32 9:36.32 10:36.32 11:36.32 12:34.26 13:34.26 14:34.26 15:34.26
+71128c8f [nvtest] 05:36:51 [probe] nvcc12.8 short w4k                        pipe  99.13% (99.13-99.13) 16.141 cyc/IMMA 167 ms x6 | 153.77 T-MAC/s by count, counter 1856 MHz, 82 SMs, 4 of 4 warps
+71128c8f [nvtest] 05:36:51 [probe] nvcc12.8 short w4k                        own cycles an mma, by warp: 0:16.14 1:16.14 2:16.14 3:16.14
+71128c8f [nvtest] 05:36:53 [probe] nvcc12.8 short base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 334 ms x3 | 154.68 T-MAC/s by count, counter 1839 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:53 [probe] nvcc12.8 short base                       own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+71128c8f [nvtest] 05:36:54 [probe] nvcc12.8 short w12k                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 337 ms x3 | 153.49 T-MAC/s by count, counter 1824 MHz, 82 SMs, 12 of 12 warps
+71128c8f [nvtest] 05:36:54 [probe] nvcc12.8 short w12k                       own cycles an mma, by warp: 0:48.00 1:48.00 2:48.00 3:48.00 4:48.00 5:48.00 6:48.00 7:48.00 8:48.00 9:48.00 10:48.00 11:48.00
+71128c8f [nvtest] 05:36:55 [probe] nvcc12.8 short w16k                       pipe  99.61% (99.55-99.64) 16.062 cyc/IMMA 340 ms x3 | 152.57 T-MAC/s by count, counter 1817 MHz, 82 SMs, 16 of 16 warps
+71128c8f [nvtest] 05:36:55 [probe] nvcc12.8 short w16k                       own cycles an mma, by warp: 0:64.25 1:64.25 2:64.25 3:64.25 4:48.59 5:48.59 6:48.59 7:48.59 8:48.55 9:48.55 10:48.55 11:48.55 12:48.55 13:48.55 14:48.55 15:48.55
+71128c8f [nvtest] 05:36:56 [probe] nvcc12.8 short pure                       pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 330 ms x4 | 157.10 T-MAC/s by count, counter 1865 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:58 [probe] nvcc12.8 short base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 336 ms x3 | 154.22 T-MAC/s by count, counter 1827 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:36:59 [probe] nvcc12.8 short rd1                        pipe  98.75% (98.71-98.78) 16.203 cyc/IMMA 345 ms x3 | 150.67 T-MAC/s by count, counter 1804 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:00 [probe] nvcc12.8 short rd1a                       pipe  97.93% (97.93-97.97) 16.338 cyc/IMMA 349 ms x3 | 148.75 T-MAC/s by count, counter 1798 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:01 [probe] nvcc12.8 short rd2                        pipe  99.68% (99.68-99.68) 16.052 cyc/IMMA 340 ms x3 | 151.83 T-MAC/s by count, counter 1815 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:02 [probe] nvcc12.8 short rd2a                       pipe  99.71% (99.71-99.71) 16.047 cyc/IMMA 343 ms x3 | 151.50 T-MAC/s by count, counter 1796 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:03 [probe] nvcc12.8 short rd3                        pipe  99.60% (99.59-99.64) 16.064 cyc/IMMA 345 ms x3 | 150.99 T-MAC/s by count, counter 1789 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:05 [probe] nvcc12.8 short d4e                        pipe  99.71% (99.70-99.71) 16.047 cyc/IMMA 361 ms x3 | 144.46 T-MAC/s by count, counter 1709 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:06 [probe] nvcc12.8 short d4m                        pipe  99.52% (99.51-99.54) 16.076 cyc/IMMA 361 ms x3 | 144.15 T-MAC/s by count, counter 1710 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:07 [probe] nvcc12.8 short d4h                        pipe  97.03% (97.00-97.05) 16.490 cyc/IMMA 370 ms x3 | 141.06 T-MAC/s by count, counter 1711 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:08 [probe] nvcc12.8 short d4s                        pipe  97.37% (97.36-97.38) 16.433 cyc/IMMA 368 ms x3 | 141.63 T-MAC/s by count, counter 1717 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:10 [probe] nvcc12.8 short d4mg                       pipe  97.89% (97.87-97.90) 16.346 cyc/IMMA 367 ms x3 | 142.04 T-MAC/s by count, counter 1709 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:11 [probe] nvcc12.8 short d4r                        pipe  99.03% (99.03-99.03) 16.156 cyc/IMMA 366 ms x3 | 141.92 T-MAC/s by count, counter 1694 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:12 [probe] nvcc12.8 short fullns                     pipe  95.17% (95.17-95.17) 16.812 cyc/IMMA 383 ms x3 | 135.98 T-MAC/s by count, counter 1686 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:14 [probe] nvcc12.8 short full                       pipe  95.23% (95.13-95.31) 16.802 cyc/IMMA 385 ms x3 | 135.43 T-MAC/s by count, counter 1678 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:15 [probe] nvcc12.8 short full3                      pipe  96.73% (96.72-96.75) 16.540 cyc/IMMA 375 ms x3 | 138.94 T-MAC/s by count, counter 1693 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:16 [probe] nvcc12.8 short fulle                      pipe  97.15% (97.15-97.16) 16.469 cyc/IMMA 378 ms x3 | 137.42 T-MAC/s by count, counter 1673 MHz, 82 SMs, 8 of 8 warps
+71128c8f [nvtest] 05:37:47 [probe] nvcc12.8 long pure                       pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 335 ms x91 | 154.73 T-MAC/s by count, counter 1836 MHz, 82 SMs, 8 of 8 warps | 1844 MHz (1815-1890) 339.8 W (max 345.4) of 390 W, 86 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:38:17 [probe] nvcc12.8 long base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 347 ms x87 | 148.94 T-MAC/s by count, counter 1771 MHz, 82 SMs, 8 of 8 warps | 1777 MHz (1740-1815) 344.3 W (max 347.3) of 390 W, 86 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:38:47 [probe] nvcc12.8 long rd1                        pipe  98.41% (98.37-98.44) 16.258 cyc/IMMA 356 ms x85 | 145.33 T-MAC/s by count, counter 1753 MHz, 82 SMs, 8 of 8 warps | 1754 MHz (1725-1785) 345.7 W (max 348.3) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:39:18 [probe] nvcc12.8 long rd2a                       pipe  99.71% (99.71-99.71) 16.047 cyc/IMMA 353 ms x86 | 146.24 T-MAC/s by count, counter 1746 MHz, 82 SMs, 8 of 8 warps | 1744 MHz (1710-1785) 344.7 W (max 347.2) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:39:48 [probe] nvcc12.8 long d4m                        pipe  99.52% (99.51-99.54) 16.076 cyc/IMMA 373 ms x81 | 138.67 T-MAC/s by count, counter 1657 MHz, 82 SMs, 8 of 8 warps | 1662 MHz (1635-1695) 354.4 W (max 358.5) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:40:19 [probe] nvcc12.8 long d4r                        pipe  99.03% (99.03-99.03) 16.156 cyc/IMMA 380 ms x80 | 136.04 T-MAC/s by count, counter 1635 MHz, 82 SMs, 8 of 8 warps | 1635 MHz (1605-1665) 352.6 W (max 354.6) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:40:49 [probe] nvcc12.8 long full                       pipe  95.22% (95.17-95.27) 16.803 cyc/IMMA 399 ms x76 | 129.58 T-MAC/s by count, counter 1619 MHz, 82 SMs, 8 of 8 warps | 1622 MHz (1590-1650) 351.5 W (max 354.3) of 390 W, 88 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:41:19 [probe] nvcc12.8 long full3                      pipe  96.48% (96.41-96.68) 16.584 cyc/IMMA 388 ms x78 | 133.33 T-MAC/s by count, counter 1641 MHz, 82 SMs, 8 of 8 warps | 1643 MHz (1620-1680) 347.7 W (max 349.0) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:41:50 [probe] nvcc12.8 long baser                      pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 375 ms x81 | 137.92 T-MAC/s by count, counter 1639 MHz, 82 SMs, 8 of 8 warps | 1644 MHz (1620-1695) 348.9 W (max 351.2) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:42:20 [probe] nvcc12.8 long rd1r                       pipe  98.71% (98.71-98.71) 16.208 cyc/IMMA 384 ms x79 | 134.21 T-MAC/s by count, counter 1619 MHz, 82 SMs, 8 of 8 warps | 1623 MHz (1605-1665) 350.9 W (max 352.4) of 390 W, 88 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:42:51 [probe] nvcc12.8 long rd2ar                      pipe  99.71% (99.71-99.71) 16.047 cyc/IMMA 380 ms x79 | 135.51 T-MAC/s by count, counter 1620 MHz, 82 SMs, 8 of 8 warps | 1620 MHz (1620-1620) 350.8 W (max 351.2) of 390 W, 88 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:43:21 [probe] nvcc12.8 long d4mr                       pipe  99.52% (99.51-99.54) 16.077 cyc/IMMA 401 ms x76 | 129.15 T-MAC/s by count, counter 1541 MHz, 82 SMs, 8 of 8 warps | 1548 MHz (1500-1590) 359.1 W (max 360.8) of 390 W, 88 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:43:51 [probe] nvcc12.8 long base                       pipe  99.66% (99.66-99.66) 16.055 cyc/IMMA 353 ms x85 | 146.34 T-MAC/s by count, counter 1748 MHz, 82 SMs, 8 of 8 warps | 1747 MHz (1725-1785) 331.3 W (max 334.8) of 390 W, 87 C, util 100%, reasons 0x0000000000000020, 27 samples
+71128c8f [nvtest] 05:43:51 [probe] card after the probe 1770 MHz, 333.39 W, 390.00 W, 87, 100 %, 731 MiB
+71128c8f [nvtest] 05:43:51 [probe] all done
+71128c8f [nvtest] 05:43:51 all done
+71128c8f [nvtest] 05:43:51 idle until deleted

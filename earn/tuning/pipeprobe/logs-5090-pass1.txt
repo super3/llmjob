@@ -1,0 +1,44 @@
+892b7450 [nvtest] 05:13:47 boot container started
+892b7450 [nvtest] 05:13:56 [probe] card NVIDIA GeForce RTX 5090, 617.42, 12.0, 522.00 W, 600.00 W, 400.00 W, 600.00 W, 3090 MHz, 32607 MiB
+892b7450 [nvtest] 05:13:56 [probe] card idle 210 MHz, 15.25 W, 26, 0 %, 631 MiB gpus=1
+892b7450 [nvtest] 05:14:15 setup ok in 0s
+892b7450 [nvtest] [bench] 05:14:17 card NVIDIA GeForce RTX 5090, 617.42, 522.00 W, 600.00 W, 32607 MiB, 12.0
+892b7450 [nvtest] 05:14:24 cuda V13.3.73 in /opt/cuda, 9s
+892b7450 [nvtest] 05:14:25 fetch ok 6f4a424b8e88
+892b7450 [nvtest] [bench] 05:14:26 [verify-pool] listening on 127.0.0.1:3334, compressed proofs offered, target 2^210 (commit 6f4a424b8e88)
+892b7450 [nvtest] [bench] 05:14:26 ready PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5, ours v0.6.15
+892b7450 [nvtest] [bench] 05:14:26 start ozm 60s
+892b7450 [nvtest] [bench] 05:15:34 start ozm 180s
+892b7450 [nvtest] [bench] 05:15:49 sample ozm t=15 hs=373138759367539 acc=34 rej=0 gpu=486.36,2542,61,13801,100,0,1727
+892b7450 [nvtest] [bench] 05:16:04 sample ozm t=30 hs=421034253395460 acc=99 rej=0 gpu=494.46,2542,62,13801,100,0,1479
+892b7450 [nvtest] [bench] 05:16:19 sample ozm t=45 hs=433352296944274 acc=164 rej=0 gpu=498.53,2527,64,13801,98,0,1479
+892b7450 [nvtest] [bench] 05:16:35 sample ozm t=60 hs=433430126070815 acc=220 rej=0 gpu=476.72,2497,64,13801,98,0,1489
+892b7450 [nvtest] [bench] 05:16:50 sample ozm t=76 hs=423994793143557 acc=279 rej=0 gpu=479.82,2505,65,13801,100,0,1489
+892b7450 [nvtest] [bench] 05:17:05 sample ozm t=91 hs=424001089075796 acc=346 rej=0 gpu=497.22,2557,67,13801,98,0,1489
+892b7450 [nvtest] [bench] 05:17:20 sample ozm t=106 hs=422683808945874 acc=417 rej=0 gpu=492.02,2520,68,13801,98,0,1489
+892b7450 [nvtest] [bench] 05:17:35 sample ozm t=121 hs=424683148446036 acc=481 rej=0 gpu=488.02,2505,67,13801,100,0,1489
+892b7450 [nvtest] [bench] 05:17:50 sample ozm t=136 hs=416912860127179 acc=543 rej=0 gpu=480.74,2505,67,13801,100,0,1489
+892b7450 [nvtest] [bench] 05:18:05 sample ozm t=151 hs=413528753057044 acc=612 rej=0 gpu=475.93,2475,67,13801,100,0,1489
+892b7450 [nvtest] [bench] 05:18:20 sample ozm t=166 hs=424911194090987 acc=677 rej=0 gpu=490.10,2482,68,13801,98,0,1489
+892b7450 [nvtest] [bench] 05:18:35 sample ozm t=181 hs=416654154017821 acc=739 rej=0 gpu=488.99,2490,68,13801,100,0,1500
+892b7450 [nvtest] [bench] 05:18:35 end ozm:  05:18:34  [32m[pearlhash] GPU 0 Share accepted (93 ms)[0m  05:18:34  [32m[pearlhash] GPU 0 Share accepted (168 ms)[0m
+892b7450 [nvtest] [bench] 05:18:35 credit ozm secs=181 bits=210 ok=739 dup=0 rej=0 ths=287.31 ths60=304.74 hs=none permin=215,263,259,2
+892b7450 [nvtest] [bench] 05:18:43 start ours 180s
+892b7450 [nvtest] [bench] 05:18:58 sample ours t=15 hs=406300000000000 acc=84 rej=0 gpu=522.28,2460,67,13801,100,2,1925
+892b7450 [nvtest] [bench] 05:19:13 sample ours t=30 hs=405300000000000 acc=178 rej=0 gpu=522.12,2460,68,13801,99,2,1925
+892b7450 [nvtest] [bench] 05:19:28 sample ours t=45 hs=406300000000000 acc=250 rej=0 gpu=522.14,2460,68,13801,99,2,1935
+892b7450 [nvtest] [bench] 05:19:43 sample ours t=60 hs=405600000000000 acc=343 rej=0 gpu=521.86,2452,69,13801,100,2,1945
+892b7450 [nvtest] [bench] 05:19:58 sample ours t=75 hs=405700000000000 acc=432 rej=0 gpu=521.78,2460,69,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:20:13 sample ours t=90 hs=405100000000000 acc=522 rej=0 gpu=521.96,2452,69,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:20:28 sample ours t=105 hs=405000000000000 acc=612 rej=0 gpu=522.31,2452,69,13801,99,2,1946
+892b7450 [nvtest] [bench] 05:20:43 sample ours t=120 hs=405600000000000 acc=710 rej=0 gpu=522.05,2452,69,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:20:58 sample ours t=135 hs=404900000000000 acc=805 rej=0 gpu=522.30,2452,69,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:21:13 sample ours t=150 hs=404600000000000 acc=880 rej=0 gpu=521.72,2452,70,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:21:28 sample ours t=165 hs=405100000000000 acc=982 rej=0 gpu=522.00,2452,70,13801,100,2,1946
+892b7450 [nvtest] [bench] 05:21:43 sample ours t=180 hs=413900000000000 acc=1059 rej=0 gpu=521.72,2452,70,13801,99,2,1956
+892b7450 [nvtest] [bench] 05:21:43 loaded CUDA 13 build; driver 617, mining card is compute 12.0
+892b7450 [nvtest] [bench] 05:21:43 end ours: share accepted share accepted
+892b7450 [nvtest] [bench] 05:21:43 credit ours secs=180 bits=210 ok=1059 dup=0 rej=0 ths=414.00 ths60=419.87 hs=4.04e+14 permin=343,365,351
+892b7450 [nvtest] [bench] 05:21:51 vpool {"connections":3,"jobs":15,"byK":{"2048":{"shares":1063,"accepted":1063,"rejected":0},"65536":{"shares":968,"accepted":968,"rejected":0}},"reasons":{},"methods":{},"logins":[{"conn":1,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"},{"conn":2,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"
+892b7450 [nvtest] [bench] 05:21:51 vpool },{"conn":3,"agent":"llmjob-earn/0.6.15","type":"v2","params":"wallet,worker,agent,type"}]}
+892b7450 [nvtest] [bench] 05:21:51 all done

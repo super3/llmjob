@@ -1,0 +1,91 @@
+7f4f5e71 [nvtest] 06:37:36 boot container started
+7f4f5e71 [nvtest] 06:37:53 [probe] card NVIDIA GeForce RTX 4070 SUPER, 610.88, 8.9, 220.00 W, 220.00 W, 100.00 W, 220.00 W, 3105 MHz, 12282 MiB
+7f4f5e71 [nvtest] 06:37:53 [probe] card idle 210 MHz, 9.45 W, 45, 1 %, 593 MiB gpus=1
+7f4f5e71 [nvtest] 06:37:53 [probe] card enforced limit 220.00 W, instant draw 10.41 W, average 9.53 W
+7f4f5e71 [nvtest] 06:38:15 setup ok in 0s
+7f4f5e71 [nvtest] 06:38:33 cuda V12.8.93 in /opt/cuda, 18s
+7f4f5e71 [nvtest] 06:38:35 fetch ok 0fe0e68b85e7
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built base regs=218 spill=0 imma=192 other=19 per_imma=0.099 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built baser regs=218 spill=0 imma=192 other=19 per_imma=0.099 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d1e regs=231 spill=0 imma=192 other=91 per_imma=0.474 longest_run=4 runs_over_8=0 ctl=1[BRA] top=IMAD:24,LDS:16,PRMT:16,LDSM:16,LOP3:8,IADD3:5,STS:4
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d1m regs=229 spill=0 imma=192 other=91 per_imma=0.474 longest_run=4 runs_over_8=0 ctl=1[BRA] top=IMAD:24,LDS:16,PRMT:16,LDSM:16,LOP3:8,IADD3:5,STS:4
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d2e regs=234 spill=0 imma=192 other=163 per_imma=0.849 longest_run=4 runs_over_8=0 ctl=1[BRA] top=IMAD:48,LDS:32,PRMT:32,LOP3:16,LDSM:16,IADD3:9,STS:8
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d2m regs=234 spill=0 imma=192 other=163 per_imma=0.849 longest_run=4 runs_over_8=0 ctl=1[BRA] top=IMAD:48,LDS:32,PRMT:32,LOP3:16,LDSM:16,IADD3:9,STS:8
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d2r regs=236 spill=0 imma=192 other=195 per_imma=1.016 longest_run=10 runs_over_8=1 ctl=1[BRA] top=IMAD:64,LDS:40,PRMT:32,IADD3:17,LOP3:16,LDSM:16,STS:8
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d3e regs=236 spill=0 imma=192 other=235 per_imma=1.224 longest_run=4 runs_over_8=0 ctl=1[BRA] top=IMAD:72,LDS:48,PRMT:48,LOP3:24,LDSM:16,IADD3:13,STS:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d3m regs=236 spill=0 imma=192 other=235 per_imma=1.224 longest_run=5 runs_over_8=0 ctl=1[BRA] top=IMAD:72,LDS:48,PRMT:48,LOP3:24,LDSM:16,IADD3:13,STS:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d3r regs=238 spill=0 imma=192 other=283 per_imma=1.474 longest_run=12 runs_over_8=2 ctl=1[BRA] top=IMAD:96,LDS:60,PRMT:48,IADD3:25,LOP3:24,LDSM:16,STS:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4e regs=236 spill=0 imma=192 other=308 per_imma=1.604 longest_run=10 runs_over_8=1 ctl=1[BRA] top=IMAD:96,LDS:64,PRMT:64,LOP3:32,IADD3:18,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4h regs=234 spill=0 imma=192 other=307 per_imma=1.599 longest_run=21 runs_over_8=3 ctl=1[BRA] top=IMAD:96,LDS:64,PRMT:64,LOP3:32,IADD3:17,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4m regs=236 spill=0 imma=192 other=308 per_imma=1.604 longest_run=10 runs_over_8=1 ctl=1[BRA] top=IMAD:96,LDS:64,PRMT:64,LOP3:32,IADD3:18,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4mg regs=242 spill=0 imma=192 other=267 per_imma=1.391 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IMAD:80,LDS:64,PRMT:64,LOP3:16,STS:16,LDSM:16,IADD3:9
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4mr regs=236 spill=0 imma=192 other=308 per_imma=1.604 longest_run=10 runs_over_8=1 ctl=1[BRA] top=IMAD:96,LDS:64,PRMT:64,LOP3:32,IADD3:18,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4r regs=238 spill=0 imma=192 other=371 per_imma=1.932 longest_run=32 runs_over_8=3 ctl=1[BRA] top=IMAD:128,LDS:80,PRMT:64,IADD3:33,LOP3:32,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built d4s regs=234 spill=0 imma=192 other=307 per_imma=1.599 longest_run=21 runs_over_8=3 ctl=1[BRA] top=IMAD:96,LDS:64,PRMT:64,LOP3:32,IADD3:17,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built full regs=238 spill=0 imma=192 other=491 per_imma=2.557 longest_run=65 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=IMAD:136,LOP3:132,LDS:84,PRMT:64,IADD3:24,STS:16,LDSM:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built full3 regs=238 spill=0 imma=192 other=403 per_imma=2.099 longest_run=45 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=LOP3:124,IMAD:102,LDS:64,PRMT:48,IADD3:18,STS:12,LDSM:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built fulle regs=246 spill=0 imma=192 other=492 per_imma=2.562 longest_run=65 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=IMAD:136,LOP3:132,LDS:84,PRMT:64,IADD3:25,STS:16,LDSM:12
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built fullns regs=239 spill=0 imma=192 other=472 per_imma=2.458 longest_run=59 runs_over_8=3 ctl=1[BRA] top=IMAD:144,LOP3:132,LDS:80,PRMT:64,IADD3:17,STS:16,LDSM:16
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m0 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m01 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m02 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m03 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m04 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m05 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m06 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built m07 regs=218 spill=0 imma=192 other=9 per_imma=0.047 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:6,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p1k0 regs=241 spill=0 imma=192 other=115 per_imma=0.599 longest_run=5 runs_over_8=0 ctl=1[BRA] top=IADD3:97,LDSM:16,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p1k1 regs=228 spill=0 imma=192 other=211 per_imma=1.099 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p1k2 regs=255 spill=0 imma=192 other=307 per_imma=1.599 longest_run=20 runs_over_8=3 ctl=1[BRA] top=LDS:192,LOP3:96,LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p1k3 regs=220 spill=0 imma=192 other=211 per_imma=1.099 longest_run=6 runs_over_8=0 ctl=1[BRA] top=STS:192,LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p2k0 regs=241 spill=0 imma=192 other=211 per_imma=1.099 longest_run=12 runs_over_8=1 ctl=1[BRA] top=IADD3:193,LDSM:16,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p2k1 regs=227 spill=0 imma=192 other=403 per_imma=2.099 longest_run=12 runs_over_8=3 ctl=1[BRA] top=LOP3:384,LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p2k4 regs=219 spill=0 imma=192 other=211 per_imma=1.099 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:193,LDSM:16,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built p4k0 regs=239 spill=0 imma=192 other=403 per_imma=2.099 longest_run=12 runs_over_8=3 ctl=1[BRA] top=IADD3:385,LDSM:16,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built pure regs=218 spill=0 imma=192 other=10 per_imma=0.052 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd1 regs=223 spill=0 imma=192 other=121 per_imma=0.630 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:98,LDSM:16,IMAD:1,LDS:1,IADD3:1,ISETP:1,SHF:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd1a regs=221 spill=0 imma=192 other=116 per_imma=0.604 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:96,LDSM:16,IADD3:1,ISETP:1,ATOMS:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd1c16 regs=224 spill=0 imma=192 other=121 per_imma=0.630 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LOP3:98,LDSM:16,IADD3:1,ISETP:1,IMAD:1,LDS:1,SHF:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd1c4 regs=223 spill=0 imma=192 other=121 per_imma=0.630 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:98,LDSM:16,IADD3:1,ISETP:1,IMAD:1,LDS:1,SHF:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd1r regs=223 spill=0 imma=192 other=121 per_imma=0.630 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:98,LDSM:16,IMAD:1,LDS:1,IADD3:1,ISETP:1,SHF:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd2 regs=229 spill=0 imma=192 other=125 per_imma=0.651 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:101,LDSM:16,IADD3:2,IMAD:1,LDS:1,SHF:1,STS:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd2a regs=229 spill=0 imma=192 other=120 per_imma=0.625 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LOP3:100,LDSM:16,IADD3:1,ISETP:1,ATOMS:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd2ar regs=229 spill=0 imma=192 other=120 per_imma=0.625 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LOP3:100,LDSM:16,IADD3:1,ISETP:1,ATOMS:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd2c16 regs=238 spill=0 imma=192 other=124 per_imma=0.646 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:104,LDSM:16,IADD3:1,ISETP:1,ATOMS:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd2c4 regs=223 spill=0 imma=192 other=118 per_imma=0.615 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LOP3:98,LDSM:16,IADD3:1,ISETP:1,ATOMS:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built rd3 regs=229 spill=0 imma=192 other=125 per_imma=0.651 longest_run=3 runs_over_8=0 ctl=1[BRA] top=LOP3:101,LDSM:16,IADD3:2,IMAD:1,LDS:1,SHF:1,STS:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w12 regs=152 spill=0 imma=128 other=10 per_imma=0.078 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w12k regs=154 spill=0 imma=128 other=19 per_imma=0.148 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w16 regs=120 spill=0 imma=96 other=10 per_imma=0.104 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w16k regs=122 spill=0 imma=96 other=19 per_imma=0.198 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w4 regs=218 spill=0 imma=192 other=10 per_imma=0.052 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w4k regs=218 spill=0 imma=192 other=19 per_imma=0.099 longest_run=2 runs_over_8=0 ctl=1[BRA] top=LDSM:16,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w8a24 regs=120 spill=0 imma=96 other=10 per_imma=0.104 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 built w8a32 regs=152 spill=0 imma=128 other=10 per_imma=0.078 longest_run=6 runs_over_8=0 ctl=1[BRA] top=IMAD:7,IADD3:1,ISETP:1,BRA:1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 builds done in 22 s with V12.8.93 for sm_89
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p2k0 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 M1 A2 I1 A2 I1 M1 A2 I1 A2 I1 M1 A3 M1 A7 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p2k0 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A3 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 M1 A2 I1 A1 I1 M1 I2 M2 I44 M1 I2 M1 I2 M2 I44 M1 I2 M1 I2 M2 BRA1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k1 I1 X2 I1 X2 I1 X2 I1 X2 I1 X2 I1 X1 A1 I1 A1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X2 M1 X2 I4 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X2 M1 X2 I4 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X1 I1 X1 I1 M1 X2 M1 X2 I4 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 M1 I2 M1 I2 M2 BRA1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k2 I1 L2 A1 I1 L1 A1 L1 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I5 X1 L1 I1 X1 L1 X1 I1 L1 X1 L1 X1 I1 L1 X1 L1 X1 I1 L1 X1 L1 I1 L1 I5 X1 L1 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 X1 I1 L2 X1 I1 L1 X1 L1 X1 I1 X2 I1 X1 I12 L2 I1 L2 I1 L2 I1 L2 I1 M2 X5 M1 X1 M1 X2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L2 I2 X2 I1 X2 I1 X2 I1 L1 X1 L1 I1 L1 X1 L1 I1 L2 I1 L2 I6 L2 I1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k2 L2 I1 L2 I1 L2 I1 L2 I1 L1 X1 L1 X1 I1 L1 X1 L1 X1 I1 L2 X1 I1 X2 I1 X1 I13 L2 I1 L2 I1 L2 I1 L2 I1 X4 L1 X1 M1 X1 M1 X1 M1 X1 M1 L7 I1 L2 I1 L2 I1 L2 I1 L2 I2 X2 I1 X2 I1 X2 I1 L1 X1 L1 I1 L1 X1 L1 I1 L2 I1 L2 I6 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L1 X1 L1 X1 I1 L1 X1 L1 X1 I1 L2 X1 I1 X2 I1 X1 I17 L2 I1 L2 I1 L2 I1 L2 I1 X4 L1 X1 M1 X1 M1 X1 M1 X1 M1 L7 I1 L2
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k2 I1 L2 I1 L2 I1 L2 I2 X2 I1 X2 I1 X2 I1 L1 X1 L1 I1 L1 X1 L1 I1 L2 I1 L2 I6 L2 I1 L2 I1 L2 I1 L2 I1 L2 I1 L1 X1 L1 X1 I1 L1 X1 L1 X1 I1 L2 X1 I1 X2 I1 X1 I17 L2 I1 L2 I1 L2 I1 L2 I1 M1 X2 M1 X3 M1 X1 M1 X2 BRA1
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k3 I1 S2 A1 I1 S1 A1 S1 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I20 M1 I2 M1 I2 M2 S4 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I22 M1 I2 M1 I2 M2 S4 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2
+7f4f5e71 [nvtest] 06:39:02 [probe] nvcc12.8 trace p1k3 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I22 M1 I2 M1 I2 M2 S4 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I22 M1 I2 M1 I2 M2 BRA1
+7f4f5e71 [nvtest] 06:39:17 [probe] card before the probe 210 MHz, 8.94 W, 220.00 W, 42, 1 %, 594 MiB
+7f4f5e71 [nvtest] 06:39:19 [probe] nvcc12.8 short base                       pipe  99.65% (99.65-99.65) 16.056 cyc/IMMA 217 ms x5 | 158.16 T-MAC/s by count, counter 2843 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:20 [probe] nvcc12.8 short p1k0                       pipe  99.55% (99.54-99.59) 16.072 cyc/IMMA 219 ms x5 | 161.68 T-MAC/s by count, counter 2820 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:21 [probe] nvcc12.8 short p2k0                       pipe  99.28% (99.26-99.31) 16.117 cyc/IMMA 221 ms x5 | 160.70 T-MAC/s by count, counter 2804 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:22 [probe] nvcc12.8 short p4k0                       pipe  99.10% (99.06-99.18) 16.146 cyc/IMMA 222 ms x5 | 159.39 T-MAC/s by count, counter 2795 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:24 [probe] nvcc12.8 short p2k4                       pipe  99.22% (99.09-99.32) 16.126 cyc/IMMA 221 ms x5 | 159.91 T-MAC/s by count, counter 2801 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:25 [probe] nvcc12.8 short p1k1                       pipe  96.24% (96.21-96.27) 16.626 cyc/IMMA 229 ms x5 | 154.62 T-MAC/s by count, counter 2789 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:26 [probe] nvcc12.8 short p2k1                       pipe  95.07% (95.06-95.08) 16.830 cyc/IMMA 234 ms x5 | 151.77 T-MAC/s by count, counter 2759 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:28 [probe] nvcc12.8 short p1k2                       pipe  88.51% (88.49-88.53) 18.077 cyc/IMMA 250 ms x5 | 141.93 T-MAC/s by count, counter 2782 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:29 [probe] nvcc12.8 short p1k3                       pipe  81.84% (81.77-81.92) 19.549 cyc/IMMA 269 ms x4 | 131.39 T-MAC/s by count, counter 2787 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:30 [probe] nvcc12.8 short base                       pipe  99.63% (99.63-99.63) 16.059 cyc/IMMA 219 ms x5 | 161.30 T-MAC/s by count, counter 2819 MHz, 56 SMs, 8 of 8 warps
+7f4f5e71 [nvtest] 06:39:30 [probe] card after the probe 2820 MHz, 165.93 W, 220.00 W, 68, 100 %, 593 MiB
+7f4f5e71 [nvtest] 06:39:30 [probe] all done
+7f4f5e71 [nvtest] 06:39:30 all done
+7f4f5e71 [nvtest] 06:39:30 idle until deleted
