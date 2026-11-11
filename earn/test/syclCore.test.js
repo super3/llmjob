@@ -329,15 +329,17 @@ describe('what the host answers where pearl_host.cu has more', () => {
 // November 2026) and not from a guess. It is pinned so that it is changed only
 // against a new measurement (native/sycl/README.md, "Results on an Arc A750 rig").
 describe('what the first run on hardware set', () => {
-  test('a band is the device cache\'s size for the XMX folds and a quarter of it for the plain fold', () => {
+  test('a band is the device cache\'s size for fold_xmx, a quarter of it for the plain fold, an eighth for the fragment fold', () => {
     // On an A750 (16 MiB): xmx8 16.6 to 16.9 TH/s at 256 row windows against
     // 15.2 to 15.5 at 64, the quarter that was the rule for both; dot 3.74 at
-    // 256 against 3.91 at 64.
+    // 256 against 3.91 at 64; xmx8f 42.1 to 42.2 at 16, 32 and 64 against
+    // 31.7 at 128 and 35.4 at 256.
     const rule = slice(HOST, 'const uint64_t share =', 'ctx->band = floor_pow2(band);');
     expect(statements(rule).slice(0, 2)).toEqual([
-      'const uint64_t share = ctx->fold == kDot ? 4 : 1;',
+      'const uint64_t share = ctx->fold == kDot ? 4 : fold_is_frag(ctx->fold) ? 8 : 1;',
       'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
     ]);
+    expect(HOST).toContain('bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu; }');
     // The fold is settled before the band is: pick_fold comes first in create.
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     const picked = create.indexOf('if (!pick_fold(ctx, err, err_len)) {');
@@ -345,7 +347,7 @@ describe('what the first run on hardware set', () => {
     expect(picked).toBeLessThan(create.indexOf('const uint64_t share ='));
     // 16 MiB at the mainnet k: 32 rows of 2048 bytes a row window.
     const windows = (share) => Math.floor((16 * 1024 * 1024) / share / (32 * PROFILE.k));
-    expect([windows(1), windows(4)]).toEqual([256, 64]);
+    expect([windows(1), windows(4), windows(8)]).toEqual([256, 64, 32]);
     // PEARL_SYCL_BAND still wins, so a rig can time another.
     expect(rule).toContain('if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);');
     // bench.sh times each fold in a core that would mine with it, so each
@@ -705,8 +707,8 @@ const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status ===
     for (const l of gpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --bits 234$/);
     const cpu = sh('verify.sh', ['--quick'], { PEARL_SYCL_DEVICE: 'cpu' });
     expect(cpu.status).toBe(0);
-    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8', 'dot,xmx16']);
-    expect(cpu.nodes).toHaveLength(3);
+    expect(folds(cpu)).toEqual(['dot,xmx16,xmx8,xmx8f', 'dot,xmx16,xmx8f']);
+    expect(cpu.nodes).toHaveLength(4);
     for (const l of cpu.nodes) expect(l).toMatch(/--hits 100 --seconds 1800 --m 4096 --n 4096 --col-batch 64 --bits 245$/);
     expect(cpu.out).not.toContain('not part of PASS');
   });

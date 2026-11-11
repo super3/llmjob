@@ -92,26 +92,29 @@ describe('kernels the driver compiles reach the hardware DPAS by the built-in\'s
   test('the host launches a hardware fold only on a card that has it at that sub-group size', () => {
     const launch = slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n');
     const body = launch.split('\n').map((l) => l.trim());
-    expect(body.slice(2, 4)).toEqual([
+    expect(body.slice(2, 5)).toEqual([
       'if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;',
       'if (fold == kXmx8 && ctx->hwSg != 8) fold = kXmx8Emu;',
+      'if (fold == kXmx8F && ctx->hwSg != 8) fold = kXmx8FEmu;',
     ]);
-    // The two lines in JS, over every fold and every kind of device.
-    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu] = [0, 1, 2, 3, 4];
-    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4 };');
+    // The three lines in JS, over every fold and every kind of device.
+    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu] = [0, 1, 2, 3, 4, 5, 6];
+    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6 };');
     const launched = (fold, hwSg) => {
       if (fold === kXmx16 && hwSg !== 16) fold = kXmx16Emu;
       if (fold === kXmx8 && hwSg !== 8) fold = kXmx8Emu;
+      if (fold === kXmx8F && hwSg !== 8) fold = kXmx8FEmu;
       return fold;
     };
-    const hw = (fold) => fold === kXmx16 || fold === kXmx8;
+    const hw = (fold) => fold === kXmx16 || fold === kXmx8 || fold === kXmx8F;
+    const emuOf = { [kXmx16]: kXmx16Emu, [kXmx8]: kXmx8Emu, [kXmx8F]: kXmx8FEmu };
     for (const hwSg of [0, 8, 16]) {
-      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu]) {
+      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu]) {
         const got = launched(fold, hwSg);
         // A hardware kernel only where the device has that instruction.
         if (hw(got)) expect([hwSg, got === kXmx16 ? 16 : 8]).toEqual([hwSg, hwSg]);
         // And the same fold by name: its reference code otherwise.
-        expect([fold, hwSg, got === fold || got === fold + 2]).toEqual([fold, hwSg, true]);
+        expect([fold, hwSg, got === fold || got === emuOf[fold]]).toEqual([fold, hwSg, true]);
       }
     }
     // hwSg is the device's own answer, asked at run time in both builds.
