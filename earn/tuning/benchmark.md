@@ -3226,6 +3226,58 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   k-step alone costs
   0.8 points, with the draw 18. Tables and the reasoning: `earn/native/probes/README.md`, "The third design".
 
+- **Where the release fold's readout goes: every other place loses (11 November, rig01's RTX 4090, 450 W limit,
+  branch `goal/readout`).** A probe of the bare stream had priced the readout's one run of 96 XOR3 at 1.3 points of
+  the tensor pipe and the same XOR3 woven between the IMMA at 0.3, so the shipped fold (sm_89, the cp.async ring,
+  k 2048) was rebuilt with the runs moved. No form gains, and nothing ships from this.
+
+  Method: `bench.exe` built with `-DPEARL_TALL_CYC`, 12 s a run, cycles a tile from the SM's own counter (ideal
+  98,304). The base ran ten times in five holds: 102,714 to 102,721. By `hashrate.js` (60 s after 10 s) the base is
+  317.46 TH/s and its twin, the same build again, 317.33, both at 2531 MHz and 449 W (76 and 78 °C). Every form's
+  clock was 2535 to 2595 MHz at 448 to 450 W (one or two readings a 12 s run). Positions are `PEARL_TALL_RO_AT0/1/2` for the three m16 tile pairs
+  (`pearl_config.h`); "999" is where the shipped fold has the run.
+
+  | Form | Cycles a tile | Of the pipe | As ptxas compiled it |
+  |---|---|---|---|
+  | Shipped: one run after the chunk's last IMMA | 102,714 to 102,721 | 95.70% | 99 LOP3 and 3 shared XOR in one gap; IMMA in source order; A reused on 168 of 192 IMMA |
+  | Readout in the tile's last chunk only (timing only, wrong results on purpose) | 101,103 | 97.23% | so the readout costs 1.57 points |
+  | Pair 2 after the next chunk's A copy group (999/999/403) | 103,386 | 95.08% | 40 LOP3 in the copy group's gap after IMMA 31 |
+  | Pair 0 woven, the rest shipped (23/999/999) | 104,136 | 94.40% | pair 0 at IMMA 166 to 182, sums 14 to 30 IMMA old; tiles interleaved there; A reuse 150 |
+  | All moved: 23/24/27 | 104,368 | 94.19% | pair 0 woven; pair 1 a run of 35 after IMMA 7; pair 2 woven at IMMA 15 to 26 |
+  | All moved: 23/24/25 | 105,183 | 93.46% | pair 0 woven; pairs 1 and 2 one run of 66 after IMMA 7 |
+  | Pair 2 woven, the rest shipped (999/999/27) | 105,447 | 93.23% | |
+  | Pairs 1 and 2 deferred to the next chunk's top (999/200/200) | 105,497 | 93.18% | one run of 66 after IMMA 7 |
+  | 23/23/27 | 105,497 | 93.18% | ptxas rebuilds the loop: uniform registers, 579 instructions for 540 |
+  | 21/24/25 | 106,792 | 92.05% | pair 0 lifted to IMMA 149 to 159, sums 0 to 9 IMMA old |
+  | Pair 2 as a run after IMMA 7, the rest shipped (999/999/24) | 107,066 | 91.82% | a run of 35 in mid-stream |
+  | Each run after its tiles' last IMMA (19/21/23) | 108,879 | 90.29% | loop rebuilt, IMMA of two k-steps interleaved |
+  | Hand-woven (form 2): one chain a word, 8 XOR3 before each of four tile passes | 110,116 | 89.27% | two LOP3 after every IMMA, sums 15 to 35 IMMA old; A reuse 132 |
+  | 21/23/23 | 110,674 | 88.82% | loop rebuilt |
+  | All at the chunk's end, before the EMPTY arrival (23/23/23) | 111,111 | 88.47% | loop rebuilt |
+
+  The shared XOR, priced with three timing-only arms (wrong transcripts on purpose, not kept in the source): a plain
+  store to a word of the thread's own 102,662; the shared XOR with no word and no bank shared 102,583; the shared
+  XOR as shipped but on eight banks instead of two 102,854 and 102,858. So four lanes sharing a word costs at most 0.13 point,
+  and a proof tile of one thread's own sums (the competitors' shape) would save that and no XOR3.
+
+  What the compiled loops showed:
+  - The chunk's end is the one place where every fragment register is dead (16 of B, up to 12 of A), so the run's
+    temporaries are free there. Anywhere else they take the registers ptxas uses to load A fragments 8 to 24 IMMA
+    ahead and to keep A in the operand reuse cache.
+  - ptxas does not leave a run where the source puts it. It lifts it as early as its inputs allow, across a copy
+    group's branch too, and weaves it two to four after an IMMA; in seven forms it also re-sorted the IMMA or
+    moved loop values into uniform registers.
+  - A weave that is clean by the probe's rules (two XOR3 an IMMA, sums at least 15 IMMA old, tile order kept) is the
+    worst: 2.3 cycles of the pipe an XOR3, against 0.5 in the run at the chunk's end and 0.1 in the probe. The real
+    fold's warps are tied by the ring and its stream has a branch every 32 IMMA; the probe's are neither.
+  - The fence the TMA build uses to hold ptxas (`griddepcontrol.launch_dependents`) does not assemble for sm_89.
+
+  Checked: the default build is byte for byte what it was on sm_80, sm_86 and sm_89 (sm_120 was not compiled:
+  no CUDA 12.8 or 13 on this PC). `verify-hits.js` 400 of 400 on 23/24/27. `PEARL_HITLIST` over six batches: the
+  shipped fold's hit list from 23/23/23, 23/24/27, form 2 and the five forms with a pair at 999. Forms 23/24/27
+  and form 2 compile for sm_86 with no spill; no RTX 30 card ran them. Not verified: the other six forms' hits, any
+  second card, and why an XOR3 in mid-stream costs ten times the probe's figure.
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
