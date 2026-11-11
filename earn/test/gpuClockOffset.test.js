@@ -226,7 +226,7 @@ describe('the addon\'s side (native/src/pearl_core.cc)', () => {
       '["OS==\'linux\'", {',
     ]);
     const blocks = GYP.split(/\n\s*\["OS==/).slice(1);
-    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_NVML_OFFSETS" ]'))).toEqual([true, false, false, true]);
+    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_NVML_OFFSETS", "PEARL_HOST_ROT" ]'))).toEqual([true, false, false, true]);
     expect(blocks[3]).toContain('-lpearl_cuda');
     expect(read('amd', 'build-amd.sh')).not.toContain('PEARL_NVML_OFFSETS');
     expect(read('sycl', 'build.sh')).toContain('-c "$SRC/pearl_core.cc"');

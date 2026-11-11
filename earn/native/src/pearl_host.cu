@@ -38,9 +38,26 @@
 #include <string.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <set>
+#include <thread>
 #include <vector>
+
+// For the rotation fold's host side (pearl_host_rot.inc): where this module is on disk.
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #include <cstdlib>
 #include <cstdio>
@@ -239,8 +256,12 @@ struct PearlSearchResult {
 
 namespace {
 
+// The rotation fold's state (pearl_host_rot.inc): null unless PEARL_FOLD_ROT=1 made this context one.
+struct RotState;
+
 struct Ctx {
   PearlProfile profile;
+  RotState *rot = nullptr;
 
   // The card every allocation below lives on, as chosen by
   // pearl_host_select_device. Kept because the current device is a PER-THREAD
@@ -1739,9 +1760,30 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // The k a card mines when the miner lets the core choose (pearl_core.cc's cardK).
 // The CUDA folds are built for one k (PEARL_FOLD_K), so a card mines the profile's,
 // as it always has. The AMD host's answer differs (pearl_host_hip.cpp).
-extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int, char *note,
+//
+// One exception, off by default: with PEARL_FOLD_ROT=1 an RTX 40 card (compute 8.9) mines k 65536 on the
+// rotation fold, a second kernel loaded from its own cubin (pearl_host_rot.inc).
+namespace {
+bool rot_env();
+bool rot_card_ok(const PearlProfile *p, int device);
+bool rot_wanted(const PearlProfile *p, int device);
+size_t rot_needed_bytes(const PearlProfile *p);
+bool rot_create(Ctx *ctx, char *err, size_t err_len);
+void rot_destroy(Ctx *ctx);
+void rot_reseed(Ctx *ctx, uint64_t salt);
+bool rot_submit(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base, uint64_t *regions_out, char *err,
+                size_t err_len);
+void rot_region(const Ctx *ctx, uint64_t nonce_base, uint32_t index, uint64_t *nonce, uint32_t *rows,
+                uint32_t *cols);
+}  // namespace
+extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, char *note,
                                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
+  if (profile && rot_env()) {
+    if (rot_card_ok(profile, device)) return 65536u;
+    if (note && note_len)
+      snprintf(note, note_len, "PEARL_FOLD_ROT=1 but no rotation fold for this card: release fold");
+  }
   return profile ? profile->k : 0;
 }
 
@@ -1814,7 +1856,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     }
   }
 
-  const size_t need = needed_bytes(profile, transcript_buffer_card(current));
+  // The rotation fold (PEARL_FOLD_ROT=1, pearl_host_rot.inc) keeps no noised operands.
+  const bool rot = rot_wanted(profile, current);
+  const size_t need = rot ? rot_needed_bytes(profile)
+                          : needed_bytes(profile, transcript_buffer_card(current));
 
   // Check the budget BEFORE allocating, so an 8 GB card gets a sentence it can
   // act on instead of an out-of-memory abort three kernels deep. This reads the
@@ -1846,10 +1891,10 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   // once so the fold reads defined bytes there, and it hashes no region from them.
   {
     const size_t apBytes = (size_t)PEARL_TALL_A_ROWS(profile->m) * k;
-    CUDA_OK(cudaMalloc(&ctx->dAp, apBytes), "allocating the noised A");
-    if (apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
+    CUDA_OK(cudaMalloc(&ctx->dAp, rot ? 16 : apBytes), "allocating the noised A");
+    if (!rot && apBytes > aBytes) cudaMemset(ctx->dAp + aBytes, 0, apBytes - aBytes);
   }
-  CUDA_OK(cudaMalloc(&ctx->dBp, bBytes), "allocating the noised B");
+  CUDA_OK(cudaMalloc(&ctx->dBp, rot ? 16 : bBytes), "allocating the noised B");
   CUDA_OK(cudaMalloc(&ctx->dEAL, (size_t)profile->m * rank), "allocating E_AL");
   CUDA_OK(cudaMalloc(&ctx->dEBR, (size_t)profile->n * rank), "allocating E_BR");
   CUDA_OK(cudaMalloc(&ctx->dPermA, k * 2 * sizeof(uint32_t)), "allocating E_AR");
@@ -2216,8 +2261,13 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
   }
   // In per-tile order A's padding rows sit inside every slab of its last block, not
   // after m * k, so the whole noised A is zeroed once.
-  if (ctx->foldTiled)
+  if (ctx->foldTiled && !rot)
     cudaMemset(ctx->dAp, 0, (size_t)PEARL_TALL_A_ROWS(profile->m) * profile->k);
+  if (rot && !rot_create(ctx, err, err_len)) {
+    pearl_host_destroy(ctx);
+    (void)cudaGetLastError();
+    return nullptr;
+  }
 
   return ctx;
 }
@@ -2345,6 +2395,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (!ctx) return;
   DeviceScope scope(ctx->device);
   cudaDeviceSynchronize();  // nothing still queued may read what is freed below
+  rot_destroy(ctx);
   cudaFree(ctx->dA); cudaFree(ctx->dB);
   cudaFree(ctx->dAp); cudaFree(ctx->dBp);
   cudaFree(ctx->dEAL); cudaFree(ctx->dEBR);
@@ -2780,6 +2831,10 @@ extern "C" void pearl_host_reseed(void *handle, uint64_t salt) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return;
   DeviceScope scope(ctx->device);
+  if (ctx->rot) {
+    rot_reseed(ctx, salt);
+    return;
+  }
   ctx->salt = salt;
 
   // A restamp needs a real tree to repair: at least two leaves, so leaf 0 has a
@@ -2887,6 +2942,29 @@ void fill_hit(Ctx *ctx, const Ctx::Pending &p, int slot, uint32_t i, PearlSearch
   // drops the batch base entirely. The columns in the snapshot then belong
   // to a different tile than the row indices the proof declares, which the
   // pool reports as "Failed to extract strip".
+  if (ctx->rot) {
+    // The rotation fold: the index counts tiles and threads; the share's nonce and the tile's rows and
+    // columns come from rot_region.
+    uint32_t rrows[12], rcols[16];
+    rot_region(ctx, p.nonceBase, ctx->hHitIndex[i], &out->nonce, rrows, rcols);
+    snapshotProof(ctx, true, rrows, 12, &out->proof_a.leaf_indices, &out->proof_a.leaves,
+                  &out->proof_a.siblings, rec, &reads);
+    snapshotProof(ctx, false, rcols, 16, &out->proof_bt.leaf_indices, &out->proof_bt.leaves,
+                  &out->proof_bt.siblings, nullptr, &reads);
+    if (rec)
+      hb3_bytes(rec->path[rec->levels - 1], out->proof_a.root);
+    else
+      reads.to(out->proof_a.root, ctx->dHashA, PEARL_HASH_BYTES);
+    reads.to(out->proof_bt.root, ctx->dHashB, PEARL_HASH_BYTES);
+    out->proof_a.total_leaves = (uint64_t)ctx->profile.m * ctx->profile.k / 1024;
+    out->proof_bt.total_leaves = (uint64_t)ctx->profile.n * ctx->profile.k / 1024;
+    out->proof.assign(PEARL_JACKPOT_BUCKETS * 4, 0);
+    reads.to(out->proof.data(), dTranscripts + (size_t)i * PEARL_JACKPOT_BUCKETS,
+             PEARL_JACKPOT_BUCKETS * 4);
+    run_reads(ctx, &reads);
+    out->found = true;
+    return;
+  }
   const uint64_t region = out->nonce;
   const uint32_t rowIdx = (uint32_t)(region % ctx->rowsValid);
   const uint32_t colIdx = (uint32_t)((region / ctx->rowsValid) % ctx->colsValid);
@@ -3122,6 +3200,9 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   }
   return pearl_queue_batch(ctx, slot, st, nonce_base, regions, regions_out, err, err_len);
 }
+
+// The rotation fold's host side (PEARL_FOLD_ROT=1; off by default).
+#include "pearl_host_rot.inc"
 }  // namespace
 
 // Queue one batch at nonce_base, under the current salt, into the next free pipeline
@@ -3185,6 +3266,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       cudaStreamWaitEvent(st, ctx->slotDone[(slot + Ctx::kSlots - 1) % Ctx::kSlots], 0);
     ctx->afterRedraw--;
   }
+
+  // The rotation fold (PEARL_FOLD_ROT=1) has a launch of its own; nothing below is for it.
+  if (ctx->rot) return rot_submit(ctx, slot, st, nonce_base, regions_out, err, err_len);
 
   const uint32_t k = ctx->profile.k;
   const uint32_t rank = ctx->profile.rank;
@@ -3694,6 +3778,9 @@ static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->rot)
+    return "rotation fold 192x256, 8 warps of 96x64, noise drawn on the chip, hand-written loop, "
+           "k 65536, tile 12x16 (PEARL_FOLD_ROT)";
   if (ctx->foldHmma) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "fp16 mma 128x128, 128 threads of 64x64 m8n8k4, a block a tile, band %u, "
@@ -3874,4 +3961,17 @@ extern "C" uint32_t pearl_host_tree_levels(void *handle, int isA) {
   Ctx *ctx = static_cast<Ctx *>(handle);
   if (!ctx) return 0;
   return (uint32_t)(isA ? ctx->layerOffA.size() : ctx->layerOffB.size());
+}
+
+// The tile this context mines when it is not the release's: its row and column patterns (12 and 16 values).
+// False for every context but a rotation-fold one.
+extern "C" bool pearl_host_tile(void *handle, uint32_t *rows, uint32_t *n_rows, uint32_t *cols,
+                                uint32_t *n_cols) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!ctx || !ctx->rot) return false;
+  for (int i = 0; i < PEARL_ROT_ROWS; i++) rows[i] = kRotRows[i];
+  for (int i = 0; i < PEARL_ROT_COLS; i++) cols[i] = kRotCols[i];
+  *n_rows = PEARL_ROT_ROWS;
+  *n_cols = PEARL_ROT_COLS;
+  return true;
 }

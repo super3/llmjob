@@ -6,6 +6,7 @@ const {
   patternToList, patternFromList, patternToBytes, difficultyAdjustmentFactor,
   PENALTY_BASE_RANK, penalizedAdjustmentFactor, shareBound, profileForK,
   ROWS_MASK, COLS_MASK, offsetIsValid, expandOffset, regionToTile,
+  profileForCore, nthValidOffset, validOffsets,
 } = require('../src/shared/miner/pearlhash');
 
 describe('PROFILE', () => {
@@ -529,5 +530,61 @@ describe('profileForK', () => {
     const t = BigInt('0x00000000000007fff80000000000000000000000000000000000000000000000');
     expect(shareBound(t, profileForK(PROFILE, 4096))).toBe(2n * shareBound(t, PROFILE));
     expect(penalizedAdjustmentFactor(profileForK(PROFILE, 4096))).toBe(difficultyAdjustmentFactor(profileForK(PROFILE, 4096)));
+  });
+});
+
+// The CUDA core's rotation fold (PEARL_FOLD_ROT=1, off by default) mines a tile of its own: one thread's sums,
+// rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57}. The core says so in core.tile.
+describe('a tile of the core\'s own (profileForCore)', () => {
+  const ROT_ROWS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88];
+  const ROT_COLS = PROFILE.cols;
+  const core = { k: 65536, tile: { rows: ROT_ROWS, cols: ROT_COLS } };
+  // The verifier's PeriodicPattern::offset_is_valid, over patternFromList's dimensions.
+  const valid = (shape, offset) => {
+    let o = offset;
+    for (const [stride, length] of shape.slice().reverse()) {
+      o %= stride * length;
+      if (o >= stride) return false;
+    }
+    return true;
+  };
+
+  test('a core with no tile mines the profile at its k, as before', () => {
+    expect(profileForCore(PROFILE, {})).toBe(PROFILE);
+    expect(profileForCore(PROFILE, { k: 2048 })).toBe(PROFILE);
+    expect(profileForCore(PROFILE, { k: 4096 })).toEqual({ ...PROFILE, k: 4096 });
+    expect(profileForCore(PROFILE, { k: 3000, tile: core.tile })).toBeNull();
+  });
+
+  test('a core with a tile mines it: 12 by 16, its own config52 and 192 k MACs a region', () => {
+    const p = profileForCore(PROFILE, core);
+    expect([p.k, p.rows, p.cols]).toEqual([65536, ROT_ROWS, ROT_COLS]);
+    expect(buildConfig52(p).subarray(8, 20).toString('hex')).toBe('070b00000000' + '000103070000');
+    expect(difficultyAdjustmentFactor(p)).toBe(192 * 65536);
+    expect(penalizedAdjustmentFactor(p)).toBe(192 * 512 * 128);
+  });
+
+  test('nthValidOffset lists exactly the offsets the verifier takes, in rising order', () => {
+    for (const list of [ROT_ROWS, ROT_COLS, PROFILE.rows]) {
+      const shape = patternFromList(list);
+      const want = [];
+      for (let o = 0; want.length < 40; o++) if (valid(shape, o)) want.push(o);
+      expect(want.map((_, i) => nthValidOffset(shape, i))).toEqual(want);
+    }
+    expect(validOffsets(patternFromList(ROT_ROWS), 131072)).toBe(10920);
+    expect(validOffsets(patternFromList(ROT_COLS), 262144)).toBe(16384);
+    expect(validOffsets(patternFromList(PROFILE.rows), 131072)).toBe(131072 / 16);
+  });
+
+  test('regionToTile walks the tile\'s own valid offsets, rows first', () => {
+    const p = profileForCore(PROFILE, core);
+    expect(regionToTile(0, p)).toEqual({ rowOff: 0, colOff: 0, rows: ROT_ROWS, cols: ROT_COLS });
+    // Row offset index 8 Q + g is offset 96 Q + g; column offset index 4 J + q is offset 64 J + 2 q.
+    const t = regionToTile((8 * 5 + 3) + 10920 * (4 * 7 + 2), p);
+    expect([t.rowOff, t.colOff]).toEqual([96 * 5 + 3, 64 * 7 + 4]);
+    expect(t.rows).toEqual(ROT_ROWS.map((r) => 483 + r));
+    expect(t.cols).toEqual(ROT_COLS.map((c) => 452 + c));
+    // The default tile is untouched by any of this.
+    expect(regionToTile(5, PROFILE)).toEqual(regionToTile(5));
   });
 });

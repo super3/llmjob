@@ -31,8 +31,8 @@ const { computeNoiseForIndices } = require('./noise');
 const { bindRoots, foldTranscript, transcriptBytes } = require('./reference');
 const { CHUNK_LEN, unpackSide, sameIndices } = require('./shareProof');
 
-// The tile's own rows and columns, once gathered: 0..15.
-const TILE = Array.from({ length: 16 }, (_, i) => i);
+// The tile's own rows and columns, once gathered: 0 .. 15 (0 .. 11 for a tile of 12 rows).
+const tileOf = (n) => Array.from({ length: n }, (_, i) => i);
 
 // The rows a proof side covers, gathered from its leaves into one buffer, row
 // after row. Row r is bytes [r*k, r*k+k) of the operand. Every leaf is there:
@@ -72,7 +72,7 @@ function mismatch(hit, jobKey, p) {
   const Bt = gather(bt, cols, k);
   for (const op of [A, Bt]) for (const v of op) if (v < -63 || v > 63) return 'operand outside int7';
   const { noiseA, noiseB } = computeNoiseForIndices({ k, rank, aSeed, bSeed, rowIndices: rows, colIndices: cols });
-  const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows: TILE, cols: TILE, k, rank });
+  const jackpot = foldTranscript({ A, Bt, noiseA, noiseB, rows: tileOf(rows.length), cols: tileOf(cols.length), k, rank });
   if (!keyedHash(aSeed, transcriptBytes(jackpot)).equals(Buffer.from(hit.jackpotHash))) {
     return 'jackpot hash mismatch (fold/transcript)';
   }

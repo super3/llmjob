@@ -5,7 +5,7 @@
 // built in JS the way the device builds them (helpers/pearlHit.js), and then each is spoiled in one place.
 
 const { checkHit } = require('../src/shared/miner/checkHit');
-const { PROFILE, buildConfig52, profileForK } = require('../src/shared/miner/pearlhash');
+const { PROFILE, buildConfig52, profileForK, profileForCore } = require('../src/shared/miner/pearlhash');
 const { hash } = require('../src/shared/miner/blake3');
 const { hitFor } = require('./helpers/pearlHit');
 
@@ -40,6 +40,16 @@ describe('checkHit', () => {
     // At k 4096 too, where chunk c goes into word c % 16.
     const bad4 = hitFor(K4, HEADER, { tamper: (jp) => { jp[3] ^= 0x80000000; } });
     expect(checkHit(bad4, keyOf(K4), K4)).toBe('jackpot hash mismatch (fold/transcript)');
+  });
+
+  it('checks a hit of a tile of the core\'s own (12 rows by 16 columns) the same way', () => {
+    const rot = profileForCore({ ...PROFILE, m: 256, n: 256 },
+      { k: 2048, tile: { rows: [0, 8, 16, 24, 32, 40, 48, 56, 64, 72, 80, 88], cols: PROFILE.cols } });
+    expect(checkHit(hitFor(rot, HEADER), keyOf(rot), rot)).toBeNull();
+    const bad = hitFor(rot, HEADER, { tamper: (jp) => { jp[5] ^= 4; } });
+    expect(checkHit(bad, keyOf(rot), rot)).toBe('jackpot hash mismatch (fold/transcript)');
+    // The same hit read with the default tile is a different region.
+    expect(checkHit(hitFor(rot, HEADER), keyOf(rot), { ...rot, rows: PROFILE.rows })).not.toBeNull();
   });
 
   it('fails a hit with one byte of a row changed in its proof', () => {
