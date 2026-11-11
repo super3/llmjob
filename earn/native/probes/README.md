@@ -2602,3 +2602,163 @@ It holds the pipe and loses the clock: twenty global loads a k-step cost more th
 point to is the release's own, a copy fold on a shared stage, written by hand with half its copies: ten LDSM, 3.5
 global loads and 3.5 shared stores a warp a k-step, 341 by count as a timing stream with no barrier in it. The
 shortest way there is `hand89/fold.py`, which is that loop with draw units where the copy units would go.
+
+### The copy fold by hand, and what a copied byte costs by where it comes from: `hand89/cprobe.cu` (RTX 4090, 2026-11-11)
+
+Seventh round on `goal/nv-kernel`. The sixth round ended on "the release's copy fold with half its copies, 341 by
+count". That form does not exist: the release already copies the least a 192 x 256 block can (14 `LDGSTS` a warp a
+chunk, 3.5 a k-step, 16 bytes a lane each; the "0.51 loads and stores an IMMA" counted 28 `@!PT LDS RZ, [RZ]` a
+chunk, pads that never run). And the 341 priced copies whose source stayed in the SM's own cache. This round builds
+the copy fold as a probe so the source can be sized by the run, writes its loop by hand, and measures both.
+Everything is on rig01's RTX 4090 at 450 W; "by count" is pipe use x clock x 0.13107; no figure here is a mining
+rate. The release mines 317.3 TH/s here.
+
+**Files.** `hand89/cfold_h.cuh` is the kernel: the staged fold of `fold_h.cuh` with copy units where the draw was.
+A' and B' lie ready in global memory in the stage's own byte layout (16 bytes for 8 rows and a k-pair), each warp
+copies 3 or 4 units of 16 bytes a lane a k-step, the stage is a ring of four k-steps, `-DCP_MT=6` is the release's
+192 x 256 tile. A tile is three calls (prologue, loop, end) so the kernel keeps nothing in registers through the
+loop function. `hand89/cprobe.cu` is the harness: `cprobe <name> <k> <tiles a block> [secs] [tiles to check] [row
+groups] [column blocks]`; it noises A and B on the CPU and checks the regions against a CPU fold. `hand89/cfold.py`
+writes the loop by hand (`PD_CUBIN` runs it). The copy unit is key `cp`: 0 a global load and a shared store (`la=1`:
+the load a k-step ahead of its store, two sets of quads, 160 x 256 only), 1 the release's `LDGSTS`, 2 a
+timing-only stream with the staged draw's instruction mix. `asm89.py` now assembles `LDGSTS` (both cache modes),
+`LDGDEPBAR` and `DEPBAR.LE` bit for bit as ptxas writes them, and takes a kernel with several local functions.
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 [-DCP_MT=6] -cubin -o c6.cubin hand89/cprobe.cu ; nvdisasm -c c6.cubin > c6.sass
+nvcc -arch=sm_89 -O3 -std=c++17 [-DCP_MT=6] -o cprobe hand89/cprobe.cu
+python hand89/cfold.py c6.cubin c6.sass nvdisasm hand.cubin mt=6 cp=1 lead=3
+PD_CUBIN=hand.cubin ./cprobe name 2048 8 0 64        # 64 tiles against the CPU fold
+PD_CUBIN=hand.cubin ./cprobe name 65536 128 60       # 60 s, operands 370 MB
+```
+
+**It is correct, compiled and by hand.** CPU check, every run. 160 x 256: compiled 10,240 of 10,240 regions twice
+(k 2048, 64 tiles) and 2,560 of 2,560 (k 8192); by hand in ten forms 10,240 of 10,240 each (the two main ones
+twice), 2,560 of 2,560 at k 8192 for three of them and at k 65536 for one. 192 x 256: compiled 12,288 of 12,288
+twice; by hand with `LDGSTS` 12,288 of 12,288 four times and 3,072 of 3,072 at k 8192 and at k 65536; with LDG +
+STS 12,288 twice and 3,072 at k 8192. No hand form failed a check.
+
+**What a copy unit costs by where its source sits** (160 x 256, 3.5 units a warp a k-step as a global load and a
+shared store, the loop by hand, 60 s each, long launches, the last 20 one-second samples):
+
+| Source of the copied bytes | Pipe | Clock | Watts | By count |
+|---|---|---|---|---|
+| No copies (timing only; the stage keeps what the tile's prologue copied) | 98.70% | 2700 MHz | 381, flag off | 349 |
+| The SM's own cache (timing only: the same 13 KB an SM copied again every k-step) | 98.36% | 2640 MHz | 448.5 | 340 |
+| The L2 (k 8192, operands 43 MB, 16 blocks read each byte of A' and 8 each byte of B') | 98.18% | 2431 MHz | 449.8 | 313 |
+| DRAM (k 65536, 337 MB, same sharing) | 95.94% | 2325 MHz | 449.6 | 292 |
+
+So copies from the SM's cache run at the other miners' clock (they measure 2600 to 2625 MHz with no memory
+traffic), and bringing the same bytes in from outside the SM costs 209 MHz from the L2 and 315 from DRAM. The
+same was measured in the release's own loop the same afternoon on branch `goal/copies` (copies served from the
+SM's cache 2685 MHz at 428 W, from the L2 2534 to 2547 MHz at 449 W).
+
+**The release's own form by hand** (192 x 256, `LDGSTS`, stage s+3 issued in k-step s, a barrier a k-step):
+
+| Run | Pipe | Clock, watts | By count |
+|---|---|---|---|
+| No copies (timing only), the stage holding real operand bytes | 98.26% | 2685 MHz, 410 W, flag off | 346 |
+| k 2048, 16 row groups by 8 column blocks: the release's working set, 11 MB, in the L2 | 97.01% | 2432 MHz, 450 W | 309 |
+| k 8192, 8 by 16, 48 MB | 97.90% | 2409 MHz, 450 W | 309 |
+| k 65536, 8 by 16, 370 MB, from DRAM | 98.14% | 2321 MHz, 449 W | 299 |
+
+It holds more of the pipe than the release (95.7%) and is slower by count than the 317.3 the release mines. Three
+things explain it.
+
+1. **The release mines at k 2048, not 65536** (`PEARL_FOLD_K 2048u`, `pearl_config.h`). Its band's operands are 11
+   MB and stay in the L2; its 95.7% includes a tile's hash and hand-off every 16 chunks (its own table there has
+   97.1% at k 8192). A copy fold cannot go to k 65536 without taking its bytes from DRAM. `pearl_config.h` already
+   says so for k 4096 and 8192 ("DRAM traffic rises even on a 72 MB L2").
+2. **At the power limit the rate is watts over joules a multiply, not pipe use.** Every run above with real copies
+   sits at 450 W. The hand loop's base is no leaner than ptxas's: with no copies it draws 410 W at 2685 MHz, and the
+   release with its copies off draws 406 W at 2685 MHz. More pipe at the same joules only lowers the clock.
+3. **This probe copies more bytes than the release at small k** (four stages in the tile's prologue, through
+   registers, and three k-steps past the tile's end: 11% more at k 2048, 3% at k 8192), and at k 8192 it is still
+   2 to 3% behind the release's own figures. I did not separate why. Candidates: a unit's 512 bytes are two runs
+   of 256 here and one run of four lines in the release; six shared XORs a chunk against three; a barrier a k-step.
+
+**So the copy route is closed.** A copied byte costs the same whoever orders the loop, the release is already at
+the least bytes (37.3 an IMMA; a tile's area is its accumulators, 49,152 of an SM's 65,536 registers, so the tile
+cannot grow), and those bytes cannot come from the SM's cache: an operand byte is `fill + U[r][p0(k)] -
+U[r][p1(k)]`, the only table of it that fits an SM is U itself (128 bytes a row), and a table by the pair
+(p0, p1) is 127 times that (3.1 MB for 192 rows). What is left is to make the bytes on the SM (a draw) with fewer
+joules a byte than the fifth round's draw, at k 65536 where a tile's hash and hand-off cost nothing.
+
+**Other pipe figures, k 8192** (one launch each; CPU check passes unless "timing only"):
+
+| Form | 160 x 256 | 192 x 256 |
+|---|---|---|
+| As ptxas compiles the reference | 68.7% | 71.5 to 73.8% (k 2048) |
+| LDG + STS, the load a k-step ahead, two sets of quads (`la=1`) | 98.0 to 98.2% | does not fit 192 sums |
+| LDG + STS, one set of quads, the store 36 or 44 gaps behind its load (`la=2`) | 95.2% | 95.7% |
+| LDG + STS in the same k-step (`la=0`, the store 4 gaps behind) | 70.0% | |
+| LDGSTS, stage s+3 issued in k-step s (`cp=1 lead=3`) | 92.7% | 97.9% |
+| LDGSTS, stage s+2 (`lead=2`) | 76.0% | 86.7% |
+| LDGSTS through the SM's cache (`ca=1`) | 97.7% | 97.95% |
+| No copies (timing only) | 98.75% | 98.39% |
+| No barrier (timing only) | 98.36% (LDG + STS) | 98.79% (LDGSTS) |
+
+Not explained: the `LDGSTS` loop's 92.7% at 160 x 256, where the same loop through the SM's cache holds 97.7% and
+the 192 x 256 one 97.9%. An A record is 320 bytes a k-pair there, so a unit's runs straddle 128-byte lines, which
+is my guess. The barrier, the wait for the copies, their place in the k-step, ptxas's pads and a map of A's second
+unit that asks for whole lines each changed nothing (92.5 to 93.3%). Also not explained: an `LDGSTS` that bypasses
+the cache and is asked for the same lines every k-step (timing only) holds 57 to 62%; through the cache 97.9%.
+
+**The levers named for this round.** A barrier a chunk needs two whole chunks of stage, 8 buffers each of A and B:
+111 KB at 160 x 256 before the transcripts, over the 99 KB a block may have. The barrier a k-step costs this loop
+0.2 to 0.9 points in any case. A bigger block is ruled out by the register file (above; sixteen warps get 128
+registers a thread and lost 3% to eight, "Eight 64x64 warps a block").
+
+**Things a hand loop must do, each found by a fault here** (they add to the three of the sixth round):
+
+4. A 16-byte load or store (`LDS.128`, `STS.128`, `LDG.E.128`) takes its four registers from a multiple of four.
+   `STS.128 [R228+0x11a00], R242` assembles, disassembles, and stops the kernel with "an illegal instruction".
+5. The loop function must be the only thing between the kernel's registers and the hand loop's. With the tile's
+   prologue and end inline, ptxas kept 23 kernel values in registers through the call and the hand loop had 229;
+   as three calls it has 250 (all but R0, R1, R252 to R254).
+6. `LDGSTS` takes a 20-bit offset on its shared address and a signed 12-bit offset on its global one, so the
+   source pointer moves once a k-step; it names the uniform register of the address space's base in bits 0 to 5
+   of its high word; `LDGDEPBAR` commits a group on scoreboard 0 and `DEPBAR.LE SB0, n` waits until at most n
+   groups are in flight.
+
+`fold.py` (the staged draw fold) now keeps the sixth round's first rule (key `r1`, on by default: every reader of
+a loaded register waits on the load itself), at no cost: 96.07% with or without. The form that once computed 8
+of 10,240 regions wrong (`r1=0 ah=0`) passed four more wide checks. The breach could not have caused it in any
+case: a fault in the draw spoils a stage row that four warps (A) or two warps over five tiles (B) read, 32 or 40
+regions at least, and the failure was 8 regions of one warp.
+
+**What the least draw would cost, as a timing stream** (`cfold.py cp=2`, TIMING ONLY: nothing is computed). The
+copy units are replaced by the staged draw's instruction mix at the least a 192 x 256 block can draw: a warp a
+k-step 7 address adds, 7 shared loads of 16 bytes (stand-ins for the table words at the plus and the minus rank
+index: the lane's own words of two stage buffers), 14 IADD3, 14 PRMT, 3.5 shared stores of 16 bytes (into scratch
+buffers, so the stage keeps real operand bytes) and 2 global loads for the offsets. Nothing comes from outside
+the SM. Barrier, LDSM and readout as in the real loop. 60 s (40 s for the pieces) at 450 W:
+
+| Stream (timing only unless it says real) | Pipe | Clock, watts | By count |
+|---|---|---|---|
+| Nothing: no copies and no draw | 98.26% | 2685 MHz, 410 W, flag off | 346 |
+| 192 x 256, the 3.5 stores alone (40 s) | 98.15% | 2685 MHz, 428.5 W, flag off | |
+| 192 x 256, everything but the table loads (40 s) | 97.80% | 2640 MHz, 448.6 W | |
+| 192 x 256, the whole mix at 3.5 stores' worth a warp a k-step: the least | 96.69% | 2596 MHz, 449.2 W | 329 |
+| the same without the 7 address adds | 97.06% | 2599 MHz, 449.3 W | 331 |
+| 192 x 256 at 4 stores' worth (what `fold.py`'s lane map would draw there) | 96.51% | 2578 MHz, 449.6 W | 326 |
+| 160 x 256 at 3.5 | 96.26% | 2560 MHz, 449.8 W | 323 |
+| 160 x 256 at 4: the stand-in for the fifth round's real draw fold | 96.30% | 2538 MHz, 449.6 W | 320 |
+| REAL: the fifth round's draw fold, same holds (`fold.py`, CPU check passes) | 96.02% | 2535 MHz, 433.5 W | 319 |
+
+The stand-in lands within 3 MHz and 0.3 points of the real fold it stands for (it draws 16 W more), so the other
+rows can be read as what a real fold of that mix would do. Placements of the least mix, one launch each, pipe
+only: 96.74% as measured above; its four units in gaps 3, 11, 19 and 27 of the k-step instead of 2, 10, 18 and 26
+97.49% (332 by count at the same clock); warps 4 to 7 four gaps later 97.24%; the table loads not first in their
+gap 97.28%; no barrier 97.40%.
+
+So a draw fold at the least draw prices above the bar of 327, where the fifth round's real one (160 x 256, four
+stores a warp a k-step where 3.25 are needed) measures 319 in the same holds. A price list of single steps
+measured the same evening on branch `goal/nv-draw` reads the same way: a shared-memory step costs clock (7.5 MHz
+a step a warp a k-step) and no pipe, an ALU step costs pipe (0.04 points) and no clock.
+
+It is a stream, not a fold. A real one at 192 x 256 has two things to solve first. Shared memory: the tables
+(57,344 bytes), B's two stage buffers (16,896) and the transcripts (12,288) leave 14,848 of the 101,376 for A's
+stage, and three buffers are 19,200; a ring of two for the 20 groups no warp reads early (10,752) and a ring of
+two for the 4 groups of each row band's first tile (2,560) fit, with the lanes that draw those 4 groups a k-step
+further ahead. Registers: 192 sums and 24 fragment words leave 34.

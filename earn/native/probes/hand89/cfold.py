@@ -56,7 +56,7 @@ CFG = dict(mt=5, cp=0, la=1, sd=2, lead=3, g0=2, g1=10, g2=18, g3=26, gs1=0, a2g
            ca=0, lst=1, lpad=0,
            # Timing only (each computes wrong results on purpose). nodep: the k-step's end does not wait for
            # the copies.
-           nocopy=0, fix=0, nost=0, nobar=0, noread=0, nodep=0, dm=0)
+           nocopy=0, fix=0, nost=0, nobar=0, noread=0, nodep=0, dm=0, ag=2)
 AF, BF, ACC = [4, 8], 12, 28
 # Scoreboards. 0 is the copies' (LDGDEPBAR sets it, DEPBAR.LE waits on it).
 SB_AF, SB_B, SB_HOLD, SB_Q = 1, 2, 3, [4, 5]
@@ -332,9 +332,13 @@ def chunk(grp, cfg, L):
                 a, bq = L["DA"], L["DB"]
                 g = b + gl[u]
                 dm = cfg["dm"]          # pieces left out, to find a fault or to price a piece
+                # The adds sit in their own k-step (a gap before the chunk's first would wrap to its last, and
+                # the first chunk's first loads would read registers nothing wrote). ag=1 with sf=1 stopped with
+                # a bad access when the stores and the offsets' loads were also in; ag=2 is what was measured.
+                assert gl[u] - cfg["ag"] >= 0
                 if not dm & 1:
-                    put(g - 1, Ins(muladd(a, D, 1, L["ZR"]), wait=hw))
-                    put(g - 1, Ins(muladd(bq, D, 1, L["ZR"]), wait=hw))
+                    put(g - cfg["ag"], Ins(muladd(a, D, 1, L["ZR"]), wait=hw))
+                    put(g - cfg["ag"], Ins(muladd(bq, D, 1, L["ZR"]), wait=hw))
                 ra, rb = (D, D) if dm & 1 else (a, bq)
                 if not dm & 2:
                     put(g, Ins("LDS.128 R%d, %s" % (a, mem(ra, ((s + 1) & 3) * st + do)), wsb=SB_Q[0], wait=hw))

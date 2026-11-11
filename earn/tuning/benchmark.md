@@ -3615,6 +3615,38 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   stream's loads hit the SM's own cache, the release's come from L2 or DRAM. What a copy costs by its source is
   the next measurement.
 
+- **The copy fold by hand, seventh round: correct, 98% of the pipe, and under the release, because a copied byte
+  costs what it costs (11 November, rig01's RTX 4090, branch `goal/nv-kernel`).** No mining rate here: probe
+  figures, "by count" = pipe use x clock x 0.13107, 450 W, 60 s with long launches; the release mines 317.3 TH/s.
+  The sixth round's "release fold with half its copies, 341 by count" does not exist: the release already copies
+  the least a 192 x 256 block can (14 LDGSTS a warp a chunk), and the 341 priced copies from the SM's own cache.
+  (1) Built: the staged fold with real copies in place of the draw (`hand89/cfold_h.cuh`, `cprobe.cu`), A' and B'
+  noised on the CPU in the stage's layout, and its chunk loop written by hand (`cfold.py`), at 160 x 256 and at the
+  release's 192 x 256, with the copy as a global load and a shared store or as the release's LDGSTS. Correct in
+  every form: 10,240 of 10,240 regions (ten hand forms) and 12,288 of 12,288 (192 x 256), and at k 8192 and
+  k 65536. (2) What a copy costs is where its bytes come from (160 x 256, load plus store): no copies 98.7% of the
+  pipe at 2700 MHz and 381 W; from the SM's cache 98.4% at 2640 MHz (340 by count); from the L2 (43 MB) 98.2% at
+  2431 MHz (313); from DRAM (k 65536, 337 MB) 95.9% at 2325 MHz (292). (3) The release's own form by hand
+  (192 x 256, LDGSTS): 98.1% of the pipe at k 65536 but 2321 MHz, 299 by count; at the release's working set
+  (k 2048, 11 MB in the L2) 97.0% at 2432 MHz, 309. Under the release each time. (4) Why: the release mines at
+  k 2048 (`PEARL_FOLD_K`), so its 95.7% includes a tile's hash and hand-off every 16 chunks and its operands stay
+  in the L2; a copy fold at k 65536 reads DRAM. And at the power limit the rate is watts over joules a multiply:
+  the hand loop's base draws what ptxas's does (410 W at 2685 MHz with no copies; the release with its copies
+  off 406 W at 2685 MHz), so more pipe at the same joules only lowers the clock. (5) The definition allows no
+  ready-made operand table an SM could hold: a byte is fill + U[r][p0] - U[r][p1], U is 128 bytes a row, a table
+  by the pair is 127 times that. So a fold either brings 37.3 bytes an IMMA into the SM or makes them there.
+  The copy route is closed. (6) What making them there would cost at the least (a timing-only stream with the
+  staged draw's mix: a warp a k-step 7 shared loads, 3.5 shared stores, 14 IADD3, 14 PRMT, 7 adds, 2 offsets'
+  loads; nothing from outside the SM): 96.7% of the pipe at 2596 MHz and 449 W at 192 x 256, 329 by count (332 with its best placement);
+  326 at four stores a warp a k-step; 323 and 320 at 160 x 256 with 3.5 and 4, where the stream stands for a
+  real fold and lands within 3 MHz and 0.3 points of it. So a draw fold at the least draw is the one form
+  priced above the bar of 327; it is not built. The fifth round's real draw fold (160 x 256, four stores
+  a warp a k-step) measures 96.0% at 2535 MHz, 319, in the same holds. (7) `fold.py` now keeps the sixth round's
+  first rule (every reader of a loaded register waits on the load itself) at no cost, 96.07% either way; its one
+  old failure did not come back in four more wide checks and could not have come from that breach (a draw fault
+  spoils 32 regions or more, the failure was 8). Nothing ships from this round.
+  Tables: `earn/native/probes/README.md`, "The copy fold by hand, and what a copied byte costs".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
