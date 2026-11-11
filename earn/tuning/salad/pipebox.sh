@@ -24,6 +24,11 @@
 #   PP_SHORTS     more streams to run short (default: one to three draw units, the readout with 4 and 16 chains)
 #   PP_L2, PP_LONGS2   the second toolkit's streams, and those of its long runs
 #   PP_LONGS      the streams of the long runs (default: the main ones, then hashed bytes, then base again)
+#   PP_SET        a named pass of the sm_120 follow-up (b1 ...): its streams only are built and run short, with
+#                 each warp's cycles; no miners, no hashrate.js, no long runs unless PP_LONGS names some
+#   PP_BUILD      the streams to build (default: all)
+#   PP_OPS        streams whose whole kernel is printed as run lengths by instruction name
+#   PP_V          1: PP_SHORTS runs print each warp's own cycles an IMMA
 set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
@@ -102,7 +107,24 @@ ops = []
 for line in open(sys.argv[1], errors="replace"):
     m = re.search(r"/\*[0-9a-f]{4,}\*/\s+(@!?P\d+\s+)?([A-Z][A-Z0-9_.]*)", line)
     if m:
-        ops.append(m.group(2).split(".")[0])
+        p = m.group(2).split(".")
+        ops.append(p[1] if p[0] == "IMAD" and len(p) > 1 and p[1] in ("MOV", "IADD") else p[0])
+if len(sys.argv) > 2 and sys.argv[2] == "ops":   # the whole kernel, run lengths by instruction name
+    toks, last, n = [], None, 0
+    for o in ops + [None]:
+        if o == last:
+            n += 1
+        else:
+            if last:
+                toks.append(last + ("*%d" % n if n > 1 else ""))
+            last, n = o, 1
+    line = ""
+    for t in toks:
+        if len(line) + len(t) + 1 > 360:
+            print(line); line = ""
+        line += (" " if line else "") + t
+    print(line)
+    sys.exit()
 im = [i for i, o in enumerate(ops) if o == "IMMA"]
 if not im:
     print("no IMMA in %d instructions" % len(ops)); sys.exit()
@@ -140,10 +162,12 @@ for o in body:
         gaps.append(run); best = max(best, run); run = 0
     else:
         run += 1
+gaps = gaps[1:] + [run]   # the steps after each IMMA; the last gap runs to the back branch
 top = ",".join("%s:%d" % kv for kv in collections.Counter(other).most_common(7))
-print("imma=%d other=%d per_imma=%.3f longest_run=%d runs_over_8=%d ctl=%d[%s] top=%s" % (
+hist = ",".join("%d:%d" % kv for kv in sorted(collections.Counter(gaps).items()))
+print("imma=%d other=%d per_imma=%.3f longest_run=%d runs_over_8=%d ctl=%d[%s] top=%s gaps=%s" % (
     len(im), len(other), len(other) / len(im), best, sum(1 for g in gaps if g > 8), len(ctl),
-    ",".join(sorted(set(ctl))), top))
+    ",".join(sorted(set(ctl))), top, hist))
 EOF
 # smi.py FILE T0 SKIP [TAGS]: the card's samples from SKIP seconds after T0: means, the clock's range, the limit.
 # TAGS names the columns after the fifth (why: the clock's reasons; inst: instant draw; enf: enforced limit).
@@ -194,6 +218,14 @@ SQT=${SQT#,}
 # The streams: name|flags. The first block is the 4090 table's (lists 5 and 6 of the study); "r" after a name is
 # the same stream with hashed operand bytes (FILLRND), which changes the watts and not the code between the IMMA.
 F="-DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=1 -DDREAL=1"
+# The sm_120 follow-up's streams (after m0 below) are not unrolled: Z0 without the fragment loads, Z1 with them.
+# l, L: warp 0 alone on its SM; Q: warps 0 and 4 (one scheduler); f, F: all eight. The number is the steps after
+# every IMMA (one XOR3 of sums written 8 IMMA earlier, then plain steps chained on it). U: unpinned plain steps.
+# D: two XOR3 an IMMA of sums written that many IMMA earlier. B, C: one and two steps an IMMA on average, in
+# gaps after every 2nd to 48th IMMA. O, BW: every IMMA reads the same fragments, and W steps write one of them.
+# K: two plain steps of one kind after the XOR3. H: four or eight folding warps and four that only help.
+Z0="-DNOUNROLL=1 -DKLOAD=0"
+Z1="-DNOUNROLL=1"
 STREAMS="pure|-DKLOAD=0
 base|
 rd1|-DRD=1
@@ -262,7 +294,103 @@ m04|-DKLOAD=0 -DWMASK=0x11u
 m05|-DKLOAD=0 -DWMASK=0x21u
 m06|-DKLOAD=0 -DWMASK=0x41u
 m07|-DKLOAD=0 -DWMASK=0x81u
-m0|-DKLOAD=0 -DWMASK=0x01u"
+m0|-DKLOAD=0 -DWMASK=0x01u
+l0|$Z0 -DWMASK=0x01u
+l1|$Z0 -DWMASK=0x01u -DGX=1
+l2|$Z0 -DWMASK=0x01u -DGX=1 -DGA=1
+l4|$Z0 -DWMASK=0x01u -DGX=1 -DGA=3
+l8|$Z0 -DWMASK=0x01u -DGX=1 -DGA=7
+l16|$Z0 -DWMASK=0x01u -DGX=1 -DGA=15
+L0|$Z1 -DWMASK=0x01u
+L1|$Z1 -DWMASK=0x01u -DGX=1
+L2|$Z1 -DWMASK=0x01u -DGX=1 -DGA=1
+L4|$Z1 -DWMASK=0x01u -DGX=1 -DGA=3
+L8|$Z1 -DWMASK=0x01u -DGX=1 -DGA=7
+L16|$Z1 -DWMASK=0x01u -DGX=1 -DGA=15
+Q0|$Z1 -DWMASK=0x11u
+Q1|$Z1 -DWMASK=0x11u -DGX=1
+Q2|$Z1 -DWMASK=0x11u -DGX=1 -DGA=1
+Q4|$Z1 -DWMASK=0x11u -DGX=1 -DGA=3
+Q8|$Z1 -DWMASK=0x11u -DGX=1 -DGA=7
+Q16|$Z1 -DWMASK=0x11u -DGX=1 -DGA=15
+f0|$Z0
+f1|$Z0 -DGX=1
+f2|$Z0 -DGX=1 -DGA=1
+f4|$Z0 -DGX=1 -DGA=3
+f8|$Z0 -DGX=1 -DGA=7
+f16|$Z0 -DGX=1 -DGA=15
+F0|$Z1
+F1|$Z1 -DGX=1
+F2|$Z1 -DGX=1 -DGA=1
+F4|$Z1 -DGX=1 -DGA=3
+F8|$Z1 -DGX=1 -DGA=7
+F16|$Z1 -DGX=1 -DGA=15
+U1|$Z1 -DGA=1
+LU1|$Z1 -DWMASK=0x01u -DGA=1
+U2|$Z1 -DGA=2
+LU2|$Z1 -DWMASK=0x01u -DGA=2
+U4|$Z1 -DGA=4
+LU4|$Z1 -DWMASK=0x01u -DGA=4
+D0|$Z1 -DGX=2 -DGD=0
+D1|$Z1 -DGX=2 -DGD=1
+D2|$Z1 -DGX=2 -DGD=2
+D4|$Z1 -DGX=2 -DGD=4
+D8|$Z1 -DGX=2 -DGD=8
+D16|$Z1 -DGX=2 -DGD=16
+D24|$Z1 -DGX=2 -DGD=24
+D40|$Z1 -DGX=2 -DGD=40
+LD0|$Z1 -DWMASK=0x01u -DGX=2 -DGD=0
+LD1|$Z1 -DWMASK=0x01u -DGX=2 -DGD=1
+LD2|$Z1 -DWMASK=0x01u -DGX=2 -DGD=2
+LD8|$Z1 -DWMASK=0x01u -DGX=2 -DGD=8
+B2|$Z1 -DGX=1 -DGA=1 -DGEV=2
+B4|$Z1 -DGX=1 -DGA=3 -DGEV=4
+B8|$Z1 -DGX=1 -DGA=7 -DGEV=8
+B16|$Z1 -DGX=1 -DGA=15 -DGEV=16
+B48|$Z1 -DGX=1 -DGA=47 -DGEV=48
+C2|$Z1 -DGX=1 -DGA=3 -DGEV=2
+C8|$Z1 -DGX=1 -DGA=15 -DGEV=8
+C48|$Z1 -DGX=1 -DGA=95 -DGEV=48
+OS0|$Z1 -DOPSAME=1
+OWA|$Z1 -DOPSAME=1 -DGW=1
+OW0|$Z1 -DOPSAME=1 -DGX=1 -DGA=1
+OW1|$Z1 -DOPSAME=1 -DGX=1 -DGW=1
+BW2|$Z1 -DOPSAME=1 -DGX=1 -DGW=1 -DGEV=2
+BW8|$Z1 -DOPSAME=1 -DGX=1 -DGA=6 -DGW=1 -DGEV=8
+BW48|$Z1 -DOPSAME=1 -DGX=1 -DGA=46 -DGW=1 -DGEV=48
+LOS0|$Z1 -DOPSAME=1 -DWMASK=0x01u
+LOWA|$Z1 -DOPSAME=1 -DWMASK=0x01u -DGW=1
+LOW0|$Z1 -DOPSAME=1 -DWMASK=0x01u -DGX=1 -DGA=1
+LOW1|$Z1 -DOPSAME=1 -DWMASK=0x01u -DGX=1 -DGW=1
+K1|$Z1 -DGX=1 -DGA=2 -DGK=1
+K2|$Z1 -DGX=1 -DGA=2 -DGK=2
+K3|$Z1 -DGX=1 -DGA=2 -DGK=3
+K4|$Z1 -DGX=1 -DGA=2 -DGK=4
+K5|$Z1 -DGX=1 -DGA=2 -DGK=5
+K6|$Z1 -DGX=1 -DGA=2 -DGK=6
+K8|$Z1 -DGX=1 -DGA=2 -DGK=8
+K9|$Z1 -DGX=1 -DGA=2 -DGK=9
+K10|$Z1 -DGX=1 -DGA=2 -DGK=10
+H0|$Z0 -DHELP=0xf0u -DHK=-1
+H1|$Z0 -DHELP=0xf0u -DHK=0 -DHA=8
+H1B|$Z0 -DHELP=0xf0u -DHK=0 -DHA=2
+H2|$Z0 -DHELP=0xf0u -DHK=1 -DHA=1
+H3|$Z0 -DHELP=0xf0u -DHK=1 -DHA=4
+H4|$Z0 -DHELP=0xf0u -DHK=2 -DHA=4
+H1S|$Z0 -DHELP=0x10u -DWMASK=0x1fu -DHK=0 -DHA=8
+H8|$Z0 -DWARPS=12 -DACC=32 -DHELP=0xf00u -DHK=-1
+H8B|$Z0 -DWARPS=12 -DACC=32 -DHELP=0xf00u -DHK=0 -DHA=8
+H8C|$Z0 -DWARPS=12 -DACC=32 -DHELP=0xf00u -DHK=1 -DHA=1
+HL0|$Z1 -DHELP=0xf0u -DHK=-1
+HL1|$Z1 -DHELP=0xf0u -DHK=0 -DHA=8
+HL2|$Z1 -DHELP=0xf0u -DHK=1 -DHA=1
+rd2aN|$Z1 -DRD=2 -DTRW=0
+d4mN|$Z1 -DDRAW=4 -DDPOS=1
+full3N|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DDREAL=1 -DDSYNC=1
+rd2aO|$Z1 -DRD=2 -DTRW=0 -Xptxas -O1
+d4mO|$Z1 -DDRAW=4 -DDPOS=1 -Xptxas -O1
+full3O|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DDREAL=1 -DDSYNC=1 -Xptxas -O1
+F4O|$Z1 -DGX=1 -DGA=3 -Xptxas -O1"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -314,7 +442,19 @@ toolkit2() {
   return 0
 }
 L2=${PP_L2:-pure base rd1 rd2a d4m d4r fullns full full3}
-buildall $P/b "$CUDA" "nvcc$CUDA_VER"
+B1="l0 l1 l2 l4 l8 l16 L0 L1 L2 L4 L8 L16 Q0 Q1 Q2 Q4 Q8 Q16 f0 f1 f2 f4 f8 f16 F0 F1 F2 F4 F8 F16 U1 LU1 U2 LU2 U4 LU4 D0 D1 D2 D4 D8 D16 D24 D40 LD0 LD1 LD2 LD8 B2 B4 B8 B16 B48 C2 C8 C48 OS0 OWA OW0 OW1 BW2 BW8 BW48 LOS0 LOWA LOW0 LOW1 K1 K2 K3 K4 K5 K6 K8 K9 K10 H0 H1 H1B H2 H3 H4 H1S H8 H8B H8C HL0 HL1 HL2 rd2aN d4mN full3N rd2aO d4mO full3O F4O"
+case "${PP_SET:-}" in
+  b1) PP_BUILD="pure base rd2a d4m full3 p2k0 p2k1 $B1"
+      PP_TRACES="l4 L4 Q4 f4 F4 F8 F16 U2 U4 D0 D8 B8 B48 C48 OWA OW1 BW8 BW48 K8 K9 rd2aN d4mN full3N rd2aO d4mO full3O F4O"
+      PP_OPS="H1 H2 H4 H8B" ;;
+esac
+if [ -n "${PP_SET:-}" ]; then
+  PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
+fi
+buildall $P/b "$CUDA" "nvcc$CUDA_VER" "${PP_BUILD:-}"
+for s in ${PP_OPS:-}; do
+  [ -s "$P/b/$s.sass" ] && python3 $P/sass.py "$P/b/$s.sass" ops 2>&1 | while IFS= read -r l; do psay "nvcc$CUDA_VER ops $s $l"; done
+done
 # PP_ONLY_STAT=1: the builds and what stands between their IMMA, with both toolkits, and nothing run.
 if [ -n "${PP_ONLY_STAT:-}" ]; then
   if [ -n "${CUDA_VER2:-}" ] && [ "$CUDA_VER2" != "$CUDA_VER" ] && toolkit2; then
@@ -391,7 +531,7 @@ done
 #     streams without the step.
 #     PP_SHORTS names other streams to run short (with PP_SKIP_SHORT, only these run short).
 for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16 p1k0 p2k0 p4k0 p2k4 p1k1 p2k1 p1k2 p1k3}; do
-  [ -x $P/b/$s ] && short $P/b $T $s
+  [ -x $P/b/$s ] && short $P/b $T $s ${PP_V:+v}
 done
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
 for s in ${PP_LONGS:-pure base rd1 rd2a d4m d4r full full3 baser rd1r rd2ar d4mr base}; do

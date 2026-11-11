@@ -30,6 +30,20 @@
 //           it read; 3: a shared store; 4: an add into one register (each waits on the one before).
 //           What a step between the mma costs by kind differs by architecture: on sm_120 the readout and
 //           the draw cost several times what they cost on sm_86 and sm_89.
+//   Switches for placing steps (the sm_120 follow-up; all off by default):
+//   NOUNROLL 1: the chunk loop is not unrolled, so the loop is one chunk (192 mma) and its trace is short.
+//   OPSAME  1: every mma reads the same fragment registers (a[0], b[0]).
+//   GX, GA, GK, GD, GEV, GW   a gap of steps after every GEV-th mma: GX XOR3 of sums the mma GD earlier wrote
+//           (GD 0: the mma just issued), then GA plain steps of kind GK chained on the first XOR3's register, so
+//           the compiler cannot lift them above it, then with GW one XOR3 into b[0][0], which the next mma
+//           reads under OPSAME. GK: 0 add and xor in turn, 1 mul.lo, 2 funnel shift, 3 byte select, 4 add.f32,
+//           5 mul.f32, 6 fma.f32, 8 a shared load at an address taken from the register and an xor of what it
+//           read, 9 a shared store of the register, 10 the load's steps without the load (and, add, xor).
+//   HELP    the warps that only help (bit w): they issue no mma and run plain steps until the folding warps
+//           are done. HK: -1 they leave at once, 0 HA adds and xors a pass, 1 one load whose address is the last
+//           load's value and then HA adds and xors, 2 HA loads at counted addresses and one store. Each pass
+//           ends with a volatile shared load and a branch. The result line then counts the folding warps only,
+//           and a second line gives each helper's passes a cycle.
 //
 // The result line: pipe use at 16 cycles an mma a scheduler (mean, and the least and most over schedulers),
 // cycles an mma a scheduler, the last launch's time, the launches, MACs a second by count (4096 an mma, over
@@ -93,6 +107,48 @@
 #ifndef PKIND
 #define PKIND 0
 #endif
+#ifndef NOUNROLL
+#define NOUNROLL 0
+#endif
+#ifndef OPSAME
+#define OPSAME 0
+#endif
+#ifndef GX
+#define GX 0
+#endif
+#ifndef GA
+#define GA 0
+#endif
+#ifndef GK
+#define GK 0
+#endif
+#ifndef GD
+#define GD 8
+#endif
+#ifndef GEV
+#define GEV 1
+#endif
+#ifndef GW
+#define GW 0
+#endif
+#ifndef HELP
+#define HELP 0u
+#endif
+#ifndef HK
+#define HK 0
+#endif
+#ifndef HA
+#define HA 8
+#endif
+#define GSTEPS (GX > 0 || GA > 0 || GW > 0)
+#define FOLDMASK (RUNMASK & ~(HELP))
+#if OPSAME
+#define AIDX(i) 0
+#define BIDX(i) 0
+#else
+#define AIDX(i) ((i) / CT % RT)
+#define BIDX(i) ((i) % CT)
+#endif
 #if (WARPS != 8 || ACC != 48) && (RD != 0 || DRAW != 0)
 #error the readout and the draw are laid out for 8 warps of 48 mma
 #endif
@@ -114,6 +170,9 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
   unsigned *const shw = reinterpret_cast<unsigned *>(sh);
   for (unsigned i = tid; i < SHBYTES / 4u; i += THREADS)
     shw[i] = (!FILLRND && i >= 96u && i < 2048u) ? ((i * 2654435761u) >> 7) & 2040u : i * 2654435761u;
+#if HELP
+  if (tid == 12u) shw[12] = 0u;   // the folders' done flag; word 12 is this thread's own in the fill above
+#endif
   __syncthreads();
   unsigned a[RT][4], b[CT][2];
   int c[ACC][4];
@@ -126,6 +185,49 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 #if PAD > 0
   unsigned px = tid * 2654435761u + 1u, pchain = tid;
   const unsigned pa = (unsigned)__cvta_generic_to_shared(sh + 44u * 1024u + warp * 1024u + lane * 16u);
+#endif
+#if HELP
+  const unsigned fa = (unsigned)__cvta_generic_to_shared(shw + 12);
+  if ((HELP >> warp) & 1u) {
+    unsigned h = tid * 2654435761u + 7u, n = 0u;
+    const unsigned hx = tid * 40503u + 3u, hy = tid * 69069u + 5u;
+    unsigned *const hs = shw + 11264u + tid;   // a word of its own in the draw slab's place
+    const long long h0 = clock64();
+#if HK >= 0
+    unsigned flag;
+    do {
+#if HK == 1
+      h = shw[2048u + (h & 4095u)];
+#endif
+#pragma unroll
+      for (int p = 0; p < HA; p++) {
+#if HK == 2
+        h ^= shw[2048u + ((n * (unsigned)HA + (unsigned)p) & 4095u)];
+#else
+        if (p & 1) asm volatile("xor.b32 %0, %0, %1;\n" : "+r"(h) : "r"(hy));
+        else asm volatile("add.u32 %0, %0, %1;\n" : "+r"(h) : "r"(hx));
+#endif
+      }
+#if HK == 2
+      *hs = h;
+#endif
+      n++;
+      asm volatile("ld.volatile.shared.u32 %0, [%1];\n" : "=r"(flag) : "r"(fa));
+    } while (flag == 0u);
+#endif
+    const long long h1 = clock64();
+    if (lane == 0) {
+      times[blockIdx.x * (2 * WARPS) + 2 * warp] = h0;
+      times[blockIdx.x * (2 * WARPS) + 2 * warp + 1] = h1;
+    }
+    sink[blockIdx.x * THREADS + tid] = lane == 0 ? (int)n : (int)(h ^ *hs);
+    return;
+  }
+#endif
+#if GSTEPS
+  const unsigned gx = tid * 2654435761u + 1u, gy = tid * 40503u + 3u, gzero = shw[0];
+  const unsigned char *const gtab = sh + 8192u + tid * 128u;
+  unsigned *const gst = reinterpret_cast<unsigned *>(sh + 44u * 1024u + tid * 32u);
 #endif
 #pragma unroll
   for (int i = 0; i < RT; i++)
@@ -146,8 +248,8 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
                  : "+r"(c[i][0]), "+r"(c[i][1]), "+r"(c[i][2]), "+r"(c[i][3])
-                 : "r"(a[i / CT % RT][0]), "r"(a[i / CT % RT][1]), "r"(a[i / CT % RT][2]), "r"(a[i / CT % RT][3]),
-                   "r"(b[i % CT][0]), "r"(b[i % CT][1]));
+                 : "r"(a[AIDX(i)][0]), "r"(a[AIDX(i)][1]), "r"(a[AIDX(i)][2]), "r"(a[AIDX(i)][3]),
+                   "r"(b[BIDX(i)][0]), "r"(b[BIDX(i)][1]));
   };
   auto xrun = [&](int lo, int hi) {
 #pragma unroll
@@ -239,6 +341,48 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 #endif
   };
 #endif
+#if GSTEPS
+  // The steps after mma i (see GX, GA, GK, GD, GW in the header).
+  auto gap = [&](int i) {
+    const int r0 = (i / GEV * (GX > 0 ? GX : 1)) % RCH;
+#pragma unroll
+    for (int q = 0; q < GX; q++) {
+      const int j = ((i - GD - q / 2) % ACC + ACC) % ACC;
+      asm volatile("xor.b32 %0, %0, %1;\n xor.b32 %0, %0, %2;\n" : "+r"(t[(r0 + q) % RCH])
+                   : "r"(c[j][(2 * q) & 3]), "r"(c[j][(2 * q + 1) & 3]));
+    }
+#pragma unroll
+    for (int p = 0; p < GA; p++) {
+#if GK == 0
+      if (p & 1) asm volatile("xor.b32 %0, %0, %1;\n" : "+r"(t[r0]) : "r"(gy));
+      else asm volatile("add.u32 %0, %0, %1;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 1
+      asm volatile("mul.lo.u32 %0, %0, %1;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 2
+      asm volatile("shf.l.wrap.b32 %0, %1, %0, 7;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 3
+      asm volatile("prmt.b32 %0, %0, %1, 0x5140;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 4
+      asm volatile("add.f32 %0, %0, %1;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 5
+      asm volatile("mul.f32 %0, %0, %1;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 6
+      asm volatile("fma.rn.f32 %0, %0, %1, %1;\n" : "+r"(t[r0]) : "r"(gx));
+#elif GK == 8
+      t[r0] ^= *reinterpret_cast<const unsigned *>(gtab + (t[r0] & 124u));
+#elif GK == 9
+      gst[(i + p) & 7] = t[r0];
+#elif GK == 10
+      t[r0] ^= (t[r0] & 124u) + gx;
+#else
+#error GK
+#endif
+    }
+#if GW
+    b[0][0] ^= ((GX > 0 || GA > 0) ? t[r0] : gx) & gzero;
+#endif
+  };
+#endif
   // One k-step: 48 mma, with the readout's runs and the draw where the switches put them. s is 0 .. 3.
   auto kstep = [&](int s, int ch) {
 #pragma unroll
@@ -247,6 +391,9 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 #if PAD > 0
 #pragma unroll
       for (int p = 0; p < PAD; p++) pad(i, p);
+#endif
+#if GSTEPS
+      if (i % GEV == GEV - 1) gap(i);
 #endif
       const int n = i + 1;   // mma issued so far in this k-step
 #if RD == 2
@@ -294,6 +441,9 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
   const int nch = chunks;
 #endif
   const long long t0 = clock64();
+#if NOUNROLL
+#pragma unroll 1
+#endif
   for (int ch = 0; ch < nch; ch++) {
     kstep(0, ch);
     kstep(1, ch);
@@ -301,11 +451,17 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
     kstep(3, ch);
   }
   const long long t1 = clock64();
+#if HELP
+  if (nch > 0) asm volatile("st.volatile.shared.u32 [%0], %1;\n" :: "r"(fa), "r"(warp + 1u) : "memory");
+#endif
   if (lane == 0) {
     times[blockIdx.x * (2 * WARPS) + 2 * warp] = t0;
     times[blockIdx.x * (2 * WARPS) + 2 * warp + 1] = t1;
   }
   int sum = (int)dro;
+#if GSTEPS
+  sum ^= (int)(gx + gy + gzero) + (int)gtab[0] + (int)gst[0];
+#endif
 #if PAD > 0
   sum ^= (int)(px + pchain);
 #endif
@@ -369,7 +525,7 @@ int main(int argc, char **argv) {
       int ran = 0;
       for (int w = s; w < WARPS; w += 4) {
         const long long a0 = h[bk * 2 * WARPS + 2 * w], a1 = h[bk * 2 * WARPS + 2 * w + 1];
-        if (!((RUNMASK >> w) & 1u)) continue;
+        if (!((FOLDMASK >> w) & 1u)) continue;
         ran++;
         own[w] += (double)(a1 - a0) / ((double)chunks * 4.0 * ACC) / blocks;
         if (!any || a0 < lo) lo = a0;
@@ -387,7 +543,7 @@ int main(int argc, char **argv) {
   }
   const double use = use_sum / nsched;
   int running = 0;
-  for (int w = 0; w < WARPS; w++) running += (RUNMASK >> w) & 1u;
+  for (int w = 0; w < WARPS; w++) running += (FOLDMASK >> w) & 1u;
   // By count: over the launches that began 8 s or more into the run, or over all of a shorter run.
   const double macs = 4096.0 * (nlate ? nlate : launches) * blocks * running * chunks * 4.0 * ACC /
                       ((nlate ? late : total) / 1000.0);
@@ -397,8 +553,29 @@ int main(int argc, char **argv) {
   if (argc > 4) {
     printf("%-26s own cycles an mma, by warp:", name);
     for (int w = 0; w < WARPS; w++)
-      if ((RUNMASK >> w) & 1u) printf(" %d:%.2f", w, own[w]);
+      if ((FOLDMASK >> w) & 1u) printf(" %d:%.2f", w, own[w]);
     printf("\n");
   }
+#if HELP
+  {
+    // Each helper: its passes a cycle, and its passes for each mma its scheduler's folding warps issued.
+    int *hn = (int *)malloc(sizeof(int) * blocks * THREADS);
+    cudaMemcpy(hn, sink, sizeof(int) * blocks * THREADS, cudaMemcpyDeviceToHost);
+    printf("%-26s helpers, passes a cycle and passes an mma of the scheduler:", name);
+    for (int w = 0; w < WARPS; w++) {
+      if (!(((HELP) >> w) & 1u)) continue;
+      double pc = 0, n = 0;
+      int folders = 0;
+      for (int f = w % 4; f < WARPS; f += 4) folders += (FOLDMASK >> f) & 1u;
+      for (int bk = 0; bk < blocks; bk++) {
+        const double cyc = (double)(h[bk * 2 * WARPS + 2 * w + 1] - h[bk * 2 * WARPS + 2 * w]);
+        pc += hn[bk * THREADS + w * 32] / (cyc > 0 ? cyc : 1) / blocks;
+        n += (double)hn[bk * THREADS + w * 32] / blocks;
+      }
+      printf(" %d:%.4f,%.3f", w, pc, folders ? n / ((double)folders * chunks * 4.0 * ACC) : 0.0);
+    }
+    printf("\n");
+  }
+#endif
   return 0;
 }
