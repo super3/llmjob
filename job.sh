@@ -1,16 +1,15 @@
-# 7900xtx cpu: what the hash queue costs in CPU time: stamps of the fold alone (is the PC slow?), then PEARL_AMD_HASHQ=0 and =1 taking turns with the run timed, then each one's threads
+# 7900xtx blocking wait: the default and the hash queue off, each with HIP's blocking wait (PEARL_AMD_SCHED=block), taking turns with the run timed; then the threads and what the busy ones are doing (gdb)
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=aff96401d823fe1adee8300d9c34a04476a3642b
-G_PARTS=build\ stamps\ hash\ threads
+G_CODE=8389f9d4a621b5d9f6546e583f60da59422f7d86
+G_PARTS=build\ hash\ threads\ gdb
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
 G_FOLDK=0
-G_STSHAPES=sbase:131072:2048:300\ sbase:131072:16384:40
-G_SROUNDS=1
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq0=base\ PEARL_AMD_HASHQ=0\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
-G_VARIANTS=hq0\ hq1\ base
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq0=base\ PEARL_AMD_HASHQ=0\;blk=base\ PEARL_AMD_SCHED=block\;hq0blk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_SCHED=block\;spin=base\ PEARL_AMD_SCHED=spin\;hq1blk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_SCHED=block\;dd0=base\ AMD_DIRECT_DISPATCH=0\;dd1=base\ AMD_DIRECT_DISPATCH=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
+G_VARIANTS=base\ blk\ hq0\ hq0blk
 G_HROUNDS=3
 G_HASH=45:12
-G_THREADS=hq0\ hq1
+G_THREADS=blk\ hq0blk
+G_GDB=base\ blk
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -651,6 +650,31 @@ if has threads; then
     np=$(pgrep -f '^node ../probes/hashrate.js' | head -n 1)
     say "threads $v (pid ${np:-?}, $(nproc) CPUs): $(ps -L -o pcpu=,comm= -p "${np:-1}" 2>/dev/null | sort -rn | head -n 9 | awk '{printf "%s %s; ", $1, $2}')"
     wait $hp
+  done
+fi
+
+# What the busy threads are doing: the same run as gdb's child, stopped 24 s in with SIGINT, and the call chain of
+# every thread that took 30% of a core or more (ps -L just before the stop), for each variant in G_GDB.
+if has gdb; then
+  command -v gdb > /dev/null || apt-get install -y -qq gdb > /root/gdb-apt.log 2>&1 || say "gdb: apt failed: $(tail -n 1 /root/gdb-apt.log | cut -c1-200)"
+  for v in ${G_GDB:-base}; do
+    vdef "$v"
+    [ -f $SW/var/$VCORE/pearl_core_hip.node ] || { say "gdb $v: no build"; continue; }
+    command -v gdb > /dev/null || { say "gdb $v: no gdb"; continue; }
+    env PEARL_AMD_UNTESTED=1 "${VENV[@]}" timeout 150 gdb -q -batch -ex "set pagination off" -ex "set print thread-events off" -ex run -ex "thread apply all bt 12" -ex kill --args node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 60 5 > /root/gdb-$v.log 2>&1 &
+    gp=$!
+    sleep 24
+    np=$(pgrep -x node | head -n 1)
+    ps -L -o tid=,pcpu= -p "${np:-1}" 2>/dev/null | sort -k2 -rn | head -n 9 > /root/gdb-busy.txt
+    say "gdb $v busy threads (tid cpu%): $(tr -s ' ' < /root/gdb-busy.txt | tr '\n' ';' | cut -c1-200)"
+    kill -INT "${np:-1}" 2>/dev/null
+    wait $gp
+    awk 'NR == FNR { busy[$1] = $2; next }
+      /^Thread / { if (line != "") print line; line = ""; lwp = ""; for (i = 1; i < NF; i++) if ($i == "(LWP") { lwp = $(i + 1); gsub(/[^0-9]/, "", lwp) }; n = 0; if ((lwp in busy) && busy[lwp] + 0 >= 30) line = "tid " lwp " " busy[lwp] "%:"; next }
+      /^#/ && line != "" && n < 12 { f = ($3 == "in") ? $4 : $2; lib = ""; if ($(NF - 1) == "from") { m = split($NF, a, "/"); lib = "@" a[m] } line = line " " f lib " <"; n++ }
+      END { if (line != "") print line }' /root/gdb-busy.txt /root/gdb-$v.log > /root/gdb-$v.txt
+    [ -s /root/gdb-$v.txt ] || say "gdb $v: no chains: $(grep -v '^\[' /root/gdb-$v.log | tail -n 3 | tr '\n' '|' | cut -c1-300)"
+    while IFS= read -r l; do say "gdb $v ${l:0:420}"; done < /root/gdb-$v.txt
   done
 fi
 say "job done"
