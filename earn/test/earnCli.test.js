@@ -3013,6 +3013,33 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // The miner keeps each trial's answer for a week, so a card is not tried
+  // again on every start (pearlMiner.test.js has what is kept and when it is
+  // used). The CLI's part is the file: beside node.json, as the launch shapes'
+  // is, and handed to the engine on every run.
+  test('the engine is given a file beside node.json to remember trial answers in', async () => {
+    const path = require('path');
+    const m = load();
+    oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    const store = miner.opts.memClockStore;
+    const KEY = 'gpu0 NVIDIA GeForce RTX 5090';
+    const answer = { keep: true, mhz: 7001, at: 1, onTh: 103.4, offTh: 95.7 };
+    expect(store.get(KEY)).toBeNull();
+    m.fs.writeFileSync.mockClear();
+    store.set(KEY, answer);
+    const written = m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).includes('mem-clock-trials.json'));
+    expect(written).toHaveLength(1);
+    expect(String(written[0][0]).startsWith(path.join(path.dirname('/tmp/store/node.json'), 'mem-clock-trials.json')))
+      .toBe(true);
+    expect(JSON.parse(written[0][1])).toEqual({ [KEY]: answer });
+    expect(store.get(KEY)).toEqual(answer);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   // An RTX 5090 too: asking for the default's own clock locks the card at
   // once. The miner is handed no card to try.
   test('--mine-mem-clock 7001 on an RTX 5090 locks it with no trial', async () => {

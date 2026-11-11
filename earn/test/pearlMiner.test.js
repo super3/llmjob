@@ -3199,9 +3199,11 @@ describe('PearlMiner — the memory clock trial', () => {
     + '75 s locked at 5001 MHz, twice; the lock is kept only if it is faster';
   const NO_RIGHTS = { ok: false, error: 'sudo: a password is required' };
 
+  // `store` is where trial answers are kept between starts, `env` the
+  // environment the miner reads, and `now` the time the run starts at.
   function rig(over = {}) {
     const calls = [];
-    const t = { now: 0 };
+    const t = { now: over.now || 0 };
     const clocks = {
       lockMemoryClock: jest.fn((index, mhz) => { calls.push(['lock', index, mhz]); return over.lock || { ok: true, error: null }; }),
       resetMemoryClock: jest.fn((index) => { calls.push(['reset', index]); return over.reset || { ok: true, error: null }; }),
@@ -3213,7 +3215,10 @@ describe('PearlMiner — the memory clock trial', () => {
       made.push(c);
       return c;
     });
-    const m = new PearlMiner({ connect: () => makeSocket(), createCore, reconnectMs: 0, clocks, now: () => t.now });
+    const m = new PearlMiner({
+      connect: () => makeSocket(), createCore, reconnectMs: 0, clocks, now: () => t.now,
+      memClockStore: over.store, env: over.env || {},
+    });
     const logs = [];
     m.on('log', (l) => logs.push(l));
     m.on('stopped', () => calls.push(['stopped']));
@@ -3700,6 +3705,278 @@ describe('PearlMiner — the memory clock trial', () => {
         });
         expect(b.m.memClockLocked.size).toBe(0);
         b.m.stop();
+      });
+    });
+  });
+
+  // A trial's answer is kept for a week a card, so the next start does not
+  // try the card again (shared/memClockTrial; the shells keep the answers in a
+  // file, as they keep the RTX 30 launch shapes). A trial on every start cost
+  // a card where the lock pays half of its first five minutes each time, and
+  // a rig whose mining runs are shorter than a trial never kept the lock.
+  describe('remembering the answer between starts', () => {
+    const { REMEMBER_MS } = require('../src/shared/memClockTrial');
+    const { shapeFileStore } = require('../src/shared/shapePick');
+    const NOW = Date.UTC(2026, 10, 11, 12);
+    const DAY = 24 * 3600 * 1000;
+    const KEY = 'gpu0 NVIDIA GeForce RTX 4090';
+    const memStore = (data = {}) => ({ data, get: (k) => data[k] || null, set: (k, v) => { data[k] = v; } });
+    // What a trial at 5001 MHz on the RTX 4090 left in the store on 11 November.
+    const kept = (over = {}) => ({ keep: true, mhz: 5001, at: NOW, onTh: 320.5, offTh: 317.5, ...over });
+    const notKept = (over = {}) => ({ keep: false, mhz: 5001, at: NOW, onTh: 283.1, offTh: 317.5, ...over });
+    const KEPT_LINE = 'memory clock on GPU 0: its trial of 2026-11-11 kept the 5001 MHz lock, '
+      + '320.5 TH/s locked against 317.5 (+0.9%). Remembered: no trial until 2026-11-18.';
+    const NOT_KEPT_LINE = 'memory clock left to the driver on GPU 0: its trial of 2026-11-11 did not keep the '
+      + '5001 MHz lock, 283.1 TH/s locked against 317.5 (-10.8%). Remembered: no trial until 2026-11-18.';
+
+    test('a finished trial writes its answer down under the card\'s key, and says until when', () => {
+      const store = memStore();
+      const b = rig({ store, now: NOW });
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      expect(Object.keys(store.data)).toEqual([KEY]);
+      expect(store.data[KEY]).toMatchObject({ keep: true, mhz: 5001, at: NOW + 4 * TURN_MS });
+      expect(store.data[KEY].onTh).toBeCloseTo(320.5, 6);
+      expect(store.data[KEY].offTh).toBeCloseTo(317.5, 6);
+      expect(b.clockLines().pop()).toBe('memory clock kept at 5001 MHz on GPU 0 while mining: '
+        + '320.5 TH/s locked against 317.5 (+0.9%); remembered until 2026-11-18');
+      b.m.stop();
+
+      const slower = rig({ store: memStore(), now: NOW });
+      slower.m.start(AUTO);
+      trial(slower, slower.made[0], [317.5, 283.1, 317.5, 283.1]);
+      expect(slower.m.memClockStore.data[KEY]).toMatchObject({ keep: false, mhz: 5001 });
+      expect(slower.clockLines().pop()).toBe('memory clock left to the driver on GPU 0 (the lock was not ahead '
+        + 'by 0.3%): 283.1 TH/s locked against 317.5 (-10.8%); remembered until 2026-11-18');
+      // The lock came off before the answer was written: "no lock" is never
+      // remembered for a card that is still locked.
+      expect(slower.calls.pop()).toEqual(['reset', 0]);
+      slower.m.stop();
+    });
+
+    test('a remembered "kept" is locked at once on the next start, with no trial, and the log says why', () => {
+      const store = memStore({ [KEY]: kept() });
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start(AUTO);
+      // No reset and no first turn at the driver's clock: straight to the lock.
+      expect(b.calls).toEqual([['lock', 0, 5001]]);
+      expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([
+        { level: 'info', line: KEPT_LINE },
+        { level: 'info', line: 'memory clock locked at 5001 MHz on GPU 0 while mining' },
+      ]);
+      // Slower with it now, but nothing is timed: the answer stands for its week.
+      trial(b, b.made[0], [317.5, 283.1, 317.5, 283.1]);
+      expect(b.calls).toHaveLength(1);
+      expect(store.data[KEY]).toEqual(kept());
+      b.m.stop();
+      expect(b.calls.slice(1)).toEqual([['reset', 0], ['stopped']]);
+    });
+
+    test('a remembered "not kept" leaves the card alone: no lock, no trial, no call', () => {
+      const store = memStore({ [KEY]: notKept() });
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([{ level: 'info', line: NOT_KEPT_LINE }]);
+      expect(store.data[KEY]).toEqual(notKept());
+      b.m.stop();
+      expect(b.calls).toEqual([['stopped']]);
+    });
+
+    test('after a week the card is tried again, and the new answer replaces the old one', () => {
+      const store = memStore({ [KEY]: notKept() });
+      const b = rig({ store, now: NOW + REMEMBER_MS });
+      b.m.start(AUTO);
+      expect(b.clockLines()).toEqual([START_LINE]);
+      trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      expect(store.data[KEY]).toMatchObject({ keep: true, mhz: 5001, at: NOW + REMEMBER_MS + 4 * TURN_MS });
+      expect(b.clockLines().pop()).toMatch(/^memory clock kept at 5001 MHz .*; remembered until 2026-11-25$/);
+      b.m.stop();
+    });
+
+    // The key is the slot and the model in it.
+    test('a different card in the same slot is tried afresh', () => {
+      const store = memStore({ [KEY]: kept() });
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start({ ...AUTO, gpus: [{ index: 0, name: 'NVIDIA GeForce RTX 4080 SUPER' }] });
+      expect(b.calls).toEqual([['reset', 0]]);
+      expect(b.clockLines()).toEqual([START_LINE]);
+      trial(b, b.made[0], [200, 199, 200, 199]);
+      // The other card's answer is still its own.
+      expect(store.data[KEY]).toEqual(kept());
+      expect(store.data['gpu0 NVIDIA GeForce RTX 4080 SUPER']).toMatchObject({ keep: false, mhz: 5001 });
+      b.m.stop();
+    });
+
+    test('an answer for another clock is not this lock\'s: the card is tried', () => {
+      const store = memStore({ [KEY]: kept({ mhz: 7001 }) });
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start(AUTO);
+      expect(b.calls).toEqual([['reset', 0]]);
+      expect(b.clockLines()).toEqual([START_LINE]);
+      b.m.stop();
+    });
+
+    test('LLMJOB_MINE_MEM_CLOCK_RETRY=1 tries the card again now, and keeps the new answer', () => {
+      const store = memStore({ [KEY]: notKept() });
+      const b = rig({ store, now: NOW + DAY, env: { LLMJOB_MINE_MEM_CLOCK_RETRY: '1' } });
+      b.m.start(AUTO);
+      expect(b.clockLines()).toEqual([START_LINE]);
+      trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      expect(store.data[KEY]).toMatchObject({ keep: true, at: NOW + DAY + 4 * TURN_MS });
+      b.m.stop();
+    });
+
+    // No answer is not a no. Each of these leaves the store as it was, so the
+    // next start tries the card again.
+    test('a trial that could not run or finish remembers nothing', () => {
+      const tried = (over, run) => {
+        const store = memStore();
+        const b = rig({ store, now: NOW, ...over });
+        b.m.start(AUTO);
+        run(b);
+        b.m.stop();
+        return store.data;
+      };
+      const full = (b) => trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
+      // No rights: the card could not be handed to the driver, or not locked.
+      expect(tried({ reset: NO_RIGHTS }, full)).toEqual({});
+      expect(tried({ lock: NO_RIGHTS }, full)).toEqual({});
+      // Too few samples to compare.
+      expect(tried({}, (b) => {
+        for (let i = 0; i < 4; i += 1) {
+          b.t.now += TURN_MS;
+          b.made[0].emit('hashrate', 317.5);
+        }
+      })).toEqual({});
+      // The card stopped, or mining did, part way through.
+      expect(tried({}, (b) => {
+        turn(b, b.made[0], 317.5);
+        b.made[0].emit('error', new Error('GPU 0: misaligned address'));
+      })).toEqual({});
+      expect(tried({}, (b) => turn(b, b.made[0], 317.5))).toEqual({});
+      // START LLM joined the miner.
+      expect(tried({}, (b) => { turn(b, b.made[0], 317.5); b.m.releaseMemClocks(); full(b); })).toEqual({});
+    });
+
+    // A number is a request: the card is locked at it whatever its trial
+    // found, and the store is neither read for it nor written.
+    test('an explicit clock locks at once and ignores what is remembered', () => {
+      const store = memStore({ [KEY]: notKept() });
+      const get = jest.spyOn(store, 'get');
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start({ ...settings, gpus: GPU, mineMemClockByIndex: { 0: 5001 } });
+      expect(b.calls).toEqual([['lock', 0, 5001]]);
+      expect(b.clockLines()).toEqual(['memory clock locked at 5001 MHz on GPU 0 while mining']);
+      trial(b, b.made[0], [317.5, 283.1, 317.5, 283.1]);
+      b.m.stop();
+      expect(get).not.toHaveBeenCalled();
+      expect(store.data[KEY]).toEqual(notKept());
+    });
+
+    // 0 and a co-running LLM give the miner no plan at all.
+    test('with no plan the store is not touched', () => {
+      const store = memStore({ [KEY]: kept() });
+      const get = jest.spyOn(store, 'get');
+      const b = rig({ store, now: NOW + DAY });
+      b.m.start({ ...settings, gpus: GPU, mineMemClockByIndex: {}, mineMemClockTrial: undefined });
+      b.m.stop();
+      expect(get).not.toHaveBeenCalled();
+      expect(b.calls).toEqual([['stopped']]);
+    });
+
+    // The RTX 5090's default uses the same memory. Nobody asked for its lock,
+    // so a remembered one the driver will not give now is information.
+    test('the RTX 5090 default takes its remembered answer too', () => {
+      const gpus = [{ index: 0, name: 'NVIDIA GeForce RTX 5090' }];
+      const plan = planMemClocks({ cards: [{ index: 0, major: 12, minor: 0, driverMajor: 610 }], gpus });
+      const wired = {
+        ...settings, gpus,
+        mineMemClockByIndex: plan.byIndex, mineMemClockDefault: plan.isDefault, mineMemClockTrial: plan.trial,
+      };
+      const answer = { keep: true, mhz: 7001, at: NOW, onTh: 103.4, offTh: 95.7 };
+      const LINE = 'memory clock on GPU 0: its trial of 2026-11-11 kept the 7001 MHz lock, '
+        + '103.4 TH/s locked against 95.7 (+8.0%). Remembered: no trial until 2026-11-18.';
+
+      const b = rig({ store: memStore({ 'gpu0 NVIDIA GeForce RTX 5090': answer }), now: NOW + DAY });
+      b.m.start(wired);
+      expect(b.calls).toEqual([['lock', 0, 7001]]);
+      expect(b.clockLines()).toEqual([LINE, 'memory clock locked at 7001 MHz on GPU 0 while mining']);
+      b.m.stop();
+
+      const noRights = rig({ store: memStore({ 'gpu0 NVIDIA GeForce RTX 5090': answer }), now: NOW + DAY, lock: NO_RIGHTS });
+      noRights.m.start(wired);
+      expect(noRights.logs.filter((l) => /memory clock/.test(l.line))).toEqual([
+        { level: 'info', line: LINE },
+        {
+          level: 'info',
+          line: 'memory clock left at the driver\'s default on GPU 0 (sudo: a password is required): '
+            + 'the RTX 5090 lock needs root or administrator rights for nvidia-smi',
+        },
+      ]);
+      noRights.m.stop();
+    });
+
+    // The file is the user's to edit. Rates that are not numbers are left out
+    // of the line; the answer itself still stands.
+    test('a remembered answer whose rates are not usable is said without them', () => {
+      const PLAIN = 'memory clock on GPU 0: its trial of 2026-11-11 kept the 5001 MHz lock. '
+        + 'Remembered: no trial until 2026-11-18.';
+      for (const rates of [{ onTh: 'fast', offTh: 317.5 }, { onTh: 320.5, offTh: null }, { onTh: 320.5, offTh: 0 }]) {
+        const b = rig({ store: memStore({ [KEY]: kept(rates) }), now: NOW + DAY });
+        b.m.start(AUTO);
+        expect(b.clockLines()).toEqual([PLAIN, 'memory clock locked at 5001 MHz on GPU 0 while mining']);
+        b.m.stop();
+      }
+    });
+
+    // Both shells keep the answers in a JSON file, through the store the
+    // launch shapes use. Two starts over one file, as two runs of the app are.
+    test('through the shells\' file store, one run\'s answer is the next run\'s lock', () => {
+      const files = {};
+      const fileStore = () => shapeFileStore('/d/mem-clock-trials.json', {
+        readSettings: (f) => JSON.parse(JSON.stringify(files[f] || {})),
+        writeSettings: (f, data) => { files[f] = JSON.parse(JSON.stringify(data)); },
+        fs: {}, log: () => {},
+      });
+      const first = rig({ store: fileStore(), now: NOW });
+      first.m.start(AUTO);
+      trial(first, first.made[0], [317.5, 320.5, 317.5, 320.5]);
+      first.m.stop();
+      expect(Object.keys(files['/d/mem-clock-trials.json'])).toEqual([KEY]);
+
+      const next = rig({ store: fileStore(), now: NOW + DAY });
+      next.m.start(AUTO);
+      expect(next.calls).toEqual([['lock', 0, 5001]]);
+      expect(next.clockLines()[0]).toMatch(/^memory clock on GPU 0: its trial of 2026-11-11 kept the 5001 MHz lock, /);
+      next.m.stop();
+    });
+
+    describe('when the card is opened again in the same run', () => {
+      beforeEach(() => jest.useFakeTimers());
+      afterEach(() => {
+        jest.clearAllTimers();
+        jest.useRealTimers();
+      });
+
+      test('it keeps the remembered answer, and the line is not said twice', () => {
+        const b = rig({ store: memStore({ [KEY]: kept() }), now: NOW + DAY });
+        b.m.start(AUTO);
+        b.made[0].emit('error', new Error('GPU 0: misaligned address'));
+        jest.advanceTimersByTime(RESTART_MS);
+        expect(b.made).toHaveLength(2);
+        expect(b.calls).toEqual([['lock', 0, 5001], ['reset', 0], ['lock', 0, 5001]]);
+        expect(b.clockLines().filter((l) => l === KEPT_LINE)).toHaveLength(1);
+        b.m.stop();
+
+        const not = rig({ store: memStore({ [KEY]: notKept() }), now: NOW + DAY });
+        not.m.start(AUTO);
+        not.made[0].emit('error', new Error('GPU 0: misaligned address'));
+        jest.advanceTimersByTime(RESTART_MS);
+        expect(not.made).toHaveLength(2);
+        expect(not.calls).toEqual([]);
+        expect(not.clockLines()).toEqual([NOT_KEPT_LINE]);
+        not.m.stop();
       });
     });
   });

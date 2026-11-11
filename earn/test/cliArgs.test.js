@@ -468,6 +468,7 @@ describe('--mine-mem-clock', () => {
     expect(USAGE).toMatch(/while it mines, with no trial\./);
     expect(USAGE).toMatch(/Default: an RTX\s+5090 tries 7001 for five minutes and keeps it\s+only if it mines faster/);
     expect(USAGE).toMatch(/0 leaves/);
+    expect(USAGE).toMatch(/A trial's answer is remembered\s+for a week\./);
     expect(USAGE).toMatch(/Only one\s+5090 has been measured/);
   });
 

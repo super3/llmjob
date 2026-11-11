@@ -1465,6 +1465,32 @@ describe('mining', () => {
       for (const s of saved) expect(s).not.toContain('mineMemClock');
     });
 
+    // The miner keeps each trial's answer for a week, so a card is not tried
+    // again on every start (pearlMiner.test.js has what is kept and when it
+    // is used). The app's part is the file: in userData, as the launch
+    // shapes' is, and handed to the engine on every start.
+    it('gives the engine a file in userData to remember trial answers in', async () => {
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const store = ctx.PearlEngine.instances[0].opts.memClockStore;
+      const KEY = 'gpu0 NVIDIA GeForce RTX 5090';
+      const answer = { keep: false, mhz: 7001, at: 1, onTh: 158.2, offTh: 158 };
+      ctx.fs.writeFileSync.mockClear();
+      store.set(KEY, answer);
+      // Written whole, through a temp file beside it (settingsStore), so every
+      // write is the file or its temp, in userData.
+      const FILE = path.join('/tmp/userData', 'mem-clock-trials.json');
+      const written = ctx.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).includes('mem-clock-trials.json'));
+      expect(written.length).toBeGreaterThan(0);
+      for (const [file, text] of written) {
+        expect(String(file).startsWith(FILE)).toBe(true);
+        expect(JSON.parse(String(text))).toEqual({ [KEY]: answer });
+      }
+      expect(store.get(KEY)).toEqual(answer);
+    });
+
     // 'auto' co-runs the LLM in the GUI, always: there is no demand mode here.
     // A served model is memory-bandwidth-bound, so the card keeps its clock.
     it('is left to the driver when the LLM co-runs, and says why', async () => {

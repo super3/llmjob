@@ -23,6 +23,15 @@
 // clock change. The lock is kept only when it is ahead on the means by MIN_GAIN
 // and each locked turn beat each unlocked one. A card that sent too few samples
 // in any turn keeps the driver's clock: no answer is not a yes.
+//
+// The answer is remembered for a week a card (remember, recall), as the RTX 30
+// launch shape is (shared/shapePick): a trial on every start cost a card where
+// the lock pays half of its first five minutes each time, and a rig whose
+// mining runs are short (demand mode, a service that restarts) never got to
+// keep the lock at all. Only a real comparison is remembered. A trial that
+// could not run or finish has no answer, and the next start tries again.
+
+const { shapeKey, MAX_AGE_MS } = require('./shapePick');
 
 // One turn, and how much of its start is left out.
 const TURN_MS = 75 * 1000;
@@ -85,4 +94,55 @@ function feed(trial, th, now) {
   return null;
 }
 
-module.exports = { TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, MIN_SAMPLES, createTrial, feed };
+// How long an answer stands before the card is tried again: the week a launch
+// shape pick stands, and for its reason. Drivers, power limits and cooling
+// change, and each can move what the lock is worth.
+const REMEMBER_MS = MAX_AGE_MS;
+// Set to 1 in the environment of either shell, this start forgets what is
+// remembered and tries every planned card again. The new answer replaces the
+// old one. (Deleting the file the answers are kept in does the same.)
+const RETRY_ENV = 'LLMJOB_MINE_MEM_CLOCK_RETRY';
+
+// The key an answer is kept under: the card's index and its name in the mining
+// list, which is the launch shape pick's key (shapeKey). A different model in
+// the same slot is therefore tried afresh. Another card of the same model in
+// that slot is not told apart: nothing the app reads names one card of a model
+// from another.
+function cardKey(index, gpus) {
+  return shapeKey({ deviceIndex: index }, gpus);
+}
+
+// What to keep of a finished trial (`verdict` is feed()'s last answer), or null
+// when it compared nothing: too few samples is no answer, so nothing is kept
+// and the next start tries again. The two rates are kept for the log line of
+// a later start, to a hundredth of a TH/s.
+function remember(verdict, mhz, now) {
+  if (verdict.gain == null) return null;
+  const rate = (th) => Math.round(th * 100) / 100;
+  return { keep: verdict.keep, mhz, at: now, onTh: rate(verdict.onTh), offTh: rate(verdict.offTh) };
+}
+
+// A kept answer that still stands at `now` for a lock at `mhz`, or null: none
+// kept, one for another clock, one that is not an answer, one over a week old,
+// or one dated after `now` (the PC's clock has been set back, so its age is
+// not known). `retry` (RETRY_ENV is set) forgets it whatever it says.
+function recall(saved, mhz, now, retry) {
+  if (retry || !saved || typeof saved.keep !== 'boolean' || saved.mhz !== mhz) return null;
+  const at = Number(saved.at);
+  return at > now - REMEMBER_MS && at <= now ? saved : null;
+}
+
+// Whether RETRY_ENV asks for fresh trials.
+function retryAsked(env) {
+  return !!env && env[RETRY_ENV] === '1';
+}
+
+// A time as the log says it: the UTC date, 2026-11-18.
+function day(ms) {
+  return new Date(ms).toISOString().slice(0, 10);
+}
+
+module.exports = {
+  TURN_MS, SETTLE_MS, TURNS, MIN_GAIN, MIN_SAMPLES, REMEMBER_MS, RETRY_ENV,
+  createTrial, feed, cardKey, remember, recall, retryAsked, day,
+};
