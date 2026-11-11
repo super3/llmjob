@@ -547,6 +547,73 @@ holds B''s bytes, copied in from host memory and read back right by a kernel
   image, or two images, also fails there (`GPU HANG`, or an out-of-memory
   error). They are kept for the record of that.
 
+### A price list, and what holds the card (11 November, night)
+
+Every row here is timing only (the bits are not a fold's), on card 5 of the
+rig, the coolest, 2 to 3 s a row. The skeleton `p-base` is the fold's loads
+(`f-v84-pf3`) in one flat loop of 64 k-steps; a price row adds N steps of one
+kind to every k-step of every sub-group (`PeakPrice` in `pearl_sycl_peak.cpp`).
+The skeleton: 66.0 to 67.2 T-MAC/s, 1,850 to 1,936 MHz, 178 to 191 W (the
+card's power limit), 76 to 80 MACs an EU a clock.
+
+| Step added a k-step | N = 2 | N = 4 | N = 8 |
+|---|---|---|---|
+| block read of 128 bytes from a line in the first cache level | 75.5 | 77.1 | 75.0 |
+| vector of 4 dwords, same lines | 77.5 | 77.1 | 77.8 |
+| vector of 8 dwords, same lines | 77.7 | 75.7 | 74.6 |
+| sampler fetch, same texels | 76.3 | 77.7 | 77.4 |
+| vector of 4 dwords from a line the first level lacks | 63.0 | 52.0 | 34.4 |
+| local memory load, 4 dwords (2 KB a group) | 64.2 | | 64.1 |
+| local memory store, 4 dwords (2 KB a group) | 61.6 | | 54.6 |
+| 32-bit add (16, 32, 64: 75.9, 70.4, 68.7) | 78.1 | 78.4 | 76.3 |
+| work-group barrier (one a k-step: 66.6) | 59.0 | 53.4 | |
+
+What it says:
+
+- **Loads that hit cost nothing; lines that miss cost everything.** Eight more
+  hot loads of any form a k-step lose 0 to 3%. Each 128-byte line from L2 adds
+  about 3.8 core clocks to a k-step that takes 26.8 (16.4 for DPAS alone):
+  about 34 bytes a clock a core. By that fit the fold reads about 950 bytes of
+  L2 a sub-group k-step: its own 512 of A', and B' shared by about two groups
+  a core.
+- **The card is at its power limit.** Every load-bound row sits at 178 to
+  191 W. A design that does more a clock runs at a lower clock: the sampler's
+  2 of 8 fragments (`j-b2`) does 81.1 and 82.5 a clock against 78.5 and 79.0,
+  but 67.6 against 67.2 T-MAC/s.
+- **The ceiling with no misses is about 93 at this power limit.** With every
+  operand in window 0: the fold's loads 80.5 T-MAC/s (182 W, 1,897 MHz); block
+  reads 88.5; 32 by 32 tiles with block reads 92.6 (111.7 a clock, 182 W,
+  1,850 MHz). DPAS alone: 112.3 at 158 W.
+- **The readout costs the built fold about 6%.** The skeleton does 67.0, the
+  fold itself 62.7 TH/s (`race.sh`, 1,972 MHz, 187 W). Its XOR of 128 values a
+  chunk is about 32 ALU steps a k-step, which the list prices at about 8%.
+
+Also timed and dropped:
+
+- **A' with a cache control of its own.** IGC's builtin
+  `__builtin_IB_lsc_load_global_uint8(p, 0, cacheOpt)`, declared `extern "C"`
+  and called by name, reaches the instruction (`load.ugm.d32x8.a64.uc.ca`,
+  `.st.ca`, `.ri.ca` on A' alone). L1 uncached 67.3, streaming 67.6,
+  invalidate after read 67.6 T-MAC/s against 67.0 (`p-ahint*`). No gain.
+- **Operand strides padded** by 256 or 2,304 bytes (cache-set aliasing):
+  71.8 and 64.4 a clock against 72.1.
+- **Which windows a work-group takes** (`--map C,R,Q`: groups C apart take an
+  R by Q block of windows): every map loses to the fold's walk (best 76.8
+  against 77.0). Which groups share a core cannot be steered that way.
+- **A work-group that fills an Xe-core** (64 sub-groups, `c1-` rows), one
+  block of 16 A' blocks by 4 column windows: 67.9 a clock in step (60.9
+  T-MAC/s at 162 W, so stalled, not power-bound), 47 to 49 started a k-step
+  apart; other shapes 45 to 49; 32 by 32 tiles 62.7 to 63.7. Sharing cuts L2
+  traffic, but the core's threads then wait on the same lines together.
+- **Persistent work-groups** (`c-` rows) run at 17 to 26 a clock. Bisected: the
+  skeleton's own body runs 76.2 in that kernel, and 43.4 inside a loop over
+  blocks that runs once, with the same instructions in the k-loop (checked in
+  the ISA; local memory, the image handle and a uniform loop condition change
+  nothing). So on this driver a loop around the k-loop costs rate; the older
+  `f-` rows, which have one (`rep`), read 5 to 8% low for it.
+- **The fold as one flat loop with the readout every fourth k-step** (`p-rd`):
+  58.5 against the built fold's 62.7. Not built.
+
 ## The build a release carries
 
 A release carries this core as a folder, `sycl/`, beside its other cores: in

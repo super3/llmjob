@@ -2178,6 +2178,35 @@ right (134,217,728 words, none wrong).
 - A k-step's parts, as the time it takes (16 is the DPAS alone): A' 3.4, B' 8.2, and a k-step of 20 load messages
   7.7 more than one of 18 (a thread has 16 in flight at most).
 
+### Arc A750, 11 November, night: a price list, and what holds the card (`goal/arc-4`)
+
+Timing only (stand-ins in `pearl_sycl_peak --frag`, wrong results on purpose), card 5 of the rented rig, the
+coolest, 2 to 3 s a row. Skeleton `p-base`: the built fold's loads in one flat loop, 66.0 to 67.2 T-MAC/s at
+1,850 to 1,936 MHz and 178 to 191 W (the power limit), 76 to 80 MACs an EU a clock. Cards 1 to 4 mined
+throughout (160 TH/s, guard quiet); nothing new was built, so there is no new mining rate.
+
+| Added to every k-step | MACs an EU a clock |
+|---|---|
+| 2, 4, 8 more loads that hit the first cache level (block reads, vectors of 4 or 8 dwords, sampler fetches) | 74.6 to 77.8 |
+| 2, 4, 8 more 128-byte lines from L2 | 63.0, 52.0, 34.4 (178, 164, 141 W) |
+| 2 or 8 local memory loads; stores (2 KB a group) | 64.2, 64.1; 61.6, 54.6 |
+| 16, 32, 64 adds | 75.9, 70.4, 68.7 |
+| 1, 2, 4 barriers | 66.6, 59.0, 53.4 |
+
+- What holds the fold a clock: first-level cache misses, about 3.8 core clocks a 128-byte line from L2, about
+  950 bytes of L2 a sub-group k-step. Not the data port: hot loads cost nothing.
+- What holds it in rate on a cool card: the 190 W limit. Sampler 2 of 8 (`j-b2`): +4% a clock, +0.6% in
+  T-MAC/s (67.6 against 67.2). Every operand hot, 32 by 32 tiles, block reads: 92.6 T-MAC/s at 182 W and
+  1,850 MHz, so about 93 is this card's ceiling at its power limit. DPAS alone: 112.3 at 158 W.
+- The built fold (`race.sh`, card 5): 62.7 TH/s at 1,972 MHz and 187 W against the skeleton's 67.0: its readout
+  costs about 6%.
+- Dropped: A' with its own cache control through IGC's LSC builtin (reaches the instruction; 66.6 to 67.6
+  against 67.0); padded operand strides (no change); remapping windows to work-groups (best 76.8 against 77.0);
+  a work-group that fills an Xe-core (67.9 a clock in step, 45 to 49 staggered); persistent work-groups (a loop
+  around the k-loop, even run once, halves the rate on this driver); the fold as one flat loop with the readout
+  (58.5 against 62.7).
+- Records: `earn/native/sycl/README.md`, "A price list, and what holds the card".
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
