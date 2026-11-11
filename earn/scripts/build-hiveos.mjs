@@ -119,6 +119,23 @@ if (existsSync(hip) && existsSync(join(hipRuntime, 'libamdhip64.so.7'))) {
   console.error('warning: no vendor/hip-runtime — AMD rigs need ROCm 7 installed to mine');
 }
 
+// The Intel core, for a rig of Intel Arc cards: sycl/ beside the binary, the
+// addon with the host library and SYCL runtime it loads (dist:cli stages it).
+// The CLI finds the Arc cards itself, so a flight sheet needs no --core. It
+// needs only Intel's OpenCL or Level Zero driver on the rig, which HiveOS's
+// Intel image has. Optional like the AMD core.
+const sycl = join(dist, 'sycl');
+if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
+  const syclDir = join(pkgDir, 'sycl');
+  mkdirSync(syclDir);
+  for (const f of readdirSync(sycl)) {
+    copyFileSync(join(sycl, f), join(syclDir, f));
+    chmodSync(join(syclDir, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
+  }
+} else {
+  console.error('warning: no sycl/pearl_core_sycl.node — this package cannot mine on Intel Arc cards');
+}
+
 // The RandomX CPU worker, for --xmr-address in Extra config. Optional like the
 // CUDA 13 core: without it the rig mines Pearl as before.
 const xmrWorker = join(dist, 'llmjob-xmr-worker');

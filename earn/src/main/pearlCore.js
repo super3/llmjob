@@ -3,7 +3,7 @@
 const path = require('path');
 const { createRequire } = require('module');
 const {
-  CU12, CU13, AMD, FILES, LABELS, pickCoreVariant, isRuntimeError,
+  CU12, CU13, AMD, INTEL, INTEL_DIR, FILES, LABELS, pickCoreVariant, isRuntimeError,
 } = require('../shared/coreVariant');
 const { clockOffsets } = require('./gpuClockOffset');
 
@@ -47,7 +47,11 @@ const { clockOffsets } = require('./gpuClockOffset');
 // decides whether to try `pearl_core_cu13.node` first. A third, for AMD cards
 // (`pearl_core_hip.node`), is tried first when nvidia-smi lists no NVIDIA card,
 // and loads with no fallback when PEARL_CORE_VARIANT=amd asks for it (the CLI's
-// --core amd sets that).
+// --core amd sets that). A fourth, for Intel Arc cards (`pearl_core_sycl.node`,
+// in a folder of its own with the libraries it loads), is tried first only
+// when nvidia-smi lists no NVIDIA card and the operating system reports Arc
+// cards and no AMD card (`opts.intel`), and with no fallback when
+// PEARL_CORE_VARIANT=intel asks for it.
 
 // The HIP runtime the Windows AMD core links (native-core.yml checks it), which
 // AMD's graphics driver puts in System32.
@@ -106,8 +110,25 @@ function wouldNotLoad(failed) {
     // Windows names no library. The one the AMD core needs comes with AMD's driver.
     hint = '. It needs ' + WIN_HIP_DLL + ', which AMD\'s graphics driver installs: install or update the driver';
   }
+  if (path.basename(file) === FILES[INTEL]) hint = intelLoadHint(msg);
   // Windows puts the file's path on a second line; one log line reads better.
   return file + ' is there but would not load: ' + msg.replace(/\s*\r?\n\s*/g, ' ').trim() + hint;
+}
+
+// Why the Intel core would not load, when the loader's own words do not say.
+// It links only the libraries in its folder and the system's C and C++
+// runtime, so a missing library is a damaged install, and an old glibc is an
+// old system. Windows names no library at all.
+function intelLoadHint(msg) {
+  if (/GLIBC(XX)?_[0-9.]+. not found/.test(msg)) {
+    return '. It needs glibc 2.27 and GCC 7\'s libstdc++ or newer (Ubuntu 18.04 and later have both)';
+  }
+  if (/lib(pearl_sycl|sycl|umf|ur_adapter)[^ :]*\.so|specified module could not be found/i.test(msg)) {
+    return '. Its folder must hold every file the release put there (the SYCL runtime sits beside the core)'
+      + (/specified module/i.test(msg) ? ', and Windows needs Microsoft\'s Visual C++ runtime installed' : '')
+      + ': install the release again';
+  }
+  return '';
 }
 
 // The CUDA 12.8 core: PEARL_CORE_PATH, then the packaged locations, then the
@@ -147,6 +168,24 @@ function findAmdCore(opts, failed) {
   if (found && found.file === dev) found.dev = true;
   return found;
 }
+
+// The Intel core: in its folder (shared/coreVariant.INTEL_DIR) under each
+// packaged location, then the dev tree's build folder, earn/native/sycl/build,
+// where build.sh writes it.
+function findIntelCore(opts, failed) {
+  const { req, dirs } = loaderContext(opts);
+  const dev = path.join(__dirname, '..', '..', 'native', 'sycl', 'build', FILES[INTEL]);
+  const found = firstLoadable(req, dirs.map((d) => path.join(d, INTEL_DIR, FILES[INTEL])).concat([dev]), failed);
+  if (found && found.file === dev) found.dev = true;
+  return found;
+}
+
+// The two cores that are tried before a CUDA build: how each is found, what a
+// log line calls it, and how its "there is no such card here" reads.
+const FIRST = {
+  [AMD]: { find: findAmdCore, name: 'AMD', noCard: /no AMD GPU found/i },
+  [INTEL]: { find: findIntelCore, name: 'Intel', noCard: /no Intel GPU found/i },
+};
 
 function errText(e) {
   return (e && e.message) || String(e);
@@ -189,15 +228,16 @@ function coreFactory(opts = {}) {
     // fallback findCore has is a CUDA build, which on an AMD rig would load and
     // then fail on every start. The path counts from the executable's folder
     // when it is relative, not from where the command ran.
-    if (pickCoreVariant({ env }).variant === AMD) {
+    const asked = pickCoreVariant({ env }).variant;
+    if (FIRST[asked]) {
       const failed = [];
       const named = firstLoadable(loaderContext(opts).req, [env.PEARL_CORE_PATH], failed);
       if (!named) {
-        log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (failed.length ? wouldNotLoad(failed)
-          + ' (PEARL_CORE_PATH; PEARL_CORE_VARIANT=amd, so no CUDA build is tried)'
+        log('error', 'Pearl core: ' + LABELS[asked] + ' · ' + (failed.length ? wouldNotLoad(failed)
+          + ' (PEARL_CORE_PATH; PEARL_CORE_VARIANT=' + asked + ', so no CUDA build is tried)'
           : 'PEARL_CORE_PATH=' + env.PEARL_CORE_PATH + ' not found ('
             + (path.isAbsolute(env.PEARL_CORE_PATH) ? '' : 'a relative path counts from the executable\'s folder; ')
-            + 'PEARL_CORE_VARIANT=amd, so no CUDA build is tried)'));
+            + 'PEARL_CORE_VARIANT=' + asked + ', so no CUDA build is tried)'));
         return null;
       }
       log('info', 'Pearl core: ' + named.file + ' (PEARL_CORE_PATH)');
@@ -217,27 +257,29 @@ function coreFactory(opts = {}) {
     return wrap(found.addon);
   }
 
-  const pick = pickCoreVariant({ env, cards: opts.cards, gpus: opts.gpus });
+  const pick = pickCoreVariant({ env, cards: opts.cards, gpus: opts.gpus, intel: opts.intel });
   // The CLI's --core sets PEARL_CORE_VARIANT; the log names what was typed.
   if (opts.coreFlag && pick.reason === 'PEARL_CORE_VARIANT=' + pick.variant) pick.reason = '--core ' + pick.variant;
+  const win = (opts.platform || process.platform) === 'win32';
 
-  // Asked for by name, so no fallback to a CUDA build: on an AMD rig there is
-  // nothing for one to run on, and on an NVIDIA rig the operator said otherwise.
-  // Picked because nvidia-smi listed no NVIDIA card, it is only a first try.
-  const amdFailed = [];
-  if (pick.variant === AMD) {
-    const amd = findAmdCore(opts, amdFailed);
-    if (amd) {
-      say('info', AMD, (amd.dev ? 'local build ' + amd.file + ', ' : '') + pick.reason);
-      return pick.auto ? amdFirst(amd.addon, opts, say) : wrap(amd.addon);
+  // The AMD or the Intel core. Asked for by name, there is no fallback to a
+  // CUDA build: on such a rig there is nothing for one to run on, and on an
+  // NVIDIA rig the operator said otherwise. Picked because nvidia-smi listed no
+  // NVIDIA card (and, for the Intel core, the system has Arc cards), it is
+  // only a first try.
+  const first = FIRST[pick.variant];
+  const firstFailed = [];
+  if (first) {
+    const found = first.find(opts, firstFailed);
+    if (found) {
+      say('info', pick.variant, (found.dev ? 'local build ' + found.file + ', ' : '') + pick.reason
+        // No Windows PC with an Intel GPU has run the Intel core.
+        + (pick.variant === INTEL && win ? '; experimental on Windows, where no Intel card has run it yet' : ''));
+      return pick.auto ? otherFirst(pick.variant, found.addon, opts, say) : wrap(found.addon);
     }
     if (!pick.auto) {
-      const where = (opts.platform || process.platform) === 'win32'
-        ? 'the Windows installer has it in resources\\native, or set PEARL_CORE_PATH'
-        :'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
-          + ' earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH';
-      log('error', 'Pearl core: ' + LABELS[AMD] + ' · ' + (amdFailed.length ? wouldNotLoad(amdFailed)
-        : FILES[AMD] + ' not found (' + pick.reason + '; ' + where + ')'));
+      log('error', 'Pearl core: ' + LABELS[pick.variant] + ' · ' + (firstFailed.length ? wouldNotLoad(firstFailed)
+        : FILES[pick.variant] + ' not found (' + pick.reason + '; ' + whereItIs(pick.variant, win) + ')'));
       return null;
     }
   }
@@ -253,13 +295,13 @@ function coreFactory(opts = {}) {
       return null;
     }
     if (found.dev) log('info', 'Pearl core: local build ' + found.file);
-    else if (pick.variant === AMD) {
-      say(amdFailed.length ? 'warn' : 'info', CU12, pick.reason + ', and '
-        + (amdFailed.length ? wouldNotLoad(amdFailed) : FILES[AMD] + ' is not installed'));
+    else if (first) {
+      say(firstFailed.length ? 'warn' : 'info', CU12, pick.reason + ', and '
+        + (firstFailed.length ? wouldNotLoad(firstFailed) : FILES[pick.variant] + ' is not installed'));
     } else if (pick.variant !== CU13) say('info', CU12, pick.reason);
     else if (cu13Failed.length) say('warn', CU12, wouldNotLoad(cu13Failed));
     else say('info', CU12, FILES[CU13] + ' is not installed');
-    if (pick.variant === AMD && amdFailed.length) return cudaAfterAmd(found.addon, wouldNotLoad(amdFailed));
+    if (first && firstFailed.length) return cudaAfter(first.name, found.addon, wouldNotLoad(firstFailed));
     return wrap(found.addon);
   }
 
@@ -301,8 +343,25 @@ function coreFactory(opts = {}) {
 // start either, the AMD core's reason is the one thrown, since on a rig with no
 // NVIDIA card it is the one that says what to fix; unless that reason is that
 // there is no AMD card, which makes the CUDA one just as likely.
-function amdFirst(amdAddon, opts, say) {
-  let addon = amdAddon;
+//
+// The Intel core is the same, with one difference in whose reason is thrown:
+// it is tried only where the system reports Arc cards, so "no Intel GPU found"
+// from it means the cards are there and Intel's compute runtime is not. That
+// is the reason an Intel rig needs, with what to install (see intelNoDevice),
+// and it is the one thrown.
+//
+// It is thrown again on every later start that fails the same way, without
+// the advice. That takes remembering it: pearl_core.cc keeps its class in one
+// global (__pearl_exports), which each addon sets as it loads, so once the
+// 12.8 build has been loaded here, createCore of EITHER addon builds the 12.8
+// build's core. From the second failed start on, the reason caught from "the
+// Intel core" is therefore the CUDA build's own, which would send an Intel rig
+// looking for an NVIDIA driver.
+function otherFirst(variant, firstAddon, opts, say) {
+  const { name, noCard } = FIRST[variant];
+  const win = (opts.platform || process.platform) === 'win32';
+  let noDevice = null;  // the Intel core's "no Intel GPU found", once it has said it
+  let addon = firstAddon;
   let settled = false;
   return withOffsets((profile, coreOpts) => {
     const o = coreOpts || {};
@@ -318,14 +377,44 @@ function amdFirst(amdAddon, opts, say) {
       try {
         core = cu12.addon.createCore(profile, o);
       } catch (e2) {
-        throw isRuntimeError(e2) && !/no AMD GPU found/i.test(errText(e)) ? e : e2;
+        if (!isRuntimeError(e2)) throw e2;
+        const first = variant === INTEL && noCard.test(errText(e));
+        if (first || (noDevice && isRuntimeError(e))) {
+          const said = noDevice != null;
+          if (first) noDevice = errText(e);
+          throw new Error(noDevice + (said ? '' : intelNoDevice(win)));
+        }
+        throw noCard.test(errText(e)) ? e2 : e;
       }
-      say('warn', CU12, 'the AMD build could not start (' + errText(e) + ')');
+      say('warn', CU12, 'the ' + name + ' build could not start (' + errText(e) + ')');
       addon = cu12.addon;
       settled = true;
       return core;
     }
   }, () => addon);
+}
+
+// What to install when the system has Arc cards and the Intel core finds none:
+// it reaches a card through Intel's Level Zero or OpenCL driver, which is not
+// part of the kernel's graphics driver. Said once a run, with the first error.
+function intelNoDevice(win) {
+  return win
+    ? ': the system lists an Arc card, so Intel\'s graphics driver is missing or too old. Install the current Arc driver from Intel'
+    : ': the system lists an Arc card, so Intel\'s compute runtime is missing or this user may not open the card.'
+      + ' Install intel-opencl-icd (OpenCL) or libze-intel-gpu1 and libze1 (Level Zero), and add the user to the render group';
+}
+
+// Where a release keeps the AMD or the Intel core, for a rig that asked for one
+// by name and has none.
+function whereItIs(variant, win) {
+  if (variant === INTEL) {
+    return (win ? 'the Windows installer has it in resources\\native\\' + INTEL_DIR
+      : 'the Linux release has it in the ' + INTEL_DIR + ' folder beside the CLI binary and in the AppImage, or build it with'
+        + ' earn/native/sycl/build.sh --jit') + ', or set PEARL_CORE_PATH';
+  }
+  return win ? 'the Windows installer has it in resources\\native, or set PEARL_CORE_PATH'
+    : 'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
+      + ' earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH';
 }
 
 // The 12.8 build standing in for an AMD core that would not load. nvidia-smi
@@ -334,7 +423,7 @@ function amdFirst(amdAddon, opts, say) {
 // the wrong way (a 9070 XT rig without ROCm restart-looped on it, 6 Nov), so the
 // error thrown is the AMD core's, which says what to install. Only the first
 // start can tell; once a core has started the CUDA build plainly works here.
-function cudaAfterAmd(addon, amdWhy) {
+function cudaAfter(name, addon, why) {
   let settled = false;
   return withOffsets((profile, coreOpts) => {
     const o = coreOpts || {};
@@ -347,7 +436,7 @@ function cudaAfterAmd(addon, amdWhy) {
       if (!isRuntimeError(e)) throw e;
       // "no CUDA device found" stays: the HiveOS package's CI smoke test, on a
       // runner with no GPU, waits for those words as proof a core loaded.
-      throw new Error('no CUDA device found, and the AMD core would not load: ' + amdWhy);
+      throw new Error('no CUDA device found, and the ' + name + ' core would not load: ' + why);
     }
   }, () => addon);
 }

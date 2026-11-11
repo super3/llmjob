@@ -1516,6 +1516,102 @@ describe('--gpu-index', () => {
     });
   });
 
+  // A rig of Intel Arc cards, as the six-A750 rig the Intel core first ran on:
+  // nvidia-smi lists nothing, the system lists the Arc cards and no AMD one
+  // (detectGpuInfo's `intel`). One core a card, and the core loader is told how
+  // many there are, which is what makes it try the Intel core.
+  describe('on an Intel Arc rig', () => {
+    const A750 = { index: 0, name: 'Intel Arc A750', usedMb: 0, totalMb: 0 };
+    const arcInfo = (n) => ({ name: A750.name, count: n, amd: [], intel: Array(n).fill(A750) });
+    const LINE = 'mining on 6 Intel cards (GPU 0, 1, 2, 3, 4, 5), one core each; use --gpu-index to choose cards';
+    const SIX = [0, 1, 2, 3, 4, 5].map((index) => ({ index, name: null }));
+
+    test('mines on every Arc card the system lists, one core each, and tells the loader it is an Intel rig', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: SIX }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6, cards: [], gpus: SIX, coreFlag: false });
+        expect(allOut()).toContain('gpu:        6× Intel Arc A750  (auto)');
+        expect(allOut()).toContain(LINE);
+        expect(allOut()).not.toContain('AMD cards');
+        // None of its cards is nvidia-smi's: no memory clock is locked, no core clock tried.
+        expect(miner.settings.mineMemClockByIndex).toEqual({});
+        expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+        await stop(m, p);
+      });
+    });
+
+    test('one Arc card, or cards chosen by index, are left to the core', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(1));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 1 });
+        expect(allOut()).not.toContain('Intel cards');
+        await stop(m, p);
+
+        const m2 = load();
+        m2.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        m2.probe.detectMinerGpus.mockResolvedValue([]);
+        const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
+        await settle();
+        expect(allOut()).not.toContain('Intel cards');
+        expect(m2.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6 });
+        await stop(m2, p2);
+      });
+    });
+
+    // --core intel: the indices are SYCL's and go to the core as given, as
+    // --core amd's are HIP's; and an NVIDIA card in the box is left alone.
+    test('--core intel hands the chosen indices to the core and locks no clock', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--core', 'intel', '--gpu-index', '0,1']);
+        await settle();
+        expect(process.env.PEARL_CORE_VARIANT).toBe('intel');
+        const miner = m.PearlEngine.instances[0];
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({
+          coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        });
+        expect([miner.settings.mineMemClockByIndex, miner.settings.mineMemClockDefault, miner.settings.mineMemClockTrial,
+          miner.settings.mineCoreOffsetTrial]).toEqual([{}, false, [], []]);
+        expect(allErr()).not.toContain('nvidia-smi does not list it');
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      });
+    });
+
+    // The Intel core is a folder. The loader has said the file is missing; the
+    // CLI adds what goes where, and never sends an Intel rig for pearl_core.node.
+    test('--core intel with no Intel core says what to put where', async () => {
+      const FIX = 'Fix: put the sycl folder from the release (pearl_core_sycl.node and the libraries beside it) next to the '
+        + 'executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.';
+      await withEnv({ PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'intel'])).resolves.toBe(1);
+        expect(allErr()).toContain(FIX);
+        expect(allErr()).not.toContain('pearl_core.node');
+      });
+    });
+
+    // With PEARL_CORE_PATH only that file is tried, so "put it there" cannot help.
+    test('PEARL_CORE_VARIANT=intel with a PEARL_CORE_PATH that did not load adds no "put it there"', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: 'intel', PEARL_CORE_PATH: '/x/pearl_core_sycl.node' }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+        expect(allErr()).not.toContain('Fix: put');
+      });
+    });
+  });
+
   // nvidia-smi has no GPU 5 (planMinerGpus drops it): mine on the rest and say so.
   test('a card nvidia-smi does not list is skipped with a line on stderr', async () => {
     const m = load();

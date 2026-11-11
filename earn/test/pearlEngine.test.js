@@ -3,6 +3,8 @@
 const { EventEmitter } = require('events');
 const { PearlEngine, POOL_GRACE_MS } = require('../src/main/pearlEngine');
 const { RESTART_MS, RESTART_LIMIT } = require('../src/main/pearlMiner');
+const { initStats, applyEvent, snapshot } = require('../src/shared/miningStats');
+const { buildMinerReports } = require('../src/shared/minerReport');
 
 // PearlEngine turns our own miner's events into the two the UI is driven by:
 //
@@ -553,6 +555,126 @@ describe('PearlEngine — the card really mining', () => {
     await settle();
     b.core.emit('hashrate', 50);
     expect(b.status()).toMatchObject({ gpuIndex: 0, gpu: 'NVIDIA RTX PRO 4500', temp: 38 });
+    b.e.stop();
+  });
+});
+
+// The Intel core says how much memory its card has and how much of it the core
+// has allocated (core.device.memTotalMb and memUsedMb). Nothing else can tell
+// an Intel card's memory, so the engine passes both on with the card's status,
+// which is how they reach the network board (shared/minerReport). The CUDA and
+// AMD cores say neither, and their cards' events must not change.
+describe('PearlEngine — a card\'s memory, from a core that reports it', () => {
+  const ARC = { index: 0, name: 'Intel(R) Arc(TM) A750 Graphics', memTotalMb: 8128, memUsedMb: 1536 };
+
+  // `devices` are handed out in turn, one for each time a card is opened.
+  function withDevices(devices) {
+    const sock = fakeSocket();
+    const cores = [];
+    const createCore = () => {
+      const c = fakeCore();
+      c.device = devices[Math.min(cores.length, devices.length - 1)];
+      cores.push(c);
+      return c;
+    };
+    const e = new PearlEngine({ connect: () => sock, createCore });
+    const events = [];
+    e.on('event', (x) => events.push(x));
+    e.on('log', () => {});
+    e.start({ address: ADDR, worker: 'arc750', endpoint: 'h:1' });
+    sock.emit('connect');
+    return { e, sock, cores, events, status: () => events.filter((x) => x.type === 'status').pop() };
+  }
+
+  test('rides on the card\'s status, from the first one', () => {
+    const b = withDevices([ARC]);
+    // A share before any hashrate tick: the figures are known from the start.
+    b.e.miner.emit('share', { index: 0 });
+    expect(b.status()).toMatchObject({ gpuIndex: 0, accepted: 1, memUsedMb: 1536, memTotalMb: 8128 });
+    b.cores[0].emit('hashrate', 41.9);
+    expect(b.status()).toEqual({
+      type: 'status', gpuIndex: 0, hashrate: 41.9, accepted: 1, rejected: 0, temp: null,
+      gpu: 'Intel(R) Arc(TM) A750 Graphics', memUsedMb: 1536, memTotalMb: 8128,
+    });
+    b.e.stop();
+  });
+
+  test('a core that reports none leaves the status as it was', () => {
+    const b = withDevices([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    b.cores[0].emit('hashrate', 285);
+    expect(b.status()).toEqual({
+      type: 'status', gpuIndex: 0, hashrate: 285, accepted: 0, rejected: 0, temp: null,
+      gpu: 'NVIDIA GeForce RTX 4090',
+    });
+    b.e.stop();
+  });
+
+  // A card set aside for a prompt has its core closed, and a closed core holds
+  // none of the card's memory. Opened again, the card reports what its new
+  // core says.
+  test('reads 0 used while the card\'s core is closed, and the new core\'s figures after', () => {
+    const b = withDevices([ARC, { ...ARC, memUsedMb: 1792 }]);
+    b.cores[0].emit('hashrate', 41.9);
+    b.e.pauseCards([0]);
+    expect(b.status()).toMatchObject({ hashrate: 0, memUsedMb: 0, memTotalMb: 8128 });
+    b.e.resumeCards([0]);
+    b.cores[1].emit('hashrate', 41.7);
+    expect(b.status()).toMatchObject({ hashrate: 41.7, memUsedMb: 1792, memTotalMb: 8128 });
+    b.e.stop();
+  });
+
+  test('each card carries its own', () => {
+    const sock = fakeSocket();
+    const cores = [];
+    const mem = [{ memTotalMb: 8128, memUsedMb: 1536 }, { memTotalMb: 12216, memUsedMb: 2048 }];
+    const createCore = (profile, opts) => {
+      const c = fakeCore();
+      c.device = { index: opts.deviceIndex, name: 'Intel Arc', ...mem[opts.deviceIndex] };
+      cores.push(c);
+      return c;
+    };
+    const e = new PearlEngine({ connect: () => sock, createCore });
+    const events = [];
+    e.on('event', (x) => events.push(x));
+    e.start({ address: ADDR, worker: 'arc', endpoint: 'h:1', gpus: [{ index: 0, name: 'a' }, { index: 1, name: 'b' }] });
+    cores[0].emit('hashrate', 40);
+    cores[1].emit('hashrate', 60);
+    const statusFor = (i) => events.filter((x) => x.type === 'status' && x.gpuIndex === i).pop();
+    expect(statusFor(0)).toMatchObject({ memUsedMb: 1536, memTotalMb: 8128 });
+    expect(statusFor(1)).toMatchObject({ memUsedMb: 2048, memTotalMb: 12216 });
+    e.stop();
+  });
+
+  // The whole way, as both shells wire it: the engine's events into the stats
+  // accumulator, its snapshot into the report. Each step has its own tests;
+  // this one fails if two of them stop agreeing on the fields' names.
+  test('reaches the card\'s row on the network board', () => {
+    const b = withDevices([ARC]);
+    const stats = initStats(0);
+    b.e.on('event', (evt) => applyEvent(stats, evt, 0));
+    b.cores[0].emit('hashrate', 41.9);
+    // Linux: sysfs names the Intel card and has no memory figures for it.
+    const probe = [{ index: 0, name: 'Intel Arc A750', usedMb: 0, totalMb: 0 }];
+    const report = () => buildMinerReports({ address: ADDR, worker: 'arc750' }, snapshot(stats, 0), probe, '0.6.16');
+    expect(report()).toEqual([expect.objectContaining({
+      worker: 'arc750', gpu: 'Intel Arc A750', hashrate: 41.9, vramUsedMb: 1536, vramTotalMb: 8128,
+    })]);
+    // Set aside for a prompt: not mining, and holding none of the card's memory.
+    b.e.pauseCards([0]);
+    expect(report()).toEqual([expect.objectContaining({ hashrate: 0, vramUsedMb: 0, vramTotalMb: 8128 })]);
+    b.e.stop();
+  });
+
+  // A new run reads its cards afresh: figures from the last run's core are not
+  // carried into a run whose core reports none.
+  test('a restart forgets the last run\'s figures', () => {
+    const b = withDevices([ARC, { index: 0, name: 'Intel Arc A750' }]);
+    b.cores[0].emit('hashrate', 41.9);
+    b.e.stop();
+    b.e.start({ address: ADDR, worker: 'arc750', endpoint: 'h:1' });
+    b.cores[1].emit('hashrate', 41.9);
+    expect(b.status()).not.toHaveProperty('memTotalMb');
+    expect(b.status()).not.toHaveProperty('memUsedMb');
     b.e.stop();
   });
 });

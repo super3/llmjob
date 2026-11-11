@@ -1,0 +1,8 @@
+build/
+build-*/
+toolchain/
+toolchain-open/
+stage/
+node_modules/
+pool-run.log
+pool-run-stats.json

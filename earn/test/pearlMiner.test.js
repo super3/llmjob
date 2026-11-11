@@ -1174,6 +1174,109 @@ describe('PearlMiner — the cards the cores opened', () => {
   });
 });
 
+// The Intel core says how much memory its card has and how much of it the core
+// has allocated: core.device.memTotalMb and memUsedMb. The network board has no
+// other source for an Intel card, so the miner hands both on with the card. The
+// CUDA and AMD cores say neither, and their devices stay { index, name }.
+describe('PearlMiner — a card\'s memory, as its core reports it', () => {
+  const ARC = 'Intel(R) Arc(TM) A750 Graphics';
+  const GPUS = [{ index: 0, name: 'Intel Arc A750' }, { index: 1, name: 'Intel Arc A750' }];
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.clearAllTimers();
+    jest.useRealTimers();
+  });
+
+  const withDevice = (device) => {
+    const core = makeCore();
+    core.device = device;
+    const b = boot({ core });
+    b.m.start(settings);
+    return b;
+  };
+
+  // Two Arc cards. Each core reports its card, with `used` MB allocated on it:
+  // one figure for each time a card is opened, the last one repeating.
+  function rig(used = [1536]) {
+    const made = [];
+    const sock = makeSocket();
+    const createCore = jest.fn((profile, opts) => {
+      const c = makeCore();
+      c.device = {
+        index: opts.deviceIndex, name: ARC, fold: 'xmx8',
+        memTotalMb: 8128, memUsedMb: used[Math.min(made.length, used.length - 1)],
+      };
+      made.push(c);
+      return c;
+    });
+    const m = new PearlMiner({ connect: () => sock, createCore, reconnectMs: 0, restartMs: 10 });
+    const ticks = [];
+    m.on('hashrate', (th, device) => ticks.push([th, device]));
+    m.on('log', () => {});
+    m.on('error', () => {});
+    m.start({ ...settings, gpus: GPUS });
+    return { m, made, ticks };
+  }
+
+  test('is read with the card, in whole MB, and handed on with its hashrate', () => {
+    const b = withDevice({ index: 0, name: ARC, fold: 'xmx8', memTotalMb: 8127.6, memUsedMb: 1535.5 });
+    const ticks = [];
+    b.m.on('hashrate', (th, device) => ticks.push([th, device]));
+    expect(b.m.devices()).toEqual([{ index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 1536 }]);
+    b.core.emit('hashrate', 41.9);
+    expect(ticks).toEqual([[41.9, { index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 1536 }]]);
+    b.m.stop();
+  });
+
+  // No size, no figures: a `used` alone says nothing anyone can show, and a
+  // device without both keys is what every other core's card looks like.
+  test('a core that gives no usable size reports no memory at all', () => {
+    for (const memTotalMb of [undefined, null, 0, -1, NaN, Infinity, '8128']) {
+      const b = withDevice({ index: 0, name: ARC, memTotalMb, memUsedMb: 1536 });
+      const [device] = b.m.devices();
+      expect(device).toEqual({ index: 0, name: ARC });
+      expect(device).not.toHaveProperty('memTotalMb');
+      expect(device).not.toHaveProperty('memUsedMb');
+      b.m.stop();
+    }
+  });
+
+  test('a size with no usable `used` beside it reads 0 used', () => {
+    for (const memUsedMb of [undefined, null, 0, -5, NaN, 'lots']) {
+      const b = withDevice({ index: 0, name: ARC, memTotalMb: 8128, memUsedMb });
+      expect(b.m.devices()).toEqual([{ index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 0 }]);
+      b.m.stop();
+    }
+  });
+
+  // A closed core has given the card's memory back. The hashrate of 0 that
+  // says the card stopped says that too, or the board would show a card that
+  // is not mining as still holding what it mined with.
+  test('a card set aside for a prompt reads 0 used, and its new core\'s figure once it is back', () => {
+    const b = rig([1536, 1536, 1792]);
+    b.m.pauseCards([0]);
+    expect(b.ticks).toEqual([[0, { index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 0 }]]);
+    // The other card is still mining with what it had.
+    b.made[1].emit('hashrate', 41.8);
+    expect(b.ticks.pop()).toEqual([41.8, { index: 1, name: ARC, memTotalMb: 8128, memUsedMb: 1536 }]);
+    b.m.resumeCards([0]);
+    b.made[2].emit('hashrate', 41.9);
+    expect(b.ticks.pop()).toEqual([41.9, { index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 1792 }]);
+    b.m.stop();
+  });
+
+  test('a card whose core failed reads 0 used until it is opened again', () => {
+    const b = rig();
+    b.made[0].emit('error', new Error('GPU 0: device lost'));
+    expect(b.ticks).toEqual([[0, { index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 0 }]]);
+    jest.advanceTimersByTime(10);
+    b.made[2].emit('hashrate', 41.9);
+    expect(b.ticks.pop()).toEqual([41.9, { index: 0, name: ARC, memTotalMb: 8128, memUsedMb: 1536 }]);
+    b.m.stop();
+  });
+});
+
 // Mining on every card the rig has. One core per card, each on its own slice of
 // the search space -- without that they would search the same operands and find
 // the same shares, and the second card would earn nothing.
@@ -2406,8 +2509,10 @@ describe('PearlMiner — each card mines its own k', () => {
   // when the miner lets it (cardK), and with cardK off it keeps the profile's;
   // no `k` is a core built before cores could choose. `fail` makes the card's
   // next core throw it. With `gpus: false` the rig has no card list, and its one
-  // card's core (cards[0]) names no device. `miner` adds to what the miner is
-  // built with, and `more` to the settings it starts with.
+  // card's core (cards[0]) names no device. `mem` is the memory its core
+  // reports, { memTotalMb, memUsedMb }; left out, the core reports none.
+  // `miner` adds to what the miner is built with, and `more` to the settings
+  // it starts with.
   function rig(cards, { gpus = true, miner = {}, more = {} } = {}) {
     const socks = [];
     const made = [];
@@ -2420,7 +2525,7 @@ describe('PearlMiner — each card mines its own k', () => {
         throw e;
       }
       const c = makeCore();
-      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index };
+      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, ...card.mem };
       if (card.k !== undefined) c.k = opts.cardK ? card.k : profile.k;
       if (card.kNote) c.kNote = card.kNote;
       made.push({ core: c, opts, card });
@@ -2831,6 +2936,21 @@ describe('PearlMiner — each card mines its own k', () => {
       r.m.stop();
     });
 
+    // Its old core is closed and no new one opened, so it holds none of the
+    // card's memory (see "a card's memory, as its core reports it").
+    test('a card that will not open again reads 0 used, when its core reports its memory', () => {
+      const cards = [{ index: 0, k: 4096, mem: { memTotalMb: 16304, memUsedMb: 2900 } }];
+      const r = rig(cards);
+      r.login();
+      const ticks = [];
+      r.m.on('hashrate', (th, d) => ticks.push([th, d]));
+      for (let i = 0; i < 3; i++) r.core(0).emit('hit', hitFor(K4));
+      cards[0].fail = new Error('not enough free VRAM for the rank-128 profile');
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(ticks).toEqual([[0, { index: 0, name: 'Radeon 0', memTotalMb: 16304, memUsedMb: 0 }]]);
+      r.m.stop();
+    });
+
     test('a core that names no card falls back the same way, and a throw that is not an Error is said too', () => {
       const cards = [{ k: 4096 }];
       const r = rig(cards, { gpus: false });
@@ -2878,14 +2998,15 @@ describe('PearlMiner — checking the hits of an untested card', () => {
   });
 
   // Cards as [{ index, untested, fold }]; an `untested` left out is a core that does not say (an older one).
-  // With `gpus: false` the rig has no card list and its one core names no card.
+  // With `gpus: false` the rig has no card list and its one core names no card. A card's `mem` is the memory
+  // its core reports, { memTotalMb, memUsedMb }; left out, the core reports none.
   function rig(cards, { gpus = true } = {}) {
     const sock = makeSocket();
     const made = [];
     const createCore = jest.fn((profile, o) => {
       const card = gpus ? cards.find((c) => c.index === o.deviceIndex) : cards[0];
       const c = makeCore();
-      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, fold: card.fold };
+      if (gpus) c.device = { index: card.index, name: 'Radeon ' + card.index, fold: card.fold, ...card.mem };
       if (card.untested !== undefined) c.untested = card.untested;
       made.push({ core: c, card });
       return c;
@@ -2983,6 +3104,40 @@ describe('PearlMiner — checking the hits of an untested card', () => {
     expect(quiet.lines('error')).toEqual([wrong('the GPU · unknown architecture')]);
     expect(quiet.ev.hashrate).toEqual([]);
     expect(quiet.ev.stopped).toEqual([{ failed: true }]);
+  });
+
+  // The Intel core's cards are all checked. Its fold description begins with
+  // the fold and has no gfx name: on an Arc A750 rig these lines used to say
+  // "unknown architecture" and send a wrong hit's report to the AMD README.
+  test('an Intel card is named by its fold, and a wrong hit is reported to the Intel README', () => {
+    const XMX8 = 'xmx8 (DPAS 8x8x32, sub-group 8), hardware DPAS, col_batch 256, band 256 row windows, k 2048';
+    const DOT = 'dot (int8 dot products, local memory), col_batch 256, band 64 row windows, k 2048';
+    const r = rig([{ index: 0, untested: true, fold: XMX8 }, { index: 1, untested: true, fold: DOT }]);
+    r.core(0).emit('hit', GOOD);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · Intel xmx8 fold'));
+    r.core(1).emit('hit', WRONG);
+    expect(r.lines('error')).toEqual(['GPU 1 (Radeon 1) · Intel dot fold: a hit came out wrong (jackpot hash mismatch '
+      + '(fold/transcript)). No share was sent, and this card is off for the rest of this run. This kind of card has '
+      + 'not mined in a release yet: please report this line (earn/native/sycl/README.md, "Untested cards").']);
+    r.m.stop();
+    // A word that only starts like a fold's name is not one.
+    const other = rig([{ index: 0, untested: true, fold: 'xmx8x (something else)' }]);
+    other.core().emit('hit', GOOD);
+    expect(other.lines()).toContain(said('GPU 0 (Radeon 0) · unknown architecture'));
+    other.m.stop();
+  });
+
+  // The Intel core also reports its card's memory. A card taken off for a
+  // wrong hit has its core closed, so it holds none of it (see "a card's
+  // memory, as its core reports it").
+  test('a card stopped for a wrong hit reads 0 used, when its core reports its memory', () => {
+    const mem = { memTotalMb: 8128, memUsedMb: 1536 };
+    const r = rig([{ index: 0, untested: true, fold: 'xmx8', mem }, { index: 1, untested: true, fold: 'xmx8', mem }]);
+    const ticks = [];
+    r.m.on('hashrate', (th, d) => ticks.push([th, d]));
+    r.core(0).emit('hit', WRONG);
+    expect(ticks).toEqual([[0, { index: 0, name: 'Radeon 0', memTotalMb: 8128, memUsedMb: 0 }]]);
+    r.m.stop();
   });
 
   test('a wrong hit from a paused card\'s stopped core keeps the card from coming back', () => {
