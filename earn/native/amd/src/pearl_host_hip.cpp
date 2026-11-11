@@ -1081,6 +1081,28 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     if (hipGetDeviceProperties(&prop, ctx->device) == hipSuccess)
       snprintf(ctx->arch, sizeof ctx->arch, "%s", prop.gcnArchName);
   }
+  {
+    // PEARL_AMD_SCHED (the environment only; a switch for measuring): how HIP's threads wait for the card. The miner's
+    // process keeps four threads busy by default, and a fifth with the hash on its own queue (Salad, 11 November).
+    // "block" sets hipDeviceScheduleBlockingSync, which in ROCm 7.2 turns the device's active wait off: a wait then
+    // spins for 100 us and blocks, where with it on a wait spins until its signal (clr, hip_device_runtime.cpp and
+    // rocvirtual.hpp's WaitForSignal). "spin", "yield" and "auto" set those flags. Unset, nothing is called and the
+    // runtime's own default stays. This is before the first copy or stream: a queue reads the setting when it is made.
+    const char *sc = getenv("PEARL_AMD_SCHED");
+    unsigned flag = 0;
+    bool set = true;
+    if (sc && !strcmp(sc, "block")) flag = hipDeviceScheduleBlockingSync;
+    else if (sc && !strcmp(sc, "spin")) flag = hipDeviceScheduleSpin;
+    else if (sc && !strcmp(sc, "yield")) flag = hipDeviceScheduleYield;
+    else if (sc && !strcmp(sc, "auto")) flag = hipDeviceScheduleAuto;
+    else set = false;
+    if (set) {
+      const hipError_t e = hipSetDeviceFlags(flag);
+      fprintf(stderr, "[pearl-amd] PEARL_AMD_SCHED=%s: hipSetDeviceFlags %s\n", sc,
+              e == hipSuccess ? "ok" : hipGetErrorString(e));
+      (void)hipGetLastError();
+    }
+  }
 #endif
 
   ctx->compact = pearl_compact_operands(profile);
