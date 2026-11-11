@@ -1,8 +1,8 @@
-# 9060xt job 3: the core's ticker at 10, 2, 0.5 and 0.1 ms, with the hash queue, and at half the launch; then the miner's own launches by the millisecond, with and without the ticker
+# 9060xt job 3: the core's ticker at 10, 2, 0.5 and 0.1 ms, and with the hash queue; then the miner's own launches by the millisecond, with and without the ticker
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_PARTS=hash\ mstamps
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk01=base\ PEARL_AMD_TICK_US=100\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk01=sbase\ PEARL_AMD_TICK_US=100
-G_VARIANTS=base\ twin\ tk10\ tk2\ tk05\ tk01\ hq1tk\ cbstk
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk01=base\ PEARL_AMD_TICK_US=100\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk01=sbase\ PEARL_AMD_TICK_US=100
+G_VARIANTS=base\ twin\ tk10\ tk2\ tk05\ tk01\ hq1tk
 G_HROUNDS=3
 G_HASH=45:12
 G_MST=msq0\ mstk\ mstk01
