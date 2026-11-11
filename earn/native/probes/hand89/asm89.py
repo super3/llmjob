@@ -81,6 +81,16 @@ def _f(lo, hi, **k):
     return lo, hi
 
 
+LDGSTS_UR = [10]
+
+
+def _ldgsts(m, cached=0):
+    dst, src = _num(m[2]) if m[2] else 0, _num(m[4]) if m[4] else 0
+    assert 0 <= dst < 1 << 20 and -2048 <= src < 2048, (dst, src)
+    lo = 0x7fae | _reg(m[1]) << 16 | _reg(m[3]) << 24 | (src & 0xFFF) << 32 | dst << 44
+    return lo, 0x0b901c40 | cached | LDGSTS_UR[0]
+
+
 # (pattern, builder). The builder gets the match and returns (lo, hi) with predicate 7 (always) and no control.
 FORMS = [
     (r"IMMA\.16832\.S8\.S8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
@@ -146,6 +156,13 @@ FORMS = [
     # 4-byte global load and store (the uniform register pair goes in as for the 16-byte load: gfold.ldg).
     (r"LDG\.E " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1900)),
     (r"STG\.E " + MEM64 + ", " + R, lambda m: (_mem(0x7986 | _reg(m[3]) << 32, m, 1), 0x0c101900 | 6)),
+    # A 16-byte copy from global to shared memory that touches no register (cp.async): the shared address takes a
+    # 20-bit offset, the global one a signed 12-bit offset. Bits 0-5 of the high word name the uniform register
+    # pair with the address space's base, as LDG's bits 32-39 do (LDGSTS_UR; nvdisasm does not print it).
+    (r"LDGSTS\.E\.BYPASS\.128 " + MEM + ", " + MEM64, lambda m: _ldgsts(m)),
+    (r"LDGSTS\.E\.128 " + MEM + ", " + MEM64, lambda m: _ldgsts(m, 0x20000)),      # through the SM's cache
+    (r"LDGDEPBAR", lambda m: (0x79af, 0)),
+    (r"DEPBAR\.LE SB0, " + I, lambda m: (0x000080000000791a | (_num(m[1]) & 63) << 38, 0)),
     (r"NOP", lambda m: (0x7918, 0)),
     (r"YIELD", lambda m: (0x7946, 0x3800000)),
     (r"ULDC\.64 UR6, c\[0x0\]\[0x118\]", lambda m: (0x0000460000067ab9, 0x0000000000000a00)),
@@ -236,9 +253,16 @@ def read_text(path):
     return raw.decode("utf-8", errors="replace")
 
 
+LOOP_END = [None]       # the address just past the loop function, when another local function follows it
+
+
 def listing(sass_text, fn_sub="pearl"):
-    """The kernel's instructions as (address, text), the address of each label, and the loop function's entry."""
+    """The kernel's instructions as (address, text), the address of each label, and the loop function's entry.
+    LOOP_END[0] is set to the first instruction of the local function that follows the loop function, if any
+    (cfold_h.cuh's kernel has three local functions; the older probes have one)."""
     rows, labels, pending, inside, entry, want_entry = [], {}, [], False, None, False
+    want_end = False
+    LOOP_END[0] = None
     for line in sass_text.splitlines():
         if re.match(r"\s*\.section\s", line):
             inside = ".text." in line and fn_sub in line
@@ -252,6 +276,9 @@ def listing(sass_text, fn_sub="pearl"):
         if re.match(r"\$\S*_loop\S*:", line.strip()):
             want_entry = True
             continue
+        if re.match(r"\$\S+:", line.strip()) and entry is not None and LOOP_END[0] is None:
+            want_end = True
+            continue
         m = re.search(r"/\*([0-9a-f]{4,})\*/\s+(.*?)\s*;", line)
         if m:
             a = int(m[1], 16)
@@ -261,7 +288,13 @@ def listing(sass_text, fn_sub="pearl"):
             pending = []
             if want_entry:
                 entry, want_entry = a, False
+            if want_end:
+                LOOP_END[0], want_end = a, False
     return rows, labels, entry
+
+
+def _in_loop(a, entry):
+    return a >= entry and (LOOP_END[0] is None or a < LOOP_END[0])
 
 
 def disassemble(cubin, nvdisasm):
@@ -278,14 +311,13 @@ def region(sass_text):
     """What fold.py and sched.py may overwrite in a build of fold_h.cuh: from the loop function's entry up to its RET (which
     stays where it is: it is relative to its own address). Returns (entry, ret address, return address value)."""
     rows, _labels, entry = listing(sass_text)
-    ret = [a for a, t in rows if re.match(r"RET\.REL\.NODEC R%d " % RET_REG[0], t)]
-    if not ret:
-        # ptxas keeps the return address where it likes: R2 in the draw and gather folds, R4 in the direct fold.
-        m = [re.match(r"RET\.REL\.NODEC R(\d+) ", t) for a, t in rows if entry is not None and a >= entry]
-        m = [x for x in m if x]
-        assert m, "the loop function has no RET"
-        RET_REG[0] = int(m[-1][1])
-        ret = [a for a, t in rows if re.match(r"RET\.REL\.NODEC R%d " % RET_REG[0], t)]
+    # ptxas keeps the return address where it likes: R2 in the draw and gather folds, R4 in the direct fold. The
+    # function's last unconditional RET is the one kept.
+    m = [re.match(r"RET\.REL\.NODEC R(\d+) ", t) for a, t in rows if entry is not None and _in_loop(a, entry)]
+    m = [x for x in m if x]
+    assert m, "the loop function has no RET"
+    RET_REG[0] = int(m[-1][1])
+    ret = [a for a, t in rows if _in_loop(a, entry) and re.match(r"RET\.REL\.NODEC R%d " % RET_REG[0], t)]
     # A function with two exits (gfold_h.cuh's two loop copies) has two RET: the last one is kept, and the
     # replacement may overwrite the other.
     assert entry is not None and len(ret) >= 1, (entry, ret)
@@ -293,6 +325,8 @@ def region(sass_text):
     back = [(a, t) for a, t in rows if entry <= a < ret[0] and re.match(r"MOV R\d+, 0x[0-9a-f]+$", t)]
     # The function returns to the instruction after its one CALL: ptxas writes that address as a MOV.
     call = [a for a, t in rows if t.startswith("CALL.REL.NOINC `($")]
+    if len(call) > 1:
+        call = [a for a, t in rows if t.startswith("CALL.REL.NOINC `($") and "_loop" in t]
     # (In the direct fold the caller writes it, into R0, just ahead of the CALL.)
     back += [(a, t) for a, t in rows if a < entry and re.match(r"MOV R[0-9]+, 0x[0-9a-f]+$", t)]
     assert len(call) == 1 and any(int(t.split("0x")[1], 16) == call[0] + 16 for _a, t in back), (call, back)
@@ -305,7 +339,7 @@ def clobbers(sass_text):
     rows, _labels, entry = listing(sass_text)
     regs, preds = set(), set()
     for a, t in rows:
-        if a < entry:
+        if not _in_loop(a, entry):
             continue
         t = re.sub(r"^@!?P\d ", "", t).replace(".reuse", "")
         op, _, rest = t.partition(" ")
@@ -408,6 +442,8 @@ def check(cubin, sass):
             lo, lo0 = lo & ~(0xFF << 32), lo0 & ~(0xFF << 32)
         if op.startswith("STG"):
             hi, hi0 = hi & ~0x3F, hi0 & ~0x3F          # the uniform register pair again, in the high word
+        if op.startswith("LDGSTS"):
+            hi, hi0 = hi & ~0x3F, hi0 & ~0x3F          # the uniform register pair again
         if (lo, hi) != (lo0, hi0 & ~CTRL_MASK):
             bad += 1
             if bad <= 12:
