@@ -98,7 +98,7 @@ describe('fold_xmxf reads what the draw stored', () => {
   const aBase = cExpr(FOLD, /\*Ab = A\.Ap \+ ([^;]+);/, ['row0', 'aStride', 'lane']);
   const bBase = cExpr(FOLD, /\*Bb = A\.Bp \+ ([^;]+);/, ['colStart', 'wc', 'bStride', 'lane']);
   const aLoad = cExpr(FOLD, /af\[rb\] = \*reinterpret_cast<const v8iu \*>\(Ab \+ ([^;]+)\);/, ['ks', 'rb']);
-  const bLoad = cExpr(FOLD, /const v8i bf = \*reinterpret_cast<const v8iu \*>\(Bb \+ ([^;]+)\);/, ['ks', 'cb']);
+  const bLoad = cExpr(FOLD, /bf\[cb\] = load_halves\(Bb \+ ([^;]+)\);/, ['ks', 'cb']);
 
   test('the fold is sub-group 8 with 16 rows a sub-group', () => {
     expect(FOLD).toContain('static_assert(SG == 8, "the fragment layouts are sub-group 8\'s");');
@@ -158,7 +158,37 @@ describe('fold_xmxf reads what the draw stored', () => {
     expect(FOLD).toContain('for (uint32_t ch = 0; ch < 16u; ch++) {');
     expect(FOLD).toContain('for (uint32_t s = 0; s < 4u; s++) {');
     expect(FOLD).toContain('const uint32_t ks = ch * 4u + s;');
-    expect(FOLD).toContain('for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf, c[rb][cb]);');
+    expect(FOLD).toContain('for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);');
+  });
+
+  test('a fragment of B\' is loaded as its two halves, in order', () => {
+    const halves = stripComments(slice(KERNELS, 'inline v8i load_halves(const int8_t *p) {', '\n}\n'));
+    expect(halves).toContain('const v4iu lo = *reinterpret_cast<const v4iu *>(p);');
+    expect(halves).toContain('const v4iu hi = *reinterpret_cast<const v4iu *>(p + 16);');
+    expect(halves).toContain('return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);');
+    expect(KERNELS).toContain('typedef int v4iu __attribute__((ext_vector_type(4), aligned(4)));');
+  });
+
+  test('the word that orders the loads is always zero', () => {
+    // The fold ORs (a word of every loaded fragment & zero) into A, so that no
+    // DPAS of a k-step starts before its loads have landed. Any other value
+    // would change A: the host passes 0 and nothing else.
+    const body = FOLD.split('\n').map((l) => l.trim());
+    const at = body.indexOf('int wait = 0;');
+    expect(at).toBeGreaterThan(0);
+    expect(body.slice(at, at + 7)).toEqual([
+      'int wait = 0;',
+      'for (int rb = 0; rb < RB; rb++) wait ^= af[rb][0];',
+      'for (int cb = 0; cb < NCB; cb++) wait ^= bf[cb][0];',
+      'wait &= (int)A.zero;',
+      'for (int rb = 0; rb < RB; rb++) af[rb][0] |= wait;',
+      'for (int cb = 0; cb < NCB; cb++)',
+      'for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);',
+    ]);
+    expect(HOST.match(/a\.zero = /g)).toHaveLength(1);
+    expect(slice(HOST, 'FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {', '\n}\n'))
+      .toContain('a.zero = 0;');
+    for (const v of [0x12345678, -1, 0]) expect(v & 0).toBe(0);
   });
 });
 

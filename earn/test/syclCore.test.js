@@ -329,14 +329,14 @@ describe('what the host answers where pearl_host.cu has more', () => {
 // November 2026) and not from a guess. It is pinned so that it is changed only
 // against a new measurement (native/sycl/README.md, "Results on an Arc A750 rig").
 describe('what the first run on hardware set', () => {
-  test('a band is the device cache\'s size for fold_xmx, a quarter of it for the plain fold, an eighth for the fragment fold', () => {
+  test('a band is the device cache\'s size for fold_xmx, a quarter of it for the plain fold and the fragment fold', () => {
     // On an A750 (16 MiB): xmx8 16.6 to 16.9 TH/s at 256 row windows against
     // 15.2 to 15.5 at 64, the quarter that was the rule for both; dot 3.74 at
-    // 256 against 3.91 at 64; xmx8f 42.1 to 42.2 at 16, 32 and 64 against
-    // 31.7 at 128 and 35.4 at 256.
+    // 256 against 3.91 at 64; xmx8f 64.2 at 64 against 60.6 at 32, 55.8 at 16
+    // and 44.1 at 128.
     const rule = slice(HOST, 'const uint64_t share =', 'ctx->band = floor_pow2(band);');
     expect(statements(rule).slice(0, 2)).toEqual([
-      'const uint64_t share = ctx->fold == kDot ? 4 : fold_is_frag(ctx->fold) ? 8 : 1;',
+      'const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;',
       'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
     ]);
     expect(HOST).toContain('bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu; }');
@@ -347,7 +347,7 @@ describe('what the first run on hardware set', () => {
     expect(picked).toBeLessThan(create.indexOf('const uint64_t share ='));
     // 16 MiB at the mainnet k: 32 rows of 2048 bytes a row window.
     const windows = (share) => Math.floor((16 * 1024 * 1024) / share / (32 * PROFILE.k));
-    expect([windows(1), windows(4), windows(8)]).toEqual([256, 64, 32]);
+    expect([windows(1), windows(4)]).toEqual([256, 64]);
     // PEARL_SYCL_BAND still wins, so a rig can time another.
     expect(rule).toContain('if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);');
     // bench.sh times each fold in a core that would mine with it, so each

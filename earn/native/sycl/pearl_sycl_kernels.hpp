@@ -61,6 +61,7 @@ typedef int v8i __attribute__((ext_vector_type(8)));
 typedef short v8s __attribute__((ext_vector_type(8)));
 // A v8i as it lies in an operand: at a dword address, so one load takes it.
 typedef int v8iu __attribute__((ext_vector_type(8), aligned(4)));
+typedef int v4iu __attribute__((ext_vector_type(4), aligned(4)));  // and half of one
 #if defined(__SYCL_DEVICE_ONLY__) && (defined(PEARL_SYCL_XMX_HW) || defined(PEARL_SYCL_XMX_JIT))
 extern SYCL_EXTERNAL v8i intel_sub_group_i8_i8_matrix_mad_k32(v8s, v8i, v8i);
 extern SYCL_EXTERNAL v8i intel_sub_group_i8_i8_matrix_mad_k32(v8i, v8i, v8i);
@@ -313,6 +314,7 @@ struct FoldArgs {
   uint32_t band;      // row windows walked together, so their A' stays in the L2
   uint32_t aStride;   // fold_xmxf: bytes from one 16-row block of A' to the next
   uint32_t bStride;   // fold_xmxf: bytes from one 64-column block of B' to the next
+  uint32_t zero;      // fold_xmxf: 0. The kernel cannot know it, which is the point (see the fold)
   TranscriptTest test;
   HitBuf *hits;
   uint32_t *allTr;    // debug: every region's transcript, [regions][16], or null
@@ -608,12 +610,28 @@ inline void fold_xmx(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 //     needs the 256-register mode, which the hardware kernel asks for by a
 //     kernel property; an EU then runs 4 threads, not 8, and DPAS alone is as
 //     fast as before.
-//   - A lane loads a whole fragment, its v8i, with one load: 2 messages for
-//     A' and 8 for B' a k-step of 16 DPAS, where fold_xmx sends 24 for 8.
+//   - A lane loads a fragment of A', its v8i, with one load, and a fragment
+//     of B' with two, 16 bytes each: 2 messages for A' and 16 for B' a k-step
+//     of 16 DPAS. The card serves a 128-byte load message about four times as
+//     fast as a 256-byte one, so B', four fifths of the bytes, goes in halves
+//     (README.md, "Where its time goes now").
 //   - The 8 lanes' loads of a fragment are 256 bytes in a row, 4 cache lines.
+//   - A k-step sends all 18 loads first and then runs its 16 DPAS as one
+//     run. Left alone, the compiler moves each load down to the DPAS that
+//     reads it and keeps two fragments of B' in flight; sent together, 16 are.
+//     To hold the order, a word of every fragment loaded is ANDed with
+//     FoldArgs::zero, which is 0 and which the compiler cannot know, and ORed
+//     into A: no DPAS can start before every load of its k-step has landed.
 //
 // The readout is fold_xmx's: both 8-row blocks XOR into the same two words.
 // ---------------------------------------------------------------------------
+
+// A lane's 32 bytes of a fragment at p, as two loads of 16.
+inline v8i load_halves(const int8_t *p) {
+  const v4iu lo = *reinterpret_cast<const v4iu *>(p);
+  const v4iu hi = *reinterpret_cast<const v4iu *>(p + 16);
+  return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+}
 
 template <int SG, int RB, bool HW> struct FoldXmxF {
   static_assert(SG == 8, "the fragment layouts are sub-group 8's");
@@ -651,13 +669,18 @@ template <int SG, int RB, bool HW> struct FoldXmxF {
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
-        v8i af[RB];
+        v8i af[RB], bf[NCB];
         for (int rb = 0; rb < RB; rb++)
           af[rb] = *reinterpret_cast<const v8iu *>(Ab + (size_t)ks * 512u + (size_t)rb * 256u);
-        for (int cb = 0; cb < NCB; cb++) {
-          const v8i bf = *reinterpret_cast<const v8iu *>(Bb + (size_t)ks * 2048u + (size_t)cb * 256u);
-          for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf, c[rb][cb]);
-        }
+        for (int cb = 0; cb < NCB; cb++) bf[cb] = load_halves(Bb + (size_t)ks * 2048u + (size_t)cb * 256u);
+        // Every DPAS of the k-step waits for every load of it.
+        int wait = 0;
+        for (int rb = 0; rb < RB; rb++) wait ^= af[rb][0];
+        for (int cb = 0; cb < NCB; cb++) wait ^= bf[cb][0];
+        wait &= (int)A.zero;
+        for (int rb = 0; rb < RB; rb++) af[rb][0] |= wait;
+        for (int cb = 0; cb < NCB; cb++)
+          for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);
       }
       uint32_t x0 = 0, x1 = 0;
       for (int rb = 0; rb < RB; rb++)

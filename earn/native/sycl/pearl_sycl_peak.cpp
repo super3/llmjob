@@ -361,6 +361,11 @@ inline sycl::event peak_step(sycl::queue &q, const PeakArgs &args, uint32_t grou
 //             register operands: loads and DPAS side by side, no load's
 //             result going into a DPAS
 //           5 no loads: every operand is written by an add before its k-step
+//           6 as 3 in two halves: A' and the first half of B', their DPAS,
+//             then the second half of B' and its DPAS. No more than 12
+//             loads are in flight (a thread has 16 scoreboard tokens)
+//           7 6 with each half's loads sent before the other half's DPAS, so
+//             they are in flight while it runs (A' is held twice)
 // The masks cut the windows and k-steps read down to a set that stays in a
 // cache; aStride and bStride (FoldArgs) space the blocks, laneStride the
 // lanes' 32 bytes of a fragment.
@@ -430,6 +435,19 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
       for (int cb = 0; cb < NCB; cb++) c[rb][cb] = 0;
     v8i keep = 0;
     v8i af[RB], bf[NCB];
+    // A word of each of n fragments, ANDed with the unseen zero: ORed into an
+    // operand, it makes whatever reads that operand wait for all n loads.
+    auto gate = [&](const v8i *a, int na, const v8i *b, int nb) -> int {
+      int t = 0;
+      for (int i = 0; i < na; i++) t ^= a[i][0];
+      for (int i = 0; i < nb; i++) t ^= b[i][0];
+      return t & (int)P.zero;
+    };
+    constexpr int H = NCB / 2;
+    if constexpr (PF == 7) {
+      for (int rb = 0; rb < RB; rb++) af[rb] = load_a(0, rb);
+      for (int cb = 0; cb < H; cb++) bf[cb] = load_b(0, cb);
+    }
     for (uint32_t rep = 0; rep < P.reps; rep++) {
       for (uint32_t ch = 0; ch < 16u; ch++) {
         for (uint32_t s = 0; s < 4u; s++) {
@@ -450,6 +468,35 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
             for (int rb = 0; rb < RB; rb++) af[rb][0] |= t;
             for (int cb = 0; cb < NCB; cb++)
               for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+          } else if constexpr (PF == 6) {
+            for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+            for (int cb = 0; cb < H; cb++) bf[cb] = load_b(ks, cb);
+            const int g1 = gate(af, RB, bf, H);
+            for (int rb = 0; rb < RB; rb++) af[rb][0] |= g1;
+            for (int cb = 0; cb < H; cb++)
+              for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+            for (int cb = H; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+            const int g2 = gate(af, 0, bf + H, H);
+            for (int rb = 0; rb < RB; rb++) af[rb][1] |= g2;
+            for (int cb = H; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+          } else if constexpr (PF == 7) {
+            // On entry A' and the first half of B' of this k-step are loaded
+            // or in flight. The second half goes out before the first DPAS.
+            const uint32_t nx = (ks + 1u) & 63u;
+            const int g1 = gate(af, RB, bf, H);
+            for (int cb = H; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+            for (int rb = 0; rb < RB; rb++) af[rb][0] |= g1;
+            for (int cb = 0; cb < H; cb++)
+              for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+            const int g2 = gate(af, 0, bf + H, H) | (c[RB - 1][H - 1][0] & (int)P.zero);
+            v8i an[RB];
+            for (int rb = 0; rb < RB; rb++) an[rb] = load_a(nx, rb);
+            for (int cb = 0; cb < H; cb++) bf[cb] = load_b(nx + (uint32_t)(g2 & 0), cb);
+            for (int rb = 0; rb < RB; rb++) af[rb][1] |= g2;
+            for (int cb = H; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+            for (int rb = 0; rb < RB; rb++) af[rb] = an[rb];
           } else if constexpr (PF == 4) {
             for (int rb = 0; rb < RB; rb++) keep ^= load_a(ks, rb) << (1 + rb);
             for (int cb = 0; cb < NCB; cb++) keep ^= load_b(ks, cb) << (9 + cb);
@@ -606,6 +653,14 @@ void add_frag_rows(std::vector<Row> &v) {
   FRAG_ROW("f-v84-pf3", "A' as one vector of 8 dwords, B' as two of 4, every DPAS waiting for the loads", 2, 8, 1, 2, 0, 3, 1u, all, all, all);
   FRAG_ROW("f-v4-pf3-fold", "f-v4-pf3 with the readout, barrier, hash and test", 2, 8, 2, 2, 2, 3, 1u, all, all, all);
   FRAG_ROW("f-v84-pf3-fold", "f-v84-pf3 with the readout, barrier, hash and test", 2, 8, 1, 2, 2, 3, 1u, all, all, all);
+  FRAG_ROW("f-v84-pf6", "A' one vector, B' halves, in two halves of a k-step", 2, 8, 1, 2, 0, 6, 1u, all, all, all);
+  FRAG_ROW("f-v4-pf6", "both operands as halves, in two halves of a k-step", 2, 8, 2, 2, 0, 6, 1u, all, all, all);
+  FRAG_ROW("f-v84-pf7", "f-v84-pf6 with each half's loads in flight during the other half's DPAS", 2, 8, 1, 2, 0, 7, 1u, all, all, all);
+  FRAG_ROW("f-v4-pf7", "f-v4-pf6 that way", 2, 8, 2, 2, 0, 7, 1u, all, all, all);
+  FRAG_ROW("f-v84-pf7-fold", "f-v84-pf7 with the readout, barrier, hash and test", 2, 8, 1, 2, 2, 7, 1u, all, all, all);
+  FRAG_ROW("f-v84-pf6-fold", "f-v84-pf6 with the readout, barrier, hash and test", 2, 8, 1, 2, 2, 6, 1u, all, all, all);
+  FRAG_ROW("g-v4-pf6", "32 by 32, halves, in two halves of a k-step", 4, 4, 2, 2, 0, 6, 1u, all, all, all);
+  FRAG_ROW("g-v4-pf7", "32 by 32, halves, each half's loads in flight during the other half's DPAS", 4, 4, 2, 2, 0, 7, 1u, all, all, all);
   FRAG_ROW("f-q4", "f-loads with each fragment loaded as one vector of 4 qwords", 2, 8, 6, 6, 0, 0, 1u, all, all, all);
   FRAG_ROW("f-q4-b", "B' as one vector of 4 qwords, A in registers", 2, 8, 0, 6, 0, 0, 1u, all, all, all);
   FRAG_ROW("f-q4-pf3", "f-q4 with every DPAS of a k-step made to wait for its loads", 2, 8, 6, 6, 0, 3, 1u, all, all, all);
@@ -812,7 +867,7 @@ int main(int argc, char **argv) {
   } catch (const std::exception &) {
   }
   uint64_t band = bandArg ? bandArg : (cache ? cache / (32ull * k) : 16);  // the host's rule for the XMX folds
-  if (frag && !bandArg && cache) band = cache / 8 / (32ull * k);           // and for the fragment fold
+  if (frag && !bandArg && cache) band = cache / 4 / (32ull * k);           // and for the fragment fold
   if (band < 1) band = 1;
   if (band > rowsValid / 2u) band = rowsValid / 2u;
   band = floor_pow2(band);
@@ -866,6 +921,7 @@ int main(int argc, char **argv) {
   args.f.band = (uint32_t)band;
   args.f.aStride = aStride;
   args.f.bStride = bStride;
+  args.f.zero = 0;
   for (int i = 0; i < 8; i++) { args.f.test.key[i] = mix(0xA5EEDu + (uint32_t)i); args.f.test.target_w[i] = 0; }
   args.f.test.hash_big_endian = 0;
   args.f.hits = hits;

@@ -608,6 +608,7 @@ FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {
   a.band = ctx->band;
   a.aStride = ctx->aStride;
   a.bStride = ctx->bStride;
+  a.zero = 0;  // always: the fragment fold ORs (a loaded word & zero) into an operand to order its loads
   for (int i = 0; i < 8; i++) a.test.key[i] = pearl_b3::load_le32(ctx->aSeed + 4 * i);
   for (int i = 0; i < 8; i++) {
     const uint8_t *t = ctx->target + i * 4;
@@ -855,21 +856,21 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->batch = ctx->colBatch * ctx->rowsValid;
   // Row windows a band: for fold_xmx as many as make a band's A' (32 rows of k
   // bytes a window) the size of the device's last-level cache, for the plain
-  // fold a quarter of that, for the fragment fold an eighth. PEARL_SYCL_BAND
-  // forces it.
+  // fold and the fragment fold a quarter of that. PEARL_SYCL_BAND forces it.
   // Measured on an Arc A750, which reports 16 MB, so 256 and 64 (TH/s). xmx8,
   // bench: 4 -> 14.1, 16 -> 14.3, 64 -> 15.2 to 15.5, 128 -> 16.3, 256 -> 16.6
   // to 16.9, 512 -> 13.8, 1024 to 4096 -> 13.4 to 13.5. dot, 400 hits through
   // the addon: 64 -> 3.91, 256 -> 3.74. A quarter was the rule for both, and
-  // not measured, until that run. xmx8f, bench, 11 November: 16 -> 42.09,
-  // 32 -> 42.25, 64 -> 42.12, 128 -> 31.74, 256 -> 35.38.
+  // not measured, until that run. xmx8f, bench, 11 November, with B' loaded
+  // in halves: 16 -> 55.8, 32 -> 60.6, 64 -> 64.2, 128 -> 44.1 (with one load
+  // a fragment it was 42.1 to 42.2 at 16, 32 and 64, 31.7 at 128, 35.4 at 256).
   {
     uint64_t cache = 0;
     try {
       cache = ctx->dev.get_info<sycl::info::device::global_mem_cache_size>();
     } catch (const std::exception &) {
     }
-    const uint64_t share = ctx->fold == kDot ? 4 : fold_is_frag(ctx->fold) ? 8 : 1;
+    const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
     uint64_t band = cache ? cache / share / (32ull * k) : 16;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
