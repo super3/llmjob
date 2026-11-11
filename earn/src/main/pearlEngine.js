@@ -46,7 +46,8 @@ class PearlEngine extends EventEmitter {
     // The UI, the stats accumulator and the network board are all per card
     // (miningStats buckets on the index the event carries), so this is the shape
     // they want. A rig mining on one card has one entry, which is what every
-    // consumer saw before.
+    // consumer saw before. A card whose core reports its memory also has
+    // { memTotalMb, memUsedMb } (see _memory).
     this.cards = new Map();
     this.gpu = null;
     this.endpoint = null;
@@ -60,6 +61,19 @@ class PearlEngine extends EventEmitter {
       this.cards.set(i, { name: null, hashrate: 0, accepted: 0, rejected: 0, temp: null });
     }
     return this.cards.get(i);
+  }
+
+  // Keep what a card's core says of its memory: the card's size, and what the
+  // core has allocated on it, in MB (PearlMiner's readDevice). Only the Intel
+  // core says, and the network board has no other source for an Intel card
+  // (shared/minerReport). Taken from every device the miner hands over, so a
+  // card opened again, or closed (0 used), is followed. A device with no
+  // figures changes nothing, and that card's events stay as they were.
+  _memory(index, device) {
+    if (device.memTotalMb == null) return;
+    const card = this._card(index);
+    card.memTotalMb = device.memTotalMb;
+    card.memUsedMb = device.memUsedMb;
   }
 
   isRunning() {
@@ -132,6 +146,7 @@ class PearlEngine extends EventEmitter {
     m.on('hashrate', (th, device) => {
       const index = device ? device.index : 0;
       this._card(index).hashrate = th;
+      if (device) this._memory(index, device);
       this._status(index);
     });
 
@@ -152,7 +167,10 @@ class PearlEngine extends EventEmitter {
     // was hardcoded to 0 -- both true only while CUDA and nvidia-smi happen to
     // number the cards the same way, which on a multi-GPU rig they need not
     // (issue #226). What the cores report is what is mining.
-    for (const d of m.devices()) this._card(d.index).name = d.name;
+    for (const d of m.devices()) {
+      this._card(d.index).name = d.name;
+      this._memory(d.index, d);
+    }
     // Nothing named a card: an older core that won't say. Keep the one bucket
     // and the detected name, which is what this did before.
     if (!this.cards.size) this._card(0).name = this.gpu;
@@ -237,10 +255,13 @@ class PearlEngine extends EventEmitter {
   // hardcoded to 0, so on a rig where the core landed elsewhere the temperature
   // shown belonged to a card that wasn't mining and the board row was filed
   // under the wrong GPU.
+  //
+  // A card whose core reports its memory carries that too, as memUsedMb and
+  // memTotalMb (see _memory). The other cards' events have neither field.
   _status(index) {
     const i = Number.isInteger(index) ? index : 0;
     const card = this._card(i);
-    this.emit('event', {
+    const evt = {
       type: 'status',
       gpuIndex: i,
       hashrate: card.hashrate,
@@ -248,7 +269,12 @@ class PearlEngine extends EventEmitter {
       rejected: card.rejected,
       temp: card.temp,
       gpu: card.name || this.gpu,
-    });
+    };
+    if (card.memTotalMb != null) {
+      evt.memUsedMb = card.memUsedMb;
+      evt.memTotalMb = card.memTotalMb;
+    }
+    this.emit('event', evt);
   }
 }
 
