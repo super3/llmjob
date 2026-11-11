@@ -364,3 +364,70 @@ describe('CI builds the core for Linux and Windows (native-core.yml)', () => {
     expect(gate).toMatch(/\n\s+\.\/compile-gate\.sh\n/);
   });
 });
+
+// What each package carries. The core is a folder, sycl/, beside the other
+// cores: the addon cannot load without the libraries next to it.
+describe('the packages carry the folder', () => {
+  const pkg = JSON.parse(read(EARN, 'package.json'));
+  const MINER_BUILD = read(EARN, '..', '.github', 'workflows', 'miner-build.yml');
+  const BUILD_CLI = read(EARN, 'scripts', 'build-cli.mjs');
+  const BUILD_HIVE = read(EARN, 'scripts', 'build-hiveos.mjs');
+  const SMOKE = read(EARN, '..', '.github', 'scripts', 'hiveos-smoke.sh');
+
+  test('the installers pack src, package.json and what CI stages in vendor, the sycl folder with it', () => {
+    expect(pkg.build.files.length).toBeGreaterThan(0);
+    for (const pattern of pkg.build.files) {
+      expect([pattern, pattern === 'package.json' || pattern.startsWith('src/')]).toEqual([pattern, true]);
+    }
+    const extra = Object.values(pkg.build).flatMap((v) => (v && Array.isArray(v.extraResources) ? v.extraResources : []));
+    for (const r of extra) expect([r.from, r.from.startsWith('vendor/')]).toEqual([r.from, true]);
+    // From vendor/native: addons, the Monero worker, and the Intel core's folder
+    // whole (its libraries and their licence). Windows and Linux alike.
+    const native = extra.filter((x) => x.to === 'native');
+    expect(native).toHaveLength(2);
+    for (const r of native) {
+      expect(r.filter).toEqual(['**/*.node', 'llmjob-xmr-worker', 'llmjob-xmr-worker.exe', 'sycl/**']);
+    }
+    // That folder is where the loader looks (src/main/pearlCore.js).
+    const { INTEL_DIR, FILES, INTEL } = require('../src/shared/coreVariant');
+    expect([INTEL_DIR, FILES[INTEL]]).toEqual(['sycl', 'pearl_core_sycl.node']);
+    expect(read(EARN, 'src', 'main', 'pearlCore.js')).toContain('dirs.map((d) => path.join(d, INTEL_DIR, FILES[INTEL]))');
+  });
+
+  test('the installer build stages it from the same native-core run as the other cores, and says when it has none', () => {
+    const step = slice(MINER_BUILD, '- name: Stage the Intel Pearl core', 'if_no_artifact_found: warn');
+    expect(step).toContain("name: pearl-core-sycl-${{ runner.os == 'Windows' && 'windows-2022' || 'ubuntu-latest' }}");
+    expect(step).toContain('run_id: ${{ steps.pick.outputs.run_id }}');
+    expect(step).toContain('path: earn/vendor/native');
+    expect(step).toContain('continue-on-error: true');
+    expect(MINER_BUILD).toContain('if [ -f vendor/native/sycl/pearl_core_sycl.node ]; then');
+    expect(MINER_BUILD).toContain('this $RUNNER_OS build cannot mine on Intel Arc cards');
+    // The artifact is the staged folder's parent, so it unpacks as sycl/.
+    expect(job('intel')).toMatch(/name: pearl-core-sycl-ubuntu-latest\n\s+path: earn\/native\/sycl\/stage\n/);
+    expect(job('intel')).toContain('./build.sh --jit --stage stage/sycl');
+  });
+
+  test('the Linux CLI keeps it beside the binary and as one archive for the release', () => {
+    expect(BUILD_CLI).toContain("const sycl = join(root, 'vendor', 'native', 'sycl');");
+    expect(BUILD_CLI).toContain("const syclOut = join(dist, 'sycl');");
+    expect(BUILD_CLI).toContain("chmodSync(join(syclOut, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);");
+    expect(BUILD_CLI).toContain("execFileSync('tar', ['-czf', join(dist, 'pearl_core_sycl-linux.tar.gz'), '-C', dist, 'sycl']);");
+    // A stale folder from an earlier build is not left beside a new binary.
+    expect(BUILD_CLI.indexOf('rmSync(syclOut, { recursive: true, force: true });')).toBeLessThan(BUILD_CLI.indexOf('mkdirSync(syclOut);'));
+    const publish = slice(MINER_BUILD, '- name: Publish CLI + HiveOS package to release', 'gh release upload "v$VERSION" dist/llmjob-earn-cli-linux');
+    expect(publish).toContain('gh release upload "v$VERSION" dist/pearl_core_sycl-linux.tar.gz --clobber');
+    expect(publish).toContain('gh release delete-asset "v$VERSION" pearl_core_sycl-linux.tar.gz --yes');
+  });
+
+  test('the HiveOS package has it, and its smoke test loads it on every image', () => {
+    expect(BUILD_HIVE).toContain("const sycl = join(dist, 'sycl');");
+    expect(BUILD_HIVE).toContain("chmodSync(join(syclDir, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);");
+    expect(SMOKE).toContain('configure "--region us --core intel"');
+    expect(SMOKE).toContain('wait_for "Pearl core: Intel build (SYCL)" 60');
+    // The core's own words when it loaded and found no card (pearl_sycl_host.cpp).
+    const NO_CARD = 'no Intel GPU found through Level Zero or OpenCL';
+    expect(SMOKE).toContain('wait_for "' + NO_CARD + '" 60');
+    expect(HOST).toContain('"' + NO_CARD + '"');
+    expect(read(EARN, 'src', 'main', 'pearlCore.js')).toContain('noCard: /no Intel GPU found/i');
+  });
+});
