@@ -1,9 +1,13 @@
-# xt job 2 (RX 7900 XT): the duel: the PR head's core against SRBMiner 3.8.6, 2 turns each, then a clock turn each
+# xt job 3 (RX 7900 XT): the fold alone at 1, 2 and 4 batches a launch, then 2 and 4 batches a launch in the miner against the default and a twin
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=srb\ duel
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
+G_CODE=95f0817e0c37009943f48380e2dcf35e27e14180
+G_PARTS=build\ fold\ hash
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;strip=-DPEARL_AMD_STRIP=1
+G_SHAPES=base:131072:2048:400\ base:262144:2048:200\ base:524288:2048:100
+G_FROUNDS=3
+G_VARIANTS=base\ twin\ s2\ s4
+G_HROUNDS=4
+G_HASH=45:12
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
