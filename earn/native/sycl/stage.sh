@@ -9,7 +9,8 @@
 #   libsycl.so.N, libumf.so.N, libur_adapter_*.so.N             the SYCL runtime
 #       they load, from the compiler's lib directory. Each already looks for
 #       the others beside itself ($ORIGIN), as ours do
-#   LICENSE-DPCPP.txt, NOTICE.txt                               their licence
+#   LICENSE-DPCPP.txt, THIRD-PARTY-DPCPP.txt, NOTICE.txt        their licence,
+#       and those of the software built into them
 #
 # Only the open-source DPC++ (github.com/intel/llvm, Apache-2.0 with the LLVM
 # exception) is staged. A build made with Intel's oneAPI compiler links Intel's
@@ -64,6 +65,7 @@ for n in "${RUNTIME[@]}"; do
   chmod 644 "$STAGE/$n"
 done
 cp "$HERE/licenses/LICENSE-DPCPP.txt" "$STAGE/LICENSE-DPCPP.txt"
+cp "$HERE/licenses/THIRD-PARTY-DPCPP.txt" "$STAGE/THIRD-PARTY-DPCPP.txt"
 
 # Every file must find the others beside it and nowhere else: a run path that
 # names the build machine's compiler would be a wrong answer waiting on a rig.
@@ -95,7 +97,8 @@ done
   for n in "${RUNTIME[@]}"; do echo "  $n"; done
   echo "Apache License 2.0 with LLVM exceptions: LICENSE-DPCPP.txt. libumf is the Unified Memory"
   echo "Framework and the libur_adapter files the Unified Runtime, both built from that repository"
-  echo "under the same licence."
+  echo "under the same licence. THIRD-PARTY-DPCPP.txt lists the software built into them"
+  echo "(hwloc, Zstandard, emhash, xxHash, part of oneAPI Level Zero) with each one's licence."
   echo
   echo "Not here, and needed on the rig: Intel's graphics driver for compute (Level Zero or OpenCL)."
 } > "$STAGE/NOTICE.txt"

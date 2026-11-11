@@ -72,6 +72,7 @@ if [ -n "$STAGE" ]; then
     cp "$ROOT/bin/$f" "$STAGE/$f"
   done
   cp "$HERE/licenses/LICENSE-DPCPP.txt" "$STAGE/LICENSE-DPCPP.txt"
+  cp "$HERE/licenses/THIRD-PARTY-DPCPP.txt" "$STAGE/THIRD-PARTY-DPCPP.txt"
   {
     echo "The Intel (SYCL) Pearl core of LLMJob Earn for Windows, and the libraries it loads."
     echo
@@ -81,7 +82,8 @@ if [ -n "$STAGE" ]; then
     echo "(https://github.com/intel/llvm, $("$CXX" --version | head -n 1)):"
     for f in "${RUNTIME[@]}"; do echo "  $f"; done
     echo "Apache License 2.0 with LLVM exceptions: LICENSE-DPCPP.txt. The ur_ files are the Unified"
-    echo "Runtime, built from that repository under the same licence."
+    echo "Runtime, built from that repository under the same licence. THIRD-PARTY-DPCPP.txt lists"
+    echo "the software built into them with each one's licence."
     echo
     echo "Not here, and needed on the PC: Intel's graphics driver, and Microsoft's Visual C++ runtime"
     echo "(msvcp140.dll, vcruntime140.dll), which Windows or another program has usually installed."

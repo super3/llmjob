@@ -179,6 +179,26 @@ describe('staging: the folder a release carries', () => {
     expect(BUILD_WIN).toContain('cp "$HERE/licenses/LICENSE-DPCPP.txt" "$STAGE/LICENSE-DPCPP.txt"');
   });
 
+  // The runtime's files have other projects' code built into them (seen in
+  // their symbols: hwloc in libumf, Zstandard and emhash in libsycl, the Level
+  // Zero project's static loader in the adapters). Each is under a licence that
+  // asks for its notice to travel with the binary.
+  test('the notices of the software built into the runtime travel with it too', () => {
+    const tp = read(SYCL, 'licenses', 'THIRD-PARTY-DPCPP.txt');
+    const rule = '='.repeat(78) + '\n';
+    for (const name of ['oneAPI Level Zero', 'hwloc', 'Zstandard', 'emhash', 'xxHash']) {
+      expect(tp).toContain(rule + name + '\n' + rule);
+    }
+    expect(tp).toContain('Copyright (C) 2019-2026 Intel Corporation');
+    expect(tp).toContain('SPDX-License-Identifier: BSD-3-Clause');
+    expect(tp).toContain('Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.');
+    expect(tp).toContain('Copyright (c) 2012-2021 Yann Collet');
+    // Nothing in it is a licence that forbids handing the files on.
+    expect(tp).not.toMatch(/End User License|GPL|may not (re)?distribute/i);
+    expect(STAGE).toContain('cp "$HERE/licenses/THIRD-PARTY-DPCPP.txt" "$STAGE/THIRD-PARTY-DPCPP.txt"');
+    expect(BUILD_WIN).toContain('cp "$HERE/licenses/THIRD-PARTY-DPCPP.txt" "$STAGE/THIRD-PARTY-DPCPP.txt"');
+  });
+
   // stage.sh for real, under bash. A stand-in "ELF" is a text file holding what
   // `readelf -d` would print for it, and the stand-in readelf prints the file.
   const hasBash = spawnSync('bash', ['--version'], { stdio: 'ignore' }).status === 0;
@@ -228,12 +248,13 @@ describe('staging: the folder a release carries', () => {
       const r = run(l);
       expect([r.status, r.err]).toEqual([0, '']);
       expect(r.staged).toEqual([
-        'LICENSE-DPCPP.txt', 'NOTICE.txt', 'libpearl_sycl.so', 'libsycl.so.9', 'libumf.so.1',
+        'LICENSE-DPCPP.txt', 'NOTICE.txt', 'THIRD-PARTY-DPCPP.txt', 'libpearl_sycl.so', 'libsycl.so.9', 'libumf.so.1',
         'libur_adapter_level_zero.so.0', 'libur_adapter_level_zero_v2.so.0', 'pearl_core_sycl.node', 'pearl_sycl_check',
       ]);
       const notice = read(l.stage, 'NOTICE.txt');
       for (const f of ['libsycl.so.9', 'libumf.so.1', 'libur_adapter_level_zero.so.0']) expect(notice).toContain('  ' + f + '\n');
       expect(notice).toContain('Apache License 2.0 with LLVM exceptions: LICENSE-DPCPP.txt');
+      expect(notice).toContain('THIRD-PARTY-DPCPP.txt lists the software built into them');
       expect(notice).toContain('Not here, and needed on the rig: Intel\'s graphics driver for compute (Level Zero or OpenCL).');
       expect(r.out).toContain('staged in ');
     });
