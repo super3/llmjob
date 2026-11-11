@@ -1,15 +1,8 @@
-# 7900xtx blocking wait: the default and the hash queue off, each with HIP's blocking wait (PEARL_AMD_SCHED=block), taking turns with the run timed; then the threads and what the busy ones are doing (gdb)
+# 7900xtx gdb hq0: what the four busy threads are doing with the hash on the fold's queue
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=8389f9d4a621b5d9f6546e583f60da59422f7d86
-G_PARTS=build\ hash\ threads\ gdb
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
-G_FOLDK=0
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq0=base\ PEARL_AMD_HASHQ=0\;blk=base\ PEARL_AMD_SCHED=block\;hq0blk=base\ PEARL_AMD_HASHQ=0\ PEARL_AMD_SCHED=block\;spin=base\ PEARL_AMD_SCHED=spin\;hq1blk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_SCHED=block\;dd0=base\ AMD_DIRECT_DISPATCH=0\;dd1=base\ AMD_DIRECT_DISPATCH=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ blk\ hq0\ hq0blk
-G_HROUNDS=3
-G_HASH=45:12
-G_THREADS=blk\ hq0blk
-G_GDB=base\ blk
+G_PARTS=gdb
+G_VDEF=hq0=base\ PEARL_AMD_HASHQ=0
+G_GDB=hq0
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
