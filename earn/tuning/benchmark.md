@@ -1463,6 +1463,412 @@ RDNA 2 (the `dot4` fold, which no RDNA 2 card has run): of these only host-side 
 compiler, a shape trial). The first thing to learn there is the tester's own rate, and whether `v_dot4_i32_i8` runs at
 full rate on RDNA 2 (the projection is 14-41 TH/s).
 
+**What a fold with free operands is worth, and what building them on the SM costs (the gate, 10 November)**
+
+Three reviews of the NVIDIA gap (10 November) said the "+2.8% to +4.05% ceiling" for a kernel that stores no operands
+priced the wrong thing: `PEARL_ABLATE_DRAM` keeps every copy and only moves its source from DRAM into the L2. This is
+the experiment they asked for before any such kernel is built. It prices the copies themselves, then puts stand-in work
+where a draw of the operands would have to go. Every arm computes wrong results on purpose and the host refuses any
+target but zero. They are on branch `goal/gate` (not on the PR) and none can ship.
+
+The arms, all on the tall fold:
+
+- **DRAM ablation** (`PEARL_ABLATE_DRAM`, as before): every copy kept, its source held in the L2.
+- **Copies gated off** (`PEARL_TALL_AB_SKIP`, now also on the cp.async ring of sm_86 and sm_89): the copy instructions
+  stay in the stream behind a predicate that holds only in a block's first tile. On sm_120 it is the TMA ring's existing
+  switch (the boxes are not issued). A' alone and B' alone too.
+- **Copies compiled out, no operand redraw** (`PEARL_GATE_NOCOPY`, `PEARL_GATE_PHANTOM`): the chunk loop has no copy
+  instruction, the host stores two tiles of A' and B', and a new salt redraws the noise tables but no operand. This is
+  the fold a kernel with free operands would start from. On sm_120 it runs on the cp.async ring (`-DPEARL_TALL_TMA=0`).
+- **Long k**: the same at k 65536 on the RTX 4090 and 5090, and at k 16384 on the RTX 3060, 3090 and 5070 Ti, where a
+  salt at k 65536 outlasts a race turn. A launch holds the MACs a k 2048 launch does.
+- **Sham draw** (`PEARL_GATE_SHAM`): each thread rebuilds its seven 16-byte units of the buffer the stage refills, a
+  stage ahead of their use: two 16-byte shared loads, ALU steps, one 16-byte store, then the buffer's FULL arrival.
+  The chunk loop grows by 98, 196 and 378 instructions: 0.51, 1.02 and 1.97 an IMMA. Placed three ways: in runs at the
+  two k-step ends, where B's fragment registers are dead (`PEARL_GATE_SHAM_AT=0`); between the mma, each step its own
+  asm (`=2`, and `=4`, which asks for between m16 tiles and which ptxas schedules the same way); and ALU steps alone
+  after every mma (`=3`).
+- **Stages as a loop** (`PEARL_GATE_S_ROLL`): the fold has no register to spare (253 to 255 of 255), and the sham
+  between the mma spills 64 to 156 bytes inside the chunk loop on sm_89 and sm_86 unless a chunk's two stages are a
+  loop. Rolled, the arms build with no spill on sm_86, sm_89 and sm_120 (one aside, below).
+- **A warp of its own**: a ninth warp can't be built (288 threads leave 227 registers; ptxas 12.6 falls back to 40 and
+  spills 6.4 KB). So it is a second kernel beside the fold (`PEARL_GATE_SPIN`): one block of one warp an SM, in the
+  768 registers a 253-register fold leaves, doing the sham's units at a stage's pace. It shares the SM with the fold
+  and nothing else, so it prices the instructions, not a design: a real producer would have to write the fold's
+  shared memory.
+
+Checked in the machine code (nvdisasm on the sm_89 cubins, ptxas 12.6): every arm's chunk loop holds 192 IMMA and 40
+ldmatrix (96 and 20 in a rolled stage), and the code from the tile hand-off to the tile loop's branch is the release's
+2,150 instructions give or take 14 of address arithmetic (the IADD3 count, 305, and every shuffle are the same). The
+release's chunk loop is 540 instructions; with the copies compiled out, 417. The sm_86 cubins (ptxas 12.6) and the
+sm_120 ones (ptxas 13.3) built here hold the same IMMA and ldmatrix counts; sm_86's hand-off is 2,135 to 2,162
+instructions against 2,153, and sm_120's keeps its 54 warp shuffles, 50 global stores and 2 atomics in every arm. The
+Salad builds (nvcc 12.8 and 13.3) were checked for registers and spill only, by a line `gate.sh` prints (the first
+5090 pass and the 3060 ran before it did): one arm spills, `si0r` on sm_120, 28 bytes.
+
+Where: rig01's RTX 4090 with `hashrate.js` (90 s after 20 s warm-up, a control every four arms, two sessions), and
+Salad PCs in race mode with a twin, where the three competitors and our v0.6.15 CLI were measured on the same PC
+first, on the stand-in pool, by the mean of each miner's own samples from 60 s in.
+
+**RTX 4090, rig01, 450 W limit, `hashrate.js`.** The control ran 10 times, 316.81 to 317.64 TH/s, a range of 0.26%. Each
+arm's change is against the controls on either side of it. The three competitors read 338.6 to 341.9 TH/s on this card
+at 450 W and 2625 MHz (item 16).
+
+| Arm at 450 W | Runs | TH/s | vs control (each run) | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 10 | 317.3 | range 0.26% | 2531 MHz | | 449 | 77 | 125.4 | |
+| `dram` DRAM ablation (copies kept, source in L2) | 2 | 317.9 | +0.17% (+0.21, +0.14) | 2538 | +0.3% | 449 | 78 | 125.2 | -0.1% |
+| `sk3` Copies gated off, A' and B' | 2 | 329.0 | +3.67% (+3.72, +3.61) | 2685 | +6.1% | 406 | 75 | 122.5 | -2.3% |
+| `sk3p` Copies gated off, no operand redraw | 1 | 329.4 | +3.78% (+3.78) | 2685 | +6.1% | 406 | 76 | 122.7 | -2.2% |
+| `ncp` Copies compiled out, no operand redraw | 2 | 334.2 | +5.40% (+5.38, +5.41) | 2685 | +6.1% | 400 | 75 | 124.5 | -0.7% |
+| `nck` No copies, long k | 2 | 341.9 | +7.83% (+7.80, +7.85) | 2685 | +6.1% | 410 | 76 | 127.3 | +1.6% |
+| `ncpr` No copies, stages as a loop | 2 | 325.8 | +2.76% (+2.73, +2.78) | 2685 | +6.1% | 391 | 74 | 121.3 | -3.2% |
+| `ncprk` No copies, stages as a loop, long k | 2 | 339.8 | +7.13% (+7.06, +7.20) | 2685 | +6.1% | 404 | 76 | 126.5 | +1.0% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 2 | 323.6 | +1.97% (+1.95, +1.99) | 2685 | +6.1% | 435 | 77 | 120.5 | -3.8% |
+| `si1r` Sham 1 an IMMA, between the mma | 2 | 318.6 | +0.41% (+0.19, +0.64) | 2636 | +4.2% | 448 | 77 | 120.9 | -3.5% |
+| `si2r` Sham 2 an IMMA, between the mma | 1 | 306.3 | -3.50% (-3.50) | 2606 | +3.0% | 449 | 77 | 117.5 | -6.2% |
+| `si1rk` Sham 1 an IMMA, long k | 2 | 322.5 | +1.65% (+1.72, +1.58) | 2628 | +3.9% | 449 | 77 | 122.7 | -2.1% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 1 | 290.1 | -8.60% (-8.60) | 2685 | +6.1% | 428 | 76 | 108.0 | -13.8% |
+| `si05rk` Sham 0.5 an IMMA, long k | 1 | 330.2 | +4.08% (+4.08) | 2670 | +5.5% | 439 | 76 | 123.7 | -1.3% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 1 | 332.5 | +4.78% (+4.78) | 2685 | +6.1% | 400 | 75 | 123.8 | -1.3% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 1 | 310.6 | -2.12% (-2.12) | 2685 | +6.1% | 425 | 77 | 115.7 | -7.8% |
+| `si1rb` Sham 1 an IMMA, no release | 1 | 316.8 | -0.15% (-0.15) | 2630 | +3.9% | 449 | 78 | 120.5 | -4.0% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 1 | 269.0 | -15.21% (-15.21) | 2685 | +6.1% | 345 | 69 | 100.2 | -20.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 1 | 220.9 | -30.38% (-30.38) | 2691 | +6.3% | 305 | 67 | 82.1 | -34.6% |
+
+**RTX 4090, rig01, 300 W limit, `hashrate.js`.** The control ran 8 times, 270.58 to 272.23 TH/s, a range of 0.61%. Each
+arm's change is against the controls on either side of it. No competitor was run at 300 W.
+
+| Arm at 300 W | Runs | TH/s | vs control (each run) | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 8 | 271.6 | range 0.61% | 2164 MHz | | 300 | 66 | 125.5 | |
+| `dram` DRAM ablation (copies kept, source in L2) | 2 | 274.3 | +0.99% (+0.97, +1.01) | 2189 | +1.2% | 299 | 65 | 125.3 | -0.2% |
+| `sk3` Copies gated off, A' and B' | 2 | 301.2 | +10.90% (+10.85, +10.95) | 2440 | +12.7% | 300 | 67 | 123.5 | -1.6% |
+| `ncp` Copies compiled out, no operand redraw | 2 | 308.5 | +13.60% (+13.64, +13.56) | 2464 | +13.9% | 300 | 67 | 125.2 | -0.3% |
+| `nck` No copies, long k | 2 | 311.8 | +14.89% (+14.90, +14.88) | 2435 | +12.5% | 300 | 68 | 128.0 | +2.0% |
+| `ncpr` No copies, stages as a loop | 2 | 302.9 | +11.63% (+11.67, +11.60) | 2480 | +14.6% | 300 | 68 | 122.1 | -2.7% |
+| `ncprk` No copies, stages as a loop, long k | 2 | 310.8 | +14.54% (+14.64, +14.43) | 2442 | +12.9% | 300 | 67 | 127.3 | +1.4% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 2 | 289.1 | +6.59% (+6.69, +6.49) | 2382 | +10.1% | 299 | 67 | 121.4 | -3.3% |
+| `si1r` Sham 1 an IMMA, between the mma | 2 | 279.7 | +3.00% (+3.23, +2.77) | 2313 | +6.9% | 300 | 68 | 120.9 | -3.6% |
+| `si2r` Sham 2 an IMMA, between the mma | 2 | 266.2 | -2.00% (-1.82, -2.17) | 2266 | +4.7% | 300 | 67 | 117.5 | -6.4% |
+| `si1rk` Sham 1 an IMMA, long k | 2 | 282.4 | +3.97% (+4.18, +3.75) | 2304 | +6.5% | 300 | 67 | 122.6 | -2.3% |
+
+**RTX 5090, Salad `08f8e389`, 575 W limit, race mode.**
+
+The competitors, then the first race (5 s turns).
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 426.3 | 2506 MHz | 513 | 75 | 170.1 | 387.61 |
+| SRBMiner 3.8.2 | 420.9 | 2472 MHz | 503 | 75 | 170.3 | 428.04 |
+| OneZeroMiner 1.8.5 | 423.7 | 2513 MHz | 510 | 75 | 168.6 | 285.75 |
+
+| Arm (16 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 409.1 | | | | 2488 MHz | | 575 | 77 | 164.4 | |
+| `aa` Twin: a copy of the control | 409.4 | +0.08% | 0.07 | 11/16 | 2489 | +0.0% | 575 | 77 | 164.5 | +0.1% |
+| `tdram` DRAM ablation (boxes kept, source in L2) | 412.5 | +0.84% | 0.10 | 16/16 | 2502 | +0.5% | 575 | 77 | 164.9 | +0.3% |
+| `tsk3` Boxes skipped, A' and B' | 451.4 | +10.33% | 0.12 | 16/16 | 2722 | +9.4% | 575 | 79 | 165.8 | +0.9% |
+| `tsk1` Boxes skipped, A' alone | 426.8 | +4.33% | 0.15 | 16/16 | 2581 | +3.7% | 575 | 78 | 165.3 | +0.6% |
+| `tsk2` Boxes skipped, B' alone | 431.4 | +5.46% | 0.15 | 16/16 | 2610 | +4.9% | 575 | 78 | 165.3 | +0.6% |
+| `tsk3p` Boxes skipped, no operand redraw | 451.8 | +10.45% | 0.12 | 16/16 | 2722 | +9.4% | 575 | 79 | 166.0 | +1.0% |
+| `cbase` Release fold on the cp.async ring | 404.5 | -1.12% | 0.11 | 0/16 | 2466 | -0.9% | 575 | 77 | 164.1 | -0.2% |
+| `cncp` cp.async ring, copies compiled out | 445.0 | +8.78% | 0.12 | 16/16 | 2719 | +9.3% | 575 | 79 | 163.7 | -0.5% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 452.2 | +10.53% | 0.12 | 16/16 | 2712 | +9.0% | 575 | 79 | 166.7 | +1.4% |
+| `csh1` Sham 1 an IMMA, runs at the k-step ends | 384.4 | -6.03% | 0.10 | 0/16 | 2665 | +7.1% | 575 | 78 | 144.3 | -12.3% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 412.9 | +0.94% | 0.11 | 16/16 | 2626 | +5.5% | 566 | 78 | 157.2 | -4.4% |
+| `csi1r` Sham 1 an IMMA, between the mma | 408.3 | -0.19% | 0.11 | 1/16 | 2565 | +3.1% | 558 | 78 | 159.2 | -3.2% |
+| `csi2r` Sham 2 an IMMA, between the mma | 393.5 | -3.82% | 0.11 | 0/16 | 2560 | +2.9% | 576 | 78 | 153.7 | -6.5% |
+| `csi1` Sham 1 an IMMA, between the mma, stages unrolled | 400.4 | -2.14% | 0.11 | 0/16 | 2606 | +4.7% | 575 | 78 | 153.6 | -6.5% |
+| `csa1r` ALU only, 1 an IMMA | 419.2 | +2.47% | 0.11 | 16/16 | 2696 | +8.3% | 575 | 79 | 155.5 | -5.4% |
+| `tdramk` DRAM ablation, long k | 417.8 | +2.13% | 0.13 | 16/16 | 2479 | -0.4% | 575 | 77 | 168.5 | +2.5% |
+| `tsk3k` Boxes skipped, long k | 455.6 | +11.37% | 0.12 | 16/16 | 2690 | +8.1% | 575 | 79 | 169.4 | +3.0% |
+| `cnck` cp.async ring, no copies, long k | 453.5 | +10.86% | 0.12 | 16/16 | 2700 | +8.5% | 575 | 79 | 168.0 | +2.2% |
+| `cncprk` cp.async ring, no copies, loop, long k | 456.6 | +11.61% | 0.12 | 16/16 | 2699 | +8.4% | 575 | 79 | 169.2 | +2.9% |
+| `csi1rk` Sham 1 an IMMA, long k | 408.5 | -0.14% | 0.11 | 4/16 | 2528 | +1.6% | 543 | 76 | 161.6 | -1.7% |
+| `csi05rk` Sham 0.5 an IMMA, long k | 416.7 | +1.85% | 0.11 | 16/16 | 2544 | +2.2% | 525 | 75 | 163.8 | -0.4% |
+| `csi2rk` Sham 2 an IMMA, long k | 395.6 | -3.29% | 0.11 | 0/16 | 2545 | +2.3% | 569 | 77 | 155.5 | -5.4% |
+
+Our CLI and a second race on the same PC (10 s turns). Its spin arms are the first version of the spin kernel, whose
+waiting blocks slept 250 ns at a time.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| Ours, v0.6.15 (CLI) | 409.4 | 2491 MHz | 575 | 78 | 164.4 | 390.72 |
+
+| Arm (9 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 409.7 | | | | 2489 MHz | | 575 | 77 | 164.6 | |
+| `aa` Twin: a copy of the control | 409.5 | -0.05% | 0.14 | 6/9 | 2488 | -0.0% | 575 | 77 | 164.6 | -0.0% |
+| `cncp` cp.async ring, copies compiled out | 445.0 | +8.63% | 0.30 | 9/9 | 2717 | +9.2% | 575 | 79 | 163.8 | -0.5% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 452.1 | +10.36% | 0.32 | 9/9 | 2710 | +8.9% | 575 | 79 | 166.8 | +1.4% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 413.0 | +0.81% | 0.31 | 8/9 | 2626 | +5.5% | 566 | 78 | 157.3 | -4.5% |
+| `csi1r` Sham 1 an IMMA, between the mma | 408.5 | -0.29% | 0.31 | 4/9 | 2565 | +3.1% | 558 | 78 | 159.3 | -3.3% |
+| `csb1r` Sham 1 an IMMA, asked for between m16 tiles | 408.4 | -0.32% | 0.31 | 4/9 | 2577 | +3.5% | 562 | 78 | 158.5 | -3.7% |
+| `csi05rk` Sham 0.5 an IMMA, long k | 416.7 | +1.72% | 0.31 | 9/9 | 2544 | +2.2% | 526 | 76 | 163.8 | -0.5% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 449.3 | +9.68% | 0.33 | 9/9 | 2701 | +8.5% | 575 | 78 | 166.4 | +1.1% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 420.7 | +2.69% | 0.32 | 9/9 | 2692 | +8.2% | 575 | 79 | 156.3 | -5.1% |
+| `si0r` Sham's loads, stores and release, no ALU | 428.3 | +4.55% | 0.32 | 9/9 | 2640 | +6.1% | 575 | 78 | 162.2 | -1.4% |
+| `si1rb` Sham 1 an IMMA, no release | 396.2 | -3.28% | 0.30 | 0/9 | 2615 | +5.1% | 575 | 78 | 151.5 | -8.0% |
+| `si05rb` Sham 0.5 an IMMA, no release | 416.9 | +1.75% | 0.33 | 9/9 | 2614 | +5.0% | 562 | 77 | 159.5 | -3.1% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 265.4 | -35.23% | 0.22 | 0/9 | 2858 | +14.8% | 449 | 72 | 92.9 | -43.6% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 323.9 | -20.94% | 1.31 | 0/9 | 2830 | +13.7% | 538 | 76 | 114.5 | -30.5% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 310.6 | -24.18% | 2.43 | 0/9 | 2830 | +13.7% | 520 | 76 | 109.8 | -33.3% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 413.9 | +1.03% | 0.29 | 9/9 | 2692 | +8.2% | 575 | 78 | 153.7 | -6.6% |
+
+**RTX 3060, Salad `16548f76`, 170 W, 66 °C, race mode.**
+
+The competitors, then the race. The second race never printed on this PC.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 53.1 | 1878 MHz | 170 | 66 | 28.3 | 52.48 |
+| SRBMiner 3.8.2 | 52.4 | 1874 MHz | 170 | 66 | 28.0 | 57.47 |
+| OneZeroMiner 1.8.5 | 53.3 | 1879 MHz | 170 | 66 | 28.4 | 52.10 |
+
+| Arm (13 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 49.18 | | | | 1796 MHz | | 170 | 67 | 27.38 | |
+| `aa` Twin: a copy of the control | 49.18 | +0.02% | 0.03 | 7/13 | 1796 | +0.0% | 170 | 67 | 27.38 | +0.0% |
+| `dram` DRAM ablation (copies kept, source in L2) | 50.68 | +3.06% | 0.03 | 13/13 | 1851 | +3.1% | 170 | 66 | 27.38 | -0.0% |
+| `sk3` Copies gated off, A' and B' | 51.71 | +5.14% | 0.05 | 13/13 | 1912 | +6.5% | 168 | 66 | 27.04 | -1.2% |
+| `sk3p` Copies gated off, no operand redraw | 51.77 | +5.27% | 0.05 | 13/13 | 1912 | +6.5% | 168 | 66 | 27.07 | -1.1% |
+| `ncp` Copies compiled out, no operand redraw | 51.84 | +5.43% | 0.05 | 13/13 | 1912 | +6.5% | 165 | 66 | 27.11 | -1.0% |
+| `ncpr` No copies, stages as a loop | 51.01 | +3.72% | 0.05 | 13/13 | 1912 | +6.5% | 162 | 66 | 26.68 | -2.6% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 45.52 | -7.43% | 0.04 | 0/13 | 1908 | +6.2% | 170 | 66 | 23.86 | -12.9% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 50.11 | +1.91% | 0.05 | 13/13 | 1905 | +6.1% | 170 | 66 | 26.31 | -3.9% |
+| `si1r` Sham 1 an IMMA, between the mma | 49.57 | +0.80% | 0.04 | 13/13 | 1882 | +4.8% | 170 | 66 | 26.33 | -3.8% |
+| `si2r` Sham 2 an IMMA, between the mma | 47.62 | -3.17% | 0.05 | 0/13 | 1873 | +4.3% | 170 | 66 | 25.42 | -7.2% |
+| `sa1r` ALU only, 1 an IMMA | 49.06 | -0.23% | 0.05 | 0/13 | 1912 | +6.5% | 169 | 66 | 25.66 | -6.3% |
+| `dramk` DRAM ablation, long k | 51.42 | +4.56% | 0.05 | 13/13 | 1846 | +2.8% | 170 | 66 | 27.85 | +1.7% |
+| `nck` No copies, long k | 52.54 | +6.84% | 0.05 | 13/13 | 1912 | +6.5% | 166 | 66 | 27.48 | +0.4% |
+| `ncprk` No copies, stages as a loop, long k | 52.18 | +6.11% | 0.05 | 13/13 | 1912 | +6.5% | 165 | 66 | 27.29 | -0.3% |
+| `si1rk` Sham 1 an IMMA, long k | 50.34 | +2.38% | 0.04 | 13/13 | 1880 | +4.7% | 170 | 66 | 26.78 | -2.2% |
+
+**RTX 3090, Salad `71128c8f`, 390 W limit, 88 °C, race mode.**
+
+The competitors and our CLI, then the first race. The driver named heat as what held the clock in 352 of 359 samples
+over both races (`clocks_event_reasons` 0x20).
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 130.2 | 1573 MHz | 345 | 88 | 82.8 | 134.13 |
+| SRBMiner 3.8.2 | 130.2 | 1578 MHz | 347 | 88 | 82.5 | 132.18 |
+| OneZeroMiner 1.8.5 | 131.3 | 1585 MHz | 350 | 88 | 82.8 | 127.13 |
+| Ours, v0.6.15 (CLI) | 122.8 | 1538 MHz | 358 | 88 | 79.9 | 125.19 |
+
+| Arm (14 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 124.2 | | | | 1550 MHz | | 362 | 88 | 80.2 | |
+| `aa` Twin: a copy of the control | 124.3 | +0.03% | 0.07 | 8/14 | 1550 | -0.0% | 362 | 88 | 80.2 | +0.0% |
+| `dram` DRAM ablation (copies kept, source in L2) | 124.9 | +0.56% | 0.15 | 14/14 | 1559 | +0.6% | 354 | 88 | 80.1 | -0.1% |
+| `sk3` Copies gated off, A' and B' | 128.4 | +3.35% | 0.14 | 14/14 | 1619 | +4.5% | 339 | 88 | 79.3 | -1.1% |
+| `sk1` Copies gated off, A' alone | 125.7 | +1.15% | 0.11 | 14/14 | 1587 | +2.4% | 349 | 88 | 79.2 | -1.2% |
+| `sk2` Copies gated off, B' alone | 125.6 | +1.08% | 0.12 | 14/14 | 1588 | +2.4% | 355 | 88 | 79.1 | -1.3% |
+| `br` Release fold, stages as a loop | 116.5 | -6.20% | 0.17 | 0/14 | 1575 | +1.6% | 358 | 88 | 74.0 | -7.7% |
+| `sk3p` Copies gated off, no operand redraw | 128.8 | +3.67% | 0.19 | 14/14 | 1627 | +5.0% | 340 | 88 | 79.2 | -1.3% |
+| `ncp` Copies compiled out, no operand redraw | 129.5 | +4.24% | 0.19 | 14/14 | 1633 | +5.3% | 339 | 88 | 79.3 | -1.1% |
+| `ncpr` No copies, stages as a loop | 128.0 | +3.00% | 0.13 | 14/14 | 1640 | +5.8% | 338 | 87 | 78.0 | -2.7% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 112.8 | -9.20% | 0.11 | 0/14 | 1615 | +4.2% | 342 | 88 | 69.8 | -12.9% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 123.9 | -0.26% | 0.13 | 3/14 | 1606 | +3.6% | 343 | 88 | 77.2 | -3.8% |
+| `si1r` Sham 1 an IMMA, between the mma | 122.6 | -1.33% | 0.15 | 0/14 | 1590 | +2.6% | 348 | 88 | 77.1 | -3.8% |
+| `si2r` Sham 2 an IMMA, between the mma | 117.6 | -5.37% | 0.13 | 0/14 | 1583 | +2.1% | 349 | 88 | 74.3 | -7.3% |
+| `sa1r` ALU only, 1 an IMMA | 121.6 | -2.10% | 0.19 | 0/14 | 1621 | +4.6% | 341 | 88 | 75.0 | -6.4% |
+| `dramk` DRAM ablation, long k | 127.0 | +2.19% | 0.16 | 14/14 | 1557 | +0.5% | 356 | 88 | 81.5 | +1.7% |
+| `nck` No copies, long k | 131.1 | +5.49% | 0.18 | 14/14 | 1631 | +5.2% | 340 | 88 | 80.4 | +0.2% |
+| `ncprk` No copies, stages as a loop, long k | 130.5 | +5.06% | 0.16 | 14/14 | 1634 | +5.4% | 340 | 88 | 79.9 | -0.3% |
+| `si1rk` Sham 1 an IMMA, long k | 124.2 | -0.01% | 0.15 | 6/14 | 1585 | +2.3% | 349 | 88 | 78.4 | -2.3% |
+| `si05rk` Sham 0.5 an IMMA, long k | 126.2 | +1.60% | 0.25 | 14/14 | 1606 | +3.7% | 345 | 88 | 78.6 | -2.0% |
+| `si2rk` Sham 2 an IMMA, long k | 118.9 | -4.32% | 0.17 | 0/14 | 1572 | +1.5% | 349 | 88 | 75.6 | -5.7% |
+
+The second race: the sham's parts and the spin kernel (its waiting blocks spin on a barrier test).
+
+| Arm (15 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 123.9 | | | | 1564 MHz | | 365 | 88 | 79.2 | |
+| `aa` Twin: a copy of the control | 124.0 | +0.10% | 0.27 | 9/15 | 1561 | -0.2% | 365 | 88 | 79.5 | +0.3% |
+| `ncp` Copies compiled out, no operand redraw | 129.1 | +4.16% | 0.29 | 15/15 | 1641 | +4.9% | 342 | 87 | 78.7 | -0.7% |
+| `ncpr` No copies, stages as a loop | 127.5 | +2.90% | 0.29 | 15/15 | 1653 | +5.7% | 341 | 87 | 77.1 | -2.6% |
+| `si1r` Sham 1 an IMMA, between the mma | 122.3 | -1.34% | 0.44 | 2/15 | 1604 | +2.5% | 350 | 88 | 76.2 | -3.8% |
+| `sb1r` Sham 1 an IMMA, asked for between m16 tiles | 121.7 | -1.82% | 0.36 | 0/15 | 1604 | +2.5% | 350 | 88 | 75.9 | -4.2% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 129.6 | +4.57% | 0.58 | 15/15 | 1642 | +5.0% | 343 | 87 | 78.9 | -0.4% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 120.9 | -2.46% | 0.61 | 1/15 | 1635 | +4.5% | 344 | 87 | 73.9 | -6.7% |
+| `si0r` Sham's loads, stores and release, no ALU | 126.3 | +1.89% | 0.69 | 13/15 | 1621 | +3.6% | 347 | 88 | 77.9 | -1.7% |
+| `si1rb` Sham 1 an IMMA, no release | 122.5 | -1.11% | 0.64 | 2/15 | 1608 | +2.8% | 351 | 88 | 76.2 | -3.8% |
+| `si05rb` Sham 0.5 an IMMA, no release | 125.7 | +1.45% | 0.72 | 14/15 | 1624 | +3.8% | 349 | 88 | 77.4 | -2.3% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 120.5 | -2.74% | 0.63 | 1/15 | 1671 | +6.8% | 342 | 87 | 72.1 | -9.0% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 121.1 | -2.25% | 0.53 | 1/15 | 1664 | +6.3% | 344 | 87 | 72.8 | -8.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 120.9 | -2.46% | 0.62 | 1/15 | 1660 | +6.1% | 346 | 87 | 72.8 | -8.1% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 121.0 | -2.36% | 0.57 | 1/15 | 1662 | +6.2% | 346 | 87 | 72.8 | -8.1% |
+
+**RTX 5070 Ti, Salad `d0a033a5`, 300 W limit, race mode.**
+
+The competitors and our CLI, then the first race. The card ran 2805 MHz in nearly every arm, at 165 to 220 W of its 300
+W limit and 58 to 61 °C, so nothing but its top clock held it.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 198.1 | 2805 MHz | 184 | 60 | 70.6 | 177.67 |
+| SRBMiner 3.8.2 | 199.3 | 2804 MHz | 186 | 60 | 71.1 | 202.16 |
+| OneZeroMiner 1.8.5 | 197.3 | 2805 MHz | 183 | 60 | 70.3 | 168.34 |
+| Ours, v0.6.15 (CLI) | 189.2 | 2812 MHz | 220 | 62 | 67.3 | 182.18 |
+
+| Arm (19 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 191.0 | | | | 2807 MHz | | 218 | 61 | 68.0 | |
+| `aa` Twin: a copy of the control | 188.8 | -1.18% | 2.01 | 2/19 | 2807 | +0.0% | 215 | 60 | 67.3 | -1.2% |
+| `tdram` DRAM ablation (boxes kept, source in L2) | 191.2 | +0.07% | 0.22 | 10/19 | 2807 | +0.0% | 211 | 60 | 68.1 | +0.1% |
+| `tsk3` Boxes skipped, A' and B' | 191.6 | +0.31% | 0.27 | 15/19 | 2805 | -0.1% | 165 | 58 | 68.3 | +0.4% |
+| `tsk3p` Boxes skipped, no operand redraw | 191.8 | +0.43% | 0.32 | 19/19 | 2805 | -0.1% | 165 | 58 | 68.4 | +0.5% |
+| `cbase` Release fold on the cp.async ring | 191.2 | +0.12% | 0.32 | 3/19 | 2807 | +0.0% | 220 | 60 | 68.1 | +0.1% |
+| `cncp` cp.async ring, copies compiled out | 189.2 | -0.96% | 0.35 | 2/19 | 2805 | -0.1% | 166 | 58 | 67.4 | -0.9% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 192.6 | +0.86% | 0.25 | 19/19 | 2805 | -0.1% | 170 | 58 | 68.7 | +0.9% |
+| `csh1` Sham 1 an IMMA, runs at the k-step ends | 167.3 | -12.42% | 0.33 | 0/19 | 2805 | -0.1% | 174 | 59 | 59.6 | -12.4% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 181.7 | -4.87% | 0.36 | 0/19 | 2805 | -0.1% | 178 | 59 | 64.8 | -4.8% |
+| `csi1r` Sham 1 an IMMA, between the mma | 182.7 | -4.36% | 0.36 | 0/19 | 2785 | -0.8% | 187 | 59 | 65.6 | -3.6% |
+| `csi2r` Sham 2 an IMMA, between the mma | 175.8 | -7.97% | 0.35 | 0/19 | 2776 | -1.1% | 192 | 60 | 63.3 | -6.9% |
+| `csi1` Sham 1 an IMMA, between the mma, stages unrolled | 177.7 | -6.97% | 0.35 | 0/19 | 2805 | -0.1% | 185 | 59 | 63.3 | -6.9% |
+| `csa1r` ALU only, 1 an IMMA | 179.7 | -5.93% | 0.36 | 0/19 | 2805 | -0.1% | 171 | 58 | 64.1 | -5.9% |
+| `tdramk` DRAM ablation, long k | 194.5 | +1.86% | 0.40 | 19/19 | 2803 | -0.1% | 218 | 60 | 69.4 | +2.0% |
+| `tsk3k` Boxes skipped, long k | 195.3 | +2.26% | 0.39 | 19/19 | 2805 | -0.1% | 171 | 58 | 69.6 | +2.3% |
+| `cnck` cp.async ring, no copies, long k | 187.7 | -1.72% | 0.37 | 2/19 | 2805 | -0.1% | 163 | 57 | 66.9 | -1.7% |
+| `cncprk` cp.async ring, no copies, loop, long k | 195.1 | +2.15% | 0.39 | 19/19 | 2805 | -0.1% | 166 | 57 | 69.6 | +2.2% |
+| `csi1rk` Sham 1 an IMMA, long k | 183.7 | -3.81% | 0.39 | 0/19 | 2777 | -1.1% | 182 | 58 | 66.2 | -2.8% |
+
+The second race: the sham's parts and the spin kernel (its waiting blocks wait on a barrier, which suspends them on
+sm_120).
+
+| Arm (16 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 191.4 | | | | 2806 MHz | | 217 | 60 | 68.2 | |
+| `aa` Twin: a copy of the control | 191.5 | +0.02% | 0.06 | 8/16 | 2807 | +0.0% | 216 | 60 | 68.2 | -0.0% |
+| `cncp` cp.async ring, copies compiled out | 189.5 | -1.03% | 0.06 | 0/16 | 2805 | -0.0% | 165 | 58 | 67.5 | -1.0% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 192.9 | +0.77% | 0.06 | 16/16 | 2805 | -0.0% | 166 | 58 | 68.8 | +0.8% |
+| `csi1r` Sham 1 an IMMA, between the mma | 182.8 | -4.53% | 0.26 | 0/16 | 2781 | -0.9% | 182 | 60 | 65.7 | -3.7% |
+| `csb1r` Sham 1 an IMMA, asked for between m16 tiles | 182.8 | -4.50% | 1.04 | 1/16 | 2782 | -0.9% | 182 | 59 | 65.7 | -3.7% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 193.4 | +1.04% | 1.08 | 16/16 | 2805 | -0.0% | 166 | 58 | 69.0 | +1.1% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 181.7 | -5.11% | 1.02 | 1/16 | 2805 | -0.0% | 167 | 58 | 64.8 | -5.1% |
+| `si0r` Sham's loads, stores and release, no ALU | 189.3 | -1.12% | 1.06 | 1/16 | 2805 | -0.0% | 174 | 58 | 67.5 | -1.1% |
+| `si1rb` Sham 1 an IMMA, no release | 176.4 | -7.85% | 0.99 | 0/16 | 2805 | -0.0% | 178 | 58 | 62.9 | -7.8% |
+| `si05rb` Sham 0.5 an IMMA, no release | 184.5 | -3.60% | 0.17 | 0/16 | 2805 | -0.0% | 174 | 58 | 65.8 | -3.6% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 164.5 | -14.08% | 1.00 | 0/16 | 2805 | -0.0% | 147 | 56 | 58.6 | -14.0% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 164.4 | -14.12% | 0.72 | 0/16 | 2805 | -0.0% | 153 | 56 | 58.6 | -14.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 164.0 | -14.33% | 0.24 | 0/16 | 2805 | -0.0% | 155 | 56 | 58.5 | -14.3% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 162.2 | -15.30% | 0.45 | 0/16 | 2802 | -0.1% | 153 | 56 | 57.9 | -15.2% |
+
+What the tables say:
+
+- **Free operands are the gap, and the old ceiling missed it.** "Free operands" is the no-copy arm (on RTX 50 the TMA
+  ring with its boxes skipped); "long k" is k 65536 or 16384 as above.
+
+  | PC | DRAM ablation | Free operands | Free operands, long k | Best competitor on that PC |
+  |---|---|---|---|---|
+  | RTX 4090 rig01, 450 W | +0.2% | +5.4% | +7.8% (341.9 TH/s) | 341.9 (item 16, the same card) |
+  | RTX 4090 rig01, 300 W | +1.0% | +13.6% | +14.9% (311.8) | not run at 300 W |
+  | RTX 5090 `08f8e389`, 575 W limit | +0.8% | +10.3% | +11.4% (455.6) | 426.3; our CLI 409.4 |
+  | RTX 3060 `16548f76`, 170 W, 66 °C | +3.1% | +5.4% | +6.8% (52.54) | 53.30 |
+  | RTX 3090 `71128c8f`, 390 W limit, 88 °C | +0.6% | +4.2% | +5.5% (131.1) | 131.3; our CLI 122.8 |
+  | RTX 5070 Ti `d0a033a5`, 300 W limit | 0.0% | +0.1% | +2.0% (195.3) | 199.3; our CLI 189.2 |
+
+  - The gain is clock wherever power or heat holds the clock. The 4090 goes from 2531 MHz to its 2685 MHz top with
+    50 W unused at 450 W, and from 2164 to 2464 MHz at 300 W; the 5090 from 2488 to 2722 MHz; the 3060 from 1796 MHz
+    to its 1912 MHz top; the 3090, which heat held all race (88 °C, 340 to 362 W of its 390 W limit), from 1550 to
+    1633 MHz.
+  - It is nothing where the clock is already at its top: the 5070 Ti ran 2805 MHz in every arm and only drew 54 W
+    less (165 against 219 W).
+  - Work a clock moves −1.1% to +0.9% at k 2048 and +0.2% to +3.0% at long k. Long k is the only part of the gain
+    a clock-bound card sees.
+  - One operand alone is worth half or less: on the 5090 A' alone +4.3% and B' alone +5.5%; on the 3090 +1.2% and
+    +1.1% against +3.4% for both. Not redrawing A' on a new salt is worth 0.1 point.
+- **A draw made of instructions in the MMA warps gives most of it back.** Net against the release fold with the sham
+  between the mma, the cheapest placement found, at 0.5 / 1 / 2 extra instructions an IMMA:
+
+  | PC | k 2048 | Long k |
+  |---|---|---|
+  | RTX 4090, 450 W | +2.0% / +0.4% / −3.5% | +4.1% / +1.6% / not run |
+  | RTX 4090, 300 W | +6.6% / +3.0% / −2.0% | not run / +4.0% / not run |
+  | RTX 5090, 575 W limit | +0.9% / −0.2% / −3.8% | +1.9% / −0.1% / −3.3% |
+  | RTX 3060 | +1.9% / +0.8% / −3.2% | not run / +2.4% / not run |
+  | RTX 3090 | −0.3% / −1.3% / −5.4% | +1.6% / 0.0% / −4.3% |
+  | RTX 5070 Ti | −5.1% / −4.6% / −8.2% | not run / −4.1% / not run |
+
+  - It costs work a clock. Against the best no-copy arm at the same k, an arm with the sham does 2.2 to 4.2% less a
+    clock on RTX 30 and 40 at 0.5 and at 1 an IMMA alike, and 5.6 to 6.3% less at 2. On RTX 50: 3.2 to 5.7%, and 8%.
+  - It costs watts. At 2685 MHz the 4090 draws 391 to 400 W with no copies, 435 W with the sham at 0.5, and at 1 it
+    is back on its 450 W limit at 2636 MHz. So one instruction an IMMA costs about what the copies did. That is why
+    the sham pays under a deep cap only at a low count, and why a clock-bound card loses the whole per-clock cost.
+  - Placement decides the size. In runs at the k-step ends (a load, its use right behind it, no mma to issue
+    meanwhile), one instruction an IMMA reads −8.6% (4090), −6.0% (5090), −7.4% (3060), −9.2% (3090) and −12.7%
+    (5070 Ti). ALU steps alone, one after each mma, cost more a clock (5 to 7%) than the whole sham spread between
+    them. ptxas spreads the steps between the mma whatever order the source asks for, so "between the mma" and
+    "between m16 tiles" are one placement (5090: −0.29% and −0.32%).
+  - The fold has no registers for it. Unrolled, the sham between the mma spills; with a chunk's two stages as a
+    loop it fits. That loop alone moves the no-copy fold by −2.6% (4090), −1.7% (3060), −1.2% (3090) and +1.7%
+    (5090), and the release fold by −6.2% on the 3090. An arm that differs from the looped no-copy fold only in
+    where the stage's barrier is released reads 2.0% above it on the 4090 and 0.7% below it on the 5090. So arms
+    here differ by two points for reasons that are not the draw, and a difference under two points is not a finding.
+- **A warp of its own is no way out as built.** A ninth warp does not fit the fold (above), nor with B fragments
+  loaded pair by pair (`PEARL_GATE_BSTREAM`: 168 registers and 768 bytes of spill). As a second kernel beside the
+  fold (one block an SM, in the registers the fold leaves) it could not be priced, because its control fails. Blocks
+  that only wait already take 7 points off the no-copy fold on the 3090, 13 on the 5070 Ti (where a waiting block
+  is suspended), 21 on the 4090 and 44 on the 5090 (the first version, which slept). Giving them a draw's work adds
+  at most a point to that on the 3090 and the 5070 Ti at 0.5, 1 or 2 instructions an IMMA's worth. On the 4090 at 1
+  the fold is 36 points down and unsteady, in one run. Working blocks kept up about a quarter of a draw's pace on
+  the 4090 and the 3090. So it is the blocks being there that costs. Most likely they do not sit one beside each
+  fold block but crowd the SMs that are free at launch and keep the fold off them; that was not checked. The arm
+  says nothing for or against a producer warp inside the fold's own block, which is what it stood in for.
+- **Against the reviews' kill lines.**
+  - RTX 40 (kill if copies skipped is under +4% on the 4090, or skipped plus sham under +2%). Copies skipped: the
+    ported switch reads +3.7% at 450 W, 0.3 point under the line; with the copies compiled out, +5.4%; at 300 W
+    +10.9% and +13.6%. Skipped plus sham at 450 W: +2.0% at 0.5 an IMMA, +0.4% at 1, −3.5% at 2 (+4.1% and +1.6% at
+    k 65536). At 300 W: +6.6%, +3.0%, −2.0%. So it fails at 450 W unless the draw fits in half an instruction an
+    IMMA, and passes at 300 W up to 1.
+  - RTX 50 (kill under +4% at 1 an IMMA on a 5090 with a limit of 480 W or less). No such PC came up; on the one
+    with a 575 W limit, which our fold sits on, it reads −0.2% (−0.1% at k 65536) and +0.9% at 0.5. It fails
+    there. The 4090's cap from 450 to 300 W turned +0.4% into +3.0%, still under 4.
+  - RTX 30 (kill under +6% for copies skipped at long k on a normal 3060). +6.8% at k 16384 on a 66 °C PC: not
+    killed, and under the 7% the same review asked for before building. With the sham at 1 an IMMA it is +2.4%
+    there and nothing on the 3090.
+- **What the competitors' figures look like beside ours.** A clock, they do 97 to 99% of the tensor peak on every PC
+  here; ours does 94 to 96%, and our no-copy fold at long k 96 to 97%. On the 5070 Ti, where every miner runs
+  2805 MHz, that is the whole gap: 197 to 199 TH/s against 191.5, and free operands at long k recover 2 of those 3 to 4
+  points. Their clock is not free either, and on every PC it is the clock and watts of our sham at 1 an IMMA:
+
+  | PC | Competitors | Our sham at 1 an IMMA | Our no-copy fold |
+  |---|---|---|---|
+  | RTX 4090, 450 W | 2625 MHz at 450 W (item 16) | 2636 MHz at 448 W | 2685 MHz at 400 W |
+  | RTX 3060 | 1874 to 1879 MHz at 170 W | 1882 MHz at 170 W | 1912 MHz at 165 W |
+  | RTX 3090 | 1573 to 1585 MHz at 345 to 350 W | 1590 MHz at 348 W | 1633 MHz at 339 W |
+  | RTX 5070 Ti | 2805 MHz at 183 to 186 W | 2785 MHz at 188 W | 2805 MHz at 165 W |
+  | RTX 5090 | 2472 to 2513 MHz at 503 to 513 W | 2565 MHz at 558 W | 2722 MHz at 575 W |
+
+  What they do not show is its loss of work a clock. So their draw costs about an instruction an IMMA in watts and
+  no IMMA time, and nothing built here does that.
+- **Also seen.**
+  - The release fold on the cp.async ring is 1.1% behind TMA on this 5090 and level with it on the 5070 Ti
+    (−0.1%). The +2.3% on record was measured on the card since sent back; TMA stays.
+  - The 5090's sham arms ran at 525 to 565 W of 575 W and 2540 to 2630 MHz, steadily; the driver gave the power
+    cap as the reason all race (`clocks_event_reasons` 0x4). The competitors showed the same there (503 to
+    513 W, about 2500 MHz, on a card that reaches 2722 MHz). Why the cap bites below the limit is not known.
+  - Salad's logs dropped every `build` line of compilers.sh; `gate.sh` prints its own. Our CLI's run on the 3060
+    failed on a malformed test address and was not repeated, so that PC has no CLI figure.
+
+**Verdict: the gate fails as the reviews wrote it, and the kernel they describe is not worth building.** The prize is
+real. With free operands and long k our fold is level with the best competitor on the 4090 and the 3090, within 2% of
+it on the 3060 and the 5070 Ti, and 7% ahead on the 5090. But a draw the MMA warps issue themselves, even written a
+stage ahead and spread between the mma, keeps little of it at stock power. At one instruction an IMMA: +0.4 to +1.6%
+on the 4090, +0.8 to +2.4% on the 3060, nothing on the 5090 or the 3090, a loss on a clock-bound card. At half of
+one: +2.0 to +4.1% on the 4090. Under a deep power cap it keeps more (the 4090 at 300 W: +3.0% at one, +6.6% at
+half). But the sham at 1 an IMMA has 77 ALU steps for a thread's 112 bytes a stage, under three a 32-bit word, and a
+clamped add and subtract of four packed bytes takes more. So by our count a real draw sits nearer 2 an IMMA, where
+every card lost at every limit tried.
+
+Two things stand between this fold and the competitors, both work a clock, and neither has a known cause: the 1 to 3
+points the fold still lacks with free operands and long k on every card but the 5090, and the 2 to 6 points the
+draw's instructions cost beside the IMMAs. Until one of them is explained, no fold of ours with on-chip operands
+can be specified. The arms, the tools (`gate.sh`, the spin kernel, the switches) and the raw runs and logs
+(`earn/tuning/gate`, with the scripts that make these tables from them) stay on branch `goal/gate` (c3f6bf85).
+
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
