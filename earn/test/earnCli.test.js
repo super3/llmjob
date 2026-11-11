@@ -1516,6 +1516,102 @@ describe('--gpu-index', () => {
     });
   });
 
+  // A rig of Intel Arc cards, as the six-A750 rig the Intel core first ran on:
+  // nvidia-smi lists nothing, the system lists the Arc cards and no AMD one
+  // (detectGpuInfo's `intel`). One core a card, and the core loader is told how
+  // many there are, which is what makes it try the Intel core.
+  describe('on an Intel Arc rig', () => {
+    const A750 = { index: 0, name: 'Intel Arc A750', usedMb: 0, totalMb: 0 };
+    const arcInfo = (n) => ({ name: A750.name, count: n, amd: [], intel: Array(n).fill(A750) });
+    const LINE = 'mining on 6 Intel cards (GPU 0, 1, 2, 3, 4, 5), one core each; use --gpu-index to choose cards';
+    const SIX = [0, 1, 2, 3, 4, 5].map((index) => ({ index, name: null }));
+
+    test('mines on every Arc card the system lists, one core each, and tells the loader it is an Intel rig', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        const miner = m.PearlEngine.instances[0];
+        expect(miner.start).toHaveBeenCalledWith(expect.objectContaining({ gpus: SIX }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6, cards: [], gpus: SIX, coreFlag: false });
+        expect(allOut()).toContain('gpu:        6× Intel Arc A750  (auto)');
+        expect(allOut()).toContain(LINE);
+        expect(allOut()).not.toContain('AMD cards');
+        // None of its cards is nvidia-smi's: no memory clock is locked, no core clock tried.
+        expect(miner.settings.mineMemClockByIndex).toEqual({});
+        expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+        await stop(m, p);
+      });
+    });
+
+    test('one Arc card, or cards chosen by index, are left to the core', async () => {
+      await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        m.probe.detectGpuInfo.mockResolvedValue(arcInfo(1));
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update']);
+        await settle();
+        expect(m.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: [] }));
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 1 });
+        expect(allOut()).not.toContain('Intel cards');
+        await stop(m, p);
+
+        const m2 = load();
+        m2.probe.detectGpuInfo.mockResolvedValue(arcInfo(6));
+        m2.probe.detectMinerGpus.mockResolvedValue([]);
+        const p2 = m2.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-index', '0,2']);
+        await settle();
+        expect(allOut()).not.toContain('Intel cards');
+        expect(m2.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({ intel: 6 });
+        await stop(m2, p2);
+      });
+    });
+
+    // --core intel: the indices are SYCL's and go to the core as given, as
+    // --core amd's are HIP's; and an NVIDIA card in the box is left alone.
+    test('--core intel hands the chosen indices to the core and locks no clock', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+        const m = load();
+        const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--core', 'intel', '--gpu-index', '0,1']);
+        await settle();
+        expect(process.env.PEARL_CORE_VARIANT).toBe('intel');
+        const miner = m.PearlEngine.instances[0];
+        expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({
+          coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
+        });
+        expect([miner.settings.mineMemClockByIndex, miner.settings.mineMemClockDefault, miner.settings.mineMemClockTrial,
+          miner.settings.mineCoreOffsetTrial]).toEqual([{}, false, [], []]);
+        expect(allErr()).not.toContain('nvidia-smi does not list it');
+        miner.emit('stopped', 0);
+        await expect(p).resolves.toBe(0);
+      });
+    });
+
+    // The Intel core is a folder. The loader has said the file is missing; the
+    // CLI adds what goes where, and never sends an Intel rig for pearl_core.node.
+    test('--core intel with no Intel core says what to put where', async () => {
+      const FIX = 'Fix: put the sycl folder from the release (pearl_core_sycl.node and the libraries beside it) next to the '
+        + 'executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.';
+      await withEnv({ PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--core', 'intel'])).resolves.toBe(1);
+        expect(allErr()).toContain(FIX);
+        expect(allErr()).not.toContain('pearl_core.node');
+      });
+    });
+
+    // With PEARL_CORE_PATH only that file is tried, so "put it there" cannot help.
+    test('PEARL_CORE_VARIANT=intel with a PEARL_CORE_PATH that did not load adds no "put it there"', async () => {
+      await withEnv({ PEARL_CORE_VARIANT: 'intel', PEARL_CORE_PATH: '/x/pearl_core_sycl.node' }, async () => {
+        const m = load();
+        m.pearlCore.coreFactory.mockReturnValue(null);
+        await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+        expect(allErr()).not.toContain('Fix: put');
+      });
+    });
+  });
+
   // nvidia-smi has no GPU 5 (planMinerGpus drops it): mine on the rest and say so.
   test('a card nvidia-smi does not list is skipped with a line on stderr', async () => {
     const m = load();
@@ -3062,6 +3158,147 @@ describe('--mine-mem-clock', () => {
     expect(allOut()).toContain(
       'memory clock left to the driver on GPU 0: the LLM co-runs with the miner and needs full memory bandwidth');
     expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// The trial itself is PearlMiner's (pearlMinerCoreOffset.test.js) and the plan
+// is shared/coreOffset's; the CLI's part is the same as for the memory clock:
+// feed the plan what it knows and hand the miner the cards. An offset must
+// never be in place while an LLM is served.
+describe('--mine-core-offset', () => {
+  const IGNORED = '--mine-core-offset ignored: the LLM co-runs with the miner, and a model is never served '
+    + 'from a card running above its own clock';
+  const PLAN = '--mine-core-offset auto: trying core clock offsets on GPU 0, each step kept only if the card '
+    + 'still computes right and mines faster (measured on one RTX 4090 only; it runs a card above the clock its '
+    + 'maker set)';
+  const RTX4090 = { index: 0, major: 8, minor: 9, driverMajor: 610 };
+  const oneCard = (m) => {
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    m.probe.detectCudaCards.mockResolvedValue([RTX4090]);
+  };
+  const MINING = ['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report'];
+
+  // Off by default: no card is planned, and nothing is said.
+  test('not given, or 0: no card is tried and nothing is said', async () => {
+    for (const extra of [[], ['--mine-core-offset', '0']]) {
+      const m = load();
+      oneCard(m);
+      const p = m.run(MINING.concat(extra));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut() + allErr()).not.toMatch(/core clock offset|mine-core-offset/);
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    }
+  });
+
+  test('auto on a miner on its own puts the card on trial, and says how little was measured', async () => {
+    const m = load();
+    oneCard(m);
+    const p = m.run(MINING.concat(['--mine-core-offset', 'auto']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(allOut()).toContain(PLAN);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('beside --mine-mem-clock auto, the card is planned for both trials', async () => {
+    const m = load();
+    oneCard(m);
+    const p = m.run(MINING.concat(['--mine-core-offset', 'auto', '--mine-mem-clock', 'auto']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(miner.settings.mineMemClockTrial).toEqual([0]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a bad value is refused before anything starts', async () => {
+    const m = load();
+    await expect(m.run(MINING.concat(['--mine-core-offset', '150']))).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid --mine-core-offset: 150 (must be auto or 0)');
+    expect(m.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // NVML is NVIDIA's. On the AMD core the plan would be nvidia-smi's cards,
+  // which that core does not mine.
+  test('an AMD core tries nothing, even with an RTX 4090 in the rig', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      oneCard(m);
+      const p = m.run(MINING.concat(['--core', 'amd', '--gpu-index', '0,1', '--mine-core-offset', 'auto']));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut()).not.toContain('trying core clock offsets');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  test('an AMD rig is told the offset is NVIDIA-only', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+      m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+      const p = m.run(MINING.concat(['--mine-core-offset', 'auto']));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut()).toContain(
+        '--mine-core-offset auto: nvidia-smi lists no NVIDIA card, and the core clock offset is NVIDIA-only');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // Demand mode never serves while mining: the miner's stop() puts the card
+  // back at offset 0 before the gate starts llama-server, and each restart
+  // after serving runs the trial again.
+  test('demand mode keeps it, on the first start and every restart', async () => {
+    const m = load();
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 5090' }]);
+    m.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 12, minor: 0, driverMajor: 610 }]);
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--gate-port', '0',
+      '--mine-core-offset', 'auto']);
+    await settle();
+
+    expect(allOut()).toContain('mining until a request arrives');
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(m.autoGate.createAutoGate.instances[0].opts.startMinerArgs().mineCoreOffsetTrial).toEqual([0]);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a co-running LLM drops it, and says so once', async () => {
+    const m = load();
+    oneCard(m);
+    // 24 GB free: the same model wins with and without the mining reserve, so
+    // auto co-runs.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mine-core-offset', 'auto']);
+    await settle();
+
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+    expect(allErr().split(IGNORED)).toHaveLength(2);
+    expect(allOut()).not.toContain('trying core clock offsets');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

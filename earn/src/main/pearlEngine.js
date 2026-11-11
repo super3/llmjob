@@ -169,9 +169,10 @@ class PearlEngine extends EventEmitter {
     if (this.miner) this.miner.stop();
   }
 
-  // Hand every mining card's memory clock back to the driver without stopping.
-  // main.js calls it when START LLM joins a running miner, before the model
-  // starts (see PearlMiner.releaseMemClocks). Nothing to do before a start.
+  // Hand every mining card's memory clock back to the driver without stopping,
+  // and put every card back at core clock offset 0. main.js calls it when
+  // START LLM joins a running miner, before the model starts (see
+  // PearlMiner.releaseMemClocks). Nothing to do before a start.
   releaseMemClocks() {
     if (this.miner) this.miner.releaseMemClocks();
   }

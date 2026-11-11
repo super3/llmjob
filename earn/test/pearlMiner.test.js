@@ -2964,6 +2964,27 @@ describe('PearlMiner — checking the hits of an untested card', () => {
     expect(quiet.ev.stopped).toEqual([{ failed: true }]);
   });
 
+  // The Intel core's cards are all checked. Its fold description begins with
+  // the fold and has no gfx name: on an Arc A750 rig these lines used to say
+  // "unknown architecture" and send a wrong hit's report to the AMD README.
+  test('an Intel card is named by its fold, and a wrong hit is reported to the Intel README', () => {
+    const XMX8 = 'xmx8 (DPAS 8x8x32, sub-group 8), hardware DPAS, col_batch 256, band 256 row windows, k 2048';
+    const DOT = 'dot (int8 dot products, local memory), col_batch 256, band 64 row windows, k 2048';
+    const r = rig([{ index: 0, untested: true, fold: XMX8 }, { index: 1, untested: true, fold: DOT }]);
+    r.core(0).emit('hit', GOOD);
+    expect(r.lines()).toContain(said('GPU 0 (Radeon 0) · Intel xmx8 fold'));
+    r.core(1).emit('hit', WRONG);
+    expect(r.lines('error')).toEqual(['GPU 1 (Radeon 1) · Intel dot fold: a hit came out wrong (jackpot hash mismatch '
+      + '(fold/transcript)). No share was sent, and this card is off for the rest of this run. This kind of card has '
+      + 'not mined in a release yet: please report this line (earn/native/sycl/README.md, "Untested cards").']);
+    r.m.stop();
+    // A word that only starts like a fold's name is not one.
+    const other = rig([{ index: 0, untested: true, fold: 'xmx8x (something else)' }]);
+    other.core().emit('hit', GOOD);
+    expect(other.lines()).toContain(said('GPU 0 (Radeon 0) · unknown architecture'));
+    other.m.stop();
+  });
+
   test('a wrong hit from a paused card\'s stopped core keeps the card from coming back', () => {
     const r = rig([{ index: 0, untested: true, fold: FOLD }, { index: 1, untested: false }]);
     const old = r.core(0);

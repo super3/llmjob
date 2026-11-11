@@ -62,9 +62,10 @@ const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
-  planMinerGpus, planAmdGpus, describeAmdPlan,
+  planMinerGpus, planAmdGpus, describeAmdPlan, planIntelGpus, describeIntelPlan, intelCount,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -645,7 +646,8 @@ async function startMining(settings, llmCoRuns) {
   // the model: a served model must never sit on a locked card. The other way
   // round -- the mode flipped back to mining-only mid-run -- takes no lock; the
   // card mines at the driver's clock until the next start, which is slower,
-  // never wrong.
+  // never wrong. The same call ends a core clock offset trial and puts every
+  // card back at offset 0 (shared/coreOffset).
   if (miner && miner.isRunning()) {
     if (llmCoRuns) miner.releaseMemClocks();
     persistSettings(settings);
@@ -733,8 +735,13 @@ async function startMining(settings, llmCoRuns) {
   if (epoch !== miningEpoch) return;
   for (const l of describeAmdDrivers(amdCards)) send('miner:log', l);
   const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
-  const gpus = amdGpus.length ? amdGpus : nvidiaGpus;
+  // The same answer lists the Intel Arc cards of a rig with no AMD card, which
+  // are counted the same way (planIntelGpus) and tell the core loader that this
+  // is an Intel rig (shared/coreVariant).
+  const intelGpus = planIntelGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
+  const gpus = amdGpus.length ? amdGpus : (intelGpus.length ? intelGpus : nvidiaGpus);
   if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });
+  if (intelGpus.length) send('miner:log', { level: 'info', line: describeIntelPlan(intelGpus, 'set PEARL_GPU_INDEX') });
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
     send('miner:log', { level: 'warn', line });
   }
@@ -762,6 +769,18 @@ async function startMining(settings, llmCoRuns) {
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
+  // Which cards try a core clock offset (shared/coreOffset): none unless
+  // LLMJOB_MINE_CORE_OFFSET=auto is in the app's environment, the GUI's one
+  // switch for it, read on every start like the memory clock's. The same rules:
+  // nvidia-smi's cards only, and not while the LLM co-runs.
+  const offsetRequest = readCoreOffsetEnv(process.env);
+  if (offsetRequest.warning) send('miner:log', { level: 'warn', line: offsetRequest.warning });
+  const offsetPlan = planCoreOffsets({
+    requested: offsetRequest.offset, requestName: GUI_CORE_OFFSET_ENV,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
+  });
+  if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
+
   const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
@@ -771,6 +790,7 @@ async function startMining(settings, llmCoRuns) {
       resourcesPath: process.resourcesPath,
       gpus,
       cards: cudaCards,
+      intel: intelCount(amdCards),
       log: coreLog,
     }), {
       store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),
@@ -790,7 +810,7 @@ async function startMining(settings, llmCoRuns) {
     miner.start(Object.assign({}, settings, {
       endpoint, gpus, gpu: settings.gpu || null,
       mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
-      mineMemClockTrial: memPlan.trial,
+      mineMemClockTrial: memPlan.trial, mineCoreOffsetTrial: offsetPlan.trial,
     }));
   } catch (e) {
     reportLaunchFailure(e);
@@ -1425,7 +1445,9 @@ async function startLlm(reserveMb, epoch) {
   // has no code for. That card fails on its own (PearlMiner._startCores), so a
   // miner already running counts the cards that started. A rig left mining on
   // one card still pauses it for each prompt.
-  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
+  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length
+    // An Intel rig's cards are counted the same way, and fail the same way.
+    || planIntelGpus({ env: process.env, det: amdCards, chosen }).length;
   llmMiningCards = planMinerGpus(cards, chosen).length
     || (amdPlanned && miner && miner.isRunning() ? Math.min(amdPlanned, miner.cardCount()) : amdPlanned);
   // A model that kept losing the GPU on a card is not loaded there again until

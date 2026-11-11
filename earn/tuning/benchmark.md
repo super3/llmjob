@@ -15,7 +15,8 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 87–96%, median 93% (9–10 Nov, v0.6.13) | Our gap widens at lower power limits |
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94%, the one card behind |
+| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card, 15% of the 113 T-MAC/s its matrix engines do alone; 10.2 on HiveOS's own 2024 driver. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -83,6 +84,147 @@ The rows over 100% are odd PCs: one swung between 207 and 266 W, one is capped a
 | RTX 2060 | Salad (160 W, 6 GB) | 92c0cd67 | 36.7 | 37.4 | 36.7 | 37.4 | 98% |
 
 PeakMiner is fastest on every PC; OneZeroMiner is the slowest of the three here.
+
+Read again on 10 November from the boxes' own sample lines, which Salad's log service still held (the result files
+kept two PCs'), with the 94de741e and dbbceed1 PCs that the table above leaves out. Each miner is the mean of its
+samples from the first minute on; the tensor peak is the card's SMs × 1024 MAC a clock.
+
+| Card | Machine ID | Ours TH/s, MHz, W | PeakMiner TH/s, MHz, W | Ours, of the tensor peak | PeakMiner | Memory controller, ours and PeakMiner |
+|---|---|---|---|---|---|---|
+| RTX 2080 Ti | 1ff934b7 | 105.4, 1645, 292 | 105.8, 1649, 292 | 92.0% | 92.2% | 11% and 25% |
+| RTX 2080 Ti | 7e24f884 | 97.4, 1520, 254 | 97.9, 1524, 254 | 92.0% | 92.3% | 11% and 25% |
+| RTX 2080 | a5d2c787 | 79.0, 1812, 258 | 80.7, 1806, 255 | 92.5% | 94.8% | 19% and 31% |
+| RTX 2080 | c6b154db | 125.5, 1402, 166 | 128.8, 1406, 165 | 190% (two cards) | 195% | 15% and 23% |
+| RTX 2070 Super | ef050aaa | 64.7, 1707, 192 | 65.4, 1716, 188 | 92.5% | 93.0% | 15% and 21% |
+| RTX 2070 Super | 842bcd6e | 63.9, 1703, 197 | 64.8, 1706, 195 | 91.6% | 92.8% | 16% and 21% |
+| RTX 2070 | b6b2b0c9 | 51.1, 1546, 137 | 52.3, 1546, 137 | 89.7% | 91.8% | 11% and 18% |
+| RTX 2070 | 94de741e | 52.5, 1543, 112 | 53.4, 1541, 112 | 92.3% | 93.9% | 15% and 24% |
+| RTX 2060 | 67fbcdbf | 40.6, 1459, 125 | 42.0, 1430, 127 | 90.7% | 95.5% | 19% and 29% |
+| RTX 2060 | 92c0cd67 | 36.7, 1360, 100 | 37.6, 1346, 98 | 87.8% | 90.8% | 19% and 24% |
+| RTX 2070 Super | dbbceed1 | 65.9, 1759, 211 | 68.1, 1758, 212 | 91.4% | 94.6% | 16% and 25% |
+| RTX 2070 | f4e53154 | 53.5, 1578, 169 | 55.2, 1572, 172 | 91.9% | 95.2% | 13% and 19% |
+
+- Per clock we do 99.8% of PeakMiner's work on the two 2080 Tis and 97.4% (±0.45; 94.9–99.4%) on the nine other
+  single-card PCs. Its memory controller is busier than ours on every PC, and its VRAM use is ours plus 1,166 MiB on
+  every PC.
+- **`c6b154db` is not one RTX 2080.** OneZeroMiner's log on it reads `GPU 1 Share accepted`, and 125.5 TH/s is 190% of
+  what GPU 0's 46 SMs can do at the 1,402 MHz it ran at. The PC has at least two cards; every miner mined them all,
+  and `bench.sh` read the first card's power and clock. Its "% of best" stands, its TH/s and watts are not one card's.
+
+### Salad, 10 November: what PeakMiner changed on RTX 20 at 2.20.1, and our fold in its shape (PR #290 goal work)
+
+**The capture.** One RTX 2070 Super PC (`588f9e55`, 215 W, driver 616.92, 1.77 GB of VRAM held by its desktop). Each
+miner mined on the stand-in pool (`verify-pool.js serve`, target 2^211, a job every 44 s as Kryptex sends them)
+through `sharetap.py`, so every share was checked and decoded. Two passes, forward then reverse, 4 minutes a run with
+the first minute left out. Every figure is the mean of the miner's own samples: its rate every 5 s, the card every
+2 s. The two passes agreed to 0.2% for every miner. The scripts are in the session's scratchpad (`g20ctl/g20/`), not
+committed.
+
+| Miner | m | n | k | Tile | Fill | Memory controller | VRAM over idle | SM MHz | W | °C | TH/s | TH/s per GHz | Of the tensor peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PeakMiner 2.20.0 | 16384 | 65536 | 8192 | 8×16 | 64 | 35% | 1,193 MiB | 1749 | 213 | 73 | 65.01 | 37.17 | 90.7% |
+| PeakMiner 2.20.1 | 1024 | 245760 | 2048 | 8×16 | 64 | 22% | 2,153 MiB | 1750 | 212 | 73 | 67.80 | 38.75 | 94.6% |
+| PeakMiner 2.20.7 | 1024 | 245760 | 2048 | 8×16 | 64 | 23% | 2,153 MiB | 1748 | 212 | 73 | 68.19 | 39.01 | 95.2% |
+| Ours v0.6.15 | 131072 | 262144 | 2048 | 16×16 | 48 | 16% | 987 MiB | 1749 | 213 | 73 | 66.07 | 37.78 | 92.2% |
+
+The tensor peak is 40 SMs × 1024 MAC a clock. With `--gpu-lmem 810` (the lock fails on Salad) 2.20.7 ran the same:
+68.23 TH/s, the same shape, memory controller 24%.
+
+- **What 2.20.1 changed is in its shares: the shape.** A went from 16384 rows to 1024, k from 8192 to 2048, and B from
+  65536 columns to 245760. A' was 134 MB and is now 2 MB, which fits the card's 4 MB L2; B' is 503 MB. That came with
+  +4.3% work a clock on this card at the same clock and power, the memory controller 35% busy before and 22% after.
+  2.20.7 mines 2.20.1's shape and shows 0.6% more. Before 2.20.1 we were 1.6% ahead of it a clock; now we are 3.2%
+  behind.
+- Every release fills A and B with 64 and mines rank 128. It re-draws only A between salts, as we do: a share's root
+  of B is the same all job and its root of A is new almost every share (80–95 roots in a job's ~90 shares; ours 32–39
+  in ~77, a salt every 1.06 s). Its stamp is in A's first bytes, written as 63s and 64s.
+- Its tile is one thread's accumulators, 8 rows × 16 columns (128 sums); ours is 16×16 over four lanes. 2.20.1 moved
+  the tile's rows from every 16th to pairs 8 apart every 32. It hashes twice as often a MAC as we do.
+- **Ours is 96.9% of 2.20.7 here, all of it work a clock**: 1749 and 1748 MHz, 213 and 212 W, both 73 °C.
+- Shares against the shown rate, over all runs: the pool credited PeakMiner 1.01 ±0.02 of what it showed (2,369
+  shares in seven runs) and ours 0.97 ±0.04 (655 in two). One PeakMiner run had a 12 s gap in its shares, where every
+  other run's longest was 4 s: its dev fee, most likely. Without that run it read 1.03. So nothing here says its shown
+  rate is more than a user gets, and 3 minutes a run is too short to say more.
+
+**Our fold in PeakMiner's shape, same PC.** Race mode with an A/A twin, 17 to 20 rounds a race. A copy of `race.cu`
+was given per-build m, n, batch width and launch-sweep settings for this (in the scratchpad; the repo's file is
+unchanged), so one build of the release's core ran every arm but the row bands. Rates are MACs a second with re-draws
+counted.
+
+| Arm | Against the release shape | Twin | SM MHz | Memory controller |
+|---|---|---|---|---|
+| Release shape (m 131072, n 262144, column bands of 5) | 66.3 TH/s | | 1750 | 16% |
+| m 1024, n 262144, band 5 | −3.01% ±0.05 | +0.01% ±0.03 | 1728 | 34% |
+| m 1024, n 131072, band 5 | −4.64% ±0.05 | | 1743 | 33% |
+| m 1024, n 524288, band 5 | −2.30% ±0.08 | | 1720 | 36% |
+| m 2048, n 262144, band 5 | −1.51% ±0.04 | 0.00% ±0.03 | 1740 | 27% |
+| m 512, n 262144, band 5 | −5.21% ±0.06 | | 1721 | 43% |
+| m 1024, n 262144, band 5, batches of 2048 offsets (1 ms) | −6.70% ±0.10 | | 1746 | 38% |
+| m 1024, n 262144, band 1 | −1.91% ±0.04 | −0.05% ±0.07 | 1748 | 23% |
+| m 1024, n 262144, band 2 | −3.06% ±0.09 | | 1725 | 34% |
+| Our m and n, row bands of 8 (`-DPEARL_BD_WALK=0`) | −0.33% ±0.13 | | 1744 | 20% |
+| Our m and n, row bands of 6 | −1.10% ±0.05 | | 1725 | 26% |
+| Our m and n, row bands of 4 | −1.71% ±0.02 | | 1720 | 38% |
+
+- **PeakMiner's shape does not help our fold.** At m 1024 with a band of 1 our memory controller reads 23%, the same
+  as PeakMiner's, so this is very likely how it walks (inferred): A' resident, and each 256-column panel of B' read
+  from DRAM once by the eight blocks that share it. Our fold does the same work a clock that way as with B' resident:
+  row bands of 8 at our own m read −0.33%, all of it clock (0.3% lower, from the extra DRAM traffic).
+- m 1024 itself costs us 1.6% more. A salt lasts 8.6 ms there, and our re-draw between salts is queued kernels that
+  run with the fold stopped, about 0.14 ms. PeakMiner re-draws as often and shows no such loss.
+- So the shape is not what puts PeakMiner ahead of us. On this card it was behind us a clock at 2.20.0; with 2.20.1
+  it reached a walk as good as ours, and what it has beyond that is inside its loop, which its shares don't show.
+
+**Where our fold's last points go, same PC.** Timing-only builds (wrong results on purpose, never shipped) against the
+release build, 9 and 11 rounds, twins −0.02% ±0.04:
+
+| Switched off | TH/s | SM MHz | Per clock |
+|---|---|---|---|
+| The readout (`PEARL_ABLATE_READOUT`) | +1.96% ±0.10 | 1764 | +1.5% |
+| The readout and the hash | +2.37% ±0.11 | 1764 | +1.9% |
+| The readout's shuffles only | −2.88% ±0.05 | 1751 | −2.6% |
+| The hash only | −4.05% ±0.08 | 1741 | −3.3% |
+| B loaded once a tile (`PEARL_ABLATE_BLOAD`) | +4.12% ±0.05 | 1822 | +0.2% |
+| Every B load an L1 hit (`PEARL_ABLATE_BHIT`) | +3.18% ±0.05 | 1807 | +0.1% |
+| Readout, hash and B loads | +9.06% ±0.05 | 1830 | +4.5% |
+
+- Bringing B' from the L2 into the SMs costs this card about 4% of its clock at the power limit and almost no work a
+  clock. The readout and hash cost 1.9% of the work a clock. With all three free the fold would run at 96.6% of the
+  tensor peak and 1830 MHz, 9% above today.
+- PeakMiner is 3.2% ahead at our clock and our watts, so it spends less energy a MAC somewhere in those 9 points.
+  Turning off the shuffles or the hash alone makes our fold slower: its warps then drift apart and stop sharing B' in
+  L1 (memory controller 32% with the hash off), as October's rounds found.
+
+**The review's two cheap races, same PC** (16 rounds, twin −0.01% ±0.03): operand fill 56 −0.02% ±0.03 and fill 63
+−0.04% ±0.04 against the 48 that ships; band 4 −0.21% ±0.03 and band 6 −0.21% ±0.06 against the rule's 5. Nothing to
+change.
+
+**The same on an RTX 2060** (`59be6855`, 6 GB, 170 W, driver 617.42, 0.52 GB of VRAM held by its desktop), where
+PeakMiner's lead in the table above is largest. PeakMiner 2.20.7 and ours twice each, forward then reverse, 200 s a
+run with the first 50 s left out; 2.20.1 and 2.20.0 once, 100 s with the first 40 s left out. Target 2^213.
+
+| Miner | m | n | k | Tile | Fill | Memory controller | VRAM over idle | SM MHz | W | °C | TH/s | TH/s per GHz | Of the tensor peak |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| PeakMiner 2.20.0 | 16384 | 393216 | 8192 | 8×16 | 64 | 51% | 4,177 MiB | 1692 | 167 | 70 | 48.54 | 28.69 | 93.4% |
+| PeakMiner 2.20.1 | 1024 | 245760 | 2048 | 8×16 | 64 | 30% | 2,135 MiB | 1696 | 163 | 69 | 49.71 | 29.31 | 95.4% |
+| PeakMiner 2.20.7 | 1024 | 245760 | 2048 | 8×16 | 64 | 31% | 2,135 MiB | 1691 | 162 | 70 | 49.41 | 29.23 | 95.1% |
+| Ours v0.6.15 | 131072 | 262144 | 2048 | 16×16 | 48 | 22% | 969 MiB | 1707 | 165 | 71 | 47.83 | 28.03 | 91.2% |
+
+- Ours is 96.8% of 2.20.7 on this card: 95.9% of its work a clock, at a 0.9% higher clock and 3 W more.
+- 2.20.1 made the same change here (m 1024, k 2048, the same tile), worth +2.2% a clock. But 2.20.0 was already 2.4%
+  ahead of us a clock on this card with its old shape, both operands in DRAM (B' was 3.2 GB) and the memory
+  controller 51% busy. So its lead does not come from the shape.
+- Over both PCs the pool credited PeakMiner 0.99 ±0.02 of its shown rate (4,011 shares) and ours 0.98 ±0.02 (2,264).
+- Our fold in PeakMiner's regime on this card's 3 MB L2 (race, 12 rounds, twin −0.03% ±0.07; the release shape ran
+  48.19 TH/s at 1705 MHz with the memory controller 22% busy): row bands of 8 −1.00% ±0.05, row bands of 4 −1.09%
+  ±0.14, m 1024 with a band of 1 −1.78% ±0.17, each at about 1690 MHz with the memory controller 37–40% busy
+  (PeakMiner: 31%). It costs us more here than on the 2070 Super.
+
+**What this leaves.** Nothing we can copy from PeakMiner's shares (m, n, k, the walk they imply, a higher fill) gains
+on our fold; the band rule and fill 48 hold. Its tile, one thread a region, is the one visible difference not
+tried. It would let every warp do the same work, where our fold has four warps hash and four not and loses up to 4%
+when they drift apart. Whether that is where its 3% comes from is a guess; building it is a new readout and hash for
+the Turing fold, and October's ROWPAIR build, which cut the readout's shuffles from six to one, read −0.4 to 0.0%.
 
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
@@ -294,7 +436,8 @@ card still makes 86% of its 450 W rate on two-thirds of the power.
 
 A core clock lock does nothing here (item 6). `nvidia-smi -lgc 2600,2600` and `2700,2700` on top of the memory lock
 gave 319.7 and 319.8 TH/s with the SM clock still at 2549–2552 MHz, and `-lgc 2600,2600` alone gave 317.4. The power
-limit sets the clock, not the lock. nvidia-smi has no voltage control, so an undervolt was not tried.
+limit sets the clock, not the lock. nvidia-smi has no voltage control; a clock offset through NVML does the
+job and was run later the same day (next section).
 
 `verify-hits.js` under the 5001 MHz lock: 400 of 400 hits verified.
 
@@ -308,6 +451,107 @@ locked in turn, and keeps the lock only if it was 0.3% faster and ahead in every
 this branch's CLI on Kryptex: the trial measured 320.0 TH/s locked against 317.4 (+0.8%) and kept the lock, with 8
 shares accepted and none rejected in under six minutes. The lock is dropped when an LLM co-runs on the card, as
 every memory clock lock is.
+
+### rig01, 10 November: core clock offset on the RTX 4090 (item 6, second pass)
+
+Item 6's first pass tried a core clock lock (`nvidia-smi -lgc`), which changed nothing: a lock can't change the
+volts the card needs for a clock, and the power limit sets the clock. A clock offset can. nvidia-smi has no
+switch for it, but NVML does (`nvmlDeviceSetClockOffsets`, GPU clock, P-state 0; this card allows −1000 to
++1000 MHz), and PeakMiner (`--gpu-core`) and SRBMiner (`--gpu-coffset`) both expose it. The RTX 40 review of
+10 November pointed this out.
+
+Same method as the memory clock sweep: our v0.6.16 CI core, `hashrate.js` for 90 s after 20 s of warm-up, a stock
+run between every setting, 450 W limit, native Windows, driver 610.88, Administrator. Each offset first ran
+`verify-hits.js`; every one verified 400 of 400 hits. The offset was set back to 0 afterwards.
+
+| Setting | TH/s | Against stock | SM clock | Power |
+|---|---|---|---|---|
+| Stock (five runs) | 317.3–317.5 | — | 2530–2533 MHz | 449 W |
+| +50 MHz | 320.9 | +1.1% | 2559 MHz | 450 W |
+| +100 MHz | 325.3 | +2.5% | 2593 MHz | 449 W |
+| +150 MHz | 331.2 | +4.3% | 2640 MHz | 449 W |
+| +150 MHz and the 5001 MHz memory lock | 333.3 | +5.0% | 2660 MHz | 450 W |
+| 5001 MHz memory lock alone | 319.9 | +0.8% | 2554 MHz | 449 W |
+
+A sixth stock run, the first of the sweep, read 307.4 TH/s with a dip in it (sd 41); it is left out.
+
+About 70% of each offset step comes back as clock at the same watts (+107 MHz for +150), and the gain was still
+rising at +150 MHz, where the sweep stopped by choice. With the offset and the memory lock together this card runs
+at 97.5–98.4% of what the three competitors did on it at stock settings on 10 November (338.6–341.9 TH/s), up from
+92.9%.
+
+What it does not show. It is one card: how far a card can be offset before it computes wrong differs card to
+card, so a shipped version would have to step up and hit-check each step, as the memory clock trial does. No
+long run was made, so stability over hours at +150 MHz is not known. It needs Administrator or root, so it moves
+no Salad or Vast row. And the competitors have the same switch: against a competitor tuned the same way it keeps
+pace, it does not pass. Nothing is built into the app.
+
+### rig01, 10 November: `--mine-core-offset auto`, the offset trial run in the miner
+
+The sweep above as a switch in the miner, built on branch `goal/offset` and not yet in a release:
+`--mine-core-offset auto` (`LLMJOB_MINE_CORE_OFFSET=auto` in the desktop app). Each RTX 20, 30, 40 or 50 card
+mines 75 s at offset 0, at +50, +100 and +150 MHz, and at 0 again. Before a step's turn counts the card is handed
+a job with an easy target and 100 of its hits are recomputed in JS; one wrong hit ends the climb. It keeps the
+highest step that passed, beat the step before it by 0.3% and beat offset 0 by 0.3%. Off unless asked for. The
+earn README has the rest.
+
+Run on rig01's RTX 4090: the branch's CLI on the Kryptex pool, mining only, with the core CI built from the
+branch (`native core` run 42904856120), 450 W limit, native Windows, driver 610.88, Administrator. The rates are
+the trial's own turn means; clock, power and temperature are nvidia-smi's, read every 5 s.
+
+Run 1, `--mine-core-offset auto` alone:
+
+| Turn | TH/s | Against 0 | SM clock | Power | Temperature |
+|---|---|---|---|---|---|
+| 0 (two turns) | 317.4 | — | 2533–2535 MHz | 449 W | 76 °C |
+| +50 MHz | 320.7 | +1.0% | 2554 MHz | 450 W | 78 °C |
+| +100 MHz | 325.2 | +2.5% | 2592 MHz | 450 W | 77 °C |
+| +150 MHz | 331.2 | +4.3% | 2641 MHz | 449 W | 76 °C |
+
+It kept +150 MHz, the step the sweep found best, and the rates agree with the sweep's to 0.2 TH/s. The miner's
+line: `core clock offset kept at +150 MHz on GPU 0 while mining (+4.4%): 317.4 TH/s at 0, 320.7 at +50 MHz,
+325.2 at +100 MHz, 331.2 at +150 MHz` (its 4.4% is from the unrounded means). The verdict came 6 min 27 s after
+the start: five turns and about 11 s of hit checks in all. After it the card mined at 331.3 TH/s with NVML
+reading offset 150 MHz, at 2640 MHz and 450 W. 13 shares accepted, none rejected; 10 of them were found with the
+card above offset 0, so each was recomputed before it was sent. Stopped with Ctrl+C, the miner logged `core clock
+offset back to 0 on GPU 0` and exited 0, and NVML then read offset 0.
+
+Run 2, with `--mine-mem-clock auto` as well. The memory clock trial ran first and kept its lock (319.9 TH/s at
+5001 MHz against 317.6, +0.7%). The offset trial started on the sample that ended it and ran with the lock in
+place:
+
+| Turn, memory locked at 5001 MHz | TH/s | Against 0 | SM clock | Power |
+|---|---|---|---|---|
+| 0 (two turns) | 320.0 | — | 2553–2555 MHz | 449 W |
+| +50 MHz | 324.0 | +1.3% | 2586 MHz | 449 W |
+| +100 MHz | 328.4 | +2.6% | 2624 MHz | 449 W |
+| +150 MHz | 333.6 | +4.3% | 2662 MHz | 449 W |
+
+It kept +150 MHz again (the miner's line says +4.2%, from the unrounded means): 333.6 TH/s, +5.0% on the
+317.6 TH/s the run began at, the same as the sweep's 333.3 for the two together. 29 shares accepted, none
+rejected, 16 of them with the card above offset 0. Stopped with Ctrl+C:
+`memory clock released on GPU 0`, `core clock offset back to 0 on GPU 0`, exit 0, and NVML read offset 0.
+
+The hit check on its own, run as the miner runs it (the card's rate first, then the check's job with the bound
+set for 30 hits a second: 2^231.7 at 317.8 TH/s): 100 hits in 3.2 and 3.3 s (31.4 and 30.0 a second), all 100
+right both times. Recomputing a hit took 4.3 to 4.4 ms, so one check is 0.43 s of the miner's event loop.
+
+Also checked on this card:
+
+- `verify-hits.js` on the new core at offset 0: 400 of 400, from 1,397 hits over 177 salts. The core mines as
+  before.
+- The core's read answers offset 0 and a range of −1000 to +1000 MHz, as pynvml does. It takes 35 ms the first
+  time and 12 to 16 ms after, and works without administrator rights. Its set, from a process without them,
+  answers `Insufficient Permissions` (NVML code 4), and the miner then says the trial needs root or administrator
+  rights and mines on at the card's own clock.
+- Started with +50 MHz already on the card, as a run killed hard leaves it: the miner said so and the trial
+  started from 0. The miner killed hard at +50 MHz left the card at +50 MHz (NVML read it), as the README warns.
+
+What it does not show. It is still one card, and no card that fails a step has been run, so the failing paths
+are covered by the unit tests only. Each run spent about two minutes at +150 MHz, so stability over hours is not
+known. A check of 100 hits catches a card that computes a few percent of its results wrong; a card wrong once in
+several hundred passes it, and is caught later by the check on each share it sends. The trial takes six and a
+half minutes of every start.
 
 ## RTX 50-series
 
@@ -814,6 +1058,436 @@ release (an unused flag) for the noise. Not rows: no competitor ran.
   stay off. `-DPEARL_AMD_HASHQ=1` turns it on for every card, `=0` for none, and the environment variable `PEARL_AMD_HASHQ=1` (or `0`) overrides the build at run time.
 - **Cost:** five boxes (one moved by Salad mid-run), about 4.5 box-hours, high priority.
 
+### Salad, 10–11 November: the RX 7900 against SRBMiner again, and what a slow PC is (PR #290, AMD goal)
+
+The 9–10 November rows put the RX 7900 XTX at 92% and 94% of SRBMiner. Since then the hash kernel moved to a queue of
+its own on gfx1100 (`PEARL_AMD_HASHQ`, item 23). This is the duel with that on, on two XTX PCs (one of them the 94%
+row's own PC) and one RX 7900 XT, and what a PC where our rate reads low is doing. Not rows: the method differs from
+the table's (see "Keeping this file current").
+
+**Method.** One box a PC (`amdtest.py`, the ROCm image). Ours is the PR head's AMD core (5d2b012e, the default build,
+the same binary on all three PCs) through the app's CLI; both miners mine on Kryptex. Ours warms the card for 60 s,
+then the miners take turns of 5 minutes, two each. Every turn is scored the same way: the mean of its 24 ten-second
+samples after the first minute (the CLI's last printed rate, SRBMiner's API rate). Then one turn each of 3 minutes with
+a clock probe beside the miner: one wave from another process that reads SHADER_CYCLES over REALTIME for a millisecond
+or two every 10 s.
+
+| Card | PC | SRBMiner | Ours, turns 1 and 2 (TH/s) | SRBMiner, turns 1 and 2 | Ours / SRBMiner | Clock under ours | Clock under SRBMiner |
+|---|---|---|---|---|---|---|---|
+| RX 7900 XTX | `45c94e40` | 3.8.2 | 57.06, 56.91 | 55.59, 55.50 | **102.6%** | 2581 MHz (2434–2667) | 2588 MHz (2561–2646) |
+| RX 7900 XTX | `ae456453` (the 94% row's PC) | 3.8.6 | 55.04, 54.88 | 53.87, 54.07 | **101.8%** | no reading (see below) | 2494 MHz (2463–2531) |
+| RX 7900 XT | `78024435` | 3.8.6 | 46.16, 46.48 | 46.27, 46.11 | **100.3%** | 2473 MHz (2394–2553) | 2424 MHz (2396–2456) |
+
+- Both XTX PCs are above 100% now. `45c94e40` read 53.1 against 53.9 (99%) on 30 October, and `ae456453` 50.8 against
+  54.1 on 9–10 November. The XT is level: 0.3% is inside the spread of our own two turns (0.7%).
+- The CLI's own mean over every line it printed after the first minute, one a second: 57.10 and 57.17, 55.03 and 54.81,
+  46.27 and 46.35. SRBMiner's own 15-minute average at each turn's end: 55.76 and 55.51, 54.07 and 53.99, 46.12 and
+  46.19.
+- **SRBMiner 3.8.6 runs in the ROCm image once `wget` is installed.** Without it 3.8.6 printed nothing and exited
+  (given a terminal: "Make sure you have 'wget' installed on your system!"), which is what stopped it on Salad on 9
+  November. One more turn of 3.8.2 on `ae456453` read 53.68, so the two versions are level on this card.
+- **Clock.** On `45c94e40` the clock is the same under both miners, so we do 2.6% more per clock there. On the XT ours
+  runs 2% more clock for the same rate, so SRBMiner does 1.7% more per clock there. `ae456453` holds 3.6% less clock
+  than `45c94e40` (2494 MHz against 2588 under SRBMiner), and both miners read 3 to 4% lower on it.
+- **No clock under ours on `ae456453`:** in that 3-minute turn ours read 50.21 TH/s, not 55.0, and the probe's readings
+  ran from 1395 to 2809 MHz (median 2664). That is the rate the PC gives a queue it keeps stopping (below). SRBMiner
+  beside the same probe read 54.41 by its own average. Twenty minutes later `hashrate.js` with the same probe beside it
+  was level with the default (54.93–55.21), so it wasn't the probe alone: the PC has spells, and the hash queue doesn't
+  keep our miner out of all of them. A 10-minute watch of ours alone, to count them, got 2 minutes in (55.0, 54.9)
+  before Salad took the PC away. With the probe the other two turns read 56.93 (57.0 without) and 45.83 (46.3).
+- Shares: every one accepted, but one of ours in turn 1 on `45c94e40` (the reason wasn't kept).
+
+**What a slow PC is.** `ae456453` is one: the fold alone (the fold test's launches back to back on one queue) reads
+52.5–53.6 TMAC/s there against 58.6–59.1 on `45c94e40`. That is three times what its lower clock explains, and it is
+not the fold's cycles either:
+
+| Fold alone, one queue | `45c94e40` (fast) | `ae456453` (slow) |
+|---|---|---|
+| The miner's launch, TMAC/s (3 rounds) | 59.1, 59.0, 58.6 | 53.6, 52.6, 52.5 |
+| 2 batches in one launch (taller, so B' stays one batch's) | 58.6, 58.8, 58.9 | 52.9, 52.7, 52.8 |
+| 4 batches in one launch | 59.2, 59.3, 58.8 | 52.8, 52.5, 52.8 |
+| 16 tiles wide (batch 256) | 57.4, 57.9, 58.0 | 52.3, 52.0, 52.0 |
+| 32 tiles wide (batch 512) | 55.9, 56.2, 56.4 | 51.1, 51.0, 51.0 |
+| Clock in these 4 s runs, from a cool card (stamps) | 2707–2711 MHz | 2640–2782 MHz |
+| Cycles a slab | 6,711 | 6,707–6,717 |
+| Blocks whose waves changed SIMD mid-run, a launch | 0 of 8,192 | 115–119 |
+
+On the slow PC **the whole queue stops about 30 times a second, for 3.6–4.0 ms each time.** In one 171 ms launch (64
+batches wide, in strips) no block started or ended for 3.77, 3.66, 3.63, 3.64, 3.62 and 3.69 ms, at 3.9, 37.2, 67.1,
+103.8, 137.2 and 161.5 ms. The 107–126 blocks running at each stop came back on other SIMDs (their HW_ID1 changed) and
+took 3.96 ms where every other block took 0.163. Between stops the card is full and the fold runs as on the fast PC.
+3.65 ms in every 33.3 is 11%. So something on that PC preempts a compute queue that stays busy, and the fold has about
+1,150 waves to put away and bring back each time, which is probably where the 3.6 ms go. A launch longer than the 33 ms
+between stops is always hit, so longer launches can't cure it; on the fast PC they gain nothing.
+
+**The stops come while the miner has one busy queue.** A stamp build of the core can write the stamps of one of the
+miner's own launches (`PEARL_AMD_STAMP_DUMP`, on branch `goal/amd`). On `ae456453`, launches of about 10 ms, in two
+sittings an hour apart:
+
+| `hashrate.js` on the stamp build | Launches stopped | The stops |
+|---|---|---|
+| Hash on the fold's queue (v0.6.13's way, `PEARL_AMD_HASHQ=0`) | 5 of 13 | 3.72–4.02 ms; 680–1,152 waves moved; the launch then spans 13.4–13.9 ms, not 9.5–10.0 |
+| Hash on its own queue (the PR's default) | 0 of 13 | |
+| Hash on the fold's queue, and a one-thread kernel on a third queue every 2 ms (`PEARL_AMD_TICK_US=2000`) | 0 of 8 | |
+| The same every 20 ms | 1 of 5 | 3.57 ms |
+
+Five of thirteen is about what 30 stops a second give a 10 ms launch. A second queue of the miner's with work on it,
+the hash's or a ticker's, ends the stops.
+
+**`hashrate.js` on `ae456453`**, each setting in turn, order rotating, 45 s after 12 s, scored from round 2, in three
+runs of 4, 3 and 3 rounds. The control is the PR's default; the twin is a second copy of it.
+
+| Setting | TH/s | Against the default |
+|---|---|---|
+| The PR's default (hash on its own queue) | 54.92–54.98, 55.03, 55.01–55.03 | twin +0.05 to +0.44%, −0.05 to +0.02%, −0.07 to −0.09% |
+| Hash on the fold's queue (`PEARL_AMD_HASHQ=0`, v0.6.13's way) | 50.45–50.50 | **−8.05 to −8.24%** |
+| Hash on the fold's queue, the core's ticker every 2 ms | 55.07–55.16 | +0.07 to +0.24% |
+| The same, every 20 ms | 54.71–54.75 | −0.51 to −0.55% |
+| The same, every 50 ms | 51.88–51.96 | −5.54 to −5.72% |
+| The default with the core's ticker every 2 ms, every 0.5 ms | 55.09–55.15, 55.11 | +0.11 to +0.22%, +0.15% |
+| The hit count zeroed on the hash queue, not before the fold | 54.99–55.10 | +0.09 to +0.29% |
+| That, and no wait for the slot's last hash on the fold's queue | 54.92–55.07 | −0.11 to +0.27% |
+| 2 batches a launch (20 ms), as strips | 54.89–54.91 | −0.22% |
+| 4 batches a launch (41 ms), as strips | 51.51–51.52 | **−6.19 to −6.31%** |
+| 4 batches a launch, the core's ticker every 2 ms | 51.50–51.54 | −6.34 to −6.41% |
+| Batch 64 (a 5 ms launch) | 54.26–54.41 | −1.13 to −1.40% |
+| The default beside another process's kernel every 2 ms | 54.24–54.26 | −1.40 to −1.44% |
+| The default beside another process's kernel every 10 s | 54.93–55.21 | −0.18 to +0.36% |
+
+- **The hash queue is worth +8.9% on the slow PC** (50.5 to 55.0), and 50.5 is the benchmark row's 50.8. On the fast PC
+  one round read hash queue off −0.7% (56.73 against 57.15, twin 57.21), batch 256 −1.6% and batch 512 −3.3%. Item 23
+  found the same two sizes on two other PCs (+3.0 to +3.7%, +0.2 to +1.0%). So the gain is the PC's, and it is the
+  stops. What is left between the two PCs is their clock.
+- **Longer launches lose** on the slow PC, because a 41 ms launch is always stopped, and the fold alone gains nothing
+  from them on either XTX PC. The review's lead (several 128-offset batches a launch) isn't worth building as a default.
+  The test builds are on branch `goal/amd`: `-DPEARL_AMD_STRIP=1` and `PEARL_AMD_STRIPS=n` launch n batches as strips
+  of the grid's z, so B' in use stays one batch's.
+- Nothing raced beats the PR's default on this PC by more than its twin.
+- With `PEARL_AMD_TRACE=1` and the probe every 5 s the default read 50.97–51.09 there. Race on such a PC with the trace
+  off.
+
+**RX 7900 XT: the hash queue is right there too.** It is on for every gfx1100 card and no XT had raced it. One PC
+(`78024435`), `hashrate.js` 45 s after 12 s, 6 rounds, order rotating:
+
+| RX 7900 XT `78024435` | TH/s, rounds 1–6 | Against the default, rounds 2–6 |
+|---|---|---|
+| The PR's default (hash on its own queue) | 46.74, 46.36, 46.26, 46.26, 46.24, 45.79 | |
+| Twin | 46.00, 46.33, 46.18, 46.38, 44.72, 46.23 | −0.06, −0.17, +0.26, −3.29, +0.96% |
+| Hash on the fold's queue (`PEARL_AMD_HASHQ=0`) | 44.73, 44.59, 46.03, 45.96, 44.61, 44.76 | −3.82, −0.50, −0.65, −3.53, −2.25% |
+| Hash on the fold's queue, the core's ticker every 2 ms | 46.45, 45.91, 46.41, 46.33, 46.36, 46.44 | −0.97, +0.32, +0.15, +0.26, +1.42% |
+
+- Off is behind in 5 of 5 rounds: by 0.5–0.65% when the PC is steady and by 2.3–3.8% in the three rounds where it read
+  44.6–44.8. The twin read 44.72 once. So this PC has a slow state too, 3.5% down, which hit the off setting in 4 runs
+  of 6 and the default in 1 of 12. On is the right default for the XT.
+- Its stamps caught no stop: fold alone 46.75 TMAC/s at 2548 MHz, 6,708 cycles a slab, 126 blocks at once, no wave
+  moved in a 182 ms launch, nor in 12 of the miner's own launches (6 with the hash queue on, 6 off). What the slow state
+  is on this PC is not known.
+- Longer launches gain nothing on the XT either. Fold alone, 3 rounds: 47.8, 47.4, 47.6 TMAC/s at 1 batch a launch,
+  47.8, 47.8, 47.8 at 2, and 48.2, 47.6, 47.7 at 4. In the miner, 3 rounds (twin −0.04 to −0.11%): 2 batches a launch
+  −0.37 to −0.45%, 4 batches −0.54 to −0.65%.
+
+- **Not known:** what on `ae456453` preempts the queue (another program on that PC's GPU, or its driver's scheduler),
+  how many PCs do it, how long the spells last that reach our miner with the hash queue on, and whether the RX 7800 XT
+  and RDNA 4, which keep the hash on the fold's queue, are stopped the same way on such a PC. The 9–10 November RX 9060
+  XT row `3540c3e2` has the same shape: ours 15% under our other PC, SRBMiner 1.6% under. Its launch is 31 ms and the
+  RX 9070 XT's 34 ms, as long as the gap between stops here.
+- **Cost:** two boxes over four PCs (one of them with no usable GPU), about 4.5 box-hours, high priority.
+
+### Salad, 11 November: the slow PC's queue stops on RDNA 4 and the RX 7800 XT (PR #290, AMD goal)
+
+The entry above found that a slow RX 7900 XTX PC stops a busy compute queue 30 times a second, and that the hash on
+its own queue ends the stops on gfx1100. gfx1101 (RX 7800 XT) and RDNA 4 still hash on the fold's queue. This asks
+whether the stops cost us there too, and what ends them. Not rows.
+
+**Method.** As above: one box a PC, the fold alone with clock stamps first (is the PC a slow one?), then `hashrate.js`
+45 s after 12 s, the builds taking turns, with a twin for the noise, scored from round 2 (the first run on a cool
+RX 9060 XT read 1 to 3% high). Then stamps of the miner's own launches, 6 or 8 of each setting: was the queue
+stopped in that launch (a gap of 0.3 ms or more with no block starting or ending)? The run's CPU time is bash's
+`time` on the whole `hashrate.js` process.
+
+**RX 9060 XT, `3540c3e2`** (the 111% row's PC; k 4096, 256 column offsets a launch)
+
+**It is a slow PC, with the same stops.** The fold alone at the miner's launch read 57.4 and 57.6 TMAC/s at 2561 and
+2528 MHz; fast RX 9060 XT PCs mine at 70.0 to 73.2 TH/s. A launch is 38 ms here. In one 155 ms launch the queue was
+stopped 5 times for 2.08 to 2.09 ms, 33.46 ms apart, and 181 to 251 waves came back on another SIMD each time. That
+is the RX 7900 XTX PC's pattern with a shorter stop (2.1 ms, not 3.6 to 4.0).
+
+| Setting | TH/s, rounds 2 on | Against the default | Launches stopped | CPU time of a 57 s run |
+|---|---|---|---|---|
+| Default (hash on the fold's queue) | 55.28–55.51 (9 rounds) | — | 8 of 8 | 229 s |
+| Twin | 55.26–55.56 | −0.31 to +0.31% (9 rounds) | — | 229 s |
+| `PEARL_AMD_HASHQ=1` (hash on its own queue) | 55.19–55.28 | −0.23, −0.04, −0.27% | 5 of 6 | — |
+| 128 offsets a launch (19–22 ms) | 54.81–54.98 | −0.61, −0.65, −1.12% | 4 of 6 | — |
+| 128 offsets and the hash queue | 54.93–55.01 | −0.70, −0.62, −0.76% | — | — |
+| Ticker every 2 ms (`PEARL_AMD_TICK_US=2000`) | 56.76–57.43 | **+2.44 to +3.68%** (7 of 7) | 2 of 8 | 273–281 s |
+| Ticker every 0.5 ms | 56.96–57.12 | +3.10, +2.80% | — | 308–309 s |
+| Ticker every 10 ms | 56.03–56.66 | +1.14, +2.26% | 4 of 6 | 239–241 s |
+| Ticker every 2 ms that does not wait (`PEARL_AMD_TICK_WAIT=0`) | 56.92–57.42 | **+2.54 to +3.66%** (4 of 4) | 0 of 6 | 250–258 s |
+| That every 0.5 ms | 55.24–57.30 | +3.45, −0.31, +2.50, −0.45% | 3 of 4 | 272–278 s, or 237 s |
+| That every 5 ms | 55.47–57.02 | +2.72, −0.04% | — | 252 s, or 230 s |
+
+- **The hash queue does not end the stops on RDNA 4.** It was level in the rate (round 1 read −1.11%, the default
+  running first on the cool card) and 5 of 6 launches were still stopped. A launch here is 38 ms, longer than the
+  33 ms between stops, so every launch meets one, and the hash queue only gets work once a launch. Halving the launch
+  did not help either: 4 of 6 launches stopped, and the shorter launch costs 0.6 to 1.1% by itself.
+- **The ticker does:** a thread that launches a one-thread kernel on a queue of its own every 2 ms
+  (`PEARL_AMD_TICK_US`, branch `goal/amd`). +2.4 to +3.7% in 7 of 7 rounds over three races. Every 0.5 ms is the
+  same; every 10 ms gets a third to two thirds of it and leaves stops in 4 of 6 launches.
+- **It costs CPU.** The ticker's thread waits for each tick's kernel, and HIP's wait spins. The default run takes
+  229 s of CPU in 57 s (four cores busy before any ticker); the ticker every 2 ms takes 44 to 52 s more, 0.8 to 0.9
+  of a core, every 0.5 ms 1.4 cores, every 10 ms 0.2.
+- **A ticker that does not wait** (`PEARL_AMD_TICK_WAIT=0`: it records an event behind its kernel and skips a tick
+  while the last one has not run) kept the gain every 2 ms at half the CPU cost, 0.4 to 0.5 of a core, and none of 6
+  stamped launches was stopped. But it is not dependable at other intervals: every 0.5 ms 3 runs of 6 read the
+  default's rate, and every 5 ms 1 of 3. Those runs took almost no extra CPU time either (237 s and 230 s), and a
+  guard that waits for a tick not seen done in 50 ms never fired in them, so the ticks ran and did nothing. Why is
+  not known. **Every run that gained took more CPU time (11 to 80 s more), and the four that took almost none (1 to
+  8 s) gained nothing.**
+- **The stops are the smaller part of what this PC loses.** With the ticker the stamped launches still ran only 20
+  to 32 of the card's 48 blocks for about 4 ms every 17 ms: all 48 at once for 66 to 81% of a launch (8 launches;
+  61% by default, 2 launches). That looks like another program drawing 60 frames a second. With a clock 5% under a
+  fast PC's (2530–2560 MHz against about 2700) that is most of the 20% this PC is short of a fast one. Nothing of
+  ours got it back.
+- **Not a default.** `PEARL_AMD_TICK_US` stays 0 on every card. A default needs a fast RX 9060 XT PC to show the
+  ticker is not behind there, an RX 9070 XT, the hit check, and a decision on the CPU it takes: a ticker on every
+  RDNA 4 PC would spend half a core or more where there are no stops to end.
+
+**Duel on this PC**, as in the entry above: SRBMiner 3.8.6, ours the PR head's core (5d2b012e, the default build), and
+the same core with the ticker every 2 ms; 5-minute turns, two each, each scored by its 24 ten-second samples after the
+first minute.
+
+| | Turn 1 (TH/s) | Turn 2 | Against SRBMiner | Clock, probe beside a 3-minute turn |
+|---|---|---|---|---|
+| Ours, default | 55.34 | 55.37 | **112.4%** | 2550 MHz (2479–2569) |
+| Ours, ticker every 2 ms | 57.10 | 57.19 | **116.0%** | not read |
+| SRBMiner 3.8.6 | 49.25 | 49.24 | — | 2130 MHz (2057–2191) |
+
+- The row says 59.7 against 54.0 for this PC on 9–10 November. Both miners are lower now (ours 7%, SRBMiner 9%), so
+  the PC is doing more of something else than it was, and SRBMiner loses to it too.
+- SRBMiner's own 15-minute average at its turns' ends: 49.30 and 49.19. All shares accepted: ours 3, with the ticker
+  6, SRBMiner 3.
+- The probe read 16% less clock under SRBMiner than under ours, in all 13 readings. On the RX 7900s the two were
+  within 2%. Whether SRBMiner runs this card at a lower clock or the probe's one wave shares a SIMD with SRBMiner's
+  is not known.
+
+**RX 7800 XT** (k 2048, 128 column offsets a launch)
+
+One box, three PCs in turn.
+
+| PC | Fold alone at the miner's launch | Clock | Stops in one long launch | Default (TH/s) |
+|---|---|---|---|---|
+| `56ae1be5` | 34.51 TMAC/s, launch 15.9 ms | 2525 MHz | one of 1.05 ms in 128 ms | 34.25 (hash queue 34.30) |
+| `16f1685c` | the PC could not fetch the repo; nothing ran | — | — | — |
+| `559a11d6` (a 103% row's PC) | 29.66 TMAC/s, launch 18.5 ms | 2309 MHz | 4 of 3.12–3.24 ms in 150 ms, 42.3 ms apart | 29.52–29.55 |
+
+`56ae1be5` is a fast PC, so the question has no answer there. `559a11d6` is a slow one: 9% less clock, and stops 24 times
+a second with 520 to 602 waves coming back on another SIMD each time. The fold test's launches also sit 1.1 ms apart
+there (none on the fast PC). The race ran on `559a11d6`, 4 rounds:
+
+| Setting | TH/s, rounds 2 to 4 | Against the default | Stamped launches, 6 each | CPU time of a 57 s run |
+|---|---|---|---|---|
+| Default (hash on the fold's queue) | 29.54, 29.55, 29.52 | — | 1 stopped (3.27 ms) | 228 s |
+| Twin | 29.55, 29.54, 29.53 | +0.03, −0.03, +0.03% | — | 228 s |
+| `PEARL_AMD_HASHQ=1` | 29.42, 29.39, 29.52 | −0.41, −0.54, 0.00% | 6 begin with a stall of 1.3–1.7 ms | 285 s |
+| Ticker every 2 ms | 28.33, 28.34, 28.33 | −4.10, −4.09, −4.03% | 6 have one or two stalls of 1.2–1.6 ms | 322 s |
+| Ticker every 2 ms that does not wait | 28.35, 28.35, 28.33 | −4.03, −4.06, −4.03% | — | 281 s |
+
+- **The hash queue does not win on a slow RX 7800 XT.** Level or behind in every round (round 1 read −0.30%). On this
+  PC work on a second queue stops the fold's queue itself: with the hash queue every launch begins with a stall of
+  1.3 to 1.7 ms, and 60 to 90 of the 90 blocks then running come back on another SIMD. The ticker's stalls come
+  12 ms apart, and it loses 4%. So a second queue here trades the PC's own stop (one launch of 6) for a shorter one
+  in every launch.
+- **gfx1101 keeps the hash on the fold's queue.** It was level or 0.03 to 0.27% behind on two fast PCs on 10
+  November, and it is level or behind on this slow one.
+- **The hash queue takes one more CPU core.** 285 s of CPU against 228 s in a 57 s run, the same on both PCs. `ps -L`
+  shows why: the miner's process runs 4 threads at 100% by default, 5 with the hash queue, 4 and two at 82% with the
+  ticker, 4 and one at 91% with the ticker that does not wait. That is one busy thread for each HIP stream with work
+  on it. The hash queue has been the default on gfx1100 since 10 November, and its CPU time was not measured there.
+
+**What the three slow PCs say**
+
+| Slow PC | Stops in the fold alone | A second queue with work on it |
+|---|---|---|
+| RX 7900 XTX `ae456453` | 3.6–4.0 ms, 30 a second | ends them: hash queue +8.9% |
+| RX 9060 XT `3540c3e2` | 2.1 ms, 30 a second | ends them only if it has work every 2 ms: hash queue level, ticker +2.4 to +3.7% |
+| RX 7800 XT `559a11d6` | 3.2 ms, 24 a second | stops the fold itself: hash queue 0 to −0.5%, ticker −4% |
+
+- A slow PC is not one thing, and no setting is right on all three. No default changed. The ticker is a switch on
+  branch `goal/amd` (`PEARL_AMD_TICK_US`, `PEARL_AMD_TICK_WAIT`), off on every card, not for merging as it is.
+- Every box here is a WSL2 container on someone's Windows PC. Whether a miner run from Windows on these PCs is
+  stopped the same way is not known.
+- Not known either: why SRBMiner loses less than we do on the slow RX 9060 XT PC (its launch pattern was not
+  measured); a slow RX 9070 XT; the ticker on a fast RDNA 4 PC; what the four busy threads of the default are for,
+  and whether a blocking wait would free them.
+
+## Intel Arc (Alchemist, on a rented rig)
+
+The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
+(the `xmx8` fold: the XMX matrix engines through DPAS at sub-group 8), built on the rig from PR #290 and run by
+that branch's CLI through `PEARL_CORE_PATH`. It is in no release. The competitors are IAminer, the Pearl miner
+for Arc that could be had, and the two we race elsewhere (SRBMiner, WildRig). TH/s is each miner's own figure.
+
+| Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | % of best |
+|---|---|---|---|---|---|---|---|
+| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | 124% |
+| Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | 128% |
+
+- **IAminer 1.0.0** mines on the card. Its own tuning picked m = n = 131072, k 4096. The pool rejected the only two
+  shares it found ("Invalid share"), so it has no accepted share on this rig.
+- **SRBMiner 3.8.6 and 3.8.2** list the six cards but cannot mine Pearl on them: "No GPU devices available to mine
+  with". Their algorithm list marks `pearlhash` for AMD and NVIDIA only.
+- **WildRig 0.52.1 and 0.51.9** list the card, print "Start mining", then show "n/a TH/s" for four minutes with the
+  card idle at 34 W.
+- **ARCMiner** has no column: it could not be had. Kryptex's miner page lists it as Windows only, and its download
+  page (github.com/jbman2025/ARC-miner) returned 404.
+
+### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
+
+The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
+of RAM, HiveOS 0.6-231 on Ubuntu 22.04, kernel 6.12.0-hiveos, the cards on i915. Everything ran in two Ubuntu
+24.04 containers given `/dev/dri`, each with Intel's compute runtime 26.40.40196.15: ours in one, the other miners
+in the second. Downloads were checked against the SHA-256 digests GitHub lists for each release asset; IAminer's
+also against its SHA256SUMS.txt and SRBMiner's against its published MD5.
+
+One card (card 0), turns on Kryptex (prl-us:7048): ours 5 minutes, IAminer 6, alternating. TH/s is the mean after
+the first minute: ours from its status line every second, IAminer from its `speed` line every 30 s. Power and clock
+are i915's counters for the card (`hwmon/energy1_input`, `gt_act_freq_mhz`), read every 5 s and averaged from 60 s
+to 285 s. Kryptex asked 9.01 PH MACs a share, so one card finds a share about every ten minutes and the share
+counts here are small.
+
+| Miner | Turn 1 | Turn 2 | Mean | Power | Clock | Shares (acc/rej) |
+|---|---|---|---|---|---|---|
+| Ours as first built (band 64) | 15.45 | 15.47 | 15.46 | 146 W | 2000 MHz | 1/0 |
+| IAminer 1.0.0 (m = n = 131072, k 4096) | 13.64 | 13.64 | 13.64 | 173 W | 2018 MHz | 0/0 |
+| Ours as pushed (band 256), one turn after the others | 16.88 | | 16.88 | 153 W | 2000 MHz | 2/0 |
+
+Ours was 113% of IAminer as first built and is 124% with the band change found on this rig, at 12% less power:
+about 40% more work a watt. IAminer's 30 s figures alternate between 11.72 and 14.07: a whole number of its
+attempts (one attempt is the full m by n product at k 4096, 7.0e13 MACs) fits each window.
+
+All six cards, 5 minutes for ours and 6 for IAminer, each card at the settings above (IAminer's shape copied to
+the other five cards' entries in its config, as its README allows):
+
+| Miner | TH/s, six cards | Range | Power, six cards | Shares (acc/rej) |
+|---|---|---|---|---|
+| Ours as first built (band 64) | 91.9 | 87.2–96.7 | 875 W | 5/0 |
+| Ours as pushed (band 256) | 100.1 | 96.9–103.2 | 921 W | 4/0 |
+| Ours as pushed, on the branch tip (with the core clock offset work merged in) | 100.1 | 96.7–104.0 | 919 W | 3/0 |
+| IAminer 1.0.0 | 78.0 | 68.0–84.4 | 1,012 W | 0/2 |
+
+- **Ours: 15 shares accepted, 0 rejected** over the six pool runs above, where about 11 were expected from its
+  rate. Every hit was recomputed before it was sent, as the core's gate for untested cards makes the CLI do, and
+  none was wrong.
+- **IAminer: 0 accepted, 2 rejected.** Both came from its GPU4, 16 s apart, 85 s into the six-card run, and Kryptex
+  answered "share rejected: Invalid share" to each. It found none in its 12 minutes on card 0. From its rate
+  about 4 shares were expected over its three runs. Two shares cannot say whether the fault is that card, the
+  shape copied from card 0's tuning, or the miner. It was not run on the pool again, so that no more rejected
+  shares went in under the address. Until it has an accepted share here, its TH/s is a rate of work whose
+  results are unproven.
+- **IAminer's tuning** on the card (`iaminer tune`), TH/s: m 65536 with k 4096, 8192 and 16384: 13.32, 9.51 and
+  7.71; m 131072 with k 4096 and 8192: 13.55 and 9.82. At m 262144, k 4096 it used one CPU core for five minutes
+  with the card idle and was stopped; `iaminer tune --quick` (the two m 131072 shapes) gave the same best. Its
+  README's 70.3 TH/s is an Arc Pro B70 at k 8192. On the A750 a larger k is slower for it. Its 1% dev fee (60 s
+  every 100 minutes) did not fall in these runs.
+
+Ours alone, before the comparison (`earn/native/sycl/README.md`, "Results on an Arc A750 rig", has it all):
+
+- **Correct on all six cards.** The hardware DPAS fold and the plain fold match a scalar fold on the host on every
+  region checked, at a small size and at the mainnet m and n. 3,000 hits were recomputed in JS as a pool's verifier
+  does (1,500 a fold) and none failed.
+- **One thing is wrong and mines nothing:** the reference code of the sub-group 8 fold (`xmx8-emu`, the
+  specification's DPAS written out, which no card mines with) gives other transcripts on the A750, on all six
+  cards. It is right on the CPU device. The cause is not found. `verify.sh` counted it and so failed a good card;
+  it now reports it and counts the folds that mine.
+- **Fold alone and miner loop** (`bench.sh`, card 0): 15.47 and 15.47 TH/s as first built; 16.87 and 16.88 as
+  pushed. The plain int8 fold does 3.9 to 4.0 TH/s at 185 W.
+- **Band.** `PEARL_SYCL_BAND` 4, 16, 64, 128, 256, 512, 1024, 4096: 14.1, 14.3, 15.2 to 15.5, 16.3, 16.6 to 16.9,
+  13.8, 13.4, 13.5. The host took a quarter of the card's 16 MB cache, 64; it now takes all of it, 256, for the XMX
+  folds. The plain fold stays at a quarter (3.92 at 64 against 3.75 at 256). The batch width makes no difference
+  (64 to 1024: 15.44 to 15.48).
+- **Power.** Under DPAS the card sits at 2,000 MHz and about 150 W, under its 190 W limit. An idle card draws 31
+  to 36 W.
+
+Other things this run found:
+
+- SRBMiner prints nothing unless it has a terminal: `--list-devices` into a file or pipe wrote 0 bytes and exited
+  0. Under `script` it listed the cards. SRBMiner 3.8.6 also quit at once with exit 73 until `wget` was installed
+  ("Make sure you have 'wget' installed on your system!"). `earn/tuning/salad/bench.sh`'s note about 3.8.6 exiting
+  73 on Salad may be the same two things.
+- Not tried: BzMiner, which Kryptex's miner page lists for Pearl on Intel Arc, and mo-miner, whose engine IAminer
+  uses. Neither was on the list for this run.
+
+### Arc A750, 10 November: the XMX peak, and where the fold's time goes
+
+What the card's matrix engines do with nothing in the way, as `pearl_amd_peak` asked of AMD's. On paper: 448 EUs x
+128 int8 MACs a clock x 2.0 GHz, about 115 T-MAC/s. `earn/native/sycl/pearl_sycl_peak.cpp` runs the hardware DPAS
+in the fold's own grid and thread shape and puts the fold's parts back one at a time. Card 0 of the rig, 4 s a
+row; clock and watts are i915's counters; this kernel's i915 reports no temperature for Arc. The probe checks
+nothing: only the last row is a fold.
+
+| What runs | T-MAC/s | Clock, power |
+|---|---|---|
+| DPAS alone, operands in registers | **113.4** (126 MACs an EU a clock) | 2,012 MHz, 166 W |
+| The same for 120 s | 113.4, 113.2 to 113.5 each second | 2,000 MHz, 177 W |
+| On 1 of the 8 accumulators | 91.2 | 2,000 MHz, 165 W |
+| With the fold's thread starts (16 times as many) | 112.6 | 1,998 MHz, 170 W |
+| And the fold's readout, barrier, hash and test | 110.1 | 2,017 MHz, 177 W |
+| A' loaded as the fold loads it, from one window that stays in the cache | 104.5 | 1,924 MHz, 184 W |
+| B' the same way | 56.6 | 1,998 MHz, 185 W |
+| Both, from one window | 39.8 | 1,995 MHz, 166 W |
+| Both, from the fold's own addresses | 16.9 | 2,019 MHz, 148 W |
+| The same loads with 7 of every 8 DPAS taken out | 16.9 (counted as if all ran) | 2,019 MHz, 138 W |
+| The fold | **16.9** | 2,019 MHz, 151 W |
+
+- **The ceiling is 113 T-MAC/s, and the fold is at 15% of it.** Intel's paper figure holds.
+- **All of the gap is operand loads.** With 7 of every 8 DPAS taken out the rate is the same, so the matrix engines
+  are idle 85% of the time. Thread starts, the accumulator chain, the readout and the hash cost about 3% together.
+- **The loads cost twice.** The fold sends 3 load messages for each DPAS, which caps it at 39.8 even from memory
+  that never leaves the cache. From its own addresses it falls to 16.9: A' and B' together do not stay in the
+  card's 16 MB cache.
+
+What a different fold could reach, timed with the readout, hash and test in place. The bits of these rows are not a
+fold's, so they are estimates:
+
+| Loads | 8 rows a sub-group, 128 registers (today's shape) | 16 rows a sub-group, 256 registers |
+|---|---|---|
+| The fold's | 16.9 | 21.6 |
+| The fold's, at the addresses A' and B' would have in DPAS fragment order | 22.9 (31.4 at band 64) | 22.9 |
+| One vector load a fragment, B' where it is | 18.6 | 33.8 |
+| One vector load a fragment, both in fragment order | 22.8 | 38.0 (**42.7** at band 32 or 64) |
+
+- **The target for the next fold on this card is about 40 TH/s**, 2.5 times today's: 16 rows a sub-group in the
+  256-register mode (which costs nothing at the peak: 113.6), A' and B' stored in fragment order, one vector load a
+  fragment, and the band tuned again.
+- Past that the loads still limit: the best row leaves the matrix engines idle 62% of the time.
+- Card 3 gave the same 128-register rows within 2%. Not timed: staging B through local memory, another card
+  model, a run over two minutes.
+
+### Arc rig, 10 November: the build a release would carry, on two Intel drivers (branch `goal/arc-ship`)
+
+The same fold in the form CI stages for a release (`earn/native/sycl/README.md`, "The build a release carries"):
+built with the open-source DPC++, its kernels compiled by the rig's own driver at first start, the hardware DPAS
+called as an OpenCL built-in. Ours only; no other miner ran. One card, fold alone for 15 s, unless a pool is named.
+
+| Where it ran | Intel driver | TH/s | |
+|---|---|---|---|
+| Ubuntu 24.04 container | Level Zero 26.40 | 16.81 | within 1% of the prebuilt kernels' 16.9 |
+| The same | OpenCL 26.40 | 16.78 | |
+| Ubuntu 22.04 container | OpenCL 24.35 | 10.13 | |
+| HiveOS's own userland (Ubuntu 22.04), no container | OpenCL 24.35, no Level Zero | 10.2 | the plain fold: 2.4 |
+| The same, six cards on Kryptex, 5 minutes | | 60.6 | 916 W; 2 shares accepted, 0 rejected |
+| The same, the CLI given no core path and no card list | | 60.6 | it found the six cards; 2 accepted, 0 rejected |
+| The same, the HiveOS package's own binary | | 60.6 | 1 accepted, 0 rejected |
+| The same, the HiveOS package CI built, its own binary, 5 minutes | | 60.7 | 912 W; 2 accepted, 0 rejected |
+
+- **The driver is worth 40%.** HiveOS has Intel's 2024 OpenCL driver (24.35.30872, compiler 1.0.17537). Its
+  compiler sends about 8 load messages for each DPAS where the 2026 one sends 3, at the same power: six cards do
+  60.6 TH/s at 916 W here against 100.1 at 921 W in the container.
+- **No % of best for these rows.** IAminer's 13.6 TH/s was measured on the 2026 driver and it was not run on the
+  2024 one. On a HiveOS rig as it comes, ours at 10.2 is below that figure.
+- Nothing was installed on the host. The package's binary was run by hand from a folder under the user's home, not
+  through a HiveOS flight sheet.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
@@ -833,6 +1507,20 @@ What future speed work needs: how to measure, the limits found, and what has alr
   600 launches of the fold in 15 minutes.
 - Cards mine at their power limit, so a saving shows up as clock, and cuts don't add: the six RDNA 4 cuts summed to
   about 8.9% alone and gave +4.3–5.4% together.
+- A slow Radeon PC may be one that stops a busy compute queue. On an RX 7900 XTX PC (`ae456453`, 10 November) the
+  fold test's launches, back to back on one queue, were stopped 30 times a second for 3.6–4.0 ms: 10% low at an
+  unchanged clock and cycle count, and no launch length helped. A miner with a second queue at work (the hash's) wasn't
+  stopped. The fold test's stamps show it: blocks whose waves changed SIMD mid-run, and gaps with no block starting or
+  ending (AMD Radeon, "what a slow PC is"). Read them on a new AMD PC before trusting a fold-alone number from it.
+- `PEARL_AMD_TRACE` is not free on such a PC: with it (and a clock probe every 5 s) the default read 51.0 TH/s on
+  `ae456453` against 55.0 without. Time a race there with the trace off.
+- SRBMiner 3.8.6 needs `wget` in the image (3.8.2 doesn't). Without it 3.8.6 exits at once, and without a terminal it
+  prints nothing: that is what "would not start on Salad" was on 9 November.
+- Time the whole process beside the rate when a host change adds a queue (`time` on the `hashrate.js` run; `ps -L`
+  shows the threads). Each HIP stream with work on it keeps one more thread busy in the ROCm 7.2 image: the default
+  run takes four cores, the hash queue a fifth (285 s of CPU against 228 s in 57 s, RX 7800 XT, 11 November), and
+  the ticker that ended an RX 9060 XT PC's queue stops 0.4 to 0.9 of a core. Its runs that took no CPU gained
+  nothing.
 
 **Limits found**
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
@@ -1121,10 +1809,598 @@ RDNA 2 (the `dot4` fold, which no RDNA 2 card has run): of these only host-side 
 compiler, a shape trial). The first thing to learn there is the tester's own rate, and whether `v_dot4_i32_i8` runs at
 full rate on RDNA 2 (the projection is 14-41 TH/s).
 
+**What a fold with free operands is worth, and what building them on the SM costs (the gate, 10 November)**
+
+Three reviews of the NVIDIA gap (10 November) said the "+2.8% to +4.05% ceiling" for a kernel that stores no operands
+priced the wrong thing: `PEARL_ABLATE_DRAM` keeps every copy and only moves its source from DRAM into the L2. This is
+the experiment they asked for before any such kernel is built. It prices the copies themselves, then puts stand-in work
+where a draw of the operands would have to go. Every arm computes wrong results on purpose and the host refuses any
+target but zero. They are on branch `goal/gate` (not on the PR) and none can ship.
+
+The arms, all on the tall fold:
+
+- **DRAM ablation** (`PEARL_ABLATE_DRAM`, as before): every copy kept, its source held in the L2.
+- **Copies gated off** (`PEARL_TALL_AB_SKIP`, now also on the cp.async ring of sm_86 and sm_89): the copy instructions
+  stay in the stream behind a predicate that holds only in a block's first tile. On sm_120 it is the TMA ring's existing
+  switch (the boxes are not issued). A' alone and B' alone too.
+- **Copies compiled out, no operand redraw** (`PEARL_GATE_NOCOPY`, `PEARL_GATE_PHANTOM`): the chunk loop has no copy
+  instruction, the host stores two tiles of A' and B', and a new salt redraws the noise tables but no operand. This is
+  the fold a kernel with free operands would start from. On sm_120 it runs on the cp.async ring (`-DPEARL_TALL_TMA=0`).
+- **Long k**: the same at k 65536 on the RTX 4090 and 5090, and at k 16384 on the RTX 3060, 3090 and 5070 Ti, where a
+  salt at k 65536 outlasts a race turn. A launch holds the MACs a k 2048 launch does.
+- **Sham draw** (`PEARL_GATE_SHAM`): each thread rebuilds its seven 16-byte units of the buffer the stage refills, a
+  stage ahead of their use: two 16-byte shared loads, ALU steps, one 16-byte store, then the buffer's FULL arrival.
+  The chunk loop grows by 98, 196 and 378 instructions: 0.51, 1.02 and 1.97 an IMMA. Placed three ways: in runs at the
+  two k-step ends, where B's fragment registers are dead (`PEARL_GATE_SHAM_AT=0`); between the mma, each step its own
+  asm (`=2`, and `=4`, which asks for between m16 tiles and which ptxas schedules the same way); and ALU steps alone
+  after every mma (`=3`).
+- **Stages as a loop** (`PEARL_GATE_S_ROLL`): the fold has no register to spare (253 to 255 of 255), and the sham
+  between the mma spills 64 to 156 bytes inside the chunk loop on sm_89 and sm_86 unless a chunk's two stages are a
+  loop. Rolled, the arms build with no spill on sm_86, sm_89 and sm_120 (one aside, below).
+- **A warp of its own**: a ninth warp can't be built (288 threads leave 227 registers; ptxas 12.6 falls back to 40 and
+  spills 6.4 KB). So it is a second kernel beside the fold (`PEARL_GATE_SPIN`): one block of one warp an SM, in the
+  768 registers a 253-register fold leaves, doing the sham's units at a stage's pace. It shares the SM with the fold
+  and nothing else, so it prices the instructions, not a design: a real producer would have to write the fold's
+  shared memory.
+
+Checked in the machine code (nvdisasm on the sm_89 cubins, ptxas 12.6): every arm's chunk loop holds 192 IMMA and 40
+ldmatrix (96 and 20 in a rolled stage), and the code from the tile hand-off to the tile loop's branch is the release's
+2,150 instructions give or take 14 of address arithmetic (the IADD3 count, 305, and every shuffle are the same). The
+release's chunk loop is 540 instructions; with the copies compiled out, 417. The sm_86 cubins (ptxas 12.6) and the
+sm_120 ones (ptxas 13.3) built here hold the same IMMA and ldmatrix counts; sm_86's hand-off is 2,135 to 2,162
+instructions against 2,153, and sm_120's keeps its 54 warp shuffles, 50 global stores and 2 atomics in every arm. The
+Salad builds (nvcc 12.8 and 13.3) were checked for registers and spill only, by a line `gate.sh` prints (the first
+5090 pass and the 3060 ran before it did): one arm spills, `si0r` on sm_120, 28 bytes.
+
+Where: rig01's RTX 4090 with `hashrate.js` (90 s after 20 s warm-up, a control every four arms, two sessions), and
+Salad PCs in race mode with a twin, where the three competitors and our v0.6.15 CLI were measured on the same PC
+first, on the stand-in pool, by the mean of each miner's own samples from 60 s in.
+
+**RTX 4090, rig01, 450 W limit, `hashrate.js`.** The control ran 10 times, 316.81 to 317.64 TH/s, a range of 0.26%. Each
+arm's change is against the controls on either side of it. The three competitors read 338.6 to 341.9 TH/s on this card
+at 450 W and 2625 MHz (item 16).
+
+| Arm at 450 W | Runs | TH/s | vs control (each run) | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 10 | 317.3 | range 0.26% | 2531 MHz | | 449 | 77 | 125.4 | |
+| `dram` DRAM ablation (copies kept, source in L2) | 2 | 317.9 | +0.17% (+0.21, +0.14) | 2538 | +0.3% | 449 | 78 | 125.2 | -0.1% |
+| `sk3` Copies gated off, A' and B' | 2 | 329.0 | +3.67% (+3.72, +3.61) | 2685 | +6.1% | 406 | 75 | 122.5 | -2.3% |
+| `sk3p` Copies gated off, no operand redraw | 1 | 329.4 | +3.78% (+3.78) | 2685 | +6.1% | 406 | 76 | 122.7 | -2.2% |
+| `ncp` Copies compiled out, no operand redraw | 2 | 334.2 | +5.40% (+5.38, +5.41) | 2685 | +6.1% | 400 | 75 | 124.5 | -0.7% |
+| `nck` No copies, long k | 2 | 341.9 | +7.83% (+7.80, +7.85) | 2685 | +6.1% | 410 | 76 | 127.3 | +1.6% |
+| `ncpr` No copies, stages as a loop | 2 | 325.8 | +2.76% (+2.73, +2.78) | 2685 | +6.1% | 391 | 74 | 121.3 | -3.2% |
+| `ncprk` No copies, stages as a loop, long k | 2 | 339.8 | +7.13% (+7.06, +7.20) | 2685 | +6.1% | 404 | 76 | 126.5 | +1.0% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 2 | 323.6 | +1.97% (+1.95, +1.99) | 2685 | +6.1% | 435 | 77 | 120.5 | -3.8% |
+| `si1r` Sham 1 an IMMA, between the mma | 2 | 318.6 | +0.41% (+0.19, +0.64) | 2636 | +4.2% | 448 | 77 | 120.9 | -3.5% |
+| `si2r` Sham 2 an IMMA, between the mma | 1 | 306.3 | -3.50% (-3.50) | 2606 | +3.0% | 449 | 77 | 117.5 | -6.2% |
+| `si1rk` Sham 1 an IMMA, long k | 2 | 322.5 | +1.65% (+1.72, +1.58) | 2628 | +3.9% | 449 | 77 | 122.7 | -2.1% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 1 | 290.1 | -8.60% (-8.60) | 2685 | +6.1% | 428 | 76 | 108.0 | -13.8% |
+| `si05rk` Sham 0.5 an IMMA, long k | 1 | 330.2 | +4.08% (+4.08) | 2670 | +5.5% | 439 | 76 | 123.7 | -1.3% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 1 | 332.5 | +4.78% (+4.78) | 2685 | +6.1% | 400 | 75 | 123.8 | -1.3% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 1 | 310.6 | -2.12% (-2.12) | 2685 | +6.1% | 425 | 77 | 115.7 | -7.8% |
+| `si1rb` Sham 1 an IMMA, no release | 1 | 316.8 | -0.15% (-0.15) | 2630 | +3.9% | 449 | 78 | 120.5 | -4.0% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 1 | 269.0 | -15.21% (-15.21) | 2685 | +6.1% | 345 | 69 | 100.2 | -20.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 1 | 220.9 | -30.38% (-30.38) | 2691 | +6.3% | 305 | 67 | 82.1 | -34.6% |
+
+**RTX 4090, rig01, 300 W limit, `hashrate.js`.** The control ran 8 times, 270.58 to 272.23 TH/s, a range of 0.61%. Each
+arm's change is against the controls on either side of it. No competitor was run at 300 W.
+
+| Arm at 300 W | Runs | TH/s | vs control (each run) | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 8 | 271.6 | range 0.61% | 2164 MHz | | 300 | 66 | 125.5 | |
+| `dram` DRAM ablation (copies kept, source in L2) | 2 | 274.3 | +0.99% (+0.97, +1.01) | 2189 | +1.2% | 299 | 65 | 125.3 | -0.2% |
+| `sk3` Copies gated off, A' and B' | 2 | 301.2 | +10.90% (+10.85, +10.95) | 2440 | +12.7% | 300 | 67 | 123.5 | -1.6% |
+| `ncp` Copies compiled out, no operand redraw | 2 | 308.5 | +13.60% (+13.64, +13.56) | 2464 | +13.9% | 300 | 67 | 125.2 | -0.3% |
+| `nck` No copies, long k | 2 | 311.8 | +14.89% (+14.90, +14.88) | 2435 | +12.5% | 300 | 68 | 128.0 | +2.0% |
+| `ncpr` No copies, stages as a loop | 2 | 302.9 | +11.63% (+11.67, +11.60) | 2480 | +14.6% | 300 | 68 | 122.1 | -2.7% |
+| `ncprk` No copies, stages as a loop, long k | 2 | 310.8 | +14.54% (+14.64, +14.43) | 2442 | +12.9% | 300 | 67 | 127.3 | +1.4% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 2 | 289.1 | +6.59% (+6.69, +6.49) | 2382 | +10.1% | 299 | 67 | 121.4 | -3.3% |
+| `si1r` Sham 1 an IMMA, between the mma | 2 | 279.7 | +3.00% (+3.23, +2.77) | 2313 | +6.9% | 300 | 68 | 120.9 | -3.6% |
+| `si2r` Sham 2 an IMMA, between the mma | 2 | 266.2 | -2.00% (-1.82, -2.17) | 2266 | +4.7% | 300 | 67 | 117.5 | -6.4% |
+| `si1rk` Sham 1 an IMMA, long k | 2 | 282.4 | +3.97% (+4.18, +3.75) | 2304 | +6.5% | 300 | 67 | 122.6 | -2.3% |
+
+**RTX 5090, Salad `08f8e389`, 575 W limit, race mode.**
+
+The competitors, then the first race (5 s turns).
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 426.3 | 2506 MHz | 513 | 75 | 170.1 | 387.61 |
+| SRBMiner 3.8.2 | 420.9 | 2472 MHz | 503 | 75 | 170.3 | 428.04 |
+| OneZeroMiner 1.8.5 | 423.7 | 2513 MHz | 510 | 75 | 168.6 | 285.75 |
+
+| Arm (16 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 409.1 | | | | 2488 MHz | | 575 | 77 | 164.4 | |
+| `aa` Twin: a copy of the control | 409.4 | +0.08% | 0.07 | 11/16 | 2489 | +0.0% | 575 | 77 | 164.5 | +0.1% |
+| `tdram` DRAM ablation (boxes kept, source in L2) | 412.5 | +0.84% | 0.10 | 16/16 | 2502 | +0.5% | 575 | 77 | 164.9 | +0.3% |
+| `tsk3` Boxes skipped, A' and B' | 451.4 | +10.33% | 0.12 | 16/16 | 2722 | +9.4% | 575 | 79 | 165.8 | +0.9% |
+| `tsk1` Boxes skipped, A' alone | 426.8 | +4.33% | 0.15 | 16/16 | 2581 | +3.7% | 575 | 78 | 165.3 | +0.6% |
+| `tsk2` Boxes skipped, B' alone | 431.4 | +5.46% | 0.15 | 16/16 | 2610 | +4.9% | 575 | 78 | 165.3 | +0.6% |
+| `tsk3p` Boxes skipped, no operand redraw | 451.8 | +10.45% | 0.12 | 16/16 | 2722 | +9.4% | 575 | 79 | 166.0 | +1.0% |
+| `cbase` Release fold on the cp.async ring | 404.5 | -1.12% | 0.11 | 0/16 | 2466 | -0.9% | 575 | 77 | 164.1 | -0.2% |
+| `cncp` cp.async ring, copies compiled out | 445.0 | +8.78% | 0.12 | 16/16 | 2719 | +9.3% | 575 | 79 | 163.7 | -0.5% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 452.2 | +10.53% | 0.12 | 16/16 | 2712 | +9.0% | 575 | 79 | 166.7 | +1.4% |
+| `csh1` Sham 1 an IMMA, runs at the k-step ends | 384.4 | -6.03% | 0.10 | 0/16 | 2665 | +7.1% | 575 | 78 | 144.3 | -12.3% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 412.9 | +0.94% | 0.11 | 16/16 | 2626 | +5.5% | 566 | 78 | 157.2 | -4.4% |
+| `csi1r` Sham 1 an IMMA, between the mma | 408.3 | -0.19% | 0.11 | 1/16 | 2565 | +3.1% | 558 | 78 | 159.2 | -3.2% |
+| `csi2r` Sham 2 an IMMA, between the mma | 393.5 | -3.82% | 0.11 | 0/16 | 2560 | +2.9% | 576 | 78 | 153.7 | -6.5% |
+| `csi1` Sham 1 an IMMA, between the mma, stages unrolled | 400.4 | -2.14% | 0.11 | 0/16 | 2606 | +4.7% | 575 | 78 | 153.6 | -6.5% |
+| `csa1r` ALU only, 1 an IMMA | 419.2 | +2.47% | 0.11 | 16/16 | 2696 | +8.3% | 575 | 79 | 155.5 | -5.4% |
+| `tdramk` DRAM ablation, long k | 417.8 | +2.13% | 0.13 | 16/16 | 2479 | -0.4% | 575 | 77 | 168.5 | +2.5% |
+| `tsk3k` Boxes skipped, long k | 455.6 | +11.37% | 0.12 | 16/16 | 2690 | +8.1% | 575 | 79 | 169.4 | +3.0% |
+| `cnck` cp.async ring, no copies, long k | 453.5 | +10.86% | 0.12 | 16/16 | 2700 | +8.5% | 575 | 79 | 168.0 | +2.2% |
+| `cncprk` cp.async ring, no copies, loop, long k | 456.6 | +11.61% | 0.12 | 16/16 | 2699 | +8.4% | 575 | 79 | 169.2 | +2.9% |
+| `csi1rk` Sham 1 an IMMA, long k | 408.5 | -0.14% | 0.11 | 4/16 | 2528 | +1.6% | 543 | 76 | 161.6 | -1.7% |
+| `csi05rk` Sham 0.5 an IMMA, long k | 416.7 | +1.85% | 0.11 | 16/16 | 2544 | +2.2% | 525 | 75 | 163.8 | -0.4% |
+| `csi2rk` Sham 2 an IMMA, long k | 395.6 | -3.29% | 0.11 | 0/16 | 2545 | +2.3% | 569 | 77 | 155.5 | -5.4% |
+
+Our CLI and a second race on the same PC (10 s turns). Its spin arms are the first version of the spin kernel, whose
+waiting blocks slept 250 ns at a time.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| Ours, v0.6.15 (CLI) | 409.4 | 2491 MHz | 575 | 78 | 164.4 | 390.72 |
+
+| Arm (9 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 409.7 | | | | 2489 MHz | | 575 | 77 | 164.6 | |
+| `aa` Twin: a copy of the control | 409.5 | -0.05% | 0.14 | 6/9 | 2488 | -0.0% | 575 | 77 | 164.6 | -0.0% |
+| `cncp` cp.async ring, copies compiled out | 445.0 | +8.63% | 0.30 | 9/9 | 2717 | +9.2% | 575 | 79 | 163.8 | -0.5% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 452.1 | +10.36% | 0.32 | 9/9 | 2710 | +8.9% | 575 | 79 | 166.8 | +1.4% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 413.0 | +0.81% | 0.31 | 8/9 | 2626 | +5.5% | 566 | 78 | 157.3 | -4.5% |
+| `csi1r` Sham 1 an IMMA, between the mma | 408.5 | -0.29% | 0.31 | 4/9 | 2565 | +3.1% | 558 | 78 | 159.3 | -3.3% |
+| `csb1r` Sham 1 an IMMA, asked for between m16 tiles | 408.4 | -0.32% | 0.31 | 4/9 | 2577 | +3.5% | 562 | 78 | 158.5 | -3.7% |
+| `csi05rk` Sham 0.5 an IMMA, long k | 416.7 | +1.72% | 0.31 | 9/9 | 2544 | +2.2% | 526 | 76 | 163.8 | -0.5% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 449.3 | +9.68% | 0.33 | 9/9 | 2701 | +8.5% | 575 | 78 | 166.4 | +1.1% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 420.7 | +2.69% | 0.32 | 9/9 | 2692 | +8.2% | 575 | 79 | 156.3 | -5.1% |
+| `si0r` Sham's loads, stores and release, no ALU | 428.3 | +4.55% | 0.32 | 9/9 | 2640 | +6.1% | 575 | 78 | 162.2 | -1.4% |
+| `si1rb` Sham 1 an IMMA, no release | 396.2 | -3.28% | 0.30 | 0/9 | 2615 | +5.1% | 575 | 78 | 151.5 | -8.0% |
+| `si05rb` Sham 0.5 an IMMA, no release | 416.9 | +1.75% | 0.33 | 9/9 | 2614 | +5.0% | 562 | 77 | 159.5 | -3.1% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 265.4 | -35.23% | 0.22 | 0/9 | 2858 | +14.8% | 449 | 72 | 92.9 | -43.6% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 323.9 | -20.94% | 1.31 | 0/9 | 2830 | +13.7% | 538 | 76 | 114.5 | -30.5% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 310.6 | -24.18% | 2.43 | 0/9 | 2830 | +13.7% | 520 | 76 | 109.8 | -33.3% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 413.9 | +1.03% | 0.29 | 9/9 | 2692 | +8.2% | 575 | 78 | 153.7 | -6.6% |
+
+**RTX 3060, Salad `16548f76`, 170 W, 66 °C, race mode.**
+
+The competitors, then the race. The second race never printed on this PC.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 53.1 | 1878 MHz | 170 | 66 | 28.3 | 52.48 |
+| SRBMiner 3.8.2 | 52.4 | 1874 MHz | 170 | 66 | 28.0 | 57.47 |
+| OneZeroMiner 1.8.5 | 53.3 | 1879 MHz | 170 | 66 | 28.4 | 52.10 |
+
+| Arm (13 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 49.18 | | | | 1796 MHz | | 170 | 67 | 27.38 | |
+| `aa` Twin: a copy of the control | 49.18 | +0.02% | 0.03 | 7/13 | 1796 | +0.0% | 170 | 67 | 27.38 | +0.0% |
+| `dram` DRAM ablation (copies kept, source in L2) | 50.68 | +3.06% | 0.03 | 13/13 | 1851 | +3.1% | 170 | 66 | 27.38 | -0.0% |
+| `sk3` Copies gated off, A' and B' | 51.71 | +5.14% | 0.05 | 13/13 | 1912 | +6.5% | 168 | 66 | 27.04 | -1.2% |
+| `sk3p` Copies gated off, no operand redraw | 51.77 | +5.27% | 0.05 | 13/13 | 1912 | +6.5% | 168 | 66 | 27.07 | -1.1% |
+| `ncp` Copies compiled out, no operand redraw | 51.84 | +5.43% | 0.05 | 13/13 | 1912 | +6.5% | 165 | 66 | 27.11 | -1.0% |
+| `ncpr` No copies, stages as a loop | 51.01 | +3.72% | 0.05 | 13/13 | 1912 | +6.5% | 162 | 66 | 26.68 | -2.6% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 45.52 | -7.43% | 0.04 | 0/13 | 1908 | +6.2% | 170 | 66 | 23.86 | -12.9% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 50.11 | +1.91% | 0.05 | 13/13 | 1905 | +6.1% | 170 | 66 | 26.31 | -3.9% |
+| `si1r` Sham 1 an IMMA, between the mma | 49.57 | +0.80% | 0.04 | 13/13 | 1882 | +4.8% | 170 | 66 | 26.33 | -3.8% |
+| `si2r` Sham 2 an IMMA, between the mma | 47.62 | -3.17% | 0.05 | 0/13 | 1873 | +4.3% | 170 | 66 | 25.42 | -7.2% |
+| `sa1r` ALU only, 1 an IMMA | 49.06 | -0.23% | 0.05 | 0/13 | 1912 | +6.5% | 169 | 66 | 25.66 | -6.3% |
+| `dramk` DRAM ablation, long k | 51.42 | +4.56% | 0.05 | 13/13 | 1846 | +2.8% | 170 | 66 | 27.85 | +1.7% |
+| `nck` No copies, long k | 52.54 | +6.84% | 0.05 | 13/13 | 1912 | +6.5% | 166 | 66 | 27.48 | +0.4% |
+| `ncprk` No copies, stages as a loop, long k | 52.18 | +6.11% | 0.05 | 13/13 | 1912 | +6.5% | 165 | 66 | 27.29 | -0.3% |
+| `si1rk` Sham 1 an IMMA, long k | 50.34 | +2.38% | 0.04 | 13/13 | 1880 | +4.7% | 170 | 66 | 26.78 | -2.2% |
+
+**RTX 3090, Salad `71128c8f`, 390 W limit, 88 °C, race mode.**
+
+The competitors and our CLI, then the first race. The driver named heat as what held the clock in 352 of 359 samples
+over both races (`clocks_event_reasons` 0x20).
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 130.2 | 1573 MHz | 345 | 88 | 82.8 | 134.13 |
+| SRBMiner 3.8.2 | 130.2 | 1578 MHz | 347 | 88 | 82.5 | 132.18 |
+| OneZeroMiner 1.8.5 | 131.3 | 1585 MHz | 350 | 88 | 82.8 | 127.13 |
+| Ours, v0.6.15 (CLI) | 122.8 | 1538 MHz | 358 | 88 | 79.9 | 125.19 |
+
+| Arm (14 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 124.2 | | | | 1550 MHz | | 362 | 88 | 80.2 | |
+| `aa` Twin: a copy of the control | 124.3 | +0.03% | 0.07 | 8/14 | 1550 | -0.0% | 362 | 88 | 80.2 | +0.0% |
+| `dram` DRAM ablation (copies kept, source in L2) | 124.9 | +0.56% | 0.15 | 14/14 | 1559 | +0.6% | 354 | 88 | 80.1 | -0.1% |
+| `sk3` Copies gated off, A' and B' | 128.4 | +3.35% | 0.14 | 14/14 | 1619 | +4.5% | 339 | 88 | 79.3 | -1.1% |
+| `sk1` Copies gated off, A' alone | 125.7 | +1.15% | 0.11 | 14/14 | 1587 | +2.4% | 349 | 88 | 79.2 | -1.2% |
+| `sk2` Copies gated off, B' alone | 125.6 | +1.08% | 0.12 | 14/14 | 1588 | +2.4% | 355 | 88 | 79.1 | -1.3% |
+| `br` Release fold, stages as a loop | 116.5 | -6.20% | 0.17 | 0/14 | 1575 | +1.6% | 358 | 88 | 74.0 | -7.7% |
+| `sk3p` Copies gated off, no operand redraw | 128.8 | +3.67% | 0.19 | 14/14 | 1627 | +5.0% | 340 | 88 | 79.2 | -1.3% |
+| `ncp` Copies compiled out, no operand redraw | 129.5 | +4.24% | 0.19 | 14/14 | 1633 | +5.3% | 339 | 88 | 79.3 | -1.1% |
+| `ncpr` No copies, stages as a loop | 128.0 | +3.00% | 0.13 | 14/14 | 1640 | +5.8% | 338 | 87 | 78.0 | -2.7% |
+| `sh1` Sham 1 an IMMA, runs at the k-step ends | 112.8 | -9.20% | 0.11 | 0/14 | 1615 | +4.2% | 342 | 88 | 69.8 | -12.9% |
+| `si05r` Sham 0.5 an IMMA, between the mma | 123.9 | -0.26% | 0.13 | 3/14 | 1606 | +3.6% | 343 | 88 | 77.2 | -3.8% |
+| `si1r` Sham 1 an IMMA, between the mma | 122.6 | -1.33% | 0.15 | 0/14 | 1590 | +2.6% | 348 | 88 | 77.1 | -3.8% |
+| `si2r` Sham 2 an IMMA, between the mma | 117.6 | -5.37% | 0.13 | 0/14 | 1583 | +2.1% | 349 | 88 | 74.3 | -7.3% |
+| `sa1r` ALU only, 1 an IMMA | 121.6 | -2.10% | 0.19 | 0/14 | 1621 | +4.6% | 341 | 88 | 75.0 | -6.4% |
+| `dramk` DRAM ablation, long k | 127.0 | +2.19% | 0.16 | 14/14 | 1557 | +0.5% | 356 | 88 | 81.5 | +1.7% |
+| `nck` No copies, long k | 131.1 | +5.49% | 0.18 | 14/14 | 1631 | +5.2% | 340 | 88 | 80.4 | +0.2% |
+| `ncprk` No copies, stages as a loop, long k | 130.5 | +5.06% | 0.16 | 14/14 | 1634 | +5.4% | 340 | 88 | 79.9 | -0.3% |
+| `si1rk` Sham 1 an IMMA, long k | 124.2 | -0.01% | 0.15 | 6/14 | 1585 | +2.3% | 349 | 88 | 78.4 | -2.3% |
+| `si05rk` Sham 0.5 an IMMA, long k | 126.2 | +1.60% | 0.25 | 14/14 | 1606 | +3.7% | 345 | 88 | 78.6 | -2.0% |
+| `si2rk` Sham 2 an IMMA, long k | 118.9 | -4.32% | 0.17 | 0/14 | 1572 | +1.5% | 349 | 88 | 75.6 | -5.7% |
+
+The second race: the sham's parts and the spin kernel (its waiting blocks spin on a barrier test).
+
+| Arm (15 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 123.9 | | | | 1564 MHz | | 365 | 88 | 79.2 | |
+| `aa` Twin: a copy of the control | 124.0 | +0.10% | 0.27 | 9/15 | 1561 | -0.2% | 365 | 88 | 79.5 | +0.3% |
+| `ncp` Copies compiled out, no operand redraw | 129.1 | +4.16% | 0.29 | 15/15 | 1641 | +4.9% | 342 | 87 | 78.7 | -0.7% |
+| `ncpr` No copies, stages as a loop | 127.5 | +2.90% | 0.29 | 15/15 | 1653 | +5.7% | 341 | 87 | 77.1 | -2.6% |
+| `si1r` Sham 1 an IMMA, between the mma | 122.3 | -1.34% | 0.44 | 2/15 | 1604 | +2.5% | 350 | 88 | 76.2 | -3.8% |
+| `sb1r` Sham 1 an IMMA, asked for between m16 tiles | 121.7 | -1.82% | 0.36 | 0/15 | 1604 | +2.5% | 350 | 88 | 75.9 | -4.2% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 129.6 | +4.57% | 0.58 | 15/15 | 1642 | +5.0% | 343 | 87 | 78.9 | -0.4% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 120.9 | -2.46% | 0.61 | 1/15 | 1635 | +4.5% | 344 | 87 | 73.9 | -6.7% |
+| `si0r` Sham's loads, stores and release, no ALU | 126.3 | +1.89% | 0.69 | 13/15 | 1621 | +3.6% | 347 | 88 | 77.9 | -1.7% |
+| `si1rb` Sham 1 an IMMA, no release | 122.5 | -1.11% | 0.64 | 2/15 | 1608 | +2.8% | 351 | 88 | 76.2 | -3.8% |
+| `si05rb` Sham 0.5 an IMMA, no release | 125.7 | +1.45% | 0.72 | 14/15 | 1624 | +3.8% | 349 | 88 | 77.4 | -2.3% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 120.5 | -2.74% | 0.63 | 1/15 | 1671 | +6.8% | 342 | 87 | 72.1 | -9.0% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 121.1 | -2.25% | 0.53 | 1/15 | 1664 | +6.3% | 344 | 87 | 72.8 | -8.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 120.9 | -2.46% | 0.62 | 1/15 | 1660 | +6.1% | 346 | 87 | 72.8 | -8.1% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 121.0 | -2.36% | 0.57 | 1/15 | 1662 | +6.2% | 346 | 87 | 72.8 | -8.1% |
+
+**RTX 5070 Ti, Salad `d0a033a5`, 300 W limit, race mode.**
+
+The competitors and our CLI, then the first race. The card ran 2805 MHz in nearly every arm, at 165 to 220 W of its 300
+W limit and 58 to 61 °C, so nothing but its top clock held it.
+
+| Miner (its own figure) | TH/s | SM clock | W | °C | TH/s per GHz | Credited by the stand-in |
+|---|---|---|---|---|---|---|
+| PeakMiner 2.20.7 | 198.1 | 2805 MHz | 184 | 60 | 70.6 | 177.67 |
+| SRBMiner 3.8.2 | 199.3 | 2804 MHz | 186 | 60 | 71.1 | 202.16 |
+| OneZeroMiner 1.8.5 | 197.3 | 2805 MHz | 183 | 60 | 70.3 | 168.34 |
+| Ours, v0.6.15 (CLI) | 189.2 | 2812 MHz | 220 | 62 | 67.3 | 182.18 |
+
+| Arm (19 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 191.0 | | | | 2807 MHz | | 218 | 61 | 68.0 | |
+| `aa` Twin: a copy of the control | 188.8 | -1.18% | 2.01 | 2/19 | 2807 | +0.0% | 215 | 60 | 67.3 | -1.2% |
+| `tdram` DRAM ablation (boxes kept, source in L2) | 191.2 | +0.07% | 0.22 | 10/19 | 2807 | +0.0% | 211 | 60 | 68.1 | +0.1% |
+| `tsk3` Boxes skipped, A' and B' | 191.6 | +0.31% | 0.27 | 15/19 | 2805 | -0.1% | 165 | 58 | 68.3 | +0.4% |
+| `tsk3p` Boxes skipped, no operand redraw | 191.8 | +0.43% | 0.32 | 19/19 | 2805 | -0.1% | 165 | 58 | 68.4 | +0.5% |
+| `cbase` Release fold on the cp.async ring | 191.2 | +0.12% | 0.32 | 3/19 | 2807 | +0.0% | 220 | 60 | 68.1 | +0.1% |
+| `cncp` cp.async ring, copies compiled out | 189.2 | -0.96% | 0.35 | 2/19 | 2805 | -0.1% | 166 | 58 | 67.4 | -0.9% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 192.6 | +0.86% | 0.25 | 19/19 | 2805 | -0.1% | 170 | 58 | 68.7 | +0.9% |
+| `csh1` Sham 1 an IMMA, runs at the k-step ends | 167.3 | -12.42% | 0.33 | 0/19 | 2805 | -0.1% | 174 | 59 | 59.6 | -12.4% |
+| `csi05r` Sham 0.5 an IMMA, between the mma | 181.7 | -4.87% | 0.36 | 0/19 | 2805 | -0.1% | 178 | 59 | 64.8 | -4.8% |
+| `csi1r` Sham 1 an IMMA, between the mma | 182.7 | -4.36% | 0.36 | 0/19 | 2785 | -0.8% | 187 | 59 | 65.6 | -3.6% |
+| `csi2r` Sham 2 an IMMA, between the mma | 175.8 | -7.97% | 0.35 | 0/19 | 2776 | -1.1% | 192 | 60 | 63.3 | -6.9% |
+| `csi1` Sham 1 an IMMA, between the mma, stages unrolled | 177.7 | -6.97% | 0.35 | 0/19 | 2805 | -0.1% | 185 | 59 | 63.3 | -6.9% |
+| `csa1r` ALU only, 1 an IMMA | 179.7 | -5.93% | 0.36 | 0/19 | 2805 | -0.1% | 171 | 58 | 64.1 | -5.9% |
+| `tdramk` DRAM ablation, long k | 194.5 | +1.86% | 0.40 | 19/19 | 2803 | -0.1% | 218 | 60 | 69.4 | +2.0% |
+| `tsk3k` Boxes skipped, long k | 195.3 | +2.26% | 0.39 | 19/19 | 2805 | -0.1% | 171 | 58 | 69.6 | +2.3% |
+| `cnck` cp.async ring, no copies, long k | 187.7 | -1.72% | 0.37 | 2/19 | 2805 | -0.1% | 163 | 57 | 66.9 | -1.7% |
+| `cncprk` cp.async ring, no copies, loop, long k | 195.1 | +2.15% | 0.39 | 19/19 | 2805 | -0.1% | 166 | 57 | 69.6 | +2.2% |
+| `csi1rk` Sham 1 an IMMA, long k | 183.7 | -3.81% | 0.39 | 0/19 | 2777 | -1.1% | 182 | 58 | 66.2 | -2.8% |
+
+The second race: the sham's parts and the spin kernel (its waiting blocks wait on a barrier, which suspends them on
+sm_120).
+
+| Arm (16 rounds) | TH/s | vs control | ±95% | Ahead | SM clock | Clock | W | °C | TH/s per GHz | Per clock |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold (control) | 191.4 | | | | 2806 MHz | | 217 | 60 | 68.2 | |
+| `aa` Twin: a copy of the control | 191.5 | +0.02% | 0.06 | 8/16 | 2807 | +0.0% | 216 | 60 | 68.2 | -0.0% |
+| `cncp` cp.async ring, copies compiled out | 189.5 | -1.03% | 0.06 | 0/16 | 2805 | -0.0% | 165 | 58 | 67.5 | -1.0% |
+| `cncpr` cp.async ring, no copies, stages as a loop | 192.9 | +0.77% | 0.06 | 16/16 | 2805 | -0.0% | 166 | 58 | 68.8 | +0.8% |
+| `csi1r` Sham 1 an IMMA, between the mma | 182.8 | -4.53% | 0.26 | 0/16 | 2781 | -0.9% | 182 | 60 | 65.7 | -3.7% |
+| `csb1r` Sham 1 an IMMA, asked for between m16 tiles | 182.8 | -4.50% | 1.04 | 1/16 | 2782 | -0.9% | 182 | 59 | 65.7 | -3.7% |
+| `sa0r` The sham's stage-end release alone (no ALU) | 193.4 | +1.04% | 1.08 | 16/16 | 2805 | -0.0% | 166 | 58 | 69.0 | +1.1% |
+| `sa1rb` ALU only, 1 an IMMA, no release | 181.7 | -5.11% | 1.02 | 1/16 | 2805 | -0.0% | 167 | 58 | 64.8 | -5.1% |
+| `si0r` Sham's loads, stores and release, no ALU | 189.3 | -1.12% | 1.06 | 1/16 | 2805 | -0.0% | 174 | 58 | 67.5 | -1.1% |
+| `si1rb` Sham 1 an IMMA, no release | 176.4 | -7.85% | 0.99 | 0/16 | 2805 | -0.0% | 178 | 58 | 62.9 | -7.8% |
+| `si05rb` Sham 0.5 an IMMA, no release | 184.5 | -3.60% | 0.17 | 0/16 | 2805 | -0.0% | 174 | 58 | 65.8 | -3.6% |
+| `spn0` Spin kernel beside the no-copy fold, idle | 164.5 | -14.08% | 1.00 | 0/16 | 2805 | -0.0% | 147 | 56 | 58.6 | -14.0% |
+| `spn05` Spin kernel, 0.5 an IMMA's worth | 164.4 | -14.12% | 0.72 | 0/16 | 2805 | -0.0% | 153 | 56 | 58.6 | -14.1% |
+| `spn1` Spin kernel, 1 an IMMA's worth | 164.0 | -14.33% | 0.24 | 0/16 | 2805 | -0.0% | 155 | 56 | 58.5 | -14.3% |
+| `spn2` Spin kernel, 2 an IMMA's worth | 162.2 | -15.30% | 0.45 | 0/16 | 2802 | -0.1% | 153 | 56 | 57.9 | -15.2% |
+
+What the tables say:
+
+- **Free operands are the gap, and the old ceiling missed it.** "Free operands" is the no-copy arm (on RTX 50 the TMA
+  ring with its boxes skipped); "long k" is k 65536 or 16384 as above.
+
+  | PC | DRAM ablation | Free operands | Free operands, long k | Best competitor on that PC |
+  |---|---|---|---|---|
+  | RTX 4090 rig01, 450 W | +0.2% | +5.4% | +7.8% (341.9 TH/s) | 341.9 (item 16, the same card) |
+  | RTX 4090 rig01, 300 W | +1.0% | +13.6% | +14.9% (311.8) | not run at 300 W |
+  | RTX 5090 `08f8e389`, 575 W limit | +0.8% | +10.3% | +11.4% (455.6) | 426.3; our CLI 409.4 |
+  | RTX 3060 `16548f76`, 170 W, 66 °C | +3.1% | +5.4% | +6.8% (52.54) | 53.30 |
+  | RTX 3090 `71128c8f`, 390 W limit, 88 °C | +0.6% | +4.2% | +5.5% (131.1) | 131.3; our CLI 122.8 |
+  | RTX 5070 Ti `d0a033a5`, 300 W limit | 0.0% | +0.1% | +2.0% (195.3) | 199.3; our CLI 189.2 |
+
+  - The gain is clock wherever power or heat holds the clock. The 4090 goes from 2531 MHz to its 2685 MHz top with
+    50 W unused at 450 W, and from 2164 to 2464 MHz at 300 W; the 5090 from 2488 to 2722 MHz; the 3060 from 1796 MHz
+    to its 1912 MHz top; the 3090, which heat held all race (88 °C, 340 to 362 W of its 390 W limit), from 1550 to
+    1633 MHz.
+  - It is nothing where the clock is already at its top: the 5070 Ti ran 2805 MHz in every arm and only drew 54 W
+    less (165 against 219 W).
+  - Work a clock moves −1.1% to +0.9% at k 2048 and +0.2% to +3.0% at long k. Long k is the only part of the gain
+    a clock-bound card sees.
+  - One operand alone is worth half or less: on the 5090 A' alone +4.3% and B' alone +5.5%; on the 3090 +1.2% and
+    +1.1% against +3.4% for both. Not redrawing A' on a new salt is worth 0.1 point.
+- **A draw made of instructions in the MMA warps gives most of it back.** Net against the release fold with the sham
+  between the mma, the cheapest placement found, at 0.5 / 1 / 2 extra instructions an IMMA:
+
+  | PC | k 2048 | Long k |
+  |---|---|---|
+  | RTX 4090, 450 W | +2.0% / +0.4% / −3.5% | +4.1% / +1.6% / not run |
+  | RTX 4090, 300 W | +6.6% / +3.0% / −2.0% | not run / +4.0% / not run |
+  | RTX 5090, 575 W limit | +0.9% / −0.2% / −3.8% | +1.9% / −0.1% / −3.3% |
+  | RTX 3060 | +1.9% / +0.8% / −3.2% | not run / +2.4% / not run |
+  | RTX 3090 | −0.3% / −1.3% / −5.4% | +1.6% / 0.0% / −4.3% |
+  | RTX 5070 Ti | −5.1% / −4.6% / −8.2% | not run / −4.1% / not run |
+
+  - It costs work a clock. Against the best no-copy arm at the same k, an arm with the sham does 2.2 to 4.2% less a
+    clock on RTX 30 and 40 at 0.5 and at 1 an IMMA alike, and 5.6 to 6.3% less at 2. On RTX 50: 3.2 to 5.7%, and 8%.
+  - It costs watts. At 2685 MHz the 4090 draws 391 to 400 W with no copies, 435 W with the sham at 0.5, and at 1 it
+    is back on its 450 W limit at 2636 MHz. So one instruction an IMMA costs about what the copies did. That is why
+    the sham pays under a deep cap only at a low count, and why a clock-bound card loses the whole per-clock cost.
+  - Placement decides the size. In runs at the k-step ends (a load, its use right behind it, no mma to issue
+    meanwhile), one instruction an IMMA reads −8.6% (4090), −6.0% (5090), −7.4% (3060), −9.2% (3090) and −12.7%
+    (5070 Ti). ALU steps alone, one after each mma, cost more a clock (5 to 7%) than the whole sham spread between
+    them. ptxas spreads the steps between the mma whatever order the source asks for, so "between the mma" and
+    "between m16 tiles" are one placement (5090: −0.29% and −0.32%).
+  - The fold has no registers for it. Unrolled, the sham between the mma spills; with a chunk's two stages as a
+    loop it fits. That loop alone moves the no-copy fold by −2.6% (4090), −1.7% (3060), −1.2% (3090) and +1.7%
+    (5090), and the release fold by −6.2% on the 3090. An arm that differs from the looped no-copy fold only in
+    where the stage's barrier is released reads 2.0% above it on the 4090 and 0.7% below it on the 5090. So arms
+    here differ by two points for reasons that are not the draw, and a difference under two points is not a finding.
+- **A warp of its own is no way out as built.** A ninth warp does not fit the fold (above), nor with B fragments
+  loaded pair by pair (`PEARL_GATE_BSTREAM`: 168 registers and 768 bytes of spill). As a second kernel beside the
+  fold (one block an SM, in the registers the fold leaves) it could not be priced, because its control fails. Blocks
+  that only wait already take 7 points off the no-copy fold on the 3090, 13 on the 5070 Ti (where a waiting block
+  is suspended), 21 on the 4090 and 44 on the 5090 (the first version, which slept). Giving them a draw's work adds
+  at most a point to that on the 3090 and the 5070 Ti at 0.5, 1 or 2 instructions an IMMA's worth. On the 4090 at 1
+  the fold is 36 points down and unsteady, in one run. Working blocks kept up about a quarter of a draw's pace on
+  the 4090 and the 3090. So it is the blocks being there that costs. Most likely they do not sit one beside each
+  fold block but crowd the SMs that are free at launch and keep the fold off them; that was not checked. The arm
+  says nothing for or against a producer warp inside the fold's own block, which is what it stood in for.
+- **Against the reviews' kill lines.**
+  - RTX 40 (kill if copies skipped is under +4% on the 4090, or skipped plus sham under +2%). Copies skipped: the
+    ported switch reads +3.7% at 450 W, 0.3 point under the line; with the copies compiled out, +5.4%; at 300 W
+    +10.9% and +13.6%. Skipped plus sham at 450 W: +2.0% at 0.5 an IMMA, +0.4% at 1, −3.5% at 2 (+4.1% and +1.6% at
+    k 65536). At 300 W: +6.6%, +3.0%, −2.0%. So it fails at 450 W unless the draw fits in half an instruction an
+    IMMA, and passes at 300 W up to 1.
+  - RTX 50 (kill under +4% at 1 an IMMA on a 5090 with a limit of 480 W or less). No such PC came up; on the one
+    with a 575 W limit, which our fold sits on, it reads −0.2% (−0.1% at k 65536) and +0.9% at 0.5. It fails
+    there. The 4090's cap from 450 to 300 W turned +0.4% into +3.0%, still under 4.
+  - RTX 30 (kill under +6% for copies skipped at long k on a normal 3060). +6.8% at k 16384 on a 66 °C PC: not
+    killed, and under the 7% the same review asked for before building. With the sham at 1 an IMMA it is +2.4%
+    there and nothing on the 3090.
+- **What the competitors' figures look like beside ours.** A clock, they do 97 to 99% of the tensor peak on every PC
+  here; ours does 94 to 96%, and our no-copy fold at long k 96 to 97%. On the 5070 Ti, where every miner runs
+  2805 MHz, that is the whole gap: 197 to 199 TH/s against 191.5, and free operands at long k recover 2 of those 3 to 4
+  points. Their clock is not free either, and on every PC it is the clock and watts of our sham at 1 an IMMA:
+
+  | PC | Competitors | Our sham at 1 an IMMA | Our no-copy fold |
+  |---|---|---|---|
+  | RTX 4090, 450 W | 2625 MHz at 450 W (item 16) | 2636 MHz at 448 W | 2685 MHz at 400 W |
+  | RTX 3060 | 1874 to 1879 MHz at 170 W | 1882 MHz at 170 W | 1912 MHz at 165 W |
+  | RTX 3090 | 1573 to 1585 MHz at 345 to 350 W | 1590 MHz at 348 W | 1633 MHz at 339 W |
+  | RTX 5070 Ti | 2805 MHz at 183 to 186 W | 2785 MHz at 188 W | 2805 MHz at 165 W |
+  | RTX 5090 | 2472 to 2513 MHz at 503 to 513 W | 2565 MHz at 558 W | 2722 MHz at 575 W |
+
+  What they do not show is its loss of work a clock. So their draw costs about an instruction an IMMA in watts and
+  no IMMA time, and nothing built here does that.
+- **Also seen.**
+  - The release fold on the cp.async ring is 1.1% behind TMA on this 5090 and level with it on the 5070 Ti
+    (−0.1%). The +2.3% on record was measured on the card since sent back; TMA stays.
+  - The 5090's sham arms ran at 525 to 565 W of 575 W and 2540 to 2630 MHz, steadily; the driver gave the power
+    cap as the reason all race (`clocks_event_reasons` 0x4). The competitors showed the same there (503 to
+    513 W, about 2500 MHz, on a card that reaches 2722 MHz). Why the cap bites below the limit is not known.
+  - Salad's logs dropped every `build` line of compilers.sh; `gate.sh` prints its own. Our CLI's run on the 3060
+    failed on a malformed test address and was not repeated, so that PC has no CLI figure.
+
+**Verdict: the gate fails as the reviews wrote it, and the kernel they describe is not worth building.** The prize is
+real. With free operands and long k our fold is level with the best competitor on the 4090 and the 3090, within 2% of
+it on the 3060 and the 5070 Ti, and 7% ahead on the 5090. But a draw the MMA warps issue themselves, even written a
+stage ahead and spread between the mma, keeps little of it at stock power. At one instruction an IMMA: +0.4 to +1.6%
+on the 4090, +0.8 to +2.4% on the 3060, nothing on the 5090 or the 3090, a loss on a clock-bound card. At half of
+one: +2.0 to +4.1% on the 4090. Under a deep power cap it keeps more (the 4090 at 300 W: +3.0% at one, +6.6% at
+half). But the sham at 1 an IMMA has 77 ALU steps for a thread's 112 bytes a stage, under three a 32-bit word, and a
+clamped add and subtract of four packed bytes takes more. So by our count a real draw sits nearer 2 an IMMA, where
+every card lost at every limit tried.
+
+Two things stand between this fold and the competitors, both work a clock, and neither has a known cause: the 1 to 3
+points the fold still lacks with free operands and long k on every card but the 5090, and the 2 to 6 points the
+draw's instructions cost beside the IMMAs. Until one of them is explained, no fold of ours with on-chip operands
+can be specified. The arms, the tools (`gate.sh`, the spin kernel, the switches) and the raw runs and logs
+(`earn/tuning/gate`, with the scripts that make these tables from them) stay on branch `goal/gate` (c3f6bf85).
+
+**The gate's follow-up: where the loop's last points go, and a producer warp in the fold's own block (11 November, rig01)**
+
+The gate above left two things unmeasured: where the no-copy fold loses its last points a clock, and what a draw costs
+in a warp of its own inside the fold's block. Both were measured on rig01's RTX 4090, against a line set beforehand:
+with the producer at the instruction count a real draw needs, the best arrangement must net +3% on the release at
+450 W, or the on-chip-draw route is closed for stock-power cards. Every arm is timing-only, on branch `goal/gate`.
+
+How it ran: `hashrate.js`, 60 s after 15 s warm-up, three holds of the card (40, 2 and 20 minutes). The release fold
+(k 2048) is the control. The no-copy fold at k 65536, the gate's best arm, is the base of both measurements: 341.86,
+341.86 and 341.87 TH/s in three runs. Work a clock is TH/s per GHz and its share of the tensor peak (131.072 on this
+card); "cycles a chunk" is 6144 over that share, the SM clocks one chunk of a 192x256 tile takes.
+
+The arms:
+
+- **The loop gap.** One thing removed or moved at a time, on the no-copy k 65536 fold: the readout at the tile's last
+  chunk only (`PEARL_ABLATE_READOUT`); the ring's waits and arrivals off (`PEARL_ABLATE_RING`, `_ARRIVE`); the tile
+  hash off (`PEARL_ABLATE_TRANSCRIPT_HASH`); all three; B fragments reloaded for every m16 tile (`PEARL_GATE_BSTREAM`,
+  80 more ldmatrix a chunk); and in that body the readout moved into the next chunk's first k-step
+  (`PEARL_GATE_RO_LAZY`), where a lazy readout would sit. In the fold's own body the moved readout spills 108 bytes,
+  so it was not run there.
+- **Warps given up** (`PEARL_GATE_MMA_MASK`): the block keeps its eight warps and 253 registers, and only some fold.
+  Four fold, one a scheduler, and four are free; or seven fold and one is free. The host still counts every region,
+  so these rates are scaled by the share of warps that fold (a half, seven eighths).
+- **A smaller fold with warps beside it** (`PEARL_TALL_ROW_TILES=4`, `PEARL_GATE_PROD_WARPS=4`): 64x64 warps and a
+  128x256 tile need 165 to 170 registers, which leaves room for twelve warps: the eight that fold and four more, one a
+  scheduler. Its tile holds two thirds of the release's MACs and the host counts them as they are.
+- **Producers** (`PEARL_GATE_PROD`): the warps that do not fold. Each stage a producer waits for the folding warps
+  to release the buffer the stage before read, writes its 16-byte units of it (two 16-byte loads from the buffer
+  being read, ALU steps, one store) and arrives on its FULL barrier. The buffer is read two stages on. A waiting
+  producer tests its barrier every 100 ns and sleeps between (`PEARL_GATE_PROD_NAP`), or spins. Its work is counted
+  against the folding warps' IMMA: 1, 2 and 3 to 3.7 instructions an IMMA are 9 to 11, 17 to 21 and 32 instructions a
+  16-byte unit, because a smaller tile needs more operand bytes an IMMA (58.7 at 96x256 and 48 at 128x256 against
+  37.3).
+
+Checked in the machine code (sm_89, ptxas 12.6): in every mask and producer arm the folding warps' chunk loop is the
+no-copy fold's instruction for instruction (426 instructions, 192 IMMA, 40 ldmatrix, 253 registers, no spill). The
+128x256 arms hold 128 IMMA and 32 ldmatrix a chunk in 321 to 323 instructions, 165 to 170 registers, no spill. The
+producers' instructions a stage were counted in the same disassembly. Three things had to be found first. A hardware
+barrier for the producer's wait made ptxas fence every ring wait of the chunk loop and spill 100 bytes there. So did
+a plain branch to the producer's code, until the test was made warp-uniform by a vote. And a third barrier for the
+folding warps' own arrival, one that nothing waits on, gave "unspecified launch failure" within a second whenever a
+column slot had two folding warps; the arms that ran count that arrival on FULL beside the producers'. The
+four-fold-four-produce arms were measured in the third-barrier form, the others in the final one.
+
+**RTX 4090, rig01, 450 W limit, `hashrate.js`.** The release fold ran 5 times, 316.98 to 317.64 TH/s. The no-copy k
+65536 fold ran 3 times, 341.86 to 341.87. Change against the release is against the controls on either side of a run;
+against the no-copy fold, against the runs of it on either side, or their mean in a hold that had none.
+
+| Arm at 450 W | Runs | TH/s | vs release | vs no-copy k 65536 | SM clock | W | °C | TH/s per GHz | Of the tensor peak | Cycles a chunk |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold, k 2048 (control) | 5 | 317.3 |  |  | 2531 MHz | 449 | 77 | 125.3 | 95.6% | 6425 |
+| `nck` No copies, k 65536 (the base of both measurements) | 3 | 341.9 | +7.70% (+7.70, +7.70, +7.71) |  | 2685 MHz | 410 | 76 | 127.3 | 97.1% | 6325 |
+| `kro` Readout at the tile's last chunk only | 1 | 349.1 | +9.99% | +2.13% | 2685 MHz | 387 | 74 | 130.0 | 99.2% | 6193 |
+| `krg` Ring waits and arrivals off | 1 | 326.8 | +2.96% | -4.40% | 2685 MHz | 388 | 74 | 121.7 | 92.9% | 6616 |
+| `khs` Tile hash off | 1 | 342.4 | +7.86% | +0.15% | 2685 MHz | 412 | 76 | 127.5 | 97.3% | 6316 |
+| `kall` Readout, ring and hash all off | 1 | 349.4 | +10.07% | +2.21% | 2685 MHz | 386 | 74 | 130.1 | 99.3% | 6188 |
+| `kbs` B fragments reloaded a tile: 80 more ldmatrix a chunk | 1 | 313.4 | -1.26% | -8.32% | 2521 MHz | 400 | 75 | 124.3 | 94.8% | 6478 |
+| `kbz1` The same, readout moved into the next chunk's first k-step | 1 | 312.9 | -1.42% | -8.47% | 2533 MHz | 402 | 75 | 123.5 | 94.2% | 6519 |
+| `m4k` 4 warps fold (one a scheduler), 4 leave | 1 | 282.0 | -11.14% | -17.50% | 2685 MHz | 353 | 71 | 105.0 | 80.1% | 7666 |
+| `m4p0k` 4 fold, 4 producers that spin on their barrier, no work | 1 | 278.0 | -12.43% | -18.69% | 2686 MHz | 385 | 73 | 103.5 | 79.0% | 7781 |
+| `m4n0k` 4 fold, 4 producers that nap 100 ns between tests, no work | 1 | 280.5 | -11.63% | -17.95% | 2685 MHz | 359 | 71 | 104.5 | 79.7% | 7708 |
+| `m4n1k` 4 fold, 4 producers, 1.03 instructions an IMMA (9 a unit) | 1 | 271.0 | -14.63% | -20.74% | 2685 MHz | 431 | 77 | 100.9 | 77.0% | 7980 |
+| `m4n2k` 4 fold, 4 producers, 1.95 an IMMA (17 a unit) | 1 | 262.4 | -17.33% | -23.24% | 2685 MHz | 445 | 77 | 97.7 | 74.6% | 8240 |
+| `m4n3k` 4 fold, 4 producers, 3.67 an IMMA (32 a unit) | 1 | 255.6 | -19.46% | -25.22% | 2597 MHz | 449 | 78 | 98.4 | 75.1% | 8181 |
+| `m4p2k` 4 fold, 4 spinning producers, 1.95 an IMMA | 1 | 268.5 | -15.41% | -21.46% | 2640 MHz | 449 | 77 | 101.7 | 77.6% | 7919 |
+| `m7k` 7 warps fold, 1 leaves | 1 | 299.5 | -5.64% | -12.39% | 2685 MHz | 369 | 71 | 111.5 | 85.1% | 7219 |
+| `m7n1k` 7 fold, 1 producer for all seven, 1.00 an IMMA | 1 | 184.9 | -41.72% | -45.91% | 2700 MHz | 319 | 67 | 68.5 | 52.2% | 11759 |
+| `t4k` 128x256 tile, 8 warps of 64x64, no producer | 2 | 328.5 | +3.53% (+3.62, +3.45) | -3.89% | 2685 MHz | 414 | 76 | 122.4 | 93.4% | 6581 |
+| `t12n0k` 128x256, 8 fold, 4 napping producer warps, no work | 1 | 322.3 | +1.60% | -5.71% | 2685 MHz | 411 | 76 | 120.1 | 91.6% | 6708 |
+| `t12n1k` 128x256, 8 fold, 4 producers, 1.03 an IMMA (11 a unit) | 1 | 312.7 | -1.44% | -8.52% | 2580 MHz | 450 | 78 | 121.2 | 92.5% | 6644 |
+| `t12n2k` 128x256, 8 fold, 4 producers, 1.97 an IMMA (21 a unit) | 1 | 306.4 | -3.43% | -10.38% | 2541 MHz | 449 | 77 | 120.6 | 92.0% | 6679 |
+| `t12n3k` 128x256, 8 fold, 4 producers, 3.00 an IMMA (32 a unit) | 1 | 298.4 | -5.96% | -12.73% | 2504 MHz | 449 | 77 | 119.2 | 90.9% | 6759 |
+| `t12p2k` 128x256, 8 fold, 4 spinning producers, 1.97 an IMMA | 1 | 308.7 | -2.71% | -9.71% | 2525 MHz | 449 | 77 | 122.2 | 93.3% | 6588 |
+
+**RTX 4090, rig01, 300 W limit, `hashrate.js`.** The release fold ran 3 times, 270.97 to 272.53 TH/s. The no-copy k
+65536 fold ran once, 312.19. Change against the release is against the controls on either side of a run; against the
+no-copy fold, against the runs of it on either side, or their mean in a hold that had none.
+
+| Arm at 300 W | Runs | TH/s | vs release | vs no-copy k 65536 | SM clock | W | °C | TH/s per GHz | Of the tensor peak | Cycles a chunk |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold, k 2048 (control) | 3 | 271.8 |  |  | 2166 MHz | 300 | 65 | 125.5 | 95.7% | 6419 |
+| `nck` No copies, k 65536 (the base of both measurements) | 1 | 312.2 | +15.03% |  | 2438 MHz | 300 | 66 | 128.1 | 97.7% | 6289 |
+| `m4k` 4 warps fold (one a scheduler), 4 leave | 1 | 270.2 | -0.43% | -13.44% | 2566 MHz | 300 | 67 | 105.3 | 80.3% | 7647 |
+| `m4n1k` 4 fold, 4 producers, 1.03 instructions an IMMA (9 a unit) | 1 | 243.4 | -10.31% | -22.03% | 2387 MHz | 299 | 67 | 102.0 | 77.8% | 7897 |
+| `m4n2k` 4 fold, 4 producers, 1.95 an IMMA (17 a unit) | 1 | 236.0 | -13.03% | -24.39% | 2336 MHz | 300 | 67 | 101.0 | 77.1% | 7970 |
+| `t4k` 128x256 tile, 8 warps of 64x64, no producer | 2 | 298.8 | +9.86% (+10.06, +9.66) | -4.29% | 2426 MHz | 300 | 66 | 123.2 | 94.0% | 6539 |
+| `t12n1k` 128x256, 8 fold, 4 producers, 1.03 an IMMA (11 a unit) | 1 | 271.7 | -0.32% | -12.98% | 2235 MHz | 300 | 66 | 121.6 | 92.7% | 6625 |
+| `t12n2k` 128x256, 8 fold, 4 producers, 1.97 an IMMA (21 a unit) | 1 | 264.1 | -3.09% | -15.40% | 2190 MHz | 299 | 66 | 120.6 | 92.0% | 6678 |
+
+What the tables say:
+
+- **The loop gap is the readout.** The no-copy k 65536 fold does 97.1% of the tensor peak: 6325 cycles a chunk
+  against 6144.
+
+  | Piece | Arm | Work a clock | Cycles a chunk |
+  |---|---|---|---|
+  | The readout (96 XOR3 and 3 shared XOR a thread a chunk) | readout at the last chunk only | +2.13% | −132 |
+  | The tile hash, at k 65536 | hash off | +0.15% | −9 |
+  | The ring's waits and arrivals | off | −4.40% | +291 |
+  | All three | off | +2.21%, 99.3% of the peak | −137 |
+  | What is left: 40 ldmatrix a chunk and the loop's own steps | | 0.7% | 44 |
+  | An ldmatrix more in the mma stream | 80 more a chunk | −2.4% for the 80 | +1.9 each |
+  | The readout moved into the next chunk's first k-step | in the body with 80 more ldmatrix | −0.6% | +41 |
+
+  - The readout can't be cut by count: one XOR3 for every two IMMA is the least that folds a lane's 192 accumulators
+    into its three words, and the chunk is the spec's 128 of k. Moving it did not help: ptxas still schedules the
+    XOR3 in runs, so the seam only moves.
+  - The ring's waits cost nothing, and they do work: without them the fold is 4.4% slower, and with the readout
+    off as well it is not. That fits the readout being a seam on each scheduler which the scheduler's other warp
+    covers in part, with the ring keeping the two warps apart enough to cover it. It was not measured directly. A
+    lone warp keeps 80% of its scheduler's tensor pipe (below), which bounds what a better stagger could recover.
+    No stagger was built.
+  - The hash is spread out by long k already. The fragment loads are inside the 0.7%.
+  - The arm with 80 more ldmatrix also ran at 2521 MHz on 400 W of its 450 W limit, as the RTX 5090's sham arms did
+    in the gate. Why the card leaves its top clock there is still not known.
+- **A producer's instructions cost no IMMA time when its scheduler keeps two folding warps, and only then.**
+  - 128x256 fold beside four producer warps, at 450 W: work a clock is 120.1 TH/s per GHz with the producers
+    idle, 121.2 at 1.03 instructions an IMMA, 120.6 at 1.97 and 119.2 at 3.00. With producers that spin it is 122.2
+    at 1.97, level with the same fold alone (122.4). At 300 W: 123.2 alone, 121.6 and 120.6. This is what the
+    competitors' figures look like: a draw that costs watts and no IMMA time.
+  - Four of eight warps folding, one a scheduler, with the other four producing: work a clock falls 3.4% at 1.03
+    an IMMA and 6.5% at 1.95. A lone folding warp has no partner to keep the pipe fed, so the producer's instructions
+    cost it what they cost inside it (the gate's sham: 3 to 4% at 1 an IMMA).
+  - One producer for seven folding warps cannot keep up, and the fold waits for it: 184.9 TH/s against 299.5 with
+    the eighth warp gone.
+- **The watts are the cost.** At 450 W the 128x256 fold holds the 2685 MHz top clock on 414 W alone and on 411 W
+  with idle producers. Producers at 1.03, 1.97 and 3.00 an IMMA bring it to the limit at 2580, 2541 and 2504 MHz. At
+  300 W: 2426 MHz alone, 2235 and 2190 at 1.03 and 1.97. The release's copies cost 6.1% of clock at 450 W (2531
+  against 2685 MHz); a producer at 1 an IMMA gives 3.9 of that back and at 2, 5.4.
+- **Room is the other cost.** Only the 128x256 fold leaves registers for producer warps, and it is 3.8% a clock
+  behind the 192x256 fold (122.4 against 127.3 TH/s per GHz): 328.5 TH/s against 341.9. Giving up warps of the
+  eight costs more: seven folding is exactly seven eighths (299.5), and four, one a scheduler, 282.0, since a lone
+  warp reaches 80.1% of the pipe.
+
+Net against the release fold on the RTX 4090:
+
+| Arrangement | No producer work | About 1 an IMMA | About 2 | About 3 |
+|---|---|---|---|---|
+| 450 W: sham inside the folding warps, 192x256, k 65536 (the gate) | +7.7% | +1.65% | −3.5% at k 2048 | |
+| 450 W: 128x256 fold, four producer warps | +1.6% (+3.5% with no producer warps) | −1.4% | −3.4% (−2.7% spinning) | −6.0% |
+| 450 W: four of eight warps fold, four produce | −11.6% | −14.6% | −17.3% | −19.5% (3.67) |
+| 450 W: seven fold, one produces | −5.6% (the eighth warp gone) | −41.7% | | |
+| 300 W: sham inside the folding warps (the gate) | +15.0% | +4.0% | −2.0% at k 2048 | |
+| 300 W: 128x256 fold, four producer warps | +9.9% with no producer warps | −0.3% | −3.1% | |
+| 300 W: four of eight warps fold, four produce | −0.4% with the four gone | −10.3% | −13.0% | |
+
+**What a real draw needs.** The least we can write down is about 18 instructions a 16-byte unit. It takes the noise
+table held column-wise, eight rows to a unit, so that ldmatrix's transposed form reads what a column draw writes:
+one load of the pair offsets, four address adds, four 8-byte table loads, four subtracts, four byte selects to
+interleave two k indexes, one store. That is 1.3 instructions an IMMA on the 192x256 tile and 1.7 on the 128x256
+one. The one draw built so far (`pearl_e4_drawt`) is about 32 a unit: 2.3 and 3.0. Nothing has been built at 18.
+
+**Verdict: the on-chip-draw route is closed for stock-power cards.** The line was +3% on the release at 450 W with
+the producer at a real draw's count. The best arrangement at 1.3 to 1.7 an IMMA is about 0% (the draw inside the
+folding warps of the 192x256 fold) or about −3% (the 128x256 fold with producer warps); no arrangement reaches +3% at
+1 an IMMA, and at 300 W only the draw inside the folding warps does (+4.0% at 1, less at a real draw's count). What
+would have to change is known now: a fold that leaves room for producers and still does 97% of the peak (ours does
+93.4%), and a draw under one instruction an IMMA in watts. Three competitors' figures show both. We have neither,
+and nothing measured here says how to get them.
+
+The arms, the raw runs and the table script are on branch `goal/gate` (4014c732, `earn/tuning/gate`).
+
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RDNA 4 and the RX 7800 XT: the hash on its own queue, and a shorter launch, against a slow PC's queue stops (11
+  November, Salad; the numbers are under AMD Radeon). On a slow RX 9060 XT (`3540c3e2`) the hash queue was level
+  (−0.04 to −0.27%, twin ±0.3%) and 5 of 6 launches were still stopped: a launch there is 38 ms, longer than the
+  33 ms between stops, and the hash queue gets work once a launch. 128 offsets a launch read −0.6 to −1.1%, with or
+  without the hash queue. A ticker kernel on a third queue every 2 ms ends the stops there (+2.4 to +3.7%) but takes
+  half a CPU core or more, so it is a switch on branch `goal/amd` (`PEARL_AMD_TICK_US`, `PEARL_AMD_TICK_WAIT`), off
+  by default, not for merging as it is. On a slow RX 7800 XT (`559a11d6`) the hash queue read 0 to −0.5% and the
+  ticker −4%: there a second queue's work stops the fold's queue itself, in every launch. And the hash queue takes
+  one more CPU core.
+- RX 7900: several batches a launch, and fewer commands between folds (the AMD goal, 10–11 November, Salad, two RX
+  7900 XTX PCs and an XT; the numbers are under AMD Radeon). The review's lead was that each launch costs more on a slow
+  PC, so fewer, longer launches should win there. They lose: 4 batches a launch, as strips so that B' in use stays one
+  batch's, read −6.2 to −6.4% on the slow PC, and the fold alone gained nothing from 2 or 4 batches a launch on any of
+  the three PCs. A slow PC stops a busy queue every 33 ms, and a 41 ms launch is always hit. 2 batches a launch (20 ms)
+  read −0.2% there, batch 64 (5 ms) −1.1 to −1.4%; on the RX 7900 XT 2 and 4 batches a launch read −0.4% and −0.6%.
+  With the hash on its own queue, zeroing the hit count there instead of before the fold, and dropping the fold queue's
+  wait for the slot's last hash, were level (+0.09 to +0.29%, −0.11 to +0.27%, twin +0.05 to +0.44%); so was a ticker
+  kernel on a third queue every 2 ms or 0.5 ms (+0.11 to +0.22%). The switches are on branch `goal/amd`
+  (`PEARL_AMD_STRIP`, `PEARL_AMD_STRIPS`, `PEARL_AMD_HASHQ_ZERO`, `PEARL_AMD_HASHQ_WAIT`, `PEARL_AMD_TICK_US`), all off
+  by default, not for merging.
 - RTX 5090 B' drawn on the SM (research item 8, 10 November, desk study, no card time). The "+1.81%" from 2 November
   (b68b0399, 53ddd838, 87ba3d6e) was `PEARL_TALL_SHAM_DRAW`, a timing-only stand-in: it reads each B fragment from
   shared memory again and adds one IADD3 a register, but skips the real draw's table loads and byte gathers (each B'

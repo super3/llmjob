@@ -15,6 +15,7 @@
       "cflags_cc!": [ "-fno-exceptions" ],
       "conditions": [
         ["OS=='win' and pearl_backend=='cuda'", {
+          "defines": [ "PEARL_NVML_OFFSETS" ],
           "libraries": [ "<(cuda_root)/lib/x64/cudart_static.lib", "<(module_root_dir)/cuda-build/pearl_cuda.lib" ],
           "include_dirs": [ "<(cuda_root)/include" ],
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
@@ -23,7 +24,12 @@
           "libraries": [ "<(module_root_dir)/amd/build/win/pearl_hip.lib", "<(hip_root)/lib/amdhip64.lib" ],
           "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
         }],
+        ["OS=='win' and pearl_backend=='sycl'", {
+          "libraries": [ "<(module_root_dir)/sycl/build-win/pearl_sycl.lib" ],
+          "msvs_settings": { "VCCLCompilerTool": { "ExceptionHandling": 1 } }
+        }],
         ["OS=='linux'", {
+          "defines": [ "PEARL_NVML_OFFSETS" ],
           "libraries": [ "-L<(module_root_dir)/cuda-build", "-lpearl_cuda", "-L<(cuda_root)/lib64", "-lcudart_static", "-lrt", "-lpthread", "-ldl" ],
           "include_dirs": [ "<(cuda_root)/include" ]
         }]

@@ -33,11 +33,36 @@
 // host re-verifies every hit before submitting (see pearlMiner._onHit), so this
 // layer is free to be optimistic.
 //
+// The CUDA builds also export two functions that have nothing to do with a core:
+//
+//   getClockOffset(cardIndex)      -> { ok, mhz, min, max } or { ok: false, error, code }
+//   setClockOffset(cardIndex, mhz) -> { ok: true }          or { ok: false, error, code }
+//
+// They read and set a card's core clock offset through NVML, for the host's
+// offset trial (see "The core clock offset" below, and main/gpuClockOffset.js).
+// The AMD and Intel builds have neither: PEARL_NVML_OFFSETS is defined only
+// for CUDA (binding.gyp).
+//
 // Independent implementation against the ISC-licensed pearl-research-labs
 // specification. No dev fee, no fee address, nothing to disclose — see
 // pearl_kernel.cu for why that matters.
 
 #include <napi.h>
+
+#ifdef PEARL_NVML_OFFSETS
+#ifdef _WIN32
+// Before <windows.h>: its min and max macros would break std::max below.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
+#endif
 
 #include <algorithm>
 #include <atomic>
@@ -856,10 +881,227 @@ Napi::Value CreateCore(const Napi::CallbackInfo &info) {
                    info.Length() > 1 ? info[1] : env.Undefined()});
 }
 
+#ifdef PEARL_NVML_OFFSETS
+// ---- The core clock offset ---------------------------------------------------
+//
+// An offset moves a card's whole clock-to-voltage curve: at +100 MHz it runs each
+// voltage 100 MHz faster. A card held at a power limit then gets more clock for
+// the same watts, which is where the fold's rate comes from (benchmark.md, "core
+// clock offset on the RTX 4090"). nvidia-smi has no switch for it, so this calls
+// NVML, the library nvidia-smi itself is built on.
+//
+// NVML is opened at run time and its functions looked up by name. The addon so
+// has no link-time dependency on it, and loads on a machine that has none: these
+// two functions then answer { ok: false } and everything else works. Nothing here
+// throws into JS, whatever it is handed.
+//
+// The types below are NVIDIA's, from nvml.h (API version 13), declared here
+// rather than included: the CUDA 12.8 toolkit the release is built with has an
+// nvml.h older than these two calls.
+namespace nvml {
+
+typedef struct nvmlDevice_st *Device;  // nvmlDevice_t
+typedef int Return;                    // nvmlReturn_t, an enum
+// nvmlClockOffset_v1_t. Its two enums (nvmlClockType_t, nvmlPstates_t) are ints.
+struct ClockOffset {
+  unsigned int version;
+  int type;
+  int pstate;
+  int clockOffsetMHz;
+  int minClockOffsetMHz;
+  int maxClockOffsetMHz;
+};
+// nvmlClockOffset_v1, which is NVML_STRUCT_VERSION(ClockOffset, 1): the struct's
+// size with the version in the top byte, 0x1000018.
+const unsigned int kClockOffsetV1 = (unsigned int)(sizeof(ClockOffset) | (1U << 24U));
+const int kClockGraphics = 0;  // NVML_CLOCK_GRAPHICS: the core clock, not the memory's
+const int kPstate0 = 0;        // NVML_PSTATE_0: full performance, the state a card mines in
+const Return kSuccess = 0;     // NVML_SUCCESS
+
+struct Api {
+  Return (*init)() = nullptr;                                 // nvmlInit_v2
+  Return (*shutdown)() = nullptr;                             // nvmlShutdown
+  Return (*handleByIndex)(unsigned int, Device *) = nullptr;  // nvmlDeviceGetHandleByIndex_v2
+  Return (*getOffsets)(Device, ClockOffset *) = nullptr;      // nvmlDeviceGetClockOffsets
+  Return (*setOffsets)(Device, ClockOffset *) = nullptr;      // nvmlDeviceSetClockOffsets
+  const char *(*errorString)(Return) = nullptr;               // nvmlErrorString
+  // Why there is nothing to call: no library, or one too old to have a function.
+  std::string missing;
+};
+
+void *OpenLibrary() {
+#ifdef _WIN32
+  // From System32 only, where the driver installs it: never an nvml.dll that
+  // happens to sit beside the app or on PATH.
+  return (void *)LoadLibraryExA("nvml.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+#else
+  return dlopen("libnvidia-ml.so.1", RTLD_NOW | RTLD_LOCAL);
+#endif
+}
+
+void *Find(void *lib, const char *name) {
+#ifdef _WIN32
+  return (void *)GetProcAddress((HMODULE)lib, name);
+#else
+  return dlsym(lib, name);
+#endif
+}
+
+// Opened once and kept for the life of the process.
+Api LoadApi() {
+  Api api;
+  void *lib = OpenLibrary();
+  if (!lib) {
+    api.missing = "the NVIDIA management library (NVML) is not installed";
+    return api;
+  }
+  const char *lost = nullptr;
+  auto find = [&](const char *name) -> void * {
+    void *p = Find(lib, name);
+    if (!p && !lost) lost = name;
+    return p;
+  };
+  api.init = reinterpret_cast<Return (*)()>(find("nvmlInit_v2"));
+  api.shutdown = reinterpret_cast<Return (*)()>(find("nvmlShutdown"));
+  api.handleByIndex =
+      reinterpret_cast<Return (*)(unsigned int, Device *)>(find("nvmlDeviceGetHandleByIndex_v2"));
+  api.getOffsets =
+      reinterpret_cast<Return (*)(Device, ClockOffset *)>(find("nvmlDeviceGetClockOffsets"));
+  api.setOffsets =
+      reinterpret_cast<Return (*)(Device, ClockOffset *)>(find("nvmlDeviceSetClockOffsets"));
+  api.errorString = reinterpret_cast<const char *(*)(Return)>(find("nvmlErrorString"));
+  if (lost) {
+    api.missing = std::string("this NVIDIA driver's NVML has no ") + lost
+                  + ": the driver is too old for clock offsets";
+  }
+  return api;
+}
+
+const Api &GetApi() {
+  static const Api api = LoadApi();
+  return api;
+}
+
+// What a call left behind: nothing, or the words for the log and NVML's own code
+// (0 when the failure is not NVML's).
+struct Failure {
+  std::string error;
+  Return code = 0;
+};
+
+// A failure of the caller's, not NVML's.
+Failure Refused(const char *why) {
+  Failure f;
+  f.error = why;
+  return f;
+}
+
+// Run `fn` on card `index`, between nvmlInit and nvmlShutdown. NVML counts its
+// inits, so this never ends a session something else in the process holds.
+template <typename F>
+Failure WithDevice(unsigned int index, const char *what, F fn) {
+  const Api &api = GetApi();
+  Failure f;
+  if (!api.missing.empty()) {
+    f.error = api.missing;
+    return f;
+  }
+  auto fail = [&](const char *step, Return r) {
+    const char *said = api.errorString(r);
+    f.error = std::string(step) + ": " + (said ? said : "unknown NVML error");
+    f.code = r;
+  };
+  Return r = api.init();
+  if (r != kSuccess) {
+    fail("nvmlInit", r);
+    return f;
+  }
+  Device dev = nullptr;
+  r = api.handleByIndex(index, &dev);
+  if (r != kSuccess) fail("no such card", r);
+  if (f.error.empty()) {
+    r = fn(api, dev);
+    if (r != kSuccess) fail(what, r);
+  }
+  api.shutdown();
+  return f;
+}
+
+ClockOffset Blank() {
+  ClockOffset info = {};
+  info.version = kClockOffsetV1;
+  info.type = kClockGraphics;
+  info.pstate = kPstate0;
+  return info;
+}
+
+Napi::Object Answer(Napi::Env env, const Failure &f) {
+  Napi::Object out = Napi::Object::New(env);
+  out.Set("ok", Napi::Boolean::New(env, f.error.empty()));
+  if (!f.error.empty()) {
+    out.Set("error", Napi::String::New(env, f.error));
+    out.Set("code", Napi::Number::New(env, f.code));
+  }
+  return out;
+}
+
+// A card index from JS: a whole number from 0 up. -1 for anything else.
+int CardIndex(const Napi::CallbackInfo &info) {
+  if (info.Length() < 1 || !info[0].IsNumber()) return -1;
+  const double d = info[0].As<Napi::Number>().DoubleValue();
+  if (!(d >= 0 && d <= 1024) || d != (double)(int)d) return -1;
+  return (int)d;
+}
+
+// getClockOffset(cardIndex): the card's core clock offset on P-state 0 and the
+// range the driver allows, all in MHz.
+Napi::Value GetClockOffset(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  const int index = CardIndex(info);
+  if (index < 0) return Answer(env, Refused("the card index must be a whole number"));
+  ClockOffset got = Blank();
+  const Failure f = WithDevice((unsigned int)index, "reading the clock offset",
+                               [&](const Api &api, Device dev) { return api.getOffsets(dev, &got); });
+  Napi::Object out = Answer(env, f);
+  if (f.error.empty()) {
+    out.Set("mhz", Napi::Number::New(env, got.clockOffsetMHz));
+    out.Set("min", Napi::Number::New(env, got.minClockOffsetMHz));
+    out.Set("max", Napi::Number::New(env, got.maxClockOffsetMHz));
+  }
+  return out;
+}
+
+// setClockOffset(cardIndex, mhz): set the card's core clock offset on P-state 0.
+// The driver refuses a value outside its range, and a caller without root or
+// administrator rights (NVML_ERROR_NO_PERMISSION, code 4).
+Napi::Value SetClockOffset(const Napi::CallbackInfo &info) {
+  Napi::Env env = info.Env();
+  const int index = CardIndex(info);
+  if (index < 0) return Answer(env, Refused("the card index must be a whole number"));
+  double mhz = 0.0;
+  const bool given = info.Length() > 1 && info[1].IsNumber();
+  if (given) mhz = info[1].As<Napi::Number>().DoubleValue();
+  if (!given || !(mhz >= -100000 && mhz <= 100000) || mhz != (double)(int)mhz) {
+    return Answer(env, Refused("the offset must be a whole number of MHz"));
+  }
+  ClockOffset want = Blank();
+  want.clockOffsetMHz = (int)mhz;
+  const Failure f = WithDevice((unsigned int)index, "setting the clock offset",
+                               [&](const Api &api, Device dev) { return api.setOffsets(dev, &want); });
+  return Answer(env, f);
+}
+
+}  // namespace nvml
+#endif  // PEARL_NVML_OFFSETS
+
 Napi::Object InitAll(Napi::Env env, Napi::Object exports) {
   PearlCore::Init(env, exports);
   env.Global().Set("__pearl_exports", exports);
   exports.Set("createCore", Napi::Function::New(env, CreateCore));
+#ifdef PEARL_NVML_OFFSETS
+  exports.Set("getClockOffset", Napi::Function::New(env, nvml::GetClockOffset));
+  exports.Set("setClockOffset", Napi::Function::New(env, nvml::SetClockOffset));
+#endif
   return exports;
 }
 

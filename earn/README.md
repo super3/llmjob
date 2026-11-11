@@ -34,24 +34,26 @@ Paste a payout address, hit **Start**, and earn — no command line. Built with 
   - `selfUpdate.js` — decides, from the running version + GitHub's latest release, whether the CLI binary should self-update.
   - `miner/` — the Pearl protocol: Stratum messages, PearlHash, and the share proofs the pool checks.
   - `xmr/` — Monero on the CPU ([below](#monero-on-the-cpu-opt-in)): its Stratum, address check (Keccak-256), thread plan, and the worker's line protocol.
-  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8 or CUDA 13).
+  - `coreVariant.js` — which build of the mining core a rig loads (CUDA 12.8, CUDA 13, AMD or Intel).
   - `memClock.js` — which mining cards get their memory clock locked, and at what.
+  - `coreOffset.js` / `coreOffsetTrial.js` — which mining cards try a core clock offset, and the trial that decides what each keeps.
   - `miningStats.js` — accumulates the miner's events into the live stats snapshot.
   - `earnings.js` — PRL/USD per-day estimates.
   - `balance.js` — builds the pool balance lookup and parses the pending + paid response.
   - `minerReport.js` — the payload published to the public network board while mining.
   - `statsFile.js` — the stats JSON the CLI writes for HiveOS's `h-stats.sh`.
-  - `gpu.js` — reads `nvidia-smi`'s card list and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
+  - `gpu.js` — reads `nvidia-smi`'s card list, names AMD and Intel Arc cards, and decides which cards mine (`--gpu-index`, `PEARL_GPU_INDEX`).
   - `region.js` — picks the lowest-latency pool region.
   - `updateStatus.js` — formats the in-app auto-update banner.
   - `format.js` — uptime / hashrate / number formatting.
 - **`src/main/`** — Electron main process:
   - `pearlMiner.js` — the miner: one core per card, the pool connection, and share submission.
   - `pearlEngine.js` — wraps `pearlMiner.js` in the start/stop and event interface both shells drive.
-  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build.
+  - `pearlCore.js` — loads `pearl_core.node` (built from [`native/`](native)), picking the CUDA 12.8 or CUDA 13 build, or the AMD or Intel core on a rig of those cards.
   - `xmrEngine.js` — the Monero CPU miner: the pool connection and the RandomX worker process (built from [`xmr-worker/`](xmr-worker)); `xmrWorker.js` finds the worker, `cpuFacts.js` reads the CPUs, cgroup limit, memory and L3 the thread plan needs.
-  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), pings the pool regions, and posts the board report.
+  - `probe.js` — asks `nvidia-smi` about the cards (names, VRAM, temperatures, PCI bus ids), finds AMD and Intel Arc cards from the system's own list, pings the pool regions, and posts the board report.
   - `gpuClocks.js` — locks and releases a card's memory clock while it mines.
+  - `gpuClockOffset.js` — reads and sets a card's core clock offset, through the mining core.
   - `llmManager.js` / `llmEngineManager.js` — spawn/supervise the local `llama-server` and download its binary + GGUF model on demand (injected IO, unit-tested).
   - `lanShare.js` — shares the local LLM on the network when Settings asks (see [below](#sharing-the-local-llm-on-your-network)).
   - `main.js` / `preload.js` — window, settings persistence, IPC bridge (thin shells).
@@ -340,6 +342,65 @@ little free VRAM for k 4096 (about 1,969 MiB against 1,137) and the log says why
 `PEARL_AMD_K=2048` keeps every card there. If a pool turns down 3 shares at k 4096 and takes
 none, the miner mines k 2048 for the rest of the run.
 
+### The Intel core (Arc)
+
+A third core, for Intel Arc cards, is built from `native/sycl` and packed with
+the others. No release has carried it yet. It is a folder, `sycl/`, not one
+file: `pearl_core_sycl.node` with the open-source SYCL runtime it needs beside
+it (Apache-2.0 with LLVM exceptions; its licence text is in the folder). The
+folder is 15 MB on Linux and 7.6 MB on Windows.
+
+- **Linux**: in the AppImage, beside the CLI binary, in the HiveOS package, and
+  on the release page as `pearl_core_sycl-linux.tar.gz`. Six Arc A750 cards
+  have mined with it, on Ubuntu 24.04 and on HiveOS's own Ubuntu 22.04
+  userland. It needs glibc 2.27 (Ubuntu 18.04 or newer) and Intel's compute
+  runtime, which the kernel's graphics driver does not include: OpenCL
+  (`intel-opencl-icd`) or Level Zero (`libze-intel-gpu1` and `libze1`), with
+  the miner's user in the `render` group. A newer runtime is faster: an A750
+  does 16.8 TH/s with Intel's 2026 release and 10.2 with the 2024 one HiveOS
+  has.
+- **Windows**: in the installer, and **experimental**. CI builds it and checks
+  its folds on a CPU. No Intel card has run it. It needs Intel's Arc driver and
+  Microsoft's Visual C++ runtime, which the installer does not carry.
+
+It is tried only on a rig where `nvidia-smi` lists no NVIDIA card and the
+system lists Arc cards and no AMD card the AMD core mines on. Every other rig
+loads what it loaded before and never opens the folder, so a missing or broken
+one says nothing there. `--core intel` (or `PEARL_CORE_VARIANT=intel`) asks for
+it by name, with no fallback. On a rig of Arc cards the log reads:
+
+```
+gpu:        6× Intel Arc A750  (auto)
+mining on 6 Intel cards (GPU 0, 1, 2, 3, 4, 5), one core each; use --gpu-index to choose cards
+Pearl core: Intel build (SYCL) · nvidia-smi lists no NVIDIA card, and the system has 6 Intel Arc cards
+mining on GPU 0 · Intel(R) Arc(TM) A750 Graphics
+```
+
+- **Which cards.** Discrete Arc cards. On Linux the app knows the A770, A750,
+  A580, A380, A310, B580 and B570 by PCI id; on Windows it reads the adapter's
+  name. A processor's built-in graphics is not counted, and neither is an Arc
+  card it has no name for: `--core intel` mines on those. Every card the core
+  finds mines, one core each, and `--gpu-index` picks among them by the core's
+  own numbers.
+- **Every hit is checked.** No Intel card has mined in a release, so each one
+  mines the way an untested AMD card does: the miner checks every hit as the
+  pool would before sending it, and stops the card at the first wrong one. The
+  log says so once a card: `Intel xmx8 fold: this kind of card has not mined in
+  a release yet`.
+- **No driver.** When the system lists Arc cards and the core finds none, the
+  log says once which packages to install (on Windows, to update the Arc
+  driver). The CUDA build is tried after it, as on an AMD rig.
+- **What is not shown.** Temperature and VRAM for an Arc card: the app
+  has no source for them yet, so those fields stay empty. The memory clock
+  lock and the core clock offset are for NVIDIA cards and are left off. The
+  local LLM has not been tried on an Arc rig.
+- **Updates.** The CLI's self-updater does not fetch the folder yet. The
+  HiveOS package and the installers replace it with each release; a rig that
+  runs the bare binary unpacks the archive again after an update.
+
+`native/sycl/README.md` has the measurements, the licences and what is not
+done.
+
 ## Monero on the CPU (opt-in)
 
 The app can also mine Monero (**XMR**) on the CPU while the GPU mines Pearl.
@@ -564,7 +625,8 @@ each core loads, the hook scripts, and the stats HiveOS reads.
 22, which needs glibc 2.28. The CUDA cores need less: they are built on Rocky
 Linux 8 (`.github/workflows/native-core.yml`) and need glibc 2.17 and
 `GLIBCXX_3.4.22`. The AMD core also needs ROCm 7, which supports Ubuntu 22.04
-and newer. RTX 50-series and RTX PRO Blackwell cards need
+and newer. The Intel core needs glibc 2.27 and Intel's OpenCL or Level Zero
+driver. RTX 50-series and RTX PRO Blackwell cards need
 a newer NVIDIA driver than the stable image's 550: run `nvidia-driver-update`
 from Hive Shell.
 
@@ -596,6 +658,9 @@ defaults. The ones that make sense on a rig:
 - `--no-update` keeps the rig on the version it has.
 - `--mine-mem-clock <MHz>` locks the memory clock while mining; `0` turns off
   the RTX 5090 default (see below).
+- `--mine-core-offset auto` tries a core clock offset on each RTX card and
+  keeps it only if the card still computes right and mines faster. Off unless
+  you ask; read [what it risks](#try-a-core-clock-offset-while-mining---mine-core-offset-auto) first.
 - `--mode auto` also serves a local LLM (below).
 - `--no-report` keeps the rig off the public network board.
 - `--xmr-address 4…` also mines Monero on the CPU (see
@@ -606,6 +671,14 @@ defaults. The ones that make sense on a rig:
   package carries ROCm 7's HIP runtime in `rocm/`, so the rig needn't install
   ROCm. That runtime is about 60 MB of the package. No AMD rig has mined on
   HiveOS yet.
+- On a rig of Intel Arc cards the package's `sycl/` folder mines, with nothing
+  in Extra config, and `--core intel` asks for it on a mixed rig (see
+  [The Intel core](#the-intel-core-arc)). It is about 5 MB of the package. It
+  uses the Intel OpenCL driver HiveOS already has (`intel-opencl-icd` 24.35 on
+  the rig tried). On 10 November the package's binary mined on a HiveOS rig
+  of six Arc A750 cards, run by hand from a folder: 60.6 TH/s, about 10 a
+  card, shares accepted. It has not been installed through a flight sheet on
+  an Arc rig, so the hook scripts and HiveOS's stats are unproven there.
 
 `llmjob-earn-cli-linux --help` lists every flag. A flag the CLI doesn't have
 makes it exit at once, HiveOS restarts it every few seconds, and the rig's page
@@ -659,7 +732,8 @@ restarted every few seconds. HiveOS reads the setting when the miner starts, so
 restart the miner after turning a card on or off. A `--gpu-index` in Extra
 config replaces HiveOS's choice. The local LLM (`--mode auto`) doesn't follow
 it. With `--core amd` HiveOS's choice isn't passed on: its numbers are NVIDIA
-cards, and the AMD core would take them for AMD ones. To leave AMD cards out,
+cards, and the AMD core would take them for AMD ones (`--core intel` is the
+same). To leave AMD cards out,
 list the ones to mine on with `--gpu-index` in Extra config.
 
 `h-stats.sh` sends HiveOS each card's own hashrate with its PCI bus number,
@@ -816,7 +890,8 @@ only with `--xmr-address`) are separate files on the same release, and the
 binary looks for them beside itself (`pearl_core_cu13.node` is used only on
 Blackwell cards, such as the RTX 50 series and RTX PRO Blackwell, with driver
 580 or newer; on an AMD rig, add `-O $base/pearl_core_hip.node`, which loads
-when nvidia-smi lists no NVIDIA card):
+when nvidia-smi lists no NVIDIA card; on a rig of Intel Arc cards, unpack
+`pearl_core_sycl-linux.tar.gz` there too, which makes the `sycl/` folder):
 
 ```bash
 base=https://github.com/super3/llmjob/releases/latest/download
@@ -839,7 +914,8 @@ with a newer binary. The AMD core, `pearl_core_hip.node`, updates with them
 on a rig that runs `--core amd` or already has one, and is paired like the
 12.8 core: a failed download of it leaves the old install as it was. A rig that
 runs `--core amd` without one fetches it on its next start. A release without
-an AMD core leaves the old one in place. The CPU worker, `llmjob-xmr-worker`, updates with
+an AMD core leaves the old one in place. The Intel core's folder, `sycl/`, is
+not updated yet: unpack the new release's archive over it. The CPU worker, `llmjob-xmr-worker`, updates with
 it on a rig that mines Monero (`--xmr-address`) or already has one; a
 Pearl-only rig never gets it. On a Monero rig, a start that finds the worker
 missing, not executable or from another release also fetches this release's
@@ -873,13 +949,19 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as
                            0,2, or "none" (default: every GPU)
-      --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime), or
-                           cu12/cu13 to force a CUDA build (default: the CUDA
-                           build that fits the cards, or the AMD core first when
-                           nvidia-smi lists none; see above)
+      --core <build>       amd for AMD cards (needs the ROCm 7 HIP runtime),
+                           intel for Intel Arc cards (needs Intel's Level Zero
+                           or OpenCL driver), or cu12/cu13 to force a CUDA
+                           build (default: the CUDA build that fits the cards;
+                           when nvidia-smi lists none, the Intel core on a rig
+                           of Arc cards, else the AMD core first; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: 7001 on the RTX 5090; 0 turns it off; auto
                            tries a lock and keeps it if faster; see below)
+      --mine-core-offset <auto|0>  auto tries a core clock offset on each RTX
+                           card, up to +150 MHz, and keeps the highest step that
+                           computes right and is faster (default: 0, off; it
+                           overclocks the card; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
                            HeroMiners, such as xmr-us.kryptex.network:7029
@@ -1013,6 +1095,102 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # try a 
   run `sudo nvidia-smi -i <index> -rmc` (on Windows `nvidia-smi -i <index> -rmc`
   as administrator; a reboot clears it too).
 
+### Try a core clock offset while mining (`--mine-core-offset auto`)
+
+**This overclocks the card.** A core clock offset moves a card's whole
+clock-to-voltage curve: at +100 MHz it runs each voltage 100 MHz faster than its
+maker set it. Read the risks below before you turn it on. It is off unless you
+ask for it.
+
+Why a miner would want it: on a card at its power limit the fold is limited by
+watts, and an offset buys more clock for the same watts. Measured on one RTX
+4090 at its 450 W limit, with a run at offset 0 between every setting
+(`tuning/benchmark.md`, "rig01, 10 November: core clock offset on the RTX 4090"):
+
+| Core clock offset | SM clock | TH/s | Against 0 |
+|---|---|---|---|
+| 0 | 2530–2533 MHz | 317.3–317.5 | — |
+| +50 MHz | 2559 MHz | 320.9 | +1.1% |
+| +100 MHz | 2593 MHz | 325.3 | +2.5% |
+| +150 MHz | 2640 MHz | 331.2 | +4.3% |
+| +150 MHz and `--mine-mem-clock 5001` | 2660 MHz | 333.3 | +5.0% |
+
+That is the only card measured. How far a card goes before it computes wrong
+differs from card to card and with heat, and a card past that point does not
+stop: it finds wrong hashes that still meet the target, and every share it sent
+would be rejected. So there is no offset to ask for by number. `auto` makes each
+card show what it can do:
+
+```bash
+llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto
+llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto --mine-mem-clock auto
+```
+
+- **Which cards.** NVIDIA RTX 20, 30, 40 and 50 cards (told by compute
+  capability, so the other cards of those generations are tried too). Not AMD
+  cards, and not when the AMD core mines.
+- **The trial.** Each card mines 75 seconds at offset 0, then at +50, +100 and
+  +150 MHz, then at 0 again, with the first 15 seconds of each turn left out.
+  +150 MHz is as far as it goes: nothing above it has been measured. The card
+  mines the whole time, and the trial takes about six and a half minutes.
+- **Every step is checked before it counts.** A share is too rare to show that
+  a step computes right, so at the start of each step the miner gives the card
+  a job of its own with an easy target and recomputes 100 of the hits it finds,
+  the way a pool's verifier would. That takes three or four seconds; those hits
+  are never sent anywhere. One wrong hit fails the step, and the card climbs no
+  further.
+- **What it keeps.** The highest step that passed its check, was at least 0.3%
+  faster than the step before it, and at least 0.3% faster than offset 0 (the
+  mean of the two turns at 0). If no step does, the card stays at 0. The log
+  says what was measured at each step and what was kept. On the RTX 4090 above
+  the trial measured 317.4 TH/s at 0 and 320.7, 325.2 and 331.2 at the three
+  steps, and kept +150 MHz (+4.4%). With `--mine-mem-clock auto` as well it
+  ended at 333.6 TH/s, +5.0%. The two runs had 42 shares accepted and none
+  rejected (`tuning/benchmark.md`, "rig01, 10 November: `--mine-core-offset
+  auto`").
+- **After the trial**, every share a card finds while it has an offset is
+  recomputed before it is sent. If one comes out wrong it is not sent, the card
+  goes back to offset 0 at once and stays there for the rest of the run, and
+  the log says so in an error line. A card whose core fails and restarts also
+  comes back at offset 0 for the rest of the run.
+- **With `--mine-mem-clock auto`** the memory clock trial runs first and the
+  offset trial starts when it has its answer, so the two never overlap. A lock
+  the first one kept stays in place.
+- **Never while an LLM shares the card.** When `auto` co-runs the LLM with the
+  miner the request is dropped, and the log says so. Demand mode puts the card
+  back at offset 0 before the model starts, and the desktop app does the same
+  the moment START LLM joins a running miner. Nothing checks what a model
+  computes, so a model is never served from a card with an offset.
+- **Needs root, or administrator rights on Windows.** The call goes to NVML
+  from the miner itself, not through `nvidia-smi`, so a sudoers rule for
+  `nvidia-smi` does not cover it: the CLI or the app has to run as root (as
+  administrator on Windows). Without the rights it mines at the card's own
+  clock and says so in one warning per card. It also needs the CUDA mining core
+  of this release or later, and an NVIDIA driver recent enough to have NVML's
+  clock offset calls.
+- **Set back to 0 whenever the miner stops**, for the cards it changed and only
+  those, before anything else happens. The trial starts from offset 0: an
+  offset already on the card when mining starts, from an earlier run or from
+  another tool such as MSI Afterburner, is replaced, and the log says what it
+  was.
+- **A hard kill can't put it back.** After a SIGKILL, a crash or a power cut
+  while a card has an offset, it stays until the next start with
+  `--mine-core-offset auto` (which starts from 0), a driver reload or a reboot.
+  `nvidia-smi` has no switch for it.
+- **The desktop app** has no setting for it in its window. Its switch is the
+  environment variable `LLMJOB_MINE_CORE_OFFSET=auto`, read on every start, set
+  the way `LLMJOB_MINE_MEM_CLOCK` is.
+
+**The risks, plainly.** It runs the card faster than its maker set it, and only
+one RTX 4090 has been measured. The checks catch a card that computes wrong;
+they cannot catch a step so unstable that it crashes the graphics driver or
+the PC before any check runs, and a crash can lose unsaved work in other
+programs. Nothing longer than a few minutes at an offset has been measured, so
+stability over hours is not known: a card that passes at start can fail later
+as it warms up, which the check on every share is there for. Running a card
+outside its maker's settings may also affect its warranty. If a rig becomes
+unstable with this on, turn it off.
+
 ## Develop
 
 ```bash
@@ -1038,7 +1216,7 @@ the Linux **AppImage** builds on Linux; the macOS **DMG** builds on macOS
 build is uploaded as an artifact and, on a `v*` tag, published to the GitHub
 Release.
 
-The mining cores are bundled into the Windows and Linux builds only
+The mining cores, the Intel core's `sycl/` folder among them, are bundled into the Windows and Linux builds only
 (`build.win.extraResources` / `build.linux.extraResources`); the Mac build ships
 neither them nor the Windows VC++ runtime DLLs, since it cannot mine. The macOS app
 is ad-hoc signed in an `afterPack` hook — see

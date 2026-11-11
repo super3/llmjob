@@ -10,13 +10,14 @@ const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config')
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
+const { parseCoreOffset } = require('./coreOffset');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
-const { CU12, CU13, AMD } = require('./coreVariant');
+const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
-const CORES = [CU12, CU13, AMD];
+const CORES = [CU12, CU13, AMD, INTEL];
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -39,7 +40,7 @@ const VALUE_FLAGS = new Set([
   '--gpu', '--gpu-index', '--core',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
-  '--gate-quiet', '--mine-mem-clock',
+  '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
   '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
 ]);
 
@@ -97,6 +98,19 @@ const USAGE = [
   '                           a sudoers NOPASSWD rule for nvidia-smi. Released',
   '                           whenever mining stops; skipped while an LLM',
   '                           co-runs with it.',
+  '      --mine-core-offset <auto|0>  auto tries a core clock offset on each',
+  '                           RTX 20, 30, 40 or 50 card while it mines: +50,',
+  '                           +100, then +150 MHz. A step is tried only after',
+  '                           100 of its hits are recomputed right, and the',
+  '                           highest step that is right and faster is kept.',
+  '                           Default: 0, off. It runs the card above the',
+  '                           clock its maker set, and only one RTX 4090 has',
+  '                           been measured (+4.3% at +150 MHz, at 450 W): an',
+  '                           unstable step can crash the driver or the PC',
+  '                           before any check sees it. Needs root, or',
+  '                           administrator rights on Windows. Set back to 0',
+  '                           whenever mining stops; skipped while an LLM',
+  '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
   '                           An old AlphaPool id (eu1, sg1, …) maps to the nearest.',
   '      --pool <host:port>   Mine Pearl on this stratum endpoint instead of a',
@@ -111,11 +125,14 @@ const USAGE = [
   '                           the same list; the flag wins.',
   '      --core <build>       Which Pearl core to load: amd for AMD Radeon and',
   '                           Instinct cards (Linux, needs the ROCm 7 HIP',
-  '                           runtime), or cu12/cu13 to force a CUDA build.',
-  '                           Default: the CUDA build that fits the NVIDIA',
-  '                           cards, or the AMD core first when nvidia-smi',
-  '                           lists none. PEARL_CORE_VARIANT takes the same',
-  '                           values; the flag wins.',
+  '                           runtime), intel for Intel Arc cards (needs',
+  '                           Intel\'s Level Zero or OpenCL driver), or',
+  '                           cu12/cu13 to force a CUDA build. Default: the',
+  '                           CUDA build that fits the NVIDIA cards; when',
+  '                           nvidia-smi lists none, the Intel core on a rig',
+  '                           of Arc cards, else the AMD core first.',
+  '                           PEARL_CORE_VARIANT takes the same values; the',
+  '                           flag wins.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -327,6 +344,19 @@ function buildSettings(opts, errors, report, update, serve) {
       mineMemClockMhz = parsed.mhz;
     }
   }
+  // Whether to try a core clock offset on the mining cards: 'auto' runs the
+  // trial, 0 and null (not given) leave every card at its own clock. There is
+  // no MHz to ask for: an offset is only set once the trial has checked it on
+  // that card (shared/coreOffset, which also has the GUI's variable).
+  let mineCoreOffset = null;
+  if (opts['--mine-core-offset'] != null) {
+    const parsed = parseCoreOffset(opts['--mine-core-offset']);
+    if (parsed.error) {
+      errors.push('invalid --mine-core-offset: ' + opts['--mine-core-offset'] + ' (' + parsed.error + ')');
+    } else {
+      mineCoreOffset = parsed.offset;
+    }
+  }
   // An explicit ceiling on concurrent llama-servers. Null means "no operator
   // opinion" — the planner then caps by eligible GPUs and free RAM on its own.
   let llmMaxInstances = null;
@@ -348,7 +378,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,
   };

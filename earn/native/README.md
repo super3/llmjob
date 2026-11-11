@@ -6,6 +6,10 @@ lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 
 An AMD (HIP/ROCm) port, not yet run on an AMD card, is in `amd/`; see `amd/README.md`.
 
+The Intel (SYCL) core is in `sycl/`; see `sycl/README.md`. It has run on Arc A750 cards on Linux.
+CI builds it for Linux and Windows and the packages carry it as a folder, `sycl/`, beside the other
+cores; no release has shipped it yet.
+
 ## Why this exists
 
 Every third-party Pearl miner we evaluated is blocked for a product like ours:
@@ -308,3 +312,21 @@ core.stop();
 Every hit is re-verified against the current job's target in JS before it is
 submitted (`pearlMiner._onHit`), so a core bug can waste work but can never push
 a bad share to the pool and earn a ban.
+
+The CUDA builds also export two functions beside `createCore`, for the core
+clock offset trial (`--mine-core-offset auto`, see the earn README):
+
+```js
+addon.getClockOffset(cardIndex);        // { ok: true, mhz, min, max } or { ok: false, error, code }
+addon.setClockOffset(cardIndex, mhz);   // { ok: true }                or { ok: false, error, code }
+```
+
+They read and set a card's core clock offset on P-state 0 through NVML
+(`nvmlDeviceGetClockOffsets`, `nvmlDeviceSetClockOffsets`), which is the only
+way to it: `nvidia-smi` has no switch. NVML is opened at run time and its
+functions are looked up by name, so the addon links nothing new and loads the
+same on a machine without NVML. Neither function throws: `error` is NVML's own
+words and `code` its return code (4 is "no permission": setting needs root or
+administrator rights). The code is compiled only when `PEARL_NVML_OFFSETS` is
+defined, which `binding.gyp` does for the CUDA builds and nothing does for the
+AMD core or the Intel port.
