@@ -16,6 +16,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94%, the one card behind |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -1056,6 +1057,104 @@ release (an unused flag) for the noise. Not rows: no competitor ran.
   +0.2 to +1.0%), 21 of 21 rounds ahead. No RX 7900 XT or GRE has run it. gfx1101 (RX 7800 XT, 7700 XT) and RDNA 4
   stay off. `-DPEARL_AMD_HASHQ=1` turns it on for every card, `=0` for none, and the environment variable `PEARL_AMD_HASHQ=1` (or `0`) overrides the build at run time.
 - **Cost:** five boxes (one moved by Salad mid-run), about 4.5 box-hours, high priority.
+
+## Intel Arc (Alchemist, on a rented rig)
+
+The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
+(the `xmx8` fold: the XMX matrix engines through DPAS at sub-group 8), built on the rig from PR #290 and run by
+that branch's CLI through `PEARL_CORE_PATH`. It is in no release. The competitors are the Pearl miners that say
+they run on Arc (IAminer, ARCMiner) and the two we race elsewhere (SRBMiner, WildRig). TH/s is each miner's own
+figure.
+
+| Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | ARCMiner | % of best |
+|---|---|---|---|---|---|---|---|---|
+| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | not run | 124% |
+| Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | not run | 128% |
+
+- **IAminer 1.0.0** mines on the card. Its own tuning picked m = n = 131072, k 4096. The pool rejected the only two
+  shares it found ("Invalid share"), so it has no accepted share on this rig.
+- **SRBMiner 3.8.6 and 3.8.2** list the six cards but cannot mine Pearl on them: "No GPU devices available to mine
+  with". Their algorithm list marks `pearlhash` for AMD and NVIDIA only.
+- **WildRig 0.52.1 and 0.51.9** list the card, print "Start mining", then show "n/a TH/s" for four minutes with the
+  card idle at 34 W.
+- **ARCMiner** is Windows only by Kryptex's miner page, and its download page (github.com/jbman2025/ARC-miner)
+  returned 404. Not run.
+
+### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
+
+The rig: six Arc A750 (DG2, 8 GB) in the x1 slots of a mining board (PCIe 2.5 GT/s x1 each), an i5-10400T, 7.8 GB
+of RAM, HiveOS 0.6-231 on Ubuntu 22.04, kernel 6.12.0-hiveos, the cards on i915. Everything ran in two Ubuntu
+24.04 containers given `/dev/dri`, each with Intel's compute runtime 26.40.40196.15: ours in one, the other miners
+in the second. Downloads were checked against the SHA-256 digests GitHub lists for each release asset; IAminer's
+also against its SHA256SUMS.txt and SRBMiner's against its published MD5.
+
+One card (card 0), turns on Kryptex (prl-us:7048): ours 5 minutes, IAminer 6, alternating. TH/s is the mean after
+the first minute: ours from its status line every second, IAminer from its `speed` line every 30 s. Power and clock
+are i915's counters for the card (`hwmon/energy1_input`, `gt_act_freq_mhz`), read every 5 s and averaged from 60 s
+to 285 s. Kryptex asked 9.01 PH MACs a share, so one card finds a share about every ten minutes and the share
+counts here are small.
+
+| Miner | Turn 1 | Turn 2 | Mean | Power | Clock | Shares (acc/rej) |
+|---|---|---|---|---|---|---|
+| Ours as first built (band 64) | 15.45 | 15.47 | 15.46 | 146 W | 2000 MHz | 1/0 |
+| IAminer 1.0.0 (m = n = 131072, k 4096) | 13.64 | 13.64 | 13.64 | 173 W | 2018 MHz | 0/0 |
+| Ours as pushed (band 256), one turn after the others | 16.88 | | 16.88 | 153 W | 2000 MHz | 2/0 |
+
+Ours was 113% of IAminer as first built and is 124% with the band change found on this rig, at 12% less power:
+about 40% more work a watt. IAminer's 30 s figures alternate between 11.72 and 14.07: a whole number of its
+attempts (one attempt is the full m by n product at k 4096, 7.0e13 MACs) fits each window.
+
+All six cards, 5 minutes for ours and 6 for IAminer, each card at the settings above (IAminer's shape copied to
+the other five cards' entries in its config, as its README allows):
+
+| Miner | TH/s, six cards | Range | Power, six cards | Shares (acc/rej) |
+|---|---|---|---|---|
+| Ours as first built (band 64) | 91.9 | 87.2–96.7 | 875 W | 5/0 |
+| Ours as pushed (band 256) | 100.1 | 96.9–103.2 | 921 W | 4/0 |
+| Ours as pushed, on the branch tip (with the core clock offset work merged in) | 100.1 | 96.7–104.0 | 919 W | 3/0 |
+| IAminer 1.0.0 | 78.0 | 68.0–84.4 | 1,012 W | 0/2 |
+
+- **Ours: 15 shares accepted, 0 rejected** over the six pool runs above, where about 11 were expected from its
+  rate. Every hit was recomputed before it was sent, as the core's gate for untested cards makes the CLI do, and
+  none was wrong.
+- **IAminer: 0 accepted, 2 rejected.** Both came from its GPU4, 16 s apart, 85 s into the six-card run, and Kryptex
+  answered "share rejected: Invalid share" to each. It found none in its 12 minutes on card 0. From its rate
+  about 4 shares were expected over its three runs. Two shares cannot say whether the fault is that card, the
+  shape copied from card 0's tuning, or the miner. It was not run on the pool again, so that no more rejected
+  shares went in under the address. Until it has an accepted share here, its TH/s is a rate of work whose
+  results are unproven.
+- **IAminer's tuning** on the card (`iaminer tune`), TH/s: m 65536 with k 4096, 8192 and 16384: 13.32, 9.51 and
+  7.71; m 131072 with k 4096 and 8192: 13.55 and 9.82. At m 262144, k 4096 it used one CPU core for five minutes
+  with the card idle and was stopped; `iaminer tune --quick` (the two m 131072 shapes) gave the same best. Its
+  README's 70.3 TH/s is an Arc Pro B70 at k 8192. On the A750 a larger k is slower for it. Its 1% dev fee (60 s
+  every 100 minutes) did not fall in these runs.
+
+Ours alone, before the comparison (`earn/native/sycl/README.md`, "Results on an Arc A750 rig", has it all):
+
+- **Correct on all six cards.** The hardware DPAS fold and the plain fold match a scalar fold on the host on every
+  region checked, at a small size and at the mainnet m and n. 3,000 hits were recomputed in JS as a pool's verifier
+  does (1,500 a fold) and none failed.
+- **One thing is wrong and mines nothing:** the reference code of the sub-group 8 fold (`xmx8-emu`, the
+  specification's DPAS written out, which no card mines with) gives other transcripts on the A750, on all six
+  cards. It is right on the CPU device. The cause is not found. `verify.sh` counted it and so failed a good card;
+  it now reports it and counts the folds that mine.
+- **Fold alone and miner loop** (`bench.sh`, card 0): 15.47 and 15.47 TH/s as first built; 16.87 and 16.88 as
+  pushed. The plain int8 fold does 3.9 to 4.0 TH/s at 185 W.
+- **Band.** `PEARL_SYCL_BAND` 4, 16, 64, 128, 256, 512, 1024, 4096: 14.1, 14.3, 15.2 to 15.5, 16.3, 16.6 to 16.9,
+  13.8, 13.4, 13.5. The host took a quarter of the card's 16 MB cache, 64; it now takes all of it, 256, for the XMX
+  folds. The plain fold stays at a quarter (3.92 at 64 against 3.75 at 256). The batch width makes no difference
+  (64 to 1024: 15.44 to 15.48).
+- **Power.** Under DPAS the card sits at 2,000 MHz and about 150 W, under its 190 W limit. An idle card draws 31
+  to 36 W.
+
+Other things this run found:
+
+- SRBMiner prints nothing unless it has a terminal: `--list-devices` into a file or pipe wrote 0 bytes and exited
+  0. Under `script` it listed the cards. SRBMiner 3.8.6 also quit at once with exit 73 until `wget` was installed
+  ("Make sure you have 'wget' installed on your system!"). `earn/tuning/salad/bench.sh`'s note about 3.8.6 exiting
+  73 on Salad may be the same two things.
+- Not tried: BzMiner, which Kryptex's miner page lists for Pearl on Intel Arc, and mo-miner, whose engine IAminer
+  uses. Neither was on the list for this run.
 
 ## Research notes
 
