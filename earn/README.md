@@ -190,6 +190,36 @@ are paired in order, and the log warns when that may pick the wrong one. A
 vision model's projector goes on the same card as the model
 (`MTMD_BACKEND_DEVICE`, unless you set it yourself).
 
+### How much CPU a card takes (`--gpu-wait`)
+
+Each NVIDIA card has one thread that queues its launches and waits for them. Up
+to v0.6.15 that thread busy-waited: a whole CPU core a card, all the time. On a
+rig with more cards than CPU cores the threads took turns, a finished launch
+waited for its thread's turn, and the cards sat idle. One rig of 8 cards on a
+2-core Celeron made 31.8 TH/s on each RTX 3070 where another miner made 74.9.
+
+Now the thread sleeps until the driver wakes it, and raises its own priority so
+it runs as soon as it is woken (on Linux that needs root, which HiveOS has;
+without it the priority stays as it was). Measured on an RTX 4090, 60 seconds
+each:
+
+| Wait | CPU cores used | TH/s |
+|---|---|---|
+| `spin` (v0.6.15 and before) | 0.995 and 0.999 | 317.44 and 317.41 |
+| `block` (default) | 0.003 | 317.37 |
+| `poll` | 0.006 | 317.11 |
+
+And with the miner held to one CPU core beside three busy programs, which is
+what 8 spinning cards on 2 cores do to each other: `spin` 173.8 TH/s, `block`
+317.5, `poll` 317.3.
+
+`--gpu-wait block|poll|spin` on the CLI, or `PEARL_WAIT` in either app, picks the
+wait. `poll` sleeps half a millisecond at a time and looks again, and does not
+depend on the driver waking the thread. `spin` is the old behaviour. These
+numbers are from Windows on one card. Linux and rigs of many cards have not been
+measured yet: if a rig mines slower on this release, try `--gpu-wait poll`, then
+`--gpu-wait spin`, and tell us. The AMD and Intel cores are unchanged.
+
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
 
 A release ships two builds of the mining core side by side, in the installer's
@@ -962,6 +992,9 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            build (default: the CUDA build that fits the cards;
                            when nvidia-smi lists none, the Intel core on a rig
                            of Arc cards, else the AMD core first; see above)
+      --gpu-wait <how>     How the miner waits for an NVIDIA card between
+                           launches: block (default, almost no CPU), poll, or
+                           spin (a whole CPU core a card; see above)
       --mine-mem-clock <MHz>  Lock each mining GPU's memory clock while it mines
                            (default: an RTX 5090 tries 7001 and keeps it only
                            if faster; 0 turns that off; auto tries a lock on

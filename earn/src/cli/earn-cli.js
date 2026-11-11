@@ -854,6 +854,8 @@ async function run(argv) {
   // --core beats PEARL_CORE_VARIANT. Set here, before the update, so the
   // updater and the core loader read the same choice.
   if (settings.core) process.env.PEARL_CORE_VARIANT = settings.core;
+  // --gpu-wait beats PEARL_WAIT, which the CUDA core reads when it opens a card.
+  if (settings.gpuWait) process.env.PEARL_WAIT = settings.gpuWait;
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);
