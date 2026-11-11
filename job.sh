@@ -1,14 +1,15 @@
-# 9060xt race: the default, a twin, the hash on its own queue, the core's ticker, a shorter launch; then stamps of the miner's own launches
+# 9060xt job 3: the core's ticker at 10, 2, 0.5 and 0.1 ms, with the hash queue, and at half the launch; then the miner's own launches by the millisecond, with and without the ticker
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
 G_PARTS=hash\ mstamps
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=128\;cbshq1=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=128\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ twin\ hq1\ tk2\ cbs\ cbshq1
-G_HROUNDS=4
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk01=base\ PEARL_AMD_TICK_US=100\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk01=sbase\ PEARL_AMD_TICK_US=100
+G_VARIANTS=base\ twin\ tk10\ tk2\ tk05\ tk01\ hq1tk\ cbstk
+G_HROUNDS=3
 G_HASH=45:12
-G_MST=msq0\ msq1\ mstk\ mscbs
-G_MSN=6
+G_MST=msq0\ mstk\ mstk01
+G_MSN=3
 G_MSAT=100
 G_MSSTEP=17
+G_PROF=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -511,6 +512,24 @@ for (const e of ev) {
   if (c >= 0.97 * peak) share.full += dt; else if (c >= 0.5 * peak) share.part += dt; else if (c > 0) share.low += dt; else share.none += dt;
   c += e[1]; last = e[0];
 }
+// With "prof" as an argument: the mean number of blocks running in each millisecond of the span (the first 70), and
+// the blocks that started in it, so a stop and what follows it can be read off.
+if (process.argv.includes('prof')) {
+  const tpm = tickMhz * 1e3;   // ticks a millisecond
+  const n = Math.min(70, Math.ceil(span / tpm));
+  const area = new Array(n).fill(0), starts = new Array(n).fill(0);
+  c = 0; last = 0;
+  for (const e of ev) {
+    for (let b = Math.floor(last / tpm); b <= Math.floor(e[0] / tpm) && b < n; b++) {
+      const lo = Math.max(last, b * tpm), hi = Math.min(e[0], (b + 1) * tpm);
+      if (hi > lo) area[b] += c * (hi - lo);
+    }
+    if (e[1] > 0 && Math.floor(e[0] / tpm) < n) starts[Math.floor(e[0] / tpm)]++;
+    c += e[1]; last = e[0];
+  }
+  console.log('tl2 prof running: ' + area.map((a) => Math.round(a / tpm)).join(' '));
+  console.log('tl2 prof starts: ' + starts.join(' '));
+}
 const wgpOf = (h) => (((h >>> 18) & 7) << 5) | (((h >>> 16) & 1) << 4) | ((h >>> 10) & 15);
 const busy = new Map();
 for (const w of lead) busy.set(wgpOf(w.hw0), (busy.get(wgpOf(w.hw0)) || 0) + (w.e - w.s));
@@ -533,7 +552,7 @@ if has stamps; then
       [ -s /root/st.bin ] || { say "stamp r$i $FV ${FM}x${FC}: no stamps written: $(printf '%s\n' "$r" | tail -n 2 | tr '\n' '|' | cut -c1-200)"; continue; }
       node test/stamp-summary.js summary /root/st.bin 2>&1 | grep -E '^(first|rest)' | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:330}"; done
       node /root/tl.js "$A/test/stamp-summary.js" /root/st.bin "${ms:-0}" 2>&1 | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:380}"; done
-      node /root/tl2.js "$A/test/stamp-summary.js" /root/st.bin 2>&1 | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:390}"; done
+      node /root/tl2.js "$A/test/stamp-summary.js" /root/st.bin ${G_PROF:+prof} 2>&1 | while IFS= read -r l; do say "stamp r$i $FV ${FM}x${FC} ${l:0:390}"; done
     done
   done
 fi
@@ -597,7 +616,7 @@ if has mstamps; then
       env PEARL_AMD_UNTESTED=1 PEARL_AMD_STAMP_DUMP=/root/mst.bin PEARL_AMD_STAMP_DUMP_AT=$((${G_MSAT:-400} + ${G_MSSTEP:-61} * i)) "${VENV[@]}" \
         timeout 120 node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 8 2 > /root/mst.log 2>&1
       if [ -s /root/mst.bin ]; then
-        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin ${G_MSGAPS:+gaps} 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved|gaps)' | sed -E 's/; they ran .*//; s/ with no block starting or ending//' | while IFS= read -r l; do say "mst $v $i ${l:0:390}"; done
+        node /root/tl2.js "$A/test/stamp-summary.js" /root/mst.bin ${G_MSGAPS:+gaps} ${G_PROF:+prof} 2>&1 | grep -E 'tl2 (stalls: [0-9]+ blocks|moved|gaps|prof|use)' | sed -E 's/; they ran .*//; s/ with no block starting or ending//' | while IFS= read -r l; do say "mst $v $i ${l:0:390}"; done
       else
         say "mst $v $i: no stamps written: $(grep -v nvidia-smi /root/mst.log | tail -n 2 | tr '\n' '|' | cut -c1-240)"
       fi
