@@ -263,6 +263,15 @@ The probe's stand-ins said what the next fold should be, and it was built:
   44.1 at 128. A batch of 256 column offsets stays right: 60.8 at 64, 62.8
   at 128, 43.6 at 512.
 
+- **Written without loops.** A k-step's loads, its wait and its DPAS, and
+  the readout's XORs, are written out by a fold expression (`each<N>`). Kept
+  as loops, oneAPI's compiler left the fragments and the accumulators as
+  arrays in memory, and the prebuilt form ran at 3 TH/s. It compiled, spilled
+  nothing and passed every check. The build a release carries was never
+  slow, but only because its compiler unrolled the loops by itself. The
+  prebuilt form now does 41.6 TH/s against 64.3 (it still keeps the loop over
+  k-steps), and the compile gate wants a whole k-step's 16 DPAS unrolled.
+
 `auto` picks it on Alchemist. The first fold is still there as
 `PEARL_SYCL_FOLD=xmx8`, and is what the rows marked "first fold" ran.
 

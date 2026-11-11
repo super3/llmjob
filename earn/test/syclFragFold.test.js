@@ -158,7 +158,18 @@ describe('fold_xmxf reads what the draw stored', () => {
     expect(FOLD).toContain('for (uint32_t ch = 0; ch < 16u; ch++) {');
     expect(FOLD).toContain('for (uint32_t s = 0; s < 4u; s++) {');
     expect(FOLD).toContain('const uint32_t ks = ch * 4u + s;');
-    expect(FOLD).toContain('for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);');
+    expect(FOLD).toContain('each<RB>([&](int rb) { c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]); });');
+  });
+
+  test('a k-step is written out, with no loop for a compiler to keep', () => {
+    // each<N>(f) is f(0) .. f(N - 1) by a fold expression. Kept as loops, the
+    // fragments and accumulators stayed arrays in memory under oneAPI's
+    // compiler and the fold ran at 3 TH/s where it does 64.
+    expect(KERNELS).toContain('template <typename F, size_t... I> inline void each_of(F &f, std::index_sequence<I...>) { (f((int)I), ...); }');
+    expect(KERNELS).toContain('template <int N, typename F> inline void each(F f) { each_of(f, std::make_index_sequence<N>{}); }');
+    const kstep = slice(FOLD, 'const uint32_t ks = ch * 4u + s;', 'x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);');
+    expect(kstep).not.toMatch(/\bfor \(/);
+    expect(kstep.match(/each<(RB|NCB)>\(/g)).toHaveLength(9);
   });
 
   test('a fragment of B\' is loaded as its two halves, in order', () => {
@@ -178,12 +189,12 @@ describe('fold_xmxf reads what the draw stored', () => {
     expect(at).toBeGreaterThan(0);
     expect(body.slice(at, at + 7)).toEqual([
       'int wait = 0;',
-      'for (int rb = 0; rb < RB; rb++) wait ^= af[rb][0];',
-      'for (int cb = 0; cb < NCB; cb++) wait ^= bf[cb][0];',
+      'each<RB>([&](int rb) { wait ^= af[rb][0]; });',
+      'each<NCB>([&](int cb) { wait ^= bf[cb][0]; });',
       'wait &= (int)A.zero;',
-      'for (int rb = 0; rb < RB; rb++) af[rb][0] |= wait;',
-      'for (int cb = 0; cb < NCB; cb++)',
-      'for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);',
+      'each<RB>([&](int rb) { af[rb][0] |= wait; });',
+      'each<NCB>([&](int cb) {',
+      'each<RB>([&](int rb) { c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]); });',
     ]);
     expect(HOST.match(/a\.zero = /g)).toHaveLength(1);
     expect(slice(HOST, 'FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {', '\n}\n'))
@@ -203,8 +214,9 @@ describe('fold_xmxf places every region where regionToTile does', () => {
     // What the model takes as given, pinned to the code: lane = column of a
     // column block, element r = row r of an 8-row block, rows 0-3 into x0 and
     // 4-7 into x1, lane ^ 1 gathered, lane q writing region q's word.
-    expect(FOLD).toContain('for (int r = 0; r < 4; r++) x0 ^= (uint32_t)c[rb][cb][r];');
-    expect(FOLD).toContain('for (int r = 4; r < 8; r++) x1 ^= (uint32_t)c[rb][cb][r];');
+    expect(FOLD).toContain('const v8i v = c[rb][cb];');
+    expect(FOLD).toContain('x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);');
+    expect(FOLD).toContain('x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);');
     expect([...FOLD.matchAll(/permute_group_by_xor\(sg, x0, (\d+)u\)/g)].map((m) => Number(m[1]))).toEqual([1]);
     expect([...FOLD.matchAll(/permute_group_by_xor\(sg, x1, (\d+)u\)/g)].map((m) => Number(m[1]))).toEqual([1]);
     expect(FOLD).toContain('if (lane < 8u) part[(sgi * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;');
@@ -281,6 +293,6 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(get).toContain('return syclex::properties{syclex::sub_group_size<SG>};');
     // The gate holds a build to it, and still gates the fold PEARL_SYCL_FOLD=xmx8 picks.
     expect(GATE).toContain("intel_gpu_acm_*) hws=('fold_xmxf<sg8,rb2,hw>' 'fold_xmx<sg8,rb1,hw>') ;;");
-    expect(GATE).toContain('$2 == "fold_xmxf<sg8,rb2,hw>" && $4 != 256 { bad = 1 }');
+    expect(GATE).toContain('$2 == "fold_xmxf<sg8,rb2,hw>" && ($4 != 256 || $5 < 16) { bad = 1 }');
   });
 });

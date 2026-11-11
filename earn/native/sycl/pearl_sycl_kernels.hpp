@@ -42,6 +42,7 @@
 #include <sycl/sycl.hpp>
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 #include <stdint.h>
+#include <utility>
 
 #if defined(PEARL_SYCL_XMX_HW) && defined(PEARL_SYCL_XMX_JIT)
 #error "PEARL_SYCL_XMX_HW (prebuilt kernels) and PEARL_SYCL_XMX_JIT (the driver compiles them) are two builds"
@@ -626,6 +627,13 @@ inline void fold_xmx(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 // The readout is fold_xmx's: both 8-row blocks XOR into the same two words.
 // ---------------------------------------------------------------------------
 
+// f(0) .. f(N - 1), written out when compiling: no loop is left for a compiler
+// to keep. The fold's k-step is written with it. Kept as loops, its fragments
+// and accumulators stay arrays in memory and it runs at a twentieth of its
+// rate: oneAPI's compiler kept them, the open-source one unrolled them.
+template <typename F, size_t... I> inline void each_of(F &f, std::index_sequence<I...>) { (f((int)I), ...); }
+template <int N, typename F> inline void each(F f) { each_of(f, std::make_index_sequence<N>{}); }
+
 // A lane's 32 bytes of a fragment at p, as two loads of 16.
 inline v8i load_halves(const int8_t *p) {
   const v4iu lo = *reinterpret_cast<const v4iu *>(p);
@@ -664,30 +672,33 @@ template <int SG, int RB, bool HW> struct FoldXmxF {
     const int8_t *Ab = A.Ap + (size_t)(row0 >> 4) * A.aStride + (size_t)((row0 >> 3) & 1u) * 256u + 32u * lane;
     const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + 32u * lane;
     v8i c[RB][NCB];
-    for (int rb = 0; rb < RB; rb++)
-      for (int cb = 0; cb < NCB; cb++) c[rb][cb] = 0;
+    each<RB>([&](int rb) { each<NCB>([&](int cb) { c[rb][cb] = 0; }); });
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
         v8i af[RB], bf[NCB];
-        for (int rb = 0; rb < RB; rb++)
+        each<RB>([&](int rb) {
           af[rb] = *reinterpret_cast<const v8iu *>(Ab + (size_t)ks * 512u + (size_t)rb * 256u);
-        for (int cb = 0; cb < NCB; cb++) bf[cb] = load_halves(Bb + (size_t)ks * 2048u + (size_t)cb * 256u);
+        });
+        each<NCB>([&](int cb) { bf[cb] = load_halves(Bb + (size_t)ks * 2048u + (size_t)cb * 256u); });
         // Every DPAS of the k-step waits for every load of it.
         int wait = 0;
-        for (int rb = 0; rb < RB; rb++) wait ^= af[rb][0];
-        for (int cb = 0; cb < NCB; cb++) wait ^= bf[cb][0];
+        each<RB>([&](int rb) { wait ^= af[rb][0]; });
+        each<NCB>([&](int cb) { wait ^= bf[cb][0]; });
         wait &= (int)A.zero;
-        for (int rb = 0; rb < RB; rb++) af[rb][0] |= wait;
-        for (int cb = 0; cb < NCB; cb++)
-          for (int rb = 0; rb < RB; rb++) c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]);
+        each<RB>([&](int rb) { af[rb][0] |= wait; });
+        each<NCB>([&](int cb) {
+          each<RB>([&](int rb) { c[rb][cb] = dpas<SG, HW>(sg, af[rb], bf[cb], c[rb][cb]); });
+        });
       }
       uint32_t x0 = 0, x1 = 0;
-      for (int rb = 0; rb < RB; rb++)
-        for (int cb = 0; cb < NCB; cb++) {
-          for (int r = 0; r < 4; r++) x0 ^= (uint32_t)c[rb][cb][r];
-          for (int r = 4; r < 8; r++) x1 ^= (uint32_t)c[rb][cb][r];
-        }
+      each<RB>([&](int rb) {
+        each<NCB>([&](int cb) {
+          const v8i v = c[rb][cb];
+          x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+          x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
+        });
+      });
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
       if (lane < 8u) part[(sgi * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
