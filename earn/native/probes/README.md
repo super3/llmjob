@@ -12,6 +12,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 | Probe | Answers |
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
+| `pipeprobe.cu`, `pipeprobe2.cu` | The fold's instruction stream alone, timed in SM cycles: what fills a scheduler's tensor pipe and what each kind of instruction between the mma costs. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 | `hmma-check.cc` | Volta's fp16 fold run on the CPU with the kernel's own layout, conversion and readout, against a plain fold, on four kinds of operands. `c++ -O2 -std=c++17 -I../src hmma-check.cc -o hmma-check && ./hmma-check`. No GPU or CUDA needed. |
 | `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
@@ -2162,3 +2163,60 @@ measured, then 5 minutes. It reports the mean of the CLI's readings after the fi
 as earn/tuning/benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
 miner runs. It differs from earn/tuning/benchmark.md's method only in using this checkout's core instead
 of the release files, so its results go in a section's notes and never change a row.
+
+### What fills the tensor pipe: `pipeprobe.cu` and `pipeprobe2.cu` (RTX 4090, 2026-11-11)
+
+Two probes that run the fold's instruction stream with nothing else in it, one block an SM, each warp timing itself with the SM's cycle counter (`clock64`). Pipe use is 16 cycles an IMMA over the cycles taken, so it does not depend on the clock. `pipeprobe.cu` sets the warps' roles and the counts at run time (masks for folding and producing warps, runs, stagger). `pipeprobe2.cu` fixes everything at build time, so no branch stands between two mma: `-DRD` (readout as one, three or six runs), `-DDRAW`/`-DDPOS`/`-DDGRP`/`-DDREAL` (draw-shaped units and where they go), `-DDSYNC` (one shared add and test a k-step).
+
+```
+nvcc -arch=sm_89 -O3 -DRD=2 -DDRAW=4 -DDPOS=1 -o pp2 pipeprobe2.cu && ./pp2 name 20000 [seconds]
+```
+
+| Stream (8 warps, two a scheduler, 48 IMMA a k-step, 4 k-steps a chunk) | Pipe use | Clock and watts, 450 W limit |
+|---|---|---|
+| IMMA only | 99.93% | |
+| + 4 ldmatrix after every k-step (kept in every row below) | 100.00% | 2687 to 2700 MHz, 292 to 373 W by the operand bytes loaded |
+| + readout as one run of 96 XOR3 at the chunk's end, word kept by a shared load and store | 98.72% | 2685 MHz, 399 W |
+| the same with a shared XOR | 97.91% | |
+| + readout as three runs of 32 XOR3, each after its tiles' last IMMA | 99.67% (99.71% with a shared XOR) | 2691 MHz, 318 W |
+| + readout as six runs of 16 | 99.68% | |
+| + 4 draw-shaped units a k-step (58 instructions), after the 24th IMMA | 99.61% | 2595 MHz, 449.5 W |
+| the same at the k-step's end | 99.52% | |
+| the same in two halves / one unit every 12 IMMA | 98.44% / 98.44% | |
+| the same with two units' steps grouped by kind | 97.68% | |
+| + 4 units that read their four table offsets first | 98.80% | 2670 MHz, 421 W |
+| loads, readout in three runs, 4 such units, and one shared add and test a k-step | 94.71% (95.15% without the add and test) | 2660 MHz, 438 W |
+| the same with 3 units a k-step | 96.97% | 2685 MHz, 418 W |
+| the same with the 4 units at the k-step's end | 96.50% | |
+
+| Stream (first probe, roles and counts set at run time) | Pipe use |
+|---|---|
+| One warp a scheduler, IMMA only | 91.0% (17.6 cycles between a warp's own IMMA) |
+| Two a scheduler | 99.5 to 99.6% |
+| Three a scheduler (12 warps, 32 IMMA a k-step) | 98.4 to 98.9% |
+| Four a scheduler (16 warps, 24 IMMA a k-step) | 99.5% |
+| Two folding, a third warp doing 1.1 to 1.7 instructions an IMMA beside them (ALU, loads, stores, draw units) | 95.0 to 96.6% |
+| One folding, one working beside it | 78.6 to 82.4% |
+| Two, one chained ALU step after every IMMA / two steps | 98.5% / 96.3% |
+| Two, a run of 96 chained ALU steps every 192 IMMA | 94.1% (warps staggered: 94.8%) |
+| Two, runs of 8 / 16 / 32 / 64 chained steps every 192 IMMA | 98.7 / 98.8 / 98.7 / 97.8% against 98.9% |
+| Two, readout runs: tested between IMMA segments at run time / not | 91.6% / 98.0% |
+| Three a scheduler, readout runs / four | 95.9% / 97.2% |
+
+The first probe's own run-time tests cost it pipe time, so compare its rows with each other only.
+
+- **Two warps taking turns fill the pipe, and nothing else does.** One warp alone gets 91%: it cannot follow its
+  own IMMA in under 17.6 cycles. Three or four a scheduler add nothing. A third warp has no free issue slots: its
+  instructions cost the folding warps 0.44 cycle each, the same as work inside them.
+- **What costs is waiting and control, not the count of instructions.** Steps that each wait on the one before
+  cost 1.4 to 1.9 cycles each in a long run and 0.2 to 0.3 one at a time. A run-time test between two IMMA segments
+  costs about 10 cycles (ptxas puts a fence before the next IMMA). Steps that depend on nothing recent, placed where ptxas can weave them
+  between the IMMA, are close to free: the readout cut in three runs costs 0.3%, and four draw-shaped units a k-step
+  (1.2 instructions an IMMA) cost 0.4%.
+- **The pieces do not simply add.** Loads, readout and draw each alone hold 98.8 to 100%; all three together fell
+  to 94.7 to 97.0% as ptxas ordered them. So the order has to be pinned by hand and measured piece by piece.
+- **Watts follow the operand bytes and the draw.** The same IMMA stream drew 263 W on constant registers, 292 W on
+  mostly-zero loaded bytes and 373 W on random ones, all at the top clock. Four draw units a k-step added 77 to
+  130 W. At 450 W the draw-only stream ran at 2595 MHz and 99.6%: 338.8 TH/s by count. The table's watts come
+  from two builds: random operand bytes (loads 373 W, one-run readout 399 W, the 58-instruction draw 449.5 W) and
+  mostly-zero ones (loads 292 W, three-run readout 318 W, the offset-reading draw 421 W, all together 438 W).
