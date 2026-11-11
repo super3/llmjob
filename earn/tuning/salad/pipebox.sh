@@ -13,7 +13,8 @@
 #   CUDA_VER      the toolkit: 12.8 (default; 13.3 on a compute 12.x card whose driver is 580 or newer)
 #   CUDA_VER2     a second toolkit, for a short pass of the main streams built with it (default: none)
 #   PP_BENCH      1: run bench.sh first (ORDER default ozm,ours; SECS, WARM, OURS_SECS default 180, 60, 180;
-#                 VPOOL 210; VER the release, default v0.6.15)
+#                 VPOOL 210; VER the release, default v0.6.15). TAP=1 passes through to bench.sh (share relay).
+#   PP_ONLY_BENCH 1: with PP_BENCH, the miners only: no builds, no probe
 #   PP_HR_SECS    seconds of hashrate.js on the release's core after a 20 s warm-up (default 180; 0: skip)
 #   PP_CHUNKS     chunks a launch (default 100000, about 0.3 s)
 #   PP_SHORT      seconds a short run (default 1)
@@ -27,7 +28,7 @@ set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
 U="https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad"
-for f in bench.sh nvtest.sh; do
+for f in bench.sh nvtest.sh sharetap.py; do   # sharetap.py: bench.sh's share relay, used when TAP=1
   curl -fsSL --retry 3 "$U/$f" -o "/root/$f" || { psay "FAIL fetch $f"; exec sleep infinity; }
 done
 q() { nvidia-smi -i 0 --query-gpu="$1" --format=csv,noheader 2>&1 | head -1; }
@@ -54,6 +55,16 @@ if [ -n "${PP_BENCH:-}" ]; then
       | tee -a /root/bench.log | sed -u 's/^\[bench\]/[nvtest] [bench]/' ) &
 else
   echo "all done" > /root/bench.log
+fi
+# PP_ONLY_BENCH=1: the miners alone, run normally, and nothing built or probed. With TAP=1 they mine through the
+# share relay and bench.sh ends each run with that miner's shares decoded (m, n, k, rank, fill, the tile's rows
+# and columns); its sample lines carry the card's watts, clock, memory-controller use and memory in use.
+if [ -n "${PP_ONLY_BENCH:-}" ]; then
+  n=0
+  until grep -q 'all done' /root/bench.log; do n=$((n + 1)); [ $n -gt 360 ] && break; sleep 10; done
+  psay "card after the miners $(q clocks.sm,power.draw,power.limit,temperature.gpu,utilization.memory,memory.used)"
+  psay "all done"
+  exec sleep infinity
 fi
 # nvtest.sh's functions (setup, cuda, fetch), without its run. /opt/llmjob is bench.sh's own checkout.
 export NVTEST_ROOT=/opt/pp-src
