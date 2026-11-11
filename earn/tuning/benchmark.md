@@ -3388,6 +3388,39 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   and form 2 compile for sm_86 with no spill; no RTX 30 card ran them. Not verified: the other six forms' hits, any
   second card, and why an XOR3 in mid-stream costs ten times the probe's figure.
 
+- **The draw fold, fifth round: its loop written by hand in machine code, 81.7% to 96% and correct (11 November,
+  rig01's RTX 4090, probe only).** ptxas is out of the chunk loop: `probes/hand89/` assembles a loop with its own
+  registers, stall counts and scoreboards and puts it into the cubin in place of the compiled loop function; the
+  probe's CPU check judges it. Probe figures, k 8192, 64 tiles a block, clock and watts over 25 s at the 450 W
+  limit; by count is pipe use x clock x 0.13107. No hash or host side yet, so none of this is a mining rate.
+  Timing-only rows compute wrong results on purpose.
+
+  | Stream | CPU check | Pipe use | Clock, watts | TH/s by count |
+  |---|---|---|---|---|
+  | The fold's loop as ptxas compiles it | 2,560 of 2,560 | 81.73% | 2669 MHz, 439 W | 286 |
+  | By hand, first placement | 2,560 of 2,560 | 85.00% | | |
+  | + unit B from gap 20, plain steps' yield flag off | 2,560 of 2,560 | 91.26% | 2587 MHz, 440 W | 309 |
+  | + IMMA stall 5 when plain steps follow | 2,560 of 2,560 | 95.18 to 95.23% | 2550 to 2558 MHz, 430 to 437 W | 318 to 319 |
+  | + table reads and one-register steps first, warps 4-7's readout 4 IMMA later, read scoreboards on the readout's atomics (`fold.py`'s default) | 20,480 of 20,480 (k 2048), 2,560 of 2,560 (k 8192) | 96.02% | 2548 MHz, 439 W | 321 |
+  | The same without the barrier | timing only | 97.49% | | |
+  | Stall counts alone changed in the compiled loop (`restall.py`) | 2,560 of 2,560 | 81.79 to 82.04% | 2653 MHz, 435 W | 285 |
+  | Gather form's mix, 192 sums, no bank collisions (`gather.py`) | timing only | 97.74% | 2581 MHz, 438 W | 331 |
+  | the same, one or two two-way collisions in every matrix | timing only | 96.77% | | |
+  | the same, rank indices by chance | timing only | 91.15% | 2611 MHz, 449 W | 312 |
+
+  The release fold is 317.3 TH/s here, so the hand loop is level with it by count and not ahead: no kernel yet.
+  What the round found. (1) The rule "a scheduler stays on a warp until it stalls, so a clump costs its length
+  minus 16" does not hold: one-register adds cost nothing clumped or spread (99.5 to 99.7%). (2) What costs is a
+  plain step that reads two or more registers issued 1 to 4 cycles behind its own warp's IMMA: three such steps
+  after every IMMA hold 88.7% with the IMMA at stall 1 and 99.7% at stall 5, and up to six are free there. ptxas
+  writes stall 1. That one change took the real loop from 91.3% to 95.2%. (3) Changing only the stall counts of
+  ptxas's own loop does nothing (82.0%): its loss is the order. (4) A load keeps reading its address register
+  while the memory unit holds it: two of 45 placements computed wrong sums until the registers the chunk's end
+  overwrites were held by read scoreboards, and one rare failure (8 of 10,240 regions, once) is not explained.
+  (5) The maths agent's gather form (no stage, no barrier) holds 97.7% as a timing stream with the real register
+  count, but only while a matrix's rows collide in the banks two at a time; by chance they cost 6.6 points.
+  Tables: `earn/native/probes/README.md`, "The loop written by hand".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
