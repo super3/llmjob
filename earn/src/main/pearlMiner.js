@@ -861,11 +861,19 @@ class PearlMiner extends EventEmitter {
       notRun(' (' + zero.error + ')' + rightsNote(zero));
       return;
     }
+    // An offset the card already had is replaced, and not put back when mining
+    // stops or the trial keeps nothing. Nothing the miner can read says whose
+    // it was. One a killed run left (it cannot undo its own) would be put back
+    // on a card with nothing checking what it computes, and this start is what
+    // clears that. So a rig that set its own with another tool loses it, and
+    // is told so plainly, in a warning.
     if (at.mhz !== 0) {
       this.emit('log', {
-        level: 'info',
+        level: 'warn',
         line: 'GPU ' + index + ' had a core clock offset of ' + plusMhz(at.mhz) + ', left by an earlier run or '
-          + 'set by another tool; its trial starts from 0',
+          + 'set by another tool. The trial replaces it: the card starts from 0, mines at what the trial keeps, '
+          + 'and is at 0 when mining stops. The ' + plusMhz(at.mhz) + ' is not put back; set it again afterwards '
+          + 'if it was yours.',
       });
     }
     // How long the trial waits once nothing else is in its way (see

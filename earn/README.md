@@ -1147,8 +1147,8 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto --mine-
 - **Set back to 0 whenever the miner stops**, for the cards it changed and only
   those, before anything else happens. The trial starts from offset 0: an
   offset already on the card when mining starts, from an earlier run or from
-  another tool such as MSI Afterburner, is replaced, and the log says what it
-  was.
+  another tool such as MSI Afterburner, is replaced and not put back. The log
+  says so in a warning, with what it was, so you can set it again afterwards.
 - **A hard kill can't put it back.** After a SIGKILL, a crash or a power cut
   while a card has an offset, it stays until the next start with
   `--mine-core-offset auto` (which starts from 0), a driver reload or a reboot.

@@ -320,14 +320,22 @@ describe('PearlMiner — the core clock offset trial', () => {
 
     // A run killed hard cannot put its offset back, and another tool may have
     // set one. Either way the trial's turns at 0 have to be at 0.
-    test('a card found with an offset already set starts from 0, and the log says what it had', () => {
+    //
+    // It is not put back afterwards: nothing says which of the two it was, and
+    // an offset a killed run left has nothing checking what the card computes.
+    // So the line is a warning, and says the offset is gone for good.
+    test('a card found with an offset already set starts from 0, and the log warns that it is replaced', () => {
       const b = rig({ read: () => ({ ok: true, error: null, mhz: 150, min: -1000, max: 1000 }) }).start();
       expect(b.calls).toEqual([['read', 0], ['set', 0, 0]]);
-      expect(b.lines()).toEqual([
-        'GPU 0 had a core clock offset of +150 MHz, left by an earlier run or set by another tool; its trial starts from 0',
-        START(),
-      ]);
+      const HAD = 'GPU 0 had a core clock offset of +150 MHz, left by an earlier run or set by another tool. '
+        + 'The trial replaces it: the card starts from 0, mines at what the trial keeps, and is at 0 when mining '
+        + 'stops. The +150 MHz is not put back; set it again afterwards if it was yours.';
+      expect(b.lines()).toEqual([HAD, START()]);
+      expect(b.logs.find((l) => l.line === HAD).level).toBe('warn');
+      // Nothing kept, and stopped: the card is still at 0, not at what it had.
+      mine(b, b.made[0], { 0: 317.4, 50: 317.5, 100: 317.6, 150: 317.7 });
       b.m.stop();
+      expect(b.sets().pop()).toBe(0);
       const under = rig({ read: () => ({ ok: true, error: null, mhz: -75, min: -1000, max: 1000 }) }).start();
       expect(under.lines()[0]).toMatch(/^GPU 0 had a core clock offset of -75 MHz, /);
       under.m.stop();
