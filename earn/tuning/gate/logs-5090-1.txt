@@ -1,0 +1,797 @@
+08f8e389 [nvtest] 21:37:04 boot container started
+08f8e389 [nvtest] 21:37:12 [gate] card NVIDIA GeForce RTX 5090, 610.88, 12.0, 575.00 W, 575.00 W, 50, 32607 MiB, 1083 MiB, 0 %
+08f8e389 [nvtest] 21:37:23 setup ok in 0s
+08f8e389 [nvtest] [bench] 21:37:25 card NVIDIA GeForce RTX 5090, 610.88, 575.00 W, 575.00 W, 32607 MiB, 12.0
+08f8e389 [nvtest] 21:37:31 cuda V13.3.73 in /opt/cuda, 8s
+08f8e389 [nvtest] 21:37:31 fetch ok f907ece0d466
+08f8e389 [nvtest] [bench] 21:37:33 [verify-pool] listening on 127.0.0.1:3334, compressed proofs offered, target 2^210 (commit f907ece0d466)
+08f8e389 [nvtest] [bench] 21:37:33 ready PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5, ours v0.6.15
+08f8e389 [nvtest] [bench] 21:37:33 start peak 60s
+08f8e389 [nvtest] 21:37:37 [compilers] start 2026-11-10T21:37:37Z commit f907ece nvcc V13.3.73 node v22.22.0 stages: setup build
+08f8e389 [nvtest] 21:37:37 [compilers] card NVIDIA GeForce RTX 5090, 610.88, 12.0, 575.00 W, 575.00 W, 3090 MHz, 14001 MHz, 32607 MiB
+08f8e389 [nvtest] 21:37:37 [compilers] card now 2535 MHz, 13801 MHz, 508.72 W, 64, P1, 100 %, 0 %, 1629 MiB, 0x0000000000000004 gpus=1
+08f8e389 [nvtest] [bench] 21:38:41 start peak 240s
+08f8e389 [nvtest] [bench] 21:38:56 sample peak t=15 hs=426830068560344.7 acc=78 rej=? gpu=506.76,2505,73,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:39:12 sample peak t=30 hs=426262019091644.56 acc=159 rej=? gpu=508.93,2497,74,13801,100,0,1629
+08f8e389 [nvtest] 21:39:15 [compilers] done in 1 min
+08f8e389 [nvtest] 21:39:15 compilers [setup build] done rc=0 in 1 min
+08f8e389 [nvtest] [bench] 21:39:27 sample peak t=46 hs=427535395130677.7 acc=235 rej=? gpu=515.12,2505,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:39:42 sample peak t=61 hs=426551448244892.25 acc=298 rej=? gpu=511.61,2497,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:39:57 sample peak t=76 hs=426735162830799.75 acc=348 rej=? gpu=514.63,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:40:12 sample peak t=91 hs=426323094909430.6 acc=444 rej=? gpu=511.52,2497,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:40:27 sample peak t=106 hs=427166138700833.25 acc=539 rej=? gpu=516.21,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:40:42 sample peak t=121 hs=427271754732877.06 acc=634 rej=? gpu=515.26,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:40:57 sample peak t=136 hs=426548350839040.2 acc=717 rej=? gpu=512.78,2505,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:41:12 sample peak t=151 hs=426700212311910.9 acc=807 rej=? gpu=514.86,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:41:27 sample peak t=166 hs=424858742793573.1 acc=901 rej=? gpu=509.14,2505,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:41:42 sample peak t=181 hs=425715487035868.2 acc=973 rej=? gpu=509.98,2497,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:41:57 sample peak t=196 hs=425533975144017.6 acc=1053 rej=? gpu=510.19,2497,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:42:12 sample peak t=211 hs=425824971890456.8 acc=1137 rej=? gpu=511.12,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:42:27 sample peak t=226 hs=427231014922864.44 acc=1221 rej=? gpu=514.92,2512,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:42:42 sample peak t=241 hs=425802756768699.8 acc=1297 rej=? gpu=511.77,2505,75,13801,100,0,1629
+08f8e389 [nvtest] [bench] 21:42:42 end peak: 2026-11-10 21:42:42 accepted   GPU 0  lat 83ms  diff 70.37 TH  effort 141% 2026-11-10 21:42:42 accepted   GPU 0  lat 83ms  diff 70.37 TH  effort 328%
+08f8e389 [nvtest] [bench] 21:42:42 credit peak secs=241 bits=210 ok=1295 dup=0 rej=0 ths=378.12 ths60=387.61 hs=4.256e+14 permin=298,329,337,324,7
+08f8e389 [nvtest] [bench] 21:42:50 start srb 240s
+08f8e389 [nvtest] [bench] 21:43:05 sample srb t=15 hs=396991300478697.25 acc=14 rej=0 gpu=497.90,2482,72,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:43:20 sample srb t=30 hs=418744761799803.4 acc=114 rej=0 gpu=504.67,2505,74,13801,100,0,2100
+08f8e389 [nvtest] [bench] 21:43:36 sample srb t=45 hs=416504909784978.4 acc=202 rej=0 gpu=504.21,2475,75,13801,98,0,2100
+08f8e389 [nvtest] [bench] 21:43:51 sample srb t=61 hs=422971502693782.9 acc=293 rej=0 gpu=500.18,2460,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:44:06 sample srb t=76 hs=416469166955973.75 acc=384 rej=0 gpu=501.51,2475,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:44:21 sample srb t=91 hs=426606040053607.94 acc=482 rej=0 gpu=499.89,2467,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:44:36 sample srb t=106 hs=416189586925492.4 acc=568 rej=0 gpu=503.50,2475,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:44:51 sample srb t=121 hs=426609140459783.7 acc=653 rej=0 gpu=504.75,2460,75,13801,100,0,2100
+08f8e389 [nvtest] [bench] 21:45:06 sample srb t=136 hs=421980372892238.94 acc=750 rej=0 gpu=501.67,2475,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:45:21 sample srb t=151 hs=422616735079117.25 acc=841 rej=0 gpu=505.53,2475,75,13801,98,0,2100
+08f8e389 [nvtest] [bench] 21:45:36 sample srb t=166 hs=416333781068296 acc=937 rej=0 gpu=505.56,2490,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:45:51 sample srb t=181 hs=422789798032038.94 acc=1030 rej=0 gpu=500.86,2475,76,13801,98,0,2100
+08f8e389 [nvtest] [bench] 21:46:06 sample srb t=196 hs=417132770441073.6 acc=1109 rej=0 gpu=502.09,2467,75,13801,100,0,2100
+08f8e389 [nvtest] [bench] 21:46:21 sample srb t=211 hs=422611320912037.8 acc=1202 rej=0 gpu=502.36,2475,75,13801,98,0,2100
+08f8e389 [nvtest] [bench] 21:46:36 sample srb t=226 hs=416833441379255.25 acc=1304 rej=0 gpu=502.52,2475,75,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:46:51 sample srb t=241 hs=422866468390194.06 acc=1395 rej=0 gpu=502.44,2467,74,13801,99,0,2100
+08f8e389 [nvtest] [bench] 21:46:51 end srb: [0m[2026-11-10 21:46:46] [1m[40m[32mGPU0[t0] share accepted [  149ms] [pearlhash][0][0m [0m[2026-11-10 21:46:46] [1m[40m[32m
+08f8e389 [nvtest] [bench] 21:46:51 credit srb secs=241 bits=210 ok=1391 dup=0 rej=0 ths=406.15 ths60=428.04 hs=4.175e+14 permin=290,355,378,360,8
+08f8e389 [nvtest] [bench] 21:46:59 start ozm 240s
+08f8e389 [nvtest] [bench] 21:47:14 sample ozm t=15 hs=372421561719649 acc=39 rej=0 gpu=504.54,2512,73,13801,99,0,2055
+08f8e389 [nvtest] [bench] 21:47:29 sample ozm t=30 hs=425404041123050 acc=108 rej=0 gpu=502.45,2490,76,13801,99,0,2055
+08f8e389 [nvtest] [bench] 21:47:44 sample ozm t=45 hs=423717546002402 acc=167 rej=0 gpu=503.80,2497,74,13801,100,0,2055
+08f8e389 [nvtest] [bench] 21:48:00 sample ozm t=60 hs=424200510338327 acc=221 rej=0 gpu=507.72,2520,75,13801,100,0,2055
+08f8e389 [nvtest] [bench] 21:48:15 sample ozm t=76 hs=423716369873427 acc=276 rej=0 gpu=517.38,2520,75,13801,100,0,2055
+08f8e389 [nvtest] [bench] 21:48:30 sample ozm t=91 hs=423935967360833 acc=331 rej=0 gpu=508.65,2505,75,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:48:45 sample ozm t=106 hs=422909857646936 acc=394 rej=0 gpu=521.67,2587,76,13801,100,0,2055
+08f8e389 [nvtest] [bench] 21:49:00 sample ozm t=121 hs=422790633038021 acc=464 rej=0 gpu=503.57,2497,75,13801,100,0,2055
+08f8e389 [nvtest] [bench] 21:49:15 sample ozm t=136 hs=424548123229505 acc=522 rej=0 gpu=516.70,2527,75,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:49:30 sample ozm t=151 hs=423509242526656 acc=577 rej=0 gpu=506.15,2490,78,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:49:45 sample ozm t=166 hs=423602690658185 acc=638 rej=0 gpu=504.78,2512,75,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:50:00 sample ozm t=181 hs=425137659539717 acc=702 rej=0 gpu=504.93,2505,75,13801,99,0,2055
+08f8e389 [nvtest] [bench] 21:50:15 sample ozm t=196 hs=422497739696542 acc=761 rej=0 gpu=505.69,2505,75,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:50:30 sample ozm t=211 hs=422558494198766 acc=826 rej=0 gpu=503.32,2512,75,13801,99,0,2055
+08f8e389 [nvtest] [bench] 21:50:45 sample ozm t=226 hs=424165862616682 acc=890 rej=0 gpu=508.69,2482,75,13801,98,0,2055
+08f8e389 [nvtest] [bench] 21:51:00 sample ozm t=241 hs=423905233574093 acc=957 rej=0 gpu=520.46,2512,75,13801,99,0,2055
+08f8e389 [nvtest] [bench] 21:51:00 end ozm:  21:51:00  [32m[pearlhash] GPU 0 Share accepted (185 ms)[0m  21:51:00  [32m[pearlhash] GPU 0 Share accepted (97 ms)[0m
+08f8e389 [nvtest] [bench] 21:51:00 credit ozm secs=241 bits=210 ok=954 dup=0 rej=0 ths=278.56 ths60=285.75 hs=none permin=219,241,239,251,4
+08f8e389 [nvtest] [bench] 21:51:08 start ours 240s
+08f8e389 [nvtest] [bench] 21:51:23 credit ours secs=15 bits=210 ok=0 dup=0 rej=0 ths=0.00 ths60=0.00 hs=none permin=0
+08f8e389 [nvtest] [bench] 21:51:23 exited ours t=15: rc=1 error: invalid Pearl address: gate run with --help for usage
+08f8e389 [nvtest] [bench] 21:51:23 loaded
+08f8e389 [nvtest] [bench] 21:51:31 vpool {"connections":4,"jobs":26,"byK":{"65536":{"shares":3986,"accepted":3986,"rejected":0}},"reasons":{},"methods":{},"logins":[{"conn":1,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":2,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":3,"agent":"SRBMiner-MULTI/3.8.2","type":"v2"
+08f8e389 [nvtest] [bench] 21:51:31 vpool ,"params":"wallet,worker,agent,type"},{"conn":4,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"}]}
+08f8e389 [nvtest] [bench] 21:51:31 all done
+08f8e389 [nvtest] 21:51:40 [gate] card before the race 180 MHz, 14.30 W, 575.00 W, 44, 1083 MiB, 0 %
+08f8e389 [nvtest] 21:51:40 [compilers] start 2026-11-10T21:51:40Z commit f907ece nvcc V13.3.73 node v22.22.0 stages: race
+08f8e389 [nvtest] 21:51:41 [compilers] card NVIDIA GeForce RTX 5090, 610.88, 12.0, 575.00 W, 575.00 W, 3090 MHz, 14001 MHz, 32607 MiB
+08f8e389 [nvtest] 21:51:41 [compilers] card now 180 MHz, 405 MHz, 13.40 W, 44, P8, 0 %, 57 %, 1083 MiB, 0x0000000000000000 gpus=1
+08f8e389 [nvtest] 21:51:42 [compilers] race: 23 builds, 2700 s, turns of 4 s after 1 s warm
+08f8e389 [nvtest] 21:51:42 [compilers] smi race 195 MHz 14.48/575.00 W
+08f8e389 [nvtest] 21:51:43 [compilers] race START builds=23 seconds=2700 leg=4.0 warm=1.0 span=134217728 nvml=yes
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT base fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT aa fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tdram fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tsk3 fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, AB_SKIP=3: A' and B' skipped after each block's first tile (timing only)] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tsk1 fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, AB_SKIP=1: A' skipped after each block's first tile (timing only)] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tsk2 fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, AB_SKIP=2: B' skipped after each block's first tile (timing only)] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tsk3p fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, AB_SKIP=3: A' and B' skipped after each block's first tile (timing only)] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT cbase fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT cncp fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT cncpr fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csh1 fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi05r fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi1r fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi2r fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi1 fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csa1r fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=2048 band=0 l2=0 max_slice=0 slice=0 granted=0 k=2048
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tdramk fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT tsk3k fold=[tall 192x256, 8 warps of 96x64, TMA ring, k-blocked operands, AB_SKIP=3: A' and B' skipped after each block's first tile (timing only)] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT cnck fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT cncprk fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi1rk fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi05rk fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:43 [compilers] race AUDIT csi2rk fold=[tall 192x256, 8 warps of 96x64, cp.async ring, per-tile operands] col_batch=64 band=0 l2=0 max_slice=0 slice=0 granted=0 k=65536
+08f8e389 [nvtest] 21:51:52 [compilers] smi race 2632 MHz 574.94/575.00 W
+08f8e389 [nvtest] 21:52:02 [compilers] smi race 2497 MHz 575.07/575.00 W
+08f8e389 [nvtest] 21:52:12 [compilers] smi race 2497 MHz 575.25/575.00 W
+08f8e389 [nvtest] 21:52:22 [compilers] smi race 2700 MHz 575.03/575.00 W
+08f8e389 [nvtest] 21:52:32 [compilers] smi race 2700 MHz 575.05/575.00 W
+08f8e389 [nvtest] 21:52:42 [compilers] smi race 2700 MHz 575.05/575.00 W
+08f8e389 [nvtest] 21:52:52 [compilers] smi race 2700 MHz 574.97/575.00 W
+08f8e389 [nvtest] 21:53:02 [compilers] smi race 2520 MHz 541.06/575.00 W
+08f8e389 [nvtest] 21:53:12 [compilers] smi race 2527 MHz 548.07/575.00 W
+08f8e389 [nvtest] 21:53:23 [compilers] smi race 2542 MHz 525.59/575.00 W
+08f8e389 [nvtest] 21:53:33 [compilers] smi race 2542 MHz 525.39/575.00 W
+08f8e389 [nvtest] 21:53:43 [compilers] smi race 2542 MHz 566.49/575.00 W
+08f8e389 [nvtest] 21:53:53 [compilers] smi race 2490 MHz 574.49/575.00 W
+08f8e389 [nvtest] 21:53:55 [compilers] race LEG round=0 base th=408.903 salts=18 secs=3.10 mhz=2490 w=575.2 c=76 mem=4.2
+08f8e389 [nvtest] 21:53:59 [compilers] race LEG round=0 aa th=408.814 salts=18 secs=3.10 mhz=2490 w=575.0 c=76 mem=3.9
+08f8e389 [nvtest] 21:54:03 [compilers] smi race 2497 MHz 574.90/575.00 W
+08f8e389 [nvtest] 21:54:03 [compilers] race LEG round=0 tdram th=412.886 salts=18 secs=3.07 mhz=2508 w=575.1 c=77 mem=0.0
+08f8e389 [nvtest] 21:54:07 [compilers] race LEG round=0 tsk3 th=451.234 salts=19 secs=2.96 mhz=2722 w=575.1 c=79 mem=0.7
+08f8e389 [nvtest] 21:54:11 [compilers] race LEG round=0 tsk1 th=428.030 salts=18 secs=2.96 mhz=2586 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 21:54:13 [compilers] smi race 2625 MHz 574.95/575.00 W
+08f8e389 [nvtest] 21:54:15 [compilers] race LEG round=0 tsk2 th=434.179 salts=18 secs=2.92 mhz=2625 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 21:54:19 [compilers] race LEG round=0 tsk3p th=451.216 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:54:23 [compilers] smi race 2460 MHz 574.66/575.00 W
+08f8e389 [nvtest] 21:54:23 [compilers] race LEG round=0 cbase th=403.795 salts=18 secs=3.14 mhz=2462 w=574.9 c=77 mem=3.3
+08f8e389 [nvtest] 21:54:27 [compilers] race LEG round=0 cncp th=444.783 salts=19 secs=3.01 mhz=2716 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:54:32 [compilers] race LEG round=0 cncpr th=452.057 salts=19 secs=2.96 mhz=2707 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:54:33 [compilers] smi race 2662 MHz 574.96/575.00 W
+08f8e389 [nvtest] 21:54:36 [compilers] race LEG round=0 csh1 th=384.051 salts=16 secs=2.93 mhz=2663 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:54:40 [compilers] race LEG round=0 csi05r th=412.615 salts=18 secs=3.07 mhz=2625 w=565.3 c=78 mem=0.0
+08f8e389 [nvtest] 21:54:43 [compilers] smi race 2565 MHz 559.62/575.00 W
+08f8e389 [nvtest] 21:54:44 [compilers] race LEG round=0 csi1r th=408.424 salts=18 secs=3.10 mhz=2567 w=558.7 c=78 mem=0.0
+08f8e389 [nvtest] 21:54:48 [compilers] race LEG round=0 csi2r th=393.063 salts=17 secs=3.04 mhz=2558 w=576.3 c=78 mem=0.0
+08f8e389 [nvtest] 21:54:52 [compilers] race LEG round=0 csi1 th=400.332 salts=17 secs=2.99 mhz=2602 w=575.3 c=78 mem=0.0
+08f8e389 [nvtest] 21:54:53 [compilers] smi race 2692 MHz 575.15/575.00 W
+08f8e389 [nvtest] 21:54:56 [compilers] race LEG round=0 csa1r th=418.841 salts=18 secs=3.02 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:55:03 [compilers] smi race 2475 MHz 574.82/575.00 W
+08f8e389 [nvtest] 21:55:12 [compilers] race LEG round=0 tdramk th=417.385 salts=2 secs=10.79 mhz=2477 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 21:55:13 [compilers] smi race 2685 MHz 575.18/575.00 W
+08f8e389 [nvtest] 21:55:23 [compilers] smi race 2685 MHz 575.30/575.00 W
+08f8e389 [nvtest] 21:55:27 [compilers] race LEG round=0 tsk3k th=455.525 salts=2 secs=9.89 mhz=2689 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:55:33 [compilers] smi race 2700 MHz 575.29/575.00 W
+08f8e389 [nvtest] 21:55:42 [compilers] race LEG round=0 cnck th=453.365 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:55:43 [compilers] smi race 2700 MHz 575.03/575.00 W
+08f8e389 [nvtest] 21:55:53 [compilers] smi race 2700 MHz 575.02/575.00 W
+08f8e389 [nvtest] 21:55:57 [compilers] race LEG round=0 cncprk th=456.332 salts=2 secs=9.87 mhz=2697 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:56:03 [compilers] smi race 2535 MHz 547.74/575.00 W
+08f8e389 [nvtest] 21:56:13 [compilers] race LEG round=0 csi1rk th=408.689 salts=2 secs=11.02 mhz=2531 w=548.1 c=77 mem=0.0
+08f8e389 [nvtest] 21:56:13 [compilers] smi race 2527 MHz 546.88/575.00 W
+08f8e389 [nvtest] 21:56:23 [compilers] smi race 2550 MHz 525.70/575.00 W
+08f8e389 [nvtest] 21:56:29 [compilers] race LEG round=0 csi05rk th=416.560 salts=2 secs=10.81 mhz=2545 w=525.2 c=75 mem=0.0
+08f8e389 [nvtest] 21:56:33 [compilers] smi race 2557 MHz 575.73/575.00 W
+08f8e389 [nvtest] 21:56:43 [compilers] smi race 2542 MHz 568.15/575.00 W
+08f8e389 [nvtest] 21:56:46 [compilers] race LEG round=0 csi2rk th=396.013 salts=2 secs=11.37 mhz=2547 w=571.0 c=77 mem=0.0
+08f8e389 [nvtest] 21:56:53 [compilers] smi race 2550 MHz 575.43/575.00 W
+08f8e389 [nvtest] 21:57:04 [compilers] smi race 2550 MHz 577.52/575.00 W
+08f8e389 [nvtest] 21:57:04 [compilers] race LEG round=1 csi2rk th=395.964 salts=2 secs=11.37 mhz=2548 w=572.5 c=78 mem=0.0
+08f8e389 [nvtest] 21:57:14 [compilers] smi race 2550 MHz 525.59/575.00 W
+08f8e389 [nvtest] 21:57:20 [compilers] race LEG round=1 csi05rk th=417.130 salts=2 secs=10.80 mhz=2547 w=527.6 c=76 mem=0.0
+08f8e389 [nvtest] 21:57:24 [compilers] smi race 2535 MHz 547.32/575.00 W
+08f8e389 [nvtest] 21:57:34 [compilers] smi race 2535 MHz 547.88/575.00 W
+08f8e389 [nvtest] 21:57:36 [compilers] race LEG round=1 csi1rk th=408.939 salts=2 secs=11.01 mhz=2534 w=547.6 c=76 mem=0.0
+08f8e389 [nvtest] 21:57:44 [compilers] smi race 2700 MHz 575.01/575.00 W
+08f8e389 [nvtest] 21:57:51 [compilers] race LEG round=1 cncprk th=456.803 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 21:57:54 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 21:58:04 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 21:58:06 [compilers] race LEG round=1 cnck th=453.508 salts=2 secs=9.93 mhz=2701 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:58:14 [compilers] smi race 2692 MHz 575.00/575.00 W
+08f8e389 [nvtest] 21:58:21 [compilers] race LEG round=1 tsk3k th=455.552 salts=2 secs=9.89 mhz=2690 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:58:24 [compilers] smi race 2482 MHz 574.99/575.00 W
+08f8e389 [nvtest] 21:58:34 [compilers] smi race 2475 MHz 574.99/575.00 W
+08f8e389 [nvtest] 21:58:37 [compilers] race LEG round=1 tdramk th=418.085 salts=2 secs=10.77 mhz=2483 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 21:58:41 [compilers] race LEG round=1 csa1r th=419.303 salts=18 secs=3.02 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:58:44 [compilers] smi race 2602 MHz 574.87/575.00 W
+08f8e389 [nvtest] 21:58:45 [compilers] race LEG round=1 csi1 th=400.385 salts=17 secs=2.99 mhz=2605 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 21:58:49 [compilers] race LEG round=1 csi2r th=393.412 salts=17 secs=3.04 mhz=2559 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 21:58:53 [compilers] race LEG round=1 csi1r th=408.438 salts=18 secs=3.10 mhz=2564 w=557.9 c=78 mem=0.0
+08f8e389 [nvtest] 21:58:54 [compilers] smi race 2625 MHz 558.27/575.00 W
+08f8e389 [nvtest] 21:58:57 [compilers] race LEG round=1 csi05r th=413.063 salts=18 secs=3.07 mhz=2626 w=565.0 c=78 mem=0.0
+08f8e389 [nvtest] 21:59:02 [compilers] race LEG round=1 csh1 th=384.499 salts=17 secs=3.11 mhz=2668 w=575.6 c=78 mem=0.0
+08f8e389 [nvtest] 21:59:04 [compilers] smi race 2715 MHz 574.96/575.00 W
+08f8e389 [nvtest] 21:59:06 [compilers] race LEG round=1 cncpr th=452.481 salts=19 secs=2.95 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:59:10 [compilers] race LEG round=1 cncp th=445.164 salts=19 secs=3.00 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:59:14 [compilers] race LEG round=1 cbase th=405.426 salts=18 secs=3.12 mhz=2467 w=574.9 c=77 mem=3.1
+08f8e389 [nvtest] 21:59:14 [compilers] smi race 2467 MHz 574.83/575.00 W
+08f8e389 [nvtest] 21:59:18 [compilers] race LEG round=1 tsk3p th=452.279 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 21:59:22 [compilers] race LEG round=1 tsk2 th=431.453 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 21:59:24 [compilers] smi race 2580 MHz 575.18/575.00 W
+08f8e389 [nvtest] 21:59:26 [compilers] race LEG round=1 tsk1 th=426.530 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 21:59:30 [compilers] race LEG round=1 tsk3 th=451.492 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.6
+08f8e389 [nvtest] 21:59:34 [compilers] smi race 2497 MHz 574.86/575.00 W
+08f8e389 [nvtest] 21:59:34 [compilers] race LEG round=1 tdram th=412.427 salts=18 secs=3.07 mhz=2498 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 21:59:38 [compilers] race LEG round=1 aa th=410.196 salts=18 secs=3.09 mhz=2490 w=575.0 c=77 mem=3.2
+08f8e389 [nvtest] 21:59:43 [compilers] race LEG round=1 base th=408.562 salts=18 secs=3.10 mhz=2489 w=574.9 c=77 mem=4.0
+08f8e389 [nvtest] 21:59:44 [compilers] smi race 2490 MHz 575.60/575.00 W
+08f8e389 [nvtest] 21:59:47 [compilers] race LEG round=2 base th=408.551 salts=18 secs=3.10 mhz=2489 w=575.0 c=77 mem=4.1
+08f8e389 [nvtest] 21:59:51 [compilers] race LEG round=2 aa th=408.712 salts=18 secs=3.10 mhz=2492 w=575.0 c=77 mem=3.9
+08f8e389 [nvtest] 21:59:54 [compilers] smi race 2497 MHz 574.91/575.00 W
+08f8e389 [nvtest] 21:59:55 [compilers] race LEG round=2 tdram th=412.656 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 21:59:59 [compilers] race LEG round=2 tsk3 th=451.560 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:00:03 [compilers] race LEG round=2 tsk1 th=426.328 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:00:04 [compilers] smi race 2602 MHz 575.16/575.00 W
+08f8e389 [nvtest] 22:00:07 [compilers] race LEG round=2 tsk2 th=431.231 salts=18 secs=2.94 mhz=2609 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:00:11 [compilers] race LEG round=2 tsk3p th=451.835 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:00:14 [compilers] smi race 2467 MHz 574.65/575.00 W
+08f8e389 [nvtest] 22:00:15 [compilers] race LEG round=2 cbase th=405.079 salts=18 secs=3.13 mhz=2467 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:00:19 [compilers] race LEG round=2 cncp th=445.044 salts=19 secs=3.00 mhz=2721 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:00:24 [compilers] race LEG round=2 cncpr th=452.283 salts=19 secs=2.96 mhz=2714 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:00:24 [compilers] smi race 2670 MHz 575.05/575.00 W
+08f8e389 [nvtest] 22:00:28 [compilers] race LEG round=2 csh1 th=384.297 salts=16 secs=2.93 mhz=2664 w=574.9 c=78 mem=0.0
+08f8e389 [nvtest] 22:00:32 [compilers] race LEG round=2 csi05r th=412.865 salts=18 secs=3.07 mhz=2627 w=565.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:00:34 [compilers] smi race 2565 MHz 557.78/575.00 W
+08f8e389 [nvtest] 22:00:36 [compilers] race LEG round=2 csi1r th=408.448 salts=18 secs=3.10 mhz=2565 w=558.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:00:40 [compilers] race LEG round=2 csi2r th=393.368 salts=17 secs=3.04 mhz=2561 w=576.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:00:44 [compilers] race LEG round=2 csi1 th=400.308 salts=17 secs=2.99 mhz=2605 w=575.2 c=78 mem=0.0
+08f8e389 [nvtest] 22:00:45 [compilers] smi race 2692 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:00:48 [compilers] race LEG round=2 csa1r th=419.154 salts=18 secs=3.02 mhz=2695 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:00:55 [compilers] smi race 2475 MHz 575.45/575.00 W
+08f8e389 [nvtest] 22:01:04 [compilers] race LEG round=2 tdramk th=417.792 salts=2 secs=10.78 mhz=2477 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:01:05 [compilers] smi race 2527 MHz 574.93/575.00 W
+08f8e389 [nvtest] 22:01:15 [compilers] smi race 2692 MHz 574.96/575.00 W
+08f8e389 [nvtest] 22:01:19 [compilers] race LEG round=2 tsk3k th=455.557 salts=2 secs=9.89 mhz=2689 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:01:25 [compilers] smi race 2700 MHz 575.10/575.00 W
+08f8e389 [nvtest] 22:01:34 [compilers] race LEG round=2 cnck th=453.432 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:01:35 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:01:45 [compilers] smi race 2700 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:01:49 [compilers] race LEG round=2 cncprk th=456.313 salts=2 secs=9.87 mhz=2696 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:01:55 [compilers] smi race 2527 MHz 549.93/575.00 W
+08f8e389 [nvtest] 22:02:05 [compilers] smi race 2535 MHz 549.64/575.00 W
+08f8e389 [nvtest] 22:02:05 [compilers] race LEG round=2 csi1rk th=409.018 salts=2 secs=11.01 mhz=2533 w=549.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:02:15 [compilers] smi race 2542 MHz 524.43/575.00 W
+08f8e389 [nvtest] 22:02:21 [compilers] race LEG round=2 csi05rk th=416.686 salts=2 secs=10.81 mhz=2545 w=524.8 c=75 mem=0.0
+08f8e389 [nvtest] 22:02:25 [compilers] smi race 2542 MHz 567.32/575.00 W
+08f8e389 [nvtest] 22:02:35 [compilers] smi race 2542 MHz 566.55/575.00 W
+08f8e389 [nvtest] 22:02:38 [compilers] race LEG round=2 csi2rk th=395.480 salts=2 secs=11.39 mhz=2543 w=566.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:02:45 [compilers] smi race 2550 MHz 572.42/575.00 W
+08f8e389 [nvtest] 22:02:55 [compilers] smi race 2542 MHz 569.30/575.00 W
+08f8e389 [nvtest] 22:02:56 [compilers] race LEG round=3 csi2rk th=395.572 salts=2 secs=11.39 mhz=2544 w=569.1 c=77 mem=0.0
+08f8e389 [nvtest] 22:03:05 [compilers] smi race 2542 MHz 524.86/575.00 W
+08f8e389 [nvtest] 22:03:12 [compilers] race LEG round=3 csi05rk th=416.613 salts=2 secs=10.81 mhz=2543 w=524.5 c=75 mem=0.0
+08f8e389 [nvtest] 22:03:15 [compilers] smi race 2535 MHz 546.51/575.00 W
+08f8e389 [nvtest] 22:03:25 [compilers] smi race 2535 MHz 547.62/575.00 W
+08f8e389 [nvtest] 22:03:28 [compilers] race LEG round=3 csi1rk th=409.293 salts=2 secs=11.00 mhz=2534 w=547.0 c=76 mem=0.0
+08f8e389 [nvtest] 22:03:35 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:03:43 [compilers] race LEG round=3 cncprk th=456.785 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:03:45 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:03:55 [compilers] smi race 2700 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:03:58 [compilers] race LEG round=3 cnck th=453.688 salts=2 secs=9.93 mhz=2701 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:04:05 [compilers] smi race 2692 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:04:13 [compilers] race LEG round=3 tsk3k th=455.566 salts=2 secs=9.89 mhz=2690 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:04:15 [compilers] smi race 2475 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:04:26 [compilers] smi race 2475 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:04:29 [compilers] race LEG round=3 tdramk th=417.703 salts=2 secs=10.78 mhz=2479 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:04:33 [compilers] race LEG round=3 csa1r th=419.242 salts=18 secs=3.02 mhz=2697 w=575.2 c=79 mem=0.0
+08f8e389 [nvtest] 22:04:36 [compilers] smi race 2610 MHz 574.80/575.00 W
+08f8e389 [nvtest] 22:04:37 [compilers] race LEG round=3 csi1 th=400.417 salts=17 secs=2.99 mhz=2608 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:04:41 [compilers] race LEG round=3 csi2r th=393.322 salts=17 secs=3.04 mhz=2557 w=574.9 c=78 mem=0.0
+08f8e389 [nvtest] 22:04:45 [compilers] race LEG round=3 csi1r th=408.385 salts=18 secs=3.10 mhz=2565 w=557.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:04:46 [compilers] smi race 2565 MHz 557.60/575.00 W
+08f8e389 [nvtest] 22:04:49 [compilers] race LEG round=3 csi05r th=412.577 salts=18 secs=3.07 mhz=2626 w=565.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:04:53 [compilers] race LEG round=3 csh1 th=384.375 salts=16 secs=2.93 mhz=2665 w=575.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:04:56 [compilers] smi race 2707 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:04:57 [compilers] race LEG round=3 cncpr th=452.247 salts=19 secs=2.96 mhz=2712 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:05:02 [compilers] race LEG round=3 cncp th=444.749 salts=19 secs=3.01 mhz=2721 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:05:06 [compilers] smi race 2467 MHz 575.39/575.00 W
+08f8e389 [nvtest] 22:05:06 [compilers] race LEG round=3 cbase th=403.910 salts=18 secs=3.14 mhz=2463 w=575.0 c=77 mem=3.3
+08f8e389 [nvtest] 22:05:10 [compilers] race LEG round=3 tsk3p th=451.639 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:05:14 [compilers] race LEG round=3 tsk2 th=431.421 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:05:16 [compilers] smi race 2580 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:05:18 [compilers] race LEG round=3 tsk1 th=426.395 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:05:22 [compilers] race LEG round=3 tsk3 th=451.525 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.5
+08f8e389 [nvtest] 22:05:26 [compilers] smi race 2497 MHz 575.20/575.00 W
+08f8e389 [nvtest] 22:05:26 [compilers] race LEG round=3 tdram th=412.648 salts=18 secs=3.07 mhz=2499 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:05:30 [compilers] race LEG round=3 aa th=410.453 salts=18 secs=3.09 mhz=2490 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:05:34 [compilers] race LEG round=3 base th=408.633 salts=18 secs=3.10 mhz=2486 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:05:36 [compilers] smi race 2490 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:05:39 [compilers] race LEG round=4 base th=408.620 salts=18 secs=3.10 mhz=2490 w=575.0 c=77 mem=4.1
+08f8e389 [nvtest] 22:05:43 [compilers] race LEG round=4 aa th=408.559 salts=18 secs=3.10 mhz=2489 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:05:46 [compilers] smi race 2512 MHz 575.48/575.00 W
+08f8e389 [nvtest] 22:05:47 [compilers] race LEG round=4 tdram th=412.607 salts=18 secs=3.07 mhz=2507 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:05:51 [compilers] race LEG round=4 tsk3 th=451.343 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.5
+08f8e389 [nvtest] 22:05:55 [compilers] race LEG round=4 tsk1 th=426.202 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:05:56 [compilers] smi race 2602 MHz 575.03/575.00 W
+08f8e389 [nvtest] 22:05:59 [compilers] race LEG round=4 tsk2 th=430.926 salts=18 secs=2.94 mhz=2607 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:06:03 [compilers] race LEG round=4 tsk3p th=451.686 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:06:06 [compilers] smi race 2460 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:06:07 [compilers] race LEG round=4 cbase th=404.180 salts=18 secs=3.13 mhz=2465 w=575.0 c=77 mem=3.2
+08f8e389 [nvtest] 22:06:11 [compilers] race LEG round=4 cncp th=445.058 salts=19 secs=3.00 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:06:15 [compilers] race LEG round=4 cncpr th=451.995 salts=19 secs=2.96 mhz=2711 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:06:16 [compilers] smi race 2662 MHz 574.77/575.00 W
+08f8e389 [nvtest] 22:06:19 [compilers] race LEG round=4 csh1 th=384.172 salts=16 secs=2.93 mhz=2662 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:06:23 [compilers] race LEG round=4 csi05r th=412.974 salts=18 secs=3.07 mhz=2629 w=567.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:06:26 [compilers] smi race 2565 MHz 557.52/575.00 W
+08f8e389 [nvtest] 22:06:28 [compilers] race LEG round=4 csi1r th=408.318 salts=18 secs=3.10 mhz=2565 w=558.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:06:32 [compilers] race LEG round=4 csi2r th=393.596 salts=17 secs=3.04 mhz=2561 w=576.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:06:36 [compilers] race LEG round=4 csi1 th=400.447 salts=17 secs=2.99 mhz=2606 w=575.2 c=78 mem=0.0
+08f8e389 [nvtest] 22:06:36 [compilers] smi race 2602 MHz 575.10/575.00 W
+08f8e389 [nvtest] 22:06:40 [compilers] race LEG round=4 csa1r th=419.167 salts=18 secs=3.02 mhz=2697 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:06:46 [compilers] smi race 2482 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:06:56 [compilers] race LEG round=4 tdramk th=417.449 salts=2 secs=10.79 mhz=2477 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:06:56 [compilers] smi race 2475 MHz 573.92/575.00 W
+08f8e389 [nvtest] 22:07:06 [compilers] smi race 2692 MHz 574.92/575.00 W
+08f8e389 [nvtest] 22:07:11 [compilers] race LEG round=4 tsk3k th=455.585 salts=2 secs=9.89 mhz=2688 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:07:16 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:07:26 [compilers] race LEG round=4 cnck th=453.422 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:07:26 [compilers] smi race 2700 MHz 574.96/575.00 W
+08f8e389 [nvtest] 22:07:36 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:07:41 [compilers] race LEG round=4 cncprk th=456.350 salts=2 secs=9.87 mhz=2696 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:07:46 [compilers] smi race 2520 MHz 539.52/575.00 W
+08f8e389 [nvtest] 22:07:56 [compilers] smi race 2520 MHz 538.86/575.00 W
+08f8e389 [nvtest] 22:07:57 [compilers] race LEG round=4 csi1rk th=407.725 salts=2 secs=11.05 mhz=2521 w=540.1 c=77 mem=0.0
+08f8e389 [nvtest] 22:08:07 [compilers] smi race 2542 MHz 524.96/575.00 W
+08f8e389 [nvtest] 22:08:13 [compilers] race LEG round=4 csi05rk th=416.918 salts=2 secs=10.80 mhz=2544 w=526.2 c=75 mem=0.0
+08f8e389 [nvtest] 22:08:17 [compilers] smi race 2542 MHz 565.31/575.00 W
+08f8e389 [nvtest] 22:08:27 [compilers] smi race 2542 MHz 566.27/575.00 W
+08f8e389 [nvtest] 22:08:30 [compilers] race LEG round=4 csi2rk th=395.966 salts=2 secs=11.37 mhz=2546 w=570.4 c=77 mem=0.0
+08f8e389 [nvtest] 22:08:37 [compilers] smi race 2542 MHz 573.60/575.00 W
+08f8e389 [nvtest] 22:08:47 [compilers] smi race 2542 MHz 566.46/575.00 W
+08f8e389 [nvtest] 22:08:47 [compilers] race LEG round=5 csi2rk th=395.468 salts=2 secs=11.39 mhz=2544 w=568.6 c=77 mem=0.0
+08f8e389 [nvtest] 22:08:57 [compilers] smi race 2542 MHz 525.70/575.00 W
+08f8e389 [nvtest] 22:09:04 [compilers] race LEG round=5 csi05rk th=416.650 salts=2 secs=10.81 mhz=2543 w=525.3 c=76 mem=0.0
+08f8e389 [nvtest] 22:09:07 [compilers] smi race 2527 MHz 547.68/575.00 W
+08f8e389 [nvtest] 22:09:17 [compilers] smi race 2535 MHz 546.44/575.00 W
+08f8e389 [nvtest] 22:09:20 [compilers] race LEG round=5 csi1rk th=409.090 salts=2 secs=11.01 mhz=2532 w=546.7 c=76 mem=0.0
+08f8e389 [nvtest] 22:09:27 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:09:35 [compilers] race LEG round=5 cncprk th=456.670 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:09:37 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:09:47 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:09:50 [compilers] race LEG round=5 cnck th=453.560 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:09:57 [compilers] smi race 2692 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:10:05 [compilers] race LEG round=5 tsk3k th=455.617 salts=2 secs=9.88 mhz=2690 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:10:07 [compilers] smi race 2475 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:10:17 [compilers] smi race 2475 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:10:21 [compilers] race LEG round=5 tdramk th=417.415 salts=2 secs=10.79 mhz=2476 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:10:25 [compilers] race LEG round=5 csa1r th=419.219 salts=18 secs=3.02 mhz=2693 w=575.2 c=79 mem=0.0
+08f8e389 [nvtest] 22:10:27 [compilers] smi race 2602 MHz 575.42/575.00 W
+08f8e389 [nvtest] 22:10:29 [compilers] race LEG round=5 csi1 th=400.400 salts=17 secs=2.99 mhz=2603 w=574.9 c=78 mem=0.0
+08f8e389 [nvtest] 22:10:33 [compilers] race LEG round=5 csi2r th=393.154 salts=17 secs=3.04 mhz=2558 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:10:37 [compilers] race LEG round=5 csi1r th=408.381 salts=18 secs=3.10 mhz=2562 w=558.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:10:37 [compilers] smi race 2565 MHz 558.39/575.00 W
+08f8e389 [nvtest] 22:10:41 [compilers] race LEG round=5 csi05r th=412.788 salts=18 secs=3.07 mhz=2626 w=565.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:10:45 [compilers] race LEG round=5 csh1 th=384.406 salts=16 secs=2.93 mhz=2662 w=575.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:10:47 [compilers] smi race 2707 MHz 574.78/575.00 W
+08f8e389 [nvtest] 22:10:49 [compilers] race LEG round=5 cncpr th=451.859 salts=19 secs=2.96 mhz=2707 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:10:53 [compilers] race LEG round=5 cncp th=445.030 salts=19 secs=3.00 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:10:57 [compilers] smi race 2467 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:10:58 [compilers] race LEG round=5 cbase th=405.052 salts=18 secs=3.13 mhz=2467 w=575.0 c=77 mem=3.1
+08f8e389 [nvtest] 22:11:02 [compilers] race LEG round=5 tsk3p th=451.648 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:11:06 [compilers] race LEG round=5 tsk2 th=431.242 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:11:07 [compilers] smi race 2580 MHz 574.87/575.00 W
+08f8e389 [nvtest] 22:11:10 [compilers] race LEG round=5 tsk1 th=427.708 salts=18 secs=2.96 mhz=2583 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:11:14 [compilers] race LEG round=5 tsk3 th=451.163 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:11:17 [compilers] smi race 2497 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:11:18 [compilers] race LEG round=5 tdram th=412.493 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:11:22 [compilers] race LEG round=5 aa th=410.304 salts=18 secs=3.09 mhz=2489 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:11:26 [compilers] race LEG round=5 base th=410.185 salts=18 secs=3.09 mhz=2485 w=575.1 c=77 mem=3.0
+08f8e389 [nvtest] 22:11:27 [compilers] smi race 2482 MHz 575.19/575.00 W
+08f8e389 [nvtest] 22:11:30 [compilers] race LEG round=6 base th=410.383 salts=18 secs=3.09 mhz=2489 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:11:34 [compilers] race LEG round=6 aa th=410.538 salts=18 secs=3.09 mhz=2486 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:11:37 [compilers] smi race 2497 MHz 575.11/575.00 W
+08f8e389 [nvtest] 22:11:39 [compilers] race LEG round=6 tdram th=412.529 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:11:43 [compilers] race LEG round=6 tsk3 th=451.312 salts=19 secs=2.96 mhz=2722 w=575.1 c=79 mem=0.5
+08f8e389 [nvtest] 22:11:47 [compilers] race LEG round=6 tsk1 th=426.647 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:11:48 [compilers] smi race 2602 MHz 575.06/575.00 W
+08f8e389 [nvtest] 22:11:51 [compilers] race LEG round=6 tsk2 th=430.975 salts=18 secs=2.94 mhz=2606 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:11:55 [compilers] race LEG round=6 tsk3p th=451.982 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:11:58 [compilers] smi race 2467 MHz 575.15/575.00 W
+08f8e389 [nvtest] 22:11:59 [compilers] race LEG round=6 cbase th=404.615 salts=18 secs=3.13 mhz=2465 w=574.9 c=77 mem=3.1
+08f8e389 [nvtest] 22:12:03 [compilers] race LEG round=6 cncp th=445.062 salts=19 secs=3.00 mhz=2718 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:12:07 [compilers] race LEG round=6 cncpr th=452.111 salts=19 secs=2.96 mhz=2712 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:12:08 [compilers] smi race 2670 MHz 575.17/575.00 W
+08f8e389 [nvtest] 22:12:11 [compilers] race LEG round=6 csh1 th=384.184 salts=16 secs=2.93 mhz=2662 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:12:15 [compilers] race LEG round=6 csi05r th=412.944 salts=18 secs=3.07 mhz=2625 w=566.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:12:18 [compilers] smi race 2565 MHz 556.65/575.00 W
+08f8e389 [nvtest] 22:12:19 [compilers] race LEG round=6 csi1r th=408.188 salts=18 secs=3.10 mhz=2565 w=557.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:12:24 [compilers] race LEG round=6 csi2r th=393.602 salts=17 secs=3.04 mhz=2559 w=576.8 c=78 mem=0.0
+08f8e389 [nvtest] 22:12:28 [compilers] race LEG round=6 csi1 th=400.172 salts=17 secs=2.99 mhz=2602 w=575.2 c=78 mem=0.0
+08f8e389 [nvtest] 22:12:28 [compilers] smi race 2602 MHz 574.28/575.00 W
+08f8e389 [nvtest] 22:12:32 [compilers] race LEG round=6 csa1r th=419.085 salts=18 secs=3.02 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:12:38 [compilers] smi race 2482 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:12:48 [compilers] smi race 2475 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:12:48 [compilers] race LEG round=6 tdramk th=417.810 salts=2 secs=10.78 mhz=2476 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:12:58 [compilers] smi race 2685 MHz 574.36/575.00 W
+08f8e389 [nvtest] 22:13:03 [compilers] race LEG round=6 tsk3k th=455.540 salts=2 secs=9.89 mhz=2688 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:13:08 [compilers] smi race 2700 MHz 574.94/575.00 W
+08f8e389 [nvtest] 22:13:18 [compilers] race LEG round=6 cnck th=453.277 salts=2 secs=9.94 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:13:18 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:13:28 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:13:32 [compilers] race LEG round=6 cncprk th=456.382 salts=2 secs=9.87 mhz=2696 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:13:38 [compilers] smi race 2527 MHz 539.59/575.00 W
+08f8e389 [nvtest] 22:13:48 [compilers] smi race 2535 MHz 550.30/575.00 W
+08f8e389 [nvtest] 22:13:49 [compilers] race LEG round=6 csi1rk th=409.443 salts=2 secs=11.00 mhz=2534 w=548.4 c=77 mem=0.0
+08f8e389 [nvtest] 22:13:58 [compilers] smi race 2542 MHz 525.41/575.00 W
+08f8e389 [nvtest] 22:14:05 [compilers] race LEG round=6 csi05rk th=416.903 salts=2 secs=10.80 mhz=2545 w=526.5 c=75 mem=0.0
+08f8e389 [nvtest] 22:14:08 [compilers] smi race 2542 MHz 566.42/575.00 W
+08f8e389 [nvtest] 22:14:18 [compilers] smi race 2557 MHz 573.42/575.00 W
+08f8e389 [nvtest] 22:14:22 [compilers] race LEG round=6 csi2rk th=395.817 salts=2 secs=11.38 mhz=2546 w=570.8 c=77 mem=0.0
+08f8e389 [nvtest] 22:14:28 [compilers] smi race 2550 MHz 574.28/575.00 W
+08f8e389 [nvtest] 22:14:38 [compilers] smi race 2542 MHz 566.81/575.00 W
+08f8e389 [nvtest] 22:14:39 [compilers] race LEG round=7 csi2rk th=395.557 salts=2 secs=11.39 mhz=2545 w=569.5 c=77 mem=0.0
+08f8e389 [nvtest] 22:14:48 [compilers] smi race 2542 MHz 524.33/575.00 W
+08f8e389 [nvtest] 22:14:55 [compilers] race LEG round=7 csi05rk th=416.736 salts=2 secs=10.81 mhz=2543 w=525.2 c=76 mem=0.0
+08f8e389 [nvtest] 22:14:58 [compilers] smi race 2535 MHz 547.04/575.00 W
+08f8e389 [nvtest] 22:15:08 [compilers] smi race 2520 MHz 536.81/575.00 W
+08f8e389 [nvtest] 22:15:12 [compilers] race LEG round=7 csi1rk th=408.605 salts=2 secs=11.02 mhz=2528 w=544.8 c=76 mem=0.0
+08f8e389 [nvtest] 22:15:18 [compilers] smi race 2700 MHz 575.03/575.00 W
+08f8e389 [nvtest] 22:15:27 [compilers] race LEG round=7 cncprk th=456.664 salts=2 secs=9.86 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:15:28 [compilers] smi race 2700 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:15:39 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:15:42 [compilers] race LEG round=7 cnck th=453.600 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:15:49 [compilers] smi race 2692 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:15:56 [compilers] race LEG round=7 tsk3k th=455.683 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:15:59 [compilers] smi race 2475 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:16:09 [compilers] smi race 2475 MHz 575.04/575.00 W
+08f8e389 [nvtest] 22:16:13 [compilers] race LEG round=7 tdramk th=417.445 salts=2 secs=10.79 mhz=2479 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:16:17 [compilers] race LEG round=7 csa1r th=419.243 salts=18 secs=3.02 mhz=2695 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:16:19 [compilers] smi race 2602 MHz 574.86/575.00 W
+08f8e389 [nvtest] 22:16:21 [compilers] race LEG round=7 csi1 th=400.398 salts=17 secs=2.99 mhz=2603 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:16:25 [compilers] race LEG round=7 csi2r th=393.370 salts=17 secs=3.04 mhz=2558 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:16:29 [compilers] smi race 2557 MHz 557.01/575.00 W
+08f8e389 [nvtest] 22:16:29 [compilers] race LEG round=7 csi1r th=408.230 salts=18 secs=3.10 mhz=2564 w=557.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:16:33 [compilers] race LEG round=7 csi05r th=413.089 salts=18 secs=3.07 mhz=2625 w=565.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:16:37 [compilers] race LEG round=7 csh1 th=384.492 salts=17 secs=3.11 mhz=2664 w=575.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:16:39 [compilers] smi race 2715 MHz 575.09/575.00 W
+08f8e389 [nvtest] 22:16:41 [compilers] race LEG round=7 cncpr th=452.317 salts=19 secs=2.96 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:16:45 [compilers] race LEG round=7 cncp th=444.970 salts=19 secs=3.00 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:16:49 [compilers] smi race 2467 MHz 575.55/575.00 W
+08f8e389 [nvtest] 22:16:50 [compilers] race LEG round=7 cbase th=405.156 salts=18 secs=3.13 mhz=2467 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:16:54 [compilers] race LEG round=7 tsk3p th=451.870 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:16:58 [compilers] race LEG round=7 tsk2 th=431.318 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:16:59 [compilers] smi race 2580 MHz 574.86/575.00 W
+08f8e389 [nvtest] 22:17:02 [compilers] race LEG round=7 tsk1 th=426.464 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:17:06 [compilers] race LEG round=7 tsk3 th=451.200 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:17:09 [compilers] smi race 2497 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:17:10 [compilers] race LEG round=7 tdram th=412.972 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:17:14 [compilers] race LEG round=7 aa th=410.719 salts=18 secs=3.08 mhz=2490 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:17:18 [compilers] race LEG round=7 base th=410.966 salts=18 secs=3.08 mhz=2490 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:17:19 [compilers] smi race 2490 MHz 575.19/575.00 W
+08f8e389 [nvtest] 22:17:22 [compilers] race LEG round=8 base th=410.568 salts=18 secs=3.09 mhz=2490 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:17:26 [compilers] race LEG round=8 aa th=410.859 salts=18 secs=3.08 mhz=2490 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:17:29 [compilers] smi race 2497 MHz 575.08/575.00 W
+08f8e389 [nvtest] 22:17:30 [compilers] race LEG round=8 tdram th=412.665 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:17:35 [compilers] race LEG round=8 tsk3 th=451.497 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.5
+08f8e389 [nvtest] 22:17:39 [compilers] race LEG round=8 tsk1 th=426.429 salts=18 secs=2.97 mhz=2579 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:17:39 [compilers] smi race 2602 MHz 574.74/575.00 W
+08f8e389 [nvtest] 22:17:43 [compilers] race LEG round=8 tsk2 th=431.326 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:17:47 [compilers] race LEG round=8 tsk3p th=452.134 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:17:49 [compilers] smi race 2467 MHz 574.90/575.00 W
+08f8e389 [nvtest] 22:17:51 [compilers] race LEG round=8 cbase th=404.337 salts=18 secs=3.13 mhz=2466 w=574.9 c=77 mem=3.5
+08f8e389 [nvtest] 22:17:55 [compilers] race LEG round=8 cncp th=445.084 salts=19 secs=3.00 mhz=2720 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:17:59 [compilers] race LEG round=8 cncpr th=452.253 salts=19 secs=2.96 mhz=2714 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:17:59 [compilers] smi race 2715 MHz 574.94/575.00 W
+08f8e389 [nvtest] 22:18:03 [compilers] race LEG round=8 csh1 th=384.527 salts=16 secs=2.93 mhz=2667 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:18:07 [compilers] race LEG round=8 csi05r th=413.066 salts=18 secs=3.07 mhz=2627 w=566.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:18:09 [compilers] smi race 2565 MHz 557.39/575.00 W
+08f8e389 [nvtest] 22:18:11 [compilers] race LEG round=8 csi1r th=408.318 salts=18 secs=3.10 mhz=2565 w=558.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:18:15 [compilers] race LEG round=8 csi2r th=393.546 salts=17 secs=3.04 mhz=2561 w=576.8 c=78 mem=0.0
+08f8e389 [nvtest] 22:18:19 [compilers] smi race 2610 MHz 575.41/575.00 W
+08f8e389 [nvtest] 22:18:20 [compilers] race LEG round=8 csi1 th=400.304 salts=17 secs=2.99 mhz=2607 w=575.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:18:24 [compilers] race LEG round=8 csa1r th=419.278 salts=18 secs=3.02 mhz=2694 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:18:29 [compilers] smi race 2475 MHz 574.83/575.00 W
+08f8e389 [nvtest] 22:18:39 [compilers] smi race 2475 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:18:40 [compilers] race LEG round=8 tdramk th=417.716 salts=2 secs=10.78 mhz=2479 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:18:49 [compilers] smi race 2692 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:18:55 [compilers] race LEG round=8 tsk3k th=455.775 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:18:59 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:19:09 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:19:09 [compilers] race LEG round=8 cnck th=453.628 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:19:19 [compilers] smi race 2700 MHz 574.94/575.00 W
+08f8e389 [nvtest] 22:19:24 [compilers] race LEG round=8 cncprk th=456.533 salts=2 secs=9.86 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:19:30 [compilers] smi race 2520 MHz 538.87/575.00 W
+08f8e389 [nvtest] 22:19:40 [compilers] smi race 2535 MHz 547.98/575.00 W
+08f8e389 [nvtest] 22:19:41 [compilers] race LEG round=8 csi1rk th=408.602 salts=2 secs=11.02 mhz=2527 w=542.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:19:50 [compilers] smi race 2542 MHz 523.28/575.00 W
+08f8e389 [nvtest] 22:19:57 [compilers] race LEG round=8 csi05rk th=416.507 salts=2 secs=10.81 mhz=2543 w=524.0 c=75 mem=0.0
+08f8e389 [nvtest] 22:20:00 [compilers] smi race 2557 MHz 576.74/575.00 W
+08f8e389 [nvtest] 22:20:10 [compilers] smi race 2550 MHz 576.29/575.00 W
+08f8e389 [nvtest] 22:20:14 [compilers] race LEG round=8 csi2rk th=395.804 salts=2 secs=11.38 mhz=2546 w=568.8 c=77 mem=0.0
+08f8e389 [nvtest] 22:20:20 [compilers] smi race 2542 MHz 565.16/575.00 W
+08f8e389 [nvtest] 22:20:30 [compilers] smi race 2542 MHz 569.68/575.00 W
+08f8e389 [nvtest] 22:20:31 [compilers] race LEG round=9 csi2rk th=395.648 salts=2 secs=11.38 mhz=2545 w=568.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:20:40 [compilers] smi race 2542 MHz 525.01/575.00 W
+08f8e389 [nvtest] 22:20:47 [compilers] race LEG round=9 csi05rk th=416.659 salts=2 secs=10.81 mhz=2542 w=524.7 c=75 mem=0.0
+08f8e389 [nvtest] 22:20:50 [compilers] smi race 2535 MHz 546.14/575.00 W
+08f8e389 [nvtest] 22:21:00 [compilers] smi race 2520 MHz 536.63/575.00 W
+08f8e389 [nvtest] 22:21:04 [compilers] race LEG round=9 csi1rk th=407.804 salts=2 secs=11.04 mhz=2523 w=537.2 c=76 mem=0.0
+08f8e389 [nvtest] 22:21:10 [compilers] smi race 2700 MHz 575.03/575.00 W
+08f8e389 [nvtest] 22:21:19 [compilers] race LEG round=9 cncprk th=456.930 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:21:20 [compilers] smi race 2700 MHz 575.06/575.00 W
+08f8e389 [nvtest] 22:21:30 [compilers] smi race 2700 MHz 575.08/575.00 W
+08f8e389 [nvtest] 22:21:34 [compilers] race LEG round=9 cnck th=453.785 salts=2 secs=9.92 mhz=2701 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:21:40 [compilers] smi race 2692 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:21:48 [compilers] race LEG round=9 tsk3k th=455.857 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:21:50 [compilers] smi race 2482 MHz 575.13/575.00 W
+08f8e389 [nvtest] 22:22:00 [compilers] smi race 2482 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:22:05 [compilers] race LEG round=9 tdramk th=417.876 salts=2 secs=10.78 mhz=2484 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:22:09 [compilers] race LEG round=9 csa1r th=419.209 salts=18 secs=3.02 mhz=2699 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:22:10 [compilers] smi race 2610 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:22:13 [compilers] race LEG round=9 csi1 th=400.418 salts=17 secs=2.99 mhz=2610 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:22:17 [compilers] race LEG round=9 csi2r th=393.512 salts=17 secs=3.04 mhz=2561 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:22:20 [compilers] smi race 2565 MHz 557.66/575.00 W
+08f8e389 [nvtest] 22:22:21 [compilers] race LEG round=9 csi1r th=408.495 salts=18 secs=3.10 mhz=2565 w=557.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:22:25 [compilers] race LEG round=9 csi05r th=413.083 salts=18 secs=3.07 mhz=2626 w=565.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:22:29 [compilers] race LEG round=9 csh1 th=384.678 salts=17 secs=3.11 mhz=2664 w=575.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:22:30 [compilers] smi race 2715 MHz 575.04/575.00 W
+08f8e389 [nvtest] 22:22:33 [compilers] race LEG round=9 cncpr th=452.137 salts=19 secs=2.96 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:22:37 [compilers] race LEG round=9 cncp th=445.110 salts=19 secs=3.00 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:22:40 [compilers] smi race 2467 MHz 574.68/575.00 W
+08f8e389 [nvtest] 22:22:42 [compilers] race LEG round=9 cbase th=405.373 salts=18 secs=3.12 mhz=2467 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:22:46 [compilers] race LEG round=9 tsk3p th=451.950 salts=19 secs=2.96 mhz=2722 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:22:50 [compilers] race LEG round=9 tsk2 th=431.467 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:22:50 [compilers] smi race 2580 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:22:54 [compilers] race LEG round=9 tsk1 th=426.405 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:22:58 [compilers] race LEG round=9 tsk3 th=451.498 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.6
+08f8e389 [nvtest] 22:23:00 [compilers] smi race 2497 MHz 574.80/575.00 W
+08f8e389 [nvtest] 22:23:02 [compilers] race LEG round=9 tdram th=412.504 salts=18 secs=3.07 mhz=2497 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:23:06 [compilers] race LEG round=9 aa th=408.745 salts=18 secs=3.10 mhz=2491 w=574.9 c=77 mem=4.0
+08f8e389 [nvtest] 22:23:10 [compilers] race LEG round=9 base th=408.658 salts=18 secs=3.10 mhz=2488 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:23:11 [compilers] smi race 2490 MHz 575.52/575.00 W
+08f8e389 [nvtest] 22:23:14 [compilers] race LEG round=10 base th=408.615 salts=18 secs=3.10 mhz=2485 w=575.0 c=76 mem=4.1
+08f8e389 [nvtest] 22:23:18 [compilers] race LEG round=10 aa th=408.819 salts=18 secs=3.10 mhz=2485 w=575.0 c=77 mem=3.9
+08f8e389 [nvtest] 22:23:21 [compilers] smi race 2505 MHz 574.57/575.00 W
+08f8e389 [nvtest] 22:23:23 [compilers] race LEG round=10 tdram th=412.497 salts=18 secs=3.07 mhz=2506 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:23:27 [compilers] race LEG round=10 tsk3 th=451.556 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.6
+08f8e389 [nvtest] 22:23:31 [compilers] smi race 2580 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:23:31 [compilers] race LEG round=10 tsk1 th=426.599 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:23:35 [compilers] race LEG round=10 tsk2 th=431.374 salts=18 secs=2.94 mhz=2609 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:23:39 [compilers] race LEG round=10 tsk3p th=451.937 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:23:41 [compilers] smi race 2467 MHz 575.21/575.00 W
+08f8e389 [nvtest] 22:23:43 [compilers] race LEG round=10 cbase th=404.781 salts=18 secs=3.13 mhz=2467 w=575.0 c=77 mem=3.0
+08f8e389 [nvtest] 22:23:47 [compilers] race LEG round=10 cncp th=445.101 salts=19 secs=3.00 mhz=2720 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:23:51 [compilers] smi race 2707 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:23:51 [compilers] race LEG round=10 cncpr th=452.232 salts=19 secs=2.96 mhz=2714 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:23:55 [compilers] race LEG round=10 csh1 th=384.463 salts=16 secs=2.93 mhz=2663 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:23:59 [compilers] race LEG round=10 csi05r th=413.117 salts=18 secs=3.07 mhz=2625 w=565.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:24:01 [compilers] smi race 2565 MHz 557.27/575.00 W
+08f8e389 [nvtest] 22:24:03 [compilers] race LEG round=10 csi1r th=408.240 salts=18 secs=3.10 mhz=2565 w=557.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:24:08 [compilers] race LEG round=10 csi2r th=393.658 salts=17 secs=3.04 mhz=2561 w=576.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:24:11 [compilers] smi race 2610 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:24:12 [compilers] race LEG round=10 csi1 th=400.368 salts=17 secs=2.99 mhz=2607 w=575.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:24:16 [compilers] race LEG round=10 csa1r th=419.201 salts=18 secs=3.02 mhz=2695 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:24:21 [compilers] smi race 2482 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:24:31 [compilers] smi race 2482 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:24:32 [compilers] race LEG round=10 tdramk th=418.139 salts=2 secs=10.77 mhz=2481 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:24:41 [compilers] smi race 2692 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:24:47 [compilers] race LEG round=10 tsk3k th=455.727 salts=2 secs=9.88 mhz=2691 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:24:51 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:25:01 [compilers] smi race 2700 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:25:01 [compilers] race LEG round=10 cnck th=453.447 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:25:11 [compilers] smi race 2692 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:25:16 [compilers] race LEG round=10 cncprk th=456.349 salts=2 secs=9.87 mhz=2696 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:25:21 [compilers] smi race 2520 MHz 538.36/575.00 W
+08f8e389 [nvtest] 22:25:31 [compilers] smi race 2535 MHz 548.97/575.00 W
+08f8e389 [nvtest] 22:25:33 [compilers] race LEG round=10 csi1rk th=408.478 salts=2 secs=11.03 mhz=2527 w=542.1 c=77 mem=0.0
+08f8e389 [nvtest] 22:25:41 [compilers] smi race 2542 MHz 524.60/575.00 W
+08f8e389 [nvtest] 22:25:49 [compilers] race LEG round=10 csi05rk th=416.560 salts=2 secs=10.81 mhz=2542 w=524.5 c=75 mem=0.0
+08f8e389 [nvtest] 22:25:51 [compilers] smi race 2542 MHz 565.62/575.00 W
+08f8e389 [nvtest] 22:26:01 [compilers] smi race 2542 MHz 570.21/575.00 W
+08f8e389 [nvtest] 22:26:06 [compilers] race LEG round=10 csi2rk th=395.656 salts=2 secs=11.38 mhz=2546 w=568.7 c=77 mem=0.0
+08f8e389 [nvtest] 22:26:11 [compilers] smi race 2542 MHz 565.39/575.00 W
+08f8e389 [nvtest] 22:26:21 [compilers] smi race 2542 MHz 565.93/575.00 W
+08f8e389 [nvtest] 22:26:23 [compilers] race LEG round=11 csi2rk th=395.821 salts=2 secs=11.38 mhz=2547 w=570.2 c=77 mem=0.0
+08f8e389 [nvtest] 22:26:31 [compilers] smi race 2542 MHz 524.16/575.00 W
+08f8e389 [nvtest] 22:26:39 [compilers] race LEG round=11 csi05rk th=416.573 salts=2 secs=10.81 mhz=2542 w=524.2 c=75 mem=0.0
+08f8e389 [nvtest] 22:26:41 [compilers] smi race 2535 MHz 547.11/575.00 W
+08f8e389 [nvtest] 22:26:52 [compilers] smi race 2535 MHz 547.14/575.00 W
+08f8e389 [nvtest] 22:26:56 [compilers] race LEG round=11 csi1rk th=409.206 salts=2 secs=11.01 mhz=2535 w=546.8 c=76 mem=0.0
+08f8e389 [nvtest] 22:27:02 [compilers] smi race 2700 MHz 575.08/575.00 W
+08f8e389 [nvtest] 22:27:11 [compilers] race LEG round=11 cncprk th=456.917 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:27:12 [compilers] smi race 2700 MHz 574.81/575.00 W
+08f8e389 [nvtest] 22:27:22 [compilers] smi race 2700 MHz 575.18/575.00 W
+08f8e389 [nvtest] 22:27:26 [compilers] race LEG round=11 cnck th=453.661 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:27:32 [compilers] smi race 2692 MHz 575.04/575.00 W
+08f8e389 [nvtest] 22:27:40 [compilers] race LEG round=11 tsk3k th=455.704 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:27:42 [compilers] smi race 2475 MHz 575.04/575.00 W
+08f8e389 [nvtest] 22:27:52 [compilers] smi race 2520 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:27:57 [compilers] race LEG round=11 tdramk th=417.486 salts=2 secs=10.79 mhz=2481 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:28:01 [compilers] race LEG round=11 csa1r th=419.144 salts=18 secs=3.02 mhz=2696 w=575.2 c=79 mem=0.0
+08f8e389 [nvtest] 22:28:02 [compilers] smi race 2610 MHz 574.84/575.00 W
+08f8e389 [nvtest] 22:28:05 [compilers] race LEG round=11 csi1 th=400.273 salts=17 secs=2.99 mhz=2604 w=574.9 c=78 mem=0.0
+08f8e389 [nvtest] 22:28:09 [compilers] race LEG round=11 csi2r th=393.578 salts=17 secs=3.04 mhz=2557 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:28:12 [compilers] smi race 2565 MHz 557.47/575.00 W
+08f8e389 [nvtest] 22:28:13 [compilers] race LEG round=11 csi1r th=408.186 salts=18 secs=3.10 mhz=2565 w=557.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:28:17 [compilers] race LEG round=11 csi05r th=412.832 salts=18 secs=3.07 mhz=2625 w=564.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:28:21 [compilers] race LEG round=11 csh1 th=384.632 salts=17 secs=3.11 mhz=2669 w=575.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:28:22 [compilers] smi race 2700 MHz 575.27/575.00 W
+08f8e389 [nvtest] 22:28:25 [compilers] race LEG round=11 cncpr th=452.094 salts=19 secs=2.96 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:28:29 [compilers] race LEG round=11 cncp th=445.203 salts=19 secs=3.00 mhz=2719 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:28:32 [compilers] smi race 2467 MHz 574.51/575.00 W
+08f8e389 [nvtest] 22:28:34 [compilers] race LEG round=11 cbase th=404.141 salts=18 secs=3.13 mhz=2467 w=574.9 c=77 mem=3.4
+08f8e389 [nvtest] 22:28:38 [compilers] race LEG round=11 tsk3p th=452.122 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:28:42 [compilers] race LEG round=11 tsk2 th=430.904 salts=18 secs=2.94 mhz=2607 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:28:42 [compilers] smi race 2610 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:28:46 [compilers] race LEG round=11 tsk1 th=426.842 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:28:50 [compilers] race LEG round=11 tsk3 th=451.300 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.6
+08f8e389 [nvtest] 22:28:52 [compilers] smi race 2497 MHz 574.59/575.00 W
+08f8e389 [nvtest] 22:28:54 [compilers] race LEG round=11 tdram th=412.445 salts=18 secs=3.07 mhz=2502 w=574.9 c=77 mem=0.0
+08f8e389 [nvtest] 22:28:58 [compilers] race LEG round=11 aa th=408.826 salts=18 secs=3.10 mhz=2490 w=574.9 c=77 mem=3.9
+08f8e389 [nvtest] 22:29:02 [compilers] smi race 2482 MHz 574.49/575.00 W
+08f8e389 [nvtest] 22:29:02 [compilers] race LEG round=11 base th=408.089 salts=18 secs=3.10 mhz=2488 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:29:06 [compilers] race LEG round=12 base th=408.537 salts=18 secs=3.10 mhz=2489 w=575.1 c=77 mem=4.0
+08f8e389 [nvtest] 22:29:10 [compilers] race LEG round=12 aa th=408.484 salts=18 secs=3.10 mhz=2486 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:29:12 [compilers] smi race 2505 MHz 574.51/575.00 W
+08f8e389 [nvtest] 22:29:15 [compilers] race LEG round=12 tdram th=412.049 salts=18 secs=3.07 mhz=2505 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:29:19 [compilers] race LEG round=12 tsk3 th=451.100 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:29:22 [compilers] smi race 2580 MHz 575.04/575.00 W
+08f8e389 [nvtest] 22:29:23 [compilers] race LEG round=12 tsk1 th=426.294 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:29:27 [compilers] race LEG round=12 tsk2 th=431.153 salts=18 secs=2.94 mhz=2602 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:29:31 [compilers] race LEG round=12 tsk3p th=451.568 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:29:32 [compilers] smi race 2460 MHz 574.59/575.00 W
+08f8e389 [nvtest] 22:29:35 [compilers] race LEG round=12 cbase th=403.869 salts=18 secs=3.14 mhz=2463 w=574.9 c=77 mem=3.3
+08f8e389 [nvtest] 22:29:39 [compilers] race LEG round=12 cncp th=444.704 salts=19 secs=3.01 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:29:42 [compilers] smi race 2707 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:29:43 [compilers] race LEG round=12 cncpr th=452.061 salts=19 secs=2.96 mhz=2707 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:29:47 [compilers] race LEG round=12 csh1 th=384.098 salts=16 secs=2.93 mhz=2662 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:29:51 [compilers] race LEG round=12 csi05r th=413.117 salts=18 secs=3.07 mhz=2627 w=567.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:29:52 [compilers] smi race 2565 MHz 561.43/575.00 W
+08f8e389 [nvtest] 22:29:56 [compilers] race LEG round=12 csi1r th=408.316 salts=18 secs=3.10 mhz=2564 w=558.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:30:00 [compilers] race LEG round=12 csi2r th=393.518 salts=17 secs=3.04 mhz=2560 w=576.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:30:02 [compilers] smi race 2602 MHz 575.03/575.00 W
+08f8e389 [nvtest] 22:30:04 [compilers] race LEG round=12 csi1 th=400.287 salts=17 secs=2.99 mhz=2603 w=575.1 c=78 mem=0.0
+08f8e389 [nvtest] 22:30:08 [compilers] race LEG round=12 csa1r th=418.943 salts=18 secs=3.02 mhz=2695 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:30:12 [compilers] smi race 2475 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:30:22 [compilers] smi race 2475 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:30:24 [compilers] race LEG round=12 tdramk th=417.737 salts=2 secs=10.78 mhz=2476 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:30:32 [compilers] smi race 2685 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:30:39 [compilers] race LEG round=12 tsk3k th=455.489 salts=2 secs=9.89 mhz=2686 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:30:43 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:30:53 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:30:54 [compilers] race LEG round=12 cnck th=453.410 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:31:03 [compilers] smi race 2700 MHz 574.86/575.00 W
+08f8e389 [nvtest] 22:31:08 [compilers] race LEG round=12 cncprk th=456.324 salts=2 secs=9.87 mhz=2697 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:31:13 [compilers] smi race 2527 MHz 539.81/575.00 W
+08f8e389 [nvtest] 22:31:23 [compilers] smi race 2527 MHz 538.70/575.00 W
+08f8e389 [nvtest] 22:31:25 [compilers] race LEG round=12 csi1rk th=407.723 salts=2 secs=11.05 mhz=2521 w=539.2 c=77 mem=0.0
+08f8e389 [nvtest] 22:31:33 [compilers] smi race 2542 MHz 524.97/575.00 W
+08f8e389 [nvtest] 22:31:41 [compilers] race LEG round=12 csi05rk th=416.694 salts=2 secs=10.81 mhz=2543 w=524.8 c=75 mem=0.0
+08f8e389 [nvtest] 22:31:43 [compilers] smi race 2542 MHz 564.54/575.00 W
+08f8e389 [nvtest] 22:31:53 [compilers] smi race 2542 MHz 566.42/575.00 W
+08f8e389 [nvtest] 22:31:58 [compilers] race LEG round=12 csi2rk th=395.572 salts=2 secs=11.39 mhz=2544 w=567.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:32:03 [compilers] smi race 2542 MHz 567.02/575.00 W
+08f8e389 [nvtest] 22:32:13 [compilers] smi race 2542 MHz 567.26/575.00 W
+08f8e389 [nvtest] 22:32:15 [compilers] race LEG round=13 csi2rk th=395.194 salts=2 secs=11.40 mhz=2542 w=567.4 c=77 mem=0.0
+08f8e389 [nvtest] 22:32:23 [compilers] smi race 2542 MHz 525.50/575.00 W
+08f8e389 [nvtest] 22:32:32 [compilers] race LEG round=13 csi05rk th=416.619 salts=2 secs=10.81 mhz=2544 w=525.4 c=76 mem=0.0
+08f8e389 [nvtest] 22:32:33 [compilers] smi race 2535 MHz 547.35/575.00 W
+08f8e389 [nvtest] 22:32:43 [compilers] smi race 2520 MHz 536.86/575.00 W
+08f8e389 [nvtest] 22:32:48 [compilers] race LEG round=13 csi1rk th=407.673 salts=2 secs=11.05 mhz=2522 w=537.4 c=76 mem=0.0
+08f8e389 [nvtest] 22:32:53 [compilers] smi race 2700 MHz 574.18/575.00 W
+08f8e389 [nvtest] 22:33:03 [compilers] race LEG round=13 cncprk th=456.697 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:33:03 [compilers] smi race 2700 MHz 574.90/575.00 W
+08f8e389 [nvtest] 22:33:13 [compilers] smi race 2700 MHz 574.95/575.00 W
+08f8e389 [nvtest] 22:33:18 [compilers] race LEG round=13 cnck th=453.554 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:33:23 [compilers] smi race 2692 MHz 574.94/575.00 W
+08f8e389 [nvtest] 22:33:33 [compilers] race LEG round=13 tsk3k th=455.628 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:33:33 [compilers] smi race 2475 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:33:43 [compilers] smi race 2482 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:33:49 [compilers] race LEG round=13 tdramk th=418.226 salts=2 secs=10.77 mhz=2481 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:33:53 [compilers] race LEG round=13 csa1r th=419.365 salts=18 secs=3.02 mhz=2700 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:33:53 [compilers] smi race 2655 MHz 574.79/575.00 W
+08f8e389 [nvtest] 22:33:57 [compilers] race LEG round=13 csi1 th=400.162 salts=17 secs=2.99 mhz=2607 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:34:01 [compilers] race LEG round=13 csi2r th=393.317 salts=17 secs=3.04 mhz=2557 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:34:03 [compilers] smi race 2565 MHz 556.47/575.00 W
+08f8e389 [nvtest] 22:34:05 [compilers] race LEG round=13 csi1r th=408.129 salts=18 secs=3.10 mhz=2564 w=556.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:34:09 [compilers] race LEG round=13 csi05r th=413.079 salts=18 secs=3.07 mhz=2626 w=565.7 c=78 mem=0.0
+08f8e389 [nvtest] 22:34:13 [compilers] race LEG round=13 csh1 th=384.487 salts=17 secs=3.11 mhz=2667 w=575.5 c=79 mem=0.0
+08f8e389 [nvtest] 22:34:13 [compilers] smi race 2670 MHz 575.21/575.00 W
+08f8e389 [nvtest] 22:34:17 [compilers] race LEG round=13 cncpr th=452.184 salts=19 secs=2.96 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:34:22 [compilers] race LEG round=13 cncp th=445.005 salts=19 secs=3.00 mhz=2720 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:34:24 [compilers] smi race 2460 MHz 575.01/575.00 W
+08f8e389 [nvtest] 22:34:26 [compilers] race LEG round=13 cbase th=404.171 salts=18 secs=3.13 mhz=2466 w=575.0 c=77 mem=3.4
+08f8e389 [nvtest] 22:34:30 [compilers] race LEG round=13 tsk3p th=451.700 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:34:34 [compilers] smi race 2610 MHz 574.91/575.00 W
+08f8e389 [nvtest] 22:34:34 [compilers] race LEG round=13 tsk2 th=431.031 salts=18 secs=2.94 mhz=2607 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:34:38 [compilers] race LEG round=13 tsk1 th=426.383 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:34:42 [compilers] race LEG round=13 tsk3 th=451.130 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:34:44 [compilers] smi race 2497 MHz 575.15/575.00 W
+08f8e389 [nvtest] 22:34:46 [compilers] race LEG round=13 tdram th=412.150 salts=18 secs=3.07 mhz=2504 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:34:50 [compilers] race LEG round=13 aa th=408.756 salts=18 secs=3.10 mhz=2488 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:34:54 [compilers] smi race 2490 MHz 574.46/575.00 W
+08f8e389 [nvtest] 22:34:54 [compilers] race LEG round=13 base th=409.017 salts=18 secs=3.10 mhz=2490 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:34:59 [compilers] race LEG round=14 base th=408.687 salts=18 secs=3.10 mhz=2488 w=575.0 c=77 mem=4.1
+08f8e389 [nvtest] 22:35:03 [compilers] race LEG round=14 aa th=408.896 salts=18 secs=3.10 mhz=2489 w=575.0 c=77 mem=3.9
+08f8e389 [nvtest] 22:35:04 [compilers] smi race 2512 MHz 575.06/575.00 W
+08f8e389 [nvtest] 22:35:07 [compilers] race LEG round=14 tdram th=412.470 salts=18 secs=3.07 mhz=2506 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:35:11 [compilers] race LEG round=14 tsk3 th=451.204 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.7
+08f8e389 [nvtest] 22:35:14 [compilers] smi race 2595 MHz 575.02/575.00 W
+08f8e389 [nvtest] 22:35:15 [compilers] race LEG round=14 tsk1 th=429.477 salts=18 secs=2.95 mhz=2594 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:35:19 [compilers] race LEG round=14 tsk2 th=431.280 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:35:23 [compilers] race LEG round=14 tsk3p th=451.931 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:35:24 [compilers] smi race 2452 MHz 574.55/575.00 W
+08f8e389 [nvtest] 22:35:27 [compilers] race LEG round=14 cbase th=403.979 salts=18 secs=3.14 mhz=2465 w=574.9 c=77 mem=3.4
+08f8e389 [nvtest] 22:35:31 [compilers] race LEG round=14 cncp th=444.898 salts=19 secs=3.01 mhz=2716 w=575.1 c=79 mem=0.0
+08f8e389 [nvtest] 22:35:34 [compilers] smi race 2707 MHz 575.08/575.00 W
+08f8e389 [nvtest] 22:35:35 [compilers] race LEG round=14 cncpr th=452.188 salts=19 secs=2.96 mhz=2710 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:35:39 [compilers] race LEG round=14 csh1 th=384.272 salts=16 secs=2.93 mhz=2663 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:35:43 [compilers] race LEG round=14 csi05r th=412.995 salts=18 secs=3.07 mhz=2626 w=566.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:35:44 [compilers] smi race 2632 MHz 568.18/575.00 W
+08f8e389 [nvtest] 22:35:48 [compilers] race LEG round=14 csi1r th=408.165 salts=18 secs=3.10 mhz=2564 w=557.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:35:52 [compilers] race LEG round=14 csi2r th=393.666 salts=17 secs=3.04 mhz=2562 w=576.6 c=78 mem=0.0
+08f8e389 [nvtest] 22:35:54 [compilers] smi race 2610 MHz 576.09/575.00 W
+08f8e389 [nvtest] 22:35:56 [compilers] race LEG round=14 csi1 th=400.520 salts=17 secs=2.99 mhz=2609 w=575.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:36:00 [compilers] race LEG round=14 csa1r th=419.177 salts=18 secs=3.02 mhz=2698 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:36:04 [compilers] smi race 2482 MHz 575.03/575.00 W
+08f8e389 [nvtest] 22:36:14 [compilers] smi race 2482 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:36:16 [compilers] race LEG round=14 tdramk th=418.251 salts=2 secs=10.77 mhz=2483 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:36:24 [compilers] smi race 2692 MHz 574.97/575.00 W
+08f8e389 [nvtest] 22:36:31 [compilers] race LEG round=14 tsk3k th=455.804 salts=2 secs=9.88 mhz=2692 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:36:34 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:36:44 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:36:46 [compilers] race LEG round=14 cnck th=453.604 salts=2 secs=9.93 mhz=2701 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:36:54 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:37:00 [compilers] race LEG round=14 cncprk th=456.439 salts=2 secs=9.87 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:37:04 [compilers] smi race 2520 MHz 539.00/575.00 W
+08f8e389 [nvtest] 22:37:14 [compilers] smi race 2520 MHz 537.08/575.00 W
+08f8e389 [nvtest] 22:37:17 [compilers] race LEG round=14 csi1rk th=407.734 salts=2 secs=11.05 mhz=2523 w=538.6 c=76 mem=0.0
+08f8e389 [nvtest] 22:37:24 [compilers] smi race 2542 MHz 523.77/575.00 W
+08f8e389 [nvtest] 22:37:33 [compilers] race LEG round=14 csi05rk th=416.612 salts=2 secs=10.81 mhz=2543 w=523.5 c=75 mem=0.0
+08f8e389 [nvtest] 22:37:34 [compilers] smi race 2542 MHz 564.51/575.00 W
+08f8e389 [nvtest] 22:37:44 [compilers] smi race 2542 MHz 564.98/575.00 W
+08f8e389 [nvtest] 22:37:50 [compilers] race LEG round=14 csi2rk th=395.385 salts=2 secs=11.39 mhz=2542 w=565.3 c=77 mem=0.0
+08f8e389 [nvtest] 22:37:54 [compilers] smi race 2542 MHz 566.09/575.00 W
+08f8e389 [nvtest] 22:38:04 [compilers] smi race 2542 MHz 565.99/575.00 W
+08f8e389 [nvtest] 22:38:07 [compilers] race LEG round=15 csi2rk th=395.289 salts=2 secs=11.39 mhz=2542 w=566.4 c=77 mem=0.0
+08f8e389 [nvtest] 22:38:15 [compilers] smi race 2542 MHz 524.21/575.00 W
+08f8e389 [nvtest] 22:38:24 [compilers] race LEG round=15 csi05rk th=416.603 salts=2 secs=10.81 mhz=2543 w=523.6 c=75 mem=0.0
+08f8e389 [nvtest] 22:38:25 [compilers] smi race 2535 MHz 533.27/575.00 W
+08f8e389 [nvtest] 22:38:35 [compilers] smi race 2520 MHz 534.89/575.00 W
+08f8e389 [nvtest] 22:38:40 [compilers] race LEG round=15 csi1rk th=408.298 salts=2 secs=11.03 mhz=2528 w=539.9 c=76 mem=0.0
+08f8e389 [nvtest] 22:38:45 [compilers] smi race 2700 MHz 574.99/575.00 W
+08f8e389 [nvtest] 22:38:55 [compilers] smi race 2700 MHz 575.00/575.00 W
+08f8e389 [nvtest] 22:38:55 [compilers] race LEG round=15 cncprk th=456.959 salts=2 secs=9.86 mhz=2700 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:39:05 [compilers] smi race 2700 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:39:10 [compilers] race LEG round=15 cnck th=453.661 salts=2 secs=9.93 mhz=2700 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:39:15 [compilers] smi race 2692 MHz 574.98/575.00 W
+08f8e389 [nvtest] 22:39:25 [compilers] race LEG round=15 tsk3k th=455.580 salts=2 secs=9.89 mhz=2689 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:39:25 [compilers] smi race 2692 MHz 574.58/575.00 W
+08f8e389 [nvtest] 22:39:35 [compilers] smi race 2482 MHz 574.96/575.00 W
+08f8e389 [nvtest] 22:39:41 [compilers] race LEG round=15 tdramk th=418.461 salts=2 secs=10.76 mhz=2482 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:39:45 [compilers] race LEG round=15 csa1r th=419.497 salts=18 secs=3.02 mhz=2700 w=575.2 c=79 mem=0.0
+08f8e389 [nvtest] 22:39:45 [compilers] smi race 2700 MHz 575.06/575.00 W
+08f8e389 [nvtest] 22:39:49 [compilers] race LEG round=15 csi1 th=400.595 salts=17 secs=2.99 mhz=2610 w=574.9 c=79 mem=0.0
+08f8e389 [nvtest] 22:39:53 [compilers] race LEG round=15 csi2r th=393.629 salts=17 secs=3.04 mhz=2564 w=575.0 c=78 mem=0.0
+08f8e389 [nvtest] 22:39:55 [compilers] smi race 2565 MHz 556.06/575.00 W
+08f8e389 [nvtest] 22:39:57 [compilers] race LEG round=15 csi1r th=408.340 salts=18 secs=3.10 mhz=2564 w=556.5 c=78 mem=0.0
+08f8e389 [nvtest] 22:40:01 [compilers] race LEG round=15 csi05r th=412.838 salts=18 secs=3.07 mhz=2629 w=564.3 c=78 mem=0.0
+08f8e389 [nvtest] 22:40:05 [compilers] smi race 2670 MHz 574.74/575.00 W
+08f8e389 [nvtest] 22:40:05 [compilers] race LEG round=15 csh1 th=385.039 salts=17 secs=3.11 mhz=2670 w=575.4 c=78 mem=0.0
+08f8e389 [nvtest] 22:40:09 [compilers] race LEG round=15 cncpr th=452.226 salts=19 secs=2.96 mhz=2715 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:40:14 [compilers] race LEG round=15 cncp th=445.143 salts=19 secs=3.00 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:40:15 [compilers] smi race 2467 MHz 575.12/575.00 W
+08f8e389 [nvtest] 22:40:18 [compilers] race LEG round=15 cbase th=404.792 salts=18 secs=3.13 mhz=2468 w=575.0 c=77 mem=3.5
+08f8e389 [nvtest] 22:40:22 [compilers] race LEG round=15 tsk3p th=452.082 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.0
+08f8e389 [nvtest] 22:40:25 [compilers] smi race 2610 MHz 575.10/575.00 W
+08f8e389 [nvtest] 22:40:26 [compilers] race LEG round=15 tsk2 th=431.554 salts=18 secs=2.94 mhz=2610 w=575.0 c=78 mem=2.0
+08f8e389 [nvtest] 22:40:30 [compilers] race LEG round=15 tsk1 th=426.438 salts=18 secs=2.97 mhz=2580 w=575.0 c=78 mem=1.0
+08f8e389 [nvtest] 22:40:34 [compilers] race LEG round=15 tsk3 th=451.619 salts=19 secs=2.96 mhz=2722 w=575.0 c=79 mem=0.5
+08f8e389 [nvtest] 22:40:35 [compilers] smi race 2497 MHz 575.06/575.00 W
+08f8e389 [nvtest] 22:40:38 [compilers] race LEG round=15 tdram th=412.769 salts=18 secs=3.07 mhz=2508 w=575.0 c=77 mem=0.0
+08f8e389 [nvtest] 22:40:42 [compilers] race LEG round=15 aa th=408.895 salts=18 secs=3.10 mhz=2487 w=575.0 c=77 mem=4.1
+08f8e389 [nvtest] 22:40:45 [compilers] smi race 2490 MHz 574.86/575.00 W
+08f8e389 [nvtest] 22:40:46 [compilers] race LEG round=15 base th=408.696 salts=18 secs=3.10 mhz=2488 w=575.0 c=77 mem=4.0
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE base reference rounds=16 th=408.672 mhz=2489 w=575.0 mem=4.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE aa vs base rounds=16 d=+0.075% sd=0.147% ci95=0.079% ahead=11/16 th=408.860 mhz=2490 w=575.0 mem=3.9 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tdram vs base rounds=16 d=+0.842% sd=0.203% ci95=0.108% ahead=16/16 th=412.516 mhz=2501 w=575.0 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tsk3 vs base rounds=16 d=+10.329% sd=0.251% ci95=0.134% ahead=16/16 th=451.327 mhz=2722 w=575.0 mem=0.6 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tsk1 vs base rounds=16 d=+4.332% sd=0.311% ci95=0.166% ahead=16/16 th=426.451 mhz=2580 w=575.0 mem=1.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tsk2 vs base rounds=16 d=+5.457% sd=0.302% ci95=0.161% ahead=16/16 th=431.299 mhz=2610 w=575.0 mem=2.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tsk3p vs base rounds=16 d=+10.449% sd=0.243% ci95=0.130% ahead=16/16 th=451.900 mhz=2722 w=575.0 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE cbase vs base rounds=16 d=-1.115% sd=0.223% ci95=0.119% ahead=0/16 th=404.476 mhz=2466 w=575.0 mem=3.3 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE cncp vs base rounds=16 d=+8.776% sd=0.236% ci95=0.126% ahead=16/16 th=445.051 mhz=2720 w=575.0 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE cncpr vs base rounds=16 d=+10.527% sd=0.242% ci95=0.129% ahead=16/16 th=452.186 mhz=2714 w=575.0 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csh1 vs base rounds=16 d=-6.034% sd=0.214% ci95=0.114% ahead=0/16 th=384.434 mhz=2664 w=575.2 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi05r vs base rounds=16 d=+0.938% sd=0.214% ci95=0.114% ahead=16/16 th=412.984 mhz=2626 w=565.5 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi1r vs base rounds=16 d=-0.193% sd=0.221% ci95=0.118% ahead=1/16 th=408.318 mhz=2565 w=557.7 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi2r vs base rounds=16 d=-3.824% sd=0.219% ci95=0.117% ahead=0/16 th=393.515 mhz=2560 w=575.6 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi1 vs base rounds=16 d=-2.137% sd=0.218% ci95=0.116% ahead=0/16 th=400.376 mhz=2606 w=575.1 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csa1r vs base rounds=16 d=+2.466% sd=0.220% ci95=0.117% ahead=16/16 th=419.205 mhz=2696 w=575.0 mem=0.0 k=2048
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tdramk vs base rounds=16 d=+2.129% sd=0.257% ci95=0.137% ahead=16/16 th=417.764 mhz=2479 w=575.0 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE tsk3k vs base rounds=16 d=+11.375% sd=0.238% ci95=0.127% ahead=16/16 th=455.601 mhz=2690 w=575.0 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE cnck vs base rounds=16 d=+10.862% sd=0.244% ci95=0.130% ahead=16/16 th=453.557 mhz=2700 w=575.0 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE cncprk vs base rounds=16 d=+11.608% sd=0.253% ci95=0.135% ahead=16/16 th=456.599 mhz=2700 w=575.0 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi1rk vs base rounds=16 d=-0.142% sd=0.229% ci95=0.122% ahead=4/16 th=408.603 mhz=2528 w=543.4 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi05rk vs base rounds=16 d=+1.854% sd=0.222% ci95=0.118% ahead=16/16 th=416.635 mhz=2543 w=524.8 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:46 [compilers] race RACE csi2rk vs base rounds=16 d=-3.291% sd=0.217% ci95=0.116% ahead=0/16 th=395.610 mhz=2545 w=568.8 mem=0.0 k=65536
+08f8e389 [nvtest] 22:40:47 [compilers] done in 49 min
+08f8e389 [nvtest] 22:40:47 compilers [race] done rc=0 in 49 min
+08f8e389 [nvtest] 22:40:47 [gate] card after the race 2482 MHz, 516.36 W, 575.00 W, 77, 1083 MiB, 35 %
+08f8e389 [nvtest] 22:40:47 all done
+08f8e389 [nvtest] 22:40:47 idle until deleted
