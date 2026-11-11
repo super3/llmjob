@@ -17,9 +17,14 @@
 //   3. K-step s draws the stage of k-step s + 2. B's stage has two buffers and A's three.
 //   4. The warps meet at a barrier at every k-step's end (PD_BAR 3, the default). That is
 //      what makes the fold correct: checked against a CPU fold, 2,560 of 2,560 regions.
+//   5. Each unit of the draw is written just ahead of an A-tile's fragment load (PD_TETHER),
+//      and the two loop copies read out 12 mma apart (PD_RSTAG): worth 7 points, measured.
 //
-// It is correct and it is slow: 72 to 73% of the tensor pipe on an RTX 4090, the same as the
-// second design. The design was meant to run with no warp waiting for another (PD_BAR 0 with
+// It is correct and it is slow: 80.5% of the tensor pipe on an RTX 4090 (72 to 73% without
+// point 5), about 281 TH/s by count where the release fold makes 317. Under the barrier the
+// draw costs 17 points where it costs 4 with nothing holding the warps, and ptxas's order of
+// one source moves the figure by 4 to 8 points. probes/README.md, "What the barrier costs the
+// draw", has the measurements. The design was meant to run with no warp waiting for another (PD_BAR 0 with
 // the check below, or 2 with a wait a chunk). Those builds are faster and wrong: ptxas keeps
 // memory instructions in the source's order around every store, but it puts the draw's stores
 // anywhere in the k-step and moves the mma themselves, so nothing in the source holds a store
@@ -50,8 +55,10 @@
 #ifndef PD_MT
 #define PD_MT 5
 #endif
-#if PD_MT != 5
-#error "PD_MT is 5 m16 tiles a warp (with 6 the three A buffers do not fit in shared memory)"
+// 4 builds too (a 128x256 tile, 128 sums a thread) and passes the check, but holds 68%: the barrier's cost
+// is about fixed a k-step, so fewer mma between barriers is worse.
+#if PD_MT != 5 && PD_MT != 4
+#error "PD_MT is 5 m16 tiles a warp, or 4 (with 6 the three A buffers do not fit in shared memory)"
 #endif
 
 // Shared memory, bytes from the block's base.
@@ -98,15 +105,38 @@
 #ifndef PD_RLAG
 #define PD_RLAG 12u
 #endif
-// Warps 4 to 7 start theirs this many mma later still.
+// Warps 4 to 7 start theirs this many mma later still. With five tiles a warp 12 is worth 4 points
+// (measured). PD_RLAG + PD_RSTAG has a limit, checked where it is used: tile 0's readout must fit in
+// its own chunk, or it would land behind the next chunk's first mma and read a sum too many.
 #ifndef PD_RSTAG
-#define PD_RSTAG 0u
+#define PD_RSTAG (PD_MT == 5 ? 12u : 0u)
 #endif
 // Timing only: pieces off. PD_NO_DRAW folds what the prologue drew, over and over;
 // PD_NO_READOUT reads out at the tile's end only; PD_NO_CHECK drops the add, the pin and
 // the check's load.
 #ifndef PD_NO_DRAW
 #define PD_NO_DRAW 0
+#endif
+// Timing only: draw units a warp a k-step (2 is the real draw; up to 7).
+#ifndef PD_T_UNITS
+#define PD_T_UNITS 2
+#endif
+// Timing only, each computing wrong results: PD_T_NOLOAD makes a unit's table words from the address in
+// registers (no shared load); PD_T_NOSTORE folds a unit's eight words into one 4-byte store; PD_T_ONECOPY
+// has warps 0 to 3 draw and warps 4 to 7 not.
+#ifndef PD_T_NOLOAD
+#define PD_T_NOLOAD 0
+#endif
+#ifndef PD_T_NOSTORE
+#define PD_T_NOSTORE 0
+#endif
+#ifndef PD_T_ONECOPY
+#define PD_T_ONECOPY 0
+#endif
+// Timing only: PD_T_STAMP 1 sums the cycles each warp spends at the k-step barriers (the probe prints
+// them a loop copy in place of the check's count); 2 does it without the warp's own barrier.
+#ifndef PD_T_STAMP
+#define PD_T_STAMP 0
 #endif
 #ifndef PD_NO_READOUT
 #define PD_NO_READOUT 0
@@ -118,6 +148,18 @@
 // (measured dear: a warp is put to sleep and woken). 2: a warp begins a chunk only when every
 // warp has made the last add of the chunk before; one load and a test when they have.
 // 3: a barrier at each k-step's end (correct by construction, with no check).
+#ifndef PD_MIDBAR
+#define PD_MIDBAR 0
+#endif
+#ifndef PD_TETHER
+#define PD_TETHER (PD_MT == 5 ? 1234 : 1223)
+#endif
+#ifndef PD_OWNBAR
+#define PD_OWNBAR 0
+#endif
+#ifndef PD_MIDBAR_ONE
+#define PD_MIDBAR_ONE 0
+#endif
 #ifndef PD_BAR
 #define PD_BAR 3
 #endif
@@ -288,11 +330,16 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"(tr + (q & 15u) * 4u), "r"(x) : "memory");
   };
 
+#if PD_MT > 4
+#define PD_TILE4(W, S) PD_TILE(W, S, 4)
+#else
+#define PD_TILE4(W, S)
+#endif
 #define PD_TILE(W, S, M)                                                                   \
   PD_SLOT(W, S, M, 0) PD_SLOT(W, S, M, 1) PD_SLOT(W, S, M, 2) PD_SLOT(W, S, M, 3)          \
   PD_SLOT(W, S, M, 4) PD_SLOT(W, S, M, 5) PD_SLOT(W, S, M, 6) PD_SLOT(W, S, M, 7)
 #define PD_KSTEP(W, S)                                                                     \
-  PD_TILE(W, S, 0) PD_TILE(W, S, 1) PD_TILE(W, S, 2) PD_TILE(W, S, 3) PD_TILE(W, S, 4)
+  PD_TILE(W, S, 0) PD_TILE(W, S, 1) PD_TILE(W, S, 2) PD_TILE(W, S, 3) PD_TILE4(W, S)
 #define PD_CHUNK(W) PD_KSTEP(W, 0) PD_KSTEP(W, 1) PD_KSTEP(W, 2) PD_KSTEP(W, 3)
 
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
@@ -377,9 +424,40 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     // (PdC<n>), so each is a constant expression in its copy and every test below is settled
     // by the front end: a slot is straight-line code.
     uint32_t bad = 0u;
+    uint32_t waited = 0u;   // PD_T_STAMP: cycles at the k-step barriers
     uint32_t c = 0u;
     const uint32_t zero = chunks >> 16;                 // zero for every k the fold takes; ptxas cannot know
     const uint32_t pinL = tabBL + (PD_PIN - PD_TABB) + zero;
+    // A unit's table read and its stores, as the loop's units use them (the prologue's u_all
+    // keeps the plain forms). The timing-only switches stand in here.
+    auto ldt = [&](uint32_t r[4], uint32_t a) {
+      if constexpr (PD_T_NOLOAD) {
+#pragma unroll
+        for (uint32_t q = 0; q < 4u; q++)
+          asm volatile("mul.lo.u32 %0, %1, %2;" : "=r"(r[q]) : "r"(a), "r"(2u * q + 3u));
+      } else {
+        ld4(r, a);
+      }
+    };
+    auto stu = [&](uint32_t a, uint32_t h) {
+      if constexpr (PD_T_NOSTORE) {
+        uint32_t x = xor3(dw[h], dw[h + 1u], dw[h + 2u]) ^ dw[h + 3u];
+        asm volatile("st.shared.u32 [%0], %1;" ::"r"(pinL), "r"(x) : "memory");
+      } else {
+        st4(a, dw[h], dw[h + 1u], dw[h + 2u], dw[h + 3u]);
+      }
+    };
+    auto u_whole = [&](uint32_t tab, const uint32_t o[4], uint32_t dst, uint32_t second) {
+      ldt(dp, tab + o[0]);
+      ldt(dm, tab + o[1]);
+      u_sub(dx);
+      ldt(dp, tab + o[2]);
+      ldt(dm, tab + o[3]);
+      u_sub(dy);
+      u_sel();
+      stu(dst, 0u);
+      stu(dst + second, 4u);
+    };
     auto slot = [&](auto cW, auto cS, auto cM, auto cN) {
       constexpr uint32_t W = decltype(cW)::v, s = decltype(cS)::v, mb = decltype(cM)::v, nb = decltype(cN)::v;
       constexpr uint32_t wr = W >> 2;   // the copy is warps 0-3's (W 0) or warps 4-7's (W 4)
@@ -393,6 +471,8 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       constexpr uint32_t pp = PD_PIN_AT + (W < 4u ? 0u : PD_STAG);
       constexpr uint32_t au = pp + 1u, bu = pp + 6u;
       constexpr uint32_t lag = PD_RLAG + (W < 4u ? 0u : PD_RSTAG);
+      static_assert(!pd_tile_late(0u, lag), "PD_RLAG + PD_RSTAG is too large: tile 0's readout would land "
+                                            "behind the next chunk's first mma");
       // A's two fragment sets alternate from tile to tile, and on through the k-steps (a
       // warp has an odd number of tiles).
       constexpr uint32_t as = (mb + (MT & 1u) * s) & 1u, as0n = ((MT & 1u) * (s + 1u)) & 1u;
@@ -402,6 +482,24 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
           : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]), "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3])
           : "r"(af[as][0]), "r"(af[as][1]), "r"(af[as][2]), "r"(af[as][3]), "r"(bf[nb][0]),
             "r"(bf[nb][1]));
+      // PD_TETHER abcd: a whole unit is written just ahead of the fragment load of an m16 tile,
+      // unit A ahead of tile a's and unit B ahead of tile b's in warps 0 to 3, tiles c and d in
+      // warps 4 to 7. ptxas keeps a load behind the stores written before it, and a tile's mma
+      // need its fragment: so that tile's mma, and every later tile's, come after the unit.
+      // Without this ptxas issues the mma first and leaves the draw for the k-step's end,
+      // where the scheduler's other warp has no mma left to keep the pipe fed.
+      if constexpr (PD_TETHER != 0 && !PD_NO_DRAW && nb == 0u && mb + 1u < MT) {
+        constexpr uint32_t ta = W < 4u ? PD_TETHER / 1000u : (PD_TETHER / 10u) % 10u;
+        constexpr uint32_t tb = W < 4u ? (PD_TETHER / 100u) % 10u : PD_TETHER % 10u;
+        if constexpr (mb + 1u == ta) {
+          u_whole(tabAL, oA, aD[aDrw], PD_SA);
+          ldg4(oA, pOffL + (s + 3u) * 32u + 16u);
+        }
+        if constexpr (mb + 1u == tb) {
+          u_whole(tabBL, oB, dstBL + bCur, 256u);
+          ldg4(oB, pOffL + (s + 3u) * 32u);
+        }
+      }
       // A's next m16 tile of this k-step, into the other fragment set, eight mma ahead.
       if constexpr (nb == 0u && mb + 1u < MT)
         ldmt(af[as ^ 1u][0], af[as ^ 1u][1], af[as ^ 1u][2], af[as ^ 1u][3],
@@ -424,26 +522,40 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
 #if !PD_NO_DRAW
 #define PD_UNIT(U, TAB, O, DST, SECOND)                                                    \
       if constexpr (i == (U)) {                                                            \
-        ld4(dp, (TAB) + (O)[0]);                                                           \
-        ld4(dm, (TAB) + (O)[1]);                                                           \
+        ldt(dp, (TAB) + (O)[0]);                                                           \
+        ldt(dm, (TAB) + (O)[1]);                                                           \
       }                                                                                    \
       if constexpr (i == (U) + 1u) {                                                       \
         u_sub(dx);                                                                         \
-        ld4(dp, (TAB) + (O)[2]);                                                           \
-        ld4(dm, (TAB) + (O)[3]);                                                           \
+        ldt(dp, (TAB) + (O)[2]);                                                           \
+        ldt(dm, (TAB) + (O)[3]);                                                           \
       }                                                                                    \
       if constexpr (i == (U) + 2u) u_sub(dy);                                              \
       if constexpr (i == (U) + 3u) u_sel();                                                \
       if constexpr (i == (U) + 4u) {                                                       \
-        st4((DST), dw[0], dw[1], dw[2], dw[3]);                                            \
-        st4((DST) + (SECOND), dw[4], dw[5], dw[6], dw[7]);                                 \
+        stu((DST), 0);                                                                     \
+        stu((DST) + (SECOND), 4);                                                          \
       }
-      PD_UNIT(au, tabAL, oA, aD[aDrw], PD_SA)
-      PD_UNIT(bu, tabBL, oB, dstBL + bCur, 256u)
+      if constexpr (PD_TETHER == 0 && (!PD_T_ONECOPY || W < 4u)) {
+        PD_UNIT(au, tabAL, oA, aD[aDrw], PD_SA)
+        PD_UNIT(bu, tabBL, oB, dstBL + bCur, 256u)
+      }
+#if PD_T_UNITS > 2
+      // Timing only (wrong results): up to five more units a k-step, drawn over the real ones, to price a
+      // stream with as many draw steps as a draw with no stage would need (about seven units a warp).
+#define PD_XU(N, UA, UB)                                                                   \
+      if constexpr (PD_T_UNITS > 2 + (N)) {                                                \
+        constexpr uint32_t xu = W < 4u ? (UA) : (UB);                                      \
+        PD_UNIT(xu, ((N) & 1) ? tabBL : tabAL, ((N) & 1) ? oB : oA,                        \
+                ((N) & 1) ? dstBL + bCur : aD[aDrw], ((N) & 1) ? 256u : PD_SA)             \
+      }
+      PD_XU(0, 0u, 0u) PD_XU(1, 5u, 5u) PD_XU(2, 21u, 10u) PD_XU(3, 26u, 29u) PD_XU(4, 31u, 34u)
+#undef PD_XU
+#endif
 #undef PD_UNIT
       // The next k-step's offsets, once this k-step's unit has read with its own.
-      if constexpr (i == au + 2u) ldg4(oA, pOffL + (s + 3u) * 32u + 16u);
-      if constexpr (i == bu + 2u) ldg4(oB, pOffL + (s + 3u) * 32u);
+      if constexpr (PD_TETHER == 0 && (!PD_T_ONECOPY || W < 4u) && i == au + 2u) ldg4(oA, pOffL + (s + 3u) * 32u + 16u);
+      if constexpr (PD_TETHER == 0 && (!PD_T_ONECOPY || W < 4u) && i == bu + 2u) ldg4(oB, pOffL + (s + 3u) * 32u);
 #endif
       // ---- the next k-step's fragments: A's first tile into the set the last tile does not
       // use, then B's pairs, each after the last mma that reads the pair it replaces. ptxas
@@ -468,7 +580,36 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       // PD_BAR 3: every warp meets here, at each k-step's end. Nothing is then read or drawn
       // out of turn whatever ptxas does with the order: the loads above cannot sink past
       // the barrier and the next k-step's stores cannot rise past it.
-      if constexpr (PD_BAR == 3 && i == NI - 1u) __syncthreads();
+      if constexpr (PD_BAR == 3 && i == NI - 1u && !PD_T_STAMP) {
+        // PD_OWNBAR: a barrier of the warp's own 32 threads just ahead of the block's (1), behind it
+        // (2) or both (3). It holds nothing at run time. It is here because the probe's timing build,
+        // which has one, came out 8 points faster than the same source without: ptxas orders the
+        // whole k-step differently around it.
+        if constexpr (PD_OWNBAR & 1) asm volatile("bar.sync %0, %1;" ::"r"(8u + warp), "r"(32u) : "memory");
+        __syncthreads();
+        if constexpr (PD_OWNBAR & 2) asm volatile("bar.sync %0, %1;" ::"r"(8u + warp), "r"(32u) : "memory");
+      }
+#if PD_PROBE && PD_T_STAMP
+      // Timing only: the cycles each warp spends at the k-step's barrier, summed over the tile in a
+      // register. A barrier of the warp's own 32 threads keeps the first reading of the cycle counter
+      // behind the k-step's memory instructions (ptxas would issue it at the k-step's top otherwise).
+      if constexpr (PD_BAR == 3 && i == NI - 1u) {
+        uint32_t ta, tb;
+        if constexpr (PD_T_STAMP == 1) asm volatile("bar.sync %0, %1;" ::"r"(8u + warp), "r"(32u) : "memory");
+        asm volatile("mov.u32 %0, %%clock;" : "=r"(ta) ::"memory");
+        __syncthreads();
+        asm volatile("mov.u32 %0, %%clock;" : "=r"(tb) ::"memory");
+        waited += tb - ta;
+      }
+#endif
+      // PD_MIDBAR n: each loop copy's four warps (one a scheduler) also meet among themselves
+      // after mma n - 1, on a barrier of their own. ptxas keeps memory instructions on their
+      // side of a barrier, so a copy whose draw is written before mma n (warps 0 to 3, with
+      // PD_PIN_AT 0) draws in the first part of the k-step and a copy whose draw is written
+      // after it (warps 4 to 7, with PD_STAG n) in the second: the two warps of a scheduler
+      // are then not in their draw at the same moment. PD_MIDBAR_ONE: warps 4 to 7 only.
+      if constexpr (PD_MIDBAR != 0 && i == PD_MIDBAR - 1u && (W >= 4u || !PD_MIDBAR_ONE))
+        asm volatile("bar.sync %0, %1;" ::"r"(5u + wr), "r"(128u) : "memory");
       // ---- the readout: each m16 tile's chain, PD_RLAG mma after the tile's last mma of the
       // chunk's last k-step. One with no room there is made early in the next chunk's first
       // k-step, for the chunk before (zero sums in a tile's first chunk, so it XORs nothing
@@ -478,7 +619,10 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       if constexpr (s == (pd_tile_late(T, lag) ? 0u : 3u) && i == pd_tile_first(T, lag))   \
         fold_end(fold_tile(T), trL + 2u * ((wr * MT + T) >> 1) * 64u,                      \
                  pd_tile_late(T, lag) ? c - 1u : c);
-      PD_RT(0u) PD_RT(1u) PD_RT(2u) PD_RT(3u) PD_RT(4u)
+      PD_RT(0u) PD_RT(1u) PD_RT(2u) PD_RT(3u)
+#if PD_MT > 4
+      PD_RT(4u)
+#endif
 #undef PD_RT
 #endif
     };
@@ -555,7 +699,8 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 1u, (unsigned long long)(pt2 - pt1));
       atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 2u, (unsigned long long)(pt3 - pt2));
       atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 3u, 1ull);
-      if ((int)bad < 0) atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 4u, 1ull);
+      if (PD_T_STAMP) atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 4u, (unsigned long long)waited);
+      else if ((int)bad < 0) atomicAdd(cyc + (blockIdx.x * 8u + warp) * 5u + 4u, 1ull);
     }
 #else
 #error "the miner's hash is not written yet"
@@ -563,6 +708,7 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     __syncthreads();
   }
 #undef PD_TILE
+#undef PD_TILE4
 #undef PD_KSTEP
 #undef PD_CHUNK
 #endif
