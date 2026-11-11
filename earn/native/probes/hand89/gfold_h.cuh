@@ -61,7 +61,15 @@
 #endif
 #define GP_ST (GP_TR + 256u * 64u)                  // the probe's stamps
 #define GP_PTR (GP_ST + 192u)                       // direct: where the tile's A' and B' begin (two pointers)
-#define GP_SMEM (GP_ST + 256u)
+// GP_STAGE: bytes of shared memory behind the probe's stamps that the compiled kernel never touches. The
+// rotation fold written by hand (hand89/rfold.py) keeps its stage of ready fragments there: A's at GP_STG as
+// [row band][k-step of the chunk][m16 tile][lane] of 16 bytes (the mma's four A words of that lane), 3072 bytes
+// a k-step of a band.
+#ifndef GP_STAGE
+#define GP_STAGE 0u
+#endif
+#define GP_STG (GP_ST + 256u)
+#define GP_SMEM (GP_STG + GP_STAGE)
 #define GP_THREADS 256u
 #define GP_NI (8u * GP_MT)                          // mma a k-step
 #ifndef GP_FILL
