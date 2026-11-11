@@ -18,6 +18,7 @@
 #   PP_CHUNKS     chunks a launch (default 100000, about 0.3 s)
 #   PP_SHORT      seconds a short run (default 1)
 #   PP_LONG       seconds a long run (default 30; the card is read every second and the first 8 s are left out)
+#   PP_ONLY_STAT  1: build only, and print what stands between each build's IMMA (nothing runs)
 set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
@@ -60,8 +61,25 @@ P=/root/pp
 mkdir -p $P
 SRC=$R/earn/native/probes/pipeprobe2.cu
 ARCH=sm_$CC
+# disasm HOME VER: nvdisasm into a toolkit, which cuobjdump -sass calls and nvtest.sh's archives leave out. Its
+# path and SHA-256 come from the same release's manifest on NVIDIA's server.
+disasm() {
+  local home=$1 rel man path sha f=/root/dl-nvdisasm.tar.xz
+  [ -x "$home/bin/nvdisasm" ] && return 0
+  case "$2" in 12.8) rel=12.8.1 ;; 13.3) rel=13.3.1 ;; *) return 1 ;; esac
+  man=$(curl -fsSL --retry 3 "$RD/redistrib_$rel.json") || return 1
+  path=$(echo "$man" | jq -r '.cuda_nvdisasm."linux-x86_64".relative_path')
+  sha=$(echo "$man" | jq -r '.cuda_nvdisasm."linux-x86_64".sha256')
+  curl -fsSL --retry 3 "$RD/$path" -o "$f" && echo "$sha  $f" | sha256sum -c --quiet - > /dev/null 2>&1 \
+    && tar -xJf "$f" -C "$home" --strip-components=1
+  rm -f "$f"
+  [ -x "$home/bin/nvdisasm" ]
+}
+disasm "$CUDA" "$CUDA_VER" || psay "WARN no nvdisasm for $CUDA_VER: builds will show no instruction counts"
 
-# sass.py: what stands between the first IMMA of a build's kernel and the branch back after its last.
+# sass.py FILE [trace]: what stands between the first IMMA of a build's kernel and the branch back after its
+# last. With "trace": that stretch in order, run lengths by kind (I IMMA, X LOP3, M ldmatrix, L other loads,
+# S stores and shared atomics, A other straight-line steps, control instructions by name), 360 characters a line.
 cat > $P/sass.py << 'EOF'
 import collections, re, sys
 ops = []
@@ -75,8 +93,30 @@ if not im:
 end = next((i for i in range(im[-1], len(ops)) if ops[i] == "BRA"), im[-1])   # the loop's back branch
 body = ops[im[0]:end + 1]
 other = [o for o in body if o != "IMMA"]
-ctl = [o for o in other if o in ("BRA", "BRX", "JMP", "WARPSYNC", "YIELD", "BSSY", "BSYNC", "BAR", "NANOSLEEP",
-                                 "CALL", "RET", "BREAK", "BMOV", "MEMBAR")]
+CTL = ("BRA", "BRX", "JMP", "WARPSYNC", "YIELD", "BSSY", "BSYNC", "BAR", "NANOSLEEP", "CALL", "RET", "BREAK",
+       "BMOV", "MEMBAR")
+ctl = [o for o in other if o in CTL]
+if len(sys.argv) > 2:
+    kind = lambda o: ("I" if o == "IMMA" else o if o in CTL else "X" if o in ("LOP3", "PLOP3", "LOP") else
+                      "M" if o == "LDSM" else "L" if o in ("LDS", "LD", "LDG", "LDL") else
+                      "S" if o in ("STS", "ST", "STG", "STL", "ATOMS", "ATOM", "ATOMG") else "A")
+    toks, last, n = [], None, 0
+    for o in body:
+        k = kind(o)
+        if k == last:
+            n += 1
+        else:
+            if last:
+                toks.append(last + (str(n) if n > 1 or last in "IXMLSA" else ""))
+            last, n = k, 1
+    toks.append(last + str(n))
+    line = ""
+    for t in toks:
+        if len(line) + len(t) + 1 > 360:
+            print(line); line = ""
+        line += (" " if line else "") + t
+    print(line)
+    sys.exit()
 run = best = 0
 gaps = []
 for o in body:
@@ -164,10 +204,10 @@ build1() {
   local d=$1 home=$2 name=$3 flags=$4 used spill
   "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cudart static -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1 \
     || "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1
-  "$home/bin/cuobjdump" -sass "$d/$name" > "$d/$name.sass" 2> /dev/null
-  if ! grep -q IMMA "$d/$name.sass" 2> /dev/null; then
+  PATH="$home/bin:$PATH" "$home/bin/cuobjdump" -sass "$d/$name" > "$d/$name.sass" 2> /dev/null
+  if ! grep -q IMMA "$d/$name.sass" 2> /dev/null && [ -x "$home/bin/nvdisasm" ]; then
     "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
-    "$home/bin/cuobjdump" -sass "$d/$name.cubin" > "$d/$name.sass" 2> /dev/null
+    "$home/bin/nvdisasm" -c "$d/$name.cubin" > "$d/$name.sass" 2> /dev/null
   fi
   used=$(grep -oE 'Used [0-9]+ registers' "$d/$name.log" | head -1 | grep -oE '[0-9]+')
   spill=$(grep -oE '[0-9]+ bytes spill stores' "$d/$name.log" | head -1 | grep -oE '^[0-9]+')
@@ -178,9 +218,10 @@ build1() {
   fi
 }
 # buildall DIR NVCC-HOME TAG [NAMES]: every stream (or the named ones), three at a time. It waits for its own
-# builds by process id: a bare wait would also wait for bench.sh, which never exits.
+# builds by process id: a bare wait would also wait for bench.sh, which never exits. Then the main streams' loops
+# as traces.
 buildall() {
-  local d=$1 home=$2 tag=$3 only=${4:-} name flags t0 pids=()
+  local d=$1 home=$2 tag=$3 only=${4:-} name flags t0 pids=() s l
   t0=$(date +%s)
   mkdir -p "$d"
   while IFS='|' read -r name flags; do
@@ -193,8 +234,30 @@ buildall() {
   [ ${#pids[@]} -gt 0 ] && wait "${pids[@]}"
   for f in "$d"/*.built; do psay "$tag $(cat "$f")"; done
   psay "$tag builds done in $(( $(date +%s) - t0 )) s with $("$home/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1) for $ARCH"
+  for s in ${PP_TRACES:-base rd1 rd2a d4m d4r full3 full}; do
+    grep -q IMMA "$d/$s.sass" 2> /dev/null || continue
+    python3 $P/sass.py "$d/$s.sass" trace 2>&1 | while IFS= read -r l; do psay "$tag trace $s $l"; done
+  done
 }
+# toolkit2: CUDA_VER2's compiler in /opt/cuda2, with its nvdisasm. True if it is there.
+toolkit2() {
+  timeout 600 bash -c 'export CUDA_VER=$0 NVTEST_CUDA=/opt/cuda2 NVTEST_STAGE=lib; . /root/nvtest.sh; fail() { echo "FAIL $*"; exit 1; }; cuda' "$CUDA_VER2" 2>&1 \
+    | sed -u 's/^\[nvtest\] [0-9:]* //' | while IFS= read -r l; do psay "toolkit2 $l"; done
+  [ -x /opt/cuda2/bin/nvcc ] || return 1
+  disasm /opt/cuda2 "$CUDA_VER2" || psay "WARN no nvdisasm for $CUDA_VER2"
+  return 0
+}
+L2="pure base rd1 rd2a d4m d4r fullns full full3"
 buildall $P/b "$CUDA" "nvcc$CUDA_VER"
+# PP_ONLY_STAT=1: the builds and what stands between their IMMA, with both toolkits, and nothing run.
+if [ -n "${PP_ONLY_STAT:-}" ]; then
+  if [ -n "${CUDA_VER2:-}" ] && [ "$CUDA_VER2" != "$CUDA_VER" ] && toolkit2; then
+    buildall $P/b2 /opt/cuda2 "nvcc$CUDA_VER2" "$L2"
+  fi
+  psay "all done"
+  say "all done"
+  idle "until deleted"
+fi
 
 # The miners first (bench.sh, started above), then the release's core under hashrate.js.
 n=0
@@ -261,13 +324,11 @@ done
 psay "card after the probe $(q clocks.sm,power.draw,power.limit,temperature.gpu,utilization.gpu,memory.used)"
 # 4. A second toolkit's builds of the main streams, short runs and two long ones.
 if [ -n "${CUDA_VER2:-}" ] && [ "$CUDA_VER2" != "$CUDA_VER" ]; then
-  if timeout 600 bash -c 'export CUDA_VER=$0 NVTEST_CUDA=/opt/cuda2 NVTEST_STAGE=lib; . /root/nvtest.sh; fail() { echo "FAIL $*"; exit 1; }; cuda' "$CUDA_VER2" 2>&1 | sed -u 's/^\[nvtest\] [0-9:]* //' | while IFS= read -r l; do psay "toolkit2 $l"; done \
-     && [ -x /opt/cuda2/bin/nvcc ]; then
+  if toolkit2; then
     T2=nvcc$CUDA_VER2
-    L2="pure base rd1 rd2a d4m d4r fullns full full3"
     buildall $P/b2 /opt/cuda2 $T2 "$L2"
     for s in $L2; do [ -x $P/b2/$s ] && short $P/b2 $T2 $s; done
-    for s in base full3; do [ -x $P/b2/$s ] && long $P/b2 $T2 $s; done
+    for s in ${PP_LONGS2:-base full3}; do [ -x $P/b2/$s ] && long $P/b2 $T2 $s; done
   else
     psay "toolkit2 $CUDA_VER2 not installed"
   fi
