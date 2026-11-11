@@ -5668,5 +5668,163 @@ class TestClore(Base):
         self.assertTrue(row.endswith(f"| {10 * per_share * self.x.cfg['kryptex_pay']:.3f} |"))   # Kryptex's count, no star
 
 
+class TestVast(Base):
+    """Renting Vast.ai interruptible instances (founder, 11 November: funded Vast with $50 for it)."""
+    def setUp(self):
+        super().setUp()
+        real_env = w.user_env
+        w.user_env = lambda n: "vk" if n == "VAST_API_KEY" else real_env(n)
+        self.addCleanup(setattr, w, "user_env", real_env)
+        self.x.cfg.update(vast=True, min_margin=0.05, keep_margin=0.02)
+        self.x.st["xmr_mkt"] = {"t": T0, "price": 550.0, "per_hash": 1e-13, "usd_khs_hr": 0.0005}
+        self.board = []
+        self.http.on("GET", r"/api/miners", lambda b: (200, {"miners": self.board}))
+        self.http.on("PUT", r"vast\.ai/api/v0/asks/", lambda b: (200, {"success": True, "new_contract": 900}))
+        self.http.on("DELETE", r"vast\.ai/api/v0/instances/", (200, {"success": True}))
+        self.listed = []
+        self.http.on("GET", r"vast\.ai/api/v1/instances/", lambda b: (200, {"instances": self.listed}))
+
+    @staticmethod
+    def offer(oid, gpu="RTX 4080", bid=0.10, machine=None, power=320.0, cpus=16.0):
+        return {"id": oid, "machine_id": machine or oid + 1000, "gpu_name": gpu, "min_bid": bid,
+                "storage_total_cost": 0.005, "gpu_max_power": power, "cpu_cores_effective": cpus,
+                "geolocation": "Germany, DE"}
+
+    def market(self, *offers):
+        self.http.on("POST", r"vast\.ai/api/v0/bundles/", (200, {"offers": list(offers)}))
+
+    def bids(self):
+        return [(re.search(r"asks/(\d+)/", c[1]).group(1), c[2]) for c in self.http.made("PUT", r"vast\.ai/api/v0/asks/")]
+
+    def live(self, status="running"):
+        self.market(self.offer(5))
+        self.x.vast_round(self.clock[0])
+        self.listed = [{"id": 900, "actual_status": status}]
+        return self.x.st["vast"]["inst"]["900"]
+
+    def tick(self, minutes=1, ths=None):
+        for _ in range(minutes):
+            self.clock[0] += 60
+            if ths is not None:
+                self.board = [{"addr": self.x.cfg["wallet"], "worker": "vast-5-g0", "hash": ths, "xmrHashrate": 0}]
+            self.x.vast_round(self.clock[0])
+
+    def test_off_by_default(self):
+        self.x.cfg["vast"] = w.DEFAULT_CFG["vast"]
+        self.market(self.offer(5))
+        self.x.vast_round(self.clock[0])
+        self.assertFalse(w.DEFAULT_CFG["vast"])
+        self.assertEqual(self.http.made("POST", r"vast\.ai"), [])
+
+    def test_search_bids_on_the_best_offer_that_clears_and_skips_the_rest(self):
+        self.x.st["vast"] = {"bad": {"1009": {"t": self.clock[0], "why": "no mining reading", "ths": None}}}
+        self.market(self.offer(1, gpu="RTX 3090", bid=0.01),        # no measured rate
+                    self.offer(2, bid=0.05, power=200.0),           # card capped at 200 W of a 4080's 320
+                    self.offer(9, bid=0.05),                        # machine judged lately
+                    self.offer(3, bid=0.21),                        # doesn't clear 5%
+                    self.offer(4, bid=0.12),                        # clears, but makes less
+                    self.offer(5, bid=0.10))
+        self.x.vast_round(self.clock[0])
+        (oid, body), = self.bids()
+        self.assertEqual(oid, "5")
+        self.assertEqual((body["price"], body["image"], body["disk"], body["label"]), (0.11, w.IMAGE, 10, "vast-5"))
+        rec = self.x.st["vast"]["inst"]["900"]
+        self.assertEqual((rec["machine"], rec["price_hr"]), (1005, 0.115))
+        self.assertIn("CREATED vast-5 on Vast (instance 900): 4080, DE, machine 1005, spot at $0.115/hr", self.events())
+        self.x.vast_round(self.clock[0] + 60)   # searches at most every 10 min
+        self.assertEqual(len(self.bids()), 1)
+
+    def test_the_onstart_script_fits_vasts_limit_and_carries_the_box_command(self):
+        self.x.cfg["xmr_wallet"] = "8" + "a" * 94
+        self.market(self.offer(5))
+        self.x.vast_round(self.clock[0])
+        on = self.bids()[0][1]["onstart"]
+        self.assertLessEqual(len(on), 4048)
+        script = w.gzip.decompress(w.base64.b64decode(on.split()[1])).decode()
+        self.assertIn("WORKER=vast-5", script)
+        self.assertIn("--xmr-address 8" + "a" * 94, script)        # 16 CPUs: Monero on 8 threads
+        self.assertIn("touch $D/setup", script)                    # the download is skipped after a restart
+
+    def test_a_bid_that_only_clears_at_vasts_least_goes_in_at_the_least(self):
+        self.market(self.offer(5, bid=0.200))   # 10% over would be $0.225/hr with the disk, under 5%
+        self.x.vast_round(self.clock[0])
+        self.assertEqual(self.bids()[0][1]["price"], 0.201)
+
+    def test_the_caps_hold(self):
+        day = w.dt.datetime.fromtimestamp(self.clock[0], w.NY).strftime("%Y-%m-%d")
+        self.x.st["vast"] = {"day": {day: 10.0}}
+        self.market(self.offer(5))
+        self.x.vast_round(self.clock[0])
+        self.assertEqual(self.http.made("POST", r"bundles"), [])
+        self.x.st["vast"]["day"] = {day: 0.0}
+        self.x.cfg["vast_day_cap"] = 2.0         # $0.115/hr is $2.76 a day
+        self.x.vast_round(self.clock[0])
+        self.assertEqual(self.bids(), [])
+        self.x.cfg.update(vast_day_cap=10.0, vast_max=1)
+        self.x.st["vast"]["search_t"] = 0
+        self.live()
+        self.x.st["vast"]["search_t"] = 0
+        self.tick()
+        self.assertEqual(len(self.bids()), 1)    # one live box fills vast_max 1
+
+    def test_a_box_under_the_keep_bar_is_destroyed_and_its_machine_set_aside(self):
+        rec = self.live()
+        self.tick(12, ths=100)                    # 100 TH/s of a 4080 earns well under $0.115/hr
+        self.assertEqual([c[1] for c in self.http.made("DELETE", r"vast")][-1:],
+                         [w.VAST + "v0/instances/900/"])
+        self.assertTrue(rec["ended"])
+        self.assertEqual(self.x.st["vast"]["bad"]["1005"]["ths"], 100)
+        self.assertIn("CANCELLED vast-5 on Vast", self.events())
+
+    def test_a_box_that_mines_well_is_kept(self):
+        rec = self.live()
+        self.tick(15, ths=199)
+        self.assertEqual(self.http.made("DELETE", r"vast"), [])
+        self.assertFalse(rec.get("ended"))
+        self.assertIn("STARTED vast-5 on Vast", self.events())
+
+    def test_one_that_never_starts_is_destroyed_after_30_min(self):
+        rec = self.live(status="loading")
+        self.tick(29)
+        self.assertFalse(rec.get("ended"))
+        self.tick(1)
+        self.assertIn("never started in 30 min", rec["end_reason"])
+
+    def test_an_outbid_box_pays_its_disk_and_goes_after_15_min(self):
+        rec = self.live()
+        self.tick(5, ths=199)
+        self.listed[0]["actual_status"] = "exited"
+        self.tick(1)
+        self.assertIn("NOTE vast-5 on Vast stopped (exited): likely outbid", self.events())
+        spent = rec["spend"]
+        self.tick(10)
+        self.assertAlmostEqual(rec["spend"] - spent, 10 / 60 * 0.005)   # the disk alone while stopped
+        self.assertFalse(rec.get("ended"))
+        self.tick(5)
+        self.assertEqual(rec["end_reason"], "stopped (outbid) for 15 min")
+
+    def test_one_no_longer_listed_ends(self):
+        rec = self.live()
+        self.listed = []
+        self.tick(5)
+        self.assertFalse(rec.get("ended"))        # a new instance can take a moment to list
+        self.tick(5)
+        self.assertIn("ENDED vast-5 on Vast", self.events())
+
+    def test_the_report_shows_a_vast_box_and_its_credit_lasting(self):
+        rec = self.live()
+        self.x.st["vast_bal"] = {"t": self.clock[0], "usd": 50.0}
+        self.tick(5, ths=199)
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        self.assertIn(f"| ☁️{w.NB}4080{w.NB}Vast | 199 | 0.12 |", report)
+        self.assertIn("| [Vast](https://vast.ai) | $50.00 | 18d |", report)
+        rec["ended"] = self.clock[0]
+        self.x.write_report()
+        report = open(os.path.join(TMP, "report.md"), encoding="utf-8").read()
+        self.assertIn(f"| Ended{w.NB}×1 |", report)
+        self.assertIn("| [Vast](https://vast.ai) | $50.00 | idle |", report)
+
+
 if __name__ == "__main__":
     unittest.main()

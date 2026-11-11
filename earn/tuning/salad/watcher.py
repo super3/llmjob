@@ -6,7 +6,7 @@
 # The Salad key is sent as the Salad-Api-Key header from $SALAD_API_KEY when it is set; in a Claude
 # cloud session the network proxy adds it instead. With $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET set,
 # the report also shows our SafeTrade account (read-only calls).
-import base64, hashlib, hmac, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error, datetime as dt, traceback
+import base64, gzip, hashlib, hmac, json, math, os, re, sys, time, urllib.parse, urllib.request, urllib.error, datetime as dt, traceback
 from zoneinfo import ZoneInfo
 try:
     from cryptography.hazmat.primitives import serialization
@@ -39,6 +39,7 @@ IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
 AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
 CLORE = "https://api.clore.ai/v1/"
+VAST = "https://console.vast.ai/api/"
 BOARD = "https://llmjob-production.up.railway.app/api/miners"   # each CLI's own hashrate, about once a minute
 RELEASES = "https://github.com/super3/llmjob/releases/download"
 
@@ -93,6 +94,21 @@ def clore_start_script(ver, cmd):
             "  done\n"
             "  mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli && touch $D/setup\n"
             "fi\n" + cmd + "\n")
+def vast_onstart(ver, cmd):
+    """A Vast box's onstart: Clore's start script, gzipped and base64 (Vast takes at most 4,048 characters there), run in
+    the background so the container's start isn't held up. Vast runs it at every start, also after an outbid stop;
+    the script skips the download once done."""
+    b64 = base64.b64encode(gzip.compress(clore_start_script(ver, cmd).encode(), mtime=0)).decode()
+    return (f"echo {b64} | base64 -d | gunzip > /root/start.sh; "
+            "nohup bash /root/start.sh > /root/start.log 2>&1 < /dev/null &")
+
+
+def vast_gpu(name):
+    """A Vast offer's gpu_name ("RTX 4080") as (KNOWN class, short name), or None without a measured rate."""
+    cls = next((c for c in KNOWN if c.split(" (")[0] == (name or "")), None)
+    return (cls, re.sub(r"^RTX\s*", "", name).replace(" ", "").lower()) if cls else None
+
+
 PRIS = ["batch", "low", "medium", "high"]
 UNIT_TH = 419 / 93644          # TH/s per pool unit/s
 SHARE_UNITS = 2 ** 21
@@ -148,6 +164,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # boxes may cost a day; clore_max the most boxes at once; clore_key_file the SSH private key the boxes
                # are started with (the .pub beside it goes on each order).
                "clore": False, "clore_day_cap": 10.0, "clore_max": 2, "clore_key_file": "",
+               # Renting Vast.ai interruptible (spot) instances the same way (founder, 11 November: funded Vast with $50
+               # for it): off until config turns it on, with the same caps as Clore. vast_disk is the GB asked for.
+               "vast": False, "vast_day_cap": 10.0, "vast_max": 2, "vast_disk": 10,
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
                "salad_orgs": [],
                # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
@@ -1149,19 +1168,19 @@ class W:
         self.clore_search(t)
         self.clore_kx(t)
 
-    def clore_kx(self, t):
+    def clore_kx(self, t, store="clore", recs="orders"):
         """Each Clore box's PRL and XMR by Kryptex's own count (founder, 10 November: the table starred them as our
         estimate, where the Salad boxes show the pool's): its workers' charts (clore-<id>-gN, a GPU each), PRL shares
         at what Kryptex pays a share and XMR work at what it pays a hash, as kx_count and the Monero read do for Salad.
         Every 5 min, for boxes live or ended in the last 2 hours. Until a chart shows work, the estimate from readings
         stands, starred."""
-        c, mk, xm = self.st["clore"], self.st.get("mkt"), self.st.get("xmr_mkt")
+        c, mk, xm = self.st[store], self.st.get("mkt"), self.st.get("xmr_mkt")
         if t - c.get("kx_t", 0) < 5 * MIN or not mk:
             return
         c["kx_t"] = t
         per_share = self.prl_unit() * 2 ** 21
         per_hash = xm["per_hash"] / (1 - XMR_FEE) if xm else None
-        for rec in c.get("orders", {}).values():
+        for rec in c.get(recs, {}).values():
             if rec.get("ended") and t - rec["ended"] > 7200:
                 continue
             n = int(m.group(1)) if (m := re.match(r"(\d+)×", rec.get("label", ""))) else 1
@@ -1314,12 +1333,14 @@ class W:
         xusd = (self.st.get("xmr_mkt") or {}).get("usd_khs_hr", 0.0)
         return ths * self.usd(True) + khs * xusd, ths, khs
 
-    def clore_judge(self, rec, t):
+    def clore_judge(self, rec, t, cancel=None):
         """The Salad rules for a Clore box: under the keep bar over 10 min of readings, or no reading 40 min after the
-        order came online (setup with a resuming download took 40 minutes in Japan on 10 November), it's cancelled."""
+        order came online (setup with a resuming download took 40 minutes in Japan on 10 November), it's cancelled.
+        Vast boxes are judged the same way, with their own cancel."""
+        cancel = cancel or self.clore_cancel
         if rec.get("first_read") is None:
             if t - rec["online_t"] >= 40 * MIN:
-                self.clore_cancel(rec, t, f"no mining reading {(t - rec['online_t']) / 60:.0f} min after it came online")
+                cancel(rec, t, f"no mining reading {(t - rec['online_t']) / 60:.0f} min after it came online")
             return
         if t - rec["first_read"] < 10 * MIN:
             return
@@ -1327,7 +1348,7 @@ class W:
         bar = self.keep_bar()
         mg = margin_of(earn, rec["price_hr"])
         if mg < bar:
-            self.clore_cancel(rec, t, f"earns ${earn:.3f}/hr at {ths:.0f} TH/s against its ${rec['price_hr']:.3f}/hr "
+            cancel(rec, t, f"earns ${earn:.3f}/hr at {ths:.0f} TH/s against its ${rec['price_hr']:.3f}/hr "
                                       f"({under(mg, bar)}, under {bar:.0%})", ths)
 
     def clore_cancel(self, rec, t, why, ths=None):
@@ -1454,15 +1475,15 @@ class W:
             out.append((kind, float(usd), ths, desc))
         return out
 
-    def clore_rows(self, t, xon, prl_cell, xmr_cell):
-        """The report's rows for the live Clore boxes, marked ☁️: [(profit, row, ths, khs, cost, earn)]."""
+    def clore_rows(self, t, xon, prl_cell, xmr_cell, store="clore", recs="orders", site="Clore"):
+        """The report's rows for the live Clore (or Vast) boxes, marked ☁️: [(profit, row, ths, khs, cost, earn)]."""
         out = []
-        for rec in (self.st.get("clore") or {}).get("orders", {}).values():
+        for rec in (self.st.get(store) or {}).get(recs, {}).values():
             if rec.get("ended"):
                 continue
             earn, ths, khs = self.clore_earn(rec, t)
             cost = 0.0 if rec.get("paused_since") else rec.get("price_hr") or rec["price_day"] / 24
-            name = f"☁️{NB}{rec['label']}{NB}Clore"
+            name = f"☁️{NB}{rec['label']}{NB}{site}"
             if ths <= 0:
                 cells = ["⏳"] + (["⏳"] if xon else []) + [f"{cost:.2f}", "—"]
                 profit = 0.0
@@ -1472,6 +1493,177 @@ class W:
             cells = " | ".join(cells + [prl_cell([rec])] + xmr_cell([rec]))
             out.append((profit, f"| {name} | {cells} |", ths, khs, cost, earn if ths > 0 else 0.0))
         return out
+
+    # ---------- Vast.ai ----------
+    def vast_call(self, method, path, body=None):
+        """A Vast API call with $VAST_API_KEY; a 429 holds every Vast call for 2 minutes. (status, JSON)"""
+        v = self.st.setdefault("vast", {})
+        if now() < v.get("hold", 0):
+            return 429, None
+        s, j = http(method, VAST + path, body, timeout=60, headers={"Authorization": f"Bearer {self._vast_key}"})
+        if s == 429:
+            v["hold"] = now() + 120
+        return s, j
+
+    def vast_round(self, t):
+        """Rents, judges and destroys Vast interruptible instances as clore_round does Clore orders (config "vast", off
+        by default). The box starts itself from its onstart script, so there is no SSH step. Only instances this
+        watcher made are touched (st vast.inst)."""
+        if not self.cfg.get("vast"):
+            return
+        key = user_env("VAST_API_KEY")
+        if not key:
+            return
+        self._vast_key = key
+        v = self.st.setdefault("vast", {})
+        inst, bad = v.setdefault("inst", {}), v.setdefault("bad", {})
+        for m in [k for k, b in bad.items() if t - b["t"] >= 86400 * self.cfg["rate_days"]]:
+            del bad[m]
+        if any(not r.get("ended") for r in inst.values()):
+            s, j = self.vast_call("GET", "v1/instances/")
+            if s != 200 or not isinstance(j, dict) or not isinstance(j.get("instances"), list):
+                return
+            mine = {str(o.get("id")): o for o in j["instances"] if isinstance(o, dict)}
+            for k, rec in list(inst.items()):
+                if not rec.get("ended"):
+                    self.vast_sync(rec, mine.get(k), t)
+        self.vast_search(t)
+        self.clore_kx(t, "vast", "inst")
+
+    def vast_sync(self, rec, o, t):
+        """One instance: its spend (our count: the bid and disk while it runs, the disk alone while stopped; Vast's
+        API gives no running total), its readings and the rules. An instance stopped after it ran was outbid: Vast
+        bills its disk then, so after 15 min it's destroyed, as Clore's paused spot orders are cancelled."""
+        v = self.st["vast"]
+        if o is None:
+            # Destroyed by hand or by the host. A new instance can take a moment to list; give it 10 minutes.
+            if t - rec["created"] < 10 * MIN:
+                return
+            rec.update(ended=t, end_reason="no longer listed on Vast")
+            event(f"ENDED {rec['name']} on Vast: the instance is no longer listed")
+            return
+        running = o.get("actual_status") == "running"
+        last = rec.get("sync_t") or t
+        hrs = max(0.0, t - last) / 3600
+        rec["sync_t"] = t
+        cost = hrs * (rec["price_hr"] if running else rec.get("disk_hr", 0.0))
+        rec["spend"] = rec.get("spend", 0.0) + cost
+        day = dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        v["day"] = {day: (v.get("day") or {}).get(day, 0.0) + cost}
+        if not running:
+            if rec.get("online_t") is None:
+                # Still loading the image: no mining yet. One that never runs is destroyed after 30 min.
+                if t - rec["created"] >= 30 * MIN:
+                    self.vast_cancel(rec, t, f"never started in {(t - rec['created']) / 60:.0f} min "
+                                             f"({o.get('actual_status')}: {str(o.get('status_msg') or '')[:80]})")
+                return
+            if rec.get("paused_since") is None:
+                rec["paused_since"] = t
+                event(f"NOTE {rec['name']} on Vast stopped ({o.get('actual_status')}): likely outbid")
+            if t - rec["paused_since"] >= 15 * MIN:
+                self.vast_cancel(rec, t, "stopped (outbid) for 15 min")
+            return
+        if rec.get("paused_since") is not None:
+            rec["paused_since"] = None
+            rec["online_t"], rec["first_read"] = t, None   # a fresh start: judged as a new box
+        if rec.get("online_t") is None:
+            rec["online_t"] = t
+            event(f"STARTED {rec['name']} on Vast: running, its onstart script sets up the miner")
+        self.clore_read(rec, t)
+        self.clore_judge(rec, t, self.vast_cancel)
+
+    def vast_cancel(self, rec, t, why, ths=None):
+        s, j = self.vast_call("DELETE", f"v0/instances/{rec['id']}/")
+        if not (200 <= s < 300 or s == 404):
+            event(f"WARN destroying {rec['name']} on Vast failed: HTTP {s} {str(j)[:150]}")
+            return
+        rec.update(ended=t, end_reason=why)
+        self.st["vast"]["bad"][str(rec["machine"])] = {"t": t, "why": why, "ths": ths}
+        event(f"CANCELLED {rec['name']} on Vast ({rec['desc']}): {why}")
+
+    def vast_search(self, t):
+        """Bids on the Vast offer that makes the most an hour while clearing min_margin, every 10 min while there's room
+        (vast_max) and money (vast_day_cap, for the day so far and for the live boxes' day). One GPU an offer, verified
+        hosts over 95% reliable, cards at 90% or more of their stock power (Clore's 10 November lesson), a machine
+        not judged lately at a rate that doesn't clear. The bid is 10% over Vast's least, so the next small bid
+        doesn't stop it at once, if that still clears."""
+        v = self.st["vast"]
+        if t - v.get("search_t", 0) < 10 * MIN:
+            return
+        live = [r for r in v["inst"].values() if not r.get("ended")]
+        if len(live) >= self.cfg["vast_max"]:
+            return
+        cap, day = self.cfg["vast_day_cap"], dt.datetime.fromtimestamp(t, NY).strftime("%Y-%m-%d")
+        burn = sum(r["price_hr"] for r in live) * 24
+        if (v.get("day") or {}).get(day, 0.0) >= cap or burn >= cap:
+            return
+        v["search_t"] = t
+        disk = self.cfg["vast_disk"]
+        q = {"num_gpus": {"eq": 1}, "verified": {"eq": True}, "rentable": {"eq": True}, "rented": {"eq": False},
+             "reliability2": {"gt": 0.95}, "type": "bid", "allocated_storage": disk, "limit": 1000,
+             "order": [["min_bid", "asc"]]}
+        s, j = self.vast_call("POST", "v0/bundles/", q)
+        if s != 200 or not isinstance(j, dict):
+            return
+        ours = {str(r.get("machine")) for r in live}
+        offers = []
+        for o in j.get("offers") or []:
+            g = vast_gpu(o.get("gpu_name"))
+            if g is None or str(o.get("machine_id")) in ours:
+                continue
+            cls, short = g
+            pw = o.get("gpu_max_power")
+            if cls in FULL_W and isinstance(pw, (int, float)) and pw < 0.9 * FULL_W[cls]:
+                continue
+            try:
+                least, disk_hr = float(o["min_bid"]), float(o.get("storage_total_cost") or 0.0)
+            except (KeyError, TypeError, ValueError):
+                continue
+            ths = KNOWN[cls][0]
+            earn = ths * self.usd(True)
+            bid = round(max(least * 1.1, least + 0.001), 4)
+            ok = lambda b: margin_of(earn, b + disk_hr) >= self.cfg["min_margin"]
+            if not ok(bid):
+                bid = round(least + 0.001, 4)
+                if least <= 0 or not ok(bid):
+                    continue
+            b = v["bad"].get(str(o.get("machine_id")))
+            if b and (b.get("ths") is None or margin_of(b["ths"] * self.usd(True), bid + disk_hr) < self.cfg["min_margin"]):
+                continue
+            if burn + (bid + disk_hr) * 24 > cap:
+                continue
+            offers.append((earn - bid - disk_hr, o, cls, short, ths, bid, disk_hr))
+        offers.sort(key=lambda x: -x[0])
+        for _, o, cls, short, ths, bid, disk_hr in offers[:3]:
+            if self.vast_rent(t, o, short, ths, bid, disk_hr, disk):
+                return
+
+    def vast_rent(self, t, o, short, ths, bid, disk_hr, disk):
+        """Bids on one offer; True when Vast made the instance."""
+        v = self.st["vast"]
+        name = f"vast-{o['id']}"
+        threads = int(o.get("cpu_cores_effective") or 0)
+        xmr = threads >= 8 and self.cfg.get("xmr_wallet")
+        ver = self.cfg["box_ver"]
+        cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
+                      self.cfg["kryptex_host"], xmr_pool=self.cfg["xmr_kx_host"] if xmr else None)
+        body = {"client_id": "me", "image": IMAGE, "disk": disk, "price": bid, "runtype": "ssh", "label": name,
+                "onstart": vast_onstart(ver, cmd)}
+        cc = str(o.get("geolocation") or "?").split(",")[-1].strip()
+        mg = margin_of(ths * self.usd(True), bid + disk_hr)
+        desc = f"{short}, {cc}, machine {o.get('machine_id')}, spot at ${bid + disk_hr:.3f}/hr ({mg:+.0%} margin at {ths:.0f} TH/s)"
+        s, r = self.vast_call("PUT", f"v0/asks/{o['id']}/", body)
+        if s != 200 or not isinstance(r, dict) or not r.get("success") or not r.get("new_contract"):
+            event(f"WARN renting Vast offer {o['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
+            return False
+        iid = str(r["new_contract"])
+        v["inst"][iid] = {"id": iid, "name": name, "machine": o.get("machine_id"), "offer": o["id"], "bid": bid,
+                          "price_hr": bid + disk_hr, "disk_hr": disk_hr, "label": short, "threads": threads,
+                          "desc": desc, "created": t, "sync_t": t, "readings": [], "prl": 0.0, "prl_kx": 0.0,
+                          "xmr_coins": 0.0, "spend": 0.0}
+        event(f"CREATED {name} on Vast (instance {iid}): {desc}"
+              + (", Monero on 8 threads" if xmr else ", no Monero (under 8 CPU threads)"))
+        return True
 
     def st_call(self, method, path, body=None, signed=True):
         """A SafeTrade call under /api/v2/trade, signed with $SAFETRADE_API_KEY and $SAFETRADE_API_SECRET: HMAC-SHA256
@@ -2715,6 +2907,7 @@ class W:
         self.clore_balance()
         self.vast_balance()
         self.clore_round(t)
+        self.vast_round(t)
         self.kx_count(list(by_name.values()), t)
         for g in by_name.values():
             x, w = kw.get(f"{g['name']}-g0"), pw.get(f"{g['name']}-g0")
@@ -3470,7 +3663,12 @@ class W:
             rows.append((profit, row))
             all_ths += c_ths; all_khs += c_khs; all_cost += c_cost; all_earn += c_earn
             run_cost += c_cost if c_earn > 0 else 0.0   # the heading's "mining" counts Salad's slots alone
-        clores = list((st.get("clore") or {}).get("orders", {}).values())
+        for profit, row, c_ths, c_khs, c_cost, c_earn in self.clore_rows(t, xon, prl_cell, xmr_cell, "vast", "inst", "Vast"):
+            rows.append((profit, row))
+            all_ths += c_ths; all_khs += c_khs; all_cost += c_cost; all_earn += c_earn
+            run_cost += c_cost if c_earn > 0 else 0.0
+        clores = (list((st.get("clore") or {}).get("orders", {}).values())
+                  + list((st.get("vast") or {}).get("inst", {}).values()))
         # Most profitable an hour first; groups waiting for a PC make nothing, so they sit above any losing.
         lines = [r for _, r in sorted(rows, key=lambda x: -x[0])]
         # The slots the search couldn't fill, so they show instead of vanishing: one row with their count, as the
@@ -3633,8 +3831,10 @@ class W:
             lasts = short_lasts(cb["usd"] / burn) if burn > 0 else "idle"
             credit_rows.append(("[Clore](https://clore.ai)", cb["usd"], lasts))
         if vb:
-            # Vast's credit too (10 November). The watcher rents nothing on Vast, so nothing spends it: idle.
-            credit_rows.append(("[Vast](https://vast.ai)", vb["usd"], "idle"))
+            # Vast's credit too (10 November), and how long it lasts at the live boxes' $/hr as Clore's does.
+            burn = sum(r["price_hr"] if not r.get("paused_since") else r.get("disk_hr", 0.0)
+                       for r in ((st.get("vast") or {}).get("inst") or {}).values() if not r.get("ended"))
+            credit_rows.append(("[Vast](https://vast.ai)", vb["usd"], short_lasts(vb["usd"] / burn) if burn > 0 else "idle"))
         if credit_rows:
             credit_tab = ["", "| 💳 Credit | Left | Lasts |", "|---|---|---|",
                           *(f"| {o} | ${bal:.2f}{cmark if o == salad_link else ''} | {lasts} |" for o, bal, lasts in credit_rows)]
