@@ -60,17 +60,6 @@ describe('MinerService helpers', () => {
     expect(MinerService.baseWorker(null)).toBe('');
   });
 
-  // Windows and the Intel core's runtime name an Arc card with trademark marks
-  // and a trailing "Graphics"; a Linux rig names it from its PCI id.
-  test('cleanGpuName gives an Intel card one name and leaves other vendors alone', () => {
-    expect(MinerService.cleanGpuName('Intel(R) Arc(TM) A750 Graphics')).toBe('Intel Arc A750');
-    expect(MinerService.cleanGpuName('  Intel(R) Arc(TM) Pro A60 Graphics ')).toBe('Intel Arc Pro A60');
-    expect(MinerService.cleanGpuName('Intel Arc A750')).toBe('Intel Arc A750'); // the Linux name is kept
-    expect(MinerService.cleanGpuName('Intel(R) UHD Graphics 630')).toBe('Intel UHD Graphics 630'); // only a trailing word
-    expect(MinerService.cleanGpuName('NVIDIA GeForce RTX 4090')).toBe('NVIDIA GeForce RTX 4090');
-    expect(MinerService.cleanGpuName('AMD Radeon(TM) Graphics')).toBe('AMD Radeon(TM) Graphics');
-  });
-
   test('formatAgo renders each tier', () => {
     expect(MinerService.formatAgo(-100)).toBe('just now');
     expect(MinerService.formatAgo(2000)).toBe('just now');
@@ -121,22 +110,6 @@ describe('MinerService (db)', () => {
     expect(Number(row.vram_used)).toBe(4096);  // upserted
     expect(Number(row.vram_total)).toBe(24564);
     expect(row.version).toBe('0.1.16');        // reported version, upserted
-  });
-
-  // A Windows rig and a Linux rig of the same Intel cards read the same on the
-  // board: the name is cleaned when it is stored.
-  test('an Intel rig reads "Intel Arc A750 × N" whichever way its client named the cards', async () => {
-    await service.reportMiner({ address: ADDR.a, worker: 'winarc/gpu0', gpu: 'Intel(R) Arc(TM) A750 Graphics', hashrate: 17, accepted: 3 });
-    await service.reportMiner({ address: ADDR.a, worker: 'winarc/gpu1', gpu: 'Intel(R) Arc(TM) A750 Graphics', hashrate: 16, accepted: 2 });
-    await service.reportMiner({ address: ADDR.b, worker: 'arc750/gpu1', gpu: 'Intel Arc A750', hashrate: 17, accepted: 1 });
-    await service.reportMiner({ address: ADDR.b, worker: 'arc750/gpu2', gpu: 'Intel Arc A750', hashrate: 17, accepted: 1 });
-    const out = await service.getPublicMiners();
-    expect(out.miners.map((m) => [m.worker, m.gpu, m.gpus, m.hash])).toEqual([
-      ['arc750', 'Intel Arc A750 × 2', 2, 34],
-      ['winarc', 'Intel Arc A750 × 2', 2, 33],
-    ]);
-    expect(out.miners[1].cards.map((c) => c.gpu)).toEqual(['Intel Arc A750', 'Intel Arc A750']);
-    expect(out.miners[1].vramTotalMb).toBe(0); // neither client knows an Intel card's memory yet
   });
 
   test('getPublicMiners returns one row per online worker (its own GPU/VRAM/last), sorted by hashrate', async () => {

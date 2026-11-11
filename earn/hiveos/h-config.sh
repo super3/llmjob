@@ -59,10 +59,9 @@ args="--address $address"
 # config replaces HiveOS's choice.
 # With --core amd it isn't passed on either: those numbers are NVIDIA cards, and
 # the AMD core would take them as AMD card numbers and mine on the wrong cards.
-# To leave AMD cards out, put --gpu-index in Extra config. --core intel is the
-# same: the Intel core's card numbers are its own.
+# To leave AMD cards out, put --gpu-index in Extra config.
 if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-index([[:space:]]|=)
-      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)([aA][mM][dD]|[iI][nN][tT][eE][lL])[[:space:]] ]]; then
+      && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--core([[:space:]]+|=)[aA][mM][dD][[:space:]] ]]; then
   if [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*$ ]]; then
     args+=" --gpu-index=none"
   elif [[ $CUDA_VISIBLE_DEVICES =~ ^[[:space:]]*([0-9]+(,[0-9]+)*)[[:space:]]*$ ]]; then

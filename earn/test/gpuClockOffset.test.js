@@ -214,22 +214,18 @@ describe('the addon\'s side (native/src/pearl_core.cc)', () => {
     expect(NVML).not.toContain('ThrowAsJavaScriptException');
   });
 
-  // binding.gyp builds the CUDA core on Windows and Linux, and the AMD and
-  // Intel cores on Windows. The AMD core on Linux is compiled by build-amd.sh,
-  // and the Intel one by sycl/build.sh; all compile this same pearl_core.cc.
+  // binding.gyp builds the CUDA core on Windows and Linux, and the AMD core on
+  // Windows. The AMD core on Linux is compiled by build-amd.sh.
   test('is compiled into the CUDA builds only', () => {
     const conditions = GYP.split('\n').filter((l) => /^\s*\["OS==/.test(l)).map((l) => l.trim());
     expect(conditions).toEqual([
       '["OS==\'win\' and pearl_backend==\'cuda\'", {',
       '["OS==\'win\' and pearl_backend==\'hip\'", {',
-      '["OS==\'win\' and pearl_backend==\'sycl\'", {',
       '["OS==\'linux\'", {',
     ]);
     const blocks = GYP.split(/\n\s*\["OS==/).slice(1);
-    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_NVML_OFFSETS" ]'))).toEqual([true, false, false, true]);
-    expect(blocks[3]).toContain('-lpearl_cuda');
+    expect(blocks.map((b) => b.includes('"defines": [ "PEARL_NVML_OFFSETS" ]'))).toEqual([true, false, true]);
+    expect(blocks[2]).toContain('-lpearl_cuda');
     expect(read('amd', 'build-amd.sh')).not.toContain('PEARL_NVML_OFFSETS');
-    expect(read('sycl', 'build.sh')).toContain('-c "$SRC/pearl_core.cc"');
-    expect(read('sycl', 'build.sh')).not.toContain('PEARL_NVML_OFFSETS');
   });
 });

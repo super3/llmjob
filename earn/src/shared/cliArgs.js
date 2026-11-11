@@ -14,10 +14,10 @@ const { parseCoreOffset } = require('./coreOffset');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
-const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
+const { CU12, CU13, AMD } = require('./coreVariant');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
-const CORES = [CU12, CU13, AMD, INTEL];
+const CORES = [CU12, CU13, AMD];
 
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
@@ -127,14 +127,11 @@ const USAGE = [
   '                           the same list; the flag wins.',
   '      --core <build>       Which Pearl core to load: amd for AMD Radeon and',
   '                           Instinct cards (Linux, needs the ROCm 7 HIP',
-  '                           runtime), intel for Intel Arc cards (needs',
-  '                           Intel\'s Level Zero or OpenCL driver), or',
-  '                           cu12/cu13 to force a CUDA build. Default: the',
-  '                           CUDA build that fits the NVIDIA cards; when',
-  '                           nvidia-smi lists none, the Intel core on a rig',
-  '                           of Arc cards, else the AMD core first.',
-  '                           PEARL_CORE_VARIANT takes the same values; the',
-  '                           flag wins.',
+  '                           runtime), or cu12/cu13 to force a CUDA build.',
+  '                           Default: the CUDA build that fits the NVIDIA',
+  '                           cards, or the AMD core first when nvidia-smi',
+  '                           lists none. PEARL_CORE_VARIANT takes the same',
+  '                           values; the flag wins.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',

@@ -36,18 +36,6 @@ function baseWorker(worker) {
   return String(worker == null ? '' : worker).replace(GPU_SUFFIX, '');
 }
 
-// A card's name as the board shows it. Intel's device names come with trademark
-// marks and a trailing "Graphics": Windows and the Intel core's runtime both say
-// "Intel(R) Arc(TM) A750 Graphics", where a Linux rig names the same card
-// "Intel Arc A750" from its PCI id. One card gets one name on the board, so the
-// marks and the trailing word come off here, whichever client sent them. Other
-// vendors' names are kept as sent.
-function cleanGpuName(name) {
-  const s = String(name);
-  if (!/^\s*Intel\b/i.test(s)) return s;
-  return s.replace(/\((?:R|TM)\)/gi, ' ').replace(/\s+Graphics\s*$/i, '').replace(/\s+/g, ' ').trim();
-}
-
 // Drop a multi-GPU host's legacy rig-level row. Before per-card stats arrive, the
 // client posts one row on the BARE worker with the rig's summed VRAM and whole-rig
 // hashrate; once it switches to per-card "<worker>/gpuN" rows, that bare row
@@ -204,7 +192,7 @@ class MinerService {
     if (!isValidAddress(address)) return { error: 'Invalid payout address' };
 
     const worker = (String(input.worker == null ? '' : input.worker).trim() || 'rig01').slice(0, 64);
-    const gpu = input.gpu ? cleanGpuName(input.gpu).slice(0, 80) : null;
+    const gpu = input.gpu ? String(input.gpu).slice(0, 80) : null;
     const region = input.region ? String(input.region).slice(0, 16) : null;
     const hashrate = clampNum(input.hashrate, MAX_HASHRATE);
     const accepted = Math.floor(clampNum(input.accepted));
@@ -319,7 +307,6 @@ MinerService.clampNum = clampNum;
 MinerService.clampOrNull = clampOrNull;
 MinerService.formatAgo = formatAgo;
 MinerService.baseWorker = baseWorker;
-MinerService.cleanGpuName = cleanGpuName;
 MinerService.dropHostAggregates = dropHostAggregates;
 MinerService.groupHosts = groupHosts;
 MinerService.newestCard = newestCard;

@@ -144,52 +144,6 @@ describe('snapshot', () => {
   });
 });
 
-// Only the Intel core reports its card's memory, and the network board has no
-// other source for an Intel card (see minerReport). The figures ride on the
-// status event, and a card whose events have none is left exactly as it was.
-describe('a card\'s memory, from a core that reports it', () => {
-  const ARC = { type: 'status', gpuIndex: 0, hashrate: 41.9, gpu: 'Intel Arc A750' };
-
-  test('rides from the status event into that card\'s snapshot entry', () => {
-    const s = initStats(0);
-    applyEvent(s, { ...ARC, memUsedMb: 1536, memTotalMb: 8128 });
-    applyEvent(s, { type: 'status', gpuIndex: 1, hashrate: 285, gpu: 'RTX 4090' });
-    expect(snapshot(s, 0).gpus).toEqual([
-      { index: 0, gpu: 'Intel Arc A750', hashrate: 41.9, accepted: 0, rejected: 0, temp: 0, memUsedMb: 1536, memTotalMb: 8128 },
-      { index: 1, gpu: 'RTX 4090', hashrate: 285, accepted: 0, rejected: 0, temp: 0 },
-    ]);
-  });
-
-  // The stats file and the board are built from these entries: a rig with no
-  // such card must see no new key, not a null one.
-  test('a card that never reports memory has neither key', () => {
-    const s = initStats(0);
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 285, gpu: 'RTX 4090' });
-    expect(s.gpus[0]).not.toHaveProperty('memTotalMb');
-    const [card] = snapshot(s, 0).gpus;
-    expect(card).not.toHaveProperty('memUsedMb');
-    expect(card).not.toHaveProperty('memTotalMb');
-  });
-
-  test('an event without the figures keeps the last ones; a new reading replaces them', () => {
-    const s = initStats(0);
-    applyEvent(s, { ...ARC, memUsedMb: 1536, memTotalMb: 8128 });
-    applyEvent(s, { type: 'status', gpuIndex: 0, hashrate: 42 });
-    expect(snapshot(s, 0).gpus[0]).toMatchObject({ hashrate: 42, memUsedMb: 1536, memTotalMb: 8128 });
-    // The card's core closed: it holds nothing now, and the size stands.
-    applyEvent(s, { ...ARC, hashrate: 0, memUsedMb: 0, memTotalMb: 8128 });
-    expect(snapshot(s, 0).gpus[0]).toMatchObject({ hashrate: 0, memUsedMb: 0, memTotalMb: 8128 });
-  });
-
-  // Off the pool the board hears no hashrate. The card's memory is still its
-  // memory.
-  test('stays on the card while the pool connection is down', () => {
-    const s = initStats(0);
-    applyEvent(s, { ...ARC, memUsedMb: 1536, memTotalMb: 8128 });
-    expect(offPool(snapshot(s, 0)).gpus[0]).toMatchObject({ hashrate: 0, memUsedMb: 1536, memTotalMb: 8128 });
-  });
-});
-
 describe('share counters across an engine restart', () => {
   // Demand mode stops and restarts the miner on every flip back to mining, and
   // PearlEngine.start() zeroes its counters. Without folding, an hour of mining

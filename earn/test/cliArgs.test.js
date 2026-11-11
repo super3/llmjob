@@ -544,7 +544,7 @@ describe('--core', () => {
 
   test('anything else is an error that lists the choices', () => {
     const r = parseCliArgs(['-a', ADDR, '--core', 'rocm']);
-    expect(r.errors).toEqual(['invalid --core: rocm (choices: cu12, cu13, amd, intel)']);
+    expect(r.errors).toEqual(['invalid --core: rocm (choices: cu12, cu13, amd)']);
     expect(r.settings.core).toBeNull();
     expect(parseCliArgs(['-a', ADDR, '--core']).errors).toEqual(['missing value for --core']);
   });

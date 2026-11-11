@@ -40,8 +40,8 @@
 //
 // They read and set a card's core clock offset through NVML, for the host's
 // offset trial (see "The core clock offset" below, and main/gpuClockOffset.js).
-// The AMD and Intel builds have neither: PEARL_NVML_OFFSETS is defined only
-// for CUDA (binding.gyp).
+// The AMD build has neither: PEARL_NVML_OFFSETS is defined only for CUDA
+// (binding.gyp).
 //
 // Independent implementation against the ISC-licensed pearl-research-labs
 // specification. No dev fee, no fee address, nothing to disclose — see
@@ -108,16 +108,6 @@ struct PearlSearchResult {
   PearlProofSide proof_bt;
   bool found;
 };
-
-// The card's memory and what this core's context has allocated on it, in
-// bytes; false when the host does not know. Only a host whose build defines
-// PEARL_HOST_MEM_INFO has it, and only the Intel builds do (sycl/build.sh,
-// binding.gyp): the app reads an NVIDIA card's memory from nvidia-smi and an
-// AMD card's from sysfs, and has nowhere to read an Arc card's. The CUDA and
-// AMD builds compile none of this.
-#ifdef PEARL_HOST_MEM_INFO
-extern "C" bool pearl_host_mem_info(void *ctx, uint64_t *total_bytes, uint64_t *used_bytes);
-#endif
 
 extern "C" {
 // Choose the GPU to mine on and make it this thread's device. `requested` >= 0
@@ -828,15 +818,6 @@ Napi::Value PearlCore::GetDevice(const Napi::CallbackInfo &info) {
   // The fold, for logs and probes (verify-hits.js prints it). The host's readDevice
   // takes only index and name.
   out.Set("fold", Napi::String::New(env, pearl_host_fold_name(ctx_)));
-#ifdef PEARL_HOST_MEM_INFO
-  // The card's memory and this core's share of it, in whole MB, where the host
-  // knows them. Left out otherwise, and after stop().
-  uint64_t mem_total = 0, mem_used = 0;
-  if (pearl_host_mem_info(ctx_, &mem_total, &mem_used)) {
-    out.Set("memTotalMb", Napi::Number::New(env, (double)(mem_total >> 20)));
-    out.Set("memUsedMb", Napi::Number::New(env, (double)(mem_used >> 20)));
-  }
-#endif
   return out;
 }
 

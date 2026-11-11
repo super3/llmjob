@@ -61,31 +61,12 @@
 // reason still mines on NVIDIA. PEARL_CORE_VARIANT=amd asks for the AMD core
 // with no fallback (the CLI's --core amd sets that), and PEARL_CORE_PATH can
 // name it.
-//
-// A fourth, for Intel Arc cards: pearl_core_sycl.node, built from
-// earn/native/sycl (see its README). Unlike the others it is a folder, sycl/
-// beside them: the addon, its host library and the SYCL runtime they load. Its
-// kernels are compiled by the rig's own Intel driver at first start. It has
-// mined on Arc A750 cards on Linux; no Windows PC has run it.
-//
-// It is tried only on a rig that plainly is an Intel one: nvidia-smi lists no
-// NVIDIA card, and the operating system reports Intel Arc cards and no AMD
-// card our AMD core mines on (`intel`, from probe.detectGpuInfo). On every
-// other rig nothing looks for it, so one without the folder, or whose folder
-// will not load, hears nothing about it. On an Intel rig the loader falls back
-// to the 12.8 build as it does after the AMD core. PEARL_CORE_VARIANT=intel
-// (--core intel) asks for it with no fallback.
 
 const CU12 = 'cu12';
 const CU13 = 'cu13';
 const AMD = 'amd';
-const INTEL = 'intel';
-const FILES = {
-  [CU12]: 'pearl_core.node', [CU13]: 'pearl_core_cu13.node', [AMD]: 'pearl_core_hip.node', [INTEL]: 'pearl_core_sycl.node',
-};
-const LABELS = { [CU12]: 'CUDA 12.8 build', [CU13]: 'CUDA 13 build', [AMD]: 'AMD build (ROCm)', [INTEL]: 'Intel build (SYCL)' };
-// The folder the Intel core and its libraries are in, beside the other cores.
-const INTEL_DIR = 'sycl';
+const FILES = { [CU12]: 'pearl_core.node', [CU13]: 'pearl_core_cu13.node', [AMD]: 'pearl_core_hip.node' };
+const LABELS = { [CU12]: 'CUDA 12.8 build', [CU13]: 'CUDA 13 build', [AMD]: 'AMD build (ROCm)' };
 // NVIDIA's minor-version compatibility table: every 13.x runtime runs on any
 // driver >= 580, on Linux and Windows alike. Below that it cannot start at all.
 const MIN_DRIVER_CU13 = 580;
@@ -139,25 +120,22 @@ function parseCudaCards(out) {
 }
 
 // PEARL_CORE_VARIANT=cu12|cu13 forces one build, for debugging, and
-// PEARL_CORE_VARIANT=amd or intel asks for that one. Anything else is ignored
-// (and said so in the reason), never guessed at.
+// PEARL_CORE_VARIANT=amd asks for the AMD one. Anything else is ignored (and
+// said so in the reason), never guessed at.
 function readForced(env) {
   const raw = env && env.PEARL_CORE_VARIANT;
   if (raw == null || String(raw).trim() === '') return { forced: null, note: '' };
   const v = String(raw).trim().toLowerCase();
-  if (v === CU12 || v === CU13 || v === AMD || v === INTEL) return { forced: v, note: '' };
-  return { forced: null, note: 'PEARL_CORE_VARIANT=' + raw + ' ignored (use cu12, cu13, amd or intel); ' };
+  if (v === CU12 || v === CU13 || v === AMD) return { forced: v, note: '' };
+  return { forced: null, note: 'PEARL_CORE_VARIANT=' + raw + ' ignored (use cu12, cu13 or amd); ' };
 }
 
 // Decide the build. `cards` is parseCudaCards' list; `gpus` is the mining list
 // (shared/gpu.planMinerGpus) -- empty when the shell starts one core and lets it
 // choose, in which case every card has to qualify, since any of them may be
-// the one it picks. `intel` is how many Intel Arc cards the operating system
-// reports on a rig where it reports no AMD card the AMD core mines on (0 or
-// absent anywhere else). Returns { variant, reason }, the reason written for
-// the log, and `auto: true` when the AMD or Intel core is only a first try (see
-// the header).
-function pickCoreVariant({ env, cards, gpus, intel } = {}) {
+// the one it picks. Returns { variant, reason }, the reason written for the log,
+// and `auto: true` when the AMD core is only a first try (see the header).
+function pickCoreVariant({ env, cards, gpus } = {}) {
   const { forced, note } = readForced(env || {});
   if (forced) return { variant: forced, reason: 'PEARL_CORE_VARIANT=' + forced };
   const cu12 = (why) => ({ variant: CU12, reason: note + why });
@@ -165,13 +143,6 @@ function pickCoreVariant({ env, cards, gpus, intel } = {}) {
   // An empty list is nvidia-smi's answer; no list at all is a caller that
   // didn't ask, which keeps the 12.8 build.
   if (Array.isArray(cards) && !cards.length) {
-    if (Number.isInteger(intel) && intel > 0) {
-      return {
-        variant: INTEL,
-        auto: true,
-        reason: note + 'nvidia-smi lists no NVIDIA card, and the system has ' + intel + ' Intel Arc card' + (intel > 1 ? 's' : ''),
-      };
-    }
     return { variant: AMD, auto: true, reason: note + 'nvidia-smi lists no NVIDIA card' };
   }
   const known = Array.isArray(cards) ? cards : [];
@@ -238,7 +209,7 @@ function isRuntimeError(err) {
 }
 
 module.exports = {
-  CU12, CU13, AMD, INTEL, INTEL_DIR, FILES, LABELS, MIN_DRIVER_CU13,
+  CU12, CU13, AMD, FILES, LABELS, MIN_DRIVER_CU13,
   cu13HasCodeFor, cu13AutoSelectsFor,
   parseCudaCards, pickCoreVariant, isRuntimeError,
 };

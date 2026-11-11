@@ -19,10 +19,6 @@
 // A card the engine does not report reads 0: its core refused (usually the
 // local LLM holds its VRAM), or the first status has not come yet.
 //
-// A card's VRAM is the probe's. Where the probe has no total for a card, or no
-// entry for it, the row takes the memory the engine reports for that card, if
-// it reports any (see memFor below). That is an Intel card today.
-//
 // This used to split the engine's total evenly over every card nvidia-smi
 // listed whenever the engine reported fewer, for an alpha-miner build that
 // logged one aggregate line. Our engine reports every card it mines, so the
@@ -87,25 +83,6 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   const cards = Array.isArray(n.gpus) ? n.gpus : [];
   const cardFor = (index) => cards.find((c) => c.index === index) || null;
 
-  // A card's memory for its row, as [usedMb, totalMb]: the probe's when the
-  // probe has a total, else the engine's.
-  //
-  // The probe comes first because its figures are the whole card's: nvidia-smi
-  // and amdgpu count what every process has on the card, the local LLM
-  // included, and that is what says whether a model still fits. The engine's
-  // are narrower. A core that reports them (the Intel core, as memTotalMb and
-  // memUsedMb on its card; see shared/miningStats) gives the card's size and
-  // only what the core itself has allocated. So they are used only where there
-  // is nothing else: an Intel card, whose Linux drivers publish no memory
-  // files (probe.detectIntelGpus reads 0 for both), and which has no probe
-  // entry at all on Windows. Its row used to read 0 of 0, a dash on the board.
-  const memFor = (v, c) => {
-    const total = v ? Number(v.totalMb) || 0 : 0;
-    const engineTotal = c ? Number(c.memTotalMb) || 0 : 0;
-    if (total <= 0 && engineTotal > 0) return [Number(c.memUsedMb) || 0, engineTotal];
-    return [v ? Number(v.usedMb) || 0 : 0, total];
-  };
-
   // No per-card engine data yet and at most one card: a genuine single-GPU rig
   // (or one with no nvidia-smi) posts the single bare row, matching what older
   // clients sent.
@@ -132,15 +109,14 @@ function buildMinerReports(settings, snap, gpuVram, version, serving, host) {
   return indices.map((index) => {
     const v = vramFor(index);
     const c = cardFor(index);
-    const [vramUsedMb, vramTotalMb] = memFor(v, c);
     return {
       ...base,
       worker: indices.length > 1 ? base.worker + '/gpu' + index : base.worker,
       gpu: (v && v.name) || (c && c.gpu) || null,
       hashrate: c ? Number(c.hashrate) || 0 : 0,
       accepted: c ? Number(c.accepted) || 0 : 0,
-      vramUsedMb,
-      vramTotalMb,
+      vramUsedMb: v ? Number(v.usedMb) || 0 : 0,
+      vramTotalMb: v ? Number(v.totalMb) || 0 : 0,
       llmModel: llmFor(index),
     };
   });

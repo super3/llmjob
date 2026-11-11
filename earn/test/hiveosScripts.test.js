@@ -270,20 +270,6 @@ suite('h-config.sh: cards turned off in HiveOS', () => {
     // Another core keeps HiveOS's choice.
     expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2', CUSTOM_USER_CONFIG: '--core cu13' }).gpuIndices).toEqual([0, 2]);
   });
-
-  // The same on a rig with NVIDIA and Intel cards: the Intel core numbers its
-  // cards its own way.
-  test('with --core intel, HiveOS\'s NVIDIA choice is not passed on', () => {
-    for (const extra of ['--core intel', '--core=intel', '--core  Intel', '--region de --core intel']) {
-      for (const v of ['0,2', ' ']) {
-        const r = gpuIndex({ CUDA_VISIBLE_DEVICES: v, CUSTOM_USER_CONFIG: extra });
-        expect(r.line).not.toContain('--gpu-index');
-        expect(r.gpuIndices).toBeNull();
-      }
-    }
-    expect(gpuIndex({ CUDA_VISIBLE_DEVICES: '0,2', CUSTOM_USER_CONFIG: '--core intel --gpu-index 1' }).gpuIndices)
-      .toEqual([1]);
-  });
 });
 
 // ── h-stats.sh ──────────────────────────────────────────────────────────────

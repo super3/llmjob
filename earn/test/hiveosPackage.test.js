@@ -105,13 +105,6 @@ const tarOk = process.platform === 'linux'
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
     }
-    // The Intel core's folder, as dist:cli stages it.
-    fs.mkdirSync(path.join(tmp, 'dist', 'sycl'));
-    for (const f of ['pearl_core_sycl.node', 'libpearl_sycl.so', 'libsycl.so.9', 'pearl_sycl_check', 'LICENSE-DPCPP.txt']) {
-      const p = path.join(tmp, 'dist', 'sycl', f);
-      fs.writeFileSync(p, 'stand-in ' + f + '\n');
-      fs.chmodSync(p, 0o666);
-    }
     // The HIP runtime scripts/fetch-hip-runtime.sh stages for the AMD core.
     fs.mkdirSync(path.join(tmp, 'vendor', 'hip-runtime'), { recursive: true });
     for (const f of ['libamdhip64.so.7', 'libamd_comgr.so.3', 'NOTICE.txt']) {
@@ -161,13 +154,6 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/rocm/libamdhip64.so.7': '-rw-r--r--',
       'llmjob-earn/rocm/libamd_comgr.so.3': '-rw-r--r--',
       'llmjob-earn/rocm/NOTICE.txt': '-rw-r--r--',
-      // The Intel core's folder: libraries 0644, the check tool the one program.
-      'llmjob-earn/sycl/': expect.stringMatching(/^d/),
-      'llmjob-earn/sycl/pearl_core_sycl.node': '-rw-r--r--',
-      'llmjob-earn/sycl/libpearl_sycl.so': '-rw-r--r--',
-      'llmjob-earn/sycl/libsycl.so.9': '-rw-r--r--',
-      'llmjob-earn/sycl/pearl_sycl_check': '-rwxr-xr-x',
-      'llmjob-earn/sycl/LICENSE-DPCPP.txt': '-rw-r--r--',
     });
 
     const manifest = spawnSync('tar', ['-xzOf', out, 'llmjob-earn/h-manifest.conf'],
@@ -203,16 +189,6 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no vendor/hip-runtime');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('rocm/');
-  });
-
-  // The Intel core is for a rig of Arc cards; without it every other rig mines as before.
-  test('a missing Intel core still builds, and says so', () => {
-    fs.rmSync(path.join(tmp, 'dist', 'sycl'), { recursive: true });
-    const r = build('9.8.7');
-    expect(r.status).toBe(0);
-    expect(r.stderr).toContain('no sycl/pearl_core_sycl.node');
-    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
-    expect(list).not.toContain('sycl');
   });
 
   // The AMD core is for --core amd only; without it the rig mines on NVIDIA.

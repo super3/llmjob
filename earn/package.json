@@ -63,8 +63,7 @@
           "filter": [
             "**/*.node",
             "llmjob-xmr-worker",
-            "llmjob-xmr-worker.exe",
-            "sycl/**"
+            "llmjob-xmr-worker.exe"
           ]
         }
       ]
@@ -94,8 +93,7 @@
           "filter": [
             "**/*.node",
             "llmjob-xmr-worker",
-            "llmjob-xmr-worker.exe",
-            "sycl/**"
+            "llmjob-xmr-worker.exe"
           ]
         }
       ]

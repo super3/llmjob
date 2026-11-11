@@ -9,7 +9,7 @@
 
 import { build } from 'esbuild';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, copyFileSync, writeFileSync, chmodSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -75,29 +75,6 @@ if (existsSync(hip)) {
   process.stdout.write('staged pearl_core_hip.node beside the CLI\n');
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_hip.node — this CLI cannot mine on AMD cards\n');
-}
-// The Intel core (earn/native/sycl), for Intel Arc cards. It is a folder, not
-// one file: the addon loads a host library and the SYCL runtime from beside
-// itself, so the folder travels whole, as sycl/ beside the binary, where the
-// loader looks (src/main/pearlCore.js). The release also gets it as one
-// archive, pearl_core_sycl-linux.tar.gz, to unpack beside a binary that was
-// downloaded alone. Optional like the AMD core: without it an Arc rig has
-// nothing to mine with, and every other rig is unaffected.
-const sycl = join(root, 'vendor', 'native', 'sycl');
-const syclOut = join(dist, 'sycl');
-rmSync(syclOut, { recursive: true, force: true });
-rmSync(join(dist, 'pearl_core_sycl-linux.tar.gz'), { force: true });
-if (existsSync(join(sycl, 'pearl_core_sycl.node'))) {
-  mkdirSync(syclOut);
-  for (const f of readdirSync(sycl)) {
-    copyFileSync(join(sycl, f), join(syclOut, f));
-    // The CI artifact arrives without modes. The check tool is the one program.
-    chmodSync(join(syclOut, f), f === 'pearl_sycl_check' ? 0o755 : 0o644);
-  }
-  execFileSync('tar', ['-czf', join(dist, 'pearl_core_sycl-linux.tar.gz'), '-C', dist, 'sycl']);
-  process.stdout.write('staged sycl/ (the Intel core) beside the CLI, and pearl_core_sycl-linux.tar.gz\n');
-} else {
-  process.stdout.write('warning: no vendor/native/sycl/pearl_core_sycl.node — this CLI cannot mine on Intel Arc cards\n');
 }
 // The RandomX CPU worker (earn/xmr-worker, built by build-xmr-worker.sh) goes
 // beside the binary too: it is an executable of its own, run as a child

@@ -62,7 +62,7 @@ const { buildMinerReports, hostStats } = require('../shared/minerReport');
 const { runtimeCopyPlan } = require('../shared/llmRuntime');
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, readGpuIndexEnv, describeSkippedGpus,
-  planMinerGpus, planAmdGpus, describeAmdPlan, planIntelGpus, describeIntelPlan, intelCount,
+  planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
@@ -736,13 +736,8 @@ async function startMining(settings, llmCoRuns) {
   if (epoch !== miningEpoch) return;
   for (const l of describeAmdDrivers(amdCards)) send('miner:log', l);
   const amdGpus = planAmdGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
-  // The same answer lists the Intel Arc cards of a rig with no AMD card, which
-  // are counted the same way (planIntelGpus) and tell the core loader that this
-  // is an Intel rig (shared/coreVariant).
-  const intelGpus = planIntelGpus({ env: process.env, det: amdCards, chosen: gpuEnv.indices });
-  const gpus = amdGpus.length ? amdGpus : (intelGpus.length ? intelGpus : nvidiaGpus);
+  const gpus = amdGpus.length ? amdGpus : nvidiaGpus;
   if (amdGpus.length) send('miner:log', { level: 'info', line: describeAmdPlan(amdGpus, 'set PEARL_GPU_INDEX') });
-  if (intelGpus.length) send('miner:log', { level: 'info', line: describeIntelPlan(intelGpus, 'set PEARL_GPU_INDEX') });
   for (const line of describeSkippedGpus(gpuEnv.indices, gpus, 'PEARL_GPU_INDEX')) {
     send('miner:log', { level: 'warn', line });
   }
@@ -793,7 +788,6 @@ async function startMining(settings, llmCoRuns) {
       resourcesPath: process.resourcesPath,
       gpus,
       cards: cudaCards,
-      intel: intelCount(amdCards),
       log: coreLog,
     }), {
       store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),
@@ -1453,9 +1447,7 @@ async function startLlm(reserveMb, epoch) {
   // has no code for. That card fails on its own (PearlMiner._startCores), so a
   // miner already running counts the cards that started. A rig left mining on
   // one card still pauses it for each prompt.
-  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length
-    // An Intel rig's cards are counted the same way, and fail the same way.
-    || planIntelGpus({ env: process.env, det: amdCards, chosen }).length;
+  const amdPlanned = planAmdGpus({ env: process.env, det: amdCards, chosen }).length;
   llmMiningCards = planMinerGpus(cards, chosen).length
     || (amdPlanned && miner && miner.isRunning() ? Math.min(amdPlanned, miner.cardCount()) : amdPlanned);
   // A model that kept losing the GPU on a card is not loaded there again until

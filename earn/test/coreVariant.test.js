@@ -381,12 +381,12 @@ describe('pickCoreVariant', () => {
     test('anything else is ignored, and the reason says so', () => {
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: '13' }, cards: [RTX5090(0)] })).toEqual({
         variant: CU13,
-        reason: 'PEARL_CORE_VARIANT=13 ignored (use cu12, cu13, amd or intel); driver 610, mining card is compute 12.0',
+        reason: 'PEARL_CORE_VARIANT=13 ignored (use cu12, cu13 or amd); driver 610, mining card is compute 12.0',
       });
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'x' }, cards: [] }).reason)
-        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13, amd or intel); nvidia-smi lists no NVIDIA card');
+        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13 or amd); nvidia-smi lists no NVIDIA card');
       expect(pickCoreVariant({ env: { PEARL_CORE_VARIANT: 'x' } }).reason)
-        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13, amd or intel); GPU compute capability unknown');
+        .toBe('PEARL_CORE_VARIANT=x ignored (use cu12, cu13 or amd); GPU compute capability unknown');
     });
   });
 });
