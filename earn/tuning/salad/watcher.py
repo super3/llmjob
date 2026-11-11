@@ -1668,7 +1668,10 @@ class W:
         desc = (f"{short}, {cc}, machine {o.get('machine_id')}, {'spot' if kind == 'bid' else 'on demand'} at "
                 f"${bid + disk_hr:.3f}/hr ({mg:+.0%} margin at {ths:.0f} TH/s)")
         s, r = self.vast_call("PUT", f"v0/asks/{o['id']}/", body)
-        if s != 200 or not isinstance(r, dict) or not r.get("success") or not r.get("new_contract"):
+        # An answer with a contract made the instance even when it says success false: on 11 November a 5090 bid
+        # came back {'success': False, 'new_contract': 60270496}, the watcher took it as refused and rented a third
+        # box past vast_max, and the 5090 ran untracked until it was destroyed by hand.
+        if s != 200 or not isinstance(r, dict) or not r.get("new_contract"):
             event(f"WARN renting Vast offer {o['id']} ({desc}) failed: HTTP {s} {str(r)[:150]}")
             return False
         iid = str(r["new_contract"])

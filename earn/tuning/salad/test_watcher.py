@@ -5734,6 +5734,14 @@ class TestVast(Base):
         self.x.vast_round(self.clock[0] + 60)   # searches at most every 10 min
         self.assertEqual(len(self.bids()), 1)
 
+    def test_an_answer_with_a_contract_counts_as_made_even_when_it_says_success_false(self):
+        # 11 November: a 5090 bid came back success false with a contract; the instance was real.
+        self.http.on("PUT", r"vast\.ai/api/v0/asks/", (200, {"success": False, "new_contract": 901}))
+        self.market(self.offer(5), self.offer(6, bid=0.105))
+        self.x.vast_round(self.clock[0])
+        self.assertEqual(len(self.bids()), 1)                                # no second rental
+        self.assertIn("901", self.x.st["vast"]["inst"])
+
     def test_the_onstart_script_fits_vasts_limit_and_carries_the_box_command(self):
         self.x.cfg["xmr_wallet"] = "8" + "a" * 94
         self.market(self.offer(5))
