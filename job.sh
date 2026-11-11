@@ -1,15 +1,14 @@
-# 9060xt class: is this PC a slow one? Stamps of the fold alone at the miner's launch and one four times as long, then one round of the default and of the hash on its own queue
+# 9060xt race: the default, a twin, the hash on its own queue, the core's ticker, a shorter launch; then stamps of the miner's own launches
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=95f0817e0c37009943f48380e2dcf35e27e14180
-G_PARTS=build\ stamps\ hash
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
-G_FOLDK=0
-G_STSHAPES=sbase:131072:4096:100\ sbase:131072:16384:25
-G_SROUNDS=1
+G_PARTS=hash\ mstamps
 G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=128\;cbshq1=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=128\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ hq1
-G_HROUNDS=1
+G_VARIANTS=base\ twin\ hq1\ tk2\ cbs\ cbshq1
+G_HROUNDS=4
 G_HASH=45:12
+G_MST=msq0\ msq1\ mstk\ mscbs
+G_MSN=6
+G_MSAT=100
+G_MSSTEP=17
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
