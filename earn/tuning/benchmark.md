@@ -2065,6 +2065,7 @@ temperature in degrees: i915 on kernel 6.12 has no temp file for Arc, and HiveOS
 | 3 and 4 (19:37 to 20:00) | 60% | 74.2 to 75.6 | 37.5 at 126 to 131 W; fans 1,940 to 2,020 and 1,600 to 1,720 | no flag in 23 minutes; 14 accepted, 1 rejected (stale) |
 | 2, 3 and 4 (20:00 to 20:21) | 60% | 111.9 to 113.3 | 37.5 at 127 to 133 W; fans 2,050, 1,900 to 1,990, 1,450 to 1,750 | no flag in 21 minutes; 12 accepted, 0 rejected |
 | 1, 2, 3 and 4 (20:21 to 20:41) | 60% | 148.6 to 151.2 | 37.5 at 127 to 132 W; fans 2,050 to 2,120, 2,030 to 2,090, 1,920 to 2,000, 1,650 to 1,800 | no flag in 20 minutes; 17 accepted, 0 rejected |
+| 1, 2, 3 and 4 (20:42 to 20:55) | 60%, card 4 at 75% | 159.3 to 160.8 | 37.5 at 129 to 133 W, card 4 47.3 at 163 to 167 W; fans 2,050 to 2,120, 2,030 to 2,060, 1,970 to 2,000, 1,870 to 2,030 | no flag in 13 minutes; 14 accepted, 0 rejected. The guard then stopped the miner over one failed read of idle card 0's fan or energy file; restarted 21:00 |
 
 The 60% is a new switch in the host, `PEARL_SYCL_DUTY`: each batch waits for the one before it, then the card
 rests for the remainder. The fold is the same one. It costs rate in proportion (37.5 TH/s is 60% of 63) and a
@@ -2076,7 +2077,8 @@ written by root, which this login is not.
 **The guard** (a shell loop in the container, one line a card a minute to a log; it stops the miner and never
 starts one, and ends when the miner does): thermal flag in most of a minute's five samples for 2 minutes in a row;
 PROCHOT or the regulator's alert for one; CPU over 85 C; any reading missing. It tripped rightly at 19:21 and
-19:27, and wrongly at 19:35 on a clock rule that the load cycle fools, which is now off under a load cycle.
+19:27, and wrongly twice: at 19:35 on a clock rule that the load cycle fools (now off under a load cycle), and at
+20:55 on a single failed read of an idle card's file, which read again at once (a read is now tried three times).
 
 **Card 5 copies wrong bytes back to the host when it is hot.** The fold check at the mainnet size (32,768
 regions against the host's reference) came out with 4 to 80 regions mismatched on card 5 in 6 of 21 runs at first,
@@ -2118,7 +2120,8 @@ right (134,217,728 words, none wrong).
   kernel that writes one hangs the card). They are wrong for that reason and are not figures.
 - Tried in the fold itself and dropped, 12 s runs taking turns with the built fold on card 5 (62.7 to 62.9 TH/s
   at 1,975 MHz, 189 W): every DPAS waiting for both halves of each B' fragment 60.0 to 60.2; for the second halves
-  only 60.6 to 60.8; for the first four fragments only 61.6 to 61.7.
+  only 60.6 to 60.8; for the first four fragments only 61.6 to 61.7; B' loaded before A' 57.1 to 57.2 (its stand-in
+  had said 75.0 against 72.9: a stand-in does not settle a difference that small).
 - A k-step's parts, as the time it takes (16 is the DPAS alone): A' 3.4, B' 8.2, and a k-step of 20 load messages
   7.7 more than one of 18 (a thread has 16 in flight at most).
 
