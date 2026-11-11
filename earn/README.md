@@ -390,10 +390,16 @@ mining on GPU 0 · Intel(R) Arc(TM) A750 Graphics
 - **No driver.** When the system lists Arc cards and the core finds none, the
   log says once which packages to install (on Windows, to update the Arc
   driver). The CUDA build is tried after it, as on an AMD rig.
-- **What is not shown.** Temperature and VRAM for an Arc card: the app
-  has no source for them yet, so those fields stay empty. The memory clock
-  lock and the core clock offset are for NVIDIA cards and are left off. The
-  local LLM has not been tried on an Arc rig.
+- **VRAM on the network board.** Nothing outside the miner reports an Arc
+  card's memory, so its row shows what the Intel core reports: the card's
+  size, and what the miner itself has allocated on it. Memory another program
+  holds on the card (a local LLM, a game) is not counted, where an NVIDIA or
+  AMD row counts it. A core that reports no memory leaves the row's VRAM
+  empty, as before.
+- **What is not shown.** Temperature for an Arc card: the app has no source
+  for it yet, so that field stays empty. The memory clock lock and the core
+  clock offset are for NVIDIA cards and are left off. The local LLM has not
+  been tried on an Arc rig.
 - **Updates.** The CLI's self-updater does not fetch the folder yet. The
   HiveOS package and the installers replace it with each release; a rig that
   runs the bare binary unpacks the archive again after an update.

@@ -75,6 +75,106 @@ describe('buildMinerReports', () => {
     ]);
   });
 
+  // An Intel Arc card's row read 0 of 0, a dash on the board: nvidia-smi does
+  // not list it, its Linux drivers publish no memory files, and on Windows it
+  // has no probe entry at all. The Intel core reports the card's size and what
+  // the core has allocated, and the engine's per-card stats carry both.
+  describe('a card\'s memory from the engine, where the probe has none', () => {
+    const settings = { address: 'prl1pabc', worker: 'arc750', region: 'us2' };
+    const A750 = 'Intel Arc A750';
+
+    // Linux: sysfs names the cards and has 0 for their memory.
+    test('a probe entry with no total takes the engine\'s figures', () => {
+      const snap = { gpus: [
+        { index: 0, gpu: A750, hashrate: 41.9, accepted: 3, memUsedMb: 1536, memTotalMb: 8128 },
+        { index: 1, gpu: A750, hashrate: 41.8, accepted: 2, memUsedMb: 1536, memTotalMb: 8128 },
+      ] };
+      const vram = [
+        { index: 0, name: A750, usedMb: 0, totalMb: 0 },
+        { index: 1, name: A750, usedMb: 0, totalMb: 0 },
+      ];
+      expect(buildMinerReports(settings, snap, vram, '0.6.16')).toEqual([
+        { address: 'prl1pabc', worker: 'arc750/gpu0', region: 'us2', version: '0.6.16', gpu: A750, hashrate: 41.9, accepted: 3, vramUsedMb: 1536, vramTotalMb: 8128, llmModel: null, nodeId: null, ...NO_HOST },
+        { address: 'prl1pabc', worker: 'arc750/gpu1', region: 'us2', version: '0.6.16', gpu: A750, hashrate: 41.8, accepted: 2, vramUsedMb: 1536, vramTotalMb: 8128, llmModel: null, nodeId: null, ...NO_HOST },
+      ]);
+    });
+
+    // Windows: no probe lists an Intel card, so the rows come from the engine.
+    test('a card with no probe entry takes the engine\'s figures', () => {
+      const one = { gpus: [{ index: 0, gpu: A750, hashrate: 41.9, accepted: 3, memUsedMb: 1536, memTotalMb: 8128 }] };
+      expect(buildMinerReports(settings, one, [])).toEqual([
+        { address: 'prl1pabc', worker: 'arc750', region: 'us2', version: null, gpu: A750, hashrate: 41.9, accepted: 3, vramUsedMb: 1536, vramTotalMb: 8128, llmModel: null, nodeId: null, ...NO_HOST },
+      ]);
+      const two = { gpus: [
+        { index: 0, gpu: A750, hashrate: 41.9, memUsedMb: 1536, memTotalMb: 8128 },
+        { index: 1, gpu: 'Intel Arc B580', hashrate: 60, memUsedMb: 2048, memTotalMb: 12216 },
+      ] };
+      expect(buildMinerReports(settings, two, []).map((r) => [r.worker, r.vramUsedMb, r.vramTotalMb])).toEqual([
+        ['arc750/gpu0', 1536, 8128],
+        ['arc750/gpu1', 2048, 12216],
+      ]);
+    });
+
+    // nvidia-smi and amdgpu count the whole card's use, the local LLM's
+    // included. The core counts only its own, so it must not replace them.
+    test('a card with a probe total keeps the probe\'s numbers', () => {
+      const snap = { gpus: [
+        { index: 0, gpu: 'RTX 4090', hashrate: 285, memUsedMb: 2100, memTotalMb: 24000 },
+        { index: 1, gpu: 'RX 9070 XT', hashrate: 150, memUsedMb: 900, memTotalMb: 16000 },
+      ] };
+      const vram = [
+        { index: 0, name: 'RTX 4090', usedMb: 9216, totalMb: 24564 },
+        // Nothing in use yet is a reading too, not a missing one.
+        { index: 1, name: 'RX 9070 XT', usedMb: 0, totalMb: 16304 },
+      ];
+      expect(buildMinerReports(settings, snap, vram).map((r) => [r.vramUsedMb, r.vramTotalMb])).toEqual([
+        [9216, 24564],
+        [0, 16304],
+      ]);
+    });
+
+    // Each card is decided on its own: one rig can have a card the probe
+    // measures beside one only the engine can.
+    test('is decided card by card', () => {
+      const snap = { gpus: [
+        { index: 0, gpu: 'RTX 4090', hashrate: 285 },
+        { index: 1, gpu: A750, hashrate: 41.9, memUsedMb: 1536, memTotalMb: 8128 },
+      ] };
+      const vram = [{ index: 0, name: 'RTX 4090', usedMb: 9216, totalMb: 24564 }];
+      expect(buildMinerReports(settings, snap, vram).map((r) => [r.gpu, r.vramUsedMb, r.vramTotalMb])).toEqual([
+        ['RTX 4090', 9216, 24564],
+        [A750, 1536, 8128],
+      ]);
+    });
+
+    // A closed core has given its memory back (0 used), and a total with no
+    // usable `used` beside it reads 0 used. The size still shows.
+    test('the engine\'s total with 0 or no used reports 0 used', () => {
+      const snap = { gpus: [
+        { index: 0, gpu: A750, hashrate: 0, memUsedMb: 0, memTotalMb: 8128 },
+        { index: 1, gpu: A750, hashrate: 41.9, memTotalMb: 8128 },
+        { index: 2, gpu: A750, hashrate: 41.9, memUsedMb: 'lots', memTotalMb: 8128 },
+      ] };
+      expect(buildMinerReports(settings, snap, []).map((r) => [r.vramUsedMb, r.vramTotalMb])).toEqual([
+        [0, 8128], [0, 8128], [0, 8128],
+      ]);
+    });
+
+    // No total from either side is still 0 of 0, the board's dash: a `used`
+    // alone says nothing the board can show.
+    test('no total from the probe or the engine stays unknown', () => {
+      const snap = { gpus: [
+        { index: 0, gpu: A750, hashrate: 41.9, memUsedMb: 1536 },
+        { index: 1, gpu: A750, hashrate: 41.9, memUsedMb: 1536, memTotalMb: 0 },
+        { index: 2, gpu: A750, hashrate: 41.9, memUsedMb: 1536, memTotalMb: 'big' },
+      ] };
+      const vram = [{ index: 0, name: A750, usedMb: 0, totalMb: 0 }];
+      expect(buildMinerReports(settings, snap, vram).map((r) => [r.vramUsedMb, r.vramTotalMb])).toEqual([
+        [0, 0], [0, 0], [0, 0],
+      ]);
+    });
+  });
+
   test('no engine hashrate/shares and a nameless zero-VRAM card falls back cleanly', () => {
     const snap = { gpus: [{ index: 0, gpu: 'RTX 3070' }] };   // engine name, but no hashrate/accepted
     const vram = [
