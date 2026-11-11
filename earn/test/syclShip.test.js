@@ -423,6 +423,9 @@ describe('the packages carry the folder', () => {
     expect(step).toContain('continue-on-error: true');
     expect(MINER_BUILD).toContain('if [ -f vendor/native/sycl/pearl_core_sycl.node ]; then');
     expect(MINER_BUILD).toContain('this $RUNNER_OS build cannot mine on Intel Arc cards');
+    // An artifact download drops file modes. The first AppImage CI built had the
+    // check tool at 0666, in a file system nobody can chmod.
+    expect(MINER_BUILD).toContain('[ "$RUNNER_OS" = Windows ] || chmod 755 vendor/native/sycl/pearl_sycl_check');
     // The artifact is the staged folder's parent, so it unpacks as sycl/.
     expect(job('intel')).toMatch(/name: pearl-core-sycl-ubuntu-latest\n\s+path: earn\/native\/sycl\/stage\n/);
     expect(job('intel')).toContain('./build.sh --jit --stage stage/sycl');

@@ -201,6 +201,9 @@ jobs:
           fi
           if [ -f vendor/native/sycl/pearl_core_sycl.node ]; then
             echo "staged Intel core:"
+            # An artifact download drops file modes, and the AppImage is read-only once built: the
+            # check tool is the one program in the folder, for listing the cards by hand.
+            [ "$RUNNER_OS" = Windows ] || chmod 755 vendor/native/sycl/pearl_sycl_check
             ls -l vendor/native/sycl
             du -sk vendor/native/sycl
           else
