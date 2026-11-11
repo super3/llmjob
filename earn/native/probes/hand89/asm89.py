@@ -243,15 +243,30 @@ def disassemble(cubin, nvdisasm):
     return r.stdout.decode("utf-8", errors="replace")
 
 
+RET_REG = [2]           # the register pair the loop function returns through (region() finds it)
+
+
 def region(sass_text):
     """What fold.py and sched.py may overwrite in a build of fold_h.cuh: from the loop function's entry up to its RET (which
     stays where it is: it is relative to its own address). Returns (entry, ret address, return address value)."""
     rows, _labels, entry = listing(sass_text)
-    ret = [a for a, t in rows if t.startswith("RET.REL.NODEC R2")]
-    assert entry is not None and len(ret) == 1, (entry, ret)
+    ret = [a for a, t in rows if re.match(r"RET\.REL\.NODEC R%d " % RET_REG[0], t)]
+    if not ret:
+        # ptxas keeps the return address where it likes: R2 in the draw and gather folds, R4 in the direct fold.
+        m = [re.match(r"RET\.REL\.NODEC R(\d+) ", t) for a, t in rows if entry is not None and a >= entry]
+        m = [x for x in m if x]
+        assert m, "the loop function has no RET"
+        RET_REG[0] = int(m[-1][1])
+        ret = [a for a, t in rows if re.match(r"RET\.REL\.NODEC R%d " % RET_REG[0], t)]
+    # A function with two exits (gfold_h.cuh's two loop copies) has two RET: the last one is kept, and the
+    # replacement may overwrite the other.
+    assert entry is not None and len(ret) >= 1, (entry, ret)
+    ret = ret[-1:]
     back = [(a, t) for a, t in rows if entry <= a < ret[0] and re.match(r"MOV R\d+, 0x[0-9a-f]+$", t)]
     # The function returns to the instruction after its one CALL: ptxas writes that address as a MOV.
     call = [a for a, t in rows if t.startswith("CALL.REL.NOINC `($")]
+    # (In the direct fold the caller writes it, into R0, just ahead of the CALL.)
+    back += [(a, t) for a, t in rows if a < entry and re.match(r"MOV R[0-9]+, 0x[0-9a-f]+$", t)]
     assert len(call) == 1 and any(int(t.split("0x")[1], 16) == call[0] + 16 for _a, t in back), (call, back)
     return entry, ret[0], call[0] + 16
 
@@ -297,8 +312,8 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
     name = next(n for n in secs if n.startswith(".text.") and "pearl" in n)
     off, _size = secs[name]
     entry, ret, back = region(sass_text)
-    code = list(code) + [Ins("MOV R2, 0x%x" % back), Ins("IMAD.MOV.U32 R3, RZ, RZ, RZ"),
-                         Ins("BRA .RET", stall=5)]
+    code = list(code) + [Ins("MOV R%d, 0x%x" % (RET_REG[0], back)),
+                         Ins("IMAD.MOV.U32 R%d, RZ, RZ, RZ" % (RET_REG[0] + 1)), Ins("BRA .RET", stall=5)]
     room = (ret - entry) // 16
     if len(code) > room:
         raise ValueError("the loop is %d instructions and the function has room for %d" % (len(code), room))
