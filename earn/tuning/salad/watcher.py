@@ -2878,9 +2878,14 @@ class W:
                     # a measured rate is a fact about the PC, so those marks stand.
                     # The share must be newer than the box's last PC, whether it left it or lost it: on 10
                     # November 3070-258 lost 3bfd17f1, and its last share there kept a PC marked for no reading.
+                    # Kryptex can't say which PC a share came from, and the old PC can still send some after Salad
+                    # stops listing it: on 10 November 9070xt-73 lost 7d460310 at 00:26Z and kept 635a1ec0 at 00:35Z on
+                    # a share, though its miner there started at 00:35Z. So a share counts only when the last PC
+                    # ended 10 min or more ago.
+                    gone = max(g.get("left_t") or 0, lost_t or 0)
                     works = (any(r[1] == mach and r[2] > 0 and t - r[0] < 10 * MIN for r in g["readings"])
                              or (prev_m is None and t - (g["last_share"] or 0) < 10 * MIN
-                                 and (g["last_share"] or 0) > max(g.get("left_t") or 0, lost_t or 0)))
+                                 and (g["last_share"] or 0) > gone and t - gone >= 10 * MIN))
                     if works and ths is None and self.bad_ports(bad) is None:
                         st["bad_pcs"].pop(mach, None)
                         event(f"NOTE {g['name']} keeps PC {mach[:8]}: it already mines there, so {bad['group']}'s "

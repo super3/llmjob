@@ -1293,7 +1293,11 @@ class TestRule6PortBlocked(Base):
         self.assertIsNone(g["machine"])
         self.assertIn("m1", self.x.st["bad_pcs"])
         g = self.group()
-        g.update(last_share=self.clock[0], left_t=self.clock[0] - 60)         # a share since: from this PC
+        g.update(last_share=self.clock[0], left_t=self.clock[0] - 60)         # a share since, but it may be the old PC's
+        self.step(g, 1, "m1")
+        self.assertIsNone(g["machine"])
+        g = self.group()
+        g.update(last_share=self.clock[0], left_t=self.clock[0] - 15 * 60)    # a share 15 min after: from this PC
         self.step(g, 1, "m1")
         self.assertEqual(g["machine"], "m1")
 
