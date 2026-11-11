@@ -3485,14 +3485,23 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   192 x 256 block can copy) 99.2% at 2626 to 2633 MHz, 341 to 342; eight 2565 MHz, 333; the release's count of
   plain steps 2565 to 2571 MHz at 98.0%, 330. The four-copy row lands where the competitors measure (338 to 342
   TH/s at 2600 to 2625 MHz): that is an inference from our own streams, not something established about their
-  programs. The release copies about twice that. (4) A direct fold (A' and B'
+  programs. This round also said the release copies about twice that; that count was wrong (see the correction
+  at the end of this entry). (4) A direct fold (A' and B'
   ready in global memory in the fragments' own layout, one 16-byte load a fragment, no stage and no barrier) is
   correct compiled and by hand (16,384 of 16,384, nine runs); by hand with each fragment of the next k-step
   loaded ahead it holds 99.0% of the pipe but runs 2476 MHz at 449 W, 321 by count, and 73.9% at 2387 MHz when
   the operands (k 65536, 370 MB) do not fit the card's cache: global loads cost the clock more than LDSM do.
   (5) So no draw on the chip clears +3%: gather 319, staged 319 (96.0% at 2536 MHz over 60 s), direct 321. What
-  is left is the release's own form with half its copies, written by hand. Nothing ships from this round.
-  Tables: `earn/native/probes/README.md`, "The gather fold, the direct fold, and what sets the clock".
+  is left, this round concluded, is the release's own form with half its copies, written by hand. Nothing ships
+  from this round. Tables: `earn/native/probes/README.md`, "The gather fold, the direct fold, and what sets the
+  clock". **Correction, the same day (16:20 UTC, from the shipped loop's disassembly):** the release has no half
+  to cut. A warp's k-step is 48 IMMA, 10 LDSM and 3.5 copy units (`LDGSTS.E.BYPASS.128`, 16 bytes from global to
+  shared memory, no register), which is the least a 192 x 256 block can copy. The "0.51 loads and stores an IMMA"
+  behind "twice" had counted 28 `@!PT LDS RZ, [RZ]` a chunk: pads ptxas places before each copy group and
+  barrier, behind a predicate that is never true. So the release makes as many copies as the 341-by-count timing
+  stream and still runs 2531 MHz against that stream's 2626. What differs is where the copied bytes come from: the
+  stream's loads hit the SM's own cache, the release's come from L2 or DRAM. What a copy costs by its source is
+  the next measurement.
 
 ## Keeping this file current
 
