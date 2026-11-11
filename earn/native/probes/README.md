@@ -12,6 +12,8 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 | Probe | Answers |
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
+| `pipeprobe.cu`, `pipeprobe2.cu` | The fold's instruction stream alone, timed in SM cycles: what fills a scheduler's tensor pipe and what each kind of instruction between the mma costs. |
+| `drawprobe.cu` | The draw fold's own body (`src/pearl_fold_draw.cuh`: both operands drawn on the SM, no operand memory) run alone on made-up tables, timed in SM cycles and checked against a fold done on the CPU. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 | `hmma-check.cc` | Volta's fp16 fold run on the CPU with the kernel's own layout, conversion and readout, against a plain fold, on four kinds of operands. `c++ -O2 -std=c++17 -I../src hmma-check.cc -o hmma-check && ./hmma-check`. No GPU or CUDA needed. |
 | `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
@@ -2162,3 +2164,441 @@ measured, then 5 minutes. It reports the mean of the CLI's readings after the fi
 as earn/tuning/benchmark.md takes ours, with medians of the SM clock, power and temperature. Only our
 miner runs. It differs from earn/tuning/benchmark.md's method only in using this checkout's core instead
 of the release files, so its results go in a section's notes and never change a row.
+
+### What fills the tensor pipe: `pipeprobe.cu` and `pipeprobe2.cu` (RTX 4090, 2026-11-11)
+
+Two probes that run the fold's instruction stream with nothing else in it, one block an SM, each warp timing itself with the SM's cycle counter (`clock64`). Pipe use is 16 cycles an IMMA over the cycles taken, so it does not depend on the clock. `pipeprobe.cu` sets the warps' roles and the counts at run time (masks for folding and producing warps, runs, stagger). `pipeprobe2.cu` fixes everything at build time, so no branch stands between two mma: `-DRD` (readout as one, three or six runs), `-DDRAW`/`-DDPOS`/`-DDGRP`/`-DDREAL` (draw-shaped units and where they go), `-DDSYNC` (one shared add and test a k-step).
+
+```
+nvcc -arch=sm_89 -O3 -DRD=2 -DDRAW=4 -DDPOS=1 -o pp2 pipeprobe2.cu && ./pp2 name 20000 [seconds]
+```
+
+| Stream (8 warps, two a scheduler, 48 IMMA a k-step, 4 k-steps a chunk) | Pipe use | Clock and watts, 450 W limit |
+|---|---|---|
+| IMMA only | 99.93% | |
+| + 4 ldmatrix after every k-step (kept in every row below) | 100.00% | 2687 to 2700 MHz, 292 to 373 W by the operand bytes loaded |
+| + readout as one run of 96 XOR3 at the chunk's end, word kept by a shared load and store | 98.72% | 2685 MHz, 399 W |
+| the same with a shared XOR | 97.91% | |
+| + readout as three runs of 32 XOR3, each after its tiles' last IMMA | 99.67% (99.71% with a shared XOR) | 2691 MHz, 318 W |
+| + readout as six runs of 16 | 99.68% | |
+| + 4 draw-shaped units a k-step (58 instructions), after the 24th IMMA | 99.61% | 2595 MHz, 449.5 W |
+| the same at the k-step's end | 99.52% | |
+| the same in two halves / one unit every 12 IMMA | 98.44% / 98.44% | |
+| the same with two units' steps grouped by kind | 97.68% | |
+| + 4 units that read their four table offsets first | 98.80% | 2670 MHz, 421 W |
+| loads, readout in three runs, 4 such units, and one shared add and test a k-step | 94.71% (95.15% without the add and test) | 2660 MHz, 438 W |
+| the same with 3 units a k-step | 96.97% | 2685 MHz, 418 W |
+| the same with the 4 units at the k-step's end | 96.50% | |
+
+| Stream (first probe, roles and counts set at run time) | Pipe use |
+|---|---|
+| One warp a scheduler, IMMA only | 91.0% (17.6 cycles between a warp's own IMMA) |
+| Two a scheduler | 99.5 to 99.6% |
+| Three a scheduler (12 warps, 32 IMMA a k-step) | 98.4 to 98.9% |
+| Four a scheduler (16 warps, 24 IMMA a k-step) | 99.5% |
+| Two folding, a third warp doing 1.1 to 1.7 instructions an IMMA beside them (ALU, loads, stores, draw units) | 95.0 to 96.6% |
+| One folding, one working beside it | 78.6 to 82.4% |
+| Two, one chained ALU step after every IMMA / two steps | 98.5% / 96.3% |
+| Two, a run of 96 chained ALU steps every 192 IMMA | 94.1% (warps staggered: 94.8%) |
+| Two, runs of 8 / 16 / 32 / 64 chained steps every 192 IMMA | 98.7 / 98.8 / 98.7 / 97.8% against 98.9% |
+| Two, readout runs: tested between IMMA segments at run time / not | 91.6% / 98.0% |
+| Three a scheduler, readout runs / four | 95.9% / 97.2% |
+
+The first probe's own run-time tests cost it pipe time, so compare its rows with each other only.
+
+- **Two warps taking turns fill the pipe, and nothing else does.** One warp alone gets 91%: it cannot follow its
+  own IMMA in under 17.6 cycles. Three or four a scheduler add nothing. A third warp has no free issue slots: its
+  instructions cost the folding warps 0.44 cycle each, the same as work inside them.
+- **What costs is waiting and control, not the count of instructions.** Steps that each wait on the one before
+  cost 1.4 to 1.9 cycles each in a long run and 0.2 to 0.3 one at a time. A run-time test between two IMMA segments
+  costs about 10 cycles (ptxas puts a fence before the next IMMA). Steps that depend on nothing recent, placed where ptxas can weave them
+  between the IMMA, are close to free: the readout cut in three runs costs 0.3%, and four draw-shaped units a k-step
+  (1.2 instructions an IMMA) cost 0.4%.
+- **The pieces do not simply add.** Loads, readout and draw each alone hold 98.8 to 100%; all three together fell
+  to 94.7 to 97.0% as ptxas ordered them. So the order has to be pinned by hand and measured piece by piece.
+- **Watts follow the operand bytes and the draw.** The same IMMA stream drew 263 W on constant registers, 292 W on
+  mostly-zero loaded bytes and 373 W on random ones, all at the top clock. Four draw units a k-step added 77 to
+  130 W. At 450 W the draw-only stream ran at 2595 MHz and 99.6%: 338.8 TH/s by count. The table's watts come
+  from two builds: random operand bytes (loads 373 W, one-run readout 399 W, the 58-instruction draw 449.5 W) and
+  mostly-zero ones (loads 292 W, three-run readout 318 W, the offset-reading draw 421 W, all together 438 W).
+
+### The draw fold: `drawprobe.cu` and `src/pearl_fold_draw.cuh` (RTX 4090, 2026-11-11)
+
+A fold that stores neither A' nor B'. A tile keeps the dense noise factors of its rows and columns in shared memory
+and two k-step stages of the noised operands; each warp draws the next k-step's stage while it folds this one, and
+`ldmatrix.trans` reads the stage. `pearl_fold_draw.cuh` is the body, `drawprobe.cu` runs it alone: one block an SM,
+each warp stamping the SM's cycle counter, the first tiles' transcripts compared with a fold done on the CPU from
+the same tables. Nothing in `pearl_kernel.cu` or the host includes it yet: it has no hash and no host side, so it
+is not a miner's kernel and has no TH/s figure.
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 [-DPD_MT=6] [-DPD_NO_DRAW=1 ...] -o drawprobe drawprobe.cu
+./drawprobe name 8192 64 [seconds] [tiles to check]
+```
+
+It is correct in both tile forms: `-DPD_MT=6` (192x256, six m16 tiles a warp, commit 11ce0fb9) 2,304 of 2,304
+regions at k 2048 and 576 of 576 at k 8192; `PD_MT` 5 (160x256, the default) 1,920 of 1,920 and 480 of 480. The
+check found one bug on the way (with five tiles the next k-step's first A fragment overwrote the last tile's).
+
+It is slow. Pipe use (16 cycles an mma, two warps a scheduler, over the slower warp's cycles), k 8192, 64 tiles a
+block, 128 blocks:
+
+| Stream | 192x256 (`PD_MT` 6) | 160x256 (`PD_MT` 5) |
+|---|---|---|
+| mma and fragment loads | 99.78% | 99.74% |
+| + the stage wait | 99.60% | 98.70% |
+| + readout (three runs a chunk) and the wait | 95.9 to 96.2% | 95.04% |
+| draw and readout, no wait | 76.45% | 78.65% |
+| everything | 65.3 to 71.0% (2663 to 2687 MHz, 412 to 448 W) | 72.05% (2685 MHz, 428 W) |
+| everything, table reads at addresses with the least bank conflict (timing only) | | 89.63% |
+| draw and readout, no wait, the same reads (timing only) | | 94.71% |
+
+By count 72% at 2685 MHz is about 253 TH/s, against 317.3 for the release fold on this card.
+
+What the numbers say:
+
+- **The table reads' bank conflicts are most of the loss.** A lane reads 8 bytes of a 16-byte table word at a
+  random rank index. Word addresses are multiples of four words, so a warp's 32 reads fall into 8 of the 32
+  shared-memory banks, four lanes or more to a bank. Moved (timing only, `-DPD_T_OFFS=2`) to addresses where two
+  lanes share a bank and no more, the whole stream goes from 72.05% to 89.63%, and from 78.65% to 94.71% without
+  the wait. The global loads of the offsets cost 1.9 points (`-DPD_T_OFFS=1`).
+- **The wait is costly once warps differ.** A warp that reaches the wait early spins (37 to 52 tests a k-step
+  measured) and its tests take issue slots from the warp beside it. Sleeping between tests is worse (48%), a later
+  wait is worse (63.9%). Giving every scheduler the same draw work (seven half units a k-step) took the stream from
+  69.1% to 72.0%.
+- **ptxas has to be led.** It lifts every load as early as free registers allow and spills when they run out
+  (192 sums a thread leave 39 registers; draw plus wait then fell to 72% with 112 bytes spilled). A shared load
+  stays behind a shared store ptxas cannot tell apart, so the draw's stores address through a second register. It
+  rates a table read as ready at once and issues the subtracts behind it; the next k-step's offsets are loaded a
+  k-step early and the first subtracts take their constant through an mma's sum (`PD_CPIN`). A label as a fence
+  costs register moves at every join (176 a chunk at one fence in four); a 4-byte store of a sum as a hold costs
+  1.3 points each. Eight copies of the loop, one a warp, cost nothing against one (66.1% with one, timing only).
+- **A sum read soon after its mma is dear.** Four 4-byte stores of fresh sums a k-step cost 5.4 points. The
+  readout's runs start 9 mma after their tiles' last (`PD_RLAG`); at 17 the readout and the wait alone go from
+  95.04% to 95.88%, but the whole stream falls to 67.9%, because the runs then sit on the draw's steps.
+- **The fill has to be 63 or 64.** The table holds the dense factor plus 32, and `fill + plus - minus` is one
+  IADD3 a word with no borrow between bytes only from 63 up. The probe uses 63, the largest an int7 operand holds.
+
+Everything above is the first two designs (commits 11ce0fb9 and bd5dad4b); the file now holds the third.
+
+#### The third design: tables by rank index, and no wait (correct only with a barrier a k-step, and then 73%)
+
+What changed: the tables are laid out by rank index with sixteen rows to a 16-byte word (`[p][w]`, 256 bytes a rank
+index for B, 160 for A), and a lane reads the word at its own place, so a quarter warp's eight reads are 32 different
+banks whatever the rank index. A unit is two k-pairs (one a half warp) for sixteen words: 4 reads, 8 IADD3, 8 PRMT,
+2 stores. Every warp draws one unit of B and one of A a k-step (warp W: k-pairs W and W + 8), two k-steps ahead, into
+a stage of two buffers for B and three for A, so that no warp should have to wait for another. A counter (one add a
+warp a k-step) and one load before the k-step's first store record, with no branch, whether a warp ran further ahead
+of another than the stage allows (`PD_NO_CHECK=0`).
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 [-DPD_BAR=0|1|2|3] [-DPD_NO_DRAW=1 ...] -o drawprobe drawprobe.cu
+PD_CUBIN=reordered.cubin ./drawprobe name 8192 64     # launch the kernel from a cubin (drawtools/spread.py)
+```
+
+Pipe use, k 8192, 64 tiles a block, 128 blocks (mma and fragment loads alone: 99.73%):
+
+| Stream | Pipe use | CPU check |
+|---|---|---|
+| Eight loop copies, nothing holding the warps together: draw alone / readout alone (a tree) / both / everything with the check | 96.15% / 97.07% / 89.60% / 92.38% (2564 MHz, 448 W: 310 TH/s by count) | 0 of 2,560: wrong after the first chunks |
+| the same with a barrier a chunk (`PD_BAR=1`): barrier alone / readout as one chain a tile / draw / everything | 98.52% / 89.83% / 93.83% / 80.98% (2625 MHz, 450 W) | 232 of 2,560 |
+| the readout as one chain a tile, no barrier, started 12 / 20 mma after the tile's last | 96.73% / 96.45% | |
+| Two loop copies (warps 0-3, 4-7), a counter wait a chunk (`PD_BAR=2`): wait alone / readout / draw and check / everything | 97.36% / 93.17% / 89.72% / 73.98% (2601 MHz, 428 W) | 64 of 2,560 |
+| Two copies, a barrier at every k-step's end (`PD_BAR=3`, the default): barrier alone / draw / everything | 98.92% / 81.35% / 73.30% (2685 MHz, 411 W: 258 TH/s by count) | 2,560 of 2,560 (k 2048), 1,280 of 1,280 (k 8192) |
+| the same source with no barrier and no check | 89.84% | 0 of 2,560 |
+
+So the third design is correct in one form only, and that form is no faster than the second design (72.05%). What
+it taught:
+
+- **The table reads are fixed.** With no conflicts the draw alone costs 3.6 points where it cost 21.
+- **The schedulers do not keep pace.** With eight loop copies the four schedulers of an SM ran 3% apart (88.1 to
+  91.5%), so within a tile a warp is a whole k-step ahead of another. Something has to hold them together.
+- **ptxas keeps the order of memory instructions around every store, and nothing else.** It put the draw's stores
+  anywhere from 1 to 37 mma into a k-step, the next k-step's fragment loads right behind the last store, and it moves
+  the mma themselves: a value passed through the sum of mma 10 (`PD_PINDEP`) did not hold the draw behind the tenth
+  mma: the draw's stores still came out 3 mma into the k-step, so ptxas must have moved that mma (inferred from
+  the stores' places, not read instruction by instruction). So the room the stage gives (20 mma and more on paper) is not there in the
+  binary, and the fold without a barrier is wrong.
+- **Holding the warps together costs far more than the hold itself.** A barrier a chunk alone costs 1.2 points, a
+  barrier a k-step 0.8, a counter wait a chunk 2.4. With the readout or the draw in, the same hold costs 6 to 18
+  points more. What the figures fit: the pipe stays full while one of a scheduler's two warps has an mma ready.
+  A hold starts both at the same place of the same code, so both are busy with the same clump at once; left alone
+  they drift apart and cover for each other.
+- **A chain is woven, a tree is clumped, and neither is cheap.** ptxas put a tile's sixteen XOR3 two to four to an
+  mma when each waits for the one before, and thirty to forty in a row when they do not. Alone the two cost about
+  the same (3.0 and 2.7 points).
+- **Two loop copies cost registers.** With the warp's constants in lane registers ptxas put 203 to 242 register
+  moves a chunk into each copy and spilled up to 264 bytes.
+
+Not tried: the two warps of a scheduler made to take turns by the barrier's own place (the second loop copy's
+k-step shifted half a k-step against the barrier, which needs a third buffer of B and a fourth of A, and the
+transcripts out of shared memory); a readout with no shared XOR; a tile whose regions are one thread's sums.
+
+#### What the barrier costs the draw, and what does not fix it (same day, later; 73% to 80.5%, still a loss)
+
+The body's default is now the best form that passes the CPU check: the third design with a barrier every k-step,
+each unit of the draw written just ahead of an A-tile's fragment load (`PD_TETHER 1234`), and the two loop copies'
+readouts 12 mma apart (`PD_RSTAG 12`). It holds 80.5% of the pipe at 2661 to 2665 MHz and 448 to 449 W, about 281 TH/s by count
+against 317.3 for the release fold. Everything below is a probe figure on rig01's RTX 4090, k 8192, 64 tiles a
+block, 128 blocks; none is a mining rate.
+
+Correct forms (a barrier every k-step, everything in, CPU check passed on every row):
+
+| Form | Pipe use | Clock, watts |
+|---|---|---|
+| The third design as it was left | 72.93% | 2685 MHz, 411 W |
+| Each copy's four warps also meet in mid k-step, warps 0-3 drawing before and 4-7 after (`PD_MIDBAR 20`) | 73.08% | 2685 MHz, 413 W |
+| the same in warps 4-7 only / in both with the readouts 12 mma apart | 75.98% / 77.08% | |
+| The draw tethered ahead of A-tile loads (`PD_TETHER 1234`, or 1223) | 76.71%, 76.77% | 2685 MHz, 433 W |
+| Tether 1234 and readouts 12 apart (the default now; also 1,280 of 1,280 at k 8192) | 80.52%, 80.47%, 80.47% | 2661 to 2665 MHz, 448 to 449 W |
+| 19 more variants of the default (a barrier of the warp's own beside the block's, other lags, places, tiles) | 72.4 to 77.5% | |
+| Four tiles a warp (`-DPD_MT=4`, a 128x256 tile): default / own barrier / no readout | 68.01% / 65.17% / 74.62% | |
+
+Timing-only streams (they compute wrong results on purpose, or were not checked):
+
+| Stream | Pipe use | Clock, watts |
+|---|---|---|
+| mma, fragment loads and the barrier (from the section above) | 98.92% | |
+| + the draw, no readout | 81.35% | |
+| the draw with its table words made in registers (`PD_T_NOLOAD`) | 89.86% | |
+| the draw with a unit's stores folded to one 4-byte store (`PD_T_NOSTORE`) | 85.53% | |
+| both | 88.50% | |
+| only warps 0-3 draw (`PD_T_ONECOPY`) | 88.46% | |
+| A draw with no stage, by its instruction count: 7 units a warp a k-step, nothing holding the warps (`PD_T_UNITS=7`) | 63.44% | 2436 MHz, 397 W: 203 TH/s by count |
+| Four tiles a warp, nothing holding the warps | 88.91% | 2520 MHz, 427 W |
+| The default of the morning with the barrier timed (`PD_T_STAMP`): everything / draw only | 81.35% / 85.48% | |
+
+What they say:
+
+- **A draw straight into the fragment registers loses on count.** An mma register holds four k of one row; a table
+  word holds many rows at one rank index, and every k has its own two rank indices (`pearl_gen_perm` draws them
+  one k at a time, so no order of k lines them up). A thread's 144 bytes a k-step then take about 32 table reads,
+  8 reads of offsets, 32 address adds, 40 subtracts and 80 byte selects to turn "rows at one k" into "four k of
+  one row": about 190 instructions for 40 mma, against 54 for the staged draw, where `ldmatrix.trans` does that
+  turn for nothing and eight warps share one draw. A stand-in with that count held 63% at 2436 MHz.
+- **What ptxas does, read from its control fields** (`drawtools/ctl.py` decodes them from the cubin: stall, yield,
+  scoreboards, wait mask). It orders a k-step for one warp alone. It leaves 8 cycles between two IMMA and packs
+  other steps into that window when it has them ready. Two steps on the same unit are 2 cycles apart (a unit's
+  8 IADD3 and 8 PRMT are one run of 32 cycles). A reader follows a plain step by 4 to 6 cycles and an IMMA's sums
+  by 24 (`drawtools/lat.py`). A shared load sets a scoreboard or relies on a later load's: it trusts loads to
+  finish in the order issued (`drawtools/cover.py`: every one of 151 loads is covered one of those two ways). It
+  moves IMMA across barriers freely (8 IMMA in one half k-step, 47 in the next), so a barrier fences memory
+  instructions and nothing else. It fills all 255 registers whatever the tile (four tiles a warp free 32, and it
+  still reports 255 and spills).
+- **Moving IMMA in the compiled loop is safe and does almost nothing.** `drawtools/spread.py` moves IMMA later, in
+  among the steps behind them, keeps every writer-reader pair and every stall distance ptxas left, and checks its
+  own output; the probe runs the result with `PD_CUBIN=<file>` (CPU check 2,560 of 2,560). But it can move only
+  62 instructions: ptxas reuses each IMMA's old sum registers for draw temporaries and register moves at once,
+  so 31 of 56 IMMA in a stretch cannot pass the step behind them. A reorder that helps needs registers
+  assigned again, which is a back end, not a patch.
+- **The loss is not the two warps of a scheduler drawing at once.** With only warps 0-3 drawing, the stream still
+  loses 10.5 points, and warps 4-7, which have nothing but mma and loads, reach the barrier at the same moment
+  (42.0 and 42.5 cycles a k-step at the barrier for the two copies). So the drawing warp's plain steps slow its
+  neighbour's mma directly. Mid-k-step barriers and the tether, which make the two warps draw at different
+  moments by construction, are worth 0 to 4 points.
+- **Under the barrier the draw's cost is 8.5 points of table reads, 4 of wide stores, and 10 that stay with
+  registers only.** Nothing holding the warps, the whole draw costs 3.6. A model of one scheduler running the two
+  compiled copies with ptxas's own stall counts (`drawtools/sim.py`) says 91 to 98% for builds that measure 73 to
+  88%: 10 to 20 points are not in the stall counts.
+- **The cost is about fixed a k-step.** Five tiles a warp lose about 310 cycles a k-step at 80.5%; four tiles
+  (32 mma a k-step) lose about 480 and hold 68%. So fewer mma between barriers is worse, and a wider tile would
+  be better if it fitted (192 sums a thread do not leave the registers).
+- **ptxas's order is worth 4 to 8 points either way, and the source does not control it.** The morning's default
+  holds 72.9%; the same source with a barrier of the warp's own and two clock reads ahead of the block barrier
+  held 81.35%, with only the own barrier 74.6%. Across the day's builds the ones ptxas does not spill are the
+  fast ones (no spill: 81.35% and 88.5 to 89.9%; 8 to 84 bytes spilled: 72 to 77%; 184 to 208 bytes: 65 to 67%).
+- **A limit of the readout's placing, found by the check:** `PD_RLAG + PD_RSTAG` above 25 (17 with four tiles)
+  puts tile 0's readout behind the next chunk's first mma, and the regions of that tile come out wrong (2,048 of
+  2,560). The body now refuses to build that.
+
+Not tried: the k-step written by hand in SASS with its own register assignment (`probes/turing/sass/hand.py` did
+this for sm_75; the decoder and the rules above are the start for sm_89), which is the one way to take ptxas's
+order and its register reuse out of the question; a barrier every second k-step (it needs about 119 KB of shared
+memory, 101 KB is the limit); a tile whose regions are one thread's sums.
+
+#### The loop written by hand: `probes/hand89/` (same day, later; 81.7% to 96%, correct, level with the release by count)
+
+ptxas is out of the draw fold's chunk loop. `hand89/fold_h.cuh` is the same fold with the loop in a function of its
+own that is never inlined; ptxas makes that a real call, and the kernel keeps nothing in the registers the function
+writes (all but R1 and R252 to R254). `hand89/asm89.py` assembles the instruction forms a loop needs from nvdisasm's
+text (checked against ptxas: 1,867 instructions come out bit for bit the same) and replaces the function's code in
+the cubin, then disassembles the result and compares every instruction with what was asked for. `hand89/fold.py` is
+the loop itself: its own registers, stall counts and scoreboards, 40 IMMA a k-step with everything else placed in
+the gaps behind them. `hand89/hprobe.cu` runs the patched cubin (`PD_CUBIN`) and checks it against the CPU fold.
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 -cubin -o r1.cubin hand89/hprobe.cu ; nvdisasm -c r1.cubin > r1.sass
+nvcc -arch=sm_89 -O3 -std=c++17 -o hprobe hand89/hprobe.cu
+python hand89/fold.py r1.cubin r1.sass nvdisasm hand.cubin            # the defaults are the best checked form
+PD_CUBIN=hand.cubin ./hprobe name 2048 8 0 64      # 64 tiles against the CPU fold
+```
+
+Probe figures, rig01's RTX 4090, k 8192, 64 tiles a block; "by count" is pipe use x clock x 0.13107 and is not a
+mining rate (the release fold mines 317.3 TH/s here at 2520 to 2535 MHz). Every row passes the CPU check unless
+it says otherwise.
+
+| Form of the loop | Pipe use | Clock, watts (25 s) | By count |
+|---|---|---|---|
+| As ptxas compiles it (the function unpatched) | 81.73% | 2669 MHz, 439 W | 286 |
+| By hand, first placement (3 instructions a gap, both draw units from the k-step's top) | 85.00% | | |
+| Unit B started at gap 14 / 20 | 89.54% / 90.32% | 2601 MHz, 429 W (gap 14) | 305 |
+| + the plain steps' yield flag off | 91.32% | 2587 MHz, 440 W | 309 |
+| + the IMMA's stall 5 when plain steps follow (see below) | 95.24% | 2550 to 2558 MHz, 430 to 437 W | 318 to 319 |
+| + table reads and one-register steps first in a gap, warps 4-7's readout 4 IMMA later | 96.32% | 2538 to 2548 MHz, 433 to 435 W | 320 to 322 |
+| + read scoreboards on the readout's atomics too (`fold.py`'s default; 20,480 regions at k 2048 and 2,560 at k 8192 pass) | 96.02% | 2548 MHz, 439 W | 321 |
+| the same with warps 0-3's readout 6 IMMA later (10,240 regions pass) | 96.42% | | |
+| The last form without the barrier (TIMING ONLY: wrong results) | 97.49% | | |
+
+Its pieces, TIMING ONLY (first placement family): IMMA and the barrier 99.15%; with the fragment loads 98.42%; with
+the readout and no draw 94.67%; with the draw and no readout 91.28%; all 89.5%.
+
+**The rule that took it from 91% to 95% (bare streams, `hand89/sched.py`, TIMING ONLY).** A plain instruction that
+reads two or more registers costs the tensor pipe when it issues 1 to 4 cycles behind its own warp's IMMA, and
+nothing from 5 cycles behind. One that reads one register never costs. Both warps of a scheduler, the same steps
+after every IMMA:
+
+| Steps after every IMMA | IMMA stall 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| 3 one-register adds | 99.71% | | | | | |
+| 1 two-register step (PRMT) | 93.90% | 88.68% | 91.21% | 96.72% | 99.74% | 99.58% |
+| 2 | 88.67% | 84.01% | 88.66% | 93.86% | 99.71% | 99.71% |
+| 3 | 88.68% | 88.67% | 91.20% | 96.71% | 99.72% | 93.87% |
+| 4 | 88.70% | 84.03% | 88.69% | 93.88% | 99.75% | |
+| 5 | 88.71% | 88.69% | 88.69% | 93.71% | 99.20% | |
+| 6 / 7 | 88.69% / 88.59% | 83.92% / 88.42% | 88.44% | | 99.28% / 93.69% | |
+
+So an IMMA followed by up to six such steps wants a stall of exactly 5 and the steps at stall 1; where the gap's
+other cycles go does not matter. ptxas writes "IMMA stall 1, step, step, pad". Three-register XOR3 of sums behave
+the same. Marking the IMMA's A operand for reuse changes nothing. The same stream under a barrier every 40 IMMA
+holds the same.
+
+Other things the bare streams showed: a lone warp of IMMA holds 98.8% of the pipe by itself; a warp issues one
+plain step every two cycles whatever its stall count; the yield flag set means "stay on this warp" (a warp whose
+IMMA has it off gets 3% of the pipe beside one that has it on); nvdisasm refuses a stall over 11 with the yield
+flag.
+
+**Stall counts alone do not rescue the compiled loop.** `hand89/restall.py` raises the IMMA's stall in the cubin
+as ptxas made it, nothing moved: 54 of its 320 IMMA have such a step behind them, and the result holds 81.79 to
+82.04% against 81.73% (CPU check passes). The compiled loop's loss is its order.
+
+**A load's address register must not change while the memory unit still holds the load.** Two of 45 placements
+computed wrong sums for tile 0 of warps 0 to 3 (about half of that tile's regions, both times): the chunk's end
+turns A's three buffer registers a few gaps behind the load of the next chunk's first fragment, and under load
+that LDSM read the register after the turn. With a read scoreboard on the load and the moves waiting on it (as
+ptxas does) both placements pass, 10,240 of 10,240, and fail again without it. One more failure is not
+explained: the 96.32% form computed 8 of 10,240 regions wrong in one run of 64 tiles (tiles 1 and 2 of one
+warp in one tile) and none in the next. The default since then also holds the readout's atomics with a read
+scoreboard and keeps fragment loads off the IMMA's heels; it passed three wide checks, which is not proof.
+The static latency checker in `fold.py` models none of this: every build has to pass the CPU check.
+
+**The gather form's mix** (`hand89/gather.py`; the maths agent's form: each warp builds its own fragments with
+`ldmatrix.trans` as a gather on a static table, no stage, no store, no barrier). TIMING ONLY, 192 sums a thread
+with the real register count (192 sums, 24 fragment words, 20 temporaries, 8 offsets), the gathers on the probe's
+table bytes feeding the IMMA operands, a chunk 192 IMMA and 502 others, IMMA stall 5:
+
+| Rank indices of a matrix's eight rows | Pipe use | Clock, watts (25 s) | By count |
+|---|---|---|---|
+| No bank shared | 97.74% | 2581 MHz, 438 W | 331 |
+| One two-way collision in every matrix / two | 96.77% / 96.77% | | |
+| By chance (as the definition's order of k: 2.76 rows of 8 collide) | 91.15% | 2611 MHz, 449 W | 312 |
+| No bank shared, the IMMA's stall 1 | 93.3% | 2625 MHz, 446 W | 321 |
+| By chance, the IMMA's stall 1 | 90.2% | 2612 MHz, 449 W | 309 |
+| 160 sums: none / chance | 98.07% / 84.89% | | |
+
+So the form holds the pipe if the collisions are kept two-way, which the searched order of k is said to do for 92%
+of matrices; chance collisions cost 6.6 points. Nothing real is built of it yet.
+
+### The gather fold, the direct fold, and what sets the clock: `hand89/gprobe.cu` (RTX 4090, 2026-11-11)
+
+Sixth round on `goal/nv-kernel`. Two more folds built for real as probes, each compiled and written by hand,
+each checked against a CPU fold; and the measurement that explains why none of the draw folds beats the release.
+Everything is on rig01's RTX 4090, k 8192 unless stated. "By count" is pipe use x clock x 0.13107; no figure here
+is a mining rate.
+
+**Files.** `hand89/gfold_h.cuh` is the kernel, its chunk loop in a function that is never inlined (`GP_DIRECT`
+picks the fold). `hand89/gprobe.cu` is the harness: `gprobe <name> <k> <tiles a block> [secs] [tiles to check]
+[order] [fake]`. `hand89/gfold.py` writes the loop by hand and patches it into the cubin (`PD_CUBIN` runs it).
+`asm89.py` now takes a loop function with two exits and finds the register it returns through.
+
+**The gather fold** (the maths review's form: each warp builds its fragments with `ldmatrix.trans` on static
+tables; no stage, no store, no barrier). 192 sums a thread, a k-step is 20 LDSM, 40 IADD3 and 40 PRMT a warp for
+48 IMMA, 2.66 plain steps an IMMA with the readout. The offsets are one table a warp with the group's place in
+shared memory folded in, so a loaded word is an address. CPU check: 16,384 of 16,384 lane transcripts over 64
+tiles, in the definition's order and both searched orders, six runs by hand in all, and 4,096 of 4,096 at
+k 8192; compiled, 16,384 of 16,384.
+
+| Order of k in a chunk | Rows of 8 that collide, A / B | Compiled | By hand | Clock, watts (40 to 60 s) | By count |
+|---|---|---|---|---|---|
+| The definition's | 2.74 / 2.77 | 84.4% | 88.9% | 2584 MHz, 449 W | 301 |
+| Searched for B alone (once a job) | 2.76 / 0.72 | | 95.4% | | |
+| Searched for A alone | 0.76 / 2.72 | | 95.6% | | |
+| Searched for A and B (once a salt) | 1.01 / 1.00 | 89.0% | 96.7% | 2520 MHz, 436 W | 319 |
+| B searched, A made collision-free (timing only: the hybrid's stand-in) | 0 / 0.72 | | 97.2% | 2519 MHz, 432 W | 321 |
+| None collide (timing only) | 0 / 0 | | 97.4% | 2517 MHz, 429 W | 321 |
+
+The search (ported from `S/algo/order.js`) takes 4.3 ms a chunk in C++ for both sides and 1.6 ms for one. Two
+copies of A's tables with their entries at different places mod 8 would leave 1.12 rows of 8 colliding with no
+search at all (a matching a matrix; simulated, not built). None of it matters: the form's ceiling is 321.
+
+**The clock is not held by the 450 W limit in these loops.** The same loop at a 480 W limit: 2522 MHz, 432 W. At
+400 W: 2452 MHz, 400 W. With every operand byte the fill (timing only, same code and pipe use): 2535 MHz, 318 W.
+So the operands' values cost 112 W of 430, and the clock does not use them. What holds it is the loop's own
+memory and ALU steps (every operand byte the fill, so watts are out of it; `nvidia-smi`'s power-cap flag is on in
+the first three rows, in 13 of 20 samples in the fourth, and off in the last three):
+
+| Loop (timing only) | Plain steps an IMMA | Pipe | Clock | Watts |
+|---|---|---|---|---|
+| The whole gather loop | 2.66 | 97.41% | 2535 MHz | 319 |
+| No readout | 2.12 | 99.27% | 2559 MHz | 319 |
+| The gathers' LDSM alone, and the readout | 0.99 | 99.16% | 2638 MHz | 317 |
+| LDSM replaced by moves (operands are then garbage) | 2.66 | 97.12% | 2627 MHz | 428 |
+| No gathers (readout and one offsets load) | 0.57 | 99.50% | 2700 MHz | 252 |
+| One offsets load a k-step | 0.04 | 99.54% | 2700 MHz | 236 |
+| IMMA alone | 0.02 | 99.54% | 2715 MHz | 215 |
+
+**A fold with no draw** (timing only: each fragment one LDSM from a table of operand-like bytes, ten a k-step;
+`gfold.py direct=1`; 40 s at 450 W, run twice):
+
+| Loop | Plain steps an IMMA | Pipe | Clock, watts | By count |
+|---|---|---|---|---|
+| Ten LDSM a k-step, no readout | 0.24 | 99.62% | 2685 MHz, 400 W | 351 |
+| Ten LDSM and the readout | 0.78 | 99.37% | 2685 MHz, 425 W | 350 |
+| and 4 copy units a k-step (a 16-byte global load, a 16-byte shared store) | 0.95 | 99.22% | 2626 to 2633 MHz, 449 W | 341 to 342 |
+| and 8 copy units | 1.11 | 99.04% | 2565 MHz, 442 W | 333 |
+| 7 copy units and 17 more ALU steps (the release's count) | 1.43 | 97.95% | 2565 to 2571 MHz, 442 W | 330 |
+| The real gather fold, searched order, same hold | 2.66 | 96.68% | 2521 MHz, 434 W | 319.5 |
+
+A 192 x 256 block needs 14,336 bytes of operands a k-step, which is 3.5 copy units a warp: the second row from
+the top is the least a copy fold can do, and it sits where the competitors are (338 to 342 TH/s at 2600 to 2625
+MHz). The release's fold has about twice that many loads and stores (0.51 an IMMA) and runs 2531 MHz.
+
+**The direct fold** (`GP_DIRECT`, `gfold.py dg=1`): no draw, A' and B' ready in global memory in the fragments'
+own layout, a fragment one 16-byte load a lane; no shared stage, no LDSM, no store, no barrier, the SM's cache
+is what the warps share. CPU check 16,384 of 16,384 compiled, and by hand in every form in the table (nine runs
+in all, and 4,096 of 4,096 at k 8192 twice).
+
+| Build | Pipe | Clock, watts | By count |
+|---|---|---|---|
+| Compiled | 89.6% | 2610 MHz, 450 W | 306 |
+| By hand, a fragment loaded 7 IMMA ahead | 68.4% | 2685 MHz, 369 W | |
+| By hand, and every fragment of the next k-step loaded ahead into scratch registers (`pf=1`) | 99.02% | 2476 MHz, 449 W | 321 |
+| the same two k-steps ahead | 73.0% | | |
+| `pf=1` at k 65536 (370 MB of operands, beyond the card's cache) | 73.9% | 2387 MHz, 449 W | 231 |
+
+It holds the pipe and loses the clock: twenty global loads a k-step cost more than ten LDSM and seven copies.
+
+**Three things a hand-written loop must do, each found by a fault here.**
+1. An instruction that reads a register a load writes waits on the load's scoreboard itself, or issues a gap or
+   more behind one that did. The fifth round's gather stream shifted a loaded quad in place with only the first
+   shift waiting: the others read the registers before the load wrote them (its "illegal memory access").
+2. Nothing waits on a load's scoreboard right behind the load. An LDSM one cycle behind the offsets load, waiting
+   on it, was not held; eight cycles behind, it is.
+3. A loop that returns through a register a load may still write (the direct fold returns through R4, a fragment
+   register) waits for every load first, and so do loads whose results are never read: one landed on a register
+   of the kernel's after the return.
+
+**What it rules out, and what is left.** No draw on the chip clears +3% on this card: gather 319, staged 319
+(the fifth round's loop over 60 s: 96.0%, 2536 MHz), direct 321, against the release's 317. The form the figures
+point to is the release's own, a copy fold on a shared stage, written by hand with half its copies: ten LDSM, 3.5
+global loads and 3.5 shared stores a warp a k-step, 341 by count as a timing stream with no barrier in it. The
+shortest way there is `hand89/fold.py`, which is that loop with draw units where the copy units would go.
