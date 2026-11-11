@@ -305,6 +305,7 @@ Windows the core needs Microsoft's Visual C++ runtime, which is not carried.
 | the same, six cards on a pool, 5 minutes | | 60.6 TH/s, 916 W, 2 shares accepted, 0 rejected |
 | the same, the CLI from source with no core path and no card list | | it named the rig "6x Intel Arc A750", started six cores: 60.6 TH/s, 2 accepted, 0 rejected |
 | the same, the HiveOS package built from this branch, its own binary, `sycl/` beside it | | 60.6 TH/s, 1 accepted, 0 rejected |
+| the same, **the HiveOS package CI built** (the installer workflow, run by hand on the branch), its own binary | | 60.7 TH/s, 912 W, 2 accepted, 0 rejected |
 
 - **A HiveOS Arc rig can run it as it is**, with the Intel OpenCL packages
   HiveOS has. Nothing was installed on the host.
@@ -317,7 +318,14 @@ Windows the core needs Microsoft's Visual C++ runtime, which is not carried.
   "Results on an Arc A750 rig" is the newer compiler's doing. It still mines
   nothing.
 - CI checks both systems' staged folders on the SYCL CPU device: every region
-  against the host, and 100 hits a fold recomputed in JS.
+  against the host, and 100 hits a fold recomputed in JS. Its HiveOS package
+  job installs the package in Ubuntu 20.04, 22.04 and 24.04 containers and
+  starts it with `--core intel`: the core loads from `sycl/` and says it found
+  no Intel GPU, which is right on a runner.
+- The Windows installer CI built has the folder in `resources/native/sycl`.
+  Unpacked on a PC with an RTX card and no Intel GPU, the app's loader picked
+  the CUDA build and never opened the folder; asked for by name, the Intel
+  core loaded and said "no Intel GPU found through Level Zero or OpenCL".
 
 In the app, the Intel core is tried only on a rig where nvidia-smi lists no
 NVIDIA card and the system lists Arc cards and no AMD card the AMD core mines

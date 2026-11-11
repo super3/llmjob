@@ -1351,6 +1351,7 @@ called as an OpenCL built-in. Ours only; no other miner ran. One card, fold alon
 | The same, six cards on Kryptex, 5 minutes | | 60.6 | 916 W; 2 shares accepted, 0 rejected |
 | The same, the CLI given no core path and no card list | | 60.6 | it found the six cards; 2 accepted, 0 rejected |
 | The same, the HiveOS package's own binary | | 60.6 | 1 accepted, 0 rejected |
+| The same, the HiveOS package CI built, its own binary, 5 minutes | | 60.7 | 912 W; 2 accepted, 0 rejected |
 
 - **The driver is worth 40%.** HiveOS has Intel's 2024 OpenCL driver (24.35.30872, compiler 1.0.17537). Its
   compiler sends about 8 load messages for each DPAS where the 2026 one sends 3, at the same power: six cards do
