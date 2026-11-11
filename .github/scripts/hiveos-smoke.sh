@@ -46,8 +46,23 @@ if [ "${1:-}" != --inside ]; then
   trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
   # A HiveOS rig has jq (h-stats.sh needs it) and procps; the base image has neither. They go
   # in while the container still has a network.
-  docker exec -e DEBIAN_FRONTEND=noninteractive "$name" sh -c \
-    'apt-get update -qq && apt-get install -y -qq --no-install-recommends jq procps >/dev/null'
+  #
+  # apt-get update exits 0 when it cannot reach its servers, so the test is whether apt now
+  # knows jq. If it does not, the package lists are pointed at the mirror GitHub's own runners
+  # install from and fetched once more. On 11 November 2026 archive.ubuntu.com did not resolve
+  # inside a runner's containers for over three hours, and every run of this job failed here.
+  docker exec -e DEBIAN_FRONTEND=noninteractive "$name" sh -c '
+    apt-get update -qq
+    if ! apt-cache show jq >/dev/null 2>&1; then
+      echo "archive.ubuntu.com gave no package lists; trying azure.archive.ubuntu.com"
+      for f in /etc/apt/sources.list /etc/apt/sources.list.d/ubuntu.sources; do
+        if [ -f "$f" ]; then
+          sed -i -E "s#http://(archive|security)[.]ubuntu[.]com#http://azure.archive.ubuntu.com#g" "$f"
+        fi
+      done
+      apt-get update -qq
+    fi
+    apt-get install -y -qq --no-install-recommends jq procps >/dev/null'
   docker cp "$tarball" "$name:/tmp/"
   docker cp "${BASH_SOURCE[0]}" "$name:/tmp/hiveos-smoke.sh"
   docker network disconnect bridge "$name"

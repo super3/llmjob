@@ -1043,9 +1043,17 @@ jobs:
       DEBIAN_FRONTEND: noninteractive
     steps:
       # git before checkout, so that it clones (the Windows job reads the file modes it keeps).
+      # apt-get update exits 0 when it cannot reach its servers, so the test is whether apt now
+      # knows curl. If not, the lists come from the mirror the runner itself installs from
+      # (.github/scripts/hiveos-smoke.sh does the same and says why).
       - name: Install the build tools
         run: |
           apt-get update -qq
+          if ! apt-cache show curl >/dev/null 2>&1; then
+            echo "archive.ubuntu.com gave no package lists; trying azure.archive.ubuntu.com"
+            sed -i -E 's#http://(archive|security)[.]ubuntu[.]com#http://azure.archive.ubuntu.com#g' /etc/apt/sources.list
+            apt-get update -qq
+          fi
           apt-get install -y -qq --no-install-recommends ca-certificates curl git bzip2 xz-utils g++ make binutils file ocl-icd-libopencl1
 
       - uses: actions/checkout@v4
