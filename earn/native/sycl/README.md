@@ -19,6 +19,11 @@ six together 100 TH/s ("Results on an Arc A750 rig"). No other Intel card has
 run it. Every GPU still mines with each hit checked before it is sent
 ("Untested cards").
 
+On 11 November the same rig got a new fold for these cards, the fragment fold
+(`xmx8f`). An A750 does 42.2 TH/s with it at 167 W, 2.5 times the first fold,
+and the six together mined at 251 TH/s with every share accepted ("The
+fragment fold"). It is what an Arc A-series card mines with now.
+
 "Running it on an Arc A750 rig" has the steps as they were run on that rig.
 "On an Intel box" and "Test plan" are the same steps for any other Intel box.
 
@@ -34,12 +39,13 @@ host").
 | Plain fold (`dot`): int8 dot products in local memory, on any device the build has kernels for (see "Which build") | written; checked on the CPU device and on six A750s: 4.0 TH/s a card |
 | XMX fold, sub-group 16 (`xmx16`): Arc B580/B570, Arc Pro B50/B60/B65/B70, Lunar Lake, Panther Lake (H and U), Data Center GPU Max | written; its reference code checked on the CPU device and on an A750; compiles to 32 DPAS, 128 GRF, no spill. The hardware instruction has not run: no such card yet |
 | XMX fold, sub-group 8 (`xmx8`): Arc A770/A750/A580/A380/A310, Arc Pro A-series, Flex | written; **the hardware DPAS is right on six A750s**: 16.9 TH/s a card. Its reference code is right on the CPU device and wrong on the A750 (it mines nothing; see the results) |
+| Fragment fold (`xmx8f`), sub-group 8: the same cards as `xmx8`, and what `auto` picks on them | written; **right on six A750s: 42.2 TH/s a card**. 16 rows a sub-group in the 256-register mode, operands stored in DPAS fragment order, one load a fragment. Its reference code is checked on the CPU device |
 | Two-batch pipeline, all hits a batch, share proofs carried with each hit | written; checked on the CPU device and on the A750s, where a pool accepted the shares |
 | Device choice: Level Zero GPUs ranked by compute units x clock, `PEARL_GPU_INDEX` pins | written; six cards listed and each pinned in turn on the rig |
 | Untested cards: a GPU opens only for an opener that checks every hit, and says so in `core.untested` | written; on the rig the core reported it and the CLI checked each card's first hit |
 | Per-card k, launch shapes and their startup trial (the CUDA host's) | not here: the profile's k, no shapes ("Kept up with the CUDA host") |
 | Runs on an Intel GPU | **yes, on Arc A750** (six cards, 10 November). Nothing else yet |
-| Speed | **16.9 TH/s on an A750** at 152 W; 100.1 TH/s for the six at 921 W. One setting tuned on the rig, the band; the rest is as written. The card's matrix engines do 113 T-MAC/s with nothing else in the loop, so the fold is at 15% ("The A750's ceiling") |
+| Speed | **42.2 TH/s on an A750** at 167 W with the fragment fold; 251 TH/s for the six at 1,002 W over 5 minutes, about 242 over 40 (three of the rig's cards lose clock when hot). The first fold: 16.9 and 100.1. The card's matrix engines do 113 T-MAC/s with nothing else in the loop, so the fold is at 37% ("The fragment fold") |
 | Windows build | written (`build-win.sh`), built in CI and checked on the SYCL CPU device. **No Intel card has run it** |
 | In a release | CI builds and stages it for Linux and Windows, and the installers, the Linux CLI and the HiveOS package carry it ("The build a release carries"). Not released yet |
 | HiveOS | **yes**: it mined on the rig's own HiveOS userland (Ubuntu 22.04, Intel OpenCL 24.35), six cards, 60.6 TH/s |
@@ -220,6 +226,105 @@ fold's, so they are estimates:
 
 Not measured: staging B through local memory, any other card, and a run longer
 than two minutes. The 2D block loads are Xe2 and Xe-HPC only.
+
+## The fragment fold (11 November 2026)
+
+The probe's stand-ins said what the next fold should be, and it was built:
+`fold_xmxf` in `pearl_sycl_kernels.hpp`, `xmx8f` to `PEARL_SYCL_FOLD`.
+
+- **16 rows a sub-group.** A window is 2 sub-groups, not 4, and each B'
+  fragment loaded feeds two DPAS. The 16 accumulators need the 256-register
+  mode. The kernel asks for it with a kernel property (`grf_size<256>`), so
+  it works in the build the driver compiles and in the prebuilt one alike. An
+  EU then runs 4 threads, not 8.
+- **A' and B' in fragment order.** The draw's last kernel stores each noised
+  operand the way DPAS takes it: a lane's 32 bytes of a fragment in a row, the
+  8 lanes' 256 bytes in a row (`Layout` in the kernels' header). Nothing else
+  reads the noised operands. The proofs come from the operands before the
+  noise, which are stored as before.
+- **One load a fragment.** A lane loads its 8 dwords as one vector: 10 load
+  messages for a k-step of 16 DPAS, where the first fold sends 24 for 8.
+- **Band 32.** An eighth of the cache the card reports, where the first fold
+  wants all of it. Card 0, 8 s each: 42.1 TH/s at 16, 42.2 at 32, 42.1 at 64,
+  31.7 at 128, 35.4 at 256.
+
+`auto` picks it on Alchemist. The first fold is still there as
+`PEARL_SYCL_FOLD=xmx8`, and is what the rows marked "first fold" ran.
+
+All of it is the build a release carries: open-source DPC++ v7.2.0, kernels
+compiled by the driver (Intel 26.40, Level Zero), Ubuntu 24.04 container.
+Clock and watts are i915's counters for the card.
+
+| Check | Cards | Result |
+|---|---|---|
+| `verify.sh --quick`: the fold and the plain fold against the host at two sizes, 100 hits of each recomputed in JS | all six | PASS on each: 16,384 of 16,384 and 32,768 of 32,768 transcripts, 100 of 100 hits |
+| `verify.sh`: 400 hits of each | card 0 | PASS |
+| the fold's reference code (`xmx8f-emu`) | all six | wrong on every card, as `xmx8-emu` is with this driver's compiler. It mines nothing |
+| `compile-gate.sh` | the three Alchemist targets | the fold: SIMD8, 256 registers, no spill. The first fold: 128 registers, no spill, as before |
+
+| Rate | First fold (`xmx8`) | Fragment fold | Fragment fold, twin |
+|---|---|---|---|
+| Card 0, the fold alone, 20 s, taking turns: round 1 | 16.87 TH/s, 2,000 MHz, 150 W | 42.22, 2,000 MHz, 166 W | 42.25, 2,011 MHz, 167 W |
+| round 2 | 16.88, 2,011 MHz, 154 W | 42.22, 2,000 MHz, 169 W | 42.25, 2,011 MHz, 170 W |
+| round 3, the card hot and losing clock | 16.87, 2,011 MHz, 157 W | 40.76, 1,922 MHz, 160 W | 39.19, 1,850 MHz, 152 W |
+| Six cards on the pool (Kryptex), 5 minutes, mean after the first | 100.08 TH/s (98.0 to 102.2), 924 W, 2,001 MHz; 1 accepted, 0 rejected | 251.42 (249.3 to 253.8), 1,002 W, 2,000 MHz; 9 accepted, 0 rejected | 245.14 (239.5 to 252.2), 977 W, 1,948 MHz; 6 accepted, 0 rejected |
+| Five cards on the pool, 40 minutes | | 201.6 TH/s, 40.3 a card; 52 accepted, 0 rejected | |
+
+- **2.5 times the first fold**, at 9% more power: 0.25 TH/s a watt against
+  0.11. A twin run on a cool card is within 0.1%.
+- **The rig cannot cool it for long.** The six cards sit in adjacent slots.
+  The twin six-card run was the third in a row, and cards 0, 1 and 2 lost
+  clock in it: card 0 fell from 2,000 to 1,750 MHz and from 168 to 140 W.
+  After 40 minutes with five cards, cards 1, 2 and 3 were at 1,800, 1,850 and
+  1,950 MHz and the outer two at 2,000. The rate follows the clock. The first
+  fold, at 154 W, held 2,000 MHz in its runs. This kernel has no temperature
+  reading for Arc, and the fans were near 2,100 rpm.
+- The card's memory: `core.device` now carries `memTotalMb` and `memUsedMb`
+  (8128 and 864 on an A750, with either fold).
+
+### Where its time goes now
+
+`pearl_sycl_peak --frag` has the fold's grid and loads with parts taken out.
+Timing only: except for the fold's copy these rows compute wrong results on
+purpose, and none is a mining rate. Card 0 or 1, 3 s a row, T-MAC/s, and the
+same per EU and clock where the clock moved:
+
+| Row | What runs | T-MAC/s |
+|---|---|---|
+| `f-regs` | DPAS alone, 16 accumulators | 113.8 |
+| `f-fold` | the probe's copy of the fold | 42.2 |
+| `f-loads` | its loads and DPAS, no readout | 42.8 |
+| `f-win0`, `f-fixed` | every window reading window 0; every load the same fragment | 43.3, 43.3 |
+| `f-a` | A' loaded, B in registers (2 loads a k-step) | 100.7 |
+| `f-b` | B' loaded, A in registers (8 loads) | 50.1 |
+| `f-pf3` | all ten loads sent first and the 16 DPAS run as one unbroken run | 43.4 |
+| `f-keep` | the ten loads only kept by an XOR, the DPAS on register operands | 42.2 |
+| `f-alu` | no loads: every operand rewritten by an add each k-step | 106.9 |
+
+- **It is still the loads, and now it is the load message itself.** Memory
+  and cache no longer matter (window 0 is no faster), nor does the order of
+  loads and DPAS, nor whether a load's result goes into a DPAS at all. A
+  k-step gets its ten 256-byte loads at one rate whatever else happens: about
+  1.3e10 messages a second for the card, 4 clocks a message for each group
+  of 16 EUs. Rewriting the same registers by arithmetic costs 6%.
+- **A 128-byte load is served about four times as fast.** The first fold's
+  B' loads, two halves a fragment, ran at 5.5e10 messages a second from
+  cached memory. Loading each fragment as two vectors of 4 dwords:
+
+| Row | What runs | T-MAC/s (per EU and clock) |
+|---|---|---|
+| `f-v4-b-pf3` | B' as two halves a fragment, all sent first; A in registers | 80.5 (96.1) at 1,869 MHz, 182 W |
+| `f-v84-pf3` | the same with A' loaded as one vector | 61.4 (71.6) at 1,912 MHz, 182 W |
+| `f-v4-pf3` | both operands as halves: 20 messages a k-step | 54.8 (61.2) |
+| `g-loads` | 32 rows by 32 columns a sub-group, one vector a fragment: 8 messages a k-step | 57.3 (63.9) |
+| `g-v4-pf3` | 32 by 32, halves, all sent first | 54.3 (60.5); 77.6 (89.1) with every window reading window 0 |
+
+- These rows run the card at its 190 W limit, and it drops its clock to stay
+  there, so a faster fold will be held by power as well as by loads.
+- Larger work-groups (a band's windows in one, so every sub-group of it reads
+  the same B') change nothing. Spacing a lane's bytes so each lane has a
+  cache line of its own halves the rate. One vector of 4 qwords is no faster
+  than one of 8 dwords.
 
 ## The build a release carries
 
@@ -707,7 +812,8 @@ PEARL_GPU_INDEX=0 ./verify.sh 2>&1 | tee /work/out/verify-full-0.log    # 400 hi
 
 `--list` prints the cards the core may open, each with the index the loop
 uses. On the rig: six lines of `N: Intel(R) Arc(TM) A750 Graphics
-[level_zero], auto fold xmx8 (hardware DPAS)`. If there is another Intel GPU
+[level_zero], auto fold xmx8f (hardware DPAS)` (`xmx8` on 10 November, before
+the fragment fold). If there is another Intel GPU
 in the list (a motherboard's own graphics), leave its index out of the loops.
 
 Each log names the card and its fold, `xmx8 (DPAS 8x8x32, sub-group 8)
@@ -769,9 +875,9 @@ this one:
 | `PEARL_CORE_PATH` | | names a local build to the app and the CLI: point it at `build/pearl_core_sycl.node`. Without it they look in the release's `sycl/` folder |
 | `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
-| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx16-emu`, `xmx8-emu`. `auto` is the hardware DPAS where the build has it for the device, else `dot` |
+| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8f` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
-| `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is the size of the cache the device reports for the XMX folds (256 on an A750) and a quarter of it for the plain fold (64) |
+| `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is an eighth of the cache the device reports for the fragment fold (32 on an A750), all of it for `xmx8` and `xmx16` (256) and a quarter for the plain fold (64) |
 | `PEARL_SYCL_VERBOSE` | | print the device, fold, batch width and band when a core starts |
 | `PEARL_SYCL_UNTESTED` | | `1` opens a GPU for an opener that checks no hits and sends no shares (`bench.js`). It turns no check off ("Untested cards") |
 | `PEARL_GPU_INDEX` | | the app's and the CLI's: the cards to mine on, by index in the core's device list (`pearl_sycl_check --list` prints it), such as `0,1,2,3,4,5`. As one number it also pins the card for `verify.sh`, `bench.sh` and the tools under them |
@@ -831,6 +937,11 @@ reports (see `PEARL_SYCL_BAND` under "Switches").
   code in it, and the host launches it only on a card whose architecture has
   XMX at that sub-group size; every other device gets the reference kernel.
   That reference code is what the CPU device checks.
+- `xmx8f`: the same DPAS and the same readout at sub-group 8, with 16 rows a
+  sub-group (2 sub-groups a window) and the noised operands in fragment order,
+  one vector load a fragment ("The fragment fold"). The host draws the noised
+  operands in the order its fold reads. The check tool runs any fold on one
+  context, so a batch of a fold that wants the other order draws them again.
 
 ## Untested cards
 
@@ -901,14 +1012,14 @@ Three faults in the port's own scripts turned up on the way, and are fixed:
   hardware instruction) have not, nor has any card on Windows. The built-in
   the hardware folds call has a sub-group 16 form that compiles for those
   cards (the compile gate) and has never run.
-- Speed work. The fold is at 15% of what the A750's matrix engines do, and
-  all of the rest is waiting for operand loads ("The A750's ceiling"). The
-  next fold, in the order the probe's rows point: 16 rows a sub-group in the
-  256-register mode, A' and B' stored in DPAS fragment order, one vector load
-  a fragment, and the band tuned again. Together they timed at 42.7 T-MAC/s on
-  an A750, 2.5 times the fold. Not timed: staging B through local memory, and
-  2D block loads with L1 prefetch on Xe2 and Xe-HPC
-  (`SPV_INTEL_2d_block_io`), which Alchemist does not have.
+- Speed work. The fragment fold is at 37% of what the A750's matrix engines
+  do, and the rest is still operand loads ("Where its time goes now"). Not
+  built yet: B' loaded as two halves a fragment with the loads sent first,
+  which timed at 61 T-MAC/s with A' loaded and 80 with A in registers. Not
+  timed: staging B through local memory, and 2D block loads with L1 prefetch
+  on Xe2 and Xe-HPC (`SPV_INTEL_2d_block_io`), which Alchemist does not have.
+- The fragment fold is sub-group 8 only. Battlemage and newer still mine with
+  `xmx16`, the first fold's form, which no card has run.
 - The restamp is the slow form described above (fine for a first version).
 - A run on Windows with an Intel card. The Windows core is built and checked
   on the CPU device only, and the app calls it experimental.
