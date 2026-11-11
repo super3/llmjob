@@ -85,14 +85,15 @@ const USAGE = [
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
-  '                           while it mines. Default: 7001 on the RTX 5090,',
-  '                           off on every other card; 0 leaves the driver\'s',
-  '                           clock everywhere; auto tries a lock on RTX 40',
-  '                           and RTX 50 cards and keeps it only where it is',
-  '                           faster. The fold barely touches DRAM,',
+  '                           while it mines, with no trial. Default: an RTX',
+  '                           5090 tries 7001 for five minutes and keeps it',
+  '                           only if it mines faster, and every other card',
+  '                           is left alone. 0 leaves the driver\'s clock',
+  '                           everywhere; auto runs that trial on RTX 40 and',
+  '                           RTX 50 cards. The fold barely touches DRAM,',
   '                           so a power-capped card spends the watts on its SM',
   '                           clock instead: 7001 took a 600 W RTX 5090 from',
-  '                           95.7 to 103.4 TH/s (+8%). Only the',
+  '                           95.7 to 103.4 TH/s (+8%). Only one',
   '                           5090 has been measured; lower raises the clock',
   '                           but cuts the work done per clock. Needs root, or',
   '                           a sudoers NOPASSWD rule for nvidia-smi. Released',
@@ -330,8 +331,9 @@ function buildSettings(opts, errors, report, update, serve) {
     gateHost = String(opts['--gate-host']).trim();
     if (!gateHost) errors.push('invalid --gate-host: must not be empty');
   }
-  // A memory clock to lock while mining, in MHz. Null (not given) means the
-  // RTX 5090 default applies (shared/memClock); 0 turns that off and leaves
+  // A memory clock to lock while mining, in MHz, with no trial. Null (not
+  // given) means the RTX 5090 default applies (shared/memClock): each 5090
+  // tries a lock and keeps it only if it is faster. 0 turns that off and leaves
   // every card at the driver's clock; 'auto' tries a lock on the cards that
   // have one to try and keeps it where it is faster. The value's rules, and the GUI's
   // environment variable that takes the same values, are shared/memClock's.

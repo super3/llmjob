@@ -75,7 +75,6 @@ The rows over 100% are odd PCs: one swung between 207 and 266 W, one is capped a
 | RTX 2080 Ti | Salad (300 W) | 1ff934b7 | 105.4 | 105.5 | 104.2 | 105.5 | 100% |
 | RTX 2080 Ti | Salad (260 W) | 7e24f884 | 97.4 | 97.9 | 94.8 | 94.6 | 99% |
 | RTX 2080 | Salad (260 W) | a5d2c787 | 79.0 | 80.9 | 76.6 | 76.0 | 98% |
-| RTX 2080 | Salad (172 W) | c6b154db | 125.5 | 128.8 | 126.6 | 121.8 | 97% |
 | RTX 2070 Super | Salad (215 W) | ef050aaa | 64.7 | 65.4 | 64.8 | 62.2 | 99% |
 | RTX 2070 Super | Salad (215 W) | 842bcd6e | 63.9 | 65.3 | 65.2 | 61.5 | 98% |
 | RTX 2070 | Salad (140 W) | b6b2b0c9 | 51.1 | 52.5 | 51.4 | 50.3 | 97% |
@@ -110,6 +109,8 @@ samples from the first minute on; the tensor peak is the card's SMs × 1024 MAC 
 - **`c6b154db` is not one RTX 2080.** OneZeroMiner's log on it reads `GPU 1 Share accepted`, and 125.5 TH/s is 190% of
   what GPU 0's 46 SMs can do at the 1,402 MHz it ran at. The PC has at least two cards; every miner mined them all,
   and `bench.sh` read the first card's power and clock. Its "% of best" stands, its TH/s and watts are not one card's.
+  So on 11 November its row (ours 125.5 against 128.8, 126.6 and 121.8, 97%) was taken out of the 9–10 November
+  table above, which holds single cards, and out of the count of rows: 53 NVIDIA rows, not 54.
 
 ### Salad, 10 November: what PeakMiner changed on RTX 20 at 2.20.1, and our fold in its shape (PR #290 goal work)
 
@@ -451,6 +452,11 @@ locked in turn, and keeps the lock only if it was 0.3% faster and ahead in every
 this branch's CLI on Kryptex: the trial measured 320.0 TH/s locked against 317.4 (+0.8%) and kept the lock, with 8
 shares accepted and none rejected in under six minutes. The lock is dropped when an LLM co-runs on the card, as
 every memory clock lock is.
+
+Changed on 11 November: an RTX 5090 runs this trial too, at 7001 MHz, and runs it by default. It used to be locked
+at 7001 MHz outright, on one run on one card (+8.0% at 600 W) whose earlier run had the two clocks level. Not
+measured: no 5090 has run the trial. The trial now also hands the card's clock to the driver before its first turn,
+so a lock left by a killed miner is not timed against itself; that is not run on a card either, only in the tests.
 
 ### rig01, 10 November: core clock offset on the RTX 4090 (item 6, second pass)
 
@@ -869,6 +875,151 @@ cost real cycles there.
 
 Box time: 3.1 box-hours (RTX 3090 31 min, RTX 5090 60 min over three PCs, RTX 5070 Ti 27 min, RTX 3060 24 min,
 RTX 4070 28 min, RTX 5070 16 min).
+
+### Salad, 11 November: what holds the tensor pipe on RTX 50 (PR #290 goal work)
+
+The probe round above left one question: on sm_120 a plain instruction between two IMMA costs a third to a half of
+a cycle, so the stream holds 94 to 96% of the pipe where the three competitors hold 98 to 99%. Is that the chip or
+the order ptxas picks? **It is the order.** Same probe, `earn/native/probes/pipeprobe2.cu`, with switches that place
+steps; **timing only: the streams compute nothing real, and a figure "by count" is not a mining rate.** Branch
+`goal/nv-probe-cards`; logs in `earn/tuning/pipeprobe/` (`logs2-*`).
+
+How it was run. RTX 5070 Ti PCs, CUDA 13.3, 8 warps (two a scheduler), 48 IMMA a k-step, 1 s runs; pipe use is 16
+cycles an IMMA a scheduler over the cycles taken. Three PCs that held 100.00% on the loads-only stream (acefdd76,
+801f7b6a, f54436e4) agreed on every stream as compiled to 0.01 point, and the rows below are theirs unless said;
+three other PCs had another load on the card (98.4 to 99.9% on loads only) and were left or are marked. ptxas
+moves steps, so each build's loop was read back from the binary. To get orders the source cannot ask for,
+`earn/tuning/pipeprobe/perm.py` moves whole instructions inside the compiled loop: it keeps every register and
+shared-memory dependency, clears the operand-reuse flags (the card takes a flagged operand from a latch without
+checking which register the latch holds), and the probe launches the reordered cubin. A checksum of the kernel's
+output says whether a reordered loop computed what the compiler's did.
+
+**The three competitors, from outside** (normal runs through the share relay, 100 s each; PeakMiner 2.20.7,
+SRBMiner 3.8.2, OneZeroMiner 1.8.5). Same outline as on the RTX 4090.
+
+| Card, PC, limit | Miner | m x n x k | Tile | Memory controller | W | SM MHz | Shown TH/s | Of the tensor peak |
+|---|---|---|---|---|---|---|---|---|
+| RTX 5070 Ti, eaa66a4e, 300 W | PeakMiner | 30720 x 16384 x 65536 | 24 x 8 | 0% | 300 | 2865 | 202.8 | 98.7% |
+| | SRBMiner | 16514 x 62720 x 65536 | 24 x 8 | 0% | 300 | 2857 to 2880 | 200.4 | 97.6% |
+| | OneZeroMiner | 13440 x 32768 x 65536 | 24 x 8 | 0 to 1% | 300 | 2865 to 2880 | 200.3 | 97.3% |
+| RTX 5090, 218578cc, 800 W | PeakMiner | 30720 x 16384 x 65536 | 24 x 8 | 0% | 470 | 2527 | 436.4 | 99.2% |
+| | SRBMiner | 16514 x 62720 x 65536 | 24 x 8 | 0% | 469 | 2505 to 2512 | 429.9 | 98.4% |
+| | OneZeroMiner | 32640 x 32768 x 65536 | 24 x 8 | 0% | 463 | 2520 to 2527 | 429.1 | 97.7% |
+
+- 24 x 8 is 192 sums a thread: 48 IMMA a k-step a warp and two warps a scheduler, as on the 4090. k 65536, rank
+  128, fill 64, no memory traffic, 0.3 to 1.0 GiB in use. SRBMiner's tile was 10 x 16 on the 4090.
+- So they do not get their 98 to 99% from another shape. The rate is their own display; the stand-in pool's
+  credit over 100 s is too coarse to check it.
+
+**What a step costs by its place** (cycles an IMMA a scheduler; 16.000 is a full pipe).
+
+| Stream | Order | Cycles an IMMA | Pipe use |
+|---|---|---|---|
+| Loads only | | 16.000 | 100.00% |
+| 192 independent adds a chunk | as compiled: 7 in each of 27 gaps | 16.323 | 98.02% |
+| | reordered: 1 after every IMMA (PC with another load: 16.098 without the adds) | 16.131 | |
+| | reordered: 2 in each of 89 gaps | 16.167 | 98.97% |
+| | reordered: 3 in each of 56 gaps | 16.167 | 98.97% |
+| | reordered: 4 in each of 43 gaps | 16.317 | 98.06% |
+| | reordered: 8 in each of 19 gaps | 16.549 | 96.68% |
+| | reordered: one run of 184 | 16.672 | 95.97% |
+| 192 multiplies, shifts or byte selects | as compiled: 7 a gap | 16.323 each | 98.02% |
+| | reordered: 1 after every IMMA (the PC with another load) | 16.105 to 16.111 | |
+| 192 XOR3 of sums, one after every IMMA | as compiled | 16.057 | 99.64% |
+| | the same without the never-taken adds ptxas put in | 16.797 | 95.26% |
+| | each XOR3 moved to another gap, 0 to 39 IMMA later | 16.67 to 17.00 | 94.2 to 96.0% |
+| 96 XOR3 of sums, one after every second IMMA | as compiled | 16.036 to 16.051 | 99.68 to 99.77% |
+| 2 XOR3 of sums after every IMMA | as compiled | 16.91 to 17.24 | 92.8 to 94.6% |
+| XOR3 and an add that waits on it, after every IMMA | as compiled | 17.380 | 92.06% |
+| XOR3 and 2 shared stores after every IMMA | as compiled | 49.3 | 32.4% |
+| XOR3 and 2 loads that each wait on the last, after every IMMA | as compiled | 29.3 | 54.7% |
+| 4 warps fold, 4 only help (11 plain steps a pass, flat out) | helpers got 1.7 steps an IMMA | 16.872 (16.130 idle) | 94.83% |
+
+- **One plain step after an IMMA is free on sm_120, whatever its kind. The second in the same gap costs about 0.2
+  cycle if it is independent and about a cycle if it reads sums or waits on the first; four cost 1.4 and eight
+  5.2.** On sm_89 a k-step's worth weaves in for nothing. ptxas does not know the difference: it packs seven or
+  eight steps behind one IMMA and leaves the next gaps empty, and that packing is the 2 to 5% the last round saw.
+- A warp that only helps gets under two issue slots an IMMA beside a folding warp and costs it 0.4 cycle a step.
+  Helper warps are no way out.
+- With fewer than eight warps running, the same one-XOR3-a-gap loop costs 0.3 to 0.7 cycle an IMMA: 16.83 with
+  one warp (16.14 without the XOR3), 16.46 with one warp on each of two or four schedulers (16.14), 16.64 with
+  two warps on each of one to three schedulers (16.02), 16.06 with all eight (16.00). I don't know why.
+- Shared stores are dear when they come close together: 48 wide stores a chunk, two in a gap, cost nothing
+  (16.000), 96 narrow ones at one every second IMMA cost 1.3 cycles an IMMA (17.336), and four in a gap about 20
+  cycles a gap (18.369).
+- An XOR3 of sums is free only where ptxas puts it. In its loops the instruction right after an IMMA never names a
+  register in the aligned block of eight that holds the IMMA's four sums; where an XOR3 would, ptxas puts a
+  never-taken uniform add before it. Take those adds out and each such XOR3 costs about 1.5 cycles.
+- `-Xptxas -O1` does not keep the source's order, and is slower (draw 92.1%, all together 90.1%).
+
+**The readout and the draw** (a draw unit is the probe's 18 instructions for 16 bytes).
+
+| Stream | As compiled | Reordered, one step a gap |
+|---|---|---|
+| Readout, three runs of 32 XOR3 | 98.40% (6 or 7 a gap) | 97.5 to 97.7% |
+| Readout written one XOR3 after every IMMA of two k-steps (`-DRD=4`) | 97.96% (ptxas bunches them again, and spills) | |
+| A readout's count of XOR3, one after every second IMMA | 99.68 to 99.77% | |
+| 1 draw unit a k-step | 99.64% | 99.97%, same checksum |
+| 2 draw units | 98.86% | 99.68%, same checksum (99.89% with the reuse flags kept, not checked) |
+| 3 draw units | 97.9 to 98.0% | faults |
+| 4 draw units | 96.92% | 96.02% (one or two a gap; not checked) |
+| XOR3 after every second IMMA, and 1 draw unit | 98.98% | 97.77%, checksum differs: not the same program |
+| the same with 2 draw units | 98.29% | |
+| Three-run readout and 2 / 3 / 4 draw units | 97.04 / 96.32 / 94.08% | faults, or 95.14% with 3 |
+
+- Loads and a readout's count of XOR3 hold 99.7%, as compiled. With one draw unit 99.0%. Two draw units alone,
+  one step a gap, hold 99.7%.
+- Reordered draws of three or four units fault (illegal memory access) in most orders, with every dependency the
+  listing shows kept. `perm.py` now also keeps the step after an IMMA off that IMMA's block of eight registers
+  (the draw's offset register shares a block with the first sums), which would explain it. That rule is not
+  tested: the box budget ran out.
+
+**Watts on an RTX 5090** (PC 218578cc, 800 W limit, operand bytes like a real fold's: 64 + u - v with u and v in 0
+to 63; 30 s runs). This card ran everything at 2506 to 2532 MHz, miners too, so nothing was capped. No 450 W PC
+turned up in four tries (575, 600, 600 and 800 W limits).
+
+| Stream | Pipe use | By count, T-MAC/s | W |
+|---|---|---|---|
+| Loads only | 100.00% | 439.2 | 355 |
+| + a readout's count of XOR3 | 99.77% | 437.7 | 384 |
+| + readout in three runs, as compiled | 98.37% | 430.6 | 375 |
+| Loads and 1 draw unit, as compiled / one step a gap | 99.64 / 99.97% | 435.8 / 437.0 | 395 / 403 |
+| Loads and 2 draw units, as compiled / one step a gap | 98.77 / 99.68% | 432.3 / 434.8 | 427 / 426 |
+| Loads and 4 draw units, as compiled | 96.92% | 422.3 | 473 |
+| XOR3 and 1 draw unit, as compiled | 98.98% | 432.3 | 421 |
+| XOR3 and 2 draw units, as compiled | 98.29% | 429.1 | 448 |
+| Three-run readout and 4 draw units, as compiled | 94.08% | 410.2 | 481 |
+| PeakMiner / SRBMiner / OneZeroMiner | 99.2 / 98.4 / 97.7% | 436.4 / 429.9 / 429.1 TH/s | 470 / 469 / 463 |
+
+- A readout's XOR3 cost 29 W and a draw unit 30 to 40 W at this clock. The competitors' whole stream draws 79 to
+  86 W more than loads and XOR3 alone, which is two to three of the probe's units; a real fold needs 3.5 units'
+  worth of bytes a thread a k-step. So the probe's unit is too dear in watts by about half, as well as too long.
+
+**What it means for an RTX 50 kernel**
+
+- The budget is about one plain instruction an IMMA, each in its own gap: 48 a k-step a warp. The readout takes
+  24 of them on average and the fragment loads 4. The probe's draw is 63 (3.5 units of 18), which cannot fit. A
+  draw that writes the fragment registers directly (wide loads and three-input adds, no store and no ldmatrix) is
+  about 24 instructions for a thread's 64 bytes, and 24 + 24 is 48. That count is the only thing the competitors'
+  98 to 99% tells us about their draw.
+- ptxas will not lay such a stream out by itself. It kept one step a gap only where each step read sums the IMMA
+  before it wrote. So either every step is tied to an IMMA by a value it reads, or the loop is reordered after
+  ptxas, as `perm.py` does.
+- Keep eight warps running the loop, and keep an XOR3 of sums where ptxas puts it.
+
+**Not verified**
+
+- Why reordered draws of three or four units fault, and whether the block-of-eight rule stops it.
+- A true readout (each IMMA's two XOR3 inside the 48 gaps after the chunk's last k-step) at one XOR3 a gap: the
+  99.7% is for the count, with XOR3 that read sums on the compiler's schedule.
+- Readout and draw together above 99.0%.
+- The watts under a 450 W cap. On a card that clocks to 2880 MHz a cap would bite every stream here.
+- One-step-a-gap figures for adds and other kinds come from the PC with another load (16.098 cycles on loads
+  only); on a clean PC the same build had 56 adds held in one gap by a false dependency in the tool.
+- Why a card with an 800 W limit sits at 2520 MHz from 355 W up.
+
+Box time: 3.4 box-hours for 3 budgeted (RTX 5070 Ti 71 min over seven PCs; RTX 5090 135 min, of which 118 were an
+idle box: this PC stalled for two hours with the delete waiting behind a log poll).
 
 ## A100-class (sm_80)
 
@@ -3112,6 +3263,26 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   readout 3 to 4, the offsets' global loads 2. Not built: tables laid out rank-index-major, so that a warp draws
   one k-pair for 32 row groups and every lane reads its own 8 bytes of one table row. Tables, switches and what
   ptxas had to be led around: `earn/native/probes/README.md`, "The draw fold".
+- **The draw fold's third design: the table reads are fixed, and it still loses (11 November, rig01's RTX 4090,
+  probe only).** Tables laid out by rank index, sixteen rows to a 16-byte word, so no table read has a bank
+  conflict; every warp draws one unit of B and one of A a k-step, two k-steps ahead, so that no warp should wait
+  for another. Probe figures, k 8192 (branch `goal/nv-kernel`; no hash or host side, so no mining rate):
+
+  | Stream | CPU check | Pipe use | Clock, watts | TH/s by count |
+  |---|---|---|---|---|
+  | Draw alone, nothing holding the warps together | n/a | 96.15% (second design: about 79%) | | |
+  | Everything, nothing holding the warps together | 0 of 2,560 regions | 92.38% | 2564 MHz, 448 W | 310 |
+  | Everything, a barrier a chunk | 232 of 2,560 | 80.98% | 2625 MHz, 450 W | 279 |
+  | Everything, a counter wait a chunk, two loop copies | 64 of 2,560 | 73.98% | 2601 MHz, 428 W | 252 |
+  | Everything, a barrier a k-step (the form left on the branch) | 2,560 of 2,560 | 73.30% | 2685 MHz, 411 W | 258 |
+
+  The release fold is 317.3 TH/s here, so every form loses, and only the last is correct. The conflict-free
+  tables did what they were for. What is left is the hold: the four schedulers of an SM run this loop up to 3%
+  apart, ptxas puts the draw's stores anywhere in a k-step (and moves the mma, so nothing in the source pins
+  them), and a warp a few mma behind has its stage overwritten. A barrier makes it correct and starts both warps
+  of a scheduler at the same place of the same code, where (as the figures read) they are busy at once: a barrier a
+  k-step alone costs
+  0.8 points, with the draw 18. Tables and the reasoning: `earn/native/probes/README.md`, "The third design".
 
 ## Keeping this file current
 

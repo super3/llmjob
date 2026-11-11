@@ -621,7 +621,13 @@ class Bench:
                    "ours": figure(r["miners"].get("ours"), mean_after=60),
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
-                   "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")}}
+                   "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
+                   # Every miner's samples, and its mean after the first minute beside the figure above, so a
+                   # row can be scored again another way later. The 9-10 November run kept only the one
+                   # figure for each miner, and its rows could not be re-scored (11 November).
+                   "samples": {k: [[x["t"], x["th"]] for x in v.get("samples", [])]
+                               for k, v in r["miners"].items()},
+                   "means": {k: figure(v, mean_after=60)[0] for k, v in r["miners"].items()}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":
