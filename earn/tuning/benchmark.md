@@ -1193,6 +1193,133 @@ runs of 4, 3 and 3 rounds. The control is the PR's default; the twin is a second
   RX 9070 XT's 34 ms, as long as the gap between stops here.
 - **Cost:** two boxes over four PCs (one of them with no usable GPU), about 4.5 box-hours, high priority.
 
+### Salad, 11 November: the slow PC's queue stops on RDNA 4 and the RX 7800 XT (PR #290, AMD goal)
+
+The entry above found that a slow RX 7900 XTX PC stops a busy compute queue 30 times a second, and that the hash on
+its own queue ends the stops on gfx1100. gfx1101 (RX 7800 XT) and RDNA 4 still hash on the fold's queue. This asks
+whether the stops cost us there too, and what ends them. Not rows.
+
+**Method.** As above: one box a PC, the fold alone with clock stamps first (is the PC a slow one?), then `hashrate.js`
+45 s after 12 s, the builds taking turns, with a twin for the noise, scored from round 2 (the first run on a cool
+RX 9060 XT read 1 to 3% high). Then stamps of the miner's own launches, 6 or 8 of each setting: was the queue
+stopped in that launch (a gap of 0.3 ms or more with no block starting or ending)? The run's CPU time is bash's
+`time` on the whole `hashrate.js` process.
+
+**RX 9060 XT, `3540c3e2`** (the 111% row's PC; k 4096, 256 column offsets a launch)
+
+**It is a slow PC, with the same stops.** The fold alone at the miner's launch read 57.4 and 57.6 TMAC/s at 2561 and
+2528 MHz; fast RX 9060 XT PCs mine at 70.0 to 73.2 TH/s. A launch is 38 ms here. In one 155 ms launch the queue was
+stopped 5 times for 2.08 to 2.09 ms, 33.46 ms apart, and 181 to 251 waves came back on another SIMD each time. That
+is the RX 7900 XTX PC's pattern with a shorter stop (2.1 ms, not 3.6 to 4.0).
+
+| Setting | TH/s, rounds 2 on | Against the default | Launches stopped | CPU time of a 57 s run |
+|---|---|---|---|---|
+| Default (hash on the fold's queue) | 55.28–55.51 (9 rounds) | — | 8 of 8 | 229 s |
+| Twin | 55.26–55.56 | −0.31 to +0.31% (9 rounds) | — | 229 s |
+| `PEARL_AMD_HASHQ=1` (hash on its own queue) | 55.19–55.28 | −0.23, −0.04, −0.27% | 5 of 6 | — |
+| 128 offsets a launch (19–22 ms) | 54.81–54.98 | −0.61, −0.65, −1.12% | 4 of 6 | — |
+| 128 offsets and the hash queue | 54.93–55.01 | −0.70, −0.62, −0.76% | — | — |
+| Ticker every 2 ms (`PEARL_AMD_TICK_US=2000`) | 56.76–57.43 | **+2.44 to +3.68%** (7 of 7) | 2 of 8 | 273–281 s |
+| Ticker every 0.5 ms | 56.96–57.12 | +3.10, +2.80% | — | 308–309 s |
+| Ticker every 10 ms | 56.03–56.66 | +1.14, +2.26% | 4 of 6 | 239–241 s |
+| Ticker every 2 ms that does not wait (`PEARL_AMD_TICK_WAIT=0`) | 56.92–57.42 | **+2.54 to +3.66%** (4 of 4) | 0 of 6 | 250–258 s |
+| That every 0.5 ms | 55.24–57.30 | +3.45, −0.31, +2.50, −0.45% | 3 of 4 | 272–278 s, or 237 s |
+| That every 5 ms | 55.47–57.02 | +2.72, −0.04% | — | 252 s, or 230 s |
+
+- **The hash queue does not end the stops on RDNA 4.** It was level in the rate (round 1 read −1.11%, the default
+  running first on the cool card) and 5 of 6 launches were still stopped. A launch here is 38 ms, longer than the
+  33 ms between stops, so every launch meets one, and the hash queue only gets work once a launch. Halving the launch
+  did not help either: 4 of 6 launches stopped, and the shorter launch costs 0.6 to 1.1% by itself.
+- **The ticker does:** a thread that launches a one-thread kernel on a queue of its own every 2 ms
+  (`PEARL_AMD_TICK_US`, branch `goal/amd`). +2.4 to +3.7% in 7 of 7 rounds over three races. Every 0.5 ms is the
+  same; every 10 ms gets a third to two thirds of it and leaves stops in 4 of 6 launches.
+- **It costs CPU.** The ticker's thread waits for each tick's kernel, and HIP's wait spins. The default run takes
+  229 s of CPU in 57 s (four cores busy before any ticker); the ticker every 2 ms takes 44 to 52 s more, 0.8 to 0.9
+  of a core, every 0.5 ms 1.4 cores, every 10 ms 0.2.
+- **A ticker that does not wait** (`PEARL_AMD_TICK_WAIT=0`: it records an event behind its kernel and skips a tick
+  while the last one has not run) kept the gain every 2 ms at half the CPU cost, 0.4 to 0.5 of a core, and none of 6
+  stamped launches was stopped. But it is not dependable at other intervals: every 0.5 ms 3 runs of 6 read the
+  default's rate, and every 5 ms 1 of 3. Those runs took almost no extra CPU time either (237 s and 230 s), and a
+  guard that waits for a tick not seen done in 50 ms never fired in them, so the ticks ran and did nothing. Why is
+  not known. **Every run that gained took more CPU time (11 to 80 s more), and the four that took almost none (1 to
+  8 s) gained nothing.**
+- **The stops are the smaller part of what this PC loses.** With the ticker the stamped launches still ran only 20
+  to 32 of the card's 48 blocks for about 4 ms every 17 ms: all 48 at once for 66 to 81% of a launch (8 launches;
+  61% by default, 2 launches). That looks like another program drawing 60 frames a second. With a clock 5% under a
+  fast PC's (2530–2560 MHz against about 2700) that is most of the 20% this PC is short of a fast one. Nothing of
+  ours got it back.
+- **Not a default.** `PEARL_AMD_TICK_US` stays 0 on every card. A default needs a fast RX 9060 XT PC to show the
+  ticker is not behind there, an RX 9070 XT, the hit check, and a decision on the CPU it takes: a ticker on every
+  RDNA 4 PC would spend half a core or more where there are no stops to end.
+
+**Duel on this PC**, as in the entry above: SRBMiner 3.8.6, ours the PR head's core (5d2b012e, the default build), and
+the same core with the ticker every 2 ms; 5-minute turns, two each, each scored by its 24 ten-second samples after the
+first minute.
+
+| | Turn 1 (TH/s) | Turn 2 | Against SRBMiner | Clock, probe beside a 3-minute turn |
+|---|---|---|---|---|
+| Ours, default | 55.34 | 55.37 | **112.4%** | 2550 MHz (2479–2569) |
+| Ours, ticker every 2 ms | 57.10 | 57.19 | **116.0%** | not read |
+| SRBMiner 3.8.6 | 49.25 | 49.24 | — | 2130 MHz (2057–2191) |
+
+- The row says 59.7 against 54.0 for this PC on 9–10 November. Both miners are lower now (ours 7%, SRBMiner 9%), so
+  the PC is doing more of something else than it was, and SRBMiner loses to it too.
+- SRBMiner's own 15-minute average at its turns' ends: 49.30 and 49.19. All shares accepted: ours 3, with the ticker
+  6, SRBMiner 3.
+- The probe read 16% less clock under SRBMiner than under ours, in all 13 readings. On the RX 7900s the two were
+  within 2%. Whether SRBMiner runs this card at a lower clock or the probe's one wave shares a SIMD with SRBMiner's
+  is not known.
+
+**RX 7800 XT** (k 2048, 128 column offsets a launch)
+
+One box, three PCs in turn.
+
+| PC | Fold alone at the miner's launch | Clock | Stops in one long launch | Default (TH/s) |
+|---|---|---|---|---|
+| `56ae1be5` | 34.51 TMAC/s, launch 15.9 ms | 2525 MHz | one of 1.05 ms in 128 ms | 34.25 (hash queue 34.30) |
+| `16f1685c` | the PC could not fetch the repo; nothing ran | — | — | — |
+| `559a11d6` (a 103% row's PC) | 29.66 TMAC/s, launch 18.5 ms | 2309 MHz | 4 of 3.12–3.24 ms in 150 ms, 42.3 ms apart | 29.52–29.55 |
+
+`56ae1be5` is a fast PC, so the question has no answer there. `559a11d6` is a slow one: 9% less clock, and stops 24 times
+a second with 520 to 602 waves coming back on another SIMD each time. The fold test's launches also sit 1.1 ms apart
+there (none on the fast PC). The race ran on `559a11d6`, 4 rounds:
+
+| Setting | TH/s, rounds 2 to 4 | Against the default | Stamped launches, 6 each | CPU time of a 57 s run |
+|---|---|---|---|---|
+| Default (hash on the fold's queue) | 29.54, 29.55, 29.52 | — | 1 stopped (3.27 ms) | 228 s |
+| Twin | 29.55, 29.54, 29.53 | +0.03, −0.03, +0.03% | — | 228 s |
+| `PEARL_AMD_HASHQ=1` | 29.42, 29.39, 29.52 | −0.41, −0.54, 0.00% | 6 begin with a stall of 1.3–1.7 ms | 285 s |
+| Ticker every 2 ms | 28.33, 28.34, 28.33 | −4.10, −4.09, −4.03% | 6 have one or two stalls of 1.2–1.6 ms | 322 s |
+| Ticker every 2 ms that does not wait | 28.35, 28.35, 28.33 | −4.03, −4.06, −4.03% | — | 281 s |
+
+- **The hash queue does not win on a slow RX 7800 XT.** Level or behind in every round (round 1 read −0.30%). On this
+  PC work on a second queue stops the fold's queue itself: with the hash queue every launch begins with a stall of
+  1.3 to 1.7 ms, and 60 to 90 of the 90 blocks then running come back on another SIMD. The ticker's stalls come
+  12 ms apart, and it loses 4%. So a second queue here trades the PC's own stop (one launch of 6) for a shorter one
+  in every launch.
+- **gfx1101 keeps the hash on the fold's queue.** It was level or 0.03 to 0.27% behind on two fast PCs on 10
+  November, and it is level or behind on this slow one.
+- **The hash queue takes one more CPU core.** 285 s of CPU against 228 s in a 57 s run, the same on both PCs. `ps -L`
+  shows why: the miner's process runs 4 threads at 100% by default, 5 with the hash queue, 4 and two at 82% with the
+  ticker, 4 and one at 91% with the ticker that does not wait. That is one busy thread for each HIP stream with work
+  on it. The hash queue has been the default on gfx1100 since 10 November, and its CPU time was not measured there.
+
+**What the three slow PCs say**
+
+| Slow PC | Stops in the fold alone | A second queue with work on it |
+|---|---|---|
+| RX 7900 XTX `ae456453` | 3.6–4.0 ms, 30 a second | ends them: hash queue +8.9% |
+| RX 9060 XT `3540c3e2` | 2.1 ms, 30 a second | ends them only if it has work every 2 ms: hash queue level, ticker +2.4 to +3.7% |
+| RX 7800 XT `559a11d6` | 3.2 ms, 24 a second | stops the fold itself: hash queue 0 to −0.5%, ticker −4% |
+
+- A slow PC is not one thing, and no setting is right on all three. No default changed. The ticker is a switch on
+  branch `goal/amd` (`PEARL_AMD_TICK_US`, `PEARL_AMD_TICK_WAIT`), off on every card, not for merging as it is.
+- Every box here is a WSL2 container on someone's Windows PC. Whether a miner run from Windows on these PCs is
+  stopped the same way is not known.
+- Not known either: why SRBMiner loses less than we do on the slow RX 9060 XT PC (its launch pattern was not
+  measured); a slow RX 9070 XT; the ticker on a fast RDNA 4 PC; what the four busy threads of the default are for,
+  and whether a blocking wait would free them.
+
 ## Intel Arc (Alchemist, on a rented rig)
 
 The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
@@ -1389,6 +1516,11 @@ What future speed work needs: how to measure, the limits found, and what has alr
   `ae456453` against 55.0 without. Time a race there with the trace off.
 - SRBMiner 3.8.6 needs `wget` in the image (3.8.2 doesn't). Without it 3.8.6 exits at once, and without a terminal it
   prints nothing: that is what "would not start on Salad" was on 9 November.
+- Time the whole process beside the rate when a host change adds a queue (`time` on the `hashrate.js` run; `ps -L`
+  shows the threads). Each HIP stream with work on it keeps one more thread busy in the ROCm 7.2 image: the default
+  run takes four cores, the hash queue a fifth (285 s of CPU against 228 s in 57 s, RX 7800 XT, 11 November), and
+  the ticker that ended an RX 9060 XT PC's queue stops 0.4 to 0.9 of a core. Its runs that took no CPU gained
+  nothing.
 
 **Limits found**
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
@@ -2249,6 +2381,15 @@ The arms, the raw runs and the table script are on branch `goal/gate` (4014c732,
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RDNA 4 and the RX 7800 XT: the hash on its own queue, and a shorter launch, against a slow PC's queue stops (11
+  November, Salad; the numbers are under AMD Radeon). On a slow RX 9060 XT (`3540c3e2`) the hash queue was level
+  (−0.04 to −0.27%, twin ±0.3%) and 5 of 6 launches were still stopped: a launch there is 38 ms, longer than the
+  33 ms between stops, and the hash queue gets work once a launch. 128 offsets a launch read −0.6 to −1.1%, with or
+  without the hash queue. A ticker kernel on a third queue every 2 ms ends the stops there (+2.4 to +3.7%) but takes
+  half a CPU core or more, so it is a switch on branch `goal/amd` (`PEARL_AMD_TICK_US`, `PEARL_AMD_TICK_WAIT`), off
+  by default, not for merging as it is. On a slow RX 7800 XT (`559a11d6`) the hash queue read 0 to −0.5% and the
+  ticker −4%: there a second queue's work stops the fold's queue itself, in every launch. And the hash queue takes
+  one more CPU core.
 - RX 7900: several batches a launch, and fewer commands between folds (the AMD goal, 10–11 November, Salad, two RX
   7900 XTX PCs and an XT; the numbers are under AMD Radeon). The review's lead was that each launch costs more on a slow
   PC, so fewer, longer launches should win there. They lose: 4 batches a launch, as strips so that B' in use stays one
