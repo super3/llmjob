@@ -3676,6 +3676,33 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   count is 4% over the release and 2 to 3% under the other miners (338.6 to 341.9). Nothing ships from this
   round. Tables: `earn/native/probes/README.md`, "The price of a step, and the rotation fold".
 
+### rig01 RTX 4090, 11 November: the rotation fold as a miner, behind a switch, raced against the release fold (branch `goal/nv-mine`)
+
+- **What ran.** The rotation fold of the note above, built into the CUDA core as a second sm_89 fold that is
+  off unless `PEARL_FOLD_ROT=1` is set (`earn/native/README.md`). One addon for both arms, built on rig01 with
+  CUDA 12.6; the release kernels' sources are unchanged. rig01's RTX 4090 at the 450 W limit. It mines k 65536
+  with a tile of 12 rows by 16 columns.
+- **Correct.** `verify-hits.js`: 400 of 400 hits verified, twice (21 and 13 salts). A stand-in pool that checks
+  every share as the real one does: 52 of 52 accepted. Kryptex: 24 shares sent in two 330 s legs, 24 accepted,
+  0 rejected (the release fold's two legs: 17 accepted, 0 rejected).
+- **The race**, release and rotation alternating, 5 minutes counted a leg, twice each, two ways.
+
+  | | Release fold | Rotation fold | Gain |
+  |---|---|---|---|
+  | On Kryptex, the miner's own count | 317.12 and 317.26 TH/s, 2531 MHz, 449 W | 330.56 and 330.36 TH/s, 2594 MHz, 449 W | +4.2% |
+  | `hashrate.js` | 317.42 and 317.29 TH/s, 2531 MHz, 449 W | 330.95 and 330.96 TH/s, 2596 MHz, 449 W | +4.3% |
+  | Kryptex shares accepted / rejected | 8 / 0 and 9 / 0 | 13 / 0 and 11 / 0 | |
+
+  Twins of an arm are 0.06% apart at most. The gain is in the clock (+2.5%) and in the tensor pipe (95.6% to
+  97.2%). Accepted shares cannot resolve it: at Kryptex's target a 5-minute leg holds about 10 shares, so a
+  leg's rate by shares has a standard deviation of a third (release 210 and 270 TH/s, rotation 360 and 330).
+- **Against the others.** 330.5 as a mining rate is 96.7 to 97.6% of the other miners' 338.6 to 341.9 on this
+  card (measured earlier, not rerun here); the release is 92.8 to 93.7%.
+- **Not shipped.** The switch is off by default and no build makes the fold's cubin. Its loop is written by
+  hand and assembled by our own assembler, CI does not build it, only this one RTX 4090 has run it, and RTX 30
+  and RTX 50 have no such fold. Table, checks and costs: `earn/native/probes/README.md`, "The rotation fold in
+  the miner".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.

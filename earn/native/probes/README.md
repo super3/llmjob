@@ -2896,3 +2896,70 @@ means the miner launching a patched cubin. By count it is 4.2% above the release
 other miners' 338.6 to 341.9. What the price list says is still to be had: B's fragments shared by the two warps of a
 column slot (16 ALU steps and half of B's gathers; it needs the transcripts out of shared memory and the two
 bands in step), and the offsets load, which is 2.9 units a warp a k-step.
+
+### The rotation fold in the miner, behind `PEARL_FOLD_ROT=1`, and its race against the release fold (RTX 4090, 2026-11-11)
+
+The rotation fold of the section above is now a second sm_89 fold in the CUDA core, off by default
+(`earn/native/README.md`, "A second RTX 40 fold behind a switch"). This is what it does as a miner, on rig01's
+RTX 4090 at the 450 W limit, driver as installed, one addon for both arms (built here with CUDA 12.6; the arm
+is the environment switch and nothing else). Branch `goal/nv-mine`.
+
+Checks, in order. None failed.
+
+| Check | Result |
+|---|---|
+| `verify-hits.js`, 150 s at 2^234 (every hit recomputed in JS as the pool's verifier does) | 851 hits, 400 of 400 verified, 0 failed, 21 salts |
+| the same on the final host code, 90 s | 492 hits, 400 of 400, 13 salts |
+| stand-in pool (`verify-pool.js serve`, 2^206, a job every 30 s), the CLI mining on it | 52 shares at k 65536, 52 accepted, 0 rejected |
+| Kryptex (prl-us.kryptex.network:7048), the CLI, two legs of 330 s | 24 shares accepted, 0 rejected |
+
+The race. Release fold (A) and rotation fold (B), alternating, 5 minutes counted a leg.
+
+| Leg | Fold | TH/s, the miner's own count | Clock | Watts | Temp | Shares accepted / rejected |
+|---|---|---|---|---|---|---|
+| pool 1 | release | 317.12 | 2531 MHz | 449.2 | 77 C | 8 / 0 |
+| pool 2 | rotation | 330.56 | 2594 MHz | 449.1 | 77 C | 13 / 0 |
+| pool 3 | rotation | 330.36 | 2594 MHz | 449.2 | 77 C | 11 / 0 |
+| pool 4 | release | 317.26 | 2531 MHz | 449.2 | 77 C | 9 / 0 |
+| `hashrate.js` 1 | rotation | 330.95 (sd 0.38) | 2596 MHz | 449 | 77 C | |
+| `hashrate.js` 2 | release | 317.42 (sd 0.42) | 2531 MHz | 449 | 76 C | |
+| `hashrate.js` 3 | release | 317.29 (sd 0.42) | 2530 MHz | 449 | 76 C | |
+| `hashrate.js` 4 | rotation | 330.96 (sd 0.38) | 2596 MHz | 449 | 76 C | |
+
+Pool legs: the CLI through `tuning/salad/sharetap.py`'s relay, 330 s, the first 30 s not counted; TH/s is the
+mean of the CLI's one-second figures (287 or 288 of them), the shares are the whole leg's. `hashrate.js`: 300 s
+after 10 s. Clock, watts and temperature from nvidia-smi every 2 s.
+
+- Gain on the pool: 330.46 against 317.19, +4.2%. The two release legs are 0.04% apart and the two rotation
+  legs 0.06%.
+- Gain by `hashrate.js`: 330.96 against 317.36, +4.3%. Twins 0.04% and 0.003% apart.
+- By accepted shares the legs cannot be told apart, and could not be: Kryptex's target was 2^203 throughout, a
+  share is worth 9.0e15 MACs, so a 5-minute leg holds about 10. Counted over the 300 s: release 7 and 9 shares
+  (210 and 270 TH/s, each with one standard deviation of about 85), rotation 12 and 11 (360 and 330, about 100).
+  What the shares show is that the pool takes the fold's work: every one sent was accepted.
+- The miner's count is work in batches the card finished, over time, the same code for both folds. The fold's
+  own check of that count is the probe's, which counts cycles: 331.4 at 2594 MHz.
+- Pipe use, from the count and the clock (TH/s = 0.13107 x MHz x pipe): release 95.6%, rotation 97.2% on the
+  pool and 97.3% in `hashrate.js`. The probe held 97.48% in the chunk loop and 97.36% over whole tiles.
+
+Where the last 0.3% to the probe's figure goes. The probe: 331.4 by count, 331.9 by tiles and time, one job,
+one salt, launches of 160 ms. The miner: 330.96 with one job, 330.46 on the pool with a job every 30 to 60 s.
+A job switch costs about 0.15%: its two queued batches are finished and dropped (up to 80 ms of work), the
+draw takes 17 ms, and the first quarter second of the job runs in the definition's order of k while the helper
+searches. The rest, 0.1 to 0.3%, is the salt changes (one about every 6.8 s: the restamp's commit, and one empty
+batch) and whatever the 58 MB of tables and offsets of a salt cost in the L2 against the probe's 34 MB. It is
+not the batch length: 16, 32, 64, 128 and 256 tiles a block a batch (20 to 320 ms) gave 330.89, 331.05,
+330.86, 331.03 and 330.99 TH/s over 45 s each.
+
+What it costs the PC. The order search is 0.22 s of one core for every salt (512 chunks, about 0.43 ms each
+after the gain of a swap was worked out from the four counters it changes; the probe's search took 5 ms a
+chunk), on one helper thread a card that sleeps the rest of the time: 3% of a core. Measured as the
+miner process's CPU time over 54 s of `hashrate.js`: 54.2 CPU-seconds with the release fold (the search thread
+spins on one core while it waits for a batch, in both) and 55.8 with the rotation fold. The card holds 2,666 MiB
+against 1,326 (the operands' trees are 32 times larger at k 65536). A share is 1,823 KB, 11 KB compressed.
+
+The fallbacks. With the switch set and the core opened without `cardK` (as the miner opens it after a pool has
+turned down shares at another k), the card mines k 2048 on the release fold: 317.7 TH/s at 2534 MHz. A new job
+every 30 s (`PEARL_JOB_EVERY=30`, 60 s): 330.48 against the release fold's 317.65. Stopping ends the helper
+thread and frees the card (every run above ended that way). The cubin was rebuilt from source three times and
+came out the same bytes each time (sha256 1b8df26f...).
