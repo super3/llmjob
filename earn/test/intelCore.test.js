@@ -372,6 +372,15 @@ describe('loading the Intel core (main/pearlCore)', () => {
       expect(() => f({})).toThrow(new Error(NO_GPU));
       expect(() => f({})).toThrow(new Error(NO_GPU));
       expect(intel.createCore).toHaveBeenCalledTimes(3);
+      // What the real addons do from the second start on: pearl_core.cc keeps
+      // its class in one global, so with the 12.8 build loaded, the Intel
+      // addon's createCore builds the 12.8 build's core and fails with ITS
+      // words. An Intel rig is still told about its Intel driver, not NVIDIA's.
+      intel.createCore.mockImplementation(() => { throw new Error('no CUDA device found (is an NVIDIA driver installed?)'); });
+      expect(() => f({})).toThrow(new Error(NO_GPU));
+      // A reason that is not about a missing driver is its own.
+      intel.createCore.mockImplementation(() => { throw new Error('out of device memory'); });
+      expect(() => f({})).toThrow(new Error('out of device memory'));
       const w = rig({ [INTEL_BESIDE]: addon('intel', () => new Error(NO_GPU)), [CU12_BESIDE]: cu12 });
       expect(() => factory(w, { ...ARC_RIG, platform: 'win32' })({})).toThrow(new Error(NO_GPU + ': the system lists an Arc card, so '
         + 'Intel\'s graphics driver is missing or too old. Install the current Arc driver from Intel'));

@@ -349,10 +349,18 @@ function coreFactory(opts = {}) {
 // from it means the cards are there and Intel's compute runtime is not. That
 // is the reason an Intel rig needs, with what to install (see intelNoDevice),
 // and it is the one thrown.
+//
+// It is thrown again on every later start that fails the same way, without
+// the advice. That takes remembering it: pearl_core.cc keeps its class in one
+// global (__pearl_exports), which each addon sets as it loads, so once the
+// 12.8 build has been loaded here, createCore of EITHER addon builds the 12.8
+// build's core. From the second failed start on, the reason caught from "the
+// Intel core" is therefore the CUDA build's own, which would send an Intel rig
+// looking for an NVIDIA driver.
 function otherFirst(variant, firstAddon, opts, say) {
   const { name, noCard } = FIRST[variant];
   const win = (opts.platform || process.platform) === 'win32';
-  let hinted = false;
+  let noDevice = null;  // the Intel core's "no Intel GPU found", once it has said it
   let addon = firstAddon;
   let settled = false;
   return withOffsets((profile, coreOpts) => {
@@ -370,10 +378,11 @@ function otherFirst(variant, firstAddon, opts, say) {
         core = cu12.addon.createCore(profile, o);
       } catch (e2) {
         if (!isRuntimeError(e2)) throw e2;
-        if (variant === INTEL && noCard.test(errText(e))) {
-          const said = hinted;
-          hinted = true;
-          throw new Error(errText(e) + (said ? '' : intelNoDevice(win)));
+        const first = variant === INTEL && noCard.test(errText(e));
+        if (first || (noDevice && isRuntimeError(e))) {
+          const said = noDevice != null;
+          if (first) noDevice = errText(e);
+          throw new Error(noDevice + (said ? '' : intelNoDevice(win)));
         }
         throw noCard.test(errText(e)) ? e2 : e;
       }
