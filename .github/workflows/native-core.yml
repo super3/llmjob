@@ -1280,9 +1280,11 @@ jobs:
           done
 
       # The same check as the Linux job: verify.sh --quick on the SYCL CPU device, with
-      # nothing of the compiler on PATH. The CPU runtime is named to the OpenCL loader by
-      # OCL_ICD_FILENAMES; the loader (OpenCL.dll) and the runtime's own DLLs are found on
-      # PATH, in the folders the conda packages put them in.
+      # nothing of the compiler on PATH. The CPU runtime is named to the OpenCL loader in the
+      # registry, where Windows keeps its list of OpenCL drivers: the loader ignores
+      # OCL_ICD_FILENAMES in an elevated process, and a runner's steps are elevated. The
+      # loader (OpenCL.dll) and the runtime's own DLLs are found on PATH, in the folders the
+      # conda packages put them in.
       - name: Check the folds on the SYCL CPU device
         working-directory: earn/native/sycl
         shell: bash
@@ -1293,6 +1295,7 @@ jobs:
           echo "CPU runtime: $icd"
           export PATH="$(dirname "$icd"):$rt/Library/bin:$PATH"
           export OCL_ICD_FILENAMES="$(cygpath -w "$icd")"
+          MSYS_NO_PATHCONV=1 reg add 'HKLM\SOFTWARE\Khronos\OpenCL\Vendors' /v "$(cygpath -w "$icd")" /t REG_DWORD /d 0 /f
           PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check.exe --list
           PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
 
