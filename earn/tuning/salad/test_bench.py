@@ -621,6 +621,17 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual((h["core"], h["order"]), ("0123456789ab", "ours,srb"))
         self.assertIn(("DELETE", f"{self.la.w.CB}/bench-a-rx9070xt-1", None), calls)   # next PC: a new group
 
+    def test_a_result_keeps_every_miner_s_samples_and_mean(self):
+        """So a row can be scored again another way: the table's figure for a competitor is its own last one."""
+        x, _ = self.done(self.la, AMD_LINES)
+        h = x.st["results"]["RX 9070 XT"][0]
+        self.assertEqual(sorted(h["samples"]), ["ours", "srb"])
+        for k in ("ours", "srb"):
+            self.assertTrue(all(len(s) == 2 for s in h["samples"][k]) and len(h["samples"][k]) > 1)
+            late = [th for t, th in h["samples"][k] if t >= 60 and th]
+            self.assertAlmostEqual(h["means"][k], sum(late) / len(late))
+        self.assertEqual(h["means"]["ours"], h["ours"][0])      # ours is scored by that mean already
+
     def test_a_failed_hit_check_records_srbminer_and_says_why_ours_is_missing(self):
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
         x, _ = self.done(self.la, lines)
