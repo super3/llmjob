@@ -139,6 +139,13 @@ FORMS = [
     (r"CS2R " + R + ", SRZ", lambda m: _f(0x7805, 0x1ff00, rd=_reg(m[1]))),
     (r"S2R " + R + r", SR_TID\.X", lambda m: _f(0x7919, 0x2100, rd=_reg(m[1]))),
     (r"BAR\.SYNC\.DEFER_BLOCKING 0x0", lambda m: (0x7b1d, 0x10000)),
+    # A barrier of its own number for a part of the block: the number, then how many threads it waits for
+    # (bar.sync a, b). Taken from ptxas's own encodings of bar.sync 1, 128; 2, 128; 3, 64.
+    (r"BAR\.SYNC\.DEFER_BLOCKING " + I + ", " + I,
+     lambda m: (0x7b1d | _num(m[1]) << 54 | _num(m[2]) << 42, 0x10000)),
+    # 4-byte global load and store (the uniform register pair goes in as for the 16-byte load: gfold.ldg).
+    (r"LDG\.E " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1900)),
+    (r"STG\.E " + MEM64 + ", " + R, lambda m: (_mem(0x7986 | _reg(m[3]) << 32, m, 1), 0x0c101900 | 6)),
     (r"NOP", lambda m: (0x7918, 0)),
     (r"YIELD", lambda m: (0x7946, 0x3800000)),
     (r"ULDC\.64 UR6, c\[0x0\]\[0x118\]", lambda m: (0x0000460000067ab9, 0x0000000000000a00)),
@@ -199,6 +206,27 @@ def sections(b):
         end = b.index(b"\0", stro + name)
         out[bytes(b[stro + name:end]).decode()] = (off, size)
     return out
+
+
+def set_barriers(path, n):
+    """Writes into the cubin how many barriers its kernel uses (numbers 0 .. n - 1). ptxas keeps the count in
+    the code section's flags, from bit 20 (SHF_BARRIERS in nvdisasm's listing): a loop that uses bar.sync 1
+    and 2 in a kernel compiled with bar.sync 0 alone must raise it to 3."""
+    b = bytearray(open(path, "rb").read())
+    shoff = struct.unpack_from("<Q", b, 0x28)[0]
+    entsize, num, strndx = struct.unpack_from("<HHH", b, 0x3A)
+    stro = struct.unpack_from("<IIQQQQ", b, shoff + strndx * entsize)[4]
+    done = 0
+    for i in range(num):
+        at = shoff + i * entsize
+        name = struct.unpack_from("<I", b, at)[0]
+        end = b.index(bytes(1), stro + name)
+        if bytes(b[stro + name:end]).decode().startswith(".text.") and b"pearl" in b[stro + name:end]:
+            flags = struct.unpack_from("<Q", b, at + 8)[0]
+            struct.pack_into("<Q", b, at + 8, (flags & 0xFFFFF) | (n << 20))
+            done += 1
+    assert done == 1
+    open(path, "wb").write(b)
 
 
 def read_text(path):
@@ -378,6 +406,8 @@ def check(cubin, sass):
             # Bits 32-39 name the uniform register pair that holds the address space's base (UR6 in the
             # loop function, UR8 in the kernel). nvdisasm does not print it.
             lo, lo0 = lo & ~(0xFF << 32), lo0 & ~(0xFF << 32)
+        if op.startswith("STG"):
+            hi, hi0 = hi & ~0x3F, hi0 & ~0x3F          # the uniform register pair again, in the high word
         if (lo, hi) != (lo0, hi0 & ~CTRL_MASK):
             bad += 1
             if bad <= 12:

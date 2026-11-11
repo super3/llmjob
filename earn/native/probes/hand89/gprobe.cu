@@ -3,7 +3,7 @@
 // how much of the tensor pipe the chunk loop holds, and checks every thread's transcript against a CPU fold of
 // the same tiles. Our own code, for the nv-kernel work.
 //
-//   gprobe <name> <k> <tiles a block> [seconds] [tiles to check] [order] [fake]
+//   gprobe <name> <k> <tiles a block> [seconds] [tiles to check] [order] [fake] [rot]
 //
 // order: how the k of a chunk are put into its 128 slots (any order gives the same sums at the chunk's end).
 //   0 the definition's; 1 searched for the fewest bank collisions in A's and B's gathers; 2 searched for B's
@@ -15,6 +15,13 @@
 //   index are the same made-up one for A and B (every operand byte is then the fill); 32, the tables hold
 //   bytes spread as noised operands are (for gfold.py direct=1, a loop with no draw).
 //
+// rot: 1 writes the offsets for the rotation fold (hand89/rfold.py; build with -DGP_STAGE=24576). Every warp
+//   takes the four k-steps of a chunk in an order of its own (any order inside a chunk gives the same sums):
+//   column slot j of row band 0 takes k-step (j + i) & 3 at its i-th turn, of row band 1 k-step (j + (i ^ 1)) & 3.
+//   So at a chunk's first turn the four warps of a band fold four different k-steps: each makes that k-step's A
+//   fragments itself and stores them, and the other three load them at a later turn. A warp's records are in
+//   its own order; a record of a later turn holds, in place of A's first offset, where that k-step's stored
+//   fragments are. The kernel as ptxas compiles it cannot use these offsets: rot is for the hand-written loop.
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 -o gprobe gprobe.cu   (and -cubin for the file gfold.py patches)
 #include <chrono>
 #include <cstdint>
@@ -105,6 +112,7 @@ int main(int argc, char **argv) {
   const uint32_t check = argc > 5 ? (uint32_t)atoi(argv[5]) : 0u;
   const uint32_t order_mode = argc > 6 ? (uint32_t)atoi(argv[6]) : 0u;
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
+  const uint32_t rot = argc > 8 ? (uint32_t)atoi(argv[8]) : 0u;
   if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 3u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 3\n");
     return 2;
@@ -223,9 +231,14 @@ int main(int argc, char **argv) {
         p4[l][h] = pa;
         p4[l][2u + h] = pb;
         for (uint32_t w = 0; w < 8u; w++) {
-          uint32_t *o = &hOffs[w * warpWords + ((size_t)ks * 32u + l) * 4u];
+          // rot: this k-step is warp w's turn `turn` of the chunk (the last record, of the k-step that never
+          // comes, is a first turn).
+          const uint32_t j = w & 3u, band = w >> 2;
+          const uint32_t turn = !rot || ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ 1u) : ((s + 4u - j) & 3u);
+          uint32_t *o = &hOffs[w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 4u];
           o[h] = 16u * pa + ((fake & 4u) ? 0u : 2048u * MT * (w >> 2));
           o[2u + h] = 16u * pb + GP_TABB + ((fake & 8u) ? 0u : 8192u * (w & 3u));
+          if (rot && turn && ks < ksteps) o[h] = h ? 0u : GP_STG + band * (2048u * MT) + s * (512u * MT) + 16u * l;
         }
       }
     }
@@ -388,12 +401,37 @@ int main(int argc, char **argv) {
       nsched++;
     }
   const double use = nsched ? useSum / nsched : 0, tuse = nsched ? tileSum / nsched : 0;
-  printf("%-22s k %u order %u%s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% tiles %llu %.0f ms x%d | "
+  printf("%-22s k %u order %u%s%s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% tiles %llu %.0f ms x%d | "
          "rows of 8 that collide A %.2f B %.2f, largest A %.2f B %.2f, search %.2f ms/chunk",
-         name, k, order_mode, fake ? " FAKE(timing only)" : "", use * 100, useMin * 100, useMax * 100,
+         name, k, order_mode, rot ? " rot" : "", fake ? " FAKE(timing only)" : "", use * 100, useMin * 100, useMax * 100,
          use > 0 ? 16.0 / use : 0.0, tuse * 100, tilesDone / 8ull, ms, launches, coll[0] / mats, coll[1] / mats,
          worst[0] / mats, worst[1] / mats, order_ms);
 
+  if (getenv("PD_WARPS")) {
+    // Each warp's loop cycles a tile (the mean over the blocks), and how far apart a block's eight warps end
+    // a tile's loop: they start it together, so that is what they drift in a tile.
+    double sum[8] = {0}, spread = 0, worst = 0;
+    uint32_t nb = 0;
+    for (uint32_t b = 0; b < blocks; b++) {
+      double lo = 1e30, hi = 0;
+      bool ok = true;
+      for (uint32_t w = 0; w < 8u; w++) {
+        const unsigned long long *c = &cyc[((size_t)b * 8u + w) * 4u];
+        if (!c[3]) { ok = false; break; }
+        const double per = (double)c[1] / (double)c[3];
+        sum[w] += per;
+        if (per < lo) lo = per;
+        if (per > hi) hi = per;
+      }
+      if (!ok) continue;
+      nb++;
+      spread += hi - lo;
+      if (hi - lo > worst) worst = hi - lo;
+    }
+    printf(" | loop cycles a tile by warp:");
+    for (uint32_t w = 0; w < 8u; w++) printf(" %.0f", nb ? sum[w] / nb : 0.0);
+    printf("; slowest less fastest warp of a block, mean %.0f worst %.0f", nb ? spread / nb : 0.0, worst);
+  }
   if (dumpTiles) {
     // The CPU's fold of the same tiles from the plain inputs, in the definition's order of k.
     std::vector<uint32_t> dump((size_t)dumpTiles * GP_THREADS * 16u);
