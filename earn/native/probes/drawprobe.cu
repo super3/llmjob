@@ -17,6 +17,11 @@
 #include <cstring>
 #include <vector>
 #include <cuda_runtime.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 #define PD_PROBE 1
 #define PD_FN pearl_draw_probe
@@ -126,6 +131,44 @@ int main(int argc, char **argv) {
   cudaMemset(dCyc, 0, cycN * 8u);
   cudaFuncSetAttribute(pearl_draw_probe, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)PD_SMEM);
 
+  // PD_CUBIN=<file>: the kernel is launched from that cubin and not from the program. It is a build of this same
+  // source with the same switches, its loop reordered by probes/drawtools/spread.py. The driver's own calls are
+  // looked up by name, so the probe needs no driver header or library to build.
+  typedef int (*launch_t)(void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, void *,
+                          void **, void **);
+  void *cubin_fn = nullptr;
+  launch_t cubin_launch = nullptr;
+  const char *cb = getenv("PD_CUBIN");
+  if (cb && *cb) {
+#ifdef _WIN32
+    HMODULE lib = LoadLibraryA("nvcuda.dll");
+#define PD_SYM(n) (lib ? (void *)GetProcAddress(lib, n) : nullptr)
+#else
+    void *lib = dlopen("libcuda.so.1", RTLD_NOW);
+#define PD_SYM(n) (lib ? dlsym(lib, n) : nullptr)
+#endif
+    typedef int (*load_t)(void **, const char *);
+    typedef int (*get_t)(void **, void *, const char *);
+    typedef int (*attr_t)(void *, int, int);
+    load_t load = (load_t)PD_SYM("cuModuleLoad");
+    get_t get = (get_t)PD_SYM("cuModuleGetFunction");
+    attr_t attr = (attr_t)PD_SYM("cuFuncSetAttribute");
+    cubin_launch = (launch_t)PD_SYM("cuLaunchKernel");
+#undef PD_SYM
+    void *mod = nullptr;
+    int rc = -1;
+    if (!load || !get || !attr || !cubin_launch || (rc = load(&mod, cb)) ||
+        (rc = get(&cubin_fn, mod, "pearl_draw_probe")) ||
+        (rc = attr(cubin_fn, 8 /* the most dynamic shared memory */, (int)PD_SMEM))) {
+      fprintf(stderr, "%s: PD_CUBIN %s: driver error %d\n", name, cb, rc);
+      return 1;
+    }
+  }
+  uint32_t a_stamp = stampBytes, a_chunks = chunks, a_coloff = 0u, a_rows = RG * RO, a_cg = CB * 16u,
+           a_tiles = tiles, a_dt = dumpTiles;
+  void *cubin_args[13] = {&dTabA, &dTabB, &dOffs, &dStamp, &a_stamp, &a_chunks, &a_coloff, &a_rows, &a_cg,
+                          &a_tiles, &dCyc, &dDump, &a_dt};
+
   cudaEvent_t e0, e1;
   cudaEventCreate(&e0);
   cudaEventCreate(&e1);
@@ -133,10 +176,17 @@ int main(int argc, char **argv) {
   int launches = 0;
   do {
     cudaEventRecord(e0);
-    pearl_draw_probe<<<blocks, PD_THREADS, PD_SMEM>>>(dTabA, dTabB, dOffs, dStamp, stampBytes, chunks,
-                                                     0u, RG * RO, CB * 16u, tiles, dCyc, dDump,
-                                                     dumpTiles);
-    cudaError_t err = cudaGetLastError();
+    cudaError_t err;
+    if (cubin_fn) {
+      err = cubin_launch(cubin_fn, blocks, 1, 1, PD_THREADS, 1, 1, PD_SMEM, nullptr, cubin_args, nullptr)
+                ? cudaErrorLaunchFailure
+                : cudaSuccess;
+    } else {
+      pearl_draw_probe<<<blocks, PD_THREADS, PD_SMEM>>>(dTabA, dTabB, dOffs, dStamp, stampBytes, chunks,
+                                                       0u, RG * RO, CB * 16u, tiles, dCyc, dDump,
+                                                       dumpTiles);
+      err = cudaGetLastError();
+    }
     cudaEventRecord(e1);
     if (err == cudaSuccess) err = cudaEventSynchronize(e1);
     if (err != cudaSuccess) {
@@ -178,7 +228,7 @@ int main(int argc, char **argv) {
   (void)ksteps_run;
   printf("%-22s k %u pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% bad %llu of %llu %.0f ms x%d",
          name, k, use * 100, useMin * 100, useMax * 100, use > 0 ? 16.0 / use : 0.0, tuse * 100,
-         spins, tilesDone, ms, launches);
+         PD_T_STAMP ? 0ull : spins, tilesDone, ms, launches);
 
   if (dumpTiles) {
     // The CPU's fold of the same tiles, from the same tables.
@@ -255,6 +305,18 @@ int main(int argc, char **argv) {
       for (uint32_t ro = 0; ro < RO; ro++) printf(" %u", badro[ro]);
     }
   }
+#if PD_T_STAMP
+  {
+    // The cycles a warp spent at a k-step's barrier, a loop copy (warps 0-3, warps 4-7), a k-step.
+    double w[2] = {0, 0}, n = 0;
+    for (uint32_t b = 0; b < blocks; b++)
+      for (uint32_t wp = 0; wp < 8u; wp++) {
+        w[wp >> 2] += (double)cyc[((size_t)b * 8u + wp) * 5u + 4u];
+        n += (double)cyc[((size_t)b * 8u + wp) * 5u + 3u] * ksteps;
+      }
+    printf(" | at the barrier, cycles a k-step: warps 0-3 %.1f, warps 4-7 %.1f", w[0] / (n / 2.0), w[1] / (n / 2.0));
+  }
+#endif
   printf("\n");
   return 0;
 }
