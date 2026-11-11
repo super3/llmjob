@@ -1992,6 +1992,53 @@ and driver as above. "First version" is the fold of the section above (`0308ff15
 - Per EU and clock the fold is at 58% of the matrix engines' peak. What the probe says is left: A' as two
   256-byte loads is a third of the load time, and the card's power limit now binds as well as its loads.
 
+### Arc rig, 11 November, afternoon: the fold written without loops on six cards, and what was timed toward 100 (`goal/arc-kernel`)
+
+**The head, `900c154c`** (the fold of the section above with its k-step written out, so the prebuilt form is fast
+too). Release build form: open-source DPC++ v7.2.0, kernels compiled by the driver (Intel 26.40, Level Zero).
+
+| Check or run | Cards | Result |
+|---|---|---|
+| `verify.sh --quick` | all six | PASS on each; 63.7, 61.6, 61.6, 62.3, 62.3, 60.8 TH/s with every hit checked |
+| full `verify.sh` | card 0 | PASS, 400 of 400 hits with the fold and 400 of 400 with the plain fold |
+| Kryptex, 5 minutes, mean after the first minute (13:29 to 13:34 UTC) | six | 347.53 TH/s (326.8 to 372.2), 57.9 a card; 1,810 MHz, 171 W a card; 16 accepted, 0 rejected, no wrong hit |
+| the version before it, `08e4ae8e`, straight after (13:34 to 13:40) | six | 325.89 TH/s (318.2 to 340.9), 54.3 a card; 1,684 MHz, 157 W a card; 14 accepted, 0 rejected, no wrong hit |
+
+Per MHz the two runs are the same (0.192 and 0.194 TH/s); the second ran on a hotter rig. Five cards then mined
+with the head for 41 minutes: 265 TH/s, 53 a card, 81 accepted, 0 rejected.
+
+**Toward 100 TH/s a card.** 100 is 112 MACs an EU a clock at 2,000 MHz; the matrix engines alone do 125 and the
+fold 73 to 77. Six designs were timed with `pearl_sycl_peak --frag` before building any. Timing only: these rows
+compute wrong results on purpose, and none is a mining rate. Card 0, hot, 2 s a row, MACs an EU a clock.
+
+| Design | From the fold's addresses | With every operand in one window (192 KB) |
+|---|---|---|
+| the fold's loads as built | 72.9 | 93.5; 98.6 in a later run |
+| 1. every fragment as two sub-group block reads of 128 bytes (one address a message) | 70.7; 73.4 with A' as the fold loads it; 73.7 on a 32 by 32 tile | 107.1; 108.2 on the 32 by 32 tile |
+| 2. every fragment as one block read of 256 bytes | 56.1 | 68.3 |
+| 3. a work-group that fills an Xe-core and shares operands: in step; a k-step apart | 58.4; 66.7 to 69.6 | 91.3 in step |
+| 4. a chunk's cache lines read first, a barrier, then its 4 k-steps | 55.1; 57.6 on 32 by 32 | 71.0; 77.1 (the barrier alone) |
+| 5. the prefetch extension 2 k-steps ahead; one-byte loads a k-step ahead (their row without either: 64.7) | 58.5; 59.4 | |
+| 6. operands made in registers: a loop of 16, 64, 128 adds a k-step beside the loads (without: 97.6) | | 84.7, 69.3, 54.3 |
+| the compiler's cache control on every load: first level off; streaming; invalidate after read | 38.7; 51.8; 47.9 | |
+| B' sent before A' | 75.0 | |
+
+- No design moves the rate from real addresses, so none was built. The block read is the cheapest load when its
+  lines are near (107 against 93.5 to 98.6) and no better when they are not.
+- Each Xe-core (16 EUs, 64 threads) has a first cache level of about 256 KB. One window's operands, 192 KB, fit;
+  two row windows of A' with one of B', 256 KB, give 88.9; with that level switched off the block reads do 38.7.
+  One window in 16 reading other bytes is enough to drop 107 to 84.9, and from there the amount hardly matters:
+  everything that misses it lands between 70 and 85, the fold included.
+- A core's 64 threads hold 64 different tiles, which read at least 4 new cache lines a tile and k-step however
+  they are dealt. So no deal of tiles stays inside that cache, and the two that come nearest (rows 3 and 4) lose
+  more to running in step than they gain.
+- The prefetch extension compiles to a load that names the last cache level only, whichever hint is given. A
+  cache hint on A' alone (`annotated_ptr` with a `read_hint`) did not reach its loads, so it was not timed.
+- A' cannot be made in registers: its noise table for a sub-group is 64 registers on top of 208 live of 256, and a
+  k-step needs 128 byte selects. B''s table is 8 KB, all 256 registers.
+- What is left is outside the kernel: the card holds 2,000 MHz under DPAS though its top is 2,400 (not touched),
+  and a rig that sheds 190 W a card holds 64 TH/s where this one holds 54 to 58.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
