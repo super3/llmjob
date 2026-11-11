@@ -17,6 +17,9 @@
 // loads ahead and work in registers (the PF 11 rows only). PeakArgs says what
 // each does; README.md, "What was timed toward 100", what they showed.
 //
+// The image rows (i-..., j-...), where part of an operand comes through the
+// sampler, are described above PeakImg.
+//
 // --frag: the rows of the fragment fold (fold_xmxf, what an Arc A-series card
 // mines with since 11 November 2026) in place of the rows below, which are the
 // first fold's. They are listed above PeakFrag and in add_frag_rows; README.md,
@@ -750,6 +753,187 @@ inline sycl::event peak_frag(sycl::queue &q, const PeakArgs &args, uint32_t grou
   });
 }
 
+// The image rows are in the build the driver compiles only (./build.sh --jit --peak): the prebuilt
+// form's CPU image does not compile them.
+#if defined(PEARL_SYCL_XMX_JIT)
+// ---------------------------------------------------------------------------
+// The image rows ("i-"): does an Xe-core have a second way in for operands?
+//
+// Every row above reads through the core's data port (untyped loads). A core
+// also has a sampler, with caches of its own. These rows keep the fragment
+// fold's tile (16 rows by 64 columns, 16 DPAS a k-step) and read one or both
+// operands as texels of a 2D image, 16 bytes a texel (RGBA, 32-bit unsigned),
+// so one fetch is a lane's half fragment and one message is 128 bytes, the
+// same as the fold's half-fragment load of B'. Timing only: the images hold
+// other bytes than the operands, and the bits are not a fold's.
+//
+//   LA, LB  0 registers, 1 one vector of 8 dwords from memory, 2 two vectors
+//           of 4 dwords from memory, 9 two texel fetches from the image.
+//           LB 10, 11, 14, 12, 15: the first 1, 2, 3, 4 or 6 of a k-step's 8
+//           fragments of B' from the image and the rest from memory. LA 13: A'
+//           fetched from B's image where B' fragments 6 and 7 are, which every
+//           sub-group of a band shares: not a real A'
+// The "i-" rows read the old SYCL image class (sycl::image). Those images are
+// never written: a kernel that writes one hung the card, one made from host
+// bytes crashed the runtime, and so did a kernel that reads only its first
+// image or reads two. On images never written the rows come out faster than
+// on a filled one, so they are not to be trusted. The "j-" rows read a
+// bindless image filled from host memory and checked: those are the figures
+// (README.md, "A second way in: the sampler"). Both run only with --only.
+//   PF      3 every load first and every DPAS made to wait for all of them,
+//           4 the loads only kept by an XOR and the DPAS on register operands
+//             (what the messages alone cost)
+//   SMP     0 a read with no sampler (the compiler picks the message), 1 a
+//           read through a sampler (nearest, unnormalized, integer coordinates),
+//           2 a fetch from the bindless image (the "j-" rows; B' only)
+//
+// An image is 4096 texels wide (64 KB a row) and holds the operand's bytes at
+// the same offsets as the memory rows read them: texel = byte offset / 16.
+typedef sycl::vec<uint32_t, 4> peak_texel;
+typedef sycl::accessor<peak_texel, 2, sycl::access::mode::read, sycl::access::target::image> peak_img_acc;
+struct PeakImages {
+  sycl::image<2> *a = nullptr, *b = nullptr;
+  uint32_t yMaskA = 0, yMaskB = 0;  // rows of the image, less one (a power of two)
+  // The "j-" rows: B's image again as a bindless image (sycl_ext_oneapi_bindless_images), which is a plain
+  // handle in the kernel, is filled by a copy from memory, and is read with fetch_image.
+  sycl::ext::oneapi::experimental::unsampled_image_handle hb{};
+  bool haveBindless = false;
+};
+PeakImages gImg;
+
+template <int LA, int LB, int PF, int SMP> struct PeakImg {
+  PeakArgs P;
+  uint32_t yMaskA, yMaskB;
+  peak_img_acc ia, ib;
+  sycl::sampler smp;
+  sycl::ext::oneapi::experimental::unsampled_image_handle hb;
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    const FoldArgs &A = P.f;
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgi = (uint32_t)sg.get_group_linear_id();
+    const uint32_t g = (uint32_t)it.get_group(0);
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t wr, wc;
+    pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);
+    const uint32_t wra = wr & P.rowMask;
+    const uint32_t wcb = (A.colStart / 4u + wc) & P.colMask;
+    const uint32_t blkA = 2u * wra + sgi;  // the sub-group's 16-row block of A'
+    const int8_t *Au = A.Ap + (size_t)blkA * A.aStride + 32u * lane;
+    const int8_t *Bu = A.Bp + (size_t)wcb * A.bStride + 32u * lane;
+    const uint32_t tA = blkA * (A.aStride >> 4) + 2u * lane;  // this lane's first texel of the block
+    const uint32_t tB = wcb * (A.bStride >> 4) + 2u * lane;
+    v8i ar[2][2], br[2];
+    for (int set = 0; set < 2; set++)
+      for (int rb = 0; rb < 2; rb++)
+        for (int r = 0; r < 8; r++)
+          ar[set][rb][r] = (int)bytes7(mix(P.seed + lane * 131u + sgi * 17u + (uint32_t)(set * 64 + rb * 8 + r)));
+    for (int i = 0; i < 2; i++)
+      for (int d = 0; d < 8; d++) br[i][d] = (int)bytes7(mix((P.seed ^ 0xB5297A4Du) + lane * 257u + (uint32_t)(i * 8 + d)));
+    auto fetch = [&](const peak_img_acc &im, uint32_t t, uint32_t ymask) -> peak_v4i {
+      const sycl::vec<int, 2> xy{(int)(t & 4095u), (int)((t >> 12) & ymask)};
+      peak_texel v;
+      if constexpr (SMP == 1) v = im.read(xy, smp);
+      else if constexpr (SMP == 2) v = sycl::ext::oneapi::experimental::fetch_image<peak_texel>(hb, xy);
+      else v = im.read(xy);
+      return peak_v4i{(int)v[0], (int)v[1], (int)v[2], (int)v[3]};
+    };
+    auto load_a = [&](uint32_t ks, int rb) -> v8i {
+      const uint32_t f = (ks & P.kMask) * 2u + (uint32_t)rb;  // fragment of the block
+      if constexpr (LA == 0) return ar[ks & 1u][rb];
+      else if constexpr (LA == 13) {
+        // A' read where B' fragments 6 and 7 of the k-step are, from B's image: the cost of A' by the
+        // sampler without A's own coordinates, which hung the card.
+        const uint32_t fb = (ks & P.kMask) * 8u + 6u + (uint32_t)rb;
+        const peak_v4i lo = fetch(ib, tB + fb * 16u, yMaskB), hi = fetch(ib, tB + fb * 16u + 1u, yMaskB);
+        return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else if constexpr (LA == 9) {
+        // With A' alone read from an image it goes in as the kernel's second image: a kernel that used its
+        // first image and not its second hung the card (GPU HANG in the kernel log, device lost).
+        const peak_img_acc &im = LB >= 9 ? ia : ib;
+        const peak_v4i lo = fetch(im, tA + f * 16u, yMaskA), hi = fetch(im, tA + f * 16u + 1u, yMaskA);
+        return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else if constexpr (LA == 2) {
+        const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(Au + (size_t)f * 256u);
+        const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(Au + (size_t)f * 256u + 16);
+        return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else return *reinterpret_cast<const v8iu *>(Au + (size_t)f * 256u);
+    };
+    auto load_b = [&](uint32_t ks, int cb) -> v8i {
+      const uint32_t f = (ks & P.kMask) * 8u + (uint32_t)cb;
+      if constexpr (LB == 0) return br[(ks + (uint32_t)cb) & 1u];
+      else if constexpr (LB >= 9) {
+        // 9: every fragment from the image. 10, 11, 12, 14, 15: the first 1, 2, 4, 3 or 6 of the 8, the rest
+        // from memory.
+        if (LB != 9 && cb >= (LB == 10 ? 1 : LB == 11 ? 2 : LB == 12 ? 4 : LB == 14 ? 3 : 6)) {
+          const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(Bu + (size_t)f * 256u);
+          const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(Bu + (size_t)f * 256u + 16);
+          return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        }
+        const peak_v4i lo = fetch(ib, tB + f * 16u, yMaskB), hi = fetch(ib, tB + f * 16u + 1u, yMaskB);
+        return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else if constexpr (LB == 2) {
+        const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(Bu + (size_t)f * 256u);
+        const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(Bu + (size_t)f * 256u + 16);
+        return __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else return *reinterpret_cast<const v8iu *>(Bu + (size_t)f * 256u);
+    };
+    v8i c[2][8];
+    for (int rb = 0; rb < 2; rb++)
+      for (int cb = 0; cb < 8; cb++) c[rb][cb] = 0;
+    v8i keep = 0;
+    v8i af[2], bf[8];
+    for (uint32_t ks = 0; ks < 64u; ks++) {
+      if constexpr (PF == 3) {
+        for (int rb = 0; rb < 2; rb++) af[rb] = load_a(ks, rb);
+        for (int cb = 0; cb < 8; cb++) bf[cb] = load_b(ks, cb);
+        int t = 0;
+        for (int rb = 0; rb < 2; rb++) t ^= af[rb][0] ^ af[rb][4];
+        for (int cb = 0; cb < 8; cb++) t ^= bf[cb][0] ^ bf[cb][4];
+        t &= (int)P.zero;
+        for (int rb = 0; rb < 2; rb++) af[rb][0] |= t;
+        for (int cb = 0; cb < 8; cb++)
+          for (int rb = 0; rb < 2; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+      } else {
+        if constexpr (LA != 0)
+          for (int rb = 0; rb < 2; rb++) keep ^= load_a(ks, rb) << (1 + rb);
+        if constexpr (LB != 0)
+          for (int cb = 0; cb < 8; cb++) keep ^= load_b(ks, cb) << (9 + cb);
+        for (int cb = 0; cb < 8; cb++)
+          for (int rb = 0; rb < 2; rb++)
+            c[rb][cb] = pearl_sycl::dpas<8, true>(sg, ar[ks & 1u][rb], br[(ks + (uint32_t)cb) & 1u], c[rb][cb]);
+      }
+    }
+    uint32_t x = 0;
+    for (int rb = 0; rb < 2; rb++)
+      for (int cb = 0; cb < 8; cb++)
+        for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+    for (int r = 0; r < 8; r++) x ^= (uint32_t)keep[r];
+    x = sycl::reduce_over_group(sg, x, sycl::bit_xor<uint32_t>());
+    if (lane == 0) P.sink[(size_t)g * 2u + sgi] = x;
+  }
+};
+
+template <int LA, int LB, int PF, int SMP>
+inline sycl::event peak_img(sycl::queue &q, const PeakArgs &args, uint32_t groups) {
+  return q.submit([&](sycl::handler &h) {
+    peak_img_acc ia = gImg.a->get_access<peak_texel, sycl::access::mode::read>(h);
+    peak_img_acc ib = (LB >= 9 || LA == 13 ? gImg.b : gImg.a)->get_access<peak_texel, sycl::access::mode::read>(h);
+    sycl::sampler smp(sycl::coordinate_normalization_mode::unnormalized, sycl::addressing_mode::clamp_to_edge,
+                      sycl::filtering_mode::nearest);
+    h.parallel_for(sycl::nd_range<1>((size_t)groups * 16, 16),
+                   PeakImg<LA, LB, PF, SMP>{args, gImg.yMaskA, gImg.yMaskB, ia, ib, smp, gImg.hb});
+  });
+}
+
+#endif  // PEARL_SYCL_XMX_JIT
+
 struct Row {
   const char *name;
   const char *what;
@@ -907,6 +1091,55 @@ void add_frag_rows(std::vector<Row> &v) {
   FRAG_ROW("g-k8", "32 by 32, one block read of 256 bytes a fragment", 4, 4, 8, 8, 0, 0, 1u, all, all, all);
   FRAG_ROW("g-k8-pf3", "g-k8 with every DPAS of a k-step made to wait for its loads", 4, 4, 8, 8, 0, 3, 1u, all, all, all);
 #undef FRAG_ROW
+#if defined(PEARL_SYCL_XMX_JIT)
+  // Operands read as texels of an image: the sampler, or whatever message a read with no sampler becomes.
+#define IMG_ROW(NAME, WHAT, LA, LB, PF, SMP)                                                    \
+  v.push_back({NAME, WHAT, 16, 16, 16, 1u, all, all, all,                                       \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) {                              \
+                 return peak_img<LA, LB, PF, SMP>(q, a, g);                                     \
+               }})
+  IMG_ROW("i-regs", "the image rows' kernel with every operand in registers", 0, 0, 4, 0);
+  IMG_ROW("i-base", "A' one vector of 8 dwords, B' two of 4, from memory, every DPAS waiting (f-v84-pf3 again)", 1, 2, 3, 0);
+  IMG_ROW("i-b-smp", "B' as 16 sampler fetches a k-step, A' from memory, every DPAS waiting", 1, 9, 3, 1);
+  IMG_ROW("i-b-rd", "B' as 16 image reads with no sampler, A' from memory, every DPAS waiting", 1, 9, 3, 0);
+  IMG_ROW("i-keep-b-smp", "16 sampler fetches a k-step only kept, DPAS on register operands", 0, 9, 4, 1);
+  IMG_ROW("i-keep-b-rd", "16 image reads with no sampler a k-step only kept, DPAS on register operands", 0, 9, 4, 0);
+  IMG_ROW("i-keep-b-mem", "16 half-fragment loads from memory a k-step only kept, DPAS on register operands", 0, 2, 4, 0);
+  IMG_ROW("i-keep-a-mem", "4 half-fragment loads of A' from memory a k-step only kept, DPAS on register operands", 2, 0, 4, 0);
+  IMG_ROW("i-b1-smp", "1 of the 8 B' fragments a k-step by the sampler (2 fetches), the rest and A' from memory", 1, 10, 3, 1);
+  IMG_ROW("i-b2-smp", "2 of the 8 B' fragments a k-step by the sampler (4 fetches), the rest and A' from memory", 1, 11, 3, 1);
+  IMG_ROW("i-b4-smp", "4 of the 8 B' fragments a k-step by the sampler (8 fetches), the rest and A' from memory", 1, 12, 3, 1);
+  IMG_ROW("i-keep-b1-smp", "i-keep-b-mem with 1 of the 8 fragments by the sampler", 0, 10, 4, 1);
+  IMG_ROW("i-keep-b2-smp", "i-keep-b-mem with 2 of the 8 fragments by the sampler", 0, 11, 4, 1);
+  IMG_ROW("i-keep-b4-smp", "i-keep-b-mem with 4 of the 8 fragments by the sampler", 0, 12, 4, 1);
+  IMG_ROW("i-a4-b1-smp", "i-b1-smp with A' from memory as halves (4 loads)", 2, 10, 3, 1);
+  IMG_ROW("i-a4-b2-smp", "i-b2-smp with A' from memory as halves (4 loads)", 2, 11, 3, 1);
+  IMG_ROW("i-a4", "A' and B' from memory, both as halves (f-v4-pf3 again)", 2, 2, 3, 0);
+  IMG_ROW("i-b1-rd", "i-b1-smp with the image read with no sampler", 1, 10, 3, 0);
+  IMG_ROW("i-b2-rd", "i-b2-smp with the image read with no sampler", 1, 11, 3, 0);
+  IMG_ROW("i-ab-smp2", "A' by the sampler (4 fetches, at B' coordinates), B' from memory in halves", 13, 2, 3, 1);
+  IMG_ROW("i-ab1-smp2", "A' by the sampler (at B' coordinates) and 1 of the 8 B' fragments too", 13, 10, 3, 1);
+  IMG_ROW("i-b3-rd", "3 of the 8 B' fragments a k-step as image reads with no sampler", 1, 14, 3, 0);
+  IMG_ROW("i-b4-rd", "4 of the 8", 1, 12, 3, 0);
+  IMG_ROW("i-b6-rd", "6 of the 8", 1, 15, 3, 0);
+  IMG_ROW("i-ab-rd2", "A' as image reads with no sampler (at B' coordinates), B' from memory in halves", 13, 2, 3, 0);
+  IMG_ROW("i-ab2-rd2", "A' and 2 of the 8 B' fragments as image reads with no sampler", 13, 11, 3, 0);
+  IMG_ROW("i-ab4-rd2", "A' and 4 of the 8 B' fragments as image reads with no sampler", 13, 12, 3, 0);
+  IMG_ROW("j-b1", "1 of the 8 B' fragments a k-step fetched from a bindless image", 1, 10, 3, 2);
+  IMG_ROW("j-b2", "2 of the 8", 1, 11, 3, 2);
+  IMG_ROW("j-b3", "3 of the 8", 1, 14, 3, 2);
+  IMG_ROW("j-b4", "4 of the 8", 1, 12, 3, 2);
+  IMG_ROW("j-b", "all 8", 1, 9, 3, 2);
+  IMG_ROW("j-a4-b2", "j-b2 with A' from memory as halves", 2, 11, 3, 2);
+  IMG_ROW("j-ab", "A' fetched from the bindless image (at B' coordinates), B' from memory in halves", 13, 2, 3, 2);
+  IMG_ROW("j-ab2", "A' and 2 of the 8 B' fragments fetched from the bindless image", 13, 11, 3, 2);
+  IMG_ROW("j-a", "A' fetched from the bindless image at its own blocks' texels, B' from memory in halves", 9, 2, 3, 2);
+  IMG_ROW("j-a-b1", "j-a with 1 of the 8 B' fragments fetched too", 9, 10, 3, 2);
+  IMG_ROW("j-a-b2", "j-a with 2 of the 8 B' fragments fetched too", 9, 11, 3, 2);
+  IMG_ROW("j-keep-a", "4 fetches of A' a k-step only kept, DPAS on register operands", 9, 0, 4, 2);
+  IMG_ROW("j-keep-b2", "4 fetches of B' a k-step and 12 half loads only kept, DPAS on register operands", 0, 11, 4, 2);
+#undef IMG_ROW
+#endif
 }
 
 bool read_num(const std::string &path, double &v) {
@@ -1197,6 +1430,65 @@ int main(int argc, char **argv) {
     fprintf(stderr, "fragment rows: A' blocks %u bytes apart, B' blocks %u, a lane's 32 bytes every %u, %u windows a work-group\n",
             aStride, bStride, laneStride, wpg);
     add_frag_rows(rows);
+#if defined(PEARL_SYCL_XMX_JIT)
+    // The image rows' two images, made only when one of those rows is asked for by name.
+    if (only.find(",i-") != std::string::npos || only.find(",j-") != std::string::npos) {
+      try {
+        // The images are left as the driver hands them out: a kernel that wrote the texels hung the card, and
+        // an image made from bytes on the host crashed the runtime. What they hold does not matter to the clock.
+        auto make = [&](size_t bytes, uint32_t &ymask, uint32_t) {
+          uint64_t rowsWanted = (bytes / 16u + 4095u) / 4096u;
+          if (rowsWanted > 16384u) rowsWanted = 16384u;
+          const uint32_t h = floor_pow2(rowsWanted);
+          ymask = h - 1u;
+          return new sycl::image<2>(sycl::image_channel_order::rgba, sycl::image_channel_type::unsigned_int32,
+                                    sycl::range<2>(4096, h));
+        };
+        gImg.a = make(aBytes, gImg.yMaskA, 0x9E3779B9u);
+        gImg.b = make(bBytes, gImg.yMaskB, 0x51ED270Bu);
+        // The bindless image: B's bytes as the operands are filled, copied in from host memory, then checked
+        // by a kernel that fetches every texel back.
+        if (only.find(",j-") != std::string::npos) {
+          namespace sx = sycl::ext::oneapi::experimental;
+          const uint32_t rowsB = gImg.yMaskB + 1u;
+          const size_t words = (size_t)4096 * rowsB * 4u;
+          const uint32_t salt = 0x51ED270Bu;
+          std::vector<uint32_t> host(words);
+          for (size_t i = 0; i < words; i++) host[i] = bytes7(mix((uint32_t)i ^ salt));
+          sx::image_descriptor desc(sycl::range<2>{4096, rowsB}, 4, sycl::image_channel_type::unsigned_int32);
+          const auto t0 = std::chrono::steady_clock::now();
+          sx::image_mem_handle mem = sx::alloc_image_mem(desc, q);
+          q.ext_oneapi_copy(host.data(), mem, desc);
+          q.wait_and_throw();
+          const double dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+          gImg.hb = sx::create_image(mem, desc, q);
+          gImg.haveBindless = true;
+          const sx::unsampled_image_handle hb = gImg.hb;
+          uint32_t *bad = sycl::malloc_shared<uint32_t>(1, q);
+          *bad = 0;
+          q.parallel_for(sycl::range<2>(rowsB, 4096), sycl::reduction(bad, sycl::plus<uint32_t>()),
+                         [=](sycl::id<2> i, auto &sum) {
+            const uint32_t x = (uint32_t)i[1], y = (uint32_t)i[0];
+            const uint32_t t = (y * 4096u + x) * 4u;
+            const peak_texel v = sx::fetch_image<peak_texel>(hb, sycl::vec<int, 2>{(int)x, (int)y});
+            uint32_t n = 0;
+            for (uint32_t c = 0; c < 4u; c++) n += v[c] != bytes7(mix((t + c) ^ salt));
+            sum += n;
+          });
+          q.wait_and_throw();
+          fprintf(stderr, "bindless image: 4096 by %u texels (%u MB) copied from host memory in %.3f s; "
+                          "%u of %zu words read back wrong\n", rowsB, rowsB >> 4, dt, *bad, words);
+          sycl::free(bad, q);
+        }
+        fprintf(stderr, "image rows: A' image 4096 by %u texels (%u MB of %zu), B' image 4096 by %u (%u MB of %zu)\n",
+                gImg.yMaskA + 1u, (gImg.yMaskA + 1u) >> 4, aBytes >> 20, gImg.yMaskB + 1u, (gImg.yMaskB + 1u) >> 4,
+                bBytes >> 20);
+      } catch (const std::exception &e) {
+        fprintf(stderr, "images: %s\n", e.what());
+        return 2;
+      }
+    }
+#endif
   } else if (rbArg == 2 && SG == 8) {
 #if defined(PEARL_PEAK_LARGE_GRF)
     add_rows<8, 2, false>(rows);
@@ -1213,6 +1505,10 @@ int main(int argc, char **argv) {
   int failed = 0;
   for (const Row &r : rows) {
     if (!only.empty() && only.find(std::string(",") + r.name + ",") == std::string::npos) continue;
+#if defined(PEARL_SYCL_XMX_JIT)
+    // The image rows run only when asked for by name (--only), which is when their images are made.
+    if (r.name[1] == '-' && ((r.name[0] == 'i' && !gImg.a) || (r.name[0] == 'j' && !gImg.haveBindless))) continue;
+#endif
     PeakArgs a = args;
     a.reps = r.reps ? r.reps : reps;
     a.rowMask = maskSet[0] ? maskArg[0] : r.rowMask;

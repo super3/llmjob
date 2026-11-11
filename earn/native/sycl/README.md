@@ -482,6 +482,71 @@ though its top clock is 2,400; why is not known, and clocks were not touched.
 A rig that sheds 190 W a card holds 64 TH/s where this one holds 54 to 58.
 Battlemage has a wider DPAS and other loads, and no such card has run this.
 
+### A second way in: the sampler (11 November, evening)
+
+Every row above reads through the Xe-core's data port. A core also has a
+sampler with caches of its own. The probe's `i-` and `j-` rows keep the fold's
+tile and read part of an operand as texels of a 2D image, 16 bytes a texel
+(RGBA, 32-bit unsigned), so one fetch is a half fragment: 128 bytes a message,
+the same as a half-fragment load. Timing only, as above. Card 5 (the cool end
+of the rig), 2 s a row, release build form.
+
+What a k-step's parts cost, as the time a k-step takes (16 is the 16 DPAS
+alone; from the rows' MACs an EU a clock, 124.7 for `f-regs`):
+
+| A k-step's loads, from the fold's real addresses | A clock | A k-step |
+|---|---|---|
+| none (`f-regs`) | 124.7 | 16.0 |
+| A' as 2 loads of 256 bytes, B in registers (`f-a`) | 102.9 | 19.4 |
+| A' as 4 loads of 128 bytes (`f-v4-a`) | 100.4 | 19.9 |
+| B' as 16 loads of 128 bytes, A in registers (`f-v4-b-pf3`) | 82.3 | 24.2 |
+| both, as the fold has them: 18 messages (`f-v84-pf3`, `i-base`) | 73.3 to 75.5 | 26.4 to 27.2 |
+| both in halves: 20 messages (`f-v4-pf3`) | 57.1 | 34.9 |
+
+So A' costs 3.4, B' 8.2, and going from 18 messages to 20 costs 7.7 more: a
+thread has 16 messages in flight at most.
+
+The `j-` rows read a bindless image (`sycl_ext_oneapi_bindless_images`) that
+holds B''s bytes, copied in from host memory and read back right by a kernel
+(134,217,728 words, none wrong). The copy of 512 MB took 3.4 s.
+
+| Row | What goes through the sampler | A clock | T-MAC/s, clock, power |
+|---|---|---|---|
+| `i-base` | nothing | 74.9 to 77.0 | 65.3 to 65.5, 1,900 to 1,945 MHz, 178 W |
+| `j-b1` | 1 of the 8 B' fragments a k-step (2 fetches) | 76.0 | 66.1, 1,941 MHz, 178 W |
+| `j-b2` | 2 of the 8 (4 fetches) | 80.8 to 82.5 | 67.6 to 67.7, 1,830 to 1,868 MHz, 178 to 192 W |
+| `j-b3` | 3 of the 8 | 77.6 | 64.5, 1,855 MHz, 178 W |
+| `j-b4` | 4 of the 8 | 59.9 | 51.7 |
+| `j-b` | all 8 | 21.5 | 19.7 |
+| `j-a` | A', from its own blocks' texels (4 fetches) | 71.2 to 72.5 | 60.2, 1,855 to 1,886 MHz, 178 W |
+| `j-a-b1`, `j-a-b2` | A' and 1 or 2 fragments of B' | 68.5, 59.3 | |
+| `j-a4-b2` | 2 of the 8, with A' from memory in halves | 67.8 | |
+| `j-ab` | A' from texels that every sub-group of a band shares. Not a real A' | 99.5 to 100.1 | 80.7, 1,800 MHz, 176 W |
+
+- **The sampler takes about 4 fetches a k-step for nearly nothing, but only
+  of texels that many threads fetch at once.** A column window's B' is read
+  by the 128 sub-groups of a band one after another, and 2 of its 8 fragments
+  through the sampler give 81 to 82 a clock where the fold's loads give 75 to
+  77. A third fragment loses it again, and all 8 run at 21.
+- **A' does not go through it.** A sub-group's A' is its own, and 4 fetches
+  of it are slower than the 2 loads they replace. `j-ab` shows what it would
+  be worth if it did: 100 a clock, 80.7 T-MAC/s at 176 W. Small bands, where
+  neighbours share A' and not B', are worse for every row: at band 1, 2, 4 and
+  16 `i-base` is 54.6, 54.3, 54.7 and 62.0 and `j-a` 38.2, 38.0, 41.0 and
+  48.9.
+- **At the card's 190 W limit the gain is 3.5%.** `j-b2` does 5 to 10% more
+  a clock and the card then runs at a lower clock: 67.6 T-MAC/s against 65.3
+  to 65.5, the same in each of four runs. It was not built into a fold. It
+  would need a bindless image of a quarter of B' (128 MB) refilled at every
+  draw, for that 3.5%.
+- **The `i-` rows are not to be trusted.** They read the old SYCL image
+  class, whose images could not be filled here (a kernel that writes one hangs
+  the card, one made from host bytes crashes the runtime), and on images
+  never written they came out higher than the filled bindless image does:
+  89 to 97 a clock for 1 to 3 fragments. A kernel that reads only its first
+  image, or two images, also fails there (`GPU HANG`, or an out-of-memory
+  error). They are kept for the record of that.
+
 ## The build a release carries
 
 A release carries this core as a folder, `sycl/`, beside its other cores: in
@@ -1034,6 +1099,7 @@ this one:
 | `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8f` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
 | `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is a quarter of the cache the device reports for the fragment fold and the plain fold (64 on an A750) and all of it for `xmx8` and `xmx16` (256) |
+| `PEARL_SYCL_DUTY` | 100 | the share of the time a card folds, 10 to 100, for a card that cannot shed the heat of a full load: each batch waits for the one before it, then the card rests for the remainder. One figure for every card, or a list by card index (`100,60,60`; a card past the end takes the last). The fold is the same. On the A750 rig 60 gave 37.5 TH/s and 128 W a card where 100 gives 63 and 190 W |
 | `PEARL_SYCL_VERBOSE` | | print the device, fold, batch width and band when a core starts |
 | `PEARL_SYCL_UNTESTED` | | `1` opens a GPU for an opener that checks no hits and sends no shares (`bench.js`). It turns no check off ("Untested cards") |
 | `PEARL_GPU_INDEX` | | the app's and the CLI's: the cards to mine on, by index in the core's device list (`pearl_sycl_check --list` prints it), such as `0,1,2,3,4,5`. As one number it also pins the card for `verify.sh`, `bench.sh` and the tools under them |
