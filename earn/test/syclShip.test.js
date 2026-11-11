@@ -328,7 +328,7 @@ describe('CI builds the core for Linux and Windows (native-core.yml)', () => {
     expect(slice(linux, '- uses: actions/upload-artifact@v4', 'if-no-files-found: error'))
       .toMatch(/name: pearl-core-sycl-ubuntu-latest\n\s+path: earn\/native\/sycl\/stage\n/);
     // The cache key changes with either version install-toolchain.sh names.
-    expect(linux).toContain('key: dpcpp-open-' + DPCPP_TAG + '-cpurt-2026.1.1-ubuntu-20.04');
+    expect(linux).toContain('key: dpcpp-open-' + DPCPP_TAG + "-cpurt-2026.1.1-ubuntu-20.04-${{ hashFiles('earn/native/sycl/install-toolchain.sh') }}");
   });
 
   test('Linux: what is checked is the staged folder, on Ubuntu 20.04\'s limits and on the CPU device', () => {

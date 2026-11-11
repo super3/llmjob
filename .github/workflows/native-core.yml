@@ -1061,7 +1061,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: earn/native/sycl/toolchain-open
-          key: dpcpp-open-v7.2.0-cpurt-2026.1.1-ubuntu-20.04
+          key: dpcpp-open-v7.2.0-cpurt-2026.1.1-ubuntu-20.04-${{ hashFiles('earn/native/sycl/install-toolchain.sh') }}
 
       - name: Install the DPC++ toolchain
         if: steps.dpcpp.outputs.cache-hit != 'true'
@@ -1281,15 +1281,18 @@ jobs:
 
       # The same check as the Linux job: verify.sh --quick on the SYCL CPU device, with
       # nothing of the compiler on PATH. The CPU runtime is named to the OpenCL loader by
-      # OCL_ICD_FILENAMES, and the loader and the runtime's own DLLs come from its folder.
+      # OCL_ICD_FILENAMES; the loader (OpenCL.dll) and the runtime's own DLLs are found on
+      # PATH, in the folders the conda packages put them in.
       - name: Check the folds on the SYCL CPU device
         working-directory: earn/native/sycl
         shell: bash
         run: |
-          rt=$(cygpath -u "$CPU_RT")/Library/bin
-          ls "$rt" | grep -iE 'opencl|intelocl' || true
-          export PATH="$rt:$PATH"
-          export OCL_ICD_FILENAMES="$(cygpath -w "$rt/intelocl64.dll")"
+          rt=$(cygpath -u "$CPU_RT")
+          icd=$(find "$rt" -iname 'intelocl64.dll' | head -n 1)
+          [ -n "$icd" ] || { echo "::error::the CPU runtime has no intelocl64.dll"; find "$rt" -iname '*ocl*' | head -n 40; exit 1; }
+          echo "CPU runtime: $icd"
+          export PATH="$(dirname "$icd"):$rt/Library/bin:$PATH"
+          export OCL_ICD_FILENAMES="$(cygpath -w "$icd")"
           PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check.exe --list
           PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
 
