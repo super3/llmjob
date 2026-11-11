@@ -3729,6 +3729,17 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   count is 4% over the release and 2 to 3% under the other miners (338.6 to 341.9). Nothing ships from this
   round. Tables: `earn/native/probes/README.md`, "The price of a step, and the rotation fold".
 
+## Community reports (not our measurements)
+
+Figures people posted from their own rigs. We did not run them, the method and length of each run are unknown, and
+none is checked against a pool. They change no row above. They are kept because they cover hardware we have no
+figure for, and each says what would make it a real row.
+
+| Date | Who | Hardware | What they reported | Notes |
+|---|---|---|---|---|
+| 11 Nov 2026 | jarvcat (Discord) | RX 9070 (not the XT), Windows or Linux not stated | Ours: 75 TH/s at 153 W with power turned down 30%; 95 TH/s at 220 W at stock | The first figure for the non-XT 9070. By our arithmetic 0.49 TH/s a watt turned down against 0.43 at stock. No other miner was run. A row needs SRBMiner on the same card at the same setting. |
+| 11 Nov 2026 | 306Miner (Discord) | HiveOS rig: 4x RTX 3070, 2x CMP 50HX, RTX 3060, RTX 4070, on a 2-core Celeron G1840; every card at a locked core clock and a 100 W power limit setting | OneZeroMiner: 74.8 to 74.9 a 3070 at 101 W, 81.0 and 81.1 a CMP 50HX at 156 and 185 W, 45.4 the 3060 at 67 W, 117.2 the 4070 at 113 W. Ours (v0.6.15, with `--mode auto --llm-max-instances 1`): 31.8 a 3070 at 77 W, 87.7 a CMP 50HX at 206 and 221 W, 4.5 the 3060, 92.3 the 4070 at 115 W; load average 6.8, and HiveOS's watchdog rebooted the rig every four minutes | Not a fair race: ours also ran one LLM server, and its memory clock read 810 against 405 under OneZeroMiner. It is the report that led to the CPU work (`earn/README.md`, "How much CPU a card takes", and the CPU record at the end of the RTX 40-series section): v0.6.15 spins one CPU core a card. The first CMP 50HX figures we have. A row needs a mining-only run on a build with that fix. |
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
