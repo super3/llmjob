@@ -1197,14 +1197,13 @@ runs of 4, 3 and 3 rounds. The control is the PR's default; the twin is a second
 
 The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
 (the `xmx8` fold: the XMX matrix engines through DPAS at sub-group 8), built on the rig from PR #290 and run by
-that branch's CLI through `PEARL_CORE_PATH`. It is in no release. The competitors are the Pearl miners that say
-they run on Arc (IAminer, ARCMiner) and the two we race elsewhere (SRBMiner, WildRig). TH/s is each miner's own
-figure.
+that branch's CLI through `PEARL_CORE_PATH`. It is in no release. The competitors are IAminer, the Pearl miner
+for Arc that could be had, and the two we race elsewhere (SRBMiner, WildRig). TH/s is each miner's own figure.
 
-| Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | ARCMiner | % of best |
-|---|---|---|---|---|---|---|---|---|
-| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | not run | 124% |
-| Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | not run | 128% |
+| Card | Host | Rig | Ours | IAminer | SRBMiner | WildRig | % of best |
+|---|---|---|---|---|---|---|---|
+| Arc A750 | HiveOS rig (8 GB) | arc750, card 0 | 16.9 | 13.6 | 0 | 0 | 124% |
+| Arc A750 x 6 | HiveOS rig (8 GB each) | arc750, all six | 100.1 | 78.0 | 0 | 0 | 128% |
 
 - **IAminer 1.0.0** mines on the card. Its own tuning picked m = n = 131072, k 4096. The pool rejected the only two
   shares it found ("Invalid share"), so it has no accepted share on this rig.
@@ -1212,8 +1211,8 @@ figure.
   with". Their algorithm list marks `pearlhash` for AMD and NVIDIA only.
 - **WildRig 0.52.1 and 0.51.9** list the card, print "Start mining", then show "n/a TH/s" for four minutes with the
   card idle at 34 W.
-- **ARCMiner** is Windows only by Kryptex's miner page, and its download page (github.com/jbman2025/ARC-miner)
-  returned 404. Not run.
+- **ARCMiner** has no column: it could not be had. Kryptex's miner page lists it as Windows only, and its download
+  page (github.com/jbman2025/ARC-miner) returned 404.
 
 ### Arc rig, 10 November (PR #290's SYCL core; IAminer 1.0.0, SRBMiner 3.8.6 and 3.8.2, WildRig 0.52.1 and 0.51.9)
 
