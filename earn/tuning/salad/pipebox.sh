@@ -19,7 +19,9 @@
 #   PP_SHORT      seconds a short run (default 1)
 #   PP_LONG       seconds a long run (default 30; the card is read every second and the first 8 s are left out)
 #   PP_ONLY_STAT  1: build only, and print what stands between each build's IMMA (nothing runs)
-#   PP_SKIP_SHORT 1: no short runs
+#   PP_SKIP_SHORT 1: no short runs but PP_SHORTS's
+#   PP_SHORTS     more streams to run short (default: one to three draw units, the readout with 4 and 16 chains)
+#   PP_L2, PP_LONGS2   the second toolkit's streams, and those of its long runs
 #   PP_LONGS      the streams of the long runs (default: the main ones, then hashed bytes, then base again)
 set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
@@ -198,6 +200,18 @@ fullns|$F
 full|$F -DDSYNC=1
 full3|-DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DDREAL=1 -DDSYNC=1
 fulle|-DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=0 -DDREAL=1 -DDSYNC=1
+d1m|-DDRAW=1 -DDPOS=1
+d2m|-DDRAW=2 -DDPOS=1
+d3m|-DDRAW=3 -DDPOS=1
+d1e|-DDRAW=1 -DDPOS=0
+d2e|-DDRAW=2 -DDPOS=0
+d3e|-DDRAW=3 -DDPOS=0
+d3r|-DDRAW=3 -DDPOS=1 -DDREAL=1
+d2r|-DDRAW=2 -DDPOS=1 -DDREAL=1
+rd1c4|-DRD=1 -DRCH=4
+rd1c16|-DRD=1 -DRCH=16
+rd2c4|-DRD=2 -DTRW=0 -DRCH=4
+rd2c16|-DRD=2 -DTRW=0 -DRCH=16
 baser|-DFILLRND=1
 rd1r|-DRD=1 -DFILLRND=1
 rd2ar|-DRD=2 -DTRW=0 -DFILLRND=1
@@ -268,7 +282,7 @@ toolkit2() {
   disasm /opt/cuda2 "$CUDA_VER2" || psay "WARN no nvdisasm for $CUDA_VER2"
   return 0
 }
-L2="pure base rd1 rd2a d4m d4r fullns full full3"
+L2=${PP_L2:-pure base rd1 rd2a d4m d4r fullns full full3}
 buildall $P/b "$CUDA" "nvcc$CUDA_VER"
 # PP_ONLY_STAT=1: the builds and what stands between their IMMA, with both toolkits, and nothing run.
 if [ -n "${PP_ONLY_STAT:-}" ]; then
@@ -336,6 +350,11 @@ T=nvcc$CUDA_VER
 done
 # 2. The 4090 table's streams, pipe use only.
 [ -n "${PP_SKIP_SHORT:-}" ] || for s in pure base rd1 rd1a rd2 rd2a rd3 d4e d4m d4h d4s d4mg d4r fullns full full3 fulle; do
+  [ -x $P/b/$s ] && short $P/b $T $s
+done
+# 2b. What a step between the IMMA costs by count and kind: one to three draw units, the readout's chains.
+#     PP_SHORTS names other streams to run short (with PP_SKIP_SHORT, only these run short).
+for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16}; do
   [ -x $P/b/$s ] && short $P/b $T $s
 done
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
