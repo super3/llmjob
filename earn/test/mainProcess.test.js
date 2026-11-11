@@ -1419,7 +1419,9 @@ describe('mining', () => {
   // handing the result to the engine. The renderer has no setting for it, so
   // the RTX 5090 default is how a GUI rig gets the lock -- which is the point:
   // before this, no GUI rig ever did -- and the environment variable is how it
-  // gets off it, or onto it on another card.
+  // gets off it, or onto it on another card. The default is a trial: the engine
+  // is handed the 5090 as a card to try, and keeps the lock only if it is
+  // faster (pearlMiner.test.js).
   describe('the memory clock', () => {
     const RTX5090 = { index: 0, major: 12, minor: 0, driverMajor: 610 };
     const RTX4090 = { index: 0, major: 8, minor: 9, driverMajor: 610 };
@@ -1442,16 +1444,19 @@ describe('mining', () => {
       else delete process.env[ENV];
     });
 
-    it('is locked by default on an RTX 5090 mining alone, and the log says so', async () => {
+    it('is tried by default on an RTX 5090 mining alone, and the log says so', async () => {
       const ctx = await boot();
       oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
       await flush();
       expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true,
+        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true, mineMemClockTrial: [0],
       }));
-      expect(lines(ctx)).toContain(
-        'memory clock 7001 MHz by default on GPU 0 (RTX 5090; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'info',
+        line: 'trying a memory clock lock of 7001 MHz on GPU 0 by default (RTX 5090), kept only if the card mines '
+          + 'faster; LLMJOB_MINE_MEM_CLOCK=7001 locks without a trial, LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock',
+      });
       // The plan rides on the start call only: what is saved is what the
       // renderer sent, and never the plan.
       const saved = ctx.fs.writeFileSync.mock.calls
@@ -1470,8 +1475,11 @@ describe('mining', () => {
       expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
         mineMemClockByIndex: {}, mineMemClockDefault: false,
       }));
+      // Not tried either: a trial would cut the memory clock under the model.
+      expect(ctx.PearlEngine.instances[0].start.mock.calls[0][0].mineMemClockTrial).toBeUndefined();
       expect(lines(ctx)).toContain(
         'memory clock left to the driver on GPU 0: the LLM co-runs with the miner and needs full memory bandwidth');
+      expect(lines(ctx).join('\n')).not.toContain('trying a memory clock lock');
     });
 
     it('is not planned on any other card, with nothing in the log', async () => {
@@ -1485,8 +1493,9 @@ describe('mining', () => {
       expect(lines(ctx).join('\n')).not.toMatch(/memory clock/);
     });
 
-    // The default is measured on a 5090 only. A rig that regresses on another
-    // compute 12.x card turns it off the way the CLI does with --mine-mem-clock 0.
+    // The default is measured on a 5090 only. A rig that wants no part of it
+    // turns it off the way the CLI does with --mine-mem-clock 0: nothing is
+    // locked and nothing is tried.
     it('is turned off by LLMJOB_MINE_MEM_CLOCK=0, and the log says so', async () => {
       process.env[ENV] = '0';
       const ctx = await boot();
@@ -1496,6 +1505,7 @@ describe('mining', () => {
       expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
         mineMemClockByIndex: {}, mineMemClockDefault: false,
       }));
+      expect(ctx.PearlEngine.instances[0].start.mock.calls[0][0].mineMemClockTrial).toBeUndefined();
       expect(ctx.sent('miner:log')).toContainEqual(
         { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=0: memory clocks left to the driver' });
     });
@@ -1512,6 +1522,38 @@ describe('mining', () => {
       }));
       expect(ctx.sent('miner:log')).toContainEqual(
         { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
+    });
+
+    // An RTX 5090 included: asking for the default's own clock locks it at
+    // once, with no trial. This is the GUI's way past the trial.
+    it('LLMJOB_MINE_MEM_CLOCK=7001 locks an RTX 5090 with no trial', async () => {
+      process.env[ENV] = '7001';
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const started = ctx.PearlEngine.instances[0].start.mock.calls[0][0];
+      expect([started.mineMemClockByIndex, started.mineMemClockDefault, started.mineMemClockTrial])
+        .toEqual([{ 0: 7001 }, false, undefined]);
+      expect(ctx.sent('miner:log')).toContainEqual(
+        { level: 'info', line: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0' });
+      expect(lines(ctx).join('\n')).not.toContain('trying a memory clock lock');
+    });
+
+    // auto is the same trial, asked for.
+    it('LLMJOB_MINE_MEM_CLOCK=auto puts an RTX 5090 on trial, like any card with a lock to try', async () => {
+      process.env[ENV] = 'auto';
+      const ctx = await boot();
+      oneCard(ctx, RTX5090, 'NVIDIA GeForce RTX 5090');
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
+        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: false, mineMemClockTrial: [0],
+      }));
+      expect(ctx.sent('miner:log')).toContainEqual({
+        level: 'info',
+        line: 'LLMJOB_MINE_MEM_CLOCK=auto: trying a memory clock lock on GPU 0, kept only if the card mines faster',
+      });
     });
 
     // Two AMD cards mine from the OS's count, but the lock is nvidia-smi's. The
@@ -1569,7 +1611,7 @@ describe('mining', () => {
       ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
       await flush();
       expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({
-        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true,
+        mineMemClockByIndex: { 0: 7001 }, mineMemClockDefault: true, mineMemClockTrial: [0],
       }));
       expect(ctx.sent('miner:log')).toContainEqual({
         level: 'warn',

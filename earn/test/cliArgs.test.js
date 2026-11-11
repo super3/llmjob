@@ -456,17 +456,25 @@ describe('--mine-mem-clock', () => {
   });
 
   // The flag's help has to carry the reason to use it, the value to use, and
-  // what it needs -- nobody reads a README before a flight sheet. Now that it
-  // is on by default on the RTX 5090 it also has to say so, say how to turn it
+  // what it needs -- nobody reads a README before a flight sheet. An RTX 5090
+  // tries the lock by default, so it also has to say that, that the lock is
+  // kept only if it is faster, that a number skips the trial, how to turn it
   // off, and not claim a measurement for any card but the one measured.
   test('is documented with the number, the default, the off switch and the requirement', () => {
     expect(VALUE_FLAGS.has('--mine-mem-clock')).toBe(true);
     expect(USAGE).toContain('--mine-mem-clock <MHz>');
     expect(USAGE).toContain('7001');
     expect(USAGE).toContain('NOPASSWD');
-    expect(USAGE).toMatch(/Default: 7001 on the RTX 5090/);
+    expect(USAGE).toMatch(/while it mines, with no trial\./);
+    expect(USAGE).toMatch(/Default: an RTX\s+5090 tries 7001 for five minutes and keeps it\s+only if it mines faster/);
     expect(USAGE).toMatch(/0 leaves/);
-    expect(USAGE).toMatch(/Only the\s+5090 has been measured/);
+    expect(USAGE).toMatch(/Only one\s+5090 has been measured/);
+  });
+
+  // "five minutes" is the trial's four turns (shared/memClockTrial).
+  test('quotes the trial\'s real length', () => {
+    const { TURN_MS, TURNS } = require('../src/shared/memClockTrial');
+    expect(TURN_MS * TURNS.length).toBe(5 * 60 * 1000);
   });
 });
 

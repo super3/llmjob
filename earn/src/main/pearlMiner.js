@@ -262,7 +262,7 @@ class PearlMiner extends EventEmitter {
     // stop(), and a start that fails locks nothing, so start() never finds any
     // -- and if it somehow did, forgetting them would leave them locked.
     this.memClockLocked = new Set();
-    // Memory clock trials under way, as card index -> { mhz, trial }, and the
+    // Memory clock trials under way, as card index -> { mhz, byDefault, trial }, and the
     // ones this run has finished, as card index -> kept (see _startMemClockTrial).
     this.memClockTrials = new Map();
     this.memClockVerdicts = new Map();
@@ -517,16 +517,17 @@ class PearlMiner extends EventEmitter {
     if (Object.keys(memClocks).length > 0) {
       const index = device ? device.index : null;
       if (index == null || memClocks[index]) {
-        // A card on trial (--mine-mem-clock auto) keeps the driver's clock for
-        // now and earns the lock. Opened again in the same run, it takes the
-        // trial's answer: the lock at once if it was kept, nothing if it was not.
+        // A card on trial (an RTX 5090 by default, or --mine-mem-clock auto)
+        // keeps the driver's clock for now and earns the lock. Opened again in
+        // the same run, it takes the trial's answer: the lock at once if it was
+        // kept, nothing if it was not.
+        const byDefault = !!this.settings.mineMemClockDefault;
         const onTrial = index != null && (this.settings.mineMemClockTrial || []).includes(index);
         const verdict = this.memClockVerdicts.get(index);
         if (onTrial && verdict === undefined) {
-          this._startMemClockTrial(index, memClocks[index]);
+          this._startMemClockTrial(index, memClocks[index], byDefault);
         } else if (!onTrial || verdict) {
-          this._lockMemClock(index, index == null ? null : memClocks[index],
-            !!this.settings.mineMemClockDefault);
+          this._lockMemClock(index, index == null ? null : memClocks[index], byDefault);
         }
       }
     }
@@ -536,8 +537,35 @@ class PearlMiner extends EventEmitter {
 
   // Start one card's memory clock trial (shared/memClockTrial has the method
   // and the reasons). The card mines throughout; only its memory clock changes.
-  _startMemClockTrial(index, mhz) {
-    this.memClockTrials.set(index, { mhz, trial: memClockTrial.createTrial(this.now()) });
+  //
+  // The trial's first turn is the driver's clock, so the card is handed back
+  // to the driver first. A run that was killed never ran its stop(), and its
+  // lock stays on the card until a reset or a reboot. Every RTX 5090 used to be
+  // locked by default at the very clock its trial now tries, so a 5090 can come
+  // to its first trial still locked at it. That trial would time the lock
+  // against itself in its first two turns, and give up a lock that pays. On a
+  // card with no lock the reset changes nothing.
+  //
+  // A reset that fails means this process cannot hand the card's clock back
+  // (no rights, as a rule), so it could not undo a lock either. The trial is
+  // not run, and the rig hears why now, not a turn in.
+  //
+  // `byDefault` is true when nobody asked for the trial (the RTX 5090's
+  // default). Its lines are then information, not warnings, as for a lock
+  // nobody asked for (see _lockMemClock). The lines themselves are the same:
+  // the shell's plan line has already said the trial is the default's.
+  _startMemClockTrial(index, mhz, byDefault) {
+    const reset = this.clocks.resetMemoryClock(index);
+    if (!reset.ok) {
+      this._endMemClockTrial(index);
+      this.emit('log', {
+        level: byDefault ? 'info' : 'warn',
+        line: 'memory clock trial not run on GPU ' + index + ' (' + reset.error + '): setting the memory clock '
+          + 'needs root or administrator rights for nvidia-smi. Mining continues at the default memory clock.',
+      });
+      return;
+    }
+    this.memClockTrials.set(index, { mhz, byDefault, trial: memClockTrial.createTrial(this.now()) });
     const secs = memClockTrial.TURN_MS / 1000;
     this.emit('log', {
       level: 'info',
@@ -584,11 +612,14 @@ class PearlMiner extends EventEmitter {
       this.memClockLocked.add(index);
       return;
     }
-    // No rights to set clocks is the common way to get here. The trial was
-    // asked for, so it is a warning, and the card is not tried again this run.
+    // The card is not tried again this run. A trial that was asked for says so
+    // in a warning; the default's is information (see _startMemClockTrial).
+    // The reset at the trial's start worked, so this is a driver that hands a
+    // clock back but will not lock it, for want of rights or for its own
+    // reason. Its own words are in the line.
     this._endMemClockTrial(index);
     this.emit('log', {
-      level: 'warn',
+      level: t.byDefault ? 'info' : 'warn',
       line: 'memory clock trial ended on GPU ' + index + ' (' + r.error + '): setting the memory clock needs '
         + 'root or administrator rights for nvidia-smi. Mining continues at the default memory clock.',
     });
@@ -600,17 +631,18 @@ class PearlMiner extends EventEmitter {
     this.memClockVerdicts.set(index, false);
   }
 
-  // Lock one mining card's memory clock (the RTX 5090 default, or
-  // --mine-mem-clock; see gpuClocks for the measurements). The index is the
-  // card the core says it opened. A core that does not say is one that ignores
-  // the card it was asked for (see below), so the index it was given is a
-  // guess, and a wrong guess would lock a card something else is using.
+  // Lock one mining card's memory clock outright: a --mine-mem-clock request,
+  // or a lock the card's trial kept, taken again when the card is opened again
+  // (see gpuClocks for the measurements). The index is the card the core says
+  // it opened. A core that does not say is one that ignores the card it was
+  // asked for (see below), so the index it was given is a guess, and a wrong
+  // guess would lock a card something else is using.
   //
-  // `byDefault` is true when nobody asked for this lock: the log then says
-  // where it came from, and not getting it is information, not a warning. A
-  // rig with no rights to set clocks is the common case, and it should not
-  // read a warning on every start for something it never asked for. A
-  // requested lock that fails keeps its warning.
+  // `byDefault` is true when nobody asked for this lock: it comes from the RTX
+  // 5090's default, whose trial kept it. Not getting it is then information,
+  // not a warning. A rig with no rights to set clocks is the common case, and
+  // it should not read a warning on every start for something it never asked
+  // for. A requested lock that fails keeps its warning.
   //
   // These lines reach both shells, so they name neither a flag nor sudo: the
   // GUI has no --mine-mem-clock, and on Windows there is no sudoers rule, only
@@ -630,8 +662,7 @@ class PearlMiner extends EventEmitter {
       this.memClockLocked.add(index);
       this.emit('log', {
         level: 'info',
-        line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining'
-          + (byDefault ? ' (the default on the RTX 5090)' : ''),
+        line: 'memory clock locked at ' + mhz + ' MHz on GPU ' + index + ' while mining',
       });
       return;
     }
@@ -667,7 +698,7 @@ class PearlMiner extends EventEmitter {
   // while mining-only is up: the miner is kept (restarting it would drop the
   // pool connection for nothing) but a model is about to be served from its
   // cards, and a served model must never sit on a locked card. Mining then
-  // carries on at the driver's clock -- slower on an RTX 5090, never
+  // carries on at the driver's clock -- slower on a card whose lock paid, never
   // wrong. Idempotent, and a later stop() finds nothing left to release. A card
   // restarted after this does not lock again (see _openCore); the next start
   // plans the locks afresh.

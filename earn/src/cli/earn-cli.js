@@ -1249,12 +1249,14 @@ async function run(argv) {
   }
 
   // Which cards lock their memory clock while mining, and at what: the
-  // RTX 5090 default, or --mine-mem-clock (shared/memClock). Decided here,
+  // RTX 5090 default, which tries the lock and keeps it only where the card
+  // mines faster, or --mine-mem-clock (shared/memClock). Decided here,
   // where the LLM plan is known, because the lock is only safe while nothing
   // else wants the memory. LLM decode is memory-bandwidth-bound -- the opposite
   // of the fold -- so a model served from a locked card slows down with the
   // memory clock. Demand mode never overlaps the two: the miner's stop()
-  // releases the lock before the gate starts llama-server. A co-running LLM
+  // releases the lock, and ends a trial, before the gate starts llama-server.
+  // Each of its mining runs starts the trial again. A co-running LLM
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.
@@ -1278,7 +1280,8 @@ async function run(argv) {
     const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
-    // The cards that have to earn their lock (--mine-mem-clock auto); none otherwise.
+    // The cards that have to earn their lock: each RTX 5090 by default, more
+    // cards with --mine-mem-clock auto, none when a clock was asked for.
     settings.mineMemClockTrial = memPlan.trial;
     if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
     const offsetPlan = planCoreOffsets({ requested: settings.mineCoreOffset, ...nvidia });

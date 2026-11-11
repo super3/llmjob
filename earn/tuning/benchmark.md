@@ -453,6 +453,11 @@ this branch's CLI on Kryptex: the trial measured 320.0 TH/s locked against 317.4
 shares accepted and none rejected in under six minutes. The lock is dropped when an LLM co-runs on the card, as
 every memory clock lock is.
 
+Changed on 11 November: an RTX 5090 runs this trial too, at 7001 MHz, and runs it by default. It used to be locked
+at 7001 MHz outright, on one run on one card (+8.0% at 600 W) whose earlier run had the two clocks level. Not
+measured: no 5090 has run the trial. The trial now also hands the card's clock to the driver before its first turn,
+so a lock left by a killed miner is not timed against itself; that is not run on a card either, only in the tests.
+
 ### rig01, 10 November: core clock offset on the RTX 4090 (item 6, second pass)
 
 Item 6's first pass tried a core clock lock (`nvidia-smi -lgc`), which changed nothing: a lock can't change the
