@@ -51,6 +51,9 @@ X, T0, ONE = [246, 247, 248], 249, 0
 SB_AF, SB_B0, SB_B1, SB_HOLD, SB_DX, SB_DY, SB_OFF = 0, 1, 1, 2, 3, 4, 5
 
 CFG = dict(cap=3, cap0=5, cap3=5, pad=8, ua=1, ub=20, ua1=None, ub1=None, rsh0=0, rsh1=4, ly=1, py=0, iy=1, ru=0, ist=5, pol=2, sf=1, hold=1, lead=2, bstall=1, rst=1, pst=2,
+           # r1: see unit(). ah: the readout's atomics are held too (ah=0 with hold=1 is the form that once
+           # computed 8 regions of 10,240 wrong).
+           r1=1, ah=1,
            # Timing only (each computes wrong results on purpose): pieces left out.
            nodraw=0, noread=0, nold=0, nost=0, nobar=0, noldsm=0)
 
@@ -246,13 +249,17 @@ def unit(s, which, cfg):
         b = (s & 1) * STB
         d0 = "[R%d+0x%x]" % (DSTBL, b) if b else "[R%d]" % DSTBL
         d1 = "[R%d+0x%x]" % (DSTBL, b + 0x100)
-    adds = [Ins(muladd(q[j], tab, 1, off + j), wait=(SB_OFF,) if j == 0 else ()) for j in range(4)]
+    # r1: every reader of a loaded register waits on the load's scoreboard itself (the sixth round's first rule:
+    # a step right behind a waiting step can read the register before the load has written it). r1=0 is the
+    # loop as the fifth round measured it, with only the first of each four waiting.
+    r1 = cfg["r1"]
+    adds = [Ins(muladd(q[j], tab, 1, off + j), wait=(SB_OFF,) if j == 0 or r1 else ()) for j in range(4)]
     lds = [Ins("LDS.128 R%d, [R%d]" % (q[j], q[j]), wsb=SB_DX if j < 2 else SB_DY) for j in range(4)]
     lds.append(Ins("LDG.E.128 R%d, [R%d.64+0x%x]" % (off, POFF, ldg), wsb=SB_OFF))
-    dx = [Ins("IADD3 R%d, -R%d, 0x3f3f3f3f, R%d" % (q[0] + i, q[1] + i, q[0] + i), wait=(SB_DX,) if i == 0 else ())
-          for i in range(4)]
-    dy = [Ins("IADD3 R%d, -R%d, 0x3f3f3f3f, R%d" % (q[2] + i, q[3] + i, q[2] + i), wait=(SB_DY,) if i == 0 else ())
-          for i in range(4)]
+    dx = [Ins("IADD3 R%d, -R%d, 0x3f3f3f3f, R%d" % (q[0] + i, q[1] + i, q[0] + i),
+              wait=(SB_DX,) if i == 0 or r1 else ()) for i in range(4)]
+    dy = [Ins("IADD3 R%d, -R%d, 0x3f3f3f3f, R%d" % (q[2] + i, q[3] + i, q[2] + i),
+              wait=(SB_DY,) if i == 0 or r1 else ()) for i in range(4)]
     pr = []
     for h in range(2):          # the first store's four words, then the second's
         for i in range(2):
@@ -316,8 +323,8 @@ def chunk(grp, cfg):
         steps.append(Ins("SHF.L.W.U32.HI R%d, R%d, R%d, R%d" % (x, x, ROT, x)))
         imm = 128 * ((grp * 5 + t) >> 1)
         steps.append(Ins("ATOMS.XOR RZ, [R%d%s], R%d" % (TRW, "+0x%x" % imm if imm else "", x),
-                         rsb=SB_HOLD if cfg["hold"] else None))
-        if cfg["hold"]:
+                         rsb=SB_HOLD if cfg["hold"] and cfg["ah"] else None))
+        if cfg["hold"] and cfg["ah"]:
             # The atomic XOR keeps reading its value register until every lane's word is done (four lanes share
             # a word). The next tile that takes the same register starts its chain by overwriting it: it waits.
             steps[0].wait = (SB_HOLD,)
