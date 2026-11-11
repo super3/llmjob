@@ -2406,8 +2406,9 @@ describe('PearlMiner — each card mines its own k', () => {
   // when the miner lets it (cardK), and with cardK off it keeps the profile's;
   // no `k` is a core built before cores could choose. `fail` makes the card's
   // next core throw it. With `gpus: false` the rig has no card list, and its one
-  // card's core (cards[0]) names no device.
-  function rig(cards, { gpus = true } = {}) {
+  // card's core (cards[0]) names no device. `miner` adds to what the miner is
+  // built with, and `more` to the settings it starts with.
+  function rig(cards, { gpus = true, miner = {}, more = {} } = {}) {
     const socks = [];
     const made = [];
     const connect = jest.fn(() => { const s = makeSocket(); socks.push(s); return s; });
@@ -2425,12 +2426,13 @@ describe('PearlMiner — each card mines its own k', () => {
       made.push({ core: c, opts, card });
       return c;
     });
-    const m = new PearlMiner({ connect, createCore, reconnectMs: 0, restartMs: 10 });
+    const m = new PearlMiner({ connect, createCore, reconnectMs: 0, restartMs: 10, ...miner });
     const lines = [];
     m.on('log', (l) => lines.push(l.line));
     m.on('error', () => {});
     const start = () => m.start({
       ...settings, profile: SMALL, gpus: gpus ? cards.map((c) => ({ index: c.index, name: 'Radeon ' + c.index })) : [],
+      ...more,
     });
     start();
     const sock = () => socks[socks.length - 1];
@@ -2639,6 +2641,44 @@ describe('PearlMiner — each card mines its own k', () => {
       expect(r.made[3].opts.cardK).toBe(false);
       expect(r.m.cores.map((c) => c.profile.k)).toEqual([2048, 2048]);
       r.m.stop();
+    });
+
+    // The card's core closes and opens again, so its memory clock lock goes
+    // with it, as at every other place a card's core closes. Left on, a card
+    // part way through its memory clock trial started the trial over with the
+    // miner still counting it as locked.
+    test('a card opened again at k 2048 gives its memory clock lock back first', () => {
+      const { TURN_MS } = require('../src/shared/memClockTrial');
+      const calls = [];
+      const t = { now: 0 };
+      const ok = { ok: true, error: null };
+      const clocks = {
+        lockMemoryClock: (index, mhz) => { calls.push(['lock', index, mhz]); return ok; },
+        resetMemoryClock: (index) => { calls.push(['reset', index]); return ok; },
+      };
+      const r = rig([{ index: 0, k: 4096 }], {
+        miner: { clocks, now: () => t.now },
+        more: { mineMemClockByIndex: { 0: 5001 }, mineMemClockTrial: [0] },
+      });
+      r.login();
+      // Into the trial's second turn, the first locked one.
+      t.now += TURN_MS;
+      r.core().emit('hashrate', 100);
+      expect(calls).toEqual([['reset', 0], ['lock', 0, 5001]]);
+      expect([...r.m.memClockLocked]).toEqual([0]);
+
+      for (let i = 0; i < 3; i++) r.core().emit('hit', hitFor(K4));
+      for (const s of r.submits()) r.answer(s.id, false);
+      expect(r.lines).toContain(FALLBACK);
+      expect(r.made).toHaveLength(2);
+      // The lock came off with the old core. The new core's trial then starts
+      // as any does, with the card handed to the driver, and holds no lock.
+      expect(calls.slice(2)).toEqual([['reset', 0], ['reset', 0]]);
+      expect(r.lines).toContain('memory clock released on GPU 0');
+      expect(r.m.memClockLocked.size).toBe(0);
+      expect(r.m.memClockTrials.has(0)).toBe(true);
+      r.m.stop();
+      expect(calls).toHaveLength(4);
     });
 
     test('one accepted share at k 4096 shows the pool takes it: no rejection after it falls back', () => {

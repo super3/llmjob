@@ -1063,6 +1063,15 @@ class PearlMiner extends EventEmitter {
     });
   }
 
+  // One card's core has closed mid-run, whatever closed it. Its memory clock
+  // lock and its core clock offset go with it, and their trials end. Every
+  // place that closes one card's core calls this, so none can leave one of the
+  // two behind: the k fallback once released the offset and not the lock.
+  _cardClosed(index) {
+    this._releaseMemClock(index);
+    this._closedCoreOffset(index);
+  }
+
   // Put every card back at offset 0 and end every trial, before 'stopped' is
   // emitted and before an LLM joins the cards (see releaseMemClocks).
   _releaseCoreOffsets() {
@@ -1257,10 +1266,12 @@ class PearlMiner extends EventEmitter {
       try { c.core.stop(); } catch (e) { /* already gone */ }
       // Its last figure, at k 4096, leaves the rig total until the new core
       // reports, and the board too if it does not open (as in _onCoreError).
-      // Its core clock offset goes with its core, as for any card closed mid-run.
+      // Its memory clock lock and its core clock offset go with its core, as
+      // for any card closed mid-run. The card opens again just below and takes
+      // the lock again there, if it has one to take (see _openCore).
       if (c.device) {
         this.hashrates.delete(c.device.index);
-        this._closedCoreOffset(c.device.index);
+        this._cardClosed(c.device.index);
       }
       this.hashrate = this.totalHashrate();
       let entry;
@@ -1426,8 +1437,7 @@ class PearlMiner extends EventEmitter {
       this.hashrates.delete(device.index);
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', 0, device);
-      this._releaseMemClock(device.index);
-      this._closedCoreOffset(device.index);
+      this._cardClosed(device.index);
     } else {
       this.emit('log', { level: 'error', line: 'the GPU stopped: ' + message });
     }
@@ -1577,8 +1587,7 @@ class PearlMiner extends EventEmitter {
         this.emit('hashrate', 0, c.device);
         // A model must never run on a locked card (see releaseMemClocks), or
         // on one above its own clock.
-        this._releaseMemClock(index);
-        this._closedCoreOffset(index);
+        this._cardClosed(index);
       }
       done.push(c.device);
     }
@@ -1806,8 +1815,7 @@ class PearlMiner extends EventEmitter {
       this.hashrates.delete(device.index);
       this.hashrate = this.totalHashrate();
       this.emit('hashrate', 0, device);
-      this._releaseMemClock(device.index);
-      this._closedCoreOffset(device.index);
+      this._cardClosed(device.index);
     }
     // The last card going is the end of mining, as in _cardDown.
     if (this._outOfCards()) {
