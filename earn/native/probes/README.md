@@ -2279,8 +2279,56 @@ What the numbers say:
 - **The fill has to be 63 or 64.** The table holds the dense factor plus 32, and `fill + plus - minus` is one
   IADD3 a word with no borrow between bytes only from 63 up. The probe uses 63, the largest an int7 operand holds.
 
-Next design (not built): tables laid out rank-index-major, `[p][group of 8 rows]`, and a warp drawing one k-pair
-for 32 groups instead of sixteen k-pairs for two. Every lane then reads the same rank index at its own 8 bytes,
-which is the least-conflict case measured above, every warp does the same work, and the four offsets of a
-half unit are one value for the warp. The stage's group stride has to be 272 bytes, not 256, or the stores land
-in one bank.
+Everything above is the first two designs (commits 11ce0fb9 and bd5dad4b); the file now holds the third.
+
+#### The third design: tables by rank index, and no wait (correct only with a barrier a k-step, and then 73%)
+
+What changed: the tables are laid out by rank index with sixteen rows to a 16-byte word (`[p][w]`, 256 bytes a rank
+index for B, 160 for A), and a lane reads the word at its own place, so a quarter warp's eight reads are 32 different
+banks whatever the rank index. A unit is two k-pairs (one a half warp) for sixteen words: 4 reads, 8 IADD3, 8 PRMT,
+2 stores. Every warp draws one unit of B and one of A a k-step (warp W: k-pairs W and W + 8), two k-steps ahead, into
+a stage of two buffers for B and three for A, so that no warp should have to wait for another. A counter (one add a
+warp a k-step) and one load before the k-step's first store record, with no branch, whether a warp ran further ahead
+of another than the stage allows (`PD_NO_CHECK=0`).
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 [-DPD_BAR=0|1|2|3] [-DPD_NO_DRAW=1 ...] -o drawprobe drawprobe.cu
+```
+
+Pipe use, k 8192, 64 tiles a block, 128 blocks (mma and fragment loads alone: 99.73%):
+
+| Stream | Pipe use | CPU check |
+|---|---|---|
+| Eight loop copies, nothing holding the warps together: draw alone / readout alone (a tree) / both / everything with the check | 96.15% / 97.07% / 89.60% / 92.38% (2564 MHz, 448 W: 310 TH/s by count) | 0 of 2,560: wrong after the first chunks |
+| the same with a barrier a chunk (`PD_BAR=1`): barrier alone / readout as one chain a tile / draw / everything | 98.52% / 89.83% / 93.83% / 80.98% (2625 MHz, 450 W) | 232 of 2,560 |
+| the readout as one chain a tile, no barrier, started 12 / 20 mma after the tile's last | 96.73% / 96.45% | |
+| Two loop copies (warps 0-3, 4-7), a counter wait a chunk (`PD_BAR=2`): wait alone / readout / draw and check / everything | 97.36% / 93.17% / 89.72% / 73.98% (2601 MHz, 428 W) | 64 of 2,560 |
+| Two copies, a barrier at every k-step's end (`PD_BAR=3`, the default): barrier alone / draw / everything | 98.92% / 81.35% / 73.30% (2685 MHz, 411 W: 258 TH/s by count) | 2,560 of 2,560 (k 2048), 1,280 of 1,280 (k 8192) |
+| the same source with no barrier and no check | 89.84% | 0 of 2,560 |
+
+So the third design is correct in one form only, and that form is no faster than the second design (72.05%). What
+it taught:
+
+- **The table reads are fixed.** With no conflicts the draw alone costs 3.6 points where it cost 21.
+- **The schedulers do not keep pace.** With eight loop copies the four schedulers of an SM ran 3% apart (88.1 to
+  91.5%), so within a tile a warp is a whole k-step ahead of another. Something has to hold them together.
+- **ptxas keeps the order of memory instructions around every store, and nothing else.** It put the draw's stores
+  anywhere from 1 to 37 mma into a k-step, the next k-step's fragment loads right behind the last store, and it moves
+  the mma themselves: a value passed through the sum of mma 10 (`PD_PINDEP`) did not hold the draw behind the tenth
+  mma: the draw's stores still came out 3 mma into the k-step, so ptxas must have moved that mma (inferred from
+  the stores' places, not read instruction by instruction). So the room the stage gives (20 mma and more on paper) is not there in the
+  binary, and the fold without a barrier is wrong.
+- **Holding the warps together costs far more than the hold itself.** A barrier a chunk alone costs 1.2 points, a
+  barrier a k-step 0.8, a counter wait a chunk 2.4. With the readout or the draw in, the same hold costs 6 to 18
+  points more. What the figures fit: the pipe stays full while one of a scheduler's two warps has an mma ready.
+  A hold starts both at the same place of the same code, so both are busy with the same clump at once; left alone
+  they drift apart and cover for each other.
+- **A chain is woven, a tree is clumped, and neither is cheap.** ptxas put a tile's sixteen XOR3 two to four to an
+  mma when each waits for the one before, and thirty to forty in a row when they do not. Alone the two cost about
+  the same (3.0 and 2.7 points).
+- **Two loop copies cost registers.** With the warp's constants in lane registers ptxas put 203 to 242 register
+  moves a chunk into each copy and spilled up to 264 bytes.
+
+Not tried: the two warps of a scheduler made to take turns by the barrier's own place (the second loop copy's
+k-step shifted half a k-step against the barrier, which needs a third buffer of B and a fourth of A, and the
+transcripts out of shared memory); a readout with no shared XOR; a tile whose regions are one thread's sums.

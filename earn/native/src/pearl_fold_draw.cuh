@@ -7,18 +7,23 @@
 // rows and columns, and a few k-steps of the noised operands (the stage). ldmatrix.trans
 // reads the stage; every warp draws a part of a later k-step's stage while it folds.
 //
-// Three rules shape it:
+// What shapes it:
 //   1. No table read has a bank conflict. The tables are laid out by rank index: one 16-byte
 //      word holds sixteen rows at one rank index, and a rank index's words are side by side.
 //      A lane reads the word at its own place, so the eight lanes of a quarter warp read 32
 //      different banks whatever rank index each half of the warp is at.
 //   2. Every warp draws the same: a k-step, one unit of B (two k-pairs for all 256 columns)
 //      and one of A (two k-pairs for all 160 rows; six lanes of each half repeat others).
-//   3. No warp waits for another. K-step s draws the stage of k-step s + 2. B's stage has two
-//      buffers and A's three, so nothing is read or written out of turn while the warps stay
-//      within about 20 mma of each other. Nothing in the loop enforces that; one shared add
-//      and one load a k-step record whether it held, with no branch, and a tile where it did
-//      not is thrown away (see "the check" below).
+//   3. K-step s draws the stage of k-step s + 2. B's stage has two buffers and A's three.
+//   4. The warps meet at a barrier at every k-step's end (PD_BAR 3, the default). That is
+//      what makes the fold correct: checked against a CPU fold, 2,560 of 2,560 regions.
+//
+// It is correct and it is slow: 72 to 73% of the tensor pipe on an RTX 4090, the same as the
+// second design. The design was meant to run with no warp waiting for another (PD_BAR 0 with
+// the check below, or 2 with a wait a chunk). Those builds are faster and wrong: ptxas keeps
+// memory instructions in the source's order around every store, but it puts the draw's stores
+// anywhere in the k-step and moves the mma themselves, so nothing in the source holds a store
+// late enough for a warp a few mma behind. probes/README.md, "The draw fold", has the figures.
 //
 // Included by probes/drawprobe.cu (cycle stamps and a transcript dump in place of the hash).
 // Before including, define PD_FN (the kernel's name) and PD_PROBE (1 for the probe).
@@ -82,8 +87,8 @@
 #ifndef PD_STAG
 #define PD_STAG 8u
 #endif
-// 1: the pin's value passes through the sum of the mma it follows, so ptxas cannot move the
-// pin (and with it the draw) ahead of that mma.
+// 1: the pin's value passes through the sum of the mma it follows. Meant to keep ptxas from
+// moving the pin (and with it the draw) ahead of that mma; it moves the mma instead.
 #ifndef PD_PINDEP
 #define PD_PINDEP 0
 #endif
@@ -107,12 +112,14 @@
 #define PD_NO_READOUT 0
 #endif
 #ifndef PD_NO_CHECK
-#define PD_NO_CHECK 0
+#define PD_NO_CHECK (PD_BAR == 3)   // the barrier a k-step needs no check
 #endif
-// 1: every warp of the block meets at a barrier at each chunk's end. The schedulers of an SM
-// do not run this loop at one pace (measured: 3% apart), and nothing else holds them together.
+// What holds the warps together, once a chunk. 0: nothing. 1: a barrier at each chunk's end
+// (measured dear: a warp is put to sleep and woken). 2: a warp begins a chunk only when every
+// warp has made the last add of the chunk before; one load and a test when they have.
+// 3: a barrier at each k-step's end (correct by construction, with no check).
 #ifndef PD_BAR
-#define PD_BAR 1
+#define PD_BAR 3
 #endif
 
 // The fill of A and B the draw is written for: the table's bytes are the dense factor plus 32
@@ -181,21 +188,23 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
   uint32_t tabAL = sbase + PD_TABA + 16u * wA;
   // The draw's stores: the lane's first group of its k-pair, less the unit's and the buffer's
   // part. A unit's k-pairs are W and W + 8.
-  uint32_t dstBL = sbase + PD_STGB + hL * 8u * PD_SJB + 16u * l16;
+  uint32_t dstBL = sbase + PD_STGB + (warp + hL * 8u) * PD_SJB + 16u * l16;
   uint32_t aD[3], aF[3];
   // ldmatrix rows. Lane bits 0-2 are the k-pair of a half. For A bit 3 is the group of the
   // m16 tile's two and bit 4 the k half; for B bit 3 is the k half and bit 4 the n8 tile of
   // the pair (the mma wants a tile's two k halves in adjacent registers for B, and its two
   // row groups for A).
-  uint32_t fragBL = sbase + PD_STGB + (((lane >> 3) & 1u) * 8u + (lane & 7u)) * PD_SJB + (lane >> 4) * 16u;
+  uint32_t fragBL = sbase + PD_STGB + (((lane >> 3) & 1u) * 8u + (lane & 7u)) * PD_SJB + (lane >> 4) * 16u
+                    + (warp & 3u) * 128u;
 #pragma unroll
   for (uint32_t x = 0; x < 3u; x++) {
-    aD[x] = sbase + PD_STGA + x * PD_STA + hL * 8u * PD_SJA + 16u * wA;
-    aF[x] = sbase + PD_STGA + x * PD_STA + ((lane >> 4) * 8u + (lane & 7u)) * PD_SJA + ((lane >> 3) & 1u) * 16u;
+    aD[x] = sbase + PD_STGA + x * PD_STA + (warp + hL * 8u) * PD_SJA + 16u * wA;
+    aF[x] = sbase + PD_STGA + x * PD_STA + ((lane >> 4) * 8u + (lane & 7u)) * PD_SJA + ((lane >> 3) & 1u) * 16u
+            + (warp >> 2) * (MT * 32u);
   }
   // trL: the lane's region words, less the warp's and the row group's part: its column
   // offset (lane & 3) and which of a 32-row group's two row offsets it holds (lane bit 4).
-  uint32_t trL = sbase + PD_TR + ((lane & 3u) * RO + ((lane >> 4) & 1u)) * 64u;
+  uint32_t trL = sbase + PD_TR + ((warp & 3u) * RPS + (lane & 3u) * RO + ((lane >> 4) & 1u)) * 64u;
   asm volatile("" : "+r"(tabBL), "+r"(tabAL), "+r"(dstBL), "+r"(fragBL), "+r"(trL));
   const uint32_t sCnt = sbase + PD_CNT;
 
@@ -313,14 +322,15 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     // chunk (x 0 .. 2; k-step 3 has k-step 0's), turned by one at each chunk's end.
 #pragma unroll
     for (uint32_t x = 0; x < 3u; x++) {
-      aD[x] = sbase + PD_STGA + x * PD_STA + hL * 8u * PD_SJA + 16u * wA;
-      aF[x] = sbase + PD_STGA + x * PD_STA + ((lane >> 4) * 8u + (lane & 7u)) * PD_SJA + ((lane >> 3) & 1u) * 16u;
+      aD[x] = sbase + PD_STGA + x * PD_STA + (warp + hL * 8u) * PD_SJA + 16u * wA;
+      aF[x] = sbase + PD_STGA + x * PD_STA + ((lane >> 4) * 8u + (lane & 7u)) * PD_SJA + ((lane >> 3) & 1u) * 16u
+              + (warp >> 2) * (MT * 32u);
     }
     const uint4 *pOffL = offs + 8u * hL + warp;        // k-step 0, B's, this warp's unit, this lane's k-pair
 #pragma unroll
     for (uint32_t ts = 0; ts < 2u; ts++) {
-      u_all(tabBL, pOffL + ts * 32u, dstBL + ts * PD_STB + warp * PD_SJB, 256u);
-      u_all(tabAL, pOffL + ts * 32u + 16u, aD[ts] + warp * PD_SJA, PD_SA);
+      u_all(tabBL, pOffL + ts * 32u, dstBL + ts * PD_STB, 256u);
+      u_all(tabAL, pOffL + ts * 32u + 16u, aD[ts], PD_SA);
     }
     __syncthreads();
     // The salt stamp: A's row 0 holds it in place of the fill for its first bytes, so those
@@ -344,11 +354,11 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     // (rows 0-7, k 0-15), (rows 8-15, k 0-15), (rows 0-7, k 16-31), (rows 8-15, k 16-31); B's
     // of a pair of n8 tiles are (tile 0, k 0-15), (tile 0, k 16-31), (tile 1, k 0-15),
     // (tile 1, k 16-31).
-    ldmt(af[0][0], af[0][1], af[0][2], af[0][3], aF[0] + (warp >> 2) * (MT * 32u));
+    ldmt(af[0][0], af[0][1], af[0][2], af[0][3], aF[0]);
 #pragma unroll
     for (uint32_t p = 0; p < NB / 2u; p++)
       ldmt(bf[2u * p][0], bf[2u * p][1], bf[2u * p + 1u][0], bf[2u * p + 1u][1],
-           fragBL + (warp & 3u) * 128u + p * 32u);
+           fragBL + p * 32u);
     // The offsets of the stage k-step 0 draws (k-step 2's); the loop loads each k-step's in
     // the one before.
     uint32_t oB[4], oA[4];
@@ -372,7 +382,7 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     const uint32_t pinL = tabBL + (PD_PIN - PD_TABB) + zero;
     auto slot = [&](auto cW, auto cS, auto cM, auto cN) {
       constexpr uint32_t W = decltype(cW)::v, s = decltype(cS)::v, mb = decltype(cM)::v, nb = decltype(cN)::v;
-      constexpr uint32_t wr = W >> 2, wc = W & 3u;
+      constexpr uint32_t wr = W >> 2;   // the copy is warps 0-3's (W 0) or warps 4-7's (W 4)
       // B's buffers alternate, and a chunk is four k-steps: bCur holds this k-step's stage
       // (read in the k-step before) and takes k-step s + 2's.
       constexpr uint32_t bCur = (s & 1u) * PD_STB, bNxt = PD_STB - bCur;
@@ -395,7 +405,7 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       // A's next m16 tile of this k-step, into the other fragment set, eight mma ahead.
       if constexpr (nb == 0u && mb + 1u < MT)
         ldmt(af[as ^ 1u][0], af[as ^ 1u][1], af[as ^ 1u][2], af[as ^ 1u][3],
-             aF[aCur] + (wr * MT + mb + 1u) * 32u);
+             aF[aCur] + (mb + 1u) * 32u);
       // ---- the check, before this k-step's first store into a stage: have all eight warps
       // made the add of the k-step before (see below)? Then none still reads the buffers
       // this k-step draws into, and all have drawn what this warp reads next. The counter
@@ -428,8 +438,8 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
         st4((DST), dw[0], dw[1], dw[2], dw[3]);                                            \
         st4((DST) + (SECOND), dw[4], dw[5], dw[6], dw[7]);                                 \
       }
-      PD_UNIT(au, tabAL, oA, aD[aDrw] + W * PD_SJA, PD_SA)
-      PD_UNIT(bu, tabBL, oB, dstBL + bCur + W * PD_SJB, 256u)
+      PD_UNIT(au, tabAL, oA, aD[aDrw], PD_SA)
+      PD_UNIT(bu, tabBL, oB, dstBL + bCur, 256u)
 #undef PD_UNIT
       // The next k-step's offsets, once this k-step's unit has read with its own.
       if constexpr (i == au + 2u) ldg4(oA, pOffL + (s + 3u) * 32u + 16u);
@@ -440,11 +450,11 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       // moves them up when it has registers, but never past this k-step's stores, which it
       // cannot tell from them.
       if constexpr (i == NI - 8u)
-        ldmt(af[as0n][0], af[as0n][1], af[as0n][2], af[as0n][3], aF[aNxt] + wr * (MT * 32u));
+        ldmt(af[as0n][0], af[as0n][1], af[as0n][2], af[as0n][3], aF[aNxt]);
 #define PD_BLOAD(PB)                                                                       \
       if constexpr (i == NI - 7u + 2u * PB)                                                \
         ldmt(bf[2u * PB][0], bf[2u * PB][1], bf[2u * PB + 1u][0], bf[2u * PB + 1u][1],     \
-             fragBL + bNxt + wc * 128u + PB * 32u);
+             fragBL + bNxt + PB * 32u);
       PD_BLOAD(0u)
       PD_BLOAD(1u)
       PD_BLOAD(2u)
@@ -453,8 +463,12 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
       // ---- the add, behind those loads: this warp has read all it will of A's stage s and
       // of stage s + 1's B and first A tile, and has drawn its part of stage s + 2. One
       // ATOMS for the warp.
-      if constexpr (!PD_NO_CHECK && i == NI - 1u)
+      if constexpr ((!PD_NO_CHECK || PD_BAR == 2) && i == NI - 1u)
         atomicAdd(reinterpret_cast<unsigned *>(pd_smem) + PD_CNT / 4u + s, 1u);
+      // PD_BAR 3: every warp meets here, at each k-step's end. Nothing is then read or drawn
+      // out of turn whatever ptxas does with the order: the loads above cannot sink past
+      // the barrier and the next k-step's stores cannot rise past it.
+      if constexpr (PD_BAR == 3 && i == NI - 1u) __syncthreads();
       // ---- the readout: each m16 tile's chain, PD_RLAG mma after the tile's last mma of the
       // chunk's last k-step. One with no room there is made early in the next chunk's first
       // k-step, for the chunk before (zero sums in a tile's first chunk, so it XORs nothing
@@ -462,7 +476,7 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
 #if !PD_NO_READOUT
 #define PD_RT(T)                                                                           \
       if constexpr (s == (pd_tile_late(T, lag) ? 0u : 3u) && i == pd_tile_first(T, lag))   \
-        fold_end(fold_tile(T), trL + (wc * RPS + 2u * ((wr * MT + T) >> 1)) * 64u,         \
+        fold_end(fold_tile(T), trL + 2u * ((wr * MT + T) >> 1) * 64u,                      \
                  pd_tile_late(T, lag) ? c - 1u : c);
       PD_RT(0u) PD_RT(1u) PD_RT(2u) PD_RT(3u) PD_RT(4u)
 #undef PD_RT
@@ -470,24 +484,27 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
     };
 #define PD_SLOT(W, S, M, N) slot(PdC<W>{}, PdC<S>{}, PdC<M>{}, PdC<N>{});
 #define PD_LOOP(W)                                                                         \
-  case W:                                                                                  \
+  case (W) >> 2:                                                                           \
     for (; c < chunks; c++) {                                                              \
+      if (PD_BAR == 2) {                                                                   \
+        /* Every warp has made the last add of chunk c - 1: the counter is 256 c. (A   */  \
+        /* volatile load: ptxas lifts a plain one out of the loop.)                    */  \
+        for (;;) {                                                                         \
+          uint32_t seen;                                                                   \
+          asm volatile("ld.volatile.shared.u32 %0, [%1];" : "=r"(seen) : "r"(sCnt + 12u) : "memory"); \
+          if (!__any_sync(0xffffffffu, (int)(seen - c * PD_THREADS) < 0)) break;           \
+        }                                                                                  \
+      }                                                                                    \
       PD_CHUNK(W)                                                                          \
       pOffL += 128; /* four k-steps of B's and A's offsets, 16 k-pairs each */             \
       { const uint32_t t = aF[0]; aF[0] = aF[1]; aF[1] = aF[2]; aF[2] = t; }               \
       { const uint32_t t = aD[0]; aD[0] = aD[1]; aD[1] = aD[2]; aD[2] = t; }               \
-      if (PD_BAR) __syncthreads();                                                         \
+      if (PD_BAR == 1) __syncthreads();                                                    \
     }                                                                                      \
     break;
-    switch (warp) {
+    switch (warp >> 2) {
       PD_LOOP(0)
-      PD_LOOP(1)
-      PD_LOOP(2)
-      PD_LOOP(3)
       PD_LOOP(4)
-      PD_LOOP(5)
-      PD_LOOP(6)
-      PD_LOOP(7)
       default:
         break;
     }
@@ -504,7 +521,7 @@ extern "C" __global__ __launch_bounds__(PD_THREADS, 1) void PD_FN(
 #pragma unroll
     for (uint32_t t = 0; t < MT; t++)
       if (PD_NO_READOUT || (warp < 4u ? pd_tile_late(t, PD_RLAG) : pd_tile_late(t, PD_RLAG + PD_RSTAG)))
-        fold_end(fold_tile(t), trL + ((warp & 3u) * RPS + 2u * (((warp >> 2) * MT + t) >> 1)) * 64u, chunks - 1u);
+        fold_end(fold_tile(t), trL + 2u * (((warp >> 2) * MT + t) >> 1) * 64u, chunks - 1u);
 
     // Hand-off: the column slot's two warps meet, so every word is in shared.
     asm volatile("bar.sync %0, %1;" ::"r"(1u + (warp & 3u)), "r"(64u) : "memory");
