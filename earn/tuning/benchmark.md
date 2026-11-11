@@ -2680,6 +2680,35 @@ The arms, the raw runs and the table script are on branch `goal/gate` (4014c732,
   old failure did not come back in four more wide checks and could not have come from that breach (a draw fault
   spoils 32 regions or more, the failure was 8). Nothing ships from this round.
   Tables: `earn/native/probes/README.md`, "The copy fold by hand, and what a copied byte costs".
+- **The draw fold, eighth round: a price list of steps, and a fold priced from it that beats the release by count
+  (11 November, rig01's RTX 4090, branch `goal/nv-draw`).** No mining rate here: probe figures, "by count" =
+  pipe use x clock x 0.13107; the release mines 317.7 TH/s (2535 MHz, 449 W). (1) The price of one more step a
+  warp a k-step, all in one loop with ready fragments and operand-like bytes, 60 s at the 450 W limit (timing
+  only): the clock under the card's cap is 419,840 / (152 + units), at most 2685 MHz, where a 16-byte shared
+  load or an LDSM is one unit (16 MHz near 2600), a 16-byte shared store 0.8, a 4-byte load 0.36, a 16-byte
+  global load 1.15 from the SM's cache and 2.9 from the L2, a PRMT or IADD3 about a tenth, and the first four
+  units are free (2, 4, 8, 12, 16 loads: 2685, 2685, 2624, 2560, 2504 MHz). Watts fall as loads are added (443
+  to 398): the cap counts steps, not joules. ALU steps cost pipe instead, 0.04 points each when few. Marking the
+  IMMA's operand for reuse does nothing. (2) So a draw should make each fragment once. The "rotation fold" has
+  every warp take a chunk's four k-steps in its own order; at the first turn the four warps of a row band fold
+  four different k-steps, each makes that k-step's A fragments by gathers and stores them, and at the other
+  three turns loads what another stored: 17 memory steps and 44 ALU steps a warp a k-step where the gather fold
+  has 20 and 80. Priced at 333 before it was built. (3) Built by hand (`hand89/rfold.py`): with no barrier it
+  holds 97.2% at 2600 MHz and is wrong (12 to 54 of 64 tiles fail: the two warps of a scheduler run 2.8% apart
+  and nothing orders a load after its store). A barrier at every k-step's end over all eight warps makes it
+  correct at 88.2%; one barrier for each row band 93.8%; B's gathers issued apart 96.0%; the subtract a gap
+  later, the yield flag off and an order search that weighs B's rows 97.05% (k 8192). The cost was bank
+  collisions among warps a barrier had put in step, not the barrier itself. (4) Over 60 s at k 65536: 97.48% of
+  the pipe at 2594 MHz and 449.1 W, 331.4 by count, CPU check 512 of 512 (and 2,048 of 2,048 over 8 tiles; at
+  k 2048 16,384 of 16,384 in three orders of k). The gather fold in the same hold: 96.68% at 2520 MHz, 319.3.
+  (5) A job's own noise from the repo's port of the protocol, folded on the card, every hit through a port of
+  the pool's check: 1,049 of 1,049, 1,004 of 1,004 and 1,068 of 1,068 at k 2048 (64 tiles each), 249 of 249 at
+  k 8192. With the hash on the card (one keyed BLAKE3 a thread a tile, `-DGP_HASH=1`) the card's own list is
+  the list made on the PC in the checked tiles, and 400 of 400 of its other hits pass, at k 2048 and at k 8192;
+  the kernel with the hash runs 97.48% at 2593 MHz. (6) It is a probe: no share built or sent, no Merkle proof,
+  no host side, and the loop is written by hand, so the product would have to launch a patched cubin. 331 by
+  count is 4% over the release and 2 to 3% under the other miners (338.6 to 341.9). Nothing ships from this
+  round. Tables: `earn/native/probes/README.md`, "The price of a step, and the rotation fold".
 
 ## Keeping this file current
 
