@@ -15,6 +15,21 @@
 //   DPOS    where: 0 at the k-step's end, 1 after mma 24, 2 half after mma 16 and half after mma 40,
 //           3 one unit after every 48 / DRAW mma
 //   DGRP    1: two units' steps grouped by kind (loads, subtracts, byte selects, stores)
+//   DREAL   1: a unit reads its four table offsets from a slice first, as a real draw must
+//   DSYNC   1: one shared add after the draw and one shared read and warp-uniform test before the loads, a k-step
+//   WARPS   warps a block: 4, 8, 12 or 16 (one to four a scheduler, if warp w runs on scheduler w % 4), with
+//   ACC     mma a k-step a warp (48; 32 fits twelve warps' registers, 24 sixteen's). Only the mma-only and
+//           fragment-load streams build at other values than 8 and 48.
+//   WMASK   the warps that run (bit w); the others leave at once. Two warps that share a tensor pipe take
+//           twice the cycles an mma of two that do not, which is how a card's warp-to-scheduler map is read.
+//   FILLRND 1: the fragments are loaded from hashed bytes, not from the mostly-zero offset slice (the draw
+//           then must not be DREAL). Operand bytes change the watts, not the pipe use.
+//
+// The result line: pipe use at 16 cycles an mma a scheduler (mean, and the least and most over schedulers),
+// cycles an mma a scheduler, the last launch's time, the launches, MACs a second by count (4096 an mma, over
+// the launches' own time; in a run of more than 8 s, over the launches that began after its first 8 s), and the
+// SM's cycle counter in MHz (cycles over the last launch's time). A fourth argument adds each running warp's
+// own cycles an mma. The streams compute nothing real: a rate by count is not a mining rate.
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
@@ -52,8 +67,26 @@
 #ifndef CT
 #define CT 4
 #endif
+#ifndef ACC
 #define ACC 48
+#endif
+#ifndef WARPS
 #define WARPS 8
+#endif
+#ifdef WMASK
+#define RUNMASK (WMASK)
+#else
+#define RUNMASK 0xffffffffu
+#endif
+#ifndef FILLRND
+#define FILLRND 0
+#endif
+#if (WARPS != 8 || ACC != 48) && (RD != 0 || DRAW != 0)
+#error the readout and the draw are laid out for 8 warps of 48 mma
+#endif
+#if FILLRND && DREAL
+#error DREAL reads its offsets from the slice FILLRND fills with hashed bytes
+#endif
 #define THREADS (WARPS * 32)
 #define SHBYTES (56 * 1024)
 
@@ -68,7 +101,7 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
   const unsigned tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   unsigned *const shw = reinterpret_cast<unsigned *>(sh);
   for (unsigned i = tid; i < SHBYTES / 4u; i += THREADS)
-    shw[i] = (i >= 96u && i < 2048u) ? ((i * 2654435761u) >> 7) & 2040u : i * 2654435761u;
+    shw[i] = (!FILLRND && i >= 96u && i < 2048u) ? ((i * 2654435761u) >> 7) & 2040u : i * 2654435761u;
   __syncthreads();
   unsigned a[RT][4], b[CT][2];
   int c[ACC][4];
@@ -214,8 +247,13 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 #endif
   };
 
+#ifdef WMASK
+  const int nch = ((RUNMASK >> warp) & 1u) ? chunks : 0;
+#else
+  const int nch = chunks;
+#endif
   const long long t0 = clock64();
-  for (int ch = 0; ch < chunks; ch++) {
+  for (int ch = 0; ch < nch; ch++) {
     kstep(0, ch);
     kstep(1, ch);
     kstep(2, ch);
@@ -238,7 +276,7 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 
 int main(int argc, char **argv) {
   if (argc < 3) {
-    fprintf(stderr, "pipeprobe2 name chunks [secs]\n");
+    fprintf(stderr, "pipeprobe2 name chunks [secs] [v]\n");
     return 2;
   }
   const char *name = argv[1];
@@ -256,9 +294,10 @@ int main(int argc, char **argv) {
   cudaEventCreate(&e0);
   cudaEventCreate(&e1);
   cudaFuncSetAttribute(pipeprobe2, cudaFuncAttributeMaxDynamicSharedMemorySize, SHBYTES);
-  float ms = 0, total = 0;
-  int launches = 0;
+  float ms = 0, total = 0, late = 0;
+  int launches = 0, nlate = 0;
   do {
+    const bool settled = total >= 8000.0f;   // a capped card's clock has come down by then
     cudaEventRecord(e0);
     pipeprobe2<<<blocks, THREADS, SHBYTES>>>(times, sink, chunks);
     cudaError_t err = cudaGetLastError();
@@ -271,21 +310,31 @@ int main(int argc, char **argv) {
     cudaEventElapsedTime(&ms, e0, e1);
     total += ms;
     launches++;
+    if (settled) {
+      late += ms;
+      nlate++;
+    }
   } while (total < secs * 1000.0);
   cudaMemcpy(h, times, sizeof(long long) * blocks * 2 * WARPS, cudaMemcpyDeviceToHost);
-  double use_sum = 0, use_min = 1e9, use_max = 0;
+  double use_sum = 0, use_min = 1e9, use_max = 0, cyc_sum = 0, own[WARPS] = {0};
   int nsched = 0;
   for (int bk = 0; bk < blocks; bk++) {
     for (int s = 0; s < 4; s++) {
       long long lo = 0, hi = 0;
       bool any = false;
+      int ran = 0;
       for (int w = s; w < WARPS; w += 4) {
         const long long a0 = h[bk * 2 * WARPS + 2 * w], a1 = h[bk * 2 * WARPS + 2 * w + 1];
+        if (!((RUNMASK >> w) & 1u)) continue;
+        ran++;
+        own[w] += (double)(a1 - a0) / ((double)chunks * 4.0 * ACC) / blocks;
         if (!any || a0 < lo) lo = a0;
         if (!any || a1 > hi) hi = a1;
         any = true;
       }
-      const double use = 16.0 * 2.0 * chunks * 4.0 * ACC / (double)(hi - lo);
+      if (!ran) continue;
+      const double use = 16.0 * ran * chunks * 4.0 * ACC / (double)(hi - lo);
+      cyc_sum += (double)(hi - lo);
       use_sum += use;
       if (use < use_min) use_min = use;
       if (use > use_max) use_max = use;
@@ -293,7 +342,19 @@ int main(int argc, char **argv) {
     }
   }
   const double use = use_sum / nsched;
-  printf("%-26s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA pg 0 %.0f ms x%d\n", name, use * 100, use_min * 100,
-         use_max * 100, 16.0 / use, ms, launches);
+  int running = 0;
+  for (int w = 0; w < WARPS; w++) running += (RUNMASK >> w) & 1u;
+  // By count: over the launches that began 8 s or more into the run, or over all of a shorter run.
+  const double macs = 4096.0 * (nlate ? nlate : launches) * blocks * running * chunks * 4.0 * ACC /
+                      ((nlate ? late : total) / 1000.0);
+  printf("%-26s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA %.0f ms x%d | %.2f T-MAC/s by count, counter %.0f MHz, "
+         "%d SMs, %d of %d warps\n", name, use * 100, use_min * 100, use_max * 100, 16.0 / use, ms, launches,
+         macs / 1e12, cyc_sum / nsched / (ms * 1000.0), blocks, running, WARPS);
+  if (argc > 4) {
+    printf("%-26s own cycles an mma, by warp:", name);
+    for (int w = 0; w < WARPS; w++)
+      if ((RUNMASK >> w) & 1u) printf(" %d:%.2f", w, own[w]);
+    printf("\n");
+  }
   return 0;
 }
