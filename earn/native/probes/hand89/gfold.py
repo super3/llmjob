@@ -45,6 +45,9 @@ import fold  # noqa: E402
 from fold import addi, andi, muladd, shr  # noqa: E402
 
 CFG = dict(mt=6, pad=8, ist=5, py=1, iy=1, ly=1, ru=0, lead=2, sf=0, hold=1, pst=2, rmar=5, roff=11,
+           # pol=0: a gap with plain steps is padded to `pad` cycles behind its last step, so every gap is
+           # as long as an empty one (the default, 2, adds nothing: the gap is ist + its steps).
+           pol=2,
            # Timing only (each computes wrong results on purpose): pieces left out.
            noread=0, nold=0, noalu=0, nogather=0, dbg=0, pw=0,
            # Timing only, no draw at all: what a fold costs whose operands are ready in shared memory. direct:
@@ -443,6 +446,8 @@ def emit(G, iwait, cfg):
             x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw)
             if k == len(items) - 1:
                 x.yld = bool(cfg["ly"])
+                if cfg["pol"] == 0:
+                    x.stall = max(x.stall, cfg["pad"] - ist - (len(items) - 1))
             out.append(x)
     out.append(Ins("@P1 BRA .L0", stall=5))
     # After the last chunk: the readout's tail once more.

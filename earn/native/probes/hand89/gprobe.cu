@@ -3,11 +3,12 @@
 // how much of the tensor pipe the chunk loop holds, and checks every thread's transcript against a CPU fold of
 // the same tiles. Our own code, for the nv-kernel work.
 //
-//   gprobe <name> <k> <tiles a block> [seconds] [tiles to check] [order] [fake]
+//   gprobe <name> <k> <tiles a block> [seconds] [tiles to check] [order] [fake] [rot]
 //
 // order: how the k of a chunk are put into its 128 slots (any order gives the same sums at the chunk's end).
 //   0 the definition's; 1 searched for the fewest bank collisions in A's and B's gathers; 2 searched for B's
-//   alone; 3 for A's alone. The search is hand89's port of the maths review's (S/algo/order.js).
+//   alone; 3 for A's alone; 4 to 6 searched for both with B's rows weighing more or the deepest collisions
+//   costing most (see octet_cost). The search is hand89's port of the maths review's (S/algo/order.js).
 // fake: TIMING ONLY, the results are wrong on purpose and the check will say so. Bit 0: A's offsets are made up
 //   so that no matrix shares a bank (as a stage's reads would have it); bit 1: B's. For what the operands'
 //   values cost in watts: 4, both row bands read the first band's A (the two warps of a scheduler then fold
@@ -15,6 +16,13 @@
 //   index are the same made-up one for A and B (every operand byte is then the fill); 32, the tables hold
 //   bytes spread as noised operands are (for gfold.py direct=1, a loop with no draw).
 //
+// rot: 1 writes the offsets for the rotation fold (hand89/rfold.py; build with -DGP_STAGE=24576). Every warp
+//   takes the four k-steps of a chunk in an order of its own (any order inside a chunk gives the same sums):
+//   column slot j of row band 0 takes k-step (j + i) & 3 at its i-th turn, of row band 1 k-step (j + (i ^ 1)) & 3.
+//   So at a chunk's first turn the four warps of a band fold four different k-steps: each makes that k-step's A
+//   fragments itself and stores them, and the other three load them at a later turn. A warp's records are in
+//   its own order; a record of a later turn holds, in place of A's first offset, where that k-step's stored
+//   fragments are. The kernel as ptxas compiles it cannot use these offsets: rot is for the hand-written loop.
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 -o gprobe gprobe.cu   (and -cubin for the file gfold.py patches)
 #include <chrono>
 #include <cstdint>
@@ -45,12 +53,19 @@ static inline uint32_t rotl13(uint32_t x) { return (x << 13) | (x >> 19); }
 // the eight slots one ldmatrix matrix reads: slots 4t + 2oo + {0, 1} of half-k-step o >> 1, oo = o & 1. The
 // search lowers the rows of a matrix that share their banks with an earlier row (entries with the same rank
 // index mod 8), over the streams in `mask` (bit 0 A's plus index, 1 A's minus, 2 B's plus, 3 B's minus).
+// g_wt: what a colliding row of each stream costs the search (A's two, B's two); g_sq: a bank shared by n rows
+// costs (n - 1) squared and not n - 1, so that the search breaks up the deepest collisions first (a matrix is
+// served in as many passes as its fullest bank has rows).
+static int g_wt[4] = {1, 1, 1, 1}, g_sq = 0;
 static int octet_cost(const uint8_t *cnt, unsigned mask) {
   int c = 0;
   for (unsigned st = 0; st < 4u; st++)
     if (mask >> st & 1u)
       for (unsigned r = 0; r < 8u; r++)
-        if (cnt[8u * st + r] > 1) c += cnt[8u * st + r] - 1;
+        if (cnt[8u * st + r] > 1) {
+          const int x = cnt[8u * st + r] - 1;
+          c += g_wt[st] * (g_sq ? x * x : x);
+        }
   return c;
 }
 static void order_search(const uint8_t res[128][4], unsigned mask, int sweeps, uint8_t member[16][8]) {
@@ -105,8 +120,9 @@ int main(int argc, char **argv) {
   const uint32_t check = argc > 5 ? (uint32_t)atoi(argv[5]) : 0u;
   const uint32_t order_mode = argc > 6 ? (uint32_t)atoi(argv[6]) : 0u;
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
-  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 3u) {
-    fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 3\n");
+  const uint32_t rot = argc > 8 ? (uint32_t)atoi(argv[8]) : 0u;
+  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 6u) {
+    fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
   }
   const uint32_t chunks = k / 128u, ksteps = k / 32u;
@@ -137,6 +153,23 @@ int main(int argc, char **argv) {
       const uint32_t u = rng() >> 7, p0 = u & 127u, p1 = p0 ^ (1u + ((u >> 8) % 127u));
       pm[op][0][kk] = (uint8_t)p0;
       pm[op][1][kk] = (uint8_t)p1;
+    }
+  }
+  // PD_INPUT=<file>: the plain inputs come from a file and not from the generator above, so that a job's own
+  // noise can be folded (hand89/hostcheck.js writes it from the protocol's reference code): 16 bytes "GPIN",
+  // rows of A, columns of B, k; then the rows' dense factors plus 32 (128 bytes each), the columns', and the
+  // four index lists (A plus, A minus, B plus, B minus; k bytes each).
+  if (const char *inp = getenv("PD_INPUT")) {
+    FILE *f = fopen(inp, "rb");
+    uint32_t hdr[4] = {0, 0, 0, 0};
+    bool ok = f && fread(hdr, 4, 4, f) == 4 && hdr[0] == 0x4e495047u && hdr[1] == rowsA && hdr[2] == colsB && hdr[3] == k &&
+              fread(DA.data(), 1, DA.size(), f) == DA.size() && fread(DB.data(), 1, DB.size(), f) == DB.size();
+    for (int op = 0; ok && op < 2; op++)
+      for (int sg = 0; ok && sg < 2; sg++) ok = fread(pm[op][sg].data(), 1, k, f) == k;
+    if (f) fclose(f);
+    if (!ok) {
+      fprintf(stderr, "%s: PD_INPUT %s does not hold %u rows, %u columns, k %u\n", name, inp, rowsA, colsB, k);
+      return 1;
     }
   }
 #if GP_DIRECT
@@ -190,7 +223,11 @@ int main(int argc, char **argv) {
         res[i][2] = pm[1][0][kk] & 7u;
         res[i][3] = pm[1][1][kk] & 7u;
       }
-      order_search(res, order_mode == 1u ? 15u : order_mode == 2u ? 12u : 3u, 8, member);
+      // 4 to 6 are for the rotation fold, where a warp gathers B eight times a k-step and A three: B's rows
+      // weigh 3 (4), or the cost is squared with B's rows at 1 (5) or 2 (6).
+      g_wt[2] = g_wt[3] = order_mode == 4u ? 3 : order_mode == 6u ? 2 : 1;
+      g_sq = order_mode >= 5u;
+      order_search(res, order_mode == 2u ? 12u : order_mode == 3u ? 3u : 15u, 8, member);
       for (uint32_t oc = 0; oc < 16u; oc++)
         for (uint32_t x = 0; x < 8u; x++)
           o[16u * (oc >> 1) + 4u * (x >> 1) + 2u * (oc & 1u) + (x & 1u)] = member[oc][x];
@@ -223,9 +260,14 @@ int main(int argc, char **argv) {
         p4[l][h] = pa;
         p4[l][2u + h] = pb;
         for (uint32_t w = 0; w < 8u; w++) {
-          uint32_t *o = &hOffs[w * warpWords + ((size_t)ks * 32u + l) * 4u];
+          // rot: this k-step is warp w's turn `turn` of the chunk (the last record, of the k-step that never
+          // comes, is a first turn).
+          const uint32_t j = w & 3u, band = w >> 2;
+          const uint32_t turn = !rot || ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ 1u) : ((s + 4u - j) & 3u);
+          uint32_t *o = &hOffs[w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 4u];
           o[h] = 16u * pa + ((fake & 4u) ? 0u : 2048u * MT * (w >> 2));
           o[2u + h] = 16u * pb + GP_TABB + ((fake & 8u) ? 0u : 8192u * (w & 3u));
+          if (rot && turn && ks < ksteps) o[h] = h ? 0u : GP_STG + band * (2048u * MT) + s * (512u * MT) + 16u * l;
         }
       }
     }
@@ -294,6 +336,25 @@ int main(int argc, char **argv) {
       return 1;
     }
   }
+  // PD_HASH=<file> (a build with -DGP_HASH=1): the file's 64 bytes are the hash's key and the bound, each 8
+  // little-endian words. The card then hashes every thread's transcript of every tile and lists the hits;
+  // PD_HITFILE=<file> gets the count and the (tile, thread) pairs.
+  const uint32_t hitRoom = 1u << 20;
+  uint32_t *dHits = nullptr;
+  if (const char *hf = getenv("PD_HASH")) {
+    uint32_t kb[18];
+    FILE *f = fopen(hf, "rb");
+    const bool ok = f && fread(kb, 4, 16, f) == 16;
+    if (f) fclose(f);
+    if (!ok || !GP_HASH) {
+      fprintf(stderr, "%s: PD_HASH needs a 64-byte file and a build with -DGP_HASH=1", name);
+      return 1;
+    }
+    kb[16] = 0u;
+    kb[17] = hitRoom;
+    cudaMalloc(&dHits, (18u + 2u * (size_t)hitRoom) * 4u);
+    cudaMemcpy(dHits, kb, sizeof kb, cudaMemcpyHostToDevice);
+  }
   cudaMalloc(&dCyc, cycN * 8u);
   cudaMalloc(&dDump, (size_t)(dumpTiles ? dumpTiles : 1u) * GP_THREADS * 16u * 4u);
   cudaMemcpy(dTabA, hTabA.data(), hTabA.size(), cudaMemcpyHostToDevice);
@@ -335,7 +396,7 @@ int main(int argc, char **argv) {
     }
   }
   uint32_t a_chunks = chunks, a_rg = RG, a_tiles = tiles, a_cb = CB;
-  void *cubin_args[10] = {&dTabA, &dTabB, &dOffs, &a_chunks, &a_rg, &a_tiles, &dCyc, &dDump, &dumpTiles, &a_cb};
+  void *cubin_args[11] = {&dTabA, &dTabB, &dOffs, &a_chunks, &a_rg, &a_tiles, &dCyc, &dDump, &dumpTiles, &a_cb, &dHits};
 
   cudaEvent_t e0, e1;
   cudaEventCreate(&e0);
@@ -351,7 +412,7 @@ int main(int argc, char **argv) {
                 : cudaSuccess;
     } else {
       pearl_gather_probe<<<blocks, GP_THREADS, GP_SMEM>>>(dTabA, dTabB, dOffs, chunks, RG, tiles, dCyc, dDump,
-                                                         dumpTiles, CB);
+                                                         dumpTiles, CB, dHits);
       err = cudaGetLastError();
     }
     cudaEventRecord(e1);
@@ -388,16 +449,67 @@ int main(int argc, char **argv) {
       nsched++;
     }
   const double use = nsched ? useSum / nsched : 0, tuse = nsched ? tileSum / nsched : 0;
-  printf("%-22s k %u order %u%s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% tiles %llu %.0f ms x%d | "
+  printf("%-22s k %u order %u%s%s pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% tiles %llu %.0f ms x%d | "
          "rows of 8 that collide A %.2f B %.2f, largest A %.2f B %.2f, search %.2f ms/chunk",
-         name, k, order_mode, fake ? " FAKE(timing only)" : "", use * 100, useMin * 100, useMax * 100,
+         name, k, order_mode, rot ? " rot" : "", fake ? " FAKE(timing only)" : "", use * 100, useMin * 100, useMax * 100,
          use > 0 ? 16.0 / use : 0.0, tuse * 100, tilesDone / 8ull, ms, launches, coll[0] / mats, coll[1] / mats,
          worst[0] / mats, worst[1] / mats, order_ms);
 
+  if (dHits) {
+    // The card's hits over every launch made (a timed run folds the same tiles again and lists them again).
+    uint32_t head[18];
+    cudaMemcpy(head, dHits, sizeof head, cudaMemcpyDeviceToHost);
+    const uint32_t kept = head[16] < hitRoom ? head[16] : hitRoom;
+    printf(" | the card's hits %u in %d launch%s", head[16], launches, launches == 1 ? "" : "es");
+    if (const char *of = getenv("PD_HITFILE")) {
+      std::vector<uint32_t> list(2u * (size_t)kept + 2u);
+      list[0] = head[16];
+      list[1] = (uint32_t)launches;
+      if (kept) cudaMemcpy(list.data() + 2, dHits + 18, 2u * (size_t)kept * 4u, cudaMemcpyDeviceToHost);
+      FILE *f = fopen(of, "wb");
+      if (f) {
+        fwrite(list.data(), 4, list.size(), f);
+        fclose(f);
+      }
+    }
+  }
+  if (getenv("PD_WARPS")) {
+    // Each warp's loop cycles a tile (the mean over the blocks), and how far apart a block's eight warps end
+    // a tile's loop: they start it together, so that is what they drift in a tile.
+    double sum[8] = {0}, spread = 0, worst = 0;
+    uint32_t nb = 0;
+    for (uint32_t b = 0; b < blocks; b++) {
+      double lo = 1e30, hi = 0;
+      bool ok = true;
+      for (uint32_t w = 0; w < 8u; w++) {
+        const unsigned long long *c = &cyc[((size_t)b * 8u + w) * 4u];
+        if (!c[3]) { ok = false; break; }
+        const double per = (double)c[1] / (double)c[3];
+        sum[w] += per;
+        if (per < lo) lo = per;
+        if (per > hi) hi = per;
+      }
+      if (!ok) continue;
+      nb++;
+      spread += hi - lo;
+      if (hi - lo > worst) worst = hi - lo;
+    }
+    printf(" | loop cycles a tile by warp:");
+    for (uint32_t w = 0; w < 8u; w++) printf(" %.0f", nb ? sum[w] / nb : 0.0);
+    printf("; slowest less fastest warp of a block, mean %.0f worst %.0f", nb ? spread / nb : 0.0, worst);
+  }
   if (dumpTiles) {
     // The CPU's fold of the same tiles from the plain inputs, in the definition's order of k.
     std::vector<uint32_t> dump((size_t)dumpTiles * GP_THREADS * 16u);
     cudaMemcpy(dump.data(), dDump, dump.size() * 4u, cudaMemcpyDeviceToHost);
+    // PD_DUMPFILE=<file>: the card's transcripts of the checked tiles, [tile][thread][16 words], as they are.
+    if (const char *df = getenv("PD_DUMPFILE")) {
+      FILE *f = fopen(df, "wb");
+      if (f) {
+        fwrite(dump.data(), 4, dump.size(), f);
+        fclose(f);
+      }
+    }
     uint32_t bad = 0, total_tr = 0, bad_tiles = 0, first_bad = 0xffffffffu;
     std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)256 * 128);
     std::vector<int32_t> C((size_t)BM * 256);
