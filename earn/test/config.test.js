@@ -40,7 +40,7 @@ describe('config', () => {
 
   test('engine and economics metadata are present', () => {
     expect(MINER).toEqual({ devFeePct: 0, poolFeePct: 0 });
-    expect(ECON).toMatchObject({ DIFFICULTY: 34.45e6, BLOCK_REWARD: 2278, PRL_USD: 1.14 });
+    expect(ECON).toMatchObject({ DIFFICULTY: 57.26e6, BLOCK_REWARD: 2177, PRL_USD: 1.42 });
     // Every fee the miner and the pool take comes off the estimate, and no other.
     expect(ECON.FEE).toBe(1 - (MINER.devFeePct + MINER.poolFeePct) / 100);
   });

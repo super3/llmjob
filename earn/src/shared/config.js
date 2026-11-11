@@ -118,14 +118,16 @@ const NETWORK = {
 // + main.js); the constants here are only the offline fallback, so keep them
 // roughly current — a stale fallback silently overstates earnings (a network
 // whose difficulty doubled makes every estimate ~2x too high).
-// Snapshot: 2026-10-06 (prlscan, block 124012).
+// Snapshot: 2026-11-11 (prlscan, block 141674). The one before, of 2026-10-06, read 34.45e6,
+// 2278 and 1.14: in five weeks difficulty rose 66%, and the fallback overstated a day's
+// earnings by about 40%.
 const ECON = {
-  DIFFICULTY: 34.45e6, // network difficulty of the latest block
-  BLOCK_REWARD: 2278, // PRL per block
+  DIFFICULTY: 57.26e6, // network difficulty of the latest block
+  BLOCK_REWARD: 2177, // PRL per block
   // The share of the work that pays you: what is left after the dev fee and the
   // pool fee, so a fee change in MINER reaches every estimate.
   FEE: 1 - (MINER.devFeePct + MINER.poolFeePct) / 100,
-  PRL_USD: 1.14, // PRL price in USD — prlscan (CoinMarketCap-sourced)
+  PRL_USD: 1.42, // PRL price in USD — prlscan (CoinMarketCap-sourced)
 };
 
 // prlscan API endpoints the app live-refreshes economics from (CORS-open; the

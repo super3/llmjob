@@ -350,7 +350,7 @@
           <div><div class="ap-v"><span id="pv-th">317.6</span><small> TH/s</small></div><div class="ap-k">Pearl · GPU</div></div>
           <div><div class="ap-v">5.26<small> kH/s</small></div><div class="ap-k">Monero · CPU</div></div>
           <div><div class="ap-v">31.6<small> tok/s</small></div><div class="ap-k">LLM · GPU</div></div>
-          <div class="ap-day"><div class="ap-v" id="pv-day">$7.12</div><div class="ap-k">per day</div></div>
+          <div class="ap-day"><div class="ap-v" id="pv-day">$5.26</div><div class="ap-k">per day</div></div>
         </div>
         <svg viewBox="0 0 480 56" width="100%" height="64" preserveAspectRatio="none">
           <defs><linearGradient id="pvFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
@@ -418,7 +418,7 @@
     <div class="calc-out" aria-live="polite">
       <div class="out-lbl" id="out-label">RTX 4090 · 317.6 TH/s</div>
       <div class="out-big"><span id="out-month">$213.72</span><small> / month</small></div>
-      <div class="out-rows"><span>Per day</span><b id="out-day">$7.12</b><span>PRL per month</span><span id="out-prl">187.5</span></div>
+      <div class="out-rows"><span>Per day</span><b id="out-day">$5.26</b><span>PRL per month</span><span id="out-prl">111.2</span></div>
     </div>
   </div>
 </section>
@@ -553,8 +553,8 @@
   {{> api-base}}
 
   // Shared by the calculator and the app preview. PRICE, DIFFICULTY and REWARD
-  // are an October 2026 snapshot, used until the live fetch at the bottom lands.
-  const est = { PRICE: 1.14, DIFFICULTY: 34.45e6, REWARD: 2278 };
+  // are a snapshot of 11 November 2026, used until the live fetch at the bottom lands.
+  const est = { PRICE: 1.42, DIFFICULTY: 57.26e6, REWARD: 2177 };
   // Expected USD a day for a hashrate, from difficulty alone, the way the pool
   // works it out: a block takes difficulty x 2^48 hashes on average. The pool
   // takes no fee and the miner has no dev fee. Electricity is not included.
@@ -1016,7 +1016,7 @@
       }
       if (live < 2) {
         document.getElementById('calc-note').textContent =
-          "Estimate only. Live network data didn't load, so this uses an October 2026 snapshot ($1.14/PRL) that may be out of date.";
+          "Estimate only. Live network data didn't load, so this uses a snapshot of 11 November 2026 ($1.42/PRL) that may be out of date.";
       }
       picked();
     })();
