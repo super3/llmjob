@@ -1,15 +1,15 @@
 # 9060xt ticker: does the gain need the thread that waits for each tick, or only the second queue's work? The ticker with and without the wait, on new builds
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=9c7c0cb2b191dd2da44efc0626c5455cf809ae70
+G_CODE=e373ffc4cac4b1c6be4289577e9c8bb87e864fcf
 G_PARTS=build\ hash\ mstamps
 G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
 G_FOLDK=0
 G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=128\;cbshq1=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=128\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ twin\ tk2\ tkq2\ tkq05
+G_VARIANTS=base\ twin\ tkq2\ tkq05\ tkq5
 G_HROUNDS=3
 G_HASH=45:12
-G_MST=mstkq2
-G_MSN=6
+G_MST=mstkq05
+G_MSN=4
 G_MSAT=100
 G_MSSTEP=17
 cd /opt/llmjob/earn/native/amd || exit 1
