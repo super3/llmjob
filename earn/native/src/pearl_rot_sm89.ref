@@ -8,3 +8,9 @@
 # CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090, 11 November 2026: verify-hits 400 of 400 three times,
 # Kryptex 24 shares accepted and none rejected.
 12.6 15817a7be9c5afdd443cc0aa52b1e14c8299b55d3ac350dacb63f3968a8e388e
+
+# CUDA 12.8 (what CI builds with, Linux and Windows: the same file apart from its string table). The same code
+# as 12.6's, byte for byte; one byte of each .nv.info section differs, the toolkit's version. rig01, RTX 4090,
+# 11 November 2026, the file native core run 43105008459 built: verify-hits 400 of 400, and 33 shares accepted
+# and none rejected by the stand-in pool.
+12.8 6c71715b46354aa9d5b91d1eac0a8fed8fc7269bd6c15dfcdccbbf999de2a7c4

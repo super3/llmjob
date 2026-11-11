@@ -66,6 +66,19 @@ if (existsSync(cu13)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core\n');
 }
+// The rotation fold's cubin (earn/native/src/pearl_rot.cu), which the 12.8 and
+// CUDA 13 cores load from beside themselves when a rig asks for the fold
+// (--rotation-fold). Optional: without it such a rig says the file is missing
+// and mines on the release fold.
+const rot = join(root, 'vendor', 'native', 'pearl_rot_sm89.cubin');
+rmSync(join(dist, 'pearl_rot_sm89.cubin'), { force: true });
+if (existsSync(rot)) {
+  copyFileSync(rot, join(dist, 'pearl_rot_sm89.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm89.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm89.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_rot_sm89.cubin — --rotation-fold will mine on the release fold\n');
+}
 // The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
 // same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
 // is unaffected.

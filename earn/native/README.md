@@ -298,12 +298,30 @@ The addon lands at `build/Release/pearl_core.node`, which is exactly where
 without a CUDA build — the host reports "Pearl core is not built" and stops
 cleanly rather than crashing.
 
-## A second RTX 40 fold behind a switch (`PEARL_FOLD_ROT=1`, off by default)
+## A second RTX 40 fold behind a switch (`--rotation-fold`, off by default)
 
-The rotation fold is a second sm_89 fold. It is off unless `PEARL_FOLD_ROT=1` is in the miner's
-environment, the card is compute 8.9, and the fold's cubin, `pearl_rot_sm89.cubin`, is beside
-`pearl_core.node` (or `PEARL_ROT_CUBIN` names it). No release build makes or ships that file, so a
-release mines exactly as before. With any of the three missing the card runs the release fold.
+The rotation fold is a second sm_89 fold. It is off unless a rig asks for it: `--rotation-fold` on
+the CLI, or `PEARL_FOLD_ROT=1` in either app's environment (the flag sets the variable, which is
+what the host reads). It then runs on a card that is compute 8.9, when the fold's cubin,
+`pearl_rot_sm89.cubin`, is beside the core (or `PEARL_ROT_CUBIN` names it) and the card has the
+memory free (2.7 GB against the release fold's 1.3 GB). With any of those missing the card runs
+the release fold, and the line that names the card says why: `pearl_host_card_k` writes the
+reason into the core's `kNote`. A fold the driver will not load, or whose tables will not
+allocate, makes the core refuse with "rotation fold: ..."; the miner then opens the card again on
+the release fold and logs one line. A default build mines exactly as before.
+
+The miner does not take the fold on trust (`src/shared/foldCheck.js`, and `_planFoldCheck` in
+`src/main/pearlMiner.js`). A card that opens on it first searches a job of the miner's own and has
+24 hits recomputed on the CPU by `checkHit`, the pool's check; after that every share it finds is
+recomputed before it is sent. One wrong result, or too few hits in a minute, and the card is
+opened again on the release fold for the rest of the run, with a line to report.
+
+Where the host looks for the cubin: beside the module that holds its code. On Windows that is
+`GetModuleFileName`. On Linux it is the path the loader was given (`dladdr`), then the file that
+path resolves to, then the mapping `/proc/self/maps` lists for the code. The CLI and the HiveOS
+package load the core from beside the executable and the AppImage from `resources/native` on its
+mount, so the first of the three finds it in every package; the other two are for a relative
+path and for a core that is a symbolic link.
 
 What it is. The release fold copies noised operands from global memory. This one draws the noise
 on the chip from tables of the dense factors, at k 65536, and its chunk loop is written by hand,
@@ -315,8 +333,26 @@ How it fits.
 
 - `src/pearl_rot.cu` is its device code: the fold's kernel and two helpers. It is compiled alone
   into a cubin and is not part of `pearl_kernel.cu` or of the addon. `probes/hand89/build_rot.py
-  <nvcc> <nvdisasm> <out dir>` compiles it, checks the assembler against the compiler's own bytes,
-  puts the hand loop in and reads the result back.
+  <nvcc> <nvdisasm> <out dir>` builds it in six checked steps and writes the file only when all
+  pass: it compiles the kernel; checks the assembler against the compiler's own bytes; builds the
+  hand loop and runs its latency checker; compares what the loop expects with what the compiler
+  made (the registers and predicates the compiled function writes, the uniform register with the
+  address base, the kernel parameters, the transcripts' place, the room); reads the patched file
+  back through nvdisasm; and compares its hash with `src/pearl_rot_sm89.ref`.
+- `src/pearl_rot_sm89.ref` lists the cubins that have mined on a card with every hit verified,
+  by toolkit. The hash is the file's sha256 with its string table zeroed (`python
+  probes/hand89/asm89.py hash <cubin>`): nvcc puts a hash of the source file's path into the
+  static loop function's name, so the plain sha256 differs from one checkout folder to the next
+  while every other byte is the same. A build whose hash is not listed fails and leaves
+  `pearl_rot_sm89.cubin.unverified`: run that on an RTX 40 card (`PEARL_ROT_CUBIN`,
+  `probes/verify-hits.js`) and add its line. CUDA 12.6 and 12.8 compile the kernel to the same
+  code, on Linux and on Windows; their cubins differ in one byte of each `.nv.info` section, the
+  toolkit's version.
+- CI builds it in the two CUDA 12.8 jobs (`native-core.yml`, "Build the rotation fold's cubin")
+  and puts it in the core's artifact. The step does not block: a failure ships no cubin, and a
+  rig that asks for the fold then mines on the release fold. The installer and the AppImage
+  carry the file in `resources/native`, the CLI and the HiveOS package beside the binary, and
+  the CLI's self-updater replaces it with the core.
 - `src/pearl_host_rot.inc` (included by `pearl_host.cu`) is its host side. It loads the cubin
   through the driver on the context the runtime already has. It reuses the release's operand
   trees, seed chain, noise generators, restamp, pipeline, hit list and proof capture. Its own:
@@ -338,8 +374,9 @@ Check it like any fold: `PEARL_FOLD_ROT=1 node probes/verify-hits.js <pearl_core
 (a hit takes longer to recompute at k 65536, so give it 150 s) and `PEARL_FOLD_ROT=1 node
 probes/hashrate.js <pearl_core.node>`.
 
-Not done: CI does not build the cubin, the packages do not carry it, only an RTX 4090 has run it,
-and RTX 30 and RTX 50 have no such fold.
+Not done: only one RTX 4090, on Windows, has run it. No other RTX 40 card and no Linux rig has,
+so the Linux lookup of the cubin is tested by reading and by its unit tests only. RTX 30 and
+RTX 50 have no such fold.
 
 ## Interface
 

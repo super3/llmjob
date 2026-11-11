@@ -410,7 +410,7 @@ describe('the packages carry the folder', () => {
     const native = extra.filter((x) => x.to === 'native');
     expect(native).toHaveLength(2);
     for (const r of native) {
-      expect(r.filter).toEqual(['**/*.node', 'llmjob-xmr-worker', 'llmjob-xmr-worker.exe', 'sycl/**']);
+      expect(r.filter).toEqual(['**/*.node', 'pearl_rot_sm89.cubin', 'llmjob-xmr-worker', 'llmjob-xmr-worker.exe', 'sycl/**']);
     }
     // That folder is where the loader looks (src/main/pearlCore.js).
     const { INTEL_DIR, FILES, INTEL } = require('../src/shared/coreVariant');

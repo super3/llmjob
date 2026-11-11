@@ -1116,6 +1116,17 @@ describe('mining', () => {
     });
   });
 
+  test('--rotation-fold sets PEARL_FOLD_ROT for the core, and nothing does without it', async () => {
+    await withEnv({ PEARL_FOLD_ROT: undefined, PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBeUndefined();
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--rotation-fold'])).resolves.toBe(1);
+      expect(process.env.PEARL_FOLD_ROT).toBe('1');
+    });
+  });
+
   test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
     await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();

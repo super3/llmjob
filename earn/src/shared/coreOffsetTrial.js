@@ -79,10 +79,12 @@ function stepsFor(maxMhz) {
 // its speed. One attempt costs `macsPerAttempt` multiply-accumulates
 // (pearlhash.difficultyAdjustmentFactor), so the card makes th * 1e12 /
 // macsPerAttempt attempts a second, and each is a hit with probability
-// bound / 2^256. A card with no rate yet is taken as 1 TH/s.
-function checkBound(th, macsPerAttempt) {
+// bound / 2^256. A card with no rate yet is taken as 1 TH/s. `hitsPerSec` is
+// for a check that wants another rate: the rotation fold's (shared/foldCheck),
+// whose hits take far longer to recompute.
+function checkBound(th, macsPerAttempt, hitsPerSec = CHECK_HITS_PER_S) {
   const macsPerSec = BigInt(Math.round(Math.max(Number(th) || 0, 1) * 1e12));
-  return ((1n << 256n) * BigInt(CHECK_HITS_PER_S * macsPerAttempt)) / macsPerSec;
+  return ((1n << 256n) * BigInt(hitsPerSec * macsPerAttempt)) / macsPerSec;
 }
 
 // A new trial, in its first turn (offset 0) from `now` (ms). `steps` is the

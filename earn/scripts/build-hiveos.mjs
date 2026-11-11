@@ -93,6 +93,17 @@ if (existsSync(cu13)) {
   console.error('warning: no pearl_core_cu13.node — RTX 50 rigs will use the CUDA 12.8 core');
 }
 
+// The rotation fold's cubin, for --rotation-fold in Extra config: the CUDA
+// cores load it from beside themselves. Optional like the CUDA 13 core:
+// without it a rig that asks for the fold mines on the release fold.
+const rot = join(dist, 'pearl_rot_sm89.cubin');
+if (existsSync(rot)) {
+  copyFileSync(rot, join(pkgDir, 'pearl_rot_sm89.cubin'));
+  chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_rot_sm89.cubin — --rotation-fold will mine on the release fold');
+}
+
 // The AMD core, for --core amd in Extra config. Optional like the CUDA 13
 // core: without it the package mines on NVIDIA cards as before.
 const hip = join(dist, 'pearl_core_hip.node');

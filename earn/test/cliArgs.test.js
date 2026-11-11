@@ -621,6 +621,38 @@ describe('--gpu-wait', () => {
   });
 });
 
+// The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 40 cards.
+describe('--rotation-fold', () => {
+  test('is off by default, and on with the flag', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.rotationFold).toBe(false);
+    const r = parseCliArgs(['-a', ADDR, '--rotation-fold', '--worker', 'rig01']);
+    expect([r.errors, r.settings.rotationFold, r.settings.worker]).toEqual([[], true, 'rig01']);
+  });
+
+  // `--rotation-fold=0` read as "on" would be the opposite of what was typed.
+  test('takes no value', () => {
+    for (const arg of ['--rotation-fold=0', '--rotation-fold=1', '--rotation-fold=']) {
+      const r = parseCliArgs(['-a', ADDR, arg]);
+      expect([arg, r.errors, r.settings.rotationFold]).toEqual([arg, ['--rotation-fold takes no value'], false]);
+    }
+  });
+
+  test('the usage text says what it is, what it costs and what happens when it cannot run', () => {
+    const at = USAGE.indexOf('      --rotation-fold ');
+    const text = USAGE.slice(at, USAGE.indexOf('      --xmr-address')).replace(/\s+/g, ' ');
+    expect(at).toBeGreaterThan(0);
+    for (const part of [
+      'Experimental, RTX 40 cards only',
+      'About 4% faster on an RTX 4090',
+      'about 1.3 GB more card memory',
+      'Off by default.',
+      'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',
+      'the card mines on the normal kernel and the log says why',
+      'PEARL_FOLD_ROT=1 does the same',
+    ]) expect(text).toContain(part);
+  });
+});
+
 // Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
 // there, so a bad value has to be loud, not read as "every card".
 // Which core loads; HiveOS's Extra config takes flags, not environment variables.
