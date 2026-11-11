@@ -1,8 +1,16 @@
-# 7800xt threads: which of the miner's threads keep the CPU busy, by default, with the hash queue and with the ticker
+# 7900xtx cpu: what the hash queue costs in CPU time: stamps of the fold alone (is the PC slow?), then PEARL_AMD_HASHQ=0 and =1 taking turns with the run timed, then each one's threads
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=threads
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0
-G_THREADS=base\ hq1\ tk2\ tkq2
+G_CODE=aff96401d823fe1adee8300d9c34a04476a3642b
+G_PARTS=build\ stamps\ hash\ threads
+G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
+G_FOLDK=0
+G_STSHAPES=sbase:131072:2048:300\ sbase:131072:16384:40
+G_SROUNDS=1
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq0=base\ PEARL_AMD_HASHQ=0\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
+G_VARIANTS=hq0\ hq1\ base
+G_HROUNDS=3
+G_HASH=45:12
+G_THREADS=hq0\ hq1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
