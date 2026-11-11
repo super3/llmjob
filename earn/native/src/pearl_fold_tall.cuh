@@ -267,6 +267,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   pearl_cp_async16((ib) + bdst0 + (p) * bStep * SK,                                    \
                    bP + (sg) * bKB + (int)((p) * bStep * SK) - (int)BMID);
 #endif
+#ifdef PEARL_ABLATE_L1COPY
+  // Diagnostic only when defined: the same fourteen copies a chunk, at the same points, but
+  // every copy reads a fixed line through the L1 (cp.async.ca): a thread's slot p always
+  // reads the same 16 bytes of A' or B', 16 KB in all for the block, which the SM's L1
+  // keeps. So no operand byte crosses from the L2 after the first tile. Prices where the
+  // copied bytes come from, with the loop's steps as they are; the output is meaningless.
+  // RTX 4090 at 450 W (11 November, bench with PEARL_TALL_CYC, 45 s): 2685 MHz at 428 W
+  // with the power-cap flag off and 95.65% of the tensor pipe, against the release's 2535
+  // to 2539 MHz at 449 W and 95.70%. See earn/tuning/benchmark.md.
+#undef PEARL_TALL_ISSUE_A
+#undef PEARL_TALL_ISSUE_B
+  const int8_t *const aFix = Aprime + (arow * SK + aq * 16u);
+  const int8_t *const bFix = Bprime + (bcol * SK + bq * 16u);
+#define PEARL_TALL_ISSUE_A(ib, sg, p)                                                  \
+  pearl_cp_async16_ca((ib) + adst0 + (p) * aStep * SK, aFix + (p) * 512u);
+#define PEARL_TALL_ISSUE_B(ib, sg, p)                                                  \
+  pearl_cp_async16_ca((ib) + bdst0 + (p) * bStep * SK, bFix + (p) * 512u);
+#endif
 #else
   // TMA staging (PEARL_TALL_TMA). The producer is lane 0 of warp 4: row slot 1, so it
   // never hashes, and the next tile's third stage does not wait for a hash.
@@ -365,6 +383,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   uint32_t bLane0 = (wc * 64u + blcol) * SK + 16u * (((lane >> 3) & 1u) ^ f);
 #endif
   asm volatile("" : "+r"(aLane0), "+r"(bLane0));
+#if PEARL_TALL_LANE1 && !PEARL_TALL_TMA_BODY
+  // K-step 1's lane bases, held too (PEARL_TALL_LANE1). A buffer's address is a multiple
+  // of 128, so (base + buffer) ^ 32 is (base ^ 32) + buffer, and no k-step XORs an address.
+  uint32_t aLane1 = aLane0 ^ 32u, bLane1 = bLane0 ^ 32u;
+  asm volatile("" : "+r"(aLane1), "+r"(bLane1));
+#endif
 
   int32_t acc[MT][NB][4];
   // The readout, as the eight-warp fold's: the lane's 64 accumulators of m16 tiles 2rl
@@ -938,15 +962,22 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll
         for (uint32_t t = 0; t < KS; t++) {
           const uint32_t kt = t * 32u;
+#if PEARL_TALL_LANE1
+          // The k-step's lane bases come from registers (PEARL_TALL_LANE1).
+          (void)kt;
+          const uint32_t bK = (t ? bLane1 : bLane0) + so, aK = (t ? aLane1 : aLane0) + so;
+#else
+          const uint32_t bK = (bLane0 + so) ^ kt, aK = (aLane0 + so) ^ kt;
+#endif
           uint32_t bfr[NB / 2u][4];
 #pragma unroll
           for (uint32_t nb2 = 0; nb2 < NB / 2u; nb2++)
             pearl_ldmatrix_x4(bfr[nb2][0], bfr[nb2][1], bfr[nb2][2], bfr[nb2][3],
-                              ((bLane0 + so) ^ kt) + nb2 * 16u * SK);
+                              bK + nb2 * 16u * SK);
 #pragma unroll
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
-            pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+            pearl_ldmatrix_x4(a0, a1, a2, a3, aK + mb * 16u * SK);
 #pragma unroll
             for (uint32_t nb = 0; nb < NB; nb++)
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],

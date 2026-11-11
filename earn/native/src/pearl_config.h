@@ -2522,6 +2522,24 @@ typedef struct {
 #define PEARL_TALL_TILE_ORDER 1
 #endif
 
+// Whether the cp.async tall fold (Ada, Ampere) holds k-step 1's lane bases in registers.
+// 0, what ships: a stage builds them, (base + buffer) ^ 32, two XORs a stage for each
+// operand. 1: they are held beside k-step 0's, and a stage adds the buffer to each. The
+// two are the same address, because a buffer's address is a multiple of 128.
+//
+// It is the one cut of the chunk loop's plain steps that ptxas 12.6 kept and that did not
+// cost cycles (11 November, goal/copies). sm_89: 537 instructions a chunk against 540, 254
+// registers against 255, no spill; sm_86: 538 against 542, 255 registers, no spill, not run
+// on a card. RTX 4090 at 450 W, bench with PEARL_TALL_CYC: 102,676 cycles a tile against
+// 102,719 (95.74% of the tensor pipe against 95.70%). By hashrate.js, 60 s after 10 s, one
+// run each in one hold, it was behind: 317.08 TH/s at 2529 MHz against the release's 317.67
+// and its twin's 317.67 at 2535 MHz, all at 449 W. verify-hits: 400 of 400. Not a gain, so
+// it stays off. The other cuts tried lost more: see earn/tuning/benchmark.md. TMA builds
+// (Blackwell) ignore it.
+#ifndef PEARL_TALL_LANE1
+#define PEARL_TALL_LANE1 0
+#endif
+
 // How the tall fold's per-chunk readout combines the four lanes that hold a region, on
 // Ada (sm_89), Ampere (sm_86) and Blackwell (sm_120, and sm_100); Turing ignores it. 0:
 // three shuffles give every lane the whole XOR, and the lane that keeps the chunk stores
