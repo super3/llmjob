@@ -567,11 +567,13 @@ hr() {
   for e in "${envs[@]}"; do case $e in TICK=*) tk=${e#TICK=} ;; esac; done
   if [ -n "$tk" ] && [ -x /root/clkprobe ]; then ( exec /root/clkprobe "$tk" 100000000 ) > /root/tick.log 2>&1 & tp=$!; fi
   [ -f $SW/var/$core/pearl_core_hip.node ] || { say "hash $label $v: no build"; return; }
-  log=$(env PEARL_AMD_UNTESTED=1 "${envs[@]}" "$@" timeout 600 node ../probes/hashrate.js $SW/var/$core/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi)
+  # The run's CPU seconds (user+system, the whole process) beside its rate: what a ticker thread costs the PC.
+  local TIMEFORMAT='cpu=%U+%S real=%R'
+  log=$( { time env PEARL_AMD_UNTESTED=1 "${envs[@]}" "$@" timeout 600 node ../probes/hashrate.js $SW/var/$core/pearl_core_hip.node "$HSECS" "$HWARM" 2>&1 | grep -v nvidia-smi; } 2> /root/hr.time )
   if [ -n "$tp" ]; then kill $tp 2>/dev/null; wait $tp 2>/dev/null; fi
   r=$(printf '%s\n' "$log" | grep -E '"th"' | tail -n 1 | sed -nE 's/.*"th":([0-9.]+),"sd":([0-9.]+),"n":([0-9]+).*/th=\1 sd=\2 n=\3/p')
   [ -n "$r" ] || r="FAIL $(printf '%s\n' "$log" | tail -n 2 | tr '\n' '|' | cut -c1-240)"
-  say "hash $label $v $r"
+  say "hash $label $v $r $(tail -n 1 /root/hr.time 2>/dev/null | cut -c1-60)"
   r=$(printf '%s\n' "$log" | grep '^\[pearl-amd\]' | tail -n 1)
   [ -z "$r" ] || say "hash $label $v trace: ${r:0:330}"
 }
