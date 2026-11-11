@@ -29,6 +29,9 @@
 #   PP_BUILD      the streams to build (default: all)
 #   PP_OPS        streams whose whole kernel is printed as run lengths by instruction name
 #   PP_V          1: PP_SHORTS runs print each warp's own cycles an IMMA
+#   PP_PERMS      NAME:TAG:RULES ...: after the short runs, each named stream again with its loop's steps placed
+#                 by earn/tuning/pipeprobe/perm.py's RULES (the kernel is launched from the reordered cubin)
+#   PP_PTRACE     NAME.TAG ...: the reordered loops to print as traces
 set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
@@ -390,14 +393,31 @@ full3N|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DDREAL=1 -DDSYNC=1
 rd2aO|$Z1 -DRD=2 -DTRW=0 -Xptxas -O1
 d4mO|$Z1 -DDRAW=4 -DDPOS=1 -Xptxas -O1
 full3O|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DDREAL=1 -DDSYNC=1 -Xptxas -O1
-F4O|$Z1 -DGX=1 -DGA=3 -Xptxas -O1"
+F4O|$Z1 -DGX=1 -DGA=3 -Xptxas -O1
+A1|$Z1 -DGA=1 -DGK=1
+A2|$Z1 -DGA=1 -DGK=2
+A3|$Z1 -DGA=1 -DGK=3
+A4|$Z1 -DGA=1 -DGK=4
+A5|$Z1 -DGA=1 -DGK=5
+A6|$Z1 -DGA=1 -DGK=6
+A9|$Z1 -DGA=1 -DGK=9
+A11|$Z1 -DGA=1 -DGK=11
+A9h|$Z1 -DGA=1 -DGK=9 -DGEV=2
+A11h|$Z1 -DGA=1 -DGK=11 -DGEV=2
+M03|$Z1 -DGX=1 -DWMASK=0x03u
+M0f|$Z1 -DGX=1 -DWMASK=0x0fu
+M33|$Z1 -DGX=1 -DWMASK=0x33u
+M55|$Z1 -DGX=1 -DWMASK=0x55u
+M77|$Z1 -DGX=1 -DWMASK=0x77u
+N0f|$Z1 -DWMASK=0x0fu
+N33|$Z1 -DWMASK=0x33u"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
 build1() {
   local d=$1 home=$2 name=$3 flags=$4 used spill
-  "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cudart static -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1 \
-    || "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1
+  "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cudart static -Xptxas -v $flags "$SRC" -o "$d/$name" -ldl > "$d/$name.log" 2>&1 \
+    || "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -Xptxas -v $flags "$SRC" -o "$d/$name" -ldl > "$d/$name.log" 2>&1
   PATH="$home/bin:$PATH" "$home/bin/cuobjdump" -sass "$d/$name" > "$d/$name.sass" 2> /dev/null
   if ! grep -q IMMA "$d/$name.sass" 2> /dev/null && [ -x "$home/bin/nvdisasm" ]; then
     "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
@@ -447,6 +467,12 @@ case "${PP_SET:-}" in
   b1) PP_BUILD="pure base rd2a d4m full3 p2k0 p2k1 $B1"
       PP_TRACES="l4 L4 Q4 f4 F4 F8 F16 U2 U4 D0 D8 B8 B48 C48 OWA OW1 BW8 BW48 K8 K9 rd2aN d4mN full3N rd2aO d4mO full3O F4O"
       PP_OPS="H1 H2 H4 H8B" ;;
+  # b2: steps placed exactly (perm.py): one step after every IMMA by kind, two to eight a gap, the readout and
+  # the draw one or two a gap, and one XOR3 an IMMA with one to seven warps running.
+  b2) PP_BUILD="base F0 F1 p2k0 p2k1 U1 B2 B48 rd2aN d4mN full3N A1 A2 A3 A4 A5 A6 A9 A11 A9h A11h M03 M0f M33 M55 M77 N0f N33"
+      PP_TRACES="A11 A11h A9"
+      PP_PTRACE="F1.e1 rd2aN.x1 d4mN.e1 A11h.s1"
+      PP_PERMS="F1:o:*=orig F1:e1:X=even,1 p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 U1:h1:A=every,2,1 U1:h2:A=every,4,2 U1:e1:A=even,1 B2:s1:X=every,2,1,0/A=every,2,1,1 B2:s2:X=every,2,1,1/A=every,2,1,1 B2:s3:X=even,1,0/A=even,1,96 B48:e1:*=even,1 B48:b48:*=every,48,0,47 B48:b8:*=every,8,0,7 rd2aN:x1:X=even,1,8 rd2aN:x2:X=even,2,8 d4mN:e1:*=even,1 d4mN:e2:*=even,2 d4mN:e4:*=even,4 d4mN:b:*=every,48,0,23 full3N:e1:*=even,1 full3N:e2:*=even,2 A1:e1:A=even,1 A2:e1:A=even,1 A3:e1:A=even,1 A4:e1:A=even,1 A5:e1:A=even,1 A6:e1:A=even,1 A9:e1:S=even,1 A9h:e1:S=every,2,1 A11h:s1:L=every,2,1,0/X=every,2,1,1 A11h:s2:L=every,2,1,1/X=every,2,1,1 A11:e1:L=even,1/X=even,1,0" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
@@ -514,6 +540,27 @@ long() {
   psay "$2 long $out | $(python3 $P/smi.py "$f" "$t0" 8 "$SQT")"
 }
 T=nvcc$CUDA_VER
+# perm NAME TAG RULES: the stream's kernel with its loop's steps placed by perm.py's RULES, launched from the
+# reordered cubin by the stream's own program. The line before the run gives the gaps asked for, and the gaps
+# read back from the reordered cubin.
+perm() {
+  local name=$1 tag=$2 rules=$3 d=$P/b flags l
+  [ -x "$d/$name" ] || { psay "$T perm $name.$tag: no program"; return; }
+  if [ ! -s "$d/$name.csass" ]; then
+    flags=$(echo "$STREAMS" | awk -F'|' -v n="$name" '$1 == n { print $2; exit }')
+    "$CUDA/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
+    "$CUDA/bin/nvdisasm" -c "$d/$name.cubin" > "$d/$name.csass" 2> /dev/null
+  fi
+  l=$(python3 "$R/earn/tuning/pipeprobe/perm.py" "$d/$name.cubin" "$d/$name.csass" "$d/$name.$tag.cubin" "$rules" 2>&1 | tail -1)
+  [ -s "$d/$name.$tag.cubin" ] || { psay "$T perm $name.$tag FAIL $l"; return; }
+  "$CUDA/bin/nvdisasm" -c "$d/$name.$tag.cubin" > "$d/$name.$tag.sass" 2> /dev/null
+  psay "$T $name.$tag $l | read back $(python3 $P/sass.py "$d/$name.$tag.sass" 2>&1 | grep -oE 'gaps=.*')"
+  case " ${PP_PTRACE:-} " in *" $name.$tag "*)
+    python3 $P/sass.py "$d/$name.$tag.sass" trace 2>&1 | while IFS= read -r l; do psay "$T trace $name.$tag $l"; done ;;
+  esac
+  PP_CUBIN="$d/$name.$tag.cubin" timeout 120 "$d/$name" "$name.$tag" "$CH" "${PP_SHORT:-1}" v 2>&1 \
+    | while IFS= read -r l; do psay "$T short $l"; done
+}
 # 1. What a full pipe is here: IMMA only with one to four warps a scheduler, the warp-to-pipe map, and the same
 #    with the fragment loads.
 [ -n "${PP_SKIP_SHORT:-}" ] || for s in m0 m01 m02 m03 m04 m05 m06 m07 w4 pure w8a32 w8a24 w12 w16 w4k base w12k w16k; do
@@ -533,6 +580,13 @@ done
 for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16 p1k0 p2k0 p4k0 p2k4 p1k1 p2k1 p1k2 p1k3}; do
   [ -x $P/b/$s ] && short $P/b $T $s ${PP_V:+v}
 done
+# 2c. Reordered kernels.
+set -f   # a rule may hold a "*"
+for x in ${PP_PERMS:-}; do
+  IFS=: read -r pn pt pr <<< "$x"
+  perm "$pn" "$pt" "$pr"
+done
+set +f
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
 for s in ${PP_LONGS:-pure base rd1 rd2a d4m d4r full full3 baser rd1r rd2ar d4mr base}; do
   [ -x $P/b/$s ] && long $P/b $T $s

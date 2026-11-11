@@ -38,7 +38,8 @@
 //           the compiler cannot lift them above it, then with GW one XOR3 into b[0][0], which the next mma
 //           reads under OPSAME. GK: 0 add and xor in turn, 1 mul.lo, 2 funnel shift, 3 byte select, 4 add.f32,
 //           5 mul.f32, 6 fma.f32, 8 a shared load at an address taken from the register and an xor of what it
-//           read, 9 a shared store of the register, 10 the load's steps without the load (and, add, xor).
+//           read, 9 a shared store of the register, 10 the load's steps without the load (and, add, xor),
+//           11 a shared load at a fixed address and an xor of what it read.
 //   HELP    the warps that only help (bit w): they issue no mma and run plain steps until the folding warps
 //           are done. HK: -1 they leave at once, 0 HA adds and xors a pass, 1 one load whose address is the last
 //           load's value and then HA adds and xors, 2 HA loads at counted addresses and one store. Each pass
@@ -50,9 +51,15 @@
 // the launches' own time; in a run of more than 8 s, over the launches that began after its first 8 s), and the
 // SM's cycle counter in MHz (cycles over the last launch's time). A fourth argument adds each running warp's
 // own cycles an mma. The streams compute nothing real: a rate by count is not a mining rate.
+//
+// PP_CUBIN=<file> (Linux): the kernel is launched from that cubin, not from the program. It must be a build of
+// the same switches; earn/tuning/pipeprobe/perm.py makes one whose loop has its steps in another order.
 #include <cstdio>
 #include <cstdlib>
 #include <cuda_runtime.h>
+#ifdef __linux__
+#include <dlfcn.h>
+#endif
 
 #ifndef KLOAD
 #define KLOAD 1
@@ -374,6 +381,8 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
       gst[(i + p) & 7] = t[r0];
 #elif GK == 10
       t[r0] ^= (t[r0] & 124u) + gx;
+#elif GK == 11
+      t[r0] ^= reinterpret_cast<const unsigned *>(gtab)[(i + p) & 31];
 #else
 #error GK
 #endif
@@ -494,13 +503,45 @@ int main(int argc, char **argv) {
   cudaEventCreate(&e0);
   cudaEventCreate(&e1);
   cudaFuncSetAttribute(pipeprobe2, cudaFuncAttributeMaxDynamicSharedMemorySize, SHBYTES);
+  // The driver's own calls, by name, so the program needs no driver header or library to build.
+  typedef int (*launch_t)(void *, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, unsigned, void *,
+                          void **, void **);
+  void *cubin_fn = nullptr;
+  launch_t cubin_launch = nullptr;
+#ifdef __linux__
+  if (const char *cb = getenv("PP_CUBIN")) {
+    void *lib = dlopen("libcuda.so.1", RTLD_NOW);
+    typedef int (*load_t)(void **, const char *);
+    typedef int (*get_t)(void **, void *, const char *);
+    typedef int (*attr_t)(void *, int, int);
+    load_t load = lib ? (load_t)dlsym(lib, "cuModuleLoad") : nullptr;
+    get_t get = lib ? (get_t)dlsym(lib, "cuModuleGetFunction") : nullptr;
+    attr_t attr = lib ? (attr_t)dlsym(lib, "cuFuncSetAttribute") : nullptr;
+    cubin_launch = lib ? (launch_t)dlsym(lib, "cuLaunchKernel") : nullptr;
+    void *mod = nullptr;
+    int rc = -1;
+    if (!load || !get || !attr || !cubin_launch || (rc = load(&mod, cb)) || (rc = get(&cubin_fn, mod, "pipeprobe2")) ||
+        (rc = attr(cubin_fn, 8 /* the most dynamic shared memory */, SHBYTES))) {
+      fprintf(stderr, "%s: PP_CUBIN %s: driver error %d\n", name, cb, rc);
+      return 1;
+    }
+  }
+#endif
+  int chunks_arg = chunks;
+  void *cubin_args[3] = {&times, &sink, &chunks_arg};
   float ms = 0, total = 0, late = 0;
   int launches = 0, nlate = 0;
   do {
     const bool settled = total >= 8000.0f;   // a capped card's clock has come down by then
     cudaEventRecord(e0);
-    pipeprobe2<<<blocks, THREADS, SHBYTES>>>(times, sink, chunks);
-    cudaError_t err = cudaGetLastError();
+    cudaError_t err;
+    if (cubin_fn) {
+      err = cubin_launch(cubin_fn, blocks, 1, 1, THREADS, 1, 1, SHBYTES, nullptr, cubin_args, nullptr)
+                ? cudaErrorLaunchFailure : cudaSuccess;
+    } else {
+      pipeprobe2<<<blocks, THREADS, SHBYTES>>>(times, sink, chunks);
+      err = cudaGetLastError();
+    }
     cudaEventRecord(e1);
     if (err == cudaSuccess) err = cudaEventSynchronize(e1);
     if (err != cudaSuccess) {
