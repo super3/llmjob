@@ -3359,6 +3359,118 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   k-step alone costs
   0.8 points, with the draw 18. Tables and the reasoning: `earn/native/probes/README.md`, "The third design".
 
+- **The release fold's loads and stores: none to cut, and what holds its clock is where the copied bytes come from
+  (11 November, rig01's RTX 4090, 450 W limit, branch `goal/copies`).** The sixth kernel round read the release
+  fold as doing about twice the loads and stores its block needs (0.51 an IMMA), and priced a copy fold with half of
+  them at 341 TH/s by count. So the shipped sm_89 loop was counted from its disassembly and its source changed to
+  cut what could be cut. Nothing gains, and nothing ships from this.
+
+  The count, for a warp over a k-step (48 IMMA), from nvdisasm of the release's sm_89 cubin (ptxas 12.6). The chunk
+  loop is 540 instructions in the listing; a chunk that is not the tile's last runs 470 of them.
+
+  | Step | A k-step | Where it comes from |
+  |---|---|---|
+  | IMMA | 48 | 6 m16 tiles by 8 n8 tiles |
+  | LDSM, a fragment load of 16 bytes a lane | 10 | 6 of A and 4 of B: the least a 96 x 64 warp can load |
+  | LDGSTS, a copy of 16 bytes from the L2 to shared memory through no register | 3.5 | 3 of A and 4 of B a stage of two k-steps |
+  | LDS that run | 1 | the barrier tests: one FULL and one EMPTY a stage |
+  | LDS that never run (`@!PT LDS RZ, [RZ]`) | 7 | pads ptxas adds: 3 before each LDGSTS group, 4 before each ARRIVES and each MEMBAR |
+  | ARRIVES.LDGSTSBAR, ATOMS.ARRIVE, MEMBAR.ALL.CTA | 0.5 each | one of each a stage |
+  | ATOMS.XOR | 0.75 | the readout's three shared XOR a chunk |
+  | LOP3 of the readout | 24.75 | 99 a chunk, the least for 192 sums |
+  | Other ALU, branches and NOP | about 22 | copy addresses, barrier parity, the k-step's address XOR, the ring's role moves, one test made four times |
+
+  So the fold already copies the least a 192 x 256 block can: a stage is 192 rows and 256 columns of 64 bytes, 1,792
+  units of 16 bytes over 256 threads and two k-steps, 3.5 a warp a k-step. The 0.51 counted the mnemonic LDS, and 28
+  of a chunk's 32 are the pads. There is no second copy of an operand, no narrow load, and no noise added on the
+  chip to remove.
+
+  Method: `bench.exe` built with `-DPEARL_TALL_CYC`, 45 s a run (25 s for the forms judged by cycles alone), cycles
+  a tile from the SM's own counter (ideal 98,304). Clock, watts and the power-cap flag are the last 20 one-second
+  nvidia-smi samples of a run. The base ran nine times in six holds: 102,717 to 102,720 cycles a tile, 316.4 to
+  317.5 TH/s by the bench's count, 448.8 to 450.0 W, flag on, and 2534 to 2539 MHz in the 45 s runs. "Timing only"
+  rows compute wrong results on purpose and cannot ship.
+
+  What each kind of step costs, in the release's own loop:
+
+  | Arm | Kind | TH/s | Cycles a tile | Of the pipe | SM clock | Watts | Cap flag |
+  |---|---|---|---|---|---|---|---|
+  | The release | real | 316.4 to 317.5 | 102,717 to 102,720 | 95.70% | 2534 to 2539 MHz | 449 | on |
+  | The 14 copies a chunk read 16 KB of fixed lines through the L1 (`PEARL_ABLATE_L1COPY`) | timing only | 332.8 | 102,779 | 95.65% | 2685 | 428.0 | off |
+  | The same bytes by `ld.global` and `st.shared` through registers, the L1 serving the load | timing only | 330.7 | 103,399 | 95.07% | 2685 | 433.3 | 11 of 20 |
+  | The same fixed lines by `cp.async.cg`, so all 128 SMs ask the L2 for the same 16 KB | timing only | 176.0 | 192,995 | 50.94% | 2685 | 331.2 | off |
+  | A's copies off after a block's first tile (6 of the 14) | timing only | 321.8 | 104,502 | 94.07% | 2625 | 449.5 | on |
+  | B's copies off (8 of the 14) | timing only | 329.5 | 102,535 | 95.87% | 2639 | 448.7 | on |
+  | Copies kept, their sources held in the L2 (`PEARL_ABLATE_DRAM`) | timing only | 317.4 | 102,729 | 95.69% | 2544 | 449.0 | on |
+  | Readout at the tile's last chunk only (`PEARL_ABLATE_READOUT`) | timing only | 324.4 | 101,107 | 97.23% | 2555 | 449.3 | on |
+  | Tile hash off (`PEARL_ABLATE_TRANSCRIPT_HASH`) | timing only | 321.0 | 101,424 | 96.92% | 2544 | 449.3 | on |
+  | Ring waits and EMPTY arrivals off (`PEARL_ABLATE_RING`, `_ARRIVE`) | timing only | 318.0 | 102,240 | 96.15% | 2540 | 448.7 | on |
+  | Every fragment by a plain 16-byte shared load, not ldmatrix | timing only | 316.6 | 102,763 | 95.66% | 2535 | 449.1 | on |
+
+  The copies' steps are nearly free and their bytes are not. With the same 14 LDGSTS a chunk at the same points,
+  served by the SM's own L1, the card runs at the top of its clock range, 2685 MHz, 21 W under the limit with the
+  flag off. Served by the L2 it runs about 2537 MHz at the limit. A's copies alone are worth 91 MHz and B's alone
+  105. The sixth round's ladder (4 copy units a k-step 2626 to 2633 MHz, 8 units 2565) was read as a price a copy
+  step, but its copies hit the SM's cache, as that round noted. With the bytes coming from the L2 a copy unit a
+  k-step costs 50 to 60 MHz here. So a copy fold sits near the release's clock however its loop is written, and
+  the 341 TH/s by count is not there to be had by copying less: this fold has no copy to drop. A plain step costs
+  about 1 MHz: taking away the readout's 25.5 steps a k-step raised the clock 21 MHz while the pipe filled by 1.5
+  points, and a point of pipe is worth about 6 MHz the other way (the slower forms below run 2580 MHz at 89%). So
+  the 22 other plain steps are worth 20 to 25 MHz together if every one went. ldmatrix costs what a plain shared
+  load of the same bytes costs.
+
+  Forms written to compute the right result (ptxas 12.6, sm_89; loop length, registers of 255 and spill from the
+  listing and `-Xptxas -v`). Only the first was hit-checked; the others lost before that mattered.
+
+  | Form | Loop, registers, spill | Cycles a tile | Of the pipe | TH/s, clock |
+  |---|---|---|---|---|
+  | The release | 540, 255, none | 102,717 to 102,720 | 95.70% | 316.4 to 317.5, 2534 to 2539 MHz |
+  | K-step 1's lane bases held in registers (`PEARL_TALL_LANE1`): 3 ALU steps fewer | 537, 254, none | 102,676 | 95.74% | 316.8, 2541 MHz |
+  | The lane's transcript base held too: 8 fewer | 532, 254, none | 102,962 | 95.48% | 316.4 |
+  | The transcript base held alone | 535, 255, none | 102,945 | 95.49% | 315.9 |
+  | A's and B's copies through the L1 (`cp.async.ca`) | 540, 255, none | 102,742 | 95.68% | 313.3, 2509 MHz |
+  | Copies by `ld.global` and `st.shared` through registers | 519, 255, none | 106,113 | 92.64% | 302.1, 2519 MHz |
+  | The EMPTY wait one m16 tile ahead of A's copies | 544, 255, none; ptxas moves the copies up to the wait | 104,650 | 93.94% | 311.9 |
+  | The EMPTY wait two tiles ahead | 544, 255, none; the same | 106,292 | 92.48% | 308.4 |
+  | The copies' arrival one tile after B's copies | 546, 254, none; ptxas moves B's copies two tiles up | 105,010 | 93.61% | 310.6 |
+  | The copies' arrival two tiles after | 545, 255, none | 104,970 | 93.65% | 311.4 |
+  | The EMPTY arrival after the stage's last fragment load, before that tile's mma | 541, 253, none; 11 of the readout's LOP3 woven | 107,219 | 91.69% | 306.5 |
+  | The EMPTY arrival made in the next stage, after its m16 tile 0 | 567, 255, none; loop rebuilt (below) | 110,060 | 89.32% | 300.9, 2580 MHz |
+  | The same after its tile 1 | 567, 255, none; loop rebuilt | 110,403 | 89.04% | 299.9, 2580 MHz |
+  | The same after its tile 2 | 567, 255, none; loop rebuilt | 117,495 | 83.67% | 285.9, 2618 MHz |
+  | EMPTY as a counted word: `red.shared.add` and a plain load, no MEMBAR and no pads there | 553, 255, none; loop rebuilt | 108,081 | 90.95% | 304.0 |
+  | The same with the bases held | 546, 254, none; loop rebuilt | 106,084 | 92.67% | 308.3 |
+  | Copy groups issued with no `stage_next` test | 592, 255, spills 80 bytes | not run | | |
+  | The chunk loop compiled twice, the tile's first 15 chunks and its last | 255, spills 84 bytes | not run | | |
+
+  One form is ahead by cycles, by 0.04%: the lane bases held. By `hashrate.js` (60 s after 10 s, one run each in
+  one hold) it is behind: 317.08 TH/s at 2529 MHz against the release's 317.67 and its twin's 317.67 at 2535 MHz,
+  all at 449 W. It is not a gain. The others lose: 0.2 to 14% more cycles a tile, or, for the copies through the
+  L1, 29 MHz of clock. What was learned about ptxas and this loop: a cut that takes a test out of the loop's
+  control (no `stage_next` test, a chunk loop in two parts) makes it spill. Any form that takes the stage-end
+  `MEMBAR.ALL.CTA` away from the chunk's end (the EMPTY arrival made earlier, made later, or made with a plain
+  atomic) makes ptxas rebuild the loop on uniform registers with the readout woven into the last 20 IMMA, the form
+  the readout round (branch `goal/readout`) found slower: the fence at the seam is part of what keeps the shipped
+  schedule. A step moved to an emptier place does not stay there: ptxas hoists the copies to follow a moved wait.
+  And a register held to save steps can cost more than the steps (the transcript base). More would need a loop
+  whose order ptxas cannot change, which is the hand-written route; by the count above it has about 22 plain steps
+  and 7 pads a k-step to win back, and the ring's waits and arrivals together are 0.45 points of the pipe.
+
+  One idea was closed on paper. With A set to 0, a chunk's sum is the dense rows of A's noise against B' pushed
+  through A's sparse factor, and A's operand is then 24.6 KB a tile, the same for all sixteen chunks: 40% fewer bytes
+  from the L2, which the table prices at about 80 MHz. But the pushed B' sums the B' of every k that lands in one
+  of the 128 bins, two on average, and an int8 holds two of them at most; about a third of bins get three or more.
+  Splitting those bins takes about 160 to 190 products a chunk in place of 128, by arithmetic only: nothing was
+  built.
+
+  Checks. Two switches stay in the source on that branch, which is not merged since nothing gained:
+  `PEARL_TALL_LANE1`, off, and the diagnostic `PEARL_ABLATE_L1COPY`. With
+  them the default build's cubin is byte-identical to the release's on sm_80, sm_86 and sm_89. `verify-hits.js` on
+  the lane-base form: 400 of 400 hits verified (1,395 hits over 177 salts). On sm_86 the same switch cuts the same
+  four LOP3 (538 instructions a chunk against 542, 255 registers, no spill); no RTX 30 card ran it. sm_120 builds
+  the TMA body, which the switch does not touch; no RTX 50 card ran anything here. Whether a newer ptxas pads the
+  copy groups the same way was not checked: the CUDA 13.3 copy is no longer on this PC.
+
 - **The draw fold, fourth round: 73% to 80.5% in the one correct form, and what the barrier costs (11 November,
   rig01's RTX 4090, probe only).** Probe figures, k 8192 (branch `goal/nv-kernel`; no hash or host side, so no
   mining rate). Timing-only rows compute wrong results on purpose.
