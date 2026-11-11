@@ -1101,6 +1101,21 @@ describe('mining', () => {
     });
   });
 
+  test('--gpu-wait sets PEARL_WAIT for the core, over the variable', async () => {
+    await withEnv({ PEARL_WAIT: 'block', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--gpu-wait', 'spin'])).resolves.toBe(1);
+      expect(process.env.PEARL_WAIT).toBe('spin');
+    });
+    await withEnv({ PEARL_WAIT: 'poll', PEARL_CORE_VARIANT: undefined, PEARL_CORE_PATH: undefined }, async () => {
+      const m = load();
+      m.pearlCore.coreFactory.mockReturnValue(null);
+      await expect(m.run(['-a', ADDR, '--mode', 'mining', '--no-update'])).resolves.toBe(1);
+      expect(process.env.PEARL_WAIT).toBe('poll');
+    });
+  });
+
   test('with PEARL_CORE_VARIANT=amd and no AMD core, it says where the AMD core goes', async () => {
     await withEnv({ PEARL_CORE_VARIANT: ' AMD ', PEARL_CORE_PATH: undefined }, async () => {
       const m = load();

@@ -40,21 +40,66 @@
 #include <algorithm>
 #include <chrono>
 #include <set>
+#include <thread>
 #include <vector>
 
 #include <cstdlib>
 #include <cstdio>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
 #include "pearl_fold_hmma.h"   // Volta's fold: the readout's bias
 
-// How the search thread waits for a batch: spinning, as the synchronous copy it
-// replaced did. cudaEventBlockingSync, which sleeps instead, measured 0.4% slower on a
-// 4090 with the next batch already queued: the fold itself ran slower by the GPU's own
-// timer, at the same clock. Why is not known.
+// How the search thread waits for a batch (Ctx::waitMode), chosen when the context is made:
+//   block  cudaEventSynchronize on a cudaEventBlockingSync event: the thread sleeps and the
+//          driver wakes it. The default.
+//   poll   cudaEventQuery, sleeping PEARL_WAIT_POLL_US microseconds between looks.
+//   spin   cudaEventSynchronize on a plain event, which busy-waits: a whole CPU core a
+//          card, all the time. What every release up to v0.6.15 did.
+// PEARL_WAIT=block|poll|spin picks one at run time (the CLI's --gpu-wait sets it).
+//
+// Measured on an RTX 4090 (rig01, 12 CPUs, 28 ms a launch, 60 s each, 11 November 2026):
+//   spin   0.995 and 0.999 cores   317.44 and 317.41 TH/s
+//   block  0.003 cores             317.37 TH/s
+//   poll   0.006 cores             317.11 TH/s
+// (An older note here had blocking 0.4% slower. That was before the slots had a stream
+// each; it does not show now.) The core is all one thread, the search thread, and all of
+// it is the wait: queueing a launch and reading its hit count take about 0.1 ms in 28.
+//
+// Spinning is worst where CPUs are few. A rig of 8 cards on a 2-core CPU had 8 spinning
+// threads on 2 cores, so a finished launch waited for its thread's turn and the cards sat
+// idle: 31.8 TH/s where another miner made 74.9 on the same RTX 3070s. Imitated here with
+// the miner pinned to one core beside three busy loops: spin 173.8 TH/s (55%, GPU 53%
+// busy), block 208.7, poll 260.3, because a sleeping thread at normal priority is still
+// woken late on a busy core. So a search thread that does not spin also raises its own
+// priority (pearl_host_bind_thread): it needs almost no CPU, but needs it at once. With
+// that, block made 317.49 and poll 317.28 on the same busy core.
 #ifndef PEARL_SLOT_EVENT_FLAGS
 #define PEARL_SLOT_EVENT_FLAGS cudaEventDisableTiming
+#endif
+#define PEARL_WAIT_SPIN 0
+#define PEARL_WAIT_BLOCK 1
+#define PEARL_WAIT_POLL 2
+#ifndef PEARL_WAIT_DEFAULT
+#define PEARL_WAIT_DEFAULT PEARL_WAIT_BLOCK
+#endif
+#ifndef PEARL_WAIT_POLL_US
+#define PEARL_WAIT_POLL_US 500u
 #endif
 // The pipeline's two slots on two streams, so one batch starts on the SMs the one before
 // it has already left (Ctx::foldStream). 0 puts both on the default stream.
@@ -488,6 +533,11 @@ struct Ctx {
   int pendHead = 0, pendCount = 0;
   cudaEvent_t slotDone[kSlots] = {};
   uint32_t *hSlotCount = nullptr;    // pinned, [kSlots]
+  // How the search thread waits for a batch (PEARL_WAIT_*).
+  int waitMode = PEARL_WAIT_DEFAULT;
+#ifdef _WIN32
+  HANDLE napTimer = nullptr;         // the poll's sleep (pearl_nap)
+#endif
   // Proof reads run here, not on the search's stream: that stream holds the next
   // batch, and a copy queued behind it would wait for it and then leave the GPU idle.
   cudaStream_t side = nullptr;
@@ -723,6 +773,37 @@ const PearlRestampRecord *find_record(const Ctx *ctx, uint64_t salt) {
   for (int i = 0; i < Ctx::kRecords; i++)
     if (ctx->recValid[i] && ctx->recSalt[i] == salt) return &ctx->rec[i];
   return nullptr;
+}
+
+// The wait PEARL_WAIT asks for (see PEARL_WAIT_SPIN), or the default.
+int pearl_wait_mode() {
+  const char *w = getenv("PEARL_WAIT");
+  if (!w || !*w) return PEARL_WAIT_DEFAULT;
+  if (!strcmp(w, "spin")) return PEARL_WAIT_SPIN;
+  if (!strcmp(w, "block")) return PEARL_WAIT_BLOCK;
+  if (!strcmp(w, "poll")) return PEARL_WAIT_POLL;
+  fprintf(stderr, "[pearl] PEARL_WAIT=%s ignored: it takes block, poll or spin\n", w);
+  return PEARL_WAIT_DEFAULT;
+}
+
+// Sleep about `us` microseconds. Windows' Sleep is whole timer ticks, up to 15.6 ms each,
+// which is longer than a batch; a high-resolution waitable timer is not.
+void pearl_nap(Ctx *ctx, uint32_t us) {
+#ifdef _WIN32
+  if (!ctx->napTimer)
+    ctx->napTimer = CreateWaitableTimerExW(nullptr, nullptr, 0x00000002 /* HIGH_RESOLUTION */,
+                                           TIMER_ALL_ACCESS);
+  LARGE_INTEGER due;
+  due.QuadPart = -(LONGLONG)us * 10;
+  if (ctx->napTimer && SetWaitableTimer(ctx->napTimer, &due, 0, nullptr, nullptr, FALSE)) {
+    WaitForSingleObject(ctx->napTimer, INFINITE);
+    return;
+  }
+  Sleep(us >= 1000u ? us / 1000u : 1u);
+#else
+  (void)ctx;
+  std::this_thread::sleep_for(std::chrono::microseconds(us));
+#endif
 }
 
 // A device-to-host copy on the side stream, so it does not queue behind the fold.
@@ -1922,8 +2003,11 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
           "allocating the hit list");
   CUDA_OK(cudaHostAlloc(&ctx->hSlotCount, S * sizeof(uint32_t), cudaHostAllocDefault),
           "allocating the pinned hit counts");
+  ctx->waitMode = pearl_wait_mode();
   for (int i = 0; i < Ctx::kSlots; i++)
-    CUDA_OK(cudaEventCreateWithFlags(&ctx->slotDone[i], PEARL_SLOT_EVENT_FLAGS),
+    CUDA_OK(cudaEventCreateWithFlags(&ctx->slotDone[i],
+                                     PEARL_SLOT_EVENT_FLAGS
+                                         | (ctx->waitMode == PEARL_WAIT_BLOCK ? cudaEventBlockingSync : 0)),
             "creating the batch events");
   CUDA_OK(cudaStreamCreateWithFlags(&ctx->side, cudaStreamNonBlocking),
           "creating the proof stream");
@@ -2244,6 +2328,18 @@ extern "C" void pearl_host_bind_thread(void *handle) {
   Ctx *ctx = (Ctx *)handle;
   if (!ctx) return;
   cudaSetDevice(ctx->device);
+  // A search thread that sleeps between launches needs almost no CPU, but must run the
+  // moment its batch ends, or the card idles (see PEARL_WAIT_SPIN). So it asks to go
+  // first. A spinning thread must not: it would take the core from everything else.
+  // On Linux a lower nice value needs root or CAP_SYS_NICE; without it the call fails
+  // and the thread stays as it was.
+  if (ctx->waitMode != PEARL_WAIT_SPIN) {
+#ifdef _WIN32
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+#else
+    if (setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), -10) != 0) errno = 0;
+#endif
+  }
 }
 
 // For probes/race.cu, which runs two or more builds in one process, on one card, taking
@@ -2368,6 +2464,9 @@ extern "C" void pearl_host_destroy(void *handle) {
   for (int i = 0; i < Ctx::kSlots; i++)
     if (ctx->foldStream[i]) cudaStreamDestroy(ctx->foldStream[i]);
   if (ctx->hSlotCount) cudaFreeHost(ctx->hSlotCount);
+#ifdef _WIN32
+  if (ctx->napTimer) CloseHandle(ctx->napTimer);
+#endif
   if (ctx->hStage) cudaFreeHost(ctx->hStage);
   delete ctx;
 }
@@ -3557,7 +3656,13 @@ extern "C" bool pearl_host_collect(void *handle, PearlSearchResult *out, uint64_
   DeviceScope scope(ctx->device);
   const int slot = ctx->pendHead;
   const Ctx::Pending p = ctx->pend[slot];
-  cudaError_t e = cudaEventSynchronize(ctx->slotDone[slot]);
+  cudaError_t e;
+  if (ctx->waitMode == PEARL_WAIT_POLL) {
+    while ((e = cudaEventQuery(ctx->slotDone[slot])) == cudaErrorNotReady)
+      pearl_nap(ctx, PEARL_WAIT_POLL_US);
+  } else {
+    e = cudaEventSynchronize(ctx->slotDone[slot]);
+  }
   if (e == cudaSuccess) e = cudaGetLastError();
   ctx->pendHead = (ctx->pendHead + 1) % Ctx::kSlots;
   ctx->pendCount--;
