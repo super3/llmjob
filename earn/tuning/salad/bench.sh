@@ -39,9 +39,11 @@ POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM
 # on 9 November.
 VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
 PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
-# SRBMiner stays at 3.8.2: on Salad 3.8.6 exited 73 within seconds and printed only its interactive setup prompt
-# ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two 2080 Tis, 9 November).
-SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
+# SRBMiner 3.8.6 needs wget in the image. Without it, on Salad, it exited 73 within seconds and printed only its
+# interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
+# 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
+# ran on all four RX 7900 boxes of the 11 November re-run. Not yet run this way on an NVIDIA box.
+SRB_VER=3.8.6; SRB_MD5=38128fa15afff3c488e53726aa251249
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
 OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
@@ -107,7 +109,7 @@ if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.
   drop wild "no OpenCL"
 fi
 OCL=; [ -z "$AMD" ] && has wild && OCL=1
-apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
+apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps wget \
   ${AMD:+clinfo} ${TAP:+python3} ${VPOOL:+git} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
 if [ -n "$OCL" ] && [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
   mkdir -p /etc/OpenCL/vendors && echo libnvidia-opencl.so.1 > /etc/OpenCL/vendors/nvidia.icd
