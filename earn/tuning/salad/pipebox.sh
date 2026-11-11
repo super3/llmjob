@@ -33,7 +33,9 @@
 #                 by earn/tuning/pipeprobe/perm.py's RULES (the kernel is launched from the reordered cubin)
 #   PP_PTRACE     NAME.TAG ...: the reordered loops to print as traces
 set -u
-psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
+# Salad's log service hands back at most 100 lines for its smallest window (about 2 s), so a burst of lines loses
+# some: psay waits a moment after each.
+psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; sleep 0.03; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
 U="https://raw.githubusercontent.com/super3/llmjob/$BASE_SHA/earn/tuning/salad"
 for f in bench.sh nvtest.sh sharetap.py; do   # sharetap.py: bench.sh's share relay, used when TAP=1
@@ -108,7 +110,7 @@ cat > $P/sass.py << 'EOF'
 import collections, re, sys
 ops = []
 for line in open(sys.argv[1], errors="replace"):
-    m = re.search(r"/\*[0-9a-f]{4,}\*/\s+(@!?P\d+\s+)?([A-Z][A-Z0-9_.]*)", line)
+    m = re.search(r"/\*[0-9a-f]{4,}\*/\s+(@\S+\s+)?([A-Z][A-Z0-9_.]*)", line)
     if m:
         p = m.group(2).split(".")
         ops.append(p[1] if p[0] == "IMAD" and len(p) > 1 and p[1] in ("MOV", "IADD") else p[0])
@@ -410,7 +412,8 @@ M33|$Z1 -DGX=1 -DWMASK=0x33u
 M55|$Z1 -DGX=1 -DWMASK=0x55u
 M77|$Z1 -DGX=1 -DWMASK=0x77u
 N0f|$Z1 -DWMASK=0x0fu
-N33|$Z1 -DWMASK=0x33u"
+N33|$Z1 -DWMASK=0x33u
+Mff|$Z1 -DGX=1 -DWMASK=0xffu"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -469,10 +472,10 @@ case "${PP_SET:-}" in
       PP_OPS="H1 H2 H4 H8B" ;;
   # b2: steps placed exactly (perm.py): one step after every IMMA by kind, two to eight a gap, the readout and
   # the draw one or two a gap, and one XOR3 an IMMA with one to seven warps running.
-  b2) PP_BUILD="base F0 F1 p2k0 p2k1 U1 B2 B48 rd2aN d4mN full3N A1 A2 A3 A4 A5 A6 A9 A11 A9h A11h M03 M0f M33 M55 M77 N0f N33"
+  b2) PP_BUILD="base F0 F1 p2k0 p2k1 U1 B2 B48 rd2aN d4mN full3N A1 A2 A3 A4 A5 A6 A9 A11 A9h A11h M03 M0f M33 M55 M77 N0f N33 Mff"
       PP_TRACES="A11 A11h A9"
       PP_PTRACE="F1.e1 rd2aN.x1 d4mN.e1 A11h.s1"
-      PP_PERMS="F1:o:*=orig F1:e1:X=even,1 p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 U1:h1:A=every,2,1 U1:h2:A=every,4,2 U1:e1:A=even,1 B2:s1:X=every,2,1,0/A=every,2,1,1 B2:s2:X=every,2,1,1/A=every,2,1,1 B2:s3:X=even,1,0/A=even,1,96 B48:e1:*=even,1 B48:b48:*=every,48,0,47 B48:b8:*=every,8,0,7 rd2aN:x1:X=even,1,8 rd2aN:x2:X=even,2,8 d4mN:e1:*=even,1 d4mN:e2:*=even,2 d4mN:e4:*=even,4 d4mN:b:*=every,48,0,23 full3N:e1:*=even,1 full3N:e2:*=even,2 A1:e1:A=even,1 A2:e1:A=even,1 A3:e1:A=even,1 A4:e1:A=even,1 A5:e1:A=even,1 A6:e1:A=even,1 A9:e1:S=even,1 A9h:e1:S=every,2,1 A11h:s1:L=every,2,1,0/X=every,2,1,1 A11h:s2:L=every,2,1,1/X=every,2,1,1 A11:e1:L=even,1/X=even,1,0" ;;
+      PP_PERMS="F1:o:*=orig F1:e1:X=even,1 p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 U1:h1:A=every,2,1 U1:h2:A=every,4,2 U1:e1:A=even,1 B2:s1:X=every,2,1,0/A=every,2,1,1 B2:s2:X=every,2,1,1/A=every,2,1,1 B2:s3:X=even,1,0/A=even,1,96 B48:e1:*=even,1 B48:b48:*=every,48,0,47 B48:b8:*=every,8,0,7 rd2aN:x1:X=even,1,8 rd2aN:x2:X=even,2,8 d4mN:e1:*=even,1 d4mN:e2:*=even,2 d4mN:e4:*=even,4 d4mN:b:*=every,48,0,23 full3N:e1:*=even,1 full3N:e2:*=even,2 A1:e1:A=even,1 A2:e1:A=even,1 A3:e1:A=even,1 A4:e1:A=even,1 A5:e1:A=even,1 A6:e1:A=even,1 A9:e1:S=even,1 A9h:e1:S=every,2,1 A11h:s1:L=every,2,1,0/X=every,2,1,1 A11h:s2:L=every,2,1,1/X=every,2,1,1 A11:e1:L=even,1/X=even,1,0 F1:x2:X=every,2,2 A9h:e2:S=even,1 p2k0:v2:A=every,2,2 p2k0:v4:A=every,4,4" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1

@@ -24,6 +24,8 @@
 //           twice the cycles an mma of two that do not, which is how a card's warp-to-scheduler map is read.
 //   FILLRND 1: the fragments are loaded from hashed bytes, not from the mostly-zero offset slice (the draw
 //           then must not be DREAL). Operand bytes change the watts, not the pipe use.
+//           2: the fragments are loaded from bytes like a real fold's (64 + u - v, u and v in 0 .. 63) and the
+//           draw's table bytes are 0 .. 63.
 //   PAD     steps after every mma (0: none), all of the kind
 //   PKIND   0: an add into one of RCH registers no mma writes (independent steps); 1: an XOR3 of two sums the
 //           mma 8 earlier wrote (the readout's step, spread one an mma); 2: a shared load and an XOR of what
@@ -176,7 +178,17 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
   const unsigned tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   unsigned *const shw = reinterpret_cast<unsigned *>(sh);
   for (unsigned i = tid; i < SHBYTES / 4u; i += THREADS)
+#if FILLRND == 2
+  {
+    // Bytes like a real fold's: an operand byte is the fill plus one small table byte less another (64 + u - v
+    // with u and v in 0 .. 63), and a table byte is 0 .. 63.
+    const unsigned x = i * 2654435761u, y = (i ^ 0x5bd1e995u) * 2246822519u;
+    const unsigned u = (x >> 3) & 0x3f3f3f3fu, v = (y >> 5) & 0x3f3f3f3fu;
+    shw[i] = (i >= 256u && i < 2048u) ? 0x40404040u + u - v : u;
+  }
+#else
     shw[i] = (!FILLRND && i >= 96u && i < 2048u) ? ((i * 2654435761u) >> 7) & 2040u : i * 2654435761u;
+#endif
 #if HELP
   if (tid == 12u) shw[12] = 0u;   // the folders' done flag; word 12 is this thread's own in the fill above
 #endif

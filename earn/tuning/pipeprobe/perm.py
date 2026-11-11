@@ -59,9 +59,13 @@ def sections(b):
     return out
 
 
+odd = []   # listing lines with an address that did not read as an instruction
+
+
 def listing(path, fn):
     """The kernel's instructions in order as (address, name), and the addresses that carry a label."""
     ins, labels, inside, pending = [], set(), False, False
+    del odd[:]
     for line in open(path, errors="replace"):
         if re.match(r"\s*\.section\s", line):
             inside = (".text." + fn + ",") in line
@@ -71,13 +75,15 @@ def listing(path, fn):
         if re.match(r"\s*\.L_x_\d+:", line):
             pending = True
             continue
-        m = re.search(r"/\*([0-9a-f]{4,})\*/\s+(@!?P\d+\s+)?([A-Z][A-Z0-9_.]*)", line)
+        m = re.search(r"/\*([0-9a-f]{4,})\*/\s+(@\S+\s+)?([A-Za-z_][A-Za-z0-9_.]*)", line)
         if m:
             addr = int(m.group(1), 16)
             ins.append((addr, m.group(3).split(".")[0]))
             if pending:
                 labels.add(addr)
                 pending = False
+        elif re.search(r"/\*[0-9a-f]{4,}\*/", line) and len(odd) < 3:
+            odd.append(line.strip()[:90])
     return ins, labels
 
 
@@ -120,8 +126,14 @@ def main():
     secs = sections(b)
     off, size = secs[".text." + fn]
     ins, labels = listing(sass, fn)
-    if not ins or any(a != 16 * i for i, (a, _) in enumerate(ins)) or 16 * len(ins) > size:
-        sys.exit("the listing does not match the kernel's text: %d instructions, %d bytes" % (len(ins), size))
+    # An instruction's bytes run to the next one's address. Most are 16 bytes; whatever the sizes, a stretch keeps
+    # its length when its instructions change places, so branches and their targets stay where they are.
+    addrs = [a for a, _ in ins]
+    lens = [(addrs[i + 1] if i + 1 < len(ins) else size) - a for i, a in enumerate(addrs)]
+    if not ins or addrs[0] != 0 or min(lens) < 16 or any(n % 16 for n in lens[:-1]):
+        sys.exit("the listing does not match the kernel's text: %d instructions, %d bytes, sizes %s, unread %s" % (
+            len(ins), size, sorted(collections.Counter(lens).items())[:6], odd))
+    lens[-1] = 16 if lens[-1] % 16 or lens[-1] > 64 else lens[-1]
     ops = [o for _, o in ins]
     im = [i for i, o in enumerate(ops) if o == "IMMA"]
     if not im:
@@ -165,19 +177,20 @@ def main():
         for pos, src in zip(seg, new):
             order[pos] = src
             moved += pos != src
-    text = bytes(b[off:off + 16 * len(ops)])
-    for pos, src in enumerate(order):
-        b[off + 16 * pos:off + 16 * pos + 16] = text[16 * src:16 * src + 16]
+    text = bytes(b[off:off + size])
+    out = b"".join(text[addrs[src]:addrs[src] + lens[src]] for src in order)
+    assert len(out) == sum(lens)
+    b[off:off + len(out)] = out
     open(dst, "wb").write(b)
     # Tables in .nv.info that name an instruction's address would now point at another instruction.
     warn = []
     if ".nv.info." + fn in secs:
         io, isz = secs[".nv.info." + fn]
-        was = {16 * src for pos, src in enumerate(order) if pos != src}
+        was = {addrs[src]: ops[src] for pos, src in enumerate(order) if pos != src}
         for q in range(io, io + isz - 3, 4):
             v = struct.unpack_from("<I", b, q)[0]
-            if v in was and v >= 16 * im[0]:
-                warn.append("0x%x %s" % (v, ops[v // 16]))
+            if v in was:
+                warn.append("0x%x %s" % (v, was[v]))
     new_ops = [ops[src] for src in order]
     gaps, run = [], 0
     for o in new_ops[im[0]:end]:
@@ -188,8 +201,10 @@ def main():
             run += 1
     gaps = gaps[1:] + [run]
     hist = ",".join("%d:%d" % kv for kv in sorted(collections.Counter(gaps).items()))
-    print("perm %s: %d stretches, %d of %d instructions moved, gaps=%s%s" % (
-        spec, stretches, moved, end - im[0], hist, (" WARN nv.info names moved: " + " ".join(warn[:6])) if warn else ""))
+    sizes = ",".join("%d:%d" % kv for kv in sorted(collections.Counter(lens).items()))
+    print("perm %s: %d stretches, %d of %d instructions moved, sizes %s, gaps=%s%s%s" % (
+        spec, stretches, moved, end - im[0], sizes, hist,
+        (" WARN nv.info names moved: " + " ".join(warn[:6])) if warn else "", (" unread: %s" % odd) if odd else ""))
 
 
 if __name__ == "__main__":
