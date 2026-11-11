@@ -65,6 +65,40 @@ describe('the ticker (PEARL_AMD_TICK_US)', () => {
     expect(loop).not.toMatch(/c->(work|hashq|side|dCaps|dTr|dHit)/);
   });
 
+  it('can run without waiting for its kernel, and then never has two ticks on the queue (PEARL_AMD_TICK_WAIT)', () => {
+    expect(HOST).toContain('#ifndef PEARL_AMD_TICK_WAIT\n#define PEARL_AMD_TICK_WAIT 1\n#endif\n');
+    expect(start).toContain('ctx->tickWait = PEARL_AMD_TICK_WAIT != 0;');
+    expect(start).toContain('const char *tw = getenv("PEARL_AMD_TICK_WAIT");\n'
+      + '      if (tw && (!strcmp(tw, "0") || !strcmp(tw, "1"))) ctx->tickWait = tw[0] == \'1\';');
+    // The event is made before the thread that records it starts.
+    const made = start.indexOf('HIP_OK(hipEventCreateWithFlags(&ctx->tickDone, hipEventDisableTiming), "creating the ticker\'s event");');
+    expect(made).toBeGreaterThan(0);
+    expect(made).toBeLessThan(start.indexOf('ctx->ticker = std::thread([c] {'));
+    const loop = slice(start, 'ctx->ticker = std::thread([c] {', '});');
+    // With the wait: the launch, then the wait. Without: a launch only once the last tick's event is done.
+    const wait = slice(loop, 'if (c->tickWait) {', '} else {');
+    expect(wait).toContain('hipLaunchKernelGGL(pearl_amd_caps,');
+    expect(wait).toContain('(void)hipStreamSynchronize(c->tickq);');
+    const free = loop.slice(loop.indexOf('} else {'));
+    const seen = free.indexOf('if (out && hipEventQuery(c->tickDone) == hipSuccess) out = false;');
+    const gate = free.indexOf('if (!out) {');
+    const launch = free.indexOf('hipLaunchKernelGGL(pearl_amd_caps,');
+    const record = free.indexOf('if (hipEventRecord(c->tickDone, c->tickq) == hipSuccess) out = true;');
+    expect(seen).toBeGreaterThan(0);
+    expect(gate).toBeGreaterThan(seen);
+    expect(launch).toBeGreaterThan(gate);
+    expect(record).toBeGreaterThan(launch);
+    // An event that would not record: wait for the kernel instead, so launches can't pile up.
+    expect(free.slice(record)).toContain('else (void)hipStreamSynchronize(c->tickq);');
+    expect(loop.match(/hipLaunchKernelGGL\(/g)).toHaveLength(2);
+    // The event goes after the thread has stopped.
+    const destroy = slice(HOST, 'extern "C" void pearl_host_destroy(void *handle) {', '\n}\n');
+    expect(destroy.indexOf('if (ctx->tickDone) hipEventDestroy(ctx->tickDone);'))
+      .toBeGreaterThan(destroy.indexOf('if (ctx->ticker.joinable()) ctx->ticker.join();'));
+    expect(HOST).toContain('  bool tickWait = true;');
+    expect(HOST).toContain('  hipEvent_t tickDone = nullptr;');
+  });
+
   it('is stopped and joined before the device is waited for and anything is freed', () => {
     const destroy = slice(HOST, 'extern "C" void pearl_host_destroy(void *handle) {', '\n}\n');
     const stop = destroy.indexOf('ctx->tickStop.store(true);\n  if (ctx->ticker.joinable()) ctx->ticker.join();');

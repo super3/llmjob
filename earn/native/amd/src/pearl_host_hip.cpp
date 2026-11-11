@@ -88,11 +88,21 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #error "PEARL_AMD_STRIPS is 1 to 16"
 #endif
 // PEARL_AMD_TICK_US: a thread launches a one-thread kernel on a queue of its own every that many microseconds
-// (Ctx::ticker), 0 for none. On an RX 7900 XTX PC where the fold's queue was held up (its slots in use 86-88% of the
-// time, on one queue), the hash queue's launch every batch got most of that back; this asks whether a faster tick
-// gets the rest. The environment variable of the same name (0, or 100 to 100000) overrides it at run time.
+// (Ctx::ticker), 0 for none. Some PCs stop a miner's queue about 30 times a second while it is the only busy one
+// (3.6 to 4.0 ms a stop on an RX 7900 XTX, 2.1 ms on an RX 9060 XT, Salad, 10-11 November). A second queue with work
+// on it more often than that ends the stops. On RDNA 3 the hash queue is that queue: a launch there is 10 to 17 ms.
+// On RDNA 4 a launch is 31 to 38 ms, longer than the 33 ms between stops, so the hash queue left them (5 of 6
+// launches stopped) and the ticker ended most (2 of 8): +3.2 to +3.4% on that RX 9060 XT (earn/tuning/benchmark.md,
+// AMD Radeon, 11 November). The environment variable of the same name (0, or 100 to 100000) overrides it at run
+// time.
 #ifndef PEARL_AMD_TICK_US
 #define PEARL_AMD_TICK_US 0
+#endif
+// PEARL_AMD_TICK_WAIT: 1, the ticker's thread waits for each tick's kernel (hipStreamSynchronize, which spins: a tick
+// every 2 ms cost 0.8 of a CPU core on the RX 9060 XT PC). 0, it doesn't: it records an event behind the kernel and
+// skips a tick while the last one has not run. The environment variable of the same name (0 or 1) overrides it.
+#ifndef PEARL_AMD_TICK_WAIT
+#define PEARL_AMD_TICK_WAIT 1
 #endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
@@ -286,6 +296,8 @@ struct Ctx {
   hipStream_t tickq = nullptr;
   uint32_t *dTick = nullptr;
   uint32_t tickUs = 0;
+  bool tickWait = true;           // PEARL_AMD_TICK_WAIT: the thread waits for each tick's kernel
+  hipEvent_t tickDone = nullptr;  // without the wait: recorded after each tick, queried before the next
   bool stripCap = false;    // the card's code object takes such a launch (PEARL_AMD_CAP_STRIP)
   uint32_t strips = 1;
   uint32_t stripBatch = 1;
@@ -1204,12 +1216,28 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       HIP_OK(hipStreamCreateWithFlags(&ctx->tickq, hipStreamDefault), "creating the ticker's stream");
       HIP_OK(hipMalloc(&ctx->dTick, 2 * sizeof(uint32_t)), "allocating the ticker's words");
       ctx->tickUs = us;
+      ctx->tickWait = PEARL_AMD_TICK_WAIT != 0;
+      const char *tw = getenv("PEARL_AMD_TICK_WAIT");
+      if (tw && (!strcmp(tw, "0") || !strcmp(tw, "1"))) ctx->tickWait = tw[0] == '1';
+      if (!ctx->tickWait)
+        HIP_OK(hipEventCreateWithFlags(&ctx->tickDone, hipEventDisableTiming), "creating the ticker's event");
       Ctx *c = ctx;
       ctx->ticker = std::thread([c] {
         hipSetDevice(c->device);
+        bool out = false;   // PEARL_AMD_TICK_WAIT=0: a tick is on the queue and not yet seen done
         while (!c->tickStop.load(std::memory_order_relaxed)) {
-          hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
-          (void)hipStreamSynchronize(c->tickq);
+          if (c->tickWait) {
+            hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
+            (void)hipStreamSynchronize(c->tickq);
+          } else {
+            // Never two ticks on the queue: a tick is skipped while the last one has not run.
+            if (out && hipEventQuery(c->tickDone) == hipSuccess) out = false;
+            if (!out) {
+              hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
+              if (hipEventRecord(c->tickDone, c->tickq) == hipSuccess) out = true;
+              else (void)hipStreamSynchronize(c->tickq);
+            }
+          }
           (void)hipGetLastError();
           std::this_thread::sleep_for(std::chrono::microseconds(c->tickUs));
         }
@@ -1241,6 +1269,7 @@ extern "C" void pearl_host_destroy(void *handle) {
   if (ctx->ticker.joinable()) ctx->ticker.join();
   DeviceScope scope(ctx->device);
   hipDeviceSynchronize();
+  if (ctx->tickDone) hipEventDestroy(ctx->tickDone);
   if (ctx->tickq) hipStreamDestroy(ctx->tickq);
   hipFree(ctx->dTick);
   hipFree(ctx->dA); hipFree(ctx->dB);
