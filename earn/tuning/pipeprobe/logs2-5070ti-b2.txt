@@ -1,0 +1,172 @@
+43cebcb7 [nvtest] 07:50:15 boot container started
+43cebcb7 [nvtest] 07:50:29 [probe] card NVIDIA GeForce RTX 5070 Ti, 621.14, 12.0, 250.00 W, 300.00 W, 250.00 W, 300.00 W, 3090 MHz, 16303 MiB
+43cebcb7 [nvtest] 07:50:29 [probe] card idle 240 MHz, 15.16 W, 39.40, 2 %, 1095 MiB gpus=1
+43cebcb7 [nvtest] 07:50:29 [probe] card enforced limit 250.00 W, instant draw 15.01 W, average 15.21 W
+43cebcb7 [nvtest] 07:50:53 setup ok in 0s
+43cebcb7 [nvtest] 07:51:05 cuda V13.3.73 in /opt/cuda, 12s
+43cebcb7 [nvtest] 07:51:06 fetch ok 883c2e496c85
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A1 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IMAD:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:154,1:5,2:2,3:4,6:6,7:20,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A11 regs=255 spill=20 imma=192 other=109 per_imma=0.568 longest_run=11 runs_over_8=2 ctl=1[BRA] top=LOP3:72,MOV:9,LDSM:9,LDS:8,LDL:3,UIADD3:2,STL:2 gaps=0:165,1:4,2:7,3:3,4:2,5:4,6:2,7:2,8:1,9:1,11:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A11h regs=249 spill=0 imma=192 other=38 per_imma=0.198 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LDS:16,LDSM:9,LOP3:8,UIADD3:2,LEA:1,UISETP:1,BRA:1 gaps=0:178,1:5,2:3,4:4,5:1,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A2 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=8 runs_over_8=0 ctl=1[BRA] top=SHF:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:154,1:5,2:2,3:4,6:6,7:20,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A3 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=8 runs_over_8=0 ctl=1[BRA] top=PRMT:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:154,1:5,2:2,3:4,6:6,7:20,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A4 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=14 runs_over_8=15 ctl=1[BRA] top=FADD:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:166,1:6,2:2,3:3,10:1,11:3,12:1,13:9,14:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A5 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=14 runs_over_8=15 ctl=1[BRA] top=FMUL:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:166,1:6,2:2,3:3,10:1,11:3,12:1,13:9,14:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A6 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=14 runs_over_8=14 ctl=1[BRA] top=FFMA:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:167,1:5,2:3,5:1,6:1,8:1,10:1,11:2,12:1,13:9,14:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A9 regs=218 spill=0 imma=192 other=67 per_imma=0.349 longest_run=4 runs_over_8=0 ctl=1[BRA] top=STS:48,LDSM:16,UIADD3:1,UISETP:1,BRA:1 gaps=0:156,1:8,2:26,3:1,4:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built A9h regs=218 spill=0 imma=192 other=115 per_imma=0.599 longest_run=6 runs_over_8=0 ctl=1[BRA] top=STS:96,LDSM:16,UIADD3:1,UISETP:1,BRA:1 gaps=0:156,1:8,2:3,3:1,4:23,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built B2 regs=241 spill=0 imma=192 other=287 per_imma=1.495 longest_run=9 runs_over_8=1 ctl=1[BRA] top=LOP3:96,IADD:96,UIADD3:84,LDSM:9,UISETP:1,BRA:1 gaps=0:97,1:7,2:14,3:57,4:11,5:3,6:1,7:1,9:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built B48 regs=229 spill=0 imma=192 other=208 per_imma=1.083 longest_run=23 runs_over_8=3 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:5,UISETP:1,BRA:1 gaps=0:141,1:1,2:1,3:41,4:5,10:1,23:1,29:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built F0 regs=224 spill=0 imma=192 other=13 per_imma=0.068 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:184,1:5,2:2,4:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built F1 regs=233 spill=0 imma=192 other=295 per_imma=1.536 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:92,LDSM:9,UISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:4,4:1,5:1,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built M03 regs=235 spill=0 imma=192 other=295 per_imma=1.536 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:91,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:3,4:1,5:2,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built M0f regs=235 spill=0 imma=192 other=295 per_imma=1.536 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:91,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:3,4:1,5:2,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built M33 regs=236 spill=0 imma=192 other=295 per_imma=1.536 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:91,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:3,4:1,5:2,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built M55 regs=236 spill=0 imma=192 other=295 per_imma=1.536 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:91,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:3,4:1,5:2,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built M77 regs=236 spill=0 imma=192 other=295 per_imma=1.536 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:91,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:3,4:1,5:2,6:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built Mff regs=233 spill=0 imma=192 other=295 per_imma=1.536 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:92,LDSM:9,UISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:4,4:1,5:1,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built N0f regs=228 spill=0 imma=192 other=13 per_imma=0.068 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,UIADD3:1,BRA:1 gaps=0:184,1:5,2:2,4:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built N33 regs=228 spill=0 imma=192 other=13 per_imma=0.068 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,UIADD3:1,BRA:1 gaps=0:184,1:5,2:2,4:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built U1 regs=241 spill=0 imma=192 other=109 per_imma=0.568 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:96,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:168,1:5,2:4,3:1,4:1,6:3,7:9,8:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built base regs=236 spill=0 imma=1344 other=155 per_imma=0.115 longest_run=6 runs_over_8=1 ctl=5[BRA] top=IADD3:95,LDSM:26,UIADD3:6,BRA:5,IMAD:5,UISETP:3,STG:3 gaps=0:1324,1:10,2:5,3:1,4:1,5:1,6:1,117:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built d4mN regs=240 spill=0 imma=192 other=308 per_imma=1.604 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:113,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:103,1:11,2:24,3:22,4:9,5:7,6:4,7:9,8:2,9:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built full3N regs=235 spill=0 imma=192 other=412 per_imma=2.146 longest_run=12 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=LOP3:124,IADD:120,LDS:64,PRMT:48,STS:12,LDSM:12,UIADD3:8 gaps=0:85,1:25,2:17,3:15,4:9,5:6,6:19,7:10,8:3,11:2,12:1
+43cebcb7 [nvtest] 07:51:28 [probe] nvcc13.3 built p2k0 regs=241 spill=0 imma=192 other=205 per_imma=1.068 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:192,LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:154,1:5,2:2,3:4,6:6,7:20,8:1
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 built p2k1 regs=230 spill=0 imma=192 other=476 per_imma=2.479 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,UIADD3:81,LDSM:9,UISETP:1,BRA:1 gaps=0:26,2:75,3:78,4:4,5:1,6:1,7:5,8:1,22:1
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 built rd2aN regs=231 spill=0 imma=192 other=123 per_imma=0.641 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:100,UIADD3:11,LDSM:9,UISETP:1,ATOMS:1,BRA:1 gaps=0:158,1:5,2:10,3:9,4:1,6:2,7:5,8:1,12:1
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 builds done in 19 s with V13.3.73 for sm_120
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 trace A11 I1 A3 L1 I1 L2 I1 L2 I1 L1 I2 A1 S1 A3 S1 X2 L1 X2 I1 X1 L1 X3 I2 X6 I1 X7 I1 X7 I1 X4 I32 M1 I2 M1 I2 M2 I44 X3 M1 X1 I1 X1 M1 X3 I47 L1 X4 I1 X2 A1 X3 I1 X3 A1 X1 M1 X1 A1 I1 X1 A1 X1 L1 X1 A1 L1 X2 I1 A1 X2 I4 X1 M1 X1 I1 X1 I1 X2 I38 X2 I1 X2 I1 X2 M1 I2 A1 BRA1
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 trace A11h I1 M1 A3 M1 I1 L4 I1 L4 I1 L4 I1 L4 I3 X6 I1 X2 I35 M1 I2 M1 I2 M2 I44 M1 I48 M1 I2 M1 I50 A1 BRA1
+43cebcb7 [nvtest] 07:51:29 [probe] nvcc13.3 trace A9 I1 S1 A2 S1 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 BRA1
+43cebcb7 [nvtest] 07:51:44 [probe] card before the probe 262 MHz, 14.34 W, 250.00 W, 35.80, 2 %, 1095 MiB
+43cebcb7 [nvtest] 07:51:45 [probe] nvcc13.3 short base                       pipe  99.39% (99.38-99.40) 16.098 cyc/IMMA 294 ms x4 | 149.42 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:45 [probe] nvcc13.3 short base                       own cycles an mma, by warp: 0:32.20 1:32.20 2:32.20 3:32.20 4:32.20 5:32.20 6:32.20 7:32.20
+43cebcb7 [nvtest] 07:51:47 [probe] nvcc13.3 short F1                         pipe  98.88% (98.85-98.89) 16.182 cyc/IMMA 296 ms x4 | 148.94 T-MAC/s by count, counter 2099 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:47 [probe] nvcc13.3 short F1                         own cycles an mma, by warp: 0:32.36 1:32.36 2:32.36 3:32.36 4:32.36 5:32.36 6:32.36 7:32.36
+43cebcb7 [nvtest] 07:51:48 [probe] nvcc13.3 short Mff                        pipe  99.01% (98.99-99.02) 16.160 cyc/IMMA 296 ms x4 | 148.85 T-MAC/s by count, counter 2094 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:48 [probe] nvcc13.3 short Mff                        own cycles an mma, by warp: 0:32.32 1:32.32 2:32.32 3:32.32 4:32.32 5:32.32 6:32.32 7:32.32
+43cebcb7 [nvtest] 07:51:49 [probe] nvcc13.3 F1.o perm *=orig: 1 stretches, 0 of 486 instructions moved, sizes 16:816, gaps=0:14,1:77,2:94,3:4,4:1,5:1,8:1 | read back gaps=0:14,1:76,2:95,3:4,4:1,5:1,8:1
+43cebcb7 [nvtest] 07:51:50 [probe] nvcc13.3 short F1.o                       pipe  99.17% (99.15-99.17) 16.135 cyc/IMMA 295 ms x4 | 149.09 T-MAC/s by count, counter 2103 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 short F1.o                       own cycles an mma, by warp: 0:32.27 1:32.27 2:32.27 3:32.27 4:32.27 5:32.27 6:32.27 7:32.27
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 F1.e1 perm X=even,1: 1 stretches, 477 of 486 instructions moved, sizes 16:816, gaps=1:94,2:95,3:2,4:1 | read back gaps=1:94,2:94,3:3,4:1
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 trace F1.e1 I1 A1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 M1 I1 X1 A1 I1 X1 M1 I1 X1
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 trace F1.e1 A1 I1 X1 M2 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 M1 I1 X1 A1 I1 X1 A1 I1 X1 A1 I1 X1 A1 M1 I1 X1 I1 X1 A1 I1 X1 M1 I1
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 trace F1.e1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 M1
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 trace F1.e1 I1 X1 A1 I1 X1 M1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 A1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1
+43cebcb7 [nvtest] 07:51:51 [probe] nvcc13.3 trace F1.e1 I1 X1 I1 X1 A1 BRA1
+43cebcb7 [nvtest] 07:51:52 [probe] nvcc13.3 short F1.e1                      pipe  95.35% (95.31-95.38) 16.781 cyc/IMMA 307 ms x4 | 143.52 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:52 [probe] nvcc13.3 short F1.e1                      own cycles an mma, by warp: 0:33.56 1:33.56 2:33.56 3:33.56 4:33.56 5:33.56 6:33.56 7:33.56
+43cebcb7 [nvtest] 07:51:53 [probe] nvcc13.3 p2k0.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:720, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:51:55 [probe] nvcc13.3 short p2k0.e1                    pipe  99.19% (99.18-99.20) 16.131 cyc/IMMA 295 ms x4 | 149.20 T-MAC/s by count, counter 2098 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:55 [probe] nvcc13.3 short p2k0.e1                    own cycles an mma, by warp: 0:32.26 1:32.26 2:32.26 3:32.26 4:32.26 5:32.26 6:32.26 7:32.26
+43cebcb7 [nvtest] 07:51:55 [probe] nvcc13.3 p2k0.e2 perm A=even,2: 1 stretches, 393 of 396 instructions moved, sizes 16:720, gaps=0:92,1:3,2:91,3:5,4:1 | read back gaps=0:91,1:4,2:91,3:5,4:1
+43cebcb7 [nvtest] 07:51:57 [probe] nvcc13.3 short p2k0.e2                    pipe  98.60% (98.59-98.62) 16.227 cyc/IMMA 296 ms x4 | 148.22 T-MAC/s by count, counter 2102 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:57 [probe] nvcc13.3 short p2k0.e2                    own cycles an mma, by warp: 0:32.45 1:32.45 2:32.45 3:32.45 4:32.45 5:32.45 6:32.45 7:32.45
+43cebcb7 [nvtest] 07:51:57 [probe] nvcc13.3 p2k0.e4 perm A=even,4: 1 stretches, 391 of 396 instructions moved, sizes 16:720, gaps=0:140,1:3,3:1,4:43,5:4,6:1 | read back gaps=0:139,1:4,3:1,4:43,5:4,6:1
+43cebcb7 [nvtest] 07:51:58 [probe] nvcc13.3 short p2k0.e4                    pipe  97.93% (97.64-97.98) 16.339 cyc/IMMA 299 ms x4 | 147.03 T-MAC/s by count, counter 2095 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:51:58 [probe] nvcc13.3 short p2k0.e4                    own cycles an mma, by warp: 0:32.68 1:32.68 2:32.68 3:32.68 4:32.68 5:32.68 6:32.68 7:32.68
+43cebcb7 [nvtest] 07:51:59 [probe] nvcc13.3 p2k0.e8 perm A=even,8: 1 stretches, 362 of 396 instructions moved, sizes 16:720, gaps=0:161,1:5,2:1,3:1,8:22,9:2 | read back gaps=0:160,1:6,2:1,3:1,8:22,9:2
+43cebcb7 [nvtest] 07:52:00 [probe] nvcc13.3 short p2k0.e8                    pipe  96.37% (96.32-96.40) 16.603 cyc/IMMA 305 ms x4 | 145.43 T-MAC/s by count, counter 2094 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:00 [probe] nvcc13.3 short p2k0.e8                    own cycles an mma, by warp: 0:33.21 1:33.21 2:33.21 3:33.21 4:33.21 5:33.21 6:33.21 7:33.21
+43cebcb7 [nvtest] 07:52:00 [probe] nvcc13.3 p2k0.b perm A=all,10: 1 stretches, 388 of 396 instructions moved, sizes 16:720, gaps=0:184,1:6,2:1,196:1 | read back gaps=0:183,1:7,2:1,196:1
+43cebcb7 [nvtest] 07:52:02 [probe] nvcc13.3 short p2k0.b                     pipe  96.17% (96.08-96.34) 16.637 cyc/IMMA 305 ms x4 | 144.78 T-MAC/s by count, counter 2094 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:02 [probe] nvcc13.3 short p2k0.b                     own cycles an mma, by warp: 0:33.27 1:33.27 2:33.28 3:33.28 4:33.27 5:33.27 6:33.28 7:33.28
+43cebcb7 [nvtest] 07:52:03 [probe] nvcc13.3 U1.h1 perm A=every,2,1: 1 stretches, 295 of 300 instructions moved, sizes 16:632, gaps=0:96,1:86,2:8,3:2 | read back gaps=0:96,1:85,2:9,3:2
+43cebcb7 [nvtest] 07:52:04 [probe] nvcc13.3 short U1.h1                      pipe  99.36% (99.34-99.36) 16.104 cyc/IMMA 294 ms x4 | 149.59 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:04 [probe] nvcc13.3 short U1.h1                      own cycles an mma, by warp: 0:32.21 1:32.21 2:32.21 3:32.21 4:32.21 5:32.21 6:32.21 7:32.21
+43cebcb7 [nvtest] 07:52:05 [probe] nvcc13.3 U1.h2 perm A=every,4,2: 1 stretches, 295 of 300 instructions moved, sizes 16:632, gaps=0:141,1:3,2:42,3:3,4:3 | read back gaps=0:141,1:3,2:41,3:4,4:3
+43cebcb7 [nvtest] 07:52:06 [probe] nvcc13.3 short U1.h2                      pipe  99.13% (99.12-99.14) 16.140 cyc/IMMA 295 ms x4 | 149.36 T-MAC/s by count, counter 2098 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:06 [probe] nvcc13.3 short U1.h2                      own cycles an mma, by warp: 0:32.28 1:32.28 2:32.28 3:32.28 4:32.28 5:32.28 6:32.28 7:32.28
+43cebcb7 [nvtest] 07:52:06 [probe] nvcc13.3 U1.e1 perm A=even,1: 1 stretches, 296 of 300 instructions moved, sizes 16:632, gaps=0:91,1:95,2:5,3:1 | read back gaps=0:90,1:96,2:5,3:1
+43cebcb7 [nvtest] 07:52:08 [probe] nvcc13.3 short U1.e1                      pipe  99.39% (99.37-99.40) 16.099 cyc/IMMA 294 ms x4 | 149.66 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:08 [probe] nvcc13.3 short U1.e1                      own cycles an mma, by warp: 0:32.20 1:32.20 2:32.20 3:32.20 4:32.20 5:32.20 6:32.20 7:32.20
+43cebcb7 [nvtest] 07:52:09 [probe] nvcc13.3 B2.s1 perm X=every,2,1,0/A=every,2,1,1: 1 stretches, 474 of 478 instructions moved, sizes 16:808, gaps=1:106,2:79,3:6,4:1 | read back gaps=1:105,2:80,3:6,4:1
+43cebcb7 [nvtest] 07:52:10 [probe] nvcc13.3 short B2.s1                      pipe  95.94% (95.89-95.97) 16.677 cyc/IMMA 305 ms x4 | 144.60 T-MAC/s by count, counter 2098 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:10 [probe] nvcc13.3 short B2.s1                      own cycles an mma, by warp: 0:33.35 1:33.36 2:33.36 3:33.35 4:33.35 5:33.35 6:33.36 7:33.35
+43cebcb7 [nvtest] 07:52:11 [probe] nvcc13.3 B2.s2 perm X=every,2,1,1/A=every,2,1,1: 1 stretches, 476 of 478 instructions moved, sizes 16:808, gaps=0:95,1:1,2:11,3:78,4:6,5:1 | read back gaps=0:95,1:1,2:10,3:79,4:6,5:1
+43cebcb7 [nvtest] 07:52:12 [probe] nvcc13.3 short B2.s2                      pipe  96.14% (96.11-96.19) 16.642 cyc/IMMA 305 ms x4 | 144.81 T-MAC/s by count, counter 2094 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:12 [probe] nvcc13.3 short B2.s2                      own cycles an mma, by warp: 0:33.28 1:33.28 2:33.28 3:33.28 4:33.28 5:33.28 6:33.28 7:33.28
+43cebcb7 [nvtest] 07:52:12 [probe] nvcc13.3 B2.s3 perm X=even,1,0/A=even,1,96: 1 stretches, 470 of 478 instructions moved, sizes 16:808, gaps=1:103,2:85,3:3,4:1 | read back gaps=1:102,2:86,3:3,4:1
+43cebcb7 [nvtest] 07:52:14 [probe] nvcc13.3 short B2.s3                      pipe  95.13% (95.12-95.16) 16.818 cyc/IMMA 307 ms x4 | 143.11 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:14 [probe] nvcc13.3 short B2.s3                      own cycles an mma, by warp: 0:33.64 1:33.64 2:33.64 3:33.64 4:33.64 5:33.64 6:33.64 7:33.64
+43cebcb7 [nvtest] 07:52:15 [probe] nvcc13.3 B48.e1 perm *=even,1: 1 stretches, 391 of 399 instructions moved, sizes 16:720, gaps=1:177,2:15 | read back gaps=1:176,2:16
+43cebcb7 [nvtest] 07:52:16 [probe] nvcc13.3 short B48.e1                     pipe  98.13% (98.03-98.19) 16.306 cyc/IMMA 298 ms x4 | 147.44 T-MAC/s by count, counter 2099 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:16 [probe] nvcc13.3 short B48.e1                     own cycles an mma, by warp: 0:32.61 1:32.61 2:32.61 3:32.61 4:32.61 5:32.61 6:32.61 7:32.61
+43cebcb7 [nvtest] 07:52:17 [probe] nvcc13.3 B48.b48 perm *=every,48,0,47: 1 stretches, 354 of 399 instructions moved, sizes 16:720, gaps=0:188,51:1,52:3 | read back gaps=0:188,52:4
+43cebcb7 [nvtest] 07:52:18 [probe] nvcc13.3 short B48.b48                    pipe  94.62% (94.60-94.67) 16.910 cyc/IMMA 309 ms x4 | 142.20 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:18 [probe] nvcc13.3 short B48.b48                    own cycles an mma, by warp: 0:33.82 1:33.82 2:33.82 3:33.82 4:33.82 5:33.82 6:33.82 7:33.82
+43cebcb7 [nvtest] 07:52:19 [probe] nvcc13.3 B48.b8 perm *=every,8,0,7: 1 stretches, 397 of 399 instructions moved, sizes 16:720, gaps=0:169,9:23 | read back gaps=0:168,1:1,9:23
+43cebcb7 [nvtest] 07:52:20 [probe] nvcc13.3 short B48.b8                     pipe  94.36% (94.23-94.44) 16.957 cyc/IMMA 311 ms x4 | 141.84 T-MAC/s by count, counter 2093 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:20 [probe] nvcc13.3 short B48.b8                     own cycles an mma, by warp: 0:33.91 1:33.91 2:33.91 3:33.91 4:33.91 5:33.91 6:33.91 7:33.91
+43cebcb7 [nvtest] 07:52:21 [probe] nvcc13.3 rd2aN.x1 perm X=even,1,8: 1 stretches, 310 of 314 instructions moved, sizes 16:640, gaps=0:78,1:108,2:4,3:2 | read back gaps=0:77,1:109,2:4,3:2
+43cebcb7 [nvtest] 07:52:21 [probe] nvcc13.3 trace rd2aN.x1 I1 A2 I6 S1 M2 I2 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 M1 I1 X1 I1 M1 X1 I1 X1 I1 M2 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1
+43cebcb7 [nvtest] 07:52:21 [probe] nvcc13.3 trace rd2aN.x1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 M1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I1 X1 I32 M1 I2 M1 I8 A1 I2 A1 I2 A1 I2 A1 I2 A1 I2 A1 I2 A1 I3 A1 I4 A1 I4 A1 I19 BRA1
+43cebcb7 [nvtest] 07:52:23 [probe] nvcc13.3 short rd2aN.x1                   pipe  96.45% (96.44-96.47) 16.588 cyc/IMMA 303 ms x4 | 145.24 T-MAC/s by count, counter 2102 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:23 [probe] nvcc13.3 short rd2aN.x1                   own cycles an mma, by warp: 0:33.18 1:33.18 2:33.18 3:33.18 4:33.18 5:33.18 6:33.18 7:33.18
+43cebcb7 [nvtest] 07:52:23 [probe] nvcc13.3 rd2aN.x2 perm X=even,2,8: 1 stretches, 311 of 314 instructions moved, sizes 16:640, gaps=0:127,1:13,2:48,3:3,4:1 | read back gaps=0:126,1:14,2:48,3:3,4:1
+43cebcb7 [nvtest] 07:52:24 [probe] nvcc13.3 short rd2aN.x2                   pipe  97.37% (97.36-97.38) 16.432 cyc/IMMA 300 ms x4 | 146.44 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:24 [probe] nvcc13.3 short rd2aN.x2                   own cycles an mma, by warp: 0:32.86 1:32.86 2:32.86 3:32.86 4:32.86 5:32.86 6:32.86 7:32.86
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 d4mN.e1 perm *=even,1: 1 stretches, 494 of 499 instructions moved, sizes 16:816, gaps=1:77,2:115 | read back gaps=1:76,2:116
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 trace d4mN.e1 I1 A2 I1 A1 S1 I1 A1 L1 I1 A1 L1 I1 X1 L1 I1 X1 L1 I1 X1 A1 I1 A2 I1 A1 X1 I1 A1 X1 I1 L1 A1 I1 L1 A1 I1 L1 A1 I1 L1 A1 I1 A2 I1 X1 A1 I1 X1 A1 I1 A2 I1 A1 S1 I1 A1 L1 I1 A1 L1 I1 A1 L1 I1 A1 L1 I1 A2 I1 A2 I1 S1 A1 I1 L1 A1 I1 L1 A1 I1 L1 A1 I1 L1 X1 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A1 S1 I1 A1 X1 I1 A1 X1 I1 A1 X1 I1 A2 I1 A1 L1 I1 S1 L1 I1 L2 I1 L2 I1 L1
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 trace d4mN.e1 A1 I1 L1 A1 I1 X1 A1 I1 X1 A1 I1 A2 I1 A2 I1 A2 I1 A2 I1 A2 I1 A1 X1 I1 A1 X1 I1 A2 I1 A2 I1 A1 M1 I1 S1 M1 I1 L1 M1 I1 L1 M1 I1 L1 S1 I1 L2 I1 A1 L1 I1 A1 L1 I1 A1 L1 I1 A2 I1 A2 I1 A2 I1 X1 A1 I1 A2 I1 A2 I1 A2 I1 A2 I1 X1 A1 I1 S1 A1 I1 A2 I1 A1 S1 I1 L1 A1 I1 L2 I1 L2 I1 L2 I1 X1 L1 I1 X2 I1 A1 X1 I1 A2 I1 A2 I1 X1 A1 I1 X1 A1 I1 A2 I1 A2 I1 A2 I1 A2 I1
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 trace d4mN.e1 A2 I1 A2 I1 A1 S1 I1 A1 L1 I1 M1 L1 I1 M1 L1 I1 M1 L1 I1 M1 A1 I1 S1 A1 I1 L1 A1 I1 L1 A1 I1 L1 A1 I1 L1 A1 I1 A1 X1 I1 A2 I1 A2 I1 A2 I1 A1 S1 I1 A1 M1 I1 A1 M1 I1 A1 M1 I1 A1 M1 I1 A1 I1 A1 I1 S1 I1 L1 I1 L1 I1 L1 I1 L1 I1 X1 I1 X1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 S1 I1 L1 I1 L1 I1 L1 I1 L1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 trace d4mN.e1 I1 X1 I1 A1 I1 A1 I1 A1 I1 A1 I1 S1 I1 X1 I1 A1 I1 A1 I1 X1 I1 X1 I1 L1 I1 L1 I1 L1 I1 L1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 X1 I1 X1 I1 A1 I1 A1 I1 M1 I1 M1 I1 M1 I1 M1 I1 S1 I1 L1 I1 L1 I1 L1 I1 L1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 I1 A1 BRA1
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 short d4mN.e1: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:26 [probe] nvcc13.3 d4mN.e2 perm *=even,2: 1 stretches, 492 of 499 instructions moved, sizes 16:816, gaps=0:38,1:1,2:153 | read back gaps=0:37,1:2,2:153
+43cebcb7 [nvtest] 07:52:27 [probe] nvcc13.3 short d4mN.e2: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:27 [probe] nvcc13.3 d4mN.e4 perm *=even,4: 1 stretches, 483 of 499 instructions moved, sizes 16:816, gaps=0:115,3:1,4:76 | read back gaps=0:114,1:1,3:1,4:76
+43cebcb7 [nvtest] 07:52:27 [probe] nvcc13.3 short d4mN.e4: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:28 [probe] nvcc13.3 d4mN.b perm *=every,48,0,23: 1 stretches, 498 of 499 instructions moved, sizes 16:816, gaps=0:188,76:1,77:3 | read back gaps=0:187,1:1,76:1,77:3
+43cebcb7 [nvtest] 07:52:28 [probe] nvcc13.3 short d4mN.b: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:29 [probe] nvcc13.3 full3N.e1 perm *=even,1: 8 stretches, 579 of 603 instructions moved, sizes 16:952, gaps=0:45,1:18,2:24,3:75,4:30 | read back gaps=0:45,1:17,2:25,3:75,4:30
+43cebcb7 [nvtest] 07:52:29 [probe] nvcc13.3 short full3N.e1: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:29 [probe] nvcc13.3 full3N.e2 perm *=even,2: 8 stretches, 577 of 603 instructions moved, sizes 16:952, gaps=0:54,2:65,3:11,4:62 | read back gaps=0:53,1:1,2:65,3:11,4:62
+43cebcb7 [nvtest] 07:52:30 [probe] nvcc13.3 short full3N.e2: an illegal memory access was encountered
+43cebcb7 [nvtest] 07:52:31 [probe] nvcc13.3 A1.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:32 [probe] nvcc13.3 short A1.e1                      pipe  99.35% (99.34-99.36) 16.105 cyc/IMMA 295 ms x4 | 149.58 T-MAC/s by count, counter 2098 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:32 [probe] nvcc13.3 short A1.e1                      own cycles an mma, by warp: 0:32.21 1:32.21 2:32.21 3:32.21 4:32.21 5:32.21 6:32.21 7:32.21
+43cebcb7 [nvtest] 07:52:33 [probe] nvcc13.3 A2.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:34 [probe] nvcc13.3 short A2.e1                      pipe  99.33% (99.32-99.33) 16.108 cyc/IMMA 294 ms x4 | 149.36 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:35 [probe] nvcc13.3 short A2.e1                      own cycles an mma, by warp: 0:32.22 1:32.22 2:32.22 3:32.22 4:32.22 5:32.22 6:32.22 7:32.22
+43cebcb7 [nvtest] 07:52:36 [probe] nvcc13.3 A3.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:37 [probe] nvcc13.3 short A3.e1                      pipe  99.31% (99.30-99.32) 16.111 cyc/IMMA 295 ms x4 | 149.24 T-MAC/s by count, counter 2099 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:37 [probe] nvcc13.3 short A3.e1                      own cycles an mma, by warp: 0:32.22 1:32.22 2:32.22 3:32.22 4:32.22 5:32.22 6:32.22 7:32.22
+43cebcb7 [nvtest] 07:52:38 [probe] nvcc13.3 A4.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:39 [probe] nvcc13.3 short A4.e1                      pipe  99.43% (99.42-99.44) 16.091 cyc/IMMA 294 ms x4 | 149.52 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:39 [probe] nvcc13.3 short A4.e1                      own cycles an mma, by warp: 0:32.18 1:32.18 2:32.18 3:32.18 4:32.18 5:32.18 6:32.18 7:32.18
+43cebcb7 [nvtest] 07:52:40 [probe] nvcc13.3 A5.e1 perm A=even,1: 1 stretches, 392 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:42 [probe] nvcc13.3 short A5.e1                      pipe  99.35% (99.33-99.35) 16.105 cyc/IMMA 294 ms x4 | 149.47 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:42 [probe] nvcc13.3 short A5.e1                      own cycles an mma, by warp: 0:32.21 1:32.21 2:32.21 3:32.21 4:32.21 5:32.21 6:32.21 7:32.21
+43cebcb7 [nvtest] 07:52:43 [probe] nvcc13.3 A6.e1 perm A=even,1: 1 stretches, 390 of 396 instructions moved, sizes 16:728, gaps=1:181,2:10,3:1 | read back gaps=1:180,2:11,3:1
+43cebcb7 [nvtest] 07:52:44 [probe] nvcc13.3 short A6.e1                      pipe  98.92% (98.91-98.94) 16.174 cyc/IMMA 297 ms x4 | 149.42 T-MAC/s by count, counter 2093 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:44 [probe] nvcc13.3 short A6.e1                      own cycles an mma, by warp: 0:32.35 1:32.35 2:32.35 3:32.35 4:32.35 5:32.35 6:32.35 7:32.35
+43cebcb7 [nvtest] 07:52:45 [probe] nvcc13.3 A9.e1 perm S=even,1: 1 stretches, 207 of 258 instructions moved, sizes 16:576, gaps=0:135,1:50,2:5,3:2 | read back gaps=0:135,1:50,2:4,3:3
+43cebcb7 [nvtest] 07:52:47 [probe] nvcc13.3 short A9.e1                      pipe  99.27% (99.24-99.29) 16.118 cyc/IMMA 295 ms x4 | 149.19 T-MAC/s by count, counter 2098 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:52:47 [probe] nvcc13.3 short A9.e1                      own cycles an mma, by warp: 0:32.24 1:32.24 2:32.24 3:32.24 4:32.24 5:32.24 6:32.24 7:32.24
+43cebcb7 [nvtest] 07:52:48 [probe] nvcc13.3 A9h.e1 perm S=every,2,1: 1 stretches, 294 of 306 instructions moved, sizes 16:624, gaps=0:95,1:84,2:9,3:4 | read back gaps=0:95,1:84,2:9,3:3,4:1
+43cebcb7 [nvtest] 07:54:49 [probe] nvcc13.3 A11h.s1 perm L=every,2,1,0/X=every,2,1,1: 1 stretches, 54 of 229 instructions moved, sizes 16:560, gaps=0:161,1:29,2:1,6:1 | read back gaps=0:161,1:28,2:2,6:1
+43cebcb7 [nvtest] 07:54:49 [probe] nvcc13.3 trace A11h.s1 I1 M1 A3 M1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I1 X1 I1 L1 I2 L1 I2 L1 I2 L1 I2 L1 I2 L1 I2 L1 I2 L1 I13 M1 I2 M1 I2 M2 I44 M1 I48 M1 I2 M1 I50 A1 BRA1
+43cebcb7 [nvtest] 07:54:51 [probe] nvcc13.3 short A11h.s1                    pipe  99.11% (99.10-99.12) 16.143 cyc/IMMA 295 ms x4 | 149.11 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:54:51 [probe] nvcc13.3 short A11h.s1                    own cycles an mma, by warp: 0:32.29 1:32.29 2:32.29 3:32.29 4:32.29 5:32.29 6:32.29 7:32.29
+43cebcb7 [nvtest] 07:54:51 [probe] nvcc13.3 A11h.s2 perm L=every,2,1,1/X=every,2,1,1: 1 stretches, 53 of 229 instructions moved, sizes 16:560, gaps=0:168,1:14,2:9,5:1 | read back gaps=0:168,1:13,2:10,5:1
+43cebcb7 [nvtest] 07:54:52 [probe] nvcc13.3 short A11h.s2                    pipe  99.15% (99.13-99.17) 16.137 cyc/IMMA 295 ms x4 | 148.78 T-MAC/s by count, counter 2101 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:54:52 [probe] nvcc13.3 short A11h.s2                    own cycles an mma, by warp: 0:32.27 1:32.27 2:32.27 3:32.27 4:32.27 5:32.27 6:32.27 7:32.27
+43cebcb7 [nvtest] 07:54:54 [probe] nvcc13.3 A11.e1 perm L=even,1/X=even,1,0: 2 stretches, 278 of 300 instructions moved, sizes 16:632, gaps=0:112,1:63,2:13,3:2,5:1,8:1 WARN nv.info names moved: 0xcf0 STL 0xd30 STL 0x18a0 LDL 0x1a30 LDL 0x1a60 LDL | read back gaps=0:112,1:62,2:14,3:2,5:1,8:1
+43cebcb7 [nvtest] 07:54:55 [probe] nvcc13.3 short A11.e1                     pipe  96.11% (95.11-96.29) 16.647 cyc/IMMA 308 ms x4 | 143.51 T-MAC/s by count, counter 2075 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:54:55 [probe] nvcc13.3 short A11.e1                     own cycles an mma, by warp: 0:33.29 1:33.29 2:33.29 3:33.29 4:33.29 5:33.29 6:33.29 7:33.29
+43cebcb7 [nvtest] 07:54:55 [probe] nvcc13.3 F1.x2 perm X=every,2,2: 1 stretches, 480 of 486 instructions moved, sizes 16:816, gaps=0:25,1:69,2:71,3:26,5:1 | read back gaps=0:25,1:69,2:71,3:25,4:1,5:1
+43cebcb7 [nvtest] 07:54:57 [probe] nvcc13.3 short F1.x2                      pipe  95.34% (95.33-95.35) 16.781 cyc/IMMA 307 ms x4 | 143.10 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:54:57 [probe] nvcc13.3 short F1.x2                      own cycles an mma, by warp: 0:33.56 1:33.56 2:33.56 3:33.56 4:33.56 5:33.56 6:33.56 7:33.56
+43cebcb7 [nvtest] 07:54:57 [probe] nvcc13.3 A9h.e2 perm S=even,1: 1 stretches, 256 of 306 instructions moved, sizes 16:624, gaps=0:90,1:93,2:6,3:3 | read back gaps=0:90,1:93,2:5,3:4
+43cebcb7 [nvtest] 07:54:59 [probe] nvcc13.3 short A9h.e2                     pipe  88.52% (88.42-88.58) 18.075 cyc/IMMA 331 ms x4 | 132.95 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:54:59 [probe] nvcc13.3 short A9h.e2                     own cycles an mma, by warp: 0:36.15 1:36.15 2:36.15 3:36.15 4:36.05 5:36.05 6:36.05 7:36.05
+43cebcb7 [nvtest] 07:54:59 [probe] nvcc13.3 p2k0.v2 perm A=every,2,2: 1 stretches, 392 of 396 instructions moved, sizes 16:720, gaps=0:94,1:2,2:88,3:6,4:2 | read back gaps=0:94,1:2,2:87,3:7,4:2
+43cebcb7 [nvtest] 07:55:00 [probe] nvcc13.3 short p2k0.v2                    pipe  98.83% (98.81-98.83) 16.190 cyc/IMMA 296 ms x4 | 148.72 T-MAC/s by count, counter 2100 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:55:00 [probe] nvcc13.3 short p2k0.v2                    own cycles an mma, by warp: 0:32.38 1:32.38 2:32.38 3:32.38 4:32.38 5:32.38 6:32.38 7:32.38
+43cebcb7 [nvtest] 07:55:01 [probe] nvcc13.3 p2k0.v4 perm A=every,4,4: 1 stretches, 394 of 396 instructions moved, sizes 16:720, gaps=0:140,1:4,4:43,5:3,6:1,7:1 | read back gaps=0:140,1:4,4:42,5:4,6:1,7:1
+43cebcb7 [nvtest] 07:55:02 [probe] nvcc13.3 short p2k0.v4                    pipe  97.50% (97.48-97.62) 16.411 cyc/IMMA 301 ms x4 | 146.77 T-MAC/s by count, counter 2097 MHz, 70 SMs, 8 of 8 warps
+43cebcb7 [nvtest] 07:55:02 [probe] nvcc13.3 short p2k0.v4                    own cycles an mma, by warp: 0:32.82 1:32.82 2:32.82 3:32.82 4:32.82 5:32.82 6:32.82 7:32.82
+43cebcb7 [nvtest] 07:55:02 [probe] card after the probe 2100 MHz, 91.52 W, 250.00 W, 49.40, 69 %, 1095 MiB
+43cebcb7 [nvtest] 07:55:02 [probe] all done
+43cebcb7 [nvtest] 07:55:02 all done
+43cebcb7 [nvtest] 07:55:02 idle until deleted

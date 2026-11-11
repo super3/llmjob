@@ -1,0 +1,74 @@
+eaa66a4e [nvtest] 07:05:47 boot container started
+eaa66a4e [nvtest] 07:05:54 [probe] card NVIDIA GeForce RTX 5070 Ti, 621.14, 12.0, 300.00 W, 300.00 W, 250.00 W, 350.00 W, 3090 MHz, 16303 MiB
+eaa66a4e [nvtest] 07:05:54 [probe] card idle 2595 MHz, 52.06 W, 42.70, 0 %, 1257 MiB gpus=1
+eaa66a4e [nvtest] 07:05:54 [probe] card enforced limit 300.00 W, instant draw 51.89 W, average 51.99 W
+eaa66a4e [nvtest] [bench] 07:06:13 card NVIDIA GeForce RTX 5070 Ti, 621.14, 300.00 W, 300.00 W, 16303 MiB, 12.0
+eaa66a4e [nvtest] [bench] 07:06:21 [verify-pool] listening on 127.0.0.1:3334, compressed proofs offered, target 2^210 (commit 1a64facb5ac1)
+eaa66a4e [nvtest] [bench] 07:06:22 tap listening on 127.0.0.1:3333 -> 127.0.0.1:3334
+eaa66a4e [nvtest] [bench] 07:06:22 ready PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5, ours v0.6.15
+eaa66a4e [nvtest] [bench] 07:06:22 start peak 60s
+eaa66a4e [nvtest] [bench] 07:07:30 start peak 100s
+eaa66a4e [nvtest] [bench] 07:07:45 sample peak t=15 hs=203104577168543.03 acc=35 rej=? gpu=299.96,2872,68.40,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:08:00 sample peak t=30 hs=202947867961835.53 acc=84 rej=? gpu=299.99,2865,68.90,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:08:15 sample peak t=45 hs=202623764115903.88 acc=124 rej=? gpu=300.01,2865,69.20,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:08:30 sample peak t=60 hs=202718798986201.6 acc=174 rej=? gpu=299.98,2865,69.30,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:08:45 sample peak t=75 hs=202666279226848.56 acc=211 rej=? gpu=299.94,2865,69.30,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:09:00 sample peak t=90 hs=202806777320863.03 acc=246 rej=? gpu=299.92,2865,69.30,14001,100,1,1528
+eaa66a4e [nvtest] [bench] 07:09:15 sample peak t=105 hs=202737559359989.22 acc=276 rej=? gpu=299.96,2865,69.40,14001,100,0,1528
+eaa66a4e [nvtest] [bench] 07:09:15 end peak: 2026-11-11 07:09:15 accepted   GPU 0  lat 131ms  diff 70.37 TH  effort 0% 2026-11-11 07:09:15 accepted   GPU 0  lat 81ms  diff 70.37 TH  effort 47%
+eaa66a4e [nvtest] [bench] 07:09:15 credit peak secs=105 bits=210 ok=273 dup=0 rej=0 ths=182.96 ths60=157.94 hs=2.024e+14 permin=172,101
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16496 plain=2133072 tail=0 A:leaves=1536x1024 of 1966080 sib=47 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16496}
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 A rows 24@23438+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 Bt rows 8@2865+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16196 plain=2132944 tail=0 A:leaves=1536x1024 of 1966080 sib=43 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16196}
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 A rows 24@29004+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 Bt rows 8@3584+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16252 plain=2132976 tail=0 A:leaves=1536x1024 of 1966080 sib=44 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16252}
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 A rows 24@13830+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak 07:07:34 Bt rows 8@2343+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:09:24 share peak bench-peak summary m=30720 n=16384 k=65536 r=128 tile=24x8:277 ok:277
+eaa66a4e [nvtest] [bench] 07:09:24 start srb 100s
+eaa66a4e [nvtest] [bench] 07:09:40 sample srb t=16 hs=132779077928863.6 acc=2 rej=0 gpu=301.79,2880,68.30,14001,99,0,1725
+eaa66a4e [nvtest] [bench] 07:09:55 sample srb t=31 hs=202467065247762.53 acc=49 rej=0 gpu=300.19,2865,68.60,14001,100,0,1725
+eaa66a4e [nvtest] [bench] 07:10:10 sample srb t=46 hs=196152298364735.72 acc=108 rej=0 gpu=299.97,2872,69.00,14001,100,0,1725
+eaa66a4e [nvtest] [bench] 07:10:25 sample srb t=61 hs=202550448921228.38 acc=154 rej=0 gpu=300.03,2857,69.10,14001,99,0,1725
+eaa66a4e [nvtest] [bench] 07:10:40 sample srb t=76 hs=196241908387267.9 acc=196 rej=0 gpu=300.01,2857,69.20,14001,100,0,1725
+eaa66a4e [nvtest] [bench] 07:10:55 sample srb t=91 hs=202527821826386.7 acc=239 rej=0 gpu=299.95,2865,69.20,14001,99,0,1725
+eaa66a4e [nvtest] [bench] 07:11:10 sample srb t=106 hs=202404918884999.9 acc=266 rej=0 gpu=300.01,2865,69.20,14001,100,0,1725
+eaa66a4e [nvtest] [bench] 07:11:10 end srb: [0m[2026-11-11 07:10:56] [1m[40m[37m ID Name                         Hashrate    Power     Eff     Fan  Temp   CClk   MClk       A       R      HW[0m [0m[2026-11-11 07:10:56] [1m[40m[37m--------------------------------------------------------------------------------------------------------------
+eaa66a4e [nvtest] [bench] 07:11:10 credit srb secs=106 bits=210 ok=266 dup=0 rej=0 ths=176.59 ths60=174.39 hs=1.906e+14 permin=152,114
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31292 plain=2133072 tail=0 A:leaves=1536x1024 of 1056896 sib=45 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31292,hs:int}
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 A rows 24@7874+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 Bt rows 8@13587+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31296 plain=2133072 tail=0 A:leaves=1536x1024 of 1056896 sib=45 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31296,hs:int}
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 A rows 24@15558+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 Bt rows 8@58387+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31328 plain=2133040 tail=0 A:leaves=1536x1024 of 1056896 sib=44 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31328,hs:int}
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 A rows 24@14400+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb 07:09:39 Bt rows 8@26886+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:11:19 share srb bench-srb summary m=16514 n=62720 k=65536 r=128 tile=24x8:266 ok:266
+eaa66a4e [nvtest] [bench] 07:11:19 start ozm 100s
+eaa66a4e [nvtest] [bench] 07:11:34 sample ozm t=15 hs=181539256023147 acc=31 rej=0 gpu=300.06,2880,68.30,14001,100,1,1778
+eaa66a4e [nvtest] [bench] 07:11:49 sample ozm t=30 hs=198887250480879 acc=72 rej=0 gpu=300.05,2872,68.90,14001,100,1,1778
+eaa66a4e [nvtest] [bench] 07:12:04 sample ozm t=45 hs=198902679042965 acc=112 rej=0 gpu=301.02,2880,69.50,14001,100,0,1778
+eaa66a4e [nvtest] [bench] 07:12:19 sample ozm t=60 hs=202206230343597 acc=143 rej=0 gpu=301.01,2872,69.20,14001,100,1,1778
+eaa66a4e [nvtest] [bench] 07:12:34 sample ozm t=75 hs=204411757582940 acc=188 rej=0 gpu=299.75,2872,69.30,14001,100,0,1778
+eaa66a4e [nvtest] [bench] 07:12:49 sample ozm t=90 hs=198451759659742 acc=232 rej=0 gpu=299.22,2865,67.80,14001,99,1,1778
+eaa66a4e [nvtest] [bench] 07:13:04 sample ozm t=105 hs=198987449602625 acc=268 rej=0 gpu=300.74,2865,69.40,14001,100,1,1778
+eaa66a4e [nvtest] [bench] 07:13:04 end ozm:  07:13:03  [32m[pearlhash] GPU 0 Share accepted (82 ms)[0m  07:13:04  [32m[pearlhash] GPU 0 Share accepted (87 ms)[0m
+eaa66a4e [nvtest] [bench] 07:13:04 credit ozm secs=105 bits=210 ok=268 dup=0 rej=0 ths=179.61 ths60=195.47 hs=none permin=143,125
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 ok m=13440 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36024 plain=2132977 tail=1 A:leaves=1536x1024 of 860160 sib=43 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36024}
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 A rows 24@5196+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 Bt rows 8@27445+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 ok m=13440 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36192 plain=2133009 tail=1 A:leaves=1536x1024 of 860160 sib=44 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36192}
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 A rows 24@2690+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 Bt rows 8@23808+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 ok m=13440 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36120 plain=2133009 tail=1 A:leaves=1536x1024 of 860160 sib=44 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36120}
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 A rows 24@8834+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm 07:11:25 Bt rows 8@21010+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+eaa66a4e [nvtest] [bench] 07:13:13 share ozm bench-ozm summary m=13440 n=32768 k=65536 r=128 tile=24x8:269 ok:269
+eaa66a4e [nvtest] [bench] 07:13:13 vpool {"connections":4,"jobs":14,"byK":{"65536":{"shares":965,"accepted":965,"rejected":0}},"reasons":{},"methods":{},"logins":[{"conn":1,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":2,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":3,"agent":"SRBMiner-MULTI/3.8.2","type":"v2","
+eaa66a4e [nvtest] [bench] 07:13:13 vpool params":"wallet,worker,agent,type"},{"conn":4,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"}]}
+eaa66a4e [nvtest] [bench] 07:13:13 all done
+eaa66a4e [nvtest] 07:13:21 [probe] card after the miners 2595 MHz, 51.51 W, 300.00 W, 40.50, 0 %, 1257 MiB
+eaa66a4e [nvtest] 07:13:21 [probe] all done

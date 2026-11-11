@@ -1,0 +1,331 @@
+acefdd76 [nvtest] 07:28:59 boot container started
+acefdd76 [nvtest] 07:29:34 [probe] card NVIDIA GeForce RTX 5070 Ti, 621.14, 12.0, 300.00 W, 300.00 W, 250.00 W, 300.00 W, 3090 MHz, 16303 MiB
+acefdd76 [nvtest] 07:29:34 [probe] card idle 180 MHz, 16.23 W, 37.90, 0 %, 496 MiB gpus=1
+acefdd76 [nvtest] 07:29:35 [probe] card enforced limit 300.00 W, instant draw 19.71 W, average 16.70 W
+acefdd76 [nvtest] 07:30:05 setup ok in 0s
+acefdd76 [nvtest] 07:30:43 cuda V13.3.73 in /opt/cuda, 38s
+acefdd76 [nvtest] 07:30:49 fetch ok f1957b3714e5
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built B16 regs=232 spill=0 imma=192 other=204 per_imma=1.062 longest_run=7 runs_over_8=0 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:134,1:3,2:19,3:16,4:1,5:7,6:8,7:4
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built B2 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=9 runs_over_8=1 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:97,1:21,2:57,3:10,4:3,5:1,6:1,7:1,9:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built B4 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:109,1:15,2:46,3:10,4:3,5:4,6:1,7:3,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built B48 regs=229 spill=0 imma=192 other=204 per_imma=1.062 longest_run=23 runs_over_8=3 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:141,1:1,2:5,3:37,4:5,10:1,23:1,29:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built B8 regs=237 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:131,1:8,2:18,3:15,4:4,5:5,6:4,7:6,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built BW2 regs=236 spill=0 imma=192 other=210 per_imma=1.094 longest_run=7 runs_over_8=0 ctl=1[BRA] top=LOP3:187,MOV:13,LDSM:7,UIADD3:1,UISETP:1,BRA:1 gaps=0:23,1:142,2:21,3:2,4:2,5:1,7:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built BW48 regs=216 spill=0 imma=192 other=199 per_imma=1.036 longest_run=12 runs_over_8=4 ctl=1[BRA] top=LOP3:96,IADD:92,LDSM:8,UIADD3:1,UISETP:1,BRA:1 gaps=0:141,2:6,3:41,9:1,12:2,31:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built BW8 regs=253 spill=8 imma=192 other=225 per_imma=1.172 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:116,IADD:72,MOV:27,LDSM:7,UIADD3:1,UISETP:1,BRA:1 gaps=0:101,1:22,2:31,3:21,4:11,5:4,6:1,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built C2 regs=243 spill=0 imma=192 other=396 per_imma=2.062 longest_run=9 runs_over_8=4 ctl=1[BRA] top=LOP3:192,IADD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:46,1:23,2:74,3:21,4:13,5:5,6:4,7:1,8:1,9:3,19:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built C48 regs=229 spill=0 imma=192 other=396 per_imma=2.062 longest_run=71 runs_over_8=3 ctl=1[BRA] top=LOP3:192,IADD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:109,1:1,2:5,3:69,4:5,10:1,71:1,77:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built C8 regs=237 spill=0 imma=192 other=396 per_imma=2.062 longest_run=9 runs_over_8=4 ctl=1[BRA] top=LOP3:192,IADD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:99,1:5,2:22,3:23,4:2,5:9,6:16,7:8,8:4,9:3,14:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D0 regs=233 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:16,1:1,2:162,3:7,5:1,6:2,7:2,19:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D1 regs=235 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:19,2:159,3:7,4:1,5:1,6:2,7:2,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D16 regs=231 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:33,1:1,2:138,3:7,4:1,5:1,6:3,7:6,8:1,21:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D2 regs=233 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:20,2:158,3:7,5:1,6:3,7:2,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D24 regs=231 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:41,1:1,2:127,3:7,5:1,6:5,7:8,8:1,21:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D4 regs=233 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:22,2:155,3:7,4:1,5:1,6:2,7:2,8:1,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D40 regs=254 spill=200 imma=192 other=439 per_imma=2.286 longest_run=25 runs_over_8=6 ctl=1[BRA] top=LOP3:352,MOV:49,STL:16,LDL:12,LDSM:9,BRA:1 gaps=0:102,1:19,2:11,3:3,4:13,5:7,6:6,7:19,8:6,9:2,10:1,15:1,17:1,25:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built D8 regs=231 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:25,1:1,2:150,3:7,5:1,6:2,7:4,8:1,21:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F0 regs=224 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F1 regs=233 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:3,4:2,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F16 regs=243 spill=0 imma=192 other=3083 per_imma=16.057 longest_run=412 runs_over_8=142 ctl=1[BRA] top=IADD:1536,LOP3:1535,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:1,1:1,2:1,4:1,5:2,6:1,7:13,8:30,9:60,10:77,11:2,320:1,412:1,665:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F2 regs=245 spill=0 imma=192 other=396 per_imma=2.062 longest_run=10 runs_over_8=2 ctl=1[BRA] top=LOP3:192,IADD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:16,1:19,2:127,3:21,4:3,6:2,8:2,10:2
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F4 regs=243 spill=0 imma=192 other=780 per_imma=4.062 longest_run=18 runs_over_8=7 ctl=1[BRA] top=LOP3:384,IADD:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:22,1:13,2:28,3:20,4:44,5:22,6:21,7:8,8:7,9:3,10:2,18:1,62:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F4O regs=233 spill=0 imma=192 other=783 per_imma=4.078 longest_run=47 runs_over_8=13 ctl=1[BRA] top=LOP3:384,IADD:384,LDSM:12,UIADD3:1,UISETP:1,BRA:1 gaps=0:24,1:13,2:15,3:26,4:48,5:26,6:18,7:6,8:3,9:3,10:7,11:2,47:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built F8 regs=243 spill=0 imma=192 other=1548 per_imma=8.062 longest_run=165 runs_over_8=61 ctl=1[BRA] top=LOP3:768,IADD:768,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:20,1:2,2:6,3:10,4:8,5:8,6:12,7:24,8:41,9:48,10:10,11:1,156:1,165:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H0 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H1 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H1B regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H1S regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H2 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H3 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H4 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H8 regs=150 spill=0 imma=128 other=3 per_imma=0.023 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:126,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H8B regs=150 spill=0 imma=128 other=3 per_imma=0.023 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:126,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built H8C regs=150 spill=0 imma=128 other=3 per_imma=0.023 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:126,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built HL0 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built HL1 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built HL2 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K1 regs=241 spill=0 imma=192 other=588 per_imma=3.062 longest_run=11 runs_over_8=6 ctl=1[BRA] top=IMAD:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:11,1:7,2:27,3:114,4:24,6:1,8:2,9:2,10:2,11:1,18:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K10 regs=247 spill=0 imma=192 other=1356 per_imma=7.062 longest_run=20 runs_over_8=19 ctl=1[BRA] top=LOP3:960,IADD:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:2,1:2,2:5,3:2,4:5,5:7,6:27,7:61,8:62,9:16,10:1,20:1,24:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K2 regs=245 spill=0 imma=192 other=588 per_imma=3.062 longest_run=10 runs_over_8=2 ctl=1[BRA] top=SHF:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:16,1:6,2:31,3:97,4:29,5:4,6:2,7:4,8:1,10:1,35:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K3 regs=245 spill=0 imma=192 other=588 per_imma=3.062 longest_run=10 runs_over_8=2 ctl=1[BRA] top=PRMT:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:16,1:6,2:31,3:97,4:29,5:4,6:2,7:4,8:1,10:1,35:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K4 regs=241 spill=0 imma=192 other=588 per_imma=3.062 longest_run=13 runs_over_8=5 ctl=1[BRA] top=FADD:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:11,1:7,2:27,3:115,4:23,5:1,7:2,8:1,10:1,11:2,13:1,18:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K5 regs=241 spill=0 imma=192 other=588 per_imma=3.062 longest_run=13 runs_over_8=5 ctl=1[BRA] top=FMUL:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:11,1:7,2:27,3:115,4:23,5:1,7:2,8:1,10:1,11:2,13:1,18:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K6 regs=234 spill=0 imma=192 other=588 per_imma=3.062 longest_run=11 runs_over_8=5 ctl=1[BRA] top=FFMA:384,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:38,1:9,2:7,3:83,4:22,5:9,6:4,7:8,8:7,9:4,11:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K8 regs=251 spill=0 imma=192 other=1740 per_imma=9.062 longest_run=112 runs_over_8=51 ctl=1[BRA] top=LOP3:960,IADD:384,LDS:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:5,1:1,2:4,3:14,4:18,5:16,6:21,7:44,8:18,9:27,10:5,11:9,12:1,13:2,14:1,15:1,25:1,88:1,101:1,112:1,174:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built K9 regs=243 spill=0 imma=192 other=595 per_imma=3.099 longest_run=11 runs_over_8=2 ctl=1[BRA] top=STS:288,LOP3:192,MOV:96,LDSM:16,UIADD3:1,UISETP:1,BRA:1 gaps=0:3,1:16,3:148,4:8,5:7,6:8,9:1,11:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L0 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L1 regs=236 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L16 regs=246 spill=0 imma=192 other=3082 per_imma=16.052 longest_run=411 runs_over_8=140 ctl=1[BRA] top=IADD:1537,LOP3:1534,LDSM:9,ISETP:1,BRA:1 gaps=0:1,1:2,2:1,4:2,5:1,6:5,7:7,8:33,9:57,10:75,11:4,31:1,296:1,411:1,677:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L2 regs=248 spill=0 imma=192 other=396 per_imma=2.062 longest_run=10 runs_over_8=2 ctl=1[BRA] top=IADD:193,LOP3:192,LDSM:9,ISETP:1,BRA:1 gaps=0:23,1:17,2:122,3:20,4:2,5:1,6:3,7:1,8:1,10:1,19:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L4 regs=246 spill=0 imma=192 other=780 per_imma=4.062 longest_run=19 runs_over_8=7 ctl=1[BRA] top=IADD:385,LOP3:384,LDSM:9,ISETP:1,BRA:1 gaps=0:22,1:13,2:30,3:12,4:52,5:21,6:21,7:8,8:6,9:4,10:1,19:1,63:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built L8 regs=246 spill=0 imma=192 other=1548 per_imma=8.062 longest_run=151 runs_over_8=64 ctl=1[BRA] top=IADD:769,LOP3:768,LDSM:9,ISETP:1,BRA:1 gaps=0:20,1:2,2:5,3:9,4:11,5:6,6:11,7:25,8:39,9:47,10:14,11:1,151:1,157:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LD0 regs=236 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:16,1:1,2:162,3:7,5:1,6:2,7:2,19:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LD1 regs=238 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:19,2:159,3:7,4:1,5:1,6:2,7:2,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LD2 regs=236 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:20,2:157,3:8,5:2,6:2,7:2,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LD8 regs=233 spill=0 imma=192 other=396 per_imma=2.062 longest_run=7 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:26,2:149,3:7,4:1,5:1,6:3,7:4,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LOS0 regs=224 spill=0 imma=192 other=11 per_imma=0.057 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:8,IADD:1,ISETP:1,BRA:1 gaps=0:186,1:3,2:2,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LOW0 regs=230 spill=0 imma=192 other=395 per_imma=2.057 longest_run=23 runs_over_8=4 ctl=1[BRA] top=IADD:193,LOP3:192,LDSM:8,ISETP:1,BRA:1 gaps=0:36,1:21,2:112,3:15,4:1,5:2,6:1,11:1,23:2,28:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LOW1 regs=232 spill=0 imma=192 other=410 per_imma=2.135 longest_run=10 runs_over_8=1 ctl=1[BRA] top=LOP3:379,MOV:20,LDSM:8,IADD:1,ISETP:1,BRA:1 gaps=1:37,2:113,3:30,4:9,5:1,6:1,10:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LOWA regs=220 spill=0 imma=192 other=19 per_imma=0.099 longest_run=5 runs_over_8=0 ctl=1[BRA] top=LDSM:8,LOP3:4,MOV:4,IADD:1,ISETP:1,BRA:1 gaps=0:181,1:6,2:4,5:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LU1 regs=244 spill=0 imma=192 other=108 per_imma=0.562 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:96,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:168,1:6,2:3,3:1,5:1,6:4,7:8,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LU2 regs=246 spill=0 imma=192 other=396 per_imma=2.062 longest_run=11 runs_over_8=23 ctl=1[BRA] top=IADD:193,LOP3:192,LDSM:9,ISETP:1,BRA:1 gaps=0:140,1:5,2:1,4:1,5:1,6:2,7:8,8:11,9:15,10:5,11:2,17:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built LU4 regs=246 spill=0 imma=192 other=780 per_imma=4.062 longest_run=24 runs_over_8=45 ctl=1[BRA] top=IADD:385,LOP3:384,LDSM:9,ISETP:1,BRA:1 gaps=0:105,1:3,5:1,6:4,7:12,8:22,9:30,10:11,11:2,24:1,62:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built OS0 regs=220 spill=0 imma=192 other=11 per_imma=0.057 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:8,UIADD3:1,UISETP:1,BRA:1 gaps=0:186,1:3,2:2,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built OW0 regs=227 spill=0 imma=192 other=395 per_imma=2.057 longest_run=26 runs_over_8=4 ctl=1[BRA] top=LOP3:192,IADD:192,LDSM:8,UIADD3:1,UISETP:1,BRA:1 gaps=0:42,1:11,2:120,3:13,5:1,8:1,11:1,26:2,29:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built OW1 regs=230 spill=0 imma=192 other=406 per_imma=2.115 longest_run=12 runs_over_8=1 ctl=1[BRA] top=LOP3:379,MOV:16,LDSM:8,UIADD3:1,UISETP:1,BRA:1 gaps=1:32,2:126,3:24,4:7,5:2,12:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built OWA regs=216 spill=0 imma=192 other=19 per_imma=0.099 longest_run=5 runs_over_8=0 ctl=1[BRA] top=LDSM:8,LOP3:4,MOV:4,UIADD3:1,UISETP:1,BRA:1 gaps=0:181,1:6,2:4,5:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q0 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q1 regs=236 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q16 regs=246 spill=0 imma=192 other=3082 per_imma=16.052 longest_run=411 runs_over_8=140 ctl=1[BRA] top=IADD:1537,LOP3:1534,LDSM:9,ISETP:1,BRA:1 gaps=0:1,1:2,2:1,4:2,5:1,6:5,7:7,8:33,9:57,10:75,11:4,31:1,296:1,411:1,677:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q2 regs=248 spill=0 imma=192 other=396 per_imma=2.062 longest_run=10 runs_over_8=2 ctl=1[BRA] top=IADD:193,LOP3:192,LDSM:9,ISETP:1,BRA:1 gaps=0:23,1:17,2:122,3:20,4:2,5:1,6:3,7:1,8:1,10:1,19:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q4 regs=246 spill=0 imma=192 other=780 per_imma=4.062 longest_run=19 runs_over_8=7 ctl=1[BRA] top=IADD:385,LOP3:384,LDSM:9,ISETP:1,BRA:1 gaps=0:22,1:13,2:30,3:12,4:52,5:21,6:21,7:8,8:6,9:4,10:1,19:1,63:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built Q8 regs=246 spill=0 imma=192 other=1548 per_imma=8.062 longest_run=151 runs_over_8=64 ctl=1[BRA] top=IADD:769,LOP3:768,LDSM:9,ISETP:1,BRA:1 gaps=0:20,1:2,2:5,3:9,4:11,5:6,6:11,7:25,8:39,9:47,10:14,11:1,151:1,157:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built U1 regs=241 spill=0 imma=192 other=108 per_imma=0.562 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:168,1:6,2:3,3:1,4:1,6:3,7:9,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built U2 regs=243 spill=0 imma=192 other=396 per_imma=2.062 longest_run=12 runs_over_8=23 ctl=1[BRA] top=IADD:192,LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:140,1:5,2:1,4:1,5:1,6:3,7:8,8:10,9:15,10:4,11:2,12:1,17:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built U4 regs=243 spill=0 imma=192 other=780 per_imma=4.062 longest_run=24 runs_over_8=45 ctl=1[BRA] top=IADD:384,LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:105,1:3,5:1,6:4,7:14,8:20,9:29,10:11,11:3,24:1,62:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built base regs=236 spill=0 imma=1344 other=150 per_imma=0.112 longest_run=5 runs_over_8=1 ctl=5[BRA] top=IADD3:95,LDSM:26,BRA:5,IMAD:5,UISETP:3,STG:3,LDC:2 gaps=0:1324,1:11,2:5,4:1,5:2,115:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built d4m regs=240 spill=0 imma=192 other=308 per_imma=1.604 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:113,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:103,1:11,2:24,3:22,4:9,5:7,6:4,7:9,8:2,9:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built d4mN regs=240 spill=0 imma=192 other=308 per_imma=1.604 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:113,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:103,1:11,2:24,3:22,4:9,5:7,6:4,7:9,8:2,9:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built d4mO regs=247 spill=0 imma=192 other=306 per_imma=1.594 longest_run=10 runs_over_8=4 ctl=1[BRA] top=IADD:111,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:123,1:8,2:8,3:12,4:11,5:8,6:5,7:10,8:3,9:2,10:2
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f0 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=UIADD3:1,UISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f1 regs=255 spill=648 imma=192 other=578 per_imma=3.010 longest_run=74 runs_over_8=11 ctl=1[BRA] top=MOV:287,LOP3:192,STL:44,LDL:42,IADD:10,UIADD3:1,UISETP:1 gaps=0:51,1:51,2:21,3:14,4:12,5:10,6:4,7:9,8:9,9:3,10:2,12:2,13:2,15:1,74:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f16 regs=255 spill=200 imma=192 other=3387 per_imma=17.641 longest_run=270 runs_over_8=142 ctl=1[BRA] top=IADD:1544,LOP3:1536,MOV:276,STL:17,LDL:11,UIADD3:1,UISETP:1 gaps=0:12,1:1,2:2,3:3,4:5,5:3,6:10,7:5,8:9,9:3,10:7,11:1,12:8,13:19,14:30,15:13,16:1,17:3,18:7,20:2,21:1,22:7,23:7,24:2,25:13,26:3,27:1,28:1,29:2,31:1,41:1,44:1,46:1,52:1,96:3,99:1,101:1,270:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f2 regs=255 spill=680 imma=192 other=772 per_imma=4.021 longest_run=72 runs_over_8=23 ctl=1[BRA] top=MOV:281,IADD:203,LOP3:192,STL:46,LDL:43,IMAD:4,UIADD3:1 gaps=0:41,1:19,2:21,3:31,4:24,5:14,6:9,7:6,8:4,9:6,10:5,11:2,12:3,13:1,14:3,16:1,19:1,72:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f4 regs=255 spill=520 imma=192 other=1098 per_imma=5.719 longest_run=48 runs_over_8=36 ctl=1[BRA] top=IADD:388,LOP3:384,MOV:260,LDL:35,STL:28,UIADD3:1,UISETP:1 gaps=0:30,1:13,2:22,3:20,4:24,5:21,6:15,7:7,8:4,9:9,10:6,11:2,12:1,13:2,14:1,15:6,17:1,18:1,20:1,26:1,30:1,35:1,37:1,48:1,73:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built f8 regs=255 spill=264 imma=192 other=1828 per_imma=9.521 longest_run=155 runs_over_8=58 ctl=1[BRA] top=IADD:778,LOP3:768,MOV:245,STL:19,LDL:15,UIADD3:1,UISETP:1 gaps=0:14,2:4,3:8,4:17,5:22,6:9,7:8,8:52,9:12,10:7,11:7,12:4,13:7,14:3,15:3,17:1,19:2,20:1,21:1,27:1,30:2,34:1,40:1,42:1,45:2,67:1,155:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built full3 regs=235 spill=0 imma=192 other=404 per_imma=2.104 longest_run=10 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=LOP3:124,IADD:120,LDS:64,PRMT:48,STS:12,LDSM:12,ATOMS:5 gaps=0:85,1:26,2:17,3:14,4:9,5:6,6:19,7:10,8:3,9:2,10:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built full3N regs=235 spill=0 imma=192 other=404 per_imma=2.104 longest_run=10 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=LOP3:124,IADD:120,LDS:64,PRMT:48,STS:12,LDSM:12,ATOMS:5 gaps=0:85,1:26,2:17,3:14,4:9,5:6,6:19,7:10,8:3,9:2,10:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built full3O regs=234 spill=0 imma=192 other=402 per_imma=2.094 longest_run=31 runs_over_8=8 ctl=7[BRA,NANOSLEEP] top=LOP3:123,IADD:120,LDS:64,PRMT:48,STS:12,LDSM:12,ATOMS:5 gaps=0:109,1:12,2:17,3:10,4:21,5:4,6:1,7:2,8:8,9:5,31:3
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l0 regs=214 spill=0 imma=192 other=3 per_imma=0.016 longest_run=2 runs_over_8=0 ctl=1[BRA] top=IADD:1,ISETP:1,BRA:1 gaps=0:190,1:1,2:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l1 regs=255 spill=724 imma=192 other=579 per_imma=3.016 longest_run=73 runs_over_8=16 ctl=1[BRA] top=MOV:277,LOP3:192,STL:49,LDL:47,IADD:12,ISETP:1,BRA:1 gaps=0:55,1:52,2:25,3:8,4:14,5:7,6:6,7:3,8:6,9:3,10:5,12:1,14:3,15:1,18:1,20:1,73:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l16 regs=255 spill=156 imma=192 other=3393 per_imma=17.672 longest_run=167 runs_over_8=124 ctl=1[BRA] top=IADD:1547,LOP3:1536,MOV:283,STL:14,LDL:10,LDC:1,ISETP:1 gaps=0:11,1:2,3:3,4:4,5:10,6:15,7:11,8:12,9:2,10:7,11:17,12:5,13:4,14:17,15:5,16:1,17:13,19:6,20:5,21:1,22:11,23:2,24:1,26:1,28:1,29:2,30:1,31:2,32:3,34:1,37:1,38:2,40:1,41:1,50:1,58:2,71:1,86:1,109:4,115:1,167:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l2 regs=255 spill=488 imma=192 other=730 per_imma=3.802 longest_run=81 runs_over_8=17 ctl=1[BRA] top=MOV:271,IADD:195,LOP3:192,LDL:39,STL:30,LDC:1,ISETP:1 gaps=0:44,1:27,2:33,3:20,4:22,5:11,6:4,7:8,8:6,9:2,10:2,11:1,12:1,13:1,14:2,15:4,17:1,19:1,27:1,81:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l4 regs=255 spill=624 imma=192 other=1120 per_imma=5.833 longest_run=40 runs_over_8=30 ctl=1[BRA] top=IADD:389,LOP3:384,MOV:262,STL:42,LDL:40,LDC:1,ISETP:1 gaps=0:34,1:3,2:18,3:17,4:30,5:16,6:26,7:6,8:12,9:2,10:9,11:3,12:2,13:1,14:2,15:1,16:1,17:1,20:1,24:1,26:1,32:1,33:1,34:1,40:1,73:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built l8 regs=255 spill=224 imma=192 other=1850 per_imma=9.635 longest_run=107 runs_over_8=64 ctl=1[BRA] top=IADD:777,LOP3:768,MOV:274,STL:18,LDL:10,LDC:1,ISETP:1 gaps=0:19,2:2,3:4,4:11,5:13,6:12,7:11,8:56,9:6,10:7,11:13,12:10,13:5,14:4,15:2,16:1,17:3,20:1,21:1,24:1,30:2,31:1,36:1,40:3,49:1,55:1,107:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built p2k0 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:154,1:6,2:1,3:4,6:6,7:20,8:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built p2k1 regs=230 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:26,2:150,3:7,5:1,6:2,7:4,8:1,22:1
+acefdd76 [nvtest] 07:31:51 [probe] nvcc13.3 built pure regs=255 spill=240 imma=5568 other=371 per_imma=0.067 longest_run=38 runs_over_8=4 ctl=7[BRA] top=MOV:262,LDL:60,STL:30,UISETP:7,BRA:7,UIADD3:3,ULOP3:2 gaps=0:5491,1:5,2:14,3:2,4:44,5:3,6:2,8:3,10:1,24:1,33:1,38:1
+acefdd76 [nvtest] 07:32:07 [probe] card before the probe 195 MHz, 17.76 W, 300.00 W, 37.80, 0 %, 496 MiB
+acefdd76 [nvtest] 07:32:08 [probe] nvcc13.3 short pure                       pipe  99.84% (99.84-99.84) 16.026 cyc/IMMA 218 ms x5 | 201.82 T-MAC/s by count, counter 2818 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:08 [probe] nvcc13.3 short pure                       own cycles an mma, by warp: 0:32.05 1:32.05 2:32.05 3:32.05 4:32.05 5:32.05 6:32.05 7:32.05
+acefdd76 [nvtest] 07:32:09 [probe] nvcc13.3 short base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 221 ms x5 | 200.58 T-MAC/s by count, counter 2786 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:09 [probe] nvcc13.3 short base                       own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+acefdd76 [nvtest] 07:32:11 [probe] nvcc13.3 short rd2a                       pipe  98.40% (98.40-98.40) 16.260 cyc/IMMA 225 ms x5 | 196.05 T-MAC/s by count, counter 2777 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:11 [probe] nvcc13.3 short rd2a                       own cycles an mma, by warp: 0:32.52 1:32.52 2:32.52 3:32.52 4:32.52 5:32.52 6:32.52 7:32.52
+acefdd76 [nvtest] 07:32:12 [probe] nvcc13.3 short d4m                        pipe  96.92% (96.92-96.92) 16.508 cyc/IMMA 229 ms x5 | 192.63 T-MAC/s by count, counter 2771 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:12 [probe] nvcc13.3 short d4m                        own cycles an mma, by warp: 0:33.02 1:33.02 2:33.02 3:33.02 4:33.02 5:33.02 6:33.02 7:33.02
+acefdd76 [nvtest] 07:32:13 [probe] nvcc13.3 short full3                      pipe  95.03% (95.03-95.04) 16.836 cyc/IMMA 233 ms x5 | 188.83 T-MAC/s by count, counter 2771 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:13 [probe] nvcc13.3 short full3                      own cycles an mma, by warp: 0:33.67 1:33.67 2:33.67 3:33.67 4:33.66 5:33.66 6:33.66 7:33.66
+acefdd76 [nvtest] 07:32:15 [probe] nvcc13.3 short p2k0                       pipe  98.02% (98.02-98.02) 16.323 cyc/IMMA 226 ms x5 | 195.13 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:15 [probe] nvcc13.3 short p2k0                       own cycles an mma, by warp: 0:32.65 1:32.65 2:32.65 3:32.65 4:32.65 5:32.65 6:32.65 7:32.65
+acefdd76 [nvtest] 07:32:16 [probe] nvcc13.3 short p2k1                       pipe  94.54% (94.54-94.54) 16.925 cyc/IMMA 234 ms x5 | 187.96 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:16 [probe] nvcc13.3 short p2k1                       own cycles an mma, by warp: 0:33.85 1:33.85 2:33.85 3:33.85 4:33.85 5:33.85 6:33.85 7:33.85
+acefdd76 [nvtest] 07:32:17 [probe] nvcc13.3 short l0                         pipe  99.35% (99.35-99.35) 16.104 cyc/IMMA 109 ms x10 | 50.32 T-MAC/s by count, counter 2827 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:17 [probe] nvcc13.3 short l0                         own cycles an mma, by warp: 0:16.10
+acefdd76 [nvtest] 07:32:18 [probe] nvcc13.3 short l1                         pipe  78.19% (78.19-78.19) 20.464 cyc/IMMA 139 ms x8 | 39.58 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:18 [probe] nvcc13.3 short l1                         own cycles an mma, by warp: 0:20.46
+acefdd76 [nvtest] 07:32:20 [probe] nvcc13.3 short l2                         pipe  80.76% (80.76-80.76) 19.813 cyc/IMMA 135 ms x8 | 40.88 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:20 [probe] nvcc13.3 short l2                         own cycles an mma, by warp: 0:19.81
+acefdd76 [nvtest] 07:32:21 [probe] nvcc13.3 short l4                         pipe  74.35% (74.35-74.35) 21.521 cyc/IMMA 146 ms x7 | 37.62 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:21 [probe] nvcc13.3 short l4                         own cycles an mma, by warp: 0:21.52
+acefdd76 [nvtest] 07:32:22 [probe] nvcc13.3 short l8                         pipe  62.78% (62.78-62.78) 25.484 cyc/IMMA 173 ms x6 | 31.79 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:22 [probe] nvcc13.3 short l8                         own cycles an mma, by warp: 0:25.48
+acefdd76 [nvtest] 07:32:24 [probe] nvcc13.3 short l16                        pipe  43.77% (43.77-43.77) 36.557 cyc/IMMA 248 ms x5 | 22.16 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:24 [probe] nvcc13.3 short l16                        own cycles an mma, by warp: 0:36.56
+acefdd76 [nvtest] 07:32:25 [probe] nvcc13.3 short L0                         pipe  99.16% (99.16-99.16) 16.135 cyc/IMMA 110 ms x10 | 50.22 T-MAC/s by count, counter 2827 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:25 [probe] nvcc13.3 short L0                         own cycles an mma, by warp: 0:16.14
+acefdd76 [nvtest] 07:32:26 [probe] nvcc13.3 short L1                         pipe  95.08% (95.08-95.08) 16.828 cyc/IMMA 114 ms x9 | 48.15 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:26 [probe] nvcc13.3 short L1                         own cycles an mma, by warp: 0:16.83
+acefdd76 [nvtest] 07:32:27 [probe] nvcc13.3 short L2                         pipe  82.32% (82.32-82.32) 19.438 cyc/IMMA 132 ms x8 | 41.68 T-MAC/s by count, counter 2827 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:27 [probe] nvcc13.3 short L2                         own cycles an mma, by warp: 0:19.44
+acefdd76 [nvtest] 07:32:28 [probe] nvcc13.3 short L4                         pipe  83.46% (83.46-83.46) 19.172 cyc/IMMA 130 ms x8 | 42.25 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:28 [probe] nvcc13.3 short L4                         own cycles an mma, by warp: 0:19.17
+acefdd76 [nvtest] 07:32:30 [probe] nvcc13.3 short L8                         pipe  72.90% (72.90-72.90) 21.948 cyc/IMMA 149 ms x7 | 36.90 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:30 [probe] nvcc13.3 short L8                         own cycles an mma, by warp: 0:21.95
+acefdd76 [nvtest] 07:32:31 [probe] nvcc13.3 short L16                        pipe  49.44% (49.44-49.44) 32.365 cyc/IMMA 220 ms x5 | 25.02 T-MAC/s by count, counter 2824 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:31 [probe] nvcc13.3 short L16                        own cycles an mma, by warp: 0:32.36
+acefdd76 [nvtest] 07:32:32 [probe] nvcc13.3 short Q0                         pipe  99.90% (99.90-99.90) 16.016 cyc/IMMA 218 ms x5 | 50.60 T-MAC/s by count, counter 2826 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:32 [probe] nvcc13.3 short Q0                         own cycles an mma, by warp: 0:32.03 4:32.03
+acefdd76 [nvtest] 07:32:33 [probe] nvcc13.3 short Q1                         pipe  96.14% (96.14-96.14) 16.643 cyc/IMMA 226 ms x5 | 48.69 T-MAC/s by count, counter 2826 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:33 [probe] nvcc13.3 short Q1                         own cycles an mma, by warp: 0:33.29 4:33.29
+acefdd76 [nvtest] 07:32:35 [probe] nvcc13.3 short Q2                         pipe  89.65% (89.65-89.65) 17.848 cyc/IMMA 243 ms x5 | 45.40 T-MAC/s by count, counter 2825 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:35 [probe] nvcc13.3 short Q2                         own cycles an mma, by warp: 0:35.70 4:35.70
+acefdd76 [nvtest] 07:32:36 [probe] nvcc13.3 short Q4                         pipe  86.67% (86.67-86.67) 18.461 cyc/IMMA 251 ms x4 | 43.84 T-MAC/s by count, counter 2826 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:36 [probe] nvcc13.3 short Q4                         own cycles an mma, by warp: 0:36.92 4:36.92
+acefdd76 [nvtest] 07:32:37 [probe] nvcc13.3 short Q8                         pipe  75.73% (75.73-75.73) 21.128 cyc/IMMA 287 ms x4 | 38.32 T-MAC/s by count, counter 2825 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:37 [probe] nvcc13.3 short Q8                         own cycles an mma, by warp: 0:42.26 4:42.26
+acefdd76 [nvtest] 07:32:39 [probe] nvcc13.3 short Q16                        pipe  54.21% (54.01-54.49) 29.513 cyc/IMMA 403 ms x3 | 27.41 T-MAC/s by count, counter 2815 MHz, 70 SMs, 2 of 8 warps
+acefdd76 [nvtest] 07:32:39 [probe] nvcc13.3 short Q16                        own cycles an mma, by warp: 0:59.03 4:59.03
+acefdd76 [nvtest] 07:32:40 [probe] nvcc13.3 short f0                         pipe  99.93% (99.93-99.93) 16.010 cyc/IMMA 219 ms x5 | 201.63 T-MAC/s by count, counter 2809 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:40 [probe] nvcc13.3 short f0                         own cycles an mma, by warp: 0:32.02 1:32.02 2:32.02 3:32.02 4:32.02 5:32.02 6:32.02 7:32.02
+acefdd76 [nvtest] 07:32:41 [probe] nvcc13.3 short f1                         pipe  62.34% (52.34-77.46) 25.667 cyc/IMMA 420 ms x3 | 104.92 T-MAC/s by count, counter 2359 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:41 [probe] nvcc13.3 short f1                         own cycles an mma, by warp: 0:48.88 1:50.59 2:49.15 3:50.56 4:51.12 5:50.23 6:49.91 7:49.35
+acefdd76 [nvtest] 07:32:43 [probe] nvcc13.3 short f2                         pipe  59.60% (50.43-73.37) 26.847 cyc/IMMA 438 ms x3 | 100.60 T-MAC/s by count, counter 2366 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:43 [probe] nvcc13.3 short f2                         own cycles an mma, by warp: 0:51.85 1:52.83 2:51.24 3:53.16 4:53.63 5:52.40 6:52.15 7:51.78
+acefdd76 [nvtest] 07:32:44 [probe] nvcc13.3 short f4                         pipe  60.96% (52.06-69.78) 26.246 cyc/IMMA 425 ms x3 | 103.79 T-MAC/s by count, counter 2383 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:44 [probe] nvcc13.3 short f4                         own cycles an mma, by warp: 0:50.05 1:51.67 2:50.83 3:51.62 4:52.02 5:51.58 6:51.27 7:50.55
+acefdd76 [nvtest] 07:32:46 [probe] nvcc13.3 short f8                         pipe  69.36% (69.31-70.59) 23.069 cyc/IMMA 322 ms x4 | 137.12 T-MAC/s by count, counter 2753 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:46 [probe] nvcc13.3 short f8                         own cycles an mma, by warp: 0:46.14 1:46.14 2:46.14 3:46.15 4:46.14 5:46.14 6:46.14 7:46.15
+acefdd76 [nvtest] 07:32:47 [probe] nvcc13.3 short f16                        pipe  51.54% (51.30-51.97) 31.042 cyc/IMMA 435 ms x3 | 101.35 T-MAC/s by count, counter 2740 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:47 [probe] nvcc13.3 short f16                        own cycles an mma, by warp: 0:62.05 1:62.06 2:62.17 3:62.06 4:62.05 5:62.06 6:62.17 7:62.06
+acefdd76 [nvtest] 07:32:48 [probe] nvcc13.3 short F0                         pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 221 ms x5 | 199.33 T-MAC/s by count, counter 2779 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:48 [probe] nvcc13.3 short F0                         own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+acefdd76 [nvtest] 07:32:50 [probe] nvcc13.3 short F1                         pipe  99.64% (99.64-99.64) 16.057 cyc/IMMA 222 ms x5 | 198.34 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:50 [probe] nvcc13.3 short F1                         own cycles an mma, by warp: 0:32.11 1:32.11 2:32.11 3:32.11 4:32.11 5:32.11 6:32.11 7:32.11
+acefdd76 [nvtest] 07:32:51 [probe] nvcc13.3 short F2                         pipe  92.06% (92.06-92.06) 17.380 cyc/IMMA 241 ms x5 | 183.08 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:51 [probe] nvcc13.3 short F2                         own cycles an mma, by warp: 0:34.76 1:34.76 2:34.76 3:34.76 4:34.76 5:34.76 6:34.76 7:34.76
+acefdd76 [nvtest] 07:32:52 [probe] nvcc13.3 short F4                         pipe  88.29% (88.09-88.56) 18.121 cyc/IMMA 253 ms x4 | 174.67 T-MAC/s by count, counter 2751 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:52 [probe] nvcc13.3 short F4                         own cycles an mma, by warp: 0:36.16 1:36.23 2:36.32 3:36.26 4:36.16 5:36.23 6:36.32 7:36.26
+acefdd76 [nvtest] 07:32:54 [probe] nvcc13.3 short F8                         pipe  76.65% (76.64-76.65) 20.875 cyc/IMMA 291 ms x4 | 151.51 T-MAC/s by count, counter 2755 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:54 [probe] nvcc13.3 short F8                         own cycles an mma, by warp: 0:41.75 1:41.75 2:41.75 3:41.75 4:41.75 5:41.75 6:41.75 7:41.75
+acefdd76 [nvtest] 07:32:55 [probe] nvcc13.3 short F16                        pipe  55.01% (55.00-55.01) 29.086 cyc/IMMA 405 ms x3 | 108.73 T-MAC/s by count, counter 2755 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:55 [probe] nvcc13.3 short F16                        own cycles an mma, by warp: 0:58.17 1:58.17 2:58.17 3:58.17 4:58.17 5:58.17 6:58.17 7:58.17
+acefdd76 [nvtest] 07:32:56 [probe] nvcc13.3 short U1                         pipe  99.09% (99.09-99.10) 16.147 cyc/IMMA 223 ms x5 | 197.49 T-MAC/s by count, counter 2777 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:56 [probe] nvcc13.3 short U1                         own cycles an mma, by warp: 0:32.29 1:32.29 2:32.29 3:32.29 4:32.29 5:32.29 6:32.29 7:32.29
+acefdd76 [nvtest] 07:32:58 [probe] nvcc13.3 short LU1                        pipe  97.46% (97.46-97.46) 16.417 cyc/IMMA 112 ms x9 | 49.36 T-MAC/s by count, counter 2824 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:32:58 [probe] nvcc13.3 short LU1                        own cycles an mma, by warp: 0:16.42
+acefdd76 [nvtest] 07:32:59 [probe] nvcc13.3 short U2                         pipe  95.20% (95.20-95.20) 16.807 cyc/IMMA 233 ms x5 | 189.47 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:32:59 [probe] nvcc13.3 short U2                         own cycles an mma, by warp: 0:33.61 1:33.61 2:33.61 3:33.61 4:33.61 5:33.61 6:33.61 7:33.61
+acefdd76 [nvtest] 07:33:00 [probe] nvcc13.3 short LU2                        pipe  93.15% (93.15-93.15) 17.177 cyc/IMMA 117 ms x9 | 47.18 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:00 [probe] nvcc13.3 short LU2                        own cycles an mma, by warp: 0:17.18
+acefdd76 [nvtest] 07:33:01 [probe] nvcc13.3 short U4                         pipe  90.59% (90.59-90.59) 17.661 cyc/IMMA 245 ms x5 | 180.15 T-MAC/s by count, counter 2772 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:01 [probe] nvcc13.3 short U4                         own cycles an mma, by warp: 0:35.32 1:35.32 2:35.32 3:35.32 4:35.32 5:35.32 6:35.32 7:35.32
+acefdd76 [nvtest] 07:33:03 [probe] nvcc13.3 short LU4                        pipe  87.95% (87.95-87.95) 18.193 cyc/IMMA 124 ms x9 | 44.53 T-MAC/s by count, counter 2824 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:03 [probe] nvcc13.3 short LU4                        own cycles an mma, by warp: 0:18.19
+acefdd76 [nvtest] 07:33:04 [probe] nvcc13.3 short D0                         pipe  92.80% (92.80-92.80) 17.242 cyc/IMMA 239 ms x5 | 184.68 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:04 [probe] nvcc13.3 short D0                         own cycles an mma, by warp: 0:34.48 1:34.48 2:34.48 3:34.48 4:34.48 5:34.48 6:34.48 7:34.48
+acefdd76 [nvtest] 07:33:05 [probe] nvcc13.3 short D1                         pipe  93.92% (93.92-93.92) 17.036 cyc/IMMA 236 ms x5 | 186.68 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:05 [probe] nvcc13.3 short D1                         own cycles an mma, by warp: 0:34.07 1:34.07 2:34.07 3:34.07 4:34.07 5:34.07 6:34.07 7:34.07
+acefdd76 [nvtest] 07:33:07 [probe] nvcc13.3 short D2                         pipe  93.28% (93.28-93.28) 17.153 cyc/IMMA 237 ms x5 | 185.56 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:07 [probe] nvcc13.3 short D2                         own cycles an mma, by warp: 0:34.31 1:34.31 2:34.31 3:34.31 4:34.31 5:34.31 6:34.31 7:34.31
+acefdd76 [nvtest] 07:33:08 [probe] nvcc13.3 short D4                         pipe  93.94% (93.94-93.94) 17.033 cyc/IMMA 236 ms x5 | 186.87 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:08 [probe] nvcc13.3 short D4                         own cycles an mma, by warp: 0:34.07 1:34.07 2:34.07 3:34.07 4:34.07 5:34.07 6:34.07 7:34.07
+acefdd76 [nvtest] 07:33:10 [probe] nvcc13.3 short D8                         pipe  94.03% (94.03-94.03) 17.016 cyc/IMMA 236 ms x5 | 186.90 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:10 [probe] nvcc13.3 short D8                         own cycles an mma, by warp: 0:34.03 1:34.03 2:34.03 3:34.03 4:34.03 5:34.03 6:34.03 7:34.03
+acefdd76 [nvtest] 07:33:11 [probe] nvcc13.3 short D16                        pipe  94.32% (94.32-94.32) 16.964 cyc/IMMA 235 ms x5 | 187.54 T-MAC/s by count, counter 2773 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:11 [probe] nvcc13.3 short D16                        own cycles an mma, by warp: 0:33.93 1:33.93 2:33.93 3:33.93 4:33.93 5:33.93 6:33.93 7:33.93
+acefdd76 [nvtest] 07:33:12 [probe] nvcc13.3 short D24                        pipe  94.63% (94.63-94.63) 16.907 cyc/IMMA 234 ms x5 | 188.20 T-MAC/s by count, counter 2773 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:12 [probe] nvcc13.3 short D24                        own cycles an mma, by warp: 0:33.81 1:33.81 2:33.81 3:33.81 4:33.81 5:33.81 6:33.81 7:33.81
+acefdd76 [nvtest] 07:33:14 [probe] nvcc13.3 short D40                        pipe  90.86% (90.82-91.07) 17.609 cyc/IMMA 245 ms x5 | 179.78 T-MAC/s by count, counter 2755 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:14 [probe] nvcc13.3 short D40                        own cycles an mma, by warp: 0:35.21 1:35.22 2:35.22 3:35.22 4:35.21 5:35.22 6:35.22 7:35.22
+acefdd76 [nvtest] 07:33:15 [probe] nvcc13.3 short LD0                        pipe  91.05% (91.05-91.05) 17.573 cyc/IMMA 119 ms x9 | 46.10 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:15 [probe] nvcc13.3 short LD0                        own cycles an mma, by warp: 0:17.57
+acefdd76 [nvtest] 07:33:16 [probe] nvcc13.3 short LD1                        pipe  91.00% (91.00-91.00) 17.583 cyc/IMMA 120 ms x9 | 46.07 T-MAC/s by count, counter 2824 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:16 [probe] nvcc13.3 short LD1                        own cycles an mma, by warp: 0:17.58
+acefdd76 [nvtest] 07:33:17 [probe] nvcc13.3 short LD2                        pipe  92.03% (92.03-92.03) 17.385 cyc/IMMA 118 ms x9 | 46.60 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:17 [probe] nvcc13.3 short LD2                        own cycles an mma, by warp: 0:17.39
+acefdd76 [nvtest] 07:33:19 [probe] nvcc13.3 short LD8                        pipe  92.06% (92.06-92.06) 17.380 cyc/IMMA 118 ms x9 | 46.61 T-MAC/s by count, counter 2824 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:19 [probe] nvcc13.3 short LD8                        own cycles an mma, by warp: 0:17.38
+acefdd76 [nvtest] 07:33:20 [probe] nvcc13.3 short B2                         pipe  95.26% (95.24-95.27) 16.797 cyc/IMMA 232 ms x5 | 189.78 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:20 [probe] nvcc13.3 short B2                         own cycles an mma, by warp: 0:33.59 1:33.59 2:33.59 3:33.59 4:33.59 5:33.59 6:33.59 7:33.59
+acefdd76 [nvtest] 07:33:21 [probe] nvcc13.3 short B4                         pipe  96.51% (96.51-96.51) 16.578 cyc/IMMA 229 ms x5 | 192.04 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:21 [probe] nvcc13.3 short B4                         own cycles an mma, by warp: 0:33.16 1:33.16 2:33.16 3:33.16 4:33.16 5:33.16 6:33.16 7:33.16
+acefdd76 [nvtest] 07:33:22 [probe] nvcc13.3 short B8                         pipe  96.09% (96.04-96.13) 16.651 cyc/IMMA 230 ms x5 | 191.50 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:22 [probe] nvcc13.3 short B8                         own cycles an mma, by warp: 0:33.30 1:33.30 2:33.30 3:33.30 4:33.30 5:33.30 6:33.30 7:33.30
+acefdd76 [nvtest] 07:33:24 [probe] nvcc13.3 short B16                        pipe  96.18% (96.18-96.18) 16.635 cyc/IMMA 230 ms x5 | 191.49 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:24 [probe] nvcc13.3 short B16                        own cycles an mma, by warp: 0:33.27 1:33.27 2:33.27 3:33.27 4:33.27 5:33.27 6:33.27 7:33.27
+acefdd76 [nvtest] 07:33:25 [probe] nvcc13.3 short B48                        pipe  95.36% (95.36-95.36) 16.779 cyc/IMMA 232 ms x5 | 189.80 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:25 [probe] nvcc13.3 short B48                        own cycles an mma, by warp: 0:33.56 1:33.56 2:33.56 3:33.56 4:33.56 5:33.56 6:33.56 7:33.56
+acefdd76 [nvtest] 07:33:26 [probe] nvcc13.3 short C2                         pipe  93.35% (93.33-93.37) 17.139 cyc/IMMA 237 ms x5 | 185.84 T-MAC/s by count, counter 2773 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:26 [probe] nvcc13.3 short C2                         own cycles an mma, by warp: 0:34.28 1:34.28 2:34.28 3:34.28 4:34.28 5:34.28 6:34.28 7:34.28
+acefdd76 [nvtest] 07:33:28 [probe] nvcc13.3 short C8                         pipe  93.17% (93.08-93.27) 17.173 cyc/IMMA 238 ms x5 | 185.20 T-MAC/s by count, counter 2771 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:28 [probe] nvcc13.3 short C8                         own cycles an mma, by warp: 0:34.31 1:34.38 2:34.38 3:34.31 4:34.31 5:34.38 6:34.38 7:34.31
+acefdd76 [nvtest] 07:33:29 [probe] nvcc13.3 short C48                        pipe  88.52% (88.52-88.52) 18.074 cyc/IMMA 250 ms x4 | 176.01 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:29 [probe] nvcc13.3 short C48                        own cycles an mma, by warp: 0:36.15 1:36.15 2:36.15 3:36.15 4:36.15 5:36.15 6:36.15 7:36.15
+acefdd76 [nvtest] 07:33:30 [probe] nvcc13.3 short OS0                        pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 221 ms x5 | 199.38 T-MAC/s by count, counter 2779 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:30 [probe] nvcc13.3 short OS0                        own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+acefdd76 [nvtest] 07:33:32 [probe] nvcc13.3 short OWA                        pipe  99.87% (99.87-99.87) 16.021 cyc/IMMA 221 ms x5 | 199.20 T-MAC/s by count, counter 2778 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:32 [probe] nvcc13.3 short OWA                        own cycles an mma, by warp: 0:32.04 1:32.04 2:32.04 3:32.04 4:32.04 5:32.04 6:32.04 7:32.04
+acefdd76 [nvtest] 07:33:33 [probe] nvcc13.3 short OW0                        pipe  91.81% (91.81-91.81) 17.427 cyc/IMMA 241 ms x5 | 182.69 T-MAC/s by count, counter 2774 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:33 [probe] nvcc13.3 short OW0                        own cycles an mma, by warp: 0:34.85 1:34.85 2:34.85 3:34.85 4:34.85 5:34.85 6:34.85 7:34.85
+acefdd76 [nvtest] 07:33:34 [probe] nvcc13.3 short OW1                        pipe  94.69% (94.69-94.69) 16.897 cyc/IMMA 234 ms x5 | 188.46 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:34 [probe] nvcc13.3 short OW1                        own cycles an mma, by warp: 0:33.79 1:33.79 2:33.79 3:33.79 4:32.73 5:32.73 6:32.73 7:32.73
+acefdd76 [nvtest] 07:33:36 [probe] nvcc13.3 short BW2                        pipe  97.25% (97.20-97.26) 16.453 cyc/IMMA 228 ms x5 | 193.61 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:36 [probe] nvcc13.3 short BW2                        own cycles an mma, by warp: 0:32.91 1:32.91 2:32.90 3:32.90 4:32.91 5:32.91 6:32.90 7:32.90
+acefdd76 [nvtest] 07:33:37 [probe] nvcc13.3 short BW8                        pipe  96.61% (96.56-96.78) 16.561 cyc/IMMA 229 ms x5 | 192.30 T-MAC/s by count, counter 2775 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:37 [probe] nvcc13.3 short BW8                        own cycles an mma, by warp: 0:33.14 1:33.06 2:33.14 3:33.14 4:33.14 5:33.06 6:33.14 7:33.14
+acefdd76 [nvtest] 07:33:38 [probe] nvcc13.3 short BW48                       pipe  96.26% (96.26-96.26) 16.622 cyc/IMMA 230 ms x5 | 191.71 T-MAC/s by count, counter 2777 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:38 [probe] nvcc13.3 short BW48                       own cycles an mma, by warp: 0:33.24 1:33.24 2:33.24 3:33.24 4:33.24 5:33.24 6:33.24 7:33.24
+acefdd76 [nvtest] 07:33:39 [probe] nvcc13.3 short LOS0                       pipe  97.52% (97.52-97.52) 16.406 cyc/IMMA 111 ms x9 | 49.41 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:39 [probe] nvcc13.3 short LOS0                       own cycles an mma, by warp: 0:16.41
+acefdd76 [nvtest] 07:33:40 [probe] nvcc13.3 short LOWA                       pipe  97.43% (97.43-97.43) 16.422 cyc/IMMA 112 ms x9 | 49.34 T-MAC/s by count, counter 2826 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:40 [probe] nvcc13.3 short LOWA                       own cycles an mma, by warp: 0:16.42
+acefdd76 [nvtest] 07:33:42 [probe] nvcc13.3 short LOW0                       pipe  81.12% (81.12-81.12) 19.724 cyc/IMMA 134 ms x8 | 41.09 T-MAC/s by count, counter 2828 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:42 [probe] nvcc13.3 short LOW0                       own cycles an mma, by warp: 0:19.72
+acefdd76 [nvtest] 07:33:43 [probe] nvcc13.3 short LOW1                       pipe  94.58% (94.58-94.58) 16.917 cyc/IMMA 115 ms x9 | 47.88 T-MAC/s by count, counter 2825 MHz, 70 SMs, 1 of 8 warps
+acefdd76 [nvtest] 07:33:43 [probe] nvcc13.3 short LOW1                       own cycles an mma, by warp: 0:16.92
+acefdd76 [nvtest] 07:33:44 [probe] nvcc13.3 short K1                         pipe  89.52% (89.52-89.54) 17.873 cyc/IMMA 248 ms x5 | 178.16 T-MAC/s by count, counter 2772 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:44 [probe] nvcc13.3 short K1                         own cycles an mma, by warp: 0:35.75 1:35.75 2:35.75 3:35.75 4:35.75 5:35.75 6:35.75 7:35.75
+acefdd76 [nvtest] 07:33:46 [probe] nvcc13.3 short K2                         pipe  92.80% (92.80-92.80) 17.242 cyc/IMMA 239 ms x5 | 184.48 T-MAC/s by count, counter 2772 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:46 [probe] nvcc13.3 short K2                         own cycles an mma, by warp: 0:34.48 1:34.48 2:34.48 3:34.48 4:34.48 5:34.48 6:34.48 7:34.48
+acefdd76 [nvtest] 07:33:47 [probe] nvcc13.3 short K3                         pipe  92.91% (92.91-92.91) 17.221 cyc/IMMA 238 ms x5 | 184.73 T-MAC/s by count, counter 2773 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:47 [probe] nvcc13.3 short K3                         own cycles an mma, by warp: 0:34.44 1:34.44 2:34.44 3:34.44 4:34.44 5:34.44 6:34.44 7:34.44
+acefdd76 [nvtest] 07:33:48 [probe] nvcc13.3 short K4                         pipe  91.91% (91.91-91.92) 17.408 cyc/IMMA 242 ms x5 | 182.36 T-MAC/s by count, counter 2758 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:48 [probe] nvcc13.3 short K4                         own cycles an mma, by warp: 0:34.82 1:34.82 2:34.82 3:34.82 4:34.81 5:34.81 6:34.81 7:34.81
+acefdd76 [nvtest] 07:33:50 [probe] nvcc13.3 short K5                         pipe  92.02% (92.02-92.02) 17.388 cyc/IMMA 242 ms x5 | 182.45 T-MAC/s by count, counter 2757 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:50 [probe] nvcc13.3 short K5                         own cycles an mma, by warp: 0:34.78 1:34.78 2:34.78 3:34.78 4:34.78 5:34.78 6:34.78 7:34.78
+acefdd76 [nvtest] 07:33:51 [probe] nvcc13.3 short K6                         pipe  87.52% (87.52-87.52) 18.281 cyc/IMMA 255 ms x4 | 173.56 T-MAC/s by count, counter 2758 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:51 [probe] nvcc13.3 short K6                         own cycles an mma, by warp: 0:36.56 1:36.56 2:36.56 3:36.56 4:36.56 5:36.56 6:36.56 7:36.56
+acefdd76 [nvtest] 07:33:52 [probe] nvcc13.3 short K8                         pipe  54.69% (54.68-54.69) 29.258 cyc/IMMA 408 ms x3 | 108.28 T-MAC/s by count, counter 2757 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:52 [probe] nvcc13.3 short K8                         own cycles an mma, by warp: 0:58.51 1:58.52 2:58.52 3:58.52 4:58.51 5:58.52 6:58.52 7:58.52
+acefdd76 [nvtest] 07:33:54 [probe] nvcc13.3 short K9                         pipe  32.43% (32.43-32.43) 49.333 cyc/IMMA 674 ms x2 | 65.37 T-MAC/s by count, counter 2811 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:54 [probe] nvcc13.3 short K9                         own cycles an mma, by warp: 0:98.66 1:98.67 2:98.67 3:98.67 4:95.05 5:95.05 6:95.05 7:95.05
+acefdd76 [nvtest] 07:33:55 [probe] nvcc13.3 short K10                        pipe  84.79% (84.79-84.79) 18.870 cyc/IMMA 263 ms x4 | 167.65 T-MAC/s by count, counter 2754 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:33:55 [probe] nvcc13.3 short K10                        own cycles an mma, by warp: 0:37.74 1:37.74 2:37.74 3:37.74 4:37.74 5:37.74 6:37.74 7:37.74
+acefdd76 [nvtest] 07:33:56 [probe] nvcc13.3 short H0                         pipe  99.20% (99.19-99.20) 16.130 cyc/IMMA 110 ms x10 | 199.84 T-MAC/s by count, counter 2812 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:33:56 [probe] nvcc13.3 short H0                         own cycles an mma, by warp: 0:16.13 1:16.13 2:16.13 3:16.13
+acefdd76 [nvtest] 07:33:56 [probe] nvcc13.3 short H0                         helpers, passes a cycle and passes an mma of the scheduler: 4:0.0000,0.000 5:0.0000,0.000 6:0.0000,0.000 7:0.0000,0.000
+acefdd76 [nvtest] 07:33:58 [probe] nvcc13.3 short H1                         pipe  94.83% (94.83-94.83) 16.872 cyc/IMMA 117 ms x9 | 188.91 T-MAC/s by count, counter 2780 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:33:58 [probe] nvcc13.3 short H1                         own cycles an mma, by warp: 0:16.87 1:16.87 2:16.87 3:16.87
+acefdd76 [nvtest] 07:33:58 [probe] nvcc13.3 short H1                         helpers, passes a cycle and passes an mma of the scheduler: 4:0.0085,0.144 5:0.0085,0.144 6:0.0085,0.144 7:0.0085,0.144
+acefdd76 [nvtest] 07:33:59 [probe] nvcc13.3 short H1B                        pipe  96.91% (96.91-96.91) 16.510 cyc/IMMA 114 ms x9 | 193.25 T-MAC/s by count, counter 2780 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:33:59 [probe] nvcc13.3 short H1B                        own cycles an mma, by warp: 0:16.51 1:16.51 2:16.51 3:16.51
+acefdd76 [nvtest] 07:33:59 [probe] nvcc13.3 short H1B                        helpers, passes a cycle and passes an mma of the scheduler: 4:0.0122,0.201 5:0.0122,0.201 6:0.0122,0.201 7:0.0122,0.201
+acefdd76 [nvtest] 07:34:00 [probe] nvcc13.3 short H2                         pipe  98.30% (98.30-98.30) 16.277 cyc/IMMA 112 ms x9 | 196.07 T-MAC/s by count, counter 2779 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:00 [probe] nvcc13.3 short H2                         own cycles an mma, by warp: 0:16.28 1:16.28 2:16.28 3:16.28
+acefdd76 [nvtest] 07:34:00 [probe] nvcc13.3 short H2                         helpers, passes a cycle and passes an mma of the scheduler: 4:0.0085,0.139 5:0.0085,0.139 6:0.0085,0.139 7:0.0085,0.139
+acefdd76 [nvtest] 07:34:01 [probe] nvcc13.3 short H3                         pipe  96.97% (96.95-97.36) 16.500 cyc/IMMA 114 ms x9 | 193.17 T-MAC/s by count, counter 2778 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:01 [probe] nvcc13.3 short H3                         own cycles an mma, by warp: 0:16.50 1:16.50 2:16.50 3:16.50
+acefdd76 [nvtest] 07:34:01 [probe] nvcc13.3 short H3                         helpers, passes a cycle and passes an mma of the scheduler: 4:0.0083,0.137 5:0.0083,0.137 6:0.0083,0.137 7:0.0083,0.137
+acefdd76 [nvtest] 07:34:02 [probe] nvcc13.3 short H4                         pipe  97.06% (97.06-97.06) 16.484 cyc/IMMA 114 ms x9 | 193.65 T-MAC/s by count, counter 2777 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:02 [probe] nvcc13.3 short H4                         own cycles an mma, by warp: 0:16.48 1:16.48 2:16.48 3:16.48
+acefdd76 [nvtest] 07:34:02 [probe] nvcc13.3 short H4                         helpers, passes a cycle and passes an mma of the scheduler: 4:0.0057,0.094 5:0.0057,0.094 6:0.0057,0.094 7:0.0057,0.094
+acefdd76 [nvtest] 07:34:04 [probe] nvcc13.3 short H1S                        pipe  98.27% (95.03-99.35) 16.281 cyc/IMMA 116 ms x9 | 190.37 T-MAC/s by count, counter 2696 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:04 [probe] nvcc13.3 short H1S                        own cycles an mma, by warp: 0:16.84 1:16.10 2:16.10 3:16.10
+acefdd76 [nvtest] 07:34:04 [probe] nvcc13.3 short H1S                        helpers, passes a cycle and passes an mma of the scheduler: 4:0.0085,0.138
+acefdd76 [nvtest] 07:34:05 [probe] nvcc13.3 short H8                         pipe  99.90% (99.90-99.90) 16.016 cyc/IMMA 147 ms x7 | 200.29 T-MAC/s by count, counter 2782 MHz, 70 SMs, 8 of 12 warps
+acefdd76 [nvtest] 07:34:05 [probe] nvcc13.3 short H8                         own cycles an mma, by warp: 0:32.03 1:32.03 2:32.03 3:32.03 4:32.03 5:32.03 6:32.03 7:32.03
+acefdd76 [nvtest] 07:34:05 [probe] nvcc13.3 short H8                         helpers, passes a cycle and passes an mma of the scheduler: 8:0.0000,0.000 9:0.0000,0.000 10:0.0000,0.000 11:0.0000,0.000
+acefdd76 [nvtest] 07:34:06 [probe] nvcc13.3 short H8B                        pipe  95.78% (95.76-95.97) 16.705 cyc/IMMA 154 ms x7 | 190.89 T-MAC/s by count, counter 2778 MHz, 70 SMs, 8 of 12 warps
+acefdd76 [nvtest] 07:34:06 [probe] nvcc13.3 short H8B                        own cycles an mma, by warp: 0:33.41 1:33.41 2:33.41 3:33.41 4:33.41 5:33.41 6:33.41 7:33.41
+acefdd76 [nvtest] 07:34:06 [probe] nvcc13.3 short H8B                        helpers, passes a cycle and passes an mma of the scheduler: 8:0.0085,0.142 9:0.0085,0.142 10:0.0085,0.142 11:0.0085,0.142
+acefdd76 [nvtest] 07:34:07 [probe] nvcc13.3 short H8C                        pipe  98.98% (98.98-98.98) 16.165 cyc/IMMA 149 ms x7 | 197.23 T-MAC/s by count, counter 2778 MHz, 70 SMs, 8 of 12 warps
+acefdd76 [nvtest] 07:34:07 [probe] nvcc13.3 short H8C                        own cycles an mma, by warp: 0:32.33 1:32.33 2:32.33 3:32.33 4:32.33 5:32.33 6:32.33 7:32.33
+acefdd76 [nvtest] 07:34:07 [probe] nvcc13.3 short H8C                        helpers, passes a cycle and passes an mma of the scheduler: 8:0.0085,0.137 9:0.0085,0.137 10:0.0085,0.137 11:0.0085,0.137
+acefdd76 [nvtest] 07:34:08 [probe] nvcc13.3 short HL0                        pipe  99.02% (99.00-99.03) 16.158 cyc/IMMA 112 ms x9 | 197.50 T-MAC/s by count, counter 2778 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:08 [probe] nvcc13.3 short HL0                        own cycles an mma, by warp: 0:16.16 1:16.16 2:16.16 3:16.16
+acefdd76 [nvtest] 07:34:08 [probe] nvcc13.3 short HL0                        helpers, passes a cycle and passes an mma of the scheduler: 4:0.0000,0.000 5:0.0000,0.000 6:0.0000,0.000 7:0.0000,0.000
+acefdd76 [nvtest] 07:34:10 [probe] nvcc13.3 short HL1                        pipe  94.34% (94.33-94.34) 16.960 cyc/IMMA 117 ms x9 | 187.78 T-MAC/s by count, counter 2775 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:10 [probe] nvcc13.3 short HL1                        own cycles an mma, by warp: 0:16.96 1:16.96 2:16.96 3:16.96
+acefdd76 [nvtest] 07:34:10 [probe] nvcc13.3 short HL1                        helpers, passes a cycle and passes an mma of the scheduler: 4:0.0085,0.145 5:0.0085,0.145 6:0.0085,0.145 7:0.0085,0.145
+acefdd76 [nvtest] 07:34:11 [probe] nvcc13.3 short HL2                        pipe  97.99% (97.99-97.99) 16.328 cyc/IMMA 113 ms x9 | 194.99 T-MAC/s by count, counter 2775 MHz, 70 SMs, 4 of 8 warps
+acefdd76 [nvtest] 07:34:11 [probe] nvcc13.3 short HL2                        own cycles an mma, by warp: 0:16.33 1:16.33 2:16.33 3:16.33
+acefdd76 [nvtest] 07:34:11 [probe] nvcc13.3 short HL2                        helpers, passes a cycle and passes an mma of the scheduler: 4:0.0085,0.138 5:0.0085,0.138 6:0.0085,0.138 7:0.0085,0.138
+acefdd76 [nvtest] 07:34:12 [probe] nvcc13.3 short rd2aN                      pipe  98.40% (98.40-98.40) 16.260 cyc/IMMA 225 ms x5 | 195.95 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:12 [probe] nvcc13.3 short rd2aN                      own cycles an mma, by warp: 0:32.52 1:32.52 2:32.52 3:32.52 4:32.52 5:32.52 6:32.52 7:32.52
+acefdd76 [nvtest] 07:34:13 [probe] nvcc13.3 short d4mN                       pipe  96.92% (96.92-96.92) 16.508 cyc/IMMA 230 ms x5 | 191.79 T-MAC/s by count, counter 2756 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:13 [probe] nvcc13.3 short d4mN                       own cycles an mma, by warp: 0:33.02 1:33.02 2:33.02 3:33.02 4:33.02 5:33.02 6:33.02 7:33.02
+acefdd76 [nvtest] 07:34:15 [probe] nvcc13.3 short full3N                     pipe  95.03% (95.03-95.04) 16.836 cyc/IMMA 235 ms x5 | 187.93 T-MAC/s by count, counter 2756 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:15 [probe] nvcc13.3 short full3N                     own cycles an mma, by warp: 0:33.67 1:33.67 2:33.67 3:33.67 4:33.66 5:33.66 6:33.66 7:33.66
+acefdd76 [nvtest] 07:34:16 [probe] nvcc13.3 short rd2aO                      pipe  98.08% (98.05-98.08) 16.313 cyc/IMMA 226 ms x5 | 195.27 T-MAC/s by count, counter 2776 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:16 [probe] nvcc13.3 short rd2aO                      own cycles an mma, by warp: 0:32.63 1:32.63 2:32.63 3:32.63 4:32.63 5:32.63 6:32.63 7:32.63
+acefdd76 [nvtest] 07:34:17 [probe] nvcc13.3 short d4mO                       pipe  92.08% (91.27-92.23) 17.376 cyc/IMMA 244 ms x5 | 181.15 T-MAC/s by count, counter 2733 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:17 [probe] nvcc13.3 short d4mO                       own cycles an mma, by warp: 0:34.75 1:34.75 2:34.75 3:34.75 4:34.75 5:34.75 6:34.75 7:34.75
+acefdd76 [nvtest] 07:34:19 [probe] nvcc13.3 short full3O                     pipe  90.14% (89.99-90.52) 17.750 cyc/IMMA 248 ms x5 | 178.23 T-MAC/s by count, counter 2754 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:19 [probe] nvcc13.3 short full3O                     own cycles an mma, by warp: 0:35.50 1:35.50 2:35.50 3:35.50 4:35.50 5:35.50 6:35.50 7:35.50
+acefdd76 [nvtest] 07:34:20 [probe] nvcc13.3 short F4O                        pipe  87.97% (87.97-87.97) 18.188 cyc/IMMA 253 ms x4 | 174.07 T-MAC/s by count, counter 2757 MHz, 70 SMs, 8 of 8 warps
+acefdd76 [nvtest] 07:34:20 [probe] nvcc13.3 short F4O                        own cycles an mma, by warp: 0:36.38 1:36.38 2:36.38 3:36.38 4:36.37 5:36.37 6:36.37 7:36.37
+acefdd76 [nvtest] 07:34:20 [probe] card after the probe 2752 MHz, 223.21 W, 300.00 W, 63.80, 100 %, 496 MiB
+acefdd76 [nvtest] 07:34:20 [probe] all done
+acefdd76 [nvtest] 07:34:20 all done
+acefdd76 [nvtest] 07:34:20 idle until deleted

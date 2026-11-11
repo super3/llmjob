@@ -1,0 +1,139 @@
+218578cc [nvtest] 08:37:08 boot container started
+218578cc [nvtest] 08:37:17 [probe] card NVIDIA GeForce RTX 5090, 621.14, 12.0, 800.00 W, 800.00 W, 400.00 W, 800.00 W, 3090 MHz, 32607 MiB
+218578cc [nvtest] 08:37:17 [probe] card idle 375 MHz, 27.70 W, 35.50, 0 %, 1327 MiB gpus=1
+218578cc [nvtest] 08:37:17 [probe] card enforced limit 800.00 W, instant draw 27.79 W, average 27.70 W
+218578cc [nvtest] 08:37:35 setup ok in 0s
+218578cc [nvtest] 08:37:43 cuda V13.3.73 in /opt/cuda, 8s
+218578cc [nvtest] 08:37:43 fetch ok f2f5c8edd932
+218578cc [nvtest] [bench] 08:37:45 card NVIDIA GeForce RTX 5090, 621.14, 800.00 W, 800.00 W, 32607 MiB, 12.0
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built F1F regs=233 spill=0 imma=192 other=295 per_imma=1.536 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:192,UIADD3:92,LDSM:9,UISETP:1,BRA:1 gaps=0:14,1:76,2:95,3:4,4:1,5:1,8:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built G2F regs=237 spill=0 imma=192 other=193 per_imma=1.005 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:96,UIADD3:86,LDSM:9,UISETP:1,BRA:1 gaps=0:98,1:5,2:84,3:2,4:2,6:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built G2d1F regs=240 spill=0 imma=192 other=269 per_imma=1.401 longest_run=9 runs_over_8=1 ctl=1[BRA] top=LOP3:104,UIADD3:82,IADD:29,LDS:16,PRMT:16,LDSM:16,STS:4 gaps=0:77,1:10,2:86,3:11,4:2,5:1,8:4,9:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built G2d2F regs=244 spill=0 imma=192 other=331 per_imma=1.724 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:112,UIADD3:72,IADD:57,LDS:32,PRMT:32,LDSM:16,STS:8 gaps=0:68,1:12,2:77,3:7,4:12,5:8,6:3,7:2,8:3
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built base regs=236 spill=0 imma=1344 other=155 per_imma=0.115 longest_run=6 runs_over_8=1 ctl=5[BRA] top=IADD3:95,LDSM:26,UIADD3:6,BRA:5,IMAD:5,UISETP:3,STG:3 gaps=0:1324,1:10,2:5,3:1,4:1,5:1,6:1,117:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built baseF regs=224 spill=0 imma=192 other=13 per_imma=0.068 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,UIADD3:2,UISETP:1,BRA:1 gaps=0:184,1:5,2:2,4:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built d1mF regs=232 spill=0 imma=192 other=92 per_imma=0.479 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:29,LDS:16,PRMT:16,LDSM:16,LOP3:8,STS:4,UIADD3:1 gaps=0:157,1:14,2:9,3:5,4:1,5:2,6:1,8:2,9:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built d2mF regs=236 spill=0 imma=192 other=164 per_imma=0.854 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:57,LDS:32,PRMT:32,LOP3:16,LDSM:16,STS:8,UIADD3:1 gaps=0:141,1:12,2:11,3:12,4:3,5:4,6:4,7:3,8:1,9:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built d4mF regs=240 spill=0 imma=192 other=308 per_imma=1.604 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:113,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:103,1:11,2:24,3:22,4:9,5:7,6:4,7:9,8:2,9:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built rd2aF regs=231 spill=0 imma=192 other=123 per_imma=0.641 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:100,UIADD3:11,LDSM:9,UISETP:1,ATOMS:1,BRA:1 gaps=0:158,1:5,2:10,3:9,4:1,6:2,7:5,8:1,12:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 built rd4F regs=238 spill=0 imma=192 other=415 per_imma=2.161 longest_run=9 runs_over_8=2 ctl=1[BRA] top=LOP3:132,IADD:113,LDS:64,PRMT:64,STS:16,LDSM:16,UIADD3:7 gaps=0:85,1:12,2:26,3:28,4:8,5:6,6:5,7:14,8:6,9:1,20:1
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 builds done in 6 s with V13.3.73 for sm_120
+218578cc [nvtest] 08:37:51 [probe] nvcc13.3 trace base I1 M1 A2 M1 I1 M2 I1 M1 I41 M1 I2 M1 I2 M2 I720 A1 BRA A1 BRA A1 BRA I1 M1 A1 M3 I23 M1 I1 M1 I11 M1 I12 M2 I336 A2 BRA I1 M1 I23 M1 I12 M2 I12 M2 I83 M1 I1 M1 I60 A21 X1 A1 X1 A4 S1 A1 S1 A83 S1 A1 BRA1
+218578cc [nvtest] [bench] 08:37:52 [verify-pool] listening on 127.0.0.1:3334, compressed proofs offered, target 2^210 (commit f2f5c8edd932)
+218578cc [nvtest] [bench] 08:37:53 tap listening on 127.0.0.1:3333 -> 127.0.0.1:3334
+218578cc [nvtest] [bench] 08:37:53 ready PeakMiner 2.20.7, SRBMiner 3.8.2, OneZeroMiner 1.8.5, ours v0.6.15
+218578cc [nvtest] [bench] 08:37:53 start peak 60s
+218578cc [nvtest] [bench] 08:39:01 start peak 100s
+218578cc [nvtest] [bench] 08:39:16 sample peak t=15 hs=436000377156702.94 acc=70 rej=? gpu=468.62,2527,54.30,13801,100,0,1902
+218578cc [nvtest] [bench] 08:39:31 sample peak t=30 hs=436284111321238.6 acc=160 rej=? gpu=468.90,2527,55.40,13801,100,0,1902
+218578cc [nvtest] [bench] 08:39:46 sample peak t=45 hs=436147169545844.56 acc=254 rej=? gpu=470.21,2520,56.20,13801,100,0,1902
+218578cc [nvtest] [bench] 08:40:01 sample peak t=60 hs=436431487522354.06 acc=343 rej=? gpu=469.57,2527,56.70,13801,100,0,1902
+218578cc [nvtest] [bench] 08:40:17 sample peak t=75 hs=436597839150226.7 acc=435 rej=? gpu=470.02,2527,57.10,13801,100,0,1902
+218578cc [nvtest] [bench] 08:40:32 sample peak t=91 hs=436497876640607.4 acc=528 rej=? gpu=469.79,2527,57.50,13801,100,0,1902
+218578cc [nvtest] [bench] 08:40:47 sample peak t=106 hs=436565809698611.25 acc=607 rej=? gpu=470.65,2527,57.80,13801,100,0,1902
+218578cc [nvtest] [bench] 08:40:47 end peak: 2026-11-11 08:40:46 accepted   GPU 0  lat 78ms  diff 70.37 TH  effort 94% 2026-11-11 08:40:46 accepted   GPU 0  lat 138ms  diff 70.37 TH  effort 0%
+218578cc [nvtest] [bench] 08:40:47 credit peak secs=106 bits=210 ok=607 dup=0 rej=0 ths=402.96 ths60=419.15 hs=4.301e+14 permin=333,274
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16320 plain=2133008 tail=0 A:leaves=1536x1024 of 1966080 sib=45 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16320}
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 A rows 24@1734+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 Bt rows 8@6407+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16336 plain=2132976 tail=0 A:leaves=1536x1024 of 1966080 sib=44 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16336}
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 A rows 24@6914+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 Bt rows 8@13604+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 ok m=30720 n=16384 k=65536 r=128 tile=24x8 gz=1 wire=16320 plain=2133008 tail=0 A:leaves=1536x1024 of 1966080 sib=45 Bt:leaves=512x1024 of 1048576 sib=38 params={hs:float,job_id:14,plain_proof:16320}
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 A rows 24@20172+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak 08:39:04 Bt rows 8@6692+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:40:57 share peak bench-peak summary m=30720 n=16384 k=65536 r=128 tile=24x8:607 ok:607
+218578cc [nvtest] [bench] 08:40:57 start srb 100s
+218578cc [nvtest] [bench] 08:41:13 sample srb t=15 hs=434361634884493.4 acc=0 rej=0 gpu=470.30,2505,55.10,13801,100,0,2373
+218578cc [nvtest] [bench] 08:41:28 sample srb t=31 hs=425725442988925.8 acc=84 rej=0 gpu=468.26,2505,56.20,13801,100,0,2373
+218578cc [nvtest] [bench] 08:41:43 sample srb t=46 hs=430830652262266.8 acc=183 rej=0 gpu=468.85,2512,56.70,13801,100,0,2373
+218578cc [nvtest] [bench] 08:41:58 sample srb t=61 hs=436100786669790.8 acc=274 rej=0 gpu=468.83,2512,57.20,13801,100,0,2373
+218578cc [nvtest] [bench] 08:42:13 sample srb t=76 hs=425991418156723.8 acc=358 rej=0 gpu=470.97,2512,57.60,13801,100,0,2373
+218578cc [nvtest] [bench] 08:42:28 sample srb t=91 hs=431583615623875.5 acc=450 rej=0 gpu=469.33,2512,57.80,13801,99,0,2373
+218578cc [nvtest] [bench] 08:42:43 sample srb t=106 hs=424817397080568.75 acc=548 rej=0 gpu=469.90,2505,58.00,13801,100,0,2373
+218578cc [nvtest] [bench] 08:42:43 end srb: [0m[2026-11-11 08:42:40] [1m[40m[32mGPU0[t0] share accepted [   86ms] [pearlhash][0][0m [0m[2026-11-11 08:42:40] [1m[40m[32mGP
+218578cc [nvtest] [bench] 08:42:43 credit srb secs=106 bits=210 ok=548 dup=0 rej=0 ths=363.79 ths60=429.86 hs=4.246e+14 permin=267,281
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31284 plain=2133072 tail=0 A:leaves=1536x1024 of 1056896 sib=45 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31284,hs:int}
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 A rows 24@6336+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 Bt rows 8@12565+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31224 plain=2133040 tail=0 A:leaves=1536x1024 of 1056896 sib=44 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31224,hs:int}
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 A rows 24@7688+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 Bt rows 8@25137+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 ok m=16514 n=62720 k=65536 r=128 tile=24x8 gz=1 wire=31384 plain=2133136 tail=0 A:leaves=1536x1024 of 1056896 sib=47 Bt:leaves=512x1024 of 4014080 sib=40 params={job_id:14,plain_proof:31384,hs:int}
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 A rows 24@11142+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb 08:41:14 Bt rows 8@55574+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:42:52 share srb bench-srb summary m=16514 n=62720 k=65536 r=128 tile=24x8:553 ok:552 noreply:1
+218578cc [nvtest] [bench] 08:42:52 start ozm 100s
+218578cc [nvtest] [bench] 08:43:07 sample ozm t=15 hs=373101018092201 acc=34 rej=0 gpu=463.65,2520,54.80,13801,100,0,2328
+218578cc [nvtest] [bench] 08:43:22 sample ozm t=30 hs=422440711877787 acc=95 rej=0 gpu=460.76,2520,55.80,13801,100,0,2328
+218578cc [nvtest] [bench] 08:43:37 sample ozm t=45 hs=429122517841276 acc=159 rej=0 gpu=465.25,2520,56.60,13801,100,0,2328
+218578cc [nvtest] [bench] 08:43:53 sample ozm t=60 hs=428490733885501 acc=230 rej=0 gpu=459.97,2520,56.90,13801,98,0,2328
+218578cc [nvtest] [bench] 08:44:08 sample ozm t=76 hs=429869192350807 acc=291 rej=0 gpu=463.07,2527,57.40,13801,100,0,2328
+218578cc [nvtest] [bench] 08:44:23 sample ozm t=91 hs=429212655640182 acc=355 rej=0 gpu=465.99,2527,57.60,13801,98,0,2328
+218578cc [nvtest] [bench] 08:44:38 sample ozm t=106 hs=428567662865052 acc=425 rej=0 gpu=462.52,2520,57.40,13801,98,0,2328
+218578cc [nvtest] [bench] 08:44:38 end ozm:  08:44:37  [32m[pearlhash] GPU 0 Share accepted (164 ms)[0m  08:44:38  [32m[pearlhash] GPU 0 Share accepted (88 ms)[0m
+218578cc [nvtest] [bench] 08:44:38 credit ozm secs=106 bits=210 ok=425 dup=0 rej=0 ths=282.14 ths60=307.48 hs=none permin=224,201
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 ok m=32640 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36300 plain=2133073 tail=1 A:leaves=1536x1024 of 2088960 sib=46 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36300}
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 A rows 24@31106+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 Bt rows 8@24865+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 ok m=32640 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36156 plain=2133009 tail=1 A:leaves=1536x1024 of 2088960 sib=44 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36156}
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 A rows 24@5960+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:58 Bt rows 8@9510+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:59 ok m=32640 n=32768 k=65536 r=128 tile=24x8 gz=1 wire=36252 plain=2133073 tail=1 A:leaves=1536x1024 of 2088960 sib=46 Bt:leaves=512x1024 of 2097152 sib=39 params={wallet:62,worker:9,job_id:14,plain_proof:36252}
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:59 A rows 24@14796+[0,1,16,17,32,33,48,49,64,65,80,81,96,97,112,113,128,129,144,145,160,161,176,177] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm 08:42:59 Bt rows 8@1843+[0,8,64,72,128,136,192,200] bytes distinct=1 range=64..64 top=64:100.0%
+218578cc [nvtest] [bench] 08:44:47 share ozm bench-ozm summary m=32640 n=32768 k=65536 r=128 tile=24x8:427 ok:427
+218578cc [nvtest] [bench] 08:44:47 vpool {"connections":4,"jobs":14,"byK":{"65536":{"shares":1948,"accepted":1948,"rejected":0}},"reasons":{},"methods":{},"logins":[{"conn":1,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":2,"agent":"peakminer/2.20.7","type":"v2","params":"agent,devices,encoding,password,type,wallet,worker"},{"conn":3,"agent":"SRBMiner-MULTI/3.8.2","type":"v2"
+218578cc [nvtest] [bench] 08:44:47 vpool ,"params":"wallet,worker,agent,type"},{"conn":4,"agent":"OneZeroMiner/1.8.5","type":"v2","params":"wallet,worker,password,agent,devices,type,compress"}]}
+218578cc [nvtest] [bench] 08:44:47 all done
+218578cc [nvtest] 08:45:07 [probe] card before the probe 375 MHz, 27.82 W, 800.00 W, 36.40, 0 %, 1356 MiB
+218578cc [nvtest] 08:45:08 [probe] nvcc13.3 short base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 243 ms x5 | 440.61 T-MAC/s by count, counter 2532 MHz, 170 SMs, 8 of 8 warps, sums 95b8bae5
+218578cc [nvtest] 08:45:08 [probe] nvcc13.3 short base                       own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+218578cc [nvtest] 08:45:09 [probe] nvcc13.3 short baseF                      pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 244 ms x5 | 439.59 T-MAC/s by count, counter 2523 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5
+218578cc [nvtest] 08:45:09 [probe] nvcc13.3 short baseF                      own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+218578cc [nvtest] 08:45:11 [probe] nvcc13.3 short F1F                        pipe  99.54% (99.53-99.54) 16.074 cyc/IMMA 245 ms x5 | 436.83 T-MAC/s by count, counter 2519 MHz, 170 SMs, 8 of 8 warps, sums 9b1a4e85
+218578cc [nvtest] 08:45:11 [probe] nvcc13.3 short F1F                        own cycles an mma, by warp: 0:32.15 1:32.15 2:32.15 3:32.15 4:32.15 5:32.15 6:32.15 7:32.15
+218578cc [nvtest] 08:45:12 [probe] nvcc13.3 short G2F                        pipe  99.77% (99.77-99.77) 16.036 cyc/IMMA 244 ms x5 | 438.11 T-MAC/s by count, counter 2520 MHz, 170 SMs, 8 of 8 warps, sums de8aee35
+218578cc [nvtest] 08:45:12 [probe] nvcc13.3 short G2F                        own cycles an mma, by warp: 0:32.07 1:32.07 2:32.07 3:32.07 4:32.07 5:32.07 6:32.07 7:32.07
+218578cc [nvtest] 08:45:14 [probe] nvcc13.3 short d1mF                       pipe  99.64% (99.64-99.64) 16.059 cyc/IMMA 245 ms x5 | 436.87 T-MAC/s by count, counter 2516 MHz, 170 SMs, 8 of 8 warps, sums 28af04a5
+218578cc [nvtest] 08:45:14 [probe] nvcc13.3 short d1mF                       own cycles an mma, by warp: 0:32.12 1:32.12 2:32.12 3:32.12 4:32.12 5:32.12 6:32.12 7:32.12
+218578cc [nvtest] 08:45:15 [probe] nvcc13.3 short d2mF                       pipe  98.86% (98.86-98.86) 16.184 cyc/IMMA 247 ms x5 | 433.35 T-MAC/s by count, counter 2520 MHz, 170 SMs, 8 of 8 warps, sums 874694a5
+218578cc [nvtest] 08:45:15 [probe] nvcc13.3 short d2mF                       own cycles an mma, by warp: 0:32.37 1:32.37 2:32.37 3:32.37 4:32.37 5:32.37 6:32.37 7:32.37
+218578cc [nvtest] 08:45:16 [probe] nvcc13.3 short d4mF                       pipe  96.92% (96.92-96.92) 16.508 cyc/IMMA 252 ms x4 | 424.55 T-MAC/s by count, counter 2514 MHz, 170 SMs, 8 of 8 warps, sums 77a564a5
+218578cc [nvtest] 08:45:16 [probe] nvcc13.3 short d4mF                       own cycles an mma, by warp: 0:33.02 1:33.02 2:33.02 3:33.02 4:33.02 5:33.02 6:33.02 7:33.02
+218578cc [nvtest] 08:45:18 [probe] nvcc13.3 short rd2aF                      pipe  98.37% (98.37-98.37) 16.266 cyc/IMMA 248 ms x5 | 432.07 T-MAC/s by count, counter 2520 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5
+218578cc [nvtest] 08:45:18 [probe] nvcc13.3 short rd2aF                      own cycles an mma, by warp: 0:32.53 1:32.53 2:32.53 3:32.53 4:32.53 5:32.53 6:32.53 7:32.53
+218578cc [nvtest] 08:45:19 [probe] nvcc13.3 short rd4F                       pipe  94.05% (93.98-94.39) 17.012 cyc/IMMA 260 ms x4 | 411.53 T-MAC/s by count, counter 2508 MHz, 170 SMs, 8 of 8 warps, sums 77a564a5
+218578cc [nvtest] 08:45:19 [probe] nvcc13.3 short rd4F                       own cycles an mma, by warp: 0:34.02 1:34.02 2:34.02 3:34.02 4:34.02 5:34.02 6:34.02 7:34.02
+218578cc [nvtest] 08:45:20 [probe] nvcc13.3 short G2d1F                      pipe  98.98% (98.98-98.98) 16.164 cyc/IMMA 247 ms x5 | 433.24 T-MAC/s by count, counter 2513 MHz, 170 SMs, 8 of 8 warps, sums 165d57ad
+218578cc [nvtest] 08:45:20 [probe] nvcc13.3 short G2d1F                      own cycles an mma, by warp: 0:32.33 1:32.33 2:32.33 3:32.33 4:32.33 5:32.33 6:32.33 7:32.33
+218578cc [nvtest] 08:45:22 [probe] nvcc13.3 short G2d2F                      pipe  98.29% (98.29-98.29) 16.279 cyc/IMMA 249 ms x5 | 430.31 T-MAC/s by count, counter 2512 MHz, 170 SMs, 8 of 8 warps, sums 3523cbad
+218578cc [nvtest] 08:45:22 [probe] nvcc13.3 short G2d2F                      own cycles an mma, by warp: 0:32.56 1:32.56 2:32.56 3:32.56 4:32.56 5:32.56 6:32.56 7:32.56
+218578cc [nvtest] 08:45:23 [probe] nvcc13.3 baseF.o perm *=orig: 1 stretches, 0 of 204 moved, 0 held by a dependency, 0 reuse flags cleared, gaps=0:184,1:6,2:1,4:1 | read back gaps=0:184,1:5,2:2,4:1
+218578cc [nvtest] 08:45:24 [probe] nvcc13.3 short baseF.o                    pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 243 ms x5 | 439.44 T-MAC/s by count, counter 2524 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5
+218578cc [nvtest] 08:45:24 [probe] nvcc13.3 short baseF.o                    own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+218578cc [nvtest] 08:45:25 [probe] nvcc13.3 d1mF.sp perm *=spread: 1 stretches, 267 of 283 moved, 16 held by a dependency, 10 reuse flags cleared, gaps=0:110,1:74,2:7,3:1 | read back gaps=0:110,1:74,2:6,3:2
+218578cc [nvtest] 08:45:27 [probe] nvcc13.3 short d1mF.sp                    pipe  99.86% (99.86-99.87) 16.022 cyc/IMMA 245 ms x5 | 438.02 T-MAC/s by count, counter 2516 MHz, 170 SMs, 8 of 8 warps, sums 28af04a5
+218578cc [nvtest] 08:45:27 [probe] nvcc13.3 short d1mF.sp                    own cycles an mma, by warp: 0:32.04 1:32.04 2:32.04 3:32.04 4:32.04 5:32.04 6:32.04 7:32.04
+218578cc [nvtest] 08:45:28 [probe] nvcc13.3 d2mF.sp perm *=spread: 1 stretches, 344 of 355 moved, 15 held by a dependency, 22 reuse flags cleared, gaps=0:40,1:144,2:5,3:3 | read back gaps=0:40,1:144,2:4,3:4
+218578cc [nvtest] 08:45:29 [probe] nvcc13.3 short d2mF.sp                    pipe  99.68% (99.68-99.68) 16.052 cyc/IMMA 245 ms x5 | 435.75 T-MAC/s by count, counter 2512 MHz, 170 SMs, 8 of 8 warps, sums 874694a5
+218578cc [nvtest] 08:45:29 [probe] nvcc13.3 short d2mF.sp                    own cycles an mma, by warp: 0:32.10 1:32.10 2:32.10 3:32.10 4:32.10 5:32.10 6:32.10 7:32.10
+218578cc [nvtest] 08:45:30 [probe] nvcc13.3 G2d1F.sp perm YLAS=spread: 1 stretches, 450 of 460 moved, 65 held by a dependency, 8 reuse flags cleared, gaps=0:63,1:70,2:36,3:14,4:1,5:2,9:2,10:1,13:2,16:1 | read back gaps=0:63,1:70,2:35,3:15,4:1,5:2,9:2,10:1,13:2,16:1
+218578cc [nvtest] 08:45:31 [probe] nvcc13.3 short G2d1F.sp                   pipe  97.77% (97.77-97.77) 16.365 cyc/IMMA 251 ms x4 | 427.47 T-MAC/s by count, counter 2506 MHz, 170 SMs, 8 of 8 warps, sums f3cfd0ed
+218578cc [nvtest] 08:45:31 [probe] nvcc13.3 short G2d1F.sp                   own cycles an mma, by warp: 0:32.73 1:32.73 2:32.73 3:32.73 4:32.73 5:32.73 6:32.73 7:32.73
+218578cc [nvtest] 08:46:02 [probe] nvcc13.3 long baseF                      pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 244 ms x124 | 439.18 T-MAC/s by count, counter 2522 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5 | 2526 MHz (2520-2527) 355.0 W (max 355.6) of 800 W, 50 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 355.1 W (352.9-357.0), enforced 800.00 W
+218578cc [nvtest] 08:46:32 [probe] nvcc13.3 long G2F                        pipe  99.77% (99.77-99.77) 16.036 cyc/IMMA 245 ms x123 | 437.69 T-MAC/s by count, counter 2518 MHz, 170 SMs, 8 of 8 warps, sums de8aee35 | 2527 MHz (2527-2535) 383.9 W (max 385.1) of 800 W, 52 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 384.1 W (378.6-387.5), enforced 800.00 W
+218578cc [nvtest] 08:47:02 [probe] nvcc13.3 long d1mF                       pipe  99.64% (99.64-99.64) 16.059 cyc/IMMA 245 ms x123 | 435.79 T-MAC/s by count, counter 2513 MHz, 170 SMs, 8 of 8 warps, sums 28af04a5 | 2524 MHz (2520-2527) 394.7 W (max 395.6) of 800 W, 54 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 395.1 W (389.7-398.6), enforced 800.00 W
+218578cc [nvtest] 08:47:33 [probe] nvcc13.3 long d2mF                       pipe  98.77% (98.74-98.77) 16.200 cyc/IMMA 248 ms x122 | 432.25 T-MAC/s by count, counter 2510 MHz, 170 SMs, 8 of 8 warps, sums 874694a5 | 2527 MHz (2527-2527) 426.6 W (max 427.4) of 800 W, 55 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 426.5 W (421.0-430.4), enforced 800.00 W
+218578cc [nvtest] 08:48:03 [probe] nvcc13.3 long d4mF                       pipe  96.92% (96.92-96.92) 16.508 cyc/IMMA 253 ms x119 | 422.34 T-MAC/s by count, counter 2504 MHz, 170 SMs, 8 of 8 warps, sums 77a564a5 | 2527 MHz (2520-2527) 473.0 W (max 474.1) of 800 W, 57 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 472.8 W (463.9-480.8), enforced 800.00 W
+218578cc [nvtest] 08:48:33 [probe] nvcc13.3 long rd2aF                      pipe  98.37% (98.37-98.37) 16.266 cyc/IMMA 248 ms x121 | 430.59 T-MAC/s by count, counter 2514 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5 | 2522 MHz (2520-2527) 374.7 W (max 375.2) of 800 W, 55 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 375.5 W (370.6-378.7), enforced 800.00 W
+218578cc [nvtest] 08:49:04 [probe] nvcc13.3 long rd4F                       pipe  94.08% (94.08-94.08) 17.007 cyc/IMMA 261 ms x116 | 410.22 T-MAC/s by count, counter 2504 MHz, 170 SMs, 8 of 8 warps, sums 77a564a5 | 2521 MHz (2520-2527) 481.2 W (max 482.9) of 800 W, 58 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 481.0 W (473.9-486.6), enforced 800.00 W
+218578cc [nvtest] 08:49:34 [probe] nvcc13.3 long G2d1F                      pipe  98.98% (98.98-98.98) 16.164 cyc/IMMA 247 ms x122 | 432.28 T-MAC/s by count, counter 2509 MHz, 170 SMs, 8 of 8 warps, sums 165d57ad | 2523 MHz (2520-2527) 421.1 W (max 422.6) of 800 W, 57 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 420.7 W (414.9-428.5), enforced 800.00 W
+218578cc [nvtest] 08:50:05 [probe] nvcc13.3 long G2d2F                      pipe  98.29% (98.29-98.29) 16.279 cyc/IMMA 249 ms x121 | 429.14 T-MAC/s by count, counter 2508 MHz, 170 SMs, 8 of 8 warps, sums 3523cbad | 2527 MHz (2527-2535) 447.8 W (max 448.6) of 800 W, 57 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 445.4 W (440.2-452.9), enforced 800.00 W
+218578cc [nvtest] 08:50:35 [probe] nvcc13.3 long baseF                      pipe  99.90% (99.90-99.91) 16.015 cyc/IMMA 244 ms x123 | 438.53 T-MAC/s by count, counter 2523 MHz, 170 SMs, 8 of 8 warps, sums 1ddf04a5 | 2528 MHz (2527-2535) 358.6 W (max 359.5) of 800 W, 54 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 357.9 W (354.6-361.2), enforced 800.00 W
+218578cc [nvtest] 08:51:05 [probe] nvcc13.3 long d1mF.sp                    pipe  99.97% (99.97-99.97) 16.005 cyc/IMMA 245 ms x123 | 436.98 T-MAC/s by count, counter 2513 MHz, 170 SMs, 8 of 8 warps, sums 28af04a5 | 2526 MHz (2520-2527) 403.4 W (max 404.4) of 800 W, 55 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 403.1 W (397.6-408.2), enforced 800.00 W
+218578cc [nvtest] 08:51:35 [probe] nvcc13.3 long d2mF.sp                    pipe  99.68% (99.68-99.68) 16.052 cyc/IMMA 246 ms x122 | 434.82 T-MAC/s by count, counter 2506 MHz, 170 SMs, 8 of 8 warps, sums 874694a5 | 2521 MHz (2512-2527) 426.2 W (max 426.9) of 800 W, 56 C, util 100%, reasons 0x0000000000000004, 27 samples, instant 426.8 W (420.1-432.7), enforced 800.00 W
+218578cc [nvtest] 08:51:35 [probe] card after the probe 2520 MHz, 398.92 W, 800.00 W, 55.70, 57 %, 1356 MiB
+218578cc [nvtest] 08:51:36 [probe] all done
+218578cc [nvtest] 08:51:36 all done
+218578cc [nvtest] 08:51:36 idle until deleted

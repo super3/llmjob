@@ -1,0 +1,135 @@
+801f7b6a [nvtest] 07:43:06 boot container started
+801f7b6a [nvtest] 07:43:14 [probe] card NVIDIA GeForce RTX 5070 Ti, 621.01, 12.0, 300.00 W, 300.00 W, 250.00 W, 300.00 W, 3090 MHz, 16303 MiB
+801f7b6a [nvtest] 07:43:14 [probe] card idle 180 MHz, 13.59 W, 48.90, 0 %, 642 MiB gpus=1
+801f7b6a [nvtest] 07:43:14 [probe] card enforced limit 300.00 W, instant draw 12.77 W, average 13.59 W
+801f7b6a [nvtest] 07:43:27 setup ok in 0s
+801f7b6a [nvtest] 07:43:36 cuda V13.3.73 in /opt/cuda, 9s
+801f7b6a [nvtest] 07:43:37 fetch ok 06c336467aab
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A1 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IMAD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:154,1:6,2:1,3:4,6:6,7:20,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A11 regs=255 spill=20 imma=192 other=108 per_imma=0.562 longest_run=11 runs_over_8=2 ctl=1[BRA] top=LOP3:72,MOV:9,LDSM:9,LDS:8,LDL:3,STL:2,UIADD3:1 gaps=0:165,1:5,2:6,3:3,4:2,5:4,6:2,7:2,8:1,9:1,11:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A11h regs=249 spill=0 imma=192 other=37 per_imma=0.193 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LDS:16,LDSM:9,LOP3:8,UIADD3:1,LEA:1,UISETP:1,BRA:1 gaps=0:178,1:6,2:2,4:4,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A2 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=SHF:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:154,1:6,2:1,3:4,6:6,7:20,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A3 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=PRMT:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:154,1:6,2:1,3:4,6:6,7:20,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A4 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=14 runs_over_8=15 ctl=1[BRA] top=FADD:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:166,1:7,2:1,3:3,10:1,11:3,12:1,13:9,14:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A5 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=14 runs_over_8=15 ctl=1[BRA] top=FMUL:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:166,1:7,2:1,3:3,10:1,11:3,12:1,13:9,14:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A6 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=14 runs_over_8=14 ctl=1[BRA] top=FFMA:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:167,1:6,2:2,5:1,6:1,8:1,10:1,11:2,12:1,13:9,14:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A9 regs=218 spill=0 imma=192 other=67 per_imma=0.349 longest_run=4 runs_over_8=0 ctl=1[BRA] top=STS:48,LDSM:16,UIADD3:1,UISETP:1,BRA:1 gaps=0:156,1:8,2:26,3:1,4:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built A9h regs=218 spill=0 imma=192 other=115 per_imma=0.599 longest_run=6 runs_over_8=0 ctl=1[BRA] top=STS:96,LDSM:16,UIADD3:1,UISETP:1,BRA:1 gaps=0:156,1:8,2:3,3:1,4:23,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built B2 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=9 runs_over_8=1 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:97,1:21,2:57,3:10,4:3,5:1,6:1,7:1,9:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built B48 regs=229 spill=0 imma=192 other=204 per_imma=1.062 longest_run=23 runs_over_8=3 ctl=1[BRA] top=LOP3:96,IADD:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:141,1:1,2:5,3:37,4:5,10:1,23:1,29:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built F0 regs=224 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built F1 regs=233 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:3,4:2,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built M03 regs=235 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built M0f regs=235 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built M33 regs=236 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built M55 regs=236 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built M77 regs=236 spill=0 imma=192 other=204 per_imma=1.062 longest_run=6 runs_over_8=0 ctl=1[BRA] top=LOP3:192,LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:14,1:165,2:7,3:2,4:2,5:1,6:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built N0f regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built N33 regs=228 spill=0 imma=192 other=12 per_imma=0.062 longest_run=4 runs_over_8=0 ctl=1[BRA] top=LDSM:9,IADD:1,ISETP:1,BRA:1 gaps=0:184,1:6,2:1,4:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built U1 regs=241 spill=0 imma=192 other=108 per_imma=0.562 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:96,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:168,1:6,2:3,3:1,4:1,6:3,7:9,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built base regs=236 spill=0 imma=1344 other=150 per_imma=0.112 longest_run=5 runs_over_8=1 ctl=5[BRA] top=IADD3:95,LDSM:26,BRA:5,IMAD:5,UISETP:3,STG:3,LDC:2 gaps=0:1324,1:11,2:5,4:1,5:2,115:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built d4mN regs=240 spill=0 imma=192 other=308 per_imma=1.604 longest_run=9 runs_over_8=1 ctl=1[BRA] top=IADD:113,LDS:64,PRMT:64,LOP3:32,STS:16,LDSM:16,UIADD3:1 gaps=0:103,1:11,2:24,3:22,4:9,5:7,6:4,7:9,8:2,9:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built full3N regs=235 spill=0 imma=192 other=404 per_imma=2.104 longest_run=10 runs_over_8=3 ctl=7[BRA,NANOSLEEP] top=LOP3:124,IADD:120,LDS:64,PRMT:48,STS:12,LDSM:12,ATOMS:5 gaps=0:85,1:26,2:17,3:14,4:9,5:6,6:19,7:10,8:3,9:2,10:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built p2k0 regs=241 spill=0 imma=192 other=204 per_imma=1.062 longest_run=8 runs_over_8=0 ctl=1[BRA] top=IADD3:192,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:154,1:6,2:1,3:4,6:6,7:20,8:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built p2k1 regs=230 spill=0 imma=192 other=396 per_imma=2.062 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:384,LDSM:9,UIADD3:1,UISETP:1,BRA:1 gaps=0:26,2:150,3:7,5:1,6:2,7:4,8:1,22:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 built rd2aN regs=231 spill=0 imma=192 other=113 per_imma=0.589 longest_run=8 runs_over_8=1 ctl=1[BRA] top=LOP3:100,LDSM:9,UIADD3:1,UISETP:1,ATOMS:1,BRA:1 gaps=0:158,1:8,2:14,3:2,4:1,6:2,7:5,8:1,12:1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 builds done in 16 s with V13.3.73 for sm_120
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 trace A11 I1 A3 L1 I1 L2 I1 L2 I1 L1 I2 A1 S1 A3 S1 X2 L1 X2 I1 X1 L1 X3 I2 X6 I1 X7 I1 X7 I1 X4 I32 M1 I2 M1 I2 M2 I44 X3 M1 X1 I1 X1 M1 X3 I47 L1 X4 I1 X2 A1 X3 I1 X3 A1 X1 M1 X1 A1 I1 X1 A1 X1 L1 X1 A1 L1 X2 I1 A1 X2 I4 X1 M1 X1 I1 X1 I1 X2 I38 X2 I1 X2 I1 X2 M1 I2 BRA1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 trace A11h I1 M1 A3 M1 I1 L4 I1 L4 I1 L4 I1 L4 I3 X6 I1 X2 I35 M1 I2 M1 I2 M2 I44 M1 I48 M1 I2 M1 I50 BRA1
+801f7b6a [nvtest] 07:43:54 [probe] nvcc13.3 trace A9 I1 S1 A2 S1 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I1 S2 I38 M1 I2 M1 I2 M2 BRA1
+801f7b6a [nvtest] 07:44:09 [probe] card before the probe 180 MHz, 11.62 W, 300.00 W, 45.50, 0 %, 642 MiB
+801f7b6a [nvtest] 07:44:10 [probe] nvcc13.3 short base                       pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 223 ms x5 | 198.23 T-MAC/s by count, counter 2760 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:10 [probe] nvcc13.3 short base                       own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+801f7b6a [nvtest] 07:44:11 [probe] nvcc13.3 short F0                         pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 222 ms x5 | 198.38 T-MAC/s by count, counter 2768 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:11 [probe] nvcc13.3 short F0                         own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+801f7b6a [nvtest] 07:44:12 [probe] nvcc13.3 short F1                         pipe  99.64% (99.64-99.64) 16.057 cyc/IMMA 226 ms x5 | 195.58 T-MAC/s by count, counter 2734 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:12 [probe] nvcc13.3 short F1                         own cycles an mma, by warp: 0:32.11 1:32.11 2:32.11 3:32.11 4:32.11 5:32.11 6:32.11 7:32.11
+801f7b6a [nvtest] 07:44:14 [probe] nvcc13.3 short p2k0                       pipe  98.02% (98.02-98.02) 16.323 cyc/IMMA 228 ms x5 | 193.06 T-MAC/s by count, counter 2755 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:14 [probe] nvcc13.3 short p2k0                       own cycles an mma, by warp: 0:32.65 1:32.65 2:32.65 3:32.65 4:32.65 5:32.65 6:32.65 7:32.65
+801f7b6a [nvtest] 07:44:15 [probe] nvcc13.3 short p2k1                       pipe  94.54% (94.54-94.54) 16.925 cyc/IMMA 239 ms x5 | 184.69 T-MAC/s by count, counter 2723 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:15 [probe] nvcc13.3 short p2k1                       own cycles an mma, by warp: 0:33.85 1:33.85 2:33.85 3:33.85 4:33.85 5:33.85 6:33.85 7:33.85
+801f7b6a [nvtest] 07:44:16 [probe] nvcc13.3 short U1                         pipe  99.18% (99.18-99.18) 16.132 cyc/IMMA 227 ms x5 | 195.15 T-MAC/s by count, counter 2726 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:16 [probe] nvcc13.3 short U1                         own cycles an mma, by warp: 0:32.26 1:32.26 2:32.26 3:32.26 4:32.26 5:32.26 6:32.26 7:32.26
+801f7b6a [nvtest] 07:44:18 [probe] nvcc13.3 short B2                         pipe  95.26% (95.24-95.27) 16.797 cyc/IMMA 237 ms x5 | 186.31 T-MAC/s by count, counter 2724 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:18 [probe] nvcc13.3 short B2                         own cycles an mma, by warp: 0:33.59 1:33.59 2:33.59 3:33.59 4:33.59 5:33.59 6:33.59 7:33.59
+801f7b6a [nvtest] 07:44:19 [probe] nvcc13.3 short B48                        pipe  95.36% (95.36-95.36) 16.779 cyc/IMMA 236 ms x5 | 186.87 T-MAC/s by count, counter 2725 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:19 [probe] nvcc13.3 short B48                        own cycles an mma, by warp: 0:33.56 1:33.56 2:33.56 3:33.56 4:33.56 5:33.56 6:33.56 7:33.56
+801f7b6a [nvtest] 07:44:20 [probe] nvcc13.3 short rd2aN                      pipe  98.40% (98.40-98.40) 16.260 cyc/IMMA 229 ms x5 | 192.42 T-MAC/s by count, counter 2725 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:20 [probe] nvcc13.3 short rd2aN                      own cycles an mma, by warp: 0:32.52 1:32.52 2:32.52 3:32.52 4:32.52 5:32.52 6:32.52 7:32.52
+801f7b6a [nvtest] 07:44:22 [probe] nvcc13.3 short d4mN                       pipe  96.92% (96.92-96.92) 16.508 cyc/IMMA 233 ms x5 | 189.09 T-MAC/s by count, counter 2720 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:22 [probe] nvcc13.3 short d4mN                       own cycles an mma, by warp: 0:33.02 1:33.02 2:33.02 3:33.02 4:33.02 5:33.02 6:33.02 7:33.02
+801f7b6a [nvtest] 07:44:23 [probe] nvcc13.3 short full3N                     pipe  95.03% (95.03-95.04) 16.836 cyc/IMMA 238 ms x5 | 185.29 T-MAC/s by count, counter 2718 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:23 [probe] nvcc13.3 short full3N                     own cycles an mma, by warp: 0:33.67 1:33.67 2:33.67 3:33.67 4:33.66 5:33.66 6:33.66 7:33.66
+801f7b6a [nvtest] 07:44:24 [probe] nvcc13.3 short A1                         pipe  98.02% (98.02-98.02) 16.323 cyc/IMMA 230 ms x5 | 191.71 T-MAC/s by count, counter 2724 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:24 [probe] nvcc13.3 short A1                         own cycles an mma, by warp: 0:32.65 1:32.65 2:32.65 3:32.65 4:32.65 5:32.65 6:32.65 7:32.65
+801f7b6a [nvtest] 07:44:26 [probe] nvcc13.3 short A2                         pipe  98.02% (98.02-98.02) 16.323 cyc/IMMA 230 ms x5 | 191.87 T-MAC/s by count, counter 2725 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:26 [probe] nvcc13.3 short A2                         own cycles an mma, by warp: 0:32.65 1:32.65 2:32.65 3:32.65 4:32.65 5:32.65 6:32.65 7:32.65
+801f7b6a [nvtest] 07:44:27 [probe] nvcc13.3 short A3                         pipe  98.02% (98.02-98.02) 16.323 cyc/IMMA 230 ms x5 | 192.27 T-MAC/s by count, counter 2724 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:27 [probe] nvcc13.3 short A3                         own cycles an mma, by warp: 0:32.65 1:32.65 2:32.65 3:32.65 4:32.65 5:32.65 6:32.65 7:32.65
+801f7b6a [nvtest] 07:44:28 [probe] nvcc13.3 short A4                         pipe  98.29% (98.29-98.29) 16.279 cyc/IMMA 230 ms x5 | 192.12 T-MAC/s by count, counter 2723 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:28 [probe] nvcc13.3 short A4                         own cycles an mma, by warp: 0:32.56 1:32.56 2:32.56 3:32.56 4:32.56 5:32.56 6:32.56 7:32.56
+801f7b6a [nvtest] 07:44:30 [probe] nvcc13.3 short A5                         pipe  98.29% (98.29-98.29) 16.279 cyc/IMMA 229 ms x5 | 192.29 T-MAC/s by count, counter 2729 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:30 [probe] nvcc13.3 short A5                         own cycles an mma, by warp: 0:32.56 1:32.56 2:32.56 3:32.56 4:32.56 5:32.56 6:32.56 7:32.56
+801f7b6a [nvtest] 07:44:31 [probe] nvcc13.3 short A6                         pipe  98.52% (98.52-98.52) 16.240 cyc/IMMA 229 ms x5 | 192.65 T-MAC/s by count, counter 2722 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:31 [probe] nvcc13.3 short A6                         own cycles an mma, by warp: 0:32.48 1:32.48 2:32.48 3:32.48 4:32.48 5:32.48 6:32.48 7:32.48
+801f7b6a [nvtest] 07:44:32 [probe] nvcc13.3 short A9                         pipe 100.00% (100.00-100.00) 16.000 cyc/IMMA 226 ms x5 | 195.32 T-MAC/s by count, counter 2723 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:32 [probe] nvcc13.3 short A9                         own cycles an mma, by warp: 0:32.00 1:32.00 2:32.00 3:32.00 4:32.00 5:32.00 6:32.00 7:32.00
+801f7b6a [nvtest] 07:44:34 [probe] nvcc13.3 short A11                        pipe  95.02% (94.81-97.05) 16.839 cyc/IMMA 238 ms x5 | 185.89 T-MAC/s by count, counter 2717 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:34 [probe] nvcc13.3 short A11                        own cycles an mma, by warp: 0:33.68 1:33.68 2:33.68 3:33.68 4:33.68 5:33.68 6:33.68 7:33.68
+801f7b6a [nvtest] 07:44:35 [probe] nvcc13.3 short A9h                        pipe  87.10% (87.10-87.10) 18.369 cyc/IMMA 256 ms x4 | 171.75 T-MAC/s by count, counter 2753 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:35 [probe] nvcc13.3 short A9h                        own cycles an mma, by warp: 0:36.74 1:36.74 2:36.74 3:36.74 4:36.74 5:36.74 6:36.74 7:36.74
+801f7b6a [nvtest] 07:44:36 [probe] nvcc13.3 short A11h                       pipe  92.19% (92.17-92.23) 17.356 cyc/IMMA 245 ms x5 | 180.28 T-MAC/s by count, counter 2722 MHz, 70 SMs, 8 of 8 warps
+801f7b6a [nvtest] 07:44:36 [probe] nvcc13.3 short A11h                       own cycles an mma, by warp: 0:34.72 1:34.69 2:34.72 3:34.72 4:34.72 5:34.70 6:34.72 7:34.72
+801f7b6a [nvtest] 07:44:37 [probe] nvcc13.3 short M03                        pipe  97.22% (97.22-97.22) 16.458 cyc/IMMA 114 ms x9 | 96.35 T-MAC/s by count, counter 2761 MHz, 70 SMs, 2 of 8 warps
+801f7b6a [nvtest] 07:44:37 [probe] nvcc13.3 short M03                        own cycles an mma, by warp: 0:16.46 1:16.46
+801f7b6a [nvtest] 07:44:39 [probe] nvcc13.3 short M0f                        pipe  97.21% (97.21-97.22) 16.459 cyc/IMMA 116 ms x9 | 190.02 T-MAC/s by count, counter 2723 MHz, 70 SMs, 4 of 8 warps
+801f7b6a [nvtest] 07:44:39 [probe] nvcc13.3 short M0f                        own cycles an mma, by warp: 0:16.46 1:16.46 2:16.46 3:16.46
+801f7b6a [nvtest] 07:44:40 [probe] nvcc13.3 short M33                        pipe  96.14% (96.14-96.14) 16.643 cyc/IMMA 232 ms x5 | 95.28 T-MAC/s by count, counter 2761 MHz, 70 SMs, 4 of 8 warps
+801f7b6a [nvtest] 07:44:40 [probe] nvcc13.3 short M33                        own cycles an mma, by warp: 0:33.29 1:33.29 4:33.29 5:33.29
+801f7b6a [nvtest] 07:44:41 [probe] nvcc13.3 short M55                        pipe  96.14% (96.14-96.14) 16.642 cyc/IMMA 231 ms x5 | 95.38 T-MAC/s by count, counter 2768 MHz, 70 SMs, 4 of 8 warps
+801f7b6a [nvtest] 07:44:41 [probe] nvcc13.3 short M55                        own cycles an mma, by warp: 0:33.28 2:33.28 4:33.28 6:33.28
+801f7b6a [nvtest] 07:44:43 [probe] nvcc13.3 short M77                        pipe  96.15% (96.15-96.15) 16.642 cyc/IMMA 232 ms x5 | 142.58 T-MAC/s by count, counter 2756 MHz, 70 SMs, 6 of 8 warps
+801f7b6a [nvtest] 07:44:43 [probe] nvcc13.3 short M77                        own cycles an mma, by warp: 0:33.28 1:33.28 2:33.28 4:33.28 5:33.28 6:33.28
+801f7b6a [nvtest] 07:44:44 [probe] nvcc13.3 short N0f                        pipe  99.16% (99.16-99.16) 16.135 cyc/IMMA 114 ms x9 | 194.89 T-MAC/s by count, counter 2725 MHz, 70 SMs, 4 of 8 warps
+801f7b6a [nvtest] 07:44:44 [probe] nvcc13.3 short N0f                        own cycles an mma, by warp: 0:16.14 1:16.14 2:16.14 3:16.14
+801f7b6a [nvtest] 07:44:45 [probe] nvcc13.3 short N33                        pipe  99.90% (99.90-99.90) 16.016 cyc/IMMA 222 ms x5 | 99.13 T-MAC/s by count, counter 2768 MHz, 70 SMs, 4 of 8 warps
+801f7b6a [nvtest] 07:44:45 [probe] nvcc13.3 short N33                        own cycles an mma, by warp: 0:32.03 1:32.03 4:32.03 5:32.03
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm F1.o FAIL the listing does not match the kernel's text: 724 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm F1.e1 FAIL the listing does not match the kernel's text: 724 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm p2k0.e1 FAIL the listing does not match the kernel's text: 718 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm p2k0.e2 FAIL the listing does not match the kernel's text: 718 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm p2k0.e4 FAIL the listing does not match the kernel's text: 718 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm p2k0.e8 FAIL the listing does not match the kernel's text: 718 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:46 [probe] nvcc13.3 perm p2k0.b FAIL the listing does not match the kernel's text: 718 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:47 [probe] nvcc13.3 perm U1.h1 FAIL the listing does not match the kernel's text: 630 instructions, 10112 bytes
+801f7b6a [nvtest] 07:44:47 [probe] nvcc13.3 perm U1.h2 FAIL the listing does not match the kernel's text: 630 instructions, 10112 bytes
+801f7b6a [nvtest] 07:44:47 [probe] nvcc13.3 perm U1.e1 FAIL the listing does not match the kernel's text: 630 instructions, 10112 bytes
+801f7b6a [nvtest] 07:44:48 [probe] nvcc13.3 perm B2.s1 FAIL the listing does not match the kernel's text: 724 instructions, 12928 bytes
+801f7b6a [nvtest] 07:44:48 [probe] nvcc13.3 perm B2.s2 FAIL the listing does not match the kernel's text: 724 instructions, 12928 bytes
+801f7b6a [nvtest] 07:44:48 [probe] nvcc13.3 perm B2.s3 FAIL the listing does not match the kernel's text: 724 instructions, 12928 bytes
+801f7b6a [nvtest] 07:44:49 [probe] nvcc13.3 perm B48.e1 FAIL the listing does not match the kernel's text: 716 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:49 [probe] nvcc13.3 perm B48.b48 FAIL the listing does not match the kernel's text: 716 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:49 [probe] nvcc13.3 perm B48.b8 FAIL the listing does not match the kernel's text: 716 instructions, 11520 bytes
+801f7b6a [nvtest] 07:44:49 [probe] nvcc13.3 perm rd2aN.x1 FAIL the listing does not match the kernel's text: 630 instructions, 10240 bytes
+801f7b6a [nvtest] 07:44:49 [probe] nvcc13.3 perm rd2aN.x2 FAIL the listing does not match the kernel's text: 630 instructions, 10240 bytes
+801f7b6a [nvtest] 07:44:50 [probe] nvcc13.3 perm d4mN.e1 FAIL the listing does not match the kernel's text: 815 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:50 [probe] nvcc13.3 perm d4mN.e2 FAIL the listing does not match the kernel's text: 815 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:50 [probe] nvcc13.3 perm d4mN.e4 FAIL the listing does not match the kernel's text: 815 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:50 [probe] nvcc13.3 perm d4mN.b FAIL the listing does not match the kernel's text: 815 instructions, 13056 bytes
+801f7b6a [nvtest] 07:44:51 [probe] nvcc13.3 perm full3N.e1 FAIL the listing does not match the kernel's text: 944 instructions, 15232 bytes
+801f7b6a [nvtest] 07:44:51 [probe] nvcc13.3 perm full3N.e2 FAIL the listing does not match the kernel's text: 944 instructions, 15232 bytes
+801f7b6a [nvtest] 07:44:51 [probe] nvcc13.3 perm A1.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:52 [probe] nvcc13.3 perm A2.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:53 [probe] nvcc13.3 perm A3.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:53 [probe] nvcc13.3 perm A4.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:54 [probe] nvcc13.3 perm A5.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:54 [probe] nvcc13.3 perm A6.e1 FAIL the listing does not match the kernel's text: 726 instructions, 11648 bytes
+801f7b6a [nvtest] 07:44:55 [probe] nvcc13.3 perm A9.e1 FAIL the listing does not match the kernel's text: 575 instructions, 9216 bytes
+801f7b6a [nvtest] 07:44:56 [probe] nvcc13.3 perm A9h.e1 FAIL the listing does not match the kernel's text: 623 instructions, 9984 bytes
+801f7b6a [nvtest] 07:44:57 [probe] nvcc13.3 perm A11h.s1 FAIL the listing does not match the kernel's text: 558 instructions, 8960 bytes
+801f7b6a [nvtest] 07:44:57 [probe] nvcc13.3 perm A11h.s2 FAIL the listing does not match the kernel's text: 558 instructions, 8960 bytes
+801f7b6a [nvtest] 07:44:58 [probe] nvcc13.3 perm A11.e1 FAIL the listing does not match the kernel's text: 630 instructions, 10112 bytes
+801f7b6a [nvtest] 07:44:58 [probe] card after the probe 180 MHz, 12.92 W, 300.00 W, 48.30, 0 %, 642 MiB
+801f7b6a [nvtest] 07:44:58 [probe] all done
+801f7b6a [nvtest] 07:44:58 all done
+801f7b6a [nvtest] 07:44:58 idle until deleted
