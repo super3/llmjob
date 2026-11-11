@@ -179,4 +179,43 @@ describe('shapeFileStore', () => {
     expect(files['/d/launch-shapes.json'].gpu0).toBeUndefined();
     expect(readSettings).toHaveBeenCalledTimes(1);
   });
+
+  // The CLI keeps the file beside node.json, and a mining-only or --no-serve
+  // run never writes node.json, so the folder may not be there yet. Against
+  // the real settings store and a real disk: without the folder every save
+  // failed with ENOENT, and the trial ran again on every start.
+  test('makes the folder the file goes in, so a first run\'s answer is kept', () => {
+    const fs = require('fs');
+    const os = require('os');
+    const path = require('path');
+    const { readSettings, writeSettings } = require('../src/shared/settingsStore');
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'shape-store-'));
+    try {
+      const file = path.join(root, 'share', 'llmjob-earn', 'launch-shapes.json');
+      const log = jest.fn();
+      const open = () => shapeFileStore(file, { readSettings, writeSettings, fs, log });
+      const first = open();
+      expect(first.get('gpu0')).toBeNull();
+      first.set('gpu0', { shape: 'flip 128', at: 1 });
+      first.set('gpu1', { shape: 'band 8 x 512', at: 2 });
+      expect(log).not.toHaveBeenCalled();
+      // The next start reads what this one wrote.
+      expect(open().get('gpu0')).toEqual({ shape: 'flip 128', at: 1 });
+      const next = open();
+      next.remove('gpu0');
+      expect(open().get('gpu0')).toBeNull();
+      expect(open().get('gpu1')).toEqual({ shape: 'band 8 x 512', at: 2 });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // A folder that cannot be made is the write's failure to report, not a throw.
+  test('a folder that cannot be made leaves the save to fail in the settings store\'s words', () => {
+    const writeSettings = jest.fn();
+    const fs = { mkdirSync: () => { throw new Error('EACCES'); } };
+    const s = shapeFileStore('/d/launch-shapes.json', { readSettings: () => ({}), writeSettings, fs, log: () => {} });
+    expect(() => s.set('gpu0', { shape: 'flip 128', at: 1 })).not.toThrow();
+    expect(writeSettings).toHaveBeenCalledTimes(1);
+  });
 });

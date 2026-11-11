@@ -15,6 +15,8 @@
 // shapes, and nothing here changes how it opens. PEARL_SHAPE_TRIAL=0 turns trials off and
 // PEARL_SHAPE=<name> opens every card in that shape, for testing.
 
+const path = require('path');
+
 const TRIAL_SECS = 150;
 // A pick is timed again after a week: drivers, power limits and cooling change.
 const MAX_AGE_MS = 7 * 24 * 3600 * 1000;
@@ -99,22 +101,36 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
 // The cache as a JSON file, { key: { shape, at } }, read once and written whole on each
 // change. `readSettings` and `writeSettings` are shared/settingsStore's, which log a bad
 // file or a failed write rather than throw.
+//
+// The folder is made first, as shared/poolLookup's fileCache does. The CLI
+// keeps these files beside node.json, and a mining-only or --no-serve run
+// never writes node.json, so the folder may not be there. Without it every
+// save failed, nothing was remembered, and the trials ran again on each start.
+// A folder that cannot be made is left to the write to report.
 function shapeFileStore(file, { readSettings, writeSettings, fs, log }) {
   let data = null;
   const load = () => {
     if (!data) data = readSettings(file, { fs, log });
     return data;
   };
+  const save = () => {
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+    } catch (e) {
+      // The write below says what is wrong.
+    }
+    writeSettings(file, data, { fs, log });
+  };
   return {
     get: (key) => load()[key] || null,
     set: (key, value) => {
       load()[key] = value;
-      writeSettings(file, data, { fs, log });
+      save();
     },
     remove: (key) => {
       if (!(key in load())) return;
       delete data[key];
-      writeSettings(file, data, { fs, log });
+      save();
     },
   };
 }
