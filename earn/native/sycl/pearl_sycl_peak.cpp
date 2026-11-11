@@ -200,6 +200,8 @@ struct PeakArgs {
                         // prefetch, so the lines come into the first cache level
   uint32_t pfA, pfB;    // fragment rows: 0, or D: each k-step sends prefetches for the A' (B') of the k-step D
                         // ahead, 8 cache lines a message (one a lane), so its loads find them in the cache
+  uint32_t sga, sgb;    // "s-" rows: a work-group is sga 16-row blocks of A' by sgb 64-column blocks of B'
+  uint32_t sgp;         // producer rows: sub-groups a work-group that only copy the ring
   uint32_t *sink;    // one word a sub-group, so no accumulator can be dropped
 };
 
@@ -753,6 +755,254 @@ inline sycl::event peak_frag(sycl::queue &q, const PeakArgs &args, uint32_t grou
   });
 }
 
+// The "s-" rows: operands staged through shared local memory, the way the AMD folds stage 32 bytes of k
+// at a time through LDS (../amd/README.md). A work-group is sga by sgb sub-groups, each with the fold's
+// 16 by 64 tile: 16 sga rows by 64 sgb columns. A stage is KS k-steps. Every stage the group copies the
+// next stage of its A' (512 bytes a 16-row block and k-step) and B' (2,048 bytes a 64-column block and
+// k-step) from memory into a ring of D + 1 stages, 128 bytes a message (a lane's 16), and each sub-group
+// reads its fragments from the ring. So A' is read from memory once for sgb sub-groups and B' once for
+// sga, where the fold reads A' once a sub-group. Timing only: the copy is real, the results are not a
+// fold's.
+//   OPS   which operands go through the ring: 1 A', 2 B', 3 both. The other is loaded from memory as
+//         the fold loads it (A' one vector of 8 dwords, B' two of 4)
+//   MODE  0 the ring filled once, then only fragment reads from it (what reads from local memory cost)
+//         1 the whole pipeline: a stage sends the loads of the stage D ahead, runs its k-steps (fragment
+//           reads from the ring, 16 DPAS each), stores the loaded stage and meets the group at a barrier
+//         2 1 without the copy (the barrier alone)
+//         3 1 without the barrier (the copy alone)
+//   D     stages in flight ahead of the one being used
+//   BF    how a B' fragment is read from the ring: 1 one vector of 8 dwords, 2 two of 4
+//   PPS   128-byte pieces a sub-group copies a stage, at most (registers held across the stage: 4 each)
+//   KS    k-steps a stage
+//         4 1 with a split barrier (SPV_INTEL_split_barrier, AMD's s_barrier_signal and s_barrier_wait;
+//           modes 4, 5, 8, 13 to 16 need a probe built with
+//           PEARL_SYCL_EXTRA="-DPEARL_PEAK_SPLIT -Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier"
+//           ./build.sh --jit --peak, which no release does):
+//           a sub-group arrives after storing a stage and waits for that phase only just before its next
+//           store, a stage later, so it is held only when another is a stage behind. D must be 2
+//         5 4 without the copy (the split barrier alone)
+//         6 1 with the copy's loads pinned: the stage's last k-step waits for them, so the compiler cannot
+//           sink them to the store (AMD's PEARL_AMD_LPIN)
+//         7 6 without the barrier
+#if defined(__SYCL_DEVICE_ONLY__)
+#define PEAK_LOCAL __attribute__((opencl_local))
+#else
+#define PEAK_LOCAL
+#endif
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_PEAK_SPLIT)
+// Scope 2 is the work-group; semantics 0x100 its local memory, with 0x4 release (arrive), 0x2 acquire (wait).
+}  // namespace
+SYCL_EXTERNAL void __spirv_ControlBarrierArriveINTEL(int, int, int) noexcept;
+SYCL_EXTERNAL void __spirv_ControlBarrierWaitINTEL(int, int, int) noexcept;
+namespace {
+inline void peak_arrive() { __spirv_ControlBarrierArriveINTEL(2, 2, 0x104); }
+inline void peak_wait() { __spirv_ControlBarrierWaitINTEL(2, 2, 0x102); }
+#else
+inline void peak_arrive() {}
+inline void peak_wait() {}
+#endif
+template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0> struct PeakSlm {
+  static constexpr int TR = G ? 4 : 2, TC = G ? 4 : 8;  // a sub-group's tile in 8-row and 8-column blocks
+  static constexpr uint32_t R = (uint32_t)D + 1u;
+  static constexpr bool RA = (OPS & 1) != 0, RBp = (OPS & 2) != 0;
+  PeakArgs P;
+  sycl::local_accessor<uint32_t, 1> ring;
+
+  // Bytes of one k-step in the ring, and of a stage.
+  // A group holds nAb 16-row blocks of A' and nBb 64-column blocks of B'.
+  static uint32_t a_blocks(uint32_t ga) { return G ? 2u * ga : ga; }
+  static uint32_t b_blocks(uint32_t gb) { return G ? gb / 2u : gb; }
+  static uint32_t step_bytes(uint32_t ga, uint32_t gb) {
+    return (RA ? 512u * a_blocks(ga) : 0u) + (RBp ? 2048u * b_blocks(gb) : 0u);
+  }
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    const FoldArgs &A = P.f;
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgl = (uint32_t)sg.get_group_linear_id();
+    const uint32_t ga = P.sga, gb = P.sgb, n = ga * gb;
+    // 13, 14, 15: sub-groups n and up are producers. They copy the ring and run no DPAS.
+    constexpr bool PROD = MODE == 13 || MODE == 14 || MODE == 15;
+    const uint32_t copiers = PROD ? P.sgp : n, ci = PROD ? sgl - n : sgl;
+    const bool producer = PROD && sgl >= n, copier = !PROD || producer;
+    const uint32_t si = (sgl % n) % ga, sj = (sgl % n) / ga;
+    const uint32_t nAb = a_blocks(ga), nBb = b_blocks(gb);
+    const uint32_t hr = G ? ga : ga / 2u, cw = nBb;  // row and column windows a group
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t bandS = A.band / hr;
+    if (bandS < 1u) bandS = 1u;
+    uint32_t swr, swc;
+    pearl_sycl::window_of((uint32_t)it.get_group(0), rowWins / hr, colWins / cw, bandS, swr, swc);
+    const uint32_t ablk0 = 2u * hr * swr, bblk0 = A.colStart / 4u + cw * swc;
+    // A k-step in the ring: [A' of the ga blocks, 512 bytes each][B' of the gb blocks, 2,048 bytes each],
+    // as present; a stage is KS of them.
+    const uint32_t aPart = RA ? 512u * nAb : 0u;
+    const uint32_t T1 = step_bytes(ga, gb), T = T1 * (uint32_t)KS;
+    const uint32_t NP1 = T1 / 128u, NP = T / 128u;
+    PEAK_LOCAL int8_t *ls = reinterpret_cast<PEAK_LOCAL int8_t *>(ring.template get_multi_ptr<sycl::access::decorated::yes>().get_decorated());
+    // Piece q of k-step ks in memory.
+    auto src = [&](uint32_t q, uint32_t ks) -> const int8_t * {
+      if (RA && q < 4u * nAb)
+        return MODE == 12 ? A.Ap + (size_t)(q % 4u) * 128u
+                          : A.Ap + (size_t)(ablk0 + q / 4u) * A.aStride + (size_t)ks * 512u + (size_t)(q % 4u) * 128u;
+      const uint32_t r = q - (RA ? 4u * nAb : 0u);
+      return A.Bp + (size_t)(bblk0 + r / 16u) * A.bStride + (size_t)ks * 2048u + (size_t)(r % 16u) * 128u;
+    };
+    peak_v4i held[PPS], nxt[PPS];
+    auto load_into = [&](uint32_t st, peak_v4i *out) {
+      for (int i = 0; i < PPS; i++) {
+        const uint32_t p = ci + (uint32_t)i * copiers;
+        if (p < NP) out[i] = *reinterpret_cast<const peak_v4i *>(src(p % NP1, (st * (uint32_t)KS + p / NP1) & 63u) + 16u * lane);
+      }
+    };
+    auto load_stage = [&](uint32_t st) { load_into(st, held); };
+    auto store_stage = [&](uint32_t slot) {
+      for (int i = 0; i < PPS; i++) {
+        const uint32_t p = ci + (uint32_t)i * copiers;
+        if (p < NP) *reinterpret_cast<PEAK_LOCAL peak_v4i *>(ls + (size_t)slot * T + p * 128u + 16u * lane) = held[i];
+      }
+    };
+    const uint32_t aOwn = G ? 2u * si : si;  // the sub-group's first 16-row block in the group
+    const uint32_t bOwn = G ? (sj / 2u) * 2048u + (sj % 2u) * 1024u : sj * 2048u;  // its B' in a k-step
+    const int8_t *Ag = A.Ap + (size_t)(ablk0 + aOwn) * A.aStride + 32u * lane;
+    const int8_t *Bg = A.Bp + (size_t)(bblk0 + (G ? sj / 2u : sj)) * A.bStride + (G ? (sj % 2u) * 1024u : 0u) + 32u * lane;
+    if (copier) {
+      for (uint32_t st = 0; st < (MODE == 0 ? R : (uint32_t)D); st++) {
+        load_stage(st);
+        store_stage(st);
+      }
+    }
+    constexpr bool CARRY = MODE == 8 || MODE == 9 || MODE == 15;
+    if constexpr (CARRY) {
+      if (copier) load_stage((uint32_t)D);
+    }
+    sycl::group_barrier(it.get_group());
+    v8i c[TR][TC];
+    for (int rb = 0; rb < TR; rb++)
+      for (int cb = 0; cb < TC; cb++) c[rb][cb] = 0;
+    constexpr uint32_t NST = 64u / (uint32_t)KS;
+    constexpr bool COPY = MODE == 1 || MODE == 3 || MODE == 4 || MODE == 6 || MODE == 7 || MODE == 16 || CARRY;  // 16: 4 without the pin
+    // 7 with only its loads, or only its stores; 12 its loads all from one place that stays in the cache
+    constexpr bool LOADONLY = MODE == 10 || MODE == 12, STOREONLY = MODE == 11;
+    constexpr bool PIN = MODE == 4 || MODE == 6 || MODE == 7 || LOADONLY;
+    constexpr bool FULLBAR = MODE == 1 || MODE == 2 || MODE == 6;
+    constexpr bool SPLIT = MODE == 4 || MODE == 5 || MODE == 8 || MODE == 16 || PROD;
+    bool arrived = false;
+    if (producer) {
+      // Copy stage st + D each stage (15: load stage st + D + 1 and store the one loaded a stage before),
+      // meeting the consumers at the same split barrier.
+      for (uint32_t rep = 0; rep < P.reps; rep++) {
+#pragma unroll 1
+        for (uint32_t st = 0; st < NST; st++) {
+          if constexpr (MODE == 13) load_stage(st + (uint32_t)D);
+          if constexpr (MODE == 15) load_into(st + (uint32_t)D + 1u, nxt);
+          if (arrived) peak_wait();
+          if constexpr (MODE != 14) store_stage((st + (uint32_t)D) % R);
+          peak_arrive();
+          arrived = true;
+          if constexpr (MODE == 15) {
+            for (int i = 0; i < PPS; i++) held[i] = nxt[i];
+          }
+        }
+      }
+      peak_wait();
+      return;
+    }
+    for (uint32_t rep = 0; rep < P.reps; rep++) {
+      // One stage an iteration: unrolled, the compiler hoists the next stages' reads and spills.
+#pragma unroll 1
+      for (uint32_t st = 0; st < NST; st++) {
+        int pin = 0;
+        if constexpr (PROD) {
+        } else if constexpr (CARRY) load_into(st + (uint32_t)D + 1u, nxt);
+        else if constexpr (COPY || LOADONLY) load_stage(st + (uint32_t)D);
+        if constexpr (PIN) {
+          for (int i = 0; i < PPS; i++) pin ^= held[i][0];
+          pin &= (int)P.zero;
+        }
+        const PEAK_LOCAL int8_t *sl0 = ls + (size_t)(st % R) * T;
+        for (int kk = 0; kk < KS; kk++) {
+          const uint32_t ks = st * (uint32_t)KS + (uint32_t)kk;
+          const PEAK_LOCAL int8_t *sl = sl0 + (uint32_t)kk * T1;
+          v8i af[TR], bf[TC];
+          for (int rb = 0; rb < TR; rb++) {
+            if constexpr (RA) af[rb] = *reinterpret_cast<const PEAK_LOCAL v8iu *>(sl + aOwn * 512u + (uint32_t)rb * 256u + 32u * lane);
+            else af[rb] = *reinterpret_cast<const v8iu *>(Ag + (size_t)(rb / 2) * A.aStride + (size_t)ks * 512u + (size_t)(rb % 2) * 256u);
+          }
+          for (int cb = 0; cb < TC; cb++) {
+            if constexpr (RBp) {
+              const PEAK_LOCAL int8_t *p = sl + aPart + bOwn + (uint32_t)cb * 256u + 32u * lane;
+              if constexpr (BF == 1) {
+                bf[cb] = *reinterpret_cast<const PEAK_LOCAL v8iu *>(p);
+              } else {
+                const peak_v4i lo = *reinterpret_cast<const PEAK_LOCAL peak_v4i *>(p);
+                const peak_v4i hi = *reinterpret_cast<const PEAK_LOCAL peak_v4i *>(p + 16);
+                bf[cb] = __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+              }
+            } else {
+              bf[cb] = pearl_sycl::load_halves(Bg + (size_t)ks * 2048u + (size_t)cb * 256u);
+            }
+          }
+          int t = 0;
+          for (int rb = 0; rb < TR; rb++) t ^= af[rb][0];
+          for (int cb = 0; cb < TC; cb++) t ^= bf[cb][0];
+          t &= (int)P.zero;
+          if (kk == KS - 1) t |= pin;  // the stage's last k-step waits for the copy's loads
+          for (int rb = 0; rb < TR; rb++) af[rb][0] |= t;
+          for (int cb = 0; cb < TC; cb++)
+            for (int rb = 0; rb < TR; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+        }
+        if constexpr (SPLIT) {
+          if (arrived) peak_wait();
+        }
+        if constexpr ((COPY || STOREONLY) && !PROD) store_stage((st + (uint32_t)D) % R);
+        if constexpr (FULLBAR) sycl::group_barrier(it.get_group());
+        if constexpr (SPLIT) {
+          peak_arrive();
+          arrived = true;
+        }
+        if constexpr (CARRY && !PROD) {
+          for (int i = 0; i < PPS; i++) held[i] = nxt[i];
+        }
+      }
+    }
+    if constexpr (SPLIT) peak_wait();
+    uint32_t x = 0;
+    for (int rb = 0; rb < TR; rb++)
+      for (int cb = 0; cb < TC; cb++)
+        for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+    x = sycl::reduce_over_group(sg, x, sycl::bit_xor<uint32_t>());
+    if (lane == 0) P.sink[(size_t)it.get_group(0) * n + sgl] = x;
+  }
+};
+
+template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0>
+inline sycl::event peak_slm(sycl::queue &q, const PeakArgs &args, uint32_t groups) {
+  typedef PeakSlm<OPS, MODE, D, BF, PPS, KS, G> K;
+#if !defined(PEARL_PEAK_SPLIT)
+  if (MODE == 4 || MODE == 5 || MODE == 8 || MODE == 13 || MODE == 14 || MODE == 15 || MODE == 16)
+    throw std::runtime_error("a split-barrier row: build with PEARL_PEAK_SPLIT (see the s- rows' comment)");
+#endif
+  if (G && (args.sgb & 1u)) throw std::runtime_error("the 32 by 32 rows need an even --sgb");
+  const bool prod = MODE == 13 || MODE == 14 || MODE == 15;
+  const uint32_t n = args.sga * args.sgb, all = n + (prod ? args.sgp : 0u);
+  if (all > 64u) throw std::runtime_error("more than 64 sub-groups a work-group");
+  const uint32_t T = K::step_bytes(args.sga, args.sgb) * (uint32_t)KS;
+  if (T / 128u > (uint32_t)PPS * (prod ? args.sgp : n)) throw std::runtime_error("--sga by --sgb leaves more than PPS pieces a sub-group");
+  if (K::R * T > 65536u) throw std::runtime_error("the ring is over 64 KB at this --sga, --sgb");
+  const uint32_t wgs = groups / (args.sga * args.sgb / 2u);
+  return q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<uint32_t, 1> ring(K::R * T / 4u, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)wgs * all * 8u, (size_t)all * 8u), K{args, ring});
+  });
+}
+
 // The image rows are in the build the driver compiles only (./build.sh --jit --peak): the prebuilt
 // form's CPU image does not compile them.
 #if defined(PEARL_SYCL_XMX_JIT)
@@ -1049,6 +1299,7 @@ void add_frag_rows(std::vector<Row> &v) {
   FRAG_ROW("g-v4-a-pf3", "g-v4-pf3 with A' loaded and B in registers", 4, 4, 2, 0, 0, 3, 1u, all, all, all);
   FRAG_ROW("g-v4-b-pf3", "g-v4-pf3 with B' loaded and A in registers", 4, 4, 0, 2, 0, 3, 1u, all, all, all);
   FRAG_ROW("g-v4-pf3-fold", "g-v4-pf3 with the readout, barrier, hash and test", 4, 4, 2, 2, 2, 3, 1u, all, all, all);
+  FRAG_ROW("g-v84-pf3", "32 by 32, A' one vector of 8 dwords, B' two of 4, every DPAS waiting (the fold's forms)", 4, 4, 1, 2, 0, 3, 1u, all, all, all);
   FRAG_ROW("g-q4-pf3", "32 by 32, one vector of 4 qwords a fragment, every DPAS waiting for the loads", 4, 4, 6, 6, 0, 3, 1u, all, all, all);
   FRAG_ROW("g-win0", "g-v4-pf3 with every window reading window 0", 4, 4, 2, 2, 0, 3, 1u, 0u, 0u, all);
   // Sub-group block reads: one address a message.
@@ -1091,6 +1342,85 @@ void add_frag_rows(std::vector<Row> &v) {
   FRAG_ROW("g-k8", "32 by 32, one block read of 256 bytes a fragment", 4, 4, 8, 8, 0, 0, 1u, all, all, all);
   FRAG_ROW("g-k8-pf3", "g-k8 with every DPAS of a k-step made to wait for its loads", 4, 4, 8, 8, 0, 3, 1u, all, all, all);
 #undef FRAG_ROW
+  // Operands staged through shared local memory (PeakSlm), --sga by --sgb sub-groups a work-group (default
+  // 4 by 4). PPS is sized for 4 by 4; a shape that needs more pieces a sub-group fails with a message.
+#define SLM_ROW(NAME, WHAT, OPS, MODE, D, BF, PPS, KS)                                           \
+  v.push_back({NAME, WHAT, 16, 16, 16, 1u, all, all, all,                                       \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) {                              \
+                 return peak_slm<OPS, MODE, D, BF, PPS, KS>(q, a, g);                           \
+               }})
+  SLM_ROW("s-ceil", "both operands only read from local memory, filled once (B' halves)", 3, 0, 1, 2, 5, 1);
+  SLM_ROW("s-ceil-v8", "s-ceil with B' read as one vector of 8 dwords", 3, 0, 1, 1, 5, 1);
+  SLM_ROW("s-ceil-a", "A' only read from local memory, filled once; B' from its own addresses", 1, 0, 1, 2, 1, 1);
+  SLM_ROW("s-ceil-b", "B' only read from local memory, filled once; A' from its own addresses", 2, 0, 1, 2, 4, 1);
+  SLM_ROW("s-ceil-b-v8", "s-ceil-b with B' read as one vector of 8 dwords", 2, 0, 1, 1, 4, 1);
+  SLM_ROW("s-pipe", "both through a ring in local memory, copied a k-step ahead, a barrier a k-step", 3, 1, 1, 2, 5, 1);
+  SLM_ROW("s-pipe-b", "B' through the ring, A' from its own addresses", 2, 1, 1, 2, 4, 1);
+  SLM_ROW("s-pipe-a", "A' through the ring a k-step a stage, B' from its own addresses", 1, 1, 1, 2, 1, 1);
+  SLM_ROW("s-pipe-a2", "s-pipe-a, 2 k-steps a stage", 1, 1, 1, 2, 2, 2);
+  SLM_ROW("s-pipe-a4", "s-pipe-a, 4 k-steps a stage (a chunk)", 1, 1, 1, 2, 4, 4);
+  SLM_ROW("s-pipe-a8", "s-pipe-a, 8 k-steps a stage", 1, 1, 1, 2, 8, 8);
+  SLM_ROW("s-pipe-a4-d2", "s-pipe-a4, two stages ahead", 1, 1, 2, 2, 4, 4);
+  SLM_ROW("s-pipe-a4w", "s-pipe-a4 with room for 8 pieces a sub-group (--sga 8 --sgb 2)", 1, 1, 1, 2, 8, 4);
+  SLM_ROW("s-bar-a", "s-pipe-a without the copy: the barrier alone", 1, 2, 1, 2, 1, 1);
+  SLM_ROW("s-bar-a4", "s-pipe-a4 without the copy", 1, 2, 1, 2, 4, 4);
+  SLM_ROW("s-copy-a", "s-pipe-a without the barrier: the copy alone", 1, 3, 1, 2, 1, 1);
+  SLM_ROW("s-copy-a4", "s-pipe-a4 without the barrier", 1, 3, 1, 2, 4, 4);
+  SLM_ROW("s-pin-a4", "s-pipe-a4 with the copy's loads pinned", 1, 6, 1, 2, 4, 4);
+  SLM_ROW("s-pin-a4-d2", "s-pin-a4 two stages ahead", 1, 6, 2, 2, 4, 4);
+  SLM_ROW("s-pinc-a4", "s-pin-a4 without the barrier", 1, 7, 1, 2, 4, 4);
+  SLM_ROW("s-split-a", "A' through the ring, pinned, split barrier, a k-step a stage", 1, 4, 2, 2, 1, 1);
+  SLM_ROW("s-split-a2", "s-split-a, 2 k-steps a stage", 1, 4, 2, 2, 2, 2);
+  SLM_ROW("s-split-a4", "s-split-a, 4 k-steps a stage", 1, 4, 2, 2, 4, 4);
+  SLM_ROW("s-sbar-a", "s-split-a without the copy: the split barrier alone", 1, 5, 2, 2, 1, 1);
+  SLM_ROW("s-sbar-a4", "s-split-a4 without the copy", 1, 5, 2, 2, 4, 4);
+  SLM_ROW("s-split", "both operands through the ring, pinned, split barrier, a k-step a stage", 3, 4, 2, 2, 5, 1);
+#undef SLM_ROW
+  // The same at 32 rows by 32 columns a sub-group ("t-"): 4 fragments of each operand a k-step, so a k-step
+  // sends 12 messages (4 of A', 8 half fragments of B') where the 16 by 64 tile sends 18.
+#define SLM_ROW(NAME, WHAT, OPS, MODE, D, BF, PPS, KS)                                           \
+  v.push_back({NAME, WHAT, 16, 16, 16, 1u, all, all, all,                                       \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) {                              \
+                 return peak_slm<OPS, MODE, D, BF, PPS, KS, 1>(q, a, g);                        \
+               }})
+  SLM_ROW("t-ceil-a", "32 by 32: A' only read from local memory, filled once; B' from its own addresses", 1, 0, 1, 2, 2, 1);
+  SLM_ROW("t-ceil-b", "32 by 32: B' only read from local memory, filled once; A' from its own addresses", 2, 0, 1, 2, 2, 1);
+  SLM_ROW("t-ceil", "32 by 32: both only read from local memory, filled once", 3, 0, 1, 2, 4, 1);
+  SLM_ROW("t-ceil-v8", "t-ceil with B' read as one vector of 8 dwords", 3, 0, 1, 1, 4, 1);
+  SLM_ROW("t-ceil-b-v8", "t-ceil-b with B' read as one vector of 8 dwords", 2, 0, 1, 1, 2, 1);
+  SLM_ROW("t-split-v8", "t-split with B' read as one vector of 8 dwords", 3, 4, 2, 1, 4, 1);
+  SLM_ROW("t-split-b-v8", "t-split-b with B' read as one vector of 8 dwords", 2, 4, 2, 1, 2, 1);
+  SLM_ROW("t-free", "32 by 32, both through the ring (8-dword reads), copy loads at the top and stores after the DPAS, no pin, split barrier", 3, 16, 2, 1, 4, 1);
+  SLM_ROW("t-free-b", "t-free with B' only through the ring", 2, 16, 2, 1, 2, 1);
+  SLM_ROW("t-free-a", "t-free with A' only through the ring", 1, 16, 2, 1, 2, 1);
+  SLM_ROW("t-freec", "t-free without the barrier", 3, 3, 2, 1, 4, 1);
+  SLM_ROW("t-sbar-v8", "t-free without the copy", 3, 5, 2, 1, 4, 1);
+  SLM_ROW("t-pinc-a", "32 by 32: A' copied into the ring a k-step ahead, pinned, no barrier", 1, 7, 1, 2, 2, 1);
+  SLM_ROW("t-split-a", "32 by 32: A' through the ring, pinned, split barrier, a k-step a stage", 1, 4, 2, 2, 2, 1);
+  SLM_ROW("t-split-a2", "t-split-a, 2 k-steps a stage", 1, 4, 2, 2, 4, 2);
+  SLM_ROW("t-split-b", "32 by 32: B' through the ring, pinned, split barrier; A' from its own addresses", 2, 4, 2, 2, 2, 1);
+  SLM_ROW("t-split", "32 by 32: both through the ring, pinned, split barrier", 3, 4, 2, 2, 4, 1);
+  SLM_ROW("t-sbar", "t-split without the copy: the split barrier alone", 3, 5, 2, 2, 4, 1);
+  SLM_ROW("t-sbar-a", "t-split-a without the copy", 1, 5, 2, 2, 2, 1);
+  SLM_ROW("t-carry-a", "32 by 32: A' through a ring of 3, each stage's loads stored a stage later, split barrier", 1, 8, 2, 2, 2, 1);
+  SLM_ROW("t-carryc-a", "t-carry-a without the barrier", 1, 9, 2, 2, 2, 1);
+  SLM_ROW("t-carry-a2", "t-carry-a, 2 k-steps a stage", 1, 8, 2, 2, 4, 2);
+  SLM_ROW("t-carry", "32 by 32: both operands through the ring, carried, split barrier", 3, 8, 2, 2, 4, 1);
+  SLM_ROW("t-ld-a", "t-pinc-a with only the copy's loads (kept, not stored)", 1, 10, 1, 2, 2, 1);
+  SLM_ROW("t-st-a", "t-pinc-a with only the copy's stores (of registers)", 1, 11, 1, 2, 2, 1);
+  SLM_ROW("t-ldc-a", "t-ld-a with every load from one place that stays in the cache", 1, 12, 1, 2, 2, 1);
+  SLM_ROW("t-pinc-a2", "t-pinc-a, 2 k-steps a stage, the copy pinned to the second", 1, 7, 1, 2, 2, 2);
+  SLM_ROW("t-pinc-a4", "t-pinc-a, 4 k-steps a stage, the copy pinned to the fourth", 1, 7, 1, 2, 4, 4);
+  SLM_ROW("t-split-a4", "t-split-a, 4 k-steps a stage", 1, 4, 2, 2, 4, 4);
+  SLM_ROW("t-split-a2p", "t-split-a, 2 k-steps a stage, room for 2 pieces", 1, 4, 2, 2, 2, 2);
+  SLM_ROW("t-sbar-a4", "t-split-a4 without the copy", 1, 5, 2, 2, 4, 4);
+  SLM_ROW("u-prod-a", "32 by 32, A' through the ring, copied by --sgp producer sub-groups that run no DPAS, split barrier", 1, 13, 2, 2, 8, 1);
+  SLM_ROW("u-prodc-a", "u-prod-a with each producer load stored a stage later", 1, 15, 2, 2, 8, 1);
+  SLM_ROW("u-idle-a", "u-prod-a with producers that copy nothing (their threads and the barrier alone)", 1, 14, 2, 2, 8, 1);
+  SLM_ROW("u-prod-a16", "u-prod-a with room for 16 pieces a producer", 1, 13, 2, 2, 16, 1);
+  SLM_ROW("u-prodc-a16", "u-prodc-a with room for 16 pieces a producer", 1, 15, 2, 2, 16, 1);
+#undef SLM_ROW
+
 #if defined(PEARL_SYCL_XMX_JIT)
   // Operands read as texels of an image: the sampler, or whatever message a read with no sampler becomes.
 #define IMG_ROW(NAME, WHAT, LA, LB, PF, SMP)                                                    \
@@ -1231,7 +1561,7 @@ int main(int argc, char **argv) {
   PearlProfile p = PEARL_MAINNET_PROFILE;
   double secs = 5;
   uint32_t reps = 16, bandArg = 0, colBatch = 256;
-  uint32_t aStride = 0, bStride = 0, laneStride = 32, wpg = 1, stagger = 0, aMix = 0, bMix = 0, spin = 0, pfA = 0, pfB = 0, pfHint = 0, touchA = 0, touchB = 0, fillSkip = 0;
+  uint32_t aStride = 0, bStride = 0, laneStride = 32, wpg = 1, stagger = 0, aMix = 0, bMix = 0, spin = 0, pfA = 0, pfB = 0, pfHint = 0, touchA = 0, touchB = 0, fillSkip = 0, sga = 4, sgb = 4, sgp = 2;
   uint32_t maskArg[3] = {0, 0, 0};
   bool maskSet[3] = {false, false, false};
   int sgArg = 0, rbArg = 0;
@@ -1265,6 +1595,9 @@ int main(int argc, char **argv) {
     else if (a == "--touch-a" && v) { touchA = (uint32_t)atoi(v); i++; }
     else if (a == "--fill-skip" && v) { fillSkip = (uint32_t)atoi(v); i++; }
     else if (a == "--touch-b" && v) { touchB = (uint32_t)atoi(v); i++; }
+    else if (a == "--sga" && v) { sga = (uint32_t)atoi(v); i++; }
+    else if (a == "--sgb" && v) { sgb = (uint32_t)atoi(v); i++; }
+    else if (a == "--sgp" && v) { sgp = (uint32_t)atoi(v); i++; }
     else if (a == "--row-mask" && v) { maskArg[0] = (uint32_t)strtoul(v, nullptr, 0); maskSet[0] = true; i++; }
     else if (a == "--col-mask" && v) { maskArg[1] = (uint32_t)strtoul(v, nullptr, 0); maskSet[1] = true; i++; }
     else if (a == "--k-mask" && v) { maskArg[2] = (uint32_t)strtoul(v, nullptr, 0); maskSet[2] = true; i++; }
@@ -1419,6 +1752,18 @@ int main(int argc, char **argv) {
   args.touchA = touchA;
   args.fillSkip = fillSkip;
   args.touchB = touchB;
+  // The "s-" rows' work-group: an even number of 16-row blocks, whole row windows of a band, whole column
+  // windows of a batch, at most 64 sub-groups (an Xe-core's threads in this mode). A row whose ring would
+  // pass 64 KB at this shape fails with a message.
+  if (sga < 2 || (sga & 1u) || ((rowsValid / 2u) % (sga / 2u)) || sgb < 1 || ((colBatch / 4u) % sgb)
+      || sga * sgb > 64u) {
+    if (sga != 4 || sgb != 4) fprintf(stderr, "--sga %u --sgb %u does not fit: 4 by 4 instead\n", sga, sgb);
+    sga = 4;
+    sgb = 4;
+  }
+  args.sga = sga;
+  args.sgb = sgb;
+  args.sgp = sgp < 1 ? 1 : sgp;
   args.sink = sink;
 
   std::vector<Row> rows;
