@@ -1,15 +1,14 @@
-# 7800xt class: is this PC a slow one? Stamps of the fold alone at the miner's launch and one four times as long, then one round of the default and of the hash on its own queue
+# 7800xt race: the default, a twin, the hash on its own queue, the core's ticker, a shorter launch; then stamps of the miner's own launches
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_CODE=e373ffc4cac4b1c6be4289577e9c8bb87e864fcf
-G_PARTS=build\ stamps\ hash
-G_SWEEP=base=\;twin=-DPEARL_AMD_GOALTWIN=1\;sbase=-DPEARL_AMD_STAMP=1
-G_FOLDK=0
-G_STSHAPES=sbase:131072:2048:300\ sbase:131072:16384:40
-G_SROUNDS=1
+G_PARTS=hash\ mstamps
 G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ hq1
-G_HROUNDS=1
+G_VARIANTS=base\ twin\ hq1\ tk2\ tkq2
+G_HROUNDS=4
 G_HASH=45:12
+G_MST=msq0\ msq1\ mstk
+G_MSN=6
+G_MSAT=250
+G_MSSTEP=37
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
