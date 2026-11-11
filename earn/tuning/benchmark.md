@@ -3243,7 +3243,7 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   | Third design as left (a barrier a k-step) | 2,560 of 2,560 | 72.93% | 2685 MHz, 411 W | 257 |
   | + draw tethered ahead of A-tile loads, readouts of the two copies 12 mma apart (the default now) | 2,560 of 2,560 (k 2048), 1,280 of 1,280 (k 8192) | 80.47% | 2665 MHz, 448 W | 281 |
   | 19 other correct variants (own barriers, lags, places) | all pass | 72.4 to 77.5% | | |
-  | Four tiles a warp (128x256) | 2,048 of 2,048 | 68.01% | 2685 MHz, 408 W | 239 |
+  | Four tiles a warp (128x256) | 2,048 of 2,048 | 68.01% | not measured on the checked build (2685 MHz, 408 W on a variant that fails the check) | about 239 |
   | Draw alone under the barrier / table words from registers / narrow stores / both / one copy drawing | timing only | 81.35% / 89.86% / 85.53% / 88.50% / 88.46% | | |
   | A draw with no stage, by instruction count (7 units a warp a k-step, nothing holding the warps) | timing only | 63.44% | 2436 MHz, 397 W | 203 |
 
