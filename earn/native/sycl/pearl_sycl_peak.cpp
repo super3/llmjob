@@ -123,6 +123,7 @@ struct PeakArgs {
   uint32_t rowMask;  // "masked" A loads: the row windows read (window & mask)
   uint32_t colMask;  // "masked" B loads: the column windows read
   uint32_t kMask;    // "masked" loads: the k offsets read (0: one fragment)
+  uint32_t zero;     // 0, which the compiler cannot know: makes one value wait for another
   uint32_t *sink;    // one word a sub-group, so no accumulator can be dropped
 };
 
@@ -320,6 +321,167 @@ inline sycl::event peak_step(sycl::queue &q, const PeakArgs &args, uint32_t grou
   });
 }
 
+// The fragment fold's rows (--frag): pearl_sycl::FoldXmxF's grid and thread
+// shape, sub-group 8 with 16 rows a sub-group in the 256-register mode, and
+// its loads, one vector load a fragment at the fragment-order address.
+//   LA, LB  0 the operand in registers, 1 loaded as the fold loads it
+//   RD      0 no readout, 2 the fold's readout, barrier, hash and test
+//   NA      accumulators that get a DPAS, of 16
+//   PF      when a k-step's loads are sent:
+//           0 where the fold has them: A', then each B' fragment before its
+//             two DPAS
+//           1 all ten first, then the 16 DPAS
+//           2 a k-step ahead: each fragment's next load is sent as soon as
+//             its last DPAS of this k-step has read it
+//           3 all ten first, and every DPAS made to wait for all ten (a word
+//             of each fragment, ANDed with a zero the compiler cannot see,
+//             is ORed into A), so the 16 DPAS can run as one unbroken run
+// The masks cut the windows and k-steps read down to a set that stays in a
+// cache; aStride and bStride (FoldArgs) space the blocks.
+template <int LA, int LB, int RD, int NA, int PF> struct PeakFrag {
+  static constexpr int RB = 2, NCB = 8, S = 2;
+  PeakArgs P;
+  sycl::local_accessor<uint32_t, 1> part;
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    const FoldArgs &A = P.f;
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgi = (uint32_t)sg.get_group_linear_id();
+    const uint32_t g = (uint32_t)it.get_group(0);
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t wr, wc;
+    pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);
+    const uint32_t row0 = 32u * (wr & P.rowMask) + sgi * 16u;
+    const int8_t *Ab = A.Ap + (size_t)(row0 >> 4) * A.aStride + 32u * lane;
+    const int8_t *Bb = A.Bp + (size_t)((A.colStart / 4u + wc) & P.colMask) * A.bStride + 32u * lane;
+    v8i ar[2][RB], br[2];
+    if constexpr (LA == 0) {
+      for (int set = 0; set < 2; set++)
+        for (int rb = 0; rb < RB; rb++)
+          for (int r = 0; r < 8; r++)
+            ar[set][rb][r] = (int)bytes7(mix(P.seed + lane * 131u + sgi * 17u + (uint32_t)(set * 64 + rb * 8 + r)));
+    }
+    if constexpr (LB == 0) {
+      for (int i = 0; i < 2; i++)
+        for (int d = 0; d < 8; d++)
+          br[i][d] = (int)bytes7(mix((P.seed ^ 0xB5297A4Du) + lane * 257u + (uint32_t)(i * 8 + d)));
+    }
+    auto load_a = [&](uint32_t ks, int rb) -> v8i {
+      if constexpr (LA == 0) return ar[ks & 1u][rb];
+      else return *reinterpret_cast<const v8iu *>(Ab + (size_t)(ks & P.kMask) * 512u + (size_t)rb * 256u);
+    };
+    auto load_b = [&](uint32_t ks, int cb) -> v8i {
+      if constexpr (LB == 0) return br[(ks + (uint32_t)cb) & 1u];
+      else return *reinterpret_cast<const v8iu *>(Bb + (size_t)(ks & P.kMask) * 2048u + (size_t)cb * 256u);
+    };
+    v8i c[RB][NCB];
+    for (int rb = 0; rb < RB; rb++)
+      for (int cb = 0; cb < NCB; cb++) c[rb][cb] = 0;
+    v8i keep = 0;
+    // One DPAS, or for an accumulator past NA its operands kept by an XOR.
+    auto step = [&](int rb, int cb, v8i a, v8i b) {
+      if (rb * NCB + cb < NA) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, a, b, c[rb][cb]);
+      else keep ^= a ^ b;
+    };
+    v8i af[RB], bf[NCB];
+    if constexpr (PF == 2) {
+      for (int rb = 0; rb < RB; rb++) af[rb] = load_a(0, rb);
+      for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(0, cb);
+    }
+    for (uint32_t rep = 0; rep < P.reps; rep++) {
+      for (uint32_t ch = 0; ch < 16u; ch++) {
+        for (uint32_t s = 0; s < 4u; s++) {
+          const uint32_t ks = ch * 4u + s;
+          if constexpr (PF == 0) {
+            for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+            for (int cb = 0; cb < NCB; cb++) {
+              const v8i b = load_b(ks, cb);
+              for (int rb = 0; rb < RB; rb++) step(rb, cb, af[rb], b);
+            }
+          } else if constexpr (PF == 1) {
+            for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+            for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+            for (int cb = 0; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++) step(rb, cb, af[rb], bf[cb]);
+          } else if constexpr (PF == 3) {
+            for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+            for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+            int t = 0;
+            for (int rb = 0; rb < RB; rb++) t ^= af[rb][0];
+            for (int cb = 0; cb < NCB; cb++) t ^= bf[cb][0];
+            t &= (int)P.zero;
+            for (int rb = 0; rb < RB; rb++) af[rb][0] |= t;
+            for (int cb = 0; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++) step(rb, cb, af[rb], bf[cb]);
+          } else {
+            // The next k-step's fragment, wrapping at the end so every load
+            // has an address of the block.
+            const uint32_t nx = (ks + 1u) & 63u;
+            v8i an[RB];
+            for (int rb = 0; rb < RB; rb++) an[rb] = load_a(nx, rb);
+            for (int cb = 0; cb < NCB; cb++) {
+              for (int rb = 0; rb < RB; rb++) step(rb, cb, af[rb], bf[cb]);
+              bf[cb] = load_b(nx, cb);
+            }
+            for (int rb = 0; rb < RB; rb++) af[rb] = an[rb];
+          }
+        }
+        if constexpr (RD >= 1) {
+          uint32_t x0 = 0, x1 = 0;
+          for (int rb = 0; rb < RB; rb++)
+            for (int cb = 0; cb < NCB; cb++) {
+              for (int r = 0; r < 4; r++) x0 ^= (uint32_t)c[rb][cb][r];
+              for (int r = 4; r < 8; r++) x1 ^= (uint32_t)c[rb][cb][r];
+            }
+          x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
+          x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
+          if (lane < 8u) part[(sgi * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+        }
+      }
+    }
+    if constexpr (RD == 2) {
+      sycl::group_barrier(it.get_group());
+      if (sgi == 0 && lane < 8u) {
+        const uint32_t qr = lane;
+        uint32_t words[16];
+        for (int j = 0; j < 16; j++) {
+          uint32_t x = 0;
+          for (int s = 0; s < S; s++) x ^= part[((uint32_t)s * 8u + qr) * 16u + (uint32_t)j];
+          words[j] = x;
+        }
+        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+        pearl_sycl::region_epilogue(words, local, A.test, A.hits, A.allTr);
+      }
+    } else {
+      uint32_t x = 0;
+      for (int rb = 0; rb < RB; rb++)
+        for (int cb = 0; cb < NCB; cb++)
+          for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+      for (int r = 0; r < 8; r++) x ^= (uint32_t)keep[r];
+      if constexpr (PF == 2) {
+        for (int cb = 0; cb < NCB; cb++) x ^= (uint32_t)bf[cb][0];
+        for (int rb = 0; rb < RB; rb++) x ^= (uint32_t)af[rb][0];
+      }
+      x = sycl::reduce_over_group(sg, x, sycl::bit_xor<uint32_t>());
+      if (lane == 0) P.sink[(size_t)g * S + sgi] = x;
+    }
+  }
+};
+
+template <int LA, int LB, int RD, int NA, int PF>
+inline sycl::event peak_frag(sycl::queue &q, const PeakArgs &args, uint32_t groups) {
+  return q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<uint32_t, 1> part(2 * 8 * 16, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)groups * 16, 16), PeakFrag<LA, LB, RD, NA, PF>{args, part});
+  });
+}
+
 struct Row {
   const char *name;
   const char *what;
@@ -382,6 +544,38 @@ template <int SG, int RB, bool FOLD> void add_rows(std::vector<Row> &v) {
   PEAK_ROW("vecfrag", "both as one vector load a fragment, both in fragment order", 4, 5, 0, ALL, ALL, 1u, all, all, all);
   PEAK_ROW("vecfrag-fold", "vecfrag with the readout, barrier, hash and test", 4, 5, 2, ALL, ALL, 1u, all, all, all);
 #undef PEAK_ROW
+}
+
+// The fragment fold's rows. Every one is 16 accumulators a sub-group.
+void add_frag_rows(std::vector<Row> &v) {
+  const uint32_t all = ~0u;
+#define FRAG_ROW(NAME, WHAT, LA, LB, RD, NA, PF, REPS, RMASK, CMASK, KMASK)                    \
+  v.push_back({NAME, WHAT, NA, 16, 16, REPS, RMASK, CMASK, KMASK,                               \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) {                              \
+                 return peak_frag<LA, LB, RD, NA, PF>(q, a, g);                                 \
+               }})
+  FRAG_ROW("f-regs", "DPAS alone on 16 accumulators, operands in registers, long threads", 0, 0, 0, 16, 0, 0u, all, all, all);
+  FRAG_ROW("f-regs-short", "f-regs, one window a thread as the fold has it", 0, 0, 0, 16, 0, 1u, all, all, all);
+  FRAG_ROW("f-fold", "the fragment fold: this file's copy", 1, 1, 2, 16, 0, 1u, all, all, all);
+  FRAG_ROW("f-loads", "its loads and DPAS, no readout", 1, 1, 0, 16, 0, 1u, all, all, all);
+  FRAG_ROW("f-loads-1dpas", "its loads with one DPAS a k-step: the rate the loads alone would allow", 1, 1, 0, 1, 0, 1u, all, all, all);
+  FRAG_ROW("f-win0", "its loads, every window reading window 0 (64 KB of A', 128 KB of B')", 1, 1, 0, 16, 0, 1u, 0u, 0u, all);
+  FRAG_ROW("f-win0-1dpas", "f-win0 with one DPAS a k-step", 1, 1, 0, 1, 0, 1u, 0u, 0u, all);
+  FRAG_ROW("f-fixed", "its loads, all of one k-step of window 0", 1, 1, 0, 16, 0, 1u, 0u, 0u, 0u);
+  FRAG_ROW("f-a", "A' loaded from its own addresses, B in registers", 1, 0, 0, 16, 0, 1u, all, all, all);
+  FRAG_ROW("f-b", "B' loaded from its own addresses, A in registers", 0, 1, 0, 16, 0, 1u, all, all, all);
+  FRAG_ROW("f-a-win0", "A' loaded from window 0, B in registers", 1, 0, 0, 16, 0, 1u, 0u, all, all);
+  FRAG_ROW("f-b-win0", "B' loaded from window 0, A in registers", 0, 1, 0, 16, 0, 1u, all, 0u, all);
+  FRAG_ROW("f-own-a", "A' from its own addresses, B' from window 0", 1, 1, 0, 16, 0, 1u, all, 0u, all);
+  FRAG_ROW("f-own-b", "B' from its own addresses, A' from window 0", 1, 1, 0, 16, 0, 1u, 0u, all, all);
+  FRAG_ROW("f-pf1", "f-loads with a k-step's ten loads sent first", 1, 1, 0, 16, 1, 1u, all, all, all);
+  FRAG_ROW("f-pf2", "f-loads with each load sent a k-step ahead", 1, 1, 0, 16, 2, 1u, all, all, all);
+  FRAG_ROW("f-pf3", "f-loads with every DPAS of a k-step made to wait for its ten loads", 1, 1, 0, 16, 3, 1u, all, all, all);
+  FRAG_ROW("f-pf3-b", "f-pf3 with B' loaded and A in registers", 0, 1, 0, 16, 3, 1u, all, all, all);
+  FRAG_ROW("f-pf3-fold", "f-pf3 with the readout, barrier, hash and test", 1, 1, 2, 16, 3, 1u, all, all, all);
+  FRAG_ROW("f-pf1-fold", "f-pf1 with the readout, barrier, hash and test", 1, 1, 2, 16, 1, 1u, all, all, all);
+  FRAG_ROW("f-pf2-fold", "f-pf2 with the readout, barrier, hash and test", 1, 1, 2, 16, 2, 1u, all, all, all);
+#undef FRAG_ROW
 }
 
 bool read_num(const std::string &path, double &v) {
@@ -473,8 +667,10 @@ int main(int argc, char **argv) {
   PearlProfile p = PEARL_MAINNET_PROFILE;
   double secs = 5;
   uint32_t reps = 16, bandArg = 0, colBatch = 256;
+  uint32_t aStride = 0, bStride = 0, maskArg[3] = {0, 0, 0};
+  bool maskSet[3] = {false, false, false};
   int sgArg = 0, rbArg = 0;
-  bool trace = false;
+  bool trace = false, frag = false;
   std::string only;
   for (int i = 1; i < argc; i++) {
     const std::string a = argv[i];
@@ -489,9 +685,17 @@ int main(int argc, char **argv) {
     else if (a == "--sg" && v) { sgArg = atoi(v); i++; }
     else if (a == "--rb" && v) { rbArg = atoi(v); i++; }
     else if (a == "--trace") { trace = true; }
+    else if (a == "--frag") { frag = true; }
+    else if (a == "--a-stride" && v) { aStride = (uint32_t)atoi(v); i++; }
+    else if (a == "--b-stride" && v) { bStride = (uint32_t)atoi(v); i++; }
+    else if (a == "--row-mask" && v) { maskArg[0] = (uint32_t)strtoul(v, nullptr, 0); maskSet[0] = true; i++; }
+    else if (a == "--col-mask" && v) { maskArg[1] = (uint32_t)strtoul(v, nullptr, 0); maskSet[1] = true; i++; }
+    else if (a == "--k-mask" && v) { maskArg[2] = (uint32_t)strtoul(v, nullptr, 0); maskSet[2] = true; i++; }
     else {
       fprintf(stderr, "usage: %s [--secs S] [--only LIST] [--reps R] [--trace] [--m M] [--n N] "
-                      "[--col-batch C] [--band B] [--sg 8|16] [--rb 2]\n", argv[0]);
+                      "[--col-batch C] [--band B] [--sg 8|16] [--rb 2]\n"
+                      "       %s --frag [--a-stride BYTES] [--b-stride BYTES] [--row-mask M] [--col-mask M] "
+                      "[--k-mask M] and the options above\n", argv[0], argv[0]);
       return 2;
     }
   }
@@ -560,6 +764,7 @@ int main(int argc, char **argv) {
   } catch (const std::exception &) {
   }
   uint64_t band = bandArg ? bandArg : (cache ? cache / (32ull * k) : 16);  // the host's rule for the XMX folds
+  if (frag && !bandArg && cache) band = cache / 8 / (32ull * k);           // and for the fragment fold
   if (band < 1) band = 1;
   if (band > rowsValid / 2u) band = rowsValid / 2u;
   band = floor_pow2(band);
@@ -576,7 +781,10 @@ int main(int argc, char **argv) {
           sensors.fan.empty() ? "none" : "yes");
 
   // Operands: uniform int8 in [-64, 63], about what the miner's are.
-  const size_t aBytes = (size_t)p.m * k, bBytes = (size_t)p.n * k;
+  // The fragment rows' blocks: 16 rows of A', 64 columns of B', or further apart.
+  if (aStride < 16u * k) aStride = 16u * k;
+  if (bStride < 64u * k) bStride = 64u * k;
+  const size_t aBytes = (size_t)(p.m / 16u) * aStride, bBytes = (size_t)(p.n / 64u) * bStride;
   int8_t *dA = sycl::malloc_device<int8_t>(aBytes, q);
   int8_t *dB = sycl::malloc_device<int8_t>(bBytes, q);
   HitBuf *hits = sycl::malloc_device<HitBuf>(1, q);
@@ -607,15 +815,25 @@ int main(int argc, char **argv) {
   args.f.colStart = 0;
   args.f.colBatch = colBatch;
   args.f.band = (uint32_t)band;
+  args.f.aStride = aStride;
+  args.f.bStride = bStride;
   for (int i = 0; i < 8; i++) { args.f.test.key[i] = mix(0xA5EEDu + (uint32_t)i); args.f.test.target_w[i] = 0; }
   args.f.test.hash_big_endian = 0;
   args.f.hits = hits;
   args.f.allTr = nullptr;
   args.seed = 0x1234567u;
+  args.zero = 0;
   args.sink = sink;
 
   std::vector<Row> rows;
-  if (rbArg == 2 && SG == 8) {
+  if (frag) {
+    if (SG != 8 || cpu) {
+      fprintf(stderr, "--frag is the sub-group 8 hardware fold's: an Arc A-series card\n");
+      return 2;
+    }
+    fprintf(stderr, "fragment rows: A' blocks %u bytes apart, B' blocks %u\n", aStride, bStride);
+    add_frag_rows(rows);
+  } else if (rbArg == 2 && SG == 8) {
 #if defined(PEARL_PEAK_LARGE_GRF)
     add_rows<8, 2, false>(rows);
 #else
@@ -633,9 +851,9 @@ int main(int argc, char **argv) {
     if (!only.empty() && only.find(std::string(",") + r.name + ",") == std::string::npos) continue;
     PeakArgs a = args;
     a.reps = r.reps ? r.reps : reps;
-    a.rowMask = r.rowMask;
-    a.colMask = r.colMask;
-    a.kMask = r.kMask;
+    a.rowMask = maskSet[0] ? maskArg[0] : r.rowMask;
+    a.colMask = maskSet[1] ? maskArg[1] : r.colMask;
+    a.kMask = maskSet[2] ? maskArg[2] : r.kMask;
     // MACs a launch: a window is 32 rows by 64 columns by 64 k-steps of 32;
     // `counted` of a sub-group's `all` DPAS are counted.
     const double macs = (double)groups * 32.0 * 64.0 * 64.0 * 32.0 * a.reps * r.counted / r.all;
