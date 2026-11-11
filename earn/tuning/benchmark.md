@@ -2545,6 +2545,26 @@ The arms, the raw runs and the table script are on branch `goal/gate` (4014c732,
   readout 3 to 4, the offsets' global loads 2. Not built: tables laid out rank-index-major, so that a warp draws
   one k-pair for 32 row groups and every lane reads its own 8 bytes of one table row. Tables, switches and what
   ptxas had to be led around: `earn/native/probes/README.md`, "The draw fold".
+- **The draw fold's third design: the table reads are fixed, and it still loses (11 November, rig01's RTX 4090,
+  probe only).** Tables laid out by rank index, sixteen rows to a 16-byte word, so no table read has a bank
+  conflict; every warp draws one unit of B and one of A a k-step, two k-steps ahead, so that no warp should wait
+  for another. Probe figures, k 8192 (branch `goal/nv-kernel`; no hash or host side, so no mining rate):
+
+  | Stream | CPU check | Pipe use | Clock, watts | TH/s by count |
+  |---|---|---|---|---|
+  | Draw alone, nothing holding the warps together | n/a | 96.15% (second design: about 79%) | | |
+  | Everything, nothing holding the warps together | 0 of 2,560 regions | 92.38% | 2564 MHz, 448 W | 310 |
+  | Everything, a barrier a chunk | 232 of 2,560 | 80.98% | 2625 MHz, 450 W | 279 |
+  | Everything, a counter wait a chunk, two loop copies | 64 of 2,560 | 73.98% | 2601 MHz, 428 W | 252 |
+  | Everything, a barrier a k-step (the form left on the branch) | 2,560 of 2,560 | 73.30% | 2685 MHz, 411 W | 258 |
+
+  The release fold is 317.3 TH/s here, so every form loses, and only the last is correct. The conflict-free
+  tables did what they were for. What is left is the hold: the four schedulers of an SM run this loop up to 3%
+  apart, ptxas puts the draw's stores anywhere in a k-step (and moves the mma, so nothing in the source pins
+  them), and a warp a few mma behind has its stage overwritten. A barrier makes it correct and starts both warps
+  of a scheduler at the same place of the same code, where (as the figures read) they are busy at once: a barrier a
+  k-step alone costs
+  0.8 points, with the draw 18. Tables and the reasoning: `earn/native/probes/README.md`, "The third design".
 
 ## Keeping this file current
 
