@@ -2566,6 +2566,31 @@ The arms, the raw runs and the table script are on branch `goal/gate` (4014c732,
   k-step alone costs
   0.8 points, with the draw 18. Tables and the reasoning: `earn/native/probes/README.md`, "The third design".
 
+- **The draw fold, fourth round: 73% to 80.5% in the one correct form, and what the barrier costs (11 November,
+  rig01's RTX 4090, probe only).** Probe figures, k 8192 (branch `goal/nv-kernel`; no hash or host side, so no
+  mining rate). Timing-only rows compute wrong results on purpose.
+
+  | Stream | CPU check | Pipe use | Clock, watts | TH/s by count |
+  |---|---|---|---|---|
+  | Third design as left (a barrier a k-step) | 2,560 of 2,560 | 72.93% | 2685 MHz, 411 W | 257 |
+  | + draw tethered ahead of A-tile loads, readouts of the two copies 12 mma apart (the default now) | 2,560 of 2,560 (k 2048), 1,280 of 1,280 (k 8192) | 80.47% | 2665 MHz, 448 W | 281 |
+  | 19 other correct variants (own barriers, lags, places) | all pass | 72.4 to 77.5% | | |
+  | Four tiles a warp (128x256) | 2,048 of 2,048 | 68.01% | 2685 MHz, 408 W | 239 |
+  | Draw alone under the barrier / table words from registers / narrow stores / both / one copy drawing | timing only | 81.35% / 89.86% / 85.53% / 88.50% / 88.46% | | |
+  | A draw with no stage, by instruction count (7 units a warp a k-step, nothing holding the warps) | timing only | 63.44% | 2436 MHz, 397 W | 203 |
+
+  The release fold is 317.3 TH/s here, so every form still loses. What the round settled: a draw straight into
+  the mma's fragment registers needs about 190 instructions a thread a k-step against 54 staged (the bytes have to
+  be turned from "rows at one k" to "four k of one row", which `ldmatrix.trans` does for nothing), and its
+  stand-in is the slowest stream measured. Under the barrier the draw costs 17.6 points (8.5 table reads, 4 wide
+  stores, 10 that stay with registers only) where it costs 3.6 with nothing holding the warps; the cost is there
+  with one warp of a scheduler drawing and the other not, and the idle one reaches the barrier no earlier, so it
+  is not the two warps being busy at once. It is about fixed a k-step (four tiles a warp are worse than five).
+  ptxas's order of one source is worth 4 to 8 points either way (65 to 81% over harmless variants), its spills
+  track the loss, and a tool that reorders the compiled loop safely (`probes/drawtools/spread.py`) can move
+  almost nothing because ptxas reuses registers across the steps. Tables and reasoning:
+  `earn/native/probes/README.md`, "What the barrier costs the draw".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
