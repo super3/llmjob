@@ -84,15 +84,16 @@ if [ "$OPEN" = 1 ]; then
       rm -rf mroot dl mm
     fi
     # The runtime is found through the OpenCL loader, by a list of drivers that
-    # holds the system's too. The loader itself comes from the system when it
-    # has one, else from the same conda package set, alone in a directory of
-    # its own: the rest of that set's libraries must not get in front of the
-    # system's.
-    mkdir -p ocl-loader
-    ln -sf "$DIR/cpu-rt/lib/libOpenCL.so.1" ocl-loader/libOpenCL.so.1
+    # holds the system's too. Its libraries go on the library path: it is built
+    # against a newer libstdc++ than Ubuntu 20.04's, and a process that has
+    # loaded the system's first cannot load it (the CPU device is then just
+    # missing). That set has no SYCL runtime in it.
+    #
     # cpu-rt.sh, which envrc.sh sources, is also sourced alone to check a staged
     # core: that needs the CPU device and must not find the compiler's copy of
-    # the SYCL runtime before its own.
+    # the SYCL runtime before its own. What the staged files themselves need of
+    # glibc and libstdc++ is read from them, not found out by running them here
+    # (check-glibc-floor.sh).
     cat > cpu-rt.sh <<ENV
 # source this: Intel's OpenCL CPU runtime from install-toolchain.sh --open --cpu-rt (testing only)
 mkdir -p "$DIR/ocl-vendors" && rm -f "$DIR/ocl-vendors"/*.icd
@@ -100,7 +101,7 @@ for f in /etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/
 for f in "$DIR"/cpu-rt/etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/ocl-vendors/toolchain-\${f##*/}"; fi; done
 unset f
 export OCL_ICD_VENDORS="$DIR/ocl-vendors"
-if ! ldconfig -p 2>/dev/null | grep -q 'libOpenCL\.so\.1 '; then export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:+\$LD_LIBRARY_PATH:}$DIR/ocl-loader"; fi
+export LD_LIBRARY_PATH="$DIR/cpu-rt/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
 ENV
   fi
   du -sh "$DIR"

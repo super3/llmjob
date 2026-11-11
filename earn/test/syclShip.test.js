@@ -145,9 +145,11 @@ describe('the compiler a release is built with', () => {
     expect(open).toContain('intel-opencl-rt=2026.1.1 ocl-icd');
     expect(open).toContain('cat > cpu-rt.sh <<ENV');
     expect(open).toContain('echo "if [ -f \\"$DIR/cpu-rt.sh\\" ]; then . \\"$DIR/cpu-rt.sh\\"; fi"');
-    // The OpenCL loader from that package set goes in a directory of its own.
-    expect(open).toContain('ln -sf "$DIR/cpu-rt/lib/libOpenCL.so.1" ocl-loader/libOpenCL.so.1');
-    expect(open).not.toMatch(/LD_LIBRARY_PATH=[^\n]*cpu-rt\/lib/);
+    // Its libraries go on the library path, since it needs a newer libstdc++
+    // than Ubuntu 20.04 has. That set must hold no SYCL runtime, or a check
+    // of a staged core would run the compiler's.
+    expect(open).toContain('export LD_LIBRARY_PATH="$DIR/cpu-rt/lib\\${LD_LIBRARY_PATH:+:\\$LD_LIBRARY_PATH}"');
+    expect(slice(open, 'micromamba create', 'rm -rf mroot dl mm')).not.toMatch(/dpcpp|sycl/);
   });
 
   test('build.sh takes icpx or the open-source clang++, and the addon links no SYCL of its own', () => {

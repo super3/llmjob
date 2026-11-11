@@ -52,7 +52,8 @@ if [ -z "$STAGE" ] || [ ! -f "$OUT/pearl_sycl.dll" ]; then
   "$CXX" "${SYCL_FLAGS[@]}" -shared -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_host.cpp" -o "$OUT/pearl_sycl.dll" \
     "-Wl,/DEF:$(cygpath -m "$HERE/pearl_sycl.def")" "-Wl,/IMPLIB:$(cygpath -m "$OUT/pearl_sycl.lib")"
   echo "[2/2] pearl_sycl_check.exe"
-  "$CXX" -O2 -std=c++17 "${CRT[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_check.cpp" "$OUT/pearl_sycl.lib" -o "$OUT/pearl_sycl_check.exe"
+  # -fsycl here only so that the driver links the same C++ runtime as the DLL has.
+  "$CXX" -fsycl -O2 -std=c++17 "${CRT[@]}" -I"$HERE" -I"$SRC" "$HERE/pearl_sycl_check.cpp" "$OUT/pearl_sycl.lib" -o "$OUT/pearl_sycl_check.exe"
   echo "done: $OUT"
 fi
 
