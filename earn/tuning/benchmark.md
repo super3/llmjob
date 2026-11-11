@@ -2058,6 +2058,168 @@ draw's instructions cost beside the IMMAs. Until one of them is explained, no fo
 can be specified. The arms, the tools (`gate.sh`, the spin kernel, the switches) and the raw runs and logs
 (`earn/tuning/gate`, with the scripts that make these tables from them) stay on branch `goal/gate` (c3f6bf85).
 
+**The gate's follow-up: where the loop's last points go, and a producer warp in the fold's own block (11 November, rig01)**
+
+The gate above left two things unmeasured: where the no-copy fold loses its last points a clock, and what a draw costs
+in a warp of its own inside the fold's block. Both were measured on rig01's RTX 4090, against a line set beforehand:
+with the producer at the instruction count a real draw needs, the best arrangement must net +3% on the release at
+450 W, or the on-chip-draw route is closed for stock-power cards. Every arm is timing-only, on branch `goal/gate`.
+
+How it ran: `hashrate.js`, 60 s after 15 s warm-up, three holds of the card (40, 2 and 20 minutes). The release fold
+(k 2048) is the control. The no-copy fold at k 65536, the gate's best arm, is the base of both measurements: 341.86,
+341.86 and 341.87 TH/s in three runs. Work a clock is TH/s per GHz and its share of the tensor peak (131.072 on this
+card); "cycles a chunk" is 6144 over that share, the SM clocks one chunk of a 192x256 tile takes.
+
+The arms:
+
+- **The loop gap.** One thing removed or moved at a time, on the no-copy k 65536 fold: the readout at the tile's last
+  chunk only (`PEARL_ABLATE_READOUT`); the ring's waits and arrivals off (`PEARL_ABLATE_RING`, `_ARRIVE`); the tile
+  hash off (`PEARL_ABLATE_TRANSCRIPT_HASH`); all three; B fragments reloaded for every m16 tile (`PEARL_GATE_BSTREAM`,
+  80 more ldmatrix a chunk); and in that body the readout moved into the next chunk's first k-step
+  (`PEARL_GATE_RO_LAZY`), where a lazy readout would sit. In the fold's own body the moved readout spills 108 bytes,
+  so it was not run there.
+- **Warps given up** (`PEARL_GATE_MMA_MASK`): the block keeps its eight warps and 253 registers, and only some fold.
+  Four fold, one a scheduler, and four are free; or seven fold and one is free. The host still counts every region,
+  so these rates are scaled by the share of warps that fold (a half, seven eighths).
+- **A smaller fold with warps beside it** (`PEARL_TALL_ROW_TILES=4`, `PEARL_GATE_PROD_WARPS=4`): 64x64 warps and a
+  128x256 tile need 165 to 170 registers, which leaves room for twelve warps: the eight that fold and four more, one a
+  scheduler. Its tile holds two thirds of the release's MACs and the host counts them as they are.
+- **Producers** (`PEARL_GATE_PROD`): the warps that do not fold. Each stage a producer waits for the folding warps
+  to release the buffer the stage before read, writes its 16-byte units of it (two 16-byte loads from the buffer
+  being read, ALU steps, one store) and arrives on its FULL barrier. The buffer is read two stages on. A waiting
+  producer tests its barrier every 100 ns and sleeps between (`PEARL_GATE_PROD_NAP`), or spins. Its work is counted
+  against the folding warps' IMMA: 1, 2 and 3 to 3.7 instructions an IMMA are 9 to 11, 17 to 21 and 32 instructions a
+  16-byte unit, because a smaller tile needs more operand bytes an IMMA (58.7 at 96x256 and 48 at 128x256 against
+  37.3).
+
+Checked in the machine code (sm_89, ptxas 12.6): in every mask and producer arm the folding warps' chunk loop is the
+no-copy fold's instruction for instruction (426 instructions, 192 IMMA, 40 ldmatrix, 253 registers, no spill). The
+128x256 arms hold 128 IMMA and 32 ldmatrix a chunk in 321 to 323 instructions, 165 to 170 registers, no spill. The
+producers' instructions a stage were counted in the same disassembly. Three things had to be found first. A hardware
+barrier for the producer's wait made ptxas fence every ring wait of the chunk loop and spill 100 bytes there. So did
+a plain branch to the producer's code, until the test was made warp-uniform by a vote. And a third barrier for the
+folding warps' own arrival, one that nothing waits on, gave "unspecified launch failure" within a second whenever a
+column slot had two folding warps; the arms that ran count that arrival on FULL beside the producers'. The
+four-fold-four-produce arms were measured in the third-barrier form, the others in the final one.
+
+**RTX 4090, rig01, 450 W limit, `hashrate.js`.** The release fold ran 5 times, 316.98 to 317.64 TH/s. The no-copy k
+65536 fold ran 3 times, 341.86 to 341.87. Change against the release is against the controls on either side of a run;
+against the no-copy fold, against the runs of it on either side, or their mean in a hold that had none.
+
+| Arm at 450 W | Runs | TH/s | vs release | vs no-copy k 65536 | SM clock | W | °C | TH/s per GHz | Of the tensor peak | Cycles a chunk |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold, k 2048 (control) | 5 | 317.3 |  |  | 2531 MHz | 449 | 77 | 125.3 | 95.6% | 6425 |
+| `nck` No copies, k 65536 (the base of both measurements) | 3 | 341.9 | +7.70% (+7.70, +7.70, +7.71) |  | 2685 MHz | 410 | 76 | 127.3 | 97.1% | 6325 |
+| `kro` Readout at the tile's last chunk only | 1 | 349.1 | +9.99% | +2.13% | 2685 MHz | 387 | 74 | 130.0 | 99.2% | 6193 |
+| `krg` Ring waits and arrivals off | 1 | 326.8 | +2.96% | -4.40% | 2685 MHz | 388 | 74 | 121.7 | 92.9% | 6616 |
+| `khs` Tile hash off | 1 | 342.4 | +7.86% | +0.15% | 2685 MHz | 412 | 76 | 127.5 | 97.3% | 6316 |
+| `kall` Readout, ring and hash all off | 1 | 349.4 | +10.07% | +2.21% | 2685 MHz | 386 | 74 | 130.1 | 99.3% | 6188 |
+| `kbs` B fragments reloaded a tile: 80 more ldmatrix a chunk | 1 | 313.4 | -1.26% | -8.32% | 2521 MHz | 400 | 75 | 124.3 | 94.8% | 6478 |
+| `kbz1` The same, readout moved into the next chunk's first k-step | 1 | 312.9 | -1.42% | -8.47% | 2533 MHz | 402 | 75 | 123.5 | 94.2% | 6519 |
+| `m4k` 4 warps fold (one a scheduler), 4 leave | 1 | 282.0 | -11.14% | -17.50% | 2685 MHz | 353 | 71 | 105.0 | 80.1% | 7666 |
+| `m4p0k` 4 fold, 4 producers that spin on their barrier, no work | 1 | 278.0 | -12.43% | -18.69% | 2686 MHz | 385 | 73 | 103.5 | 79.0% | 7781 |
+| `m4n0k` 4 fold, 4 producers that nap 100 ns between tests, no work | 1 | 280.5 | -11.63% | -17.95% | 2685 MHz | 359 | 71 | 104.5 | 79.7% | 7708 |
+| `m4n1k` 4 fold, 4 producers, 1.03 instructions an IMMA (9 a unit) | 1 | 271.0 | -14.63% | -20.74% | 2685 MHz | 431 | 77 | 100.9 | 77.0% | 7980 |
+| `m4n2k` 4 fold, 4 producers, 1.95 an IMMA (17 a unit) | 1 | 262.4 | -17.33% | -23.24% | 2685 MHz | 445 | 77 | 97.7 | 74.6% | 8240 |
+| `m4n3k` 4 fold, 4 producers, 3.67 an IMMA (32 a unit) | 1 | 255.6 | -19.46% | -25.22% | 2597 MHz | 449 | 78 | 98.4 | 75.1% | 8181 |
+| `m4p2k` 4 fold, 4 spinning producers, 1.95 an IMMA | 1 | 268.5 | -15.41% | -21.46% | 2640 MHz | 449 | 77 | 101.7 | 77.6% | 7919 |
+| `m7k` 7 warps fold, 1 leaves | 1 | 299.5 | -5.64% | -12.39% | 2685 MHz | 369 | 71 | 111.5 | 85.1% | 7219 |
+| `m7n1k` 7 fold, 1 producer for all seven, 1.00 an IMMA | 1 | 184.9 | -41.72% | -45.91% | 2700 MHz | 319 | 67 | 68.5 | 52.2% | 11759 |
+| `t4k` 128x256 tile, 8 warps of 64x64, no producer | 2 | 328.5 | +3.53% (+3.62, +3.45) | -3.89% | 2685 MHz | 414 | 76 | 122.4 | 93.4% | 6581 |
+| `t12n0k` 128x256, 8 fold, 4 napping producer warps, no work | 1 | 322.3 | +1.60% | -5.71% | 2685 MHz | 411 | 76 | 120.1 | 91.6% | 6708 |
+| `t12n1k` 128x256, 8 fold, 4 producers, 1.03 an IMMA (11 a unit) | 1 | 312.7 | -1.44% | -8.52% | 2580 MHz | 450 | 78 | 121.2 | 92.5% | 6644 |
+| `t12n2k` 128x256, 8 fold, 4 producers, 1.97 an IMMA (21 a unit) | 1 | 306.4 | -3.43% | -10.38% | 2541 MHz | 449 | 77 | 120.6 | 92.0% | 6679 |
+| `t12n3k` 128x256, 8 fold, 4 producers, 3.00 an IMMA (32 a unit) | 1 | 298.4 | -5.96% | -12.73% | 2504 MHz | 449 | 77 | 119.2 | 90.9% | 6759 |
+| `t12p2k` 128x256, 8 fold, 4 spinning producers, 1.97 an IMMA | 1 | 308.7 | -2.71% | -9.71% | 2525 MHz | 449 | 77 | 122.2 | 93.3% | 6588 |
+
+**RTX 4090, rig01, 300 W limit, `hashrate.js`.** The release fold ran 3 times, 270.97 to 272.53 TH/s. The no-copy k
+65536 fold ran once, 312.19. Change against the release is against the controls on either side of a run; against the
+no-copy fold, against the runs of it on either side, or their mean in a hold that had none.
+
+| Arm at 300 W | Runs | TH/s | vs release | vs no-copy k 65536 | SM clock | W | °C | TH/s per GHz | Of the tensor peak | Cycles a chunk |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `base` Release fold, k 2048 (control) | 3 | 271.8 |  |  | 2166 MHz | 300 | 65 | 125.5 | 95.7% | 6419 |
+| `nck` No copies, k 65536 (the base of both measurements) | 1 | 312.2 | +15.03% |  | 2438 MHz | 300 | 66 | 128.1 | 97.7% | 6289 |
+| `m4k` 4 warps fold (one a scheduler), 4 leave | 1 | 270.2 | -0.43% | -13.44% | 2566 MHz | 300 | 67 | 105.3 | 80.3% | 7647 |
+| `m4n1k` 4 fold, 4 producers, 1.03 instructions an IMMA (9 a unit) | 1 | 243.4 | -10.31% | -22.03% | 2387 MHz | 299 | 67 | 102.0 | 77.8% | 7897 |
+| `m4n2k` 4 fold, 4 producers, 1.95 an IMMA (17 a unit) | 1 | 236.0 | -13.03% | -24.39% | 2336 MHz | 300 | 67 | 101.0 | 77.1% | 7970 |
+| `t4k` 128x256 tile, 8 warps of 64x64, no producer | 2 | 298.8 | +9.86% (+10.06, +9.66) | -4.29% | 2426 MHz | 300 | 66 | 123.2 | 94.0% | 6539 |
+| `t12n1k` 128x256, 8 fold, 4 producers, 1.03 an IMMA (11 a unit) | 1 | 271.7 | -0.32% | -12.98% | 2235 MHz | 300 | 66 | 121.6 | 92.7% | 6625 |
+| `t12n2k` 128x256, 8 fold, 4 producers, 1.97 an IMMA (21 a unit) | 1 | 264.1 | -3.09% | -15.40% | 2190 MHz | 299 | 66 | 120.6 | 92.0% | 6678 |
+
+What the tables say:
+
+- **The loop gap is the readout.** The no-copy k 65536 fold does 97.1% of the tensor peak: 6325 cycles a chunk
+  against 6144.
+
+  | Piece | Arm | Work a clock | Cycles a chunk |
+  |---|---|---|---|
+  | The readout (96 XOR3 and 3 shared XOR a thread a chunk) | readout at the last chunk only | +2.13% | −132 |
+  | The tile hash, at k 65536 | hash off | +0.15% | −9 |
+  | The ring's waits and arrivals | off | −4.40% | +291 |
+  | All three | off | +2.21%, 99.3% of the peak | −137 |
+  | What is left: 40 ldmatrix a chunk and the loop's own steps | | 0.7% | 44 |
+  | An ldmatrix more in the mma stream | 80 more a chunk | −2.4% for the 80 | +1.9 each |
+  | The readout moved into the next chunk's first k-step | in the body with 80 more ldmatrix | −0.6% | +41 |
+
+  - The readout can't be cut by count: one XOR3 for every two IMMA is the least that folds a lane's 192 accumulators
+    into its three words, and the chunk is the spec's 128 of k. Moving it did not help: ptxas still schedules the
+    XOR3 in runs, so the seam only moves.
+  - The ring's waits cost nothing, and they do work: without them the fold is 4.4% slower, and with the readout
+    off as well it is not. That fits the readout being a seam on each scheduler which the scheduler's other warp
+    covers in part, with the ring keeping the two warps apart enough to cover it. It was not measured directly. A
+    lone warp keeps 80% of its scheduler's tensor pipe (below), which bounds what a better stagger could recover.
+    No stagger was built.
+  - The hash is spread out by long k already. The fragment loads are inside the 0.7%.
+  - The arm with 80 more ldmatrix also ran at 2521 MHz on 400 W of its 450 W limit, as the RTX 5090's sham arms did
+    in the gate. Why the card leaves its top clock there is still not known.
+- **A producer's instructions cost no IMMA time when its scheduler keeps two folding warps, and only then.**
+  - 128x256 fold beside four producer warps, at 450 W: work a clock is 120.1 TH/s per GHz with the producers
+    idle, 121.2 at 1.03 instructions an IMMA, 120.6 at 1.97 and 119.2 at 3.00. With producers that spin it is 122.2
+    at 1.97, level with the same fold alone (122.4). At 300 W: 123.2 alone, 121.6 and 120.6. This is what the
+    competitors' figures look like: a draw that costs watts and no IMMA time.
+  - Four of eight warps folding, one a scheduler, with the other four producing: work a clock falls 3.4% at 1.03
+    an IMMA and 6.5% at 1.95. A lone folding warp has no partner to keep the pipe fed, so the producer's instructions
+    cost it what they cost inside it (the gate's sham: 3 to 4% at 1 an IMMA).
+  - One producer for seven folding warps cannot keep up, and the fold waits for it: 184.9 TH/s against 299.5 with
+    the eighth warp gone.
+- **The watts are the cost.** At 450 W the 128x256 fold holds the 2685 MHz top clock on 414 W alone and on 411 W
+  with idle producers. Producers at 1.03, 1.97 and 3.00 an IMMA bring it to the limit at 2580, 2541 and 2504 MHz. At
+  300 W: 2426 MHz alone, 2235 and 2190 at 1.03 and 1.97. The release's copies cost 6.1% of clock at 450 W (2531
+  against 2685 MHz); a producer at 1 an IMMA gives 3.9 of that back and at 2, 5.4.
+- **Room is the other cost.** Only the 128x256 fold leaves registers for producer warps, and it is 3.8% a clock
+  behind the 192x256 fold (122.4 against 127.3 TH/s per GHz): 328.5 TH/s against 341.9. Giving up warps of the
+  eight costs more: seven folding is exactly seven eighths (299.5), and four, one a scheduler, 282.0, since a lone
+  warp reaches 80.1% of the pipe.
+
+Net against the release fold on the RTX 4090:
+
+| Arrangement | No producer work | About 1 an IMMA | About 2 | About 3 |
+|---|---|---|---|---|
+| 450 W: sham inside the folding warps, 192x256, k 65536 (the gate) | +7.7% | +1.65% | −3.5% at k 2048 | |
+| 450 W: 128x256 fold, four producer warps | +1.6% (+3.5% with no producer warps) | −1.4% | −3.4% (−2.7% spinning) | −6.0% |
+| 450 W: four of eight warps fold, four produce | −11.6% | −14.6% | −17.3% | −19.5% (3.67) |
+| 450 W: seven fold, one produces | −5.6% (the eighth warp gone) | −41.7% | | |
+| 300 W: sham inside the folding warps (the gate) | +15.0% | +4.0% | −2.0% at k 2048 | |
+| 300 W: 128x256 fold, four producer warps | +9.9% with no producer warps | −0.3% | −3.1% | |
+| 300 W: four of eight warps fold, four produce | −0.4% with the four gone | −10.3% | −13.0% | |
+
+**What a real draw needs.** The least we can write down is about 18 instructions a 16-byte unit. It takes the noise
+table held column-wise, eight rows to a unit, so that ldmatrix's transposed form reads what a column draw writes:
+one load of the pair offsets, four address adds, four 8-byte table loads, four subtracts, four byte selects to
+interleave two k indexes, one store. That is 1.3 instructions an IMMA on the 192x256 tile and 1.7 on the 128x256
+one. The one draw built so far (`pearl_e4_drawt`) is about 32 a unit: 2.3 and 3.0. Nothing has been built at 18.
+
+**Verdict: the on-chip-draw route is closed for stock-power cards.** The line was +3% on the release at 450 W with
+the producer at a real draw's count. The best arrangement at 1.3 to 1.7 an IMMA is about 0% (the draw inside the
+folding warps of the 192x256 fold) or about −3% (the 128x256 fold with producer warps); no arrangement reaches +3% at
+1 an IMMA, and at 300 W only the draw inside the folding warps does (+4.0% at 1, less at a real draw's count). What
+would have to change is known now: a fold that leaves room for producers and still does 97% of the peak (ours does
+93.4%), and a draw under one instruction an IMMA in watts. Three competitors' figures show both. We have neither,
+and nothing measured here says how to get them.
+
+The arms, the raw runs and the table script are on branch `goal/gate` (4014c732, `earn/tuning/gate`).
+
 **Tried and dropped (don't repeat without a new idea)**
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
