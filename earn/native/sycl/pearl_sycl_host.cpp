@@ -601,7 +601,7 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
   if (devs.empty()) {
     fail(err, err_len, env_str("PEARL_SYCL_DEVICE", "gpu") == "cpu"
                            ? "no SYCL CPU device found (is the OpenCL CPU runtime installed?)"
-                           : "no Intel GPU found through SYCL (is the Intel GPU driver with Level Zero installed?)");
+                           : "no Intel GPU found through Level Zero or OpenCL");
     return -1;
   }
   int chosen = -1;

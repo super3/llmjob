@@ -131,13 +131,26 @@ function readDevice(core) {
   return { index: d.index, name: d.name ? String(d.name) : 'GPU ' + d.index };
 }
 
-// The card's gfx architecture, for the hit check's lines (see _checkedHit),
-// or null. The AMD core ends its fold's description (core.device.fold) with
-// the card's gcnArchName, e.g. gfx1030 or gfx90a:sramecc+:xnack-, and names
-// none when it could not read it.
+// What kind of card a checked core says it runs on, for the hit check's lines
+// (see _checkedHit), or null. The AMD core ends its fold's description
+// (core.device.fold) with the card's gcnArchName, e.g. gfx1030 or
+// gfx90a:sramecc+:xnack-, and names none when it could not read it. The Intel
+// core begins its description with the fold: xmx16 or xmx8, the card's XMX
+// matrix engines at that sub-group size, or dot, the plain fold.
 function archOf(core) {
-  const m = /\bgfx[0-9a-f]+/.exec(String((core.device && core.device.fold) || ''));
-  return m ? m[0] : null;
+  const fold = String((core.device && core.device.fold) || '');
+  const m = /\bgfx[0-9a-f]+/.exec(fold);
+  if (m) return m[0];
+  const intel = /^(xmx16|xmx8|dot)\b/.exec(fold);
+  return intel ? 'Intel ' + intel[1] + ' fold' : null;
+}
+
+// Where a wrong hit from a checked card is reported: the README of the core
+// that card runs, at the part that says what to send.
+const REPORT_AMD = 'earn/native/amd/README.md, "Testing on real hardware"';
+const REPORT_INTEL = 'earn/native/sycl/README.md, "Untested cards"';
+function reportTo(arch) {
+  return /^Intel /.test(arch || '') ? REPORT_INTEL : REPORT_AMD;
 }
 
 class PearlMiner extends EventEmitter {
@@ -1670,7 +1683,7 @@ class PearlMiner extends EventEmitter {
     }
     const line = where + ': a hit came out wrong (' + why + '). No share was sent, and this card is off for '
       + 'the rest of this run. This kind of card has not mined in a release yet: please report this line '
-      + '(earn/native/amd/README.md, "Testing on real hardware").';
+      + '(' + reportTo(check.arch) + ').';
     this.emit('log', { level: 'error', line });
     if (device) {
       this.hashrates.delete(device.index);
