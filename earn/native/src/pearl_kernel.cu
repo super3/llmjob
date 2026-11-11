@@ -2923,6 +2923,14 @@ extern "C" __global__ __launch_bounds__(PEARL_FOLD_THREADS) void pearl_tile_fold
 #else
 #define PEARL_TALL_PREGUARD_ON 0
 #endif
+// Whether this compile's tall fold places its readout's runs by PEARL_TALL_RO_SPLIT: the
+// cp.async ring with the shared-XOR readout, on sm_86 and sm_89.
+#if PEARL_TALL_RO_SPLIT && PEARL_TALL_RED_ON && !PEARL_TALL_TMA_BODY && defined(__CUDA_ARCH__) \
+    && (__CUDA_ARCH__ == 860 || __CUDA_ARCH__ == 890) && !defined(PEARL_ABLATE_READOUT)
+#define PEARL_TALL_RO_SPLIT_ON 1
+#else
+#define PEARL_TALL_RO_SPLIT_ON 0
+#endif
 
 // BLAKE3's message permutation, in place. The paired hash below and GA100's hash kernel
 // (pearl_tall_hash80) both use it, so it is defined whatever PEARL_TALL_HASH_PAIRS says.

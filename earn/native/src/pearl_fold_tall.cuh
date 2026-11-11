@@ -387,7 +387,88 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   const uint32_t trBase =
       sTr + (wc * 2u * WARP_REGIONS + wr * WARP_REGIONS + (lane & 3u) * (2u * RPL)
              + ((lane >> 4) & 1u)) * 64u;
-  auto readout = [&](uint32_t rl, uint32_t c) {
+#if PEARL_TALL_RO_SPLIT_ON
+  // Where each pair's run goes (PEARL_TALL_RO_SPLIT).
+  constexpr uint32_t ro_at[3] = {PEARL_TALL_RO_AT0, PEARL_TALL_RO_AT1, PEARL_TALL_RO_AT2};
+  static_assert(RPL == 3u && SPC * KS * MT == 24u && (chunks & (chunks - 1u)) == 0u,
+                "three pairs, 24 m16 tile passes a chunk, a power of two of chunks");
+  // A position is one of three hooks at an m16 tile pass p (0 .. 23 in the chunk, or q, 0 .. 5,
+  // in the next chunk's first k-step): after the tile's mma (p, or 24 + q deferred), before
+  // them (100 + p, 200 + q), or after the copy group that follows them (300 + p, 400 + q).
+  // Pair r's sums are final after pass 19 + 2r and are next written by pass 2r of the next
+  // chunk.
+#define PEARL_TALL_RO_OK(r, at)                                                              \
+  ((at) == 999u || ((at) >= 19u + 2u * (r) && (at) <= 23u) || ((at) >= 24u && (at) < 24u + 2u * (r)) \
+   || ((at) >= 120u + 2u * (r) && (at) <= 123u) || ((at) >= 200u && (at) <= 200u + 2u * (r)) \
+   || ((at) >= 319u + 2u * (r) && (at) <= 323u) || ((at) >= 400u && (at) < 400u + 2u * (r)))
+#define PEARL_TALL_RO_DEFERRED(at)                                                           \
+  (((at) >= 24u && (at) < 100u) || ((at) >= 200u && (at) < 300u) || ((at) >= 400u && (at) < 500u))
+  static_assert(PEARL_TALL_RO_OK(0u, ro_at[0]) && PEARL_TALL_RO_OK(1u, ro_at[1])
+                    && PEARL_TALL_RO_OK(2u, ro_at[2]),
+                "each pair's run sits after its last mma of the chunk and before its first of the next");
+  // The runs at a hook: pair rl's of this chunk (same), or the chunk before's (def: deferred,
+  // zero sums in the tile's first chunk).
+#define PEARL_TALL_RO_HOOK1(rl, same, def)                                                   \
+  if (ro_at[rl] == (same)) readout(rl, chunk);                                               \
+  if (ro_at[rl] == (def)) readout(rl, (chunk + chunks - 1u) & (chunks - 1u), true);
+#define PEARL_TALL_RO_HOOK(same, def)                                                        \
+  {                                                                                          \
+    PEARL_TALL_RO_HOOK1(0u, same, def)                                                       \
+    PEARL_TALL_RO_HOOK1(1u, same, def)                                                       \
+    PEARL_TALL_RO_HOOK1(2u, same, def)                                                       \
+  }
+  // Where a deferred run's XOR of zero goes in a tile's first chunk: bytes 16 to 79 of the
+  // 112 unused ones behind ring buffer 1's two barriers (PEARL_TALL_CYC uses buffer 0's
+  // and PEARL_TALL_HASHCYC buffer 2's).
+  static_assert(STRIDE >= STAGE + 80u, "the scratch words fit behind the barriers");
+  const uint32_t roScratch = sbase + STRIDE + STAGE + 16u + (lane & 15u) * 4u;
+#if PEARL_TALL_RO_SPLIT == 2
+  // The woven form: each pair's word is one chain, eight XOR3 a piece (the sixteen sums of
+  // n8 tiles 2np and 2np + 1 of the pair's two m16 tiles), four pieces a word, each piece
+  // before one m16 tile pass's mma. Pair 0's go before passes 20 to 23 of the chunk; pair
+  // 1's before passes 22 and 23 and passes 0 and 1 of the next chunk; pair 2's before passes
+  // 0 to 3 of the next chunk. So a pass carries 8 or 16 XOR3, each of sums written at least
+  // 16 mma earlier. (No fence holds the passes apart: the one the TMA build uses,
+  // griddepcontrol.launch_dependents, assembles for sm_90 and later only.) The chains
+  // start at zero: a tile's first chunk XORs zero sums into them and sends the zero word
+  // to the scratch.
+  uint32_t rx[3] = {0u, 0u, 0u};
+  auto ro_piece = [&](uint32_t rl, uint32_t np) {
+    const int32_t *p0 = acc[2u * rl][2u * np], *p1 = acc[2u * rl + 1u][2u * np];
+    const int32_t *p2 = acc[2u * rl][2u * np + 1u], *p3 = acc[2u * rl + 1u][2u * np + 1u];
+    uint32_t x = rx[rl];
+    x = pearl_xor3(x, (uint32_t)p0[0], (uint32_t)p0[1]);
+    x = pearl_xor3(x, (uint32_t)p0[2], (uint32_t)p0[3]);
+    x = pearl_xor3(x, (uint32_t)p1[0], (uint32_t)p1[1]);
+    x = pearl_xor3(x, (uint32_t)p1[2], (uint32_t)p1[3]);
+    x = pearl_xor3(x, (uint32_t)p2[0], (uint32_t)p2[1]);
+    x = pearl_xor3(x, (uint32_t)p2[2], (uint32_t)p2[3]);
+    x = pearl_xor3(x, (uint32_t)p3[0], (uint32_t)p3[1]);
+    x = pearl_xor3(x, (uint32_t)p3[2], (uint32_t)p3[3]);
+    rx[rl] = x;
+  };
+  auto ro_finish = [&](uint32_t rl, uint32_t c, bool deferred) {
+    const bool ro_first = deferred && c == chunks - 1u;
+    uint32_t x = rx[rl];
+    rx[rl] = 0u;
+#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+    {
+      const uint32_t later = PEARL_FOLD_CHUNKS / PEARL_JACKPOT_BUCKETS - 1u - (c >> 4);
+      x = __funnelshift_l(x, x, (13u * later) & 31u);
+      c &= PEARL_JACKPOT_BUCKETS - 1u;
+    }
+#endif
+    const uint32_t dst = ro_first ? roScratch : trBase + rl * 128u + c * 4u;
+    asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
+                 ::"r"(dst), "r"(x), "r"(lane) : "memory");
+  };
+#endif
+#endif
+  auto readout = [&](uint32_t rl, uint32_t c, bool deferred = false) {
+    // (A deferred run's c is the chunk before's index: the last one only in the tile's
+    // first chunk, PEARL_TALL_RO_SPLIT.)
+    const bool ro_first = deferred && c == chunks - 1u;
+    (void)ro_first;
     uint32_t x = 0u;
 #pragma unroll
     for (uint32_t np = 0; np < NB / 2u; np++) x = fold_pair(x, rl, np);
@@ -401,6 +482,18 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       const uint32_t later = PEARL_FOLD_CHUNKS / PEARL_JACKPOT_BUCKETS - 1u - (c >> 4);
       x = __funnelshift_l(x, x, (13u * later) & 31u);
       c &= PEARL_JACKPOT_BUCKETS - 1u;
+    }
+#endif
+#if PEARL_TALL_RO_SPLIT_ON
+    // A deferred run (PEARL_TALL_RO_SPLIT) in a tile's first chunk reads accumulators that
+    // are still zero, while the column slot's hasher may be reading and zeroing the last
+    // tile's words. Its XOR of zero goes to a scratch word instead (the unused pad behind
+    // ring buffer 1's barriers), by a select: a test would put a branch between two mma.
+    if (deferred) {
+      const uint32_t dst = ro_first ? roScratch : trBase + rl * 128u + c * 4u;
+      asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
+                   ::"r"(dst), "r"(x), "r"(lane) : "memory");
+      return;
     }
 #endif
     // Every lane XORs its part in. The predicate is always true (lane is never 99), but
@@ -947,11 +1040,36 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
             pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+#if PEARL_TALL_RO_SPLIT_ON
+            // The readout's runs placed in the stream (PEARL_TALL_RO_SPLIT). Before the
+            // tile's mma:
+            const uint32_t ro_pos = (s * KS + t) * MT + mb;
+#if PEARL_TALL_RO_SPLIT == 2
+            {
+              const uint32_t ro_prev = (chunk + chunks - 1u) & (chunks - 1u);
+              if (ro_pos >= 20u) ro_piece(0u, ro_pos - 20u);
+              if (ro_pos == 23u) ro_finish(0u, chunk, false);
+              if (ro_pos >= 22u) ro_piece(1u, ro_pos - 22u);
+              if (ro_pos < 2u) ro_piece(1u, ro_pos + 2u);
+              if (ro_pos == 1u) ro_finish(1u, ro_prev, true);
+              if (ro_pos < 4u) ro_piece(2u, ro_pos);
+              if (ro_pos == 3u) ro_finish(2u, ro_prev, true);
+            }
+#else
+            PEARL_TALL_RO_HOOK(100u + ro_pos, ro_pos < MT ? 200u + ro_pos : ~0u)
+#endif
+#endif
 #pragma unroll
             for (uint32_t nb = 0; nb < NB; nb++)
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
                                  a0, a1, a2, a3, bfr[nb / 2u][(nb & 1u) * 2u],
                                  bfr[nb / 2u][(nb & 1u) * 2u + 1u]);
+#if PEARL_TALL_RO_SPLIT_ON
+            // After them:
+#if PEARL_TALL_RO_SPLIT != 2
+            PEARL_TALL_RO_HOOK(ro_pos, ro_pos < MT ? 24u + ro_pos : ~0u)
+#endif
+#endif
             // The next chunk's copies for this stage (see PEARL_TALL_APT): A after m16
             // tile 3 of k-step 0, behind the EMPTY wait; B after tile 2 of k-step 1, then
             // the arrival that counts them.
@@ -983,6 +1101,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, sg, p)
               pearl_mbar_arrive_copies(ib + STAGE);
             }
+#if PEARL_TALL_RO_SPLIT_ON
+            // And after the copy group that follows them, if one does:
+#if PEARL_TALL_RO_SPLIT != 2
+            PEARL_TALL_RO_HOOK(300u + ro_pos, ro_pos < MT ? 400u + ro_pos : ~0u)
+#endif
+#endif
 #if defined(PEARL_E4_GENLOAD) && !defined(PEARL_E4_NOGEN)
             // E4's draw, two chunks ahead: this thread's words of the chunk spread over the
             // chunk's four k-step ends, where the step's B fragments are dead.
@@ -1049,11 +1173,38 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
       }
+#elif PEARL_TALL_RO_SPLIT_ON
+      // (PEARL_TALL_RO_SPLIT: the runs are in the stage body above, but for a pair at
+      // position 999, which stays here, where the shipped fold has all three.)
+#if PEARL_TALL_RO_SPLIT == 1
+#pragma unroll
+      for (uint32_t rl = 0; rl < RPL; rl++)
+        if (ro_at[rl] == 999u) readout(rl, chunk);
+#endif
 #else
 #pragma unroll
       for (uint32_t rl = 0; rl < RPL; rl++) readout(rl, chunk);
 #endif
     }
+#if PEARL_TALL_RO_SPLIT_ON
+    // The last chunk's deferred runs: there is no next chunk of this tile to carry them.
+#if PEARL_TALL_RO_SPLIT == 2
+    ro_piece(1u, 2u);
+    ro_piece(1u, 3u);
+    ro_finish(1u, chunks - 1u, false);
+#pragma unroll
+    for (uint32_t np = 0; np < NB / 2u; np++) ro_piece(2u, np);
+    ro_finish(2u, chunks - 1u, false);
+#else
+#pragma unroll
+    for (uint32_t rl = 0; rl < RPL; rl++)
+      if (PEARL_TALL_RO_DEFERRED(ro_at[rl])) readout(rl, chunks - 1u);
+#endif
+#undef PEARL_TALL_RO_HOOK
+#undef PEARL_TALL_RO_HOOK1
+#undef PEARL_TALL_RO_DEFERRED
+#undef PEARL_TALL_RO_OK
+#endif
 
 #if PEARL_TALL_UNFUSED_ON
     // GA100 (PEARL_TALL_UNFUSED): no hasher and no hand-off. Each warp copies the 24

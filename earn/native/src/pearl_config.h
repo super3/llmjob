@@ -2558,6 +2558,56 @@ typedef struct {
 #define PEARL_TALL_RED_READOUT 1
 #endif
 
+// Where the cp.async ring's fold (sm_86, sm_89) issues the per-chunk readout. An experiment
+// (goal/readout, 11 November), kept as a record and off: every form measured loses.
+// 0: as shipped, the three m16 tile pairs' 96 XOR3 and three shared XORs in one run after the
+// chunk's last mma. 1: each pair's run where PEARL_TALL_RO_AT0, 1 and 2 put it (the fold lists
+// the positions: before or after an m16 tile pass's mma, after its copy group, in the same
+// chunk or deferred into the next chunk's first k-step, or 999 for where it ships). 2: each
+// pair's word as one chain, eight XOR3 before each of four tile passes. A deferred run in a
+// tile's first chunk reads accumulators that are still zero, and its XOR of zero goes to a
+// scratch word, picked by a select (a test there would be a branch between two mma); the
+// tile's last chunk's deferred runs follow the chunk loop. The words are the same in every
+// form: the same sums, XORed into the same transcript word (verify-hits 400 of 400 on
+// positions 23, 24, 27; the shipped fold's hit list over six batches from that form, form 2
+// and six others).
+//
+// Why it was tried: a probe of the bare stream (IMMA, fragment loads and XOR3 only) priced
+// the one run at 1.3 points of the tensor pipe and three runs woven between the IMMA at 0.3.
+// Measured on the fold itself, RTX 4090, sm_89, CUDA 12.6, cycles a tile (PEARL_TALL_CYC,
+// ideal 98,304; the base repeats within 7 cycles):
+//   as shipped                                                    102,719   95.70%
+//   readout in the tile's last chunk only (PEARL_ABLATE_READOUT)   101,103   97.23%
+//   pair 2 after the A copy group of the next chunk (999/999/403)  103,386   95.08%
+//   pair 0 woven at IMMA 166-182, the rest as shipped (23/999/999) 104,136   94.40%
+//   all three moved (23/24/27: woven, a run of 35, woven)          104,368   94.19%
+//   pair 2 as a run of 35 after IMMA 7 (999/999/24)                107,066   91.82%
+//   form 2, two XOR3 after every IMMA, sums 15-35 IMMA old         110,116   89.27%
+//   all three at the chunk's end, before the EMPTY arrival (23/23/23) 111,111 88.47%
+// (benchmark.md has all thirteen.) The shared XOR is not the cost: with a plain store to a word
+// of the thread's own, or a shared XOR nothing shares, the fold is 57 and 136 cycles a tile
+// faster (timing-only arms, not kept in the source). The 99 XOR3 are, and the chunk's end is
+// the one place where they cost least: every fragment register is dead there, so the run's
+// temporaries are free. Anywhere else they take the registers ptxas loads A fragments ahead
+// with and keeps A in the operand reuse cache with (A reuse falls from 168 of 192 IMMA to
+// 132-158), ptxas re-sorts the IMMA in some forms, and an XOR3 between two IMMA of the real
+// fold costs one to two cycles of the pipe, not the probe's tenth.
+#ifndef PEARL_TALL_RO_SPLIT
+#define PEARL_TALL_RO_SPLIT 0
+#endif
+#ifndef PEARL_TALL_RO_AT0
+#define PEARL_TALL_RO_AT0 21
+#endif
+#ifndef PEARL_TALL_RO_AT1
+#define PEARL_TALL_RO_AT1 24
+#endif
+#ifndef PEARL_TALL_RO_AT2
+#define PEARL_TALL_RO_AT2 25
+#endif
+#if PEARL_TALL_RO_SPLIT != 0 && PEARL_TALL_RO_SPLIT != 1 && PEARL_TALL_RO_SPLIT != 2
+#error "PEARL_TALL_RO_SPLIT is 0 (as shipped), 1 (placed runs) or 2 (woven chains)"
+#endif
+
 // Blackwell (sm_120) stages the tall fold with TMA instead of cp.async. sm_100 (B200)
 // builds the same body with the same switches (PEARL_SM100_ARCH); what follows was
 // measured on sm_120 only.
