@@ -103,6 +103,19 @@ describe('the core clock offset trial', () => {
     expect(end.offset).toBe(150);
   });
 
+  // A step that beat the one before it is not thereby the fastest: after a dip
+  // the next step up can pass that test and still be slower than a lower one.
+  test('keeps the fastest step, not the highest one that beat the step before it', () => {
+    const dip = run({ 0: 100, 50: 102, 100: 100.5, 150: 100.9 }).end;
+    expect(dip.offset).toBe(50);
+    expect(dip.keptTh).toBeCloseTo(102, 6);
+    expect(dip.gain).toBeCloseTo(0.02, 6);
+    // A higher step takes a lower one's place only when it is faster by 0.3%:
+    // level with it, the card keeps the lower offset.
+    expect(run({ 0: 100, 50: 102, 100: 100.5, 150: 102.3 }).end.offset).toBe(50);
+    expect(run({ 0: 100, 50: 102, 100: 100.5, 150: 102.31 }).end.offset).toBe(150);
+  });
+
   test('keeps nothing when no step was faster than offset 0 by 0.3%', () => {
     const { end } = run({ 0: 317.4, 50: 317.5, 100: 317.6, 150: 317.7 });
     expect(end.offset).toBe(0);

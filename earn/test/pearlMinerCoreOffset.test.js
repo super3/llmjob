@@ -2,7 +2,7 @@
 
 // --mine-core-offset auto in the miner: a card on trial mines turns at offset 0
 // and at each step up, every step first having its hits recomputed, and keeps
-// the highest step that is right and faster (shared/coreOffsetTrial has the
+// the fastest step that is right (shared/coreOffsetTrial has the
 // method; the shells' plan says which cards are on trial). pearlMiner.test.js
 // has the rest of the miner.
 
@@ -66,7 +66,7 @@ const RIG01 = { 0: 317.4, 50: 320.9, 100: 325.3, 150: 331.2 };
 
 const START = (index = 0, steps = '+50, +100, +150', tail = '') => 'core clock offset trial on GPU ' + index
   + ': mining 75 s at each of 0, ' + steps + ' MHz and 0 again' + tail + '; each step first has 100 of its hits '
-  + 'recomputed, and the highest step that is right and faster is kept';
+  + 'recomputed, and the fastest step that is right is kept';
 const KEPT_150 = 'core clock offset kept at +150 MHz on GPU 0 while mining (+4.3%): 317.4 TH/s at 0, '
   + '320.9 at +50 MHz, 325.3 at +100 MHz, 331.2 at +150 MHz';
 const NOT_RUN = (why) => 'core clock offset trial not run on GPU 0' + why + '. Mining continues at the card\'s own clock.';

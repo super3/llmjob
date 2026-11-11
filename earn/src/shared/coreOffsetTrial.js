@@ -28,9 +28,11 @@
 // check that ends with too few hits to mean anything. A failed step ends the
 // climb: no higher step is tried.
 //
-// At the end the card keeps the highest step that passed its check, beat the
-// step before it by MIN_GAIN and beat offset 0 (the mean of its two turns) by
-// MIN_GAIN. A turn with too few samples is no answer, and no answer never
+// At the end the card keeps the fastest step that passed its check. A step
+// counts when it beat the step before it by MIN_GAIN and beat offset 0 (the
+// mean of its two turns) by MIN_GAIN, and it takes a lower step's place only
+// when it beat that one by MIN_GAIN too: a higher offset has to earn its
+// place. A turn with too few samples is no answer, and no answer never
 // keeps the higher setting. 150 MHz is as far as it goes: nothing above that
 // has been measured on any card.
 
@@ -137,7 +139,11 @@ function verdict(trial) {
   for (let t = 1; t <= trial.reached; t += 1) {
     const th = rate(t);
     const before = rate(t - 1);
-    if (th != null && before != null && th >= before * (1 + MIN_GAIN) && th >= baseTh * (1 + MIN_GAIN)) {
+    const ahead = th != null && before != null && th >= before * (1 + MIN_GAIN) && th >= baseTh * (1 + MIN_GAIN);
+    // Ahead of the step before it is not ahead of every lower step: after a
+    // dip, the next step up beats the dip and can still be slower than a step
+    // below both. So it must also beat the step kept so far, by the same bar.
+    if (ahead && (keptTh == null || th >= keptTh * (1 + MIN_GAIN))) {
       offset = trial.turns[t];
       keptTh = th;
     }

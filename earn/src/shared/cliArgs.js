@@ -104,7 +104,7 @@ const USAGE = [
   '                           RTX 20, 30, 40 or 50 card while it mines: +50,',
   '                           +100, then +150 MHz. A step is tried only after',
   '                           100 of its hits are recomputed right, and the',
-  '                           highest step that is right and faster is kept.',
+  '                           fastest step that is right is kept.',
   '                           Default: 0, off. It runs the card above the',
   '                           clock its maker set, and only one RTX 4090 has',
   '                           been measured (+4.3% at +150 MHz, at 450 W): an',

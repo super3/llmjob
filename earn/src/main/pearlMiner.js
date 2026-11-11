@@ -804,7 +804,7 @@ class PearlMiner extends EventEmitter {
 
   // A card has opened. If the plan names it, it gets a core clock offset trial:
   // it mines turns at offset 0 and at each step up, every step first having its
-  // hits recomputed, and keeps the highest step that is right and faster
+  // hits recomputed, and keeps the fastest step that is right
   // (shared/coreOffsetTrial has the method and the reasons). The plan is
   // settings.mineCoreOffsetTrial, the card indices from shared/coreOffset's
   // planCoreOffsets, which the shells run: like the memory clock's plan, it
@@ -879,7 +879,7 @@ class PearlMiner extends EventEmitter {
       line: 'core clock offset trial on GPU ' + index + ': mining ' + coreOffsetTrial.TURN_MS / 1000
         + ' s at each of 0, ' + steps.map((mhz) => '+' + mhz).join(', ') + ' MHz and 0 again'
         + (this.memClockTrials.has(index) ? ', once the memory clock trial is over' : '') + '; each step first has '
-        + coreOffsetTrial.CHECK_HITS + ' of its hits recomputed, and the highest step that is right and faster is kept',
+        + coreOffsetTrial.CHECK_HITS + ' of its hits recomputed, and the fastest step that is right is kept',
     });
   }
 

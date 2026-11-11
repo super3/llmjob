@@ -888,8 +888,8 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            if faster; 0 turns that off; auto tries a lock on
                            RTX 40 and other RTX 50 cards too; see below)
       --mine-core-offset <auto|0>  auto tries a core clock offset on each RTX
-                           card, up to +150 MHz, and keeps the highest step that
-                           computes right and is faster (default: 0, off; it
+                           card, up to +150 MHz, and keeps the fastest step that
+                           computes right (default: 0, off; it
                            overclocks the card; see below)
       --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid here (see below)
       --xmr-pool <host:port>  Mine Monero on this stratum endpoint instead of
@@ -1114,9 +1114,10 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-core-offset auto --mine-
   the way a pool's verifier would. That takes three or four seconds; those hits
   are never sent anywhere. One wrong hit fails the step, and the card climbs no
   further.
-- **What it keeps.** The highest step that passed its check, was at least 0.3%
+- **What it keeps.** The fastest step that passed its check, was at least 0.3%
   faster than the step before it, and at least 0.3% faster than offset 0 (the
-  mean of the two turns at 0). If no step does, the card stays at 0. The log
+  mean of the two turns at 0). A higher step takes a lower one's place only
+  when it is at least 0.3% faster than it. If no step does, the card stays at 0. The log
   says what was measured at each step and what was kept. On the RTX 4090 above
   the trial measured 317.4 TH/s at 0 and 320.7, 325.2 and 331.2 at the three
   steps, and kept +150 MHz (+4.4%). With `--mine-mem-clock auto` as well it
