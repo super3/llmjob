@@ -88,19 +88,23 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 #error "PEARL_AMD_STRIPS is 1 to 16"
 #endif
 // PEARL_AMD_TICK_US: a thread launches a one-thread kernel on a queue of its own every that many microseconds
-// (Ctx::ticker), 0 for none. Some PCs stop a miner's queue about 30 times a second while it is the only busy one
-// (3.6 to 4.0 ms a stop on an RX 7900 XTX, 2.1 ms on an RX 9060 XT, Salad, 10-11 November). A second queue with work
-// on it more often than that ends the stops. On RDNA 3 the hash queue is that queue: a launch there is 10 to 17 ms.
-// On RDNA 4 a launch is 31 to 38 ms, longer than the 33 ms between stops, so the hash queue left them (5 of 6
-// launches stopped) and the ticker ended most (2 of 8): +3.2 to +3.4% on that RX 9060 XT (earn/tuning/benchmark.md,
-// AMD Radeon, 11 November). The environment variable of the same name (0, or 100 to 100000) overrides it at run
-// time.
+// (Ctx::ticker), 0 for none. Some PCs stop a miner's queue 24 to 30 times a second while it is the only busy one
+// (3.6 to 4.0 ms a stop on an RX 7900 XTX, 2.1 ms on an RX 9060 XT, 3.2 ms on an RX 7800 XT, Salad, 10-11 November).
+// What a second queue with work on it does depends on the PC (earn/tuning/benchmark.md, AMD Radeon, 11 November):
+//   RX 7900 XTX: the hash queue ends the stops, and a ticker adds nothing.
+//   RX 9060 XT: a launch is 38 ms, longer than the 33 ms between stops, so the hash queue left them (5 of 6 launches
+//     stopped). The ticker every 2 ms ended most (2 of 8): +2.4 to +3.7%.
+//   RX 7800 XT: a second queue's work stops the fold's queue itself, in every launch. The ticker read -4%.
+// So it is off on every card, and a switch for measuring. It also takes CPU: every HIP stream with work on it keeps
+// a thread busy. The environment variable of the same name (0, or 100 to 100000) overrides it at run time.
 #ifndef PEARL_AMD_TICK_US
 #define PEARL_AMD_TICK_US 0
 #endif
 // PEARL_AMD_TICK_WAIT: 1, the ticker's thread waits for each tick's kernel (hipStreamSynchronize, which spins: a tick
 // every 2 ms cost 0.8 of a CPU core on the RX 9060 XT PC). 0, it doesn't: it records an event behind the kernel and
-// skips a tick while the last one has not run. The environment variable of the same name (0 or 1) overrides it.
+// skips a tick while the last one has not run. That halved the CPU cost every 2 ms and kept the gain, but every
+// 0.5 ms and every 5 ms some runs gained nothing; why is not known. The environment variable of the same name (0 or
+// 1) overrides it.
 #ifndef PEARL_AMD_TICK_WAIT
 #define PEARL_AMD_TICK_WAIT 1
 #endif
