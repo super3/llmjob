@@ -16,7 +16,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
-| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 310% and 322% of IAminer's 10 Nov figures | 16.9 TH/s a card on the PR, 42.2 with the fragment fold, which is 37% of the 113 T-MAC/s the matrix engines do alone; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -1966,6 +1966,31 @@ rate; T-MAC/s, and the same per EU and clock in brackets where the card dropped 
 - Tried and dropped: one unbroken run of DPAS a k-step with 256-byte loads (43.4 against 42.8); a band's windows
   in one work-group (no change); each lane's bytes in a cache line of its own (half the rate); one vector of 4
   qwords a fragment (24 to 34).
+
+### Arc rig, 11 November: the fragment fold with B' loaded in halves, 64 TH/s on a cool card (`goal/arc-kernel`)
+
+The second version of the fold (commit `08e4ae8e`): a fragment of B' is loaded as two vectors of 4 dwords, a
+k-step's 18 loads are sent before its 16 DPAS, and the band is 64. The stored order does not change. Same build
+and driver as above. "First version" is the fold of the section above (`0308ff15`).
+
+| What | First fold (`xmx8`) | Fragment fold, first version | Fragment fold now | Now, twin |
+|---|---|---|---|---|
+| Card 0 cool, the fold alone, 15 s, taking turns | 16.86 TH/s, 2,000 MHz, 149 W | 42.24, 2,000 MHz, 169 W | 63.91, 1,965 MHz, 189 W | 63.70, 1,954 MHz, 189 W |
+| a minute later, the card hot | | 40.23, 1,900 MHz, 157 W | 61.01, 1,856 MHz, 178 W | 57.03, 1,741 MHz, 160 W |
+| Six cards on Kryptex, 5 minutes each, one after the other on a hot rig, mean after the first minute | | 240.20 (236.2 to 247.7), 949 W, 1,908 MHz, 8 accepted, 0 rejected | 349.86 (329.0 to 371.9), 1,035 W, 1,810 MHz, 12 accepted, 0 rejected | 329.74 (322.9 to 343.6), 958 W, 1,704 MHz, 17 accepted, 0 rejected |
+| The rig's own HiveOS userland (2024 driver), card 0 warm, 15 s | 9.14 | 39.41 | 54.89 | 54.88 |
+
+- Hits: `verify.sh --quick` passed on each of the six cards (61.2 to 63.4 TH/s with every hit checked) and the
+  full `verify.sh` on card 0. No hit wrong, no share rejected.
+- 55 to 58 TH/s a card with shares accepted, against 40 for the first version in the same hour: 1.4 to 1.5 times.
+  On a cool card 1.5 times, and 3.8 times the first fold.
+- The fold now runs a card at its 190 W limit, and this rig cannot shed that: within three minutes cards 0 to 3
+  were at 1,550 to 1,650 MHz and 138 to 152 W, card 4 at 1,800 MHz, and only card 5 kept 1,950 MHz. The 6% between
+  the two runs is that. A rig with spaced cards should hold about 64 a card; this was not measured.
+- The first version over an hour on five cards (11:09 to 12:08 UTC): 36.5, 37.6, 39.7, 42.0 and 41.9 TH/s, 39.6 a
+  card, with the three inner cards at 1,700 to 1,900 MHz. 81 accepted, 0 rejected.
+- Per EU and clock the fold is at 58% of the matrix engines' peak. What the probe says is left: A' as two
+  256-byte loads is a third of the load time, and the card's power limit now binds as well as its loads.
 
 ## Research notes
 
