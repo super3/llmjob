@@ -220,6 +220,18 @@ p1k1|-DPAD=1 -DPKIND=1
 p2k1|-DPAD=2 -DPKIND=1
 p1k2|-DPAD=1 -DPKIND=2
 p1k3|-DPAD=1 -DPKIND=3
+w4p|-DKLOAD=0 -DWARPS=4 -DPAD=2 -DPKIND=0
+w8p|-DKLOAD=0 -DPAD=2 -DPKIND=0
+w8p4|-DKLOAD=0 -DPAD=4 -DPKIND=0
+w12a24|-DKLOAD=0 -DWARPS=12 -DACC=24
+w12p|-DKLOAD=0 -DWARPS=12 -DACC=24 -DPAD=2 -DPKIND=0
+w12p4|-DKLOAD=0 -DWARPS=12 -DACC=24 -DPAD=4 -DPKIND=0
+w16a16|-DKLOAD=0 -DWARPS=16 -DACC=16
+w16p|-DKLOAD=0 -DWARPS=16 -DACC=16 -DPAD=2 -DPKIND=0
+w16p4|-DKLOAD=0 -DWARPS=16 -DACC=16 -DPAD=4 -DPKIND=0
+w8q|-DKLOAD=0 -DPAD=1 -DPKIND=1
+w12q|-DKLOAD=0 -DWARPS=12 -DACC=24 -DPAD=1 -DPKIND=1
+w16q|-DKLOAD=0 -DWARPS=16 -DACC=16 -DPAD=1 -DPKIND=1
 baser|-DFILLRND=1
 rd1r|-DRD=1 -DFILLRND=1
 rd2ar|-DRD=2 -DTRW=0 -DFILLRND=1
@@ -363,6 +375,9 @@ done
 # 2b. What a step between the IMMA costs by count and kind: one to three draw units, the readout's chains, and
 #     one kind of step after every IMMA (p<PAD>k<PKIND>; ptxas folds two adds into one, so p2k0 is one add an
 #     IMMA, and p1k2 is one shared load and half an XOR).
+#     w<warps>p, w<warps>p4, w<warps>q (not run unless PP_SHORTS names them): one add, two adds or one XOR3 of
+#     earlier sums an IMMA with one to four warps a scheduler, IMMA only; w12a24 and w16a16 are their
+#     streams without the step.
 #     PP_SHORTS names other streams to run short (with PP_SKIP_SHORT, only these run short).
 for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16 p1k0 p2k0 p4k0 p2k4 p1k1 p2k1 p1k2 p1k3}; do
   [ -x $P/b/$s ] && short $P/b $T $s
