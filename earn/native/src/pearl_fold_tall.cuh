@@ -72,6 +72,15 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // wc, stage column slot wc's B between them, and hand their transcripts to warp wc.
   const uint32_t wr = warp >> 2;
   const uint32_t wc = warp & 3u;
+#if PEARL_GATE_MASKED
+  // The warps that fold (PEARL_GATE_MMA_MASK, PEARL_GATE_PROD_WARPS; timing only): the mask's
+  // bits among the eight, and none of the extra warps. The others are the ring's producers,
+  // N_PROD of them, or leave after the prologue.
+  constexpr uint32_t GATE_MASK = PEARL_GATE_MMA_MASK;
+  constexpr uint32_t N_MMA = pearl_popcount_ce(GATE_MASK);
+  constexpr uint32_t N_PROD = 8u - N_MMA + PEARL_GATE_PROD_WARPS;
+  const bool folds = warp < 8u && ((GATE_MASK >> warp) & 1u) != 0u;
+#endif
 
   // Tiles are row groups of 12 valid row offsets (192 rows) by column groups of 16 valid
   // column offsets (256 columns). The last row group runs past m (PEARL_TALL_A_ROWS).
@@ -164,7 +173,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // 16-byte copies a thread a stage, slots 32 rows apart; column slot wc's 64 columns by
   // its two (tB 0..63), four copies, slots 16 columns apart. Whole swizzle bands a slot,
   // so the swizzle is fixed per thread and a slot is a constant offset.
-  constexpr uint32_t ASLOTS = 3u, BSLOTS = 4u;
+  constexpr uint32_t ASLOTS = MT / 2u, BSLOTS = 4u;
   constexpr uint32_t aStep = 32u, bStep = 16u;
   static_assert(ASLOTS * aStep == BM / 2u && BSLOTS * bStep == 64u && aStep % 8u == 0u
                     && bStep % 8u == 0u, "a group splits evenly, in whole swizzle bands");
@@ -460,6 +469,21 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
                    : "memory");
   };
 
+#if PEARL_GATE_RO_LAZY == 2
+  // The readout's last step alone (PEARL_GATE_RO_LAZY 2, timing only): the shared XOR of a
+  // word folded elsewhere. The readout's own tail, on the cp.async ring.
+  auto readout_put = [&](uint32_t rl, uint32_t c, uint32_t x) {
+#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS
+    {
+      const uint32_t later = PEARL_FOLD_CHUNKS / PEARL_JACKPOT_BUCKETS - 1u - (c >> 4);
+      x = __funnelshift_l(x, x, (13u * later) & 31u);
+      c &= PEARL_JACKPOT_BUCKETS - 1u;
+    }
+#endif
+    asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
+                 ::"r"(trBase + rl * 128u + c * 4u), "r"(x), "r"(lane) : "memory");
+  };
+#endif
   if (threadIdx.x < NST) {
 #if PEARL_TALL_TMA_BODY
     if ((sbase & 1023u) != 0u) __trap();
@@ -479,9 +503,17 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     // FULL at +STAGE, EMPTY at +STAGE + 8: every thread arrives on both.
     // (PEARL_GATE_WARP9, timing only: FULL takes the ninth warp's 32 arrivals, and EMPTY
     // the 256 of the warps that fold.)
+#if PEARL_GATE_MASKED
+    // (PEARL_GATE_MMA_MASK, PEARL_GATE_PROD: FULL takes the folding warps' arrivals, made
+    // where the no-copy fold makes them, and with producers theirs too, so a buffer is full
+    // when the producers have written it. EMPTY takes the folding warps'.)
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE, 32u * (N_MMA + (PEARL_GATE_PROD ? N_PROD : 0u)));
+    pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, 32u * N_MMA);
+#else
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE,
                     PEARL_GATE_WARP9 ? 32u : PEARL_TALL_MMA_THREADS);
     pearl_mbar_init(sbase + threadIdx.x * STRIDE + STAGE + 8u, PEARL_TALL_MMA_THREADS);
+#endif
 #endif
   }
 #if PEARL_TALL_RED_ON
@@ -596,7 +628,10 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // (With the sham draw the first stage writes buffer 2 itself, from buffer 0.)
   // (PEARL_GATE_WARP9: only the eight warps that fold copy. They wait for their copies, the
   // block meets, and the ninth warp makes the FULL arrivals, below.)
-#if PEARL_GATE_WARP9
+  // (PEARL_GATE_MMA_MASK, PEARL_GATE_PROD: the same shape. All eight warps copy, the ones
+  // that will not fold too, so every buffer holds real operands; the block meets; then the
+  // warps that make the loop's FULL arrivals make the prologue's two.)
+#if PEARL_GATE_WARP9 || PEARL_GATE_MASKED
   if (warp < 8u) {
 #endif
 #pragma unroll
@@ -606,14 +641,21 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     for (uint32_t p = 0; p < ASLOTS; p++) PEARL_TALL_ISSUE_A(ib, s, p)
 #pragma unroll
     for (uint32_t p = 0; p < BSLOTS; p++) PEARL_TALL_ISSUE_B(ib, s, p)
-#if !PEARL_GATE_WARP9
+#if !PEARL_GATE_WARP9 && !PEARL_GATE_MASKED
     if (s < SPC) pearl_mbar_arrive_copies(ib + STAGE);
 #endif
   }
-#if PEARL_GATE_WARP9
+#if PEARL_GATE_WARP9 || PEARL_GATE_MASKED
     pearl_cp_async_wait();
   }
   __syncthreads();
+#endif
+#if PEARL_GATE_MASKED
+  // The prologue's two FULL phases: every thread that arrives on FULL in the loop.
+  if (PEARL_GATE_PROD || folds) {
+    pearl_mbar_arrive(sbase + STAGE);
+    pearl_mbar_arrive(sbase + STRIDE + STAGE);
+  }
 #endif
 #if PEARL_GATE_SHAM
   // One ALU step of the interleaved shams, each its own asm so the PTX keeps their order:
@@ -718,6 +760,24 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         pA = tpar;
       }
     }
+    return;
+  }
+#endif
+#if PEARL_GATE_MASKED
+  // (The test is made warp-uniform by a vote, as the hasher's is: behind a plain branch to
+  // the producer's call ptxas fenced every ring wait of the chunk loop with a YIELD, a
+  // WARPSYNC and a BSSY pair, 24 instructions a chunk.)
+  if (!__any_sync(0xffffffffu, folds)) {
+#if PEARL_GATE_PROD
+    // A producer (PEARL_GATE_PROD, timing only): pearl_gate_producer in pearl_kernel.cu, which
+    // walks the tiles, chunks, stages and roles the folding warps do. Out of line, so that its
+    // registers are not the fold's: inlined here, the folding warps' chunk loop spilled 100
+    // bytes (sm_89, ptxas 12.6). Producer pidx of N_PROD takes every N_PROD-th 512-byte unit
+    // of a buffer, 16 bytes a lane.
+    const uint32_t pidx = warp < 8u ? (uint32_t)__popc(~GATE_MASK & ((1u << warp) - 1u) & 0xFFu)
+                                    : 8u - N_MMA + (warp - 8u);
+    pearl_gate_producer(sbase, (pidx * 32u + lane) * 16u, tile_first, tiles, tile_stride);
+#endif
     return;
   }
 #endif
@@ -1114,7 +1174,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         // Diagnostic only when defined: no ring waits, so warps read stages that may not
         // have landed and refill ones still being read. Prices the synchronisation; the
         // output is meaningless.
+#if PEARL_GATE_PROD && PEARL_GATE_PROD_RNAP
+        // (PEARL_GATE_PROD_RNAP: asleep between tests when the stage is not full yet.)
+        pearl_mbar_wait_nap(so + STAGE, rpar);
+#else
         pearl_mbar_wait(so + STAGE, rpar);
+#endif
 #endif
 #if PEARL_GATE_SHAM_TILE
         // The between-tiles sham's unit in flight (PEARL_GATE_SHAM_AT 4): loaded after one m16
@@ -1142,6 +1207,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
           for (uint32_t mb = 0; mb < MT; mb++) {
             uint32_t a0, a1, a2, a3;
             pearl_ldmatrix_x4(a0, a1, a2, a3, ((aLane0 + so) ^ kt) + mb * 16u * SK);
+#if PEARL_GATE_RO_LAZY == 1
+            // (PEARL_GATE_RO_LAZY 1, timing only: the readout of m16 tiles mb and mb + 1 in one
+            // run, before the pair's first mma of the chunk.)
+            if (s == 0u && t == 0u && (mb & 1u) == 0u) readout(mb / 2u, chunk);
+#elif PEARL_GATE_RO_LAZY == 2
+            uint32_t rox = 0u;
+#endif
 #if PEARL_GATE_SHAM_MMA
             // The sham draw between the mma (PEARL_GATE_SHAM_AT 2): one 16-byte unit an m16
             // tile, in tiles 4 to 10 of the stage, behind the EMPTY wait of tile 3. Its first
@@ -1165,6 +1237,12 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #endif
 #pragma unroll
             for (uint32_t nb = 0; nb < NB; nb++) {
+#if PEARL_GATE_RO_LAZY == 2
+              // (PEARL_GATE_RO_LAZY 2: eight XOR3 before every second mma of the pair's first
+              // tile, of accumulators those two mma and the two below them are about to take.)
+              if (s == 0u && t == 0u && (mb & 1u) == 0u && (nb & 1u) == 0u)
+                rox = fold_pair(rox, mb / 2u, nb / 2u);
+#endif
 #if PEARL_GATE_BSTREAM
               // The register-light body (PEARL_GATE_BSTREAM, timing only but correct): a B pair
               // is loaded right before the two mma of each m16 tile that read it, so four
@@ -1179,6 +1257,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               pearl_mma_m16n8k32(acc[mb][nb][0], acc[mb][nb][1], acc[mb][nb][2], acc[mb][nb][3],
                                  a0, a1, a2, a3, bfr[nb / 2u][(nb & 1u) * 2u],
                                  bfr[nb / 2u][(nb & 1u) * 2u + 1u]);
+#endif
+#if PEARL_GATE_RO_LAZY == 2
+              // (And the word's shared XOR after the tile's last mma.)
+              if (s == 0u && t == 0u && (mb & 1u) == 0u && nb + 1u == NB)
+                readout_put(mb / 2u, chunk, rox);
 #endif
 #if PEARL_GATE_SHAM_MMA
               if (sham_on) {
@@ -1294,6 +1377,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
               }
             }
 #elif !PEARL_GATE_SHAM && !PEARL_GATE_WARP9
+            // (PEARL_GATE_PROD: this arrival stays, and FULL counts the producers' too. So the
+            // chunk loop is the no-copy fold's exactly; without the arrival ptxas spilled 100
+            // bytes in it.)
             // No copies (PEARL_GATE_NOCOPY): the same arrival at the same point. With none of
             // this thread's copies out it fires at once; in the kernel's first stage it waits
             // for the prologue's copies into buffer 2.
@@ -1408,7 +1494,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
       for (uint32_t rl = 0; rl < RPL; rl++)
         asm volatile("{\n .reg .pred p;\n setp.ne.u32 p, %2, 99;\n @p red.shared.xor.b32 [%0], %1;\n}"
                      ::"r"(trBase + rl * 128u + chunk * 4u), "r"(xg[rl]), "r"(lane) : "memory");
-#elif defined(PEARL_ABLATE_READOUT)
+#elif defined(PEARL_ABLATE_READOUT) || PEARL_GATE_RO_LAZY
+      // (PEARL_GATE_RO_LAZY, timing only: the same, with the other chunks' readouts in the
+      // chunk's first k-step.)
       // Diagnostic only: the readout at the tile's last chunk alone, so the accumulators
       // stay live (ptxas deletes mma whose results nothing reads). Prices the per-chunk
       // readout. Output is meaningless.
@@ -1453,7 +1541,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #else
     // Hand-off: the column slot's two warps (one scheduler) meet, so every chunk-15 word
     // is in shared, and the first hashes the slot's 48 regions -- all 32 lanes, then 16.
+#if PEARL_GATE_MASKED
+    pearl_bar_sync(1u + wc, 32u * (((GATE_MASK >> wc) & 1u) + ((GATE_MASK >> (4u + wc)) & 1u)));
+#else
     pearl_bar_sync(1u + wc, 64u);
+#endif
 #if PEARL_TALL_HASH_PAIRS_ON
     // The same test, made warp-uniform by a vote: the shuffles of the paired hash below
     // sit inside it, and behind a plain wr == 0 branch ptxas fences every ring wait of the

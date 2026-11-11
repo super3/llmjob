@@ -1568,13 +1568,19 @@ typedef struct {
 // The tall geometry by name, for the host: two row slots of six 16-row blocks by four
 // column slots of 64 columns, three 64-deep stages.
 // (PEARL_GATE_WARP9, timing only, branch goal/gate: a ninth warp beside the eight that fold.)
+// (PEARL_GATE_PROD_WARPS, the same: that many producer warps beside the eight. And
+// PEARL_TALL_ROW_TILES=4, timing only: 64x64 warps and a 128x256 tile, which leaves them room.)
 #if defined(PEARL_GATE_WARP9) && PEARL_GATE_WARP9
 #define PEARL_TALL_THREADS 288u
+#elif defined(PEARL_GATE_PROD_WARPS)
+#define PEARL_TALL_THREADS (256u + 32u * (PEARL_GATE_PROD_WARPS))
 #else
 #define PEARL_TALL_THREADS 256u
 #endif
 #define PEARL_TALL_MMA_THREADS 256u   // the eight warps that fold
+#ifndef PEARL_TALL_ROW_TILES
 #define PEARL_TALL_ROW_TILES 6u
+#endif
 #define PEARL_TALL_BM (2u * PEARL_TALL_ROW_TILES * 16u)          // 192 rows of A
 #define PEARL_TALL_BN (4u * 64u)                                 // 256 columns of B
 #define PEARL_TALL_STAGE_K 64u
@@ -2843,6 +2849,89 @@ typedef struct {
 #ifndef PEARL_GATE_SHAM_NOP
 #define PEARL_GATE_SHAM_NOP 0
 #endif
+// The follow-up's switches (11 November): where the no-copy fold's last points a clock go,
+// and a producer warp inside the fold's own block.
+//   PEARL_GATE_MMA_MASK (default 0xFF, needs NOCOPY): the warps that fold, a bit a warp. A warp
+//       out of the mask stages its share of the prologue's copies, then leaves (PEARL_GATE_PROD
+//       0) or produces (1). The block keeps eight warps and its 253 to 255 registers, so a tile
+//       holds popcount(mask) / 8 of the release's MACs and the host's rate must be scaled by
+//       that. Every column slot keeps its hasher (the low four bits stay set).
+//   PEARL_GATE_PROD=1: the warps that do not fold are the ring's producers. Each stage a
+//       producer waits for the folding warps to release the buffer the stage before read (its
+//       EMPTY phase, as a folding warp waits before it copies), writes PEARL_GATE_PROD_UNITS
+//       16-byte units a lane of it, each from two 16-byte loads of the buffer being read and
+//       PEARL_GATE_PROD_ALU ALU steps, and makes its FULL arrival, a release. The buffer is
+//       read two stages on. With 0 units it only waits and arrives. The folding warps' chunk
+//       loop is the no-copy fold's instruction for instruction: they keep its FULL arrival, and
+//       FULL counts the producers' arrivals too.
+//       (The first form took the folding warps' arrival to a third barrier that nothing waits
+//       on, with the largest count. It ran with mask 0x0F and gave "unspecified launch failure"
+//       within a second whenever a column slot had two folding warps: mask 0x7F, and eight
+//       folding warps beside PEARL_GATE_PROD_WARPS producers. The four-fold arms of 11
+//       November were measured in that form.)
+//       (A hardware barrier would let a producer wait without issuing anything, but a
+//       bar.arrive in the chunk loop made ptxas fence every ring wait with a YIELD and a
+//       WARPSYNC and spill 100 bytes there. So the wait is the ring's spin on test_wait, or
+//       with PEARL_GATE_PROD_NAP=N a test every N nanoseconds, asleep between.)
+//   PEARL_GATE_PROD_WARPS=N (default 0): N warps more than the eight that fold, all producers
+//       (with PEARL_GATE_PROD=1): 8 + N warps, so ptxas gets 65536 / (256 + 32 N) registers.
+//       For a fold small enough to leave them room (PEARL_TALL_ROW_TILES=4).
+//   PEARL_GATE_RO_LAZY=1|2: the readout's XOR folds sit in the chunk's first k-step instead of
+//       after its last mma, as a lazy readout of the chunk before would: 1, each m16 tile
+//       pair's 32 XOR3 and its shared XOR in one run before the pair's first mma; 2, eight XOR3
+//       before every second mma of the pair's first tile. The tile's last chunk keeps the
+//       readout at its end. It reads the accumulators a chunk early, so the words are wrong.
+#ifndef PEARL_GATE_MMA_MASK
+#define PEARL_GATE_MMA_MASK 0xFF
+#endif
+#ifndef PEARL_GATE_PROD
+#define PEARL_GATE_PROD 0
+#endif
+#ifndef PEARL_GATE_PROD_UNITS
+#define PEARL_GATE_PROD_UNITS 0
+#endif
+#ifndef PEARL_GATE_PROD_ALU
+#define PEARL_GATE_PROD_ALU 0
+#endif
+#ifndef PEARL_GATE_PROD_WARPS
+#define PEARL_GATE_PROD_WARPS 0
+#endif
+#ifndef PEARL_GATE_PROD_NAP
+#define PEARL_GATE_PROD_NAP 0
+#endif
+//   PEARL_GATE_PROD_RNAP=N (with PEARL_GATE_PROD): a folding warp that finds its stage not yet
+//       full sleeps N nanoseconds between its tests too, so a warp that waits for a producer
+//       leaves it the scheduler. Built while looking for the fault above, which it did not
+//       change; not measured.
+#ifndef PEARL_GATE_PROD_RNAP
+#define PEARL_GATE_PROD_RNAP 0
+#endif
+#ifndef PEARL_GATE_RO_LAZY
+#define PEARL_GATE_RO_LAZY 0
+#endif
+// A fold some of whose warps do not fold: by the mask, or by extra producer warps.
+#define PEARL_GATE_MASKED (PEARL_GATE_MMA_MASK != 0xFF || PEARL_GATE_PROD_WARPS != 0)
+#if PEARL_GATE_MASKED && !PEARL_GATE_NOCOPY
+#error "PEARL_GATE_MMA_MASK and PEARL_GATE_PROD_WARPS are for the no-copy fold: build with PEARL_GATE_NOCOPY=1"
+#endif
+#if (PEARL_GATE_MMA_MASK & 0x0F) != 0x0F || PEARL_GATE_MMA_MASK > 0xFF
+#error "PEARL_GATE_MMA_MASK keeps warps 0 to 3, the hashers, and names eight warps"
+#endif
+#if PEARL_GATE_MASKED && (PEARL_GATE_SHAM || PEARL_GATE_WARP9 || PEARL_GATE_SPIN)
+#error "PEARL_GATE_MMA_MASK and PEARL_GATE_PROD_WARPS are arms of their own: no sham, ninth warp or spin kernel"
+#endif
+#if PEARL_GATE_PROD && !PEARL_GATE_MASKED
+#error "PEARL_GATE_PROD needs warps that do not fold: PEARL_GATE_MMA_MASK or PEARL_GATE_PROD_WARPS"
+#endif
+#if PEARL_GATE_PROD_WARPS && (!PEARL_GATE_PROD || PEARL_GATE_MMA_MASK != 0xFF)
+#error "PEARL_GATE_PROD_WARPS adds producers to the eight warps that fold: PEARL_GATE_PROD=1, no mask"
+#endif
+#if PEARL_GATE_PROD_ALU < 0 || PEARL_GATE_PROD_ALU > 48
+#error "PEARL_GATE_PROD_ALU is 0 to 48 ALU steps a unit"
+#endif
+#if PEARL_GATE_RO_LAZY < 0 || PEARL_GATE_RO_LAZY > 2
+#error "PEARL_GATE_RO_LAZY is 0, 1 or 2"
+#endif
 #if PEARL_GATE_SHAM && !PEARL_GATE_NOCOPY
 #error "PEARL_GATE_SHAM stands in for the copies: build it with PEARL_GATE_NOCOPY=1"
 #endif
@@ -2865,7 +2954,7 @@ typedef struct {
 #error "PEARL_GATE_SHAM_AT is 0, 1, 2, 3 or 4"
 #endif
 // Any of them makes a timing-only build: the host refuses every target but zero.
-#define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM || PEARL_GATE_SPIN)
+#define PEARL_GATE_TIMING (PEARL_GATE_NOCOPY || PEARL_GATE_PHANTOM || PEARL_GATE_SPIN || PEARL_GATE_RO_LAZY)
 // The two shams that sit between the mma (PEARL_GATE_SHAM_AT 2 and 3).
 #define PEARL_GATE_SHAM_MMA (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 2)
 #define PEARL_GATE_SHAM_ALU (PEARL_GATE_SHAM && !PEARL_GATE_WARP9 && PEARL_GATE_SHAM_AT == 3)

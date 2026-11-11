@@ -3470,6 +3470,111 @@ __device__ __forceinline__ void pearl_e4_drawt(uint32_t g, uint32_t lane, uint32
 #else
 #define PEARL_E4_ABASE Aprime
 #endif
+#if PEARL_GATE_PROD && PEARL_FOLD_TALL && defined(__CUDA_ARCH__) && PEARL_TALL_BODY_ARCH(__CUDA_ARCH__) \
+    && !PEARL_TALL_TMA_BODY
+#if PEARL_GATE_PROD_RNAP
+// pearl_mbar_wait for a folding warp beside producers (PEARL_GATE_PROD_RNAP, timing only): the
+// same test, and a nap before the next one when the phase is not complete, so a warp that waits
+// for a producer leaves it the scheduler. Ready, it is the test and one branch, as before.
+#define PEARL_GATE_STR2(x) #x
+#define PEARL_GATE_STR(x) PEARL_GATE_STR2(x)
+__device__ __forceinline__ void pearl_mbar_wait_nap(uint32_t bar, uint32_t parity) {
+  asm volatile(
+      "{\n\t.reg .pred done;\n"
+      "PEARL_MBAR_NAPW:\n\t"
+      "mbarrier.test_wait.parity.shared.b64 done, [%0], %1;\n\t"
+      "@done bra PEARL_MBAR_NAPD;\n\t"
+      "nanosleep.u32 " PEARL_GATE_STR(PEARL_GATE_PROD_RNAP) ";\n\t"
+      "bra PEARL_MBAR_NAPW;\n"
+      "PEARL_MBAR_NAPD:\n\t}" ::"r"(bar), "r"(parity)
+      : "memory");
+}
+#endif
+// The gate's producer (PEARL_GATE_PROD, timing only, branch goal/gate, 11 November): what a warp
+// of the tall fold's block does when it does not fold. It walks the tiles, chunks, stages and
+// ring roles the folding warps do. A stage: wait for every folding warp to have released the
+// buffer the stage before read (that buffer's EMPTY phase, the wait a folding warp makes before
+// its copies); write PEARL_GATE_PROD_UNITS 16-byte units of it, each from two 16-byte loads of
+// the buffer being read and PEARL_GATE_PROD_ALU ALU steps; arrive on its FULL, a release. A
+// folding warp cannot start the stage after next before that arrival, so the producer is never
+// more than a phase behind. The steps are the sham draw's: an XOR of one low bit a byte or a
+// rotation by whole bytes, so every byte stays in 0 .. 127 as A' and B' are.
+// The wait is the ring's spin on test_wait, or with PEARL_GATE_PROD_NAP=N a test every N
+// nanoseconds, asleep between. (A hardware barrier would wait without issuing anything, but a
+// bar.arrive in the folding warps' chunk loop made ptxas fence every ring wait there.)
+#define PEARL_PROD_XOR(w, y, m)                                                                  \
+  asm volatile("{\n .reg .b32 t;\n and.b32 t, %1, " #m ";\n xor.b32 %0, %0, t;\n}" : "+r"(w) : "r"(y));
+#define PEARL_PROD_ROT(w, n) asm volatile("shf.r.wrap.b32 %0, %0, %0, " #n ";" : "+r"(w));
+__device__ __noinline__ void pearl_gate_producer(uint32_t sbase, uint32_t pofs, uint32_t tile_first,
+                                                 uint32_t tiles, uint32_t tile_stride) {
+  constexpr uint32_t STAGE = PEARL_TALL_STAGE_BYTES, STRIDE = PEARL_TALL_STAGE_STRIDE;
+  constexpr uint32_t SPC = PEARL_FOLD_RANK / PEARL_TALL_STAGE_K;
+  constexpr uint32_t N_PROD = 8u - pearl_popcount_ce(PEARL_GATE_MMA_MASK) + PEARL_GATE_PROD_WARPS;
+  constexpr uint32_t PU = PEARL_GATE_PROD_UNITS;
+  static_assert(PU * N_PROD * 512u <= STAGE, "the producers' units lie in the stage's rows");
+  uint32_t soA = sbase, soB = sbase + STRIDE, soC = sbase + 2u * STRIDE;
+  uint32_t pA = 0u, pB = 0u, pC = 0u;
+#pragma unroll 1
+  for (uint32_t v = tile_first; v < tiles; v += tile_stride) {
+    const bool has_next = v + tile_stride < tiles;
+#pragma unroll 1
+    for (uint32_t chunk = 0; chunk < PEARL_FOLD_CHUNKS; chunk++) {
+      const bool stage_next = chunk + 1u != PEARL_FOLD_CHUNKS || has_next;
+#pragma unroll
+      for (uint32_t s = 0; s < SPC; s++) {
+        const uint32_t so = s == 0u ? soA : soB;
+        const uint32_t ib = s == 0u ? soC : soA;
+        const uint32_t epar = s == 0u ? (pC ^ 1u) : pA;
+        if (stage_next) {
+#if PEARL_GATE_PROD_NAP
+          for (;;) {
+            uint32_t done;
+            asm volatile("{\n .reg .pred d;\n mbarrier.test_wait.parity.shared.b64 d, [%1], %2;\n"
+                         " selp.u32 %0, 1, 0, d;\n}" : "=r"(done) : "r"(ib + STAGE + 8u), "r"(epar) : "memory");
+            if (done) break;
+            __nanosleep((unsigned)PEARL_GATE_PROD_NAP);
+          }
+#else
+          pearl_mbar_wait(ib + STAGE + 8u, epar);
+#endif
+#pragma unroll
+          for (uint32_t j = 0; j < PU; j++) {
+            const uint32_t o = pofs + j * N_PROD * 512u;
+            const uint32_t o2 = pofs + ((j + 1u) % (PU ? PU : 1u)) * N_PROD * 512u;
+            uint32_t x[4], y[4];
+            asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(x[0]), "=r"(x[1]), "=r"(x[2]), "=r"(x[3]) : "r"(so + o) : "memory");
+            asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                         : "=r"(y[0]), "=r"(y[1]), "=r"(y[2]), "=r"(y[3]) : "r"(so + o2) : "memory");
+#pragma unroll
+            for (uint32_t q = 0; q < (uint32_t)PEARL_GATE_PROD_ALU; q++) {
+              const uint32_t w = q & 3u, st = (q >> 2) % 6u;
+              if (st == 0u) PEARL_PROD_XOR(x[w], y[w], 0x01010101)
+              if (st == 1u) PEARL_PROD_ROT(x[w], 8)
+              if (st == 2u) PEARL_PROD_XOR(x[w], y[w], 0x01000100)
+              if (st == 3u) PEARL_PROD_ROT(x[w], 16)
+              if (st == 4u) PEARL_PROD_XOR(x[w], y[w], 0x00010001)
+              if (st == 5u) PEARL_PROD_ROT(x[w], 8)
+            }
+            asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
+                         ::"r"(ib + o), "r"(x[0]), "r"(x[1]), "r"(x[2]), "r"(x[3]) : "memory");
+          }
+          pearl_mbar_arrive(ib + STAGE);
+        }
+      }
+      const uint32_t tso = soC, tpar = pC;
+      soC = soB;
+      pC = pB ^ 1u;
+      soB = soA;
+      pB = pA ^ 1u;
+      soA = tso;
+      pA = tpar;
+    }
+  }
+}
+#undef PEARL_PROD_XOR
+#undef PEARL_PROD_ROT
+#endif
 // The tall fold (pearl_fold_tall.cuh), twice: the kernel every tall card runs, and the
 // flip's, which holds B' in the persisting L2 slice instead of A' (PEARL_AMPERE_FLIP; a
 // body only on sm_86). The host picks one a card.

@@ -1,0 +1,4 @@
+{"arm":"t12p0k","pl":450.00,"seq":1,"t":"02:16:29","app":0,"r":{"error":"core error [Error: GPU 0: CUDA error during search: unspecified launch failure] "}}
+{"arm":"t12p2k","pl":450.00,"seq":2,"t":"02:16:30","app":0,"r":{"error":"core error [Error: GPU 0: CUDA error during search: unspecified launch failure] "}}
+{"arm":"m7p0k","pl":450.00,"seq":3,"t":"02:16:31","app":0,"r":{"error":"core error [Error: GPU 0: CUDA error during search: unspecified launch failure] "}}
+{"arm":"m7p1k","pl":450.00,"seq":4,"t":"02:16:32","app":0,"r":{"error":"core error [Error: GPU 0: CUDA error during search: unspecified launch failure] "}}
