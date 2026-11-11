@@ -1,11 +1,14 @@
-# 9060xt job 3: the duel: SRBMiner 3.8.6 against the PR head's default and against the build with the core's ticker every 2 ms, 2 turns each, then a clock turn each
+# 9060xt job 3: the miner's own launches by the millisecond: default, with the ticker, and the fold alone
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=srb\ duel
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_VDEF=tk2=base\ PEARL_AMD_TICK_US=2000
-G_OURSX=tk2
+G_PARTS=stamps\ mstamps
+G_STSHAPES=sbase:131072:4096:100
+G_SROUNDS=1
+G_VDEF=msq0=sbase\ PEARL_AMD_HASHQ=0\;mstk=sbase\ PEARL_AMD_TICK_US=2000
+G_MST=msq0\ mstk
+G_MSN=2
+G_MSAT=100
+G_MSSTEP=17
+G_PROF=1
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
