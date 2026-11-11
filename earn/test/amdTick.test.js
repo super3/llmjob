@@ -88,6 +88,12 @@ describe('the ticker (PEARL_AMD_TICK_US)', () => {
     expect(gate).toBeGreaterThan(seen);
     expect(launch).toBeGreaterThan(gate);
     expect(record).toBeGreaterThan(launch);
+    // A tick not seen done after 50 ms is waited for, so an event that never reads done can't end the ticking.
+    const stuck = free.indexOf('if (out && ++late * c->tickUs >= 50000u) {\n              (void)hipStreamSynchronize(c->tickq);\n'
+      + '              out = false;');
+    expect(stuck).toBeGreaterThan(seen);
+    expect(stuck).toBeLessThan(gate);
+    expect(free.slice(gate, launch)).toContain('late = 0;');
     // An event that would not record: wait for the kernel instead, so launches can't pile up.
     expect(free.slice(record)).toContain('else (void)hipStreamSynchronize(c->tickq);');
     expect(loop.match(/hipLaunchKernelGGL\(/g)).toHaveLength(2);

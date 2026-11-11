@@ -1224,15 +1224,26 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       Ctx *c = ctx;
       ctx->ticker = std::thread([c] {
         hipSetDevice(c->device);
-        bool out = false;   // PEARL_AMD_TICK_WAIT=0: a tick is on the queue and not yet seen done
+        bool out = false;    // PEARL_AMD_TICK_WAIT=0: a tick is on the queue and not yet seen done
+        uint32_t late = 0;   // sleeps since that tick was launched
+        uint32_t stuck = 0;  // ticks that were waited for after all
         while (!c->tickStop.load(std::memory_order_relaxed)) {
           if (c->tickWait) {
             hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
             (void)hipStreamSynchronize(c->tickq);
           } else {
-            // Never two ticks on the queue: a tick is skipped while the last one has not run.
+            // Never two ticks on the queue: a tick is skipped while the last one has not run. One not seen done
+            // after 50 ms is waited for, so an event that never reads done can't stop the ticker for good (one run
+            // of three every 0.5 ms lost its gain and its CPU time part of the way, RX 9060 XT, 11 November).
             if (out && hipEventQuery(c->tickDone) == hipSuccess) out = false;
+            if (out && ++late * c->tickUs >= 50000u) {
+              (void)hipStreamSynchronize(c->tickq);
+              out = false;
+              if (++stuck == 1u || stuck % 100u == 0u)
+                fprintf(stderr, "[pearl-amd] ticker: waited for a tick not seen done in 50 ms, %u so far\n", stuck);
+            }
             if (!out) {
+              late = 0;
               hipLaunchKernelGGL(pearl_amd_caps, dim3(1), dim3(1), 0, c->tickq, c->dTick);
               if (hipEventRecord(c->tickDone, c->tickq) == hipSuccess) out = true;
               else (void)hipStreamSynchronize(c->tickq);
