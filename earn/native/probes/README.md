@@ -13,6 +13,7 @@ nvcc -arch=sm_120 -O3 -o mmapeak mmapeak.cu && ./mmapeak 512
 |---|---|
 | `mmapeak.cu` | Pure `mma.m16n8k32.s8` from registers, no memory. Hardware ceiling + power. |
 | `pipeprobe.cu`, `pipeprobe2.cu` | The fold's instruction stream alone, timed in SM cycles: what fills a scheduler's tensor pipe and what each kind of instruction between the mma costs. |
+| `drawprobe.cu` | The draw fold's own body (`src/pearl_fold_draw.cuh`: both operands drawn on the SM, no operand memory) run alone on made-up tables, timed in SM cycles and checked against a fold done on the CPU. |
 | `dp4a-check.js` | Pascal's dp4a fold run on the CPU (`dp4a-check.cc`, the kernel's own layout and inner loop) against `reference.js`. No GPU or CUDA needed, only a C++ compiler. |
 | `hmma-check.cc` | Volta's fp16 fold run on the CPU with the kernel's own layout, conversion and readout, against a plain fold, on four kinds of operands. `c++ -O2 -std=c++17 -I../src hmma-check.cc -o hmma-check && ./hmma-check`. No GPU or CUDA needed. |
 | `multicast-probe.cu` | RTX 50: the TMA fold's B' feed in clusters of two, without the mma. What multicast saves (f), and which cluster barrier pattern hangs. `multicast-read.js` reads it. |
@@ -2220,3 +2221,66 @@ The first probe's own run-time tests cost it pipe time, so compare its rows with
   130 W. At 450 W the draw-only stream ran at 2595 MHz and 99.6%: 338.8 TH/s by count. The table's watts come
   from two builds: random operand bytes (loads 373 W, one-run readout 399 W, the 58-instruction draw 449.5 W) and
   mostly-zero ones (loads 292 W, three-run readout 318 W, the offset-reading draw 421 W, all together 438 W).
+
+### The draw fold: `drawprobe.cu` and `src/pearl_fold_draw.cuh` (RTX 4090, 2026-11-11)
+
+A fold that stores neither A' nor B'. A tile keeps the dense noise factors of its rows and columns in shared memory
+and two k-step stages of the noised operands; each warp draws the next k-step's stage while it folds this one, and
+`ldmatrix.trans` reads the stage. `pearl_fold_draw.cuh` is the body, `drawprobe.cu` runs it alone: one block an SM,
+each warp stamping the SM's cycle counter, the first tiles' transcripts compared with a fold done on the CPU from
+the same tables. Nothing in `pearl_kernel.cu` or the host includes it yet: it has no hash and no host side, so it
+is not a miner's kernel and has no TH/s figure.
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 [-DPD_MT=6] [-DPD_NO_DRAW=1 ...] -o drawprobe drawprobe.cu
+./drawprobe name 8192 64 [seconds] [tiles to check]
+```
+
+It is correct in both tile forms: `-DPD_MT=6` (192x256, six m16 tiles a warp, commit 11ce0fb9) 2,304 of 2,304
+regions at k 2048 and 576 of 576 at k 8192; `PD_MT` 5 (160x256, the default) 1,920 of 1,920 and 480 of 480. The
+check found one bug on the way (with five tiles the next k-step's first A fragment overwrote the last tile's).
+
+It is slow. Pipe use (16 cycles an mma, two warps a scheduler, over the slower warp's cycles), k 8192, 64 tiles a
+block, 128 blocks:
+
+| Stream | 192x256 (`PD_MT` 6) | 160x256 (`PD_MT` 5) |
+|---|---|---|
+| mma and fragment loads | 99.78% | 99.74% |
+| + the stage wait | 99.60% | 98.70% |
+| + readout (three runs a chunk) and the wait | 95.9 to 96.2% | 95.04% |
+| draw and readout, no wait | 76.45% | 78.65% |
+| everything | 65.3 to 71.0% (2663 to 2687 MHz, 412 to 448 W) | 72.05% (2685 MHz, 428 W) |
+| everything, table reads at addresses with the least bank conflict (timing only) | | 89.63% |
+| draw and readout, no wait, the same reads (timing only) | | 94.71% |
+
+By count 72% at 2685 MHz is about 253 TH/s, against 317.3 for the release fold on this card.
+
+What the numbers say:
+
+- **The table reads' bank conflicts are most of the loss.** A lane reads 8 bytes of a 16-byte table word at a
+  random rank index. Word addresses are multiples of four words, so a warp's 32 reads fall into 8 of the 32
+  shared-memory banks, four lanes or more to a bank. Moved (timing only, `-DPD_T_OFFS=2`) to addresses where two
+  lanes share a bank and no more, the whole stream goes from 72.05% to 89.63%, and from 78.65% to 94.71% without
+  the wait. The global loads of the offsets cost 1.9 points (`-DPD_T_OFFS=1`).
+- **The wait is costly once warps differ.** A warp that reaches the wait early spins (37 to 52 tests a k-step
+  measured) and its tests take issue slots from the warp beside it. Sleeping between tests is worse (48%), a later
+  wait is worse (63.9%). Giving every scheduler the same draw work (seven half units a k-step) took the stream from
+  69.1% to 72.0%.
+- **ptxas has to be led.** It lifts every load as early as free registers allow and spills when they run out
+  (192 sums a thread leave 39 registers; draw plus wait then fell to 72% with 112 bytes spilled). A shared load
+  stays behind a shared store ptxas cannot tell apart, so the draw's stores address through a second register. It
+  rates a table read as ready at once and issues the subtracts behind it; the next k-step's offsets are loaded a
+  k-step early and the first subtracts take their constant through an mma's sum (`PD_CPIN`). A label as a fence
+  costs register moves at every join (176 a chunk at one fence in four); a 4-byte store of a sum as a hold costs
+  1.3 points each. Eight copies of the loop, one a warp, cost nothing against one (66.1% with one, timing only).
+- **A sum read soon after its mma is dear.** Four 4-byte stores of fresh sums a k-step cost 5.4 points. The
+  readout's runs start 9 mma after their tiles' last (`PD_RLAG`); at 17 the readout and the wait alone go from
+  95.04% to 95.88%, but the whole stream falls to 67.9%, because the runs then sit on the draw's steps.
+- **The fill has to be 63 or 64.** The table holds the dense factor plus 32, and `fill + plus - minus` is one
+  IADD3 a word with no borrow between bytes only from 63 up. The probe uses 63, the largest an int7 operand holds.
+
+Next design (not built): tables laid out rank-index-major, `[p][group of 8 rows]`, and a warp drawing one k-pair
+for 32 groups instead of sixteen k-pairs for two. Every lane then reads the same rank index at its own 8 bytes,
+which is the least-conflict case measured above, every warp does the same work, and the four offsets of a
+half unit are one value for the warp. The stage's group stride has to be 272 bytes, not 256, or the stores land
+in one bank.

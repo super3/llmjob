@@ -50,12 +50,13 @@ int main(int argc, char **argv) {
   const uint32_t blocks = (uint32_t)prop.multiProcessorCount;
   // Tiles: RG row groups by CB column block groups, RG * CB = blocks * tpb.
   const uint32_t RG = 8u, tiles = blocks * tpb, CB = (tiles + RG - 1u) / RG;
-  const uint32_t ga = RG * 12u, gb = CB * 16u;       // groups of sixteen rows / columns
+  const uint32_t MT = PD_MT, BM = 32u * MT, RO = 2u * MT, RPS = 4u * RO, REG = 4u * RPS;
+  const uint32_t ga = RG * RO, gb = CB * 16u;        // table words a rank index: two a quad
   const uint32_t stampBytes = 11u;
 
   // Plain inputs: the dense factors plus 32 (0 .. 63), a row of 128 for every row of A and
   // column of B, and every k's plus and minus rank index (distinct, as the protocol's are).
-  const uint32_t rowsA = ga * 16u, colsB = gb * 16u, kpad = k + 32u;
+  const uint32_t rowsA = ga * 16u, colsB = gb * 16u, kpad = k + 96u;
   std::vector<uint8_t> DA((size_t)rowsA * 128u), DB((size_t)colsB * 128u);
   for (auto &b : DA) b = (uint8_t)(rng() >> 9) & 63u;
   for (auto &b : DB) b = (uint8_t)(rng() >> 9) & 63u;
@@ -87,8 +88,8 @@ int main(int argc, char **argv) {
   // B's lane L draws e = L >> 4, k-pair L & 15; A's draws e = (L >> 3) & 1, k-pair
   // 8 (L >> 4) + (L & 7). One k-step of padding at the end (the tile's last k-step draws a
   // stage nothing reads).
-  std::vector<uint32_t> hOffs((size_t)(ksteps + 1u) * 64u * 4u);
-  for (uint32_t ts = 0; ts <= ksteps; ts++)
+  std::vector<uint32_t> hOffs((size_t)(ksteps + 3u) * 64u * 4u);
+  for (uint32_t ts = 0; ts < ksteps + 3u; ts++)
     for (uint32_t op = 0; op < 2u; op++)
       for (uint32_t L = 0; L < 32u; L++) {
         const uint32_t e = op ? (L >> 3) & 1u : L >> 4, kp = op ? 8u * (L >> 4) + (L & 7u) : L & 15u;
@@ -113,7 +114,7 @@ int main(int argc, char **argv) {
   cudaMalloc(&dOffs, hOffs.size() * 4u);
   cudaMalloc(&dStamp, 16);
   cudaMalloc(&dCyc, cycN * 8u);
-  cudaMalloc(&dDump, (size_t)(dumpTiles ? dumpTiles : 1u) * 3072u * 4u);
+  cudaMalloc(&dDump, (size_t)(dumpTiles ? dumpTiles : 1u) * REG * 16u * 4u);
   cudaMemcpy(dTabA, hTabA.data(), hTabA.size(), cudaMemcpyHostToDevice);
   cudaMemcpy(dTabB, hTabB.data(), hTabB.size(), cudaMemcpyHostToDevice);
   cudaMemcpy(dOffs, hOffs.data(), hOffs.size() * 4u, cudaMemcpyHostToDevice);
@@ -129,7 +130,7 @@ int main(int argc, char **argv) {
   do {
     cudaEventRecord(e0);
     pearl_draw_probe<<<blocks, PD_THREADS, PD_SMEM>>>(dTabA, dTabB, dOffs, dStamp, stampBytes, chunks,
-                                                     0u, RG * 12u, CB * 16u, tiles, dCyc, dDump,
+                                                     0u, RG * RO, CB * 16u, tiles, dCyc, dDump,
                                                      dumpTiles);
     cudaError_t err = cudaGetLastError();
     cudaEventRecord(e1);
@@ -152,7 +153,7 @@ int main(int argc, char **argv) {
     for (uint32_t s = 0; s < 4u; s++) {
       const unsigned long long *w0 = &cyc[((size_t)b * 8u + s) * 5u], *w1 = &cyc[((size_t)b * 8u + s + 4u) * 5u];
       if (!w0[3] || !w1[3]) continue;
-      const double imma = (double)(w0[3] + w1[3]) * chunks * 192.0;
+      const double imma = (double)(w0[3] + w1[3]) * chunks * 4.0 * PD_NI;
       // The slower warp's cycles: with nothing holding the two together one can run ahead,
       // and the scheduler's pipe is busy until the other is done.
       const double loop = (double)(w0[1] > w1[1] ? w0[1] : w1[1]);
@@ -176,12 +177,12 @@ int main(int argc, char **argv) {
 
   if (dumpTiles) {
     // The CPU's fold of the same tiles, from the same tables.
-    std::vector<uint32_t> dump((size_t)dumpTiles * 3072u);
+    std::vector<uint32_t> dump((size_t)dumpTiles * REG * 16u);
     cudaMemcpy(dump.data(), dDump, dump.size() * 4u, cudaMemcpyDeviceToHost);
-    uint32_t bad = 0, total_regions = 0;
-    std::vector<int8_t> Ap((size_t)192 * 128), Bp((size_t)256 * 128);
-    std::vector<int32_t> C((size_t)192 * 256);
-    std::vector<uint32_t> tr((size_t)192 * 16);
+    uint32_t bad = 0, total_regions = 0, badro[16] = {0};
+    std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)256 * 128);
+    std::vector<int32_t> C((size_t)BM * 256);
+    std::vector<uint32_t> tr((size_t)REG * 16);
     for (uint32_t v = 0; v < dumpTiles; v++) {
       const uint32_t rbg = v % RG, cbg = v / RG;
       std::fill(C.begin(), C.end(), 0);
@@ -190,12 +191,12 @@ int main(int argc, char **argv) {
         for (uint32_t kk = 0; kk < 128u; kk++) {
           const uint32_t gk = ch * 128u + kk;
           const uint32_t bp0 = pm[0][0][gk], bp1 = pm[0][1][gk], ap0 = pm[1][0][gk], ap1 = pm[1][1][gk];
-          for (uint32_t r = 0; r < 192u; r++) {
-            const uint32_t gr = rbg * 192u + r;
+          for (uint32_t r = 0; r < BM; r++) {
+            const uint32_t gr = rbg * BM + r;
             const uint8_t *T = &DA[(size_t)gr * 128u];
-            int val = 64 + (int)T[ap0] - (int)T[ap1];
+            int val = PD_FILL + (int)T[ap0] - (int)T[ap1];
             if (gr == 0u && gk < stampBytes) {
-              val = val - 64 + (int)hStamp[gk];
+              val = val - PD_FILL + (int)hStamp[gk];
               val = val < -128 ? -128 : (val > 127 ? 127 : val);
             }
             Ap[(size_t)r * 128u + kk] = (int8_t)val;
@@ -203,10 +204,10 @@ int main(int argc, char **argv) {
           for (uint32_t cidx = 0; cidx < 256u; cidx++) {
             const uint32_t gc = cbg * 256u + cidx;
             const uint8_t *T = &DB[(size_t)gc * 128u];
-            Bp[(size_t)cidx * 128u + kk] = (int8_t)(64 + (int)T[bp0] - (int)T[bp1]);
+            Bp[(size_t)cidx * 128u + kk] = (int8_t)(PD_FILL + (int)T[bp0] - (int)T[bp1]);
           }
         }
-        for (uint32_t r = 0; r < 192u; r++)
+        for (uint32_t r = 0; r < BM; r++)
           for (uint32_t cidx = 0; cidx < 256u; cidx++) {
             const int8_t *a = &Ap[(size_t)r * 128u], *bb = &Bp[(size_t)cidx * 128u];
             int32_t sum = 0;
@@ -214,33 +215,40 @@ int main(int argc, char **argv) {
             C[(size_t)r * 256u + cidx] += sum;
           }
         for (uint32_t wc = 0; wc < 4u; wc++)
-          for (uint32_t Lc = 0; Lc < 48u; Lc++) {
-            const uint32_t wr = Lc / 24u, rem = Lc % 24u, tq = rem / 6u, rl = (rem % 6u) / 2u, rh = rem & 1u;
+          for (uint32_t Lc = 0; Lc < RPS; Lc++) {
+            // Region Lc of the slot: column offset tq, row offset ro (32-row group ro / 2, half ro & 1).
+            const uint32_t tq = Lc / RO, ro = Lc % RO, grp = ro / 2u, rh = ro & 1u;
             uint32_t x = 0;
             for (uint32_t q = 0; q < 4u; q++)
               for (uint32_t jj = 0; jj < 4u; jj++)
                 for (uint32_t e = 0; e < 2u; e++)
                   for (uint32_t ii = 0; ii < 8u; ii++) {
-                    const uint32_t r = wr * 96u + rl * 32u + 4u * rh + q + 8u * jj;
+                    const uint32_t r = grp * 32u + 4u * rh + q + 8u * jj;
                     const uint32_t cidx = wc * 64u + 2u * tq + e + 8u * ii;
                     x ^= (uint32_t)C[(size_t)r * 256u + cidx];
                   }
-            uint32_t &w = tr[(size_t)(wc * 48u + Lc) * 16u + (ch & 15u)];
+            uint32_t &w = tr[(size_t)(wc * RPS + Lc) * 16u + (ch & 15u)];
             w = rotl13(w) ^ x;
           }
       }
-      for (uint32_t reg = 0; reg < 192u; reg++) {
+      for (uint32_t reg = 0; reg < REG; reg++) {
         total_regions++;
-        if (memcmp(&tr[(size_t)reg * 16u], &dump[(size_t)v * 3072u + reg * 16u], 64) != 0) {
+        if (memcmp(&tr[(size_t)reg * 16u], &dump[(size_t)v * REG * 16u + reg * 16u], 64) != 0) {
           if (bad < 4u)
             fprintf(stderr, "tile %u region %u: cpu %08x %08x.. gpu %08x %08x..\n", v, reg, tr[reg * 16u],
-                    tr[reg * 16u + 1u], dump[(size_t)v * 3072u + reg * 16u],
-                    dump[(size_t)v * 3072u + reg * 16u + 1u]);
+                    tr[reg * 16u + 1u], dump[(size_t)v * REG * 16u + reg * 16u],
+                    dump[(size_t)v * REG * 16u + reg * 16u + 1u]);
           bad++;
+          badro[(reg % RPS) % RO]++;
         }
       }
     }
     printf(" check %u/%u", total_regions - bad, total_regions);
+    if (bad) {
+      // Which row offsets of the tile the bad regions are on.
+      printf(" bad by row offset:");
+      for (uint32_t ro = 0; ro < RO; ro++) printf(" %u", badro[ro]);
+    }
   }
   printf("\n");
   return 0;
