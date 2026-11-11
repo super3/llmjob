@@ -19,6 +19,8 @@
 #   PP_SHORT      seconds a short run (default 1)
 #   PP_LONG       seconds a long run (default 30; the card is read every second and the first 8 s are left out)
 #   PP_ONLY_STAT  1: build only, and print what stands between each build's IMMA (nothing runs)
+#   PP_SKIP_SHORT 1: no short runs
+#   PP_LONGS      the streams of the long runs (default: the main ones, then hashed bytes, then base again)
 set -u
 psay() { echo "[nvtest] $(date -u +%T) [probe] $*"; }
 [ -n "${BASE_SHA:-}" ] || { psay "no BASE_SHA; idle"; exec sleep infinity; }
@@ -29,6 +31,7 @@ done
 q() { nvidia-smi -i 0 --query-gpu="$1" --format=csv,noheader 2>&1 | head -1; }
 psay "card $(q name,driver_version,compute_cap,power.limit,power.default_limit,power.min_limit,power.max_limit,clocks.max.sm,memory.total)"
 psay "card idle $(q clocks.sm,power.draw,temperature.gpu,utilization.gpu,memory.used) gpus=$(nvidia-smi -L | wc -l)"
+psay "card enforced limit $(q enforced.power.limit), instant draw $(q power.draw.instant), average $(q power.draw.average)"
 CC=$(q compute_cap | tr -d ' .')
 DRV=$(q driver_version | cut -d. -f1 | tr -d ' ')
 case "$CC" in ''|*[!0-9]*) psay "FAIL no compute capability: $CC"; exec sleep infinity ;; esac
@@ -129,11 +132,13 @@ print("imma=%d other=%d per_imma=%.3f longest_run=%d runs_over_8=%d ctl=%d[%s] t
     len(im), len(other), len(other) / len(im), best, sum(1 for g in gaps if g > 8), len(ctl),
     ",".join(sorted(set(ctl))), top))
 EOF
-# smi.py FILE T0 SKIP: the card's samples from SKIP seconds after T0: means, the clock's range, the limit.
+# smi.py FILE T0 SKIP [TAGS]: the card's samples from SKIP seconds after T0: means, the clock's range, the limit.
+# TAGS names the columns after the fifth (why: the clock's reasons; inst: instant draw; enf: enforced limit).
 cat > $P/smi.py << 'EOF'
 import sys
 f, t0, skip = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
-rows, why = [], set()
+tags = sys.argv[4].split(",") if len(sys.argv) > 4 and sys.argv[4] else []
+rows, why, inst, enf = [], set(), [], set()
 for line in open(f):
     p = [x.strip() for x in line.split(",")]
     try:
@@ -142,20 +147,36 @@ for line in open(f):
         continue
     if t - t0 >= skip:
         rows.append(v)
-        if len(p) > 6:
-            why.add(p[6])
+        for i, tag in enumerate(tags):
+            x = p[6 + i] if len(p) > 6 + i else ""
+            if tag == "why":
+                why.add(x)
+            elif tag == "enf":
+                enf.add(x)
+            elif tag == "inst":
+                try:
+                    inst.append(float(x))
+                except ValueError:
+                    pass
 if not rows:
     print("no card samples"); sys.exit()
 n = len(rows)
 m = [sum(r[i] for r in rows) / n for i in range(5)]
 print("%.0f MHz (%.0f-%.0f) %.1f W (max %.1f) of %.0f W, %.0f C, util %.0f%%, reasons %s, %d samples" % (
     m[0], min(r[0] for r in rows), max(r[0] for r in rows), m[1], max(r[1] for r in rows), m[4], m[2], m[3],
-    "/".join(sorted(why)) or "-", n))
+    "/".join(sorted(why)) or "-", n)
+    + (", instant %.1f W (%.1f-%.1f)" % (sum(inst) / len(inst), min(inst), max(inst)) if inst else "")
+    + (", enforced %s W" % "/".join(sorted(enf)) if enf else ""))
 EOF
 SQ=clocks.sm,power.draw,temperature.gpu,utilization.gpu,power.limit
+SQT=""
+has_field() { nvidia-smi -i 0 --query-gpu=$1 --format=csv,noheader > /dev/null 2>&1; }
 for r in clocks_event_reasons.active clocks_throttle_reasons.active; do
-  if nvidia-smi -i 0 --query-gpu=$r --format=csv,noheader > /dev/null 2>&1; then SQ=$SQ,$r; break; fi
+  if has_field $r; then SQ=$SQ,$r; SQT=why; break; fi
 done
+has_field power.draw.instant && { SQ=$SQ,power.draw.instant; SQT=$SQT,inst; }
+has_field enforced.power.limit && { SQ=$SQ,enforced.power.limit; SQT=$SQT,enf; }
+SQT=${SQT#,}
 
 # The streams: name|flags. The first block is the 4090 table's (lists 5 and 6 of the study); "r" after a name is
 # the same stream with hashed operand bytes (FILLRND), which changes the watts and not the code between the IMMA.
@@ -305,16 +326,16 @@ long() {
   t0=$(date +%s.%N)
   out=$(timeout 240 "$1/$3" "$3" "$CH" "${PP_LONG:-30}" 2>&1 | tail -1)
   kill $sp 2> /dev/null; wait $sp 2> /dev/null
-  psay "$2 long $out | $(python3 $P/smi.py "$f" "$t0" 8)"
+  psay "$2 long $out | $(python3 $P/smi.py "$f" "$t0" 8 "$SQT")"
 }
 T=nvcc$CUDA_VER
 # 1. What a full pipe is here: IMMA only with one to four warps a scheduler, the warp-to-pipe map, and the same
 #    with the fragment loads.
-for s in m0 m01 m02 m03 m04 m05 m06 m07 w4 pure w8a32 w8a24 w12 w16 w4k base w12k w16k; do
+[ -n "${PP_SKIP_SHORT:-}" ] || for s in m0 m01 m02 m03 m04 m05 m06 m07 w4 pure w8a32 w8a24 w12 w16 w4k base w12k w16k; do
   [ -x $P/b/$s ] && short $P/b $T $s v
 done
 # 2. The 4090 table's streams, pipe use only.
-for s in pure base rd1 rd1a rd2 rd2a rd3 d4e d4m d4h d4s d4mg d4r fullns full full3 fulle; do
+[ -n "${PP_SKIP_SHORT:-}" ] || for s in pure base rd1 rd1a rd2 rd2a rd3 d4e d4m d4h d4s d4mg d4r fullns full full3 fulle; do
   [ -x $P/b/$s ] && short $P/b $T $s
 done
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
