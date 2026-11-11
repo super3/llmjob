@@ -562,6 +562,59 @@ known. A check of 100 hits catches a card that computes a few percent of its res
 several hundred passes it, and is caught later by the check on each share it sends. The trial takes six and a
 half minutes of every start.
 
+### rig01, 11 November: CPU use per card, and a search thread that sleeps (branch `goal/cpu-per-card`)
+
+Why: on 11 November a rig of 8 NVIDIA cards on a 2-core Celeron G1840 (HiveOS, v0.6.15) made 31.8 TH/s on each
+RTX 3070 at 77 W where OneZeroMiner made 74.9 at about 101 W; the load average reached 6.8 and HiveOS's watchdog
+rebooted it. It ran `--mode auto` with one LLM server at the time.
+
+Where the CPU went, by reading and by OS thread counters (`Get-Process` thread times over 55 s of a 60 s run; one
+core on a synthetic job, hardest target, nothing else in the process; scripts in the session's `cpu/` folder):
+one native thread a card, `PearlCore::SearchLoop`, and all of it in the wait. It keeps two launches queued and
+waits for the older one in `cudaEventSynchronize` on a plain event, which busy-waits. A launch on the 4090 is 28 ms
+(36 a second), and queueing one and reading its hit count takes about 0.1 ms. Every other thread in the process
+(Node's, the driver's) read under 0.002 cores. The installed app's mining process read 1.00 core the same way.
+
+RTX 4090, 450 W, same build each row, the wait chosen by `PEARL_WAIT`, 60 s after a 12 s warm-up:
+
+| Wait | Cores used | TH/s | MHz | W |
+|---|---|---|---|---|
+| spin (v0.6.15's), twin runs | 0.995, 0.999 | 317.44, 317.41 | 2534, 2532 | 449 |
+| blocking event | 0.003 | 317.37 | 2530 | 449 |
+| blocking event + `cudaDeviceScheduleBlockingSync` | 0.003 | 317.19 | 2532 | 449 |
+| poll (`cudaEventQuery`, 0.5 ms sleep) | 0.006 | 317.11 | 2531 | 449 |
+| spin, a new job every 5 s | 0.991 | 317.56 | 2535 | 449 |
+| blocking event, a new job every 5 s | 0.002 | 317.16 | 2535 | 449 |
+| blocking event + device flag, a new job every 5 s | 0.002 | 317.14 | 2528 | 449 |
+| **shipped form** (blocking event, thread priority raised), twin runs | 0.004, 0.003 | 317.37, 317.13 | 2534, 2528 | 449 |
+| shipped build with `PEARL_WAIT=spin` | 0.998 | 317.26 | 2527 | 449 |
+
+The spread of like runs is 0.08% (317.13 to 317.37), so no wait differs from another in rate. The device flag added
+nothing, with or without job switches, and is not set.
+
+A starved CPU, imitated: the miner pinned to one core (affinity mask 1), alone or beside three busy loops pinned to
+the same core at normal priority. Four busy threads on a core is what 8 spinning cards on 2 cores are.
+
+| Wait | One core, alone: TH/s | One core + 3 busy loops: TH/s | W | GPU busy |
+|---|---|---|---|---|
+| spin | 317.73 | 173.82 and 184.12 (55% and 58%) | 299, 312 | 53%, 58% |
+| blocking event, normal priority | 317.21 | 208.65 | 331 | 60% |
+| poll, normal priority | not run | 260.33 | 409 | 88% |
+| blocking event, priority raised | not run | 317.49 and 317.52 | 449 | 100% |
+| poll, priority raised | not run | 317.28 | 449 | 100% |
+
+The spinning miner on the busy core lost what the field report lost: under 60% of the rate, the card under 60% busy
+and well under its power limit. Sleeping alone did not cure it, because a thread at normal priority is woken late on
+a busy core; with its priority raised (`THREAD_PRIORITY_HIGHEST`; nice -10 on Linux) it ran at full rate.
+
+`verify-hits.js` on the shipped build: 400 of 400 with the default wait, with `poll` and with `spin`.
+
+Not measured: Linux (the code is the same file, but the driver's blocking wait, the scheduler, and the nice value,
+which needs root, are not; nothing here was compiled or run on Linux), a rig of many cards, a real 2-core CPU, and
+any card but the 4090. The busy loops stand in for other cards' spinning threads on Windows' scheduler, not Linux's.
+The AMD and Intel hosts wait their own way and were not touched. `nvidia-smi`, which the app runs every 5 s for
+temperatures, took 39 ms of CPU a call here (0.008 cores); on a slow CPU with 8 cards it will be more.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
