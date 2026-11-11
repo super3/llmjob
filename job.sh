@@ -1,14 +1,8 @@
-# 7800xt race: the default, a twin, the hash on its own queue, the core's ticker, a shorter launch; then stamps of the miner's own launches
+# 7800xt threads: which of the miner's threads keep the CPU busy, by default, with the hash queue and with the ticker
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=hash\ mstamps
-G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;tk0=base\ PEARL_AMD_TICK_US=0\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;tkq05=base\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tkq1=base\ PEARL_AMD_TICK_US=1000\ PEARL_AMD_TICK_WAIT=0\;tkq5=base\ PEARL_AMD_TICK_US=5000\ PEARL_AMD_TICK_WAIT=0\;tkq10=base\ PEARL_AMD_TICK_US=10000\ PEARL_AMD_TICK_WAIT=0\;mstkq2=sbase\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0\;mstkq05=sbase\ PEARL_AMD_TICK_US=500\ PEARL_AMD_TICK_WAIT=0\;tk0t=twin\ PEARL_AMD_TICK_US=0\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=64\;cbshq1=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=64\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=64\ PEARL_AMD_HASHQ=1
-G_VARIANTS=base\ twin\ hq1\ tk2\ tkq2
-G_HROUNDS=4
-G_HASH=45:12
-G_MST=msq0\ msq1\ mstk
-G_MSN=6
-G_MSAT=250
-G_MSSTEP=37
+G_PARTS=threads
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tkq2=base\ PEARL_AMD_TICK_US=2000\ PEARL_AMD_TICK_WAIT=0
+G_THREADS=base\ hq1\ tk2\ tkq2
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
@@ -635,6 +629,20 @@ if has verify; then
     j=$(grep '^{' /root/verify-$v.log | tail -n 1)
     say "verify $v rc=$rc $(printf '%s' "$j" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);console.log(JSON.stringify({PASS:j.PASS,hits:j.hits,verified:j.verified,failed:j.failed,salts:j.salts,secs:j.secs,fold:j.device&&j.device.fold,error:j.error}).slice(0,330))}catch(e){console.log("no result: "+s.slice(-200))}})')"
     [ -n "$j" ] || tail -n 3 /root/verify-$v.log | while IFS= read -r l; do say "verify $v | ${l:0:300}"; done
+  done
+fi
+
+# Which of the miner's threads keep the CPU busy: ps -L 22 s into a 30 s run, for each variant in G_THREADS.
+if has threads; then
+  for v in ${G_THREADS:-base hq1}; do
+    vdef "$v"
+    [ -f $SW/var/$VCORE/pearl_core_hip.node ] || { say "threads $v: no build"; continue; }
+    env PEARL_AMD_UNTESTED=1 "${VENV[@]}" timeout 120 node ../probes/hashrate.js $SW/var/$VCORE/pearl_core_hip.node 25 5 > /root/thr.log 2>&1 &
+    hp=$!
+    sleep 22
+    np=$(pgrep -f '^node ../probes/hashrate.js' | head -n 1)
+    say "threads $v (pid ${np:-?}, $(nproc) CPUs): $(ps -L -o pcpu=,comm= -p "${np:-1}" 2>/dev/null | sort -rn | head -n 9 | awk '{printf "%s %s; ", $1, $2}')"
+    wait $hp
   done
 fi
 say "job done"
