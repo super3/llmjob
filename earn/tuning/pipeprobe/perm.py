@@ -14,8 +14,9 @@ register an instruction names counts as both read and written, which only makes 
   python3 perm.py IN.cubin IN.sass OUT.cubin RULES [dump A B]
 
 IN.sass is `nvdisasm -c IN.cubin`. RULES is KIND=PLACE joined by "/". KIND is X (LOP3), M (ldmatrix), L (other
-loads), S (stores and shared atomics), U (steps on uniform registers only), A (any other plain step) or * (every
-kind without a rule of its own). PLACE, with IMMA numbered from 0 in each stretch:
+loads), S (stores and shared atomics), U (steps on uniform registers only), Y (a LOP3 with fewer than three
+registers in, such as a mask), A (any other plain step) or * (every kind without a rule of its own). Several
+letters together (YLAS=spread) place those kinds as one list. PLACE, with IMMA numbered from 0 in each stretch:
   orig            where the compiler put them
   even,N[,K]      N after every IMMA from IMMA K on (default 0), round the loop, until none is left
   every,E,N[,K]   N after IMMA K, K+E, K+2E ... (default K = E-1); N = 0 shares them out evenly
@@ -47,8 +48,8 @@ def kind(o, text=""):
         return "I"
     if o in CTL:
         return "C"
-    if o in ("LOP3", "PLOP3", "LOP"):
-        return "X"
+    if o in ("LOP3", "PLOP3", "LOP"):   # X: three registers in (the readout's step); Y: a mask or a two-input step
+        return "X" if len(re.findall(r"(?<![A-Za-z0-9_])R\d+", text)) >= 4 else "Y"
     if o == "LDSM":
         return "M"
     if o in ("LDS", "LD", "LDG", "LDL"):
@@ -107,6 +108,8 @@ def regs(op, text):
     """Every register the instruction names, each widened to the registers a wide operand covers."""
     mnem = text.split()[1] if text.startswith("@") else text.split()[0]
     wide = 3 if op in ("IMMA", "LDSM") or "128" in mnem else 1 if "64" in mnem else 0
+    if op in ("LDS", "LD", "LDL", "LDG", "STS", "ST", "STL", "STG", "ATOMS", "ATOM", "ATOMG"):
+        wide = 3   # a load or a store may be up to four registers wide whatever its name says
     out = set()
     inside = [(m.start(), m.end()) for m in re.finditer(r"\[[^\]]*\]", text)]   # an address is one register wide
     for x, m in enumerate(REG.finditer(text)):
@@ -190,7 +193,9 @@ def main():
     if dump:
         lo, hi = int(sys.argv[6]), int(sys.argv[7])
         for i in range(im[0] + lo, min(im[0] + hi, end + 1)):
-            print("%4d %s" % (i - im[0], re.sub(r"\s+", " ", texts[i])))
+            # Salad's log drops some lines (every load's, in the first dumps): print with brackets spelled out.
+            print("%4d %s" % (i - im[0], re.sub(r"\s+", " ", texts[i]).replace("[", "<").replace("]", ">")
+                              .replace("LD", "L_D")))
         return
     rules = dict(r.split("=", 1) for r in spec.split("/") if r)
     reuse = rules.pop("R", "clear" if any(v != "orig" for v in rules.values()) else "keep")
@@ -227,8 +232,9 @@ def main():
                 was[i] = seen
         want = dict(was)
         by_kind = collections.defaultdict(list)
-        for i in others:
-            by_kind[kinds[i] if kinds[i] in rules else "*"].append(i)
+        for i in others:   # a rule's key may name several kinds, which then share one PLACE in the loop's order
+            key = next((k for k in rules if kinds[i] in k), "*")
+            by_kind[key].append(i)
         for k, members in by_kind.items():
             place = rules.get(k, "orig")
             if place != "orig":

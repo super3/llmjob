@@ -9,6 +9,8 @@
 //   RD      0: no readout. 1: one run of 96 XOR3 at the chunk's end. 2: three runs of 32, each after its tiles'
 //           last mma (after mma 24 and 40 of the last k-step, after mma 8 of the next chunk's first).
 //           3: six runs of 16 (after mma 12, 20, 28, 36, 44 of the last k-step and mma 4 of the first).
+//           4: one XOR3 after every mma of the chunk's last k-step (sums 0 to 23) and of the next chunk's first
+//           (sums 24 to 47), which is the order ptxas keeps one a gap on sm_120.
 //   RCH     XOR chains the readout keeps (registers)
 //   TRW     1: the chunk's word goes into the thread's own transcript in shared (load, rotate, store)
 //   DRAW    draw-shaped units a k-step (0: none); each is 16 bytes from four 8-byte table reads
@@ -424,6 +426,13 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
 #elif RD == 3
       if (s == 3 && n >= 12 && n <= 44 && (n - 12) % 8 == 0) xrun((n - 12), (n - 12) + 8);
       if (s == 0 && n == 4) { xrun(40, 48); word(ch + 15); }
+#elif RD == 4
+      if (s == 3 || s == 0) {
+        const int j = (s == 3 ? 0 : 24) + i / 2;   // the mma whose sums this XOR3 reads: at or before mma i
+        asm volatile("xor.b32 %0, %0, %1;\n xor.b32 %0, %0, %2;\n" : "+r"(t[i % RCH])
+                     : "r"(c[j][(i & 1) * 2]), "r"(c[j][(i & 1) * 2 + 1]));
+        if (s == 0 && n == ACC) word(ch + 15);
+      }
 #endif
 #if DRAW > 0 && DPOS == 1
       if (n == 24) draw(DRAW);

@@ -428,7 +428,18 @@ rd4F|$Z1 -DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=1 -DFILLRND=2
 rd3F|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2
 FP1|$Z1 -DGX=1 -DPAD=1 -DPKIND=0
 rd3N|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1
-rd2N|$Z1 -DRD=2 -DTRW=0 -DDRAW=2 -DDPOS=1"
+rd2N|$Z1 -DRD=2 -DTRW=0 -DDRAW=2 -DDPOS=1
+r4|$Z1 -DRD=4 -DTRW=0
+r4d1|$Z1 -DRD=4 -DTRW=0 -DDRAW=1 -DDPOS=1
+r4d2|$Z1 -DRD=4 -DTRW=0 -DDRAW=2 -DDPOS=1
+r4d3|$Z1 -DRD=4 -DTRW=0 -DDRAW=3 -DDPOS=1
+d1mN|$Z1 -DDRAW=1 -DDPOS=1
+r4F|$Z1 -DRD=4 -DTRW=0 -DFILLRND=2
+r4d1F|$Z1 -DRD=4 -DTRW=0 -DDRAW=1 -DDPOS=1 -DFILLRND=2
+r4d2F|$Z1 -DRD=4 -DTRW=0 -DDRAW=2 -DDPOS=1 -DFILLRND=2
+r4d3F|$Z1 -DRD=4 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2
+d2mF|$Z1 -DDRAW=2 -DDPOS=1 -DFILLRND=2
+d1mF|$Z1 -DDRAW=1 -DDPOS=1 -DFILLRND=2"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -504,6 +515,13 @@ case "${PP_SET:-}" in
       PP_TRACES="FP1"
       PP_PTRACE="FP1.ax FP1.axn FP1.ax1 FP1.xa1 d4mN.sp rd4N.sp full3N.sp"
       PP_PERMS="p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e3:A=even,3 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 F1:n9:U=all,191 FP1:o:*=orig FP1:ax:A=even,1,0/X=even,1,0 FP1:axn:A=even,1,0/X=even,1,0/U=all,191 FP1:ax1:A=even,1,0/X=even,1,1/U=all,191 FP1:xa1:A=even,1,1/X=even,1,0/U=all,191 rd2aN:s1n:X=seg,0:32:1,146:32:1,162:32:1/U=all,191 d4mN:c:R=clear d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:v2:*=every,2,0,1 d4mN:v4:*=every,4,0,3 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread rd4N:sp:*=spread rd4N:e2:*=even,2 rd3N:sp:*=spread rd2N:sp:*=spread full3N:sp:*=spread full2N:sp:*=spread" ;;
+  # b5: the readout written one XOR3 after every IMMA (RD=4), alone and with one to three draw units whose steps
+  # are shared out over the gaps while the XOR3 stay where the compiler put them.
+  b5) PP_BUILD="base F1 rd2aN d4mN d3mN d2mN d1mN rd4N rd2N r4 r4d1 r4d2 r4d3"
+      PP_TRACES="r4 r4d2"
+      PP_DUMPS="d4mN:60:110 r4:0:24"
+      PP_PTRACE="r4d2.d r4d1.d d4mN.sp"
+      PP_PERMS="d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread d1mN:sp:*=spread rd4N:sp:*=spread rd2N:sp:*=spread r4:o:*=orig r4d1:d:YLAS=spread r4d2:d:YLAS=spread r4d3:d:YLAS=spread r4d1:s:*=spread r4d2:s:*=spread" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
