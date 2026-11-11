@@ -167,6 +167,9 @@ DEFAULT_CFG = {"max_active": 1, "search": True, "search_token": 0, "restart_toke
                # Renting Vast.ai interruptible (spot) instances the same way (founder, 11 November: funded Vast with $50
                # for it): off until config turns it on, with the same caps as Clore. vast_disk is the GB asked for.
                "vast": False, "vast_day_cap": 10.0, "vast_max": 2, "vast_disk": 10,
+               # A spot bid is the most that still leaves this margin (None: 10% over Vast's least). On 11 November
+               # bids 10% over the least were stopped by higher bids within 1 to 30 minutes, five boxes in an hour.
+               "vast_bid_margin": 0.15,
                # Salad orgs whose credit the heading adds up (balance and all bought); none: just ORG.
                "salad_orgs": [],
                # The Salad orgs groups run in and how many each may run, filled in this order, e.g. {"llmjob": 8,
@@ -1585,8 +1588,9 @@ class W:
         """Bids on the Vast offer that makes the most an hour while clearing min_margin, every 10 min while there's room
         (vast_max) and money (vast_day_cap, for the day so far and for the live boxes' day). One GPU an offer, verified
         hosts over 95% reliable, cards at 90% or more of their stock power (Clore's 10 November lesson), a machine
-        not judged lately at a rate that doesn't clear. The bid is 10% over Vast's least, so the next small bid
-        doesn't stop it at once, if that still clears. On-demand offers are weighed too (founder, 11 November: "and
+        not judged lately at a rate that doesn't clear. The bid is the most that leaves vast_bid_margin (15%), and at
+        least 10% over Vast's least, so the next bid doesn't stop it at once; Vast stopped every lower bid within
+        minutes on 11 November. On-demand offers are weighed too (founder, 11 November: "and
         also on demand if its profitable"), at their full price with the disk; on that day none cleared."""
         v = self.st["vast"]
         if t - v.get("search_t", 0) < 10 * MIN:
@@ -1633,6 +1637,8 @@ class W:
                 else:
                     least = float(o["min_bid"])
                     bid = round(max(least * 1.1, least + 0.001), 4)
+                    if self.cfg.get("vast_bid_margin") is not None:
+                        bid = max(bid, round(earn * (1 - self.cfg["vast_bid_margin"]) - disk_hr, 4))
                     if not ok(bid):
                         bid = round(least + 0.001, 4)
                         if least <= 0 or not ok(bid):

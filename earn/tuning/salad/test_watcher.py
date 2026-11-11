@@ -5675,7 +5675,8 @@ class TestVast(Base):
         real_env = w.user_env
         w.user_env = lambda n: "vk" if n == "VAST_API_KEY" else real_env(n)
         self.addCleanup(setattr, w, "user_env", real_env)
-        self.x.cfg.update(vast=True, min_margin=0.05, keep_margin=0.02)
+        # Most tests bid 10% over Vast's least; test_a_spot_bid_is_the_most_that_leaves_the_bid_margin checks the default.
+        self.x.cfg.update(vast=True, min_margin=0.05, keep_margin=0.02, vast_bid_margin=None)
         self.x.st["xmr_mkt"] = {"t": T0, "price": 550.0, "per_hash": 1e-13, "usd_khs_hr": 0.0005}
         self.board = []
         self.http.on("GET", r"/api/miners", lambda b: (200, {"miners": self.board}))
@@ -5752,6 +5753,15 @@ class TestVast(Base):
         self.assertIn("WORKER=vast-5", script)
         self.assertIn("--xmr-address 8" + "a" * 94, script)        # 16 CPUs: Monero on 8 threads
         self.assertIn("touch $D/setup", script)                    # the download is skipped after a restart
+
+    def test_a_spot_bid_is_the_most_that_leaves_the_bid_margin(self):
+        # 11 November: bids 10% over Vast's least were stopped by higher bids within minutes, five boxes in an hour.
+        self.x.cfg["vast_bid_margin"] = w.DEFAULT_CFG["vast_bid_margin"]
+        self.market(self.offer(5, bid=0.10))
+        self.x.vast_round(self.clock[0])
+        earn = 199 * self.x.usd(True)
+        self.assertEqual(self.bids()[0][1]["price"], round(earn * 0.85 - 0.005, 4))
+        self.assertAlmostEqual(w.margin_of(earn, self.x.st["vast"]["inst"]["900"]["price_hr"]), 0.15, places=3)
 
     def test_a_bid_that_only_clears_at_vasts_least_goes_in_at_the_least(self):
         self.market(self.offer(5, bid=0.200))   # 10% over would be $0.225/hr with the disk, under 5%
