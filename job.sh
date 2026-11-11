@@ -1,11 +1,14 @@
-# 9060xt job 4: the duel: SRBMiner 3.8.6 against the PR head's default and against the build with the core's ticker every 2 ms, 2 turns each, then a clock turn each
+# 9060xt race: the default, a twin, the hash on its own queue, the core's ticker, a shorter launch; then stamps of the miner's own launches
 G_PR=5d2b012eaba6e514a0a543c985ded658d025bd73
-G_PARTS=srb\ duel
-G_TURNS=2
-G_DSECS=300
-G_CLKSECS=180
-G_VDEF=tk2=base\ PEARL_AMD_TICK_US=2000
-G_OURSX=tk2
+G_PARTS=hash\ mstamps
+G_VDEF=hq1=base\ PEARL_AMD_HASHQ=1\;hq1t=twin\ PEARL_AMD_HASHQ=1\;tk2=base\ PEARL_AMD_TICK_US=2000\;tk10=base\ PEARL_AMD_TICK_US=10000\;tk05=base\ PEARL_AMD_TICK_US=500\;tk1=base\ PEARL_AMD_TICK_US=1000\;tk5=base\ PEARL_AMD_TICK_US=5000\;tk2t=twin\ PEARL_AMD_TICK_US=2000\;hq1tk=base\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;cbs=base\ PEARL_AMD_COL_BATCH=128\;cbshq1=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1\;cbstk=base\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_TICK_US=2000\;msq0=sbase\ PEARL_AMD_HASHQ=0\;msq1=sbase\ PEARL_AMD_HASHQ=1\;mstk=sbase\ PEARL_AMD_TICK_US=2000\;mstk05=sbase\ PEARL_AMD_TICK_US=500\;mstk10=sbase\ PEARL_AMD_TICK_US=10000\;mshq1tk=sbase\ PEARL_AMD_HASHQ=1\ PEARL_AMD_TICK_US=2000\;mscbs=sbase\ PEARL_AMD_COL_BATCH=128\;mscbsq1=sbase\ PEARL_AMD_COL_BATCH=128\ PEARL_AMD_HASHQ=1
+G_VARIANTS=base\ twin\ tk2\ tk05\ tk10
+G_HROUNDS=3
+G_HASH=45:12
+G_MST=mstk10
+G_MSN=6
+G_MSAT=100
+G_MSSTEP=17
 cd /opt/llmjob/earn/native/amd || exit 1
 # goal/amd job body (PR #290, 10 November). The box agent (agent.sh) runs it from earn/native/amd; the job's header
 # sets G_*. Parts (G_PARTS), in this order:
