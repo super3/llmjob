@@ -330,16 +330,26 @@ def main():
             continue
         _r, w, _k = fold.rw(ins.text)
         used |= {x for x in w if not isinstance(x, str)}
-    assert used <= regs and 2 in preds, "writes registers the kernel keeps: %s" % sorted(used - regs)
-    # The loop's own predicate is P1 where the compiled function writes P1; a build whose function writes
-    # another one (with the hash in the kernel it is P0) gets that one, since the kernel may keep the rest.
-    if 1 not in preds:
-        lp = min(preds - {2})
-        for ins in code:
-            if ins.text.startswith("ISETP.NE.AND P1, "):
-                ins.text = "ISETP.NE.AND P%d, " % lp + ins.text[len("ISETP.NE.AND P1, "):]
-            elif ins.text.startswith("@P1 BRA "):
-                ins.text = "@P%d BRA " % lp + ins.text[len("@P1 BRA "):]
+    assert used <= regs and len(preds) >= 2, "writes registers the kernel keeps: %s" % sorted(used - regs)
+    # The loop's own predicate is P1 and the row band's P2 where the compiled function writes them; a build whose
+    # function writes others gets those, since the kernel may keep the rest (with the hash in the probe's kernel
+    # the function writes P0 and P2, in the miner's kernel, src/pearl_rot.cu, P0 and P1).
+    bp = 2 if 2 in preds else min(preds - {1})
+    lp = 1 if 1 in preds else min(preds - {bp})
+    assert bp != lp
+    for ins in code:
+        t = ins.text
+        if lp != 1:
+            if t.startswith("ISETP.NE.AND P1, "):
+                t = "ISETP.NE.AND P%d, " % lp + t[len("ISETP.NE.AND P1, "):]
+            elif t.startswith("@P1 BRA "):
+                t = "@P%d BRA " % lp + t[len("@P1 BRA "):]
+        if bp != 2:
+            if t.startswith("ISETP.NE.AND P2, "):
+                t = "ISETP.NE.AND P%d, " % bp + t[len("ISETP.NE.AND P2, "):]
+            elif t.startswith("@!P2 BAR") or t.startswith("@P2 BAR"):
+                t = t.replace("P2 BAR", "P%d BAR" % bp, 1)
+        ins.text = t
     n, room = asm89.patch(cubin, text, out, code, nvd)
     if cfg["band"]:
         asm89.set_barriers(out, 3)

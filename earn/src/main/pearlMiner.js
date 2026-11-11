@@ -5,7 +5,7 @@ const {
   buildAuthorize, buildSubmit, encode, parseMessage, isKryptexHost,
 } = require('../shared/miner/stratum');
 const {
-  PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52, profileForK, difficultyAdjustmentFactor,
+  PROFILE, meetsTarget, rankMatches, shareBound, buildConfig52, profileForCore, difficultyAdjustmentFactor,
 } = require('../shared/miner/pearlhash');
 const { hash } = require('../shared/miner/blake3');
 const { buildShareProof } = require('../shared/miner/shareProof');
@@ -491,7 +491,8 @@ class PearlMiner extends EventEmitter {
     // before cores could choose has no `k` and mines the profile as it is. This
     // card's config52, job_key, share bound and proofs all come from it, so a
     // rig whose cards mine different k never mixes them.
-    const profile = core.k == null ? want : profileForK(want, core.k);
+    // A core with a tile of its own (core.tile: the CUDA core's rotation fold, off by default) mines that.
+    const profile = profileForCore(want, core);
     if (!profile) {
       try { core.stop(); } catch (e) { /* already gone */ }
       throw new Error('the core chose k ' + core.k + ', which a share can\'t carry');

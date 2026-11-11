@@ -59,6 +59,9 @@ let trial = null;
 core.on('shape', (s) => { trial = s; console.error('shape ' + s); });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
 const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
+// A core with a tile of its own (core.tile: the CUDA core's rotation fold, PEARL_FOLD_ROT=1) mines that. It
+// always mines another k than the profile's, so PROFILE is a copy here.
+if (PROFILE && PROFILE !== ASKED && core.tile) { PROFILE.rows = core.tile.rows; PROFILE.cols = core.tile.cols; }
 if (!PROFILE) {
   core.stop();
   console.log(JSON.stringify({ error: `the core chose k ${core.k}, which a share can't carry` }));
