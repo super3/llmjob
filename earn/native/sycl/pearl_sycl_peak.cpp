@@ -6,7 +6,16 @@
 //                   [--m M] [--n N] [--col-batch C] [--band B] [--sg 8|16] [--rb 2]
 //   pearl_sycl_peak --frag [--a-stride BYTES] [--b-stride BYTES] [--lane-stride BYTES]
 //                   [--wpg WINDOWS] [--row-mask M] [--col-mask M] [--k-mask M]
+//                   [--stagger N] [--a-mix N] [--b-mix N] [--fill-skip 1]
+//                   [--pfa D] [--pfb D] [--pf-hint H] [--touch-a D] [--touch-b D] [--spin N]
 //                   and the options above
+//
+// The second line of --frag switches came with the rows that read by
+// sub-group block reads (f-k4..., g-k4...): what a work-group that fills an
+// Xe-core shares (--wpg 32 with --stagger, PF 12's chunk fill), what a few
+// windows reading elsewhere cost (--a-mix, --b-mix), and prefetches, one-byte
+// loads ahead and work in registers (the PF 11 rows only). PeakArgs says what
+// each does; README.md, "What was timed toward 100", what they showed.
 //
 // --frag: the rows of the fragment fold (fold_xmxf, what an Arc A-series card
 // mines with since 11 November 2026) in place of the rows below, which are the
@@ -122,6 +131,40 @@ typedef short peak_v8s __attribute__((ext_vector_type(8), aligned(2)));
 typedef int peak_v4i __attribute__((ext_vector_type(4), aligned(4)));
 typedef long long peak_v4q __attribute__((ext_vector_type(4), aligned(4)));
 typedef long long peak_v8q __attribute__((ext_vector_type(8), aligned(4)));
+// What a sub-group block read returns to a lane: 4 dwords (a message of 128 bytes at sub-group 8) or 4 qwords
+// (256 bytes).
+typedef uint32_t peak_b4u __attribute__((ext_vector_type(4)));
+typedef uint64_t peak_b4q __attribute__((ext_vector_type(4)));
+
+// A sub-group block read (SPV_INTEL_subgroups): one message with one address for the whole sub-group, where a
+// vector load is a gather with an address a lane. Lane l's component c is word c * 8 + l at p.
+// A prefetch with one of the extension's eight hints: cache level 1 to 4, then the same four non-temporal.
+inline void peak_prefetch(const int8_t *p, uint32_t hint) {
+  namespace sx = sycl::ext::oneapi::experimental;
+  switch (hint) {
+    case 0: sx::prefetch(p, sx::properties{sx::prefetch_hint_L1}); break;
+    case 1: sx::prefetch(p, sx::properties{sx::prefetch_hint_L2}); break;
+    case 2: sx::prefetch(p, sx::properties{sx::prefetch_hint_L3}); break;
+    case 3: sx::prefetch(p, sx::properties{sx::prefetch_hint_L4}); break;
+    case 4: sx::prefetch(p, sx::properties{sx::prefetch_hint_L1_nt}); break;
+    case 5: sx::prefetch(p, sx::properties{sx::prefetch_hint_L2_nt}); break;
+    case 6: sx::prefetch(p, sx::properties{sx::prefetch_hint_L3_nt}); break;
+    default: sx::prefetch(p, sx::properties{sx::prefetch_hint_L4_nt}); break;
+  }
+}
+
+template <typename V, typename E> inline V peak_block_read(const int8_t *p) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  return __spirv_SubgroupBlockReadINTEL<V>((const __attribute__((opencl_global)) E *)p);
+#else
+  // A prebuilt probe has an image for the CPU device, which has no block read:
+  // there a plain load of the same size stands in, and the row is not a block
+  // read's. Build with --jit --peak for these rows.
+  V v;
+  __builtin_memcpy(&v, p, sizeof(V));
+  return v;
+#endif
+}
 
 namespace {
 
@@ -140,6 +183,20 @@ struct PeakArgs {
   uint32_t laneStride;  // fragment rows: bytes from one lane's 32 of a fragment to the next lane's (32: packed)
   uint32_t wpg;         // fragment rows: windows a work-group (1: the fold's; a band's: every sub-group of a
                         // work-group reads the same B')
+  uint32_t stagger;     // fragment rows: 0, or N: a sub-group reads the k-step (i + j) % N ahead of the one it
+                        // is at, i its block of A' and j its column window in the work-group. Stands in for
+                        // sub-groups that share an operand starting a k-step apart: a sharer then finds a
+                        // fragment another loaded a k-step ago
+  uint32_t aMix;        // fragment rows: 0, or N: only one window in N reads its own A', the others window 0's
+  uint32_t bMix;        // the same for B'
+  uint32_t spin;        // fragment rows: extra adds on registers a k-step, to price work done in registers
+  uint32_t pfHint;      // which of the prefetch extension's hints (peak_prefetch)
+  uint32_t fillSkip;    // PF 12: 1 leaves the chunk's fill reads out
+  uint32_t touchA, touchB;  // fragment rows: 0, or D + 1: each k-step loads one byte of each cache line of the
+                        // A' (B') of the k-step D ahead, 8 lines a message, and keeps it: a load, not a
+                        // prefetch, so the lines come into the first cache level
+  uint32_t pfA, pfB;    // fragment rows: 0, or D: each k-step sends prefetches for the A' (B') of the k-step D
+                        // ahead, 8 cache lines a message (one a lane), so its loads find them in the cache
   uint32_t *sink;    // one word a sub-group, so no accumulator can be dropped
 };
 
@@ -351,6 +408,9 @@ inline sycl::event peak_step(sycl::queue &q, const PeakArgs &args, uint32_t grou
 //           2 two vectors of 4 dwords
 //           6 one vector of 4 qwords, kept a qword load by adding a zero the
 //             compiler cannot see, then taken as 8 dwords
+//           7 two sub-group block reads of 4 dwords a lane: 128 bytes a
+//             message, one address for the sub-group
+//           8 one sub-group block read of 4 qwords a lane: 256 bytes
 //   RD      0 no readout, 2 the fold's readout, barrier, hash and test
 //   PF      how a k-step's loads and DPAS are ordered:
 //           0 as the fold has them: A', then each B' fragment before its DPAS
@@ -366,6 +426,22 @@ inline sycl::event peak_step(sycl::queue &q, const PeakArgs &args, uint32_t grou
 //             loads are in flight (a thread has 16 scoreboard tokens)
 //           7 6 with each half's loads sent before the other half's DPAS, so
 //             they are in flight while it runs (A' is held twice)
+//           8 every fragment as one block read of 256 bytes (4 qwords a
+//             lane), all sent first; each is taken as 8 dwords only once all
+//             have landed. LA and LB choose which operands are loaded so:
+//             8 the 256-byte read, 7 two reads of 128 bytes, 0 registers
+//           10 3 with B' sent before A'
+//           11 3 with the probe's prefetch, touch and spin switches in the loop
+//           12 3 for a work-group that fills an Xe-core (--wpg 32 --band 8: 64 sub-groups,
+//             16 blocks of A' by 4 column windows, or 8 by 8 for the 32 by 32 tile), a
+//             chunk at a time: at each chunk's start a sub-group reads its 1/64 of
+//             the chunk's cache lines (8 block reads, kept), the group meets at a
+//             barrier, and the chunk's 4 k-steps then find every line in the
+//             first cache level. --fill-skip 1 leaves the reads out (the barrier
+//             alone)
+//           9 block reads only kept: one word of each goes into an XOR and
+//             the DPAS take register operands. What the messages alone
+//             cost, in either size (LA, LB: 8 or 7)
 // The masks cut the windows and k-steps read down to a set that stays in a
 // cache; aStride and bStride (FoldArgs) space the blocks, laneStride the
 // lanes' 32 bytes of a fragment.
@@ -386,18 +462,23 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
     // A work-group is wpg windows in the walk's order, S sub-groups each.
     const uint32_t sgl = (uint32_t)sg.get_group_linear_id();
     const uint32_t sgi = sgl % (uint32_t)S;
-    const uint32_t g = (uint32_t)it.get_group(0) * P.wpg + sgl / (uint32_t)S;
+    const uint32_t widx = sgl / (uint32_t)S;
+    const uint32_t g = (uint32_t)it.get_group(0) * P.wpg + widx;
+    const uint32_t rot = P.stagger ? ((widx % A.band) * (uint32_t)S + sgi + widx / A.band) % P.stagger : 0u;
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
     uint32_t wr, wc;
     pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);
     // The sub-group's first row and first column block of the window.
-    const uint32_t row0 = 32u * (wr & P.rowMask) + (RB == 2 ? sgi * 16u : 0u);
+    const uint32_t wra = (P.aMix && (g % P.aMix)) ? 0u : (wr & P.rowMask);
+    const uint32_t wcb = (P.bMix && (g % P.bMix)) ? 0u : ((A.colStart / 4u + wc) & P.colMask);
+    const uint32_t row0 = 32u * wra + (RB == 2 ? sgi * 16u : 0u);
     const uint32_t cb0 = NCB == 8 ? 0u : sgi * 4u;
     // A fragment is 8 lanes of laneStride bytes: 256 bytes when packed.
     const size_t fragBytes = 8u * (size_t)P.laneStride;
-    const int8_t *Ab = A.Ap + (size_t)(row0 >> 4) * A.aStride + (size_t)P.laneStride * lane;
-    const int8_t *Bb = A.Bp + (size_t)((A.colStart / 4u + wc) & P.colMask) * A.bStride
-                       + (size_t)cb0 * fragBytes + (size_t)P.laneStride * lane;
+    // The sub-group's block, which a block read addresses, and this lane's bytes in it.
+    const int8_t *Au = A.Ap + (size_t)(row0 >> 4) * A.aStride;
+    const int8_t *Bu = A.Bp + (size_t)wcb * A.bStride + (size_t)cb0 * fragBytes;
+    const size_t laneOff = (size_t)P.laneStride * lane;
     v8i ar[2][RB], br[2];
     if constexpr (LA == 0 || PF >= 4) {
       for (int set = 0; set < 2; set++)
@@ -411,7 +492,15 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
           br[i][d] = (int)bytes7(mix((P.seed ^ 0xB5297A4Du) + lane * 257u + (uint32_t)(i * 8 + d)));
     }
     // A lane's 32 bytes of a fragment at p, loaded in form F.
-    auto load_frag = [&](const int8_t *p, int F) -> v8i {
+    auto load_frag = [&](const int8_t *u, int F) -> v8i {
+      if (F == 7) {
+        const peak_b4u lo = peak_block_read<peak_b4u, uint32_t>(u);
+        const peak_b4u hi = peak_block_read<peak_b4u, uint32_t>(u + 128);
+        return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      } else if (F == 8) {
+        return (v8i)peak_block_read<peak_b4q, uint64_t>(u);
+      }
+      const int8_t *p = u + laneOff;
       if (F == 2) {
         const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(p);
         const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(p + 16);
@@ -424,11 +513,11 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
     };
     auto load_a = [&](uint32_t ks, int rb) -> v8i {
       if constexpr (LA == 0) return ar[ks & 1u][rb];
-      else return load_frag(Ab + ((size_t)(ks & P.kMask) * RB + (size_t)rb) * fragBytes, LA);
+      else return load_frag(Au + ((size_t)(((ks + rot) & 63u) & P.kMask) * RB + (size_t)rb) * fragBytes, LA);
     };
     auto load_b = [&](uint32_t ks, int cb) -> v8i {
       if constexpr (LB == 0) return br[(ks + (uint32_t)cb) & 1u];
-      else return load_frag(Bb + ((size_t)(ks & P.kMask) * 8u + (size_t)cb) * fragBytes, LB);
+      else return load_frag(Bu + ((size_t)(((ks + rot) & 63u) & P.kMask) * 8u + (size_t)cb) * fragBytes, LB);
     };
     v8i c[RB][NCB];
     for (int rb = 0; rb < RB; rb++)
@@ -452,15 +541,67 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
       for (uint32_t ch = 0; ch < 16u; ch++) {
         for (uint32_t s = 0; s < 4u; s++) {
           const uint32_t ks = ch * 4u + s;
+          // Prefetches: a message is 8 cache lines, one a lane, and brings nothing back.
+          if constexpr (PF == 11) {
+          if (P.pfA) {
+            const uint32_t kp = ((ks + rot + P.pfA) & 63u) & P.kMask;
+            for (int i = 0; i < RB / 2; i++)
+              peak_prefetch(Au + ((size_t)kp * RB + 2u * (size_t)i) * fragBytes + 64u * lane, P.pfHint);
+          }
+          if (P.pfB) {
+            const uint32_t kp = ((ks + rot + P.pfB) & 63u) & P.kMask;
+            for (int i = 0; i < NCB / 2; i++)
+              peak_prefetch(Bu + ((size_t)kp * 8u + 2u * (size_t)i) * fragBytes + 64u * lane, P.pfHint);
+          }
+          if (P.touchA) {
+            const uint32_t kp = ((ks + rot + P.touchA - 1u) & 63u) & P.kMask;
+            for (int i = 0; i < RB / 2; i++)
+              keep[1] ^= (int)*reinterpret_cast<const uint8_t *>(Au + ((size_t)kp * RB + 2u * (size_t)i) * fragBytes + 64u * lane);
+          }
+          if (P.touchB) {
+            const uint32_t kp = ((ks + rot + P.touchB - 1u) & 63u) & P.kMask;
+            for (int i = 0; i < NCB / 2; i++)
+              keep[2] ^= (int)*reinterpret_cast<const uint8_t *>(Bu + ((size_t)kp * 8u + 2u * (size_t)i) * fragBytes + 64u * lane);
+          }
+          // Work in registers: `spin` adds that depend on each other, kept by the sink.
+          for (uint32_t i = 0; i < P.spin; i++) keep += keep + (int)(ks + i);
+          }
           if constexpr (PF == 0) {
             for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
             for (int cb = 0; cb < NCB; cb++) {
               const v8i b = load_b(ks, cb);
               for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], b, c[rb][cb]);
             }
-          } else if constexpr (PF == 3) {
-            for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
-            for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+          } else if constexpr (PF == 3 || PF == 10 || PF == 11 || PF == 12) {
+            if constexpr (PF == 12) {
+              if (s == 0u) {
+                // The sub-group's block of A' and of B' among the work-group's, and how many share each.
+                const uint32_t ia = RB == 2 ? (widx % A.band) * 2u + sgi : widx % A.band;
+                const uint32_t ib = RB == 2 ? widx / A.band : (widx / A.band) * 2u + sgi;
+                if (!P.fillSkip) {
+                  const uint32_t k0 = (ks & 63u) & P.kMask;
+                  const size_t runB = (size_t)NCB * fragBytes;
+                  const size_t pb = (size_t)ia * 512u;
+                  const int8_t *fa = Au + (size_t)k0 * RB * fragBytes + (size_t)ib * 512u;
+                  const int8_t *fb = Bu + ((size_t)k0 + pb / runB) * 8u * fragBytes + pb % runB;
+                  uint32_t t = 0;
+                  for (int m = 0; m < 4; m++) {
+                    t ^= peak_block_read<peak_b4u, uint32_t>(fa + 128 * m)[0];
+                    t ^= peak_block_read<peak_b4u, uint32_t>(fb + 128 * m)[0];
+                  }
+                  keep[3] ^= (int)t;
+                }
+                sycl::group_barrier(it.get_group());
+              }
+            }
+            // 10: B' sent before A', so the loads that wait for a free token are A's.
+            if constexpr (PF == 10) {
+              for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+              for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+            } else {
+              for (int rb = 0; rb < RB; rb++) af[rb] = load_a(ks, rb);
+              for (int cb = 0; cb < NCB; cb++) bf[cb] = load_b(ks, cb);
+            }
             int t = 0;
             for (int rb = 0; rb < RB; rb++) t ^= af[rb][0];
             for (int cb = 0; cb < NCB; cb++) t ^= bf[cb][0];
@@ -497,6 +638,56 @@ template <int RB, int NCB, int LA, int LB, int RD, int PF> struct PeakFrag {
             for (int cb = H; cb < NCB; cb++)
               for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
             for (int rb = 0; rb < RB; rb++) af[rb] = an[rb];
+          } else if constexpr (PF == 8) {
+            const uint32_t kr = ((ks + rot) & 63u) & P.kMask;
+            peak_b4q qa[RB], qb[NCB];
+            uint64_t t = 0;
+            if constexpr (LA == 8) {
+              for (int rb = 0; rb < RB; rb++) {
+                qa[rb] = peak_block_read<peak_b4q, uint64_t>(Au + ((size_t)kr * RB + (size_t)rb) * fragBytes);
+                t ^= qa[rb][0];
+              }
+            } else {
+              for (int rb = 0; rb < RB; rb++) { af[rb] = load_a(ks, rb); t ^= (uint64_t)(uint32_t)af[rb][0]; }
+            }
+            if constexpr (LB == 8) {
+              for (int cb = 0; cb < NCB; cb++) {
+                qb[cb] = peak_block_read<peak_b4q, uint64_t>(Bu + ((size_t)kr * 8u + (size_t)cb) * fragBytes);
+                t ^= qb[cb][0];
+              }
+            } else {
+              for (int cb = 0; cb < NCB; cb++) { bf[cb] = load_b(ks, cb); t ^= (uint64_t)(uint32_t)bf[cb][0]; }
+            }
+            t &= (uint64_t)P.zero;
+            if constexpr (LA == 8) {
+              for (int rb = 0; rb < RB; rb++) { qa[rb][0] |= t; af[rb] = (v8i)qa[rb]; }
+            } else {
+              for (int rb = 0; rb < RB; rb++) af[rb][0] |= (int)t;
+            }
+            if constexpr (LB == 8) {
+              for (int cb = 0; cb < NCB; cb++) { qb[cb][0] |= t; bf[cb] = (v8i)qb[cb]; }
+            }
+            for (int cb = 0; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+          } else if constexpr (PF == 9) {
+            const uint32_t kr = ((ks + rot) & 63u) & P.kMask;
+            uint32_t t = 0;
+            for (int rb = 0; rb < RB; rb++) {
+              const int8_t *u = Au + ((size_t)kr * RB + (size_t)rb) * fragBytes;
+              if constexpr (LA == 8) t ^= (uint32_t)peak_block_read<peak_b4q, uint64_t>(u)[0];
+              else if constexpr (LA == 7)
+                t ^= peak_block_read<peak_b4u, uint32_t>(u)[0] ^ peak_block_read<peak_b4u, uint32_t>(u + 128)[0];
+            }
+            for (int cb = 0; cb < NCB; cb++) {
+              const int8_t *u = Bu + ((size_t)kr * 8u + (size_t)cb) * fragBytes;
+              if constexpr (LB == 8) t ^= (uint32_t)peak_block_read<peak_b4q, uint64_t>(u)[0];
+              else if constexpr (LB == 7)
+                t ^= peak_block_read<peak_b4u, uint32_t>(u)[0] ^ peak_block_read<peak_b4u, uint32_t>(u + 128)[0];
+            }
+            keep[0] ^= (int)t;
+            for (int cb = 0; cb < NCB; cb++)
+              for (int rb = 0; rb < RB; rb++)
+                c[rb][cb] = pearl_sycl::dpas<8, true>(sg, ar[ks & 1u][rb], br[(ks + (uint32_t)cb) & 1u], c[rb][cb]);
           } else if constexpr (PF == 4) {
             for (int rb = 0; rb < RB; rb++) keep ^= load_a(ks, rb) << (1 + rb);
             for (int cb = 0; cb < NCB; cb++) keep ^= load_b(ks, cb) << (9 + cb);
@@ -676,6 +867,45 @@ void add_frag_rows(std::vector<Row> &v) {
   FRAG_ROW("g-v4-pf3-fold", "g-v4-pf3 with the readout, barrier, hash and test", 4, 4, 2, 2, 2, 3, 1u, all, all, all);
   FRAG_ROW("g-q4-pf3", "32 by 32, one vector of 4 qwords a fragment, every DPAS waiting for the loads", 4, 4, 6, 6, 0, 3, 1u, all, all, all);
   FRAG_ROW("g-win0", "g-v4-pf3 with every window reading window 0", 4, 4, 2, 2, 0, 3, 1u, 0u, 0u, all);
+  // Sub-group block reads: one address a message.
+  FRAG_ROW("f-k4", "both operands as two block reads of 128 bytes a fragment", 2, 8, 7, 7, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k4-pf3", "f-k4 with every DPAS of a k-step made to wait for its loads", 2, 8, 7, 7, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k4-a", "A' as block reads of 128 bytes, B in registers", 2, 8, 7, 0, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k4-b", "B' as block reads of 128 bytes, A in registers", 2, 8, 0, 7, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k8", "both operands as one block read of 256 bytes a fragment", 2, 8, 8, 8, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k8-pf3", "f-k8 with every DPAS of a k-step made to wait for its loads", 2, 8, 8, 8, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k8-a", "A' as one block read of 256 bytes a fragment, B in registers", 2, 8, 8, 0, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k8-b", "B' as one block read of 256 bytes a fragment, A in registers", 2, 8, 0, 8, 0, 0, 1u, all, all, all);
+  FRAG_ROW("f-k84-pf3", "A' as one block read of 256 bytes, B' as two of 128, every DPAS waiting", 2, 8, 8, 7, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k48-pf3", "A' as two block reads of 128 bytes, B' as one of 256, every DPAS waiting", 2, 8, 7, 8, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k8-pf3-fold", "f-k8-pf3 with the readout, barrier, hash and test", 2, 8, 8, 8, 2, 3, 1u, all, all, all);
+  FRAG_ROW("f-k4-pf3-fold", "f-k4-pf3 with the readout, barrier, hash and test", 2, 8, 7, 7, 2, 3, 1u, all, all, all);
+  FRAG_ROW("f-k8-pf8", "one block read of 256 bytes a fragment, all ten sent first, taken as dwords after", 2, 8, 8, 8, 0, 8, 1u, all, all, all);
+  FRAG_ROW("f-k84-pf8", "A' as one block read of 256 bytes a fragment, B' as two of 128, all sent first", 2, 8, 8, 7, 0, 8, 1u, all, all, all);
+  FRAG_ROW("f-k48-pf8", "A' as two block reads of 128 bytes a fragment, B' as one of 256, all sent first", 2, 8, 7, 8, 0, 8, 1u, all, all, all);
+  FRAG_ROW("f-k8-a-pf8", "A' as one block read of 256 bytes a fragment, sent first; B in registers", 2, 8, 8, 0, 0, 8, 1u, all, all, all);
+  FRAG_ROW("f-k8-b-pf8", "B' as one block read of 256 bytes a fragment, sent first; A in registers", 2, 8, 0, 8, 0, 8, 1u, all, all, all);
+  FRAG_ROW("g-k8-pf8", "32 by 32, one block read of 256 bytes a fragment, all eight sent first", 4, 4, 8, 8, 0, 8, 1u, all, all, all);
+  FRAG_ROW("f-v8k4-pf3", "A' as one vector of 8 dwords a fragment, B' as two block reads of 128 bytes, every DPAS waiting", 2, 8, 1, 7, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-v8k4-pf3-fold", "f-v8k4-pf3 with the readout, barrier, hash and test", 2, 8, 1, 7, 2, 3, 1u, all, all, all);
+  FRAG_ROW("f-v4k4-pf3", "A' as two vectors of 4 dwords a fragment, B' as two block reads of 128 bytes, every DPAS waiting", 2, 8, 2, 7, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k4-pf11", "f-k4-pf3 with the prefetch, touch and spin switches", 2, 8, 7, 7, 0, 11, 1u, all, all, all);
+  FRAG_ROW("f-v4-pf10", "both operands as two vectors of 4 dwords, B' sent first, every DPAS waiting", 2, 8, 2, 2, 0, 10, 1u, all, all, all);
+  FRAG_ROW("f-v84-pf10", "A' one vector of 8 dwords, B' two of 4, B' sent first, every DPAS waiting", 2, 8, 1, 2, 0, 10, 1u, all, all, all);
+  FRAG_ROW("f-k4-pf10", "both operands as block reads of 128 bytes, B' sent first, every DPAS waiting", 2, 8, 7, 7, 0, 10, 1u, all, all, all);
+  FRAG_ROW("f-v4k4-pf10", "A' as two vectors of 4 dwords, B' as block reads of 128 bytes, B' sent first", 2, 8, 2, 7, 0, 10, 1u, all, all, all);
+  FRAG_ROW("f-k4v4-pf3", "A' as block reads of 128 bytes, B' as two vectors of 4 dwords, every DPAS waiting", 2, 8, 7, 2, 0, 3, 1u, all, all, all);
+  FRAG_ROW("f-k4-pf12", "16 by 64, block reads, a chunk filled and met at a barrier before its 4 k-steps", 2, 8, 7, 7, 0, 12, 1u, all, all, all);
+  FRAG_ROW("g-k4-pf12", "32 by 32, block reads, a chunk filled and met at a barrier before its 4 k-steps", 4, 4, 7, 7, 0, 12, 1u, all, all, all);
+  FRAG_ROW("f-k4-keep", "20 block reads of 128 bytes a k-step only kept, DPAS on register operands", 2, 8, 7, 7, 0, 9, 1u, all, all, all);
+  FRAG_ROW("f-k8-keep", "10 block reads of 256 bytes a k-step only kept, DPAS on register operands", 2, 8, 8, 8, 0, 9, 1u, all, all, all);
+  FRAG_ROW("f-k8-keep-b", "8 block reads of 256 bytes a k-step only kept, DPAS on register operands", 2, 8, 0, 8, 0, 9, 1u, all, all, all);
+  FRAG_ROW("f-k4-keep-b", "16 block reads of 128 bytes a k-step only kept, DPAS on register operands", 2, 8, 0, 7, 0, 9, 1u, all, all, all);
+  FRAG_ROW("f-k4-keep-a", "4 block reads of 128 bytes a k-step only kept, DPAS on register operands", 2, 8, 7, 0, 0, 9, 1u, all, all, all);
+  FRAG_ROW("g-k4", "32 by 32, two block reads of 128 bytes a fragment", 4, 4, 7, 7, 0, 0, 1u, all, all, all);
+  FRAG_ROW("g-k4-pf3", "g-k4 with every DPAS of a k-step made to wait for its loads", 4, 4, 7, 7, 0, 3, 1u, all, all, all);
+  FRAG_ROW("g-k8", "32 by 32, one block read of 256 bytes a fragment", 4, 4, 8, 8, 0, 0, 1u, all, all, all);
+  FRAG_ROW("g-k8-pf3", "g-k8 with every DPAS of a k-step made to wait for its loads", 4, 4, 8, 8, 0, 3, 1u, all, all, all);
 #undef FRAG_ROW
 }
 
@@ -768,7 +998,8 @@ int main(int argc, char **argv) {
   PearlProfile p = PEARL_MAINNET_PROFILE;
   double secs = 5;
   uint32_t reps = 16, bandArg = 0, colBatch = 256;
-  uint32_t aStride = 0, bStride = 0, laneStride = 32, wpg = 1, maskArg[3] = {0, 0, 0};
+  uint32_t aStride = 0, bStride = 0, laneStride = 32, wpg = 1, stagger = 0, aMix = 0, bMix = 0, spin = 0, pfA = 0, pfB = 0, pfHint = 0, touchA = 0, touchB = 0, fillSkip = 0;
+  uint32_t maskArg[3] = {0, 0, 0};
   bool maskSet[3] = {false, false, false};
   int sgArg = 0, rbArg = 0;
   bool trace = false, frag = false;
@@ -791,6 +1022,16 @@ int main(int argc, char **argv) {
     else if (a == "--b-stride" && v) { bStride = (uint32_t)atoi(v); i++; }
     else if (a == "--lane-stride" && v) { laneStride = (uint32_t)atoi(v); i++; }
     else if (a == "--wpg" && v) { wpg = (uint32_t)atoi(v); i++; }
+    else if (a == "--stagger" && v) { stagger = (uint32_t)atoi(v); i++; }
+    else if (a == "--a-mix" && v) { aMix = (uint32_t)atoi(v); i++; }
+    else if (a == "--b-mix" && v) { bMix = (uint32_t)atoi(v); i++; }
+    else if (a == "--spin" && v) { spin = (uint32_t)atoi(v); i++; }
+    else if (a == "--pfa" && v) { pfA = (uint32_t)atoi(v); i++; }
+    else if (a == "--pfb" && v) { pfB = (uint32_t)atoi(v); i++; }
+    else if (a == "--pf-hint" && v) { pfHint = (uint32_t)atoi(v); i++; }
+    else if (a == "--touch-a" && v) { touchA = (uint32_t)atoi(v); i++; }
+    else if (a == "--fill-skip" && v) { fillSkip = (uint32_t)atoi(v); i++; }
+    else if (a == "--touch-b" && v) { touchB = (uint32_t)atoi(v); i++; }
     else if (a == "--row-mask" && v) { maskArg[0] = (uint32_t)strtoul(v, nullptr, 0); maskSet[0] = true; i++; }
     else if (a == "--col-mask" && v) { maskArg[1] = (uint32_t)strtoul(v, nullptr, 0); maskSet[1] = true; i++; }
     else if (a == "--k-mask" && v) { maskArg[2] = (uint32_t)strtoul(v, nullptr, 0); maskSet[2] = true; i++; }
@@ -798,7 +1039,9 @@ int main(int argc, char **argv) {
       fprintf(stderr, "usage: %s [--secs S] [--only LIST] [--reps R] [--trace] [--m M] [--n N] "
                       "[--col-batch C] [--band B] [--sg 8|16] [--rb 2]\n"
                       "       %s --frag [--a-stride BYTES] [--b-stride BYTES] [--row-mask M] [--col-mask M] "
-                      "[--k-mask M] and the options above\n", argv[0], argv[0]);
+                      "[--k-mask M] [--wpg W] [--stagger N] [--a-mix N] [--b-mix N] [--fill-skip 1] [--pfa D] "
+                      "[--pfb D] [--pf-hint H] [--touch-a D] [--touch-b D] [--spin N] and the options above\n",
+              argv[0], argv[0]);
       return 2;
     }
   }
@@ -929,9 +1172,20 @@ int main(int argc, char **argv) {
   args.seed = 0x1234567u;
   args.zero = 0;
   args.laneStride = laneStride;
-  // Windows a work-group: a divisor of the band, so a group stays in one column window.
-  if (wpg < 1 || band % wpg) wpg = 1;
+  // Windows a work-group: a divisor of the band, so a group stays in one column window, or a multiple of it
+  // that divides a band's walk, so a group is whole column windows of one band.
+  if (wpg < 1 || ((band % wpg) && ((wpg % band) || ((band * (colBatch / 4u)) % wpg)))) wpg = 1;
   args.wpg = wpg;
+  args.stagger = stagger;
+  args.aMix = aMix;
+  args.bMix = bMix;
+  args.spin = spin;
+  args.pfA = pfA;
+  args.pfB = pfB;
+  args.pfHint = pfHint;
+  args.touchA = touchA;
+  args.fillSkip = fillSkip;
+  args.touchB = touchB;
   args.sink = sink;
 
   std::vector<Row> rows;

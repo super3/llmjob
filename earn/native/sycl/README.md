@@ -275,6 +275,15 @@ The probe's stand-ins said what the next fold should be, and it was built:
 `auto` picks it on Alchemist. The first fold is still there as
 `PEARL_SYCL_FOLD=xmx8`, and is what the rows marked "first fold" ran.
 
+The fold written without loops (`900c154c`) was checked again on the rig the
+same day: `verify.sh --quick` passed on each of the six cards (60.8 to 63.7
+TH/s with every hit checked), the full `verify.sh` on card 0 (400 of 400
+hits), and six cards did 347.5 TH/s over 5 minutes on Kryptex (326.8 to
+372.2; 1,810 MHz and 171 W a card; 16 shares accepted, none rejected, no
+wrong hit). The version before it, run straight after on the hotter rig:
+325.9 TH/s at 1,684 MHz and 157 W a card, 14 accepted, none rejected. Per
+MHz the two are the same.
+
 All of it is the build a release carries: open-source DPC++ v7.2.0, kernels
 compiled by the driver (Intel 26.40, Level Zero), Ubuntu 24.04 container.
 Clock and watts are i915's counters for the card.
@@ -383,6 +392,95 @@ same per EU and clock where the clock moved:
   the same B') change nothing. Spacing a lane's bytes so each lane has a
   cache line of its own halves the rate. One vector of 4 qwords is no faster
   than one of 8 dwords.
+
+### What was timed toward 100 (11 November, afternoon)
+
+100 TH/s on this card is 112 MACs an EU a clock at 2,000 MHz, 89% of what the
+matrix engines do with operands in registers. The fold is at 73 to 77. Every
+design below was timed with `pearl_sycl_peak --frag` before anything was
+built. Timing only: these rows compute wrong results on purpose and none is a
+mining rate. Card 0, 2 s a row, MACs an EU a clock (the card was hot, so the
+clock moved between rows).
+
+| What | A clock |
+|---|---|
+| DPAS alone (`f-regs`) | 124.6 |
+| the fold's loads as built, from its own addresses (`f-v84-pf3`) | 72.9 |
+| every fragment as two sub-group block reads of 128 bytes (`f-k4-pf3`) | 70.7 |
+| A' as the fold loads it, B' as block reads (`f-v8k4-pf3`) | 73.4 |
+| every fragment as one block read of 256 bytes (`f-k8-pf8`) | 56.1 |
+| 32 by 32 tile, block reads (`g-k4-pf3`) | 73.7 |
+| the fold's loads with B' sent before A' (`f-v84-pf10`) | 75.0 |
+| with every window reading window 0: the fold's loads; block reads; 256-byte block reads; 32 by 32 | 93.5 (98.6 in a later run); 107.1; 68.3; 108.2 |
+| block reads: A' from its own addresses and B' from window 0; the other way round | 77.5; 81.3 |
+| A' from 2 row windows, from 4; B' from window 0 | 88.9, 83.7 |
+| one window in 16 reads its own A', the rest window 0's | 84.9 |
+| window 0 with a work-group that fills an Xe-core (64 sub-groups, in step) | 91.3 |
+| each such group reading one window of its own: in step; a k-step apart | 78.9; 88.5 |
+| such a group as 8 blocks of A' by 8 column windows: in step; a k-step apart; 16 by 4 | 58.4; 66.7; 69.6 |
+| a chunk's lines read first, a barrier, then its 4 k-steps (`f-k4-pf12`, `g-k4-pf12`) | 55.1, 57.6; 71.0, 77.1 with every line already there |
+| the prefetch extension 2 k-steps ahead; one-byte loads a k-step ahead (base 64.7) | 58.5; 59.4 |
+| 16, 64, 128 adds in registers a k-step, window 0 (base 97.6) | 84.7, 69.3, 54.3 |
+| the compiler's cache control for every load: first level off; streaming; invalidate after read (default 70.7) | 38.7; 51.8; 47.9 |
+
+What they say:
+
+- **A sub-group block read is the cheapest load there is, when its lines are
+  near.** `__spirv_SubgroupBlockReadINTEL` gives one message with one address
+  for the whole sub-group (`load.ugm.d32x32t`, 128 bytes into 4 registers, in
+  register order). Twenty of them a k-step from window 0 run at 107 a clock,
+  where the fold's own loads do 93.5 to 98.6, and the 32 by 32 tile reaches 108. From
+  the fold's real addresses they are no better than what is built: 70.7
+  against 72.9. A 256-byte block read arrives as qwords and has to be moved
+  into dwords, and is slower either way.
+- **The card has a first cache level of about 256 KB in each Xe-core** (16
+  EUs, 64 threads in this mode). One window's operands are 192 KB and fit.
+  Two row windows of A' with one of B' are 256 KB: 88.9. The compiler's
+  cache-control switch (`IGC_LscLoadCacheControlOverride`) shows it is real:
+  with the first level off the same row does 38.7. Work-groups that fill a
+  core and each read a window of their own run as fast as ones that all read
+  window 0 (88.5 against 91.0 in an earlier run, both a k-step apart), so the
+  level is a core's own.
+- **Anything that misses it puts the row on one plateau, 70 to 85.** One
+  window in 16 reading other bytes is enough (84.9). After that the amount
+  hardly matters: A' from 4 row windows, from 4,096, or both operands from
+  their own addresses all land between 71 and 84. The fold is on that
+  plateau, and so is every load form above.
+- **64 threads with 64 different tiles cannot stay inside 256 KB.** A core's
+  threads hold one tile each, so between them they read at least 4 new cache
+  lines a tile and k-step however the tiles are dealt (16 blocks of A' by 4
+  column windows is the least). Dealt that way and started a k-step apart, so
+  that a sharer finds what another just read: 66.7 to 69.6. Read a chunk at a
+  time behind a barrier: 55 to 58, and the barrier alone holds that form to 71
+  to 77. A work-group that fills a core runs its threads in step, which by
+  itself costs 15% (91.3 against 107.1).
+- **Nothing brings bytes in early.** The prefetch extension compiles to a
+  load with no destination that names the last cache level only
+  (`load.ugm.d8u32 ... uc.ca`), whichever hint is given, and is a loss. A
+  one-byte load of each line a k-step ahead is a loss too.
+- **A cache hint on one operand did not reach its loads.** A' read through an
+  `annotated_ptr` with a `read_hint` (so that it would pass the first level
+  by and leave it to B') compiles to the same `load.ugm.d32x8 ... ca.ca` as
+  without, with `SPV_INTEL_cache_controls` switched on in the translator or
+  not. So that was not timed. The compiler's own switch sets every load
+  alike, and every setting but the default is a loss (last row).
+- **Operands cannot be made in registers instead.** A' is the fill plus one
+  noise-table byte minus another, picked by the job's permutation, so a
+  sub-group could build its fragments of A' from its 16 rows of the table and
+  load nothing for A'. That table is 2 KB, 64 registers, on top of the 208
+  the fold holds live (16 accumulators and a k-step's fragments) of 256. And a
+  fragment is 32 bytes a lane, 64 byte selects: 128 register-indirect moves a
+  k-step before what the compiler adds. A loop of 64 adds a k-step beside the
+  loads cost 29%, and 128 cost 44% (the row with 80 adds and no loads, above,
+  lost 6%). B''s table for a window's 64 columns is 8 KB, all 256 registers.
+
+So no design here moves the rate from real addresses, and none was built. What
+holds the fold is the data port of each Xe-core: a k-step's 2,560 bytes have
+to cross it, and it serves them fast only from a cache that 64 tiles do not
+fit in. What is left is outside the kernel. The card runs DPAS at 2,000 MHz
+though its top clock is 2,400; why is not known, and clocks were not touched.
+A rig that sheds 190 W a card holds 64 TH/s where this one holds 54 to 58.
+Battlemage has a wider DPAS and other loads, and no such card has run this.
 
 ## The build a release carries
 
