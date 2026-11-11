@@ -1320,6 +1320,44 @@ there (none on the fast PC). The race ran on `559a11d6`, 4 rounds:
   measured); a slow RX 9070 XT; the ticker on a fast RDNA 4 PC; what the four busy threads of the default are for,
   and whether a blocking wait would free them.
 
+### Salad, 11 November: what the hash queue costs in CPU on an RX 7900 XTX (PR #290, AMD goal)
+
+The entry above found the hash on its own queue taking one more CPU core on the RX 7800 XT. It is the default on
+gfx1100, so this is the same measurement there. One box, RX 7900 XTX `6f96bc89`, branch `goal/amd` (aff96401, then
+8389f9d4; the default path is the PR's). `hashrate.js` 45 s after 12 s, the settings taking turns, two races of 3
+rounds, every round shown. The CPU time is bash's `time` on the whole 57 s run, and the threads are `ps -L`.
+
+**The PC is a fast one:** the fold alone at the miner's launch read 56.8 TMAC/s at 2635 MHz, and an 81 ms launch had
+no queue stop and no wave moved.
+
+| Race | Setting | TH/s, rounds 1 to 3 | Against the hash queue off | CPU time | Threads at 100% |
+|---|---|---|---|---|---|
+| 1 | `PEARL_AMD_HASHQ=0` | 54.16, 54.17, 54.03 | — | 228 s | 4 |
+| 1 | `PEARL_AMD_HASHQ=1` | 54.59, 54.74, 54.65 | +0.79, +1.05, +1.15% | 285 s | 5 |
+| 1 | Default (the hash queue, on gfx1100) | 54.50, 54.56, 54.43 | +0.63, +0.72, +0.74% | 285 s | — |
+| 2 | `PEARL_AMD_HASHQ=0` | 54.10, 54.15, 54.28 | — | 228 s | 4 |
+| 2 | Default | 54.58, 54.51, 54.73 | +0.89, +0.66, +0.83% | 285 s | 5 |
+| 2 | Default, HIP's blocking wait | 54.29, 54.41, 54.58 | +0.35, +0.48, +0.55% | 285 s | 5 |
+| 2 | Hash queue off, HIP's blocking wait | 53.93, 53.93, 54.02 | −0.31, −0.41, −0.48% | 228 s | 4 |
+
+- **The hash queue takes one more CPU core on the RX 7900 XTX too:** 285 s of CPU against 228 s, the same in every
+  run, for +0.6 to +1.2% on this fast PC (it was +8.9% on the slow PC `ae456453`). No twin ran: the default and
+  `PEARL_AMD_HASHQ=1` are one setting on this card and read 0.2 to 0.4% apart in race 1, so that is the noise.
+- **HIP's blocking wait frees no thread.** `PEARL_AMD_SCHED=block` (an environment switch on `goal/amd`) calls
+  `hipSetDeviceFlags(hipDeviceScheduleBlockingSync)` before the first allocation. In ROCm 7.2's source that turns the
+  device's active wait off, so a wait spins for 100 µs and then blocks (`hip_device_runtime.cpp`, and `WaitForSignal`
+  in `rocvirtual.hpp`). The runtime took the call, the CPU time and the busy threads did not change, and the rate read
+  0.2 to 0.5% lower.
+- **What the busy threads are** (gdb, the call chain of each): the miner's own worker, waiting for a slot's event in
+  `pearl_host_collect`, inside HIP and then libhsa-runtime64; one `wsl::thunk::ComputeQueue::AqlToPm4Thread` in
+  `librocdxg.so` for each compute queue, a loop around `steady_clock::now()`; and two threads wholly inside
+  libhsa-runtime64. The fifth thread the hash queue adds is its own queue's `AqlToPm4Thread`.
+- **This is WSL2's cost.** `librocdxg.so` is ROCm's layer over Windows' GPU driver in a WSL2 container, which is
+  what a Salad box is. The Windows installer's core runs on AMD's HIP SDK instead, where none of this was
+  measured, and no Windows Radeon has run that core yet.
+- No default changed. Not known: what the two libhsa-runtime64 threads are for, and whether any setting of the
+  runtime's lets the three threads that are not ours sleep.
+
 ## Intel Arc (Alchemist, on a rented rig)
 
 The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
