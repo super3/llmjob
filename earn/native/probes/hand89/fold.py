@@ -36,7 +36,7 @@ TRL, TRW, ROT, CH, LATER0, IDXB, POFF = 238, 239, 240, 241, 242, 243, 244
 X, T0, ONE = [246, 247, 248], 249, 0
 SB_AF, SB_B0, SB_B1, SB_DX, SB_DY, SB_OFF = 0, 1, 2, 3, 4, 5
 
-CFG = dict(cap=3, cap0=5, cap3=5, pad=8, ua=1, ub=2, ua1=None, ub1=None, rsh0=0, rsh1=0, ly=1, py=1, iy=1, lead=2, bstall=1, rst=1, pst=2,
+CFG = dict(cap=3, cap0=5, cap3=5, pad=8, ua=1, ub=2, ua1=None, ub1=None, rsh0=0, rsh1=0, ly=1, py=1, iy=1, ru=0, ist=1, pol=0, lead=2, bstall=1, rst=1, pst=2,
            # Timing only (each computes wrong results on purpose): pieces left out.
            nodraw=0, noread=0, nold=0, nost=0, nobar=0, noldsm=0)
 
@@ -353,16 +353,32 @@ def emit(G, grp, cfg):
         if mb == 0 and nb == 4:
             wait.append(SB_B1)
         items = [ins for ins, _w in G[g]]
+        n = len(items)
+        # pol: where a gap's spare cycles go. 0: behind the last plain step (the IMMA's stall is key ist).
+        # 1: behind the IMMA, the steps at stall 1 (a two-register step issued 5 cycles behind its IMMA costs
+        # the pipe nothing; issued 1 to 4 behind it costs up to 2 cycles: measured). 2: the IMMA's stall is
+        # ist and nothing is added behind the steps.
+        if cfg["pol"] == 1:
+            ist_g, last_g = max(1, pad - n), 1
+        elif cfg["pol"] == 2:
+            ist_g, last_g = cfg["ist"], 1
+        else:
+            ist_g, last_g = cfg["ist"], max(1, pad - cfg["ist"] - (n - 1))
         imma = Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (acc(mb, nb), AF[(mb + s) & 1], BF + 2 * nb,
                                                                  acc(mb, nb)),
-                   stall=pad if not items else 1, yld=bool(cfg["iy"]), wait=wait,
+                   stall=pad if not items else ist_g, yld=bool(cfg["iy"]), wait=wait,
+                   # ru: as ptxas marks them, a tile's IMMA keep A's fragment in the reuse latch (all but the
+                   # tile's last), so seven of eight do not read it from the register file again.
+                   reuse=1 if cfg["ru"] and nb < 7 else 0,
                    label=".L%d" % grp if g == 0 else None)
         out.append(imma)
         for k, ins in enumerate(items):
             ins = Ins(ins.text, ins.stall, bool(cfg["py"]), ins.wsb, ins.rsb, ins.wait)
             if k == len(items) - 1:
-                ins.stall = max(ins.stall, pad - 1 - (len(items) - 1))
+                ins.stall = max(ins.stall, last_g)
                 ins.yld = bool(cfg["ly"])
+            if cfg["ru"] >= 2 and ins.text.startswith("PRMT") and "0x5140" in ins.text and k + 1 < len(items)                     and items[k + 1].text.startswith("PRMT") and "0x7362" in items[k + 1].text:
+                ins.reuse = 5      # both sources stay latched for the pair's second PRMT, as ptxas does
             out.append(ins)
         if i == 39 and not cfg["nobar"]:
             out.append(Ins("BAR.SYNC.DEFER_BLOCKING 0x0", stall=cfg["bstall"]))

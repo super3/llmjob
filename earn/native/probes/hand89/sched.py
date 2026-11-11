@@ -21,30 +21,47 @@ from asm89 import Ins  # noqa: E402
 A_FRAG, B_FRAG, ACC, PLAIN, CNT = 4, 8, 24, 184, 200
 
 
-def group(tag, gaps, s=1, y=True, iy=True, istall=8, pad=8, bar=False, mult=1, lasty=None):
+def group(tag, gaps, s=1, y=True, iy=True, istall=8, pad=8, bar=False, mult=1, lasty=None, kind="add", ru=0, ist1=1, first=None, pat=None):
     out = [Ins("IMAD.SHL.U32 R%d, R3, 0x%x, RZ" % (CNT, 4 * mult), label=".G" + tag)]
     body = []
     na = 0
     for i in range(40):
         g = gaps[i]
+        if pat:
+            # pat: the stalls written out, the IMMA's first and then each step's.
+            g, ist1, pad = len(pat) - 1, pat[0], 0
         text = "IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (ACC + 4 * i, A_FRAG, B_FRAG + 2 * (i % 8), ACC + 4 * i)
+        reuse = 1 if ru and i % 8 < 7 else 0     # ru: A's fragment kept in the reuse latch, as ptxas marks it
         if g == 0:
-            body.append(Ins(text, stall=istall, yld=iy))
+            body.append(Ins(text, stall=istall, yld=iy, reuse=reuse))
             continue
-        body.append(Ins(text, stall=1, yld=iy))
+        # ist1: the IMMA's stall when plain steps follow, so the first of them issues that many cycles behind it.
+        body.append(Ins(text, stall=ist1, yld=iy, reuse=reuse))
         for j in range(g):
             r = PLAIN + na % 16
             na += 1
             st, yl = s, y
             if j == g - 1:
-                st = max(s, pad - 1 - (g - 1) * s) if pad else s
+                st = max(s, pad - ist1 - (g - 1) * s) if pad else s
                 if st > 11:
                     # nvdisasm knows no stall over 11 with the yield flag on an add: the rest goes on the IMMA.
                     body[-j - 1].stall += st - 11
                     st = 11
                 if lasty is not None:
                     yl = lasty
-            body.append(Ins("IADD3 R%d, R%d, 0x1, RZ" % (r, r), stall=st, yld=yl))
+            if pat:
+                st = pat[1 + j]
+            if first == "add" and j == 0:
+                body.append(Ins("IADD3 R%d, R%d, 0x1, RZ" % (r, r), stall=st, yld=yl))
+            elif kind == "x3":
+                # A plain step with three register sources, two of them sums made 20 IMMA earlier.
+                a = ACC + 4 * ((i + 20) % 40) + 2 * (j & 1)
+                body.append(Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (r, r, a, a + 1), stall=st, yld=yl))
+            elif kind == "p2":
+                # Two register sources, neither a sum.
+                body.append(Ins("PRMT R%d, R%d, 0x6420, R%d" % (r, r, PLAIN + (na + 7) % 16), stall=st, yld=yl))
+            else:
+                body.append(Ins("IADD3 R%d, R%d, 0x1, RZ" % (r, r), stall=st, yld=yl))
     # The loop's test and count sit after IMMA 35, the branch after the last IMMA. The test reads the count
     # before the add writes it (a reader wants its value 4 cycles old or more), and the two take their cycles
     # out of the stall of the instruction before them.
@@ -138,12 +155,63 @@ def variants():
     return v
 
 
+def variants2():
+    """Hold 4: does a plain step cost by what it reads? Both warps, g steps after every IMMA."""
+    v = {}
+    for g in (3, 5):
+        for kind in ("add", "p2", "x3"):
+            for ru in (0, 1):
+                d = dict(gaps=[g] * 40, kind=kind, ru=ru)
+                v["k%s_%d%s" % (kind, g, "u" if ru else "")] = (d, dict(d))
+    for ru in (0, 1):
+        d = dict(gaps=[3] * 40, kind="x3", ru=ru, bar=True)
+        v["kx3b_3%s" % ("u" if ru else "")] = (d, dict(d))
+    return v
+
+
+def variants4():
+    """Hold 6: the map. Both warps, the same two-register steps after every IMMA, every stall written out."""
+    pats = []
+    pats += [(a, 8 - a) for a in (2, 3, 5, 6, 7)] + [(5, 1), (6, 1)]
+    pats += [(a, 1, 7 - a) for a in (2, 3, 4, 5, 6)] + [(5, 1, 1), (4, 1, 1), (5, 2, 1)]
+    pats += [(4, 1, 1, 1), (5, 1, 1, 2), (5, 1, 2, 1), (5, 2, 1, 1)]
+    pats += [(1, 1, 1, 1, 4), (2, 1, 1, 1, 3), (3, 1, 1, 1, 2), (4, 1, 1, 1, 1), (5, 1, 1, 1, 1), (3, 1, 1, 1, 1)]
+    pats += [(1, 1, 1, 1, 1, 3), (2, 1, 1, 1, 1, 2), (3, 1, 1, 1, 1, 1), (4, 1, 1, 1, 1, 1), (5, 1, 1, 1, 1, 1)]
+    pats += [(1,) + (1,) * 5 + (2,), (2,) + (1,) * 6, (3,) + (1,) * 6, (5,) + (1,) * 6]
+    pats += [(1,) * 8, (2,) + (1,) * 7, (5,) + (1,) * 7]
+    v = {}
+    for p in pats:
+        d = dict(gaps=[len(p) - 1] * 40, kind="p2", pat=p)
+        v["m" + "".join(str(x) for x in p)] = (d, dict(d))
+    return v
+
+
+def variants3():
+    """Hold 5: the same steps issued later behind the IMMA (w cycles), or with a one-register step first."""
+    v = {}
+    for kind, g in (("p2", 3), ("x3", 3), ("x3", 5)):
+        for w in (2, 3, 4, 5, 6):
+            d = dict(gaps=[g] * 40, kind=kind, ist1=w)
+            v["w%s_%d_%d" % (kind, g, w)] = (d, dict(d))
+        d = dict(gaps=[g + 1] * 40, kind=kind, first="add")
+        v["f%s_%d" % (kind, g)] = (d, dict(d))
+    for kind in ("p2", "x3"):
+        for g in (1, 2):
+            d = dict(gaps=[g] * 40, kind=kind)
+            v["k%s_%d" % (kind, g)] = (d, dict(d))
+        d = dict(gaps=[1] * 40, kind=kind, ist1=4)
+        v["w%s_1_4" % kind] = (d, dict(d))
+        d = dict(gaps=gaps_clump(32), kind=kind, bar=True)
+        v["c%s_32b" % kind] = (d, dict(d))
+    return v
+
+
 def main():
     cubin, sass, nvd, outdir, listfile = sys.argv[1:6]
     text = asm89.read_text(sass)
     os.makedirs(outdir, exist_ok=True)
     lines = ["# sched.py's timing-only streams (they compute nothing real). k 8192, 64 tiles a block."]
-    for name, (a, b) in variants().items():
+    for name, (a, b) in ({"2": variants2, "3": variants3, "4": variants4}.get(sys.argv[6] if len(sys.argv) > 6 else "", variants)()).items():
         code = stream(a, b)
         n, room = asm89.patch(cubin, text, os.path.join(outdir, "sc_" + name + ".cubin"), code, nvd)
         lines.append("r1@sc_%s sc_%s 8192 64" % (name, name))
