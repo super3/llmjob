@@ -3254,7 +3254,7 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   stores, 10 that stay with registers only) where it costs 3.6 with nothing holding the warps; the cost is there
   with one warp of a scheduler drawing and the other not, and the idle one reaches the barrier no earlier, so it
   is not the two warps being busy at once. It is about fixed a k-step (four tiles a warp are worse than five).
-  ptxas's order of one source is worth 4 to 8 points either way (65 to 81% over harmless variants), its spills
+  ptxas's order of one source is worth 4 to 8 points either way (72.4 to 80.5% over harmless variants that pass the CPU check; three that read 65 to 67% were wrong, and the 81.35% build is the unchecked timing one), its spills
   track the loss, and a tool that reorders the compiled loop safely (`probes/drawtools/spread.py`) can move
   almost nothing because ptxas reuses registers across the steps. Tables and reasoning:
   `earn/native/probes/README.md`, "What the barrier costs the draw".
