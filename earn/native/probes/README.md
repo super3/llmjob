@@ -2762,3 +2762,137 @@ It is a stream, not a fold. A real one at 192 x 256 has two things to solve firs
 stage, and three buffers are 19,200; a ring of two for the 20 groups no warp reads early (10,752) and a ring of
 two for the 4 groups of each row band's first tile (2,560) fit, with the lanes that draw those 4 groups a k-step
 further ahead. Registers: 192 sums and 24 fragment words leave 34.
+
+### The price of a step, and the rotation fold: `hand89/price.py`, `hand89/rfold.py` (RTX 4090, 2026-11-11)
+
+Eighth round, branch `goal/nv-draw`. Two things: a price list of single steps, all measured in one loop, and the
+fold that list points to, built by hand and checked. Everything is on rig01's RTX 4090 at the 450 W limit, 60 s
+runs with 160 ms launches unless stated. "By count" is pipe use x clock x 0.13107; no figure here is a mining
+rate. The release mines 317.7 TH/s (95.7% of the pipe at 2535 MHz).
+
+**The price list (`price.py`, TIMING ONLY: every stream computes wrong results on purpose).** The skeleton is
+`gfold.py`'s loop with ready fragments: a k-step is 48 IMMA, ten LDSM, one 16-byte offsets load from global
+memory and the readout, on tables whose bytes are spread as noised operands are. `price.py <spec>` adds N more
+of one step a warp a k-step, one to a gap.
+
+| Stream | Pipe | Clock | Watts | Cap flag |
+|---|---|---|---|---|
+| skeleton | 99.38% | 2685 MHz | 426.8 | off |
+| 2 / 4 / 8 / 12 / 16 LDS of 16 bytes | 99.37 / 99.34 / 99.37 / 99.35 / 99.27% | 2685 / 2685 / 2624 / 2560 / 2504 | 433 / 443 / 440 / 416 / 398 | half / on / on / on / on |
+| 8 LDSM, a matrix's lanes in a row | 99.38% | 2625 | 438.1 | on |
+| 8 LDSM as a gather, no bank collisions | 99.38% | 2624 | 437.5 | on |
+| 12 LDSM as a gather, three two-way collisions a matrix | 99.31% | 2565 | 423.1 | on |
+| 8 / 12 STS of 16 bytes | 99.15 / 99.03% | 2625 / 2605 | 449.4 / 450.0 | on |
+| 12 LDS of 4 bytes | 99.38% | 2685 | 444.2 | on |
+| 8 PRMT; 8 IADD3 of two registers | 99.05%; 99.05% | 2685; 2685 | 429.5; 429.9 | off |
+| 8 LDSM + 16 PRMT + 16 IADD3 | 98.10% | 2595 | 441.3 | on |
+| 8 global loads the SM's cache holds + 4 LDS | 99.06% | 2550 | 413.8 | on |
+| 2 / 4 global loads of bytes from the L2 + 8 LDS | 99.21 / 99.14% | 2535 / 2460 | 428.7 / 427.8 | on |
+| 8 LDSM, the IMMA's A operand marked for reuse | 99.38% | 2625 | 437.2 | on |
+| a barrier a k-step; a barrier a chunk | 98.59; 98.66% | 2685; 2685 | 419.5; 420.9 | off |
+| 12 LDS of 16 bytes with the pipe held down by NOPs | 94.45% | 2596 | 421.3 | on |
+
+What it says:
+
+- **Under the cap, clock times units a k-step is constant.** With an LDS of 16 bytes as the unit, the five LDS
+  rows fit clock = 419,840 / (152 + N), at most 2685 MHz (16 loads: 2499 predicted, 2504 measured). The first
+  four units are free: the skeleton sits that far under the cap. Near 2600 MHz a unit is 16 MHz.
+- **A unit by kind:** LDS of 16 bytes 1; LDSM 1, gathered or not, collisions or not; STS of 16 bytes 0.8; LDS of
+  4 bytes 0.36; a global load of 16 bytes 1.15 when the SM's cache holds the bytes and 2.9 when they come from
+  the L2; PRMT or IADD3 0.06 to 0.12. The skeleton's 152 is mostly its 48 IMMA. Reuse marks change nothing.
+- **Watts are not what is capped.** They fall from 443 to 398 as loads are added. The earlier rounds' "clock
+  ceiling" is this cap, and it counts memory steps, not joules.
+- **ALU steps cost pipe instead** (2 s runs): one to a gap, 16 cost 0.45 points, 32 0.64, 48 1.00, 80 1.15; two
+  or four to a gap cost more (32 steps: 1.05 and 0.88; 80 steps four to a gap: 2.2); 24 XOR3 1.1; 8 adds of one
+  register 0.08. The plain steps' yield flag off gains 0.18 on 32 steps. An IMMA stall of 4, 6 or 7 in place of
+  5 is worse; padding every gap to 8 cycles does nothing.
+- **A lower pipe gives back a little clock.** With 5% of the pipe idle the same 12 loads ran 36 MHz higher, not
+  0 and not 140: the cap is closer to "units a cycle" than "units a second", so pipe points still count.
+
+**What the list rules in and out.** A fragment a lane needs is 16 bytes, ten of them a k-step. Made by a gather
+it costs two LDSM and eight ALU steps; shared by n warps it costs (2 LDSM + 1 STS + n - 1 LDS) / n. So the gather
+fold is 20 memory steps and 80 ALU steps a warp a k-step, and sharing A's fragments among the four warps of a
+row band is 17 and 44. Two candidates fell to reasoning. Ordering k so that one index stream is sequential: the
+indices are drawn with replacement (about 81 different values in a chunk's 128), so a sorted stream is not the
+table in order, and one sequential term saves nothing while the other still needs the regroup. Fewer than two
+ALU steps a fragment register made: the gather hands a lane two rows at two k and the IMMA wants four k of one
+row; a table whose 16-bit element is one row at two k is the table by pair, 127 times the size.
+
+**The rotation fold (`rfold.py`, on `gfold_h.cuh` built with `-DGP_STAGE=24576`, `gprobe`'s `rot` offsets).**
+Every warp takes the four k-steps of a chunk in its own order (any order inside a chunk gives the same sums):
+column slot j of a band takes k-step (j + i) & 3 at its turn i. At a chunk's first turn the four warps of a band
+therefore fold four different k-steps. A warp makes the six A fragments of that k-step with gathers, uses them,
+and stores each with one 16-byte store; at its other three turns an A fragment is one 16-byte load of what
+another warp of its band stored. B is gathered by every warp at every turn. A warp a k-step: 11 LDSM, 4.5 LDS,
+1.5 STS, 44 ALU steps and one offsets load, for 48 IMMA. The stage is 24,576 bytes ([band][k-step][tile][lane]);
+with the tables (57,344) and the transcripts (16,384) it fits the 101,376.
+
+**What keeps a load behind its store.** The four warps of a row band meet at a barrier of their own at every
+k-step's end (`bar.sync 1, 128` and `bar.sync 2, 128`; `asm89.set_barriers` raises the cubin's barrier count).
+Tiles 1 to 5 are stored in the first turn and loaded in turns 1 to 3. Tile 0, which a turn loads during the
+turn before, is stored in the chunk's last turn (the first chunk's in the prologue, ahead of a barrier). So
+every load has a barrier between it and the store that wrote its fragment, and one between it and the store
+that overwrites it. What the barriers cost, and what got it back (k 8192, 2 s runs; searched order 1 of k
+unless stated):
+
+| Form | Pipe | CPU check |
+|---|---|---|
+| no barrier (or one every 16 or 64 chunks) | 97.8% | FAILS: 12 to 54 of 64 tiles |
+| a barrier a chunk for all eight warps | 92.6% | passes, but nothing orders tile 0's load |
+| a barrier a k-step for all eight warps | 88.2% | passes |
+| a barrier a k-step for each row band | 93.8% | passes |
+| and the first five of B's eight LDSM issued early, two gaps apart | 96.0% | passes |
+| the same with no bank collisions (timing only) | 97.6% | |
+| and the gather's IADD3 three gaps behind its LDSM, the plain steps' yield flag off | 96.7% | passes |
+| and k ordered by search 6 (the default form, as `gprobe ... 6 0 1`) | 97.05% | passes |
+
+Why: with no barrier the two bands run 2.8% apart (each scheduler serves its second warp more), and nothing
+orders a load after its store. A barrier puts warps in step, and warps in step issue the same LDSM in the same
+gap; with bank collisions that is more than shared memory serves (the same loop with no collisions in B's
+gathers holds 95.9% under the eight-warp barrier, with none in A's 89.5%). It is not the warps taking different
+k-steps: the same loop on offsets where all take the same k-step holds 87.4%. Order searches 4 to 6
+(`gprobe.cu`, `octet_cost`) weigh B's rows, which this fold gathers three times as often as A's: 6 leaves 1.26
+of A's 8 rows and 0.80 of B's colliding where search 1 leaves 1.0 and 1.0.
+
+**Results (CPU check: every lane's transcript against a CPU fold of the same tiles).**
+
+| Fold, by hand | k | Pipe | Clock, watts (60 s) | By count | CPU check |
+|---|---|---|---|---|---|
+| gather fold (the sixth round's), same hold | 8192 | 96.68% | 2520 MHz, 437.8 W | 319.3 | 1,024 of 1,024 |
+| rotation fold, no barrier (timing only) | 8192 | 97.20% | 2600 MHz, 449.4 W | 331 | fails |
+| rotation fold, barrier a band, B spread; search 1 | 8192 | 96.02% | 2608 MHz, 449.5 W | 328.2 | 2,048 of 2,048 |
+| the same | 65536 | 96.47% | 2601 MHz, 449.0 W | 328.9 | 512 of 512 |
+| the same, yield flag off | 65536 | 96.67% | 2598 MHz, 449.4 W | 329.2 | 512 of 512 |
+| **the default form; search 6** | 65536 | **97.48%** | **2594 MHz, 449.1 W** | **331.4** | 512 of 512 |
+| the default form; search 4 | 65536 | 97.38% | 2590 MHz, 449.0 W | 330.6 | 512 of 512 |
+| the default form in the kernel that hashes on the card; search 6 | 65536 | 97.48% | 2593 MHz, 449.1 W | 331.3 | 512 of 512 |
+
+At k 2048 over 64 tiles the default form passes 16,384 of 16,384 in searches 6 and 1 and in the definition's
+order, and at k 65536 2,048 of 2,048 over 8 tiles. Every form with the barriers passed the same checks (15 wide
+runs at k 2048, three at k 65536) but one: with the IADD3 moved and the prologue as it was, one subtract ran
+twice and every transcript was wrong; `rfold.py`'s prologue now follows the loop. In the definition's order of k
+the fold holds 90 to 92%: the order search matters more here than in the gather fold. The price list put this
+fold at 333 before it was built.
+
+**A job's own noise, and the hash on the card (`hostcheck.js`, `-DGP_HASH=1`).** `hostcheck.js` makes a job with
+the repo's port of the protocol (header, operands filled with 63, seeds, dense factors, rank indices), has
+`gprobe` fold it (`PD_INPUT`), and puts every hit through a port of the pool's check: the tile's pattern from
+the hit's own rows and columns (12 by 16, one thread's sums), the job key from that pattern, the sanity checks,
+the operand range, the noise, compute_jackpot, the hash, the bound. It needs the maths review's prototype
+library (`HC_LIB`), which is not in the repo. With `-DGP_HASH=1` every thread hashes its own transcript on the
+card after a tile's loop (one keyed BLAKE3 compression) and the kernel lists the hits.
+
+| Run | Lanes | Hits through the check | Other lanes sampled | The card's own list |
+|---|---|---|---|---|
+| k 2048, 64 tiles, search 1, two jobs | 16,384 each | 1,049 of 1,049; 1,004 of 1,004 | 251 of 251; 251 of 251 | |
+| k 2048, 64 tiles, the definition's order | 16,384 | 1,068 of 1,068 | 260 of 260 | |
+| k 8192, 16 tiles, search 1 | 4,096 | 249 of 249 | 62 of 62 | |
+| k 2048, 512 tiles folded, 64 checked, search 6, hash on the card | 16,384 | 1,078 of 1,078 | 261 of 261 | 8,361 hits; in the checked tiles the same 1,078; 400 of 400 others pass |
+| k 8192, 256 tiles folded, 16 checked, search 6, hash on the card | 4,096 | 236 of 236 | 65 of 65 | 4,047 hits; the same 236; 400 of 400 others pass |
+
+**What it is not yet.** A probe. No share has been built or sent: there is no Merkle proof, no host that writes
+the group tables for each tile and the offsets for each salt, and the loop is written by hand, so shipping it
+means the miner launching a patched cubin. By count it is 4.2% above the release's 318 and 2 to 3% under the
+other miners' 338.6 to 341.9. What the price list says is still to be had: B's fragments shared by the two warps of a
+column slot (16 ALU steps and half of B's gathers; it needs the transcripts out of shared memory and the two
+bands in step), and the offsets load, which is 2.9 units a warp a k-step.
