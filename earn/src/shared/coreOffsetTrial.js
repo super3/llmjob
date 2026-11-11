@@ -36,17 +36,17 @@
 // keeps the higher setting. 150 MHz is as far as it goes: nothing above that
 // has been measured on any card.
 
-// One turn, and how much of its start is left out. As shared/memClockTrial.
-const TURN_MS = 75 * 1000;
-const SETTLE_MS = 15 * 1000;
+// The memory clock trial's own numbers, taken from it so the two trials cannot
+// drift apart: they time the same thing, a card's rate over a turn.
+//   TURN_MS, SETTLE_MS  one turn (75 s), and how much of its start is left out
+//   MIN_GAIN            what a step has to be ahead by, of the step before it
+//                       and of offset 0: twin runs on one card differ by less
+//   MIN_SAMPLES         the fewest samples a turn needs. A core samples about
+//                       twice a second, so a full turn has over a hundred.
+const { TURN_MS, SETTLE_MS, MIN_GAIN, MIN_SAMPLES } = require('./memClockTrial');
+
 // The steps of the climb, in MHz, lowest first.
 const STEPS_MHZ = [50, 100, 150];
-// What a step has to be ahead by, of the step before it and of offset 0. The
-// memory clock trial uses the same bar: twin runs on one card differ by less.
-const MIN_GAIN = 0.003;
-// The fewest samples a turn needs. A core samples about twice a second, so a
-// full turn has over a hundred.
-const MIN_SAMPLES = 20;
 // A step's hit check: it passes at CHECK_HITS right hits. The check's job is
 // set to hit about CHECK_HITS_PER_S times a second at the card's own rate
 // (checkBound), so it takes three or four seconds on any card. After CHECK_MS
