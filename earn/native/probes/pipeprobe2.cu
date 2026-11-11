@@ -24,6 +24,12 @@
 //           twice the cycles an mma of two that do not, which is how a card's warp-to-scheduler map is read.
 //   FILLRND 1: the fragments are loaded from hashed bytes, not from the mostly-zero offset slice (the draw
 //           then must not be DREAL). Operand bytes change the watts, not the pipe use.
+//   PAD     steps after every mma (0: none), all of the kind
+//   PKIND   0: an add into one of RCH registers no mma writes (independent steps); 1: an XOR3 of two sums the
+//           mma 8 earlier wrote (the readout's step, spread one an mma); 2: a shared load and an XOR of what
+//           it read; 3: a shared store; 4: an add into one register (each waits on the one before).
+//           What a step between the mma costs by kind differs by architecture: on sm_120 the readout and
+//           the draw cost several times what they cost on sm_86 and sm_89.
 //
 // The result line: pipe use at 16 cycles an mma a scheduler (mean, and the least and most over schedulers),
 // cycles an mma a scheduler, the last launch's time, the launches, MACs a second by count (4096 an mma, over
@@ -81,6 +87,12 @@
 #ifndef FILLRND
 #define FILLRND 0
 #endif
+#ifndef PAD
+#define PAD 0
+#endif
+#ifndef PKIND
+#define PKIND 0
+#endif
 #if (WARPS != 8 || ACC != 48) && (RD != 0 || DRAW != 0)
 #error the readout and the draw are laid out for 8 warps of 48 mma
 #endif
@@ -111,6 +123,10 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
   unsigned char *const dslab = sh + 44u * 1024u + warp * 1024u + lane * 16u;
   unsigned *const jw = shw + 64u + tid * 16u;
   unsigned dro = lane * 24u;
+#if PAD > 0
+  unsigned px = tid * 2654435761u + 1u, pchain = tid;
+  const unsigned pa = (unsigned)__cvta_generic_to_shared(sh + 44u * 1024u + warp * 1024u + lane * 16u);
+#endif
 #pragma unroll
   for (int i = 0; i < RT; i++)
 #pragma unroll
@@ -202,11 +218,36 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
     for (int u = 0; u < n; u++) unit();
 #endif
   };
+#if PAD > 0
+  // One step after mma i, of the kind PKIND.
+  auto pad = [&](int i, int p) {
+    const int r = (i * PAD + p) % RCH;
+#if PKIND == 0
+    asm volatile("add.u32 %0, %0, %1;\n" : "+r"(t[r]) : "r"(px));
+#elif PKIND == 1
+    const int j = (i + ACC - 8) % ACC;
+    asm volatile("xor.b32 %0, %0, %1;\n xor.b32 %0, %0, %2;\n" : "+r"(t[r])
+                 : "r"(c[j][(2 * p) & 3]), "r"(c[j][(2 * p + 1) & 3]));
+#elif PKIND == 2
+    unsigned v;
+    asm volatile("ld.volatile.shared.u32 %0, [%1];\n" : "=r"(v) : "r"(pa));
+    asm volatile("xor.b32 %0, %0, %1;\n" : "+r"(t[r]) : "r"(v));
+#elif PKIND == 3
+    asm volatile("st.volatile.shared.u32 [%0], %1;\n" :: "r"(pa), "r"(px) : "memory");
+#else
+    asm volatile("add.u32 %0, %0, %1;\n" : "+r"(pchain) : "r"(px));
+#endif
+  };
+#endif
   // One k-step: 48 mma, with the readout's runs and the draw where the switches put them. s is 0 .. 3.
   auto kstep = [&](int s, int ch) {
 #pragma unroll
     for (int i = 0; i < ACC; i++) {
       mma(i);
+#if PAD > 0
+#pragma unroll
+      for (int p = 0; p < PAD; p++) pad(i, p);
+#endif
       const int n = i + 1;   // mma issued so far in this k-step
 #if RD == 2
       if (s == 3 && n == 24) xrun(0, 16);
@@ -265,6 +306,9 @@ extern "C" __global__ __launch_bounds__(THREADS, 1) void pipeprobe2(long long *t
     times[blockIdx.x * (2 * WARPS) + 2 * warp + 1] = t1;
   }
   int sum = (int)dro;
+#if PAD > 0
+  sum ^= (int)(px + pchain);
+#endif
 #pragma unroll
   for (int i = 0; i < RCH; i++) sum ^= (int)t[i];
 #pragma unroll

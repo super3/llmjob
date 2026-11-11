@@ -212,6 +212,14 @@ rd1c4|-DRD=1 -DRCH=4
 rd1c16|-DRD=1 -DRCH=16
 rd2c4|-DRD=2 -DTRW=0 -DRCH=4
 rd2c16|-DRD=2 -DTRW=0 -DRCH=16
+p1k0|-DPAD=1 -DPKIND=0
+p2k0|-DPAD=2 -DPKIND=0
+p4k0|-DPAD=4 -DPKIND=0
+p2k4|-DPAD=2 -DPKIND=4
+p1k1|-DPAD=1 -DPKIND=1
+p2k1|-DPAD=2 -DPKIND=1
+p1k2|-DPAD=1 -DPKIND=2
+p1k3|-DPAD=1 -DPKIND=3
 baser|-DFILLRND=1
 rd1r|-DRD=1 -DFILLRND=1
 rd2ar|-DRD=2 -DTRW=0 -DFILLRND=1
@@ -352,9 +360,11 @@ done
 [ -n "${PP_SKIP_SHORT:-}" ] || for s in pure base rd1 rd1a rd2 rd2a rd3 d4e d4m d4h d4s d4mg d4r fullns full full3 fulle; do
   [ -x $P/b/$s ] && short $P/b $T $s
 done
-# 2b. What a step between the IMMA costs by count and kind: one to three draw units, the readout's chains.
+# 2b. What a step between the IMMA costs by count and kind: one to three draw units, the readout's chains, and
+#     one kind of step after every IMMA (p<PAD>k<PKIND>; ptxas folds two adds into one, so p2k0 is one add an
+#     IMMA, and p1k2 is one shared load and half an XOR).
 #     PP_SHORTS names other streams to run short (with PP_SKIP_SHORT, only these run short).
-for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16}; do
+for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16 p1k0 p2k0 p4k0 p2k4 p1k1 p2k1 p1k2 p1k3}; do
   [ -x $P/b/$s ] && short $P/b $T $s
 done
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
