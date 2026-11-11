@@ -38,6 +38,11 @@ function execCb(err, stdout) {
   execFile.mockImplementation((_bin, _args, _opts, cb) => cb(err, stdout));
 }
 
+// A box with no /sys/class/drm, for the tests that are about nvidia-smi alone.
+// Without it they read the real folder, and fail on a Linux box that has an AMD
+// or an Intel Arc card: three did on the Arc rig, which listed its six A750s.
+const NO_DRM = { fs: { readdirSync() { throw new Error('ENOENT'); } } };
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -218,7 +223,7 @@ describe('detectPciBusIds', () => {
 
   it('is empty when nvidia-smi fails', async () => {
     execCb(new Error('nvidia-smi: not found'));
-    expect(await probe.detectPciBusIds()).toEqual({});
+    expect(await probe.detectPciBusIds(NO_DRM)).toEqual({});
   });
 });
 
@@ -403,7 +408,7 @@ describe('detectGpuInfo', () => {
   it('gives up on a non-Windows box with no nvidia-smi', async () => {
     await withPlatform('linux', async () => {
       execCb(new Error('ENOENT'));
-      expect(await probe.detectGpuInfo()).toBeNull();
+      expect(await probe.detectGpuInfo(NO_DRM)).toBeNull();
     });
   });
 
@@ -516,7 +521,7 @@ describe('detectGpuInfo', () => {
   it('falls through when nvidia-smi succeeds but names nothing', async () => {
     await withPlatform('linux', async () => {
       execCb(null, '\n\n');
-      expect(await probe.detectGpuInfo()).toBeNull();
+      expect(await probe.detectGpuInfo(NO_DRM)).toBeNull();
     });
   });
 });

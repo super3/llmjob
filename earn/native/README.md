@@ -6,6 +6,10 @@ lifecycle half is JavaScript, under `earn/src/shared/miner/` and
 
 An AMD (HIP/ROCm) port, not yet run on an AMD card, is in `amd/`; see `amd/README.md`.
 
+The Intel (SYCL) core is in `sycl/`; see `sycl/README.md`. It has run on Arc A750 cards on Linux.
+CI builds it for Linux and Windows and the packages carry it as a folder, `sycl/`, beside the other
+cores; no release has shipped it yet.
+
 ## Why this exists
 
 Every third-party Pearl miner we evaluated is blocked for a product like ours:
@@ -325,4 +329,4 @@ same on a machine without NVML. Neither function throws: `error` is NVML's own
 words and `code` its return code (4 is "no permission": setting needs root or
 administrator rights). The code is compiled only when `PEARL_NVML_OFFSETS` is
 defined, which `binding.gyp` does for the CUDA builds and nothing does for the
-AMD core.
+AMD core or the Intel port.

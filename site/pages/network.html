@@ -315,9 +315,11 @@
       return Math.round(Number(h) || 0).toString() + '<span class="u">TH/s</span>';
     }
     // Model-only GPU name ("NVIDIA GeForce RTX 4090" → "RTX 4090") for smaller
-    // screens, where end-ellipsis would leave nothing but the vendor prefix.
+    // screens, where end-ellipsis would leave nothing but the vendor prefix. An
+    // Intel card keeps "Arc" ("Intel Arc A750" → "Arc A750"): "A750" alone names
+    // no card a reader knows, where "RTX" and "RX" already say whose card it is.
     function shortGpu(g) {
-      return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+|Arc\s+)?/i, '') || String(g);
+      return String(g).replace(/^\s*(NVIDIA|AMD|Intel)\s+(GeForce\s+|Radeon\s+)?/i, '') || String(g);
     }
     // Measured generation speed per node id, from GET /api/nodes/serving. Empty
     // until that first load resolves, which just means every dot starts hollow.

@@ -125,10 +125,36 @@ function rightsNote(r) {
 // host must stay usable against it — an older pearl_core.node beside a newer
 // app is the normal state of a rig mid-upgrade. Null then means "unknown", and
 // every consumer falls back to what it did before.
+//
+// A core that reports its card's memory adds { memTotalMb, memUsedMb } (see
+// cardMemory). A core that does not leaves the device as { index, name }.
 function readDevice(core) {
   const d = core && core.device;
   if (!d || !Number.isInteger(d.index) || d.index < 0) return null;
-  return { index: d.index, name: d.name ? String(d.name) : 'GPU ' + d.index };
+  return { index: d.index, name: d.name ? String(d.name) : 'GPU ' + d.index, ...cardMemory(d) };
+}
+
+// A card's memory as its core reports it, in whole MB: { memTotalMb, memUsedMb },
+// the card's size and what this core has allocated on it. {} when the core
+// gives no size. Only the Intel core gives one: nothing else can tell an Intel
+// card's memory, where nvidia-smi and amdgpu report the other cards' (see
+// shared/minerReport, which is where these end up). Read once for each opening:
+// the Intel core allocates everything in its create call (pearl_host_create in
+// native/sycl/pearl_sycl_host.cpp). A size with no usable `used` beside it
+// reads 0 used.
+function cardMemory(d) {
+  if (!Number.isFinite(d.memTotalMb) || d.memTotalMb <= 0) return {};
+  const used = Number.isFinite(d.memUsedMb) && d.memUsedMb > 0 ? d.memUsedMb : 0;
+  return { memTotalMb: Math.round(d.memTotalMb), memUsedMb: Math.round(used) };
+}
+
+// A card whose core has just closed, for the 'hashrate' of 0 that says so. The
+// core has given the card's memory back, so a device with memory figures reads
+// 0 used from here; the board would otherwise show a card that is paused or
+// has failed as still holding what it mined with. A device without figures is
+// passed on as it is.
+function closedDevice(device) {
+  return device.memTotalMb == null ? device : { ...device, memUsedMb: 0 };
 }
 
 // What a memory clock trial measured, as the log says it: "103.4 TH/s locked
@@ -142,13 +168,26 @@ function lockRates(onTh, offTh) {
     + (gain >= 0 ? '+' : '') + (gain * 100).toFixed(1) + '%)';
 }
 
-// The card's gfx architecture, for the hit check's lines (see _checkedHit),
-// or null. The AMD core ends its fold's description (core.device.fold) with
-// the card's gcnArchName, e.g. gfx1030 or gfx90a:sramecc+:xnack-, and names
-// none when it could not read it.
+// What kind of card a checked core says it runs on, for the hit check's lines
+// (see _checkedHit), or null. The AMD core ends its fold's description
+// (core.device.fold) with the card's gcnArchName, e.g. gfx1030 or
+// gfx90a:sramecc+:xnack-, and names none when it could not read it. The Intel
+// core begins its description with the fold: xmx16 or xmx8, the card's XMX
+// matrix engines at that sub-group size, or dot, the plain fold.
 function archOf(core) {
-  const m = /\bgfx[0-9a-f]+/.exec(String((core.device && core.device.fold) || ''));
-  return m ? m[0] : null;
+  const fold = String((core.device && core.device.fold) || '');
+  const m = /\bgfx[0-9a-f]+/.exec(fold);
+  if (m) return m[0];
+  const intel = /^(xmx16|xmx8|dot)\b/.exec(fold);
+  return intel ? 'Intel ' + intel[1] + ' fold' : null;
+}
+
+// Where a wrong hit from a checked card is reported: the README of the core
+// that card runs, at the part that says what to send.
+const REPORT_AMD = 'earn/native/amd/README.md, "Testing on real hardware"';
+const REPORT_INTEL = 'earn/native/sycl/README.md, "Untested cards"';
+function reportTo(arch) {
+  return /^Intel /.test(arch || '') ? REPORT_INTEL : REPORT_AMD;
 }
 
 class PearlMiner extends EventEmitter {
@@ -1237,7 +1276,7 @@ class PearlMiner extends EventEmitter {
           level: 'error',
           line: 'could not open ' + cardName(c.device) + ' again at k ' + base + ': ' + ((e && e.message) || String(e)),
         });
-        if (c.device) this.emit('hashrate', 0, c.device);
+        if (c.device) this.emit('hashrate', 0, closedDevice(c.device));
         this._cardDown(c.slot, c.device, e);
         continue;
       }
@@ -1391,7 +1430,7 @@ class PearlMiner extends EventEmitter {
       // for as long as the others keep mining.
       this.hashrates.delete(device.index);
       this.hashrate = this.totalHashrate();
-      this.emit('hashrate', 0, device);
+      this.emit('hashrate', 0, closedDevice(device));
       this._releaseMemClock(device.index);
       this._closedCoreOffset(device.index);
     } else {
@@ -1540,7 +1579,7 @@ class PearlMiner extends EventEmitter {
       if (c.device) {
         this.hashrates.delete(index);
         this.hashrate = this.totalHashrate();
-        this.emit('hashrate', 0, c.device);
+        this.emit('hashrate', 0, closedDevice(c.device));
         // A model must never run on a locked card (see releaseMemClocks), or
         // on one above its own clock.
         this._releaseMemClock(index);
@@ -1766,12 +1805,12 @@ class PearlMiner extends EventEmitter {
     }
     const line = where + ': a hit came out wrong (' + why + '). No share was sent, and this card is off for '
       + 'the rest of this run. This kind of card has not mined in a release yet: please report this line '
-      + '(earn/native/amd/README.md, "Testing on real hardware").';
+      + '(' + reportTo(check.arch) + ').';
     this.emit('log', { level: 'error', line });
     if (device) {
       this.hashrates.delete(device.index);
       this.hashrate = this.totalHashrate();
-      this.emit('hashrate', 0, device);
+      this.emit('hashrate', 0, closedDevice(device));
       this._releaseMemClock(device.index);
       this._closedCoreOffset(device.index);
     }

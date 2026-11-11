@@ -4,7 +4,7 @@
 // (Win32_VideoController) and feeds the raw adapter-name list here; keeping the
 // selection logic here makes it unit-testable without touching the OS.
 
-const { AMD, pickCoreVariant } = require('./coreVariant');
+const { AMD, INTEL, pickCoreVariant } = require('./coreVariant');
 
 // Virtual / basic display adapters that aren't real mining GPUs.
 const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|citrix|vmware|oray/i;
@@ -14,6 +14,22 @@ const IGNORE = /basic display|microsoft basic|remote|rdp|virtual|meta|parsec|cit
 // Intel iGPUs (UHD/HD/Iris) and AMD APUs, whose adapter name is a bare "Radeon
 // Graphics" / "…Vega… Graphics" with no discrete model (RX/Pro/Instinct).
 const INTEGRATED = /\bintel\b|\buhd\b|\bhd graphics\b|\biris\b|radeon(\(tm\))? graphics|vega.*graphics|integrated/i;
+
+// A discrete Intel Arc card's model inside a longer name: "Arc A750", "Arc(TM)
+// B580", "Arc Pro B60", "Arc A770M". The letter is what tells a card from a
+// processor's own graphics, which Intel also calls Arc ("Arc Graphics", "Arc
+// 140V"). A Pro card's number has two digits.
+const INTEL_ARC = /\bArc(?:\(TM\))?\s+(?:Pro\s+[AB]\d{2}|[AB]\d{3})[A-Z]?\b/i;
+
+// Whether an adapter name is a discrete Intel Arc card: "Intel(R) Arc(TM) A750
+// Graphics". INTEGRATED has every Intel name, so this is asked beside it.
+function isDiscreteIntel(name) {
+  const n = String(name == null ? '' : name).trim();
+  return INTEL_ARC.test(n) && !IGNORE.test(n);
+}
+
+// An integrated GPU: INTEGRATED's names, less the discrete Arc cards among them.
+const integrated = (name) => INTEGRATED.test(name) && !isDiscreteIntel(name);
 
 // Pick the best real GPU from a list of adapter names, or null if none. Prefers
 // a discrete card over an integrated one (Win32_VideoController may list the
@@ -27,7 +43,7 @@ function pickGpu(names) {
     if (name && !IGNORE.test(name)) real.push(name);
   }
   if (!real.length) return null;
-  return real.find((n) => !INTEGRATED.test(n)) || real[0];
+  return real.find((n) => !integrated(n)) || real[0];
 }
 
 // Count the GPUs that actually mine: discrete cards when any are present (an
@@ -42,7 +58,7 @@ function countGpus(names) {
     const name = String(raw == null ? '' : raw).trim();
     if (!name || IGNORE.test(name)) continue;
     real++;
-    if (!INTEGRATED.test(name)) discrete++;
+    if (!integrated(name)) discrete++;
   }
   return discrete > 0 ? discrete : (real > 0 ? 1 : 0);
 }
@@ -430,10 +446,61 @@ function describeAmdPlan(gpus, how) {
     + '), one core each; ' + how + ' to choose cards';
 }
 
+// Intel Arc cards on Linux, named from their PCI ids as the AMD cards are:
+// nvidia-smi lists none of them. The table is the desktop cards, for a rig
+// without pci.ids; any other device is named when pci.ids calls it an Arc card
+// with a model ("DG2 [Arc A770M]"). A processor's own graphics, which the Intel
+// core has no XMX fold for or mines too slowly to matter, gets no row.
+const INTEL_DEVICES = {
+  '56a0': 'Arc A770',
+  '56a1': 'Arc A750',
+  '56a2': 'Arc A580',
+  '56a5': 'Arc A380',
+  '56a6': 'Arc A310',
+  e20b: 'Arc B580',
+  e20c: 'Arc B570',
+};
+
+// "Intel Arc A750", or null for a device that isn't a card we name. `ids` is
+// parsePciIds' answer for the device.
+function intelCardName(device, ids) {
+  if (INTEL_DEVICES[device]) return 'Intel ' + INTEL_DEVICES[device];
+  const dev = ids.deviceName || '';
+  const bracket = /\[([^\]]+)\]/.exec(dev);
+  const m = INTEL_ARC.exec(bracket ? bracket[1] : dev);
+  return m ? 'Intel ' + m[0].replace(/\(TM\)/i, '').replace(/\s+/g, ' ') : null;
+}
+
+// How many Intel Arc cards probe.detectGpuInfo's answer has. It lists them only
+// on a rig where nvidia-smi lists no card and the system has no AMD card the
+// AMD core mines on, which is the rig the Intel core is tried on.
+function intelCount(det) {
+  return det && Array.isArray(det.intel) ? det.intel.length : 0;
+}
+
+// The cards an Intel rig mines on when nobody chose any: the Intel core's
+// 0..N-1, one core each, for the N Arc cards the OS reports. As planAmdGpus,
+// and for its reason: nvidia-smi lists none of them, so without this one core
+// would mine one card. [] keeps that path: cards were chosen, the OS shows one
+// Arc card or can't say, or `env` asks for another core. The cards get no
+// names here: each core names the card it opened.
+function planIntelGpus({ env, det, chosen } = {}) {
+  const n = intelCount(det);
+  if (chosen != null || n < 2 || pickCoreVariant({ env, cards: [], intel: n }).variant !== INTEL) return [];
+  return Array.from({ length: n }, (_, index) => ({ index, name: null }));
+}
+
+// The log line for planIntelGpus' cards. `how` is how this shell chooses cards.
+function describeIntelPlan(gpus, how) {
+  return 'mining on ' + gpus.length + ' Intel cards (GPU ' + gpus.map((g) => g.index).join(', ')
+    + '), one core each; ' + how + ' to choose cards';
+}
+
 module.exports = {
   IGNORE, INTEGRATED, pickGpu, countGpus, alignCudaDeviceOrder,
   clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList, readGpuIndexEnv,
   describeSkippedGpus,
   planMinerGpus, parseGpuStats, parsePciBusIds, normalizePciBusId, parseMacGpu,
   AMD_DEVICES, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd, planAmdGpus, describeAmdPlan,
+  INTEL_DEVICES, intelCardName, isDiscreteIntel, intelCount, planIntelGpus, describeIntelPlan,
 };

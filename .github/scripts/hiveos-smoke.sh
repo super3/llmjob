@@ -26,6 +26,8 @@
 #   - does the same with --core cu13 for the CUDA 13 core. With rocm/, --core amd must load the
 #     AMD core; without it, the miner must say why it won't load: ROCm is missing (the container
 #     has none), or on 20.04 the system
+#   - with sycl/ in the package, --core intel must load the Intel core from it, on every image,
+#     and the core must then say it found no Intel GPU: its libraries are all in that folder
 #   - with every GPU turned off in HiveOS (CUDA_VISIBLE_DEVICES=" "), mines Monero on the CPU,
 #     waits for the worker's self-test, reads the stats file through h-stats.sh as the HiveOS
 #     agent does, and stops the miner with Ctrl+C, as `miner stop` does, checking its shutdown
@@ -98,7 +100,7 @@ for f in h-manifest.conf h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux p
   [ -f "$f" ] || fail "the package has no $f"
 done
 # The optional files: a build can ship without each, and says so in its own run summary.
-for f in pearl_core_cu13.node pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7; do
+for f in pearl_core_cu13.node pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7 sycl/pearl_core_sycl.node; do
   [ -f "$f" ] || echo "::warning::$image: the package has no $f, so it isn't tested"
 done
 mode_is() {
@@ -106,6 +108,12 @@ mode_is() {
 }
 for f in h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux llmjob-xmr-worker; do mode_is "$f" 755; done
 for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do mode_is "$f" 644; done
+# The Intel core's folder: the addon and the libraries it loads, and one program, the check tool.
+if [ -d sycl ]; then
+  for f in sycl/*; do
+    if [ "$f" = sycl/pearl_sycl_check ]; then mode_is "$f" 755; else mode_is "$f" 644; fi
+  done
+fi
 
 got=$(. ./h-manifest.conf && echo "$CUSTOM_VERSION")
 [ "$got" = "$version" ] || fail "h-manifest.conf says CUSTOM_VERSION=$got, not $version"
@@ -132,6 +140,20 @@ for core in pearl_core.node pearl_core_cu13.node pearl_core_hip.node; do
   [ -z "$versions" ] || fail "$core needs versions this system doesn't have: $versions"
   [ -z "$missing" ] || fail "$core needs libraries this system doesn't have: $missing"
 done
+
+# The Intel core and everything it loads are in sycl/, each file finding the others beside it,
+# so nothing of the system's but its C and C++ runtime may be needed, on any image.
+if [ -f sycl/pearl_core_sycl.node ]; then
+  for f in sycl/pearl_core_sycl.node sycl/*.so*; do
+    deps=$(ldd "./$f" 2>&1 || true)
+    echo "ldd $f:"
+    sed 's/^/  /' <<< "$deps"
+    versions=$(grep -F "version \`" <<< "$deps" || true)
+    missing=$(grep -F '=> not found' <<< "$deps" | awk '{print $1}' || true)
+    [ -z "$versions" ] || fail "$f needs versions this system doesn't have: $versions"
+    [ -z "$missing" ] || fail "$f needs libraries this system doesn't have: $missing"
+  done
+fi
 
 # ── The flight sheet, h-config.sh and h-run.sh ───────────────────────────────────────────
 # h-config.sh as HiveOS's wrapper runs it: in a subshell, with the flight sheet's fields set.
@@ -269,6 +291,18 @@ elif [ -f pearl_core_hip.node ]; then
       || fail "with --core amd the miner's reason isn't that ROCm is missing"
   fi
   wait_message "danger LLMJob Earn can't mine: "
+fi
+
+# 3b. The Intel core. It loads from sycl/ on every image, and with no Intel driver in the
+#     container (no Level Zero, no OpenCL) it finds no card and says so. A rig of Arc cards gets
+#     it without --core; here nothing lists an Arc card, so it is asked for by name.
+if [ -f sycl/pearl_core_sycl.node ]; then
+  configure "--region us --core intel"
+  start
+  wait_for "Pearl core: Intel build (SYCL)" 60
+  wait_for "no Intel GPU found through Level Zero or OpenCL" 60
+  wait_exit 60
+  grep -qF 'is there but would not load' <<< "$(run_log)" && fail "with --core intel the Intel core would not load"
 fi
 
 # 4. Every GPU turned off in HiveOS, mining Monero on the CPU. The miner keeps running, so this

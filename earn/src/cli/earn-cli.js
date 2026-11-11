@@ -53,7 +53,9 @@ const { requiredFreeMb, pickLlmGpu } = require('../shared/vram');
 const { planLlmInstances } = require('../shared/llmPlan');
 const { allModels, pickModel, ctxLadder, planAutoMode } = require('../shared/models');
 const { createPromptPause, cardForPrompt } = require('../shared/promptPause');
-const { AMD: CORE_AMD, FILES: CORE_FILES, pickCoreVariant } = require('../shared/coreVariant');
+const {
+  AMD: CORE_AMD, INTEL: CORE_INTEL, INTEL_DIR: CORE_INTEL_DIR, FILES: CORE_FILES, pickCoreVariant,
+} = require('../shared/coreVariant');
 const { createAutoGate, createServeGate } = require('../main/autoGate');
 const { resolvePlan, normalizeMode } = require('../shared/llmMode');
 const { minerSupported, minerUnsupportedNote } = require('../shared/platform');
@@ -61,6 +63,7 @@ const { resolveServerUrl, placeLlmPlan, describeLlmStart } = require('../shared/
 const {
   alignCudaDeviceOrder, clearCudaVisibleDevices, describeClearedCuda, parseGpuIndexList,
   describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
+  planIntelGpus, describeIntelPlan, intelCount,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const { planCoreOffsets } = require('../shared/coreOffset');
@@ -185,6 +188,13 @@ async function repairXmrWorker(url) {
 // PEARL_CORE_VARIANT, or that variable itself.
 function wantsAmdCore() {
   return pickCoreVariant({ env: process.env }).variant === CORE_AMD;
+}
+
+// The same for the Intel core: --core intel or PEARL_CORE_VARIANT=intel. A rig
+// of Arc cards that asked for nothing gets it too, but that is found out later,
+// from what the system lists (shared/gpu planIntelGpus).
+function wantsIntelCore() {
+  return pickCoreVariant({ env: process.env }).variant === CORE_INTEL;
 }
 
 // The AMD core beside the binary, fetched when this run asked for it and there
@@ -906,6 +916,8 @@ async function run(argv) {
 
   let endpoint = null;
   let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
+  let intelGpus = []; // planIntelGpus' cards, the same way
+  let intelCards = 0; // the Intel Arc cards the system lists on a rig with no NVIDIA or AMD card
   if (plan.miner) {
     // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
     // back to the defaults already in `settings` and never blocks mining. Explicit
@@ -927,12 +939,18 @@ async function run(argv) {
     // The AMD core's cards are HIP's, which nvidia-smi doesn't list: on a rig
     // with an NVIDIA card beside the AMD ones, its list would drop the AMD
     // cards the indices name. The chosen indices go to the core as they are.
-    if (wantsAmdCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
+    // The same for the Intel core, whose cards are SYCL's.
+    if (wantsAmdCore() || wantsIntelCore()) settings.gpus = planMinerGpus([], gpuPick ? gpuPick.indices : null);
     // With none chosen, an AMD rig's list is empty and one core would mine one
     // card. The OS counts them instead (det.amd, shared/gpu planAmdGpus), as in
     // the GUI.
     amdGpus = planAmdGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
     if (amdGpus.length) settings.gpus = amdGpus;
+    // A rig of Intel Arc cards is counted the same way (det.intel), and the
+    // count also tells the core loader that this is one (shared/coreVariant).
+    intelCards = intelCount(det);
+    intelGpus = planIntelGpus({ env: process.env, det, chosen: gpuPick ? gpuPick.indices : null });
+    if (intelGpus.length) settings.gpus = intelGpus;
     // Always set, so downstream reads don't need a fallback: 1 when detection
     // found nothing or found a single card.
     settings.gpuCount = det && det.count > 1 ? det.count : 1;
@@ -973,6 +991,7 @@ async function run(argv) {
       const cudaLine = describeClearedCuda(clearedCuda, 'use --gpu-index to choose the cards');
       if (cudaLine) log(cudaLine);
       if (amdGpus.length) log(describeAmdPlan(amdGpus, 'use --gpu-index'));
+      else if (intelGpus.length) log(describeIntelPlan(intelGpus, 'use --gpu-index'));
       else if (mining.length > 1) log('mining on:  ' + cardList(mining));
     }
   }
@@ -1054,6 +1073,7 @@ async function run(argv) {
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
+      intel: intelCards,
       coreFlag: !!settings.core,
       log: coreLog,
     }), {
@@ -1083,6 +1103,11 @@ async function run(argv) {
       } else if (wantsAmdCore()) {
         if (!process.env.PEARL_CORE_PATH) {
           log('Fix: put ' + CORE_FILES[CORE_AMD] + ' from the release next to the executable (a run from the source tree also finds earn/native/amd/build), or set PEARL_CORE_PATH to its absolute path.', process.stderr);
+        }
+      } else if (wantsIntelCore()) {
+        // The Intel core is a folder: the addon needs the libraries beside it.
+        if (!process.env.PEARL_CORE_PATH) {
+          log('Fix: put the ' + CORE_INTEL_DIR + ' folder from the release (' + CORE_FILES[CORE_INTEL] + ' and the libraries beside it) next to the executable (a run from the source tree also finds earn/native/sycl/build), or set PEARL_CORE_PATH to the core\'s absolute path.', process.stderr);
         }
       } else {
         const where = 'searched: PEARL_CORE_PATH, beside the executable, and the dev tree';
@@ -1251,13 +1276,14 @@ async function run(argv) {
   // planned beside it and by the same rules: NVIDIA cards only, so never on an
   // AMD core, and never while an LLM co-runs. In demand mode the miner's stop()
   // puts every card back at offset 0 before the gate starts llama-server.
-  if (miner && wantsAmdCore()) {
+  // An Intel core is the same on both counts: none of its cards is nvidia-smi's.
+  if (miner && (wantsAmdCore() || wantsIntelCore())) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
     settings.mineMemClockTrial = [];
     settings.mineCoreOffsetTrial = [];
   } else if (miner) {
-    const nvidia = { cards: cudaCards, gpus: amdGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
+    const nvidia = { cards: cudaCards, gpus: amdGpus.length || intelGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
     const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;

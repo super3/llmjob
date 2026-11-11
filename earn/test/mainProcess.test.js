@@ -1282,6 +1282,29 @@ describe('mining', () => {
       }));
     });
 
+    // A rig of Intel Arc cards is counted the same way, from the same answer
+    // (its `intel`), and the core loader is told how many there are: that is
+    // what makes it try the Intel core. An AMD rig's answer has no `intel`.
+    it('an Intel Arc rig mines on every card the OS lists, and tells the loader it is one', async () => {
+      const A750 = { name: 'Intel(R) Arc(TM) A750 Graphics', driverVersion: '32.0.101.6913' };
+      const ctx = await boot({ platform: 'win32' });
+      ctx.probe.detectGpuInfo.mockResolvedValue({ name: A750.name, count: 3, amd: [], intel: [A750, A750, A750] });
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      const three = [0, 1, 2].map((index) => ({ index, name: null }));
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalledWith(expect.objectContaining({ gpus: three }));
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenCalledWith(expect.objectContaining({ gpus: three, intel: 3, cards: [] }));
+      expect(lines(ctx)).toContain('mining on 3 Intel cards (GPU 0, 1, 2), one core each; set PEARL_GPU_INDEX to choose cards');
+      expect(lines(ctx).some((l) => l.includes('AMD cards'))).toBe(false);
+
+      const amd = await boot({ platform: 'win32' });
+      amd.probe.detectGpuInfo.mockResolvedValue(amdInfo(2));
+      amd.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(require('../src/main/pearlCore').coreFactory).toHaveBeenLastCalledWith(expect.objectContaining({ intel: 0 }));
+      expect(lines(amd).some((l) => l.includes('Intel cards'))).toBe(false);
+    });
+
     // An NVIDIA rig starts as it did: nothing more is asked of the OS.
     it('asks the OS nothing when nvidia-smi lists cards', async () => {
       const ctx = await boot({ platform: 'win32' });

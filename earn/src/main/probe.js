@@ -16,6 +16,7 @@ const { pickFastestRegion } = require('../shared/region');
 const {
   parseGpuStats, pickGpu, countGpus, parseMacGpu, readGpuIndexEnv, planMinerGpus,
   parsePciBusIds, parsePciIds, amdCardName, parseVideoControllers, isDiscreteAmd,
+  intelCardName, isDiscreteIntel,
 } = require('../shared/gpu');
 const { parseCudaCards } = require('../shared/coreVariant');
 const { parseDeviceList, parseUsingDeviceLine } = require('../shared/llama');
@@ -102,15 +103,43 @@ function detectAmdGpus(opts) {
 // The AMD cards' PCI bus ids, { index: "0000:04:00.0" }, by detectAmdGpus's index. A card
 // whose sysfs path couldn't be resolved to its PCI address has none. Never throws.
 function detectAmdBusIds(opts) {
+  return busIds(amdCards(opts));
+}
+
+// detectAmdGpus's cards with their sysfs bus, in PCI bus order.
+function amdCards(opts) {
+  return drmCards(opts, '1002', amdCardName);
+}
+
+// Intel Arc cards on Linux, from sysfs, in detectAmdGpus's shape and for its
+// reason: nvidia-smi knows none of them (shared/gpu.intelCardName has the
+// naming). The i915 and xe drivers publish no memory figures there, so usedMb
+// and totalMb are 0, which the callers read as "not known". Never throws.
+function detectIntelGpus(opts) {
+  return intelCards(opts).map((c, index) => ({ index, name: c.name, usedMb: c.usedMb, totalMb: c.totalMb }));
+}
+
+// The Intel cards' PCI bus ids, as detectAmdBusIds gives the AMD cards'.
+function detectIntelBusIds(opts) {
+  return busIds(intelCards(opts));
+}
+
+function intelCards(opts) {
+  return drmCards(opts, '8086', intelCardName);
+}
+
+// { index: bus } for the cards whose sysfs path resolved to a PCI address.
+function busIds(cards) {
   const ids = {};
-  amdCards(opts).forEach((c, index) => {
+  cards.forEach((c, index) => {
     if (/^[0-9a-f]{4,8}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/i.test(c.bus)) ids[index] = c.bus;
   });
   return ids;
 }
 
-// detectAmdGpus's cards with their sysfs bus, in PCI bus order.
-function amdCards(opts) {
+// The cards of one PCI vendor that `nameOf` names, with their sysfs bus and
+// what the driver says of their memory, in PCI bus order.
+function drmCards(opts, vendor, nameOf) {
   const o = opts || {};
   const fsx = o.fs || fs;
   const root = o.root || '/sys/class/drm';
@@ -126,9 +155,9 @@ function amdCards(opts) {
     if (!/^card\d+$/.test(entry)) continue;
     const dev = root + '/' + entry + '/device';
     const hex = (f) => read(dev + '/' + f).toLowerCase().replace(/^0x/, '');
-    if (hex('vendor') !== '1002') continue;
+    if (hex('vendor') !== vendor) continue;
     const device = hex('device');
-    const name = amdCardName(device, parsePciIds(ids, '1002', device, hex('subsystem_vendor'), hex('subsystem_device')));
+    const name = nameOf(device, parsePciIds(ids, vendor, device, hex('subsystem_vendor'), hex('subsystem_device')));
     if (!name) continue;
     let bus = entry;
     try { bus = String(fsx.realpathSync(dev)).split('/').pop(); } catch (_) { /* keep the card's name */ }
@@ -143,11 +172,13 @@ function amdCards(opts) {
 }
 
 // The cards for the network board's rows: nvidia-smi's, or on Linux with none,
-// the AMD cards. Same shape as detectGpusVram. Never rejects.
+// the AMD cards, or with none of those the Intel Arc cards. Same shape as
+// detectGpusVram. Never rejects.
 async function detectBoardGpus(opts) {
   const cards = await detectGpusVram();
   if (cards.length || process.platform !== 'linux') return cards;
-  return detectAmdGpus(opts);
+  const amd = detectAmdGpus(opts);
+  return amd.length ? amd : detectIntelGpus(opts);
 }
 
 // The cards this rig mines on: one entry per card, [{ index, name }], in index
@@ -225,7 +256,9 @@ function detectPciBusIds(opts) {
       (err, stdout) => {
         const ids = err ? {} : parsePciBusIds(stdout);
         if (Object.keys(ids).length || process.platform !== 'linux') return resolve(ids);
-        resolve(detectAmdBusIds(opts));
+        // The Intel cards' when there is no AMD card, as detectGpuInfo lists them.
+        const amd = detectAmdBusIds(opts);
+        resolve(detectAmdGpus(opts).length ? amd : detectIntelBusIds(opts));
       });
   });
 }
@@ -374,6 +407,11 @@ function detectMacGpuInfo() {
 // [{ name, driverVersion }], on Linux detectAmdGpus' entries. nvidia-smi can't
 // count them, so shared/gpu.planAmdGpus counts these. There is no `amd` when
 // nvidia-smi answered, or on macOS.
+//
+// And `intel`, when that list of AMD cards is empty and the OS reports Intel
+// Arc cards: the same entries for them (shared/gpu.isDiscreteIntel on Windows,
+// detectIntelGpus on Linux). That is the rig the Intel core is tried on
+// (shared/coreVariant), so a rig with an AMD card never has it.
 function detectGpuInfo(opts) {
   return new Promise((resolve) => {
     execFile('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'],
@@ -392,7 +430,9 @@ function detectGpuInfo(opts) {
         // Linux with no NVIDIA card: an AMD card, named from its PCI ids.
         if (process.platform !== 'win32') {
           const amd = detectAmdGpus(opts);
-          return resolve(amd.length ? { name: amd[0].name, count: amd.length, amd } : null);
+          if (amd.length) return resolve({ name: amd[0].name, count: amd.length, amd });
+          const intel = detectIntelGpus(opts);
+          return resolve(intel.length ? { name: intel[0].name, count: intel.length, amd, intel } : null);
         }
         // Each adapter's driver version rides on the same query, for the AMD
         // driver line at mining start (shared/amdDriver).
@@ -406,7 +446,9 @@ function detectGpuInfo(opts) {
             const names = adapters.map((a) => a.name);
             const name = pickGpu(names);
             const amd = adapters.filter((a) => isDiscreteAmd(a.name));
-            resolve(name ? { name, count: countGpus(names), amd } : null);
+            const intel = amd.length ? [] : adapters.filter((a) => isDiscreteIntel(a.name));
+            if (!name) return resolve(null);
+            resolve(intel.length ? { name, count: countGpus(names), amd, intel } : { name, count: countGpus(names), amd });
           });
       });
   });
@@ -424,6 +466,8 @@ module.exports = {
   detectCudaCards,
   detectPciBusIds,
   detectAmdBusIds,
+  detectIntelGpus,
+  detectIntelBusIds,
   detectLlmDevices,
   detectLlmBusIds,
   postMinerReport,
