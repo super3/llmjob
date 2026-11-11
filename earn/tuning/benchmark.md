@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 87–96%, median 93% (9–10 Nov, v0.6.13) | Our gap widens at lower power limits |
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94%, the one card behind |
+| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
@@ -1058,6 +1058,141 @@ release (an unused flag) for the noise. Not rows: no competitor ran.
   stay off. `-DPEARL_AMD_HASHQ=1` turns it on for every card, `=0` for none, and the environment variable `PEARL_AMD_HASHQ=1` (or `0`) overrides the build at run time.
 - **Cost:** five boxes (one moved by Salad mid-run), about 4.5 box-hours, high priority.
 
+### Salad, 10–11 November: the RX 7900 against SRBMiner again, and what a slow PC is (PR #290, AMD goal)
+
+The 9–10 November rows put the RX 7900 XTX at 92% and 94% of SRBMiner. Since then the hash kernel moved to a queue of
+its own on gfx1100 (`PEARL_AMD_HASHQ`, item 23). This is the duel with that on, on two XTX PCs (one of them the 94%
+row's own PC) and one RX 7900 XT, and what a PC where our rate reads low is doing. Not rows: the method differs from
+the table's (see "Keeping this file current").
+
+**Method.** One box a PC (`amdtest.py`, the ROCm image). Ours is the PR head's AMD core (5d2b012e, the default build,
+the same binary on all three PCs) through the app's CLI; both miners mine on Kryptex. Ours warms the card for 60 s,
+then the miners take turns of 5 minutes, two each. Every turn is scored the same way: the mean of its 24 ten-second
+samples after the first minute (the CLI's last printed rate, SRBMiner's API rate). Then one turn each of 3 minutes with
+a clock probe beside the miner: one wave from another process that reads SHADER_CYCLES over REALTIME for a millisecond
+or two every 10 s.
+
+| Card | PC | SRBMiner | Ours, turns 1 and 2 (TH/s) | SRBMiner, turns 1 and 2 | Ours / SRBMiner | Clock under ours | Clock under SRBMiner |
+|---|---|---|---|---|---|---|---|
+| RX 7900 XTX | `45c94e40` | 3.8.2 | 57.06, 56.91 | 55.59, 55.50 | **102.6%** | 2581 MHz (2434–2667) | 2588 MHz (2561–2646) |
+| RX 7900 XTX | `ae456453` (the 94% row's PC) | 3.8.6 | 55.04, 54.88 | 53.87, 54.07 | **101.8%** | no reading (see below) | 2494 MHz (2463–2531) |
+| RX 7900 XT | `78024435` | 3.8.6 | 46.16, 46.48 | 46.27, 46.11 | **100.3%** | 2473 MHz (2394–2553) | 2424 MHz (2396–2456) |
+
+- Both XTX PCs are above 100% now. `45c94e40` read 53.1 against 53.9 (99%) on 30 October, and `ae456453` 50.8 against
+  54.1 on 9–10 November. The XT is level: 0.3% is inside the spread of our own two turns (0.7%).
+- The CLI's own mean over every line it printed after the first minute, one a second: 57.10 and 57.17, 55.03 and 54.81,
+  46.27 and 46.35. SRBMiner's own 15-minute average at each turn's end: 55.76 and 55.51, 54.07 and 53.99, 46.12 and
+  46.19.
+- **SRBMiner 3.8.6 runs in the ROCm image once `wget` is installed.** Without it 3.8.6 printed nothing and exited
+  (given a terminal: "Make sure you have 'wget' installed on your system!"), which is what stopped it on Salad on 9
+  November. One more turn of 3.8.2 on `ae456453` read 53.68, so the two versions are level on this card.
+- **Clock.** On `45c94e40` the clock is the same under both miners, so we do 2.6% more per clock there. On the XT ours
+  runs 2% more clock for the same rate, so SRBMiner does 1.7% more per clock there. `ae456453` holds 3.6% less clock
+  than `45c94e40` (2494 MHz against 2588 under SRBMiner), and both miners read 3 to 4% lower on it.
+- **No clock under ours on `ae456453`:** in that 3-minute turn ours read 50.21 TH/s, not 55.0, and the probe's readings
+  ran from 1395 to 2809 MHz (median 2664). That is the rate the PC gives a queue it keeps stopping (below). SRBMiner
+  beside the same probe read 54.41 by its own average. Twenty minutes later `hashrate.js` with the same probe beside it
+  was level with the default (54.93–55.21), so it wasn't the probe alone: the PC has spells, and the hash queue doesn't
+  keep our miner out of all of them. A 10-minute watch of ours alone, to count them, got 2 minutes in (55.0, 54.9)
+  before Salad took the PC away. With the probe the other two turns read 56.93 (57.0 without) and 45.83 (46.3).
+- Shares: every one accepted, but one of ours in turn 1 on `45c94e40` (the reason wasn't kept).
+
+**What a slow PC is.** `ae456453` is one: the fold alone (the fold test's launches back to back on one queue) reads
+52.5–53.6 TMAC/s there against 58.6–59.1 on `45c94e40`. That is three times what its lower clock explains, and it is
+not the fold's cycles either:
+
+| Fold alone, one queue | `45c94e40` (fast) | `ae456453` (slow) |
+|---|---|---|
+| The miner's launch, TMAC/s (3 rounds) | 59.1, 59.0, 58.6 | 53.6, 52.6, 52.5 |
+| 2 batches in one launch (taller, so B' stays one batch's) | 58.6, 58.8, 58.9 | 52.9, 52.7, 52.8 |
+| 4 batches in one launch | 59.2, 59.3, 58.8 | 52.8, 52.5, 52.8 |
+| 16 tiles wide (batch 256) | 57.4, 57.9, 58.0 | 52.3, 52.0, 52.0 |
+| 32 tiles wide (batch 512) | 55.9, 56.2, 56.4 | 51.1, 51.0, 51.0 |
+| Clock in these 4 s runs, from a cool card (stamps) | 2707–2711 MHz | 2640–2782 MHz |
+| Cycles a slab | 6,711 | 6,707–6,717 |
+| Blocks whose waves changed SIMD mid-run, a launch | 0 of 8,192 | 115–119 |
+
+On the slow PC **the whole queue stops about 30 times a second, for 3.6–4.0 ms each time.** In one 171 ms launch (64
+batches wide, in strips) no block started or ended for 3.77, 3.66, 3.63, 3.64, 3.62 and 3.69 ms, at 3.9, 37.2, 67.1,
+103.8, 137.2 and 161.5 ms. The 107–126 blocks running at each stop came back on other SIMDs (their HW_ID1 changed) and
+took 3.96 ms where every other block took 0.163. Between stops the card is full and the fold runs as on the fast PC.
+3.65 ms in every 33.3 is 11%. So something on that PC preempts a compute queue that stays busy, and the fold has about
+1,150 waves to put away and bring back each time, which is probably where the 3.6 ms go. A launch longer than the 33 ms
+between stops is always hit, so longer launches can't cure it; on the fast PC they gain nothing.
+
+**The stops come while the miner has one busy queue.** A stamp build of the core can write the stamps of one of the
+miner's own launches (`PEARL_AMD_STAMP_DUMP`, on branch `goal/amd`). On `ae456453`, launches of about 10 ms, in two
+sittings an hour apart:
+
+| `hashrate.js` on the stamp build | Launches stopped | The stops |
+|---|---|---|
+| Hash on the fold's queue (v0.6.13's way, `PEARL_AMD_HASHQ=0`) | 5 of 13 | 3.72–4.02 ms; 680–1,152 waves moved; the launch then spans 13.4–13.9 ms, not 9.5–10.0 |
+| Hash on its own queue (the PR's default) | 0 of 13 | |
+| Hash on the fold's queue, and a one-thread kernel on a third queue every 2 ms (`PEARL_AMD_TICK_US=2000`) | 0 of 8 | |
+| The same every 20 ms | 1 of 5 | 3.57 ms |
+
+Five of thirteen is about what 30 stops a second give a 10 ms launch. A second queue of the miner's with work on it,
+the hash's or a ticker's, ends the stops.
+
+**`hashrate.js` on `ae456453`**, each setting in turn, order rotating, 45 s after 12 s, scored from round 2, in three
+runs of 4, 3 and 3 rounds. The control is the PR's default; the twin is a second copy of it.
+
+| Setting | TH/s | Against the default |
+|---|---|---|
+| The PR's default (hash on its own queue) | 54.92–54.98, 55.03, 55.01–55.03 | twin +0.05 to +0.44%, −0.05 to +0.02%, −0.07 to −0.09% |
+| Hash on the fold's queue (`PEARL_AMD_HASHQ=0`, v0.6.13's way) | 50.45–50.50 | **−8.05 to −8.24%** |
+| Hash on the fold's queue, the core's ticker every 2 ms | 55.07–55.16 | +0.07 to +0.24% |
+| The same, every 20 ms | 54.71–54.75 | −0.51 to −0.55% |
+| The same, every 50 ms | 51.88–51.96 | −5.54 to −5.72% |
+| The default with the core's ticker every 2 ms, every 0.5 ms | 55.09–55.15, 55.11 | +0.11 to +0.22%, +0.15% |
+| The hit count zeroed on the hash queue, not before the fold | 54.99–55.10 | +0.09 to +0.29% |
+| That, and no wait for the slot's last hash on the fold's queue | 54.92–55.07 | −0.11 to +0.27% |
+| 2 batches a launch (20 ms), as strips | 54.89–54.91 | −0.22% |
+| 4 batches a launch (41 ms), as strips | 51.51–51.52 | **−6.19 to −6.31%** |
+| 4 batches a launch, the core's ticker every 2 ms | 51.50–51.54 | −6.34 to −6.41% |
+| Batch 64 (a 5 ms launch) | 54.26–54.41 | −1.13 to −1.40% |
+| The default beside another process's kernel every 2 ms | 54.24–54.26 | −1.40 to −1.44% |
+| The default beside another process's kernel every 10 s | 54.93–55.21 | −0.18 to +0.36% |
+
+- **The hash queue is worth +8.9% on the slow PC** (50.5 to 55.0), and 50.5 is the benchmark row's 50.8. On the fast PC
+  one round read hash queue off −0.7% (56.73 against 57.15, twin 57.21), batch 256 −1.6% and batch 512 −3.3%. Item 23
+  found the same two sizes on two other PCs (+3.0 to +3.7%, +0.2 to +1.0%). So the gain is the PC's, and it is the
+  stops. What is left between the two PCs is their clock.
+- **Longer launches lose** on the slow PC, because a 41 ms launch is always stopped, and the fold alone gains nothing
+  from them on either XTX PC. The review's lead (several 128-offset batches a launch) isn't worth building as a default.
+  The test builds are on branch `goal/amd`: `-DPEARL_AMD_STRIP=1` and `PEARL_AMD_STRIPS=n` launch n batches as strips
+  of the grid's z, so B' in use stays one batch's.
+- Nothing raced beats the PR's default on this PC by more than its twin.
+- With `PEARL_AMD_TRACE=1` and the probe every 5 s the default read 50.97–51.09 there. Race on such a PC with the trace
+  off.
+
+**RX 7900 XT: the hash queue is right there too.** It is on for every gfx1100 card and no XT had raced it. One PC
+(`78024435`), `hashrate.js` 45 s after 12 s, 6 rounds, order rotating:
+
+| RX 7900 XT `78024435` | TH/s, rounds 1–6 | Against the default, rounds 2–6 |
+|---|---|---|
+| The PR's default (hash on its own queue) | 46.74, 46.36, 46.26, 46.26, 46.24, 45.79 | |
+| Twin | 46.00, 46.33, 46.18, 46.38, 44.72, 46.23 | −0.06, −0.17, +0.26, −3.29, +0.96% |
+| Hash on the fold's queue (`PEARL_AMD_HASHQ=0`) | 44.73, 44.59, 46.03, 45.96, 44.61, 44.76 | −3.82, −0.50, −0.65, −3.53, −2.25% |
+| Hash on the fold's queue, the core's ticker every 2 ms | 46.45, 45.91, 46.41, 46.33, 46.36, 46.44 | −0.97, +0.32, +0.15, +0.26, +1.42% |
+
+- Off is behind in 5 of 5 rounds: by 0.5–0.65% when the PC is steady and by 2.3–3.8% in the three rounds where it read
+  44.6–44.8. The twin read 44.72 once. So this PC has a slow state too, 3.5% down, which hit the off setting in 4 runs
+  of 6 and the default in 1 of 12. On is the right default for the XT.
+- Its stamps caught no stop: fold alone 46.75 TMAC/s at 2548 MHz, 6,708 cycles a slab, 126 blocks at once, no wave
+  moved in a 182 ms launch, nor in 12 of the miner's own launches (6 with the hash queue on, 6 off). What the slow state
+  is on this PC is not known.
+- Longer launches gain nothing on the XT either. Fold alone, 3 rounds: 47.8, 47.4, 47.6 TMAC/s at 1 batch a launch,
+  47.8, 47.8, 47.8 at 2, and 48.2, 47.6, 47.7 at 4. In the miner, 3 rounds (twin −0.04 to −0.11%): 2 batches a launch
+  −0.37 to −0.45%, 4 batches −0.54 to −0.65%.
+
+- **Not known:** what on `ae456453` preempts the queue (another program on that PC's GPU, or its driver's scheduler),
+  how many PCs do it, how long the spells last that reach our miner with the hash queue on, and whether the RX 7800 XT
+  and RDNA 4, which keep the hash on the fold's queue, are stopped the same way on such a PC. The 9–10 November RX 9060
+  XT row `3540c3e2` has the same shape: ours 15% under our other PC, SRBMiner 1.6% under. Its launch is 31 ms and the
+  RX 9070 XT's 34 ms, as long as the gap between stops here.
+- **Cost:** two boxes over four PCs (one of them with no usable GPU), about 4.5 box-hours, high priority.
+
 ## Intel Arc (Alchemist, on a rented rig)
 
 The first Intel hardware, 10 November: a rig of six Arc A750 cards. Ours is the SYCL core in `earn/native/sycl`
@@ -1175,6 +1310,15 @@ What future speed work needs: how to measure, the limits found, and what has alr
   600 launches of the fold in 15 minutes.
 - Cards mine at their power limit, so a saving shows up as clock, and cuts don't add: the six RDNA 4 cuts summed to
   about 8.9% alone and gave +4.3–5.4% together.
+- A slow Radeon PC may be one that stops a busy compute queue. On an RX 7900 XTX PC (`ae456453`, 10 November) the
+  fold test's launches, back to back on one queue, were stopped 30 times a second for 3.6–4.0 ms: 10% low at an
+  unchanged clock and cycle count, and no launch length helped. A miner with a second queue at work (the hash's) wasn't
+  stopped. The fold test's stamps show it: blocks whose waves changed SIMD mid-run, and gaps with no block starting or
+  ending (AMD Radeon, "what a slow PC is"). Read them on a new AMD PC before trusting a fold-alone number from it.
+- `PEARL_AMD_TRACE` is not free on such a PC: with it (and a clock probe every 5 s) the default read 51.0 TH/s on
+  `ae456453` against 55.0 without. Time a race there with the trace off.
+- SRBMiner 3.8.6 needs `wget` in the image (3.8.2 doesn't). Without it 3.8.6 exits at once, and without a terminal it
+  prints nothing: that is what "would not start on Salad" was on 9 November.
 
 **Limits found**
 - RDNA 4's WMMA does 1,009 MAC a CU a clock (98.6% of AMD's 1,024). The fold ran at 70% of that in v0.6.11 and 77% after
@@ -1873,6 +2017,17 @@ can be specified. The arms, the tools (`gate.sh`, the spin kernel, the switches)
 "Item N" alone means issue #287 or an earlier numbered plan; "suggestion list item N" is the ten-item list worked on
 6 November, which stopped on every item before any GPU time.
 
+- RX 7900: several batches a launch, and fewer commands between folds (the AMD goal, 10–11 November, Salad, two RX
+  7900 XTX PCs and an XT; the numbers are under AMD Radeon). The review's lead was that each launch costs more on a slow
+  PC, so fewer, longer launches should win there. They lose: 4 batches a launch, as strips so that B' in use stays one
+  batch's, read −6.2 to −6.4% on the slow PC, and the fold alone gained nothing from 2 or 4 batches a launch on any of
+  the three PCs. A slow PC stops a busy queue every 33 ms, and a 41 ms launch is always hit. 2 batches a launch (20 ms)
+  read −0.2% there, batch 64 (5 ms) −1.1 to −1.4%; on the RX 7900 XT 2 and 4 batches a launch read −0.4% and −0.6%.
+  With the hash on its own queue, zeroing the hit count there instead of before the fold, and dropping the fold queue's
+  wait for the slot's last hash, were level (+0.09 to +0.29%, −0.11 to +0.27%, twin +0.05 to +0.44%); so was a ticker
+  kernel on a third queue every 2 ms or 0.5 ms (+0.11 to +0.22%). The switches are on branch `goal/amd`
+  (`PEARL_AMD_STRIP`, `PEARL_AMD_STRIPS`, `PEARL_AMD_HASHQ_ZERO`, `PEARL_AMD_HASHQ_WAIT`, `PEARL_AMD_TICK_US`), all off
+  by default, not for merging.
 - RTX 5090 B' drawn on the SM (research item 8, 10 November, desk study, no card time). The "+1.81%" from 2 November
   (b68b0399, 53ddd838, 87ba3d6e) was `PEARL_TALL_SHAM_DRAW`, a timing-only stand-in: it reads each B fragment from
   shared memory again and adds one IADD3 a register, but skips the real draw's table loads and byte gathers (each B'
