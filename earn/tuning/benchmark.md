@@ -2527,6 +2527,25 @@ The arms, the raw runs and the table script are on branch `goal/gate` (4014c732,
   1,380 TH/s a B200 earns about $1.07 an hour, so nobody rents one to mine. Not worth it until someone mines on
   their own B200s.
 
+- A fold that draws both operands on the SM: built as a body and a probe, correct, slow so far (11 November,
+  RTX 4090 rig01, branch `goal/nv-kernel`). `earn/native/src/pearl_fold_draw.cuh` stores neither A' nor B': a tile
+  keeps its dense noise factors in shared memory and each warp draws the next k-step's operands while it folds.
+  `earn/native/probes/drawprobe.cu` runs it alone, times it in SM cycles and checks it against a CPU fold. It has no
+  hash and no host side, so there is no TH/s figure: the pipe figures below are the probe's, at k 8192.
+
+  | Form | CPU check | Pipe use, everything in | Clock, watts | TH/s by count |
+  |---|---|---|---|---|
+  | 192x256, six m16 tiles a warp | 2,304 of 2,304 regions | 65.3 to 71.0% | 2663 to 2687 MHz, 412 to 448 W | 228 to 251 |
+  | 160x256, five tiles a warp | 1,920 of 1,920 | 72.05% | 2685 MHz, 428 W | 253 |
+  | 160x256, table reads at least-conflict addresses (timing only, wrong sums) | | 89.63% (94.71% without the stage wait) | | 315 |
+
+  The release fold is 317.3 TH/s on this card and the three competitors 338.6 to 341.9, so both forms lose as
+  built. Most of the loss is one thing: a lane reads 8 bytes of the table at a random rank index, and a warp's 32
+  reads fall into 8 of shared memory's 32 banks. The stage wait costs 14 points on top while warps differ, the
+  readout 3 to 4, the offsets' global loads 2. Not built: tables laid out rank-index-major, so that a warp draws
+  one k-pair for 32 row groups and every lane reads its own 8 bytes of one table row. Tables, switches and what
+  ptxas had to be led around: `earn/native/probes/README.md`, "The draw fold".
+
 ## Keeping this file current
 
 - A change that re-measures a host here updates its row in the same PR. A number only in chat or a PR doesn't count.
