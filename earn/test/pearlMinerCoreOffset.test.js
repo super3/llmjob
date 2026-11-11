@@ -126,7 +126,7 @@ function rig(over = {}) {
   // A socket for each connection, as net.connect gives: b.sock is the latest.
   const connect = () => { b.sock = makeSocket(); return b.sock; };
   const m = new PearlMiner({
-    connect, createCore, reconnectMs: 0, restartMs: 10, clocks, now: () => t.now,
+    connect, createCore: over.wrap ? over.wrap(createCore) : createCore, reconnectMs: 0, restartMs: 10, clocks, now: () => t.now,
     offsets: over.injectNone ? undefined : offsets,
   });
   const logs = [];
@@ -387,9 +387,81 @@ describe('PearlMiner — the core clock offset trial', () => {
       b.m.stop();
     });
 
-    // An RTX 30 card may time its launch shapes for its first 150 seconds
-    // (shared/shapePick), a new shape every few seconds.
-    test('a card with launch shapes to time starts once that is over', () => {
+    // An RTX 30 card may time its launch shapes when it opens
+    // (shared/shapePick), a new shape every few seconds. The shells'
+    // createCore says whether a core still is, from the core's 'shape' event.
+    describe('a card timing its launch shapes', () => {
+      const SHAPES = ['flip 256', 'band walk 8'];
+      const shaped = (timingShapes) => {
+        const b = rig({ core: (c) => { c.shapes = SHAPES; } });
+        b.createCore.timingShapes = timingShapes;
+        return b;
+      };
+
+      // The shape trial has no fixed length: each new job restarts its turn.
+      test('waits for the shape trial however long it runs, and starts on the next sample', () => {
+        let timing = true;
+        const asked = [];
+        const b = shaped((core) => { asked.push(core); return timing; }).start();
+        const core = b.made[0];
+        expect(b.lines()).toEqual([START(0, undefined, ', once its launch shapes are timed')]);
+        // Well past the 180 s the miner used to guess.
+        for (let i = 0; i < 800; i += 1) tick(b, core, 95.5);
+        expect(b.t.now).toBe(400000);
+        expect(b.m.coreOffsetTrials.get(0).trial).toBe(null);
+        expect(b.sets()).toEqual([0]);
+        expect(asked.every((c) => c === core)).toBe(true);
+        timing = false;
+        while (!b.sets().includes(50)) tick(b, core, 95.5);
+        expect(b.t.now).toBe(400000 + 500 + TURN_MS);
+        b.m.stop();
+      });
+
+      // A remembered shape, a forced one, trials off: nothing is timed.
+      test('does not wait at all when no shape trial is under way', () => {
+        const b = shaped(() => false).start();
+        expect(b.lines()).toEqual([START()]);
+        while (!b.sets().includes(50)) tick(b, b.made[0], 95.5);
+        expect(b.t.now).toBe(500 + TURN_MS);
+        b.m.stop();
+      });
+
+      // The miner and the shells' real wrapper together: the wait ends when
+      // the core sends its 'shape' event, and a remembered shape means none.
+      test('through shared/shapePick, the core\'s shape event is what ends the wait', () => {
+        const { withShapePick } = require('../src/shared/shapePick');
+        const data = {};
+        const store = { get: (k) => data[k] || null, set: (k, v) => { data[k] = v; }, remove: (k) => { delete data[k]; } };
+        const wrap = (create) => withShapePick(create, { store, gpus: GPU, now: () => 1, env: {} });
+        const shape = (c) => { c.shapes = SHAPES; [c.shape] = SHAPES; };
+        const b = rig({ core: shape, wrap }).start();
+        const core = b.made[0];
+        for (let i = 0; i < 800; i += 1) tick(b, core, 95.5);
+        expect(b.sets()).toEqual([0]);
+        core.emit('shape', JSON.stringify({ shape: SHAPES[1], rule: SHAPES[0], trial: [] }));
+        while (!b.sets().includes(50)) tick(b, core, 95.5);
+        expect(b.t.now).toBe(400000 + 500 + TURN_MS);
+        b.m.stop();
+
+        // The next start has the shape remembered, and its offset trial starts at once.
+        const next = rig({ core: (c) => { c.shapes = SHAPES; [, c.shape] = SHAPES; }, wrap }).start();
+        while (!next.sets().includes(50)) tick(next, next.made[0], 95.5);
+        expect(next.t.now).toBe(500 + TURN_MS);
+        next.m.stop();
+      });
+
+      test('with a memory clock trial as well, the start line names both', () => {
+        const b = shaped(() => true).start({ mineMemClockByIndex: { 0: 5001 }, mineMemClockTrial: [0] });
+        expect(b.lines()).toEqual([
+          START(0, undefined, ', once the memory clock trial is over and its launch shapes are timed'),
+        ]);
+        b.m.stop();
+      });
+    });
+
+    // A createCore that cannot say when the shape trial ends: the miner waits
+    // the trial's 150 seconds and 30 more, as it did before it could ask.
+    test('a card with launch shapes to time, and nothing to ask, starts after a fixed wait', () => {
       expect(SHAPE_TRIAL_SECS).toBe(150);
       const b = rig({ core: (c) => { c.shapes = ['flip 256', 'band walk 8']; } }).start();
       const core = b.made[0];

@@ -55,6 +55,9 @@ function trialLine(t) {
 // coreFactory's answer as it is.
 function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Date.now, env = process.env } = {}) {
   if (typeof createCore !== 'function') return null;
+  // The cores whose trial is under way: from the open that asked for it until
+  // the core's 'shape' event (see timingShapes below).
+  const timing = new WeakSet();
   const wrapped = (profile, coreOpts) => {
     const opts = Object.assign({}, coreOpts);
     const key = shapeKey(opts, gpus);
@@ -82,7 +85,11 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
     if (!opts.shapeTrialSecs) return core;
     log('info', card + ': timing its launch shapes for about ' + TRIAL_SECS + ' s while it mines ('
       + core.shapes.join(', ') + ')');
+    // The core only runs a trial when it has two shapes or more, and one that
+    // runs none sends no 'shape' event to end the wait.
+    if (core.shapes.length > 1) timing.add(core);
     core.on('shape', (json) => {
+      timing.delete(core);
       const t = readTrial(json);
       if (!t) {
         log('warn', card + ': launch shape trial sent a report that does not parse');
@@ -95,6 +102,13 @@ function withShapePick(createCore, { store, log = () => {}, gpus = [], now = Dat
   };
   // The factory's core clock offset calls (main/pearlCore) go to the miner with it.
   wrapped.clockOffsets = createCore.clockOffsets;
+  // Whether `core` is still timing its launch shapes. The miner asks before it
+  // starts a card's core clock offset trial (main/pearlMiner, _planCoreOffset):
+  // the two would read each other's changes. It asks here and does not listen
+  // for 'shape' itself, because the core keeps one listener an event and a
+  // second would take this one's place. A core opened with a cached or forced
+  // shape, or with trials off, times nothing, and the answer is false at once.
+  wrapped.timingShapes = (core) => timing.has(core);
   return wrapped;
 }
 

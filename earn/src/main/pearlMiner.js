@@ -105,6 +105,9 @@ const OFFSET_STAGGER_MS = 15 * 1000;
 // An RTX 30 card may spend its first minutes timing its launch shapes against
 // each other (shared/shapePick), a new shape every few seconds. Its offset
 // trial waits until that is over, or the two would read each other's changes.
+// This fixed wait is the fallback, for a createCore that cannot say when the
+// shape trial ends (see _planCoreOffset). It is a guess: the shape trial has
+// no fixed length.
 const OFFSET_SHAPE_WAIT_MS = (SHAPE_TRIAL_SECS + 30) * 1000;
 
 // An offset as the log says it: +50 MHz.
@@ -876,17 +879,32 @@ class PearlMiner extends EventEmitter {
           + 'if it was yours.',
       });
     }
+    // An RTX 30 card may be timing its launch shapes (shared/shapePick), and
+    // the offset trial waits for that to end. The shells' createCore says
+    // whether this core still is (timingShapes), from the core's own 'shape'
+    // event. So a card with a remembered shape does not wait at all, and a
+    // trial that runs long, as it does when new jobs restart its turns, is
+    // waited out in full. A trial that never reports leaves the offset trial
+    // unrun: no offset is better than one measured against changing shapes.
+    //
+    // A createCore that cannot say gets the fixed wait instead, when its core
+    // has shapes to time.
+    const asks = this.createCore && typeof this.createCore.timingShapes === 'function';
+    const timing = asks ? () => this.createCore.timingShapes(core) : null;
+    const shapes = !asks && Array.isArray(core.shapes) && core.shapes.length > 1;
     // How long the trial waits once nothing else is in its way (see
-    // _feedCoreOffsetTrial): its turn in the stagger, and the launch shape
-    // trial of a card that has shapes to time.
-    const shapes = Array.isArray(core.shapes) && core.shapes.length > 1;
+    // _feedCoreOffsetTrial): its turn in the stagger, and the fixed wait above.
     const wait = OFFSET_STAGGER_MS * this.coreOffsetTrials.size + (shapes ? OFFSET_SHAPE_WAIT_MS : 0);
-    this.coreOffsetTrials.set(index, { steps, wait, from: null, trial: null, mhz: 0, check: null });
+    this.coreOffsetTrials.set(index, { steps, wait, timing, from: null, trial: null, mhz: 0, check: null });
+    const first = [
+      this.memClockTrials.has(index) ? 'the memory clock trial is over' : '',
+      timing && timing() ? 'its launch shapes are timed' : '',
+    ].filter(Boolean);
     this.emit('log', {
       level: 'info',
       line: 'core clock offset trial on GPU ' + index + ': mining ' + coreOffsetTrial.TURN_MS / 1000
         + ' s at each of 0, ' + steps.map((mhz) => '+' + mhz).join(', ') + ' MHz and 0 again'
-        + (this.memClockTrials.has(index) ? ', once the memory clock trial is over' : '') + '; each step first has '
+        + (first.length ? ', once ' + first.join(' and ') : '') + '; each step first has '
         + coreOffsetTrial.CHECK_HITS + ' of its hits recomputed, and the fastest step that is right is kept',
     });
   }
@@ -900,6 +918,9 @@ class PearlMiner extends EventEmitter {
       // The memory clock trial goes first, so the two never overlap: each would
       // read the other's changes as its own. The lock it kept stays in place.
       if (this.memClockTrials.has(index)) return;
+      // So does the card's launch shape trial, for the same reason (see
+      // _planCoreOffset).
+      if (t.timing && t.timing()) return;
       // Then the card's own wait, counted from here and not from when it
       // opened: cards whose memory clock trials end on the same sample still
       // start 15 seconds apart. The first turn starts on a sample, with the

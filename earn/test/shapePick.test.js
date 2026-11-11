@@ -142,6 +142,41 @@ describe('withShapePick', () => {
     expect(lines).toEqual([]);
   });
 
+  // The miner holds a card's core clock offset trial back while this says true
+  // (main/pearlMiner, _feedCoreOffsetTrial).
+  describe('timingShapes says whether a core\'s trial is under way', () => {
+    const opts = (over = {}) => ({ store: memStore(), now: () => NOW, env: {}, ...over });
+
+    test('from the open that asked for the trial until the core reports, parsed or not', () => {
+      for (const report of ['{"shape":"flip 128","rule":"flip 128"}', 'garbage']) {
+        const core = fakeCore();
+        const make = withShapePick(() => core, opts());
+        expect(make.timingShapes(core)).toBe(false);
+        make({}, { deviceIndex: 0 });
+        expect(make.timingShapes(core)).toBe(true);
+        core.emit('shape', report);
+        expect(make.timingShapes(core)).toBe(false);
+      }
+    });
+
+    test('never for a core that times nothing', () => {
+      const none = (core, over) => {
+        const make = withShapePick(() => core, opts(over));
+        make({}, { deviceIndex: 0 });
+        return make.timingShapes(core);
+      };
+      // A cached pick, a forced shape, trials turned off.
+      expect(none(fakeCore(), { store: memStore({ gpu0: { shape: 'flip 128', at: NOW } }) })).toBe(false);
+      expect(none(fakeCore(), { env: { PEARL_SHAPE: 'flip 128' } })).toBe(false);
+      expect(none(fakeCore(), { env: { PEARL_SHAPE_TRIAL: '0' } })).toBe(false);
+      // One shape or none: the core runs no trial, so no report would end the wait.
+      expect(none(fakeCore({ shapes: ['flip 128'] }))).toBe(false);
+      expect(none(fakeCore({ shapes: [] }))).toBe(false);
+      // A core this factory did not open.
+      expect(withShapePick(() => null, opts()).timingShapes(fakeCore())).toBe(false);
+    });
+  });
+
   test('defaults: Date.now and process.env, and a silent log', () => {
     const create = jest.fn(() => fakeCore());
     const before = process.env.PEARL_SHAPE;
