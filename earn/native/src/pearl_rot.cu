@@ -252,9 +252,15 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
   out[idx] = make_uint4(w[0], w[1], w[2], w[3]);
 }
 
-// The fold's offsets for one salt (gprobe.cu's `rot` form). permA and permB are pearl_gen_perm's [k][2] (plus
+// The fold's offsets for one salt (gprobe.cu's `rot` 2 form). permA and permB are pearl_gen_perm's [k][2] (plus
 // index, minus index); order[128 c + x] is which k of chunk c sits in slot x. offs is [warp][k-step][lane] of
-// four words, one k-step more than the tile has at each warp's end. One thread a (k-step, lane).
+// two words, one k-step more than the tile has at each warp's end. One thread a (k-step, lane).
+//
+// A record is 8 bytes, not the 16 of four plain offsets. The hand loop reads one record a warp a k-step from
+// the L2, and that trip is a large part of what holds the card's clock down (probes/README.md, "Where the
+// rotation fold's time goes"). Every offset is a shared-memory address under 65536, so two fit a word: a
+// first turn's record is {A's two, B's two}, a later turn's {the stage address of the k-step's A fragments,
+// B's two}. The loop parts them with two ALU steps.
 extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, const uint32_t *__restrict__ permB,
                                         const uint8_t *__restrict__ order, uint32_t *__restrict__ offs,
                                         uint32_t ksteps) {
@@ -263,7 +269,7 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
   const uint32_t ks = idx >> 5, l = idx & 31u;
   const uint32_t ch = ks >> 2, s = ks & 3u;
   const uint32_t sign = l >> 4, slot = 4u * ((l & 7u) >> 1) + 2u * ((l >> 3) & 1u) + (l & 1u);
-  const size_t warpWords = (size_t)(ksteps + 1u) * 32u * 4u;
+  const size_t warpWords = (size_t)(ksteps + 1u) * 32u * 2u;
   uint32_t pa[2] = {0u, 0u}, pb[2] = {0u, 0u};
   if (ks < ksteps)
     for (uint32_t h = 0; h < 2u; h++) {
@@ -274,14 +280,11 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
   for (uint32_t w = 0; w < 8u; w++) {
     const uint32_t j = w & 3u, band = w >> 2;
     const uint32_t turn = ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ 1u) : ((s + 4u - j) & 3u);
-    uint32_t *o = offs + w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 4u;
-    o[0] = 16u * pa[0] + 2048u * ROT_MT * band;
-    o[1] = 16u * pa[1] + 2048u * ROT_MT * band;
-    o[2] = 16u * pb[0] + ROT_TABB + 8192u * j;
-    o[3] = 16u * pb[1] + ROT_TABB + 8192u * j;
-    if (turn && ks < ksteps) {
-      o[0] = ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l;
-      o[1] = 0u;
-    }
+    uint32_t *o = offs + w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 2u;
+    const uint32_t a0 = 16u * pa[0] + 2048u * ROT_MT * band, a1 = 16u * pa[1] + 2048u * ROT_MT * band;
+    const uint32_t b0 = 16u * pb[0] + ROT_TABB + 8192u * j, b1 = 16u * pb[1] + ROT_TABB + 8192u * j;
+    o[0] = turn && ks < ksteps ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l
+                               : a0 | (a1 << 16);
+    o[1] = b0 | (b1 << 16);
   }
 }

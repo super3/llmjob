@@ -66,6 +66,7 @@ const {
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
 const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
+const { readRotationFoldEnv, CORE_ROTATION_FOLD_ENV } = require('../shared/rotationFold');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -783,6 +784,14 @@ async function startMining(settings, llmCoRuns) {
     cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
   });
   if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
+
+  // The rotation fold (shared/rotationFold): off unless LLMJOB_ROTATION_FOLD=1
+  // is in the app's environment, read on every start like the two above. It is
+  // handed to the CUDA core as its own variable. Which cards can run it, and
+  // what a card that cannot says, is the core's and the miner's business.
+  const foldRequest = readRotationFoldEnv(process.env);
+  if (foldRequest.warning) send('miner:log', { level: 'warn', line: foldRequest.warning });
+  if (foldRequest.on) process.env[CORE_ROTATION_FOLD_ENV] = '1';
 
   const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({

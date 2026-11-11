@@ -85,6 +85,39 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
   });
 });
 
+// The offsets records are a contract between three places: the kernel that writes them (rot_aux_offs, in the
+// cubin), the hand loop that reads them (rfold.py's co, in the same cubin) and the host that sizes the table
+// (in the addon). The hash list is what keeps a cubin of one form out of a core of the other.
+describe('the offsets records are 8 bytes in the kernel, the loop and the host alike', () => {
+  const KERNEL = read('native', 'src', 'pearl_rot.cu');
+
+  test('rot_aux_offs writes two words a lane a k-step', () => {
+    const offs = KERNEL.slice(KERNEL.indexOf('extern "C" __global__ void rot_aux_offs('));
+    expect(offs).toContain('const size_t warpWords = (size_t)(ksteps + 1u) * 32u * 2u;');
+    expect(offs).toContain('uint32_t *o = offs + w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 2u;');
+    // A first turn's record is A's two offsets and B's two; a later turn's has the stage address whole.
+    expect(offs).toContain('o[0] = turn && ks < ksteps ? ROT_STG + band * (2048u * ROT_MT) + s * (512u * ROT_MT) + 16u * l\n'
+      + '                               : a0 | (a1 << 16);\n    o[1] = b0 | (b1 << 16);');
+    // Two offsets fit a word only while every table is under 65536 in shared memory: A's and B's are.
+    const num = (name) => Number(new RegExp('#define ' + name + ' \\(?(\\d+)u').exec(KERNEL)[1]);
+    expect(num('ROT_MT')).toBe(6);
+    expect(2048 * (2 * num('ROT_MT') + 16) + 2048).toBeLessThan(65536);
+  });
+
+  test('the hand loop loads 8 bytes a k-step by default and parts them', () => {
+    expect(RFOLD).toMatch(/\n {11}al=1, bl=1, bp=1, cq=0, /);
+    expect(RFOLD).toMatch(/\n {11}co=1,\n/);
+    expect(RFOLD).toContain('rec = 0x100 if cfg["co"] else 0x200');
+    expect(RFOLD).toContain('size=64 if cfg["co"] else 128');
+    expect(ASM).toContain('(r"LDG\\.E\\.64 " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1b00)),');
+  });
+
+  test('the host allocates a table of that size', () => {
+    expect(ROT).toContain('r->offsWords = (size_t)8 * (r->ksteps + 1u) * 64u;');
+    expect(ROT).toContain('const size_t offs = (size_t)3 * 8 * (p->k / 32 + 1) * 256;');
+  });
+});
+
 describe('CI builds it with the release toolkit (native-core.yml)', () => {
   const build = step(NATIVE_CORE, 'Build the rotation fold\'s cubin (RTX 40, opt-in, not blocking)');
 

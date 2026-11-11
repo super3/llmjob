@@ -1717,6 +1717,59 @@ describe('mining', () => {
     });
   });
 
+  // The rotation fold (shared/rotationFold): the GUI's part is its one switch,
+  // LLMJOB_ROTATION_FOLD in the app's environment, handed to the CUDA core as
+  // PEARL_FOLD_ROT. Which cards run it, and the check of it, are the core's and
+  // the miner's (pearlMinerFoldCheck.test.js).
+  describe('the rotation fold', () => {
+    const ENV = 'LLMJOB_ROTATION_FOLD';
+    const CORE = 'PEARL_FOLD_ROT';
+    const logged = (ctx) => ctx.sent('miner:log').filter((l) => /rotation fold|ROTATION_FOLD/.test(l.line));
+    let before;
+    beforeEach(() => {
+      before = [ENV, CORE].map((k) => [k, Object.prototype.hasOwnProperty.call(process.env, k), process.env[k]]);
+      delete process.env[ENV];
+      delete process.env[CORE];
+    });
+    afterEach(() => {
+      for (const [k, had, v] of before) {
+        if (had) process.env[k] = v;
+        else delete process.env[k];
+      }
+    });
+
+    it('is off unless asked for: the core\'s variable is not set, and nothing is logged', async () => {
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBeUndefined();
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('LLMJOB_ROTATION_FOLD=1 sets the core\'s variable for the miner it starts', async () => {
+      process.env[ENV] = '1';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(ctx.PearlEngine.instances[0].start).toHaveBeenCalled();
+      expect(process.env[CORE]).toBe('1');
+      expect(logged(ctx)).toEqual([]);
+    });
+
+    it('ignores a bad LLMJOB_ROTATION_FOLD with a warning, and leaves the fold off', async () => {
+      process.env[ENV] = 'true';
+      const ctx = await boot();
+      ctx.emit('miner:start', { address: VALID_ADDR, mode: 'mining' });
+      await flush();
+      expect(process.env[CORE]).toBeUndefined();
+      expect(logged(ctx)).toEqual([{
+        level: 'warn',
+        line: 'LLMJOB_ROTATION_FOLD=true ignored (must be 1 or 0); the rotation fold stays off',
+      }]);
+    });
+  });
+
   // The core clock offset trial: the plan is shared/coreOffset's
   // (coreOffset.test.js) and the trial is PearlMiner's. The GUI's part is the
   // same as for the memory clock, and its one switch is LLMJOB_MINE_CORE_OFFSET

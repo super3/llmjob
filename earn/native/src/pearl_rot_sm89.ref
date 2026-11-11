@@ -2,15 +2,20 @@
 #   <toolkit release> <hash>
 # The hash is the cubin's sha256 with its string table zeroed (python probes/hand89/asm89.py hash <cubin>).
 # probes/hand89/build_rot.py refuses to write pearl_rot_sm89.cubin unless what it built is listed here for the
-# toolkit that built it. The loop in that file is written by hand, so a new line is added only after the file
-# it names has run on an RTX 40 card: probes/verify-hits.js 400 of 400 with the fold on, and shares accepted.
+# toolkit that built it, and the host loads the file beside the core only when its hash is one of these
+# (kRotCubins in pearl_host_rot.inc holds the same list). The loop in that file is written by hand, so a new
+# line is added only after the file it names has run on an RTX 40 card: probes/verify-hits.js 400 of 400 with
+# the fold on, and shares accepted. A line for a loop that is no longer built is taken out: its file has
+# another form of offsets records than this host writes.
 
-# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090, 11 November 2026: verify-hits 400 of 400 three times,
-# Kryptex 24 shares accepted and none rejected.
-12.6 15817a7be9c5afdd443cc0aa52b1e14c8299b55d3ac350dacb63f3968a8e388e
+# The loop of 11 November 2026, later: a gather's IADD3 and PRMT late, offsets records of 8 bytes
+# (rfold.py al=1 bl=1 bp=1 co=1).
 
-# CUDA 12.8 (what CI builds with, Linux and Windows: the same file apart from its string table). The same code
-# as 12.6's, byte for byte; one byte of each .nv.info section differs, the toolkit's version. rig01, RTX 4090,
-# 11 November 2026, the file native core run 43105008459 built: verify-hits 400 of 400, and 33 shares accepted
-# and none rejected by the stand-in pool.
-12.8 6c71715b46354aa9d5b91d1eac0a8fed8fc7269bd6c15dfcdccbbf999de2a7c4
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (621 hits, 16 salts), and
+# 333.6 TH/s by hashrate.js against 330.9 for the loop before it, twins within 0.02%.
+12.6 42998841642bb19c476967994ed22f9d353e38e714dc4df4b3f927618167c1c3
+
+# CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
+# version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
+# verify-hits 400 of 400 (733 hits, 18 salts), and 18 shares accepted and none rejected by the stand-in pool.
+12.8 ad9ada2fa4fcdd1672953fe4b971d793e2d4303da3451c731d9b9dcc9d8e3dac

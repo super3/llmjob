@@ -104,6 +104,7 @@ FORMS = [
     (r"STS\.64 " + MEM + ", " + R, lambda m: (_mem(0x7388 | _reg(m[3]) << 32, m, 1), 0xa00)),
     (r"STS " + MEM + ", " + R, lambda m: (_mem(0x7388 | _reg(m[3]) << 32, m, 1), 0x800)),
     (r"LDG\.E\.128 " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1d00)),
+    (r"LDG\.E\.64 " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1b00)),
     (r"ATOMS\.XOR RZ, " + MEM + ", " + R, lambda m: (_mem(0x738c | RZ << 16 | _reg(m[3]) << 32, m, 1), 0x3800000)),
     (r"IADD3 " + R + ", " + R + ", " + I + ", " + R,
      lambda m: _f(0x7810, 0x7ffe000, rd=_reg(m[1]), ra=_reg(m[2]), imm=_num(m[3]), rc=_reg(m[4]))),

@@ -223,8 +223,13 @@ measured yet: if a rig mines slower on this release, try `--gpu-wait poll`, then
 ### A second kernel for RTX 40 cards, to try (`--rotation-fold`)
 
 Experimental, and off by default. `--rotation-fold` on the CLI, or
-`PEARL_FOLD_ROT=1` in either app's environment, makes each RTX 40 card mine on a
-second kernel, the rotation fold. On the one card it has been measured on, an
+`LLMJOB_ROTATION_FOLD=1` in the desktop app's environment, makes each RTX 40
+card mine on a second kernel, the rotation fold. The app has no setting for it
+in its window: set the variable the way `LLMJOB_MINE_MEM_CLOCK` is set, in the
+shell that launches the app on Linux or in Windows' system environment
+variables. It is read on every start, and a value other than 1 or 0 is ignored
+with a warning. (Both become `PEARL_FOLD_ROT=1`, the variable the mining core
+reads.) On the one card it has been measured on, an
 RTX 4090 at 450 W, it mined 330.5 TH/s against 317.2 for the normal kernel,
 about 4% more, with every share accepted. It uses about 1.3 GB more card memory
 (2.7 GB against 1.3 GB).

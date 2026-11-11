@@ -301,8 +301,8 @@ cleanly rather than crashing.
 ## A second RTX 40 fold behind a switch (`--rotation-fold`, off by default)
 
 The rotation fold is a second sm_89 fold. It is off unless a rig asks for it: `--rotation-fold` on
-the CLI, or `PEARL_FOLD_ROT=1` in either app's environment (the flag sets the variable, which is
-what the host reads). It then runs on a card that is compute 8.9, when the fold's cubin,
+the CLI, or `LLMJOB_ROTATION_FOLD=1` in the desktop app's environment (`src/shared/rotationFold.js`).
+Both set `PEARL_FOLD_ROT=1`, which is what the host reads, and which the probes set themselves. It then runs on a card that is compute 8.9, when the fold's cubin,
 `pearl_rot_sm89.cubin`, is beside the core (or `PEARL_ROT_CUBIN` names it) and the card has the
 memory free (2.7 GB against the release fold's 1.3 GB). With any of those missing the card runs
 the release fold, and the line that names the card says why: `pearl_host_card_k` writes the

@@ -1,7 +1,7 @@
 'use strict';
 
 // The check a card's rotation fold has to pass before the miner trusts it
-// (--rotation-fold on the CLI, PEARL_FOLD_ROT=1 in the desktop app's
+// (--rotation-fold on the CLI, LLMJOB_ROTATION_FOLD=1 in the desktop app's
 // environment; off unless asked for). Pure: PearlMiner feeds it the hits and
 // the time (main/pearlMiner, _feedFoldCheck).
 //

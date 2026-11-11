@@ -648,7 +648,7 @@ describe('--rotation-fold', () => {
       'Off by default.',
       'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',
       'the card mines on the normal kernel and the log says why',
-      'PEARL_FOLD_ROT=1 does the same',
+      'In the desktop app: LLMJOB_ROTATION_FOLD=1 in its environment.',
     ]) expect(text).toContain(part);
   });
 });

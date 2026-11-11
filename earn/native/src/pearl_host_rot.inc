@@ -146,8 +146,8 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
 const char *const kRotCubins[] = {
-    "15817a7be9c5afdd443cc0aa52b1e14c8299b55d3ac350dacb63f3968a8e388e",  // CUDA 12.6
-    "6c71715b46354aa9d5b91d1eac0a8fed8fc7269bd6c15dfcdccbbf999de2a7c4",  // CUDA 12.8
+    "42998841642bb19c476967994ed22f9d353e38e714dc4df4b3f927618167c1c3",  // CUDA 12.6
+    "ad9ada2fa4fcdd1672953fe4b971d793e2d4303da3451c731d9b9dcc9d8e3dac",  // CUDA 12.8
 };
 
 bool rot_named() {
@@ -218,7 +218,7 @@ size_t rot_needed_bytes(const PearlProfile *p) {
   const size_t aLeaves = (size_t)p->m * p->k / 1024, bLeaves = (size_t)p->n * p->k / 1024;
   const size_t tree = 2 * (aLeaves + bLeaves) * 32 + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
   const size_t tabs = (size_t)p->m * 128 * 5 + (size_t)p->n * 128 * 2;
-  const size_t offs = (size_t)3 * 8 * (p->k / 32 + 1) * 512;
+  const size_t offs = (size_t)3 * 8 * (p->k / 32 + 1) * 256;
   return tree + tabs + offs + ((size_t)16 << 20);
 }
 
@@ -728,7 +728,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   r->tilesPerBatch = tpb * r->sms;
   ctx->batch = r->tilesPerBatch * PEARL_ROT_UNITS;
   const size_t tabA = (size_t)p.m * 128u, tabB = (size_t)p.n * 128u;
-  r->offsWords = (size_t)8 * (r->ksteps + 1u) * 128u;
+  // Eight warps, a record of two words a lane a k-step (rot_aux_offs), and one k-step more than a tile has.
+  r->offsWords = (size_t)8 * (r->ksteps + 1u) * 64u;
   for (int i = 0; i < 3; i++) {
     if (cudaMalloc(&r->dTabA[i], tabA) != cudaSuccess) return bad("allocating A's tables", i);
     if (cudaMalloc(&r->dOrder[i], r->k) != cudaSuccess) return bad("allocating an order", i);

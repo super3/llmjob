@@ -87,9 +87,10 @@ def layout(mt, dg=0):
     return r
 
 
-def ldg(dst, base, off, **k):
-    """A 16-byte global load: asm89's LDG with the uniform register the kernel was compiled with."""
-    text = "LDG.E.128 R%d, [R%d.64%s]" % (dst, base, "+0x%x" % off if off else "")
+def ldg(dst, base, off, size=128, **k):
+    """A 16-byte global load (8 with size=64): asm89's LDG with the uniform register the kernel was compiled
+    with."""
+    text = "LDG.E.%d R%d, [R%d.64%s]" % (size, dst, base, "+0x%x" % off if off else "")
     lo, hi = asm89.assemble(text)
     lo = (lo & ~(0xFF << 32)) | (UR << 32)
     return Ins(text, raw=(lo, hi), **k)
@@ -417,7 +418,9 @@ def chunk(cfg, R):
     return G, iwait
 
 
-def emit(G, iwait, cfg):
+def emit(G, iwait, cfg, bfalt=None):
+    """`bfalt`: a second set of sixteen registers for B's fragments, read in a chunk's second and fourth k-step
+    (rfold.py's bfa: the next turn's fragments are then loaded while this turn's are still read)."""
     mt = cfg["mt"]
     ni, tot = 8 * mt, 32 * mt
     out, most = [], 0
@@ -439,7 +442,8 @@ def emit(G, iwait, cfg):
         if cfg["sf"]:
             ist = max(1, ist - nsingle) if nsingle < len(items) else 1
         a = AF[(mb + (mt & 1) * s) & 1]
-        out.append(Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (ACC + 4 * i, a, BF + 2 * nb, ACC + 4 * i),
+        bf = bfalt if bfalt is not None and s & 1 else BF
+        out.append(Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (ACC + 4 * i, a, bf + 2 * nb, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):

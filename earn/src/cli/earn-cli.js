@@ -67,6 +67,7 @@ const {
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
 const { planCoreOffsets } = require('../shared/coreOffset');
+const { CORE_ROTATION_FOLD_ENV } = require('../shared/rotationFold');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -857,7 +858,7 @@ async function run(argv) {
   // --gpu-wait beats PEARL_WAIT, which the CUDA core reads when it opens a card.
   if (settings.gpuWait) process.env.PEARL_WAIT = settings.gpuWait;
   // --rotation-fold turns on PEARL_FOLD_ROT, which the CUDA core reads the same way.
-  if (settings.rotationFold) process.env.PEARL_FOLD_ROT = '1';
+  if (settings.rotationFold) process.env[CORE_ROTATION_FOLD_ENV] = '1';
   const gpuPick = gpuChoice(settings, process.env);
   if (gpuPick && gpuPick.error) {
     log('error: ' + gpuPick.error, process.stderr);

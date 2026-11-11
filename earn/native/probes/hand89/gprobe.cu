@@ -23,6 +23,8 @@
 //   fragments itself and stores them, and the other three load them at a later turn. A warp's records are in
 //   its own order; a record of a later turn holds, in place of A's first offset, where that k-step's stored
 //   fragments are. The kernel as ptxas compiles it cannot use these offsets: rot is for the hand-written loop.
+//   rot 2 is the same in records of 8 bytes, two offsets to a word (rfold.py's co, its default now); rot 1
+//   writes the 16-byte records, for rfold.py co=0.
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 -o gprobe gprobe.cu   (and -cubin for the file gfold.py patches)
 #include <chrono>
 #include <cstdint>
@@ -121,7 +123,7 @@ int main(int argc, char **argv) {
   const uint32_t order_mode = argc > 6 ? (uint32_t)atoi(argv[6]) : 0u;
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
   const uint32_t rot = argc > 8 ? (uint32_t)atoi(argv[8]) : 0u;
-  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 6u) {
+  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 9u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
   }
@@ -224,8 +226,10 @@ int main(int argc, char **argv) {
         res[i][3] = pm[1][1][kk] & 7u;
       }
       // 4 to 6 are for the rotation fold, where a warp gathers B eight times a k-step and A three: B's rows
-      // weigh 3 (4), or the cost is squared with B's rows at 1 (5) or 2 (6).
-      g_wt[2] = g_wt[3] = order_mode == 4u ? 3 : order_mode == 6u ? 2 : 1;
+      // weigh 3 (4), or the cost is squared with B's rows at 1 (5), 2 (6) or 3 (9). 7 and 8: squared, A's
+      // rows at 2 or 3 and B's at 1.
+      g_wt[2] = g_wt[3] = order_mode == 4u || order_mode == 9u ? 3 : order_mode == 6u ? 2 : 1;
+      g_wt[0] = g_wt[1] = order_mode == 7u ? 2 : order_mode == 8u ? 3 : 1;
       g_sq = order_mode >= 5u;
       order_search(res, order_mode == 2u ? 12u : order_mode == 3u ? 3u : 15u, 8, member);
       for (uint32_t oc = 0; oc < 16u; oc++)
@@ -283,6 +287,25 @@ int main(int argc, char **argv) {
         coll[q >> 1] += extra;
         worst[q >> 1] += most;
       }
+  }
+  // rot 2: the same offsets in half the bytes (rfold.py co=1). A record is two words where it was four. A
+  // first turn's {x, y, z, w} is {x | y << 16, z | w << 16}; a later turn's (x the stage address, y nothing)
+  // is {x, z | w << 16}. Every offset is a shared-memory address under 65536. The records come from the L2:
+  // 256 bytes a warp a k-step, not 512.
+  if (rot == 2u) {
+    const size_t recs = hOffs.size() / 4u;
+    std::vector<uint32_t> packed(recs * 2u);
+    for (size_t i = 0; i < recs; i++) {
+      const uint32_t *o = &hOffs[i * 4u];
+      const uint32_t turn = (uint32_t)((i / 32u) % (size_t)(ksteps + 1u)) & 3u;
+      if (((turn ? 0u : o[0] | o[1]) | o[2] | o[3]) >> 16) {
+        fprintf(stderr, "%s: an offset does not fit 16 bits\n", name);
+        return 1;
+      }
+      packed[2u * i] = turn ? o[0] : o[0] | (o[1] << 16);
+      packed[2u * i + 1u] = o[2] | (o[3] << 16);
+    }
+    hOffs.swap(packed);
   }
   const double mats = (double)ksteps * 8.0;
   // The tables: [row group][A group 0 .. NA-1][p] and [column block][B group 0 .. 15][p], 16 bytes an entry.

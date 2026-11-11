@@ -161,7 +161,8 @@ const USAGE = [
   '                           that. If the card is not an RTX 40, a file is',
   '                           missing, memory is short or a check fails, the',
   '                           card mines on the normal kernel and the log says',
-  '                           why. PEARL_FOLD_ROT=1 does the same.',
+  '                           why. In the desktop app: LLMJOB_ROTATION_FOLD=1',
+  '                           in its environment.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
