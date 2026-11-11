@@ -2507,3 +2507,98 @@ table bytes feeding the IMMA operands, a chunk 192 IMMA and 502 others, IMMA sta
 
 So the form holds the pipe if the collisions are kept two-way, which the searched order of k is said to do for 92%
 of matrices; chance collisions cost 6.6 points. Nothing real is built of it yet.
+
+### The gather fold, the direct fold, and what sets the clock: `hand89/gprobe.cu` (RTX 4090, 2026-11-11)
+
+Sixth round on `goal/nv-kernel`. Two more folds built for real as probes, each compiled and written by hand,
+each checked against a CPU fold; and the measurement that explains why none of the draw folds beats the release.
+Everything is on rig01's RTX 4090, k 8192 unless stated. "By count" is pipe use x clock x 0.13107; no figure here
+is a mining rate.
+
+**Files.** `hand89/gfold_h.cuh` is the kernel, its chunk loop in a function that is never inlined (`GP_DIRECT`
+picks the fold). `hand89/gprobe.cu` is the harness: `gprobe <name> <k> <tiles a block> [secs] [tiles to check]
+[order] [fake]`. `hand89/gfold.py` writes the loop by hand and patches it into the cubin (`PD_CUBIN` runs it).
+`asm89.py` now takes a loop function with two exits and finds the register it returns through.
+
+**The gather fold** (the maths review's form: each warp builds its fragments with `ldmatrix.trans` on static
+tables; no stage, no store, no barrier). 192 sums a thread, a k-step is 20 LDSM, 40 IADD3 and 40 PRMT a warp for
+48 IMMA, 2.66 plain steps an IMMA with the readout. The offsets are one table a warp with the group's place in
+shared memory folded in, so a loaded word is an address. CPU check: 16,384 of 16,384 lane transcripts over 64
+tiles, in the definition's order and both searched orders, six runs by hand in all, and 4,096 of 4,096 at
+k 8192; compiled, 16,384 of 16,384.
+
+| Order of k in a chunk | Rows of 8 that collide, A / B | Compiled | By hand | Clock, watts (40 to 60 s) | By count |
+|---|---|---|---|---|---|
+| The definition's | 2.74 / 2.77 | 84.4% | 88.9% | 2584 MHz, 449 W | 301 |
+| Searched for B alone (once a job) | 2.76 / 0.72 | | 95.4% | | |
+| Searched for A alone | 0.76 / 2.72 | | 95.6% | | |
+| Searched for A and B (once a salt) | 1.01 / 1.00 | 89.0% | 96.7% | 2520 MHz, 436 W | 319 |
+| B searched, A made collision-free (timing only: the hybrid's stand-in) | 0 / 0.72 | | 97.2% | 2519 MHz, 432 W | 321 |
+| None collide (timing only) | 0 / 0 | | 97.4% | 2517 MHz, 429 W | 321 |
+
+The search (ported from `S/algo/order.js`) takes 4.3 ms a chunk in C++ for both sides and 1.6 ms for one. Two
+copies of A's tables with their entries at different places mod 8 would leave 1.12 rows of 8 colliding with no
+search at all (a matching a matrix; simulated, not built). None of it matters: the form's ceiling is 321.
+
+**The clock is not held by the 450 W limit in these loops.** The same loop at a 480 W limit: 2522 MHz, 432 W. At
+400 W: 2452 MHz, 400 W. With every operand byte the fill (timing only, same code and pipe use): 2535 MHz, 318 W.
+So the operands' values cost 112 W of 430, and the clock does not use them. What holds it is the loop's own
+memory and ALU steps (every operand byte the fill, so watts are out of it; `nvidia-smi`'s power-cap flag is on in
+the first three rows, in 13 of 20 samples in the fourth, and off in the last three):
+
+| Loop (timing only) | Plain steps an IMMA | Pipe | Clock | Watts |
+|---|---|---|---|---|
+| The whole gather loop | 2.66 | 97.41% | 2535 MHz | 319 |
+| No readout | 2.12 | 99.27% | 2559 MHz | 319 |
+| The gathers' LDSM alone, and the readout | 0.99 | 99.16% | 2638 MHz | 317 |
+| LDSM replaced by moves (operands are then garbage) | 2.66 | 97.12% | 2627 MHz | 428 |
+| No gathers (readout and one offsets load) | 0.57 | 99.50% | 2700 MHz | 252 |
+| One offsets load a k-step | 0.04 | 99.54% | 2700 MHz | 236 |
+| IMMA alone | 0.02 | 99.54% | 2715 MHz | 215 |
+
+**A fold with no draw** (timing only: each fragment one LDSM from a table of operand-like bytes, ten a k-step;
+`gfold.py direct=1`; 40 s at 450 W, run twice):
+
+| Loop | Plain steps an IMMA | Pipe | Clock, watts | By count |
+|---|---|---|---|---|
+| Ten LDSM a k-step, no readout | 0.24 | 99.62% | 2685 MHz, 400 W | 351 |
+| Ten LDSM and the readout | 0.78 | 99.37% | 2685 MHz, 425 W | 350 |
+| and 4 copy units a k-step (a 16-byte global load, a 16-byte shared store) | 0.95 | 99.22% | 2626 to 2633 MHz, 449 W | 341 to 342 |
+| and 8 copy units | 1.11 | 99.04% | 2565 MHz, 442 W | 333 |
+| 7 copy units and 17 more ALU steps (the release's count) | 1.43 | 97.95% | 2565 to 2571 MHz, 442 W | 330 |
+| The real gather fold, searched order, same hold | 2.66 | 96.68% | 2521 MHz, 434 W | 319.5 |
+
+A 192 x 256 block needs 14,336 bytes of operands a k-step, which is 3.5 copy units a warp: the second row from
+the top is the least a copy fold can do, and it sits where the competitors are (338 to 342 TH/s at 2600 to 2625
+MHz). The release's fold has about twice that many loads and stores (0.51 an IMMA) and runs 2531 MHz.
+
+**The direct fold** (`GP_DIRECT`, `gfold.py dg=1`): no draw, A' and B' ready in global memory in the fragments'
+own layout, a fragment one 16-byte load a lane; no shared stage, no LDSM, no store, no barrier, the SM's cache
+is what the warps share. CPU check 16,384 of 16,384 compiled, and by hand in every form in the table (nine runs
+in all, and 4,096 of 4,096 at k 8192 twice).
+
+| Build | Pipe | Clock, watts | By count |
+|---|---|---|---|
+| Compiled | 89.6% | 2610 MHz, 450 W | 306 |
+| By hand, a fragment loaded 7 IMMA ahead | 68.4% | 2685 MHz, 369 W | |
+| By hand, and every fragment of the next k-step loaded ahead into scratch registers (`pf=1`) | 99.02% | 2476 MHz, 449 W | 321 |
+| the same two k-steps ahead | 73.0% | | |
+| `pf=1` at k 65536 (370 MB of operands, beyond the card's cache) | 73.9% | 2387 MHz, 449 W | 231 |
+
+It holds the pipe and loses the clock: twenty global loads a k-step cost more than ten LDSM and seven copies.
+
+**Three things a hand-written loop must do, each found by a fault here.**
+1. An instruction that reads a register a load writes waits on the load's scoreboard itself, or issues a gap or
+   more behind one that did. The fifth round's gather stream shifted a loaded quad in place with only the first
+   shift waiting: the others read the registers before the load wrote them (its "illegal memory access").
+2. Nothing waits on a load's scoreboard right behind the load. An LDSM one cycle behind the offsets load, waiting
+   on it, was not held; eight cycles behind, it is.
+3. A loop that returns through a register a load may still write (the direct fold returns through R4, a fragment
+   register) waits for every load first, and so do loads whose results are never read: one landed on a register
+   of the kernel's after the return.
+
+**What it rules out, and what is left.** No draw on the chip clears +3% on this card: gather 319, staged 319
+(the fifth round's loop over 60 s: 96.0%, 2536 MHz), direct 321, against the release's 317. The form the figures
+point to is the release's own, a copy fold on a shared stage, written by hand with half its copies: ten LDSM, 3.5
+global loads and 3.5 shared stores a warp a k-step, 341 by count as a timing stream with no barrier in it. The
+shortest way there is `hand89/fold.py`, which is that loop with draw units where the copy units would go.

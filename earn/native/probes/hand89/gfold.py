@@ -57,9 +57,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=1, iy=1, ly=1, ru=0, lead=2, sf=0, hold=1, pst
            # the loads' address base goes in (the one the compiled loop function uses: 4 gather, 14 direct).
            dg=0, ur=4,
            # pf: the direct fold touches its operands ahead of time. 1: every warp loads each of its ten
-           # fragments of the k-step after next into scratch registers (the loads that count then find the
-           # lines in the SM's cache). pfk: how many k-steps ahead (2).
-           pf=0, pfk=2)
+           # fragments of the next k-step into scratch registers (the loads that count then find the lines
+           # in the SM's cache: 68% of the pipe without, 99% with). pfk: how many k-steps ahead (two is too
+           # far: 73%).
+           pf=0, pfk=1)
 W, XR, AF, BF, ACC = 0, [2, 3], [4, 8], 12, 28
 # Scoreboards: the gathers' LDSM go round 0-3; the offsets load; the transcript word's load and the holds.
 SB_OFF, SB_RD = 4, 5
@@ -288,10 +289,12 @@ def chunk(cfg, R):
                 for g in (b + ni + 2 * p, b + ni + 2 * p + 1):
                     iwait.setdefault(g % tot, []).append(3)
             for j in range(mt + 4) if cfg["pf"] else ():
-                # Gaps 5 on: pb is the chunk's own from gap 4. The results are never read.
+                # Gaps 5 on: pb is the chunk's own from gap 4. The results are never read, but the loads
+                # have a scoreboard: the loop's end waits for them too, or one would land on a register
+                # of the kernel's after the return (it did: a fault in long runs).
                 ahead = s + cfg["pfk"]
                 off = 1024 * mt * ahead + 512 * j if j < mt else 8192 * ahead + 512 * (j - mt)
-                put(b + 5 + 3 * j, ldg(R["s"], pa if j < mt else pb, off), False)
+                put(b + 5 + 3 * j, ldg(R["s"], pa if j < mt else pb, off, wsb=SB_OFF), False)
         put(tot - 4, Ins(addi(pa, pa, 4096 * mt), wait=hw), False)
         put(tot + 4, Ins(addi(pb, pb, 0x8000), wait=hw), False)
     for s in range(4) if not cfg["dg"] else ():
