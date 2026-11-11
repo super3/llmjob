@@ -521,7 +521,8 @@ int main(int argc, char **argv) {
   void *cubin_fn = nullptr;
   launch_t cubin_launch = nullptr;
 #ifdef __linux__
-  if (const char *cb = getenv("PP_CUBIN")) {
+  const char *cb = getenv("PP_CUBIN");
+  if (cb && *cb) {
     void *lib = dlopen("libcuda.so.1", RTLD_NOW);
     typedef int (*load_t)(void **, const char *);
     typedef int (*get_t)(void **, void *, const char *);

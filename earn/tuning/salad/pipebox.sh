@@ -32,6 +32,8 @@
 #   PP_PERMS      NAME:TAG:RULES ...: after the short runs, each named stream again with its loop's steps placed
 #                 by earn/tuning/pipeprobe/perm.py's RULES (the kernel is launched from the reordered cubin)
 #   PP_PTRACE     NAME.TAG ...: the reordered loops to print as traces
+#   PP_PLONGS     NAME.TAG ...: reordered kernels to run long, after PP_LONGS
+#   PP_DUMPS      NAME:A:B ...: the listing of a stream's loop from its instruction A to B, as the compiler made it
 set -u
 # Salad's log service hands back at most 100 lines for its smallest window (about 2 s), so a burst of lines loses
 # some: psay waits a moment after each.
@@ -413,7 +415,17 @@ M55|$Z1 -DGX=1 -DWMASK=0x55u
 M77|$Z1 -DGX=1 -DWMASK=0x77u
 N0f|$Z1 -DWMASK=0x0fu
 N33|$Z1 -DWMASK=0x33u
-Mff|$Z1 -DGX=1 -DWMASK=0xffu"
+Mff|$Z1 -DGX=1 -DWMASK=0xffu
+full2N|$Z1 -DRD=2 -DTRW=0 -DDRAW=2 -DDPOS=1 -DDREAL=1 -DDSYNC=1
+rd4N|$Z1 -DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=1
+d3mN|$Z1 -DDRAW=3 -DDPOS=1
+d2mN|$Z1 -DDRAW=2 -DDPOS=1
+baseF|$Z1 -DFILLRND=2
+rd2aF|$Z1 -DRD=2 -DTRW=0 -DFILLRND=2
+d4mF|$Z1 -DDRAW=4 -DDPOS=1 -DFILLRND=2
+d3mF|$Z1 -DDRAW=3 -DDPOS=1 -DFILLRND=2
+rd4F|$Z1 -DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=1 -DFILLRND=2
+rd3F|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -476,6 +488,13 @@ case "${PP_SET:-}" in
       PP_TRACES="A11 A11h A9"
       PP_PTRACE="F1.e1 rd2aN.x1 d4mN.e1 A11h.s1"
       PP_PERMS="F1:o:*=orig F1:e1:X=even,1 p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 U1:h1:A=every,2,1 U1:h2:A=every,4,2 U1:e1:A=even,1 B2:s1:X=every,2,1,0/A=every,2,1,1 B2:s2:X=every,2,1,1/A=every,2,1,1 B2:s3:X=even,1,0/A=even,1,96 B48:e1:*=even,1 B48:b48:*=every,48,0,47 B48:b8:*=every,8,0,7 rd2aN:x1:X=even,1,8 rd2aN:x2:X=even,2,8 d4mN:e1:*=even,1 d4mN:e2:*=even,2 d4mN:e4:*=even,4 d4mN:b:*=every,48,0,23 full3N:e1:*=even,1 full3N:e2:*=even,2 A1:e1:A=even,1 A2:e1:A=even,1 A3:e1:A=even,1 A4:e1:A=even,1 A5:e1:A=even,1 A6:e1:A=even,1 A9:e1:S=even,1 A9h:e1:S=every,2,1 A11h:s1:L=every,2,1,0/X=every,2,1,1 A11h:s2:L=every,2,1,1/X=every,2,1,1 A11:e1:L=even,1/X=even,1,0 F1:x2:X=every,2,2 A9h:e2:S=even,1 p2k0:v2:A=every,2,2 p2k0:v4:A=every,4,4" ;;
+  # b3: the same with steps held where their registers allow (so each kernel computes what the compiler's did):
+  # the cost of one to eight independent adds a gap, what the UIADD3 that ptxas puts beside an XOR3 of sums is
+  # worth, and the readout and the draw shared out one or two a gap.
+  b3) PP_BUILD="base F0 F1 p2k0 B2 rd2aN d4mN d3mN d2mN rd4N full3N full2N A9h"
+      PP_DUMPS="F1:96:136 B2:96:130 rd2aN:0:44 rd2aN:268:314 d4mN:60:120"
+      PP_PTRACE="rd2aN.s1 d4mN.sp full3N.sp F1.x1u9"
+      PP_PERMS="p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e3:A=even,3 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 F1:o:*=orig F1:u9:U=all,191 F1:x1:X=even,1 F1:x1u9:X=even,1/U=all,191 F1:x1u1:X=even,1/U=even,1 rd2aN:o:*=orig rd2aN:u9:U=all,191 rd2aN:s1:X=seg,0:32:1,144:32:1,160:32:1 rd2aN:s1u9:X=seg,0:32:1,144:32:1,160:32:1/U=all,191 rd2aN:s2:X=seg,0:32:2,144:32:2,168:32:2 d4mN:o:*=orig d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:v2:*=every,2,0,1 d4mN:v4:*=every,4,0,3 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread rd4N:sp:*=spread rd4N:e2:*=even,2 full3N:sp:*=spread full3N:e2:*=even,2 full2N:sp:*=spread A9h:e1:S=every,2,1 A9h:e2:S=even,1" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
@@ -538,7 +557,7 @@ long() {
     done ) &
   sp=$!
   t0=$(date +%s.%N)
-  out=$(timeout 240 "$1/$3" "$3" "$CH" "${PP_LONG:-30}" 2>&1 | tail -1)
+  out=$(${4:+env "PP_CUBIN=$4"} timeout 240 "$1/$3" "${5:-$3}" "$CH" "${PP_LONG:-30}" 2>&1 | tail -1)
   kill $sp 2> /dev/null; wait $sp 2> /dev/null
   psay "$2 long $out | $(python3 $P/smi.py "$f" "$t0" 8 "$SQT")"
 }
@@ -546,14 +565,19 @@ T=nvcc$CUDA_VER
 # perm NAME TAG RULES: the stream's kernel with its loop's steps placed by perm.py's RULES, launched from the
 # reordered cubin by the stream's own program. The line before the run gives the gaps asked for, and the gaps
 # read back from the reordered cubin.
+# cub NAME: the stream's kernel as a cubin, and its listing.
+cub() {
+  local name=$1 d=$P/b flags
+  [ -s "$d/$name.csass" ] && return 0
+  flags=$(echo "$STREAMS" | awk -F'|' -v n="$name" '$1 == n { print $2; exit }')
+  "$CUDA/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
+  "$CUDA/bin/nvdisasm" -c "$d/$name.cubin" > "$d/$name.csass" 2> /dev/null
+  [ -s "$d/$name.csass" ]
+}
 perm() {
-  local name=$1 tag=$2 rules=$3 d=$P/b flags l
+  local name=$1 tag=$2 rules=$3 d=$P/b l
   [ -x "$d/$name" ] || { psay "$T perm $name.$tag: no program"; return; }
-  if [ ! -s "$d/$name.csass" ]; then
-    flags=$(echo "$STREAMS" | awk -F'|' -v n="$name" '$1 == n { print $2; exit }')
-    "$CUDA/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
-    "$CUDA/bin/nvdisasm" -c "$d/$name.cubin" > "$d/$name.csass" 2> /dev/null
-  fi
+  cub "$name"
   l=$(python3 "$R/earn/tuning/pipeprobe/perm.py" "$d/$name.cubin" "$d/$name.csass" "$d/$name.$tag.cubin" "$rules" 2>&1 | tail -1)
   [ -s "$d/$name.$tag.cubin" ] || { psay "$T perm $name.$tag FAIL $l"; return; }
   "$CUDA/bin/nvdisasm" -c "$d/$name.$tag.cubin" > "$d/$name.$tag.sass" 2> /dev/null
@@ -584,6 +608,10 @@ for s in ${PP_SHORTS:-d1m d2m d3m d1e d2e d3e d2r d3r rd1c4 rd1c16 rd2c4 rd2c16 
   [ -x $P/b/$s ] && short $P/b $T $s ${PP_V:+v}
 done
 # 2c. Reordered kernels.
+for x in ${PP_DUMPS:-}; do
+  IFS=: read -r pn pa pb <<< "$x"
+  cub "$pn" && python3 "$R/earn/tuning/pipeprobe/perm.py" "$P/b/$pn.cubin" "$P/b/$pn.csass" - - dump "$pa" "$pb" 2>&1     | while IFS= read -r l; do psay "$T dump $pn $l"; done
+done
 set -f   # a rule may hold a "*"
 for x in ${PP_PERMS:-}; do
   IFS=: read -r pn pt pr <<< "$x"
@@ -593,6 +621,10 @@ set +f
 # 3. The long runs, with clock and watts: the offset-slice bytes first, then hashed bytes, then base again.
 for s in ${PP_LONGS:-pure base rd1 rd2a d4m d4r full full3 baser rd1r rd2ar d4mr base}; do
   [ -x $P/b/$s ] && long $P/b $T $s
+done
+# 3b. Long runs of reordered kernels (PP_PLONGS: NAME.TAG ..., each made by PP_PERMS above).
+for x in ${PP_PLONGS:-}; do
+  [ -s "$P/b/$x.cubin" ] && long $P/b $T "${x%%.*}" "$P/b/$x.cubin" "$x"
 done
 psay "card after the probe $(q clocks.sm,power.draw,power.limit,temperature.gpu,utilization.gpu,memory.used)"
 # 4. A second toolkit's builds of the main streams, short runs and two long ones.
