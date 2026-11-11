@@ -75,7 +75,6 @@ The rows over 100% are odd PCs: one swung between 207 and 266 W, one is capped a
 | RTX 2080 Ti | Salad (300 W) | 1ff934b7 | 105.4 | 105.5 | 104.2 | 105.5 | 100% |
 | RTX 2080 Ti | Salad (260 W) | 7e24f884 | 97.4 | 97.9 | 94.8 | 94.6 | 99% |
 | RTX 2080 | Salad (260 W) | a5d2c787 | 79.0 | 80.9 | 76.6 | 76.0 | 98% |
-| RTX 2080 | Salad (172 W) | c6b154db | 125.5 | 128.8 | 126.6 | 121.8 | 97% |
 | RTX 2070 Super | Salad (215 W) | ef050aaa | 64.7 | 65.4 | 64.8 | 62.2 | 99% |
 | RTX 2070 Super | Salad (215 W) | 842bcd6e | 63.9 | 65.3 | 65.2 | 61.5 | 98% |
 | RTX 2070 | Salad (140 W) | b6b2b0c9 | 51.1 | 52.5 | 51.4 | 50.3 | 97% |
@@ -110,6 +109,8 @@ samples from the first minute on; the tensor peak is the card's SMs × 1024 MAC 
 - **`c6b154db` is not one RTX 2080.** OneZeroMiner's log on it reads `GPU 1 Share accepted`, and 125.5 TH/s is 190% of
   what GPU 0's 46 SMs can do at the 1,402 MHz it ran at. The PC has at least two cards; every miner mined them all,
   and `bench.sh` read the first card's power and clock. Its "% of best" stands, its TH/s and watts are not one card's.
+  So on 11 November its row (ours 125.5 against 128.8, 126.6 and 121.8, 97%) was taken out of the 9–10 November
+  table above, which holds single cards, and out of the count of rows: 53 NVIDIA rows, not 54.
 
 ### Salad, 10 November: what PeakMiner changed on RTX 20 at 2.20.1, and our fold in its shape (PR #290 goal work)
 
