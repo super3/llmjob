@@ -102,8 +102,11 @@ def regs(op, text):
     mnem = text.split()[1] if text.startswith("@") else text.split()[0]
     wide = 3 if op in ("IMMA", "LDSM") or "128" in mnem else 1 if "64" in mnem else 0
     out = set()
-    for cls, num in REG.findall(text):
-        for q in range(int(num), int(num) + (wide if cls == "R" else 0) + 1):
+    for x, (cls, num) in enumerate(REG.findall(text)):
+        w = wide if cls == "R" else 0
+        if op == "IMMA" and x == 2:   # sums, row fragment, column fragment, sums: the column fragment is two registers
+            w = 1
+        for q in range(int(num), int(num) + w + 1):
             out.add(cls + str(q))
     return out
 
