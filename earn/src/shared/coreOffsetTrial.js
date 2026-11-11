@@ -25,7 +25,7 @@
 // hands the card a job with a target easy enough to hit many times a second,
 // and recomputes each hit the way a pool would (shared/miner/checkHit). The
 // step passes at CHECK_HITS right hits. One wrong hit fails it, and so does a
-// check that ends with too few hits to mean anything. A failed step ends the
+// check that has not found that many when its time is up. A failed step ends the
 // climb: no higher step is tried.
 //
 // At the end the card keeps the fastest step that passed its check. A step
@@ -50,7 +50,10 @@ const MIN_SAMPLES = 20;
 // A step's hit check: it passes at CHECK_HITS right hits. The check's job is
 // set to hit about CHECK_HITS_PER_S times a second at the card's own rate
 // (checkBound), so it takes three or four seconds on any card. After CHECK_MS
-// it ends anyway, and passes only with CHECK_MIN_HITS or more. Recomputing a
+// it ends anyway, and fails: the usage text and the trial's first log line
+// promise CHECK_HITS hits recomputed, and a step that found fewer has not had
+// that check. A card that hits at a third of the rate its job was set for is
+// also not mining as it was a moment ago. Recomputing a
 // hit costs the miner's event loop 4.6 ms (shared/miner/checkHit), so a whole
 // check is about half a second of it. On rig01's RTX 4090 a check took 3.2 to
 // 3.3 s for its 100 hits, at 4.3 to 4.4 ms a hit (tuning/benchmark.md,
@@ -64,7 +67,6 @@ const MIN_SAMPLES = 20;
 const CHECK_HITS = 100;
 const CHECK_HITS_PER_S = 30;
 const CHECK_MS = 10 * 1000;
-const CHECK_MIN_HITS = 20;
 
 // The steps a card can try: those its driver allows (`maxMhz` is the top of the
 // range NVML reports for it).
@@ -168,8 +170,8 @@ function feed(trial, th, now) {
   const waited = now - trial.since;
   if (trial.checking) {
     if (waited < CHECK_MS) return null;
-    if (trial.hits >= CHECK_MIN_HITS) return pass(trial, now);
-    return fail(trial, 'only ' + trial.hits + ' hits in ' + CHECK_MS / 1000 + ' s, too few to check', now);
+    // hit() passes the step at CHECK_HITS, so a check still open has fewer.
+    return fail(trial, 'only ' + trial.hits + ' of the ' + CHECK_HITS + ' hits it needs in ' + CHECK_MS / 1000 + ' s', now);
   }
   if (waited >= TURN_MS) {
     const last = trial.turns.length - 1;
@@ -199,6 +201,6 @@ function hit(trial, why, now) {
 }
 
 module.exports = {
-  TURN_MS, SETTLE_MS, STEPS_MHZ, MIN_GAIN, MIN_SAMPLES, CHECK_HITS, CHECK_HITS_PER_S, CHECK_MS, CHECK_MIN_HITS,
+  TURN_MS, SETTLE_MS, STEPS_MHZ, MIN_GAIN, MIN_SAMPLES, CHECK_HITS, CHECK_HITS_PER_S, CHECK_MS,
   stepsFor, checkBound, createTrial, feed, hit,
 };

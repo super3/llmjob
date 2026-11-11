@@ -36,7 +36,7 @@ const {
 } = require('../src/shared/miner/pearlhash');
 const { hitFor: genuine } = require('./helpers/pearlHit');
 
-const { TURN_MS, CHECK_HITS, CHECK_MS, CHECK_MIN_HITS } = coreOffsetTrial;
+const { TURN_MS, CHECK_HITS, CHECK_MS } = coreOffsetTrial;
 
 const ADDR = 'prl1px5ervx6ftaegmdhqa5ajemh20j2uw7l9jt5j5s97rljp72yt3s8qncrxud';
 const HEADER = '000000203a49fea8b6d42c60c543fe0f029749787679372495e5d2d1007e29e3'
@@ -562,22 +562,18 @@ describe('PearlMiner — the core clock offset trial', () => {
       b.m.stop();
     });
 
-    test('ends after 10 seconds: passed with 20 hits or more, failed for want of hits with fewer', () => {
-      const enough = rig().start();
-      mine(enough, enough.made[0], RIG01, { checks: { 100: { hits: CHECK_MIN_HITS } } });
-      expect(enough.lines().pop()).toBe(KEPT_150);
-      enough.m.stop();
-
+    // The trial's start line promises 100 hits recomputed, so 99 is not a pass.
+    test('ends after 10 seconds, failed for want of hits, with fewer than the 100 it needs', () => {
       const few = rig().start();
       const core = few.made[0];
       untilCheck(few, core, 50);
-      for (let n = 0; n < CHECK_MIN_HITS - 1; n += 1) core.emit('hit', checkHitOf(checkJob(core)));
+      for (let n = 0; n < CHECK_HITS - 1; n += 1) core.emit('hit', checkHitOf(checkJob(core)));
       const began = few.t.now;
       while (checkJob(core)) tick(few, core, 320.9);
       expect(few.t.now - began).toBe(CHECK_MS);
       expect(few.sets()).toEqual([0, 50, 0]);
       mine(few, core, RIG01);
-      expect(few.lines().pop()).toMatch(/; \+50 MHz failed its hit check \(only 19 hits in 10 s, too few to check\)$/);
+      expect(few.lines().pop()).toMatch(/; \+50 MHz failed its hit check \(only 99 of the 100 hits it needs in 10 s\)$/);
       few.m.stop();
     });
 

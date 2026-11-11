@@ -1,7 +1,7 @@
 'use strict';
 
 const {
-  TURN_MS, SETTLE_MS, STEPS_MHZ, MIN_GAIN, MIN_SAMPLES, CHECK_HITS, CHECK_HITS_PER_S, CHECK_MS, CHECK_MIN_HITS,
+  TURN_MS, SETTLE_MS, STEPS_MHZ, MIN_GAIN, MIN_SAMPLES, CHECK_HITS, CHECK_HITS_PER_S, CHECK_MS,
   stepsFor, checkBound, createTrial, feed, hit,
 } = require('../src/shared/coreOffsetTrial');
 const { PROFILE, difficultyAdjustmentFactor } = require('../src/shared/miner/pearlhash');
@@ -54,10 +54,9 @@ describe('the core clock offset trial', () => {
     expect(createTrial(0).turns).toEqual([0, 50, 100, 150, 0]);
   });
 
-  test('checks a step with 100 hits, or as many as 10 seconds bring if that is 20 or more', () => {
+  test('checks a step with 100 hits, and gives it 10 seconds to find them', () => {
     expect(CHECK_HITS).toBe(100);
     expect(CHECK_MS).toBe(10000);
-    expect(CHECK_MIN_HITS).toBe(20);
     expect(CHECK_HITS_PER_S).toBe(30);
   });
 
@@ -154,11 +153,14 @@ describe('the core clock offset trial', () => {
       expect(end.baseTh).toBeCloseTo(317.4, 6);
     });
 
-    test('passes at the time limit with 20 hits or more, and fails with fewer', () => {
-      expect(run(RIG01, { checks: { 100: { hits: CHECK_MIN_HITS } } }).end.offset).toBe(150);
-      const few = run(RIG01, { checks: { 100: { hits: CHECK_MIN_HITS - 1 } } }).end;
-      expect(few.offset).toBe(50);
-      expect(few.failed).toEqual({ mhz: 100, why: 'only 19 hits in 10 s, too few to check' });
+    // The usage text and the trial's start line promise 100 hits recomputed.
+    // A step that found fewer in its 10 seconds has not had that check.
+    test('fails at the time limit with fewer than 100 hits, however many it had', () => {
+      for (const hits of [0, 20, CHECK_HITS - 1]) {
+        const few = run(RIG01, { checks: { 100: { hits } } }).end;
+        expect(few.offset).toBe(50);
+        expect(few.failed).toEqual({ mhz: 100, why: 'only ' + hits + ' of the 100 hits it needs in 10 s' });
+      }
     });
 
     test('a turn starts when its check passes, not before', () => {
