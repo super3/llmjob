@@ -19,16 +19,96 @@
 #
 # If oneAPI is installed already (source /opt/intel/oneapi/setvars.sh), none of
 # this is needed: build.sh uses whatever icpx is on PATH.
+#
+#   ./install-toolchain.sh --open [DIR]
+#
+# The compiler releases are built with: the open-source DPC++ (github.com/
+# intel/llvm, release v7.2.0, checked against its SHA-256) into ./toolchain-open
+# (or DIR). 242 MB to download, 670 MB on disk. Its runtime libraries are under
+# the Apache License 2.0 with LLVM exceptions, so build.sh --jit --stage may
+# copy them into a release; the oneAPI ones above are under Intel's end user
+# licence for developer tools and may not be. It has no ocloc, so it builds the
+# --jit form only. It runs on glibc 2.27 or newer (Ubuntu 18.04).
+#
+#   ./install-toolchain.sh --open --cpu-rt [DIR]
+#
+# also installs Intel's OpenCL CPU runtime from conda-forge beside it, so that
+# verify.sh can run on the SYCL CPU device (PEARL_SYCL_DEVICE=cpu). That runtime
+# is Intel's, for testing only: nothing stages or ships it.
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
-DIR="$HERE/toolchain"
+DIR=""
 OCLOC=0
+OPEN=0
+CPU_RT=0
 for a in "$@"; do
   case "$a" in
     --ocloc) OCLOC=1 ;;
+    --open) OPEN=1 ;;
+    --cpu-rt) CPU_RT=1 ;;
     *) DIR="$a" ;;
   esac
 done
+if [ "$OPEN" = 1 ]; then
+  [ "$OCLOC" = 0 ] || { echo "--open has no ocloc: it builds ./build.sh --jit, which needs none" >&2; exit 2; }
+  DIR=${DIR:-$HERE/toolchain-open}
+  mkdir -p "$DIR"
+  DIR=$(cd "$DIR" && pwd)
+  cd "$DIR"
+  # One release, by name and by digest: a rebuilt archive under the same tag is
+  # a compiler nobody has checked a fold with.
+  DPCPP_TAG=v7.2.0
+  DPCPP_SHA256=385586a25e75ac727883f0be5e442dec0ee81b3c20f9a29037a79921ad2f1728
+  if [ ! -x dpcpp/bin/clang++ ]; then
+    mkdir -p dl
+    curl -fsSL -o dl/sycl_linux.tar.gz "https://github.com/intel/llvm/releases/download/$DPCPP_TAG/sycl_linux.tar.gz"
+    echo "$DPCPP_SHA256  dl/sycl_linux.tar.gz" | sha256sum -c - >/dev/null \
+      || { echo "sycl_linux.tar.gz of $DPCPP_TAG is not the file this script was written for (SHA-256 differs)" >&2; exit 1; }
+    rm -rf dpcpp && mkdir dpcpp && tar -xzf dl/sycl_linux.tar.gz -C dpcpp
+    rm -rf dl
+  fi
+  dpcpp/bin/clang++ --version | head -n 1
+  {
+    echo "# source this: the open-source DPC++ compiler and runtime from install-toolchain.sh --open"
+    echo "export PATH=\"$DIR/dpcpp/bin:\$PATH\""
+    echo "export LD_LIBRARY_PATH=\"$DIR/dpcpp/lib:\${LD_LIBRARY_PATH:-}\""
+    echo "if [ -f \"$DIR/cpu-rt.sh\" ]; then . \"$DIR/cpu-rt.sh\"; fi"
+  } > envrc.sh
+  if [ "$CPU_RT" = 1 ]; then
+    if [ ! -d cpu-rt/etc/OpenCL/vendors ]; then
+      mkdir -p dl mm
+      curl -fsSL -o dl/mm.tar.bz2 https://conda.anaconda.org/conda-forge/linux-64/micromamba-2.9.0-0.tar.bz2
+      tar -xjf dl/mm.tar.bz2 -C mm bin/micromamba
+      MAMBA_ROOT_PREFIX="$DIR/mroot" ./mm/bin/micromamba create -y -q -p "$DIR/cpu-rt" -c conda-forge --override-channels \
+        intel-opencl-rt=2026.1.1 ocl-icd
+      rm -rf mroot dl mm
+    fi
+    # The runtime is found through the OpenCL loader, by a list of drivers that
+    # holds the system's too. The loader itself comes from the system when it
+    # has one, else from the same conda package set, alone in a directory of
+    # its own: the rest of that set's libraries must not get in front of the
+    # system's.
+    mkdir -p ocl-loader
+    ln -sf "$DIR/cpu-rt/lib/libOpenCL.so.1" ocl-loader/libOpenCL.so.1
+    # cpu-rt.sh, which envrc.sh sources, is also sourced alone to check a staged
+    # core: that needs the CPU device and must not find the compiler's copy of
+    # the SYCL runtime before its own.
+    cat > cpu-rt.sh <<ENV
+# source this: Intel's OpenCL CPU runtime from install-toolchain.sh --open --cpu-rt (testing only)
+mkdir -p "$DIR/ocl-vendors" && rm -f "$DIR/ocl-vendors"/*.icd
+for f in /etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/ocl-vendors/system-\${f##*/}"; fi; done
+for f in "$DIR"/cpu-rt/etc/OpenCL/vendors/*.icd; do if [ -e "\$f" ]; then ln -sf "\$f" "$DIR/ocl-vendors/toolchain-\${f##*/}"; fi; done
+unset f
+export OCL_ICD_VENDORS="$DIR/ocl-vendors"
+if ! ldconfig -p 2>/dev/null | grep -q 'libOpenCL\.so\.1 '; then export LD_LIBRARY_PATH="\${LD_LIBRARY_PATH:+\$LD_LIBRARY_PATH:}$DIR/ocl-loader"; fi
+ENV
+  fi
+  du -sh "$DIR"
+  echo "done: . $DIR/envrc.sh && ./build.sh --jit"
+  exit 0
+fi
+[ "$CPU_RT" = 0 ] || { echo "--cpu-rt goes with --open: the oneAPI toolchain has the CPU runtime already" >&2; exit 2; }
+DIR=${DIR:-$HERE/toolchain}
 mkdir -p "$DIR"
 DIR=$(cd "$DIR" && pwd)
 cd "$DIR"

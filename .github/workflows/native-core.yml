@@ -1012,3 +1012,289 @@ jobs:
           name: pearl-amd-foldtest-windows-2022
           path: earn/native/amd/build/pearl_amd_foldtest.exe
           if-no-files-found: warn
+
+  # The Intel core, pearl_core_sycl.node (earn/native/sycl and its README), for Arc cards on
+  # Linux. Unlike the other cores it is a folder: the addon, the host library with the kernels
+  # (libpearl_sycl.so) and the SYCL runtime they load. The kernels are SPIR-V that the rig's
+  # own Intel driver compiles at first start (build.sh --jit), so the build needs no ocloc and
+  # is not tied to one driver version; it mined on an Arc A750 rig through Intel's 2026 Level
+  # Zero driver and through its 24.35 OpenCL driver, the newest built for Ubuntu 22.04.
+  #
+  # Built in Ubuntu 20.04 with the open-source DPC++ release (github.com/intel/llvm v7.2.0,
+  # fetched by SHA-256), whose runtime is under the Apache License 2.0 with LLVM exceptions, so
+  # the release may carry it. Intel's oneAPI compiler links libraries that it may not; stage.sh
+  # refuses such a build.
+  #
+  # The runner has no Intel GPU. The folds are checked on the SYCL CPU device, where DPAS is
+  # the extension's reference code: every region against a scalar fold on the host, and 100
+  # hits a fold recomputed in JS as a pool's verifier would. The CPU device comes from Intel's
+  # OpenCL CPU runtime, which is used here only, never staged.
+  #
+  # Non-blocking, like the AMD jobs and for their reason: miner-build.yml warns when it finds
+  # no Intel core, and the release then ships without one.
+  intel:
+    name: ubuntu-latest-sycl
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    continue-on-error: true
+    # Under pick-core-run.sh's 25 minutes, as for the AMD jobs.
+    timeout-minutes: 20
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      # git before checkout, so that it clones (the Windows job reads the file modes it keeps).
+      - name: Install the build tools
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates curl git bzip2 xz-utils g++ make binutils file ocl-icd-libopencl1
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 670 MB of compiler and 600 MB of CPU runtime. The key names both versions, as
+      # install-toolchain.sh does.
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: earn/native/sycl/toolchain-open
+          key: dpcpp-open-v7.2.0-cpurt-2026.1.1-ubuntu-20.04
+
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./install-toolchain.sh --open --cpu-rt
+
+      # And check it is the compiler the cache key promised: another release would build a
+      # core nobody has run.
+      - name: Report the toolchain
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/envrc.sh
+          v=$(clang++ --version | head -n 1)
+          echo "$v"
+          g++ --version | head -n 1
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      - name: Install node-addon-api
+        working-directory: earn/native/sycl
+        # --prefix .: this folder has no package.json, and without it npm installs into
+        # earn/, the whole app's lockfile.
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+
+      - name: Build and stage the core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/envrc.sh
+          ./build.sh --jit --stage stage/sycl
+
+      # The staged folder is what ships, so it is what is checked, with nothing of the
+      # compiler on any path: it loads in Node (no device is touched), every file in it loads
+      # on Ubuntu 20.04's glibc and libstdc++, and each finds the others beside it (stage.sh
+      # has checked the run paths).
+      - name: Check the staged core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          cd stage/sycl
+          ls -l
+          node -e "const a = require('./pearl_core_sycl.node'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          bash ../../../../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 pearl_core_sycl.node pearl_sycl_check *.so*
+          missing=$(for f in pearl_core_sycl.node pearl_sycl_check *.so*; do ldd "$f"; done | grep 'not found' | sort -u || true)
+          if [ -n "$missing" ]; then echo "::error::the staged core needs a library it does not carry: $missing"; exit 1; fi
+
+      # verify.sh --quick on the SYCL CPU device: the plain fold and both XMX folds (their
+      # reference code there) against the host on every region, at a small size and at the
+      # mainnet m and n, then 100 hits with each recomputed in JS. Only cpu-rt.sh is sourced:
+      # the staged core must find its own copy of the SYCL runtime, not the compiler's.
+      - name: Check the folds on the SYCL CPU device
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain-open/cpu-rt.sh
+          PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check --list
+          PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-sycl-ubuntu-latest
+          path: earn/native/sycl/stage
+          if-no-files-found: error
+
+  # What Intel's compiler makes of the folds for each GPU it has XMX kernels for: the SIMD
+  # width, the register mode, the DPAS count and any spill (compile-gate.sh). A fold that
+  # spills still compiles and mines, only slower, and nothing else here would see it. This
+  # needs ocloc, which Intel builds for Ubuntu 24.04 and newer, and so the oneAPI compiler
+  # that drives it: the kernels are the same source as the shipped ones, prebuilt for named
+  # GPUs instead of compiled by the driver. Nothing from this job ships. Its ocloc is
+  # whichever Intel's PPA has that day, so a failure here can be Intel's change, not ours.
+  intel-gate:
+    name: ubuntu-24.04-sycl-gate
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install the oneAPI DPC++ toolchain and ocloc
+        working-directory: earn/native/sycl
+        run: ./install-toolchain.sh --ocloc 2>&1 | tail -n 12
+
+      - name: Install node-addon-api
+        working-directory: earn/native/sycl
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api
+
+      - name: Compile every target and check the folds (DPAS present, no spill)
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          . toolchain/envrc.sh
+          icpx --version | head -n 1
+          ocloc --help 2>&1 | head -n 2 || true
+          ./compile-gate.sh
+
+  # The Intel core for Windows: the same source and the same open-source DPC++ release, with
+  # MSVC's headers and linker. The host and kernels are a DLL (build-win.sh; its exports are
+  # named in pearl_sycl.def) and the addon is linked against it by node-gyp, as the CUDA and
+  # AMD cores are. Windows has no ocloc, so this too is the form the driver compiles.
+  #
+  # No Intel GPU on Windows has run it. It is checked here on the SYCL CPU device, as the
+  # Linux job does, and the app calls it experimental.
+  #
+  # Non-blocking, like the Linux job.
+  intel-windows:
+    name: windows-2022-sycl
+    runs-on: windows-2022
+    continue-on-error: true
+    timeout-minutes: 25
+    env:
+      DPCPP_TAG: v7.2.0
+      DPCPP_SHA256: 9d8964878a68e6d4ca3edced4fc1093fa6f4f51fd44698808e244870caa77bad
+      DPCPP_ROOT: C:\dpcpp
+      CPU_RT: C:\dpcpp-cpu-rt
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Restore the DPC++ toolchain
+        id: dpcpp
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\dpcpp
+            C:\dpcpp-cpu-rt
+          key: dpcpp-open-${{ env.DPCPP_TAG }}-cpurt-2026.1.1-windows-2022
+
+      # The compiler, one release by name and by digest, and Intel's OpenCL CPU runtime with
+      # the Khronos loader from conda-forge for the CPU-device check (testing only).
+      - name: Install the DPC++ toolchain
+        if: steps.dpcpp.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o sycl_windows.tar.gz "https://github.com/intel/llvm/releases/download/$DPCPP_TAG/sycl_windows.tar.gz"
+          echo "$DPCPP_SHA256  sycl_windows.tar.gz" | sha256sum -c -
+          mkdir -p /c/dpcpp
+          tar -xzf sycl_windows.tar.gz -C /c/dpcpp
+          rm sycl_windows.tar.gz
+          curl -fsSL -o mm.tar.bz2 https://conda.anaconda.org/conda-forge/win-64/micromamba-2.9.0-0.tar.bz2
+          mkdir -p mm && tar -xjf mm.tar.bz2 -C mm Library/bin/micromamba.exe
+          MAMBA_ROOT_PREFIX="$RUNNER_TEMP/mroot" mm/Library/bin/micromamba.exe create -y -q -p 'C:\dpcpp-cpu-rt' \
+            -c conda-forge --override-channels intel-opencl-rt=2026.1.1 khronos-opencl-icd-loader
+          rm -rf mm mm.tar.bz2 mroot
+
+      - name: Put MSVC on PATH
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Report the toolchain
+        shell: bash
+        run: |
+          v=$(/c/dpcpp/bin/clang++.exe --version | head -n 1)
+          echo "$v"
+          node --version
+          case "$v" in
+            *"DPC++ compiler 7.2.0"*) ;;
+            *) echo "::error::expected the open-source DPC++ 7.2.0, got: $v"; exit 1 ;;
+          esac
+
+      # --prefix .: earn/native has no package.json, and without it npm installs the whole
+      # app into earn/.
+      - name: Install node-addon-api
+        working-directory: earn/native
+        run: npm install --prefix . --no-save --no-audit --no-fund node-addon-api node-gyp
+
+      - name: Compile the kernels and host (pearl_sycl.dll)
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./build-win.sh
+
+      - name: Build the N-API addon
+        working-directory: earn/native
+        env:
+          PEARL_BACKEND: sycl
+        run: npx node-gyp rebuild
+
+      - name: Stage the core
+        working-directory: earn/native/sycl
+        shell: bash
+        run: ./build-win.sh --stage stage/sycl
+
+      # It loads in Node from the staged folder alone (no device is touched) and has the
+      # core's entry point; and the only DLLs any staged file needs that are not staged are
+      # Windows' own, Microsoft's C++ runtime, and the driver's loaders, which sycl9.dll
+      # opens by name only when it looks for devices.
+      - name: Check the staged core
+        working-directory: earn/native/sycl/stage/sycl
+        shell: bash
+        run: |
+          ls -l
+          node -e "const a = require('./pearl_core_sycl.node'); if (typeof a.createCore !== 'function') { console.error('no createCore'); process.exit(1); }"
+          for f in pearl_core_sycl.node *.dll pearl_sycl_check.exe; do
+            deps=$(dumpbin -nologo -dependents "$f" | sed -n 's/^ *\([A-Za-z0-9_.-]*\.[dD][lL][lL]\|node\.exe\) *$/\1/p' | tr 'A-Z' 'a-z' | sort -u)
+            echo "$f needs: $(echo $deps)"
+            for d in $deps; do
+              case "$d" in
+                node.exe|kernel32.dll|advapi32.dll|user32.dll|shell32.dll|ole32.dll|bcrypt.dll|ws2_32.dll|shlwapi.dll|dbghelp.dll|version.dll|psapi.dll|ntdll.dll|api-ms-win-*) ;;
+                msvcp140*.dll|vcruntime140*.dll|ucrtbase.dll|concrt140.dll|ze_loader.dll|opencl.dll) ;;
+                *) [ -f "$d" ] || { echo "::error::$f needs $d, which is not staged and not part of Windows"; exit 1; } ;;
+              esac
+            done
+          done
+
+      # The same check as the Linux job: verify.sh --quick on the SYCL CPU device, with
+      # nothing of the compiler on PATH. The CPU runtime is named to the OpenCL loader by
+      # OCL_ICD_FILENAMES, and the loader and the runtime's own DLLs come from its folder.
+      - name: Check the folds on the SYCL CPU device
+        working-directory: earn/native/sycl
+        shell: bash
+        run: |
+          rt=$(cygpath -u "$CPU_RT")/Library/bin
+          ls "$rt" | grep -iE 'opencl|intelocl' || true
+          export PATH="$rt:$PATH"
+          export OCL_ICD_FILENAMES="$(cygpath -w "$rt/intelocl64.dll")"
+          PEARL_SYCL_DEVICE=cpu stage/sycl/pearl_sycl_check.exe --list
+          PEARL_SYCL_BUILD=$PWD/stage/sycl PEARL_SYCL_DEVICE=cpu ./verify.sh --quick
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-core-sycl-windows-2022
+          path: earn/native/sycl/stage
+          if-no-files-found: error

@@ -634,35 +634,8 @@ describe('the XMX peak probe', () => {
   });
 });
 
-// The port is not shipped: the app loads it only when PEARL_CORE_PATH names a
-// build of it. These pin that, so adding the folder cannot change an installer.
-describe('the installer leaves the port out', () => {
-  const EARN = path.join(__dirname, '..');
-  const pkg = JSON.parse(read(EARN, 'package.json'));
-
-  test('electron-builder packs only src, package.json and what CI stages in vendor', () => {
-    expect(pkg.build.files.length).toBeGreaterThan(0);
-    for (const pattern of pkg.build.files) {
-      expect([pattern, pattern === 'package.json' || pattern.startsWith('src/')]).toEqual([pattern, true]);
-    }
-    const extra = Object.values(pkg.build).flatMap((v) => (v && Array.isArray(v.extraResources) ? v.extraResources : []));
-    expect(extra.length).toBeGreaterThan(0);
-    for (const r of extra) expect([r.from, r.from.startsWith('vendor/')]).toEqual([r.from, true]);
-    // From vendor/native, only addons and the Monero worker: no script, source or library.
-    for (const r of extra.filter((x) => x.to === 'native')) {
-      expect(r.filter).toEqual(['**/*.node', 'llmjob-xmr-worker', 'llmjob-xmr-worker.exe']);
-    }
-  });
-
-  test('nothing that builds or loads a release names the SYCL core', () => {
-    for (const f of [['scripts', 'build-cli.mjs'], ['scripts', 'build-hiveos.mjs'],
-      ['src', 'shared', 'coreVariant.js'], ['src', 'main', 'pearlCore.js']]) {
-      expect([f.join('/'), /sycl/i.test(read(EARN, ...f))]).toEqual([f.join('/'), false]);
-    }
-    const workflows = path.join(EARN, '..', '.github', 'workflows');
-    for (const f of fs.readdirSync(workflows)) expect([f, /sycl/i.test(read(workflows, f))]).toEqual([f, false]);
-  });
-});
+// What a release carries of this folder, how CI builds it and how the app
+// finds it are pinned in syclShip.test.js.
 
 // verify.sh and pool-run.sh, run for real under bash against stand-ins for the
 // two programs they call: a pearl_sycl_check that prints its arguments and

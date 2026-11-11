@@ -48,7 +48,7 @@
 #include <string>
 #include <vector>
 
-#if defined(PEARL_SYCL_XMX_HW)
+#if defined(PEARL_SYCL_XMX_HW) || defined(PEARL_SYCL_XMX_JIT)
 #include <sycl/ext/oneapi/experimental/device_architecture.hpp>
 #endif
 
@@ -120,6 +120,7 @@ struct Ctx {
   std::string deviceName;
   int fold = kDot;
   bool xmxHw = false;  // the fold runs the hardware instruction
+  int hwSg = 0;        // the sub-group size this device has hardware DPAS at: 16, 8 or 0
   bool isGpu = false;  // a GPU, not the SYCL CPU device
   bool untested = false;  // a GPU, which no fold has run on yet, opened because its opener checks every hit
   std::string foldName;   // pearl_host_fold_name's answer, written once at create
@@ -210,8 +211,10 @@ uint32_t floor_pow2(uint64_t v) {
   return p;
 }
 
-#if defined(PEARL_SYCL_XMX_HW)
-// Which XMX DPAS the device's architecture has (16, 8), or 0 for none.
+#if defined(PEARL_SYCL_XMX_HW) || defined(PEARL_SYCL_XMX_JIT)
+// Which XMX DPAS the device's architecture has (16, 8), or 0 for none. Asked of
+// the device at run time, so it is the same answer whether this build's kernels
+// were prebuilt for named GPUs or are compiled by the driver.
 int xmx_sg(const sycl::device &d) {
   namespace syclex = sycl::ext::oneapi::experimental;
   using arch = syclex::architecture;
@@ -251,6 +254,7 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
     return fail(err, err_len,
                 "PEARL_SYCL_FOLD=" + want + " is not one of auto, dot, xmx16, xmx8, xmx16-emu, xmx8-emu");
   }
+  ctx->hwSg = sg;
   ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || (ctx->fold == kXmx8 && sg == 8);
   return true;
 }
@@ -547,8 +551,14 @@ void resolve_pending(Ctx *ctx) {
   for (int i = 0; i < ctx->count; i++) finish_slot(ctx, (ctx->head + i) % kSlots);
 }
 
+// A hardware fold is launched only on a device that has the instruction at
+// that sub-group size; anywhere else the same name is the reference code. In a
+// build whose kernels the driver compiles, the hardware fold's kernel has
+// nothing but the instruction, and would not compile on another device.
 void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   sycl::queue &q = *ctx->q;
+  if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;
+  if (fold == kXmx8 && ctx->hwSg != 8) fold = kXmx8Emu;
   switch (fold) {
     case kXmx16: fold_xmx<16, 2, true>(q, a, groups); break;
     case kXmx8: fold_xmx<8, 1, true>(q, a, groups); break;

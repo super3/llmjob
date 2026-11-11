@@ -5,10 +5,31 @@
 //   fold_dot  plain int8 dot products in local memory. Needs no XMX, so it runs
 //             on any device the build has kernels for. The reference fold.
 //   fold_xmx  the XMX matrix engines through DPAS, at sub-group 16 (Xe2, Xe3,
-//             Xe-HPC) or 8 (Xe-HPG). With PEARL_SYCL_XMX_HW (an AOT build) it is
-//             the hardware instruction on those GPUs; everywhere else it is the
-//             reference code from the cl_intel_subgroup_matrix_multiply_accumulate
-//             specification, which the CPU device runs. Same source either way.
+//             Xe-HPC) or 8 (Xe-HPG): the hardware instruction on those GPUs, and
+//             everywhere else the reference code from the
+//             cl_intel_subgroup_matrix_multiply_accumulate specification, which
+//             the CPU device runs. Same source either way.
+//
+// The hardware instruction is that extension's OpenCL built-in,
+// intel_sub_group_i8_i8_matrix_mad_k32, called by name: Intel's compiler knows
+// the name whether the kernel reaches it as OpenCL C or, as here, as SPIR-V. A
+// build reaches it one of two ways:
+//
+//   PEARL_SYCL_XMX_JIT  (./build.sh --jit, what a release carries) The driver
+//             compiles each kernel itself, the first time it is used. A fold
+//             with HW set calls the built-in and nothing else, so it compiles
+//             only where the built-in exists. Each kernel is a device image of
+//             its own (-fsycl-device-code-split=per_kernel), and the host
+//             launches a hardware fold only on a device whose architecture has
+//             XMX at that sub-group size, so no other device ever sees one.
+//   PEARL_SYCL_XMX_HW   (./build.sh, kernels prebuilt by ocloc for named GPUs)
+//             The choice is made inside the kernel, per target, with
+//             if_architecture_is.
+//
+// SPIR-V has an instruction for it too (SPV_INTEL_subgroup_matrix_multiply_
+// accumulate, which this file used until November 2026), but a driver from
+// before 2025 refuses a module that names it: Intel's 24.35, the newest built
+// for Ubuntu 22.04, did on an Arc A750, and took the built-in.
 //
 // Both folds compute the same thing as pearl_tile_fold_* in the CUDA core: for
 // every region of a batch, the cumulative int32 tile over k, XORed into one
@@ -21,6 +42,9 @@
 #include <sycl/sycl.hpp>
 #include <stdint.h>
 
+#if defined(PEARL_SYCL_XMX_HW) && defined(PEARL_SYCL_XMX_JIT)
+#error "PEARL_SYCL_XMX_HW (prebuilt kernels) and PEARL_SYCL_XMX_JIT (the driver compiles them) are two builds"
+#endif
 #if defined(PEARL_SYCL_XMX_HW)
 #include <sycl/ext/oneapi/experimental/device_architecture.hpp>
 #endif
@@ -28,15 +52,15 @@
 #include "../src/pearl_config.h"
 #include "pearl_sycl_blake3.h"
 
-// The DPAS vector types, and the SPIR-V builtin
-// (SPV_INTEL_subgroup_matrix_multiply_accumulate). The builtin must be declared
-// at global scope: inside a namespace its name is mangled and the SPIR-V
-// translator no longer recognises it.
+// The DPAS vector types, and the built-in: 8 rows of A (a word a lane at
+// sub-group 16, a dword at 8), the lane's column of B, the accumulator. It must
+// be declared at global scope, so that its mangled name is the one OpenCL C
+// gives it (short8 or int8, int8, int8), which is how the compiler finds it.
 typedef int v8i __attribute__((ext_vector_type(8)));
 typedef short v8s __attribute__((ext_vector_type(8)));
-#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_HW)
-extern SYCL_EXTERNAL v8i __spirv_SubgroupMatrixMultiplyAccumulateINTEL(int, v8s, v8i, v8i, int);
-extern SYCL_EXTERNAL v8i __spirv_SubgroupMatrixMultiplyAccumulateINTEL(int, v8i, v8i, v8i, int);
+#if defined(__SYCL_DEVICE_ONLY__) && (defined(PEARL_SYCL_XMX_HW) || defined(PEARL_SYCL_XMX_JIT))
+extern SYCL_EXTERNAL v8i intel_sub_group_i8_i8_matrix_mad_k32(v8s, v8i, v8i);
+extern SYCL_EXTERNAL v8i intel_sub_group_i8_i8_matrix_mad_k32(v8i, v8i, v8i);
 #endif
 
 namespace pearl_sycl {
@@ -407,11 +431,16 @@ inline v8i dpas_emu(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c
   return r;
 }
 
-// HW: use the hardware instruction on the architectures that have it at this
-// sub-group size, when the binary carries it (PEARL_SYCL_XMX_HW). Otherwise, and
-// on every other device, the reference code.
+// HW: the hardware instruction. In a build whose kernels the driver compiles
+// (PEARL_SYCL_XMX_JIT) that is all a HW fold has, and the host launches it only
+// where it exists. In a prebuilt one (PEARL_SYCL_XMX_HW) it is chosen here, on
+// the architectures that have it at this sub-group size. Otherwise, and on
+// every other device, the reference code.
 template <int SG, bool HW>
 inline v8i dpas(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) return ::intel_sub_group_i8_i8_matrix_mad_k32(a, b, c);
+#endif
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_HW)
   if constexpr (HW) {
     namespace syclex = sycl::ext::oneapi::experimental;
@@ -421,12 +450,12 @@ inline v8i dpas(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c) {
       syclex::if_architecture_is<arch::intel_gpu_pvc, arch::intel_gpu_bmg_g21,
                                  arch::intel_gpu_bmg_g31, arch::intel_gpu_lnl_m,
                                  arch::intel_gpu_ptl_h, arch::intel_gpu_ptl_u>([&]() {
-        r = __spirv_SubgroupMatrixMultiplyAccumulateINTEL(32, a, b, c, 0x33);
+        r = ::intel_sub_group_i8_i8_matrix_mad_k32(a, b, c);
       }).otherwise([&]() { r = dpas_emu<16>(sg, a, b, c); });
     } else {
       syclex::if_architecture_is<arch::intel_gpu_acm_g10, arch::intel_gpu_acm_g11,
                                  arch::intel_gpu_acm_g12>([&]() {
-        r = __spirv_SubgroupMatrixMultiplyAccumulateINTEL(32, a, b, c, 0x33);
+        r = ::intel_sub_group_i8_i8_matrix_mad_k32(a, b, c);
       }).otherwise([&]() { r = dpas_emu<8>(sg, a, b, c); });
     }
     return r;
