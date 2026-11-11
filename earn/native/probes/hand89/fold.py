@@ -15,6 +15,18 @@ instructions to a gap (key cap), placed here and not by a compiler:
   - a tile's readout is one chain, one XOR3 a gap, started 10 IMMA after the tile's last (key rsh0/rsh1 shift it);
   - the chunk's bookkeeping (stage buffers turned, offsets pointer, counter) is in the last gaps of k-step 3.
 
+The defaults are the best form that passed the CPU check on rig01's RTX 4090 (11 November 2026): 96.0 to 96.3% of
+the tensor pipe at 2538 to 2548 MHz, where the same fold as ptxas compiles it holds 81.7%. What got it there,
+each measured (probes/README.md, "The loop written by hand"):
+  - ist=5: an IMMA that has plain steps behind it gets a stall of 5. A step that reads two or more registers costs
+    the pipe when it issues 1 to 4 cycles behind its warp's IMMA and nothing from 5 (91.3% to 95.2%);
+  - sf=1: a gap's table reads and one-register steps go first, and the IMMA's stall shrinks by their count;
+  - ub=20, rsh1=4, py=0: unit B starts at gap 20, warps 4 to 7 read out 4 IMMA later than warps 0 to 3, and the
+    plain steps' yield flag is off (85% to 91% before ist);
+  - hold=1: read scoreboards on the loads, stores and atomics whose address or value register is overwritten
+    soon after. Without them two placements in 45 computed wrong sums. The latency checker here does not model
+    that hazard: every build must pass hprobe's CPU check before its figure counts.
+
 Registers (R1 and R252-R254 are the kernel's): A's two fragment sets R4-R11, B's eight R12-R27, the sums R28-R187,
 draw temporaries R188-R219, offsets R220-R227, lane constants and counters R228-R249.
 """
@@ -34,9 +46,11 @@ TABBL, TABAL, DSTBL, FRAGBL = 228, 229, 230, 231
 AD, AFR = [232, 233, 234], [235, 236, 237]
 TRL, TRW, ROT, CH, LATER0, IDXB, POFF = 238, 239, 240, 241, 242, 243, 244
 X, T0, ONE = [246, 247, 248], 249, 0
-SB_AF, SB_B0, SB_B1, SB_DX, SB_DY, SB_OFF = 0, 1, 2, 3, 4, 5
+# Scoreboards: A's fragment loads, B's (one for all four), the holds (read scoreboards, see key hold), the
+# draw's two pairs of table reads, the offsets.
+SB_AF, SB_B0, SB_B1, SB_HOLD, SB_DX, SB_DY, SB_OFF = 0, 1, 1, 2, 3, 4, 5
 
-CFG = dict(cap=3, cap0=5, cap3=5, pad=8, ua=1, ub=2, ua1=None, ub1=None, rsh0=0, rsh1=0, ly=1, py=1, iy=1, ru=0, ist=1, pol=0, lead=2, bstall=1, rst=1, pst=2,
+CFG = dict(cap=3, cap0=5, cap3=5, pad=8, ua=1, ub=20, ua1=None, ub1=None, rsh0=0, rsh1=4, ly=1, py=0, iy=1, ru=0, ist=5, pol=2, sf=1, hold=1, lead=2, bstall=1, rst=1, pst=2,
            # Timing only (each computes wrong results on purpose): pieces left out.
            nodraw=0, noread=0, nold=0, nost=0, nobar=0, noldsm=0)
 
@@ -246,6 +260,8 @@ def unit(s, which, cfg):
             pr.append(Ins("PRMT R%d, R%d, 0x5140, R%d" % (q[1 + 2 * h] + 2 * i, x, y)))
             pr.append(Ins("PRMT R%d, R%d, 0x7362, R%d" % (q[1 + 2 * h] + 2 * i + 1, x, y)))
     st = [Ins("STS.128 %s, R%d" % (d0, q[1])), Ins("STS.128 %s, R%d" % (d1, q[3]))]
+    if which == "A" and s == 3 and cfg["hold"]:
+        st = [Ins(i.text, rsb=SB_HOLD) for i in st]     # A's buffer register is turned at the chunk's end
     if cfg["nold"]:
         # Timing only: no table read and no offsets read; the words are whatever the registers hold.
         adds = [Ins(i.text) for i in adds]
@@ -267,10 +283,16 @@ def chunk(grp, cfg):
 
     for s in range(4) if not cfg["noldsm"] else ():
         b = 40 * s
+        # hold: a load or store reads its address register for as long as the memory unit keeps it waiting.
+        # The chunk's end overwrites A's buffer registers and the offsets pointer a few gaps behind their last
+        # users, so those users set a read scoreboard and the overwriting moves wait on it (ptxas does the
+        # same). Without it two placements in 45 computed wrong sums for tile 0 of warps 0-3: the load of the
+        # next chunk's first fragment read a register the turn had already changed.
+        held = SB_HOLD if s == 3 and cfg["hold"] else None
         for m in range(1, 5):
             put(b + 8 * (m - 1), Ins("LDSM.16.MT88.4 R%d, [R%d+0x%x]" % (AF[(m + s) & 1], AFR[s % 3], 32 * m),
-                                     wsb=SB_AF))
-        put(b + 32, Ins("LDSM.16.MT88.4 R%d, [R%d]" % (AF[(s + 1) & 1], AFR[(s + 1) % 3]), wsb=SB_AF))
+                                     wsb=SB_AF, rsb=held if m == 4 else None))
+        put(b + 32, Ins("LDSM.16.MT88.4 R%d, [R%d]" % (AF[(s + 1) & 1], AFR[(s + 1) % 3]), wsb=SB_AF, rsb=held))
         bn = STB - (s & 1) * STB
         for p in range(4):
             o = bn + 32 * p
@@ -293,7 +315,12 @@ def chunk(grp, cfg):
             steps.append(Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (x, x, acc(t, nb) + 2, acc(t, nb) + 3)))
         steps.append(Ins("SHF.L.W.U32.HI R%d, R%d, R%d, R%d" % (x, x, ROT, x)))
         imm = 128 * ((grp * 5 + t) >> 1)
-        steps.append(Ins("ATOMS.XOR RZ, [R%d%s], R%d" % (TRW, "+0x%x" % imm if imm else "", x)))
+        steps.append(Ins("ATOMS.XOR RZ, [R%d%s], R%d" % (TRW, "+0x%x" % imm if imm else "", x),
+                         rsb=SB_HOLD if cfg["hold"] else None))
+        if cfg["hold"]:
+            # The atomic XOR keeps reading its value register until every lane's word is done (four lanes share
+            # a word). The next tile that takes the same register starts its chain by overwriting it: it waits.
+            steps[0].wait = (SB_HOLD,)
         for j, ins in enumerate(steps):
             g = g0 + j * cfg["rst"]
             put(g % 160, ins, wrapped=g >= 160)
@@ -305,17 +332,20 @@ def chunk(grp, cfg):
     assert max(120 + 8 * 4 + 10 + rsh + 17 * cfg["rst"] - 160, 0) < 40, "the readout must end in k-step 0"
     # The chunk's end, in k-step 3's last gaps: A's stage buffers turn by one, the offsets move on, the count.
     e = 153
+    hw = (SB_HOLD,) if cfg["hold"] else ()
     put(e + 0, Ins(mov(T0, AFR[0])))
     put(e + 0, Ins(mov(2, AD[0])))
     put(e + 0, Ins(addi(IDXB, IDXB, 0x800)))
-    put(e + 1, Ins(mov(AFR[0], AFR[1])))
-    put(e + 1, Ins(mov(AD[0], AD[1])))
+    put(e + 1, Ins(mov(AFR[0], AFR[1]), wait=hw))
+    put(e + 1, Ins(mov(AD[0], AD[1]), wait=hw))
     put(e + 1, Ins(addi(CH, CH, 1)))
-    put(e + 2, Ins(mov(AFR[1], AFR[2])))
-    put(e + 2, Ins(mov(AD[1], AD[2])))
-    put(e + 2, Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (POFF, IDXB, ONE)))
-    put(e + 3, Ins(mov(AFR[2], T0)))
-    put(e + 3, Ins(mov(AD[2], 2)))
+    put(e + 2, Ins(mov(AFR[1], AFR[2]), wait=hw))
+    put(e + 2, Ins(mov(AD[1], AD[2]), wait=hw))
+    # The offsets pointer: its last users are the k-step's two LDG, which set the offsets' scoreboard.
+    put(e + 2, Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (POFF, IDXB, ONE),
+                   wait=(SB_OFF,) if cfg["hold"] else ()))
+    put(e + 3, Ins(mov(AFR[2], T0), wait=hw))
+    put(e + 3, Ins(mov(AD[2], 2), wait=hw))
     put(e + 3, Ins("ISETP.GE.U32.AND P0, PT, R%d, c[0x0][0x184], PT" % CH))
     # The draw: each unit's groups go into the first gaps with room, from the unit's start.
     ua = cfg["ua1"] if grp and cfg["ua1"] is not None else cfg["ua"]
@@ -354,6 +384,16 @@ def emit(G, grp, cfg):
             wait.append(SB_B1)
         items = [ins for ins, _w in G[g]]
         n = len(items)
+        nsingle = 0
+        if cfg["sf"]:
+            # sf: a gap's loads and one-register steps go first, right behind the IMMA (only a step that reads
+            # two or more registers has to keep its distance), and the IMMA's stall shrinks by their count.
+            def single(ins):
+                r, _w, kind = rw(ins.text)
+                # Not the fragment loads: they overwrite registers the IMMA just ahead may still be reading.
+                return (kind == "load" and not ins.text.startswith("LDSM")) or (kind == "alu" and len(r) <= 1)
+            items = [x for x in items if single(x)] + [x for x in items if not single(x)]
+            nsingle = sum(1 for x in items if single(x))
         # pol: where a gap's spare cycles go. 0: behind the last plain step (the IMMA's stall is key ist).
         # 1: behind the IMMA, the steps at stall 1 (a two-register step issued 5 cycles behind its IMMA costs
         # the pipe nothing; issued 1 to 4 behind it costs up to 2 cycles: measured). 2: the IMMA's stall is
@@ -364,6 +404,8 @@ def emit(G, grp, cfg):
             ist_g, last_g = cfg["ist"], 1
         else:
             ist_g, last_g = cfg["ist"], max(1, pad - cfg["ist"] - (n - 1))
+        if cfg["sf"]:
+            ist_g = max(1, ist_g - nsingle) if nsingle < n else 1
         imma = Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (acc(mb, nb), AF[(mb + s) & 1], BF + 2 * nb,
                                                                  acc(mb, nb)),
                    stall=pad if not items else ist_g, yld=bool(cfg["iy"]), wait=wait,
