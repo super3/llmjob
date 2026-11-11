@@ -19,6 +19,10 @@ const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
 const CORES = [CU12, CU13, AMD, INTEL];
 
+// --gpu-wait's choices, the values PEARL_WAIT takes (native/src/pearl_host.cu): how a
+// card's search thread waits for the GPU between launches.
+const GPU_WAITS = ['block', 'poll', 'spin'];
+
 // Short flags → their canonical long form.
 // --mdl / -m are deliberately absent from USAGE: merge mining is retired from
 // the UI and undocumented, but still parsed so an existing HiveOS flight sheet
@@ -37,7 +41,7 @@ const ALIASES = {
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
   '--address', '--mdl', '--region', '--pool', '--worker',
-  '--gpu', '--gpu-index', '--core',
+  '--gpu', '--gpu-index', '--core', '--gpu-wait',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
   '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
@@ -135,6 +139,12 @@ const USAGE = [
   '                           of Arc cards, else the AMD core first.',
   '                           PEARL_CORE_VARIANT takes the same values; the',
   '                           flag wins.',
+  '      --gpu-wait <how>     How the miner waits for an NVIDIA card between',
+  '                           launches: block sleeps until the driver wakes it',
+  '                           (default, almost no CPU), poll sleeps and looks',
+  '                           every half millisecond, spin busy-waits and takes',
+  '                           a whole CPU core a card. PEARL_WAIT takes the same',
+  '                           values; the flag wins.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -245,6 +255,15 @@ function buildSettings(opts, errors, report, update, serve) {
     const c = String(opts['--core']).trim().toLowerCase();
     if (CORES.includes(c)) core = c;
     else errors.push('invalid --core: ' + opts['--core'] + ' (choices: ' + CORES.join(', ') + ')');
+  }
+
+  // How a card's search thread waits between launches. Null leaves it to PEARL_WAIT
+  // and then to the core's default. A flag for the same reason --core is one.
+  let gpuWait = null;
+  if (opts['--gpu-wait'] != null) {
+    const w = String(opts['--gpu-wait']).trim().toLowerCase();
+    if (GPU_WAITS.includes(w)) gpuWait = w;
+    else errors.push('invalid --gpu-wait: ' + opts['--gpu-wait'] + ' (choices: ' + GPU_WAITS.join(', ') + ')');
   }
 
   // Monero on the CPU (shared/xmr). Off unless an address is given; the thread
@@ -380,7 +399,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

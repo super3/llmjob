@@ -526,6 +526,32 @@ describe('--mine-core-offset', () => {
   });
 });
 
+// How a card's search thread waits between launches (PEARL_WAIT in the CUDA core).
+describe('--gpu-wait', () => {
+  test('is unset by default', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings.gpuWait).toBeNull();
+  });
+
+  test('takes block, poll or spin, in any case', () => {
+    for (const [arg, want] of [['block', 'block'], [' SPIN ', 'spin'], ['--gpu-wait=poll', 'poll']]) {
+      const argv = arg.startsWith('--') ? ['-a', ADDR, arg] : ['-a', ADDR, '--gpu-wait', arg];
+      const r = parseCliArgs(argv);
+      expect([arg, r.errors, r.settings.gpuWait]).toEqual([arg, [], want]);
+    }
+  });
+
+  test('anything else is an error that lists the choices', () => {
+    const r = parseCliArgs(['-a', ADDR, '--gpu-wait', 'yield']);
+    expect(r.errors).toEqual(['invalid --gpu-wait: yield (choices: block, poll, spin)']);
+    expect(r.settings.gpuWait).toBeNull();
+    expect(parseCliArgs(['-a', ADDR, '--gpu-wait']).errors).toEqual(['missing value for --gpu-wait']);
+  });
+
+  test('is listed in the usage text', () => {
+    expect(USAGE).toContain('--gpu-wait <how>');
+  });
+});
+
 // Which cards mine. HiveOS's h-config.sh writes this from the cards turned off
 // there, so a bad value has to be loud, not read as "every card".
 // Which core loads; HiveOS's Extra config takes flags, not environment variables.
