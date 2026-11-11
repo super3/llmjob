@@ -2917,6 +2917,50 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // The miner keeps each trial's answer for a week, so a card is not tried
+  // again on every start (pearlMiner.test.js has what is kept and when it is
+  // used). The CLI's part is the file: beside node.json, as the launch shapes'
+  // is, and handed to the engine on every run.
+  test('the engine is given a file beside node.json to remember trial answers in', async () => {
+    const path = require('path');
+    const m = load();
+    oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    const store = miner.opts.memClockStore;
+    const KEY = 'gpu0 NVIDIA GeForce RTX 5090';
+    const answer = { keep: true, mhz: 7001, at: 1, onTh: 103.4, offTh: 95.7 };
+    expect(store.get(KEY)).toBeNull();
+    m.fs.writeFileSync.mockClear();
+    store.set(KEY, answer);
+    const written = m.fs.writeFileSync.mock.calls.filter((c) => String(c[0]).includes('mem-clock-trials.json'));
+    expect(written).toHaveLength(1);
+    expect(String(written[0][0]).startsWith(path.join(path.dirname('/tmp/store/node.json'), 'mem-clock-trials.json')))
+      .toBe(true);
+    expect(JSON.parse(written[0][1])).toEqual({ [KEY]: answer });
+    expect(store.get(KEY)).toEqual(answer);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  // An RTX 5090 too: asking for the default's own clock locks the card at
+  // once. The miner is handed no card to try.
+  test('--mine-mem-clock 7001 on an RTX 5090 locks it with no trial', async () => {
+    const m = load();
+    oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', '7001']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 7001 });
+    expect(miner.settings.mineMemClockDefault).toBe(false);
+    expect(miner.settings.mineMemClockTrial).toBeUndefined();
+    expect(allOut()).toContain('--mine-mem-clock 7001 MHz on GPU 0');
+    expect(allOut()).not.toContain('trying a memory clock lock');
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   // On the AMD core the plan would be nvidia-smi's: an RTX 5090 beside the AMD
   // cards would have its memory clock locked while it sits idle.
   test('an AMD core locks no clock, even with an RTX 5090 in the rig', async () => {
@@ -2928,7 +2972,8 @@ describe('--mine-mem-clock', () => {
       const miner = m.PearlEngine.instances[0];
       expect(miner.settings.mineMemClockByIndex).toEqual({});
       expect(miner.settings.mineMemClockDefault).toBe(false);
-      expect(allOut()).not.toContain('memory clock 7001');
+      expect(miner.settings.mineMemClockTrial).toEqual([]);
+      expect(allOut()).not.toMatch(/memory clock/);
       // HIP's indices go to the core as given, not filtered by nvidia-smi's list.
       expect(m.pearlCore.coreFactory.mock.calls[0][0]).toMatchObject({
         coreFlag: true, gpus: [{ index: 0, name: null }, { index: 1, name: null }],
@@ -2959,9 +3004,11 @@ describe('--mine-mem-clock', () => {
     });
   });
 
-  // The default. An RTX 5090 is locked without being asked, and the log
-  // says so and names the way to turn it off.
-  test('an RTX 5090 is locked by default, and told how to opt out', async () => {
+  // The default. An RTX 5090 tries the lock without being asked and keeps it
+  // only if it mines faster: the miner is handed the card as one to try, not
+  // one to lock. The log says so and names the way past the trial and the way
+  // to turn it off. It used to be locked outright.
+  test('an RTX 5090 is put on trial by default, and told how to skip the trial or opt out', async () => {
     const m = load();
     oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report']);
@@ -2969,19 +3016,37 @@ describe('--mine-mem-clock', () => {
     const miner = m.PearlEngine.instances[0];
     expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 7001 });
     expect(miner.settings.mineMemClockDefault).toBe(true);
+    expect(miner.settings.mineMemClockTrial).toEqual([0]);
     expect(allOut()).toContain(
-      'memory clock 7001 MHz by default on GPU 0 (RTX 5090; --mine-mem-clock 0 leaves the driver\'s clock)');
+      'trying a memory clock lock of 7001 MHz on GPU 0 by default (RTX 5090), kept only if the card mines faster; '
+      + '--mine-mem-clock 7001 locks without a trial, --mine-mem-clock 0 leaves the driver\'s clock');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });
 
-  test('--mine-mem-clock 0 turns the default off', async () => {
+  test('--mine-mem-clock auto on an RTX 5090 is the trial too, as asked for', async () => {
+    const m = load();
+    oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', 'auto']);
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineMemClockByIndex).toEqual({ 0: 7001 });
+    expect(miner.settings.mineMemClockDefault).toBe(false);
+    expect(miner.settings.mineMemClockTrial).toEqual([0]);
+    expect(allOut()).toContain(
+      '--mine-mem-clock auto: trying a memory clock lock on GPU 0, kept only if the card mines faster');
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('--mine-mem-clock 0 turns the default off: nothing to lock and nothing to try', async () => {
     const m = load();
     oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
     const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report', '--mine-mem-clock', '0']);
     await settle();
     const miner = m.PearlEngine.instances[0];
     expect(miner.settings.mineMemClockByIndex).toEqual({});
+    expect(miner.settings.mineMemClockTrial).toBeUndefined();
     expect(allOut()).toContain('--mine-mem-clock 0: memory clocks left to the driver');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
@@ -3025,6 +3090,29 @@ describe('--mine-mem-clock', () => {
     await expect(p).resolves.toBe(0);
   });
 
+  // With no flag, demand mode gives the RTX 5090 its default: the trial, on
+  // the first start and again on every restart after serving. A mining run
+  // shorter than the trial ends at the driver's clock.
+  test('demand mode puts an RTX 5090 on trial by default, on the first start and every restart', async () => {
+    const m = load();
+    oneCard(m, RTX5090, 'NVIDIA GeForce RTX 5090');
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--gate-port', '0']);
+    await settle();
+
+    expect(allOut()).toContain('mining until a request arrives');
+    expect(allOut()).toContain('trying a memory clock lock of 7001 MHz on GPU 0 by default (RTX 5090)');
+    const miner = m.PearlEngine.instances[0];
+    const planOf = (s) => [s.mineMemClockByIndex, s.mineMemClockDefault, s.mineMemClockTrial];
+    expect(planOf(miner.settings)).toEqual([{ 0: 7001 }, true, [0]]);
+    expect(planOf(m.autoGate.createAutoGate.instances[0].opts.startMinerArgs())).toEqual([{ 0: 7001 }, true, [0]]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
   test('a co-running LLM drops it, and says so once', async () => {
     const m = load();
     oneCard(m, RTX4090, 'NVIDIA GeForce RTX 4090');
@@ -3058,10 +3146,155 @@ describe('--mine-mem-clock', () => {
 
     expect(m.LlmManager.instances.length).toBeGreaterThan(0);
     const miner = m.PearlEngine.instances[0];
+    // Nothing to lock and nothing to try: the trial would cut the memory
+    // clock under the model for half its turns.
     expect(miner.settings.mineMemClockByIndex).toEqual({});
+    expect(miner.settings.mineMemClockTrial).toBeUndefined();
     expect(allOut()).toContain(
       'memory clock left to the driver on GPU 0: the LLM co-runs with the miner and needs full memory bandwidth');
+    expect(allOut()).not.toContain('trying a memory clock lock');
     expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+});
+
+// The trial itself is PearlMiner's (pearlMinerCoreOffset.test.js) and the plan
+// is shared/coreOffset's; the CLI's part is the same as for the memory clock:
+// feed the plan what it knows and hand the miner the cards. An offset must
+// never be in place while an LLM is served.
+describe('--mine-core-offset', () => {
+  const IGNORED = '--mine-core-offset ignored: the LLM co-runs with the miner, and a model is never served '
+    + 'from a card running above its own clock';
+  const PLAN = '--mine-core-offset auto: trying core clock offsets on GPU 0, each step kept only if the card '
+    + 'still computes right and mines faster (measured on one RTX 4090 only; it runs a card above the clock its '
+    + 'maker set)';
+  const RTX4090 = { index: 0, major: 8, minor: 9, driverMajor: 610 };
+  const oneCard = (m) => {
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 4090' }]);
+    m.probe.detectCudaCards.mockResolvedValue([RTX4090]);
+  };
+  const MINING = ['-a', ADDR, '--mode', 'mining', '--no-update', '--no-report'];
+
+  // Off by default: no card is planned, and nothing is said.
+  test('not given, or 0: no card is tried and nothing is said', async () => {
+    for (const extra of [[], ['--mine-core-offset', '0']]) {
+      const m = load();
+      oneCard(m);
+      const p = m.run(MINING.concat(extra));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut() + allErr()).not.toMatch(/core clock offset|mine-core-offset/);
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    }
+  });
+
+  test('auto on a miner on its own puts the card on trial, and says how little was measured', async () => {
+    const m = load();
+    oneCard(m);
+    const p = m.run(MINING.concat(['--mine-core-offset', 'auto']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(allOut()).toContain(PLAN);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('beside --mine-mem-clock auto, the card is planned for both trials', async () => {
+    const m = load();
+    oneCard(m);
+    const p = m.run(MINING.concat(['--mine-core-offset', 'auto', '--mine-mem-clock', 'auto']));
+    await settle();
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(miner.settings.mineMemClockTrial).toEqual([0]);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a bad value is refused before anything starts', async () => {
+    const m = load();
+    await expect(m.run(MINING.concat(['--mine-core-offset', '150']))).resolves.toBe(1);
+    expect(allErr()).toContain('error: invalid --mine-core-offset: 150 (must be auto or 0)');
+    expect(m.PearlEngine.instances).toHaveLength(0);
+  });
+
+  // NVML is NVIDIA's. On the AMD core the plan would be nvidia-smi's cards,
+  // which that core does not mine.
+  test('an AMD core tries nothing, even with an RTX 4090 in the rig', async () => {
+    await withEnv({ PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      oneCard(m);
+      const p = m.run(MINING.concat(['--core', 'amd', '--gpu-index', '0,1', '--mine-core-offset', 'auto']));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut()).not.toContain('trying core clock offsets');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  test('an AMD rig is told the offset is NVIDIA-only', async () => {
+    await withEnv({ PEARL_GPU_INDEX: undefined, PEARL_CORE_VARIANT: undefined }, async () => {
+      const m = load();
+      const R9700 = { name: 'AMD Radeon AI PRO R9700' };
+      m.probe.detectGpuInfo.mockResolvedValue({ name: R9700.name, count: 2, amd: [R9700, R9700] });
+      const p = m.run(MINING.concat(['--mine-core-offset', 'auto']));
+      await settle();
+      const miner = m.PearlEngine.instances[0];
+      expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+      expect(allOut()).toContain(
+        '--mine-core-offset auto: nvidia-smi lists no NVIDIA card, and the core clock offset is NVIDIA-only');
+      miner.emit('stopped', 0);
+      await expect(p).resolves.toBe(0);
+    });
+  });
+
+  // Demand mode never serves while mining: the miner's stop() puts the card
+  // back at offset 0 before the gate starts llama-server, and each restart
+  // after serving runs the trial again.
+  test('demand mode keeps it, on the first start and every restart', async () => {
+    const m = load();
+    m.probe.detectMinerGpus.mockResolvedValue([{ index: 0, name: 'NVIDIA GeForce RTX 5090' }]);
+    m.probe.detectCudaCards.mockResolvedValue([{ index: 0, major: 12, minor: 0, driverMajor: 610 }]);
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 5090', usedMb: 0, totalMb: 32149 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    m.LlmEngineManager.mmprojInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--gate-port', '0',
+      '--mine-core-offset', 'auto']);
+    await settle();
+
+    expect(allOut()).toContain('mining until a request arrives');
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([0]);
+    expect(m.autoGate.createAutoGate.instances[0].opts.startMinerArgs().mineCoreOffsetTrial).toEqual([0]);
+    expect(allErr()).not.toContain(IGNORED);
+    miner.emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+  });
+
+  test('a co-running LLM drops it, and says so once', async () => {
+    const m = load();
+    oneCard(m);
+    // 24 GB free: the same model wins with and without the mining reserve, so
+    // auto co-runs.
+    m.probe.detectGpusVram.mockResolvedValue([{ index: 0, name: 'RTX 4090', usedMb: 2000, totalMb: 24000 }]);
+    m.LlmEngineManager.serverInstalled = true;
+    m.LlmEngineManager.modelInstalled = true;
+    const p = m.run(['--address', ADDR, '--no-update', '--no-serve', '--no-report', '--mine-core-offset', 'auto']);
+    await settle();
+
+    expect(m.LlmManager.instances.length).toBeGreaterThan(0);
+    const miner = m.PearlEngine.instances[0];
+    expect(miner.settings.mineCoreOffsetTrial).toEqual([]);
+    expect(allErr().split(IGNORED)).toHaveLength(2);
+    expect(allOut()).not.toContain('trying core clock offsets');
     miner.emit('stopped', 0);
     await expect(p).resolves.toBe(0);
   });

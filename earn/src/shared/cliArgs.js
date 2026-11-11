@@ -10,6 +10,7 @@ const { REGIONS, LEGACY_REGIONS, DEFAULTS, splitEndpoint } = require('./config')
 const { isValidAddress, isValidMdlAddress, normalizeAddress } = require('./address');
 const { MODES, DEFAULT_MODE, isValidMode } = require('./llmMode');
 const { parseMemClockMhz } = require('./memClock');
+const { parseCoreOffset } = require('./coreOffset');
 const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
@@ -39,7 +40,7 @@ const VALUE_FLAGS = new Set([
   '--gpu', '--gpu-index', '--core',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
-  '--gate-quiet', '--mine-mem-clock',
+  '--gate-quiet', '--mine-mem-clock', '--mine-core-offset',
   '--xmr-address', '--xmr-pool', '--cpu-threads', '--cpu-priority',
 ]);
 
@@ -84,15 +85,32 @@ const USAGE = [
   '      --llm-max-instances <n>  Cap how many llama-servers run (default: one per',
   '                           eligible GPU, itself capped by free system RAM)',
   '      --mine-mem-clock <MHz>  Lock each mining GPU\'s memory clock to <MHz>',
-  '                           while it mines. Default: 7001 on the RTX 5090,',
-  '                           off on every other card; 0 leaves the driver\'s',
-  '                           clock everywhere. The fold barely touches DRAM,',
+  '                           while it mines, with no trial. Default: an RTX',
+  '                           5090 tries 7001 for five minutes and keeps it',
+  '                           only if it mines faster, and every other card',
+  '                           is left alone. 0 leaves the driver\'s clock',
+  '                           everywhere; auto runs that trial on RTX 40 and',
+  '                           RTX 50 cards. A trial\'s answer is remembered',
+  '                           for a week. The fold barely touches DRAM,',
   '                           so a power-capped card spends the watts on its SM',
   '                           clock instead: 7001 took a 600 W RTX 5090 from',
-  '                           95.7 to 103.4 TH/s (+8%). Only the',
+  '                           95.7 to 103.4 TH/s (+8%). Only one',
   '                           5090 has been measured; lower raises the clock',
   '                           but cuts the work done per clock. Needs root, or',
   '                           a sudoers NOPASSWD rule for nvidia-smi. Released',
+  '                           whenever mining stops; skipped while an LLM',
+  '                           co-runs with it.',
+  '      --mine-core-offset <auto|0>  auto tries a core clock offset on each',
+  '                           RTX 20, 30, 40 or 50 card while it mines: +50,',
+  '                           +100, then +150 MHz. A step is tried only after',
+  '                           100 of its hits are recomputed right, and the',
+  '                           fastest step that is right is kept.',
+  '                           Default: 0, off. It runs the card above the',
+  '                           clock its maker set, and only one RTX 4090 has',
+  '                           been measured (+4.3% at +150 MHz, at 450 W): an',
+  '                           unstable step can crash the driver or the PC',
+  '                           before any check sees it. Needs root, or',
+  '                           administrator rights on Windows. Set back to 0',
   '                           whenever mining stops; skipped while an LLM',
   '                           co-runs with it.',
   '  -r, --region <id>        Pool region: ' + Object.keys(REGIONS).join('/') + ' (default: auto-detect fastest)',
@@ -311,9 +329,11 @@ function buildSettings(opts, errors, report, update, serve) {
     gateHost = String(opts['--gate-host']).trim();
     if (!gateHost) errors.push('invalid --gate-host: must not be empty');
   }
-  // A memory clock to lock while mining, in MHz. Null (not given) means the
-  // RTX 5090 default applies (shared/memClock); 0 turns that off and leaves
-  // every card at the driver's clock. The value's rules, and the GUI's
+  // A memory clock to lock while mining, in MHz, with no trial. Null (not
+  // given) means the RTX 5090 default applies (shared/memClock): each 5090
+  // tries a lock and keeps it only if it is faster. 0 turns that off and leaves
+  // every card at the driver's clock; 'auto' tries a lock on the cards that
+  // have one to try and keeps it where it is faster. The value's rules, and the GUI's
   // environment variable that takes the same values, are shared/memClock's.
   let mineMemClockMhz = null;
   if (opts['--mine-mem-clock'] != null) {
@@ -322,6 +342,19 @@ function buildSettings(opts, errors, report, update, serve) {
       errors.push('invalid --mine-mem-clock: ' + opts['--mine-mem-clock'] + ' (' + parsed.error + ')');
     } else {
       mineMemClockMhz = parsed.mhz;
+    }
+  }
+  // Whether to try a core clock offset on the mining cards: 'auto' runs the
+  // trial, 0 and null (not given) leave every card at its own clock. There is
+  // no MHz to ask for: an offset is only set once the trial has checked it on
+  // that card (shared/coreOffset, which also has the GUI's variable).
+  let mineCoreOffset = null;
+  if (opts['--mine-core-offset'] != null) {
+    const parsed = parseCoreOffset(opts['--mine-core-offset']);
+    if (parsed.error) {
+      errors.push('invalid --mine-core-offset: ' + opts['--mine-core-offset'] + ' (' + parsed.error + ')');
+    } else {
+      mineCoreOffset = parsed.offset;
     }
   }
   // An explicit ceiling on concurrent llama-servers. Null means "no operator
@@ -345,7 +378,7 @@ function buildSettings(opts, errors, report, update, serve) {
 
   return {
     address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
-    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz,
+    mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,
   };

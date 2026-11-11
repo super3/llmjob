@@ -3,24 +3,37 @@
 const {
   estDailyPrl, estDailyUsd, estDailyUsdLabel, HASHES_PER_DIFFICULTY,
 } = require('../src/shared/earnings');
+const { ECON } = require('../src/shared/config');
 
 // prlscan on 2026-10-06, block 124012: the latest block's difficulty and reward,
 // and the price. HeroMiners' calculator said 6.190208 PRL/day ($7.05) for 305
 // TH/s at that moment; the app said 6.70 ($7.64) before this formula.
 const OCT6 = { DIFFICULTY: 34452600.30923175, BLOCK_REWARD: 2277.90297138, FEE: 1, PRL_USD: 1.1407684455824119 };
 
+// Round figures for the arithmetic below. They were config's snapshot once; the
+// tests name them so that refreshing the snapshot does not break them, as it did
+// on 11 November 2026 when difficulty had risen 66% in five weeks.
+const ROUND = { DIFFICULTY: 34.45e6, BLOCK_REWARD: 2278, FEE: 1, PRL_USD: 1.14 };
+
 describe('earnings', () => {
   test('estDailyPrl scales with hashrate and handles bad input', () => {
-    expect(estDailyPrl(354)).toBeCloseTo(7.1852, 3);
-    expect(estDailyPrl(708)).toBeCloseTo(2 * estDailyPrl(354), 9);
+    expect(estDailyPrl(354, ROUND)).toBeCloseTo(7.1852, 3);
+    expect(estDailyPrl(708, ROUND)).toBeCloseTo(2 * estDailyPrl(354, ROUND), 9);
     expect(estDailyPrl(0)).toBe(0);
     expect(estDailyPrl('not a number')).toBe(0);
   });
 
   test('estDailyUsd and label', () => {
-    expect(estDailyUsd(354)).toBeCloseTo(8.1912, 3);
-    expect(estDailyUsdLabel(354)).toBe('$8.19');
+    expect(estDailyUsd(354, ROUND)).toBeCloseTo(8.1912, 3);
+    expect(estDailyUsdLabel(354, ROUND)).toBe('$8.19');
     expect(estDailyUsdLabel(0)).toBe('$0.00');
+  });
+
+  // With no figures passed, an estimate uses config's snapshot, whatever it holds.
+  test('the default is the snapshot in config', () => {
+    expect(estDailyPrl(354)).toBeCloseTo(estDailyPrl(354, ECON), 9);
+    expect(estDailyUsd(354)).toBeCloseTo(estDailyUsd(354, ECON), 9);
+    expect(estDailyUsdLabel(354)).toBe(estDailyUsdLabel(354, ECON));
   });
 
   // The figure the pool's own calculator gives, from the same difficulty and

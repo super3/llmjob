@@ -1,10 +1,12 @@
 #!/bin/bash
-# Benchmarks PeakMiner, SRBMiner and our miner on one Salad GPU, one after another, the way earn/tuning/benchmark.md's
-# "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes on Kryptex
-# (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it).
+# Benchmarks PeakMiner, SRBMiner, WildRig Multi, OneZeroMiner and our miner on one Salad GPU, one after another, the
+# way earn/tuning/benchmark.md's "How a host is tested" does: a 60 s unmeasured warm-up, then each miner for 5 minutes
+# on Kryptex (prl-us.kryptex.network:7048; HeroMiners until 30 October, when the founder retired it). WildRig and
+# OneZeroMiner joined on 9 November, as the third and fourth most downloaded Pearl miners; a box runs them only
+# when ORDER names them ("wild", "ozm"). OneZeroMiner has no AMD support, so an AMD box leaves it out.
 # bench.py starts it as a Salad container command and reads its "[bench]" lines from Salad's logs.
 #
-# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,ours"), OURS_SECS (300, or 90 on a card
+# Environment (set by bench.py): W wallet, ORDER (e.g. "peak,srb,wild,ozm,ours"), OURS_SECS (300, or 90 on a card
 # our release has no build for), SRB_EXTRA (extra SRBMiner flags, usually empty), and on AMD BASE_SHA and
 # VERIFY_SECS. Every line it prints for bench.py starts "[bench] HH:MM:SS".
 #
@@ -22,14 +24,26 @@
 # records each stratum line, and each measured run ends with that miner's shares decoded ("share ..." lines): m, n,
 # k and rank, the tile's rows, and the operand bytes the proof carries. bench.py's command fetches sharetap.py at
 # the same commit.
+#
+# VPOOL=BITS (NVIDIA only, with BASE_SHA): every miner mines on the stand-in pool (earn/native/probes/verify-pool.js
+# at BASE_SHA, run here under Node 22) at the target 2^BITS instead of on Kryptex. It checks each share as the spec's
+# verifier does and refuses duplicates, so each measured run ends with a "credit" line: the shares it accepted in
+# the run's window, and the rate they prove, accepted x 2^(256-BITS) MACs over the window (TH/s), beside the miner's
+# own figure. SECS and WARM set the run and warm-up lengths (300 and 60).
 export DEBIAN_FRONTEND=noninteractive
-POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=300; WARM=60
+POOL_HOST=prl-us.kryptex.network; POOL_PORT=7048; SECS=${SECS:-300}; WARM=${WARM:-60}
 # The versions a box runs: our release, and each competitor's newest with its published checksum. bench.py pins
 # this file by commit, so a run keeps the versions it started with. Until 28 October: v0.6.0, PeakMiner 2.17.6
-# and SRBMiner 3.7.1 (the GTX and AMD tables).
-VER=v0.6.9
-PEAK_VER=2.20.3; PEAK_SHA256=345a4446acaa9213e6cd4622460b002a966dad4a8ec127f965d3a8878375fc2a
+# and SRBMiner 3.7.1 (the GTX and AMD tables); until 9 November: v0.6.9, PeakMiner 2.20.3 and SRBMiner 3.8.2.
+# PeakMiner, WildRig and OneZeroMiner publish no checksums, so theirs are the SHA-256 of the files as downloaded
+# on 9 November.
+VER=${VER:-v0.6.13}   # VER=v0.6.14 etc. runs another release of ours
+PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07fc41bd24bcb3d
+# SRBMiner stays at 3.8.2: on Salad 3.8.6 exited 73 within seconds and printed only its interactive setup prompt
+# ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two 2080 Tis, 9 November).
 SRB_VER=3.8.2; SRB_MD5=9f64784a9894067b7bc3811b4912dd81
+WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
+OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
 say() { echo "[bench] $(date -u +%T) $*"; }
 fail() { say "FAIL $*"; say "all done"; sleep infinity; }
@@ -42,6 +56,8 @@ drop() {
   [ -n "${2:-}" ] && say "skip $1: $2"
   ORDER=$(echo "${ORDER:-peak,srb,ours}" | tr , '\n' | grep -vx "$1" | paste -sd, -)
 }
+# has NAME: whether ORDER runs that miner.
+has() { case ",${ORDER:-peak,srb,ours}," in *",$1,"*) return 0 ;; esac; return 1; }
 
 # copy_rate LOG: the GB/s of amdtest_hip.cpp's timed device copy ("copy: 564 GB/s (read + write)").
 copy_rate() { grep -oE '^copy: [0-9]+' "$1" 2>/dev/null | grep -oE '[0-9]+$' | head -1; }
@@ -82,8 +98,20 @@ amd_ours() {
   CORE="HIP core $(git -C "$R" rev-parse --short=12 HEAD) for $ARCH"
 }
 
+# WildRig mines NVIDIA cards through OpenCL. Salad's PCs run containers in WSL2, whose NVIDIA driver has no OpenCL
+# library, so there it finds the card, logs "Failed to find OpenCL platform" and hashes 0 (a 3090 Ti, 9 November).
+# A box without the driver's OpenCL library leaves it out rather than spend 5 minutes on a 0. One that has it gets
+# the OpenCL loader, which Salad's CUDA image lacks, pointed at that library.
+if [ -z "$AMD" ] && has wild && ! ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl.so* /usr/lib64/libnvidia-opencl.so* \
+    /usr/lib/wsl/lib/libnvidia-opencl.so* >/dev/null 2>&1; then
+  drop wild "no OpenCL"
+fi
+OCL=; [ -z "$AMD" ] && has wild && OCL=1
 apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq --no-install-recommends curl ca-certificates jq procps \
-  ${AMD:+clinfo} ${TAP:+python3} >/dev/null 2>&1 || fail "apt-get install"
+  ${AMD:+clinfo} ${TAP:+python3} ${VPOOL:+git} ${OCL:+ocl-icd-libopencl1} >/dev/null 2>&1 || fail "apt-get install"
+if [ -n "$OCL" ] && [ ! -f /etc/OpenCL/vendors/nvidia.icd ]; then
+  mkdir -p /etc/OpenCL/vendors && echo libnvidia-opencl.so.1 > /etc/OpenCL/vendors/nvidia.icd
+fi
 if [ -z "$AMD" ]; then
   say "card $(nvidia-smi --query-gpu=name,driver_version,power.limit,power.default_limit,memory.total,compute_cap --format=csv,noheader | head -1)"
 else
@@ -102,6 +130,7 @@ else
   say "opencl $(clinfo -l 2>&1 | tr -s ' \n' ' ' | head -c 300)"
   say "gpucols $(timeout 5 $SMI monitor -p -t -u --csv 2>&1 | head -1)"
   drop peak   # no Pearl kernel for AMD
+  drop ozm    # NVIDIA only
 fi
 
 mkdir -p /opt/b && cd /opt/b || fail "no /opt/b"
@@ -118,6 +147,20 @@ curl -fsSL --retry 3 -o srb.tgz \
   || fail "download SRBMiner"
 echo "$SRB_MD5  srb.tgz" | md5sum -c --quiet || fail "SRBMiner checksum"
 tar xzf srb.tgz && SRB=$(ls -d /opt/b/SRBMiner-Multi-*/ | head -1)SRBMiner-MULTI && [ -x "$SRB" ] || fail "unpack SRBMiner"
+if has wild; then
+  curl -fsSL --retry 3 -o wild.tgz \
+    "https://github.com/andru-kun/wildrig-multi/releases/download/$WILD_VER/wildrig-multi-linux-$WILD_VER.tar.gz" \
+    || fail "download WildRig"
+  echo "$WILD_SHA256  wild.tgz" | sha256sum -c --quiet || fail "WildRig checksum"
+  mkdir -p /opt/b/wild && tar xzf wild.tgz -C /opt/b/wild && [ -x /opt/b/wild/wildrig-multi ] || fail "unpack WildRig"
+fi
+if has ozm; then
+  curl -fsSL --retry 3 -o ozm.tgz \
+    "https://github.com/OneZeroMiner/onezerominer/releases/download/v$OZM_VER/onezerominer-linux-$OZM_VER.tar.gz" \
+    || fail "download OneZeroMiner"
+  echo "$OZM_SHA256  ozm.tgz" | sha256sum -c --quiet || fail "OneZeroMiner checksum"
+  tar xzf ozm.tgz && [ -x /opt/b/onezerominer-linux/onezerominer ] || fail "unpack OneZeroMiner"
+fi
 # Our miner: the published release, as a user gets it; on AMD, the HIP core built here.
 case ",${ORDER:-peak,srb,ours}," in *,ours,*)
   if [ -z "$AMD" ]; then
@@ -129,6 +172,52 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
     amd_ours
   fi ;;
 esac
+# VPOOL: the stand-in pool on 127.0.0.1:3334, for the whole box. Its share log has a line per share:
+# "<ms> <connection> <k> ok|<reason> <hs>".
+if [ -n "${VPOOL:-}" ] && [ -z "$AMD" ]; then
+  [ -n "${BASE_SHA:-}" ] || fail "VPOOL needs BASE_SHA"
+  mkdir -p /opt/node && curl -fsSL --retry 3 https://nodejs.org/dist/v22.22.0/node-v22.22.0-linux-x64.tar.gz \
+    | tar xz -C /opt/node --strip-components=1 || fail "node download"
+  { rm -rf /opt/llmjob && mkdir -p /opt/llmjob && cd /opt/llmjob && git init -q \
+      && git remote add origin https://github.com/super3/llmjob.git && git fetch -q --depth 1 origin "$BASE_SHA" \
+      && git checkout -q FETCH_HEAD; } > /opt/b/git.log 2>&1 || fail "fetch $BASE_SHA: $(tail -c 200 /opt/b/git.log)"
+  cd /opt/b
+  PEARL_SHARE_LOG=/opt/b/vp.shares /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-pool.js serve 3334 864000 \
+    "$VPOOL" > /opt/b/vp.out 2> /opt/b/vp.err &
+  VP_PID=$!
+  for _ in 1 2 3 4 5 6 7 8 9 10; do grep -q listening /opt/b/vp.err && break; sleep 1; done
+  grep -q listening /opt/b/vp.err || fail "verify-pool: $(tail -c 200 /opt/b/vp.err)"
+  say "$(grep -m1 listening /opt/b/vp.err) (commit ${BASE_SHA:0:12})"
+  POOL_HOST=127.0.0.1; POOL_PORT=3334
+  # VERIFY_SECS with VPOOL: the hit check (verify-hits.js) on each of the release's cores this card can load, first.
+  if [ -n "${VERIFY_SECS:-}" ] && has ours; then
+    for c in pearl_core_cu13.node pearl_core.node; do
+      say "start hitcheck $c ${VERIFY_SECS}s"
+      timeout $((VERIFY_SECS + 300)) /opt/node/bin/node /opt/llmjob/earn/native/probes/verify-hits.js "/opt/b/$c"         "$VERIFY_SECS" > /opt/b/verify.log 2>&1
+      hitcheck /opt/b/verify.log; say "hitcheck $c $(grep '^{' /opt/b/verify.log | tail -1 | jq -c '{device, k, thLast, thMax}' 2>/dev/null | head -c 300)"
+    done
+  fi
+fi
+# credit NAME T0 T1: the stand-in's shares in [T0, T1) (epoch seconds), as one line: accepted, duplicates, other
+# rejects, the rate the accepted ones prove over the window and over the window less its first 60 s, accepted a
+# minute, and the mean hs (the hashrate a miner puts in its submits, if it does).
+credit() {
+  awk -v n="$1" -v a="$2" -v b="$3" -v bits="$VPOOL" '
+    BEGIN { a *= 1000; b *= 1000; w = 2 ^ (256 - bits) }
+    $1 >= a && $1 < b {
+      if ($4 == "ok") { ok++; if ($1 >= a + 60000) ok60++; m = int(($1 - a) / 60000); pm[m]++ }
+      else if ($4 == "\"duplicate_share\"") dup++
+      else { rej++; why = $4 }
+      if ($5 != "null") { hs += $5; nhs++ }
+    }
+    END {
+      s = (b - a) / 1000; mins = ""
+      for (i = 0; i < int(s / 60 + 0.999); i++) mins = mins (i ? "," : "") (pm[i] + 0)
+      printf "credit %s secs=%d bits=%d ok=%d dup=%d rej=%d ths=%.2f ths60=%.2f hs=%s permin=%s%s\n", n, s, bits, ok,
+        dup, rej, ok * w / s / 1e12, (s > 60 ? ok60 * w / (s - 60) / 1e12 : 0), (nhs ? sprintf("%.4g", hs / nhs) : "none"),
+        mins, (rej ? " why=" substr(why, 1, 120) : "")
+    }' /opt/b/vp.shares 2>/dev/null
+}
 # TAP=1: the miners connect to the relay, which passes everything on to the pool and records it.
 if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
   [ -f /root/sharetap.py ] || fail "no sharetap.py beside bench.sh"
@@ -138,10 +227,11 @@ if [ -n "${TAP:-}" ] && [ -z "$AMD" ]; then
   say "$(cat /opt/b/tap.log)"
   POOL_HOST=127.0.0.1; POOL_PORT=3333
 fi
+others=; has wild && others="$others, WildRig $WILD_VER"; has ozm && others="$others, OneZeroMiner $OZM_VER"
 if [ -z "$AMD" ]; then
-  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER, ours $VER"
+  say "ready PeakMiner $PEAK_VER, SRBMiner $SRB_VER$others, ours $VER"
 else
-  r="SRBMiner $SRB_VER"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
+  r="SRBMiner $SRB_VER$others"; case ",$ORDER," in *,ours,*) r="$r, ours $CORE" ;; esac
   say "ready $r"
   say "srb devices $(cd "$(dirname "$SRB")" && timeout 60 "$SRB" --list-devices $SRB_EXTRA 2>&1 | tr -s '\r\n ' ' ' | tail -c 400)"
 fi
@@ -150,13 +240,19 @@ peak() { ./peak -o "stratum+tcp://$POOL_HOST:$POOL_PORT" -u "$W.bench-peak" -p x
 srb()  { cd "$(dirname "$SRB")" && "$SRB" --algorithm-gpu pearlhash --pool "$POOL_HOST:$POOL_PORT" --wallet "$W" \
            --worker bench-srb --disable-cpu --api-enable --api-port 21550 ${AMD:+--disable-gpu-nvidia --disable-gpu-intel} \
            $SRB_EXTRA; }
+# WildRig and OneZeroMiner, run as their own Pearl start scripts do, each with its API on, as their HiveOS packages
+# read them (h-stats.sh).
+wild() { cd /opt/b/wild && ./wildrig-multi --algo pearlhash --url "stratum+tcp://$POOL_HOST:$POOL_PORT" \
+           --user "$W.bench-wild" --pass x --api-port 21551; }
+ozm()  { cd /opt/b/onezerominer-linux && ./onezerominer -a pearl -w "$W" --worker bench-ozm \
+           -o "stratum+tcp://$POOL_HOST:$POOL_PORT" --api-port 21552; }
 # Our CLI picks Kryptex's "wallet/worker" login from the host name, so behind the TAP relay (127.0.0.1) Kryptex
 # credits the same wallet but names the worker "worker" rather than bench-ours.
 ours() { ./cli -a "$W" --mode mining -w bench-ours --no-report --no-serve --no-update \
            --pool "$POOL_HOST:$POOL_PORT"; }
 # On AMD: the CLI from source with the core built above (amdtest.sh's mine_cli), on SRBMiner's pool.
 [ -n "$AMD" ] && ours() { WALLET=$W POOL=$POOL_HOST:$POOL_PORT WORKER=bench-ours mine_cli; }
-stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
+stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; [ -n "$AMD" ] && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
 # One sample: the miner's own hashrate (H/s), accepted and rejected shares, and the card's power, clock and temperature,
 # then (NVIDIA) its memory clock, GPU use, memory-controller use and memory in use (MiB), in gpu=.
@@ -168,6 +264,10 @@ sample() {
     peak) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:4068/summary | jq -r '
             def num(p): [paths(numbers) as $q | select(($q|map(tostring)|join(".")) | test(p; "i")) | getpath($q)];
             [(num("hash") | max), (num("accept") | max), (num("reject") | max)] | @tsv' 2>/dev/null) ;;
+    wild) read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21551 | jq -r '
+            [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
+    ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
+            [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
     ours) local l; l=$(tr '\r' '\n' < ours.log | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
@@ -178,18 +278,40 @@ sample() {
   say "sample $name t=$t hs=${hs:-?} acc=${acc:-?} rej=${rej:-?} gpu=$g"
 }
 
+# Which core our CLI loaded: its last "Pearl core:" line (a CUDA 13 build that fails to start is followed by the 12.8
+# one it fell back to). A driver under 580 gets the 12.8 build, 3.2% slower on a 5090; the bench logged only the driver
+# before 10 November, which left that to be worked out. The " · " after the label becomes "; " (ASCII only).
+loaded() { say "loaded $(tr '\r' '\n' < /opt/b/ours.log | grep -a 'Pearl core: ' | tail -1 \
+             | LC_ALL=C tr -cd ' -~' | sed 's/.*Pearl core: //; s/  /; /' | tail -c 300)"; }
+
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
-  ( $name > "/opt/b/$name.log" 2>&1 ) & local pid=$! t0; t0=$(date +%s)
+  ( $name > "/opt/b/$name.log" 2>&1; echo $? > "/opt/b/$name.rc" ) & local pid=$! t0; t0=$(date +%s)
   while [ $(( $(date +%s) - t0 )) -lt "$secs" ]; do
     sleep 15; local t=$(( $(date +%s) - t0 ))
     if ! kill -0 $pid 2>/dev/null; then
-      say "exited $name t=$t: $(tr '\r\n' '  ' < "/opt/b/$name.log" | tail -c 300)"; stop_all; return
+      [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
+      say "exited $name t=$t: rc=$(cat "/opt/b/$name.rc" 2>/dev/null || echo '?') $(tr '\r\n' '  ' < "/opt/b/$name.log" | tail -c 300)"
+      # SRBMiner 3.8.6 quit in its first seconds with no output on a 2080 Ti (9 November): say what it says about
+      # itself, and any library it can't find.
+      if [ "$name" = srb ]; then
+        say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
+      fi
+      [ "$name" = ours ] && [ -z "$AMD" ] && loaded
+      stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
-  [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -v '^\s*$' | tail -2 | tr '\n' ' ' | tail -c 300)"
+  # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
+  [ "$name" = ours ] && [ -z "$AMD" ] && loaded
+  [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+  # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
+  # whether the driver's OpenCL library is in the container.
+  if [ "$name" = wild ]; then
+    say "diag wild: $(ls /usr/lib/x86_64-linux-gnu/libnvidia-opencl* /usr/lib64/libnvidia-opencl* 2>&1 | head -2 | tr '\n' ' ') $(tr '\r' '\n' < /opt/b/wild.log | grep -a -v '^\s*$' | grep -a -i -m6 -E 'gpu|device|platform|opencl|cuda|error' | sed 's/\x1b\[[0-9;]*m//g' | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 400)"
+  fi
+  [ "$measured" = 1 ] && [ -n "${VP_PID:-}" ] && say "$(credit "$name" "$t0" "$(date +%s)")"
   kill $pid 2>/dev/null; stop_all
   if [ "$measured" = 1 ] && [ -f /opt/b/tap.jsonl ]; then
     python3 /root/sharetap.py decode /opt/b/tap.jsonl --since "$t0" 2>&1 | while IFS= read -r l; do say "share $name $l"; done
@@ -201,5 +323,11 @@ run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get 
 for m in "${MINERS[@]}"; do
   if [ "$m" = ours ]; then run ours "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
 done
+if [ -n "${VP_PID:-}" ]; then
+  # The stand-in's summary: logins (agent and type, never a wallet), methods it refused, reasons, in 400-char pieces.
+  kill -TERM "$VP_PID"; wait "$VP_PID" 2>/dev/null
+  tail -n 1 /opt/b/vp.out | jq -c '{connections, jobs, byK, reasons, methods, logins}' 2>/dev/null | fold -w 400 \
+    | while IFS= read -r l; do say "vpool $l"; done
+fi
 say "all done"
 sleep infinity

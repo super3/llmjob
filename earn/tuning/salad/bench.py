@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # Runs earn/tuning/benchmark.md's GTX 10- and 16-series benchmark on Salad: one high-priority box at a time, card class by
 # card class from the top of the tables, two PCs per card. Each box runs bench.sh (PeakMiner, SRBMiner and our
-# miner, 5 minutes each after a warm-up) and prints "[bench]" lines, which this reads from Salad's logs. Every 15
+# miner, 5 minutes each after a warm-up; on RTX also OneZeroMiner, since 9 November) and prints "[bench]" lines,
+# which this reads from Salad's logs. Every 15
 # minutes it writes both tables, filled so far, with what the box is doing now, to bench_status.md and a STATUS
 # line to bench.log. State is in bench.json, so a restart carries on. Uses the watcher's Salad client; groups are
 # named "bench-...", which the watcher's sweep and guard.py leave alone (they only touch "biz-").
@@ -105,7 +106,9 @@ if SET == "amd":
     # 50 with the default 10-minute check.
     RUN_MIN = 40 + -(-VERIFY_SECS // 60)
 if SET == "rtx":
-    # earn/tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with all three miners at their newest (bench.sh).
+    # earn/tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with every miner at its newest (bench.sh).
+    # Five miners since 9 November, about 31 minutes of mining after the downloads, so a box gets an hour.
+    RUN_MIN = 60
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
     # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
@@ -178,7 +181,7 @@ def parse(lines):
     """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
     On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
     out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
-           "core": None, "skipped": {}}
+           "core": None, "loaded": None, "skipped": {}}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
@@ -193,6 +196,9 @@ def parse(lines):
             s = re.match(r"skip (\w+): (.*)", body)
             if s:
                 out["skipped"][s.group(1)] = s.group(2)
+        elif body.startswith("loaded "):
+            # Our CLI's "Pearl core:" line, e.g. "CUDA 13 build; driver 621, ...": the label before the ";".
+            out["loaded"] = body[7:].split(";")[0].strip() or None
         elif body.startswith("fetch ok "):
             out["core"] = body.split()[2]
         elif body.startswith("card "):
@@ -218,9 +224,10 @@ def parse(lines):
                 mm["samples"].append({"t": t, "th": th, "acc": s.group(4), "rej": s.group(5)})
                 out["phase"] = f"{name} {t}s"
         elif body.startswith("exited "):
-            e = re.match(r"exited (\w+) t=(\d+): (.*)", body)
+            # "exited srb t=15:" with nothing after it: SRBMiner 3.8.6 quit with no output (9 November).
+            e = re.match(r"exited (\w+) t=(\d+):\s*(.*)", body)
             if e:
-                out["miners"].setdefault(e.group(1), {"samples": []})["exited"] = e.group(3)[:200]
+                out["miners"].setdefault(e.group(1), {"samples": []})["exited"] = e.group(3)[:200] or "no output"
     return out
 
 
@@ -241,6 +248,17 @@ def quota_refused(s, j):
     """Salad's answer when the organization's container replicas are all in use ("created_replicas_quota_exceeded"
     on a create, "replicas_quota_exceeded" on a start)."""
     return s == 400 and "quota_exceeded" in str((j or {}).get("type", "") if isinstance(j, dict) else j)
+
+
+# The competitors, in the tables' column order. OneZeroMiner joined the RTX and AMD sets on 9 November; a result
+# from before then has no figure for it and shows "not run". WildRig Multi ran for an afternoon and was dropped
+# (the founder, 9 November): it mines NVIDIA cards through OpenCL, which Salad's WSL2 containers don't have, so it
+# can't be measured on Salad. bench.sh can still run it (ORDER with "wild") where it can.
+COMPETITORS = {"gtx": ("peak", "srb")}.get(SET, ("peak", "srb", "ozm"))
+# Miners with no Pearl kernel for the set's cards: they mine nothing there, so their cells say 0 rather than
+# "not run" (the founder, 9 November). PeakMiner has no AMD kernel and OneZeroMiner no AMD support.
+UNSUPPORTED = {"amd": ("peak", "ozm")}.get(SET, ())
+NAMES = {"peak": "PeakMiner", "srb": "SRBMiner", "wild": "WildRig", "ozm": "OneZeroMiner"}
 
 
 def cell(v, why):
@@ -270,12 +288,14 @@ def pc_note(row, h):
 
 
 def render(st, sections=None):
-    """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner isn't run, so "% of best"
-    is ours against SRBMiner, and a line for each PC under the table gives its copy rate and hit check."""
+    """Both tables, in earn/tuning/benchmark.md's shape, with what's filled so far. On AMD PeakMiner and OneZeroMiner
+    aren't run and show 0, so "% of best" is ours against SRBMiner, and a line for each PC under the table
+    gives its copy rate and hit check."""
     out = []
     for title, rows in sections or SECTIONS:
-        out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | PeakMiner | SRBMiner | % of best |",
-                "|---|---|---|---|---|---|---|"]
+        out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | "
+                + " | ".join(NAMES[k] for k in COMPETITORS) + " | % of best |",
+                "|---|---|---|---|" + "---|" * len(COMPETITORS) + "---|"]
         notes = [pc_note(r, h) for r in rows for h in st["results"].get(r, []) if SET == "amd"]
         for r in rows:
             hosts = st["results"].get(r, [])
@@ -283,18 +303,19 @@ def render(st, sections=None):
             for i in range(len(hosts) if extra else HOSTS):    # a card no class is for: only the hosts it had
                 mem = f", {MEM[r]}" if r in MEM else ""
                 if i >= len(hosts):
-                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | not run | not run | — |")
+                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | "
+                               + "".join("0 | " if k in UNSUPPORTED else "not run | " for k in COMPETITORS) + "— |")
                     continue
                 h = hosts[i]
                 # nvidia-smi says "[N/A]" on a PC whose driver doesn't report a power limit.
                 p = re.sub(r"\.0+ W$", " W", h["power"]) if re.match(r"\d", h.get("power") or "") else "— W"
                 o, ow = h["ours"]
-                pk, pw = h["peak"]
-                sr, sw = h["srb"]
-                best = max([x for x in (pk, sr) if x] or [0])
+                theirs = [tuple(h.get(k) or (None, "not run")) for k in COMPETITORS]
+                best = max([v for v, _ in theirs if v] or [0])
                 pct = f"{o / best * 100:.0f}%" if o and best else "—"
-                out.append(f"| {r} | Salad ({p}{mem}) | {h['machine'][:8]} | {cell(o, ow)} | {cell(pk, pw)} | "
-                           f"{cell(sr, sw)} | {pct} |")
+                out.append(f"| {r} | Salad ({p}{mem}) | {h['machine'][:8]} | {cell(o, ow)} | "
+                           + " | ".join("0" if k in UNSUPPORTED else cell(*x) for k, x in zip(COMPETITORS, theirs))
+                           + f" | {pct} |")
         out.append("")
         if notes:
             out += notes + [""]
@@ -339,7 +360,7 @@ class Bench:
         if SET == "amd":
             return "ours,srb" if n % 2 == 0 else "srb,ours"
         if SET == "rtx":
-            return "ours,peak,srb" if n % 2 == 0 else "srb,peak,ours"
+            return "ours,peak,srb,ozm" if n % 2 == 0 else "srb,peak,ozm,ours"
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
 
     def command(self, ours_secs, order):
@@ -511,7 +532,9 @@ class Bench:
         seen = set(self.st["lines"])
         for it in items:
             mach = ((it.get("resource") or {}).get("labels") or {}).get("machine_id")
-            text = it.get("text_log") or ""
+            # Salad files some lines as JSON with the text in json_log.message: WildRig's "end" and "diag" lines,
+            # read as blank until 9 November.
+            text = it.get("text_log") or ((it.get("json_log") or {}).get("message") if isinstance(it.get("json_log"), dict) else "") or ""
             if "[bench]" in text and (not self.st.get("machine") or mach == self.st["machine"]):
                 key = f"{it.get('time')}|{text.strip()}"
                 if key not in seen:
@@ -594,10 +617,17 @@ class Bench:
         if r["done"] and r["card"]:
             row = row_for(r["card"]["name"], rows + EXTRA.get(cls, []))
             res = {"machine": self.st["machine"], "card": r["card"]["name"], "power": r["card"]["power"],
-                   "driver": r["card"]["driver"], "group": self.st["group"],
+                   "driver": r["card"]["driver"], "loaded": r["loaded"], "group": self.st["group"],
                    "ours": figure(r["miners"].get("ours"), mean_after=60),
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
-                   "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")}}
+                   "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
+                   "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
+                   # Every miner's samples, and its mean after the first minute beside the figure above, so a
+                   # row can be scored again another way later. The 9-10 November run kept only the one
+                   # figure for each miner, and its rows could not be re-scored (11 November).
+                   "samples": {k: [[x["t"], x["th"]] for x in v.get("samples", [])]
+                               for k, v in r["miners"].items()},
+                   "means": {k: figure(v, mean_after=60)[0] for k, v in r["miners"].items()}}
             if res["ours"][0] is None and res["ours"][1] in ("didn't start", "no rate", "not run") and ours == 90:
                 res["ours"] = (None, "no build")
             if SET == "amd":
@@ -606,7 +636,10 @@ class Bench:
                     res["ours"] = (None, r["skipped"]["ours"])
                     # bench.sh left ours out of the order too, so SRBMiner went first.
                     res["order"] = ",".join(x for x in (res["order"] or "").split(",") if x and x != "ours") or None
-            if ours != 90 and all(res[k][0] is None for k in ("ours", "peak", "srb")):
+            for k in COMPETITORS:        # a competitor the box left out, and why ("skip wild: no OpenCL")
+                if res[k][0] is None and r["skipped"].get(k):
+                    res[k] = (None, r["skipped"][k])
+            if ours != 90 and all(res[k][0] is None for k in ("ours",) + COMPETITORS):
                 # Where our release has a build, a PC on which no miner gets work points at its network, not the
                 # card: try another PC instead of filling the row with it.
                 self.note(f"{self.st['machine'][:8]} ({r['card']['name']}): no miner got work from the pool; "
@@ -616,8 +649,8 @@ class Bench:
                 return True
             self.st["results"].setdefault(row, []).append(res)
             self.st["seen"].append(self.st["machine"])
-            log(f"RESULT {row} on {self.st['machine'][:8]}: ours {cell(*res['ours'])}, PeakMiner {cell(*res['peak'])}, "
-                f"SRBMiner {cell(*res['srb'])}")
+            log(f"RESULT {row} on {self.st['machine'][:8]}: ours {cell(*res['ours'])}, "
+                + ", ".join(f"{NAMES[k]} {cell(*res[k])}" for k in COMPETITORS))
             self.status(force=True)
             self.move_on("done")
             return True

@@ -171,8 +171,10 @@ describe('the CUDA host: the tall fold past 16 chunks', () => {
 
   it('reads PEARL_TALL_PREGUARD, which the host sees, and the fold agrees', () => {
     expect(HOST).toContain('#include "pearl_config.h"');
-    // Defined, 1 by default, inside nothing but the header's include guard.
-    const at = CONFIG.indexOf(lines('#ifndef PEARL_TALL_PREGUARD', '#define PEARL_TALL_PREGUARD 1', '#endif'));
+    // Defined inside nothing but the header's include guard: 1 by default, and 0 by default
+    // in a build past k 2048, whose readout must wrap.
+    const at = CONFIG.indexOf(lines('#ifndef PEARL_TALL_PREGUARD', '#if PEARL_FOLD_K > 2048',
+      '#define PEARL_TALL_PREGUARD 0', '#else', '#define PEARL_TALL_PREGUARD 1', '#endif', '#endif'));
     expect(at).toBeGreaterThan(0);
     const open = [];
     for (const l of CONFIG.slice(0, at).split(NL)) {
@@ -200,5 +202,64 @@ describe('the CUDA host: the tall fold past 16 chunks', () => {
       for (const name of ['PEARL_TALL_PREGUARD', 'PEARL_FOLD_K'])
         expect([file, name, text.includes(name)]).toEqual([file, name, false]);
     }
+  });
+});
+
+// Long k (PR #290 research item 21): builds up to k 65536, the largest the spec allows at rank 128.
+describe('the tall fold at long k', () => {
+  // The bytes an operand takes at the mainnet m and n.
+  const M = 131072, N = 262144;
+
+  it('takes PEARL_FOLD_K only as a power of two from 2048 to 65536', () => {
+    const rule = grab(CONFIG, /\n#if (PEARL_FOLD_K < 2048 \|\| PEARL_FOLD_K > 65536 \|\| \(PEARL_FOLD_K & \(PEARL_FOLD_K - 1\)\))\n#error/);
+    // eslint-disable-next-line no-new-func
+    const refused = new Function('PEARL_FOLD_K', 'return ' + rule + ';');
+    const ok = [];
+    for (let k = 1024; k <= 131072; k += 1024) if (!refused(k)) ok.push(k);
+    expect(ok).toEqual([2048, 4096, 8192, 16384, 32768, 65536]);
+  });
+
+  it('widens the cp.async offsets exactly where an operand passes 4 GB', () => {
+    expect(CONFIG).toContain(lines(
+      '#if PEARL_FOLD_K > 16384',
+      '#define PEARL_TALL_OFF uint64_t',
+      '#else',
+      '#define PEARL_TALL_OFF uint32_t',
+      '#endif'));
+    for (const k of [2048, 4096, 8192, 16384, 32768, 65536]) {
+      const wide = k > 16384;
+      // B' is the larger; at k 16384 its last byte is still a 32-bit offset.
+      expect([k, N * k - 1 > 0xFFFFFFFF]).toEqual([k, wide]);
+      // A' (with its padding rows) stays under 4 GB to k 16384 too.
+      if (!wide) expect(M * k).toBeLessThan(2 ** 32);
+    }
+    expect(FOLD).toContain('  auto tile_srcs = [&](uint32_t v, PEARL_TALL_OFF &bsrc_, PEARL_TALL_OFF &asrc_) {');
+    expect(FOLD).toContain('  PEARL_TALL_OFF bsrc0, asrc0;');
+    expect(FOLD).toContain('    asrc_ = (PEARL_TALL_OFF)(rbg_ * BM) * k + (arow * SK + aq * 16u);');
+  });
+
+  it('has the host refuse over 4 GB only where the offsets are 32-bit, and never on the TMA fold', () => {
+    expect(HOST).toContain(lines(
+      '  if (ctx->foldTall && !ctx->foldTma && sizeof(PEARL_TALL_OFF) < 8',
+      "      && ((uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k > (uint64_t)0x100000000ull",
+      '          || (uint64_t)ctx->profile.n * k > (uint64_t)0x100000000ull)) {'));
+  });
+
+  it('wraps the TMA fold\'s DRAM ablation every 16 chunks, from the first two row and column groups', () => {
+    expect(FOLD).toContain(lines(
+      '    rbg_ &= 1u;',
+      '    cbg_ &= 1u;',
+      '    bcol_ = cbg_ * PEARL_TALL_COL_OFFSETS * PEARL_COLS_COUNT;',
+      '#else',
+      '    bcol_ = (col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT;',
+      '#endif'));
+    // Comment lines dropped.
+    const code = FOLD.split(NL).filter((l) => !/^\s*\/\//.test(l)).join(NL);
+    expect(code).toContain(lines(
+      '#ifdef PEARL_ABLATE_DRAM',
+      '      const uint32_t cn = (last ? 0u : chunk + 1u) & 15u;',
+      '#else',
+      '      const uint32_t cn = last ? 0u : chunk + 1u;',
+      '#endif'));
   });
 });

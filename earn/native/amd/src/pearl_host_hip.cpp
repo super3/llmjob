@@ -57,6 +57,14 @@ __attribute__((visibility("hidden"), noreturn)) void __throw_bad_array_new_lengt
 // -DPEARL_AMD_COL_BATCH=N sets another width; the host narrows it further if it has to.
 // Without it the host also picks a narrower width for the cards measured faster there
 // (amd_col_batch); a build that sets it gets exactly that cap, so a sweep can still race 256.
+// PEARL_AMD_HASHQ: the hash kernel on a queue of its own (Ctx::hashq). 0 on no card; 1 on every card; 2, the default,
+// on RDNA 3's gfx1100 (RX 7900) only. The environment variable of the same name (0 or 1) overrides it at run time.
+#ifndef PEARL_AMD_HASHQ
+#define PEARL_AMD_HASHQ 2
+#endif
+#if PEARL_AMD_HASHQ != 0 && PEARL_AMD_HASHQ != 1 && PEARL_AMD_HASHQ != 2
+#error "PEARL_AMD_HASHQ is 0, 1 or 2"
+#endif
 #ifndef PEARL_AMD_COL_BATCH
 #define PEARL_AMD_COL_BATCH 256u
 #define PEARL_AMD_COL_BATCH_BY_ARCH 1
@@ -221,6 +229,18 @@ struct Ctx {
   // next fold. On an RX 9070 XT that measured no faster (100.36 against 100.35 TH/s, three
   // rounds each, 23 October), so the batches stay on this one stream.
   hipStream_t work = nullptr;
+  // PEARL_AMD_HASHQ (above; PR #290 research item 23, 10 November): the hash kernel, the hit count's copy and the
+  // slot's event on a queue of their own, after the fold's event, so the next batch's fold follows this one on `work`
+  // with no hash between them. The slot's fold waits for that slot's last hash (slotDone) before it rewrites its
+  // transcripts and hit list. On an RX 7900 XTX (PC 44d3716f) a batch fell from 10.67 to 10.33 ms and hashrate.js
+  // rose 3.5% (51.39-51.64 to 53.22-53.28 TH/s, 5 rounds, a twin within 0.2%): the fold itself ran 10.57 -> 10.31 ms,
+  // more than the 0.084 ms hash it no longer waits for. A second run on that PC read +3.4%. On two RX 7800 XTs it was
+  // level (72dd708c, within 0.03%) and behind (16f1685c, -0.03 to -0.27%): the fold got 0.1 ms slower with the hash
+  // beside it. On an RX 9060 XT (8c96a2a7, k 4096) it lost 0.21-0.36% in 6 of 6 rounds. A second RX 7900 XTX
+  // (3bf70206) read +0.2 to +1.0% in 10 of 10 rounds (56.2 to 56.4 TH/s, a twin level), so it is on for gfx1100
+  // only. No RX 7900 XT or GRE has run it (benchmark.md, PR #290 item 23).
+  hipStream_t hashq = nullptr;
+  hipEvent_t foldDone[kSlots] = {};
   uint32_t *dTr[kSlots] = {nullptr, nullptr};  // each slot's transcripts, 16 words a region
   std::vector<PearlSearchResult> extraHits;
   size_t extraNext = 0;
@@ -1028,6 +1048,18 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   }
   HIP_OK(hipStreamCreateWithFlags(&ctx->side, hipStreamNonBlocking), "creating the proof stream");
   HIP_OK(hipStreamCreateWithFlags(&ctx->work, hipStreamDefault), "creating the search stream");
+#if !defined(__HIP_CPU_RT__)   // a GPU only: HIP-CPU's streams (Ctx::work) stay as they are
+  {
+    bool q = PEARL_AMD_HASHQ == 1 || (PEARL_AMD_HASHQ == 2 && !strncmp(ctx->arch, "gfx1100", 7));
+    const char *hq = getenv("PEARL_AMD_HASHQ");
+    if (hq && (!strcmp(hq, "0") || !strcmp(hq, "1"))) q = hq[0] == '1';
+    if (q) {
+      HIP_OK(hipStreamCreateWithFlags(&ctx->hashq, hipStreamDefault), "creating the hash stream");
+      for (int i = 0; i < Ctx::kSlots; i++)
+        HIP_OK(hipEventCreateWithFlags(&ctx->foldDone[i], hipEventDisableTiming), "creating the fold events");
+    }
+  }
+#endif
   {
     const char *tr = getenv("PEARL_AMD_TRACE");
     if (tr && tr[0] && strcmp(tr, "0") != 0) {
@@ -1126,7 +1158,9 @@ extern "C" void pearl_host_destroy(void *handle) {
     if (ctx->trace.f0[i]) hipEventDestroy(ctx->trace.f0[i]);
     if (ctx->trace.f1[i]) hipEventDestroy(ctx->trace.f1[i]);
     if (ctx->trace.h1[i]) hipEventDestroy(ctx->trace.h1[i]);
+    if (ctx->foldDone[i]) hipEventDestroy(ctx->foldDone[i]);
   }
+  if (ctx->hashq) hipStreamDestroy(ctx->hashq);
   if (ctx->side) hipStreamDestroy(ctx->side);
   if (ctx->work) hipStreamDestroy(ctx->work);
   if (ctx->hSlotCount) hipHostFree(ctx->hSlotCount);
@@ -1524,6 +1558,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   hitList.hash = reinterpret_cast<uint32_t *>(ctx->dHashes + (size_t)slot * PEARL_MAX_HITS * PEARL_HASH_BYTES);
   hitList.transcript = ctx->dHitTranscript + (size_t)slot * PEARL_MAX_HITS * PEARL_JACKPOT_BUCKETS;
   hipStream_t st = ctx->work;
+  const bool fusedQ = ctx->fuse && kFolds[ctx->fold].cap != PEARL_AMD_CAP_REF;
+  // PEARL_AMD_HASHQ (Ctx): this slot's last hash read its transcripts and counted into its hit list; wait for it.
+  const bool hashq = ctx->hashq && !fusedQ;
+  if (hashq) hipStreamWaitEvent(st, ctx->slotDone[slot], 0);
   hipMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
   if (ctx->trace.on) hipEventRecord(ctx->trace.f0[slot], st);
 
@@ -1557,6 +1595,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       break;
   }
   if (ctx->trace.on) hipEventRecord(ctx->trace.f1[slot], st);
+  if (hashq) {   // PEARL_AMD_HASHQ (Ctx): the hash, the count and the slot's event on the hash queue
+    hipEventRecord(ctx->foldDone[slot], st);
+    st = ctx->hashq;
+    hipStreamWaitEvent(st, ctx->foldDone[slot], 0);
+  }
   if (!fused)
     hipLaunchKernelGGL(pearl_amd_hash, dim3((regions + PEARL_AMD_THREADS - 1) / PEARL_AMD_THREADS),
                        dim3(PEARL_AMD_THREADS), 0, st, (const uint32_t *)tr, regions, test, hitList);
@@ -1689,6 +1732,14 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
            ctx->emulated ? ", emulated on the CPU (HIP-CPU)" : "", ctx->arch[0] ? ", " : "", ctx->arch);
   return ctx->foldName;
 }
+
+// RTX 30's launch shapes (pearl_host.cu): an AMD card has none to choose, so the core runs no
+// trial and reports no shapes.
+extern "C" int pearl_host_shape_count(void *) { return 0; }
+extern "C" void pearl_host_shape_name(void *, int, char *buf, size_t len) {
+  if (buf && len) snprintf(buf, len, "none");
+}
+extern "C" bool pearl_host_set_shape(void *, int) { return false; }
 
 extern "C" bool pearl_host_leaf_chunks(void *handle, int isA, const uint32_t *leaf_indices,
                                        uint32_t count, uint8_t *out) {

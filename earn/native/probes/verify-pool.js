@@ -7,7 +7,8 @@
 //     It agrees to compressed proofs, as both pools do, unless `plain` is given: then the CLI sends raw ones,
 //     about 180 KB a line at k 4096. Each share is checked as zk-pow's verify_plain_proof does (checkShare
 //     below) and answered accepted, or rejected with the reason. Ends with one JSON line: shares by k, accepted,
-//     rejected and the reasons, and PASS (at least one share, none rejected).
+//     rejected and the reasons, and PASS (at least one share, none rejected). PEARL_SHARE_LOG=FILE appends a line
+//     per share, "<ms> <connection> <k> ok|<reason> <hs>", for counting a miner's shares over a time window.
 //
 //   node verify-pool.js mixed CORE.node SECS [BITS=210 | pool]
 //     PearlMiner itself, as the app runs it, with two cores on one card (PEARL_GPU_INDEX, default 0): the first
@@ -26,6 +27,7 @@
 // the hash against the target scaled both ways (tile * k, and tile * (k / rank) * 128). It does not run the
 // circuit's degree check. It is our JS: refverify.rs is the spec's own code, for what that leaves.
 'use strict';
+const fs = require('fs');
 const net = require('net');
 const path = require('path');
 const S = path.join(__dirname, '..', '..', 'src') + path.sep;
@@ -150,20 +152,27 @@ function checkShare(header, target, field, { gzip = false } = {}) {
 
 // The stand-in pool. Returns { server, stats, close() }; stats.byK[k] = { shares, accepted, rejected },
 // stats.reasons[reason] = count. `target`, when given, is the share target itself instead of 2^bits.
-function servePool({ port, bits = 210, target: exact, plain = false, jobEvery = 30, log = () => {} }) {
+// A share already taken (the same tile of the same A and B trees under the same job) is rejected as a duplicate,
+// as a real pool does. `onShare`, when given, gets { t, conn, k, why, hs } for every share (hs: the hashrate the
+// miner put in its submit, if any), and `stats.logins` keeps each login's agent and type, never its wallet.
+function servePool({ port, bits = 210, target: exact, plain = false, jobEvery = 30, log = () => {}, onShare }) {
   const target = exact === undefined ? 2n ** BigInt(bits) : exact;
-  const stats = { byK: {}, reasons: {}, connections: 0, jobs: 0 };
+  const stats = { byK: {}, reasons: {}, connections: 0, jobs: 0, logins: [], methods: {} };
   const conns = new Set();
+  const seen = new Set();
   let seq = 0;
+  // Job ids in the live pools' shape, "<8 hex>_<difficulty>", difficulty = 2^256 / target / 2^32, in case a miner
+  // reads it.
+  const diff = (1n << 224n) / target > 0n ? (1n << 224n) / target : 1n;
   const job = () => {
     const header = Buffer.alloc(76);
     header.writeUInt32LE(++seq, 0);
     header.fill(0x5A, 4);
     stats.jobs++;
-    return { id: 'stand-in-' + seq, header };
+    return { id: seq.toString(16).padStart(8, '0') + '_' + diff, header };
   };
   const server = net.createServer((sock) => {
-    stats.connections++;
+    const conn = ++stats.connections;
     conns.add(sock);
     const jobs = new Map();
     let gzip = false;
@@ -189,12 +198,23 @@ function servePool({ port, bits = 210, target: exact, plain = false, jobEvery = 
         try { m = JSON.parse(line); } catch (e) { continue; }
         if (m.method === 'mining.authorize') {
           gzip = !plain && m.params && m.params.type === 'v2';
+          const pa = m.params && typeof m.params === 'object' ? m.params : {};
+          stats.logins.push({ conn, agent: Array.isArray(pa) ? null : pa.agent || null, type: Array.isArray(pa) ? null : pa.type || null,
+            params: Array.isArray(pa) ? 'array' : Object.keys(pa).join(',') });
           send({ id: m.id, result: true, error: null, ...(gzip ? { type: 'v2' } : {}) });
           notify();
         } else if (m.method === 'mining.submit') {
           const p = m.params || {};
           const j = jobs.get(p.job_id);
-          const { k, why } = j ? checkShare(j.header, target, p.plain_proof, { gzip }) : { k: null, why: 'job not found' };
+          let { k, why } = j ? checkShare(j.header, target, p.plain_proof, { gzip }) : { k: null, why: 'job not found' };
+          if (!why) {
+            const pp = decodePlainProof(p.plain_proof, { gzip });
+            const key = [p.job_id, Buffer.from(pp.a.proof.root).toString('hex'), Buffer.from(pp.bt.proof.root).toString('hex'),
+              pp.a.rowIndices.join('.'), pp.bt.rowIndices.join('.')].join('|');
+            if (seen.has(key)) why = 'duplicate share';
+            else seen.add(key);
+          }
+          if (onShare) onShare({ t: Date.now(), conn, k, why, hs: p.hs === undefined ? null : p.hs });
           const s = (stats.byK[k] = stats.byK[k] || { shares: 0, accepted: 0, rejected: 0 });
           s.shares++;
           if (why) {
@@ -206,6 +226,10 @@ function servePool({ port, bits = 210, target: exact, plain = false, jobEvery = 
             send({ id: m.id, result: true, error: null });
           }
           log('share k=' + k + ' ' + (why ? 'rejected: ' + why : 'accepted'));
+        } else if (m.method) {
+          // What the live pools answer anything but authorize and submit with.
+          stats.methods[m.method] = (stats.methods[m.method] || 0) + 1;
+          if (m.id !== null && m.id !== undefined) send({ id: m.id, result: null, error: [20, 'Undefined stratum'] });
         }
       }
     });
@@ -230,7 +254,10 @@ function serveMain(argv) {
   const port = Number(argv[0]), secs = Number(argv[1]);
   const bits = Number(argv[2] || 210), plain = argv[3] === 'plain';
   const jobEvery = Number(process.env.PEARL_JOB_EVERY || 30);
-  const pool = servePool({ port, bits, plain, jobEvery, log: (l) => console.error('[verify-pool] ' + l) });
+  const shareLog = process.env.PEARL_SHARE_LOG ? fs.openSync(process.env.PEARL_SHARE_LOG, 'a') : null;
+  const onShare = shareLog === null ? undefined : (e) => fs.writeSync(shareLog,
+    e.t + ' ' + e.conn + ' ' + e.k + ' ' + (e.why ? JSON.stringify(e.why).replace(/ /g, '_') : 'ok') + ' ' + JSON.stringify(e.hs) + '\n');
+  const pool = servePool({ port, bits, plain, jobEvery, log: (l) => console.error('[verify-pool] ' + l), onShare });
   pool.server.on('listening', () => console.error('[verify-pool] listening on 127.0.0.1:' + port
     + (plain ? ', raw proofs only' : ', compressed proofs offered') + ', target 2^' + bits));
   const end = () => {

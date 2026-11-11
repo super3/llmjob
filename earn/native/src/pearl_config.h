@@ -464,6 +464,18 @@ typedef struct {
 #define PEARL_FOLD_K 2048u
 #endif
 #define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)
+#if PEARL_FOLD_K < 2048 || PEARL_FOLD_K > 65536 || (PEARL_FOLD_K & (PEARL_FOLD_K - 1))
+#error "PEARL_FOLD_K is a power of two from 2048 to 65536 (16 x rank to 4 x rank^2)"
+#endif
+// The tall fold's cp.async source offsets (tile_srcs). At the mainnet m and n, A' and B'
+// pass 4 GB past k 16384 (B' is n x k bytes), so those builds take 64-bit offsets; at
+// k 16384 and below they stay 32-bit and the fold is what it was. Blackwell's TMA fold
+// addresses by box coordinates, which never overflow.
+#if PEARL_FOLD_K > 16384
+#define PEARL_TALL_OFF uint64_t
+#else
+#define PEARL_TALL_OFF uint32_t
+#endif
 
 // Eight 64x64 warp tiles (256 threads) over the fold's 128x256 CTA tile, in
 // place of sixteen 32x64 ones (512 threads).
@@ -1425,6 +1437,56 @@ typedef struct {
 #define PEARL_DP4A_COL_BATCH 256u
 #endif
 
+// Volta (sm_70: Tesla V100, Titan V). Its tensor cores multiply fp16, not int8, so none of
+// the int8 folds runs there, and the dp4a fold reached 29.15 TH/s on a V100 SXM2, about
+// 95% of what dp4a allows. pearl_tile_fold_hmma (pearl_fold_hmma.h) is the dp4a fold's
+// tile on the fp16 tensor cores: int8 A' and B' converted to fp16 as they are staged,
+// wmma 16x16x16 with fp32 accumulators.
+//
+// Why it is exact. fp16 holds every int8. Products are at most 2^14 and exact in fp32,
+// and a sum of integers is exact in fp32 while it stays below 2^24 (see
+// pearl_fold_hmma.h). The accumulators start at a bias of 2^23 under the constant fill,
+// and the readout takes their bits as the integer n they summed while n is in [0, 2^23)
+// at each chunk's end (pearl_hmma_bias). With the constant fill, A' = 48 + noise and
+// B' = 48 + noise, noise the difference of two uniform [-32, 32) entries (sd about 26),
+// so a product is 2304 on average, sd about 1,900. After chunk 0 (128 products) an
+// accumulator is about 295,000, sd about 21,500: 14 sd above 0. After chunk 15 (2048)
+// it is about 4.72 million, sd about 86,000: 43 sd below 2^23. Under the hashed fill
+// (A' int7 plus noise, sd about 45) the bias is 1.5 * 2^23 and the window 2^22 either
+// side of 0; a product's sd is about 2,000 and the sum's about 93,000: 45 sd to either
+// end. (These treat the noise as independent from one k to the next; it is drawn from
+// 128 entries a row, which moves them little.) Neither is reachable by chance: a region
+// past an end would mine nothing, and that is the whole cost. The worst case in theory,
+// every product 127 * 127 of one sign, is 2^25, which fp32 cannot hold; the operands
+// cannot be chosen to get there, since the noise is drawn from the job's hash.
+//
+// The body is built in the sm_70 pass only, and the host runs it on a card whose loaded
+// binary of pearl_tile_fold_hmma is 7.0 (Ctx::foldHmma). Everything around the fold is
+// the dp4a fold's: the k-blocked draw, the batch, the tile walk and the hit list.
+// -DPEARL_VOLTA_HMMA=0 builds no body, so a V100 runs the dp4a fold as before; at run time
+// PEARL_VOLTA_DP4A=1 does the same, for a race on one card.
+#ifndef PEARL_VOLTA_HMMA
+#define PEARL_VOLTA_HMMA 1
+#endif
+#if PEARL_VOLTA_HMMA != 0 && PEARL_VOLTA_HMMA != 1
+#error "PEARL_VOLTA_HMMA is 0 or 1"
+#endif
+#if defined(__CUDA_ARCH__) && PEARL_VOLTA_HMMA && __CUDA_ARCH__ == 700
+#define PEARL_HMMA_BODY 1
+#else
+#define PEARL_HMMA_BODY 0
+#endif
+#define PEARL_HMMA_THREADS 128u
+#define PEARL_HMMA_STAGE_K 32u                          // halfs of k a stage
+// Halfs between two staged rows in shared: 32 plus 8, so the 8 rows a quarter-warp's
+// 16-byte loads touch land on 8 different groups of 4 banks.
+#ifndef PEARL_HMMA_LDM
+#define PEARL_HMMA_LDM 40u
+#endif
+#ifndef PEARL_HMMA_ASWZ
+#define PEARL_HMMA_ASWZ 1
+#endif
+
 // A 192x256 CTA tile: eight 96x64 warp tiles (256 threads), staged in three 64-deep
 // stages that the warps pass through on an mbarrier ring instead of a block-wide
 // barrier (pearl_tile_fold_tall).
@@ -2109,8 +2171,14 @@ typedef struct {
 // 468 -> 469 instructions (13.3; 12.8 634 -> 635). Same hit lists as without it over a
 // fixed job in both hash byte orders. The TMA build only (sm_120, and sm_100 on the
 // same code, unmeasured there); 0 turns it off.
+// Off by default in a build for k past 2048 (PEARL_FOLD_K): its readout writes chunk c's
+// words with no wrap, so it can't fold 16 chunks into a word, and it is worth under 0.1%.
 #ifndef PEARL_TALL_PREGUARD
+#if PEARL_FOLD_K > 2048
+#define PEARL_TALL_PREGUARD 0
+#else
 #define PEARL_TALL_PREGUARD 1
+#endif
 #endif
 // GA100 (sm_80): the tall fold leaves the transcript hash to a kernel of its own. At each
 // tile's end every warp copies its 24 regions' words from shared to a per-slot buffer in

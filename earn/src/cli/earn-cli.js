@@ -29,6 +29,8 @@ const { readCpuFacts } = require('../main/cpuFacts');
 const { planCpuThreads } = require('../shared/xmr/cpuPlan');
 const { shortenXmrAddress } = require('../shared/xmr/address');
 const { coreFactory } = require('../main/pearlCore');
+const { withShapePick, shapeFileStore } = require('../shared/shapePick');
+const { readSettings, writeSettings } = require('../shared/settingsStore');
 const { extractLlamaZip } = require('../main/io');
 const {
   detectRegion, detectVram, detectGpusVram, detectMinerGpus, postMinerReport,
@@ -61,6 +63,7 @@ const {
   describeSkippedGpus, planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks } = require('../shared/memClock');
+const { planCoreOffsets } = require('../shared/coreOffset');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const format = require('../shared/format');
 const pkg = require('../../package.json');
@@ -1041,15 +1044,23 @@ async function run(argv) {
     // Set when the loader found a core that would not load. It has said why
     // (a missing library, too old a glibc), and "not found" would contradict it.
     let loadFailed = null;
-    const createCore = coreFactory({
+    const coreLog = (level, line) => {
+      if (line.includes(' is there but would not load: ')) loadFailed = line;
+      log(line, level === 'error' ? process.stderr : process.stdout);
+    };
+    // Each RTX 30 card's launch shape, timed once on this PC and cached beside node.json
+    // (shared/shapePick).
+    const createCore = withShapePick(coreFactory({
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
       coreFlag: !!settings.core,
-      log: (level, line) => {
-        if (line.includes(' is there but would not load: ')) loadFailed = line;
-        log(line, level === 'error' ? process.stderr : process.stdout);
-      },
+      log: coreLog,
+    }), {
+      store: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'launch-shapes.json'),
+        { readSettings, writeSettings, fs, log }),
+      log: coreLog,
+      gpus: settings.gpus,
     });
     // A rig whose Blackwell cards the driver is too old for mines on the rest,
     // or on none, and the dashboard should say why. Not awaited.
@@ -1093,6 +1104,11 @@ async function run(argv) {
         readTemps: () => probe.detectGpuTemps(),
         // Sent with the pool login, as the Monero miner's is.
         agent: 'llmjob-earn/' + pkg.version,
+        // Each card's memory clock trial answer, kept for a week beside
+        // node.json so a card is not tried again on every start
+        // (shared/memClockTrial). The same kind of file as the launch shapes'.
+        memClockStore: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'mem-clock-trials.json'),
+          { readSettings, writeSettings, fs, log }),
       });
       // The pool took the login, so this address is one that worked.
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
@@ -1213,12 +1229,16 @@ async function run(argv) {
   }
 
   // Which cards lock their memory clock while mining, and at what: the
-  // RTX 5090 default, or --mine-mem-clock (shared/memClock). Decided here,
+  // RTX 5090 default, which tries the lock and keeps it only where the card
+  // mines faster, or --mine-mem-clock (shared/memClock). Decided here,
   // where the LLM plan is known, because the lock is only safe while nothing
   // else wants the memory. LLM decode is memory-bandwidth-bound -- the opposite
   // of the fold -- so a model served from a locked card slows down with the
   // memory clock. Demand mode never overlaps the two: the miner's stop()
-  // releases the lock before the gate starts llama-server. A co-running LLM
+  // releases the lock, and ends a trial, before the gate starts llama-server.
+  // Each of its mining runs takes the answer remembered for the card (the
+  // engine's memClockStore, above), or starts the trial when there is none: a
+  // run that ends before its trial does leaves no answer. A co-running LLM
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.
@@ -1226,19 +1246,28 @@ async function run(argv) {
   // card beside the AMD ones it would lock that idle card's memory clock.
   // An AMD core the CLI picked itself (HiveOS passes no --core) mines the AMD
   // plan, which is no NVIDIA card: an empty list says "NVIDIA-only".
+  //
+  // The core clock offset trial (--mine-core-offset auto, shared/coreOffset) is
+  // planned beside it and by the same rules: NVIDIA cards only, so never on an
+  // AMD core, and never while an LLM co-runs. In demand mode the miner's stop()
+  // puts every card back at offset 0 before the gate starts llama-server.
   if (miner && wantsAmdCore()) {
     settings.mineMemClockByIndex = {};
     settings.mineMemClockDefault = false;
+    settings.mineMemClockTrial = [];
+    settings.mineCoreOffsetTrial = [];
   } else if (miner) {
-    const memPlan = planMemClocks({
-      requestedMhz: settings.mineMemClockMhz,
-      cards: cudaCards,
-      gpus: amdGpus.length ? [] : settings.gpus,
-      llmCoRuns: !!(plan.llm && !demand),
-    });
+    const nvidia = { cards: cudaCards, gpus: amdGpus.length ? [] : settings.gpus, llmCoRuns: !!(plan.llm && !demand) };
+    const memPlan = planMemClocks({ requestedMhz: settings.mineMemClockMhz, ...nvidia });
     settings.mineMemClockByIndex = memPlan.byIndex;
     settings.mineMemClockDefault = memPlan.isDefault;
+    // The cards that have to earn their lock: each RTX 5090 by default, more
+    // cards with --mine-mem-clock auto, none when a clock was asked for.
+    settings.mineMemClockTrial = memPlan.trial;
     if (memPlan.reason) log(memPlan.reason, memPlan.dropped ? process.stderr : process.stdout);
+    const offsetPlan = planCoreOffsets({ requested: settings.mineCoreOffset, ...nvidia });
+    settings.mineCoreOffsetTrial = offsetPlan.trial;
+    if (offsetPlan.reason) log(offsetPlan.reason, offsetPlan.dropped ? process.stderr : process.stdout);
   }
 
   // Keep a mining reserve free only when co-running with the miner. In demand

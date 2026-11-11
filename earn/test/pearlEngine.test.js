@@ -154,6 +154,28 @@ describe('PearlEngine — the surface main.js drives', () => {
     b.e.stop();
   });
 
+  // Each start builds a new miner, so a memory clock trial's answer can only
+  // reach the next start through the store the shells pass (see
+  // PearlMiner._recallMemClock; pearlMiner.test.js has what is kept).
+  test('hands the memory clock store it was given to every miner it builds', () => {
+    const store = { get: jest.fn(() => null), set: jest.fn() };
+    const sock = fakeSocket();
+    const e = new PearlEngine({ connect: () => sock, createCore: () => fakeCore(), memClockStore: store });
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    const first = e.miner;
+    expect(first.memClockStore).toBe(store);
+    e.stop();
+    e.start({ address: ADDR, worker: 'rig01', endpoint: 'us.pearl.herominers.com:1200' });
+    expect(e.miner).not.toBe(first);
+    expect(e.miner.memClockStore).toBe(store);
+    e.stop();
+
+    // None given: the miner remembers nothing, as before.
+    const b = started();
+    expect(b.e.miner.memClockStore).toBeNull();
+    b.e.stop();
+  });
+
   test('runs once started and stops on stop', () => {
     const { e, core } = started();
     expect(e.isRunning()).toBe(true);

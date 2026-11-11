@@ -30,7 +30,15 @@ if (!(every >= 0)) {
   process.exit(2);
 }
 const addon = require(file);
-const core = addon.createCore(PROFILE, kEnv ? {} : { cardK: true });
+// PEARL_SHAPE_TRIAL=secs runs the core's startup trial of RTX 30's launch shapes, and
+// PEARL_SHAPE=<name> ("flip 128", "band 8 x 512") opens the core in that shape. The trial's
+// pick is printed as a "shape" line and the JSON names the shape the core ended in.
+const shapeOpts = {};
+if (process.env.PEARL_SHAPE_TRIAL) shapeOpts.shapeTrialSecs = Number(process.env.PEARL_SHAPE_TRIAL);
+if (process.env.PEARL_SHAPE) shapeOpts.shape = process.env.PEARL_SHAPE;
+const core = addon.createCore(PROFILE, kEnv ? { ...shapeOpts } : { cardK: true, ...shapeOpts });
+let trial = null;
+core.on('shape', (s) => { trial = s; console.log('shape ' + s); });
 // The k the core mines: its own report, or the profile's from a core that has none.
 const k = core.k === undefined ? PROFILE.k : core.k;
 const t0 = Date.now(); const samples = []; const gpu = [];
@@ -55,13 +63,13 @@ const poll = setInterval(() => {
   } catch (e) {}
 }, 2000);
 setTimeout(() => {
-  clearInterval(poll); if (switcher) clearInterval(switcher); core.stop();
+  clearInterval(poll); if (switcher) clearInterval(switcher); const shape = core.shape; core.stop();
   const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
   const sd = Math.sqrt(samples.reduce((a, b) => a + (b - mean) ** 2, 0) / samples.length);
   const avg = (i) => {
     const xs = gpu.map((g) => g[i]).filter(Number.isFinite);   // a field the card reads as [N/A] is NaN
     return xs.length ? (xs.reduce((a, x) => a + x, 0) / xs.length).toFixed(0) : '?';
   };
-  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), k, ...(every > 0 ? { jobEvery: every, jobs } : {}), device: core.device, th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
+  console.log(JSON.stringify({ file: path.basename(path.dirname(file)) + '/' + path.basename(file), k, ...(every > 0 ? { jobEvery: every, jobs } : {}), device: core.device, shape, ...(trial ? { trial: JSON.parse(trial) } : {}), th: +mean.toFixed(2), sd: +sd.toFixed(2), n: samples.length, mhz: +avg(0), watts: +avg(1), tempC: +avg(2), memUtil: +avg(3), memUsedMb: +avg(4), memMhz: +avg(5) }));
   process.exit(0);
 }, (secs + warm) * 1000);

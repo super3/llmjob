@@ -24,6 +24,7 @@ const { XmrEngine } = require('./xmrEngine');
 const { findWorker, makeSpawnWorker } = require('./xmrWorker');
 const { readCpuFacts } = require('./cpuFacts');
 const { coreFactory } = require('./pearlCore');
+const { withShapePick, shapeFileStore } = require('../shared/shapePick');
 const { getJson, streamChatCompletion, extractLlamaZip } = require('./io');
 const { detectRegion, detectGpusVram, postMinerReport } = require('./probe');
 const probe = require('./probe');
@@ -64,6 +65,7 @@ const {
   planMinerGpus, planAmdGpus, describeAmdPlan,
 } = require('../shared/gpu');
 const { planMemClocks, readMemClockEnv, GUI_MEM_CLOCK_ENV } = require('../shared/memClock');
+const { planCoreOffsets, readCoreOffsetEnv, GUI_CORE_OFFSET_ENV } = require('../shared/coreOffset');
 const { describeAmdDrivers } = require('../shared/amdDriver');
 const earnings = require('../shared/earnings');
 const format = require('../shared/format');
@@ -639,12 +641,14 @@ async function startMining(settings, llmCoRuns) {
   // runs): keep the existing miner — reassigning it would orphan an unstoppable
   // engine process and spawn a second one on the same GPU.
   //
-  // A miner that started mining-only may hold the Blackwell memory clock lock
-  // (below). When the LLM joins it, that lock goes now, before runPlan starts
+  // A miner that started mining-only may hold a memory clock lock, or be part
+  // way through the trial for one (below). When the LLM joins it, the lock and
+  // the trial go now, before runPlan starts
   // the model: a served model must never sit on a locked card. The other way
   // round -- the mode flipped back to mining-only mid-run -- takes no lock; the
   // card mines at the driver's clock until the next start, which is slower,
-  // never wrong.
+  // never wrong. The same call ends a core clock offset trial and puts every
+  // card back at offset 0 (shared/coreOffset).
   if (miner && miner.isRunning()) {
     if (llmCoRuns) miner.releaseMemClocks();
     persistSettings(settings);
@@ -739,11 +743,13 @@ async function startMining(settings, llmCoRuns) {
   }
 
   // Which cards lock their memory clock while mining: the RTX 5090 default
-  // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the
-  // GUI's one switch for it. The renderer has no setting yet, so a rig that
-  // regresses with the lock needs a way off it: 0 leaves every card at the
-  // driver's clock, any other value locks every mining card at it, the same as
-  // --mine-mem-clock.
+  // (shared/memClock), which tries the lock on each 5090 and keeps it only
+  // where that card mines faster, or LLMJOB_MINE_MEM_CLOCK from the app's
+  // environment, the GUI's one switch for it. The renderer has no setting yet,
+  // so the variable is the way off the default and the way past its trial: 0
+  // leaves every card at the driver's clock, a number locks every mining card
+  // at it with no trial, and auto tries a lock on the other cards too, the
+  // same as --mine-mem-clock.
   // Read on every start, like the CLI reads its flag; a bad value is logged and
   // ignored, so a typo keeps the default rather than silently dropping it. Not
   // while the LLM co-runs: llama-server is memory-bandwidth-bound, and here
@@ -761,13 +767,33 @@ async function startMining(settings, llmCoRuns) {
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
+  // Which cards try a core clock offset (shared/coreOffset): none unless
+  // LLMJOB_MINE_CORE_OFFSET=auto is in the app's environment, the GUI's one
+  // switch for it, read on every start like the memory clock's. The same rules:
+  // nvidia-smi's cards only, and not while the LLM co-runs.
+  const offsetRequest = readCoreOffsetEnv(process.env);
+  if (offsetRequest.warning) send('miner:log', { level: 'warn', line: offsetRequest.warning });
+  const offsetPlan = planCoreOffsets({
+    requested: offsetRequest.offset, requestName: GUI_CORE_OFFSET_ENV,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
+  });
+  if (offsetPlan.reason) send('miner:log', { level: offsetPlan.dropped ? 'warn' : 'info', line: offsetPlan.reason });
+
+  const coreLog = (level, line) => send('miner:log', { level, line });
   miner = new PearlEngine({
     connect: (host, port) => net.connect({ port, host, lookup: poolLookup() }),
-    createCore: coreFactory({
+    // Each RTX 30 card's launch shape, timed once on this PC and cached in userData
+    // (shared/shapePick).
+    createCore: withShapePick(coreFactory({
       resourcesPath: process.resourcesPath,
       gpus,
       cards: cudaCards,
-      log: (level, line) => send('miner:log', { level, line }),
+      log: coreLog,
+    }), {
+      store: shapeFileStore(path.join(app.getPath('userData'), 'launch-shapes.json'),
+        { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
+      log: coreLog,
+      gpus,
     }),
     // The card temperature the UI shows next to the GPU name. Our core has no
     // NVML reading of its own to forward the way alpha-miner did, so the engine
@@ -775,12 +801,18 @@ async function startMining(settings, llmCoRuns) {
     readTemps: () => probe.detectGpuTemps(),
     // Sent with the pool login, as the Monero miner's is.
     agent: 'llmjob-earn/' + app.getVersion(),
+    // Each card's memory clock trial answer, kept for a week in userData so a
+    // card is not tried again on every start (shared/memClockTrial). The same
+    // kind of file as the launch shapes'.
+    memClockStore: shapeFileStore(path.join(app.getPath('userData'), 'mem-clock-trials.json'),
+      { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
   });
   wireMinerEvents(miner, endpoint);
   try {
     miner.start(Object.assign({}, settings, {
       endpoint, gpus, gpu: settings.gpu || null,
       mineMemClockByIndex: memPlan.byIndex, mineMemClockDefault: memPlan.isDefault,
+      mineMemClockTrial: memPlan.trial, mineCoreOffsetTrial: offsetPlan.trial,
     }));
   } catch (e) {
     reportLaunchFailure(e);

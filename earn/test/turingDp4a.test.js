@@ -199,7 +199,7 @@ describe('resolve_fold and what follows a card it takes', () => {
       'turing = pearl_dp4a_turing_for(sms, force);',
       'if ((PEARL_DP4A_ARCH(fd.binaryVersion * 10) || turing)',
       '&& (uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS) {',
-      'ctx->foldDp4a = true;', 'ctx->foldKnown = true;', 'return;']);
+      'ctx->foldDp4a = true;', 'ctx->foldKnown = true;', 'ctx->foldHmma = pearl_hmma_for(ctx);', 'return;']);
     // Nothing about the tensor folds is set before it returns.
     const head = resolve.slice(0, resolve.indexOf('ctx->foldDp4a = true;'));
     expect(head).not.toMatch(/ctx->fold(Turing|BDirect|Tall|Wide|Persistent)\b/);
@@ -216,15 +216,16 @@ describe('resolve_fold and what follows a card it takes', () => {
   // shared is fixed, and its setup is as before.
   test('a Turing card asks for 64 KB of shared, and the log says how many blocks an SM holds', () => {
     const setup = slice(HOST, '    const uint32_t cb = pearl_dp4a_col_batch(ctx->colBatch, ctx->colsValid);',
-      'ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);');
+      'ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->colBatch, perSm);');
+    // The kernel is the dp4a fold's, or on a V100 Volta's fp16 fold (voltaHmma.test.js).
     inOrder(setup, [
+      ': reinterpret_cast<const void *>(pearl_tile_fold_dp4a);',
+      'const int threads = (int)(ctx->foldHmma ? PEARL_HMMA_THREADS : PEARL_DP4A_THREADS);',
       'if (ctx->ccMajor == 7',
-      '&& cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),',
-      'cudaFuncAttributePreferredSharedMemoryCarveout,',
+      '&& cudaFuncSetAttribute(fold, cudaFuncAttributePreferredSharedMemoryCarveout,',
       '(int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)',
       '(void)cudaGetLastError();',
-      'const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,',
-      'reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);',
+      'const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, fold, threads, 0);',
       'if (oe != cudaSuccess) {']);
     // 21 KB of static shared a block: two fit Turing's 64 KB part, not its 32 KB one.
     const smem = 2 * 2 * 8 * 132 * 4 + 64 * 17 * 4;
@@ -239,18 +240,22 @@ describe('resolve_fold and what follows a card it takes', () => {
     expect(HOST).toContain('  if (ctx->foldDp4a)' + NL + '    return pearl_submit_dp4a(');
   });
 
-  // Pascal's lines read as they did; a Turing card's say Turing.
+  // Pascal's lines read as they did; a Turing card's say Turing, and a V100's (7.0) Volta.
   test('the log line, the error tag and the fold name say which cards it runs on', () => {
-    expect(HOST).toContain(
-      'const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }');
+    expect(HOST).toContain('const char *pearl_dp4a_arch(const Ctx *ctx) {' + NL
+      + '  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? "Volta" : "Turing") : "Pascal";' + NL + '}');
     const arch = (major) => (major === 7 ? 'Turing' : 'Pascal');
-    expect(HOST).toContain('"[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "' + NL
+    expect(HOST).toContain('"[pearl] GPU %d: compute %d.%d, %s %s fold, %u column offsets a batch, %d "' + NL
       + '            "blocks an SM\\n",' + NL
-      + '            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);');
+      + '            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx),' + NL
+      + '            ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->colBatch, perSm);');
     expect(HOST).toContain('  if (!ctx->foldDp4a) return "";' + NL
-      + '  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";');
-    expect(HOST).toContain('"%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",' + NL
-      + '               pearl_dp4a_arch(ctx), ctx->ccMajor, ctx->ccMinor, tiles,');
+      + '  if (ctx->foldHmma) return " (Volta fp16 tensor fold)";' + NL
+      + '  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? " (Volta dp4a fold)" : " (Turing dp4a fold)")' + NL
+      + '                           : " (Pascal dp4a fold)";');
+    expect(HOST).toContain('"%s %s fold launch failed on compute %d.%d (%u blocks of %u threads): %s",' + NL
+      + '               pearl_dp4a_arch(ctx), ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->ccMajor,' + NL
+      + '               ctx->ccMinor, tiles,');
     expect(HOST).toContain('"dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (%s)",' + NL
       + '             (unsigned)PEARL_DP4A_BAND, ctx->colBatch, pearl_dp4a_arch(ctx));');
     // As before on Pascal, and within the name's buffer on both.

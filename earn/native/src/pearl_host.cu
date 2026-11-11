@@ -47,6 +47,7 @@
 
 #include "pearl_config.h"
 #include "pearl_tensor_map.h"
+#include "pearl_fold_hmma.h"   // Volta's fold: the readout's bias
 
 // How the search thread waits for a batch: spinning, as the synchronous copy it
 // replaced did. cudaEventBlockingSync, which sleeps instead, measured 0.4% slower on a
@@ -167,6 +168,12 @@ extern "C" __global__ void pearl_tile_fold_dp4a(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
     uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
     uint32_t tiles, uint32_t band, const PearlTranscriptTest test, const PearlHitList hits);
+// Volta's fp16 tensor-core fold (PEARL_VOLTA_HMMA; a body only in an sm_70 build).
+extern "C" __global__ void pearl_tile_fold_hmma(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t a_rows, uint32_t b_rows, uint32_t k,
+    uint32_t rank, uint32_t chunks, uint32_t col_off, uint32_t rows_valid, uint32_t col_groups,
+    uint32_t tiles, uint32_t band, uint32_t bias, const PearlTranscriptTest test,
+    const PearlHitList hits);
 #if PEARL_HOPPER_WGMMA
 // Hopper's wgmma fold (PEARL_HOPPER_WGMMA; a body only in an sm_90a build with the switch).
 extern "C" __global__ void pearl_tile_fold_hopper(uint32_t k_arg, uint32_t rank_arg,
@@ -311,6 +318,18 @@ struct Ctx {
   // pearl_host_race_enter sets the slice again.
   int l2Bytes = 0, l2MaxSlice = 0;
   size_t l2Slice = 0, l2Granted = 0;
+  // RTX 30's launch shapes this card can run (pearl_host_shape_count): [0] is the rule's
+  // pick, the rest the alternatives a startup trial times against it. Empty elsewhere.
+  struct Shape {
+    uint32_t colBatch;
+    uint32_t band;
+    bool pinB;
+    size_t slice;
+  };
+  static constexpr int kMaxShapes = 3;
+  Shape shapes[kMaxShapes] = {};
+  int shapeCount = 0;
+  int shapeNow = 0;
   // Whether it is Ada's cp.async build (binaryVersion 89), whose batch width the host
   // picks from the L2 (pearl_ada_col_batch).
   bool foldAda = false;
@@ -328,6 +347,10 @@ struct Ctx {
   // a tile. Read off that kernel's loaded binary (binaryVersion 61), or on a GTX 16 card
   // with PEARL_DP4A_TURING, its sm_75 body (resolve_fold). Set, no other fold flag is.
   bool foldDp4a = false;
+  // With foldDp4a, on a V100 (compute 7.0): pearl_tile_fold_hmma runs in its place, the
+  // same tiles on the fp16 tensor cores (PEARL_VOLTA_HMMA). Everything else is the dp4a
+  // fold's: the draw, the batch and the hit list.
+  bool foldHmma = false;
   // The card's compute capability, for the fold's name and its errors.
   int ccMajor = 0, ccMinor = 0;
   unsigned hopperBlocks = 0;
@@ -1055,9 +1078,30 @@ bool pearl_dp4a_turing_for(int sms, int force) {
   return sms > 0 && sms < PEARL_DP4A_TURING_SMS;
 }
 
-// Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's, or
-// Turing's (a GTX 16 card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
-const char *pearl_dp4a_arch(const Ctx *ctx) { return ctx->ccMajor == 7 ? "Turing" : "Pascal"; }
+// Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's,
+// Volta's (a V100, compute 7.0, whose tensor cores do fp16 only), or Turing's (a GTX 16
+// card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
+const char *pearl_dp4a_arch(const Ctx *ctx) {
+  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? "Volta" : "Turing") : "Pascal";
+}
+
+// Whether a card on the dp4a fold runs Volta's fp16 tensor-core fold in its place: a
+// compute 7.0 card whose loaded binary of pearl_tile_fold_hmma is the sm_70 one with its
+// body (the empty kernel has a handful of registers), unless PEARL_VOLTA_DP4A=1 asks for
+// the dp4a fold, for a race on one card. Never in a build without PEARL_VOLTA_HMMA.
+bool pearl_hmma_for(const Ctx *ctx) {
+  if (!PEARL_VOLTA_HMMA || ctx->ccMajor != 7 || ctx->ccMinor != 0) return false;
+  uint32_t v = 0;
+  if (pearl_bd_sweep_env("PEARL_VOLTA_DP4A", &v) && v == 1u) return false;
+  cudaFuncAttributes fh;
+  if (cudaFuncGetAttributes(&fh, reinterpret_cast<const void *>(pearl_tile_fold_hmma))
+      != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  return fh.binaryVersion == 70 && fh.numRegs >= 64
+         && (uint32_t)fh.maxThreadsPerBlock >= PEARL_HMMA_THREADS;
+}
 
 // Which fold this card loaded, and what launching it takes. Ask which binary
 // actually loaded rather than which card it is -- the launch has to match the code
@@ -1117,6 +1161,7 @@ void resolve_fold(Ctx *ctx) {
           && (uint32_t)fd.maxThreadsPerBlock == PEARL_DP4A_THREADS) {
         ctx->foldDp4a = true;
         ctx->foldKnown = true;
+        ctx->foldHmma = pearl_hmma_for(ctx);
         return;
       }
     } else {
@@ -1531,6 +1576,19 @@ uint32_t pearl_ada_col_batch(uint32_t colBatch, uint32_t colsValid, uint32_t k, 
 // reads B' again every band, and A' once a batch; the flip holds B' and reads A' once a
 // batch. RTX 3090 (4.1 MiB slice, band 8): 128 offsets, 2.1 MB against 3.3 MB, so 63%.
 // RTX 3080 10 GB (3.4 MiB, band 8): 64 offsets, 4.2 MB against 3.3 MB, so not taken.
+// The flip's batch width on its own, before the model's test: the widest power-of-two
+// number of tiles' offsets whose B' fits the slice, narrower than colBatch and dividing
+// the valid offsets; 0 if none. The startup trial (pearl_host_shape_count) times this
+// width on cards where the model turns the flip down.
+uint32_t pearl_ampere_flip_width(uint32_t k, uint32_t colBatch, uint32_t colsValid,
+                                 uint64_t maxSlice) {
+  const uint64_t colBytes = (uint64_t)PEARL_COLS_COUNT * k;
+  uint32_t width = 0u;
+  for (uint32_t c = PEARL_TALL_COL_OFFSETS; c < colBatch && (uint64_t)c * colBytes <= maxSlice; c *= 2u)
+    if (colsValid % c == 0u) width = c;
+  return width;
+}
+
 uint32_t pearl_ampere_flip_for(uint32_t k, uint32_t rowGroups, uint32_t band, uint32_t colBatch,
                                uint32_t colsValid, uint64_t maxSlice) {
   // A forced band depth (-DPEARL_AMPERE_BAND) is a tuning build of the band walk: no flip.
@@ -1726,8 +1784,8 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
 
   // Whether this core has code for the card at all. A release core carries SASS for a
   // fixed list of architectures (native-core.yml) and no PTX, so a card outside it -- a
-  // P100 (6.0) or a V100 (7.0) on the CUDA 12.8 core, or a GTX 10 card on the CUDA 13
-  // core, which has no Pascal code -- cannot run one kernel. Asked before anything is
+  // P100 (6.0) on the CUDA 12.8 core, or a GTX 10 card or a V100 on the CUDA 13
+  // core, which has no Pascal or Volta code -- cannot run one kernel. Asked before anything is
   // allocated, so the card is refused here with its compute capability in the message,
   // rather than at its first search. "no GPU code for" is one of the phrases
   // shared/coreVariant.js retries on the 12.8 core. Any other failure here (the card
@@ -1925,22 +1983,26 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     // blocks take 42 KB, so a Turing card asks for the larger shared part, as the RTX 20
     // fold does (PEARL_BD_A_DIRECT_CARVEOUT). The fold stages its operands in shared, so
     // it leans little on L1. Pascal's shared is its own.
+    // Volta's fp16 fold (Ctx::foldHmma) takes 44 KB a block, so two blocks need 88 KB of
+    // a V100's 96 KB shared part.
+    const void *fold = ctx->foldHmma ? reinterpret_cast<const void *>(pearl_tile_fold_hmma)
+                                     : reinterpret_cast<const void *>(pearl_tile_fold_dp4a);
+    const int threads = (int)(ctx->foldHmma ? PEARL_HMMA_THREADS : PEARL_DP4A_THREADS);
     if (ctx->ccMajor == 7
-        && cudaFuncSetAttribute(reinterpret_cast<const void *>(pearl_tile_fold_dp4a),
-                                cudaFuncAttributePreferredSharedMemoryCarveout,
+        && cudaFuncSetAttribute(fold, cudaFuncAttributePreferredSharedMemoryCarveout,
                                 (int)cudaSharedmemCarveoutMaxShared) != cudaSuccess)
       (void)cudaGetLastError();
     int perSm = 0;
-    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm,
-        reinterpret_cast<const void *>(pearl_tile_fold_dp4a), (int)PEARL_DP4A_THREADS, 0);
+    const cudaError_t oe = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&perSm, fold, threads, 0);
     if (oe != cudaSuccess) {
       (void)cudaGetLastError();
       perSm = 0;
     }
     fprintf(stderr,
-            "[pearl] GPU %d: compute %d.%d, %s dp4a fold, %u column offsets a batch, %d "
+            "[pearl] GPU %d: compute %d.%d, %s %s fold, %u column offsets a batch, %d "
             "blocks an SM\n",
-            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx), ctx->colBatch, perSm);
+            ctx->device, ctx->ccMajor, ctx->ccMinor, pearl_dp4a_arch(ctx),
+            ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->colBatch, perSm);
   }
   // Blackwell (the TMA fold, sm_120 and sm_100): a batch narrow enough that the B' it
   // sweeps fits the L2. See PEARL_TMA_L2_SHARE.
@@ -2020,6 +2082,7 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     if (ctx->foldPersistA && PEARL_TALL_PIN_B_ARCH(ctx->tallArch * 10) && !ctx->foldUnfused) {
       const uint32_t rowGroups =
           (ctx->rowsValid + PEARL_TALL_ROW_OFFSETS - 1u) / PEARL_TALL_ROW_OFFSETS;
+      const uint32_t walkBatch = ctx->colBatch, walkBand = ctx->tallBand;
       const uint32_t w = pearl_ampere_flip_for(profile->k, rowGroups, ctx->tallBand, ctx->colBatch,
                                                ctx->colsValid, maxp > 0 ? (uint64_t)maxp : 0u);
       if (w != 0u) {
@@ -2028,6 +2091,33 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
         ctx->batch = ctx->colBatch * ctx->rowsValid;
         ctx->tallBand = 1u;
       }
+#ifndef PEARL_AMPERE_BAND
+      // The shapes a startup trial may time (pearl_host_shape_count): the rule's pick first,
+      // then the other of flip and band walk, then the band walk at the other depth. The
+      // rule picks from the L2 alone, and the best one moves with the PC: the 3080 Ti's flip
+      // read -0.14% on a 400 W PC and +1.63% on a 350 W one (benchmark.md, #287 item 3).
+      auto slice = [&](bool pinB, uint32_t cb, uint32_t band) -> size_t {
+        if (maxp <= 0 || !(PEARL_AMPERE_PERSIST_A || pinB)) return 0u;
+        size_t s = pinB ? (size_t)cb * PEARL_COLS_COUNT * profile->k
+                        : (size_t)band * PEARL_TALL_BM * profile->k;
+        return s > (size_t)maxp ? (size_t)maxp : s;
+      };
+      const uint32_t fw = PEARL_AMPERE_FLIP
+          ? pearl_ampere_flip_width(profile->k, walkBatch, ctx->colsValid,
+                                    maxp > 0 ? (uint64_t)maxp : 0u)
+          : 0u;
+      const uint32_t altBand = walkBand <= 4u ? 8u : walkBand / 2u;
+      Ctx::Shape walk = {walkBatch, walkBand, false, slice(false, walkBatch, walkBand)};
+      Ctx::Shape flip = {fw, 1u, true, slice(true, fw, 1u)};
+      Ctx::Shape alt = {walkBatch, altBand, false, slice(false, walkBatch, altBand)};
+      int n = 0;
+      ctx->shapes[n++] = ctx->foldPinB ? flip : walk;
+      if (ctx->foldPinB) ctx->shapes[n++] = walk;
+      else if (fw != 0u) ctx->shapes[n++] = flip;
+      ctx->shapes[n++] = alt;
+      ctx->shapeCount = n;
+      ctx->shapeNow = 0;
+#endif
     }
     // The fold reads it PEARL_BD_BAND_WORD words past its slot's hit counter.
     const uint32_t bands[Ctx::kSlots] = {ctx->tallBand, ctx->tallBand};
@@ -2185,6 +2275,69 @@ extern "C" void pearl_host_race_enter(void *handle) {
   if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, ctx->l2Slice) != cudaSuccess)
     (void)cudaGetLastError();
   if (cudaCtxResetPersistingL2Cache() != cudaSuccess) (void)cudaGetLastError();
+}
+
+// RTX 30's launch shapes (Ctx::shapes): how many this card can run, 0 where there is
+// nothing to choose (every other fold, and the forced-band tuning builds). Shape 0 is the
+// rule's pick, which a new context runs.
+extern "C" int pearl_host_shape_count(void *handle) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  return ctx && ctx->shapeCount > 1 ? ctx->shapeCount : 0;
+}
+
+// A shape's name for the log and the app's cache: "flip 128" or "band 8 x 512".
+extern "C" void pearl_host_shape_name(void *handle, int i, char *buf, size_t len) {
+  const Ctx *ctx = static_cast<const Ctx *>(handle);
+  if (!buf || !len) return;
+  if (!ctx || i < 0 || i >= ctx->shapeCount) {
+    snprintf(buf, len, "none");
+    return;
+  }
+  const Ctx::Shape &s = ctx->shapes[i];
+  if (s.pinB) snprintf(buf, len, "flip %u", s.colBatch);
+  else snprintf(buf, len, "band %u x %u", s.band, s.colBatch);
+}
+
+// Switch to shape i. Only with no batch queued: a queued batch's hits are read back with the
+// width it ran at. The fold reads the band from the device word, the launch takes the width
+// and kernel from the context, and the persisting slice is set again. Returns false for a
+// shape this context does not have.
+extern "C" bool pearl_host_set_shape(void *handle, int i) {
+  Ctx *ctx = static_cast<Ctx *>(handle);
+  if (!ctx || i < 0 || i >= ctx->shapeCount) return false;
+  if (i == ctx->shapeNow) return true;
+  DeviceScope scope(ctx->device);
+  const Ctx::Shape &s = ctx->shapes[i];
+  const uint32_t bands[Ctx::kSlots] = {s.band, s.band};
+  if (cudaMemcpy(ctx->dHitCount + PEARL_BD_BAND_WORD, bands, sizeof bands,
+                 cudaMemcpyHostToDevice) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  // The kernel changes with the flip: its shared-memory opt-in and resident count are asked
+  // again at the next launch.
+  if (s.pinB != ctx->foldPinB) {
+    ctx->smemOptedIn = false;
+    ctx->foldResident = 0;
+  }
+  ctx->foldPinB = s.pinB;
+  ctx->colBatch = s.colBatch;
+  ctx->batch = ctx->colBatch * ctx->rowsValid;
+  ctx->tallBand = s.band;
+  ctx->l2Slice = s.slice;
+  if (ctx->l2MaxSlice > 0) {
+    if (cudaDeviceSetLimit(cudaLimitPersistingL2CacheSize, s.slice) != cudaSuccess)
+      (void)cudaGetLastError();
+    if (cudaCtxResetPersistingL2Cache() != cudaSuccess) (void)cudaGetLastError();
+    size_t granted = 0;
+    if (cudaDeviceGetLimit(&granted, cudaLimitPersistingL2CacheSize) != cudaSuccess) {
+      (void)cudaGetLastError();
+      granted = 0;
+    }
+    ctx->l2Granted = granted;
+  }
+  ctx->shapeNow = i;
+  return true;
 }
 
 extern "C" void pearl_host_destroy(void *handle) {
@@ -2863,11 +3016,13 @@ PearlHitList pearl_slot_hits(Ctx *ctx, int slot) {
   return hitList;
 }
 
-// What a search error says about the fold, so a log from a GTX 10 or GTX 16 card says
-// which fold failed. Empty for every other fold, whose messages are as they were.
+// What a search error says about the fold, so a log from a GTX 10, V100 or GTX 16 card
+// says which fold failed. Empty for every other fold, whose messages are as they were.
 const char *pearl_fold_tag(const Ctx *ctx) {
   if (!ctx->foldDp4a) return "";
-  return ctx->ccMajor == 7 ? " (Turing dp4a fold)" : " (Pascal dp4a fold)";
+  if (ctx->foldHmma) return " (Volta fp16 tensor fold)";
+  return ctx->ccMajor == 7 ? (ctx->ccMinor == 0 ? " (Volta dp4a fold)" : " (Turing dp4a fold)")
+                           : " (Pascal dp4a fold)";
 }
 
 // The end of every submit, once the batch's kernels are queued on `st`: the hit count
@@ -2938,18 +3093,30 @@ bool pearl_submit_dp4a(Ctx *ctx, int slot, cudaStream_t st, uint64_t nonce_base,
   const PearlTranscriptTest test = pearl_slot_test(ctx);
   const PearlHitList hitList = pearl_slot_hits(ctx, slot);
   cudaMemsetAsync(hitList.count, 0, sizeof(uint32_t), st);
-  pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(
-      ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
-      ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, test, hitList);
+  // Volta's fp16 fold starts its accumulators at a bias set by the mean product: the
+  // constant fill squared, or 0 under the hashed fill (pearl_fold_hmma.h).
+  const uint32_t bias = pearl_hmma_bias(
+      ctx->profile.operand_fill == PEARL_OPERAND_CONST
+          ? (int32_t)PEARL_OPERAND_FILL * (int32_t)PEARL_OPERAND_FILL
+          : 0);
+  if (ctx->foldHmma)
+    pearl_tile_fold_hmma<<<tiles, PEARL_HMMA_THREADS, 0, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
+        ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, bias, test, hitList);
+  else
+    pearl_tile_fold_dp4a<<<tiles, PEARL_DP4A_THREADS, 0, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks, col_off,
+        ctx->rowsValid, col_groups, tiles, PEARL_DP4A_BAND, test, hitList);
   // A launch the card refuses (too many registers or too much shared for it, say) is
   // known now; say what was launched, so a log alone shows why.
   const cudaError_t le = cudaGetLastError();
   if (le != cudaSuccess) {
     if (err && err_len)
       snprintf(err, err_len,
-               "%s dp4a fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
-               pearl_dp4a_arch(ctx), ctx->ccMajor, ctx->ccMinor, tiles,
-               (unsigned)PEARL_DP4A_THREADS,
+               "%s %s fold launch failed on compute %d.%d (%u blocks of %u threads): %s",
+               pearl_dp4a_arch(ctx), ctx->foldHmma ? "fp16 tensor" : "dp4a", ctx->ccMajor,
+               ctx->ccMinor, tiles,
+               (unsigned)(ctx->foldHmma ? PEARL_HMMA_THREADS : PEARL_DP4A_THREADS),
                cudaGetErrorString(le));
     return false;
   }
@@ -3125,12 +3292,20 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // PEARL_TALL_A_ROWS pads the noised A with, and the fold hashes none of those.
   if (ctx->foldTall && (col_groups % PEARL_TALL_COL_OFFSETS != 0
                         || (ctx->foldTiled && (col_off % PEARL_TALL_COL_OFFSETS != 0
-                                               || ctx->profile.n % PEARL_TALL_BN != 0))
-                        || (uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k
-                               > (uint64_t)0xFFFFFFFFu)) {
+                                               || ctx->profile.n % PEARL_TALL_BN != 0)))) {
     if (err && err_len)
       snprintf(err, err_len, "tall fold: col_batch %u is not a whole number of %u-column tiles",
                col_groups, (unsigned)PEARL_TALL_BN);
+    return false;
+  }
+  // The cp.async walk's source offsets are 32-bit up to k 16384 (PEARL_TALL_OFF), so each
+  // operand must fit 4 GB there. The TMA fold addresses by coordinates and has no limit.
+  if (ctx->foldTall && !ctx->foldTma && sizeof(PEARL_TALL_OFF) < 8
+      && ((uint64_t)PEARL_TALL_A_ROWS(ctx->profile.m) * k > (uint64_t)0x100000000ull
+          || (uint64_t)ctx->profile.n * k > (uint64_t)0x100000000ull)) {
+    if (err && err_len)
+      snprintf(err, err_len, "tall fold: A' or B' over 4 GB (m %u, n %u, k %u) needs a build "
+               "for k past 16384", ctx->profile.m, ctx->profile.n, k);
     return false;
   }
   // The cluster build (ctx->foldCluster) walks tiles of a row-group PAIR by a column
@@ -3456,6 +3631,8 @@ extern "C" bool pearl_host_search(void *handle, uint64_t nonce_base, uint32_t ba
 #define PEARL_E4_STR(x) PEARL_E4_STR2(x)
 #ifdef PEARL_E4_NOGEN
 static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 path C=" PEARL_E4_STR(PEARL_E4_C) " (no draw)";
+#elif defined(PEARL_E4_DRAWT)
+static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw T C=" PEARL_E4_STR(PEARL_E4_C);
 #else
 static const char kAblateDramTag[] = ", ABLATE_DRAM, E4 draw C=" PEARL_E4_STR(PEARL_E4_C);
 #endif
@@ -3517,6 +3694,13 @@ static const char kTallStubTag[] = PEARL_TALL_TAIL_TAG;
 extern "C" const char *pearl_host_fold_name(void *handle) {
   const Ctx *ctx = static_cast<const Ctx *>(handle);
   if (!ctx || !ctx->foldKnown) return "unresolved";
+  if (ctx->foldHmma) {
+    snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
+             "fp16 mma 128x128, 128 threads of 64x64 m8n8k4, a block a tile, band %u, "
+             "col_batch %u (Volta)",
+             (unsigned)PEARL_DP4A_BAND, ctx->colBatch);
+    return ctx->foldName;
+  }
   if (ctx->foldDp4a) {
     snprintf(const_cast<Ctx *>(ctx)->foldName, sizeof ctx->foldName,
              "dp4a 128x128, 256 threads of 8x8, a block a tile, band %u, col_batch %u (%s)",

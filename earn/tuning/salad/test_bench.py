@@ -290,16 +290,16 @@ class TestBenchRTX(unittest.TestCase):
         self.assertEqual(body["container"]["image"], self.l20.w.IMAGE)
         self.assertEqual(body["container"]["priority"], "high")
         cmd = body["container"]["command"][2]
-        self.assertIn("ORDER=ours,peak,srb OURS_SECS=300 bash /root/bench.sh", cmd)
+        self.assertIn("ORDER=ours,peak,srb,ozm OURS_SECS=300 bash /root/bench.sh", cmd)
         self.assertNotIn("amdtest.sh", cmd)
 
     def test_the_two_pcs_of_a_class_take_turns_going_first_each_in_a_group_of_its_own(self):
         res = {"machine": "m1" * 8, "card": "NVIDIA GeForce RTX 2080 Ti", "power": "250.00 W", "ours": (90.0, None),
                "peak": (92.0, None), "srb": (91.0, None)}
         x = self.bench(self.l20, cls=0, tries=0, group="bench-20-rtx2080ti-1")
-        self.assertEqual(x.order(), "ours,peak,srb")
+        self.assertEqual(x.order(), "ours,peak,srb,ozm")
         x.st["results"] = {"RTX 2080 Ti": [res]}
-        self.assertEqual(x.order(), "srb,peak,ours")
+        self.assertEqual(x.order(), "srb,peak,ozm,ours")
         x.move_on("done")                       # a moved PC would keep the first group's order
         self.assertIsNone(x.st["group"])
 
@@ -309,9 +309,9 @@ class TestBenchRTX(unittest.TestCase):
         st = {"results": {"RTX 2070": [{"machine": "abcdef1234", "power": "175.00 W", "ours": (50.0, None),
                                          "peak": (52.0, None), "srb": (51.0, None)}]}}
         text = self.l20.render(st)
-        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | 96% |", text)
+        self.assertIn("| RTX 2070 | Salad (175 W) | abcdef12 | 50.0 | 52.0 | 51.0 | not run | 96% |", text)
         self.assertNotIn("RTX 2070 Super", text)          # not waited for: no empty rows for it
-        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | — |", text)
+        self.assertIn("| RTX 2060 | Salad (— W, 6 GB) | — | not run | not run | not run | not run | — |", text)
 
     def lane_with(self, m, answers, now=50_000):
         """A lane whose Salad answers POSTs from `answers` (a list of (status, body)), and a clock at `now`. Its and
@@ -437,8 +437,8 @@ class TestBenchRTX(unittest.TestCase):
                                               "peak": (69.0, None), "srb": (71.5, None)}]}}, f)
         text = self.r.table([f"{d}/20.json", f"{d}/30.json"])
         self.assertLess(text.index("## RTX 20-series"), text.index("## RTX 30-series"))
-        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
-        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | 98% |", text)
+        self.assertIn("| RTX 2080 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | 98% |", text)
+        self.assertIn("| RTX 3070 | Salad (200 W) | 01234567 | 70.0 | 69.0 | 71.5 | not run | 98% |", text)
 
     def test_a_tap_run_fetches_sharetap_and_sets_tap_and_a_plain_run_does_not(self):
         t = load_bench(BENCH_SET="rtx", BENCH_LANE="30", BENCH_COMMIT="c0ffee", BENCH_TAP="1")
@@ -621,6 +621,17 @@ class TestBenchAMD(unittest.TestCase):
         self.assertEqual((h["core"], h["order"]), ("0123456789ab", "ours,srb"))
         self.assertIn(("DELETE", f"{self.la.w.CB}/bench-a-rx9070xt-1", None), calls)   # next PC: a new group
 
+    def test_a_result_keeps_every_miner_s_samples_and_mean(self):
+        """So a row can be scored again another way: the table's figure for a competitor is its own last one."""
+        x, _ = self.done(self.la, AMD_LINES)
+        h = x.st["results"]["RX 9070 XT"][0]
+        self.assertEqual(sorted(h["samples"]), ["ours", "srb"])
+        for k in ("ours", "srb"):
+            self.assertTrue(all(len(s) == 2 for s in h["samples"][k]) and len(h["samples"][k]) > 1)
+            late = [th for t, th in h["samples"][k] if t >= 60 and th]
+            self.assertAlmostEqual(h["means"][k], sum(late) / len(late))
+        self.assertEqual(h["means"]["ours"], h["ours"][0])      # ours is scored by that mean already
+
     def test_a_failed_hit_check_records_srbminer_and_says_why_ours_is_missing(self):
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
         x, _ = self.done(self.la, lines)
@@ -630,20 +641,20 @@ class TestBenchAMD(unittest.TestCase):
         self.assertFalse(h["hitcheck"]["pass"])
         self.assertNotIn("83151dba", " ".join(x.st["notes"]))   # a result, not a failed PC
 
-    def test_render_has_peakminer_not_run_percent_of_srbminer_and_a_line_for_each_pc(self):
+    def test_render_has_peakminer_and_onezerominer_at_0_percent_of_srbminer_and_a_line_for_each_pc(self):
         x, _ = self.done(self.la, AMD_LINES)
         lines = [l for l in AMD_LINES if " ours " not in l and "hitcheck" not in l] + FAILED_CHECK
         x2, _ = self.done(self.la, lines, order="srb,ours")
         x.st["results"]["RX 9070 XT"].append(dict(x2.st["results"]["RX 9070 XT"][0], machine="3d6cb276-yy"))
         text = self.la.render(x.st)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | not run | 80.0 | 118% |", text)
-        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | not run | 80.0 | — |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 83151dba | 94.0 | 0 | 80.0 | 0 | 118% |", text)
+        self.assertIn("| RX 9070 XT | Salad (— W, 16 GB) | 3d6cb276 | hit check failed | 0 | 80.0 | 0 | — |", text)
         self.assertIn("- `83151dba` (RX 9070 XT): copy 564 GB/s; hit check PASS, 400 of 2202 hits verified, 0 failed, "
                       "277 salts in 600 s, 7.95 hits a salt; ours ran first.", text)
         self.assertIn("- `3d6cb276` (RX 9070 XT): copy 564 GB/s; hit check FAIL, 400 of 410 hits verified, 2 failed, "
                       "60 salts in 600 s, 6.83 hits a salt (jackpot hash mismatch (fold/transcript)); "
                       "SRBMiner ran first.", text)
-        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | not run | not run | — |", text)
+        self.assertIn("| RX 9060 XT | Salad (— W, 16 GB) | — | not run | 0 | not run | 0 | — |", text)
         self.assertNotIn("RX 7900", text)                 # lane b's rows
         self.assertNotIn("RX 7800", text)                 # lane c's
         self.assertNotIn("hits a salt", b.render({"results": {}}))
@@ -658,8 +669,8 @@ class TestBenchAMD(unittest.TestCase):
         text = self.la.table([os.path.join(d, "a.json"), os.path.join(d, "b.json"), os.path.join(d, "none.json")])
         rows = [l for l in text.splitlines() if l.startswith("| RX")]
         self.assertEqual(len(rows), 10)
-        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | not run | 79.4 | 118% |")
-        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | not run | 52.8 | 95% |")
+        self.assertEqual(rows[0], "| RX 9070 XT | Salad (— W, 16 GB) | aaaa1111 | 93.8 | 0 | 79.4 | 0 | 118% |")
+        self.assertEqual(rows[4], "| RX 7900 XTX | Salad (— W, 24 GB) | bbbb2222 | 50.4 | 0 | 52.8 | 0 | 95% |")
         self.assertIn("- `aaaa1111` (RX 9070 XT): copy 564 GB/s; no hit check.", text)
 
     def test_a_failed_check_on_the_pc_meant_to_go_first_says_srbminer_went_first(self):
@@ -880,6 +891,40 @@ class TestBenchShPieces(unittest.TestCase):
         self.assertRegex(r.stdout, r"sample ours t=75 hs=93800000000000 acc=1234 rej=1 gpu=$")
 
 
+class TestBenchShLoaded(unittest.TestCase):
+    """bench.sh's "loaded" line: which core our CLI says it loaded. Needs only bash, sed and tr."""
+
+    def loaded(self, log_text):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "ours.log"), "w", encoding="utf-8", newline="") as f:
+            f.write(log_text)
+        part = bench_sh_part("say() {", "fail() {") + bench_sh_part("# Which core our CLI loaded", "run() {")
+        r = bash(part.replace("/opt/b/", d.replace(os.sep, "/") + "/") + "loaded", env={"LC_ALL": "C"})
+        shutil.rmtree(d, ignore_errors=True)
+        line = r.stdout.strip()
+        self.assertRegex(line, r"^\[bench\] \d\d:\d\d:\d\d loaded")
+        return line.split(" ", 2)[2]
+
+    def test_the_cuda_13_build(self):
+        # The lines as the CLI prints them (earn/test/earnCli.test.js), the rate line with a carriage return.
+        line = self.loaded("LLMJob Earn CLI v0.6.13\nPearl core: CUDA 13 build · driver 621, mining card is compute 12.0\n"
+                           "\r⛏  371.3 TH/s · 4 accepted · 0 rejected · up 01m 00s")
+        self.assertEqual(line, "loaded CUDA 13 build; driver 621, mining card is compute 12.0")
+        self.assertEqual(b.parse(["[bench] 12:00:00 " + line])["loaded"], "CUDA 13 build")
+
+    def test_a_cuda_13_build_that_could_not_start_counts_as_the_12_8_build(self):
+        line = self.loaded("Pearl core: CUDA 13 build · driver 610, mining card is compute 12.0\n"
+                           "Pearl core: CUDA 12.8 build · the CUDA 13 build could not start (x)\n")
+        self.assertEqual(line, "loaded CUDA 12.8 build; the CUDA 13 build could not start (x)")
+        self.assertEqual(b.parse(["[bench] 12:00:00 " + line])["loaded"], "CUDA 12.8 build")
+
+    def test_an_old_driver_and_a_log_with_no_core_line(self):
+        self.assertEqual(self.loaded("Pearl core: CUDA 12.8 build · driver 575 (the CUDA 13 build needs 580+)\n"),
+                         "loaded CUDA 12.8 build; driver 575 (the CUDA 13 build needs 580+)")
+        self.assertEqual(self.loaded("LLMJob Earn CLI v0.6.13\n"), "loaded")
+        self.assertIsNone(b.parse(["[bench] 12:00:00 loaded"])["loaded"])
+
+
 # A dry run of bench.sh: every command it runs on a box is a stub here (apt-get, curl, the miners, nvidia-smi or
 # rocminfo and amd-smi, git, npm, node, hip-clang), the box's folders are moved into a temporary one, and date
 # and sleep share a fake clock, so a whole run takes a few seconds. The stubs log what they were asked to CALLS.
@@ -898,12 +943,18 @@ case "$url" in http://127.0.0.1*) ;; *) echo "curl $url${out:+ -> $out}" >> "$CA
 case "$url" in
   *127.0.0.1:21550*) echo '{"algorithms":[{"hashrate":{"gpu":{"total":80000000000000}},"shares":{"accepted":3,"rejected":0}}]}' ;;
   *127.0.0.1:4068*) echo '{"hashrate":40000000000000,"accepted":1,"rejected":0}' ;;
+  *127.0.0.1:21551*) echo '{"hashrate":{"total":[60000000000000,0,0]},"results":{"shares_good":5,"shares_total":6}}' ;;
+  *127.0.0.1:21552*) echo '{"algos":[{"total_hashrate":70000000000000,"total_accepted_shares":4,"total_rejected_shares":1,"total_invalid_shares":1}]}' ;;
+  *wildrig-multi-linux*) cp "$STUBS/miner" wildrig-multi && tar czf "$out" wildrig-multi && rm wildrig-multi ;;
+  *onezerominer-linux*) mkdir -p onezerominer-linux && cp "$STUBS/miner" onezerominer-linux/onezerominer                 && tar czf "$out" onezerominer-linux && rm -rf onezerominer-linux ;;
   *SRBMiner*) mkdir -p SRBMiner-Multi-3-7-1 && cp "$STUBS/srbminer" SRBMiner-Multi-3-7-1/SRBMiner-MULTI \
                 && tar czf "$out" SRBMiner-Multi-3-7-1 && rm -rf SRBMiner-Multi-3-7-1 ;;
   *peakminer*|*llmjob-earn-cli-linux) cp "$STUBS/miner" "$out" ;;
   *) : > "$out" ;;
 esac''',
-    "miner": 'echo "$(basename "$0") $*" >> "$CALLS"\necho "⛏  30.0 TH/s · 1 accepted · 0 rejected · up 00m 05s"\n'
+    "miner": 'echo "$(basename "$0") $*" >> "$CALLS"\n'
+             '[ "$(basename "$0")" = cli ] && echo "[12:00:00] Pearl core: CUDA 13 build · driver 621, mining card is compute 12.0"\n'
+             'echo "⛏  30.0 TH/s · 1 accepted · 0 rejected · up 00m 05s"\n'
              'exec "$REAL_SLEEP" 30',
     "srbminer": 'echo "srbminer $*" >> "$CALLS"\ncase " $* " in *" --list-devices "*) echo "GPU0 Radeon"; exit 0 ;; esac\n'
                 'echo "SRBMiner-MULTI mining"; exec "$REAL_SLEEP" 30',
@@ -996,9 +1047,9 @@ class TestBenchShDryRun(unittest.TestCase):
 
     def test_an_nvidia_box_runs_the_three_miners_as_before(self):
         out, calls = dry_run(self.SRC, amd=False, env={"ORDER": "peak,srb,ours", "OURS_SECS": "300"})
-        rel = "https://github.com/super3/llmjob/releases/download/v0.6.9"
+        rel = "https://github.com/super3/llmjob/releases/download/v0.6.13"
         self.assertEqual([l for l in calls.splitlines() if not l.startswith("pkill")], [
-            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.3/peakminer-2.20.3-linux-x86_64 -> peak",
+            "curl https://github.com/peakminer/peakminer/releases/download/v2.20.7/peakminer-2.20.7-linux-x86_64 -> peak",
             "curl https://github.com/doktor83/SRBMiner-Multi/releases/download/3.8.2/SRBMiner-Multi-3-8-2-Linux.tar.gz"
             " -> srb.tgz",
             f"curl {rel}/llmjob-earn-cli-linux -> llmjob-earn-cli-linux",
@@ -1012,7 +1063,7 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertNotIn("src/cli/earn-cli.js", calls)
         lines = self.bench_lines(out)
         self.assertIn("card NVIDIA GeForce GTX 1660, 550.54, 120.00 W, 120.00 W, 6144 MiB, 7.5", lines[0])
-        self.assertIn("ready PeakMiner 2.20.3, SRBMiner 3.8.2, ours v0.6.9", lines[1])
+        self.assertIn("ready PeakMiner 2.20.7, SRBMiner 3.8.2, ours v0.6.13", lines[1])
         # Each sample's gpu= has the memory readings after power, clock and temperature, memory in use last.
         samples = [l for l in lines if " sample " in l]
         self.assertTrue(samples)
@@ -1024,6 +1075,9 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual(b.figure(r["miners"]["peak"]), (40.0, None))
         self.assertEqual(b.figure(r["miners"]["srb"]), (80.0, None))
         self.assertEqual(b.figure(r["miners"]["ours"], mean_after=60), (30.0, None))
+        # Which core our CLI loaded, from its own log, once ours has run.
+        self.assertIn("loaded CUDA 13 build; driver 621, mining card is compute 12.0", [l.split(" ", 2)[2] for l in lines])
+        self.assertEqual(r["loaded"], "CUDA 13 build")
 
     def test_an_amd_box_builds_and_checks_our_core_then_runs_it_and_srbminer(self):
         out, calls = dry_run(self.SRC, amd=True, env={"ORDER": "ours,srb", "OURS_SECS": "300",
@@ -1053,6 +1107,62 @@ class TestBenchShDryRun(unittest.TestCase):
         self.assertEqual(r["hitcheck"]["salts"], 277)
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["ours"], mean_after=60), (93.8, None))
         self.assertEqual(TestBenchAMD.a.figure(r["miners"]["srb"]), (80.0, None))
+
+    # Where the driver's OpenCL library is (here /bin/sh stands in for it), WildRig runs.
+    OPENCL = "/usr/lib/wsl/lib/libnvidia-opencl.so*"
+    NO_OPENCL = [("/usr/lib/x86_64-linux-gnu/libnvidia-opencl.so*", "/nonexistent/a"),
+                 ("/usr/lib64/libnvidia-opencl.so*", "/nonexistent/b"), (OPENCL, "/nonexistent/c")]
+
+    def without_opencl(self):
+        src = self.SRC
+        for a, b in self.NO_OPENCL:
+            src = src.replace(a, b)
+        return src
+
+    def test_an_nvidia_box_without_opencl_leaves_wildrig_out(self):
+        # Salad's PCs run containers in WSL2, whose NVIDIA driver has no OpenCL (a 3090 Ti, 9 November).
+        out, calls = dry_run(self.without_opencl(), amd=False, env={"ORDER": "ours,peak,srb,wild,ozm"})
+        self.assertNotIn("wildrig", calls)
+        bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
+        self.assertIn("skip wild: no OpenCL", bodies)
+        self.assertNotIn("start wild 300s", bodies)
+        self.assertEqual(b.parse(self.bench_lines(out))["skipped"], {"wild": "no OpenCL"})
+
+    def test_an_nvidia_box_runs_wildrig_and_onezerominer_when_the_order_names_them(self):
+        src = self.without_opencl().replace("/nonexistent/c", "/bin/sh")
+        out, calls = dry_run(src, amd=False, env={"ORDER": "ours,peak,srb,wild,ozm", "OURS_SECS": "300"})
+        self.assertIn("curl https://github.com/andru-kun/wildrig-multi/releases/download/0.51.9/"
+                      "wildrig-multi-linux-0.51.9.tar.gz -> wild.tgz", calls)
+        self.assertIn("curl https://github.com/OneZeroMiner/onezerominer/releases/download/v1.8.5/"
+                      "onezerominer-linux-1.8.5.tar.gz -> ozm.tgz", calls)
+        self.assertIn("wildrig-multi --algo pearlhash --url stratum+tcp://prl-us.kryptex.network:7048 "
+                      "--user prl1test.bench-wild --pass x --api-port 21551", calls)
+        self.assertIn("onezerominer -a pearl -w prl1test --worker bench-ozm "
+                      "-o stratum+tcp://prl-us.kryptex.network:7048 --api-port 21552", calls)
+        lines = self.bench_lines(out)
+        self.assertIn("ready PeakMiner 2.20.7, SRBMiner 3.8.2, WildRig 0.51.9, OneZeroMiner 1.8.5, ours v0.6.13", lines[1])
+        self.assertEqual([l.split(" ", 2)[2] for l in lines if " start " in l],
+                         ["start ours 60s", "start ours 300s", "start peak 300s", "start srb 300s", "start wild 300s",
+                          "start ozm 300s"])
+        self.assertIn("pkill -f wildrig-multi", calls)
+        self.assertIn("pkill -f onezerominer", calls)
+        r = b.parse(lines)
+        self.assertTrue(r["done"])
+        self.assertEqual(b.figure(r["miners"]["wild"]), (60.0, None))
+        self.assertEqual(b.figure(r["miners"]["ozm"]), (70.0, None))
+        # Rejected is WildRig's total less its good shares, and OneZeroMiner's rejected plus invalid.
+        self.assertEqual(r["miners"]["wild"]["samples"][-1]["rej"], "1")
+        self.assertEqual(r["miners"]["ozm"]["samples"][-1]["rej"], "2")
+
+    def test_an_amd_box_runs_wildrig_but_not_onezerominer(self):
+        out, calls = dry_run(self.SRC, amd=True, env={"ORDER": "ours,srb,wild,ozm", "OURS_SECS": "300",
+                                                      "BASE_SHA": "0123456789abcdef"})
+        self.assertNotIn("onezerominer", calls)      # NVIDIA only: not downloaded or run
+        self.assertIn("wildrig-multi --algo pearlhash", calls)
+        bodies = [l.split(" ", 2)[2] for l in self.bench_lines(out)]
+        self.assertIn("ready SRBMiner 3.8.2, WildRig 0.51.9, ours HIP core 0123456789ab for gfx1201", bodies)
+        self.assertEqual([x for x in bodies if x.startswith("start ") and "s" == x[-1]][-3:],
+                         ["start ours 300s", "start srb 300s", "start wild 300s"])
 
     def parse_amd(self, lines):
         if not hasattr(TestBenchAMD, "a"):
@@ -1090,6 +1200,14 @@ class TestBenchShDryRun(unittest.TestCase):
 class TestBenchToolsMoved(unittest.TestCase):
     """The tools moved from tuning/salad to earn/tuning/salad on 7 November; a BENCH_COMMIT from before then is
     fetched from the old folder."""
+
+    def test_a_miner_that_quits_with_no_output_counts_as_not_starting(self):
+        # SRBMiner 3.8.6 on a 2080 Ti, 9 November: "exited srb t=15:" and nothing after it, which read as "not run".
+        b = load_bench(BENCH_SET="rtx")
+        r = b.parse(["[bench] 18:21:13 start srb 300s", "[bench] 18:21:28 exited srb t=15:"])
+        self.assertEqual(b.figure(r["miners"]["srb"]), (None, "didn't start"))
+        r = b.parse(["[bench] 18:21:28 exited srb t=15: rc=1 "])
+        self.assertEqual(r["miners"]["srb"]["exited"], "rc=1")
 
     def test_salad_dir(self):
         b = load_bench(BENCH_COMMIT="c0ffee")

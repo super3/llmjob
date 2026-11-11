@@ -49,7 +49,14 @@ const secs = Number(process.argv[3] || 40);
 const bits = BigInt(process.argv[4] || 232);
 const dumpTo = process.env.PEARL_SHARE_DUMP || '';
 const addon = require(file);
-const core = addon.createCore(ASKED, kEnv ? { checkHits: true } : { cardK: true, checkHits: true });
+// PEARL_SHAPE_TRIAL and PEARL_SHAPE as in hashrate.js: the hits of every shape the trial
+// switches through are checked.
+const shapeOpts = {};
+if (process.env.PEARL_SHAPE_TRIAL) shapeOpts.shapeTrialSecs = Number(process.env.PEARL_SHAPE_TRIAL);
+if (process.env.PEARL_SHAPE) shapeOpts.shape = process.env.PEARL_SHAPE;
+const core = addon.createCore(ASKED, kEnv ? { checkHits: true, ...shapeOpts } : { cardK: true, checkHits: true, ...shapeOpts });
+let trial = null;
+core.on('shape', (s) => { trial = s; console.error('shape ' + s); });
 // What the core mines: the profile at its k, or the profile asked for from a core that won't say.
 const PROFILE = core.k === undefined ? ASKED : profileForK(ASKED, core.k);
 if (!PROFILE) {
@@ -94,4 +101,4 @@ core.on('hashrate', (th) => {
 });
 t0 = Date.now();
 core.setJob({ header, target, jobId: 'verify' });
-setTimeout(() => { core.stop(); const res = { file: path.basename(path.dirname(file)), k, hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);
+setTimeout(() => { const shape = core.shape; core.stop(); const res = { file: path.basename(path.dirname(file)), k, shape, ...(trial ? { trial: JSON.parse(trial) } : {}), hits, verified: ok, failed: bad, salts: salts.size, fails, PASS: bad === 0 && ok >= 20 && salts.size >= 3, device, firstHitS: firstHit, firstHashrateS: firstRate, thLast, thMax, saltSeenS: saltAt }; console.log(JSON.stringify(res)); process.exit(res.PASS ? 0 : 1); }, secs * 1000);

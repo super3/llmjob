@@ -188,7 +188,9 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   // (k-blocked, [k / 64][rows][64]: the same runs, a stage a k-block on, m * 64 bytes of
   // A' and n * 64 of B'; the rows past m are the next k-block's first rows, or past the
   // last k-block the padding.)
-  auto tile_srcs = [&](uint32_t v, uint32_t &bsrc_, uint32_t &asrc_) {
+  // Offsets are 64-bit only past k 16384, where the mainnet m and n put A' and B' over
+  // 4 GB; at k 16384 and below the fold is what it was (PEARL_TALL_OFF).
+  auto tile_srcs = [&](uint32_t v, PEARL_TALL_OFF &bsrc_, PEARL_TALL_OFF &asrc_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
 #ifdef PEARL_ABLATE_DRAM
@@ -219,11 +221,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     const uint32_t coff = col_off;
 #endif
 #if PEARL_TALL_TILE_ORDER
-    bsrc_ = (coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT * k + bcol * SK + bq * 16u;
-    asrc_ = rbg_ * BM * k + arow * SK + aq * 16u;
+    bsrc_ = (PEARL_TALL_OFF)((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT) * k
+            + (bcol * SK + bq * 16u);
+    asrc_ = (PEARL_TALL_OFF)(rbg_ * BM) * k + (arow * SK + aq * 16u);
 #else
-    bsrc_ = ((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK + bq * 16u;
-    asrc_ = (rbg_ * BM + arow) * SK + aq * 16u;
+    bsrc_ = (PEARL_TALL_OFF)((coff + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT + bcol) * SK
+            + bq * 16u;
+    asrc_ = (PEARL_TALL_OFF)(rbg_ * BM + arow) * SK + aq * 16u;
 #endif
   };
 #if PEARL_TALL_TILE_ORDER
@@ -282,7 +286,17 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   auto tile_box = [&](uint32_t v, uint32_t &bcol_, uint32_t &arow_) {
     uint32_t rbg_, cbg_;
     tile_coords(v, rbg_, cbg_);
+#ifdef PEARL_ABLATE_DRAM
+    // Diagnostic only, as in the cp.async walk's tile_srcs: every tile reads row groups 0
+    // and 1 of A' and the first two column groups of B', and (cn, below) the first 16
+    // chunks of each, so at any k the boxes come from 1.75 MB that stays in the L2. The
+    // same boxes and mma; the output is meaningless. The hash still names the real regions.
+    rbg_ &= 1u;
+    cbg_ &= 1u;
+    bcol_ = cbg_ * PEARL_TALL_COL_OFFSETS * PEARL_COLS_COUNT;
+#else
     bcol_ = (col_off + cbg_ * PEARL_TALL_COL_OFFSETS) * PEARL_COLS_COUNT;
+#endif
     arow_ = rbg_ * BM;
   };
   // Fill buffer bi with k bytes [kofs, kofs + SK) of the tile at (boxB, boxA): its
@@ -453,6 +467,25 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
     }
     pearl_e4_perm[i] = make_uint4(lx, ly, sx, sy);
   }
+#ifdef PEARL_E4_DRAWT
+  // The transposed tables (pearl_e4_drawt): word (p, q) holds byte p of rows 4q .. 4q + 3, and
+  // each k index's two word offsets p * PEARL_E4_RQ.
+  for (uint32_t i = threadIdx.x; i < 128u * PEARL_E4_RQ; i += PEARL_TALL_THREADS)
+    pearl_e4_denseT[blockIdx.x * 128u * PEARL_E4_RQ + i] =
+        pearl_e4_mix(blockIdx.x * 0x10000u + i) & 0x3F3F3F3Fu;
+  for (uint32_t i = threadIdx.x; i < 16u * 32u; i += PEARL_TALL_THREADS) {
+    uint32_t o0[4], o1[4];
+#pragma unroll
+    for (uint32_t jj = 0; jj < 4u; jj++) {
+      const uint32_t h = pearl_e4_mix(0x9E3779B9u + i * 4u + jj);
+      const uint32_t p0 = h & 127u, p1 = p0 ^ (1u + ((h >> 8) & 126u));
+      o0[jj] = p0 * PEARL_E4_RQ;
+      o1[jj] = p1 * PEARL_E4_RQ;
+    }
+    pearl_e4_permT[i * 2u] = make_uint4(o0[0], o0[1], o0[2], o0[3]);
+    pearl_e4_permT[i * 2u + 1u] = make_uint4(o1[0], o1[1], o1[2], o1[3]);
+  }
+#endif
 #endif
   // Publishes the initialised barriers: the fold's only block-wide barrier (the
   // cluster build adds the two cluster barriers, here and before the return).
@@ -465,7 +498,11 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
 #pragma unroll 1
   for (uint32_t g = 0; g < 3u; g++)
 #pragma unroll 1
+#ifdef PEARL_E4_DRAWT
+    pearl_e4_drawt(g, lane, warp);
+#else
     for (uint32_t j = 0; j < PEARL_E4_WORDS; j++) pearl_e4_draw(j, g, lane, warp);
+#endif
 #endif
 #if PEARL_TALL_CLUSTER_BODY
   // And across the pair: the peer's barriers exist before this CTA arrives on them or
@@ -505,7 +542,7 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
   uint32_t fb = 0u, fpar = 0u;
 #endif
 #else
-  uint32_t bsrc0, asrc0;
+  PEARL_TALL_OFF bsrc0, asrc0;
   tile_srcs(tile_first, bsrc0, asrc0);
   const int8_t *aP = PEARL_E4_ABASE + asrc0, *bP = Bprime + bsrc0 + BMID;
   // The first tile's chunk 0: stages 0 and 1, into buffers 0 and 1.
@@ -590,7 +627,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
         boxB = nextB;
         boxA = nextA;
       }
+#ifdef PEARL_ABLATE_DRAM
+      // The DRAM ablation (see tile_box) wraps every 16 chunks, so past k 2048 its boxes
+      // stay in the same 1.75 MB.
+      const uint32_t cn = (last ? 0u : chunk + 1u) & 15u;
+#else
       const uint32_t cn = last ? 0u : chunk + 1u;
+#endif
 #pragma unroll
       for (uint32_t s = 0; s < SPC; s++) {
 #if PEARL_TALL_TMA_ROLES
@@ -946,7 +989,13 @@ extern "C" __global__ __launch_bounds__(PEARL_TALL_THREADS) void PEARL_TALL_FN(
             if (mb + 1u == MT) {
 #pragma unroll
               for (uint32_t j = 0; j < PEARL_E4_WORDS; j++)
-                if (j * 4u / PEARL_E4_WORDS == s * KS + t) pearl_e4_draw(j, chunk + 2u, lane, warp);
+                if (j * 4u / PEARL_E4_WORDS == s * KS + t) {
+#ifdef PEARL_E4_DRAWT
+                  if (j == 0u) pearl_e4_drawt(chunk + 2u, lane, warp);
+#else
+                  pearl_e4_draw(j, chunk + 2u, lane, warp);
+#endif
+                }
 #ifdef PEARL_E4_FLAGS
               // After this warp's last word of the chunk: its release on the slab's flag.
               if ((PEARL_E4_WORDS - 1u) * 4u / PEARL_E4_WORDS == s * KS + t) {

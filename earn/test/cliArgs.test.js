@@ -425,7 +425,7 @@ describe('--mine-mem-clock', () => {
     expect(parseCliArgs(['-a', ADDR, '--mine-mem-clock=0']).settings.mineMemClockMhz).toBe(0);
     const errors = [];
     expect(buildSettings({ '--mine-mem-clock': '' }, errors, true, false).mineMemClockMhz).toBeNull();
-    expect(errors).toContain('invalid --mine-mem-clock:  (must be 0, or a whole number of MHz, 100-30000)');
+    expect(errors).toContain('invalid --mine-mem-clock:  (must be 0, auto, or a whole number of MHz, 100-30000)');
   });
 
   test('carries a clock in MHz through', () => {
@@ -439,7 +439,7 @@ describe('--mine-mem-clock', () => {
     for (const bad of ['', ' ', '7', '99', '30001', '7001000', '7001.5', '-7001', 'fast']) {
       const errors = [];
       const s = buildSettings({ '--mine-mem-clock': bad }, errors, true, false);
-      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be 0, or a whole number of MHz, 100-30000)');
+      expect(errors).toContain('invalid --mine-mem-clock: ' + bad + ' (must be 0, auto, or a whole number of MHz, 100-30000)');
       expect(s.mineMemClockMhz).toBeNull();
     }
   });
@@ -456,17 +456,73 @@ describe('--mine-mem-clock', () => {
   });
 
   // The flag's help has to carry the reason to use it, the value to use, and
-  // what it needs -- nobody reads a README before a flight sheet. Now that it
-  // is on by default on the RTX 5090 it also has to say so, say how to turn it
+  // what it needs -- nobody reads a README before a flight sheet. An RTX 5090
+  // tries the lock by default, so it also has to say that, that the lock is
+  // kept only if it is faster, that a number skips the trial, how to turn it
   // off, and not claim a measurement for any card but the one measured.
   test('is documented with the number, the default, the off switch and the requirement', () => {
     expect(VALUE_FLAGS.has('--mine-mem-clock')).toBe(true);
     expect(USAGE).toContain('--mine-mem-clock <MHz>');
     expect(USAGE).toContain('7001');
     expect(USAGE).toContain('NOPASSWD');
-    expect(USAGE).toMatch(/Default: 7001 on the RTX 5090/);
+    expect(USAGE).toMatch(/while it mines, with no trial\./);
+    expect(USAGE).toMatch(/Default: an RTX\s+5090 tries 7001 for five minutes and keeps it\s+only if it mines faster/);
     expect(USAGE).toMatch(/0 leaves/);
-    expect(USAGE).toMatch(/Only the\s+5090 has been measured/);
+    expect(USAGE).toMatch(/A trial's answer is remembered\s+for a week\./);
+    expect(USAGE).toMatch(/Only one\s+5090 has been measured/);
+  });
+
+  // "five minutes" is the trial's four turns (shared/memClockTrial).
+  test('quotes the trial\'s real length', () => {
+    const { TURN_MS, TURNS } = require('../src/shared/memClockTrial');
+    expect(TURN_MS * TURNS.length).toBe(5 * 60 * 1000);
+  });
+});
+
+// The core clock offset trial (shared/coreOffset). Its one value is auto: an
+// offset is only set once the trial has checked it on that card.
+describe('--mine-core-offset', () => {
+  const errs = () => [];
+
+  // Off unless asked for.
+  test('is null unless given', () => {
+    expect(buildSettings({}, errs(), true, false).mineCoreOffset).toBeNull();
+    expect(parseCliArgs(['-a', ADDR]).settings.mineCoreOffset).toBeNull();
+  });
+
+  test('takes auto, in any case, and 0 for off', () => {
+    expect(buildSettings({ '--mine-core-offset': 'auto' }, errs(), true, false).mineCoreOffset).toBe('auto');
+    expect(buildSettings({ '--mine-core-offset': ' AUTO ' }, errs(), true, false).mineCoreOffset).toBe('auto');
+    expect(buildSettings({ '--mine-core-offset': '0' }, errs(), true, false).mineCoreOffset).toBe(0);
+  });
+
+  test('refuses a number of MHz, and anything else', () => {
+    for (const bad of ['', '150', '+100', '50', 'on']) {
+      const errors = [];
+      const s = buildSettings({ '--mine-core-offset': bad }, errors, true, false);
+      expect(errors).toContain('invalid --mine-core-offset: ' + bad + ' (must be auto or 0)');
+      expect(s.mineCoreOffset).toBeNull();
+    }
+  });
+
+  test('takes a value, in either form', () => {
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset', 'auto', '--no-report']).settings.mineCoreOffset).toBe('auto');
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset=auto']).settings.mineCoreOffset).toBe('auto');
+    expect(parseCliArgs(['-a', ADDR, '--mine-core-offset']).errors).toContain('missing value for --mine-core-offset');
+  });
+
+  // The help has to say what it does to the card and how little was measured:
+  // nobody reads a README before a flight sheet.
+  test('is documented with its steps, its default, what was measured, the rights and the risk', () => {
+    expect(VALUE_FLAGS.has('--mine-core-offset')).toBe(true);
+    expect(USAGE).toContain('--mine-core-offset <auto|0>');
+    expect(USAGE).toMatch(/\+50,\s+\+100, then \+150 MHz/);
+    expect(USAGE).toMatch(/Default: 0, off/);
+    expect(USAGE).toMatch(/only one RTX 4090 has\s+been measured/);
+    expect(USAGE).toMatch(/above the\s+clock its maker set/);
+    expect(USAGE).toMatch(/can crash the driver or the PC/);
+    expect(USAGE).toMatch(/Needs root, or\s+administrator rights on Windows/);
+    expect(USAGE).toMatch(/skipped while an LLM\s+co-runs with it/);
   });
 });
 

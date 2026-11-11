@@ -161,7 +161,7 @@ nvcc -lib cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_
 npx node-gyp rebuild
 ```
 
-`.github/workflows/native-core.yml` does exactly this for sm_61/75/80/86/89/90a/100/120, and it
+`.github/workflows/native-core.yml` does exactly this for sm_61/70/75/80/86/89/90a/100/120, and it
 is green on Linux: the workflow produces a real `pearl_core.node`. So the core
 compiles and links today, even though nothing on a runner can execute it.
 
@@ -235,7 +235,7 @@ the Server 2025 runner (exit `0xE0E1E1D9`) before reaching any of our source.
 The compile-and-link signal is platform independent, so Linux is the gate.
 
 `CUDA_PATH` is picked up automatically; override the arch for other cards
-(`sm_61` Pascal, `sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
+(`sm_61` Pascal, `sm_70` Volta, `sm_75` Turing, `sm_80` A100 / A800 / A30 / CMP 170HX, `sm_86` Ampere, `sm_89`
 Ada, `sm_90a` Hopper, `sm_120` Blackwell). Hopper has to be `sm_90a`, not
 `sm_90`: a plain sm_90 build compiles and links, but it has no wgmma fold, so
 it mines on the slower cp.async tall fold.
@@ -249,6 +249,16 @@ Ada numbers in the tuning log are Ada's only, and Ampere's much smaller L2 means
 the band walk that keeps B resident on a 4090 will miss there. Its correctness
 has been checked: an sm_86-only build runs on a 4090 (compute 8.9 runs sm_86
 code), took the tall fold, and passed verify-hits 400/400 (probes/README.md).
+
+The sm_70 build (Volta: Tesla V100, Titan V) has tensor cores that multiply fp16
+only, so it builds none of the int8 folds above. It mines on
+`pearl_tile_fold_hmma` (`src/pearl_fold_hmma.h`, `PEARL_VOLTA_HMMA` in
+`src/pearl_config.h`): the dp4a fold's 128x128 tile, with A' and B' converted
+to fp16 as they are staged and multiplied by `mma.sync` m8n8k4 into fp32
+accumulators. fp16 holds every int8 and the sums stay exact integers below
+2^24, so the transcripts are the same. `probes/hmma-check.cc` runs its layout
+and readout on the CPU; `-DPEARL_VOLTA_HMMA=0` (or `PEARL_VOLTA_DP4A=1` at run
+time) puts a V100 back on the dp4a fold.
 
 The sm_61 build (Pascal: GTX 10, Tesla P4 and P40) has no tensor cores, so it
 builds none of the folds above. It mines on `pearl_tile_fold_dp4a`, an int8
@@ -298,3 +308,21 @@ core.stop();
 Every hit is re-verified against the current job's target in JS before it is
 submitted (`pearlMiner._onHit`), so a core bug can waste work but can never push
 a bad share to the pool and earn a ban.
+
+The CUDA builds also export two functions beside `createCore`, for the core
+clock offset trial (`--mine-core-offset auto`, see the earn README):
+
+```js
+addon.getClockOffset(cardIndex);        // { ok: true, mhz, min, max } or { ok: false, error, code }
+addon.setClockOffset(cardIndex, mhz);   // { ok: true }                or { ok: false, error, code }
+```
+
+They read and set a card's core clock offset on P-state 0 through NVML
+(`nvmlDeviceGetClockOffsets`, `nvmlDeviceSetClockOffsets`), which is the only
+way to it: `nvidia-smi` has no switch. NVML is opened at run time and its
+functions are looked up by name, so the addon links nothing new and loads the
+same on a machine without NVML. Neither function throws: `error` is NVML's own
+words and `code` its return code (4 is "no permission": setting needs root or
+administrator rights). The code is compiled only when `PEARL_NVML_OFFSETS` is
+defined, which `binding.gyp` does for the CUDA builds and nothing does for the
+AMD core.

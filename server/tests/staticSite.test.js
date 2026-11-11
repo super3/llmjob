@@ -95,6 +95,36 @@ describe('extensionless page URLs', () => {
     for (const name of popular) expect(list.map((c) => c[0])).toContain(name);
   });
 
+  // The page's HTML carries the figures a visitor sees before any script runs
+  // (and the ones a crawler or a link preview keeps): the calculator's result
+  // for one RTX 4090, the price it is based on, and the app preview's numbers.
+  // The script draws the same figures from its snapshot (`est`). When the
+  // snapshot is refreshed the HTML has to follow: on 11 November it was left
+  // at the old price, $213.72 a month beside "Per day $5.26".
+  it('writes the calculator\'s first figures from the same snapshot its script uses', async () => {
+    const res = await request(app).get('/');
+    const calc = vm.runInNewContext(
+      res.text.match(/const est = [\s\S]*?const money = [^\n]*\n/)[0] + '({ est, prlPerDay, usdPerDay, fmt, money })');
+    const list = vm.runInNewContext(res.text.match(/const CARDS = (\[[\s\S]*?\])\.map/)[1]);
+    // The card the calculator opens on.
+    const name = res.text.match(/pick\.card = byName\('([^']+)'\)/)[1];
+    const th = list.find((c) => c[0] === name)[1];
+    const shown = (id) => res.text.match(new RegExp('id="' + id + '"[^>]*>([^<]*)<'))[1];
+    const day = calc.usdPerDay(th);
+    expect(shown('out-label')).toBe(name + ' · ' + calc.fmt(th, 1) + ' TH/s');
+    expect(shown('out-month')).toBe(calc.money(day * 30));
+    expect(shown('out-day')).toBe(calc.money(day));
+    expect(shown('out-prl')).toBe(calc.fmt(calc.prlPerDay(th) * 30, 1));
+    expect(shown('calc-price')).toBe('$' + calc.est.PRICE.toFixed(2));
+    expect(shown('pv-th')).toBe(calc.fmt(th, 1));
+    expect(shown('pv-day')).toBe(calc.money(day));
+    // The preview's balance is a fixed 128.41 PRL at the snapshot's price.
+    expect(res.text).toContain('<b>128.41 PRL</b>');
+    expect(shown('pv-bal')).toBe(' ≈ ' + calc.money(128.41 * calc.est.PRICE));
+    // The note shown when live data does not load names the same price.
+    expect(res.text).toMatch(new RegExp('uses a snapshot of [^(]*\\(\\$' + calc.est.PRICE.toFixed(2).replace('.', '\\.') + '/PRL\\)'));
+  });
+
   // "N GPUs mining now" is the board's exact count of online GPUs. Without an
   // answer it shows no number at all, never a made-up one.
   it('shows the exact number of GPUs mining from the network board', async () => {
@@ -277,10 +307,13 @@ describe('HiveOS flight sheet on the home page', () => {
     });
     const config = fs.readFileSync(path.join(ROOT, 'earn/hiveos/h-config.sh'), 'utf8');
     expect(config).toContain('wallet=${template%%.*}');
-    // The steps say HiveOS still asks for a wallet, and the button and the file
-    // link are there.
-    expect(sec).toContain('Import from clipboard');
-    expect(sec).toContain('pick your PRL wallet');
+    // The steps say HiveOS still asks for a wallet and that this is expected,
+    // give the file import for when HiveOS can't read the clipboard, and the
+    // button and the file link are there.
+    expect(sec).toContain('Import from Clipboard');
+    expect(sec).toContain('Import from File');
+    expect(sec).toContain('marks <b>Wallet</b> as a required field');
+    expect(sec).toContain('Pick your PRL wallet');
     expect(sec).toContain('id="fs-copy"');
     expect(sec).toContain('id="fs-file"');
   });

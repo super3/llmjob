@@ -672,6 +672,75 @@ describe('coreFactory — choosing a build', () => {
     });
   });
 
+  // The CUDA builds export getClockOffset and setClockOffset beside createCore
+  // (main/gpuClockOffset). The miner gets them with the factory, as
+  // `clockOffsets`, bound to the addon the factory's cores come from.
+  describe('the core clock offset calls', () => {
+    const AMD_BESIDE = path.join('/opt/rig', 'pearl_core_hip.node');
+    const NOT_SUPPORTED = { ok: false, error: 'not supported by this core', noRights: false };
+    // Give an addon the two calls; its read answers with `mhz`, so a test can
+    // tell which addon was asked.
+    const withCalls = (addon, mhz) => Object.assign(addon, {
+      getClockOffset: jest.fn(() => ({ ok: true, mhz, min: -1000, max: 1000 })),
+      setClockOffset: jest.fn(() => ({ ok: true })),
+    });
+    const readsFrom = (f) => f.clockOffsets.readCoreOffset(0).mhz;
+
+    test('go with the factory, to the addon it loaded', () => {
+      const r = rig();
+      withCalls(r.cu12, 12);
+      const f = factory(r, ADA);
+      expect(f.clockOffsets.readCoreOffset(0)).toEqual({ ok: true, error: null, mhz: 12, min: -1000, max: 1000 });
+      expect(f.clockOffsets.setCoreOffset(0, 50)).toEqual({ ok: true, error: null });
+      expect(r.cu12.getClockOffset).toHaveBeenCalledWith(0);
+      expect(r.cu12.setClockOffset).toHaveBeenCalledWith(0, 50);
+    });
+
+    test('a core built before them answers "not supported by this core"', () => {
+      const f = factory(rig(), ADA);
+      expect(f.clockOffsets.readCoreOffset(0)).toEqual(NOT_SUPPORTED);
+      expect(f.clockOffsets.setCoreOffset(0, 50)).toEqual(NOT_SUPPORTED);
+    });
+
+    test('follow the CUDA 13 build, and the 12.8 build once it has taken over', () => {
+      const r = rig();
+      withCalls(r.cu12, 12);
+      withCalls(r.cu13, 13);
+      const f = factory(r, BLACKWELL);
+      expect(readsFrom(f)).toBe(13);
+      r.cu13.createCore.mockImplementation(() => { throw new Error('no CUDA device found — is an NVIDIA driver installed?'); });
+      f({ rank: 128 }, { deviceIndex: 0 });
+      expect(readsFrom(f)).toBe(12);
+    });
+
+    test('the AMD core has none, and the 12.8 build that takes over from it has', () => {
+      const amd = { createCore: jest.fn(() => { throw new Error('no AMD GPU found'); }) };
+      const r = rig({ [AMD_BESIDE]: amd });
+      withCalls(r.cu12, 12);
+      const f = factory(r, { cards: [], gpus: [] });
+      expect(f.clockOffsets.readCoreOffset(0)).toEqual(NOT_SUPPORTED);
+      f({ rank: 128 }, { deviceIndex: 0 });
+      expect(readsFrom(f)).toBe(12);
+      // Asked for by name, the AMD core is all there is.
+      const named = factory(rig({ [AMD_BESIDE]: { createCore: jest.fn() } }), { env: { PEARL_CORE_VARIANT: 'amd' } });
+      expect(named.clockOffsets.setCoreOffset(0, 50)).toEqual(NOT_SUPPORTED);
+    });
+
+    test('the 12.8 build standing in for an AMD core that would not load has them', () => {
+      const r = rig({ [AMD_BESIDE]: new Error('libamdhip64.so.7: cannot open shared object file') });
+      withCalls(r.cu12, 12);
+      expect(readsFrom(factory(r, { cards: [], gpus: [] }))).toBe(12);
+    });
+
+    test('a file named by PEARL_CORE_PATH brings its own', () => {
+      const mine = withCalls({ createCore: jest.fn() }, 7);
+      const r = rig({ '/src/pearl_core.node': mine, '/src/pearl_core_hip.node': { createCore: jest.fn() } });
+      expect(readsFrom(factory(r, { env: { PEARL_CORE_PATH: '/src/pearl_core.node' } }))).toBe(7);
+      const amd = factory(r, { env: { PEARL_CORE_PATH: '/src/pearl_core_hip.node', PEARL_CORE_VARIANT: 'amd' } });
+      expect(amd.clockOffsets.readCoreOffset(0)).toEqual(NOT_SUPPORTED);
+    });
+  });
+
   // The GUI and CLI always pass a logger; nothing else has to.
   test('works without a logger', () => {
     const r = rig();

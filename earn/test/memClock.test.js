@@ -18,6 +18,10 @@ const gpu = (index, name = 'NVIDIA GeForce RTX 5090') => ({ index, name });
 
 const IGNORED = '--mine-mem-clock ignored: the LLM co-runs with the miner and needs full memory bandwidth';
 
+// With no request, each RTX 5090 tries a lock at 7001 MHz and keeps it only if
+// that card mines faster with it (the trial is shared/memClockTrial's, and
+// PearlMiner runs it). The 5090 used to be locked outright, on one run on one
+// card.
 describe('the RTX 5090 default', () => {
   // 7001 is the one value measured: 682 -> 742 MHz SM clock, +8.0% on a 600 W
   // 5090 (main/gpuClocks). The constant is where both shells and the docs
@@ -27,27 +31,48 @@ describe('the RTX 5090 default', () => {
     expect(BLACKWELL_COMPUTE_MAJOR).toBe(12);
   });
 
-  // The line names the off switch the way its shell's operator types it: the
-  // CLI's flag by default, the GUI's environment variable when main.js asks.
-  test('locks every mining 5090 and says so, naming the off switch', () => {
+  // The line names both ways out of the trial, the way its shell's operator
+  // types them: the CLI's flag by default, the GUI's environment variable when
+  // main.js asks.
+  test('puts every mining 5090 on trial at 7001 MHz and says so, naming both switches', () => {
     const plan = planMemClocks({ requestedMhz: null, cards: [RTX5090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)] });
     expect(plan).toEqual({
       byIndex: { 0: 7001, 1: 7001 },
+      trial: [0, 1],
       isDefault: true,
       dropped: false,
-      reason: 'memory clock 7001 MHz by default on GPU 0, 1 (RTX 5090; --mine-mem-clock 0 leaves the driver\'s clock)',
+      reason: 'trying a memory clock lock of 7001 MHz on GPU 0, 1 by default (RTX 5090), kept only if the card '
+        + 'mines faster; --mine-mem-clock 7001 locks without a trial, --mine-mem-clock 0 leaves the driver\'s clock',
     });
     expect(planMemClocks({ cards: [RTX5090(0)], gpus: [gpu(0)], requestName: GUI_MEM_CLOCK_ENV }).reason)
-      .toBe('memory clock 7001 MHz by default on GPU 0 (RTX 5090; LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock)');
+      .toBe('trying a memory clock lock of 7001 MHz on GPU 0 by default (RTX 5090), kept only if the card mines '
+        + 'faster; LLMJOB_MINE_MEM_CLOCK=7001 locks without a trial, LLMJOB_MINE_MEM_CLOCK=0 leaves the driver\'s clock');
+  });
+
+  // No card of the default is locked outright: the miner locks a planned card
+  // at once unless the plan lists it for a trial.
+  test('lists every card it names for a trial', () => {
+    const rigs = [
+      { cards: [RTX5090(0)], gpus: [gpu(0)] },
+      { cards: [RTX5090(0), RTX5090(1), RTX5090(2)], gpus: [gpu(0), gpu(2)] },
+      { cards: [RTX4090(0), RTX5090(1)], gpus: [gpu(0, 'NVIDIA GeForce RTX 4090'), gpu(1)] },
+    ];
+    for (const rig of rigs) {
+      const plan = planMemClocks(rig);
+      expect(plan.isDefault).toBe(true);
+      expect(plan.trial).toEqual(Object.keys(plan.byIndex).map(Number));
+      expect(plan.trial.length).toBeGreaterThan(0);
+    }
   });
 
   // A mixed rig: the 4090 is not power-bound the same way and was never
-  // measured with the lock, so it is left alone.
+  // measured with this lock, so it is left alone.
   test('leaves every other card at the driver\'s clock', () => {
     const plan = planMemClocks({ cards: [RTX4090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)] });
     expect(plan.byIndex).toEqual({ 1: 7001 });
+    expect(plan.trial).toEqual([1]);
     expect(plan.isDefault).toBe(true);
-    expect(plan.reason).toContain('on GPU 1 ');
+    expect(plan.reason).toContain('on GPU 1 by default');
   });
 
   test('is nothing on a rig with no Blackwell card, with nothing to say', () => {
@@ -67,13 +92,13 @@ describe('the RTX 5090 default', () => {
 
   // An empty mining list means the shell starts one core and lets it choose.
   // Without the list there are no names, so no card can be told to be a 5090.
-  test('with no mining list, locks nothing: no names, so no 5090', () => {
+  test('with no mining list, tries nothing: no names, so no 5090', () => {
     const plan = planMemClocks({ cards: [RTX4090(0), RTX5090(1), RTX5090(2)], gpus: [] });
     expect(plan).toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: null });
   });
 
   // Only the 5090 has been measured. The rest of the Blackwell line is compute
-  // 12.x too, and stays at the driver's clock until a card has been run.
+  // 12.x too, and stays at the driver's clock unless `auto` asks.
   test('covers the RTX 5090 and 5090 D, not the rest of Blackwell', () => {
     const blackwell = [RTX5090(0), RTX5090(1), RTX5090(2), RTX5090(3), RTX5090(4)];
     const plan = planMemClocks({
@@ -87,7 +112,8 @@ describe('the RTX 5090 default', () => {
       ],
     });
     expect(plan.byIndex).toEqual({ 0: 7001, 1: 7001 });
-    expect(plan.reason).toContain('on GPU 0, 1 (RTX 5090;');
+    expect(plan.trial).toEqual([0, 1]);
+    expect(plan.reason).toContain('on GPU 0, 1 by default (RTX 5090)');
   });
 
   test('is nothing on a rig of other Blackwell cards, with nothing to say', () => {
@@ -106,6 +132,7 @@ describe('the RTX 5090 default', () => {
   test('follows the mining list, not nvidia-smi\'s', () => {
     const plan = planMemClocks({ cards: [RTX5090(0), RTX5090(1)], gpus: [gpu(1)] });
     expect(plan.byIndex).toEqual({ 1: 7001 });
+    expect(plan.trial).toEqual([1]);
   });
 });
 
@@ -118,6 +145,25 @@ describe('an explicit --mine-mem-clock', () => {
       dropped: false,
       reason: '--mine-mem-clock 810 MHz on GPU 0, 1',
     });
+  });
+
+  // Asking for the default's own clock is still asking: the 5090 is locked at
+  // once, from either switch. This is the way past the trial, for a rig that
+  // knows the lock pays or whose mining runs are too short to finish one.
+  test('7001 on an RTX 5090 locks it with no trial', () => {
+    const rig = { cards: [RTX5090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)] };
+    const cli = planMemClocks({ ...rig, requestedMhz: 7001 });
+    expect(cli).toEqual({
+      byIndex: { 0: 7001, 1: 7001 }, isDefault: false, dropped: false,
+      reason: '--mine-mem-clock 7001 MHz on GPU 0, 1',
+    });
+    expect(cli).not.toHaveProperty('trial');
+    const app = planMemClocks({ ...rig, requestedMhz: 7001, requestName: GUI_MEM_CLOCK_ENV });
+    expect(app).toEqual({
+      byIndex: { 0: 7001, 1: 7001 }, isDefault: false, dropped: false,
+      reason: 'LLMJOB_MINE_MEM_CLOCK=7001 MHz on GPU 0, 1',
+    });
+    expect(app).not.toHaveProperty('trial');
   });
 
   // The request does not need nvidia-smi's compute capability, and it follows
@@ -137,22 +183,28 @@ describe('an explicit --mine-mem-clock', () => {
       .toBe('--mine-mem-clock 7001: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
   });
 
-  // 0 is the off switch for the default: nothing is locked, even on a 5090.
+  // 0 is the off switch for the default: nothing is locked and nothing is
+  // tried, even on a 5090.
   test('0 leaves the driver\'s clock everywhere', () => {
     const plan = planMemClocks({ requestedMhz: 0, cards: [RTX5090(0)], gpus: [gpu(0)] });
     expect(plan).toEqual({
       byIndex: {}, isDefault: false, dropped: false,
       reason: '--mine-mem-clock 0: memory clocks left to the driver',
     });
+    expect(plan).not.toHaveProperty('trial');
     // Also when the LLM co-runs: 0 is not a request to drop.
     expect(planMemClocks({ requestedMhz: 0, cards: [RTX5090(0)], gpus: [gpu(0)], llmCoRuns: true }).dropped).toBe(false);
   });
 
   // Anything that is not a positive whole number is "not given", so a shell
-  // that passes an unparsed value through cannot lock a card at it.
+  // that passes an unparsed value through cannot lock a card at it. A 5090
+  // then gets its default, which is the trial.
   test('treats a non-numeric request as none', () => {
     expect(planMemClocks({ requestedMhz: '7001', cards: [RTX4090(0)], gpus: [gpu(0)] }).byIndex).toEqual({});
-    expect(planMemClocks({ requestedMhz: -5, cards: [RTX5090(0)], gpus: [gpu(0)] }).byIndex).toEqual({ 0: 7001 });
+    expect(planMemClocks({ requestedMhz: -5, cards: [RTX5090(0)], gpus: [gpu(0)] }))
+      .toMatchObject({ byIndex: { 0: 7001 }, trial: [0], isDefault: true });
+    expect(planMemClocks({ requestedMhz: '7001', cards: [RTX5090(0)], gpus: [gpu(0)] }))
+      .toMatchObject({ byIndex: { 0: 7001 }, trial: [0], isDefault: true });
   });
 
   // The GUI's lines name its switch as an assignment, the way an operator sets
@@ -186,7 +238,7 @@ describe('parseMemClockMhz', () => {
   // setting must not switch the default off by accident.
   test('refuses anything else, with the reason in the CLI\'s words', () => {
     for (const bad of ['', ' ', 'abc', '7', '99', '30001', '7001.5', '-7001', '7e3x']) {
-      expect(parseMemClockMhz(bad)).toEqual({ error: 'must be 0, or a whole number of MHz, 100-30000' });
+      expect(parseMemClockMhz(bad)).toEqual({ error: 'must be 0, auto, or a whole number of MHz, 100-30000' });
     }
   });
 });
@@ -209,7 +261,7 @@ describe('readMemClockEnv', () => {
   test('ignores a bad value and warns, keeping the default', () => {
     expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: 'off' })).toEqual({
       mhz: null,
-      warning: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
+      warning: 'LLMJOB_MINE_MEM_CLOCK=off ignored (must be 0, auto, or a whole number of MHz, 100-30000); the RTX 5090 default stands',
     });
     expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: '' }).mhz).toBeNull();
   });
@@ -224,16 +276,126 @@ describe('an LLM co-running with the miner', () => {
   });
 
   // Nobody asked for the default, so losing it is information, not a drop.
-  test('skips the 5090 default and says why in one line', () => {
+  // The 5090 is not locked and not tried: a trial would cut the memory clock
+  // under the model for half its turns.
+  test('skips the 5090 default, trial and all, and says why in one line', () => {
     const plan = planMemClocks({ cards: [RTX4090(0), RTX5090(1)], gpus: [gpu(0), gpu(1)], llmCoRuns: true });
     expect(plan).toEqual({
       byIndex: {}, isDefault: false, dropped: false,
       reason: 'memory clock left to the driver on GPU 1: the LLM co-runs with the miner and needs full memory bandwidth',
     });
+    expect(plan).not.toHaveProperty('trial');
   });
 
   test('has nothing to say on a rig with no Blackwell card and no request', () => {
     expect(planMemClocks({ cards: [RTX4090(0)], gpus: [gpu(0)], llmCoRuns: true }))
       .toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: null });
+  });
+});
+
+// `auto`: the cards with a measured lock in their family try it, and keep it
+// only where it is faster (shared/memClockTrial; PearlMiner runs the trial).
+describe('--mine-mem-clock auto', () => {
+  const { MEM_CLOCK_AUTO, ADA_TRIAL_MEM_CLOCK_MHZ } = require('../src/shared/memClock');
+  const RTX3080 = (index) => card(index, '8.6');
+
+  // 5001 MHz is the one lock measured on an RTX 4090: +0.8% at 450 W, and the
+  // next memory speed down lost 11% (tuning/benchmark.md, "rig01, 10 November").
+  test('is spelled auto and tries 5001 MHz on compute 8.9', () => {
+    expect(MEM_CLOCK_AUTO).toBe('auto');
+    expect(ADA_TRIAL_MEM_CLOCK_MHZ).toBe(5001);
+  });
+
+  test('is read from either switch, in any case', () => {
+    expect(parseMemClockMhz('auto')).toEqual({ mhz: 'auto' });
+    expect(parseMemClockMhz(' AUTO ')).toEqual({ mhz: 'auto' });
+    expect(readMemClockEnv({ LLMJOB_MINE_MEM_CLOCK: 'Auto' })).toEqual({ mhz: 'auto', warning: null });
+  });
+
+  test('puts an RTX 40 card on trial at 5001 MHz', () => {
+    expect(planMemClocks({
+      requestedMhz: 'auto', cards: [RTX4090(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 4090')],
+    })).toEqual({
+      byIndex: { 0: 5001 },
+      trial: [0],
+      isDefault: false,
+      dropped: false,
+      reason: '--mine-mem-clock auto: trying a memory clock lock on GPU 0, kept only if the card mines faster',
+    });
+  });
+
+  // Every RTX 40 and RTX 50 card is tried, a 5090 like the rest of the
+  // Blackwell line at the 5090's clock. It used to keep its lock under `auto`
+  // with no trial, as the measured card. Older cards get nothing.
+  test('on a mixed rig: trials for RTX 40 and RTX 50 cards, a 5090 among them, nothing older', () => {
+    const plan = planMemClocks({
+      requestedMhz: 'auto',
+      requestName: GUI_MEM_CLOCK_ENV,
+      cards: [RTX4090(0), RTX5090(1), RTX5090(2), RTX3080(3)],
+      gpus: [
+        gpu(0, 'NVIDIA GeForce RTX 4090'), gpu(1), gpu(2, 'NVIDIA GeForce RTX 5080'),
+        gpu(3, 'NVIDIA GeForce RTX 3080'),
+      ],
+    });
+    expect(plan).toEqual({
+      byIndex: { 0: 5001, 1: 7001, 2: 7001 },
+      trial: [0, 1, 2],
+      isDefault: false,
+      dropped: false,
+      reason: 'LLMJOB_MINE_MEM_CLOCK=auto: trying a memory clock lock on GPU 0, 1, 2, kept only if the card '
+        + 'mines faster',
+    });
+  });
+
+  // The same trial the default gives it. Asked for, so not `isDefault`: what
+  // goes wrong with it is a warning.
+  test('with only a 5090, puts it on trial like any other card', () => {
+    expect(planMemClocks({ requestedMhz: 'auto', cards: [RTX5090(0)], gpus: [gpu(0)] })).toEqual({
+      byIndex: { 0: 7001 },
+      trial: [0],
+      isDefault: false,
+      dropped: false,
+      reason: '--mine-mem-clock auto: trying a memory clock lock on GPU 0, kept only if the card mines faster',
+    });
+  });
+
+  // `auto` goes by what nvidia-smi says the card computes with, not its name:
+  // with no mining list there are no names, and the cards are still tried.
+  test('needs no card names', () => {
+    expect(planMemClocks({ requestedMhz: 'auto', cards: [RTX4090(0), RTX5090(1)], gpus: [] }))
+      .toMatchObject({ byIndex: { 0: 5001, 1: 7001 }, trial: [0, 1] });
+  });
+
+  // No lock has been measured on RTX 30 or older, and a card whose compute
+  // capability nvidia-smi did not report is not known to be anything.
+  test('with no card that has a lock to try, leaves the clocks alone and says so', () => {
+    const NONE = {
+      byIndex: {},
+      isDefault: false,
+      dropped: false,
+      reason: '--mine-mem-clock auto: no mining card has a memory clock lock to try '
+        + '(RTX 40 and RTX 50 cards do); memory clocks left to the driver',
+    };
+    expect(planMemClocks({
+      requestedMhz: 'auto', cards: [RTX3080(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 3080')],
+    })).toEqual(NONE);
+    expect(planMemClocks({
+      requestedMhz: 'auto', cards: [RTX4090(0)], gpus: [gpu(1, 'NVIDIA GeForce RTX 4090')],
+    })).toEqual(NONE);
+  });
+
+  test('is dropped when the LLM co-runs, like any request', () => {
+    expect(planMemClocks({
+      requestedMhz: 'auto', cards: [RTX4090(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 4090')], llmCoRuns: true,
+    })).toEqual({ byIndex: {}, isDefault: false, dropped: true, reason: IGNORED });
+    // On a 5090 too: no trial runs under a model.
+    const plan = planMemClocks({ requestedMhz: 'auto', cards: [RTX5090(0)], gpus: [gpu(0)], llmCoRuns: true });
+    expect(plan).toEqual({ byIndex: {}, isDefault: false, dropped: true, reason: IGNORED });
+    expect(plan).not.toHaveProperty('trial');
+  });
+
+  test('says so when there is no NVIDIA card', () => {
+    expect(planMemClocks({ requestedMhz: 'auto', cards: [], gpus: [] }).reason)
+      .toBe('--mine-mem-clock auto: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
   });
 });

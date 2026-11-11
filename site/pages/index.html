@@ -342,7 +342,7 @@
         <span class="ap-gear"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#6b7077" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg></span>
       </div>
       <div class="ap-addr">
-        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal"><span class="ap-bal-w">Balance </span><b>128.41 PRL</b><span class="ap-bal-est" id="pv-bal"> ≈ $146.39</span></span></div>
+        <div class="ap-label"><span class="lbl">Payout address</span><span class="ap-bal"><span class="ap-bal-w">Balance </span><b>128.41 PRL</b><span class="ap-bal-est" id="pv-bal"> ≈ $182.34</span></span></div>
         <div class="ap-field">prl1pql8r6m4z9x7v2k0t3whu8e2snd4p6c</div>
       </div>
       <div class="ap-card">
@@ -350,7 +350,7 @@
           <div><div class="ap-v"><span id="pv-th">317.6</span><small> TH/s</small></div><div class="ap-k">Pearl · GPU</div></div>
           <div><div class="ap-v">5.26<small> kH/s</small></div><div class="ap-k">Monero · CPU</div></div>
           <div><div class="ap-v">31.6<small> tok/s</small></div><div class="ap-k">LLM · GPU</div></div>
-          <div class="ap-day"><div class="ap-v" id="pv-day">$7.12</div><div class="ap-k">per day</div></div>
+          <div class="ap-day"><div class="ap-v" id="pv-day">$5.26</div><div class="ap-k">per day</div></div>
         </div>
         <svg viewBox="0 0 480 56" width="100%" height="64" preserveAspectRatio="none">
           <defs><linearGradient id="pvFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2563eb" stop-opacity="0.18"></stop><stop offset="1" stop-color="#2563eb" stop-opacity="0"></stop></linearGradient></defs>
@@ -390,7 +390,7 @@
 <section class="sec" id="calculator">
   <div class="calc-head">
     <h2>What will it earn?</h2>
-    <span class="calc-note" id="calc-note">Estimate only. Based on <span id="calc-price">$1.14</span>/PRL and today's network hashrate, both of which change.</span>
+    <span class="calc-note" id="calc-note">Estimate only. Based on <span id="calc-price">$1.42</span>/PRL and today's network hashrate, both of which change.</span>
   </div>
   <div class="calc">
     <div class="calc-in">
@@ -417,8 +417,8 @@
     </div>
     <div class="calc-out" aria-live="polite">
       <div class="out-lbl" id="out-label">RTX 4090 · 317.6 TH/s</div>
-      <div class="out-big"><span id="out-month">$213.72</span><small> / month</small></div>
-      <div class="out-rows"><span>Per day</span><b id="out-day">$7.12</b><span>PRL per month</span><span id="out-prl">187.5</span></div>
+      <div class="out-big"><span id="out-month">$157.90</span><small> / month</small></div>
+      <div class="out-rows"><span>Per day</span><b id="out-day">$5.26</b><span>PRL per month</span><span id="out-prl">111.2</span></div>
     </div>
   </div>
 </section>
@@ -443,8 +443,8 @@
     <div class="hive-col">
       <div class="lbl">Then in HiveOS</div>
       <ol class="hive-steps">
-        <li><span class="n">1</span><span>Open <b>Flight Sheets</b> and click <b>Import from clipboard</b>.</span></li>
-        <li><span class="n">2</span><span>Check it reads <b>llmjob-earn</b> and pick your PRL wallet, or <b>Add Wallet</b> with the same address. Then click <b>Create flight sheet</b>.</span></li>
+        <li><span class="n">1</span><span>Open <b>Flight Sheets</b> and click <b>Import from Clipboard</b>. If HiveOS says reading the clipboard failed (Firefox blocks it), download the file above and click <b>Import from File</b>.</span></li>
+        <li><span class="n">2</span><span>HiveOS fills in the miner and marks <b>Wallet</b> as a required field. That's expected: a flight sheet can't carry a wallet. Pick your PRL wallet, or <b>Add Wallet</b> with the same address. Your address is already in the miner's settings, so it mines to that address either way. Then click <b>Create Flight Sheet</b>.</span></li>
         <li><span class="n">3</span><span>Click the rocket next to it to apply it to your rigs.</span></li>
       </ol>
     </div>
@@ -553,8 +553,8 @@
   {{> api-base}}
 
   // Shared by the calculator and the app preview. PRICE, DIFFICULTY and REWARD
-  // are an October 2026 snapshot, used until the live fetch at the bottom lands.
-  const est = { PRICE: 1.14, DIFFICULTY: 34.45e6, REWARD: 2278 };
+  // are a snapshot of 11 November 2026, used until the live fetch at the bottom lands.
+  const est = { PRICE: 1.42, DIFFICULTY: 57.26e6, REWARD: 2177 };
   // Expected USD a day for a hashrate, from difficulty alone, the way the pool
   // works it out: a block takes difficulty x 2^48 hashes on average. The pool
   // takes no fee and the miner has no dev fee. Electricity is not included.
@@ -1016,7 +1016,7 @@
       }
       if (live < 2) {
         document.getElementById('calc-note').textContent =
-          "Estimate only. Live network data didn't load, so this uses an October 2026 snapshot ($1.14/PRL) that may be out of date.";
+          "Estimate only. Live network data didn't load, so this uses a snapshot of 11 November 2026 ($1.42/PRL) that may be out of date.";
       }
       picked();
     })();
