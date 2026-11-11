@@ -158,33 +158,39 @@ m06|-DKLOAD=0 -DWMASK=0x41u
 m07|-DKLOAD=0 -DWMASK=0x81u
 m0|-DKLOAD=0 -DWMASK=0x01u"
 
-# build DIR NVCC-HOME NAME FLAGS: the cubin (registers, spill, what stands between the IMMA) and the program.
+# build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
+# (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
 build1() {
   local d=$1 home=$2 name=$3 flags=$4 used spill
-  "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin -Xptxas -v $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.log" 2>&1
-  "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cudart static $flags "$SRC" -o "$d/$name" > "$d/$name.exe.log" 2>&1 \
-    || "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 $flags "$SRC" -o "$d/$name" >> "$d/$name.exe.log" 2>&1
-  "$home/bin/cuobjdump" -sass "$d/$name.cubin" > "$d/$name.sass" 2> /dev/null
+  "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cudart static -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1 \
+    || "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -Xptxas -v $flags "$SRC" -o "$d/$name" > "$d/$name.log" 2>&1
+  "$home/bin/cuobjdump" -sass "$d/$name" > "$d/$name.sass" 2> /dev/null
+  if ! grep -q IMMA "$d/$name.sass" 2> /dev/null; then
+    "$home/bin/nvcc" -arch=$ARCH -std=c++17 -O3 -cubin $flags "$SRC" -o "$d/$name.cubin" > "$d/$name.cubin.log" 2>&1
+    "$home/bin/cuobjdump" -sass "$d/$name.cubin" > "$d/$name.sass" 2> /dev/null
+  fi
   used=$(grep -oE 'Used [0-9]+ registers' "$d/$name.log" | head -1 | grep -oE '[0-9]+')
   spill=$(grep -oE '[0-9]+ bytes spill stores' "$d/$name.log" | head -1 | grep -oE '^[0-9]+')
   if [ -x "$d/$name" ]; then
     echo "built $name regs=${used:-?} spill=${spill:-?} $(python3 $P/sass.py "$d/$name.sass" 2>&1 | head -1)"
   else
-    echo "NOT built $name: $(grep -m1 -iE 'error' "$d/$name.log" "$d/$name.exe.log" | cut -c1-240)"
+    echo "NOT built $name: $(grep -m1 -iE 'error' "$d/$name.log" | cut -c1-240)"
   fi
 }
-# buildall DIR NVCC-HOME TAG [NAMES]: every stream (or the named ones), three at a time.
+# buildall DIR NVCC-HOME TAG [NAMES]: every stream (or the named ones), three at a time. It waits for its own
+# builds by process id: a bare wait would also wait for bench.sh, which never exits.
 buildall() {
-  local d=$1 home=$2 tag=$3 only=${4:-} name flags n=0 t0
+  local d=$1 home=$2 tag=$3 only=${4:-} name flags t0 pids=()
   t0=$(date +%s)
   mkdir -p "$d"
   while IFS='|' read -r name flags; do
     [ -n "$name" ] || continue
     if [ -n "$only" ]; then case " $only " in *" $name "*) ;; *) continue ;; esac; fi
     build1 "$d" "$home" "$name" "$flags" > "$d/$name.built" 2>&1 &
-    n=$((n + 1)); [ $((n % 3)) = 0 ] && wait
+    pids+=($!)
+    if [ ${#pids[@]} -ge 3 ]; then wait "${pids[@]}"; pids=(); fi
   done <<< "$STREAMS"
-  wait
+  [ ${#pids[@]} -gt 0 ] && wait "${pids[@]}"
   for f in "$d"/*.built; do psay "$tag $(cat "$f")"; done
   psay "$tag builds done in $(( $(date +%s) - t0 )) s with $("$home/bin/nvcc" --version | grep -oE 'V[0-9.]+' | tail -1) for $ARCH"
 }
