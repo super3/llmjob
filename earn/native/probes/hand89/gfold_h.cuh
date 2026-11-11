@@ -71,6 +71,66 @@
 #define GP_STG (GP_ST + 256u)
 #define GP_SMEM (GP_STG + GP_STAGE)
 #define GP_THREADS 256u
+// GP_HASH 1: after a tile's loop every thread hashes its own transcript (one keyed BLAKE3 compression of its 64
+// bytes, as the product's kernels hash a region's) and reports the tile and itself when the hash, read as a
+// little-endian number, is at or under the bound. The kernel's last argument is then 8 words of key, 8 of the
+// bound (least significant first), the count of hits, the list's room, and the list of (tile, thread) pairs.
+#ifndef GP_HASH
+#define GP_HASH 0
+#endif
+#if GP_HASH
+static __device__ __forceinline__ void gp_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d, uint32_t mx,
+                                            uint32_t my) {
+  a = a + b + mx;
+  d = ((d ^ a) >> 16) | ((d ^ a) << 16);
+  c = c + d;
+  b = ((b ^ c) >> 12) | ((b ^ c) << 20);
+  a = a + b + my;
+  d = ((d ^ a) >> 8) | ((d ^ a) << 24);
+  c = c + d;
+  b = ((b ^ c) >> 7) | ((b ^ c) << 25);
+}
+// BLAKE3's keyed hash of one 64-byte block: one compression, counter 0, flags chunk start, chunk end, root, keyed.
+static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t block[16], uint32_t out[8]) {
+  uint32_t s[16], m[16];
+#pragma unroll
+  for (int i = 0; i < 8; i++) s[i] = key[i];
+  s[8] = 0x6A09E667u;
+  s[9] = 0xBB67AE85u;
+  s[10] = 0x3C6EF372u;
+  s[11] = 0xA54FF53Au;
+  s[12] = 0u;
+  s[13] = 0u;
+  s[14] = 64u;
+  s[15] = 1u | 2u | 8u | 16u;
+#pragma unroll
+  for (int i = 0; i < 16; i++) m[i] = block[i];
+#pragma unroll
+  for (int round = 0; round < 7; round++) {
+    gp_g(s[0], s[4], s[8], s[12], m[0], m[1]);
+    gp_g(s[1], s[5], s[9], s[13], m[2], m[3]);
+    gp_g(s[2], s[6], s[10], s[14], m[4], m[5]);
+    gp_g(s[3], s[7], s[11], s[15], m[6], m[7]);
+    gp_g(s[0], s[5], s[10], s[15], m[8], m[9]);
+    gp_g(s[1], s[6], s[11], s[12], m[10], m[11]);
+    gp_g(s[2], s[7], s[8], s[13], m[12], m[13]);
+    gp_g(s[3], s[4], s[9], s[14], m[14], m[15]);
+    if (round < 6) {
+      // The message permutation {2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8}, with literal indices.
+      const uint32_t p0 = m[2], p1 = m[6], p2 = m[3], p3 = m[10];
+      const uint32_t p4 = m[7], p5 = m[0], p6 = m[4], p7 = m[13];
+      const uint32_t p8 = m[1], p9 = m[11], p10 = m[12], p11 = m[5];
+      const uint32_t p12 = m[9], p13 = m[14], p14 = m[15], p15 = m[8];
+      m[0] = p0; m[1] = p1; m[2] = p2; m[3] = p3;
+      m[4] = p4; m[5] = p5; m[6] = p6; m[7] = p7;
+      m[8] = p8; m[9] = p9; m[10] = p10; m[11] = p11;
+      m[12] = p12; m[13] = p13; m[14] = p14; m[15] = p15;
+    }
+  }
+#pragma unroll
+  for (int i = 0; i < 8; i++) out[i] = s[i] ^ s[i + 8];
+}
+#endif
 #define GP_NI (8u * GP_MT)                          // mma a k-step
 #ifndef GP_FILL
 #define GP_FILL 63
@@ -208,7 +268,7 @@ static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, ui
 extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
     const uint4 *__restrict__ tabA, const uint4 *__restrict__ tabB, const uint4 *__restrict__ offs,
     uint32_t chunks, uint32_t row_groups, uint32_t tiles, unsigned long long *cyc, uint32_t *dump,
-    uint32_t dump_tiles, uint32_t col_blocks) {
+    uint32_t dump_tiles, uint32_t col_blocks, uint32_t *hits) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   extern __shared__ __align__(128) uint32_t gp_smem[];
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(gp_smem);
@@ -257,6 +317,37 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
       const long long pt2 = clock64();
       asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + GP_ST + 16u + warp * 24u), "l"(pt2) : "memory");
     }
+#if GP_HASH
+    if (hits) {
+      uint32_t m[16], key[8], h[8];
+#pragma unroll
+      for (uint32_t q = 0; q < 4u; q++)
+        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
+                     : "=r"(m[4u * q]), "=r"(m[4u * q + 1u]), "=r"(m[4u * q + 2u]), "=r"(m[4u * q + 3u])
+                     : "r"(sbase + GP_TR + tid * 64u + q * 16u)
+                     : "memory");
+#pragma unroll
+      for (uint32_t i = 0; i < 8u; i++) key[i] = hits[i];
+      gp_blake3_keyed64(key, m, h);
+      bool le = true;
+      for (int i = 7; i >= 0; i--) {
+        const uint32_t b = hits[8 + i];
+        if (h[i] != b) {
+          le = h[i] < b;
+          break;
+        }
+      }
+      if (le) {
+        const uint32_t n = atomicAdd(hits + 16, 1u);
+        if (n < hits[17]) {
+          hits[18u + 2u * n] = v;
+          hits[19u + 2u * n] = tid;
+        }
+      }
+    }
+#else
+    (void)hits;
+#endif
     // The probe: the thread's transcript goes out as it is.
     if (v < dump_tiles) {
 #pragma unroll

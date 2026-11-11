@@ -45,7 +45,7 @@ from fold import addi, andi, muladd, shr  # noqa: E402
 import gfold  # noqa: E402
 from gfold import ACC, AF, BF, SB_OFF, SB_RD, XR, gather_ins, ldg  # noqa: E402
 
-CFG = dict(mt=6, pad=8, ist=5, py=1, iy=1, ly=1, ru=0, lead=2, sf=0, hold=1, pst=2, rmar=5, roff=11, pol=2, ur=4,
+CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst=2, rmar=5, roff=11, pol=2, ur=4,
            # sync=4: a barrier at every k-step's end, and tile 0's store in the turn before its first use: every
            # load of a stored fragment then has a barrier between it and the store before and the store after.
            # sync=0: only a barrier every barn chunks (a power of two; 0 for none), tile 0's store in gap st0:
@@ -54,8 +54,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=1, iy=1, ly=1, ru=0, lead=2, sf=0, hold=1, pst
            # band=1: the k-step barriers are one for each row band (128 threads each): only the four warps
            # that share fragments wait for each other.
            band=1, bsp=1,
-           # plead: the gaps between a gather's IADD3 and its PRMT (lead: between its LDSM and its IADD3).
-           plead=2,
+           # lead: the gaps between a gather's LDSM and its IADD3; plead: between its IADD3 and its PRMT. Three and
+           # one hold 0.5 points more of the pipe than two and two; py=0 (the plain steps' yield flag off) 0.2.
+           plead=1,
            # Timing only (wrong results on purpose): nost, no stores; nold, the gathers' LDSM are moves.
            nost=0, nold=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -123,7 +124,9 @@ def prologue(cfg, R, tail):
         c += barrier(cfg)
     last = [gather_ins(tail[n][0], a, o, d1, d2, tail[n][1], cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[7:])]
     c += [g[0] for g in last]
-    c += last[0][1] + last[1][1]
+    for n, g in enumerate(last):
+        if tail[n][2]:                  # its IADD3 lie in the chunk's last gaps: the loop does not redo them
+            c += g[1]
     return c
 
 
@@ -222,7 +225,7 @@ def chunk(cfg, R):
             put(g_add, x, wrapped=False)
         for x in prm:
             put(g_prm, x, wrapped=False)
-        assign.append((q, sb))
+        assign.append((q, sb, g_add < tot))
     assert [plans[k][0] for k in order[-3:]] == [tot - 4, tot - 3, tot - 2]
     # The readout, as gfold's: two chains of XOR3, one step of each a gap, from r roff of the last turn.
     b3 = 3 * ni
@@ -327,7 +330,16 @@ def main():
             continue
         _r, w, _k = fold.rw(ins.text)
         used |= {x for x in w if not isinstance(x, str)}
-    assert used <= regs and {1, 2} <= preds, "writes registers the kernel keeps: %s" % sorted(used - regs)
+    assert used <= regs and 2 in preds, "writes registers the kernel keeps: %s" % sorted(used - regs)
+    # The loop's own predicate is P1 where the compiled function writes P1; a build whose function writes
+    # another one (with the hash in the kernel it is P0) gets that one, since the kernel may keep the rest.
+    if 1 not in preds:
+        lp = min(preds - {2})
+        for ins in code:
+            if ins.text.startswith("ISETP.NE.AND P1, "):
+                ins.text = "ISETP.NE.AND P%d, " % lp + ins.text[len("ISETP.NE.AND P1, "):]
+            elif ins.text.startswith("@P1 BRA "):
+                ins.text = "@P%d BRA " % lp + ins.text[len("@P1 BRA "):]
     n, room = asm89.patch(cubin, text, out, code, nvd)
     if cfg["band"]:
         asm89.set_barriers(out, 3)
