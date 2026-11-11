@@ -679,14 +679,22 @@ fields, and the rest stays blank:
   the address as the flight sheet's wallet. An old `prl1p…+mdl1p…` wallet still
   mines, but merge mining is retired.
 - **Pool URL** → `us.pearl.herominers.com:1200`. HiveOS won't save the flight
-  sheet without one (`The url field is required`), but the miner doesn't read
-  it: it mines on HeroMiners and picks the region with the lowest latency when
-  it starts.
+  sheet without one (`The url field is required`). With a HeroMiners address
+  there, whichever region it names, the miner mines on HeroMiners and picks
+  the region with the lowest latency when it starts, so a rig in Germany is
+  not held on the US server. To mine on another pool, put its `host:port`
+  there, such as `prl-us.kryptex.network:7048` for Kryptex. The pool must
+  speak the same protocol as HeroMiners, and Kryptex does. A `stratum+tcp://`
+  prefix is fine. The miner log's `pool:` line says which pool it is on. The
+  rig's page in HiveOS gets a message when Pool URL moved the rig to another
+  pool, and when it can't be used (no port, for one); the rig then stays on
+  HeroMiners. If the field holds several addresses, the first is read.
 
 If HiveOS asks for a **Hash algorithm**, use `pearlhash`. **Pass** stays blank.
 **Extra config arguments** are optional CLI flags; leave it empty for the
 defaults. The ones that make sense on a rig:
 
+- `--pool <host:port>` picks the pool too, and beats Pool URL.
 - `--region <id>` pins the pool region: `us`, `us2`, `ca`, `br`, `de`, `fi`,
   `fr`, `tr`, `sg`, `hk`, `kr` or `au`. An old AlphaPool id from an older
   flight sheet (`us1`, `eu1`, `eu2`, `ru1`, `sg1`, `hk1`, `in1`) maps to the
@@ -982,6 +990,10 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
                            HeroMiners region, such as prl-us.kryptex.network:7048.
                            It must use the same protocol as HeroMiners.
                            --xmr-pool moves Monero.
+      --hive-pool-url <url>  The flight sheet's Pool URL, which the HiveOS package
+                           passes on. A HeroMiners address leaves the region
+                           to the miner. Another host:port is mined on, as
+                           with --pool, which beats it.
   -w, --worker <name>      Worker/rig name (default: this machine's hostname)
   -g, --gpu <card>         GPU name to report on the board (default: from nvidia-smi)
       --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as

@@ -142,6 +142,87 @@ function coreLoadMessage(line) {
   return 'LLMJob Earn can\'t mine: ' + (said.length > 280 ? said.slice(0, 279) + '…' : said);
 }
 
+// ── The flight sheet's Pool URL ─────────────────────────────────────────────
+// HiveOS gives the field to h-config.sh as CUSTOM_URL, and h-config.sh passes
+// it on as --hive-pool-url. Our setup steps put us.pearl.herominers.com:1200
+// there, because HiveOS won't save a flight sheet without a pool. So a
+// HeroMiners address must not pin the rig to that server: a rig in Germany
+// would mine on the US one. Any other host:port is the owner's choice of pool.
+
+// Any HeroMiners Pearl server, whatever the region.
+const HEROMINERS_PEARL_HOST = /(^|\.)pearl\.herominers\.com$/i;
+// The address our setup steps give. Nobody chose it, so it needs no message.
+const SETUP_POOL_HOST = 'us.pearl.herominers.com';
+// A host name or an IPv4 address. Anything else (a macro HiveOS left in, an
+// IPv6 literal, a path) is not used.
+const POOL_HOST = /^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i;
+const POOL_EXAMPLE = 'prl-us.kryptex.network:7048';
+
+// What the Pool URL means, as { kind, typed, several, host, endpoint }:
+//   none        nothing in the field
+//   herominers  a HeroMiners Pearl address: the miner picks the region
+//   pool        another pool: mine on `endpoint` (host:port), as --pool would
+//   bad         not a usable host:port: it is not used, and the owner is told
+// `typed` is the address read, the first when the field holds several
+// (`several`). A stratum+tcp://, stratum:// or tcp:// prefix is dropped.
+function flightSheetPool(raw) {
+  const parts = String(raw == null ? '' : raw).split(/[\s,;]+/).filter(Boolean);
+  if (!parts.length) return { kind: 'none', typed: '', several: false, host: null, endpoint: null };
+  const typed = parts[0];
+  const several = parts.length > 1;
+  const bare = typed.replace(/^(stratum\+tcp|stratum|tcp):\/\//i, '').replace(/\/+$/, '');
+  const m = /^(.*?)(?::(\d+))?$/.exec(bare);
+  const host = m[1];
+  const port = m[2] == null ? null : Number(m[2]);
+  const out = (kind, endpoint) => ({ kind, typed, several, host, endpoint });
+  if (!POOL_HOST.test(host)) return out('bad', null);
+  if (HEROMINERS_PEARL_HOST.test(host)) return out('herominers', null);
+  // A pool has no default port, so one without a port is not guessed at.
+  if (port == null || port < 1 || port > 65535) return out('bad', null);
+  return out('pool', host + ':' + port);
+}
+
+// What to tell the owner about the Pool URL, as { log, post }: a line for the
+// miner log, and { type, text } for the HiveOS dashboard. Either can be null.
+// `pool` is flightSheetPool's result (or null), `poolFlag` whether --pool was
+// given, `regionProvided` whether --region was.
+// The dashboard hears only what the owner would not expect: another pool in
+// use, a Pool URL that can't be used, and a HeroMiners region they typed
+// themselves that is not followed.
+function poolUrlNote(pool, { poolFlag, regionProvided }) {
+  const nothing = { log: null, post: null };
+  if (!pool || pool.kind === 'none') return nothing;
+  if (poolFlag) {
+    if (pool.kind === 'herominers') return nothing;
+    return { log: 'The flight sheet\'s Pool URL is not used: --pool in Extra config wins', post: null };
+  }
+  if (pool.kind === 'pool') {
+    return {
+      log: pool.several ? 'Pool URL holds several addresses. The miner uses the first' : null,
+      post: {
+        type: 'info',
+        text: 'Mining on ' + pool.endpoint + ' from the flight sheet\'s Pool URL'
+          + (pool.several ? ', the first of the addresses there' : ''),
+      },
+    };
+  }
+  if (pool.kind === 'herominers') {
+    if (regionProvided) {
+      return { log: 'Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names', post: null };
+    }
+    const text = 'Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region';
+    const chosen = pool.host.toLowerCase() !== SETUP_POOL_HOST;
+    return {
+      log: text,
+      post: chosen ? { type: 'info', text: text + '. To pin one, put --region in Extra config, such as --region de' } : null,
+    };
+  }
+  const typed = pool.typed.length > 80 ? pool.typed.slice(0, 79) + '…' : pool.typed;
+  const text = 'The flight sheet\'s Pool URL (' + typed + ') is not a pool address like host:port, so the miner stays on'
+    + ' HeroMiners. To mine on another pool, put its host:port there, such as ' + POOL_EXAMPLE;
+  return { log: text, post: { type: 'warning', text } };
+}
+
 // The NVIDIA cards in `lspci -n` output that are Blackwell or newer, as their
 // slots. Display (0300) and 3D (0302) controllers only.
 function blackwellSlots(lspciText) {
@@ -194,6 +275,8 @@ module.exports = {
   recordPost,
   startupMessage,
   coreLoadMessage,
+  flightSheetPool,
+  poolUrlNote,
   blackwellSlots,
   driverMajor,
   driverMessage,

@@ -36,8 +36,13 @@ if [[ $code -ne 0 && -f .update-trial && -d $dir.prev ]]; then
   to=$(sed -n 's/^UPDATE_TO=//p' .update-trial)
   # The argument line, when it lives in this folder: HiveOS may have rewritten
   # it since the update.
-  [[ $(realpath -m "$(dirname "$CUSTOM_CONFIG_FILENAME")") == "$dir" ]] &&
+  if [[ $(realpath -m "$(dirname "$CUSTOM_CONFIG_FILENAME")") == "$dir" ]]; then
     cp -f "$CUSTOM_CONFIG_FILENAME" "$dir.prev/"
+    # A version from before the Pool URL was read stops on --hive-pool-url as
+    # an unknown option, so it gets the line without it.
+    grep -qs -- '--hive-pool-url' "$dir.prev/h-config.sh" ||
+      sed -i 's/ --hive-pool-url=[^ ]*//' "$dir.prev/$(basename "$CUSTOM_CONFIG_FILENAME")"
+  fi
   rm -rf "$dir.failed"
   if mv "$dir" "$dir.failed"; then
     if mv "$dir.prev" "$dir"; then

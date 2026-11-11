@@ -278,6 +278,9 @@ describe('HiveOS flight sheet on the home page', () => {
     expect(sec).toContain('<code>Custom</code>');
     expect(sec).toContain('<code>pearlhash</code>');
     expect(sec).toContain('<code>--no-update</code>');
+    // Pool URL is read: a HeroMiners address or another pool's host:port.
+    expect(sec).toContain('To mine on another pool, put its <code>host:port</code> here.');
+    expect(sec).toContain('<code>prl-us.kryptex.network:7048</code>');
     expect(sec).toContain('Ubuntu 20.04');
   });
 

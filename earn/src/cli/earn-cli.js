@@ -18,7 +18,7 @@ const selfUpdater = require('./selfUpdater');
 const { planUpdate } = require('../shared/selfUpdate');
 const hiveos = require('./hiveos');
 const {
-  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage,
+  TRIAL_FAILED_EXIT, TRIAL_FAIL_MS, TRIAL_CHECK_MS, trialVerdict, startupMessage, coreLoadMessage, poolUrlNote,
 } = require('../shared/hiveos');
 const net = require('net');
 const dns = require('dns');
@@ -965,8 +965,15 @@ async function run(argv) {
       log('region ' + settings.legacyRegion + ' is now ' + settings.region
         + ' (' + REGIONS[settings.region].name + ')');
     }
-    if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
+    if (settings.endpointFrom === 'pool-url') log('pool:       ' + endpoint + '  (the flight sheet\'s Pool URL)');
+    else if (settings.endpoint) log('pool:       ' + endpoint + '  (--pool)');
     else log('pool:       ' + endpoint + '  ' + regionLabel(settings.region) + (settings.regionProvided ? '' : '  (auto)'));
+    // What the flight sheet's Pool URL did, said in the log and, when the owner
+    // would not expect it, on the HiveOS dashboard (at most once an hour).
+    const poolNote = poolUrlNote(settings.poolUrl,
+      { poolFlag: settings.endpointFrom === '--pool', regionProvided: settings.regionProvided });
+    if (poolNote.log) log(poolNote.log);
+    if (hive && poolNote.post) hiveos.postMessage(poolNote.post.type, poolNote.post.text);
     log('worker:     ' + settings.worker + (settings.workerProvided ? '' : '  (auto)'));
     if (settings.gpu) {
       log('gpu:        ' + (settings.gpuCount > 1 ? settings.gpuCount + '× ' : '') + settings.gpu

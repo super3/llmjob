@@ -4289,6 +4289,89 @@ describe('under HiveOS', () => {
     jest.spyOn(Date, 'now').mockImplementation(() => now);
   }
 
+  // The flight sheet's Pool URL, which h-config.sh passes on as --hive-pool-url.
+  async function withPoolUrl(m, extra) {
+    const p = m.run(['-a', ADDR, '--mode', 'mining', '--no-update'].concat(extra));
+    await settle();
+    const started = m.PearlEngine.instances[0].start.mock.calls[0][0];
+    m.PearlEngine.instances[0].emit('stopped', 0);
+    await expect(p).resolves.toBe(0);
+    return started;
+  }
+
+  test('another pool in Pool URL is mined on, and the log and the dashboard say so', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=stratum+tcp://prl-us.kryptex.network:7048']);
+    expect(started.endpoint).toBe('prl-us.kryptex.network:7048');
+    expect(allOut()).toContain('pool:       prl-us.kryptex.network:7048  (the flight sheet\'s Pool URL)');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info',
+      'Mining on prl-us.kryptex.network:7048 from the flight sheet\'s Pool URL');
+  });
+
+  test('several addresses in Pool URL: the first is mined on, and the log says so', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=a.example:1,b.example:2']);
+    expect(started.endpoint).toBe('a.example:1');
+    expect(allOut()).toContain('Pool URL holds several addresses. The miner uses the first');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info',
+      'Mining on a.example:1 from the flight sheet\'s Pool URL, the first of the addresses there');
+  });
+
+  // The address our setup steps give. A rig in Germany must not mine in the US.
+  test('the HeroMiners address in Pool URL leaves the region to the miner, and posts nothing', async () => {
+    const m = hiveLoad();
+    m.probe.detectRegion.mockResolvedValue('de');
+    const started = await withPoolUrl(m, ['--hive-pool-url=us.pearl.herominers.com:1200']);
+    expect(started.endpoint).toBe('de.pearl.herominers.com:1200');
+    expect(allOut()).toMatch(/pool: {7}de\.pearl\.herominers\.com:1200 .*\(auto\)/);
+    expect(allOut()).toContain('Pool URL is a HeroMiners address, so the miner picks the fastest HeroMiners region');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('another HeroMiners region in Pool URL is not followed, and the dashboard says how to pin one', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=de.pearl.herominers.com:1200']);
+    expect(started.endpoint).toBe('us.pearl.herominers.com:1200');
+    expect(m.hive.postMessage).toHaveBeenCalledWith('info', 'Pool URL is a HeroMiners address, so the miner picks the '
+      + 'fastest HeroMiners region. To pin one, put --region in Extra config, such as --region de');
+  });
+
+  test('--region still works with a HeroMiners Pool URL', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=us.pearl.herominers.com:1200', '--region', 'fi']);
+    expect(started.endpoint).toBe('fi.pearl.herominers.com:1200');
+    expect(m.probe.detectRegion).not.toHaveBeenCalled();
+    expect(allOut()).toContain('Pool URL is a HeroMiners address, so the miner uses the HeroMiners region --region names');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('a Pool URL with no port is not guessed at: the rig stays on HeroMiners and is told why', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network']);
+    expect(started.endpoint).toBe('us.pearl.herominers.com:1200');
+    const text = 'The flight sheet\'s Pool URL (prl-us.kryptex.network) is not a pool address like host:port, so the '
+      + 'miner stays on HeroMiners. To mine on another pool, put its host:port there, such as prl-us.kryptex.network:7048';
+    expect(allOut()).toContain(text);
+    expect(m.hive.postMessage).toHaveBeenCalledWith('warning', text);
+  });
+
+  test('--pool in Extra config beats Pool URL', async () => {
+    const m = hiveLoad();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048', '--pool', 'pool.example:3333']);
+    expect(started.endpoint).toBe('pool.example:3333');
+    expect(allOut()).toContain('pool:       pool.example:3333  (--pool)');
+    expect(allOut()).toContain('The flight sheet\'s Pool URL is not used: --pool in Extra config wins');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
+  test('off HiveOS the flag works the same, with no dashboard to post to', async () => {
+    const m = load();
+    const started = await withPoolUrl(m, ['--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(started.endpoint).toBe('prl-us.kryptex.network:7048');
+    expect(m.hive.postMessage).not.toHaveBeenCalled();
+  });
+
   test('an argument error goes to the dashboard as well as the log', async () => {
     const m = hiveLoad();
     await expect(m.run(['--address', 'krx123', '--mode', 'mining'])).resolves.toBe(1);

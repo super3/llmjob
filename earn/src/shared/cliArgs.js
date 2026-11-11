@@ -15,6 +15,7 @@ const { parseGpuIndexList } = require('./gpu');
 const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
+const { flightSheetPool } = require('./hiveos');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
 const CORES = [CU12, CU13, AMD, INTEL];
@@ -40,7 +41,7 @@ const ALIASES = {
 
 // Options that consume a following value.
 const VALUE_FLAGS = new Set([
-  '--address', '--mdl', '--region', '--pool', '--worker',
+  '--address', '--mdl', '--region', '--pool', '--hive-pool-url', '--worker',
   '--gpu', '--gpu-index', '--core', '--gpu-wait',
   '--stats-file',
   '--mode', '--llm-binary', '--llm-model', '--llm-max-instances', '--gate-port', '--gate-host',
@@ -123,6 +124,10 @@ const USAGE = [
   '                           HeroMiners region, such as',
   '                           prl-us.kryptex.network:7048. It must use the same',
   '                           protocol as HeroMiners. --xmr-pool moves Monero.',
+  '      --hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package',
+  '                           passes on. A HeroMiners address leaves the region',
+  '                           to the miner. Another host:port is mined on, as',
+  '                           with --pool, which beats it.',
   '  -w, --worker <name>      Worker/rig name (default: this machine\'s hostname)',
   '  -g, --gpu <card>         GPU name to report on the board (default: auto-detect via nvidia-smi)',
   '      --gpu-index <list>   Mine only on these GPUs: nvidia-smi indices such as',
@@ -228,6 +233,20 @@ function buildSettings(opts, errors, report, update, serve) {
     const { host, port } = splitEndpoint(opts['--pool']);
     if (host && Number.isInteger(port) && port >= 1 && port <= 65535) endpoint = host + ':' + port;
     else errors.push('invalid --pool: ' + opts['--pool'] + ' (expected host:port, such as prl-us.kryptex.network:7048)');
+  }
+  // Where the endpoint came from, for the log: '--pool', 'pool-url' or null.
+  let endpointFrom = endpoint ? '--pool' : null;
+
+  // The flight sheet's Pool URL under HiveOS. --pool beats it. A HeroMiners
+  // address or one that can't be used changes nothing, and is never an error:
+  // the field is filled in on every rig (see shared/hiveos flightSheetPool).
+  let poolUrl = null;
+  if (opts['--hive-pool-url'] != null) {
+    poolUrl = flightSheetPool(opts['--hive-pool-url']);
+    if (opts['--pool'] == null && poolUrl.kind === 'pool') {
+      endpoint = poolUrl.endpoint;
+      endpointFrom = 'pool-url';
+    }
   }
 
   const worker = opts['--worker'] != null ? String(opts['--worker']).trim() : DEFAULTS.worker;
@@ -399,7 +418,7 @@ function buildSettings(opts, errors, report, update, serve) {
   const modeProvided = opts['--mode'] != null;
 
   return {
-    address, mdlAddress, region, legacyRegion, endpoint, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
+    address, mdlAddress, region, legacyRegion, endpoint, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,

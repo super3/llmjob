@@ -6,8 +6,11 @@
 #                       prl1p… for %WAL%, prl1p….rig01 for %WAL%.%WORKER_NAME%
 #   CUSTOM_USER_CONFIG  "Extra config arguments": more CLI flags, e.g. --region de
 #   WORKER_NAME         this rig's name in HiveOS
-# Pool URL and Pass (CUSTOM_URL, CUSTOM_PASS) are not used: the CLI picks the
-# fastest HeroMiners region itself, or the one --region names.
+#   CUSTOM_URL          "Pool URL", as typed. A HeroMiners address leaves the
+#                       choice of region to the CLI, as an empty field does.
+#                       Another pool's host:port is mined on, as --pool does.
+#                       --pool in Extra config beats it.
+# Pass (CUSTOM_PASS) is not used.
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 . ./h-manifest.conf
 
@@ -69,6 +72,14 @@ if [[ -v CUDA_VISIBLE_DEVICES && ! " $CUSTOM_USER_CONFIG " =~ [[:space:]]--gpu-i
     args+=" --gpu-index=${BASH_REMATCH[1]}"
   fi
 fi
+
+# Pool URL goes to the CLI as it is, and the CLI decides what it means (see
+# shared/hiveos.js). It must stay one word for h-run.sh: whitespace, as between
+# several URLs, becomes commas, and glob characters become '_'. The CLI reads
+# the first address and says so. Nothing is passed for an empty field.
+pool_url=${CUSTOM_URL//[[:space:]]/,}
+pool_url=${pool_url//[][*?]/_}
+[[ $pool_url == *[!,]* ]] && args+=" --hive-pool-url=$pool_url"
 
 # The CLI updates this package itself (h-run.sh says it runs under HiveOS), so
 # the Installation URL never has to change. --no-update in Extra config keeps a

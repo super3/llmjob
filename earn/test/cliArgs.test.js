@@ -150,6 +150,75 @@ describe('buildSettings — validation', () => {
 
   const XMR = '87wTMj88rEGV3BFiYXJc2UHeTGmHikMRWAvAskmPgaF3PZxuxonkKaJZsprNmuhM1Aca7P6UbyatGFHkQfUTYgoNN1JxND9';
 
+  // --hive-pool-url is the flight sheet's Pool URL, passed on by h-config.sh.
+  test('no Pool URL, or an empty one: the region is the miner\'s to pick', () => {
+    expect(parseCliArgs(['-a', ADDR]).settings).toMatchObject({ endpoint: null, endpointFrom: null, poolUrl: null });
+    const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, regionProvided: false });
+    expect(r.settings.poolUrl.kind).toBe('none');
+  });
+
+  test('a HeroMiners Pool URL does not pin the pool or the region', () => {
+    for (const url of ['us.pearl.herominers.com:1200', 'de.pearl.herominers.com:1200',
+      'stratum+tcp://us.pearl.herominers.com:1200', 'us2.pearl.herominers.com']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, region: 'us', regionProvided: false });
+      expect(r.settings.poolUrl.kind).toBe('herominers');
+    }
+  });
+
+  test('--region still picks the HeroMiners region with a HeroMiners Pool URL', () => {
+    const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=us.pearl.herominers.com:1200', '--region', 'de']);
+    expect(r.errors).toEqual([]);
+    expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null, region: 'de', regionProvided: true });
+  });
+
+  test('another pool in Pool URL is mined on, as --pool would', () => {
+    for (const url of ['prl-us.kryptex.network:7048', 'stratum+tcp://prl-us.kryptex.network:7048',
+      'prl-us.kryptex.network:7048,prl-eu.kryptex.network:7048']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: 'prl-us.kryptex.network:7048', endpointFrom: 'pool-url' });
+    }
+    // The same settings --pool gives, but for where the endpoint came from.
+    const viaFlag = parseCliArgs(['-a', ADDR, '--pool', 'prl-us.kryptex.network:7048']).settings;
+    const viaUrl = parseCliArgs(['-a', ADDR, '--hive-pool-url', 'prl-us.kryptex.network:7048']).settings;
+    expect(viaFlag.endpointFrom).toBe('--pool');
+    expect(Object.assign({}, viaUrl, { endpointFrom: null, poolUrl: null }))
+      .toEqual(Object.assign({}, viaFlag, { endpointFrom: null, poolUrl: null }));
+  });
+
+  test('a Pool URL that is not a host:port is not an error and changes nothing', () => {
+    for (const url of ['prl-us.kryptex.network', '%URL%', 'stratum+ssl://pool.example:3333', 'pool.example:0']) {
+      const r = parseCliArgs(['-a', ADDR, '--hive-pool-url=' + url]);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: null, endpointFrom: null });
+      expect(r.settings.poolUrl).toMatchObject({ kind: 'bad', typed: url });
+    }
+  });
+
+  test('--pool beats Pool URL, in either order', () => {
+    for (const argv of [
+      ['-a', ADDR, '--hive-pool-url=prl-us.kryptex.network:7048', '--pool', 'pool.example:3333'],
+      ['-a', ADDR, '--pool', 'pool.example:3333', '--hive-pool-url=prl-us.kryptex.network:7048'],
+      ['-a', ADDR, '--pool', 'pool.example:3333', '--hive-pool-url=us.pearl.herominers.com:1200'],
+    ]) {
+      const r = parseCliArgs(argv);
+      expect(r.errors).toEqual([]);
+      expect(r.settings).toMatchObject({ endpoint: 'pool.example:3333', endpointFrom: '--pool' });
+    }
+    // A bad --pool is still an error: Pool URL does not stand in for it.
+    const bad = parseCliArgs(['-a', ADDR, '--pool', 'pool.example', '--hive-pool-url=prl-us.kryptex.network:7048']);
+    expect(bad.errors).toContain('invalid --pool: pool.example (expected host:port, such as prl-us.kryptex.network:7048)');
+    expect(bad.settings.endpoint).toBeNull();
+  });
+
+  test('the usage text documents --hive-pool-url', () => {
+    expect(USAGE).toContain('--hive-pool-url <url>  The flight sheet\'s Pool URL, which the HiveOS package');
+  });
+
   test('--xmr-pool takes a host:port for Monero, and nothing without it', () => {
     const r = parseCliArgs(['-a', ADDR, '--xmr-address', XMR, '--xmr-pool', 'xmr-us.kryptex.network:7029']);
     expect(r.errors).toEqual([]);
