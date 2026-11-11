@@ -16,7 +16,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
 | AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
-| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release) | 16.9 TH/s a card, 15% of the 113 T-MAC/s its matrix engines do alone; 10.2 on HiveOS's own 2024 driver. SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
+| Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 310% and 322% of IAminer's 10 Nov figures | 16.9 TH/s a card on the PR, 42.2 with the fragment fold, which is 37% of the 113 T-MAC/s the matrix engines do alone; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
 
@@ -1762,6 +1762,59 @@ called as an OpenCL built-in. Ours only; no other miner ran. One card, fold alon
   2024 one. On a HiveOS rig as it comes, ours at 10.2 is below that figure.
 - Nothing was installed on the host. The package's binary was run by hand from a folder under the user's home, not
   through a HiveOS flight sheet.
+
+### Arc rig, 11 November: the fragment fold, 42 TH/s a card (branch `goal/arc-kernel`, not on the PR)
+
+The founder's goal for Intel, 11 November: 40 TH/s a card on an A750, then 100. The first is met. The fold is
+`fold_xmxf` (`xmx8f`): 16 rows a sub-group in the 256-register mode, A' and B' stored in DPAS fragment order, one
+vector load a fragment, a band of 32 row windows. It is the build a release would carry (open-source DPC++ v7.2.0,
+kernels compiled by the driver), run in the Ubuntu 24.04 container with Intel's 26.40 driver. Clock and watts are
+i915's counters. IAminer was not run again; its figures are the 10 November ones (13.6 TH/s a card, 78.0 for six).
+
+| What | First fold (`xmx8`) | Fragment fold | Fragment fold, twin |
+|---|---|---|---|
+| Card 0, the fold alone, 20 s, taking turns, round 1 | 16.87 TH/s, 2,000 MHz, 150 W | 42.22, 2,000 MHz, 166 W | 42.25, 2,011 MHz, 167 W |
+| round 2 | 16.88, 2,011 MHz, 154 W | 42.22, 2,000 MHz, 169 W | 42.25, 2,011 MHz, 170 W |
+| round 3 (card hot, clock falling) | 16.87, 2,011 MHz, 157 W | 40.76, 1,922 MHz, 160 W | 39.19, 1,850 MHz, 152 W |
+| Six cards on Kryptex, 5 minutes, mean after the first | 100.08 (98.0 to 102.2), 924 W, 2,001 MHz, 1 accepted, 0 rejected | 251.42 (249.3 to 253.8), 1,002 W, 2,000 MHz, 9 accepted, 0 rejected | 245.14 (239.5 to 252.2), 977 W, 1,948 MHz, 6 accepted, 0 rejected |
+| Five cards on Kryptex, 40 minutes | | 201.6, 40.3 a card, 52 accepted, 0 rejected | |
+
+- Hits: `verify.sh --quick` passed on each of the six cards and the full `verify.sh` on card 0. No hit came out
+  wrong and no share was rejected in any run.
+- 41.9 TH/s a card with shares accepted, against 16.7 for the first fold beside it: 2.5 times, at 167 W against
+  154 W. A twin on a cool card is within 0.1%.
+- The rig does not cool six cards at 167 W for long. In the third six-card run in a row cards 0, 1 and 2 lost
+  clock (card 0 to 1,750 MHz), and after 40 minutes with five cards, cards 1, 2 and 3 were at 1,800, 1,850 and
+  1,950 MHz. The rate follows the clock. No temperature reading exists for Arc on this kernel.
+- Not measured yet: the rig's own HiveOS userland with the 2024 driver, where the first fold did 10.2 TH/s.
+
+Toward 100 (`pearl_sycl_peak --frag`; timing only, these compute wrong results on purpose and none is a mining
+rate; T-MAC/s, and the same per EU and clock in brackets where the card dropped its clock at its 190 W limit):
+
+| Row | T-MAC/s |
+|---|---|
+| DPAS alone, 16 accumulators | 113.8 |
+| the fold's loads and DPAS, no readout | 42.8 |
+| every window reading window 0; every load the same fragment | 43.3; 43.3 |
+| A' loaded, B in registers; B' loaded, A in registers | 100.7; 50.1 |
+| all ten loads of a k-step sent first, the 16 DPAS as one unbroken run | 43.4 |
+| the ten loads kept by an XOR, the DPAS on register operands | 42.2 |
+| no loads, every operand rewritten by an add each k-step | 106.9 |
+| B' as two 128-byte halves a fragment, sent first; A in registers | 80.5 (96.1) |
+| the same with A' loaded as one vector | 61.4 (71.6) |
+| both operands as halves | 54.8 (61.2) |
+| 32 rows by 32 columns a sub-group, one vector a fragment | 57.3 (63.9) |
+| 32 by 32, halves, sent first | 54.3 (60.5); 77.6 (89.1) with every window reading window 0 |
+
+- With 256-byte loads the limit is the load message itself: the card serves about 1.3e10 of them a second
+  whatever the addresses, the order, or the use of the result. Designs that only reorder loads and DPAS, or only
+  improve the cache, change nothing.
+- A 128-byte load is served about four times as fast, so the next fold loads halves. Then two other limits show:
+  a thread can have 16 loads in flight (the hardware's scoreboard tokens), and A', which no other sub-group
+  shares, costs more than B'.
+- Tried and dropped: one unbroken run of DPAS a k-step with 256-byte loads (43.4 against 42.8); a band's windows
+  in one work-group (no change); each lane's bytes in a cache line of its own (half the rate); one vector of 4
+  qwords a fragment (24 to 34).
 
 ## Research notes
 
