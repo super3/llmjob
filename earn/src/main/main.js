@@ -807,6 +807,11 @@ async function startMining(settings, llmCoRuns) {
     readTemps: () => probe.detectGpuTemps(),
     // Sent with the pool login, as the Monero miner's is.
     agent: 'llmjob-earn/' + app.getVersion(),
+    // Each card's memory clock trial answer, kept for a week in userData so a
+    // card is not tried again on every start (shared/memClockTrial). The same
+    // kind of file as the launch shapes'.
+    memClockStore: shapeFileStore(path.join(app.getPath('userData'), 'mem-clock-trials.json'),
+      { readSettings: settingsStore.readSettings, writeSettings: settingsStore.writeSettings, fs, log: settingsLog }),
   });
   wireMinerEvents(miner, endpoint);
   try {

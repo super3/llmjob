@@ -456,7 +456,10 @@ every memory clock lock is.
 Changed on 11 November: an RTX 5090 runs this trial too, at 7001 MHz, and runs it by default. It used to be locked
 at 7001 MHz outright, on one run on one card (+8.0% at 600 W) whose earlier run had the two clocks level. Not
 measured: no 5090 has run the trial. The trial now also hands the card's clock to the driver before its first turn,
-so a lock left by a killed miner is not timed against itself; that is not run on a card either, only in the tests.
+so a lock left by a killed miner is not timed against itself. The reset alone was checked on rig01's RTX 4090 while
+it mined: `nvidia-smi -i 0 -rmc` on a card with no lock exits 0 and leaves the memory clock at 10251 MHz. A whole
+trial with the reset in it has run only in the tests. A trial's answer is kept for a week a card
+(`mem-clock-trials.json`), so a start within the week locks at once or leaves the card alone, with no trial.
 
 ### rig01, 10 November: core clock offset on the RTX 4090 (item 6, second pass)
 

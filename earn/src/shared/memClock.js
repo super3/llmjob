@@ -7,7 +7,9 @@
 // By DEFAULT an RTX 5090 tries a lock at 7001 MHz, and keeps it only if that
 // card mines faster with it. The trial is shared/memClockTrial's, the one
 // `auto` runs on the other cards: a few minutes of mining with and without the
-// lock, which PearlMiner runs. The fold is power-bound on a capped card and
+// lock, which PearlMiner runs. Its answer is remembered for a week a card, so
+// most starts lock at once or leave the card alone, with no trial
+// (shared/memClockTrial). The fold is power-bound on a capped card and
 // barely touches DRAM, so memory clock is watts the SMs could use: on an RTX
 // 5090 at its 600 W cap, 7001 MHz measured +8.0%. The runs, and why 7001 and
 // not lower, are in main/gpuClocks.

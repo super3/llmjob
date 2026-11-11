@@ -29,10 +29,14 @@ const TEMP_POLL_MS = 5000;
 const POOL_GRACE_MS = 30000;
 
 class PearlEngine extends EventEmitter {
-  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent } = {}) {
+  constructor({ connect, createCore, profile, readTemps, tempPollMs, agent, memClockStore } = {}) {
     super();
     this.connect = connect;
     this.createCore = createCore;
+    // Where memory clock trial answers are kept between starts (see
+    // PearlMiner._recallMemClock). Both shells pass a file. Each start builds
+    // a new miner, so this is what carries an answer from one to the next.
+    this.memClockStore = memClockStore || null;
     this.profile = profile || PROFILE;
     // 'llmjob-earn/<version>', which the miner sends with its login so a pool
     // can tell this miner apart. Both shells pass it.
@@ -103,7 +107,9 @@ class PearlEngine extends EventEmitter {
     this.gpu = settings.gpu || null;
     this.endpoint = settings.endpoint || null;
 
-    const m = new PearlMiner({ connect: this.connect, createCore: this.createCore, agent: this.agent });
+    const m = new PearlMiner({
+      connect: this.connect, createCore: this.createCore, agent: this.agent, memClockStore: this.memClockStore,
+    });
     this.miner = m;
 
     m.on('log', (l) => this.emit('log', l));

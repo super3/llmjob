@@ -157,6 +157,17 @@ function closedDevice(device) {
   return device.memTotalMb == null ? device : { ...device, memUsedMb: 0 };
 }
 
+// What a memory clock trial measured, as the log says it: "103.4 TH/s locked
+// against 95.7 (+8.0%)". '' when there is nothing to quote: a trial with too
+// few samples has no rates, and a remembered answer is read from a file, so
+// its rates may be anything.
+function lockRates(onTh, offTh) {
+  if (!Number.isFinite(onTh) || !Number.isFinite(offTh) || offTh <= 0) return '';
+  const gain = onTh / offTh - 1;
+  return onTh.toFixed(1) + ' TH/s locked against ' + offTh.toFixed(1) + ' ('
+    + (gain >= 0 ? '+' : '') + (gain * 100).toFixed(1) + '%)';
+}
+
 // What kind of card a checked core says it runs on, for the hit check's lines
 // (see _checkedHit), or null. The AMD core ends its fold's description
 // (core.device.fold) with the card's gcnArchName, e.g. gfx1030 or
@@ -180,7 +191,9 @@ function reportTo(arch) {
 }
 
 class PearlMiner extends EventEmitter {
-  constructor({ connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now } = {}) {
+  constructor({
+    connect, createCore, reconnectMs, restartMs, clocks, offsets, agent, now, memClockStore, env,
+  } = {}) {
     super();
     this.connect = connect;                 // (host, port) -> socket
     this.createCore = createCore || null;   // (profile) -> core, or null when unbuilt
@@ -192,6 +205,12 @@ class PearlMiner extends EventEmitter {
     // returns. A createCore without them is one whose core has no such calls.
     this.offsets = offsets || (createCore && createCore.clockOffsets) || gpuClockOffset.NO_OFFSETS;
     this.now = now || Date.now;             // the clock trials' clock
+    // Where a memory clock trial's answer is kept from one start to the next,
+    // as { get(key), set(key, value) }: both shells pass a file (see
+    // _recallMemClock). Without one nothing is remembered, and every start
+    // tries its cards. `env` is read for the switch that forgets the answers.
+    this.memClockStore = memClockStore || null;
+    this.env = env || process.env;
     this.agent = agent || null;             // 'llmjob-earn/<version>', sent with the login
     // Pending restarts of cards that failed (see _scheduleRestart), cleared by stop().
     this.restartTimers = new Set();
@@ -319,7 +338,8 @@ class PearlMiner extends EventEmitter {
     this.hashrates = new Map();   // card index -> its latest TH/s
     // Set by releaseMemClocks(): this run's cards stay at the driver's clock.
     this.memClocksReleased = false;
-    // Each run tries its cards' locks afresh: the power limit may have changed.
+    // Each run settles its cards' locks afresh: from the answer remembered for
+    // a card, or from a new trial when there is none that stands.
     this.memClockTrials = new Map();
     this.memClockVerdicts = new Map();
     // And their core clock offsets: what a card can do changes with heat.
@@ -520,12 +540,15 @@ class PearlMiner extends EventEmitter {
         // A card on trial (an RTX 5090 by default, or --mine-mem-clock auto)
         // keeps the driver's clock for now and earns the lock. Opened again in
         // the same run, it takes the trial's answer: the lock at once if it was
-        // kept, nothing if it was not.
+        // kept, nothing if it was not. A card whose answer is remembered from
+        // an earlier start takes that the same way, with no trial.
         const byDefault = !!this.settings.mineMemClockDefault;
         const onTrial = index != null && (this.settings.mineMemClockTrial || []).includes(index);
         const verdict = this.memClockVerdicts.get(index);
         if (onTrial && verdict === undefined) {
-          this._startMemClockTrial(index, memClocks[index], byDefault);
+          if (!this._recallMemClock(index, memClocks[index], byDefault)) {
+            this._startMemClockTrial(index, memClocks[index], byDefault);
+          }
         } else if (!onTrial || verdict) {
           this._lockMemClock(index, index == null ? null : memClocks[index], byDefault);
         }
@@ -585,20 +608,19 @@ class PearlMiner extends EventEmitter {
     if (step.done) {
       this.memClockTrials.delete(index);
       this.memClockVerdicts.set(index, step.keep);
-      const rates = step.gain == null ? ''
-        : ': ' + step.onTh.toFixed(1) + ' TH/s locked against ' + step.offTh.toFixed(1) + ' ('
-          + (step.gain >= 0 ? '+' : '') + (step.gain * 100).toFixed(1) + '%)';
-      if (step.keep) {
-        this.emit('log', {
-          level: 'info',
-          line: 'memory clock kept at ' + t.mhz + ' MHz on GPU ' + index + ' while mining' + rates,
-        });
-        return;
-      }
-      this._resetMemClock(index, true);
+      const measured = lockRates(step.onTh, step.offTh);
+      const rates = measured ? ': ' + measured : '';
+      // A lock that is not kept comes off before the answer is written down:
+      // a miner killed between the two must not leave "no lock" remembered
+      // for a card that is still locked.
+      if (!step.keep) this._resetMemClock(index, true);
+      const until = this._rememberMemClock(index, t.mhz, step);
       this.emit('log', {
         level: 'info',
-        line: 'memory clock left to the driver on GPU ' + index + ' (' + step.reason + ')' + rates,
+        line: (step.keep
+          ? 'memory clock kept at ' + t.mhz + ' MHz on GPU ' + index + ' while mining'
+          : 'memory clock left to the driver on GPU ' + index + ' (' + step.reason + ')')
+          + rates + (until ? '; remembered until ' + until : ''),
       });
       return;
     }
@@ -625,10 +647,53 @@ class PearlMiner extends EventEmitter {
     });
   }
 
-  // Give up a card's trial without an answer in its favour.
+  // Give up a card's trial without an answer in its favour. Nothing is
+  // remembered: the trial compared nothing, and the next start tries again.
   _endMemClockTrial(index) {
     this.memClockTrials.delete(index);
     this.memClockVerdicts.set(index, false);
+  }
+
+  // Keep a finished trial's answer for this card's later starts
+  // (shared/memClockTrial has what is kept, for how long, and under what key).
+  // Returns the day it stands until, for the trial's last line, or null when
+  // nothing was kept: no store, or a trial that compared nothing.
+  _rememberMemClock(index, mhz, verdict) {
+    const answer = this.memClockStore && memClockTrial.remember(verdict, mhz, this.now());
+    if (!answer) return null;
+    this.memClockStore.set(memClockTrial.cardKey(index, this.settings.gpus), answer);
+    return memClockTrial.day(answer.at + memClockTrial.REMEMBER_MS);
+  }
+
+  // Use the answer this card's last trial gave, if one is remembered and still
+  // stands: under a week old, for the same lock, with the same card in the
+  // slot (shared/memClockTrial). True when it was used. The card then has its
+  // answer for this run with no trial: the lock at once if it was kept, and
+  // nothing if it was not. The line says the answer is a remembered one, what
+  // was measured, and when the card is tried again.
+  //
+  // So a card pays for its trial once a week, not on every start. Tried on
+  // every start, a card where the lock pays mined half of each trial without
+  // it, and a rig whose mining runs are shorter than a trial never kept the
+  // lock at all.
+  _recallMemClock(index, mhz, byDefault) {
+    if (!this.memClockStore) return false;
+    const saved = memClockTrial.recall(
+      this.memClockStore.get(memClockTrial.cardKey(index, this.settings.gpus)),
+      mhz, this.now(), memClockTrial.retryAsked(this.env));
+    if (!saved) return false;
+    this.memClockVerdicts.set(index, saved.keep);
+    const measured = lockRates(saved.onTh, saved.offTh);
+    this.emit('log', {
+      level: 'info',
+      line: (saved.keep ? 'memory clock on GPU ' + index + ': its trial of ' + memClockTrial.day(saved.at) + ' kept'
+        : 'memory clock left to the driver on GPU ' + index + ': its trial of ' + memClockTrial.day(saved.at)
+          + ' did not keep')
+        + ' the ' + mhz + ' MHz lock' + (measured ? ', ' + measured : '') + '. Remembered: no trial until '
+        + memClockTrial.day(saved.at + memClockTrial.REMEMBER_MS) + '.',
+    });
+    if (saved.keep) this._lockMemClock(index, mhz, byDefault);
+    return true;
   }
 
   // Lock one mining card's memory clock outright: a --mine-mem-clock request,

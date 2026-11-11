@@ -1129,6 +1129,11 @@ async function run(argv) {
         readTemps: () => probe.detectGpuTemps(),
         // Sent with the pool login, as the Monero miner's is.
         agent: 'llmjob-earn/' + pkg.version,
+        // Each card's memory clock trial answer, kept for a week beside
+        // node.json so a card is not tried again on every start
+        // (shared/memClockTrial). The same kind of file as the launch shapes'.
+        memClockStore: shapeFileStore(path.join(path.dirname(nodeStore.nodePath()), 'mem-clock-trials.json'),
+          { readSettings, writeSettings, fs, log }),
       });
       // The pool took the login, so this address is one that worked.
       miner.on('authorized', (e) => lookup.worked(e.host, e.address, e.family));
@@ -1256,7 +1261,9 @@ async function run(argv) {
   // of the fold -- so a model served from a locked card slows down with the
   // memory clock. Demand mode never overlaps the two: the miner's stop()
   // releases the lock, and ends a trial, before the gate starts llama-server.
-  // Each of its mining runs starts the trial again. A co-running LLM
+  // Each of its mining runs takes the answer remembered for the card (the
+  // engine's memClockStore, above), or starts the trial when there is none: a
+  // run that ends before its trial does leaves no answer. A co-running LLM
   // shares the card for the whole run, so that drops the plan, and the miner
   // never has to ask which mode it is in. Set on `settings` so the gate's
   // restarts (startMinerArgs) carry the same plan.

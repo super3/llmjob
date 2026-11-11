@@ -1065,25 +1065,47 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # other 
   ```
   trying a memory clock lock of 7001 MHz on GPU 0 by default (RTX 5090), kept only if the card mines faster; --mine-mem-clock 7001 locks without a trial, --mine-mem-clock 0 leaves the driver's clock
   memory clock trial on GPU 0: mining 75 s at the driver's clock and 75 s locked at 7001 MHz, twice; the lock is kept only if it is faster
-  memory clock kept at 7001 MHz on GPU 0 while mining: 103.4 TH/s locked against 95.7 (+8.0%)
+  memory clock kept at 7001 MHz on GPU 0 while mining: 103.4 TH/s locked against 95.7 (+8.0%); remembered until 2026-11-18
   ```
 
   A card that is not faster ends at the driver's clock (`memory clock left to
   the driver on GPU 0`, with the two rates). So does one whose trial cannot
   finish: the card stopped, too few hashrate samples came in, or the app may
-  not set clocks. Each start of mining tries again, since the power limit may
-  have changed; a card opened again in the same run takes the answer it already
-  got. Earlier releases locked a 5090 without a trial. Other Blackwell cards
-  (the rest of the RTX 50 line, RTX PRO Blackwell) may gain the same way, since
-  they share the hard power cap and the power-bound fold, but none has been
-  measured, so they are left alone unless you ask.
+  not set clocks. Earlier releases locked a 5090 without a trial. Other
+  Blackwell cards (the rest of the RTX 50 line, RTX PRO Blackwell) may gain the
+  same way, since they share the hard power cap and the power-bound fold, but
+  none has been measured, so they are left alone unless you ask.
+- **The answer is remembered for a week.** A card is tried once, not on every
+  start: for the next seven days a card that kept its lock is locked at once
+  when mining starts, and a card that did not is left alone, with no trial.
+  The log says it is the remembered answer and when the card is tried again:
+
+  ```
+  memory clock on GPU 0: its trial of 2026-11-11 kept the 7001 MHz lock, 103.4 TH/s locked against 95.7 (+8.0%). Remembered: no trial until 2026-11-18.
+  memory clock locked at 7001 MHz on GPU 0 while mining
+  ```
+
+  After a week the card is tried again, since drivers, power limits and cooling
+  change. Only a finished comparison is remembered: a trial that could not run
+  or was cut short leaves nothing, and the next start tries again. The answer
+  is kept under the card's index and name, so a different model put in the same
+  slot is tried afresh; a second card of the same model in that slot is not
+  told apart. It is the lifetime and the key the RTX 30 launch shapes use. The
+  answers are in `mem-clock-trials.json`, beside `node.json` for the CLI
+  (`~/.local/share/llmjob-earn/`) and in the desktop app's data folder.
+- **To try a card again now,** after changing its power limit or its cooling,
+  start mining once with `LLMJOB_MINE_MEM_CLOCK_RETRY=1` in the environment, in
+  the CLI or the app, or delete `mem-clock-trials.json`. The new answer
+  replaces the old one.
 - **The trial first hands the card's clock back to the driver.** A miner that
   was killed could not release its lock, and a trial that started on a card
   still locked would compare the lock with itself.
 - **`--mine-mem-clock <MHz>` locks at once, with no trial,** on every mining
-  card, a 5090 included. Use it on a card you have measured, or on a rig whose
-  mining runs are shorter than the five minutes a trial takes (demand-driven
-  `auto` that serves often): a run that ends first never gets to keep the lock.
+  card, a 5090 included, whatever is remembered for it. Use it on a card you
+  have measured, or on a rig whose mining runs are all shorter than the five
+  minutes a trial takes (demand-driven `auto` that serves often): a run that
+  ends before its trial does leaves no answer, so such a rig would start a
+  trial every time and never finish one.
 - **`--mine-mem-clock auto` runs the same trial on more cards.** It covers RTX
   40 cards (tried at 5001 MHz) and every RTX 50 card (tried at 7001 MHz). On an
   RTX 4090, 5001 MHz measured +0.8% at a 450 W limit and +1.3 to +1.7% at 300
