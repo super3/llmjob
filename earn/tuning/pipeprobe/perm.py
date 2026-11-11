@@ -25,6 +25,12 @@ kind without a rule of its own). PLACE, with IMMA numbered from 0 in each stretc
   spread[,K0,K1]  shared out evenly, in order, over the IMMA from K0 up to K1 (default: all of them)
 A kind without a rule stays where the compiler put it. With "dump A B" nothing is written: the listing's lines
 from the loop's instruction A to B are printed, for reading what the compiler made.
+
+Operand-reuse flags. ptxas marks an operand ".reuse" when the next instruction reads the same register in the
+same place, and the card then takes it from a latch without checking which register the latch holds: a draw
+reordered with its flags kept read a wrong address register and faulted. So every flag in a reordered stretch
+is cleared (bits 122 to 125 of the instruction), which costs the card a register read and changes no result.
+The rule R=clear clears them without moving anything (to price the flags alone), and R=keep leaves them set.
 """
 import collections
 import re
@@ -102,8 +108,10 @@ def regs(op, text):
     mnem = text.split()[1] if text.startswith("@") else text.split()[0]
     wide = 3 if op in ("IMMA", "LDSM") or "128" in mnem else 1 if "64" in mnem else 0
     out = set()
-    for x, (cls, num) in enumerate(REG.findall(text)):
-        w = wide if cls == "R" else 0
+    inside = [(m.start(), m.end()) for m in re.finditer(r"\[[^\]]*\]", text)]   # an address is one register wide
+    for x, m in enumerate(REG.finditer(text)):
+        cls, num = m.group(1), m.group(2)
+        w = wide if cls == "R" and not any(a <= m.start() < e for a, e in inside) else 0
         if op == "IMMA" and x == 2:   # sums, row fragment, column fragment, sums: the column fragment is two registers
             w = 1
         for q in range(int(num), int(num) + w + 1):
@@ -185,6 +193,8 @@ def main():
             print("%4d %s" % (i - im[0], re.sub(r"\s+", " ", texts[i])))
         return
     rules = dict(r.split("=", 1) for r in spec.split("/") if r)
+    reuse = rules.pop("R", "clear" if any(v != "orig" for v in rules.values()) else "keep")
+    cleared = 0
     kinds = [kind(o, t) for o, t in zip(ops, texts)]
     touch = [regs(o, t) for o, t in zip(ops, texts)]
     mem = [{"M": 1, "L": 1, "S": 2}.get(k, 0) for k in kinds]
@@ -203,6 +213,11 @@ def main():
             continue
         stretches += 1
         n = len(imma)
+        if reuse == "clear":
+            for i in seg:
+                if lens[i] == 16 and b[off + addrs[i] + 15] & 0x3C:
+                    b[off + addrs[i] + 15] &= 0xC3
+                    cleared += 1
         others = [i for i in seg if ops[i] != "IMMA"]
         was, seen = {}, -1
         for i in seg:   # where the compiler put each step: after IMMA `seen` of the stretch (-1: before the first)
@@ -269,8 +284,8 @@ def main():
             run += 1
     gaps = gaps[1:] + [run]
     hist = ",".join("%d:%d" % kv for kv in sorted(collections.Counter(gaps).items()))
-    print("perm %s: %d stretches, %d of %d moved, %d held by a dependency, gaps=%s%s%s" % (
-        spec, stretches, moved, end - im[0], held, hist,
+    print("perm %s: %d stretches, %d of %d moved, %d held by a dependency, %d reuse flags cleared, gaps=%s%s%s" % (
+        spec, stretches, moved, end - im[0], held, cleared, hist,
         (" WARN nv.info names moved: " + " ".join(warn[:6])) if warn else "", (" unread: %s" % odd) if odd else ""))
 
 

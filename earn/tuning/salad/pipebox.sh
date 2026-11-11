@@ -425,7 +425,10 @@ rd2aF|$Z1 -DRD=2 -DTRW=0 -DFILLRND=2
 d4mF|$Z1 -DDRAW=4 -DDPOS=1 -DFILLRND=2
 d3mF|$Z1 -DDRAW=3 -DDPOS=1 -DFILLRND=2
 rd4F|$Z1 -DRD=2 -DTRW=0 -DDRAW=4 -DDPOS=1 -DFILLRND=2
-rd3F|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2"
+rd3F|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1 -DFILLRND=2
+FP1|$Z1 -DGX=1 -DPAD=1 -DPKIND=0
+rd3N|$Z1 -DRD=2 -DTRW=0 -DDRAW=3 -DDPOS=1
+rd2N|$Z1 -DRD=2 -DTRW=0 -DDRAW=2 -DDPOS=1"
 
 # build DIR NVCC-HOME NAME FLAGS: the program, with ptxas's registers and spill and what stands between its IMMA
 # (read from the program's own kernel image; from a cubin of the same flags if cuobjdump can't read the program).
@@ -495,6 +498,12 @@ case "${PP_SET:-}" in
       PP_DUMPS="rd2aN:0:60 d4mN:60:110"
       PP_PTRACE="rd2aN.s1b d4mN.sp full3N.sp F1.d1n F1.d0"
       PP_PERMS="p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e3:A=even,3 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 F1:o:*=orig F1:n9:U=all,191 F1:d0:X=even,1,191 F1:d1:X=even,1,0 F1:d1n:X=even,1,0/U=all,191 F1:d2:X=even,1,1 F1:d2n:X=even,1,1/U=all,191 F1:d4:X=even,1,3 F1:d8:X=even,1,7 F1:d24:X=even,1,23 F1:d40:X=even,1,39 rd2aN:o:*=orig rd2aN:s1:X=seg,0:32:1,144:32:1,160:32:1 rd2aN:s1b:X=seg,0:32:1,146:32:1,162:32:1 rd2aN:s1n:X=seg,0:32:1,146:32:1,162:32:1/U=all,191 rd2aN:s2:X=seg,0:32:2,146:32:2,170:32:2 d4mN:o:*=orig d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:v2:*=every,2,0,1 d4mN:v4:*=every,4,0,3 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread rd4N:sp:*=spread rd4N:e2:*=even,2 full3N:sp:*=spread full3N:e2:*=even,2 full2N:sp:*=spread A9h:e1:S=every,2,1 A9h:e2:S=even,1" ;;
+  # b4: the same once more with the operand-reuse flags cleared in every reordered stretch, and a spacer step
+  # between an IMMA and an XOR3 of sums.
+  b4) PP_BUILD="base F0 F1 FP1 p2k0 rd2aN d4mN d3mN d2mN rd4N rd3N rd2N full3N full2N"
+      PP_TRACES="FP1"
+      PP_PTRACE="FP1.ax FP1.axn FP1.ax1 FP1.xa1 d4mN.sp rd4N.sp full3N.sp"
+      PP_PERMS="p2k0:e1:A=even,1 p2k0:e2:A=even,2 p2k0:e3:A=even,3 p2k0:e4:A=even,4 p2k0:e8:A=even,8 p2k0:b:A=all,10 F1:n9:U=all,191 FP1:o:*=orig FP1:ax:A=even,1,0/X=even,1,0 FP1:axn:A=even,1,0/X=even,1,0/U=all,191 FP1:ax1:A=even,1,0/X=even,1,1/U=all,191 FP1:xa1:A=even,1,1/X=even,1,0/U=all,191 rd2aN:s1n:X=seg,0:32:1,146:32:1,162:32:1/U=all,191 d4mN:c:R=clear d4mN:sp:*=spread d4mN:e2:*=even,2 d4mN:v2:*=every,2,0,1 d4mN:v4:*=every,4,0,3 d4mN:b:*=every,48,0,23 d3mN:sp:*=spread d2mN:sp:*=spread rd4N:sp:*=spread rd4N:e2:*=even,2 rd3N:sp:*=spread rd2N:sp:*=spread full3N:sp:*=spread full2N:sp:*=spread" ;;
 esac
 if [ -n "${PP_SET:-}" ]; then
   PP_SHORTS=${PP_SHORTS:-$PP_BUILD}; PP_SKIP_SHORT=1; PP_LONGS=${PP_LONGS:-none}; PP_HR_SECS=0; PP_V=1
