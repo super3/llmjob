@@ -85,10 +85,14 @@ namespace {
 using namespace pearl_sycl;
 
 // Which fold a context runs. See pearl_sycl_kernels.hpp.
-enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6 };
+enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,
+            kXmx8REmu = 8 };
 
 // The folds that read the noised operands in fragment order (pearl_sycl_kernels.hpp, Layout).
-bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu; }
+bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu; }
+// How a fold wants the noised operands stored: 0 row-major, 1 fragment order (kFragA, kFragB), 2 fragment
+// order for block reads (kFragAT, kFragBT).
+int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 2 : fold_is_frag(f) ? 1 : 0; }
 
 const char *fold_label(int f) {
   switch (f) {
@@ -99,6 +103,8 @@ const char *fold_label(int f) {
     case kXmx8Emu: return "xmx8-emu (DPAS reference code, sub-group 8)";
     case kXmx8F: return "xmx8f (DPAS 8x8x32, sub-group 8, 16 rows a sub-group, operands in fragment order)";
     case kXmx8FEmu: return "xmx8f-emu (DPAS reference code, sub-group 8, operands in fragment order)";
+    case kXmx8R: return "xmx8r (DPAS 8x8x32, sub-group 8, 16 rows a sub-group, B' shared through local memory)";
+    case kXmx8REmu: return "xmx8r-emu (DPAS reference code, sub-group 8, B' shared through local memory)";
     default: return "?";
   }
 }
@@ -142,7 +148,8 @@ struct Ctx {
 
   int8_t *dA = nullptr, *dB = nullptr;    // operands (compact: two chunks each)
   int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major or in fragment order (frag)
-  bool frag = false;                      // how dAp and dBp are stored now
+  int frag = 0;                           // how dAp and dBp are stored now (fold_layout)
+  uint32_t ringWpg = 1;                   // xmx8r: windows a work-group
   uint32_t aStride = 0, bStride = 0;      // fragment order: bytes a 16-row block of A', a 64-column block of B'
   int8_t *dEAL = nullptr, *dEBR = nullptr;
   uint32_t *dPermA = nullptr, *dPermB = nullptr;
@@ -269,12 +276,16 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
     ctx->fold = kXmx8F;
   } else if (want == "xmx8f-emu") {
     ctx->fold = kXmx8FEmu;
+  } else if (want == "xmx8r") {
+    ctx->fold = kXmx8R;
+  } else if (want == "xmx8r-emu") {
+    ctx->fold = kXmx8REmu;
   } else {
     return fail(err, err_len, "PEARL_SYCL_FOLD=" + want
-                                  + " is not one of auto, dot, xmx16, xmx8, xmx8f, xmx16-emu, xmx8-emu, xmx8f-emu");
+                                  + " is not one of auto, dot, xmx16, xmx8, xmx8f, xmx8r, xmx16-emu, xmx8-emu, xmx8f-emu, xmx8r-emu");
   }
   ctx->hwSg = sg;
-  ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F) && sg == 8);
+  ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R) && sg == 8);
   return true;
 }
 
@@ -396,7 +407,8 @@ void draw_noise(Ctx *ctx, bool isA) {
   const uint64_t readVecs = constFill ? (PEARL_STAMP_BYTES + 15u) / 16u : len / 16;
   const uint32_t fillWord = (uint32_t)(uint8_t)PEARL_OPERAND_FILL * 0x01010101u;
   Layout lay{kRowMajor, 0};
-  if (ctx->frag) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
+  if (ctx->frag == 1) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
+  if (ctx->frag == 2) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragBT, ctx->bStride / 4u};
   materialize16(q, isA ? ctx->dA : ctx->dB, dense, perm, isA ? ctx->dAp : ctx->dBp, rows, kLog2,
                 rank, readVecs, fillWord, lay);
 }
@@ -404,7 +416,7 @@ void draw_noise(Ctx *ctx, bool isA) {
 // The noised operands stored the way `fold` reads them. A context draws them
 // for its own fold; only the check tool, which runs other folds on the same
 // context, ever changes it. Both are drawn again from the same seeds.
-void set_layout(Ctx *ctx, bool frag) {
+void set_layout(Ctx *ctx, int frag) {
   if (ctx->frag == frag) return;
   ctx->frag = frag;
   if (!ctx->haveJob) return;
@@ -592,7 +604,11 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;
   if (fold == kXmx8 && ctx->hwSg != 8) fold = kXmx8Emu;
   if (fold == kXmx8F && ctx->hwSg != 8) fold = kXmx8FEmu;
+  if (fold == kXmx8R && ctx->hwSg != 8) fold = kXmx8REmu;
   switch (fold) {
+    // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
+    case kXmx8R: fold_xmxr<true, 12>(q, a, groups); break;
+    case kXmx8REmu: fold_xmxr<false, 12>(q, a, groups); break;
     case kXmx8F: fold_xmxf<8, 2, true>(q, a, groups); break;
     case kXmx8FEmu: fold_xmxf<8, 2, false>(q, a, groups); break;
     case kXmx16: fold_xmx<16, 2, true>(q, a, groups); break;
@@ -615,6 +631,7 @@ FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {
   a.aStride = ctx->aStride;
   a.bStride = ctx->bStride;
   a.zero = 0;  // always: the fragment fold ORs (a loaded word & zero) into an operand to order its loads
+  a.wpg = ctx->ringWpg;
   for (int i = 0; i < 8; i++) a.test.key[i] = pearl_b3::load_le32(ctx->aSeed + 4 * i);
   for (int i = 0; i < 8; i++) {
     const uint8_t *t = ctx->target + i * 4;
@@ -833,7 +850,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     return nullptr;
   }
 
-  ctx->frag = fold_is_frag(ctx->fold);
+  ctx->frag = fold_layout(ctx->fold);
   ctx->aStride = 16u * k;
   ctx->bStride = 64u * k;
   ctx->rowsValid = profile->m / PEARL_ROWS_COUNT;
@@ -883,6 +900,16 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     if (band < 1) band = 1;
     if (band > ctx->rowsValid / 2u) band = ctx->rowsValid / 2u;
     ctx->band = floor_pow2(band);
+    // xmx8r: windows a work-group, all of one column window. The walk goes down a band's rows first, so a
+    // number that divides the band and the row windows keeps every work-group inside one column window.
+    // 8 (16 sub-groups) was the best of 4, 8 and 16 for the real kernel on an A750 (README.md, "The ring
+    // fold"). PEARL_SYCL_RING_WPG forces another.
+    const uint32_t rowWins = ctx->rowsValid / 2u;
+    uint32_t w = (uint32_t)strtoul(env_str("PEARL_SYCL_RING_WPG", "8").c_str(), nullptr, 10);
+    if (w < 1 || w > 32) w = 8;
+    w = floor_pow2(w);
+    while (w > 1 && (ctx->band % w || rowWins % w)) w /= 2;
+    ctx->ringWpg = w;
   }
   {
     // One figure for every card, or a list by card index ("100,60,60"; a card past its end takes the last).
@@ -900,7 +927,7 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // What pearl_host_fold_name says, for core.device.fold and the logs. Written
   // here, once: the search thread and the JS thread both read it. xmx16 and
   // xmx8 say whether they got the hardware instruction or the reference code.
-  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8 || ctx->fold == kXmx8F;
+  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R;
   ctx->foldName = std::string(fold_label(ctx->fold))
                   + (!namedXmx ? "" : ctx->xmxHw ? ", hardware DPAS" : ", DPAS reference code")
                   + ", col_batch " + std::to_string(ctx->colBatch) + ", band " + std::to_string(ctx->band)
@@ -966,7 +993,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   Slot &s = ctx->slots[si];
   try {
     sycl::queue &q = *ctx->q;
-    set_layout(ctx, fold_is_frag(ctx->fold));  // the check tool may have left the other one
+    set_layout(ctx, fold_layout(ctx->fold));  // the check tool may have left the other one
     if (ctx->dutyPct < 100) {
       // Let the card finish what it has, then rest it in proportion to the time that took (2 s at most, so
       // a wait for a job is not paid for twice).
@@ -1155,7 +1182,7 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
       if (!dTr) return fail(err, err_len, "could not allocate the transcript buffer");
     }
     q.memset(&ctx->dHits[0]->count, 0, sizeof(uint32_t)).wait();
-    set_layout(ctx, fold_is_frag(fold < 0 ? ctx->fold : fold));
+    set_layout(ctx, fold_layout(fold < 0 ? ctx->fold : fold));
     q.wait_and_throw();
     const auto t0 = std::chrono::steady_clock::now();
     launch_fold(ctx, fold < 0 ? ctx->fold : fold, fold_args(ctx, nonce_base, 0, dTr), fold_groups(ctx));
@@ -1185,7 +1212,7 @@ extern "C" bool pearl_sycl_read_operands(void *handle, int8_t *Ap, int8_t *Bp, u
   if (!ctx || !ctx->haveJob) return false;
   resolve_pending(ctx);
   try {
-    set_layout(ctx, false);
+    set_layout(ctx, 0);
     ctx->q->wait();
     ctx->q->memcpy(Ap, ctx->dAp, (size_t)ctx->profile.m * ctx->profile.k).wait();
     ctx->q->memcpy(Bp, ctx->dBp, (size_t)ctx->profile.n * ctx->profile.k).wait();

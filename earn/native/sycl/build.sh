@@ -97,6 +97,8 @@ if [ "$JIT" = 1 ]; then
   # built-in, so it must reach only the driver of a card the host launches it on
   # (pearl_sycl_kernels.hpp).
   SYCL_FLAGS+=(-fsycl-targets=spir64 -fsycl-device-code-split=per_kernel -DPEARL_SYCL_XMX_JIT)
+  # The ring fold's split barrier (pearl_sycl_kernels.hpp) is a SPIR-V extension the translator leaves off.
+  SYCL_FLAGS+=(-Xspirv-translator -spirv-ext=+SPV_INTEL_split_barrier)
 else
   SYCL_FLAGS+=(-fsycl-targets="$TARGETS" -DPEARL_SYCL_XMX_HW)
   if [ "$LARGE_GRF" = 1 ]; then
