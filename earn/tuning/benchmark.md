@@ -2,7 +2,7 @@
 
 Our miner against PeakMiner and SRBMiner, 5 minutes each on the same card and pool, and since 9 November against
 OneZeroMiner too, a top-5 Pearl miner by downloads (NVIDIA only). WildRig Multi isn't measured: it mines NVIDIA
-cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October) and v0.6.13 (9–10 November) on home PCs, so compare "% of
+cards through OpenCL, which Salad's WSL2 containers don't have. "% of best" is our rate over the fastest competitor's. Vast rows ran v0.5.14 on 10–11 October; Salad rows ran v0.6.9 (October) and v0.6.13 (9–10 November) on home PCs (the four RX 7900 rows v0.6.16, on 11 November), so compare "% of
 best" between them, not TH/s. The old file with every run's notes:
 [benchmark.md at 16192d68](https://github.com/super3/llmjob/blob/16192d68f40b9c7ba11048e1128e7ba2c5509dca/benchmark.md).
 
@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 87–96%, median 93% (9–10 Nov, v0.6.13) | Our gap widens at lower power limits |
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 92–143%, median 103% against SRBMiner 3.8.2 (9–10 Nov, v0.6.13) | RDNA 4 111–143%; 7900 XTX 92–94% in that run, 102% on two PCs in the 10 Nov duel with the hash on its own queue |
+| AMD Radeon | 101–143%, median 105%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), the rest v0.6.13 against 3.8.2 (9–10 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103% |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
@@ -1311,7 +1311,7 @@ Salad, 30 October, v0.6.9 against SRBMiner 3.8.0. PeakMiner mines nothing on AMD
 
 v0.6.12 is about 13% faster on RDNA 4 than these rows; it hasn't been raced against SRBMiner yet.
 
-### Salad, 9–10 November (v0.6.13 against SRBMiner 3.8.2)
+### Salad, 9–10 November (v0.6.13 against SRBMiner 3.8.2); RX 7900 rows re-run 11 November (v0.6.16 against SRBMiner 3.8.6)
 
 PeakMiner and OneZeroMiner don't mine on AMD.
 
@@ -1321,22 +1321,34 @@ PeakMiner and OneZeroMiner don't mine on AMD.
 | RX 9070 XT | Salad (16 GB) | c1940c4c | 120.8 | 0 | 105.9 | 0 | 114% |
 | RX 9060 XT | Salad (16 GB) | d3ae7070 | 70.0 | 0 | 54.9 | 0 | 128% |
 | RX 9060 XT | Salad (16 GB) | 3540c3e2 | 59.7 | 0 | 54.0 | 0 | 111% |
-| RX 7900 XTX | Salad (24 GB) | 6f96bc89 | 49.8 | 0 | 54.0 | 0 | 92% |
-| RX 7900 XTX | Salad (24 GB) | ae456453 | 50.8 | 0 | 54.1 | 0 | 94% |
-| RX 7900 XT | Salad (20 GB) | dc8fcef5 | 46.3 | 0 | 45.4 | 0 | 102% |
-| RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.4 | 0 | 47.7 | 0 | 101% |
+| RX 7900 XTX | Salad (24 GB) | 6f96bc89 | 54.3 | 0 | 53.8 | 0 | 101% |
+| RX 7900 XTX | Salad (24 GB) | ae456453 | 55.3 | 0 | 54.1 | 0 | 102% |
+| RX 7900 XT | Salad (20 GB) | dc8fcef5 | 45.9 | 0 | 43.0 | 0 | 107% |
+| RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.5 | 0 | 47.6 | 0 | 102% |
 | RX 7800 XT | Salad (16 GB) | 559a11d6 | 31.8 | 0 | 30.9 | 0 | 103% |
 | RX 7800 XT | Salad (16 GB) | 16f1685c | 32.9 | 0 | 32.0 | 0 | 103% |
 
-Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt. The 7900 XTX is the one
-AMD card where SRBMiner leads, on both PCs and in both run orders.
+Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt.
+
+The four RX 7900 rows are the 11 November re-run: the same PCs, v0.6.16 against SRBMiner 3.8.6, both miners run
+again ("Salad, 11 November: the RX 7900 rows re-run", below). The other six rows are still v0.6.13 against
+SRBMiner 3.8.2. What the four rows read on 9–10 November:
+
+| Card | Machine ID | Ours (v0.6.13) | SRBMiner 3.8.2 | % of best |
+|---|---|---|---|---|
+| RX 7900 XTX | 6f96bc89 | 49.8 | 54.0 | 92% |
+| RX 7900 XTX | ae456453 | 50.8 | 54.1 | 94% |
+| RX 7900 XT | dc8fcef5 | 46.3 | 45.4 | 102% |
+| RX 7900 XT | 1d5cab04 | 48.4 | 47.7 | 101% |
+
+In that run the 7900 XTX was the one AMD card where SRBMiner led, on both PCs and in both run orders.
 
 Rerun on the first of those PCs (`6f96bc89`), 10 November (item 7), with v0.6.13's AMD kernel (the same fold code,
 built at 1c78804b): the duel (ours first, then SRBMiner, 5 minutes each on Kryptex, after a 30-minute sweep had
 warmed the card) read ours 54.37 TH/s, mean after the first minute, and SRBMiner 54.40, its last figure (mean 53.89).
 That is 99.9%, not the row's 92%. `hashrate.js` read 53.48 to 54.35 in three rounds, and the CLI's trace shows the
 fold at 99% of each batch (10.07 of 10.17 ms; hash 0.8%, idle 0.2%). So the row's 49.8 was a low reading of this
-PC, not a gap in the kernel. The row stays until a full rerun (see "Keeping this file current"). What off-chip
+PC, not a gap in the kernel. The row stayed until the full rerun of 11 November (above). What off-chip
 operand traffic costs here, from the same sweep (each build in turn, three rounds of `hashrate.js`, four of the
 fold alone):
 
@@ -1801,6 +1813,52 @@ no queue stop and no wave moved.
   measured, and no Windows Radeon has run that core yet.
 - No default changed. Not known: what the two libhsa-runtime64 threads are for, and whether any setting of the
   runtime's lets the three threads that are not ours sleep.
+
+### Salad, 11 November: the RX 7900 rows re-run (v0.6.16 against SRBMiner 3.8.6)
+
+The two RX 7900 XTX rows read 92% and 94% on 9–10 November, on v0.6.13. v0.6.16 runs the hash kernel on a queue of
+its own on these cards (`PEARL_AMD_HASHQ`), which read 102% in a duel that was not a table run. This is the table
+run: `bench.py`, both miners on the row's own PC, the same lengths as 9–10 November (60 s warm-up, 5 minutes each,
+a 10-minute hit check first, Kryptex). The two RX 7900 XT rows were re-run the same way, as the nearest to 100%. All
+four boxes landed on the old rows' PCs, so the four rows above are replaced and no host is new.
+
+| Card | Machine ID | Ran first | Ours | SRBMiner 3.8.6 | % of best | Ours: mean (lowest–highest) | SRBMiner: mean (lowest–highest) | Mean over mean | On 9–10 Nov |
+|---|---|---|---|---|---|---|---|---|---|
+| RX 7900 XTX | 6f96bc89 | SRBMiner | 54.3 | 53.8 | **101%** | 54.31 (53.9–55.7) | 53.80 (53.19–54.11) | 100.9% | 49.8 / 54.0, 92% |
+| RX 7900 XTX | ae456453 | ours | 55.3 | 54.1 | **102%** | 55.28 (54.9–56.8) | 54.34 (52.99–54.81) | 101.7% | 50.8 / 54.1, 94% |
+| RX 7900 XT | dc8fcef5 | SRBMiner | 45.9 | 43.0 | **107%** | 45.88 (45.0–47.7) | 43.04 (42.91–43.28) | 106.6% | 46.3 / 45.4, 102% |
+| RX 7900 XT | 1d5cab04 | ours | 48.5 | 47.6 | **102%** | 48.47 (48.2–48.7) | 47.65 (46.00–48.29) | 101.7% | 48.4 / 47.7, 101% |
+
+"Ours" is the mean of our samples after the first minute and "SRBMiner" its own last figure, as in every table
+here. The means are of each miner's 17 samples after the first minute, one every 15 s. `bench.py` now keeps every
+sample with the result, so the rows can be scored again another way.
+
+- **What ran as ours:** v0.6.16's source (commit bffee00a, the release tag), built on each box for gfx1100 by
+  `bench.sh` and run through the CLI from source. It is not the installer's own `pearl_core_hip.node` file. The
+  9–10 November run built v0.6.13's source the same way.
+- **SRBMiner is 3.8.6, not the 3.8.2 of the other six rows.** `bench.sh` pins 3.8.2, so the run's driver swapped
+  that one line on the box for 3.8.6 and its published MD5 (38128fa1…) and installed `wget`, which 3.8.6 needs. The
+  "ready" line on all four boxes says SRBMiner 3.8.6. The two versions read level on `ae456453` on 10 November
+  (53.68 against 53.87 and 54.07).
+- **Both RX 7900 XTX rows are above 100% now, by a little.** `6f96bc89` is 1.0% ahead, which is inside what one
+  5-minute run moves by (our own samples there spread 0.4 TH/s). Call that row level or just ahead.
+- **Not all of the change on `6f96bc89` is the new code.** Its 49.8 of 9–10 November was a low reading: v0.6.13's
+  kernel read 54.37 on the same PC a day later (99.9%, above). On `ae456453` the old code read low because that PC
+  stops a busy queue 30 times a second, which the hash queue ends (+8.9% there).
+- **`dc8fcef5`'s 107% is the PC, in part.** SRBMiner held 43.0 for its whole turn (42.9–43.3), 5% under its 45.4 of
+  9–10 November. Ours then read 45.0 for 2.5 minutes and 46.4 after. So the PC was slower in SRBMiner's turn and
+  the first half of ours than in the second half. Read the row as above 100%, not as a 5-point gain.
+- **Hit checks:** all four PASS, 400 hits verified, 0 failed, 8.00 to 8.02 hits a salt (3,482 hits in 435 salts,
+  3,776 in 472, 3,076 in 384, 3,320 in 414, in the table's order). Copy rates 755, 747, 622 and 627 GB/s.
+- **No clock, power or temperature:** Salad's `amd-smi` gave no reading on any box, as on 9–10 November.
+- **PCs passed over.** Each lane first moved off PCs that were not an old row's (up to 4 moves a class: XTX
+  `a648c3ee`, `45c94e40`, `fd4ebc44`, `28a12f15`; XT `78024435`, `fa211c2d`, `4b1d9a8b`, `3f29b5c7`); none of those
+  ran a miner. One XT PC, `8e4144bb`, passed the hit check (400 of 2,947) but neither miner got work from Kryptex
+  there (SRBMiner 0.0 for 5 minutes, ours still "connecting" at the end), so `bench.py` did not record it and moved
+  the box on, to `56de7dc2`. Salad then moved it by itself, before it had set up, to `dc8fcef5`.
+- **Time and cost:** 21:33 to 23:08 UTC, four groups (`amdrerun-rx7900xtx-1` and `-2`, `amdrerun-rx7900xt-1` and
+  `-2`), two at a time, 154 group-minutes in all. About $0.50 at Salad's high-priority prices ($0.168 an hour for
+  the XTX class, $0.156 for the XT, plus 4 vCPUs and 8 GB).
 
 ## Intel Arc (Alchemist, on a rented rig)
 
