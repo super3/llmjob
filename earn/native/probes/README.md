@@ -2415,3 +2415,95 @@ Not tried: the k-step written by hand in SASS with its own register assignment (
 this for sm_75; the decoder and the rules above are the start for sm_89), which is the one way to take ptxas's
 order and its register reuse out of the question; a barrier every second k-step (it needs about 119 KB of shared
 memory, 101 KB is the limit); a tile whose regions are one thread's sums.
+
+#### The loop written by hand: `probes/hand89/` (same day, later; 81.7% to 96%, correct, level with the release by count)
+
+ptxas is out of the draw fold's chunk loop. `hand89/fold_h.cuh` is the same fold with the loop in a function of its
+own that is never inlined; ptxas makes that a real call, and the kernel keeps nothing in the registers the function
+writes (all but R1 and R252 to R254). `hand89/asm89.py` assembles the instruction forms a loop needs from nvdisasm's
+text (checked against ptxas: 1,867 instructions come out bit for bit the same) and replaces the function's code in
+the cubin, then disassembles the result and compares every instruction with what was asked for. `hand89/fold.py` is
+the loop itself: its own registers, stall counts and scoreboards, 40 IMMA a k-step with everything else placed in
+the gaps behind them. `hand89/hprobe.cu` runs the patched cubin (`PD_CUBIN`) and checks it against the CPU fold.
+
+```
+nvcc -arch=sm_89 -O3 -std=c++17 -cubin -o r1.cubin hand89/hprobe.cu ; nvdisasm -c r1.cubin > r1.sass
+nvcc -arch=sm_89 -O3 -std=c++17 -o hprobe hand89/hprobe.cu
+python hand89/fold.py r1.cubin r1.sass nvdisasm hand.cubin            # the defaults are the best checked form
+PD_CUBIN=hand.cubin ./hprobe name 2048 8 0 64      # 64 tiles against the CPU fold
+```
+
+Probe figures, rig01's RTX 4090, k 8192, 64 tiles a block; "by count" is pipe use x clock x 0.13107 and is not a
+mining rate (the release fold mines 317.3 TH/s here at 2520 to 2535 MHz). Every row passes the CPU check unless
+it says otherwise.
+
+| Form of the loop | Pipe use | Clock, watts (25 s) | By count |
+|---|---|---|---|
+| As ptxas compiles it (the function unpatched) | 81.73% | 2669 MHz, 439 W | 286 |
+| By hand, first placement (3 instructions a gap, both draw units from the k-step's top) | 85.00% | | |
+| Unit B started at gap 14 / 20 | 89.54% / 90.32% | 2601 MHz, 429 W (gap 14) | 305 |
+| + the plain steps' yield flag off | 91.32% | 2587 MHz, 440 W | 309 |
+| + the IMMA's stall 5 when plain steps follow (see below) | 95.24% | 2550 to 2558 MHz, 430 to 437 W | 318 to 319 |
+| + table reads and one-register steps first in a gap, warps 4-7's readout 4 IMMA later | 96.32% | 2538 to 2548 MHz, 433 to 435 W | 320 to 322 |
+| + read scoreboards on the readout's atomics too (`fold.py`'s default; 20,480 regions at k 2048 and 2,560 at k 8192 pass) | 96.02% | 2548 MHz, 439 W | 321 |
+| the same with warps 0-3's readout 6 IMMA later (10,240 regions pass) | 96.42% | | |
+| The last form without the barrier (TIMING ONLY: wrong results) | 97.49% | | |
+
+Its pieces, TIMING ONLY (first placement family): IMMA and the barrier 99.15%; with the fragment loads 98.42%; with
+the readout and no draw 94.67%; with the draw and no readout 91.28%; all 89.5%.
+
+**The rule that took it from 91% to 95% (bare streams, `hand89/sched.py`, TIMING ONLY).** A plain instruction that
+reads two or more registers costs the tensor pipe when it issues 1 to 4 cycles behind its own warp's IMMA, and
+nothing from 5 cycles behind. One that reads one register never costs. Both warps of a scheduler, the same steps
+after every IMMA:
+
+| Steps after every IMMA | IMMA stall 1 | 2 | 3 | 4 | 5 | 6 |
+|---|---|---|---|---|---|---|
+| 3 one-register adds | 99.71% | | | | | |
+| 1 two-register step (PRMT) | 93.90% | 88.68% | 91.21% | 96.72% | 99.74% | 99.58% |
+| 2 | 88.67% | 84.01% | 88.66% | 93.86% | 99.71% | 99.71% |
+| 3 | 88.68% | 88.67% | 91.20% | 96.71% | 99.72% | 93.87% |
+| 4 | 88.70% | 84.03% | 88.69% | 93.88% | 99.75% | |
+| 5 | 88.71% | 88.69% | 88.69% | 93.71% | 99.20% | |
+| 6 / 7 | 88.69% / 88.59% | 83.92% / 88.42% | 88.44% | | 99.28% / 93.69% | |
+
+So an IMMA followed by up to six such steps wants a stall of exactly 5 and the steps at stall 1; where the gap's
+other cycles go does not matter. ptxas writes "IMMA stall 1, step, step, pad". Three-register XOR3 of sums behave
+the same. Marking the IMMA's A operand for reuse changes nothing. The same stream under a barrier every 40 IMMA
+holds the same.
+
+Other things the bare streams showed: a lone warp of IMMA holds 98.8% of the pipe by itself; a warp issues one
+plain step every two cycles whatever its stall count; the yield flag set means "stay on this warp" (a warp whose
+IMMA has it off gets 3% of the pipe beside one that has it on); nvdisasm refuses a stall over 11 with the yield
+flag.
+
+**Stall counts alone do not rescue the compiled loop.** `hand89/restall.py` raises the IMMA's stall in the cubin
+as ptxas made it, nothing moved: 54 of its 320 IMMA have such a step behind them, and the result holds 81.79 to
+82.04% against 81.73% (CPU check passes). The compiled loop's loss is its order.
+
+**A load's address register must not change while the memory unit still holds the load.** Two of 45 placements
+computed wrong sums for tile 0 of warps 0 to 3 (about half of that tile's regions, both times): the chunk's end
+turns A's three buffer registers a few gaps behind the load of the next chunk's first fragment, and under load
+that LDSM read the register after the turn. With a read scoreboard on the load and the moves waiting on it (as
+ptxas does) both placements pass, 10,240 of 10,240, and fail again without it. One more failure is not
+explained: the 96.32% form computed 8 of 10,240 regions wrong in one run of 64 tiles (tiles 1 and 2 of one
+warp in one tile) and none in the next. The default since then also holds the readout's atomics with a read
+scoreboard and keeps fragment loads off the IMMA's heels; it passed three wide checks, which is not proof.
+The static latency checker in `fold.py` models none of this: every build has to pass the CPU check.
+
+**The gather form's mix** (`hand89/gather.py`; the maths agent's form: each warp builds its own fragments with
+`ldmatrix.trans` as a gather on a static table, no stage, no store, no barrier). TIMING ONLY, 192 sums a thread
+with the real register count (192 sums, 24 fragment words, 20 temporaries, 8 offsets), the gathers on the probe's
+table bytes feeding the IMMA operands, a chunk 192 IMMA and 502 others, IMMA stall 5:
+
+| Rank indices of a matrix's eight rows | Pipe use | Clock, watts (25 s) | By count |
+|---|---|---|---|
+| No bank shared | 97.74% | 2581 MHz, 438 W | 331 |
+| One two-way collision in every matrix / two | 96.77% / 96.77% | | |
+| By chance (as the definition's order of k: 2.76 rows of 8 collide) | 91.15% | 2611 MHz, 449 W | 312 |
+| No bank shared, the IMMA's stall 1 | 93.3% | 2625 MHz, 446 W | 321 |
+| By chance, the IMMA's stall 1 | 90.2% | 2612 MHz, 449 W | 309 |
+| 160 sums: none / chance | 98.07% / 84.89% | | |
+
+So the form holds the pipe if the collisions are kept two-way, which the searched order of k is said to do for 92%
+of matrices; chance collisions cost 6.6 points. Nothing real is built of it yet.
