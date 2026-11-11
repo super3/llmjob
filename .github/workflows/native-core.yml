@@ -1152,6 +1152,9 @@ jobs:
 
       - name: Install the oneAPI DPC++ toolchain and ocloc
         working-directory: earn/native/sycl
+        # bash, for its pipefail: without it `| tail` hid a failed install, and the job
+        # went on to fail at the next step for want of toolchain/envrc.sh.
+        shell: bash
         run: ./install-toolchain.sh --ocloc 2>&1 | tail -n 12
 
       - name: Install node-addon-api

@@ -132,17 +132,38 @@ if [ "$OCLOC" = 1 ]; then
   PPA=https://ppa.launchpadcontent.net/kobuk-team/intel-graphics/ubuntu
   SERIES=${PEARL_OCLOC_SERIES:-$(. /etc/os-release 2>/dev/null; echo "${VERSION_CODENAME:-noble}")}
   mkdir -p gpudl gpu
-  curl -fsSL "$PPA/dists/$SERIES/main/binary-amd64/Packages.gz" | gunzip > gpudl/Packages || {
+  # The index is tried five times. Launchpad's PPA host drops connections and
+  # answers 503 for minutes at a time: on 11 November it failed three CI runs in
+  # a row, and this script then blamed the Ubuntu release, which was not it.
+  # Only a 404 means the PPA has nothing for this release.
+  code=000
+  for try in 1 2 3 4 5; do
+    code=$(curl -sSL --max-time 120 -o gpudl/Packages.gz -w '%{http_code}'       "$PPA/dists/$SERIES/main/binary-amd64/Packages.gz" 2>/dev/null || true)
+    if [ "$code" = 200 ] || [ "$code" = 404 ]; then break; fi
+    echo "the kobuk-team PPA's package index did not come (HTTP $code), try $try of 5" >&2
+    if [ "$try" != 5 ]; then sleep $((try * 15)); fi
+  done
+  if [ "$code" = 404 ]; then
     echo "the kobuk-team PPA has no package index for Ubuntu '$SERIES': it builds for noble (24.04) and" >&2
     echo "resolute (26.04). Set PEARL_OCLOC_SERIES to the one whose glibc this box can run." >&2
     exit 1
-  }
+  fi
+  if [ "$code" != 200 ]; then
+    echo "the kobuk-team PPA did not answer (HTTP $code after five tries). That is Launchpad's server, not" >&2
+    echo "this script or this box: run it again later." >&2
+    exit 1
+  fi
+  gunzip -f gpudl/Packages.gz
   for pkg in intel-ocloc libigc2 libigdfcl2 libigdgmm12; do
     f=$(awk -v p="$pkg" '$1 == "Package:" { ok = ($2 == p) } ok && $1 == "Filename:" { print $2 }' gpudl/Packages \
         | sort -V | tail -1)
     [ -n "$f" ] || { echo "the PPA's $SERIES index has no $pkg" >&2; exit 1; }
     echo "ocloc toolchain: ${f##*/}"
-    curl -fsS -o "gpudl/${f##*/}" "$PPA/$f"
+    for try in 1 2 3 4 5; do
+      if curl -fsS --max-time 300 -o "gpudl/${f##*/}" "$PPA/$f"; then break; fi
+      if [ "$try" = 5 ]; then echo "the kobuk-team PPA did not give ${f##*/} in five tries; run it again later" >&2; exit 1; fi
+      sleep $((try * 15))
+    done
   done
   for d in gpudl/*.deb; do dpkg-deb -x "$d" gpu; done
   rm -rf gpudl
