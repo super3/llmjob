@@ -1122,18 +1122,19 @@ describe('PearlMiner — the core clock offset trial', () => {
     test('waits for its verdict, then runs with the lock it kept still in place', () => {
       const b = rig().start(BOTH);
       const core = b.made[0];
-      expect(b.calls).toEqual([['read', 0], ['set', 0, 0]]);
+      // The memory clock trial hands the card to the driver before its first turn.
+      expect(b.calls).toEqual([['reset', 0], ['read', 0], ['set', 0, 0]]);
       expect(b.lines()).toEqual([START(0, '+50, +100, +150', ', once the memory clock trial is over')]);
       memTrial(b, core, 320.5);
       expect(b.t.now).toBe(4 * MEM_TURN_MS);
       // The memory clock trial alone moved the card: no offset yet.
-      expect(b.calls.slice(2)).toEqual([['lock', 0, 5001], ['reset', 0], ['lock', 0, 5001]]);
+      expect(b.calls.slice(3)).toEqual([['lock', 0, 5001], ['reset', 0], ['lock', 0, 5001]]);
       expect(b.logs.map((l) => l.line))
         .toContain('memory clock kept at 5001 MHz on GPU 0 while mining: 320.5 TH/s locked against 317.5 (+0.9%)');
 
       mine(b, core, RIG01);
       // Its first turn starts on the sample that ended the memory clock trial.
-      expect(b.calls.slice(5)).toEqual([
+      expect(b.calls.slice(6)).toEqual([
         ['set', 0, 50], ['set', 0, 100], ['set', 0, 150], ['set', 0, 0], ['set', 0, 150],
       ]);
       expect(b.lines().pop()).toBe(KEPT_150);

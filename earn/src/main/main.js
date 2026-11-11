@@ -641,8 +641,9 @@ async function startMining(settings, llmCoRuns) {
   // runs): keep the existing miner — reassigning it would orphan an unstoppable
   // engine process and spawn a second one on the same GPU.
   //
-  // A miner that started mining-only may hold the Blackwell memory clock lock
-  // (below). When the LLM joins it, that lock goes now, before runPlan starts
+  // A miner that started mining-only may hold a memory clock lock, or be part
+  // way through the trial for one (below). When the LLM joins it, the lock and
+  // the trial go now, before runPlan starts
   // the model: a served model must never sit on a locked card. The other way
   // round -- the mode flipped back to mining-only mid-run -- takes no lock; the
   // card mines at the driver's clock until the next start, which is slower,
@@ -747,11 +748,13 @@ async function startMining(settings, llmCoRuns) {
   }
 
   // Which cards lock their memory clock while mining: the RTX 5090 default
-  // (shared/memClock), or LLMJOB_MINE_MEM_CLOCK from the app's environment, the
-  // GUI's one switch for it. The renderer has no setting yet, so a rig that
-  // regresses with the lock needs a way off it: 0 leaves every card at the
-  // driver's clock, any other value locks every mining card at it, the same as
-  // --mine-mem-clock.
+  // (shared/memClock), which tries the lock on each 5090 and keeps it only
+  // where that card mines faster, or LLMJOB_MINE_MEM_CLOCK from the app's
+  // environment, the GUI's one switch for it. The renderer has no setting yet,
+  // so the variable is the way off the default and the way past its trial: 0
+  // leaves every card at the driver's clock, a number locks every mining card
+  // at it with no trial, and auto tries a lock on the other cards too, the
+  // same as --mine-mem-clock.
   // Read on every start, like the CLI reads its flag; a bad value is logged and
   // ignored, so a typo keeps the default rather than silently dropping it. Not
   // while the LLM co-runs: llama-server is memory-bandwidth-bound, and here

@@ -1,9 +1,9 @@
 'use strict';
 
-// The trial behind `--mine-mem-clock auto` (shared/memClock): does this card
-// mine faster with its memory clock locked? Pure: PearlMiner feeds it the
-// card's hashrate samples and the time, and takes the lock or releases it when
-// told to (main/pearlMiner, _feedMemClockTrial).
+// The trial behind the RTX 5090's default and `--mine-mem-clock auto`
+// (shared/memClock): does this card mine faster with its memory clock locked?
+// Pure: PearlMiner feeds it the card's hashrate samples and the time, and takes
+// the lock or releases it when told to (main/pearlMiner, _feedMemClockTrial).
 //
 // Why a trial and not a table. A lower memory clock frees watts for the SM
 // clock on a power-capped card, but the fold still reads DRAM, and a card only
@@ -11,8 +11,10 @@
 // 450 W and up to +1.7% under a lower power limit, while the next speed down
 // (810 MHz) lost 11% and 405 MHz lost 75% (tuning/benchmark.md, "rig01,
 // 10 November"). The rented hosts the kernels are tested on can't set clocks,
-// so one RTX 4090 and one RTX 5090 are all that has been measured. Every other
-// card has to show on its own rig that the lock pays before it keeps it.
+// so one RTX 4090 and one RTX 5090 are all that has been measured, and the
+// 5090's two runs did not agree (+8.0% in one, level in the other). So every
+// card, a 5090 too, has to show on its own rig that the lock pays before it
+// keeps it.
 //
 // The card mines through four turns: driver's clock, locked, driver's clock,
 // locked. Two turns of each, alternating, so a card that is still warming up or
