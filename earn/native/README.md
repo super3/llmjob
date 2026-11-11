@@ -298,6 +298,49 @@ The addon lands at `build/Release/pearl_core.node`, which is exactly where
 without a CUDA build — the host reports "Pearl core is not built" and stops
 cleanly rather than crashing.
 
+## A second RTX 40 fold behind a switch (`PEARL_FOLD_ROT=1`, off by default)
+
+The rotation fold is a second sm_89 fold. It is off unless `PEARL_FOLD_ROT=1` is in the miner's
+environment, the card is compute 8.9, and the fold's cubin, `pearl_rot_sm89.cubin`, is beside
+`pearl_core.node` (or `PEARL_ROT_CUBIN` names it). No release build makes or ships that file, so a
+release mines exactly as before. With any of the three missing the card runs the release fold.
+
+What it is. The release fold copies noised operands from global memory. This one draws the noise
+on the chip from tables of the dense factors, at k 65536, and its chunk loop is written by hand,
+instruction by instruction (`probes/hand89/rfold.py`, assembled by `probes/hand89/asm89.py`);
+`probes/README.md` has how it was priced and built. Measured on an RTX 4090 at 450 W it mines
+about 4% more than the release fold; the race is in `earn/tuning/benchmark.md`.
+
+How it fits.
+
+- `src/pearl_rot.cu` is its device code: the fold's kernel and two helpers. It is compiled alone
+  into a cubin and is not part of `pearl_kernel.cu` or of the addon. `probes/hand89/build_rot.py
+  <nvcc> <nvdisasm> <out dir>` compiles it, checks the assembler against the compiler's own bytes,
+  puts the hand loop in and reads the result back.
+- `src/pearl_host_rot.inc` (included by `pearl_host.cu`) is its host side. It loads the cubin
+  through the driver on the context the runtime already has. It reuses the release's operand
+  trees, seed chain, noise generators, restamp, pipeline, hit list and proof capture. Its own:
+  the launch, the tables, the offsets of each salt, and the order of k inside each chunk (any
+  order gives the same sums; a searched one keeps the fold's gathers out of each other's memory
+  banks). The search runs on one helper thread a card that sleeps between salts: about 0.22 s
+  of one core for each salt of about 7 s. The next salt is prepared while the current one mines.
+- The fold's tile is one thread's sums: rows {0, 8, .. 88} by columns {0, 1, 8, 9, .. 56, 57},
+  12 by 16. The core reports it as `core.tile` and its k as `core.k`; the miner builds that
+  card's config52, job key, share bound and proofs from them (`profileForCore` in
+  `src/shared/miner/pearlhash.js`). A share at k 65536 carries 1.8 MB of operand rows, 11 KB
+  compressed.
+- The operands are filled with 63, not 48 (the fold's subtract must not borrow), and the first
+  192 rows of A, where the salt stamp is, are not mined.
+- If a pool turns down shares at this k, the miner's existing fallback applies: it opens the
+  card again at the profile's k, which is the release fold.
+
+Check it like any fold: `PEARL_FOLD_ROT=1 node probes/verify-hits.js <pearl_core.node> 150 234`
+(a hit takes longer to recompute at k 65536, so give it 150 s) and `PEARL_FOLD_ROT=1 node
+probes/hashrate.js <pearl_core.node>`.
+
+Not done: CI does not build the cubin, the packages do not carry it, only an RTX 4090 has run it,
+and RTX 30 and RTX 50 have no such fold.
+
 ## Interface
 
 ```js
