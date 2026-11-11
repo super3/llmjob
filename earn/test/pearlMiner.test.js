@@ -3618,15 +3618,69 @@ describe('PearlMiner — the memory clock trial', () => {
       expect(b.calls.slice(1)).toEqual([['reset', 0], ['stopped']]);
     });
 
-    test('a remembered "not kept" leaves the card alone: no lock, no trial, no call', () => {
+    // The card is handed back to the driver once, as a trial's start does: a
+    // run that was killed while it held a lock leaves it on the card.
+    test('a remembered "not kept" hands the card to the driver: no lock, no trial', () => {
       const store = memStore({ [KEY]: notKept() });
       const b = rig({ store, now: NOW + DAY });
       b.m.start(AUTO);
+      expect(b.calls).toEqual([['reset', 0]]);
       trial(b, b.made[0], [317.5, 320.5, 317.5, 320.5]);
       expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([{ level: 'info', line: NOT_KEPT_LINE }]);
       expect(store.data[KEY]).toEqual(notKept());
       b.m.stop();
-      expect(b.calls).toEqual([['stopped']]);
+      expect(b.calls).toEqual([['reset', 0], ['stopped']]);
+    });
+
+    // No rights now, where the trial had them. The answer stands; the rig is
+    // told the card may still be locked. A warning for a trial that was asked
+    // for, information for the RTX 5090's default.
+    test('a remembered "not kept" whose card cannot be handed back says so', () => {
+      const LINE = 'could not hand the memory clock on GPU 0 back to the driver (sudo: a password is required): '
+        + 'if an earlier run left it locked, it still is. Setting the memory clock needs root or administrator '
+        + 'rights for nvidia-smi.';
+      const store = memStore({ [KEY]: notKept() });
+      const b = rig({ store, now: NOW + DAY, reset: NO_RIGHTS });
+      b.m.start(AUTO);
+      expect(b.logs.filter((l) => /memory clock/.test(l.line))).toEqual([
+        { level: 'info', line: NOT_KEPT_LINE }, { level: 'warn', line: LINE },
+      ]);
+      expect(store.data[KEY]).toEqual(notKept());
+      b.m.stop();
+      expect(b.calls).toEqual([['reset', 0], ['stopped']]);
+
+      const byDefault = rig({ store: memStore({ [KEY]: notKept() }), now: NOW + DAY, reset: NO_RIGHTS });
+      byDefault.m.start({ ...AUTO, mineMemClockDefault: true });
+      expect(byDefault.logs.filter((l) => /memory clock/.test(l.line)).pop()).toEqual({ level: 'info', line: LINE });
+      byDefault.m.stop();
+    });
+
+    // The trial's last turn is a locked one. If that lock will not come off,
+    // "no lock" is not true of the card, so it is not written down: for a week
+    // every start would have left the card locked at the slower setting.
+    test('a lock that was not kept and will not come off is not remembered as "no lock"', () => {
+      const store = memStore();
+      const b = rig({ store, now: NOW });
+      b.m.start(AUTO);
+      trial(b, b.made[0], [317.5, 283.1, 317.5]);
+      b.clocks.resetMemoryClock.mockImplementation((index) => { b.calls.push(['reset', index]); return NO_RIGHTS; });
+      turn(b, b.made[0], 283.1);
+      expect(b.calls.pop()).toEqual(['reset', 0]);
+      expect(store.data).toEqual({});
+      expect(b.logs.filter((l) => /memory clock/.test(l.line)).slice(-2)).toEqual([
+        {
+          level: 'error',
+          line: 'could not release the memory clock on GPU 0 (sudo: a password is required). '
+            + 'An LLM on it will decode slowly until you run: sudo nvidia-smi -i 0 -rmc',
+        },
+        {
+          level: 'info',
+          line: 'memory clock trial on GPU 0 did not keep the lock (the lock was not ahead by 0.3%): '
+            + '283.1 TH/s locked against 317.5 (-10.8%), but the lock is still on the card; nothing is remembered, '
+            + 'so the next start tries again',
+        },
+      ]);
+      b.m.stop();
     });
 
     test('after a week the card is tried again, and the new answer replaces the old one', () => {
@@ -3820,7 +3874,8 @@ describe('PearlMiner — the memory clock trial', () => {
         not.made[0].emit('error', new Error('GPU 0: misaligned address'));
         jest.advanceTimersByTime(RESTART_MS);
         expect(not.made).toHaveLength(2);
-        expect(not.calls).toEqual([]);
+        // Handed to the driver when the answer was recalled, and not again.
+        expect(not.calls).toEqual([['reset', 0]]);
         expect(not.clockLines()).toEqual([NOT_KEPT_LINE]);
         not.m.stop();
       });

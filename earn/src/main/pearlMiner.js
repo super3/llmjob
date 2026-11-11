@@ -574,7 +574,21 @@ class PearlMiner extends EventEmitter {
       // A lock that is not kept comes off before the answer is written down:
       // a miner killed between the two must not leave "no lock" remembered
       // for a card that is still locked.
-      if (!step.keep) this._resetMemClock(index, true);
+      //
+      // Nor is "no lock" written down when the lock would not come off. For a
+      // week every start would take the answer, run no trial and leave the
+      // card locked at the clock its trial found slower. With nothing
+      // remembered the next start tries the card again, and a trial hands the
+      // card back to the driver first. _resetMemClock has said how to release
+      // it by hand.
+      if (!step.keep && !this._resetMemClock(index, true)) {
+        this.emit('log', {
+          level: 'info',
+          line: 'memory clock trial on GPU ' + index + ' did not keep the lock (' + step.reason + ')' + rates
+            + ', but the lock is still on the card; nothing is remembered, so the next start tries again',
+        });
+        return;
+      }
       const until = this._rememberMemClock(index, t.mhz, step);
       this.emit('log', {
         level: 'info',
@@ -630,8 +644,16 @@ class PearlMiner extends EventEmitter {
   // stands: under a week old, for the same lock, with the same card in the
   // slot (shared/memClockTrial). True when it was used. The card then has its
   // answer for this run with no trial: the lock at once if it was kept, and
-  // nothing if it was not. The line says the answer is a remembered one, what
-  // was measured, and when the card is tried again.
+  // the driver's clock if it was not. The line says the answer is a remembered
+  // one, what was measured, and when the card is tried again.
+  //
+  // "No lock" hands the card back to the driver, as the start of a trial does
+  // (see _startMemClockTrial). The answer says what the trial found, not what
+  // the card is at now: a run that was killed while it held a lock (a trial
+  // asked for again, a clock asked for by number) leaves it on the card, and
+  // nothing the miner reads says so. Without the reset that card would mine
+  // locked for the rest of the answer's week. On a card with no lock the reset
+  // changes nothing. One that fails is said: the answer still stands.
   //
   // So a card pays for its trial once a week, not on every start. Tried on
   // every start, a card where the lock pays mined half of each trial without
@@ -653,7 +675,19 @@ class PearlMiner extends EventEmitter {
         + ' the ' + mhz + ' MHz lock' + (measured ? ', ' + measured : '') + '. Remembered: no trial until '
         + memClockTrial.day(saved.at + memClockTrial.REMEMBER_MS) + '.',
     });
-    if (saved.keep) this._lockMemClock(index, mhz, byDefault);
+    if (saved.keep) {
+      this._lockMemClock(index, mhz, byDefault);
+      return true;
+    }
+    const reset = this.clocks.resetMemoryClock(index);
+    if (!reset.ok) {
+      this.emit('log', {
+        level: byDefault ? 'info' : 'warn',
+        line: 'could not hand the memory clock on GPU ' + index + ' back to the driver (' + reset.error + '): if an '
+          + 'earlier run left it locked, it still is. Setting the memory clock needs root or administrator rights '
+          + 'for nvidia-smi.',
+      });
+    }
     return true;
   }
 
