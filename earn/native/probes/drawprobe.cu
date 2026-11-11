@@ -5,9 +5,10 @@
 //
 // One block an SM. Each warp stamps the SM's cycle counter around a tile's prologue, its chunk
 // loop and its end. Pipe use is 16 cycles an mma, two warps a scheduler, over the cycles the
-// chunk loop took; "tile" is the same over the whole tile, prologue and end included. "spins"
-// counts the times a warp found the next stage not drawn yet. With tiles to check, the first
-// tiles' transcripts are compared with a fold done on the CPU from the same tables.
+// chunk loop took; "tile" is the same over the whole tile, prologue and end included. "bad"
+// counts the tiles a warp's check failed on (a warp got further ahead of another than the
+// stage allows). With tiles to check, the first tiles' transcripts are compared with a fold
+// done on the CPU from the same tables.
 //
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 [-DPD_...] -o drawprobe drawprobe.cu
 #include <cstdint>
@@ -51,7 +52,7 @@ int main(int argc, char **argv) {
   // Tiles: RG row groups by CB column block groups, RG * CB = blocks * tpb.
   const uint32_t RG = 8u, tiles = blocks * tpb, CB = (tiles + RG - 1u) / RG;
   const uint32_t MT = PD_MT, BM = 32u * MT, RO = 2u * MT, RPS = 4u * RO, REG = 4u * RPS;
-  const uint32_t ga = RG * RO, gb = CB * 16u;        // table words a rank index: two a quad
+  const uint32_t ga = RG * RO, gb = CB * 16u;        // table words a rank index
   const uint32_t stampBytes = 11u;
 
   // Plain inputs: the dense factors plus 32 (0 .. 63), a row of 128 for every row of A and
@@ -70,35 +71,38 @@ int main(int argc, char **argv) {
       pm[op][1][kk] = (uint8_t)p1;
     }
   }
-  // The kernel's tables: word (quad q, e, p) holds rows 32q + 8e + 0..7 and 32q + 8e + 16 + 0..7.
-  std::vector<uint8_t> hTabA((size_t)ga * 2048u), hTabB((size_t)gb * 2048u);
-  for (int op = 0; op < 2; op++) {
-    std::vector<uint8_t> &T = op ? hTabA : hTabB;
-    const std::vector<uint8_t> &D = op ? DA : DB;
-    const uint32_t words = (op ? ga : gb) * 128u;
-    for (uint32_t w = 0; w < words; w++) {
-      const uint32_t P = w / 128u, pi = w % 128u, q = P / 2u, e = P & 1u;
-      for (uint32_t i = 0; i < 16u; i++) {
-        const uint32_t row = 32u * q + 8u * e + (i < 8u ? i : 16u + i - 8u);
-        T[(size_t)w * 16u + i] = D[(size_t)row * 128u + pi];
-      }
-    }
-  }
-  // The kernel's offsets: [k-step][B, A][lane] of four, each a rank index times 16 plus 2048 e.
-  // B's lane L draws e = L >> 4, k-pair L & 15; A's draws e = (L >> 3) & 1, k-pair
-  // 8 (L >> 4) + (L & 7). One k-step of padding at the end (the tile's last k-step draws a
-  // stage nothing reads).
-  std::vector<uint32_t> hOffs((size_t)(ksteps + 3u) * 64u * 4u);
+  // The kernel's tables, a tile's after the other: [tile][rank index p][w], 16 bytes a word.
+  // B's word w holds columns 8w + 0..7 and 128 + 8w + 0..7 of the tile; A's rows 8w + 0..7
+  // and 8 (WA + w) + 0..7, WA words a rank index.
+  const uint32_t WA = PD_WA;
+  std::vector<uint8_t> hTabA((size_t)RG * 128u * WA * 16u), hTabB((size_t)CB * 128u * 256u);
+  for (uint32_t t = 0; t < CB; t++)
+    for (uint32_t p = 0; p < 128u; p++)
+      for (uint32_t w = 0; w < 16u; w++)
+        for (uint32_t b = 0; b < 16u; b++) {
+          const uint32_t col = t * 256u + (b < 8u ? 8u * w + b : 128u + 8u * w + b - 8u);
+          hTabB[(((size_t)t * 128u + p) * 16u + w) * 16u + b] = DB[(size_t)col * 128u + p];
+        }
+  for (uint32_t t = 0; t < RG; t++)
+    for (uint32_t p = 0; p < 128u; p++)
+      for (uint32_t w = 0; w < WA; w++)
+        for (uint32_t b = 0; b < 16u; b++) {
+          const uint32_t row = t * BM + (b < 8u ? 8u * w + b : 8u * (WA + w) + b - 8u);
+          hTabA[(((size_t)t * 128u + p) * WA + w) * 16u + b] = DA[(size_t)row * 128u + p];
+        }
+  // The kernel's offsets: [k-step][B, A][k-pair j] of four: the pair's first k's plus and minus
+  // rank index, then its second k's, each times the table's bytes a rank index. Three k-steps
+  // of padding at the end (the tile's last k-steps draw stages nothing reads).
+  std::vector<uint32_t> hOffs((size_t)(ksteps + 3u) * 32u * 4u);
   for (uint32_t ts = 0; ts < ksteps + 3u; ts++)
     for (uint32_t op = 0; op < 2u; op++)
-      for (uint32_t L = 0; L < 32u; L++) {
-        const uint32_t e = op ? (L >> 3) & 1u : L >> 4, kp = op ? 8u * (L >> 4) + (L & 7u) : L & 15u;
-        uint32_t *o = &hOffs[(((size_t)ts * 2u + op) * 32u + L) * 4u];
-        const uint32_t k0 = ts * 32u + 2u * kp;
-        o[0] = pm[op][0][k0] * 16u + e * 2048u;
-        o[1] = pm[op][1][k0] * 16u + e * 2048u;
-        o[2] = pm[op][0][k0 + 1u] * 16u + e * 2048u;
-        o[3] = pm[op][1][k0 + 1u] * 16u + e * 2048u;
+      for (uint32_t j = 0; j < 16u; j++) {
+        uint32_t *o = &hOffs[(((size_t)ts * 2u + op) * 16u + j) * 4u];
+        const uint32_t k0 = ts * 32u + 2u * j, S = op ? PD_SA : PD_SB;
+        o[0] = pm[op][0][k0] * S;
+        o[1] = pm[op][1][k0] * S;
+        o[2] = pm[op][0][k0 + 1u] * S;
+        o[3] = pm[op][1][k0 + 1u] * S;
       }
   int8_t hStamp[16];
   for (int i = 0; i < 16; i++) hStamp[i] = (int8_t)((rng() >> 11) & 63u);
@@ -171,9 +175,10 @@ int main(int argc, char **argv) {
   }
   const double use = nsched ? useSum / nsched : 0, tuse = nsched ? tileSum / nsched : 0;
   const double ksteps_run = (double)tilesDone * ksteps;
-  printf("%-22s k %u pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% spins %.4f/k-step %.0f ms x%d",
+  (void)ksteps_run;
+  printf("%-22s k %u pipe %6.2f%% (%.2f-%.2f) %6.3f cyc/IMMA tile %6.2f%% bad %llu of %llu %.0f ms x%d",
          name, k, use * 100, useMin * 100, useMax * 100, use > 0 ? 16.0 / use : 0.0, tuse * 100,
-         ksteps_run > 0 ? (double)spins / ksteps_run : 0.0, ms, launches);
+         spins, tilesDone, ms, launches);
 
   if (dumpTiles) {
     // The CPU's fold of the same tiles, from the same tables.
