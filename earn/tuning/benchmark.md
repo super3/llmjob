@@ -633,6 +633,243 @@ which is 3.2% slower on a 5090. The bench didn't log the core itself, so a CUDA 
 back would not show; nothing points to that. So the 5090s' 86–87% is the CUDA 13 core's real gap on these boxes, not
 an old driver. bench.sh now logs our CLI's "Pearl core:" line as "loaded ...", and bench.py keeps it per row.
 
+### Salad, 11 November: the tensor-pipe probe on RTX 30, 40 and 50 cards (PR #290 goal work)
+
+The 4090 study ("What fills the tensor pipe", Research notes) is one card. This is its second probe,
+`earn/native/probes/pipeprobe2.cu`, on Salad PCs of the other architectures: sm_86 (RTX 3090, 3060), sm_89 (RTX 4070)
+and sm_120 (RTX 5090, 5070 Ti, 5070). **Timing only: the streams compute nothing real, and a figure "by count" is not
+a mining rate.** Branch `goal/nv-probe-cards`: the probe's new switches, the box script
+`earn/tuning/salad/pipebox.sh`, and the boxes' logs with the scripts that made these tables in
+`earn/tuning/pipeprobe/`.
+
+How it was run. One PC a card. The probe was built on the box for the card's architecture, with CUDA 12.8 for sm_86
+and sm_89 and CUDA 13.3 for sm_120 (the toolkits our two cores ship with), and for sm_120 again with 12.8. Each warp
+times itself with the SM's cycle counter; pipe use is 16 cycles an IMMA a scheduler over the cycles taken. Every
+stream ran 1 s for its pipe use. The main ones ran 30 s with the card read every 0.8 s: clock, watts and flags are
+means after the first 8 s, and the rate by count is IMMA x 4096 over the time of the launches after the first 8 s.
+The fragments are loaded from mostly-zero bytes as in the study's last round, and again from hashed bytes: the bytes
+change the watts, not the pipe use. Before the probe, on the same PC in the same session: OneZeroMiner 1.8.5 and
+our release v0.6.15 on the stand-in pool (60 s warm-up, 3 minutes each, the mean of each miner's own figure from
+60 s in), then the release's core under `hashrate.js` (180 s after 20 s).
+
+| Card | PC | SMs | Power limit | What held it |
+|---|---|---|---|---|
+| RTX 3090 | 71128c8f | 82 | 390 W | Heat: 86 to 88 C with the thermal-slowdown flag on in every run, at 340 to 359 W |
+| RTX 3060 | 89183448 | 28 | 170 W | The limit, once the bytes are hashed or the draw is in; 1962 to 1987 MHz below it |
+| RTX 4070 | 1aaa2daa | 46 | 200 W | The same; 2700 to 2760 MHz below the limit |
+| RTX 5090 | a8a49612 | 170 | 600 W | Watts; 2880 MHz until a stream nears the limit |
+| RTX 5090 | e57a5671 | 170 | 450 W | Watts, in every stream but the lightest (probe only) |
+| RTX 5070 Ti | 3f7ee3a4 | 70 | 300 W | Its clock: 2805 to 2857 MHz from 166 to 296 W |
+| RTX 5070 | 949fe6d1 | 48 | 250 W | Its clock: 2887 to 2909 MHz from 140 to 215 W (probe only) |
+
+Two of the RTX 50 PCs were not clean. On the 5070 Ti every stream, even one warp alone on an SM, lost about 6% of its
+cycles (17.0 cycles an IMMA where the 5090 takes 16.0), and both miners ran about 6% under the 5070 Ti of the gate
+(10 November). Something else was using that card: it had 1130 MiB in use and 3% load before we started (inferred,
+not seen). The 5070 lost 0.7% the same way. Their rows below are shares of their own loads-only row.
+
+**What a full pipe is.** IMMA only unless said; cycles an IMMA a scheduler, and pipe use at 16.
+
+| Warps in the block | RTX 3090 | RTX 3060 | RTX 4070 | RTX 5090 |
+|---|---|---|---|---|
+| One warp alone on the SM | 16.01 (99.93%) | 16.01 (99.93%) | 16.01 (99.93%) | 16.10 (99.35%) |
+| 4 (one a scheduler) | 16.04 (99.78%) | 16.01 (99.93%) | 16.01 (99.93%) | 16.11 (99.32%) |
+| 8 (two a scheduler) | 16.01 (99.93%) | 16.01 (99.93%) | 16.01 (99.93%) | 16.01 (99.93%) |
+| 12 (three), 32 IMMA a k-step | 16.02 (99.90%) | 16.02 (99.90%) | 16.02 (99.90%) | 16.00 (99.99%) |
+| 16 (four), 24 IMMA a k-step | 16.02 (99.87%) | 16.02 (99.87%) | 16.02 (99.87%) | 16.00 (99.99%) |
+| 4, with the fragment loads | 16.14 (99.13%) | 16.14 (99.13%) | 16.16 (99.03%) | 16.05 (99.68%) |
+| 8, with the fragment loads | 16.00 (100.00%) | 16.00 (100.00%) | 16.00 (100.00%) | 16.00 (100.00%) |
+| Warps 0 and 4 only, each warp's own cycles an IMMA | 32.02 | 32.02 | 32.02 | 32.02 |
+| Warps 0 and 1 only (and 0 with 2, 3, 5, 6 or 7) | 16.01 | 16.01 | 16.01 | 16.10 |
+
+- A pipe is one IMMA every 16.0 cycles a scheduler on all three architectures, an SM has four, and warp w runs on
+  scheduler w % 4 (warps 0 and 4 share a pipe; 0 and any other do not). The SM's cycle counter agrees with
+  nvidia-smi's clock within 0.6% on every PC but the 450 W 5090 (below).
+- Two warps a scheduler fill it everywhere: 99.93% on IMMA alone, 100.00% with the fragment loads. Three or four
+  add nothing.
+- One warp a scheduler also holds 99.3 to 99.9% of an IMMA-only stream, on sm_89 too. The study's "one warp alone
+  gets 91%" was read with its first probe, whose run-time tests stand between the IMMA; this probe has none
+  (the cause is inferred: I did not rerun the first probe). What holds is narrower: on sm_86 and sm_89 a lone
+  warp loses 0.8 to 0.9 points as soon as the four ldmatrix a k-step are in its stream, and two warps lose nothing.
+
+**Pipe use by stream** (1 s runs; 8 warps, two a scheduler, 48 IMMA a k-step, 4 k-steps a chunk).
+
+| Stream | RTX 4090 (the study) | RTX 3090 | RTX 3060 | RTX 4070 | RTX 5090, CUDA 13.3 | RTX 5090, CUDA 12.8 | RTX 5070 Ti, 13.3, of its loads row | RTX 5070, 13.3, of its loads row |
+|---|---|---|---|---|---|---|---|---|
+| IMMA only | 99.93% | 99.93% | 99.93% | 99.93% | 99.93% | 99.99% | 99.7% | 99.8% |
+| + fragment loads (kept in every row below) | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 100% | 100% |
+| + readout, one run of 96 XOR3 | 98.72% | 98.75% | 98.75% | 98.71% | 98.33% | 97.67% | 98.2% | 98.5% |
+| + readout, three runs of 32 | 99.67% | 99.68% | 99.68% | 99.68% | 98.19% | | 98.5% | 97.9% |
+| the same with a shared XOR | 99.71% | 99.71% | 99.71% | 99.71% | 98.40% | 98.21% | 98.3% | 98.6% |
+| + readout, six runs of 16 | 99.68% | 99.60% | 99.68% | 99.68% | 97.94% | | 97.8% | 98.1% |
+| + 4 draw units a k-step, after the 24th IMMA | 99.61% | 99.52% | 99.52% | 99.56% | 96.92% | 96.39% | 96.9% | 96.7% |
+| the same at the k-step's end | 99.52% | 99.71% | 99.71% | 99.61% | 96.99% | | 96.9% | 97.1% |
+| the same in two halves / one unit every 12 IMMA | 98.44% | 97.03 / 97.37% | 97.36% | 97.30% | 96.34% | | 96.2% | 96.4% |
+| + 4 units that read their offsets first | 98.80% | 99.03% | 99.03% | 98.95% | 96.47% | 97.82% | 96.2% | 96.3% |
+| loads, three-run readout, 4 such units | 95.15% | 95.17% | 95.17% | 95.15% | 94.82% | 95.26% | 94.6% | 94.8% |
+| the same with one shared add and test a k-step | 94.71% | 95.23% | 95.22% | 95.27% | 93.93% | 95.04% | 93.7% | 94.1% |
+| the same with 3 units | 96.97% | 96.73% | 96.73% | 96.76% | 95.03% | 96.32% | 94.8% | 94.7% |
+
+- **sm_86 and sm_89 repeat the 4090 to a few hundredths of a point**, on three cards from 28 to 82 SMs. The
+  compiler gives sm_86 and sm_89 the same loop (same counts, same order: two XOR3 after each IMMA in a readout run).
+  Where a row differs from the study's by half a point or more (the draw in halves, the offsets-first units, the
+  whole stream with 4 units), the build differs: CUDA 12.8 here, 12.6 there.
+- **sm_120 does not.** The readout costs 1.6 to 2.1 points however it is cut (0.3 on the others), four draw units 3.1
+  to 3.6 (0.4 to 0.5), and the whole stream holds 93.9 to 96.3%. Both compilers, three cards. Both give sm_120 a
+  different order (six or seven XOR3 at a time between two IMMA), so part of this may be the order and not the chip;
+  the box cannot run an sm_89 build on an sm_120 card to tell.
+
+**What a step between the IMMA costs, by count and kind.** Points of pipe use lost against the same PC's loads-only
+row. A draw unit is 18 instructions (7 adds, 4 byte selects, 2 XOR, 4 shared loads, 1 shared store).
+
+| Stream | RTX 3060 | RTX 4070 | RTX 5090 (450 W PC), 13.3 | RTX 5070, 13.3 (12.8) |
+|---|---|---|---|---|
+| 1 draw unit a k-step | 0.07 | 0.02 | 0.78 | 0.27 (0.64) |
+| 2 draw units | 0.02 | 0.16 | 1.55 | 1.12 (1.30) |
+| 3 draw units | 0.11 | 0.11 | 2.00 | 2.16 (2.88) |
+| 4 draw units | 0.48 | 0.44 | 3.08 (600 W PC) | 3.23 (5.73) |
+| One-run readout kept in 4 / 8 / 16 XOR chains | 0.84 / 1.25 / 2.68 | 0.84 / 1.29 / 2.68 | 1.54 / 1.67 (600 W PC) / 2.36 | 1.32 / 1.52 / 2.05 |
+| Three-run readout kept in 4 / 8 / 16 chains | 0.58 / 0.29 / 0.71 | 0.58 / 0.29 / 0.71 | 1.77 / 1.60 / 2.03 | 1.77 / 1.43 / 1.54 |
+
+| One kind of step after every IMMA, loads kept | RTX 4070 Super (PC 7f4f5e71), 12.8 | RTX 5070, 13.3 (12.8) |
+|---|---|---|
+| An independent add every 2 IMMA | 0.09 | 1.06 (0.51) |
+| An independent add an IMMA | 0.36 | 2.06 (2.33) |
+| 2 independent adds an IMMA | 0.54 | 4.63 (5.06) |
+| An add an IMMA, each waiting on the one before | 0.42 | 1.46 (4.85) |
+| An XOR3 an IMMA of two sums the IMMA 8 earlier wrote | 3.40 | 1.54 (1.04) |
+| 2 such XOR3 an IMMA | 4.57 | 5.68 (6.37) |
+
+| An add an IMMA, IMMA only, RTX 5070, 13.3 | Without the add | With it | With 2 adds an IMMA |
+|---|---|---|---|
+| One warp a scheduler | 98.28% | 95.80% | |
+| Two | 99.29% | 96.34% | 94.10% |
+| Three (24 IMMA a k-step) | 99.25% | 97.09% | 94.48% |
+| Four (16 IMMA a k-step) | 99.10% | 96.81% | 94.96% |
+
+- **On sm_120 a plain add between the IMMA costs a third to a half of a cycle (0.33 to 0.50), wherever it is and
+  however many warps share the scheduler. On sm_89 it costs a twentieth or less (0.03 to 0.06).** That one
+  difference accounts for the draw: a unit costs about 6 cycles on sm_120 and under 1 on sm_86 and sm_89, and up to
+  three units a k-step are free on those two. It is linear in the count on sm_120, so there is nothing to weave
+  into: each instruction is paid for.
+- A NOP is not paid for: ptxas 12.8 puts one after every IMMA of the sm_120 IMMA-only loop, and it holds 99.99%.
+- Three or four warps a scheduler do not absorb the adds on sm_120 (2.2 to 3.0 points for one add an IMMA at any
+  warp count), so more warps is not the way out there.
+- An XOR3 of sums an IMMA wrote 8 IMMA earlier is dear on sm_89 too when there is one after every IMMA (0.55 cycle
+  each), yet the three-run readout's XOR3, placed 9 to 25 IMMA after their sums' last IMMA, cost about 0.1
+  each. Distance from the IMMA that wrote the sum seems to matter. Not followed up.
+- The same pass had a shared load and a shared store after every IMMA. I left their rows out: my addresses put four
+  lanes on one bank, so they price a conflicted access (9 to 18 points on both architectures), not a clean one.
+
+**Clock, watts and rate by count** (30 s runs; T-MAC/s by count beside the mining rates on the same PC).
+
+| Stream | RTX 3090, 390 W, heat-held | RTX 3060, 170 W | RTX 4070, 200 W |
+|---|---|---|---|
+| IMMA only | 1844 MHz, 340 W, 154.7 | 1987 MHz, 105 W, 56.8 | 2760 MHz, 133 W, 129.5 |
+| + fragment loads | 1777, 344 W, 148.9 | 1987, 125 W, 56.8 | 2758, 150 W, 129.4 |
+| + readout, one run | 1754, 346 W, 145.3 | 1977, 130 W, 55.9 | 2745, 161 W, 127.4 |
+| + readout, three runs | 1744, 345 W, 146.2 | 1972, 131 W, 56.3 | 2745, 162 W, 128.7 |
+| + 4 draw units | 1662, 354 W, 138.7 | 1968, 161 W, 56.1 | 2715, 196 W (cap flag at times), 127.0 |
+| + 4 units, offsets first | 1635, 353 W, 136.0 | 1965, 167 W, 55.7 | 2715, 198 W (cap flag), 125.9 |
+| all together, 3 units | 1643, 348 W, 133.3 | 1965, 162 W, 54.4 | 2700, 191 W, 122.7 |
+| all together, 4 units | 1622, 352 W, 129.6 | 1962, 170 W (cap), 53.4 | 2679, 200 W (cap), 120.1 |
+| loads, hashed bytes | 1644, 349 W, 137.9 | 1965, 162 W, 56.2 | 2730, 184 W, 128.1 |
+| three-run readout, hashed bytes | 1620, 351 W, 135.5 | 1964, 170 W (cap), 56.0 | 2700, 184 W, 126.5 |
+| 4 draw units, hashed bytes | 1548, 359 W, 129.2 | 1897, 170 W (cap), 54.1 | 2615, 200 W (cap), 122.6 |
+| loads again, last (the run's drift) | 1747, 331 W, 146.3 | 1968, 126 W, 56.3 | 2745, 151 W, 128.7 |
+| Our release v0.6.15, `hashrate.js` | 125.8 TH/s, 1571 MHz, 370 W | 50.6 TH/s, 1845 MHz, 170 W | 115.9 TH/s, 2568 MHz, 200 W |
+| OneZeroMiner 1.8.5 | 131.8 to 137.2 TH/s, 1590 to 1658 MHz, 354 to 378 W | 54.9 TH/s, 1938 MHz, 170 W | 123.1 TH/s, 2652 MHz, 200 W |
+| Release / OneZeroMiner, share of the pipe at their clocks | 95.3% / 98.5 to 98.7% | 95.6% / 98.7% | 95.8% / 98.5% |
+
+| Stream | RTX 5090, 600 W | RTX 5090, 450 W (the SM's counter in MHz) | RTX 5070 Ti, 300 W | RTX 5070, 250 W |
+|---|---|---|---|---|
+| IMMA only | 2880 MHz, 445 W, 501.5 | | 2857 MHz, 167 W, 192.3 | 2909 MHz, 140 W, 141.9 |
+| + fragment loads | 2880, 485 W, 501.6 | 2837, 424 W, 492.9 | 2857, 178 W, 192.7 | 2895, 150 W, 141.4 |
+| + readout, one run | 2880, 531 W, 492.9 | | 2827, 191 W, 187.4 | |
+| + readout, three runs | 2880, 523 W, 493.2 | 2816, 450 W, 481.8 | 2827, 191 W, 187.7 | 2895, 164 W, 139.1 |
+| + 1 / 2 draw units | | 2771 / 2691, 450 W, 479.5 / 462.0 | | |
+| + 4 draw units | 2710, 547 W (cap flag), 456.5 | 2573, 450 W, 433.3 | 2812, 243 W, 183.5 | 2887, 212 W, 136.5 |
+| + 4 units, offsets first | 2596, 504 W (cap flag), 435.8 | 2519, 450 W, 421.7 | 2812, 251 W, 182.5 | |
+| all together, 3 units | 2662, 529 W (cap flag), 440.4 | 2564, 450 W, 423.5 | 2812, 245 W, 179.8 | 2887, 215 W, 133.8 |
+| all together, 4 units | 2547, 493 W (cap flag), 416.4 | | 2810, 263 W, 177.9 | |
+| loads, hashed bytes | 2827, 600 W, 492.1 | 2654, 450 W, 461.2 | 2812, 225 W, 189.5 | 2887, 196 W, 140.9 |
+| three-run readout, hashed bytes | 2790, 600 W, 477.7 | | 2812, 239 W, 186.3 | |
+| 4 draw units, hashed bytes | 2601, 600 W, 438.6 | 2259, 450 W, 380.0 | 2805, 296 W (cap), 183.4 | 2840, 250 W, 134.2 |
+| all together, 3 units, CUDA 12.8 build | 2624, 514 W (cap flag), 439.9 | | 2814, 245 W, 181.0 | |
+| loads again, last | 2880, 486 W, 501.6 | | 2857, 179 W, 192.6 | 2895, 152 W, 141.4 |
+| Our release v0.6.15, `hashrate.js` (CUDA 13 core) | 425.9 TH/s, 2571 MHz, 600 W | | 179.4 TH/s, 2805 MHz, 299 W | |
+| OneZeroMiner 1.8.5 | 429.8 TH/s, 2532 MHz, 510 W | | 184.8 TH/s, 2805 MHz, 275 W | |
+| Release / OneZeroMiner, share of the pipe at their clocks | 95.2% / 97.5% | | 94.6% / 97.4% of this PC's loads row | |
+
+A first 5090 PC (892b7450, 522 W limit) ran the miners only before it went silent: OneZeroMiner 422.3 TH/s at
+2504 MHz and 486 W, ours 406.2 TH/s at 2453 MHz and 522 W.
+
+**By architecture**
+
+- **sm_86 (RTX 30) and sm_89 (RTX 40): the 4090's rules hold, and so does its reading of the competitors.**
+  Two warps a scheduler fill the pipe (100.00%). The three-run readout costs 0.3% of the pipe and 6 to 12 W; four
+  draw units cost 0.5% of the pipe and 36 to 47 W (a quarter to a third of the loads stream's watts). Watts are what
+  these cards run out of: with hashed bytes the draw-only stream sits on the limit at 1897 MHz (3060) and 2615 MHz
+  (4070), 3.5 and 4.2% under the clock of the loads stream on the same bytes. That stream is OneZeroMiner's
+  signature on both PCs, as it was on the 4090: 54.1 by count at 1897 MHz and 170 W against 54.9 TH/s at 1938 MHz
+  and 170 W, and 122.6 at 2615 MHz and 200 W against 123.1 TH/s at 2652 MHz and 200 W. On the heat-held 3090: 129.2
+  at 1548 MHz against 131.8 to 137.2 TH/s. Against our release the stream is +7.0% (3060), +5.8% (4070) and +2.7%
+  (3090).
+- So on RTX 30 and 40 the design carries over as it is, and it buys parity, not a lead: their whole miner is level
+  with or just above our draw-only stream, which has no readout in it. A lead needs the two things the study already
+  named, and these PCs put numbers on them: the order pinned so the pieces together keep what they keep apart (the
+  whole stream with 3 units holds 96.7%, where the three units alone hold 99.7 to 99.8% and the readout alone 99.7%:
+  about 2.8 points), and a draw that costs fewer watts than the probe's unit (each watt saved is clock on every one
+  of these cards).
+- **sm_120 (RTX 50): the pipe fills the same way, and nothing between the IMMA is free.** Two warps a scheduler hold
+  100.00%, at 16.0 cycles an IMMA. But the readout costs 1.6 to 2.1% of the pipe and four draw units 3.1 to 3.6%,
+  because every plain instruction costs a third to a half of a cycle there. The whole stream as the compiler orders it
+  holds 93.9 to 96.3%, about what our release holds (94.6 to 95.2%), where OneZeroMiner holds 97.4 to 97.5% on these
+  PCs and the three competitors 98.2 to 99.1% on the gate's 5070 Ti.
+- What limits an RTX 50 card differs by card. The 5070 Ti and the 5070 are held by their clock: it moves 1.8% and
+  0.8% over every stream short of the limit, so there a stream is worth its pipe use and little else. The 5090 is
+  held by watts: loads on hashed bytes already draw the 600 W limit (2827 MHz against a 2880 MHz top), the
+  three-run readout adds 38 W, and four draw units take 8% of the clock at 600 W and 15% at 450 W.
+- By count the whole stream with 3 units gives 440 on the 600 W 5090 against 425.9 TH/s for our release and
+  429.8 for OneZeroMiner (mostly-zero bytes; the draw alone on hashed bytes gives 438.6), 423.5 on the 450 W 5090
+  (380.0 for the draw alone on hashed bytes; the benchmark table's 450 W 5090 has the competitors at 406 to 408 and
+  us at 349.9 on v0.6.13), and 180 to 181 on the 5070 Ti against 179.4 and 184.8. **So on RTX 50 the 4090 design, as
+  the probe has it, is not enough**: about level with the release on the clock-held cards, and short of the
+  competitors' watts on a 450 W 5090. It needs a stream with far fewer instructions an IMMA, or an order we have not
+  found. The competitors' 98 to 99% on the 5070 Ti says one exists.
+
+**The RTX 5070 Ti: why free operands gained nothing.** The card is held by its clock, not its watts. Under a 300 W
+limit every stream ran at 2805 to 2857 MHz, from 166 W to 296 W. Free operands save watts (54 W on the gate's PC), and
+on this card watts buy no clock. Its 5% gap to the competitors is pipe time: we hold about 94 to 95% of the pipe at
+that clock and they hold 98 to 99%. And on sm_120 pipe time is not got back by weaving: the readout and the draw each
+cost real cycles there.
+
+**Not verified**
+
+- Why a plain instruction costs a third to a half of a cycle on sm_120, and whether the compiler's sm_120 order or the chip is
+  behind it. How the competitors hold 98 to 99% there.
+- On the 600 W 5090 the streams with draw units ran with the power-cap flag on at 493 to 547 W and 2547 to 2710 MHz,
+  below the limit; the hashed-byte ones drew the full 600 W. The competitors look the same on three 5090s (2470 to
+  2530 MHz at 486 to 513 W under limits of 522 to 600 W; the third is the gate's). On the 450 W 5090 every capped
+  stream drew exactly 450 W and the instant draw stayed within 13 W of it. I don't know what limit the 600 W PC's
+  streams hit.
+- On the 450 W 5090 (driver 581.57) nvidia-smi's clock read up to 15% above the SM's own cycle counter under the cap
+  (2602 against 2259 MHz), so a rate over nvidia-smi's clock understates pipe use on such a PC. The other PCs agree
+  within 0.6%. The competitors' shares of the pipe above use nvidia-smi's clock.
+- What a real fold's operand bytes cost in watts: the probe has mostly-zero bytes and hashed bytes, not a draw's.
+- One PC a card and one 30 s run a stream. The loads stream run again at the end moved by -1.7% of clock on the
+  3090 (heat), -1.0% on the 3060, -0.5% on the 4070 and 0.0% on the RTX 50 cards. On the 3090 that last run read
+  99.66% where the three before it read 100.00%; I don't know why.
+- The 3090 PC is hot: both miners and every stream ran under thermal slowdown, and the miners' order matters there
+  (OneZeroMiner read 131.8 TH/s on a hot card and 137.2 after the box's restart).
+- The 5070 Ti PC's 6% and the 5070's 0.7% are read as another load from what the card showed at idle. The miners
+  were not run on the 5070, the 450 W 5090 or the 4070 Super.
+- On the RTX 50 PCs with driver 616 to 621 a flag bit 0x400 was set in every run; I can't name it.
+- The miners' figures are their own displays. The stand-in pool's credited rate over 3 minutes (100 to 1,100
+  shares) is too coarse to check them.
+
+Box time: 3.1 box-hours (RTX 3090 31 min, RTX 5090 60 min over three PCs, RTX 5070 Ti 27 min, RTX 3060 24 min,
+RTX 4070 28 min, RTX 5070 16 min).
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
