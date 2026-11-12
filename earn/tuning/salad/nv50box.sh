@@ -126,7 +126,11 @@ if has product; then
     [ -n "$b" ] || continue
     n=${b%%:*}; r=${b#*:}; tk=${r%%:*}; fl=$(echo "${r#*:}" | tr ',' ' ')
     # shellcheck disable=SC2046,SC2086
-    $(nv $tk) -Xptxas -v $fl -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/$n.cubin > $W/$n.log 2>&1 || { tail -3 $W/$n.log | emit; fail "pearl_rot.cu $n"; }
+    $(nv $tk) -Xptxas -v $fl -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/$n.v.cubin > $W/$n.log 2>&1 || { tail -3 $W/$n.log | emit; fail "pearl_rot.cu $n"; }
+    # The cubin itself without -Xptxas -v, as build_rot.py and CI build it: the options are recorded in the file's
+    # .note.nv.tkinfo, so -v alone changes its hash (the code is the same).
+    # shellcheck disable=SC2046,SC2086
+    $(nv $tk) $fl -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/$n.cubin > /dev/null 2>&1 || fail "pearl_rot.cu $n"
     say "rot cubin $n ($tk: $fl): fold hash $(python3 -I "$H/asm89.py" hash $W/$n.cubin) $(grep -A3 "pearl_rot_fold' for" $W/$n.log | regs /dev/stdin)"
   done
   sched "${ROT_SCHED:-}"
