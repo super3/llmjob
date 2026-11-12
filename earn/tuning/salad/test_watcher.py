@@ -2996,28 +2996,27 @@ class TestSaladBalance(Base):
             self.x.salad_balance()
 
     def test_each_org_lasts_on_its_own_and_one_not_spending_is_shown_idle(self):
-        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet. 1 November: the founder asked to
-        # keep llmjob2's days in the heading anyway. Before it has spent, it's timed at the fleet's $/hr.
+        # The fleet (all in llmjob) is one 4080 on a PC; llmjob2 spends nothing yet. It's still shown (1 November), as
+        # "idle" alone, no time (11 November: "How can it be both 5d and idle").
         g = self.group()
         self.step(g, 1, "m1")
         self.two_orgs([(175.0, 10.0, 10.0)] * 9)
         self.assertTrue(self.head().endswith(" mining\n"))      # the credit is its own table now (9 November)
         rep = self.report()
         self.assertIn("| 💳 Credit | Left | Lasts |\n|---|---|---|\n| [Salad](https://portal.salad.com) llmjob | $175.00 | ", rep)
-        cost = g["price"]
-        self.assertIn(f"| [Salad](https://portal.salad.com) llmjob2 | $10.00 | {w.short_lasts(10.0 / cost)} idle |\n| **All** | **$185.00** | |\n", rep)
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | idle |\n| **All** | **$185.00** | |\n", rep)
         self.assertNotIn("ALERT llmjob2", self.events())
         # Once it has spent, an idle spell is timed at the last $/hr it spent.
         self.x.st["org_rate"]["llmjob2"] = 0.5
-        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | 20h idle |", self.report())
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | idle |", self.report())
         # A box of its own waiting for a PC spends nothing: still idle, not timed at a measured trickle (3 November:
         # "597d" with a 2070 waiting in llmjob2).
         self.group(cls="RTX 2060 (6 GB)")["org"] = "llmjob2"
         self.x.org_burn = lambda o, t: 0.001
-        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | 20h idle |", self.report())
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | idle |", self.report())
         # A trickle measured as it wound down doesn't stretch it past the fleet's $/hr (3 November: "595d idle").
         self.x.st["org_rate"]["llmjob2"] = 0.003
-        self.assertIn(f"| [Salad](https://portal.salad.com) llmjob2 | $10.00 | {w.short_lasts(10.0 / cost)} idle |", self.report())
+        self.assertIn("| [Salad](https://portal.salad.com) llmjob2 | $10.00 | idle |", self.report())
 
     def test_an_org_the_watcher_doesnt_run_is_timed_by_its_measured_spend(self):
         # llmjob2 falls $1 an hour (0.25 a quarter), with a $10 top-up two hours in that isn't spend.

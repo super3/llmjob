@@ -3718,8 +3718,9 @@ class W:
         # With more than one org read (salad_orgs), each lasts on its own: Salad stops an org's boxes when that org's
         # credit runs out, whatever the others hold. An org our boxes run in at their $/hr, another at its measured
         # spend (org_burn). An org spending nothing, as llmjob2 on 1 November with the fleet all in llmjob, is still
-        # shown, as the founder asked: marked idle and timed at the last $/hr it spent, or the fleet's $/hr before
-        # it has spent any. [(org, hours, idle)], or None with one org or no fresh read.
+        # shown, as the founder asked, but as "idle" alone: a time with nothing spending it read as a contradiction
+        # (11 November: "How can it be both 5d and idle", as Clore's on 10 November). [(org, hours, idle, bal)], or
+        # None with one org or no fresh read.
         runway = None
         if not cmark and len(sb.get("orgs") or {}) > 1:
             runway, last_rate = [], st.setdefault("org_rate", {})
@@ -3840,7 +3841,7 @@ class W:
         credit_rows, salad_link = [], "[Salad](https://portal.salad.com)"
         if runway is not None:
             # Each org named as Salad's (founder, 9 November: "label the credit for llmjob and llmjob2 as Salad").
-            credit_rows = [(f"{salad_link} {o}", bal, short_lasts(h) + (" idle" if idle else ""))
+            credit_rows = [(f"{salad_link} {o}", bal, "idle" if idle else short_lasts(h))
                            for o, h, idle, bal in runway]
         elif cb or vb:
             credit_rows = [(salad_link, credit, short_lasts(hours, cmark) if hours is not None else "")]
