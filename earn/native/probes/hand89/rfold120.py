@@ -193,6 +193,7 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
     rr = asm89.RET_REG[0]
     code = list(code) + [Ins("MOV R%d, 0x%x" % (rr, back)), Ins("IMAD.MOV.U32 R%d, RZ, RZ, RZ" % (rr + 1)),
                          Ins("BRA .RET", stall=5)]
+    code = nop_waits(code)
     room = (ret - entry) // 16
     if len(code) > room:
         raise ValueError("the loop is %d instructions and the function has room for %d" % (len(code), room))
@@ -292,6 +293,21 @@ def restore_code(sass_text, want):
     for _r, ins in alu:
         out += [ins, Ins("NOP", stall=5)]
     return out
+
+
+def nop_waits(code):
+    """A NOP's wait does not hold the warp on sm_120 (a chunk count loaded by LDC and waited for by a NOP was read
+    before it landed, on the card, 12 November): each NOP's wait moves to the next instruction that is not one."""
+    pend = set()
+    for ins in code:
+        if ins.text == "NOP":
+            pend |= set(ins.wait)
+            ins.wait = ()
+        elif pend:
+            ins.wait = tuple(sorted(set(ins.wait) | pend))
+            pend = set()
+    assert not pend
+    return code
 
 
 def rename(code, ren):
