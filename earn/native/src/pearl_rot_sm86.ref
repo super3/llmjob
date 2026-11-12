@@ -23,5 +23,11 @@
 # rgf=1 rb0=3 rb1=0 added (12 November): the readout's steps first in their gap and allowed into more of the
 # chunk's end. CUDA 12.8, built on a Salad PC by nv30box.sh. RTX 3090 (280 W): verify-hits 400 of 400 (454 hits,
 # 23 salts); 121.16, 121.17 and 121.25 TH/s by hashrate.js against 120.74, 120.81 and 120.87 for the loop above,
-# alternating 120 s legs.
-12.8 cb50068c5f8d01e7f98b241049930ccf8be2aa3dedfe89123ad5bab7ed8e2dec
+# alternating 120 s legs. (Its file, cb50068c..., is no longer built.)
+
+# sr=1 added (12 November): records the eight warps share, the kernel built with ROT_SR=1 (build_rot.py). CUDA 12.8,
+# built on a Salad PC by nv30box.sh. RTX 3090 (280 W): verify-hits 400 of 400 (451 hits, 12 salts); 108.09 and
+# 107.95 TH/s by hashrate.js against 107.76 and 107.34 for the loop above. RTX 3060 (170 W): 53.52, 53.55 and
+# 53.53 against 53.33, 53.32 and 53.32, alternating 120 s legs. The probe's CPU check: 16,384 of 16,384 at k 2048,
+# 2,048 of 2,048 at k 8192 and 65536, on both cards.
+12.8 da15a69de276227a0110728a30692df54e84211bbf46de388048cace2ce1868b

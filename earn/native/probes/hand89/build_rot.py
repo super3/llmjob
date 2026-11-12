@@ -69,9 +69,12 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # against 98.59% on a clock-bound 5080 (count +0.46%), 98.03% against 97.53% on a capped 5090 (12 November).
 # sm_89 (goal-nvk19): B drawn once for the two warps of a column slot (bx, with its exchange keys: bsym=4 bsg=8
 # bsg3=24 bss=2 bord=2 barv=1 bxt=1, readout window rb0=6 rb1=3) and records the eight warps share (sr). The
-# miner's kernel is built for both (ROT_BX, ROT_SR below).
+# miner's kernel is built for both (ROT_BX, ROT_SR below). sm_86 (goal-nv30b): sr too, on the iy=0 loop. Salad RTX
+# 3060 (170 W): 53.52, 53.55, 53.53 TH/s against 53.33, 53.32, 53.32 (hashrate.js, 12 November); Salad RTX 3090
+# (280 W): 108.09, 107.95 against 107.76, 107.34. B drawn once lost there (52.1 and 105.3 with iy=0).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",
-                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
+                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",
+                                                                                  "sr=1"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
                         "dpb=7", "dpm=1", "dpg=3"]}
 

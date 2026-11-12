@@ -739,6 +739,36 @@ The readout's XOR3 steps go first in their gap, right behind the IMMA, and may u
 
 verify-hits 400 of 400 (454 hits, 23 salts). Now the RTX 30 build (cubin cb50068c...).
 
+### Salad, 12 November: the RTX 40 changes on RTX 30, shared records and B drawn once (branch `goal/nv-30b`)
+
+The two changes the RTX 4090 took that day: records the eight warps share (`sr=1`, kernel built with ROT_SR=1),
+and B drawn once with its exchange keys (`bx=1 bsym=4 bsg=8 bsg3=24 bss=2 bord=2 barv=1 bxt=1`, ROT_BX=1). Two
+Salad PCs, CUDA 12.8 builds, hashrate.js, 120 s legs in turn (rot s y y3 yn, three rounds):
+
+| Loop | RTX 3090 (280 W, about 1330 MHz) | RTX 3060 (170 W, about 1886 MHz) |
+|---|---|---|
+| shipped (`iy=0 rpr=2 u8=1 rgf=1 rb0=3 rb1=0`, cb50068c) | 107.76, 107.34, 107.33 | 53.33, 53.32, 53.32 |
+| `+ sr=1` (da15a69d) | 108.09, 107.95, 107.98 (+0.49%) | 53.52, 53.55, 53.53 (+0.39%) |
+| `+ sr=1` + B drawn once, rb0=6 rb1=3 (the 4090's keys) | 105.30, 105.22, 105.25 | 52.10, 52.11, 52.11 |
+| `+ sr=1` + B drawn once, rb0=3 rb1=0 | 105.87, 105.85 | 52.40, 52.39 |
+| B drawn once with sr, without `iy=0` | 107.34, 107.29 | 53.32, 53.32 |
+
+verify-hits 400 of 400 on the sr file (451 hits, 12 salts) and on the B-drawn-once file (432 hits) on the 3090.
+The probe's CPU check passes for both on both cards. So sr ships for RTX 30 (cubin da15a69d...). B drawn once
+does not: on sm_86 its pipe is 94.1% (3090) and 96.4% (3060) at k 65536 against 97.0% and 99.2% for the loop
+without it, and `iy=0`, which is worth +0.45% on the plain loop, costs it 2.3%. Without `iy=0` it is only level
+with the shipped loop, below sr.
+
+The other miners on the same PCs (bench.sh, stand-in pool at 2^210, means of the 15 s samples from 30 s):
+
+| PC | OneZeroMiner | SRBMiner | PeakMiner | Ours, sr | % of best |
+|---|---|---|---|---|---|
+| RTX 3090 (280 W) | 108.92 (1362 MHz) | 109.23 (1362 MHz) | 108.46 (1343 MHz) | 108.01 (1330 MHz) | 98.9% |
+| RTX 3060 (170 W) | 53.41 (1895 MHz) | 53.31 (1899 MHz) | 53.14 (1890 MHz) | 53.53 (1886 MHz) | 100.2% |
+
+The 3060 is now above the best of them, the 3090 not: at 280 W our loop runs 30 MHz below theirs, so it
+spends more energy a MAC. That, not the pipe, is what is left on a watt-capped RTX 30.
+
 ## RTX 40-series
 
 Vast, 10 October.
