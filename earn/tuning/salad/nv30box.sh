@@ -146,11 +146,15 @@ if has product; then
   n=0
   for leg in ${HR_LEGS:-rel rot rot rel}; do
     n=$((n + 1))
-    case "$leg" in
+    # A leg may carry settings for the core after a "+": rot+PEARL_ROT_TILES=128.
+    lv=${leg%%+*}; extra=""
+    [ "$lv" != "$leg" ] && extra=$(echo "${leg#*+}" | tr '+' ' ')
+    case "$lv" in
       rel) e="PEARL_FOLD_ROT=0" ;;
       rot) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_sm86.cubin" ;;
-      *) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_$leg.cubin" ;;
+      *) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_$lv.cubin" ;;
     esac
+    e="$e $extra"
     # shellcheck disable=SC2086
     j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$ADDON" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
