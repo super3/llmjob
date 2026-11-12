@@ -161,7 +161,10 @@ class Ins:
         return cfg["lat_alu"]
 
     def ctrl(self):
-        return (self.stall & 15) | (self.yld << 4) | (self.wsb << 5) | (self.rsb << 8) | (self.wait << 11)
+        # sm_120 refuses a yield with a stall of 0 or of 12 and more (nvdisasm: "undefined value" in opex)
+        st = max(1, self.stall)
+        y = self.yld if st <= 11 else 0
+        return (st & 15) | (y << 4) | (self.wsb << 5) | (self.rsb << 8) | (self.wait << 11)
 
     def encode(self):
         hi = self.hi & ~(0x1FFFFF << CTRL_SHIFT)
@@ -604,6 +607,15 @@ def main():
     bo = off + bra.addr
     b[bo:bo + 16] = bra.encode()
     open(dst, "wb").write(bytes(b))
+    # the result must read back: every instruction of the section decodes, and the loop is ours in order
+    r = subprocess.run([nvd, "-hex", "-c", dst], capture_output=True, text=True)
+    if r.returncode or "error" in r.stderr:
+        sys.exit("nvdisasm refuses the result: " + r.stderr.strip().splitlines()[0])
+    back, _l = read(dst, nvd)
+    got = [x.text for x in back[t0:tb + 1]]
+    want = [re.sub(r"\.reuse", "", x.text) for x in code]
+    if [re.sub(r"\.reuse", "", g) for g in got] != want:
+        sys.exit("the loop read back is not the loop written")
     gaps, run = [], 0
     for x in code[:-1]:
         if x.op == "IMMA":
