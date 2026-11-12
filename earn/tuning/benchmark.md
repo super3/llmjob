@@ -2320,6 +2320,86 @@ in both; cards 1 to 4 were mining beside it.
   memory nothing wrote, so their watts are low (clock figures stand); the first `s-ring` rows at 16 and 32 windows
   also copied nothing. `p-slm` rows are held by a modulo in the address, not by local memory.
 
+### Arc rig, 11 to 12 November, night: the AMD folds' methods on the A750, and a fold that shares A' (`goal/arc-from-amd`)
+
+Which of the AMD core's methods carry over to the Arc A750, priced on card 5 with stand-ins in
+`pearl_sycl_peak` (rows `s-`, `t-`, `u-`; timing only, they compute wrong results on purpose), then the best one
+built. Card 5, 2 s a row, MACs an EU a clock and T-MAC/s, i915's clock and watts. The fold's stand-in (`f-v84-pf3`,
+its loads with no readout) ran 71.4 to 74.5 a clock, 61.6 to 61.9 T-MAC/s at 1,850 to 1,927 MHz and 178 W, in
+every run below.
+
+**Operands read from shared local memory, as the AMD folds read LDS.** A work-group copies its operands into a ring
+in local memory and its sub-groups read their fragments there. A 32 by 32 tile a sub-group (`t-`) beats the fold's
+16 by 64 (`s-`): it reads 4 fragments of each operand a k-step, so a k-step sends 12 messages, not 18.
+
+| Row | What | A clock | T-MAC/s, clock, watts |
+|---|---|---|---|
+| `t-ceil-v8` | both operands only read from local memory (filled once), 8-dword reads | 99.2 to 105.5 | 90.5 to 93.9, 1,982 to 2,036 MHz, 167 to 172 W |
+| `t-ceil-a` | A' from local memory, B' from memory | 98.6 to 107 | 86 to 92, 178 W |
+| `t-ceil` | both, B' read as two 4-dword halves | 71.1 to 72.5 | 64.7 to 64.9, 151 to 155 W |
+| `s-ceil`, `s-ceil-v8` | 16 by 64, both from local memory: halves; 8-dword reads | 47.2; 83.4 | 43.0; 75.9 |
+| `t-sbar-a` | A' from local memory, a split barrier every k-step, no copy | 93.0 to 95.6 | 82.6 to 85.3 |
+| `s-bar-a`, `s-sbar-a` | 16 by 64, a plain barrier every k-step; a split one | 72.1; 78.9 | 64.3; 71.8 |
+| `t-pinc-a` | A' copied a k-step ahead, the copy's loads waited for in their own k-step, no barrier | 78.5 to 87.0 | 69 to 75 |
+| `t-ld-a`, `t-ldc-a`, `t-st-a` | only its loads; its loads from one cached place; only its stores | 88.7; 98.4; 101.1 | |
+| `t-split-a` (4 by 8 sub-groups) | the whole pipeline: copy, split barrier | 73.2 to 75.2 | 66.4 to 66.9, 1,986 to 2,032 MHz, 172 to 174 W |
+| `t-spr-a4` (4 by 8) | the same with the copy's loads spread over a 4-k-step stage | 75.4 | 67.7, 2,005 MHz, 177 W |
+| `t-spr1` (4 by 8) | both operands through the ring | 64.7 | 57.8 |
+
+- **Local memory is fast for 8-dword reads and slow for 4-dword ones.** B' read as two halves of 4 dwords runs at
+  45 to 72; as one vector of 8, at 97 to 105.
+- **The split barrier carries over from RDNA 4.** `SPV_INTEL_split_barrier` (arrive after the stores, wait a
+  stage later) compiles and runs on DG2. A plain work-group barrier every k-step costs 16 to 22%: with 4 threads
+  an EU in the 256-register mode there are no other threads to run while it waits. The split one costs 3 to 8%.
+- **What the copy costs is its load from memory.** Stores to local memory cost nothing, and loads from a place
+  in the cache cost nothing. A load of A' from L2 that its own k-step waits for costs 10%. Keeping it in
+  registers for a stage, or pinning it further ahead, did no better (66 to 76).
+- **At the card's power limit the pipeline gains more than it does a clock.** Per clock it is level to +5%. It
+  draws less power for the same work, so the card keeps a higher clock: 66.4 to 67.9 T-MAC/s against 61.6.
+- Producer sub-groups that only copy (`u-`) ran at 21 to 39 even when they copied nothing, at every shape. The
+  cause is in code generation for a kernel with two roles; not found.
+
+**Built: `xmx8s`, A' shared in local memory.** A sub-group holds 32 rows by 32 columns. A work-group is 4 by 8
+sub-groups (16 windows); its A' goes into a ring of 3 stages of 2 k-steps, and B' is read as `xmx8f` reads it.
+It uses the same operand layouts as `xmx8f`. Off unless asked for: built with `-DPEARL_SYCL_XMX8S`, chosen with
+`PEARL_SYCL_FOLD=xmx8s`. The split barrier needs `-DPEARL_SYCL_SPLIT` and the translator's
+`SPV_INTEL_split_barrier`, which a release does not ask for (a 2024 driver refuses extensions it lacks).
+
+| Check, card 5 | Result |
+|---|---|
+| fold check, SYCL CPU device (the reference code), 8,192 regions | PASS: 0 mismatched, 23 of 23 hits |
+| fold check, card 5, 262,144 regions (m 8,192, n 16,384) | PASS: 0 mismatched, 1,002 of 1,002 hits |
+| `verify.sh` check step, 16,384 regions | PASS: 29 of 29 hits |
+| `verify-hits.js`, mainnet, core opened on `xmx8s` | PASS: 400 of 400 verified, 0 failed, 7 salts |
+| Kryptex, card 5, 5 minutes, worker `arc750-ci`, every hit checked before it was sent | 64.6 TH/s, 5 accepted, 0 rejected, no wrong hit; 2,000 MHz, 173 W |
+
+| Race, card 5, 12 s turns | Round 1 | Round 2 |
+|---|---|---|
+| `xmx8f` (today's fold) | 62.79 TH/s, 1,976 MHz, 188.5 W | 62.64, 1,962 MHz, 188.6 W |
+| `xmx8s`, split barrier | 64.96, 2,000 MHz, 171.7 W | 64.91, 2,019 MHz, 171.0 W |
+| `xmx8s`, plain barrier | 53.74, 2,000 MHz, 153.8 W | 53.65, 2,000 MHz, 153.7 W |
+| `xmx8f`, twin | 62.72, 1,974 MHz, 188.5 W | 62.68, 1,974 MHz, 188.7 W |
+
+- **+3.5% rate at 17 W less: 0.38 TH/s a watt against 0.33.** The fold now sits at the 2,000 MHz the card holds
+  under DPAS, not at its 190 W limit. On the rig's hot inner cards, which run a load cycle to stay cool, the
+  watts are the gain.
+- The plain-barrier build is 14% slower: the split barrier is what makes it pay.
+
+**The rest of the AMD list, priced.**
+
+- Operand fill, the real fold, card 5, 12 s turns, 3 rounds. Fill 48 did 62.66 to 62.86 TH/s at 1,974 to 1,979
+  MHz and 188 W (twin 62.67 to 62.78). 63 and 56 were level. 32 did 62.31 to 62.44 at 1,955 to 1,962 MHz, 16 did
+  61.72 to 61.87 at 1,936 to 1,943 MHz. Lower fills lose clock at the same watts, as on RDNA 4.
+- Readout, hash and test: the real fold runs 71.5 a clock against 72.1 for `f-v84-pf3`, its loads alone, so
+  under 1% by that stand-in; against `goal/arc-4`'s flat skeleton `p-base` (76 to 80 a clock) it is about 6%
+  (entry above). AMD's late readout and k 4096 are worth pricing again against `p-base`. Thread starts cost
+  1.4% (`f-regs` 113.7 against `f-regs-short` 112.1).
+- The host loop (AMD's hash queue and ticker): the miner's loop runs 62.04 to 62.16 TH/s against the fold alone at
+  62.63 to 62.76, so under 1%.
+- Address math (AMD's buffer loads): each of the fold's 72 loads a chunk has a 64-bit address chain (72 `addc`,
+  74 `add`, 147 `mov`). The scalar-address form was already timed level from real addresses (block reads, 73.4
+  against 72.9).
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

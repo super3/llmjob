@@ -89,7 +89,15 @@ enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F
             kXmx8REmu = 8 };
 
 // The folds that read the noised operands in fragment order (pearl_sycl_kernels.hpp, Layout).
+#if defined(PEARL_SYCL_XMX8S)
+// The shared-A' fold, an experiment (pearl_sycl_kernels.hpp, FoldXmxS): same operand layouts as xmx8f.
+enum : int { kXmx8S = 9, kXmx8SEmu = 10 };
+bool fold_is_frag(int f) {
+  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8S || f == kXmx8SEmu;
+}
+#else
 bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu; }
+#endif
 // How a fold wants the noised operands stored: 0 row-major, 1 fragment order (kFragA, kFragB), 2 fragment
 // order for block reads (kFragAT, kFragBT).
 int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 2 : fold_is_frag(f) ? 1 : 0; }
@@ -105,6 +113,10 @@ const char *fold_label(int f) {
     case kXmx8FEmu: return "xmx8f-emu (DPAS reference code, sub-group 8, operands in fragment order)";
     case kXmx8R: return "xmx8r (DPAS 8x8x32, sub-group 8, 16 rows a sub-group, B' shared through local memory)";
     case kXmx8REmu: return "xmx8r-emu (DPAS reference code, sub-group 8, B' shared through local memory)";
+#if defined(PEARL_SYCL_XMX8S)
+    case kXmx8S: return "xmx8s (DPAS 8x8x32, sub-group 8, 32 by 32 a sub-group, A' shared in local memory)";
+    case kXmx8SEmu: return "xmx8s-emu (DPAS reference code, A' shared in local memory)";
+#endif
     default: return "?";
   }
 }
@@ -280,12 +292,21 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
     ctx->fold = kXmx8R;
   } else if (want == "xmx8r-emu") {
     ctx->fold = kXmx8REmu;
+#if defined(PEARL_SYCL_XMX8S)
+  } else if (want == "xmx8s") {
+    ctx->fold = kXmx8S;
+  } else if (want == "xmx8s-emu") {
+    ctx->fold = kXmx8SEmu;
+#endif
   } else {
     return fail(err, err_len, "PEARL_SYCL_FOLD=" + want
                                   + " is not one of auto, dot, xmx16, xmx8, xmx8f, xmx8r, xmx16-emu, xmx8-emu, xmx8f-emu, xmx8r-emu");
   }
   ctx->hwSg = sg;
   ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R) && sg == 8);
+#if defined(PEARL_SYCL_XMX8S)
+  if (ctx->fold == kXmx8S && sg == 8) ctx->xmxHw = true;
+#endif
   return true;
 }
 
@@ -605,6 +626,14 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8 && ctx->hwSg != 8) fold = kXmx8Emu;
   if (fold == kXmx8F && ctx->hwSg != 8) fold = kXmx8FEmu;
   if (fold == kXmx8R && ctx->hwSg != 8) fold = kXmx8REmu;
+#if defined(PEARL_SYCL_XMX8S)
+  if (fold == kXmx8S && ctx->hwSg != 8) fold = kXmx8SEmu;
+  // A batch it cannot tile in fours (the check's 4-column batches): xmx8f, which reads the same layouts.
+  if ((fold == kXmx8S || fold == kXmx8SEmu) && (((a.rowsValid / 2u) % 4u) || ((a.colBatch / 4u) % 4u)))
+    fold = fold == kXmx8S ? kXmx8F : kXmx8FEmu;
+  if (fold == kXmx8S) { fold_xmxs<true>(q, a, groups); return; }
+  if (fold == kXmx8SEmu) { fold_xmxs<false>(q, a, groups); return; }
+#endif
   switch (fold) {
     // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
     case kXmx8R: fold_xmxr<true, 12>(q, a, groups); break;
@@ -927,7 +956,10 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   // What pearl_host_fold_name says, for core.device.fold and the logs. Written
   // here, once: the search thread and the JS thread both read it. xmx16 and
   // xmx8 say whether they got the hardware instruction or the reference code.
-  const bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R;
+  bool namedXmx = ctx->fold == kXmx16 || ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R;
+#if defined(PEARL_SYCL_XMX8S)
+  namedXmx = namedXmx || ctx->fold == kXmx8S;
+#endif
   ctx->foldName = std::string(fold_label(ctx->fold))
                   + (!namedXmx ? "" : ctx->xmxHw ? ", hardware DPAS" : ", DPAS reference code")
                   + ", col_batch " + std::to_string(ctx->colBatch) + ", band " + std::to_string(ctx->band)

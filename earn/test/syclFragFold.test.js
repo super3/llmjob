@@ -288,7 +288,7 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(pick).toContain('ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R) && sg == 8);');
     // The check tool's names are the host's codes, in order.
     expect(CHECK).toContain('const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xmx8f", "xmx8f-emu", "xmx8r",\n                            "xmx8r-emu"};');
-    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : -3;');
+    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : -3;');
   });
 
   test('the hardware kernel asks for 256 registers by a kernel property, the reference kernel does not', () => {

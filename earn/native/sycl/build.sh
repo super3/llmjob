@@ -92,7 +92,9 @@ if [ -z "${PEARL_NO_SYSTEM_GCC:-}" ] && command -v g++ >/dev/null; then
 fi
 
 SYCL_FLAGS=(-fsycl -O3 -fPIC -std=c++17 -Wno-psabi)
-# Extra compiler flags for a timing build, e.g. PEARL_SYCL_EXTRA="-DPEARL_A5=2". No release sets it.
+# Extra compiler flags for a timing build, e.g. PEARL_SYCL_EXTRA="-DPEARL_OPERAND_FILL=63". No release sets it.
+# The probe's split-barrier rows need a SPIR-V extension a release must not ask for; the probe's comment
+# on its "s-" rows gives the PEARL_SYCL_EXTRA that builds them.
 if [ -n "${PEARL_SYCL_EXTRA:-}" ]; then read -ra EXTRA <<< "$PEARL_SYCL_EXTRA"; SYCL_FLAGS+=("${EXTRA[@]}"); fi
 if [ "$JIT" = 1 ]; then
   # A device image a kernel: a hardware fold's kernel has nothing but the DPAS

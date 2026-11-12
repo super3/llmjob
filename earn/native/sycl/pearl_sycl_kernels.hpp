@@ -987,6 +987,189 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
   });
 }
 
+// ---------------------------------------------------------------------------
+// The shared-A' fold (xmx8s): an experiment, built only with -DPEARL_SYCL_XMX8S
+// (PEARL_SYCL_EXTRA). The AMD folds' way of feeding the matrix engines, on
+// Alchemist: a work-group copies its A' into local memory once and its
+// sub-groups read their fragments from there.
+//
+//   - A sub-group holds 32 rows by 32 columns (4 by 4 DPAS blocks, 16
+//     accumulators), so a k-step reads 4 fragments of A' and 4 of B'.
+//   - A work-group is 4 by 8 sub-groups: 4 row windows by 4 column windows,
+//     each window two sub-groups split by columns. Its A' (8 blocks of 16
+//     rows, 4 KB a k-step) is copied into a ring of 3 stages of 2 k-steps in
+//     local memory, 128 bytes a message, and read there as one vector of 8
+//     dwords a fragment. So a line of A' comes from memory once for 8
+//     sub-groups, where xmx8f reads A' once a sub-group. B' is read from
+//     memory as xmx8f reads it (two vectors of 4 dwords a fragment).
+//   - Each k-step of a stage sends a sub-group's share of the copy for the
+//     stage two ahead; the stage's end stores it to the ring and meets the
+//     group. With -DPEARL_SYCL_SPLIT that meeting is a split barrier
+//     (SPV_INTEL_split_barrier: arrive after the stores, wait a stage later),
+//     which needs a translator extension a release must not ask for; without
+//     it, a plain work-group barrier.
+//   - Operands in fragment order (kFragA, kFragB), as xmx8f: the draw is the
+//     same. The readout is xmx8f's: every block of a window XORs into the
+//     same 8 region words; the window's two sub-groups meet in `part`.
+//
+// Timed first as stand-ins (pearl_sycl_peak, "t-" rows, card 5): 66 to 68
+// T-MAC/s at 174 to 177 W against xmx8f's loads at 61.6 and 178 W.
+// ---------------------------------------------------------------------------
+#if defined(PEARL_SYCL_XMX8S)
+#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__) && !defined(PEARL_SYCL_XMX_JIT)  // the JIT build declares them above
+}  // namespace pearl_sycl
+SYCL_EXTERNAL void __spirv_ControlBarrierArriveINTEL(int, int, int) noexcept;
+SYCL_EXTERNAL void __spirv_ControlBarrierWaitINTEL(int, int, int) noexcept;
+namespace pearl_sycl {
+#endif
+
+#if defined(__SYCL_DEVICE_ONLY__)
+#define PEARL_LOCAL __attribute__((opencl_local))
+#else
+#define PEARL_LOCAL
+#endif
+
+template <bool HW> struct FoldXmxS {
+  static constexpr uint32_t GA = 4, GB = 8, N = GA * GB;  // sub-groups: 4 row windows by 8 half column windows
+  static constexpr uint32_t KS = 2, R = 3, D = 2;          // k-steps a stage, stages in the ring, stages ahead
+  static constexpr uint32_t T1 = 8u * 512u, T = KS * T1;   // ring bytes: a k-step's A' (8 blocks), a stage
+  FoldArgs A;
+  sycl::local_accessor<uint32_t, 1> ring;  // R * T bytes
+  sycl::local_accessor<uint32_t, 1> part;  // N * 8 * 16 words
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    if constexpr (HW)
+      return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+    else
+      return syclex::properties{syclex::sub_group_size<8>};
+  }
+
+  // The group meets: a sub-group may then store into the ring slot others read two stages ago.
+  static void arrive() {
+#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__)
+    if constexpr (HW) __spirv_ControlBarrierArriveINTEL(2, 2, 0x104);
+#endif
+  }
+  static void wait(sycl::nd_item<1> it) {
+#if defined(PEARL_SYCL_SPLIT) && defined(__SYCL_DEVICE_ONLY__)
+    if constexpr (HW) { __spirv_ControlBarrierWaitINTEL(2, 2, 0x102); return; }
+#endif
+    sycl::group_barrier(it.get_group());
+  }
+  static constexpr bool split() {
+#if defined(PEARL_SYCL_SPLIT)
+    return HW;
+#else
+    return false;
+#endif
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgl = (uint32_t)sg.get_group_linear_id();
+    const uint32_t si = sgl % GA, sj = sgl / GA;  // its row window in the group, its half column window
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t bandS = A.band / GA;
+    if (bandS < 1u) bandS = 1u;
+    uint32_t swr, swc;
+    window_of((uint32_t)it.get_group(0), rowWins / GA, colWins / (GB / 2u), bandS, swr, swc);
+    const uint32_t wr0 = GA * swr, wc0 = (GB / 2u) * swc;
+    const uint32_t wr = wr0 + si, wc = wc0 + sj / 2u, half = sj % 2u;
+    // The group's A': 16-row blocks 2 wr0 .. 2 wr0 + 7. Piece q (0..31) of a k-step: block q / 4, its
+    // 128-byte quarter q % 4, a lane's 16 bytes of it.
+    const int8_t *Ag = A.Ap + (size_t)(2u * wr0) * A.aStride + 16u * lane;
+    auto piece = [&](uint32_t q, uint32_t ks) -> const int8_t * {
+      return Ag + (size_t)(q / 4u) * A.aStride + (size_t)ks * 512u + (size_t)(q % 4u) * 128u;
+    };
+    // This sub-group's B': the window's 64-column block, its half's 4 fragments.
+    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)half * 1024u + 32u * lane;
+    PEARL_LOCAL int8_t *rb8 =
+        reinterpret_cast<PEARL_LOCAL int8_t *>(ring.template get_multi_ptr<sycl::access::decorated::yes>().get_decorated());
+    // A stage holds KS k-steps of 32 pieces; this sub-group copies piece sgl of each.
+    auto store_piece = [&](uint32_t slot, uint32_t kk, const v4iu &v) {
+      *reinterpret_cast<PEARL_LOCAL v4iu *>(rb8 + (size_t)slot * T + kk * T1 + sgl * 128u + 16u * lane) = v;
+    };
+    for (uint32_t st = 0; st < D; st++)
+      for (uint32_t kk = 0; kk < KS; kk++) store_piece(st, kk, *reinterpret_cast<const v4iu *>(piece(sgl, st * KS + kk)));
+    sycl::group_barrier(it.get_group());
+
+    v8i c[4][4];
+    each<4>([&](int r) { each<4>([&](int b) { c[r][b] = 0; }); });
+    constexpr uint32_t NST = 64u / KS;
+    for (uint32_t st = 0; st < NST; st++) {
+      const bool more = st + D < NST;  // a stage two ahead to copy
+      v4iu held[KS];
+      const PEARL_LOCAL int8_t *sl0 = rb8 + (size_t)(st % R) * T;
+      each<(int)KS>([&](int kk) {
+        const uint32_t ks = st * KS + (uint32_t)kk;
+        if (more) held[kk] = *reinterpret_cast<const v4iu *>(piece(sgl, (st + D) * KS + (uint32_t)kk));
+        v8i af[4], bf[4];
+        each<4>([&](int r) {
+          af[r] = *reinterpret_cast<const PEARL_LOCAL v8iu *>(sl0 + (size_t)kk * T1 + (2u * si + (uint32_t)r / 2u) * 512u
+                                                  + ((uint32_t)r % 2u) * 256u + 32u * lane);
+        });
+        each<4>([&](int b) { bf[b] = load_halves(Bb + (size_t)ks * 2048u + (size_t)b * 256u); });
+        int w = 0;
+        each<4>([&](int r) { w ^= af[r][0]; });
+        each<4>([&](int b) { w ^= bf[b][0]; });
+        w &= (int)A.zero;
+        each<4>([&](int r) { af[r][0] |= w; });
+        each<4>([&](int b) { each<4>([&](int r) { c[r][b] = dpas<8, HW>(sg, af[r], bf[b], c[r][b]); }); });
+      });
+      // A chunk is 4 k-steps, two stages: its readout after the second.
+      if (st & 1u) {
+        uint32_t x0 = 0, x1 = 0;
+        each<4>([&](int r) {
+          each<4>([&](int b) {
+            const v8i v = c[r][b];
+            x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+            x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
+          });
+        });
+        x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
+        x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
+        if (lane < 8u) part[(sgl * 8u + lane) * 16u + st / 2u] = (lane & 1u) ? x1 : x0;
+      }
+      if constexpr (split()) {
+        if (st > 0u) wait(it);
+        if (more) each<(int)KS>([&](int kk) { store_piece((st + D) % R, (uint32_t)kk, held[kk]); });
+        arrive();
+      } else {
+        if (more) each<(int)KS>([&](int kk) { store_piece((st + D) % R, (uint32_t)kk, held[kk]); });
+        sycl::group_barrier(it.get_group());
+      }
+    }
+    if constexpr (split()) wait(it);
+    sycl::group_barrier(it.get_group());
+    // The window's two sub-groups (half 0 and 1 are 4 sub-groups apart); half 0's lanes 0..7 finish it.
+    if (half == 0u && lane < 8u) {
+      const uint32_t qr = lane;
+      uint32_t words[16];
+      for (int j = 0; j < 16; j++)
+        words[j] = part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + GA) * 8u + qr) * 16u + (uint32_t)j];
+      const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+      region_epilogue(words, local, A.test, A.hits, A.allTr);
+    }
+  }
+};
+
+// `groups` is the batch's windows, as for the other folds; a work-group takes 16 of them. The batch must be
+// whole groups: rowsValid / 2 and colBatch / 4 multiples of 4.
+template <bool HW> inline void fold_xmxs(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
+  typedef FoldXmxS<HW> K;
+  if ((a.rowsValid / 2u) % K::GA || (a.colBatch / 4u) % (K::GB / 2u))
+    throw std::runtime_error("xmx8s needs row windows and column windows in fours");
+  const uint32_t wgs = groups / (K::GA * K::GB / 2u);
+  q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<uint32_t, 1> ring(K::R * K::T / 4u, h), part(K::N * 8u * 16u, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)wgs * K::N * 8u, (size_t)K::N * 8u), K{a, ring, part});
+  });
+}
+#endif  // PEARL_SYCL_XMX8S
+
+
 }  // namespace pearl_sycl
 
 #endif  // PEARL_SYCL_KERNELS_HPP
