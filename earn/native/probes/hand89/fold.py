@@ -128,7 +128,7 @@ def rw(text):
         return reads, {regs[0]}, "load"
     if op.startswith("IMAD.WIDE"):
         return reads | set(regs[1:]), span(regs[0], 2), "alu"
-    if op.startswith(("BRA", "BAR", "NOP", "ULDC")):
+    if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR")):
         return reads, writes, "ctl"
     assert regs, text
     return reads | set(regs[1:]), {regs[0]}, "alu"
