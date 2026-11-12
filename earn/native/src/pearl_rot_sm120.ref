@@ -21,4 +21,11 @@
 # (PC 944d2f0a, 600 W, driver 621.14): verify-hits 400 of 400 (570 hits, 29 salts). The same loop built by
 # nv50box.sh: 400 of 400 on two more PCs (498 and 510 hits), and 389.4 TH/s by hashrate.js (four 120 s legs,
 # 389.22 to 389.55) against 384.2 for ROT_C=11 and 367.6 for the release fold on one 489 W PC.
-13.3 e439e1ca4517c447b4391992b332f178051b184b68fc0520aae82be220b7f72e
+# (13.3 e439e1ca4517c447b4391992b332f178051b184b68fc0520aae82be220b7f72e: that file, replaced by the one below.)
+
+# The same hand loop with the readout keys of the RTX 40 loop and the IMMA's stall at 7 cycles (build_rot.py's
+# ARCH_KEYS: rpr=2 u8=1 rgf=1 rb0=3 rb1=0 ist=7). CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on
+# Windows: the same hash. RTX 5080 (PC 360 W, driver 610.88): verify-hits 400 of 400 (489 hits, 25 salts). The same
+# loop built by nv50box.sh: 400 of 400 on a 5080 and a 5090; +1.6% on a 5080 and +1.0% on a 5090 by hashrate.js
+# against the file before (tuning/benchmark.md, 12 November).
+13.3 57b0fdd0f25fd2b649d4655a93377e3e98d3f9f6fb4a896167604b4d99962aa4
