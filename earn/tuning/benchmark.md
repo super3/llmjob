@@ -266,6 +266,44 @@ chunk, 64 of them the readout's xors at their floor; by the probe's ALU price th
 it loses a clock. A batch of 512 column offsets costs no shown rate on any of the cards measured, which makes the review's
 job-switch change (fewer hits dropped when a job changes) free to try; it was not measured on a pool.
 
+### Salad, 12 November: L1 prefetches and the loop's load schedule on an RTX 2070 Super (branch goal/nv-20b)
+
+One PC throughout: RTX 2070 SUPER, driver 621.14, power limit 172 W (215 W default), held at it in every leg
+(166-169 W, 72-74 °C). The release core and each build from the same source with switches, `hashrate.js` legs of 90 s
+taking turns, an A/A twin (the release built again) in each race. The card drifted down about 2% over a race, so each
+leg is compared with the control legs beside it ("paired"). Every build passed `verify-hits.js` with no failures (400
+of 400 in 90 s; the 60 s runs verified all 357-375 of their hits).
+
+| Build | What it changes | Paired raw | Per clock | SM MHz against the release |
+|---|---|---|---|---|
+| A/A twin | nothing | −0.08% (−0.42 to +0.16), +0.02% | −0.1%, +0.3% | level |
+| `PEARL_BD_PF=3` | L1 prefetches two k-steps ahead, shared out among the warps that read the same A and B lines | −3.45% | −2.2% | −20 |
+| `PEARL_BD_PF=2` | B only | −1.23% (−1.32, −1.13) | −0.7% | −10 |
+| `PEARL_BD_PF=1` | A only | −1.46% (−1.47, −1.46) | −0.6% | −14 |
+| `PEARL_BD_P64=3` | 64-bit pointers a pass, so the 32 loads take immediates (8 fewer IADD3 a chunk, 653 instructions) | −0.51% (−0.78 to +0.29), 5 legs | −1.0% | +8 |
+| `PEARL_BD_P64=1` | A only | −1.08% | −1.1% | level |
+| `PEARL_BD_P64=2` | B only | −2.60% | −3.3% | +10 |
+| `PEARL_BD_TADDR=1` | round 6's transcript index in a register (649 instructions) | −0.41% (−0.41, −0.40) | −0.5% | level |
+| `-Xptxas --register-usage-level=8` | another ptxas schedule: 647 instructions, 251 registers | +0.31% (−0.06 to +1.08), 4 legs; level in the card's steady half (60.87-60.96 against 60.90-60.91) | +0.2 to +0.6% | −3 |
+| `-Xptxas --register-usage-level=3` | another schedule, 661 instructions | −0.27% (−1.13 to +0.11); level in the steady half | −0.3% | level |
+
+The last race's twin read −0.58% (−1.17 to +0.01): the card stepped up 2% between two legs, at the same clock, and
+the pairs across that step carry it. In the steady half all four builds read 60.87-60.96 TH/s.
+
+- **The warps' shared lines already reach L1 once.** A row group's four warps load the same A lines and a scheduler's
+  two warps the same B lines. If their loads missed L1 together, one warp's prefetch would save the others the trip
+  from L2 and the energy that costs. Instead every prefetch build is slower, at a lower clock and less work a clock:
+  each prefetch (`CCTL.E.PF1`) costs about what a load does, far more than the ALU price of an instruction.
+- **The loop's speed follows where ptxas puts its loads, not the instruction count.** Cutting 8 or 12 instructions a
+  chunk lost every time. P64 moved the loads (ptxas spreads them out) and lost 1% a clock, though fewer instructions
+  let the card run 0.5% faster at the same watts. A source that issues one load before each B pair's IMMA, instead of
+  four at the top of each pass, compiles to the release's chunk loop instruction for instruction: ptxas places the
+  loads itself, so the source cannot spread them.
+- So no schedule measured on this card beats the release's; ptxas's level-8 schedule ties it. What is left on Turing
+  needs the loads placed in SASS (a cubin patch or a hand schedule), not another source change.
+- Box time: one group, `nv20b-2070-1`, about 2 h (machine `e7703412`). The switches are in commits c6fe3964, e2c50a5f
+  and afd01fba and were taken out again (c1f1e88e): the Turing tests compare the fold with copies of its source.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
