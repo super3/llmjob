@@ -2567,7 +2567,7 @@ the wrong lane's word on this runtime (26.40), from a vector or a scalar; `group
 for bit. The reference DPAS now walks lanes by XOR: `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx16-emu` pass on card 5
 and on the CPU device.
 
-### Arc rig, 12 November, early morning: `xmx8w` to 91.7 TH/s a card (`goal/arc-8`)
+### Arc rig, 12 November, early morning: `xmx8w` to 92.0 TH/s a card (`goal/arc-8`)
 
 **91.7 TH/s on a cool card, verified (was 88.4).** Card 4, `pearl_sycl_check --bench 8`, three rounds taking
 turns: the new build 91.6 to 91.8 TH/s at 1,938 to 1,946 MHz and 188 W; the previous mining build 89.2 to 89.4;
@@ -2584,6 +2584,11 @@ turns: the new build 91.6 to 91.8 TH/s at 1,938 to 1,946 MHz and 188 W; the prev
   word, a k-step is about 50 instructions: 88.0 to 90.3 on card 5 at the same 188 W. It needs each operand inside one
   4 GB window, so the host allocates A' or B' again (up to five tries) when one crosses a boundary, and runs `xmx8r`
   if it still does.
+
+**Then 92.0 TH/s, verified.** A window's two sub-groups now XOR their chunk words into one shared place in local
+memory (4 KB, not 8) and the readout XORs whole accumulators before their dwords: same results (check PASS on card 5
+and the CPU device). Card 4, three rounds: 92.0 at 1,954 to 1,962 MHz and 188 W against 91.6 for the build before;
+verify.sh PASS, verify-hits 400 of 400. The mining cards run it (235 TH/s at duty 60,60,60,60,75).
 
 **What holds it now.** At the 2,000 MHz clock cap the fold does about 97.5 MACs an EU a clock (A' zeroed, so not
 power-bound: 87.3 TH/s at 169 to 173 W); 100 TH/s needs 112. With the address fix it sits at the 188 W limit near
