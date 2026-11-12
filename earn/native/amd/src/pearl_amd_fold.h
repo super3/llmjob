@@ -859,10 +859,13 @@ __device__ __forceinline__ void pearl_amd_lds_barrier() {
 #ifndef PEARL_AMD_DPP
 #define PEARL_AMD_DPP (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
 #endif
+// The passes whose wave32 has these lane moves: RDNA 3 and 4, and RDNA 2 (gfx10 has the same DPP row
+// moves and v_permlanex16), where PEARL_AMD_DPP=1 asks for them; it is off there by default, untimed.
+#define PEARL_AMD_DPP_HW (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12 || (PEARL_AMD_DOT4 && !PEARL_AMD_EMU))
 // XOR across the eight lanes that share a region: lane bits 0, 3 and 4 in every layout here.
 // (Bits 1 and 2 pick the region's column offset; on CDNA bit 5 picks its row offset.)
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
-#if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+#if PEARL_AMD_DPP && PEARL_AMD_DPP_HW
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
 #if PEARL_AMD_RDPERM == 1 && PEARL_AMD_WMMA12
@@ -2110,7 +2113,15 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC 
 // RDNA2's fold (PearlAmdDot4), in the one-slab loop. RDNA3 and RDNA4 have it only in a build with
 // -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD); add -DPEARL_AMD_DPP=0 and it runs there exactly RDNA2's
 // loop and readout, with v_dot4_i32_iu8 for v_dot4_i32_i8 (and the wrap readout on RDNA4).
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_dot4(
+// PEARL_AMD_DOT4_WAVES=n asks the compiler for n waves a SIMD (amdgpu_waves_per_eu), which caps the
+// VGPRs: on gfx103x, 4 waves at 201 VGPRs is 2 blocks a WGP, and 6 (168 VGPRs) would be 3, which the
+// 36 KB of LDS a block allows. Unset, the compiler picks (201 VGPRs, 4 waves).
+#ifdef PEARL_AMD_DOT4_WAVES
+#define PEARL_AMD_DOT4_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_DOT4_WAVES)))
+#else
+#define PEARL_AMD_DOT4_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_DOT4_OCC void pearl_amd_fold_dot4(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_DOT4_FOLD
   pearl_amd_fold_body<PearlAmdDot4>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);
