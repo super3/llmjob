@@ -105,7 +105,12 @@ bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R |
 #endif
 // How a fold wants the noised operands stored: 0 row-major, 1 fragment order (kFragA, kFragB), 2 fragment
 // order for block reads (kFragAT, kFragBT).
+#if (PEARL_RING_VAR & 262144)
+// 3, for the ring fold's timing variant PEARL_RING_VAR & 262144 only: A' for block reads, B' in fragment order.
+int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 3 : fold_is_frag(f) ? 1 : 0; }
+#else
 int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 2 : fold_is_frag(f) ? 1 : 0; }
+#endif
 
 const char *fold_label(int f) {
   switch (f) {
@@ -435,6 +440,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   Layout lay{kRowMajor, 0};
   if (ctx->frag == 1) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   if (ctx->frag == 2) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragBT, ctx->bStride / 4u};
+  if (ctx->frag == 3) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   materialize16(q, isA ? ctx->dA : ctx->dB, dense, perm, isA ? ctx->dAp : ctx->dBp, rows, kLog2,
                 rank, readVecs, fillWord, lay);
 }
