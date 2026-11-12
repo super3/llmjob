@@ -154,7 +154,13 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 #endif
 
 // The tile's fold. It takes nothing from the kernel but these two values.
-static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
+// GP_INLINE=1 (with GP_ROTC): the loop inlined into the kernel, as pearl_rot.cu's ROT_INLINE.
+#if GP_ROTC && defined(GP_INLINE) && GP_INLINE
+#define GP_LOOP_ATTR __forceinline__
+#else
+#define GP_LOOP_ATTR __noinline__
+#endif
+static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && GP_ROTC
   // The rotation fold, compiled: the miner's sm_120 loop (src/pearl_rot_c.inc), word for word.
 #define RC_MT GP_MT
