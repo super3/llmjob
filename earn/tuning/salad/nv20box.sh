@@ -8,7 +8,7 @@
 # copy of amdtest.py's nvtest boxes with the group names nv20-<card>-<n>). Every line is
 # "[nvtest] HH:MM:SS [nv20] ..." (bench.sh's "[nvtest] [bench] HH:MM:SS ..."), so the test-box tools read it.
 #
-# Environment:
+# Environment (STAGES may also name "lgc": LGC (MHz), LGC_LEGS, LGC_SECS, after product):
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
 #   STAGES        any of "probe product bench", in that order (default all three)
 #   PROBE_LIST    the probe's runs, ';' between them: "<kernel> <seconds> [tiles]" (default below)
@@ -124,6 +124,25 @@ if has product; then
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
+fi
+if has lgc; then
+  # Legs with the SM clock locked (nvidia-smi -lgc LGC,LGC): at one clock the watts each build draws are the
+  # finer instrument (goal-nvk14). Says so and skips if the box may not lock clocks.
+  cd "$R/earn/native/probes" || fail "no probes"
+  if nvidia-smi -i 0 -lgc "${LGC:-1500},${LGC:-1500}" > $W/lgc.txt 2>&1; then
+    say "lgc locked at ${LGC:-1500} MHz: $(tr '\n' ' ' < $W/lgc.txt | cut -c1-200)"
+    n=100
+    for leg in ${LGC_LEGS:-rel}; do
+      n=$((n + 1))
+      [ -f "$W/core-$leg/build/Release/pearl_core.node" ] || { say "lgcleg $leg$n: no core"; continue; }
+      j=$(timeout -k 5 $(( ${LGC_SECS:-90} + 120 )) node hashrate.js "$W/core-$leg/build/Release/pearl_core.node" \
+        "${LGC_SECS:-90}" 20 2> $W/lgc$n.err | grep '^{' | tail -1)
+      say "lgcleg $leg$n $(echo "$j" | jq -c '{th, n, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
+    done
+    nvidia-smi -i 0 -rgc > /dev/null 2>&1; say "lgc reset: $(q clocks.sm)"
+  else
+    say "lgc not allowed here: $(tr '\n' ' ' < $W/lgc.txt | cut -c1-200)"
+  fi
 fi
 if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.

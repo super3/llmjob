@@ -132,6 +132,30 @@ __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
   return v;
 }
 
+// The chunk loop's A and B loads with another cache operator, for races
+// (PEARL_BD_LD_A and PEARL_BD_LD_B, see pearl_config.h). 0 is pearl_bd_ldg itself.
+template <int C>
+__device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
+  int4 v;
+#define PEARL_BD_LDOP_ASM(op)                                       asm volatile(op " {%0,%1,%2,%3}, [%4];"                                       : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)                     : "l"(p)                                                         : "memory")
+  if constexpr (C == 1)
+    PEARL_BD_LDOP_ASM("ld.global.v4.s32");
+  else if constexpr (C == 2)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.v4.s32");
+  else if constexpr (C == 3)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_first.v4.s32");
+  else if constexpr (C == 4)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::no_allocate.v4.s32");
+  else if constexpr (C == 5)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L2::128B.v4.s32");
+  else if constexpr (C == 6)
+    PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.L2::128B.v4.s32");
+  else
+    return pearl_bd_ldg(p);
+#undef PEARL_BD_LDOP_ASM
+  return v;
+}
+
 #if PEARL_BD_TAIL_LDG
 // The same, but coherent (ld.global): the tile's last k-step loads the next tile's
 // k-step 0 with it (PEARL_BD_TAIL_LDG, see pearl_config.h).
@@ -840,6 +864,20 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       return pearl_bd_ldg(p);
     };
+    auto ldg_a = [&](const int8_t *p) -> int4 {
+      if constexpr (PEARL_BD_LD_A == 0) return ldg(p);
+#if PEARL_BD_TAIL_LDG
+      if (last) return pearl_bd_ldg_c(p);
+#endif
+      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
+    };
+    auto ldg_b = [&](const int8_t *p) -> int4 {
+      if constexpr (PEARL_BD_LD_B == 0) return ldg(p);
+#if PEARL_BD_TAIL_LDG
+      if (last) return pearl_bd_ldg_c(p);
+#endif
+      return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
+    };
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
@@ -849,10 +887,10 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg_a(Aprime + ao + q * FRAG_BLOCK);
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;

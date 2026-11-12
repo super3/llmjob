@@ -965,6 +965,17 @@ typedef struct {
 #ifndef PEARL_BD_TAIL_LDG
 #define PEARL_BD_TAIL_LDG (PEARL_BD_LEAN || PEARL_BD_RED)
 #endif
+// PEARL_BD_LD_A, PEARL_BD_LD_B: the cache operator of the chunk loop's A and B loads,
+// for races on RTX 20 (pearl_bd_ldg_op). 0 ld.global.nc (the release), 1 ld.global
+// (coherent), 2 .nc.L1::evict_last, 3 .nc.L1::evict_first, 4 .nc.L1::no_allocate,
+// 5 .nc.L2::128B, 6 .nc.L1::evict_last.L2::128B. The tile's last k-step keeps
+// TAIL_LDG's coherent loads either way.
+#ifndef PEARL_BD_LD_A
+#define PEARL_BD_LD_A 0
+#endif
+#ifndef PEARL_BD_LD_B
+#define PEARL_BD_LD_B 0
+#endif
 #ifndef PEARL_BD_TADDR
 #define PEARL_BD_TADDR PEARL_BD_RED
 #endif
