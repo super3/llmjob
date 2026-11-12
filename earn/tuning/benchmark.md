@@ -2799,6 +2799,40 @@ epilogue kernel (2.4%). It passes the fold check but never beat the SYCL fold (c
 With the scheduler off ESIMD does the same work a clock as xmx8w (46.3 against 46.4 TH/s a GHz), but the card holds a
 lower clock on it. The finalizer splits its DPAS into runs of 4 and puts a dummy before most (9 a chunk).
 
+### Arc rig, 12 November, late morning: the hash at the end of a work-group (`goal/arc-10`)
+
+`xmx8w` now runs two column windows a work-group, one after the other (c95de7d9; `PEARL_SYCL_WSEQ=1` runs one, and
+so does a batch with an odd number of column windows). Card 4, cool, 8 s, taking turns: spare18 verify.sh PASS
+(`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits 400 of 400, 0 failed; **94.4 to 94.6
+TH/s at 1,938-1,950 MHz, 188 W**, against spare17 (cf88be3c) 93.8 and `xmx8r` 68.1-68.3.
+
+Why: the BLAKE3 hash at the end of a work-group holds the Xe-core's local memory (two work-groups fit) while one
+sub-group a window runs it, so the next work-group waits. With two windows in turn, sub-group `sgi` of each window
+hashes set `sgi`'s words, both at once: the tail is paid once for twice the work. As a loop; unrolled, the second
+set's set-up wrote registers the first set's B' uses and the finalizer added 16 dummy DPAS.
+
+Timing on card 5 (8 s, 2-3 rounds, 188 W; control 91.8-92.2 TH/s, 1,935-1,946 MHz, 4 dummy DPAS a loop):
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| no hash at all (timing, `PEARL_W_NOEPI`) | 94.7-94.9 | 0 |
+| hash in a second kernel, words out as plain stores (`PEARL_W_SEPEPI`), PASS | 88.6-88.9 | 2 |
+| the same, words out as sub-group block writes (`SEPBLK`), PASS / without the hash kernel | 89.2 / 93.0-93.2 | 0 |
+| one block write of the words' XOR, no hash (`SB1`) | 93.5 | 2 |
+| hash reading its message words from local memory when needed (`PEARL_W_LEAN`), PASS | 85.5-85.7 | 3 |
+| hash as a noinline function / with `IGC_FunctionControl` 2 or 3 | not raced / FAIL | 8 |
+| DPAS in a snake (first two of each run differ in B'), PASS / with `-noschedule` | 90.2 / 88.1 | 5 / 2 |
+| the hash twice (timing) | 85.3 | 18 |
+| **two column windows in turn, as a loop, PASS (kept)** | **92.85-92.98** | 4 |
+| the same unrolled | 90.6-90.8 | 20 |
+| with it: band 32 / 128, column batch 512 | 92.6 / 90.1 / 90.4 | |
+| with it: KPS 2 / two ring slots | 88.4-88.6 / 86.4 | |
+
+What it taught: the dummy DPAS come from the hash's ALU code landing in registers the loop's B' uses (any ALU write
+anywhere in the kernel counts), but removing them is worth less than it looked: a build with 0 dummies and a short
+tail ran 93.1 where the one with no tail at all ran 94.9. The tail is the larger part. Small code changes also move
+the rate by 1-2% through register allocation alone, so race every variant rather than reason from dummy counts.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
