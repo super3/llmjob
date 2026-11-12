@@ -711,6 +711,36 @@ are the two folds themselves. Card 5, 2 to 4 s a row:
   watts do not. The `p-slm` rows are slow because of a modulo by a run-time
   number in the address, not because of local memory.
 
+## The split fold (12 November 2026)
+
+`fold_xmxw` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8w`. The ring
+fold with a 32 by 32 tile a sub-group, the window's two sub-groups sharing A'
+through Alchemist's split DPAS.
+
+- **The split DPAS.** DPASW (`intel_sub_group_i8_i8_split_matrix_mad_k32`,
+  OpenCL's `cl_intel_subgroup_split_matrix_multiply_accumulate`) takes A from
+  a pair of sub-groups of a work-group, 2i and 2i + 1: each gives half of the
+  8 rows (4 dwords a lane) and gets all 8 rows times its own B. A window is
+  split by columns: each sub-group holds all 32 rows by 32 columns, reads
+  half of each A' fragment (one 128-byte block read in the kFragAT layout) and
+  its 4 B' fragments from the ring. The same A' bytes as the ring fold, half
+  its B' reads, 176 registers.
+- **A copy with no branch.** One block of 128 bytes a sub-group a k-step,
+  loaded a k-step early, with no `if` in the k-step (past the last k-step it
+  copies k-step 63 again into a slot no one reads). IGC put a goto/join round
+  each guarded load and store of the ring fold's copy, and did not schedule
+  across them: the copy cost 23% there and 7% here. So the fold needs 8
+  windows a work-group; at any other number the host runs `xmx8r`.
+- **The group meets once a chunk.** Slots of four k-steps, 24 KB of ring.
+- Prebuilt (AOT) kernels have no split DPAS, so there it reads all of A' and
+  runs the plain DPAS, as its reference `xmx8w-emu` does.
+
+On card 4 of the rig (cool): 87.7 to 88.0 TH/s at 1,950 MHz and 188 W against
+`xmx8r`'s 68.2 at 2,000 MHz and 188 W; fold check and `verify-hits.js` (400 of
+400) pass, and on the host's 2024 driver too. It sits at the 188 W limit, so
+what it costs in watts matters as much as its clock. Details, and what was
+timed beside it, in `earn/tuning/benchmark.md` ("the split fold").
+
 ## The build a release carries
 
 A release carries this core as a folder, `sycl/`, beside its other cores: in
@@ -1260,7 +1290,7 @@ this one:
 | `PEARL_CORE_PATH` | | names a local build to the app and the CLI: point it at `build/pearl_core_sycl.node`. Without it they look in the release's `sycl/` folder |
 | `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
-| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx8r`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8r` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
+| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8r` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
 | `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is a quarter of the cache the device reports for the fragment fold and the plain fold (64 on an A750) and all of it for `xmx8` and `xmx16` (256) |
 | `PEARL_SYCL_DUTY` | 100 | the share of the time a card folds, 10 to 100, for a card that cannot shed the heat of a full load: each batch waits for the one before it, then the card rests for the remainder. One figure for every card, or a list by card index (`100,60,60`; a card past the end takes the last). The fold is the same. On the A750 rig 60 gave 37.5 TH/s and 128 W a card where 100 gives 63 and 190 W |
