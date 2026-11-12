@@ -15,7 +15,7 @@ best" between them, not TH/s. The old file with every run's notes:
 | RTX 40-series | 87–96%, median 93% (9–10 Nov, v0.6.13) | Our gap widens at lower power limits |
 | RTX 50-series | 86–97%, median 94% (9–10 Nov, v0.6.13) | 5090 trails most (86–87%) |
 | GTX 16-series | 96–104% (17 Oct, v0.6.0) | 0.7–1.3 TH/s; not worth mining |
-| AMD Radeon | 101–143%, median 108%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), RDNA 4 and 7800 XT v0.6.13 against 3.8.2 (9–10 Nov), RDNA 2 CLI v0.7.0 against 3.8.6 on a lent HiveOS rig (12 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103%; RX 6800 and two RX 6600s 108% (1400 MHz core cap) |
+| AMD Radeon | 101–143%, median 111%: RX 7900 rows v0.6.16 against SRBMiner 3.8.6 (11 Nov), RDNA 4 and 7800 XT v0.6.13 against 3.8.2 (9–10 Nov), RDNA 2 CLI v0.7.0 against 3.8.6 on a lent HiveOS rig (12 Nov) | RDNA 4 111–143%; 7900 XTX 101% and 102% on the two PCs that read 92% and 94% on v0.6.13; 7900 XT 107% and 102%; 7800 XT 103%; RX 6800 115% and two RX 6600s 114-115% (1400 MHz core cap) |
 | Intel Arc | Not Salad: one rented rig of six Arc A750s. 124% against IAminer 1.0.0 on one card, 128% on six (10 Nov, PR #290's SYCL core, in no release). With the fragment fold of 11 Nov (branch `goal/arc-kernel`, not on the PR): 470% of IAminer's 10 Nov figure on a cool card, 423 to 449% on six | 16.9 TH/s a card on the PR; 64 on a cool card with the fragment fold and 55 to 58 a card with six running hot, at the card's 190 W limit; the matrix engines alone do 113 T-MAC/s; 10.2 on HiveOS's own 2024 driver (first fold). SRBMiner and WildRig mine nothing on Arc; the pool rejected both shares IAminer found |
 
 ## RTX 20-series
@@ -2120,16 +2120,18 @@ PeakMiner and OneZeroMiner don't mine on AMD.
 | RX 7900 XT | Salad (20 GB) | 1d5cab04 | 48.5 | 0 | 47.6 | 0 | 102% |
 | RX 7800 XT | Salad (16 GB) | 559a11d6 | 31.8 | 0 | 30.9 | 0 | 103% |
 | RX 7800 XT | Salad (16 GB) | 16f1685c | 32.9 | 0 | 32.0 | 0 | 103% |
-| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 17.26 | 0 | 16.03 | 0 | 108% |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 7.94 | 0 | 7.38 | 0 | 108% |
-| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 7.93 | 0 | 7.37 | 0 | 108% |
+| RX 6800 | Chedr's HiveOS rig (1400 MHz core cap) | bus 0d:00.0 | 18.39 | 0 | 16.03 | 0 | 115% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 03:00.0 | 8.46 | 0 | 7.38 | 0 | 115% |
+| RX 6600 | Chedr's HiveOS rig (1400 MHz core cap) | bus 07:00.0 | 8.43 | 0 | 7.37 | 0 | 114% |
 
 Every PC passed a 10-minute hit check: 400 hits verified, 0 failed, 7.94–8.05 hits a salt.
 
 The three RDNA 2 rows aren't Salad. They come from a community member's HiveOS rig on 12 November: our CLI v0.7.0
-from `next/intel-and-kernel` (in no release yet) against SRBMiner 3.8.6, with the cards capped at 1400 MHz by their
-owner, so compare their "% of best", not their TH/s. Each is the mean of two 4-minute legs per miner, taken in turns.
-Both cards passed verify-hits (400 of 400). Details are in "RDNA 2 on a lent HiveOS rig", below.
+from `next/intel-and-kernel` (in no release yet) with the RDNA 2 fold of `goal/rdna2b` (A' words by DPP, 64-byte
+slabs) against SRBMiner 3.8.6, with the cards capped at 1400 MHz by their owner, so compare their "% of best", not
+their TH/s. Each is the mean of two 4-minute legs per miner, taken in turns, with four cards mining at once. Both
+cards passed verify-hits (400 of 400). Before that fold the same rows read 108% (17.26, 7.94 and 7.93 TH/s).
+Details are in "RDNA 2 on a lent HiveOS rig", below.
 
 The four RX 7900 rows are the 11 November re-run: the same PCs, v0.6.16 against SRBMiner 3.8.6, both miners run
 again ("Salad, 11 November: the RX 7900 rows re-run", below). The other six rows are still v0.6.13 against
@@ -2296,6 +2298,61 @@ of warm-up then 240 s measured, a reading every 10 s, all under the guard. Ours 
   is no faster here (107.7% either way). The Salad benchmark now pins 3.8.7 for its NVIDIA rows.
 - Shares in the 12 legs (about 2.1M difficulty): ours 5, SRBMiner 4, none rejected. Too few to compare.
 - The guard never fired. Nothing of ours or SRBMiner's was left running after.
+
+#### The dot4 fold, faster: A' words by DPP, 64-byte slabs (12 November, 19:45-21:00 UTC)
+
+Same rig, same cap, under the guard. Builds made on the rig (ROCm 7.2 clang, gfx1030 and gfx1032) and raced with
+`race.sh`'s method: each build's fold alone (fold check binary, the miner's operands) and `hashrate.js` 30 s after
+10 s, builds taking turns, the CI release core of 5ced0641 ("CI") among them.
+
+What held the old loop, from timing-only builds on the RX 6800 (fold alone; the release 17.33-17.34 TMAC/s):
+
+| Left out | TMAC/s | |
+|---|---|---|
+| LDS fragment reads (each slab's read once, used at every k-step) | 19.21, 19.22 | +10.9% |
+| the slab barrier | 18.41, 18.42 | +6.2% |
+| the slab staging (global loads, LDS stores) | 17.99, 18.00 | +3.8% |
+| staging and barrier | 19.25, 19.26 | +11.1% |
+
+So two changes, now the RDNA 2 default (`goal/rdna2b`):
+
+- **A' words by DPP** (`PEARL_AMD_DOT4_DPPA`). The eight lanes of a dpp8 group hold the same eight A' rows, so each
+  lane reads one row's word and every `v_dot4c` takes the word it needs from that lane through its own dpp8 operand
+  (`v_dot4c_i32_i8_dpp`, no extra instruction). LDS reads a k-step fall from 24 words a lane to 10; LDS instructions
+  a slab from 104 to 40. 191 VGPRs.
+- **64-byte slabs for the dot4 fold** (`PEARL_AMD_DOT4_SLAB`): half the barriers and stores. 61,440 bytes of LDS a
+  block, still 2 blocks a WGP. The host lays out each fold's operands by that fold's slab. (On an RX 9060 XT, 64-byte
+  slabs were 4% slower in the WMMA fold, so the other folds keep 32.)
+
+| Build | RX 6800 `hashrate.js` (TH/s) | fold alone (TMAC/s) | RX 6600 (03:00.0) `hashrate.js` | fold alone |
+|---|---|---|---|---|
+| CI release (5ced0641) | 17.27, 17.26, 17.26 | | 7.95, 7.95, 7.95 | |
+| release, built on the rig | 17.25-17.29 | 17.33-17.38 | 7.95, 7.95 | 7.988-7.990 |
+| 64-byte slabs | 17.76-17.79 (+3.0%) | 17.84-17.90 | 8.19 (+3.0%) | 8.230 |
+| A' by DPP | 18.04 (+4.5%) | 18.14 | 8.31, 8.31 (+4.5%) | 8.352-8.354 |
+| **both (the new default)** | **18.35, 18.36, 18.36 (+6.4%)** | 18.43-18.47 | **8.45, 8.46, 8.46 (+6.4%)** | 8.499-8.506 |
+
+- The new default passed the fold check (256x512 and 2048x2048) on both cards, and verify-hits 400 of 400, 0 failed,
+  on both (RX 6800 120 s at 18.38 TH/s, RX 6600 180 s at 8.46). 202 VGPRs, 4 waves, no spills on every gfx103x
+  target (`build-amd.sh check`).
+- **Not what held it: VGPR bank conflicts.** RDNA 2 reads each VGPR bank (register number mod 4) once a clock. In a
+  probe of nothing but `v_dot4c` from registers (RX 6800, 4 waves a SIMD) the three operands in three banks ran 253
+  MAC a CU a clock; accumulator and A' word in one bank 194 (189 with A' changing); A' and B' in one bank, B'
+  changing, 194; accumulator and B' in one bank 126. 643 of the old fold's 1032 dot4s read two operands from one
+  bank. But a build that placed every operand by hand (physical register constraints, layout fitted to the paired
+  LDS reads: 1029 of 1032 clean, 222 VGPRs, no spills) ran 17.15 against the release's 17.27 TH/s, and +0.1% on
+  top of the DPP build. So the loop waits on LDS and barriers, not on the register file.
+- Also tried: the next slab stored at the top of each slab instead of the bottom (16.66-16.68, -3.4%), and an
+  LDS-only slab barrier (17.26-17.27, no change).
+- The DPP form needs dpp8, which gfx10 and later have; RDNA 3 and RDNA 4 run their WMMA folds, whose operands can't
+  come through a dpp8 operand, so this doesn't carry over. What may: their loops' slab barrier and staging, priced
+  here at 6% and 4% of RDNA 2's.
+- **Mining, against SRBMiner again** (21:02-21:24 UTC): the CLI of 5ced0641 with this core, on the four cards whose
+  fans read rpm, Kryptex US, legs taking turns as above. Ours 43.689 and 43.770 TH/s, SRBMiner 3.8.6 38.184 and
+  38.155: 114.6%. Per card: 03:00.0 8.446, 8.472 against 7.385, 7.376 (114.6%); 07:00.0 8.416, 8.448 against 7.377,
+  7.372 (114.3%); 0d:00.0 (RX 6800) 18.398, 18.391 against 16.032, 16.025 (114.8%); 10:00.0 8.428, 8.460 against
+  7.390, 7.382 (114.3%). Same power as before (46-55 W an RX 6600, 118 W the RX 6800), same clocks. Ours 3 shares
+  accepted, SRBMiner 1, none rejected. Max 55/63 C; the guard never fired.
 
 ### Our own builds on Salad, 7 November: the RDNA 4 readout, late and in three chains (#287 item 4)
 

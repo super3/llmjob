@@ -269,21 +269,32 @@ int main(int argc, char **argv) {
   // The matrix folds read the operands in per-tile order when built with PEARL_AMD_TILED, as
   // the host materialises them then (pearl_materialize16_tiled's addresses); ref reads
   // row-major, so it gets its own copies.
-  auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br) {
+  auto tiled = [&](const std::vector<int8_t> &src, uint32_t rows, uint32_t br, uint32_t kb) {
     std::vector<int8_t> out(src.size());
-    const uint32_t kb = PEARL_AMD_SLAB;
     for (uint32_t r = 0; r < rows; r++)
       for (uint32_t kk = 0; kk < k; kk++)
         out[(size_t)(r / br) * br * k + ((size_t)(kk / kb) * br + r % br) * kb + kk % kb] = src[(size_t)r * k + kk];
     return out;
   };
   int8_t *dAt = dA, *dBt = dB;
+  // The dot4 fold's slab is its own (PEARL_AMD_DOT4_SLAB), so it gets copies tiled by it.
+  int8_t *dAt4 = dA, *dBt4 = dB;
   if (PEARL_AMD_TILED) {
     if (!ok(hipMalloc(&dAt, A.size()), "hipMalloc A tiled") || !ok(hipMalloc(&dBt, B.size()), "hipMalloc B tiled"))
       return 2;
-    const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM), Bt = tiled(B, n, PEARL_AMD_BN);
+    const std::vector<int8_t> At = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_SLAB), Bt = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_SLAB);
     hipMemcpy(dAt, At.data(), At.size(), hipMemcpyHostToDevice);
     hipMemcpy(dBt, Bt.data(), Bt.size(), hipMemcpyHostToDevice);
+    dAt4 = dAt; dBt4 = dBt;
+    if (PEARL_AMD_DOT4_SLAB != PEARL_AMD_SLAB) {
+      if (!ok(hipMalloc(&dAt4, A.size()), "hipMalloc A tiled (dot4)") ||
+          !ok(hipMalloc(&dBt4, B.size()), "hipMalloc B tiled (dot4)"))
+        return 2;
+      const std::vector<int8_t> At4 = tiled(A, m, PEARL_AMD_BM, PEARL_AMD_DOT4_SLAB),
+                                Bt4 = tiled(B, n, PEARL_AMD_BN, PEARL_AMD_DOT4_SLAB);
+      hipMemcpy(dAt4, At4.data(), At4.size(), hipMemcpyHostToDevice);
+      hipMemcpy(dBt4, Bt4.data(), Bt4.size(), hipMemcpyHostToDevice);
+    }
   }
   hipMemcpy(dA, A.data(), A.size(), hipMemcpyHostToDevice);
   hipMemcpy(dB, B.data(), B.size(), hipMemcpyHostToDevice);
@@ -329,7 +340,8 @@ int main(int argc, char **argv) {
     g_hits = foldHits;
     hipMemset(foldHits.count, 0, 4);
     // One launch to check (and to load the code), then `reps` more to time.
-    const int8_t *fa = f.tall ? dAt : dA, *fb = f.tall ? dBt : dB;
+    const bool dot4 = f.cap == PEARL_AMD_CAP_DOT4;
+    const int8_t *fa = f.tall ? (dot4 ? dAt4 : dAt) : dA, *fb = f.tall ? (dot4 ? dBt4 : dBt) : dB;
     launch(f, grid, fa, fb, k, rank, col0, rowsValid, dTr);
     hipError_t e = hipDeviceSynchronize();
     if (!ok(e, f.name) || !ok(hipGetLastError(), f.name)) { failed++; continue; }
@@ -397,6 +409,8 @@ int main(int argc, char **argv) {
              regions, n, secs, tmacs);
     }
   }
+  if (dAt4 != dAt) hipFree(dAt4);
+  if (dBt4 != dBt) hipFree(dBt4);
   if (dAt != dA) hipFree(dAt);
   if (dBt != dB) hipFree(dBt);
   hipFree(dA); hipFree(dB); hipFree(dTr); hipFree(dCaps);

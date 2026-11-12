@@ -135,6 +135,13 @@
 #ifndef PEARL_AMD_SLAB
 #define PEARL_AMD_SLAB 32u
 #endif
+// The dot4 fold's slab (RDNA 2's), 64 bytes since 12 November: half the barriers and LDS stores a chunk of 32's.
+// Its double-buffered LDS is 61,440 bytes a block, so a WGP still takes 2 blocks (4 waves a SIMD), as at 32 (36,864).
+// RX 6800, 1400 MHz cap, hashrate.js, 3 rounds: 17.77-17.79 TH/s against 17.25-17.29 at 32 (+3.0%). The host lays
+// out a fold's operands by that fold's slab (FoldInfo::slab). -DPEARL_AMD_DOT4_SLAB=32 builds the old slab.
+#ifndef PEARL_AMD_DOT4_SLAB
+#define PEARL_AMD_DOT4_SLAB 64u
+#endif
 // The reference fold's tile: one 32x64 block of C, which holds eight whole regions.
 #define PEARL_AMD_REF_BM 32u
 #define PEARL_AMD_REF_BN 64u
@@ -530,6 +537,34 @@ struct PearlAmdDot4 {
   static constexpr bool kRoByLane = false;
   static __device__ __forceinline__ int ro_of(int g) { return (g >> 3) & 1; }
 };
+
+// PEARL_AMD_DOT4_DPPA (RDNA 2, on by default): a k-step reads one A' word a lane a tile from LDS, not eight. The
+// eight lanes of a dpp8 group (lane bits 0-2) hold the same eight A' rows, so lane r of a group reads row rho = r,
+// and each v_dot4c takes row rho's word from lane rho of its group through its own dpp8 operand
+// (v_dot4c_i32_i8_dpp: no extra instruction). A k-step's LDS reads fall from 24 words a lane to 10.
+// RX 6800, 1400 MHz cap, 12 November: hashrate.js 18.04 TH/s against 17.26 (+4.5%); 191 VGPRs, 4 waves. A
+// dot4c with a dpp8 operand ran 243 MACs a CU a clock in a probe of nothing else (253 without), so this only
+// pays because the LDS reads were what held the loop: a timing-only build that read each slab's fragments once
+// was +10.9% (no barrier +6.2%, no staging +3.8%; same card, fold alone, 17.33 TMAC/s for the release). -DPEARL_AMD_DOT4_DPPA=0 builds the old k-step, to compare.
+#ifndef PEARL_AMD_DOT4_DPPA
+#define PEARL_AMD_DOT4_DPPA 1
+#endif
+#if PEARL_AMD_DOT4_DPPA && PEARL_AMD_SDOT4 && PEARL_AMD_DOT4 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_AMD_DOT4_DPPA_ON 1
+static_assert(PEARL_AMD_DOT4_K == 4, "PEARL_AMD_DOT4_DPPA is for K 4");
+#define PEARL_AMD_DPP8_ALL(R) "dpp8:[" #R "," #R "," #R "," #R "," #R "," #R "," #R "," #R "]"
+#define PEARL_AMD_D4P(R) \
+  if constexpr (RHO == R) asm("v_dot4c_i32_i8_dpp %0, %1, %2 " PEARL_AMD_DPP8_ALL(R) : "+v"(c) : "v"(a), "v"(b))
+// c plus the dot4 of a from lane RHO of this lane's dpp8 group with this lane's b.
+template <int RHO>
+__device__ __forceinline__ void pearl_amd_dot4_from(int32_t &c, int32_t a, int32_t b) {
+  PEARL_AMD_D4P(0); PEARL_AMD_D4P(1); PEARL_AMD_D4P(2); PEARL_AMD_D4P(3);
+  PEARL_AMD_D4P(4); PEARL_AMD_D4P(5); PEARL_AMD_D4P(6); PEARL_AMD_D4P(7);
+}
+#undef PEARL_AMD_D4P
+#else
+#define PEARL_AMD_DOT4_DPPA_ON 0
+#endif
 
 // One k-step of a wave: every tile of the wave's kMT x kNT, from the wave's A and B
 // fragments. On the GPU, one instruction a tile (dot4: 64 v_dot4 a 4 bytes). In the HIP-CPU
@@ -1244,12 +1279,13 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   constexpr int BM = P::kWR * WM, BN = P::kWC * WN;
 #if PEARL_AMD_LDS32
   // PEARL_AMD_LDS32 (above): 32-byte rows, halves swapped by row bits, in the RDNA 4 fold with paired reads only.
-  constexpr int KS = (int)PEARL_AMD_SLAB;
+  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB;
   constexpr bool kL32 = PEARL_AMD_KPAIR && std::is_same<P, PearlAmdWmma12>::value;
   static_assert(!kL32 || KS == 32, "PEARL_AMD_LDS32 is for 32-byte slabs");
   constexpr int S = kL32 && !PEARL_AMD_LDS32_S48 ? KS : KS + 16;
 #else
-  constexpr int KS = (int)PEARL_AMD_SLAB, S = KS + 16;
+  // The dot4 fold has a slab of its own (PEARL_AMD_DOT4_SLAB, above).
+  constexpr int KS = std::is_same<P, PearlAmdDot4>::value ? (int)PEARL_AMD_DOT4_SLAB : (int)PEARL_AMD_SLAB, S = KS + 16;
 #endif
   constexpr int QR = KS / 16;                          // 16-byte units in a slab row
   constexpr int UA = BM * QR, UB = BN * QR, U = (UA + UB) / T;
@@ -1943,6 +1979,30 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if (s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
     const int8_t *aBase = sA[buf] + wr * WM * S;
     const int8_t *bBase = sB[buf] + wc * WN * S;
+#if PEARL_AMD_DOT4_DPPA_ON
+    if constexpr (std::is_same<P, PearlAmdDot4>::value) {
+      // PEARL_AMD_DOT4_DPPA (above): this lane's A' row is rho = lane & 7 of its group's eight (load_a's rows).
+      const int8_t *aRow = aBase + (4 * (lane & 1) + ((lane >> 3) & 3) + 8 * ((lane & 7) >> 1)) * S;
+#pragma unroll
+      for (int kk = 0; kk < KS / P::kTK; kk++) {
+#if PEARL_AMD_DOT4_SPLIT
+        asm volatile("" ::: "memory");
+#endif
+        const int32_t aw[2] = {*reinterpret_cast<const int32_t *>(aRow + kk * P::kTK),
+                               *reinterpret_cast<const int32_t *>(aRow + P::kTM * S + kk * P::kTK)};
+        const typename P::BFrag b = P::load_b(bBase + kk * P::kTK, S, lane);
+        // Row by row, as the old k-step's mma: each row's eight dot4s take the same A' word.
+#define PEARL_AMD_DPPA_ROW(R) \
+  _Pragma("unroll") for (int j = 0; j < 8; j++) pearl_amd_dot4_from<R>(acc[mt][0][8 * R + j], aw[mt], b[j]);
+#pragma unroll
+        for (int mt = 0; mt < 2; mt++) {
+          PEARL_AMD_DPPA_ROW(0) PEARL_AMD_DPPA_ROW(1) PEARL_AMD_DPPA_ROW(2) PEARL_AMD_DPPA_ROW(3)
+          PEARL_AMD_DPPA_ROW(4) PEARL_AMD_DPPA_ROW(5) PEARL_AMD_DPPA_ROW(6) PEARL_AMD_DPPA_ROW(7)
+        }
+#undef PEARL_AMD_DPPA_ROW
+      }
+    } else
+#endif
 #pragma unroll
     for (int kk = 0; kk < KS / P::kTK; kk++) {
       typename P::AFrag a[P::kMT];

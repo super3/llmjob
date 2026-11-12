@@ -24,8 +24,10 @@ checking hits against the JS reference the way the pool does. RDNA 2 runs the `d
 lent HiveOS rig, it passed steps 2, 3 and 5 under "Testing on real hardware" on an RX 6600 (gfx1032)
 and an RX 6800 (gfx1030): every fold check word right, verify-hits 400 of 400, and Kryptex accepted
 every share (4, then 6 in a 10-minute run), none rejected. At the owner's 1400 MHz core cap an RX 6600 did 7.9 TH/s and the RX 6800
-17.2, 85% of what the card's bare `v_dot4` did at that clock (`earn/tuning/benchmark.md`, "RDNA 2
-on a lent HiveOS rig"). gfx103x stays among the checked cards until it has mined in a release.
+17.2, 85% of what the card's bare `v_dot4` did at that clock, and 107.7% of SRBMiner 3.8.6 on the same cards
+(`earn/tuning/benchmark.md`, "RDNA 2 on a lent HiveOS rig"). Since then the `dot4` fold takes its A' words from
+other lanes by DPP and stages 64-byte slabs: 8.46 and 18.36 TH/s there (+6.4%), 114.6% of SRBMiner. gfx103x stays among the checked
+cards until it has mined in a release.
 
 This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
 NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` and
@@ -81,7 +83,10 @@ a clock, 256 a CU a clock: RDNA 3's WMMA rate. The `dot4` fold is the matrix fol
 operand layout, staging, readout, store) with dot4s from registers in place of the instruction.
 Each lane holds 8 rows by 8 columns of each 32x64 block, laid out so the region rules above hold
 (`PearlAmdDot4` in `pearl_amd_fold.h`), and a k-step of 4 bytes is 24 words read from LDS and 128
-dot4s a lane. The reference fold reads both operands from LDS for every dot4, which is why it is
+dot4s a lane. On RDNA 2 the eight lanes of a dpp8 group hold the same eight A' rows, so each reads one of
+them and every dot4 takes its A' word from the lane that read it, through the dot4's own dpp8 operand
+(`PEARL_AMD_DOT4_DPPA`): 10 words read a k-step, not 24. And its slab is 64 bytes (`PEARL_AMD_DOT4_SLAB`;
+the host lays out each fold's operands by that fold's slab), half the barriers of 32. The reference fold reads both operands from LDS for every dot4, which is why it is
 slow. The compiler first merged each row's reads for a slab into two 16-byte reads and waited on
 each just before its dot4s, which spilled on gfx11 and ran at 10.2 TMAC/s on an RX 7800 XT; an
 empty asm between k-steps keeps the reads apart and in flight (`PEARL_AMD_DOT4_SPLIT`), and the
@@ -313,7 +318,7 @@ no scratch memory on every target:
 |---|---|---|---|---|---|
 | gfx908, gfx90a | mfma8 | 168 | 128 | 36 KB | 1 |
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
-| gfx1030, gfx1031, gfx1032 | dot4 | 200 | - | 36 KB | 4 |
+| gfx1030, gfx1031, gfx1032 | dot4 | 202 | - | 60 KB | 4 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
@@ -483,9 +488,13 @@ by contrast, stops only its own card.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
 - RDNA 2 (12 November, `earn/tuning/benchmark.md`, "RDNA 2 on a lent HiveOS rig"): the DPP readout is on there
   now (+0.35% on an RX 6800); `PEARL_AMD_DOT4_K=8` (-1.6%), `PEARL_AMD_DOT4_WAVES=5` (-6.9%) and `-mcumode` (-8.0%)
-  were slower, and 6 waves spills. The fold gets 85% of the card's bare `v_dot4` (244-248 MAC a CU a clock),
-  so 15% is left to the loads, barriers and readout. Still to do: steps 1-5 at stock clocks, an RX 6700
-  (gfx1031), and taking gfx103x out of the checked cards once it has mined in a release.
+  were slower, and 6 waves spills. Then (same day, same cap) the DPP8 A' k-step and 64-byte slabs: +6.4% on both
+  chips. Timing-only ablations (`PEARL_AMD_DOT4_ABL`) had priced the old loop's LDS fragment reads at 11%, its slab
+  barrier at 6% and the staging at 4%. Not the cause: VGPR bank conflicts. A dot4 that reads two operands from one
+  bank runs at half to three quarters rate in a probe, and 643 of the old fold's 1032 dot4s did, but placing every
+  operand by hand so none did (physical register constraints) changed the fold by -0.7% to +0.2%. Also slower: the
+  next slab stored at the top of each slab (-3.4%); no change: an LDS-only slab barrier. Still to do: steps 1-5 at
+  stock clocks, an RX 6700 (gfx1031), and taking gfx103x out of the checked cards once it has mined in a release.
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
   barrier with one slab of prefetch, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also
