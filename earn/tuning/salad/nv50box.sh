@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "probe product bench", in that order (default all three)
+#   STAGES        any of "probe micro product bench", in that order (default all three)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -169,6 +169,12 @@ if has probe; then
     # hit counts left out and the line cut to 395 (a longer name lost every probe line of a run on 12 November).
     python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
+fi
+# mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
+if has micro; then
+  $N13 -o $W/mmabench "$H/mmabench.cu" > $W/mma.log 2>&1 || fail "mmabench: $(tail -2 $W/mma.log | tr '
+' ' ')"
+  $W/mmabench "${MICRO_SECS:-10}" 2>&1 | cut -c1-300 | emit
 fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
