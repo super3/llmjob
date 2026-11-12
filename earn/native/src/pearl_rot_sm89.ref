@@ -11,19 +11,21 @@
 # The loop of 12 November 2026: a gather's IADD3 and PRMT late, offsets records of 8 bytes, A's gathers early
 # with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35); and, RTX 40's own
 # keys (build_rot.py's ARCH_KEYS), the readout's sums read as (0, 2) and (1, 3) on the chain of the other
-# register parity, with U8 IMMA (rpr=2 u8=1), the readout's steps first in their gap and allowed into gaps 41 to 44
-# of the chunk's last turn and the next chunk's first three (rgf=1 rb0=3 rb1=0), and records the eight warps
-# share (sr=1: rot_aux_offs built with ROT_SR=1 writes one stream of records with no warp's base in them; the
-# loop keeps the bases in uniform registers, so seven of a k-step's eight record loads hit the SM's cache).
+# register parity, with U8 IMMA (rpr=2 u8=1), the readout's steps first in their gap (rgf=1) in a window of
+# rb0=6 rb1=3; B drawn once for the two warps of a column slot, exchanged through the 16 KB that held the
+# transcripts (bx=1 bsym=4 bsg=8 bsg3=24 bss=2 bord=2 barv=1 bxt=1; the transcript lives in the kernel's frame,
+# ROT_BX=1); and records the eight warps share (sr=1, ROT_SR=1). The transcript store of the loop's tail holds its
+# read scoreboard (without it a store queued behind the exchange stores could read R3 after the function's return
+# zeroed it: an illegal address in repeated launches for some placements).
 
-# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (747 hits, 19 salts). By
-# hashrate.js, alternating 120 s legs against the loop before it (d18246d5...): at 810 MHz memory 343.37, 343.40
-# and 343.02 TH/s against 341.34, 341.37 and 341.34; at the driver's memory clock 339.56, 339.64 and 339.56
-# against 337.97, 338.08 and 337.97. The probe's CPU check: 16,384 of 16,384 at k 2048, 8,192 of 8,192 at k 8192,
-# 1,024 of 1,024 at k 65536.
-12.6 e0e8a52756a8d0ed7bb143d082e3d4cca355730496d6e1392d610cde27df68dd
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (742 hits, 19 salts, 810 MHz
+# memory). By hashrate.js, alternating 120 s legs against the loop before it (e0e8a527..., records shared, B
+# gathered by every warp): at 810 MHz memory 344.51, 344.38 and 344.37 TH/s against 343.03, 343.05 and 343.05;
+# at the driver's memory clock 340.75, 340.79 and 340.61 against 339.15, 339.51 and 339.57. The probe's CPU
+# check: 16,384 of 16,384 at k 2048, 8,192 of 8,192 at k 8192, 1,024 of 1,024 at k 65536, and 30 s runs (about 195 launches) clean in every placement that faulted before the fix.
+12.6 3a354cac97eccf8716e74797850786b4f8e11e206351e5d296cc77b500d0bf49
 
 # CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
 # verify-hits 400 of 400 (748 hits, 19 salts).
-12.8 217ad9b46dd781e59b3d6575ab060259661485f3690f756db8e97f6f052be950
+12.8 f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8

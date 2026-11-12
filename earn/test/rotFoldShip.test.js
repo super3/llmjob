@@ -59,10 +59,12 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     // Both take rpr=2 and u8=1 (measured on a 4090 and a 3090); RTX 30's also iy=0 (measured on a 3090); RTX 40's
     // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090); RTX 40's also sr=1, records the eight
-    // warps share (measured on a 4090).
-    expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],');
-    // sr's loop reads the shared stream, so the kernel that writes the records is built for it too.
+    // warps share and B drawn once with its exchange keys and readout window (measured on a 4090).
+    expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",\n'
+      + '                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],');
+    // sr's loop reads the shared stream and bx's keeps the transcript in the frame, so the kernel is built for both.
     expect(BUILD_ROT).toContain('if "sr=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_SR=1")');
+    expect(BUILD_ROT).toContain('if "bx=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_BX=1")');
     expect(BUILD_ROT).toContain('+ ARCH_KEYS[arch])');
     expect(BUILD_ROT).toContain('ref = os.path.join(SRC, "pearl_rot_%s.ref" % arch.replace("_", ""))');
     // The reference's --ref still wins over the one --arch picks.
@@ -143,6 +145,15 @@ describe('the offsets records are 8 bytes in the kernel, the loop and the host a
     expect(RFOLD).toContain('sr=0, sr_ua=16, sr_ub=17,');
     expect(RFOLD).toContain('put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))');
     expect(GFOLD).toContain('ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""');
+  });
+
+  test('with ROT_BX the transcript lives in the frame, and the loop\'s store of it holds its read scoreboard', () => {
+    // B drawn once: the 16 KB of transcripts become the exchange, the transcript moves to the kernel's frame.
+    expect(KERNEL).toContain('__align__(16) uint32_t trl[16];');
+    expect(KERNEL).toContain('pearl_rot_fold_loop(offs, chunks, trl);');
+    expect(KERNEL).toContain('for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];');
+    // Without the read scoreboard the store could read R3 after the function's return wrote it (local address 0).
+    expect(RFOLD).toContain('put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold)');
   });
 
   test('the hand loop loads 8 bytes a k-step by default and parts them', () => {

@@ -61,7 +61,11 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # 237.53, 237.49 and 237.54 against 233.75 and 233.69 on one 5080 PC (12 November). And the IMMA without their yield flag
 # (iy=0, as on sm_86): on a 488.75 W 5090 PC 402.11 and 402.17 TH/s against 399.18 and 399.45 without it (389.44
 # and 389.46 for the file before both).
-ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
+# sm_89 (goal-nvk19): B drawn once for the two warps of a column slot (bx, with its exchange keys: bsym=4 bsg=8
+# bsg3=24 bss=2 bord=2 barv=1 bxt=1, readout window rb0=6 rb1=3) and records the eight warps share (sr). The
+# miner's kernel is built for both (ROT_BX, ROT_SR below).
+ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",
+                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1"]}
 
 
@@ -122,6 +126,8 @@ def main():
         defs.append("-DROT_TAB8=1")         # the b8 gathers read tables in plain row order (rot_aux_tab)
     if "sr=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
+    if "bx=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:

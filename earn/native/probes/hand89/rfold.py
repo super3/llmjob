@@ -821,7 +821,11 @@ def chunk(cfg, R, role=None):
         for i, t in enumerate((shr(x3, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (x3, x3), andi(x3, x3, 0x3c),
                                "IADD3 R%d, R%d, 0x0, R1" % (x3, x3))):
             put(end + 2 + i, Ins(t), wrapped=True)
-        put(end + 6, Ins("STL [R%d], R%d" % (x3, w)) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
+        # The store releases `hold` once it has read R3 and the word (goal-nvk19). Without it nothing waited for
+        # that read: in the epilogue the function's return writes R3 (0, the return address's high word) a few
+        # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
+        # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
+        put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
     else:
         put(end + 2, Ins("%s [R%d], R%d" % (sts, trw, w), rsb=hold), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
