@@ -2917,6 +2917,39 @@ this card; work per clock is.
 After the test the four mining cards moved from spare15 (92.0 TH/s a card on a cool card) to spare18, the founder's
 decision.
 
+### Arc rig, 12 November, late morning: dummy DPAS set the rate (`goal/arc-11`)
+
+The host now adds `-noloopra` to the finalizer options it sets (3a398931). Card 4, cool, 8 s, taking turns:
+spare19 verify.sh PASS (`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits 400 of 400, 0
+failed; **95.0 to 95.5 TH/s at 1,935-1,950 MHz, 188 W**, against spare18 (c95de7d9) 94.4-94.8 and `xmx8r` 68.2-68.3.
+HiveOS's 24.35 driver takes the option too (check PASS).
+
+Why: the read-suppression workaround puts a dummy DPAS (a whole DPAS of work) before a run of DPAS whose B' registers
+any ALU instruction anywhere in the kernel writes. `-noloopra` changes the register allocation so the loop has 3 where
+it had 4. Each dummy costs about 0.5%, and that explains the earlier losses below: each design lost by the dummies it
+added, not by its own cost.
+
+Card 5, 8 s, 2-3 rounds, 188 W; control 92.9-93.0 TH/s with 4 dummy DPAS:
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| `-noloopra` (kept) | 93.4-93.5 | 3 |
+| B' as one 256-byte local read / copy after the local reads / two ring slots / copy once a chunk | 91.6 / 90.0 / 86.5 / 86.4 | 7 / 10 / 16 / 19 |
+| 16 row windows a work-group / no clamp in the copy / readout with no `if` (loop one block) | 91.2 / 91.9 / 92.6 | 8 / 8 / 7 |
+| A' a k-step ahead / with `-linearScan` | 86.0 / 91.6 | 19 / 0 |
+| `-linearScan` (20 more sync instructions in the loop) | 91.7 | 0 |
+| `-enableBCR` / `-forceBCR` / `-twoSrcBundleBCR` (DPAS bank conflicts 88 to 16 / 16 / 0) | 92.2 / 90.1 / 85.4 | 9 / 13 / 22 |
+| four column windows a work-group in turn (timing: upper bound for lead 1) | 93.2 | 4 |
+| row block from the Xe-core, so a core's four work-groups share A' (timing, `PEARL_W_CORE`) | 94.0 | 4 |
+| the same for real: a queue a core, claimed by a global atomic | 89.9 | 8 |
+| no release fence at the arrive (unsafe, `PEARL_W_NOREL`) | 93.0 | 6 |
+| hash with words read from local memory 8 at a time / four lanes a region (PASS) | not raced | 16 / 18 |
+
+Also found: an Xe-core holds four `xmx8w` work-groups at once (128 KB of local memory, 64 threads), not two (a probe
+reading each thread's core from `sr0`). About 40 other register-allocator and scheduler options left 3 or more
+dummies. Raising card 4's power limit to 190-220 W (the coordinator, founder's approval) changed nothing: 186.7 W and
+about 1,940 MHz every time.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

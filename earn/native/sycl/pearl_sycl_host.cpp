@@ -231,11 +231,14 @@ std::string env_str(const char *name, const char *dflt) {
 // "-insertDPASRSDummyMov -DPASTokenReduction" against 90.6 without (card 5, three rounds), and 85.2 against 84.2
 // on HiveOS's 24.35 driver; both drivers take the options and the fold check passes. The first swaps some of the
 // dummy DPAS a read-suppression workaround puts before a run of DPAS (6 to 4 in the loop) for movs, the second
-// lets DPAS share scoreboard tokens. A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
+// lets DPAS share scoreboard tokens. goal-arc11 added -noloopra (no separate register allocation for loops):
+// xmx8w's loop then has 3 dummy DPAS where it had 4, 93.45 TH/s against 92.92 (card 5, three rounds); the 24.35
+// driver takes it too (check PASS). Each dummy costs xmx8w about 0.5%. A user's own IGC_VISAOptions wins;
+// PEARL_SYCL_VISA=none sets nothing.
 void set_finalizer_options() {
   static std::once_flag once;
   std::call_once(once, []() {
-    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction");
+    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction -noloopra");
     if (o == "none" || getenv("IGC_VISAOptions")) return;
 #if defined(_WIN32)
     _putenv_s("IGC_VISAOptions", o.c_str());
