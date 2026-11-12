@@ -112,6 +112,10 @@ def rw(text):
         return reads | set(regs), writes, "store"
     if op == "LDS":
         return reads | {regs[1]}, {regs[0]}, "load"
+    if op == "LDL":
+        return reads | {regs[1]}, {regs[0]}, "load"
+    if op == "STL":
+        return reads | set(regs), writes, "store"
     if op.startswith("ATOMS"):
         return reads | set(regs), writes, "store"
     if op.startswith("ISETP"):
