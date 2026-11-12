@@ -265,6 +265,21 @@ def restore_code(sass_text, want):
     first, alu, done = [], [], set()
     for r in sorted(want):
         w = writes(r)
+        # gprobe's kernel: r = (tid >> 5) * imm + the shared base (SHF of the thread index, then IMAD with a
+        # register moved from the base's uniform register). Redone with our own copy of the base, UR_S[0].
+        if len(w) == 2 and re.match(r"SHF\.R\.U32\.HI R%d, RZ, 0x5, R\d+$" % r, w[0]):
+            m = re.match(r"IMAD R%d, R%d, (0x[0-9a-f]+), R(\d+)$" % (r, r), w[1])
+            src = re.match(r"SHF\.R\.U32\.HI R\d+, RZ, 0x5, R(\d+)$", w[0])[1]
+            if m and [t for t in kern if re.match(r"MOV R%s, UR\d+$" % m[2], t)] and \
+                    "S2R R%s, SR_TID.X" % src in kern:
+                first.append(Ins("S2R R%d, SR_TID.X" % r, wsb=SB_C))
+                u = UR_S[0]
+                alu.append((r, Ins("SHF.R.U32.HI R%d, RZ, 0x5, R%d" % (r, r))))
+                alu.append((r, Ins("IMAD R%d, R%d, %s, RZ" % (r, r, m[1]))))
+                alu.append((r, Ins("IADD3 R%d, PT, PT, R%d, UR%d, RZ" % (r, r, u),
+                                   raw=(0x7c10 | 7 << 12 | r << 16 | r << 24 | u << 32, 0x0fffe0ff))))
+                done.add(r)
+                continue
         if len(w) != 1:
             return None
         t = w[0]
@@ -379,10 +394,12 @@ def main():
     _e, _r, back = asm89.region(text)
     kern = [t for a, t in rows if a < entry]
     extra = [r for r in extra if [t for t in kern if re.match(r"\S+ R%d," % r, t)] != ["MOV R%d, 0x%x" % (r, back)]]
-    # A rename target is a register the compiled function writes, or one the kernel never names at all.
+    # A rename target is a register the compiled function writes.
     in_kern = {int(x) for t in kern for x in re.findall(r"\bR(\d+)\b", t)}
     in_kern |= {int(x) + 1 for t in kern for x in re.findall(r"\bR(\d+)\.64\b", t)}
-    free = set(regs) | (set(range(4, 255)) - in_kern)
+    # (Not one the kernel never names: R253 there was an illegal instruction on the card, as if the kernel's
+    # registers stop below it.)
+    free = set(regs)
     spare = sorted(r for r in free if r not in named and r not in (0, 1, 2, 3, 255))
     rest = []
     if len(spare) < len(extra):
