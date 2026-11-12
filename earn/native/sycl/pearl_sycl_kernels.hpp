@@ -362,6 +362,12 @@ struct FoldArgs {
   TranscriptTest test;
   HitBuf *hits;
   uint32_t *allTr;    // debug: every region's transcript, [regions][16], or null
+#if defined(PEARL_W_SMP)
+  uint64_t img;       // goal-arc20 timing: a bindless image's raw handle (see FoldXmxW, PEARL_W_SMP)
+#endif
+#if defined(PEARL_W_STAG)
+  uint32_t *tick;     // goal-arc20 timing: 32 counters, one an Xe-core, zeroed before each launch (PEARL_W_STAG)
+#endif
 };
 
 // Which window work-group g covers. Bands of `band` row windows: inside a band
@@ -1914,6 +1920,17 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #if !defined(PEARL_W_NOCPC1) && !defined(PEARL_W_NOCPA) && !defined(PEARL_W_CPCC1)
 #define PEARL_W_CPCC1 "st.ca"
 #endif
+// goal-arc20: the part buffer in PXT 2's layout (word j of region q of window w at (16 w + j) * 8 + q), zeroed and
+// read back for the hash as 256-byte block messages (PEARL_W_PXB), with the chunk's atomic by inline vISA
+// (PEARL_W_PXA). In the old layout a lane's 16 words lay 64 bytes from the next lane's, so the 16 zeroing stores, the
+// 16 reads before the hash and every chunk's atomic put all 8 lanes on one bank; goal-arc18's PXT lost 4-6%
+// because its zeroing and reads stayed 16 messages each. Card 5, full speed, 6 rounds: 101.54-101.78 against
+// 101.27-101.47 at the same or a lower clock. PEARL_W_NOPXB: the old layout.
+#if !defined(PEARL_W_NOPXB) && !defined(PEARL_W_PXT) && !defined(PEARL_W_PARTMIN)
+#define PEARL_W_PXT 2
+#define PEARL_W_PXB
+#define PEARL_W_PXA
+#endif
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
@@ -2105,6 +2122,27 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     const uint32_t sgl = (uint32_t)sg.get_group_linear_id();  // 0 .. kNsg - 1
 #endif
     const uint32_t sgi = sgl & 1u, widx = sgl >> 1;
+#if defined(PEARL_W_STAG) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc20 timing: the second work-group to start on an Xe-core in a launch first waits PEARL_W_STAG
+    // timestamp ticks, so two work-groups sharing a core are out of step and hash at different times.
+    if constexpr (HW) {
+      uint32_t sr = 0;
+      __asm__ volatile("mov (M1_NM, 1) %0(0,0)<1> %%sr0(0,0)<0;1,0>" : "=rw"(sr));
+      const uint32_t core = (sr >> 9) & 31u;
+      if (sgl == 0u && lane == 0u)
+        part[0] = sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                                   sycl::access::address_space::global_space>(A.tick[core]).fetch_add(1u);
+      sycl::group_barrier(it.get_group());
+      const uint32_t tk = part[0];
+      sycl::group_barrier(it.get_group());
+      if (tk == 1u) {
+        uint32_t x = A.zero + lane;
+#pragma unroll 1
+        for (uint32_t i = 0; i < (uint32_t)(PEARL_W_STAG); i++) x = x * 1664525u + 1013904223u;
+        if (x == 0x12345678u && A.zero) A.tick[31] = x;
+      }
+    }
+#endif
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
     uint32_t wr, wc;
     uint32_t wcb;
@@ -2426,14 +2464,47 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       });
     };
     v4i ahn[4];
+#if defined(PEARL_W_TR)
+    // goal-arc20 timing (wrong results): the transposed fold's messages. B' is the split operand (each sub-group
+    // reads half of its 4 fragments from the ring: 2 local messages of 256 bytes a k-step), A' the full one (4
+    // global messages of 256 bytes: the window's 4 fragments, read by both sub-groups of the pair, as 4 column
+    // windows sharing A' rows would). PEARL_W_TR=1: A' a k-step ahead (32 registers); 2: A' in the k-step.
+    auto load_a8 = [&](uint32_t ks, v8i *dst) {
+      const uint32_t base = aLo - sgi * 128u + ks * 512u;
+      each<4>([&](int rb) { dst[rb] = g_read256<HW>(lo32(aHi, base + (uint32_t)(rb >> 1) * A.aStride + (uint32_t)(rb & 1) * 256u), lane); });
+    };
+    auto load_a8r = [&](uint32_t ks, v8i *dst, int r0, int r1) {
+      const uint32_t base = aLo - sgi * 128u + ks * 512u;
+      each<4>([&](int rb) {
+        if (rb >= r0 && rb < r1) dst[rb] = g_read256<HW>(lo32(aHi, base + (uint32_t)(rb >> 1) * A.aStride + (uint32_t)(rb & 1) * 256u), lane);
+      });
+    };
+    (void)load_a8r;
+    v8i an8[4];
+    if constexpr (kSplit && (PEARL_W_TR) == 1) load_a8(0u, an8);
+    if constexpr (kSplit && (PEARL_W_TR) == 3) load_a8r(0u, an8, 0, 2);
+#else
     if constexpr (kSplit && AH) load_ah(kdo(0u), ahn);
+#endif
 #if defined(PEARL_W_AH2)
     // goal-arc16 (PEARL_W_AH2): A' two k-steps ahead (16 more registers).
     v4i ahn2[4];
     if constexpr (kSplit && AH) load_ah(kdo(1u), ahn2);
 #endif
+#if defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    static_assert((PEARL_W_PXT + 0) == 2, "PEARL_W_PXA: PXT 2's layout");
+    const uint32_t pxa0 = (uint32_t)(uintptr_t)(__attribute__((opencl_local)) uint32_t *)(&part[0] + pOff + widx * 128u) + lane * 4u;
+#endif
     if constexpr (kPartX) {
-#if defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
+#if defined(PEARL_W_PXB)
+      // goal-arc20 (PEARL_W_PXB, PXT 2's layout): a window's 128 words lie together, so zero them as two 256-byte
+      // block stores instead of 16 stores whose 8 lanes all hit one bank.
+      if (sgi == 0u) {
+        uint32_t *P = &part[0];
+        slm_write256<HW>(P + pOff + widx * 128u, (v8i)0, lane);
+        slm_write256<HW>(P + pOff + widx * 128u + 64u, (v8i)0, lane);
+      }
+#elif defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + pix(widx, lane, (uint32_t)j)] = 0u; });
 #else
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + (widx * 8u + lane) * 16u + (uint32_t)j] = 0u; });
@@ -2441,6 +2512,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     }
     v8i bqn[4];
     (void)bqn;
+#if defined(PEARL_W_SMPAH)
+    auto smp_fetch = [&](uint32_t k) {
+      namespace sx = sycl::ext::oneapi::experimental;
+      const sx::unsampled_image_handle hb{A.img};
+      const uint32_t c = (A.colStart / 4u + wc) * 64u + sgi * 32u + 24u + lane;
+      const int x = (int)((c & 31u) * 128u + 2u * k), y = (int)((c >> 5) & 2047u);
+      const sycl::vec<uint32_t, 4> lo = sx::fetch_image<sycl::vec<uint32_t, 4>>(hb, sycl::vec<int, 2>{x, y});
+      const sycl::vec<uint32_t, 4> hi = sx::fetch_image<sycl::vec<uint32_t, 4>>(hb, sycl::vec<int, 2>{x + 1, y});
+      return v8i{(int)lo[0], (int)lo[1], (int)lo[2], (int)lo[3], (int)hi[0], (int)hi[1], (int)hi[2], (int)hi[3]};
+    };
+    v8i smpn = smp_fetch(0u);
+#endif
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
 #if defined(PEARL_W_D4)
@@ -2843,6 +2926,35 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           });
           return;
 #endif
+#if defined(PEARL_W_SMP) && defined(PEARL_W_BA)
+          // goal-arc20 timing (wrong results): the last PEARL_W_SMP of the 4 fragments through the sampler, from a
+          // bindless image laid out as B' [n, k] row-major is (32 columns of 128 texels an image row, 2,048 rows):
+          // lane j fetches the 2 texels of column j's 32 bytes, which are DPAS src1's order. 2 messages of 128
+          // bytes for one 256-byte local read. The copy still fills the whole ring.
+          {
+            namespace sx = sycl::ext::oneapi::experimental;
+            const sx::unsampled_image_handle hb{A.img};
+#if defined(PEARL_W_SMPAH)
+            // the sampler fragment (SMP 1 only) fetched a k-step ahead
+            each<3>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
+            dst[3] = smpn;
+            smpn = smp_fetch(kd + 1u < 64u ? kd + 1u : 63u);
+            return;
+#endif
+            each<4>([&](int cb) {
+              if (cb >= 4 - (PEARL_W_SMP)) {
+                const uint32_t c = (A.colStart / 4u + wc) * 64u + sgi * 32u + (uint32_t)cb * 8u + lane;
+                const int x = (int)((c & 31u) * 128u + 2u * kd), y = (int)((c >> 5) & 2047u);
+                const sycl::vec<uint32_t, 4> lo = sx::fetch_image<sycl::vec<uint32_t, 4>>(hb, sycl::vec<int, 2>{x, y});
+                const sycl::vec<uint32_t, 4> hi = sx::fetch_image<sycl::vec<uint32_t, 4>>(hb, sycl::vec<int, 2>{x + 1, y});
+                dst[cb] = v8i{(int)lo[0], (int)lo[1], (int)lo[2], (int)lo[3], (int)hi[0], (int)hi[1], (int)hi[2], (int)hi[3]};
+              } else {
+                dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane);
+              }
+            });
+            return;
+          }
+#endif
 #if defined(PEARL_W_BA)
           // goal-arc13: a B' fragment as one 256-byte message (inline vISA): 4 local reads a k-step for 8.
           // goal-arc14: keeping the last k-step's B' live so the finalizer cannot reuse its registers (an empty
@@ -2880,6 +2992,35 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         };
         const int8_t *Ak = Ab + (size_t)kd * 512u;
         if constexpr (kSplit) {
+#if defined(PEARL_W_TR)
+          v8i a8[4];
+          if constexpr ((PEARL_W_TR) == 1) {
+            each<4>([&](int rb) { a8[rb] = an8[rb]; });
+            load_a8(ks + 1u < 64u ? ks + 1u : 63u, an8);
+          } else if constexpr ((PEARL_W_TR) == 3) {
+            // fragments 0, 1 a k-step ahead (16 registers), 2, 3 in the k-step
+            a8[0] = an8[0];
+            a8[1] = an8[1];
+            load_a8r(kd, a8, 2, 4);
+            load_a8r(ks + 1u < 64u ? ks + 1u : 63u, an8, 0, 2);
+          } else {
+            load_a8(kd, a8);
+          }
+          v4i bh[4];
+          each<2>([&](int bb) {
+            const v8i t = slm_read256<HW>(R + slot + jc * 512u + sgi * 128u + (uint32_t)bb * 256u, lane);
+            bh[2 * bb] = __builtin_shufflevector(t, t, 0, 1, 2, 3);
+            bh[2 * bb + 1] = __builtin_shufflevector(t, t, 4, 5, 6, 7);
+          });
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              each<2>([&](int h) {
+                v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
+                acc = split_dpas4<HW>(v2i{bh[cb][2 * h], bh[cb][2 * h + 1]}, a8[rb], acc);
+              });
+            });
+          });
+#else
           v4i ah[4];
 #if defined(PEARL_W_NOLD) && ((PEARL_W_NOLD) & 1)
           if constexpr (false) {
@@ -3078,6 +3219,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           each<kBps>([&](int i) { ring_write_local<HW>(mine(i) + at(ks + (uint32_t)KPS), csv[i], lane); });
           if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
 #endif
+#endif  // PEARL_W_TR
         } else {
           v8i af[4];
           each<4>([&](int rb) {
@@ -3214,6 +3356,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<15>([&](int j) { tw[j] = tw[j + 1]; });
         tw[15] = (lane & 1u) ? x1 : x0;
       } else {
+#if defined(PEARL_W_PXA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+        // goal-arc20 (PEARL_W_PXA, PXT 2's layout): the chunk's atomic by inline vISA, its address set once a set
+        // and stepped by 32 bytes a chunk, so IGC has no address arithmetic in the loop to rebuild.
+        if constexpr (kPartX && HW) {
+          const uint32_t pa = pxa0 + ch * 32u, pv = (lane & 1u) ? x1 : x0;
+          __asm__ volatile("lsc_atomic_xor.slm (M1, 8) %%null:d32 flat[%0]:a32 %1 %%null" : : "rw"(pa), "rw"(pv));
+        } else
+#endif
         if constexpr (kPartX) {
           sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
                            sycl::access::address_space::local_space>
@@ -3295,6 +3445,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     if ((SEQ > 1 || sgi == 0) && lane < 8u) {
       const uint32_t qr = lane;
       uint32_t words[16];
+#if defined(PEARL_W_PXB)
+      // goal-arc20: the window's words as two 256-byte block reads: a block read gives lane l, register e the
+      // dword 8 e + l, which in PXT 2's layout is word e of region l.
+      static_assert(!kRegWords && !kPart1, "PEARL_W_PXB: the part buffer, one a set");
+      if constexpr (kPartX) {
+        uint32_t *P = &part[0];
+        const uint32_t pb = (SEQ > 1 ? js * kPartWords : 0u) + widx * 128u;
+        const v8i lo = slm_read256<HW>(P + pb, lane), hi = slm_read256<HW>(P + pb + 64u, lane);
+        each<8>([&](int j) {
+          words[j] = (uint32_t)lo[j];
+          words[j + 8] = (uint32_t)hi[j];
+        });
+      } else
+#endif
       for (int j = 0; j < 16; j++)
 #if defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
         words[j] = kPartX ? part[(SEQ > 1 && !kPart1 ? js * kPartWords : 0u) + pix(widx, qr, (uint32_t)j)]
