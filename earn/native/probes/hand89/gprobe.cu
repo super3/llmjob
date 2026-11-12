@@ -134,7 +134,11 @@ int main(int argc, char **argv) {
   // rot 3 (goal-nv50d): rot 2's records with the tables in plain row order (byte c of an entry is row c of the
   // group), for rfold.py's b8 gathers (ldmatrix's byte transpose, sm_120).
   const bool tab8 = argc > 8 && atoi(argv[8]) == 3;
-  const uint32_t rot = argc > 8 ? (tab8 ? 2u : (uint32_t)atoi(argv[8])) : 0u;
+  // rot 4 (goal-nvk19): records the eight warps share, for rfold.py's sr. One stream of 8-byte records, k-step by
+  // k-step: lane l's {16 pa0 | 16 pa1 << 16, 16 pb0 | 16 pb1 << 16}, no warp's base in them (the loop keeps those
+  // in uniform registers), then four k-steps of zeros (the loop reads up to three k-steps past the last chunk).
+  const bool shared = argc > 8 && atoi(argv[8]) == 4;
+  const uint32_t rot = argc > 8 ? (tab8 || shared ? 2u : (uint32_t)atoi(argv[8])) : 0u;
   if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
@@ -266,6 +270,11 @@ int main(int argc, char **argv) {
   // One table a warp: the words carry the base of the warp's groups in shared memory.
   const size_t warpWords = (size_t)(ksteps + 1u) * 32u * 4u;
   std::vector<uint32_t> hOffs(8u * warpWords, 0u);
+  std::vector<uint32_t> hShared(shared ? (size_t)(ksteps + 4u) * 64u : 0u, 0u);
+  if (shared && (fake & 12u)) {
+    fprintf(stderr, "%s: rot 4 has no fake 4 or 8 (the bases are the loop's)\n", name);
+    return 2;
+  }
   double coll[2] = {0, 0}, worst[2] = {0, 0};
   for (uint32_t ks = 0; ks <= ksteps; ks++) {
     const uint32_t ch = ks / 4u, s = ks % 4u;
@@ -286,6 +295,10 @@ int main(int argc, char **argv) {
         }
         p4[l][h] = pa;
         p4[l][2u + h] = pb;
+        if (shared && ks < ksteps) {
+          hShared[((size_t)ks * 32u + l) * 2u] |= (16u * pa) << (16u * h);
+          hShared[((size_t)ks * 32u + l) * 2u + 1u] |= (16u * pb) << (16u * h);
+        }
         for (uint32_t w = 0; w < 8u; w++) {
           // rot: this k-step is warp w's turn `turn` of the chunk (the last record, of the k-step that never
           // comes, is a first turn).
@@ -330,6 +343,7 @@ int main(int argc, char **argv) {
     }
     hOffs.swap(packed);
   }
+  if (shared) hOffs.swap(hShared);
   const double mats = (double)ksteps * 8.0;
   // The tables: [row group][A group 0 .. NA-1][p] and [column block][B group 0 .. 15][p], 16 bytes an entry.
   std::vector<uint8_t> hTabA((size_t)RG * NA * 2048u), hTabB((size_t)CB * 16u * 2048u);
