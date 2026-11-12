@@ -1720,7 +1720,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     const int8_t *Bbi[kBps];
     each<kBps>([&](int i) {
       const uint32_t b = sgl + (uint32_t)i * kNsg;
+#if defined(PEARL_W_BPAD)
+      Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * (A.bStride - (PEARL_W_BPAD)) + (size_t)(b % 16u) * 128u;
+#else
       Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * A.bStride + (size_t)(b % 16u) * 128u;
+#endif
     });
     uint32_t *R = &ring[0];
     // Where k-step k's B' lies in the ring.
@@ -1733,9 +1737,36 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     });
     v4u next[kBps];
     each<kBps>([&](int i) { next[i] = ring_read_global<HW>(Bbi[i] + (size_t)KPS * 2048u, lane); });
+#if defined(PEARL_W_GCOPY)
+    // goal-arc8: the copy once a slot: at a chunk's first k-step each sub-group stores the 512 bytes it loaded
+    // a chunk ago (k-step sgl / 4 of the next slot, pieces 4 (sgl % 4) .. + 3) and loads the slot after.
+    static_assert(KPS == 4 && CW == 1 && RW == 8, "the grouped copy is for the 8 by 1 work-group, a chunk a slot");
+    const int8_t *Gsrc = A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride + (size_t)(sgl >> 2) * 2048u
+                         + (size_t)(sgl & 3u) * 512u;
+    uint32_t *Gdst = R + (sgl >> 2) * kStep + (sgl & 3u) * 128u;
+    v4u gn[4];
+    each<4>([&](int j) { gn[j] = ring_read_global<HW>(Gsrc + 8192u + (size_t)j * 128u, lane); });
+#endif
     // A' of k-step ks: this sub-group's half of each of the window's 4 fragments (the split DPAS), or all of
     // each (otherwise). 8-row block rb of the window is in 16-row block rb >> 1.
     auto load_ah = [&](uint32_t ks, v4i *ah) {
+#if defined(PEARL_W_KMAJ)
+      // goal-arc8 timing (wrong results): A' addressed k-step major (a k-step of every row window together),
+      // the same bytes and reuse, no power-of-two stride between the streams.
+      each<4>([&](int rb) {
+        ah[rb] = (v4i)ring_read_global<HW>(A.Ap + (size_t)ks * (size_t)(rowWins * 1024u) + (size_t)wr * 1024u
+                                               + (size_t)rb * 256u + sgi * 128u, lane);
+      });
+      return;
+#endif
+#if defined(PEARL_W_APAD)
+      // goal-arc8 timing (wrong results): the 16-row blocks PEARL_W_APAD bytes closer than aStride.
+      each<4>([&](int rb) {
+        ah[rb] = (v4i)ring_read_global<HW>(A.Ap + (size_t)(2u * wr + (uint32_t)(rb >> 1)) * (A.aStride - (PEARL_W_APAD))
+                                               + (size_t)ks * 512u + (size_t)(rb & 1) * 256u + sgi * 128u, lane);
+      });
+      return;
+#endif
       each<4>([&](int rb) {
         ah[rb] = (v4i)ring_read_global<HW>(Ab + (size_t)ks * 512u + (size_t)(rb >> 1) * A.aStride + (size_t)(rb & 1) * 256u
                                                + sgi * 128u, lane);
@@ -1749,25 +1780,84 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
     uint32_t tw[16];
     each<16>([&](int j) { tw[j] = 0u; });
+#if defined(PEARL_W_AHALF)
+    v4i ahp[4];
+#endif
+#if defined(PEARL_W_NOPUT)
+    uint32_t sink = 0u;
+#endif
+#if defined(PEARL_W_BHALF)
+    v8i bqp[4];
+#endif
     arrive(it);
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
-        const uint32_t ks = ch * 4u + s, slot = at(ks);
+        const uint32_t ks = ch * 4u + s;
+#if defined(PEARL_W_ROT)
+        // goal-arc8: column window jc takes its slot's k-steps rotated by jc * PEARL_W_ROT (a sum, so any order
+        // inside a slot gives the same accumulators), so the windows sharing A' read it at different times and
+        // the later one finds it in L1. Sharers reading together all miss.
+        const uint32_t kd = ch * 4u + (s / (uint32_t)KPS) * (uint32_t)KPS + (s + jc * (uint32_t)(PEARL_W_ROT)) % (uint32_t)KPS;
+#elif defined(PEARL_W_ROTW)
+        // goal-arc8: window widx takes the chunk's k-steps rotated by widx * PEARL_W_ROTW.
+        const uint32_t kd = ch * 4u + (s + widx * (uint32_t)(PEARL_W_ROTW)) % 4u;
+#else
+        const uint32_t kd = ks;
+#endif
+        const uint32_t slot = at(kd);
         // The group meets once a slot: every store into this slot has landed, and every read of the slot the
         // copy writes next is done. The copy stores k-step ks + KPS (loaded a k-step ago) and loads the one after.
+#if !defined(PEARL_W_NOBAR)
         if (s % (uint32_t)KPS == 0u) wait(it);
+#endif
+#if defined(PEARL_W_GCOPY)
+#ifndef PEARL_W_GLOAD_S
+#define PEARL_W_GLOAD_S 0
+#endif
+        if (s == 0u)
+          each<4>([&](int j) { ring_write_local<HW>(Gdst + ((ch + 1u) % 3u) * kSlotWords + (uint32_t)j * 32u, gn[j], lane); });
+        if (s == (uint32_t)(PEARL_W_GLOAD_S)) {
+          const uint32_t c2 = ch + 2u < 16u ? ch + 2u : 15u;
+          each<4>([&](int j) { gn[j] = ring_read_global<HW>(Gsrc + (size_t)c2 * 8192u + (size_t)j * 128u, lane); });
+        }
+#elif !defined(PEARL_W_NOCOPY)
         {
           const uint32_t kn = ks + (uint32_t)KPS + 1u;
           each<kBps>([&](int i) {
+#if defined(PEARL_W_NOFETCH)
+            // goal-arc8 timing (wrong results): the copy stores without loading.
+            const v4u v = next[i] ^ (ks * 0x9E3779B9u);
+#else
             const v4u v = ring_read_global<HW>(Bbi[i] + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
+#endif
+#if defined(PEARL_W_NOPUT)
+            // goal-arc8 timing (wrong results): the copy loads without storing.
+            sink ^= v[0] ^ v[3];
+#else
             ring_write_local<HW>(mine(i) + at(ks + (uint32_t)KPS), next[i], lane);
+#endif
             next[i] = v;
           });
         }
+#endif
+#if !defined(PEARL_W_NOBAR)
         if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
+#endif
         // B' fragment cb of this sub-group's 32 columns, from the ring.
         v8i bq[4];
         auto read_b_at = [&](uint32_t off, v8i *dst) {
+#if defined(PEARL_W_GB)
+          // goal-arc8: B' straight from memory (no ring), k-step kd; with PEARL_W_ROTW the windows reading a line
+          // come at different k-steps, so all but the first may find it in L1. Use with NOCOPY and NOBAR.
+          (void)off;
+          each<4>([&](int cb) {
+            const int8_t *g = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)kd * 2048u
+                              + (size_t)(sgi * 4u + (uint32_t)cb) * 256u;
+            const v4u lo = ring_read_global<HW>(g, lane), hi = ring_read_global<HW>(g + 128, lane);
+            dst[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          });
+          return;
+#endif
           each<4>([&](int cb) {
             uint32_t *p = R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u;
             const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
@@ -1789,16 +1879,44 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
 #endif
           read_b_at(slot, bq);
         };
-        const int8_t *Ak = Ab + (size_t)ks * 512u;
+        const int8_t *Ak = Ab + (size_t)kd * 512u;
         if constexpr (kSplit) {
           v4i ah[4];
           if constexpr (AH) {
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
             load_ah(ks + 1u < 64u ? ks + 1u : 63u, ahn);
           } else {
-            load_ah(ks, ah);
+#if defined(PEARL_W_AHALF)
+            // goal-arc8 timing (wrong results): A' loaded every other k-step, XORed so its bits still change.
+            if ((s & 1u) == 0u) load_ah(kd, ahp);
+            each<4>([&](int rb) { ah[rb] = ahp[rb] ^ (int)(ks * 0x85EBCA6Bu); });
+#else
+            load_ah(kd, ah);
+#if defined(PEARL_W_XONLY)
+            each<4>([&](int rb) { ah[rb] ^= (int)(ks * 0x85EBCA6Bu); });
+#endif
+#endif
           }
+#if defined(PEARL_W_BHALF)
+          if ((s & 1u) == 0u) read_b_at(slot, bqp);
+          each<4>([&](int cb) { bq[cb] = bqp[cb] ^ (int)(ks * 0x9E3779B9u); });
+#else
           read_b();
+#if defined(PEARL_W_XONLY)
+          each<4>([&](int cb) { bq[cb] ^= (int)(ks * 0x9E3779B9u); });
+#endif
+#endif
+#if defined(PEARL_W_AMASK)
+          // goal-arc8 timing (wrong results): A' data ANDed with a mask (0: zeros), the loads kept.
+          each<4>([&](int rb) { ah[rb] &= (int)(A.zero | (uint32_t)(PEARL_W_AMASK)); });
+#endif
+#if defined(PEARL_W_BMASK)
+          each<4>([&](int cb) { bq[cb] &= (int)(A.zero | (uint32_t)(PEARL_W_BMASK)); });
+#endif
+#if defined(PEARL_W_AXOR)
+          // goal-arc8 timing: with PEARL_W_AHOT, each window's A' made different again (addresses still hot).
+          each<4>([&](int rb) { ah[rb] ^= (int)(wr * 0x9E3779B9u + (uint32_t)rb * 0x85EBCA6Bu); });
+#endif
           // No forced wait: the DPAS wait only for their own operands. Forcing every DPAS of the k-step to wait
           // for every load of it (see fold_xmxf), PEARL_W_GATE, was 1% slower at the same 188 W.
 #if defined(PEARL_W_GATE)
@@ -1857,6 +1975,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
       }
     }
     wait(it);
+#if defined(PEARL_W_NOPUT)
+    if (A.zero && sink == 0x12345678u) part[0] = sink;
+#endif
     sycl::group_barrier(it.get_group());
     if constexpr (kRegWords) {
       // The ring is free now: sub-group 1 of each window leaves its words there for sub-group 0.
