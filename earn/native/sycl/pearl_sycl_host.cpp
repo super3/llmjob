@@ -283,7 +283,9 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
   const std::string want = env_str("PEARL_SYCL_FOLD", "auto");
   const int sg = xmx_sg(ctx->dev);
   if (want == "auto") {
-    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8F : kDot;
+    // Alchemist (sub-group 8): the ring fold since 12 Nov 2026 (67 TH/s a cool A750 against 63 for xmx8f, an
+    // hour on four mining cards with no share rejected). PEARL_SYCL_FOLD=xmx8f is the way back.
+    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8R : kDot;
   } else if (want == "dot") {
     ctx->fold = kDot;
   } else if (want == "xmx16" || want == "xmx") {
@@ -1174,7 +1176,7 @@ extern "C" int pearl_sycl_list_devices(char *buf, size_t len) {
     }
     const int sg = xmx_sg(devs[i]);
     out += std::to_string(i) + ": " + name + " [" + via + "], auto fold "
-           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8f (hardware DPAS)" : "dot") + "\n";
+           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8r (hardware DPAS)" : "dot") + "\n";
   }
   if (buf && len) snprintf(buf, len, "%s", out.c_str());
   return (int)devs.size();
