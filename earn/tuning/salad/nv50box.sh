@@ -200,6 +200,9 @@ if has probe; then
     case "$line" in
       "!lgc "*) say "lgc ${line#!lgc }: $(nvidia-smi -i 0 -lgc "${line#!lgc }","${line#!lgc }" 2>&1 | tr '\n' ' ' | cut -c1-200)"; LGC=1; continue ;;
       "!rgc"*) say "rgc: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"; continue ;;
+      # "!lmc <MHz>" / "!rmc" (goal-nv50d): the memory clock, as the RTX 40 rotation fold locks it by default.
+      "!lmc "*) say "lmc ${line#!lmc }: $(nvidia-smi -i 0 -lmc "${line#!lmc }","${line#!lmc }" 2>&1 | tr '\n' ' ' | cut -c1-200) now $(q clocks.mem)"; LMC=1; continue ;;
+      "!rmc"*) say "rmc: $(nvidia-smi -i 0 -rmc 2>&1 | tr '\n' ' ' | cut -c1-200)"; continue ;;
     esac
     exe=${line%% *}
     # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here, the collision and
@@ -207,6 +210,7 @@ if has probe; then
     python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
   [ "${LGC:-0}" = 1 ] && say "rgc at the probe's end: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"
+  [ "${LMC:-0}" = 1 ] && say "rmc at the probe's end: $(nvidia-smi -i 0 -rmc 2>&1 | tr '\n' ' ' | cut -c1-200)"
 fi
 # PROBE_SAN: probe runs under compute-sanitizer's memcheck (CUDA 13.3's, from NVIDIA's redistributables), ';'
 # between them, each "<build exe> <cubin> <k> <tiles>": the first faulting access and its address, for a hand loop.
