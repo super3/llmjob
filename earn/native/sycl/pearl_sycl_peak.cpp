@@ -871,7 +871,113 @@ template <int KIND, int N, int ND = 16> struct PeakPrice {
       copy_in(1, 1);
       peak_arrive();
     }
-    for (uint32_t rep = 0; rep < P.reps; rep++) {
+    if constexpr (KIND == 17) {
+      // A work-group is R = wpg row blocks of 16 rows by 2 column windows: sub-group (sgl % R, sgl / R).
+      const uint32_t R = P.wpg, Cw = 2u, colWins2 = A.colBatch / 4u / Cw;
+      const uint32_t G = (uint32_t)it.get_group(0);
+      const uint32_t cw0 = (G % colWins2) * Cw, rb0 = ((G / colWins2) * R) % A.rowsValid;
+      const uint32_t r = sgl % R, cc = sgl / R;
+      const uint32_t slotW = R * 128u + Cw * 512u, nb = R * 4u + Cw * 16u;
+      auto copy2 = [&](uint32_t ks, uint32_t slot) {
+        const uint32_t kr = ks & 63u;
+        for (uint32_t j = sgl; j < nb; j += nsg) {
+          const int8_t *src = j < R * 4u
+              ? A.Ap + (size_t)(rb0 + j / 4u) * A.aStride + (size_t)kr * 512u + (size_t)(j % 4u) * 128u
+              : A.Bp + (size_t)(A.colStart / 4u + cw0 + (j - R * 4u) / 16u) * A.bStride + (size_t)kr * 2048u
+                    + (size_t)((j - R * 4u) % 16u) * 128u;
+          slm_write(L + slot * slotW + j * 32u, peak_block_read<peak_b4u, uint32_t>(src));
+        }
+      };
+      copy2(0, 0);
+      peak_arrive();
+      for (uint32_t ks = 0; ks < 64u; ks++) {
+        const uint32_t slot = ks % 3u;
+        peak_wait();
+        copy2(ks + 1u, (ks + 1u) % 3u);
+        peak_arrive();
+        v8i af[2], bf[8];
+        pearl_sycl::each<2>([&](int rb) {
+          uint32_t *q = L + slot * slotW + r * 128u + (uint32_t)rb * 64u;
+          const peak_b4u lo = slm_read(q), hi = slm_read(q + 32);
+          af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        });
+        pearl_sycl::each<8>([&](int cb) {
+          uint32_t *q = L + slot * slotW + R * 128u + cc * 512u + (uint32_t)cb * 64u;
+          const peak_b4u lo = slm_read(q), hi = slm_read(q + 32);
+          bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        });
+        int t = 0;
+        pearl_sycl::each<2>([&](int rb) { t ^= af[rb][0]; });
+        pearl_sycl::each<8>([&](int cb) { t ^= bf[cb][0]; });
+        t &= (int)P.zero;
+        pearl_sycl::each<2>([&](int rb) { af[rb][0] |= t; });
+        pearl_sycl::each<8>([&](int cb) {
+          pearl_sycl::each<2>([&](int rb) { c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]); });
+        });
+      }
+      peak_wait();
+    }
+    if constexpr (KIND == 18 || KIND == 19) {
+      // wpg windows of one column window, 2 sub-groups a window: each holds the window's 32 rows by half its
+      // 64 columns. A slot: the column window's B' (512 words), then each window's A' (256 words).
+      const uint32_t W = P.wpg, slotW = 512u + W * 256u, nb = 16u + W * 8u;
+      const int8_t *Aw = A.Ap + (size_t)((32u * (wr - widx)) >> 4) * A.aStride;  // the work-group's first window's A'
+      v8i c4[4][4];
+      pearl_sycl::each<4>([&](int rb) { pearl_sycl::each<4>([&](int cb) { c4[rb][cb] = 0; }); });
+      auto src = [&](uint32_t ks, uint32_t j) -> const int8_t * {
+        const uint32_t kr = ks & 63u;
+        if (j < 16u) return Bu + (size_t)kr * 2048u + (size_t)j * 128u;
+        const uint32_t a = j - 16u, w = a / 8u, b = a % 8u;  // window w, 16-row block b / 4, its 128-byte piece b % 4
+        return Aw + (size_t)(2u * w + b / 4u) * A.aStride + (size_t)kr * 512u + (size_t)(b % 4u) * 128u;
+      };
+      auto copy3 = [&](uint32_t ks, uint32_t slot) {
+        for (uint32_t j = sgl; j < nb; j += nsg) slm_write(L + slot * slotW + j * 32u, peak_block_read<peak_b4u, uint32_t>(src(ks, j)));
+      };
+      peak_b4u pre[6];
+      const uint32_t mine = (nb - sgl + nsg - 1u) / nsg;
+      auto fetch = [&](uint32_t ks) {
+        pearl_sycl::each<6>([&](int i) { if ((uint32_t)i < mine) pre[i] = peak_block_read<peak_b4u, uint32_t>(src(ks, sgl + (uint32_t)i * nsg)); });
+      };
+      auto put = [&](uint32_t slot) {
+        pearl_sycl::each<6>([&](int i) { if ((uint32_t)i < mine) slm_write(L + slot * slotW + (sgl + (uint32_t)i * nsg) * 32u, pre[i]); });
+      };
+      copy3(0, 0);
+      if constexpr (KIND == 19) fetch(1);
+      peak_arrive();
+      for (uint32_t ks = 0; ks < 64u; ks++) {
+        const uint32_t slot = ks % 3u;
+        peak_wait();
+        if constexpr (KIND == 19) {
+          put((ks + 1u) % 3u);
+          fetch(ks + 2u);
+        } else {
+          copy3(ks + 1u, (ks + 1u) % 3u);
+        }
+        peak_arrive();
+        v8i af[4], bf[4];
+        pearl_sycl::each<4>([&](int rb) {
+          uint32_t *q = L + slot * slotW + 512u + widx * 256u + (uint32_t)rb * 64u;
+          const peak_b4u lo = slm_read(q), hi = slm_read(q + 32);
+          af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        });
+        pearl_sycl::each<4>([&](int cb) {
+          uint32_t *q = L + slot * slotW + (sgi * 4u + (uint32_t)cb) * 64u;
+          const peak_b4u lo = slm_read(q), hi = slm_read(q + 32);
+          bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        });
+        int t = 0;
+        pearl_sycl::each<4>([&](int rb) { t ^= af[rb][0]; });
+        pearl_sycl::each<4>([&](int cb) { t ^= bf[cb][0]; });
+        t &= (int)P.zero;
+        pearl_sycl::each<4>([&](int rb) { af[rb][0] |= t; });
+        pearl_sycl::each<4>([&](int cb) {
+          pearl_sycl::each<4>([&](int rb) { c4[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c4[rb][cb]); });
+        });
+      }
+      peak_wait();
+      pearl_sycl::each<4>([&](int rb) { pearl_sycl::each<4>([&](int cb) { c[rb & 1][(rb >> 1) * 4 + cb] ^= c4[rb][cb]; }); });
+    }
+    for (uint32_t rep = 0; rep < (KIND == 17 || KIND == 18 || KIND == 19 ? 0u : P.reps); rep++) {
       for (uint32_t ks = 0; ks < 64u; ks++) {
         if constexpr ((KIND >= 1 && KIND <= 7) || KIND == 8) {
           if constexpr (KIND == 7) peak_arrive();
@@ -994,6 +1100,8 @@ inline sycl::event peak_price(sycl::queue &q, const PeakArgs &args, uint32_t gro
   if (KIND == 12) need = 2u * 2048u;
   if (KIND == 13 || KIND == 14 || KIND == 15) need = 3u * 2048u;
   if (KIND == 16) need = 6u * 2048u;
+  if (KIND == 17) need = 3u * 4u * (args.wpg * 128u + 2u * 512u);
+  if (KIND == 18 || KIND == 19) need = 3u * 4u * (512u + args.wpg * 256u);
   PeakArgs a = args;
   if (a.slmBytes < need) a.slmBytes = need;
   return q.submit([&](sycl::handler &h) {
@@ -1419,6 +1527,9 @@ void add_frag_rows(std::vector<Row> &v) {
   PRICE_ROW("s-ring3", "the copy ring with a split barrier and three slots", 13, 0);
   PRICE_ROW("s-ring3k", "s-ring3 with A' as block reads of 128 bytes (4 a k-step)", 14, 0);
   PRICE_ROW("s-ringnb", "s-ring3k with no barrier at all: what the copies cost alone (reads may see a slot early)", 15, 0);
+  PRICE_ROW("s-ring2d", "both operands through a 3-slot ring: --wpg row blocks by 2 column windows a work-group, A' and B' copied once each", 17, 0);
+  PRICE_ROW("s-g32", "32 by 32 a sub-group, A' and B' both through a 3-slot ring (B' shared by the work-group, A' by a window's 2)", 18, 0);
+  PRICE_ROW("s-g32p", "s-g32 with the copy loaded a k-step early", 19, 0);
   PRICE_ROW("s-ring2k", "s-ring3k with slots of two k-steps and a split barrier every second k-step", 16, 0);
   PRICE_ROW("p-far8", "8 block reads of 128 bytes a k-step from a 1 MB stream of the sub-group's own (memory)", 8, 8);
   PRICE_ROW("p-far16", "16 block reads of 128 bytes a k-step from a 1 MB stream of the sub-group's own (memory)", 8, 16);
