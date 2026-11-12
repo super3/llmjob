@@ -1241,6 +1241,14 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   Linux and from Windows); on an RTX 5090 (PC 944d2f0a, 600 W) that file passed verify-hits 400 of 400 (570 hits,
   29 salts), and it is now the one hash in `src/pearl_rot_sm120.ref` and `kRotCubins`. Still opt-in
   (`--rotation-fold`).
+- **CI's file raced.** RTX 5080 (Salad, 360 W, clean PC, driver 621.14), hashrate.js 120 s legs taking turns: hand
+  loop 223.50, 223.48, 223.46 TH/s (2767 MHz, 360 W); form 11 215.01, 214.95, 215.01 (2775 MHz); release 220.57,
+  220.36 (2750 MHz). verify-hits 284 of 284. Same PC, bench.sh means: PeakMiner 232.0 (2775 MHz, 352 W), SRBMiner
+  230.6 (2776 MHz, 337 W). So on the 5080 the hand loop is +3.9% over form 11 and +1.4% over the release (the opt-in
+  no longer loses there), and at 96.3% of the best. The 5080 runs at its clock limit, not its power limit, so the
+  gap there is pipe share: about 94.0% of the pipe in the miner against PeakMiner's 97.3%. An RTX 5090 held at 1965
+  MHz (PC 944d2f0a, about 300 W, noisy): hand 317.6, 321.9, 324.1 against form 11 312.4, 293.8, 311.1 and release
+  320.3, 318.9.
 
 ## A100-class (sm_80)
 
