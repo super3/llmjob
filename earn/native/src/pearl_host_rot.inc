@@ -156,7 +156,7 @@ const char *const kRotCubins[] = {
     "d18246d5a53a3ac9cc2862c07d23b80c63900cb12ebd4a3ca17b9583d15cfc1a",  // CUDA 12.6
     "c7219d7dbaac0035d555a1c10e8ab8eb1752a65536f13aae589d374509f29f9d",  // CUDA 12.8
     "cb50068c5f8d01e7f98b241049930ccf8be2aa3dedfe89123ad5bab7ed8e2dec",  // sm_86, CUDA 12.8
-    "57b0fdd0f25fd2b649d4655a93377e3e98d3f9f6fb4a896167604b4d99962aa4",  // sm_120, CUDA 13.3
+    "0768c6f2598aef539ec334fa3e82a56a62c85db91262dc8be7f497b8a257325b",  // sm_120, CUDA 13.3
 };
 
 bool rot_named() {
