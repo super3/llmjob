@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "probe product bench", in that order (default all three)
+#   STAGES        any of "probe micro product bench", in that order (default all three)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -18,6 +18,11 @@
 #   ROT_BUILDS    the miner's cubins, "name:toolkit:nvcc flags;..." (ROT_C=1/3/5/7), pearl_rot.cu for sm_120
 #   PROBE_SCHED   probe cubins scheduled again by probes/hand89/sched120.py, "name:base:key=v,key=v;..." (base a
 #                 PROBE_BUILDS name); run with the base's program (PD_CUBIN)
+#   PROBE_HAND    probe cubins with rfold.py's hand loop put in by probes/hand89/rfold120.py,
+#                 "name:base:key=v,...;..." (base a PROBE_BUILDS name built with GP_ROTC=16387)
+#   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
+#                 list them in VERIFY_CUBINS and HR_LEGS
+#   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120) as rship
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -95,6 +100,21 @@ sched() {
     else say "sched $n ($base $keys) FAILED: $(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-330)"; fi
   done
 }
+# hand "name:base:key=v,key=v;...": rfold.py's hand loop put into $W/base.cubin by rfold120.py, as $W/name.cubin
+# (base a probe build with GP_ROTC=16387 or another form with flag 16384: room for the loop).
+hand() {
+  local IFS_OLD=$IFS b n r base keys out
+  IFS=';' read -r -a HL <<< "$1"
+  IFS=$IFS_OLD
+  for b in "${HL[@]}"; do
+    [ -n "$b" ] || continue
+    n=${b%%:*}; r=${b#*:}; base=${r%%:*}; keys=$(echo "${r#*:}" | tr ',' ' ')
+    # shellcheck disable=SC2086
+    out=$(python3 -I "$H/rfold120.py" "$W/$base.cubin" "$NVD" "$W/$n.cubin" $keys 2>&1)
+    if [ -f "$W/$n.cubin" ]; then say "hand $n ($base $keys): $(echo "$out" | tail -1 | cut -c1-330)"
+    else say "hand $n ($base $keys) FAILED: $(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-330)"; fi
+  done
+}
 PB=${PROBE_BUILDS:-"c1:13:-DGP_ROTC=1;c3:13:-DGP_ROTC=3;c5:13:-DGP_ROTC=5;c7:13:-DGP_ROTC=7;c1x:12:-DGP_ROTC=1"}
 RB=${ROT_BUILDS:-"r1:13:-DROT_C=1;r3:13:-DROT_C=3;r5:13:-DROT_C=5;r7:13:-DROT_C=7"}
 names() { echo "$1" | tr ';' '\n' | cut -d: -f1 | tr '\n' ' '; }
@@ -110,6 +130,7 @@ if has probe; then
     say "probe $n built ($tk: $fl): $(regs $W/$n.log)"
   done
   sched "${PROBE_SCHED:-}"
+  hand "${PROBE_HAND:-}"
 fi
 if has product; then
   t0=$(date +%s)
@@ -134,6 +155,16 @@ if has product; then
     say "rot cubin $n ($tk: $fl): fold hash $(python3 -I "$H/asm89.py" hash $W/$n.cubin) $(grep -A3 "pearl_rot_fold' for" $W/$n.log | regs /dev/stdin)"
   done
   sched "${ROT_SCHED:-}"
+  hand "${ROT_HAND:-}"
+  # ROT_SHIP=1: the file CI ships, built as CI builds it (build_rot.py --arch sm_120, CUDA 13.3), as $W/rship.cubin;
+  # its hash is printed. Name it rship in VERIFY_CUBINS and HR_LEGS.
+  if [ "${ROT_SHIP:-0}" = 1 ]; then
+    (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/br \
+      --arch sm_120 > $W/br.log 2>&1)
+    f=$W/br/pearl_rot_sm120.cubin; [ -f "$f" ] || f=$W/br/pearl_rot_sm120.cubin.unverified
+    if [ -f "$f" ]; then cp "$f" $W/rship.cubin; say "ship cubin (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rship.cubin)"
+    else say "ship cubin FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
+  fi
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).
   K=$W/addon
   rm -rf $K && mkdir -p $K/cuda-build && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" $K/
@@ -165,9 +196,33 @@ if has probe; then
   for line in "${PL[@]}"; do
     [ -n "$line" ] || continue
     exe=${line%% *}
-    # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here.
-    python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g" | emit
+    # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here, the collision and
+    # hit counts left out and the line cut to 395 (a longer name lost every probe line of a run on 12 November).
+    python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
+fi
+# PROBE_SAN: probe runs under compute-sanitizer's memcheck (CUDA 13.3's, from NVIDIA's redistributables), ';'
+# between them, each "<build exe> <cubin> <k> <tiles>": the first faulting access and its address, for a hand loop.
+if [ -n "${PROBE_SAN:-}" ]; then
+  SAN=cuda_sanitizer_api/linux-x86_64/cuda_sanitizer_api-linux-x86_64-13.3.75-archive.tar.xz
+  if [ ! -x /opt/san/compute-sanitizer/compute-sanitizer ]; then
+    mkdir -p /opt/san && curl -fsSL --retry 3 "$RD/$SAN" -o /root/san.tar.xz &&
+      echo "f409be1ba58f44a0a1c826933fa6d557659bfb5b29f4d175979d1cf9c530e3cf  /root/san.tar.xz" | sha256sum -c --quiet - &&
+      tar -xJf /root/san.tar.xz -C /opt/san --strip-components=1 || say "WARN sanitizer download"
+  fi
+  IFS=';' read -r -a SL2 <<< "$PROBE_SAN"
+  for line in "${SL2[@]}"; do
+    [ -n "$line" ] || continue
+    read -r exe cub k tiles <<< "$line"
+    PD_CUBIN=$W/$cub.cubin timeout 300 /opt/san/compute-sanitizer/compute-sanitizer --tool memcheck --show-backtrace no \
+      "$W/$exe" "san-$cub" "$k" "$tiles" 0 0 6 0 2 2>&1 | grep -vE "^=+ *$" | head -24 | cut -c1-300 | sed "s/^/san $cub /; s/%/pc/g; s/|/\//g" | emit
+  done
+fi
+# mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
+if has micro; then
+  $N13 -o $W/mmabench "$H/mmabench.cu" > $W/mma.log 2>&1 || fail "mmabench: $(tail -2 $W/mma.log | tr '
+' ' ')"
+  $W/mmabench "${MICRO_SECS:-10}" 2>&1 | cut -c1-300 | emit
 fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"

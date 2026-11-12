@@ -3,7 +3,7 @@
 // card is compute 8.9 (RTX 40), 8.6 (RTX 30) or 12.0 (RTX 50) and the card's cubin (pearl_rot_sm89.cubin,
 // pearl_rot_sm86.cubin or pearl_rot_sm120.cubin, beside the addon, or the file PEARL_ROT_CUBIN names) is there.
 // The first two hold the same hand-written loop: ptxas gives sm_86 the same code as sm_89 for this kernel, byte
-// for byte. The sm_120 file has no hand loop: it is the fold written in C (pearl_rot_c.inc) as ptxas compiles it. The release fold and everything it does are untouched.
+// for byte. The sm_120 file has the same hand loop, encoded for sm_120 (probes/hand89/rfold120.py). The release fold and everything it does are untouched.
 //
 // What is different from the release fold, and so what this file does itself:
 //   - The kernel is a cubin whose chunk loop was written by hand (src/pearl_rot.cu, probes/hand89/rfold.py). It
@@ -156,7 +156,7 @@ const char *const kRotCubins[] = {
     "d18246d5a53a3ac9cc2862c07d23b80c63900cb12ebd4a3ca17b9583d15cfc1a",  // CUDA 12.6
     "c7219d7dbaac0035d555a1c10e8ab8eb1752a65536f13aae589d374509f29f9d",  // CUDA 12.8
     "cb50068c5f8d01e7f98b241049930ccf8be2aa3dedfe89123ad5bab7ed8e2dec",  // sm_86, CUDA 12.8
-    "ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687",  // sm_120, CUDA 13.3
+    "e439e1ca4517c447b4391992b332f178051b184b68fc0520aae82be220b7f72e",  // sm_120, CUDA 13.3
 };
 
 bool rot_named() {

@@ -6,9 +6,11 @@
 //   RC_STG     the stage's place             RC_FILL4  the operand fill in each byte of a word (63)
 //   RC_FLAGS   1, plus 2 (B a turn ahead), 4 (the readout spread over the mma), 8 (barriers after the first
 //              and the last turn only), 16 (the readout spread over two turns: half a turn behind the sums) and
-//              32 (the readout's steps written out, so ptxas keeps them as they are). TIMING ONLY, wrong results
-//              on purpose, to price a part: 64 (no barriers), 128 (no readout), 256 (B gathered once a chunk), 512 (no
-//              stage loads)
+//              32 (the readout's steps written out, so ptxas keeps them as they are), 4096 (a turn's barrier goes
+//              ahead of its last m16 tile's mma, behind that tile's load or store: the loads after the barrier then
+//              go out while those eight mma run), 8192 (the first turn's A gather loads a tile ahead). TIMING ONLY, wrong results on purpose, to price a part: 64 (no
+//              barriers), 128 (no readout), 256 (B gathered once a chunk), 512 (no stage loads), 1024 (no A gathers
+//              or stores in the first turn), 2048 (no B gathers)
 // It reads the 8-byte offsets records of rot_aux_offs (gprobe's `rot` 2).
 //
 // The fold. A warp takes a chunk's four k-steps in its own order (the records are in that order). At its first
@@ -39,6 +41,9 @@
   };
   int32_t acc[MT][NB][4];
   uint32_t af[4], bf[NB][2];
+#if RC_FLAGS & 8192
+  uint32_t ma[8];
+#endif
 #pragma unroll
   for (uint32_t mb = 0; mb < MT; mb++)
 #pragma unroll
@@ -47,6 +52,10 @@
       for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
   const uint2 *po = reinterpret_cast<const uint2 *>(offs) + (size_t)warp * ((size_t)chunks * 128u + 32u) + lane;
   auto gatherB = [&](const uint32_t P, const uint32_t ob) {
+#if RC_FLAGS & 2048
+    // TIMING ONLY: no B gathers (B stays what the prologue left: zero).
+    if (P < 4u) return;
+#endif
     gather(bf[2u * P][0], bf[2u * P + 1u][0], (ob & 0xffffu) + sb + 2048u * P);
     gather(bf[2u * P][1], bf[2u * P + 1u][1], (ob >> 16) + sb + 2048u * P);
   };
@@ -90,6 +99,20 @@
     xp = 0u;
     xq = 0u;
   };
+  // The band's barrier: 1 for warps 0 to 3, 2 for warps 4 to 7, 128 threads each. Flag 8: only after the first
+  // turn (every store behind it, before any load) and the last (every load behind it, before the next chunk's
+  // stores); nothing is stored in the turns between, so the two barriers there order nothing.
+  auto bar = [&](const bool first, const bool last) {
+    (void)first;
+    (void)last;
+#if RC_FLAGS & 64
+    // TIMING ONLY (wrong results on purpose): no barriers, to price them.
+    if (false)
+#elif RC_FLAGS & 8
+    if (first || last)
+#endif
+    asm volatile("{.reg .pred p; setp.ne.u32 p, %0, 0; @p bar.sync 2, 128; @!p bar.sync 1, 128;}" ::"r"(band) : "memory");
+  };
   auto turn = [&](const bool first, const bool last, const uint32_t c) {
     (void)last;
     (void)c;
@@ -105,10 +128,37 @@
 #pragma unroll
     for (uint32_t mb = 0; mb < MT; mb++) {
       if (first) {
+#if RC_FLAGS & 1024
+        // TIMING ONLY: no A gathers or stores in the first turn (it folds the last A fragment it has).
+        if (o.x == 0xffffffffu)
+#endif
+        {
+#if RC_FLAGS & 8192
+        // Flag 8192: a tile's two gather loads go out a tile ahead, before the mma of the tile before, and the
+        // fragments are made from them when their tile comes.
+        if (mb == 0u) {
+          ldmt(ma, (o.x & 0xffffu) + sb);
+          ldmt(ma + 4, (o.x >> 16) + sb);
+        }
+        {
+          const uint32_t x0 = ma[0] + RC_FILL4 - ma[2], y0 = ma[1] + RC_FILL4 - ma[3];
+          const uint32_t x1 = ma[4] + RC_FILL4 - ma[6], y1 = ma[5] + RC_FILL4 - ma[7];
+          af[0] = __byte_perm(x0, y0, 0x6420u);
+          af[1] = __byte_perm(x0, y0, 0x7531u);
+          af[2] = __byte_perm(x1, y1, 0x6420u);
+          af[3] = __byte_perm(x1, y1, 0x7531u);
+        }
+        if (mb + 1u < MT) {
+          ldmt(ma, (o.x & 0xffffu) + sb + 2048u * (mb + 1u));
+          ldmt(ma + 4, (o.x >> 16) + sb + 2048u * (mb + 1u));
+        }
+#else
         gather(af[0], af[1], (o.x & 0xffffu) + sb + 2048u * mb);
         gather(af[2], af[3], (o.x >> 16) + sb + 2048u * mb);
+#endif
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                      ::"r"(stw + 512u * mb), "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]) : "memory");
+        }
       } else {
 #if RC_FLAGS & 512
         // TIMING ONLY: no stage loads (later turns fold the last A fragment they have).
@@ -117,6 +167,10 @@
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(af[0]), "=r"(af[1]), "=r"(af[2]), "=r"(af[3]) : "r"(o.x + sb + 512u * mb) : "memory");
       }
+#if RC_FLAGS & 4096
+      // Flag 4096: the barrier behind the last tile's load or store and ahead of its mma.
+      if (mb == MT - 1u) bar(first, last);
+#endif
 #pragma unroll
       for (uint32_t nb = 0; nb < NB; nb++) {
         asm volatile(
@@ -151,16 +205,9 @@
       if (first && mb == 0u) word(c + 15u);
 #endif
     }
-    // The band's barrier: 1 for warps 0 to 3, 2 for warps 4 to 7, 128 threads each. Flag 8: only after the
-    // first turn (every store behind it, before any load) and the last (every load behind it, before the next
-    // chunk's stores); nothing is stored in the turns between, so the two barriers there order nothing.
-#if RC_FLAGS & 64
-    // TIMING ONLY (wrong results on purpose): no barriers, to price them.
-    if (false)
-#elif RC_FLAGS & 8
-    if (first || last)
+#if !(RC_FLAGS & 4096)
+    bar(first, last);
 #endif
-    asm volatile("{.reg .pred p; setp.ne.u32 p, %0, 0; @p bar.sync 2, 128; @!p bar.sync 1, 128;}" ::"r"(band) : "memory");
 #if RC_FLAGS & 2
     o = on;
 #endif
@@ -192,6 +239,15 @@
     word(c);
 #endif
   }
+#if RC_FLAGS & 16384
+  // Flag 16384: room. 128 stores that never run (no record count is 2^32 - 1), so that the compiled function is
+  // long enough for probes/hand89/rfold120.py to put the hand-written loop in its place. Not for the miner.
+  if (chunks == 0xffffffffu) {
+#pragma unroll
+    for (uint32_t i = 0; i < 128u; i++)
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + 4u * (i & 15u)), "r"(i * 0x9e3779b9u) : "memory");
+  }
+#endif
 #if RC_FLAGS & 128
   live = true;
 #pragma unroll

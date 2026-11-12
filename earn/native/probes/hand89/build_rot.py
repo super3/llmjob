@@ -7,10 +7,10 @@ for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; of
 --arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
 architectures the same code for this kernel, so the same hand loop and the same checks serve both.
 
---arch sm_120 builds pearl_rot_sm120.cubin for RTX 50 cards against src/pearl_rot_sm120.ref. There is no hand
-loop for sm_120: pearl_rot.cu's sm_120 branch is the rotation fold in C (pearl_rot_c.inc), and the file is the
-kernel as ptxas compiles it. Steps 2 to 5 are then: nvdisasm must read the whole file, and the chunk loop must
-hold the fold's 192 IMMA a chunk. Step 6 (the reference hash) is the same.
+--arch sm_120 builds pearl_rot_sm120.cubin for RTX 50 cards against src/pearl_rot_sm120.ref, with the same hand
+loop: pearl_rot.cu is compiled with its C fold outlined and given room (-DROT_INLINE=0 -DROT_C=16387), and
+rfold120.py puts rfold.py's loop, encoded for sm_120, in that function's place. Step 2 (asm89's check of its
+own encodings) does not apply there: rfold120.py reads every word it writes back through nvdisasm.
 
 The fold's chunk loop is written by hand and put into a kernel the compiler made. So every step is checked, and
 the file is only written when all of them pass:
@@ -54,8 +54,8 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # 4090 the readout's steps first in their gap and allowed into more of the chunk's end (rgf=1 rb0=3 rb1=0: the
 # probe's pipe 99.54% against 99.18%, the level of a loop with no readout) mined 338.00, 338.04 and 337.93
 # TH/s against 336.93, 337.07 and 337.10 for the loop before (hashrate.js, 12 November); on the Salad RTX 3090,
-# with iy=0, 121.16, 121.17 and 121.25 against 120.74, 120.81 and 120.87. sm_120 is compiled from C, not built by
-# rfold.py.
+# with iy=0, 121.16, 121.17 and 121.25 against 120.74, 120.81 and 120.87. sm_120: rfold120.py with rfold.py's
+# defaults (the file verified on RTX 5090 and 5080, 12 November).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
              "sm_120": []}
 
@@ -112,21 +112,24 @@ def main():
     if not release:
         return fail("nvcc --version does not state a release")
     print("build_rot: step 1, nvcc %s compiles src/pearl_rot.cu for %s" % (release, arch))
-    r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin", "-I", SRC, os.path.join(SRC, "pearl_rot.cu"),
-                        "-o", base], capture_output=True, text=True)
+    defs = ["-DROT_INLINE=0", "-DROT_C=16387"] if arch == "sm_120" else []
+    r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
+                        os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
         return fail("nvcc")
     if arch == "sm_120":
-        print("build_rot: steps 2 to 5 for sm_120: the compiled fold read back, 192 IMMA in its chunk loop")
+        print("build_rot: steps 3 to 5 for sm_120: rfold120.py, the hand loop encoded for sm_120 and read back")
         r = subprocess.run([nvdisasm, "-c", base], capture_output=True, text=True)
         if r.returncode != 0 or "error" in r.stderr:
             return fail("nvdisasm cannot read the compiled kernel")
         open(sass, "w", encoding="utf-8", newline="\n").write(r.stdout)
-        if r.stdout.count("IMMA.16832.S8.S8") < 192:
-            return fail("the compiled kernel does not hold the fold's 192 IMMA a chunk")
-        import shutil
-        shutil.copyfile(base, tmp)
+        r = subprocess.run([sys.executable, "-I", "-X", "utf8", os.path.join(HERE, "rfold120.py"), base, nvdisasm, tmp]
+                           + ARCH_KEYS[arch])
+        if r.returncode != 0 or not os.path.exists(tmp):
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            return fail("rfold120.py (exit %d)" % r.returncode)
         return finish(tmp, ref, release, arch, NAME, final, unverified)
     print("build_rot: step 2, the assembler against this compiler's own bytes")
     text = asm89.disassemble(base, nvdisasm)
