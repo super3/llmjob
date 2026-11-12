@@ -69,6 +69,12 @@
 #define GP_STAGE 0u
 #endif
 #define GP_STG (GP_ST + 256u)
+// GP_BX 1 (goal-nvk13): B drawn once for the two warps of a column slot (hand89/rfold.py bx=1). The thread's
+// transcript then lives in local memory, in the kernel's frame (trl below), and the 16 KB at GP_TR are the hand
+// loop's exchange of B's fragments ([column slot][row band][pair][lane] of 16 bytes). The size is unchanged.
+#ifndef GP_BX
+#define GP_BX 0
+#endif
 #define GP_SMEM (GP_STG + GP_STAGE)
 #define GP_THREADS 256u
 // GP_HASH 1: after a tile's loop every thread hashes its own transcript (one keyed BLAKE3 compression of its 64
@@ -145,7 +151,11 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 #define GP_LOOPFN GP_CAT(GP_FN, _loop)
 
 // The tile's fold. It takes nothing from the kernel but these two values.
+#if GP_BX
+static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks, uint32_t *trl) {
+#else
 static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
+#endif
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 #if GP_DIRECT
   constexpr uint32_t MT = GP_MT, NB = 8u;
@@ -250,10 +260,15 @@ static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, ui
         for (uint32_t nb = 0; nb < NB; nb++)
           x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2]
                ^ (uint32_t)acc[mb][nb][3];
+#if GP_BX
+      (void)trL;
+      trl[c & 15u] = __funnelshift_l(trl[c & 15u], trl[c & 15u], 13u) ^ x;
+#else
       uint32_t w;
       asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
       w = __funnelshift_l(w, w, 13u) ^ x;
       asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
+#endif
     }
   };
   // Two copies of the same loop, which is the room the hand-written loop is given (it is longer than one).
@@ -274,6 +289,10 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(gp_smem);
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   if (blockDim.x != GP_THREADS) return;
+#if GP_BX
+  // The thread's transcript (16 words) and one word the hand loop keeps for itself (its exchange address).
+  __align__(16) uint32_t trl[20];
+#endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
     // The probe's long runs fold more tiles than it has tables for: the column blocks go round.
     const uint32_t rbg = v % row_groups, cbg = (v / row_groups) % col_blocks;
@@ -302,17 +321,26 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
                      : "memory");
       }
 #endif
+#if GP_BX
+#pragma unroll
+      for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
+#else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
         asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sbase + GP_TR + tid * 64u + q * 16u), "r"(0u)
                      : "memory");
+#endif
     }
     __syncthreads();
     if (lane == 0u) {
       const long long pt1 = clock64();
       asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + GP_ST + 8u + warp * 24u), "l"(pt1) : "memory");
     }
+#if GP_BX
+    GP_LOOPFN(offs, chunks, trl);
+#else
     GP_LOOPFN(offs, chunks);
+#endif
     if (lane == 0u) {
       const long long pt2 = clock64();
       asm volatile("st.shared.u64 [%0], %1;" ::"r"(sbase + GP_ST + 16u + warp * 24u), "l"(pt2) : "memory");
@@ -320,12 +348,17 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
 #if GP_HASH
     if (hits) {
       uint32_t m[16], key[8], h[8];
+#if GP_BX
+#pragma unroll
+      for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
+#else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(m[4u * q]), "=r"(m[4u * q + 1u]), "=r"(m[4u * q + 2u]), "=r"(m[4u * q + 3u])
                      : "r"(sbase + GP_TR + tid * 64u + q * 16u)
                      : "memory");
+#endif
 #pragma unroll
       for (uint32_t i = 0; i < 8u; i++) key[i] = hits[i];
       gp_blake3_keyed64(key, m, h);
@@ -353,10 +386,17 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++) {
         uint32_t w[4];
+#if GP_BX
+        w[0] = trl[4u * q];
+        w[1] = trl[4u * q + 1u];
+        w[2] = trl[4u * q + 2u];
+        w[3] = trl[4u * q + 3u];
+#else
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(w[0]), "=r"(w[1]), "=r"(w[2]), "=r"(w[3])
                      : "r"(sbase + GP_TR + tid * 64u + q * 16u)
                      : "memory");
+#endif
         uint32_t *const d = dump + ((size_t)v * GP_THREADS + tid) * 16u + q * 4u;
         d[0] = w[0];
         d[1] = w[1];

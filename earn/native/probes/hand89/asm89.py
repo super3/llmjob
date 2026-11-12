@@ -107,6 +107,9 @@ FORMS = [
     (r"STS\.128 " + MEM + ", " + R, lambda m: (_mem(0x7388 | _reg(m[3]) << 32, m, 1), 0xc00)),
     (r"STS\.64 " + MEM + ", " + R, lambda m: (_mem(0x7388 | _reg(m[3]) << 32, m, 1), 0xa00)),
     (r"STS " + MEM + ", " + R, lambda m: (_mem(0x7388 | _reg(m[3]) << 32, m, 1), 0x800)),
+    # 4-byte local load and store (ptxas 12.6's encodings, goal-nvk13: the thread's transcript in the kernel's frame).
+    (r"LDL " + R + ", " + MEM, lambda m: (_mem(0x7983 | _reg(m[1]) << 16, m, 2), 0x100800)),
+    (r"STL " + MEM + ", " + R, lambda m: (_mem(0x7387 | _reg(m[3]) << 32, m, 1), 0x100800)),
     (r"LDG\.E\.128 " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1d00)),
     (r"LDG\.E\.64 " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1b00)),
     (r"ATOMS\.XOR RZ, " + MEM + ", " + R, lambda m: (_mem(0x738c | RZ << 16 | _reg(m[3]) << 32, m, 1), 0x3800000)),
@@ -164,6 +167,12 @@ FORMS = [
     # RTX 4090 with a barrier test, goal-nvk12, and against a run with no barrier, which read stale data).
     (r"BAR\.SYNC\.DEFER_BLOCKING " + R + ", " + I,
      lambda m: (0x751d | _reg(m[1]) << 32 | _num(m[2]) << 42, 0x10000)),
+    # bar.arrive r, b (ptxas 12.6's encoding, goal-nvk13): the same word as bar.sync r, b with 0x2000 in the
+    # second where bar.sync has 0x10000.
+    (r"BAR\.ARV " + I + ", " + I,
+     lambda m: (0x7b1d | _num(m[1]) << 54 | _num(m[2]) << 42, 0x2000)),
+    (r"BAR\.ARV " + R + ", " + I,
+     lambda m: (0x751d | _reg(m[1]) << 32 | _num(m[2]) << 42, 0x2000)),
     (r"ISETP\.GT\.U32\.AND P(\d), PT, " + R + ", " + I + ", PT",
      lambda m: _f(0x780c, 0x3f04070, pd=int(m[1]), ra=_reg(m[2]), imm=_num(m[3]))),
     # 4-byte global load and store (the uniform register pair goes in as for the 16-byte load: gfold.ldg).

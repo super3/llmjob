@@ -3246,3 +3246,61 @@ the exchange it needs (eleventh round: 342.2 by count with the exchange free).
 - **How alike the k inside one IMMA are** costs little if anything: orders 10 and 11 have the definition order's
   bank collisions, and with the pipe taken into account their clocks sit within 6 MHz of it. Not worth a search
   that has to weigh collisions against it.
+
+### B drawn once, built correct, and why it loses (RTX 4090, 2026-11-12)
+
+Thirteenth round, branch `goal/nv-13`. B's fragments drawn once for the two warps of a column slot, as the
+eleventh and twelfth rounds proposed, now built correct and timed. It is correct and slower than the shipped loop.
+Defaults unchanged; `build_rot.py` still builds the listed 12.6 cubin.
+
+**Why this was the one to build.** In this tiling every warp needs 40 operand registers a k-step. Drawing A once
+(the four warps of a band, as shipped) and B once (the two warps of a slot) is at the floor of both counts at once:
+28 ALU steps and 17 shared-memory steps of 512 bytes a warp a k-step. No other split of the 8 warps or warp tile
+does better on paper (128 x 48: 18 steps, one band of eight warps: 19, four bands of two: 18 or more). The other
+miners run 2,619 to 2,625 MHz, which is about what that floor prices at.
+
+**What it needs, and how it is done (`rfold.py` keys).**
+
+- 16 KB of shared memory: `gfold_h.cuh -DGP_BX=1` keeps the thread's transcript in the kernel's frame (local
+  memory, 64 bytes at R1 + 0) and gives the 16 KB at `GP_TR` to the exchange, laid out [slot][band][pair][lane] so
+  that a warp's own area and its partner's differ only in bit 11. The kernel's shared size is unchanged. The hand
+  loop's tail reads and writes the word with `LDL`/`STL` (`asm89` has both, from ptxas's encodings).
+- An address register: R3 (the readout's second chain) is free from the transcript's tail to the next readout. The
+  prologue leaves the own area's address at R1 + 0x40; the tail reloads it; one XOR of 0x800 turns it into the
+  partner's around the loads (`bx=1`). The tail holds R3 to gap 31 of a chunk's first turn, so that turn's stores
+  start at gap 32 (`bsg3=32`, `bss=2`).
+- Ordering (`bord=2`): four barriers of 256 threads, each arrived on by one row band and synced on by the other:
+  4 + band "this band's pairs are stored", 6 + band "the other band has loaded them". The chunk count's register
+  holds 16 x chunks left + the number in use. With the arrives as immediates under the band predicate (`barv=1`).
+
+**What the card said (k 65536, 60 s, 450 W, gprobe order 6; by count = pipe x clock x 0.13102).**
+
+| Loop | Check | Pipe | Clock | By count |
+|---|---|---|---|---|
+| shipped (z0), six holds | 512/512 | 98.96% | 2595 to 2603 MHz | 336.4 to 337.1 |
+| B shared, no order (eleventh round's best form, TIMING ONLY) | wrong | 98.79% | 2610, 2612 MHz | 337.8, 338.1 |
+| B shared, both warps of a slot syncing on one barrier twice a cycle (TIMING ONLY) | wrong | 98.06% | 2612, 2615 MHz | 335.6, 335.9 |
+| bx7: B drawn once, correct | 16384/16384 at k 2048, 4096/4096 at k 8192, 512/512 | 97.57% | 2614 MHz | 334.2 |
+| bn7: bx7 without its syncs (TIMING ONLY) | wrong | 98.31% | 2610 MHz | 336.2 |
+
+So even with no ordering at all the correct form's exchange (stores, loads, the transcript in local memory, the
+first turn's late stores) leaves it level with the shipped loop, and the ordering costs another 0.74 points. The
+clock comes (+15 to +20 MHz), the pipe goes. B drawn once is closed for this fold.
+
+**Faults on the way, each worth knowing.**
+
+- An arrive by one warp and a sync by the other, taken in turn on ONE barrier, deadlocks: a warp's own arrive and
+  its own later sync make up the 64 threads, so a generation closes without the partner. Fixed roles per barrier
+  (one side only arrives, the other only syncs) are safe; checked in C on the card, 0 stale reads in 12,000 rounds
+  a block against 74 million without the barriers.
+- In the hand loop `BAR.ARV` with its number in a register hung (stall 1 or 6), though the same instruction from
+  ptxas in a C test does not, also with high bits set in the register. The immediate form under a predicate works.
+- A barrier simulator that reads the listing and runs 8 warps through prologue, chunks and epilogue in random
+  interleavings found a wrong starting number at once; worth running before any barrier change goes to the card.
+- An XOR that changes an address register two gaps after a store that reads it is a race (6 of 64 tiles wrong):
+  a store reads its address when the shared-memory queue takes it. Give the store a read scoreboard and make the
+  XOR wait on it. And never pick scoreboard 4 for that: the next record's load from the L2 sets it, and the XOR
+  then waits for the L2 every turn (bx5: 93.6% of the pipe).
+- With the exchange address in R251 all loop long (`bxt=1`, the transcript word found from the chunk count) and the
+  first turn's stores at gap 8, every run stopped with "an illegal memory access"; at gap 32 it is correct. Not
+  found why.
