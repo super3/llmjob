@@ -2165,7 +2165,7 @@ as earn/tuning/benchmark.md takes ours, with medians of the SM clock, power and 
 miner runs. It differs from earn/tuning/benchmark.md's method only in using this checkout's core instead
 of the release files, so its results go in a section's notes and never change a row.
 
-### The rotation fold priced on Turing: `turing/price75.cu` (RTX 2070 Super and 2080 Ti, Salad, 2026-11-12)
+### The rotation fold priced on Turing: `turing/price75.cu` (RTX 2070 Super, 2080 Ti and 2060, Salad, 2026-11-12)
 
 Branch `goal/nv-20`. The rotation fold lifted RTX 40 and 30 by about 6% (sections below). Before building one for
 sm_75 it was priced the way the RTX 40 price list was: a timing-only probe at the release fold's geometry (eight
@@ -2190,7 +2190,11 @@ cards held their power cap in every run.
 | **rotation fold**: B gathered every k-step, A gathered at one turn in four and shared through a stage, a barrier a row slot a k-step | **84.9%, 1799-1827, 62.6-63.5** | **87.0%, 1334-1342, 80.9-81.3** |
 | the same, no barrier (would be wrong) | 89.3%, 1796, 65.7 | 91.6%, 1314, 83.8 |
 | gather fold (every fragment gathered by every warp) | 83.9%, 1787, 61.4 | 86.1%, 1339, 80.2 |
-| the release fold, mined (`hashrate.js`, with its readout and hash) | 64.24 TH/s at 1767 MHz, twice | 81.88 at 1293 |
+| the release fold, mined (`hashrate.js`, with its readout and hash) | 64.24 TH/s at 1767 MHz, twice | 81.88-82.14 at 1293-1295 |
+
+On an RTX 2060 (6 GB, 30 SMs, 3 MB L2, held near 110 W) the same: ready fragments 99.9% at 1470-1504 MHz, 32 ALU
+steps 97.1%, the rotation stream 87.0% at 1451-1467 MHz (38.8-39.2 by count), the release mined 39.03-39.06 at
+1385-1389 MHz.
 
 - **The rotation fold does not carry over.** With no readout and no hash its operand stream alone mines about what
   the release mines with both (63 against 64.2; 81 against 81.9). The readout and hash cost a fold 2-4% more. Not
