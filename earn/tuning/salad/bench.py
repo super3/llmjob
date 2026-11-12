@@ -23,6 +23,9 @@ SET = os.environ.get("BENCH_SET", "gtx")
 # slot each. Each lane has its own files and group names and takes its own classes. No lane: the whole set in one
 # run. The RX 7800 XT was lane a's last class until 22 October; it has a lane of its own so a third slot can take it.
 LANE = os.environ.get("BENCH_LANE", "")
+# BENCH_PART: a second run of a lane's rows (with BENCH_CLASSES naming the classes it takes), in files and group
+# names of its own, so a slot that is done with its own lane can take some of another lane's classes.
+PART = os.environ.get("BENCH_PART", "")
 LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
          "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
                  "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
@@ -30,7 +33,7 @@ LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 790
                  "40": ["RTX 4090", "RTX 4090D", "RTX 4080 Super", "RTX 4080", "RTX 4070 Ti Super", "RTX 4070 Ti",
                         "RTX 4070 Super", "RTX 4070", "RTX 4060 Ti", "RTX 4060"],
                  "50": ["RTX 5090", "RTX 5080", "RTX 5070 Ti", "RTX 5070", "RTX 5060 Ti", "RTX 5060"]}}.get(SET, {})
-NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}"
+NAME = f"bench{'' if SET == 'gtx' else '-' + SET}{'-' + LANE if LANE else ''}{PART}"
 STATE, STATUS, LOG = (os.path.join(w.D, NAME + x) for x in (".json", "_status.md", ".log"))
 COMMIT = os.environ.get("BENCH_COMMIT", "")   # the commit whose bench.sh the boxes run (pinned, like box.sh)
 SRB_EXTRA = os.environ.get("BENCH_SRB_EXTRA", "")   # extra SRBMiner flags, e.g. --gpu-sensors-disable
@@ -40,6 +43,12 @@ TAP = os.environ.get("BENCH_TAP", "") == "1"
 # how long the hit check runs.
 BASE_SHA = os.environ.get("BENCH_BASE_SHA") or COMMIT
 VERIFY_SECS = int(os.environ.get("BENCH_VERIFY_SECS") or 600)
+# NVIDIA sets: our miner built on the box at BASE_SHA and run from source (bench.sh's OURS_SRC=1) rather than a
+# release. BENCH_FOLD=1 runs it with --rotation-fold, and BENCH_NOFOLD=1 adds a second leg of the same build
+# without it ("ours0", the old kernel), so each row shows both.
+OURS_SRC = os.environ.get("BENCH_OURS_SRC", "") == "1"
+FOLD = os.environ.get("BENCH_FOLD", "") == "1"
+NOFOLD = os.environ.get("BENCH_NOFOLD", "") == "1"
 
 
 @functools.lru_cache(maxsize=None)
@@ -109,6 +118,10 @@ if SET == "rtx":
     # earn/tuning/benchmark.md's RTX 20- to 50-series rows, rerun on Salad PCs with every miner at its newest (bench.sh).
     # Five miners since 9 November, about 31 minutes of mining after the downloads, so a box gets an hour.
     RUN_MIN = 60
+    if OURS_SRC:
+        # The toolkit, the checkout and the build for one card: 8-15 minutes on a Salad PC. The leg without the
+        # fold is 5 minutes more.
+        RUN_MIN = 80 + (10 if NOFOLD else 0)
     # Salad has no 2060 Super or 2070 Super class, so those rows fill only if another class hands one out, and only
     # a 12 GB RTX 3060 class is run, as earn/tuning/benchmark.md's 3060 rows are 12 GB cards. It has no 3050 row.
     PLAN = [("RTX 2080 Ti (11 GB)", ["RTX 2080 Ti"], 300), ("RTX 2080 (8 GB)", ["RTX 2080"], 300),
@@ -181,7 +194,7 @@ def parse(lines):
     """A box's "[bench]" lines into what it did: the card, each miner's samples, end, exit, and whether it's done.
     On AMD also the PC's copy rate, the hit check, the core's commit and any miner the box left out, and why."""
     out = {"card": None, "miners": {}, "done": False, "fail": None, "phase": None, "copy": None, "hitcheck": None,
-           "core": None, "loaded": None, "skipped": {}}
+           "core": None, "loaded": None, "skipped": {}, "fold": {}, "built": []}
     for text in lines:
         m = re.search(r"\[bench\] \S+ (.*)", text)
         if not m:
@@ -196,6 +209,13 @@ def parse(lines):
             s = re.match(r"skip (\w+): (.*)", body)
             if s:
                 out["skipped"][s.group(1)] = s.group(2)
+        elif body.startswith("fold "):
+            # OURS_SRC: "fold ours rotation fold passed its check (...)", or "fold ours0 none".
+            f = body.split(" ", 2)
+            if len(f) == 3:
+                out["fold"][f[1]] = f[2]
+        elif body.startswith("built "):
+            out["built"].append(body[6:])
         elif body.startswith("loaded "):
             # Our CLI's "Pearl core:" line, e.g. "CUDA 13 build; driver 621, ...": the label before the ";".
             out["loaded"] = body[7:].split(";")[0].strip() or None
@@ -293,9 +313,13 @@ def render(st, sections=None):
     gives its copy rate and hit check."""
     out = []
     for title, rows in sections or SECTIONS:
-        out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | "
-                + " | ".join(NAMES[k] for k in COMPETITORS) + " | % of best |",
-                "|---|---|---|---|" + "---|" * len(COMPETITORS) + "---|"]
+        # A section whose results have a leg without the rotation fold (BENCH_NOFOLD) shows it beside ours, and
+        # how much faster the fold was.
+        two = NOFOLD or any(h.get("ours0") for r in rows for h in st["results"].get(r, []))
+        out += [f"## {title}", "", "| Card | Host | Machine ID | Ours | " + ("Ours, no fold | " if two else "")
+                + " | ".join(NAMES[k] for k in COMPETITORS) + " | % of best |" + (" Fold gain |" if two else ""),
+                "|---|---|---|---|" + ("---|" if two else "") + "---|" * len(COMPETITORS) + "---|"
+                + ("---|" if two else "")]
         notes = [pc_note(r, h) for r in rows for h in st["results"].get(r, []) if SET == "amd"]
         for r in rows:
             hosts = st["results"].get(r, [])
@@ -303,8 +327,9 @@ def render(st, sections=None):
             for i in range(len(hosts) if extra else HOSTS):    # a card no class is for: only the hosts it had
                 mem = f", {MEM[r]}" if r in MEM else ""
                 if i >= len(hosts):
-                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | "
-                               + "".join("0 | " if k in UNSUPPORTED else "not run | " for k in COMPETITORS) + "— |")
+                    out.append(f"| {r} | Salad (— W{mem}) | — | not run | " + ("not run | " if two else "")
+                               + "".join("0 | " if k in UNSUPPORTED else "not run | " for k in COMPETITORS) + "— |"
+                               + (" — |" if two else ""))
                     continue
                 h = hosts[i]
                 # nvidia-smi says "[N/A]" on a PC whose driver doesn't report a power limit.
@@ -313,9 +338,12 @@ def render(st, sections=None):
                 theirs = [tuple(h.get(k) or (None, "not run")) for k in COMPETITORS]
                 best = max([v for v, _ in theirs if v] or [0])
                 pct = f"{o / best * 100:.0f}%" if o and best else "—"
+                o0 = tuple(h.get("ours0") or (None, "not run"))
+                gain = f"{(o / o0[0] - 1) * 100:+.1f}%" if o and o0[0] else "—"
                 out.append(f"| {r} | Salad ({p}{mem}) | {h['machine'][:8]} | {cell(o, ow)} | "
+                           + (f"{cell(*o0)} | " if two else "")
                            + " | ".join("0" if k in UNSUPPORTED else cell(*x) for k, x in zip(COMPETITORS, theirs))
-                           + f" | {pct} |")
+                           + f" | {pct} |" + (f" {gain} |" if two else ""))
         out.append("")
         if notes:
             out += notes + [""]
@@ -359,6 +387,8 @@ class Bench:
         n = sum(len(self.st["results"].get(r, [])) for r in self.plan()[1])
         if SET == "amd":
             return "ours,srb" if n % 2 == 0 else "srb,ours"
+        if SET == "rtx" and NOFOLD:
+            return "ours,ours0,peak,srb,ozm" if n % 2 == 0 else "srb,peak,ozm,ours0,ours"
         if SET == "rtx":
             return "ours,peak,srb,ozm" if n % 2 == 0 else "srb,peak,ozm,ours"
         return "peak,srb,ours" if self.st["tries"] % 2 == 0 else "srb,peak,ours"
@@ -374,9 +404,14 @@ class Bench:
                     f"W={self.wallet} ORDER={order} OURS_SECS={ours_secs} BASE_SHA={BASE_SHA} "
                     f"VERIFY_SECS={VERIFY_SECS}{extra} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
         tap = f" && curl -fsSL {raw}/sharetap.py -o /root/sharetap.py" if TAP else ""
+        src = ""
+        if OURS_SRC:
+            # bench.sh builds our core at BASE_SHA with nvtest.sh's setup, cuda and fetch, from the same commit.
+            tap += f" && curl -fsSL {raw}/nvtest.sh -o /root/nvtest.sh"
+            src = f" OURS_SRC=1 BASE_SHA={BASE_SHA}{' FOLD=1' if FOLD else ''}"
         return (f"apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates >/dev/null 2>&1 && "
                 f"curl -fsSL {url} -o /root/bench.sh{tap} && W={self.wallet} ORDER={order} OURS_SECS={ours_secs}{extra}"
-                f"{' TAP=1' if TAP else ''} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
+                f"{' TAP=1' if TAP else ''}{src} bash /root/bench.sh 2>&1 | tee -a /root/bench.log")
 
     def create(self):
         cls, rows, ours = self.plan()
@@ -388,10 +423,10 @@ class Bench:
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
             w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
         bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
-        name = f"bench-{LANE + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
+        name = f"bench-{LANE + PART + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
-        cpu, mem = (4, 8192) if SET == "amd" else (2, 4096)
+        cpu, mem = (4, 8192) if SET == "amd" or OURS_SRC else (2, 4096)   # and nvcc's, with OURS_SRC
         body = {"name": name, "display_name": name, "replicas": 1, "restart_policy": "never",
                 "autostart_policy": True,
                 "container": {"image": AMD_IMAGE if SET == "amd" else w.IMAGE, "priority": "high",
@@ -428,12 +463,19 @@ class Bench:
     def wait_file(self, lane):
         return os.path.join(w.D, f"bench-{SET}-{lane}.waiting.json")
 
+    def lanes(self):
+        """Every lane of the set, and every part (BENCH_PART) that has a waiting flag."""
+        pre = f"bench-{SET}-"
+        flagged = [f[len(pre):-len(".waiting.json")] for f in os.listdir(w.D)
+                   if f.startswith(pre) and f.endswith(".waiting.json")] if os.path.isdir(w.D) else []
+        return sorted(set(LANES) | set(flagged))
+
     def waiting(self, on):
         """Flag (or clear) that Salad's quota turned this lane away, for the set's other lanes (TURN_MIN)."""
         self.st["waiting"] = bool(on)
         if not LANE:
             return
-        p = self.wait_file(LANE)
+        p = self.wait_file(LANE + PART)
         if on:
             w.save(p, {"since": (w.load(p, None) or {}).get("since") or w.now(), "last": w.now()})
         elif os.path.exists(p):
@@ -444,12 +486,12 @@ class Bench:
         minutes, the one that has waited longest, unless that's this lane."""
         t = w.now()
         fresh = {}
-        for lane in LANES:
+        for lane in self.lanes():
             v = w.load(self.wait_file(lane), None)
             if v and t - v.get("last", 0) <= TURN_MIN * MIN:
                 fresh[lane] = v
         first = min(fresh, key=lambda lane: (fresh[lane].get("since", 0), lane), default=None)
-        return None if first == LANE else first
+        return None if first == LANE + PART else first
 
     def note(self, msg):
         self.st["notes"].append(f"{time.strftime('%d %b %H:%M', time.gmtime(w.now()))}Z {msg}")
@@ -619,6 +661,9 @@ class Bench:
             res = {"machine": self.st["machine"], "card": r["card"]["name"], "power": r["card"]["power"],
                    "driver": r["card"]["driver"], "loaded": r["loaded"], "group": self.st["group"],
                    "ours": figure(r["miners"].get("ours"), mean_after=60),
+                   "ours0": figure(r["miners"].get("ours0"), mean_after=60) if NOFOLD else None,
+                   "fold": r["fold"] or None, "built": r["built"] or None,
+                   "base_sha": BASE_SHA if OURS_SRC else None,
                    "peak": figure(r["miners"].get("peak")), "srb": figure(r["miners"].get("srb")),
                    "wild": figure(r["miners"].get("wild")), "ozm": figure(r["miners"].get("ozm")),
                    "exits": {k: v.get("exited") for k, v in r["miners"].items() if v.get("exited")},
@@ -639,6 +684,10 @@ class Bench:
             for k in COMPETITORS:        # a competitor the box left out, and why ("skip wild: no OpenCL")
                 if res[k][0] is None and r["skipped"].get(k):
                     res[k] = (None, r["skipped"][k])
+            if OURS_SRC and r["skipped"].get("ours"):   # our core didn't build on the box: both legs say so
+                res["ours"] = (None, "build failed")
+                if NOFOLD:
+                    res["ours0"] = (None, "build failed")
             if ours != 90 and all(res[k][0] is None for k in ("ours",) + COMPETITORS):
                 # Where our release has a build, a PC on which no miner gets work points at its network, not the
                 # card: try another PC instead of filling the row with it.
@@ -650,6 +699,7 @@ class Bench:
             self.st["results"].setdefault(row, []).append(res)
             self.st["seen"].append(self.st["machine"])
             log(f"RESULT {row} on {self.st['machine'][:8]}: ours {cell(*res['ours'])}, "
+                + (f"no fold {cell(*res['ours0'])}, " if res.get("ours0") else "")
                 + ", ".join(f"{NAMES[k]} {cell(*res[k])}" for k in COMPETITORS))
             self.status(force=True)
             self.move_on("done")
@@ -695,7 +745,7 @@ class Bench:
             sys.exit("needs PRL_WALLET (or the watcher's config wallet) and BENCH_COMMIT")
         if LANE and LANE not in LANES:
             sys.exit("BENCH_LANE is a, b or c with BENCH_SET=amd, or 20, 30, 40 or 50 with BENCH_SET=rtx")
-        if SET == "amd" and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
+        if (SET == "amd" or OURS_SRC) and not re.fullmatch(r"[0-9a-f]{40}", BASE_SHA):
             # A short one is fine in the raw URL, but git fetch on the box finds no such ref, and every box fails.
             sys.exit("BENCH_BASE_SHA (or BENCH_COMMIT) must be a full 40-character commit: the box git-fetches it")
         while True:
