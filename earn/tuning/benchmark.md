@@ -1429,6 +1429,11 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   5090 575 W PC (driver 621.14, 78 C): SRBMiner 434.8 (2559 MHz, 555 W), PeakMiner 424.8 (2474 MHz, 522 W);
   ours 418.1 (2475 MHz, 538 W) = 96.2%. A 5080 PC with another load on it (2627 MiB in use at idle): ist=7
   213.06-213.22, with iy=0 213.51-213.73 (+0.25%); verify-hits passes there, its rates are not used above.
+  A clean 5080 PC (360 W, driver 610.88, 2797 MHz, 331 W): ist=7 235.00, 234.99, 235.02; with iy=0 235.58, 235.59,
+  235.59 (pipe 97.9%, the probe's 97.93%). PeakMiner 238.2 (2797 MHz, 321 W), SRBMiner 237.4: ours 98.9% of the best.
+- **Priced after shipping (probe, shipped keys, timing only).** Offsets records from the SM's cache (nlg) change
+  nothing on a 5090 (97.84%) or a 5080 (97.93%): the L2 trip is hidden. Without the gathers' PRMT (noprm) 99.05% /
+  99.15%: the PRMT are the largest pipe item left (1.2 points). One barrier instruction (brg=1, correct) nothing.
 - **Where the rest is.** On the 5090 our pipe now equals SRBMiner's (97.2 against 96.9% by count on the 600 W PC);
   the gap is clock at the same watts (2567 against 2666 MHz), i.e. energy per cycle. On the 5080 it is about one
   point of pipe (97.6 against 98.6%) at the same clock.
