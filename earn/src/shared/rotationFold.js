@@ -1,6 +1,6 @@
 'use strict';
 
-// The switch for the rotation fold, a second mining kernel for RTX 40 cards
+// The switch for the rotation fold, a second mining kernel for RTX 30 and 40 cards
 // (shared/foldCheck has what it is and how the miner checks it). Off unless
 // asked for: --rotation-fold on the CLI, LLMJOB_ROTATION_FOLD=1 in the desktop
 // app's environment (readRotationFoldEnv, read by main.js on every start).

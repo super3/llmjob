@@ -190,12 +190,19 @@ jobs:
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
-          # The rotation fold's cubin rides in the 12.8 core's artifact (native-core.yml, "Build
-          # the rotation fold's cubin"). Optional: the fold is an opt-in for RTX 40 cards.
+          # The rotation fold's cubins ride in the 12.8 core's artifact (native-core.yml, "Build
+          # the rotation fold's cubin"). Optional: the fold is an opt-in for RTX 40 and RTX 30 cards.
           if [ -f vendor/native/pearl_rot_sm89.cubin ]; then
             echo "staged rotation fold: $(ls -l vendor/native/pearl_rot_sm89.cubin)"
           else
             msg="no pearl_rot_sm89.cubin staged — a rig that asks for the rotation fold (--rotation-fold, PEARL_FOLD_ROT=1) will mine on the release fold. Check the native-core run's 'Build the rotation fold's cubin' step."
+            echo "::warning::$msg"
+            echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [ -f vendor/native/pearl_rot_sm86.cubin ]; then
+            echo "staged rotation fold for RTX 30: $(ls -l vendor/native/pearl_rot_sm86.cubin)"
+          else
+            msg="no pearl_rot_sm86.cubin staged — an RTX 30 rig that asks for the rotation fold will mine on the release fold. Check the native-core run's 'Build the rotation fold's cubin' step."
             echo "::warning::$msg"
             echo "**Warning:** $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
@@ -362,6 +369,14 @@ jobs:
           else
             echo "::warning::publishing v$VERSION without pearl_rot_sm89.cubin"
             gh release delete-asset "v$VERSION" pearl_rot_sm89.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          fi
+          # The RTX 30 cubin, the same way.
+          if [ -f dist/pearl_rot_sm86.cubin ]; then
+            gh release upload "v$VERSION" dist/pearl_rot_sm86.cubin --clobber --repo "$GITHUB_REPOSITORY" \
+              || optional_failed pearl_rot_sm86.cubin
+          else
+            echo "::warning::publishing v$VERSION without pearl_rot_sm86.cubin"
+            gh release delete-asset "v$VERSION" pearl_rot_sm86.cubin --yes --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
           fi
           # The AMD core, the same way. A rig that mines with it keeps its old copy when a
           # release has none (src/cli/selfUpdater.js), so a stale one left here by an
