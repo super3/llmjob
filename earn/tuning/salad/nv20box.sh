@@ -67,9 +67,11 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   # A token "%t75" builds the core as CI does with matrix.t75: pearl_kernel_t75.cu at ptxas register-usage
   # level 8 (sm_75 alone) linked beside pearl_kernel.o, and the host built with PEARL_T75_RUL8=1. "%t75=<ptxas
   # options>" uses those options for that object in place of level 8 (the other tokens apply to both objects).
-  local fl="" pl="" tk t75=""
+  # A token "&<list>" (with %t75) patches the t75 object's cubin the same way, with a list for its
+  # pearl_t75_ sections (goal-nv20g).
+  local fl="" pl="" tk t75="" tpl=""
   for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; %t75) t75="--register-usage-level=8" ;; %t75=*) t75=${tk#%t75=} ;;
-    *) fl="$fl $tk" ;; esac; done
+    \&*) tpl=${tk#&} ;; *) fl="$fl $tk" ;; esac; done
   local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $fl"
   local o="$K/cuda-build/pearl_kernel.o" kp="" objs=""
   [ -n "$pl" ] && { mkdir -p "$K/keep"; kp="--keep --keep-dir $K/keep"; }
@@ -80,6 +82,21 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
     # shellcheck disable=SC2086
     nvcc $C -Xptxas -v -Xptxas "$t75" -c "$K/src/pearl_kernel_t75.cu" -o "$K/cuda-build/pearl_kernel_t75.o" \
       > "$K/t75.log" 2>&1 || { say "core $1 t75 FAILED: $(grep -m2 -i error "$K/t75.log" | cut -c1-200)"; return 1; }
+    if [ -n "$tpl" ]; then
+      local fb75 host75 cub75
+      mkdir -p "$K/keep75"
+      # shellcheck disable=SC2086
+      nvcc $C -Xptxas -v -Xptxas "$t75" --keep --keep-dir "$K/keep75" -c "$K/src/pearl_kernel_t75.cu"         -o "$K/cuda-build/pearl_kernel_t75.o" > "$K/t75k.log" 2>&1 || { say "core $1 t75 keep build failed"; return 1; }
+      # shellcheck disable=SC2086
+      nvcc $C -Xptxas -v -Xptxas "$t75" --keep --keep-dir "$K/keep75" --dryrun -c "$K/src/pearl_kernel_t75.cu"         -o "$K/cuda-build/pearl_kernel_t75.o" > "$K/dryrun75.txt" 2>&1 || { say "core $1 t75 patch: dryrun failed"; return 1; }
+      fb75=$(grep '^#\$ fatbinary ' "$K/dryrun75.txt" | sed 's/^#\$ //')
+      host75=$(tail -n 1 "$K/dryrun75.txt" | sed 's/^#\$ //; s/[[:space:]]*$//')
+      cub75=$(printf '%s\n' "$fb75" | grep -oE 'sm=75,file=[^"]+' | sed 's/^sm=75,file=//')
+      [ -f "$cub75" ] || { say "core $1 t75 patch: no cubin (${cub75:-none})"; return 1; }
+      python3 -I "$R/earn/native/probes/turing/sm75patch.py" "$cub75" "$R/earn/native/probes/turing/$tpl"         > "$K/patch75.txt" 2>&1 || { say "core $1 t75 patch FAILED: $(tail -1 "$K/patch75.txt" | cut -c1-200)"; return 1; }
+      (eval "$fb75" && eval "$host75") > "$K/replay75.txt" 2>&1         || { say "core $1 t75 patch: replay failed: $(tail -1 "$K/replay75.txt" | cut -c1-200)"; return 1; }
+      say "core $1 t75 patched with $tpl: $(tail -1 "$K/patch75.txt" | cut -c1-200)"
+    fi
     objs="$K/cuda-build/pearl_kernel_t75.o"; C="$C -DPEARL_T75_RUL8=1"
     say "core $1 t75 ($t75): $(grep -A3 "entry function 'pearl_t75_tile_fold_wmma_rg'" "$K/t75.log" | grep -o 'Used [0-9]* registers\|[0-9]* bytes spill stores' | tr '\n' ' ')"
   fi
