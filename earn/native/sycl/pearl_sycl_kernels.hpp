@@ -2002,6 +2002,19 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     });
 #endif
     each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+#if defined(PEARL_W_CPH)
+    // goal-arc12 timing (wrong results): the copy's global load as one 256-byte read every other k-step, its two
+    // halves stored in turn: half the load messages, the same bytes. 96.6 against 96.3 (card 5): message count
+    // is not what the copy costs.
+    static_assert(kBps == 1 && !kHalf, "PEARL_W_CPH: one 128-byte copy block a sub-group");
+    v8i n8 = ring_read_global8b<HW>(Bbi[0] + (size_t)(kAhead * KPS) * 2048u, lane);
+#endif
+#if defined(PEARL_W_CPD2)
+    // goal-arc12: the copy's global load two k-steps before its store (next2 is the one after next). PASS, but
+    // 95.4 against 96.3 (card 5): the load's latency is not what the copy costs. Off.
+    cvec next2[kBps];
+    each<kBps>([&](int i) { next2[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS + 1u) * 2048u, lane); });
+#endif
 #if defined(PEARL_W_GCOPY)
     // goal-arc8: the copy once a slot: at a chunk's first k-step each sub-group stores the 512 bytes it loaded
     // a chunk ago (k-step sgl / 4 of the next slot, pieces 4 (sgl % 4) .. + 3) and loads the slot after.
@@ -2159,7 +2172,24 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
         auto copy_step = [&]() {
+#if defined(PEARL_W_CPH)
+          {
+            const v8i h = n8;
+            const v4u half = (s & 1u) ? v4u{(uint32_t)h[4], (uint32_t)h[5], (uint32_t)h[6], (uint32_t)h[7]}
+                                      : v4u{(uint32_t)h[0], (uint32_t)h[1], (uint32_t)h[2], (uint32_t)h[3]};
+            cp_write(mine(0) + at(ks + kAhead * (uint32_t)KPS), half, lane);
+            if (s & 1u) {
+              const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
+              n8 = ring_read_global8b<HW>(Bbi[0] + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
+            }
+            return;
+          }
+#endif
+#if defined(PEARL_W_CPD2)
+          const uint32_t kn = ks + kAhead * (uint32_t)KPS + 2u;
+#else
           const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
+#endif
           each<kBps>([&](int i) {
 #if defined(PEARL_W_NOFETCH)
             // goal-arc8 timing (wrong results): the copy stores without loading.
@@ -2179,7 +2209,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // 16 KB after B'), stored into a slot no one reads: no clamp.
             const cvec v = cp_read(lo32(bHi, bLo[i] + kn * 2048u), lane);
 #else
+#if defined(PEARL_W_CPHOT)
+            // goal-arc12 timing (wrong results): the same instructions, but the k-step part of the address is ANDed
+            // with PEARL_W_CPHOT (0: always the first k-step's block, an L1 hit). 0: 97.6, 3: 96.3, against 96.3;
+            // no load at all (NOFETCH) 99.1 at the same clock. So of the copy load's ~2.8%, misses are ~1%, the
+            // rest its instructions and scoreboard tokens.
+            const cvec v = cp_read(lo32(bHi, bLo[i] + ((kn < 64u ? kn : 63u) & (uint32_t)(PEARL_W_CPHOT)) * 2048u), lane);
+#else
             const cvec v = cp_read(lo32(bHi, bLo[i] + (kn < 64u ? kn : 63u) * 2048u), lane);
+#endif
 #endif
 #else
             const cvec v = cp_read(Bbi[i] + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
@@ -2191,7 +2229,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #else
             cp_write(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
 #endif
+#if defined(PEARL_W_CPD2)
+            next[i] = next2[i];
+            next2[i] = v;
+#else
             next[i] = v;
+#endif
           });
         };
 #if !defined(PEARL_W_CLATE)
