@@ -64,11 +64,13 @@ def load_list(path):
             raise Refuse('the patch list is not valid JSON: %s' % e) from None
     if not isinstance(spec, dict):
         raise Refuse('the patch list is not a JSON object')
-    # "section" (optional): the kernel the list edits, the first (default) or the rg one.
+    # "section" (optional): the kernel the list edits, the first (default) or the rg one, or
+    # either of the level-8 copies in pearl_kernel_t75.cu (pearl_t75_...).
     global SECTION
     spec = dict(spec)
     section = spec.pop('section', 'pearl_tile_fold_wmma')
-    if section not in ('pearl_tile_fold_wmma', 'pearl_tile_fold_wmma_rg'):
+    if section not in ('pearl_tile_fold_wmma', 'pearl_tile_fold_wmma_rg',
+                       'pearl_t75_tile_fold_wmma', 'pearl_t75_tile_fold_wmma_rg'):
         raise Refuse('the patch list names an unknown section')
     SECTION = ('.text.' + section).encode()
     extra = set(spec) - {'description', 'before', 'after', 'words'}
