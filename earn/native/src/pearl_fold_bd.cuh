@@ -270,8 +270,18 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "the readout folds the regions the m16n8k32 accumulators hold");
   static_assert(!kHashRg || PEARL_BD_HASH_RG_OK,
                 "the second row group hashes only where PEARL_BD_HASH_RG builds");
+#if PEARL_BD_WMAP
+  // PEARL_BD_WMAP (pearl_config.h): hardware warp w is row slot w & 1 and column slot
+  // w >> 1, so the two warps that read a column slot's B are w and w + 1, on schedulers
+  // w & 3 and (w + 1) & 3. warp is the logical number (row slot * 4 + column slot) that
+  // lays out the regions, as without the switch.
+  const uint32_t lane = threadIdx.x & 31u;
+  const uint32_t wr = (threadIdx.x >> 5) & 1u, wc = threadIdx.x >> 6;
+  const uint32_t warp = (wr << 2) | wc;
+#else
   const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
+#endif
   constexpr uint32_t regions_per_warp = 4u, warp_regions = 16u;
   const uint32_t row_blocks = rows_valid / regions_per_warp;
   const uint32_t row_block_groups = row_blocks / 2u;
@@ -336,7 +346,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                     && 4u * 512u * 4u == PEARL_BD_SPLIT_SMEM,
                 "the split hash is for the persistent two-buffer fold, and the host adds its 8 KB");
 #endif
-#if PEARL_BD_GROUPS == 2
+#if PEARL_BD_GROUPS == 2 && PEARL_BD_WMAP
+  // PEARL_BD_WMAP: column slots 0-1 of both row groups are hash_tile's hashers (sid < 64
+  // in the first, sid >= 64 in the second), and sid & 63 covers each group's 64 regions.
+  const uint32_t sid = ((wc ^ (wr << 1)) << 5) | lane;
+#elif PEARL_BD_GROUPS == 2
   const uint32_t sid = threadIdx.x & 127u;  // a thread's place in its row group, for the hash
 #endif
 #else

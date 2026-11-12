@@ -997,6 +997,14 @@ typedef struct {
 #ifndef PEARL_BD_LD_A
 #define PEARL_BD_LD_A 0
 #endif
+// PEARL_BD_WMAP (race, goal-nv20f, 0 by default, device only): hardware warp w takes row
+// slot w & 1 and column slot w >> 1, and warps 0-3 hash. Each scheduler still has one
+// hashing warp and one that goes on, but the two warps that read a column slot's B now
+// hash or go on together, so B is not read twice a hash apart. The hasher-delay race
+// (PEARL_BD_HDELAY) lost 0.3-0.7% for ~1 k-step more lag and 2-2.6% for ~2.
+#ifndef PEARL_BD_WMAP
+#define PEARL_BD_WMAP 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"
