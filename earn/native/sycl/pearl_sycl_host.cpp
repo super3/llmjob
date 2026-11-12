@@ -235,12 +235,14 @@ std::string env_str(const char *name, const char *dflt) {
 // xmx8w's loop then has 3 dummy DPAS where it had 4, 93.45 TH/s against 92.92 (card 5, three rounds); the 24.35
 // driver takes it too (check PASS). Each dummy costs xmx8w about 0.5%. goal-arc12 added -noroundrobin and
 // -keepDPASMacroInSchedule: with xmx8w's 8x4 DPAS (no dummies left to shift) 96.4 TH/s against 94.85 with the
-// three before (card 5, two rounds). A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
+// three before (card 5, two rounds). goal-arc13 dropped -keepDPASMacroInSchedule again: with A' and B' read as
+// 256-byte inline-vISA messages, HiveOS's 24.35 finalizer under it gets most regions wrong (16,3xx of 16,384, a
+// different count each run); without it the check passes there, and the new driver runs level (98.0-98.1 against
+// 97.9-98.0, card 5). A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
 void set_finalizer_options() {
   static std::once_flag once;
   std::call_once(once, []() {
-    const std::string o = env_str("PEARL_SYCL_VISA",
-                                 "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin -keepDPASMacroInSchedule");
+    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin");
     if (o == "none" || getenv("IGC_VISAOptions")) return;
 #if defined(_WIN32)
     _putenv_s("IGC_VISAOptions", o.c_str());
@@ -703,6 +705,9 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;
   // The split fold copies one block a sub-group, so it runs only at 8 windows a work-group; else the ring fold.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
+  // goal-arc13: a work-group takes PEARL_W_RW (16) row windows, so 16 must divide the band and the row windows.
+  if ((fold == kXmx8W || fold == kXmx8WEmu) && ((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW)))
+    fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
   // It adds offsets to the low 32 bits of the operands' addresses only, so each must lie inside one 4 GB window.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && ctx->straddle) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
 #if defined(PEARL_SYCL_XMX8S)
@@ -1040,7 +1045,9 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       cache = ctx->dev.get_info<sycl::info::device::global_mem_cache_size>();
     } catch (const std::exception &) {
     }
-    const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
+    // xmx8w takes an eighth (32 row windows on an A750): with its 256-byte A' and B' messages (goal-arc13)
+    // 98.5-98.6 TH/s against 98.0-98.1 at 64 and 98.0-98.3 at 16 (card 5, three rounds).
+    const uint64_t share = ctx->fold == kXmx8W ? 8 : ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
     uint64_t band = cache ? cache / share / (32ull * k) : 16;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
