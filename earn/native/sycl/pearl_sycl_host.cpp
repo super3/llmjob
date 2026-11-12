@@ -739,7 +739,11 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       // goal-arc10: two column windows a work-group, one after the other, when the batch has an even number
       // of them (PEARL_SYCL_WSEQ=1 runs one): the hash at the end is paid once for twice the work. Card 5:
       // 92.9 TH/s against 92.1.
-      if (env_str("PEARL_SYCL_WSEQ", "2") == "2" && (a.colBatch / 4u) % 2u == 0u) {
+      if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % 4u == 0u) {
+        fold_xmxw<true, 4>(q, a, groups);
+        break;
+      }
+      if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u) {
         fold_xmxw<true, 2>(q, a, groups);
         break;
       }

@@ -1840,7 +1840,7 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // window hashes set sgi's words, both at once, so the hash at the end (which holds the work-group's local memory
 // and threads while it runs) is paid once for twice the work.
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
-  static_assert(SEQ == 1 || SEQ == 2, "one or two column windows in turn");
+  static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4, "one, two or four column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
   static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && CW == 1), "each sub-group copies a whole number of blocks");
   // goal-arc8: at RW 16 each of the 32 sub-groups copies half a block (64 bytes) a k-step.
@@ -2012,6 +2012,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       wc = wcb * CW + widx / RW;
     }
     const uint32_t jc = widx / RW;  // the window's column block in the ring
+#if defined(PEARL_W_HROT)
+#if defined(PEARL_W_HROTP)
+    const uint32_t hrot = (widx & 1u) ? (uint32_t)(PEARL_W_HROT) : 0u;  // odd windows
+#else
+    const uint32_t hrot = widx >= (uint32_t)RW / 2u ? (uint32_t)(PEARL_W_HROT) : 0u;
+#endif
+    auto kdo = [&](uint32_t k) { return (k & ~3u) + ((k + hrot) & 3u); };
+#else
+    auto kdo = [](uint32_t k) { return k; };
+#endif
 #if defined(PEARL_W_AHOT)
     // goal-arc7 timing (wrong results): A' of only PEARL_W_AHOT row windows, so it stays near.
     const int8_t *Ab = A.Ap + (size_t)(2u * (wr % PEARL_W_AHOT)) * A.aStride;
@@ -2129,7 +2139,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       return reinterpret_cast<const int8_t *>((uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo));
     };
     const uint32_t aHi = (uint32_t)((uint64_t)(uintptr_t)A.Ap >> 32);
+#if defined(PEARL_W_AHOT)
+    // goal-arc14 timing (wrong results): AHOT on the 32-bit address path too (goal-arc12's AHOT row read Ab, which
+    // this path never uses, so it timed the shipped code).
+    const uint32_t aLo = (uint32_t)(uintptr_t)A.Ap + 2u * (wr % (uint32_t)(PEARL_W_AHOT)) * A.aStride + sgi * 128u;
+#else
     const uint32_t aLo = (uint32_t)(uintptr_t)A.Ap + 2u * wr * A.aStride + sgi * 128u;
+#endif
     const uint32_t bHi = (uint32_t)((uint64_t)(uintptr_t)A.Bp >> 32);
     uint32_t bLo[kBps];
     each<kBps>([&](int i) { bLo[i] = (uint32_t)(uintptr_t)Bbi[i]; });
@@ -2265,7 +2281,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       });
     };
     v4i ahn[4];
-    if constexpr (kSplit && AH) load_ah(0u, ahn);
+    if constexpr (kSplit && AH) load_ah(kdo(0u), ahn);
     if constexpr (kPartX) {
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + (widx * 8u + lane) * 16u + (uint32_t)j] = 0u; });
     }
@@ -2308,6 +2324,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #elif defined(PEARL_W_ROTW)
         // goal-arc8: window widx takes the chunk's k-steps rotated by widx * PEARL_W_ROTW.
         const uint32_t kd = ch * 4u + (s + widx * (uint32_t)(PEARL_W_ROTW)) % 4u;
+#elif defined(PEARL_W_HROT)
+        // goal-arc14: the second half of the windows (PEARL_W_HROTP: the odd ones) takes the chunk's k-steps
+        // rotated by PEARL_W_HROT, so RW 16's one work-group a core is not all in step. PASS, but HROT 2 93.7,
+        // HROT 1 97.5, odd windows 97.2 against 99.0; with no copy 97.6 against 101.7 (card 5). Windows reading
+        // the same B' lines at the same time is worth keeping. Off.
+        const uint32_t kd = ch * 4u + (s + hrot) % 4u;
 #else
         const uint32_t kd = ks;
 #endif
@@ -2342,6 +2364,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
         auto copy_step = [&]() {
+#if defined(PEARL_W_C16) && defined(PEARL_W_C16S)
+          // goal-arc14 (PEARL_W_C16S): sub-groups 16-31 copy one k-step later (odd k-steps), so 16 threads store
+          // each k-step instead of 32 at even ones.
+          if (s % 2u == (sgl >> 4)) {
+            const uint32_t kb = ks - (sgl >> 4) + (uint32_t)KPS;
+            ring_write_local<HW>(R + at(kb) + (sgl >> 4) * kStep + (sgl & 15u) * 32u, c16n, lane);
+            c16n = c16_load(kb + 2u);
+          }
+          return;
+#endif
 #if defined(PEARL_W_C16)
           if (s % 2u == 0u) {
             const uint32_t kb = ks + (uint32_t)KPS;
@@ -2512,6 +2544,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #if defined(PEARL_W_BA)
           // goal-arc13: a B' fragment as one 256-byte message (inline vISA): 4 local reads a k-step for 8.
+          // goal-arc14: keeping the last k-step's B' live so the finalizer cannot reuse its registers (an empty
+          // asm using it, or extra unused inputs on the last load) changes nothing in the ISA: IGC drops operands
+          // the asm text does not name, and k-step 1's loads still land in k-step 0's registers. "=&rw" drops
+          // the load. So BA stays off for 24.35.
           each<4>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
           return;
 #endif
@@ -2546,7 +2582,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           v4i ah[4];
           if constexpr (AH) {
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
-            load_ah(ks + 1u < 64u ? ks + 1u : 63u, ahn);
+            load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
           } else {
 #if defined(PEARL_W_AHALF)
             // goal-arc8 timing (wrong results): A' loaded every other k-step, XORed so its bits still change.
@@ -2821,9 +2857,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #pragma unroll 1
     for (int set = 0; set < SEQ; set++) run_set(set);
 #endif
+    // Sub-group sgi hashes sets sgi, sgi + 2, ... (both sub-groups of the window at once). The timing variants
+    // below that return end after their first set.
+#pragma unroll 1
+    for (uint32_t js = SEQ > 1 ? sgi : 0u; js < (uint32_t)SEQ; js += 2u) {
     if constexpr (SEQ > 1) {
-      // Sub-group sgi hashes set sgi's words (both sub-groups of the window at once).
-      wcb = wcbS * (uint32_t)SEQ + sgi;
+      wcb = wcbS * (uint32_t)SEQ + js;
       wc = wcb * CW + widx / RW;
     }
 #if defined(PEARL_W_REGWORDS)  // (SEQ 1 only: R and tw belong to the set)
@@ -2845,7 +2884,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       const uint32_t qr = lane;
       uint32_t words[16];
       for (int j = 0; j < 16; j++)
-        words[j] = kPartX ? part[(SEQ > 1 ? sgi * kPartWords : 0u) + (widx * 8u + qr) * 16u + (uint32_t)j]
+        words[j] = kPartX ? part[(SEQ > 1 ? js * kPartWords : 0u) + (widx * 8u + qr) * 16u + (uint32_t)j]
                           : part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
       const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
 #if defined(PEARL_W_NOEPI)
@@ -2902,6 +2941,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
       region_epilogue(words, local, A.test, A.hits, A.allTr);
     }
+    }  // js
   }
 };
 
