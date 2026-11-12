@@ -3855,6 +3855,11 @@ spare28 on card 4: verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 4
 100 and at duty 75. HiveOS 24.35 (staged ship-a18): xmx8w, xmx8w-emu and the mainnet-shaped check PASS. Under the
 mining duty it is level with spare27, so moving the mining cards gains nothing yet.
 
+Candidate for the duty path, not yet the default or checked on card 4: the same inline load on the CW 1 instance
+with L1 uncached or streaming (`PEARL_W_CPCW=1`, `PEARL_W_CPCC="uc.ca"` / `"st.ca"`), card 5, duty 75, 30-40 s,
+five rounds against spare28's code: 76.98-77.16 / 77.03-77.21 against 76.79-76.95 (+0.3%). With ca.ca it lost 0.4%.
+Copy store after the k-step's local reads (`CLATE`) on top of spare28: 100.1-100.2 against 101.5-101.6.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
