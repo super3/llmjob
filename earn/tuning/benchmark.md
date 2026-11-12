@@ -4135,6 +4135,46 @@ with L1 uncached or streaming (`PEARL_W_CPCW=1`, `PEARL_W_CPCC="uc.ca"` / `"st.c
 five rounds against spare28's code: 76.98-77.16 / 77.03-77.21 against 76.79-76.95 (+0.3%). With ca.ca it lost 0.4%.
 Copy store after the k-step's local reads (`CLATE`) on top of spare28: 100.1-100.2 against 101.5-101.6.
 
+### Arc rig, 12 November, night: the duty path's copy load, and where else the k-step's messages can go (`goal/arc-19`)
+
+**New default: the CW 1 instance sends the copy's load inline too, streaming in L1** (`PEARL_W_CPCC1`, default
+"st.ca"; `PEARL_W_NOCPC1` turns it off). The CW 2 instance, which runs at full speed, is unchanged (same ISA as
+spare28). Frozen as spare29.
+
+| What | full speed | duty 75 (bench.js, 40 s) |
+|---|---|---|
+| card 4: spare29 / spare28, 3 rounds | 102.60-102.64 / 102.61-102.71 (2,000 MHz, 176 W) | |
+| card 4: spare29 / spare28, 8 rounds | | 77.27-77.50 / 77.08-77.42 (2,084-2,127 MHz, 175 W) |
+
+spare29 on card 4: verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty
+100 and at duty 75 (the CW 1 instance). HiveOS 24.35 (staged ship-a19): xmx8w and xmx8w-emu PASS at both column
+widths (CW 1 forced too), mainnet-shaped dot and xmx8w PASS; bench 90.7 against ship-a18's 90.7-90.8. The gain under
+duty is within noise on card 4 (+0.1%; +0.3% on card 5), so moving the mining cards is optional.
+
+**Nothing else found toward 105.** Card 5, `pearl_sycl_check --bench 8`, 2-3 rounds, default 101.1-101.6 TH/s at
+1,960-1,980 MHz, 175 W. Every variant below PASSes the check unless marked timing.
+
+| What | TH/s |
+|---|---|
+| copy load after A''s next load / after the B' reads / between the DPAS halves / after the DPAS (`PEARL_W_CPLD` 1-4) | 100.3-100.6 / 98.0-98.1 / 98.0-98.1 / 98.7-98.9 |
+| copy load before the group's wait (`CPLD=-1`) | 100.8-100.9 |
+| copy store after the B' reads / between the DPAS halves / after the DPAS (`PEARL_W_CPST` 2-4, arrive with it) | 95.6-95.8 / 95.8-96.0 / 91.7-91.8 |
+| copy load 1 + store 2 | 95.3-95.5 |
+| A''s next load before the group's wait (`PEARL_W_AEARLY`) / + copy load there | 95.3-95.7 / 94.8-95.2 |
+| SLOTS 2 + NOPARTX on the CW 2 instance only (`PEARL_W_S2CW=2`, emu PASS) | 100.4-100.5 |
+| no release fence before the arrive (`NOREL`, timing) | 100.6-100.9 |
+| no readout atomic (`NOPXA`, timing) | 101.4-101.7 (+0.15%) |
+| two chunks a loop pass (`CHUNROLL=2`) | 100.8-101.1 |
+
+- The finalizer moves the copy's messages across k-steps whatever the source order; the k-step's start is still the
+  best place for both the load and the store.
+- On this base the readout's atomic costs ~0.15% and the release fence nothing: neither is worth a redesign.
+- Finalizer options on top of the default set, one at a time (2 rounds): `-nopresched`, `-presched`,
+  `-scheduleForReadSuppression`, `-sinkBarrierWait`, `-SendTokenReduction` level (101.0-101.5);
+  `-schedWithSendSrcReadCycle`, `-multiplePipeSched` 101.1-101.3; `-noSendSrcDstOverlap` 100.8-101.1;
+  `-globalTokenAllocation`, `-distPropTokenAllocation`, `-quickTokenAllocation`, `-dontUseMultiThreadedLatencies`
+  100.4-100.9; `-sendQueueSched` 99.7-99.9; `-nodefhoist` 99.5-99.9; `-enableDpasFwd` does not run.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

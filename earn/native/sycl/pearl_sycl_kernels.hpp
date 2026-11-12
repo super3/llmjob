@@ -1900,13 +1900,19 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // goal-arc18: the copy's 128-byte load as one inline-vISA message (PEARL_W_CPCC, its cache control), in work-groups
 // of at least PEARL_W_CPCW column windows. IGC's block read sends the same message; the gain is where the volatile
 // load lands in the k-step. Card 5, full speed (CW 2): 101.2-101.3 against 100.0-100.3; uc.ca and st.ca the same,
-// uc.uc 71.9. Under duty 75 (the CW 1 instance) it lost 0.4%, so CW 1 keeps the block read: 76.9-77.0 against
-// 76.9. With the inline store too (STA) 100.6-100.8; with SLOTS 2 + NOPARTX 100.2-100.4. PEARL_W_NOCPA: off.
+// uc.uc 71.9. Under duty 75 (the CW 1 instance) it lost 0.4% at ca.ca, so CW 1 uses its own cache control
+// (goal-arc19, PEARL_W_CPCC1 below). With the inline store too (STA) 100.6-100.8; with SLOTS 2 + NOPARTX 100.2-100.4. PEARL_W_NOCPA: off.
 #if !defined(PEARL_W_NOCPA) && !defined(PEARL_W_CPCC)
 #define PEARL_W_CPCC "ca.ca"
 #endif
 #ifndef PEARL_W_CPCW
 #define PEARL_W_CPCW 2  // PEARL_W_CPCC applies to work-groups of at least this many column windows
+#endif
+// goal-arc19: the CW 1 instance (the duty path) sends the inline load too, at its own cache control PEARL_W_CPCC1
+// (streaming in L1). Card 5, duty 75: st.ca / uc.ca +0.3%, ca.ca -0.4%. Card 4, duty 75, 8 rounds: 77.27-77.50
+// against spare28's 77.08-77.42 (level to +0.1%); full speed unchanged (same CW 2 ISA). PEARL_W_NOCPC1: off.
+#if !defined(PEARL_W_NOCPC1) && !defined(PEARL_W_NOCPA) && !defined(PEARL_W_CPCC1)
+#define PEARL_W_CPCC1 "st.ca"
 #endif
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
@@ -1937,6 +1943,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
         return r;
       }
+#if defined(PEARL_W_CPCC1)
+      if constexpr (HW && CW == 1) {
+        v4u r;
+        const uint64_t a = (uint64_t)(uintptr_t)p;
+        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC1 " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+        return r;
+      }
+#endif
 #endif
       return ring_read_global<HW>(p, lane);
     }
@@ -1969,16 +1983,23 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
   static constexpr uint32_t kStep = 512u * CW;                  // a k-step's B': CW blocks of 64 columns by 32 k
   static constexpr uint32_t kSlotWords = kStep * (uint32_t)KPS;  // a slot: KPS k-steps
+  // goal-arc19 (PEARL_W_S2CW=n): work-groups of at least n column windows (the HW fold only) run SLOTS 2 +
+  // NOPARTX, the CW 1 instance keeps 3 slots and the atomic. 0: off. PASS (emu too), but on spare28's code it
+  // loses: 100.4-100.5 against 101.4-101.6 (card 5, full speed). Off.
+#ifndef PEARL_W_S2CW
+#define PEARL_W_S2CW 0
+#endif
+  static constexpr bool kS2 = kSplit && (PEARL_W_S2CW) > 0 && CW >= (PEARL_W_S2CW);
 #if defined(PEARL_W_SLOTS)
   // goal-arc8: 2 slots, with the group's arrive after the slot's last local reads (else 3, arrive before them).
   static constexpr uint32_t kSlots = PEARL_W_SLOTS;
 #else
-  static constexpr uint32_t kSlots = 3u;
+  static constexpr uint32_t kSlots = kS2 ? 2u : 3u;
 #endif
 #if !defined(PEARL_W_NOPARTX)
   // goal-arc8: a window's two sub-groups XOR their words into one place (half the local memory). With the
   // readout below as a tree, 90.3 to 90.6 against 89.9 to 90.2 on card 5 (three rounds, 188 W).
-  static constexpr bool kPartX = true;
+  static constexpr bool kPartX = !kS2;
 #else
   static constexpr bool kPartX = false;
 #endif
@@ -2489,6 +2510,19 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         const uint32_t kd = ks;
 #endif
         const uint32_t slot = at(kd);
+#if defined(PEARL_W_AEARLY)
+        // goal-arc19 (PEARL_W_AEARLY): A''s next load before the group's wait (it does not depend on it). PASS,
+        // 95.3-95.7 against 101.3-101.5 (card 5, full speed); with the copy's load there too 94.8-95.2. Off.
+        v4i ahe[4];
+        each<4>([&](int rb) { ahe[rb] = ahn[rb]; });
+        load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
+#endif
+#if (PEARL_W_CPLD + 0) < 0
+        // goal-arc19 (PEARL_W_CPLD=-1): the copy's load before the group's wait.
+        const uint32_t knE = ks + kAhead * (uint32_t)KPS + 1u;
+        cvec cpE[kBps];
+        each<kBps>([&](int i) { cpE[i] = cp_read(lo32(bHi, bLo[i] + (knE < 64u ? knE : 63u) * 2048u), lane); });
+#endif
         // The group meets once a slot: every store into this slot has landed, and every read of the slot the
         // copy writes next is done. The copy stores k-step ks + KPS (loaded a k-step ago) and loads the one after.
 #if !defined(PEARL_W_NOBAR)
@@ -2504,6 +2538,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         }
 #endif
 #if defined(PEARL_W_GCOPY)
+        auto cp_at = [&](int) {};
 #ifndef PEARL_W_GLOAD_S
 #define PEARL_W_GLOAD_S 0
 #endif
@@ -2519,9 +2554,44 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         }
 #elif defined(PEARL_W_CSAME)
         // goal-arc8: the copy loads at the k-step's start and stores after its DPAS: nothing carried.
+        auto cp_at = [&](int) {};
         v4u csv[kBps];
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
+#if defined(PEARL_W_CPLD) || defined(PEARL_W_CPST)
+        // goal-arc19 (timing; the HW path only, so not for the emu fold): where in the k-step the copy's global
+        // load (PEARL_W_CPLD) and local store (PEARL_W_CPST) go: 0 the k-step's start (as shipped), 1 after A''s
+        // next load, 2 after the B' reads, 3 between the two halves of the DPAS, 4 after the DPAS; load -1 before
+        // the group's wait. With the store moved, the group's arrive moves with it. All PASS, all lose (card 5,
+        // full speed, def 101.1-101.5): load 1 / 2 / 3 / 4 / -1 100.3-100.6 / 98.0-98.1 / 98.0-98.1 / 98.7-98.9 /
+        // 100.8-100.9; store 2 / 3 / 4 95.6-95.8 / 95.8-96.0 / 91.7-91.8; load 1 + store 2 95.3-95.5. The finalizer
+        // still moves the messages across k-steps; the start of the k-step is the best place for both.
+#ifndef PEARL_W_CPLD
+#define PEARL_W_CPLD 0
+#endif
+#ifndef PEARL_W_CPST
+#define PEARL_W_CPST 0
+#endif
+        cvec cpn[kBps];
+        auto cp_at = [&](int pos) {
+#if (PEARL_W_CPLD) < 0
+          if (pos == 0) each<kBps>([&](int i) { cpn[i] = cpE[i]; });
+#endif
+          if (pos == (PEARL_W_CPLD)) {
+            const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
+            each<kBps>([&](int i) { cpn[i] = cp_read(lo32(bHi, bLo[i] + (kn < 64u ? kn : 63u) * 2048u), lane); });
+          }
+          if (pos == (PEARL_W_CPST)) {
+            each<kBps>([&](int i) { cp_write(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane); });
+#if (PEARL_W_CPST) > 0
+            if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
+#endif
+          }
+          if (pos == ((PEARL_W_CPLD) > (PEARL_W_CPST) ? (PEARL_W_CPLD) : (PEARL_W_CPST))) each<kBps>([&](int i) { next[i] = cpn[i]; });
+        };
+#else
+        auto cp_at = [&](int) {};
+#endif
         auto copy_step = [&]() {
 #if defined(PEARL_W_C16) && defined(PEARL_W_C16S)
           // goal-arc14 (PEARL_W_C16S): sub-groups 16-31 copy one k-step later (odd k-steps), so 16 threads store
@@ -2608,6 +2678,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #else
           const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
 #endif
+#if defined(PEARL_W_CPLD) || defined(PEARL_W_CPST)
+          // goal-arc19 (see cp_at): the parts that stay at the k-step's start.
+          (void)kn;
+          cp_at(0);
+          return;
+#endif
           each<kBps>([&](int i) {
 #if defined(PEARL_W_NOFETCH)
             // goal-arc8 timing (wrong results): the copy stores without loading.
@@ -2675,6 +2751,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
         copy_step();
 #endif
+#else
+        auto cp_at = [&](int) {};
 #endif
 #if defined(PEARL_W_PFA) && defined(PEARL_W_LO32)
         // goal-arc17 (PEARL_W_PFA=d): the work-group's A' of k-step ks + d prefetched into L1, 256 bytes a message:
@@ -2698,11 +2776,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           each<kBps>([&](int i) { g_pf128<HW>(lo32(bHi, bLo[i] + (kf < 64u ? kf : 63u) * 2048u)); });
         }
 #endif
-#if !defined(PEARL_W_NOBAR) && !defined(PEARL_W_CSAME) && !defined(PEARL_W_CLATE) && !defined(PEARL_W_SLOTS)
+#if !defined(PEARL_W_NOBAR) && !defined(PEARL_W_CSAME) && !defined(PEARL_W_CLATE) && !defined(PEARL_W_SLOTS) && !(defined(PEARL_W_CPST) && (PEARL_W_CPST + 0) > 0)
 #if defined(PEARL_W_A2)
         if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive_nf(it);
 #else
-        if (s % (uint32_t)KPS == (uint32_t)KPS - 1u && (ch % (uint32_t)(PEARL_W_BARN)) == (uint32_t)(PEARL_W_BARN) - 1u) arrive(it);
+        if (!kS2 && s % (uint32_t)KPS == (uint32_t)KPS - 1u && (ch % (uint32_t)(PEARL_W_BARN)) == (uint32_t)(PEARL_W_BARN) - 1u) arrive(it);
 #if defined(PEARL_W_BARX)
         if (s == 1u) arrive(it);
 #endif
@@ -2808,8 +2886,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #else
           if constexpr (AH) {
 #endif
+#if defined(PEARL_W_AEARLY)
+            each<4>([&](int rb) { ah[rb] = ahe[rb]; });
+#else
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
-#if defined(PEARL_W_AROLL)
+#endif
+#if defined(PEARL_W_AROLL) || defined(PEARL_W_AEARLY)
 #elif defined(PEARL_W_AH2)
             each<4>([&](int rb) { ahn[rb] = ahn2[rb]; });
             load_ah(ks + 2u < 64u ? kdo(ks + 2u) : 63u, ahn2);
@@ -2830,6 +2912,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #endif
           }
+          cp_at(1);
 #if defined(PEARL_W_BHALF)
           if ((s & 1u) == 0u) read_b_at(slot, bqp);
           each<4>([&](int cb) { bq[cb] = bqp[cb] ^ (int)(ks * 0x9E3779B9u); });
@@ -2864,6 +2947,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           each<4>([&](int cb) { bq[cb] ^= (int)(ks * 0x9E3779B9u); });
 #endif
 #endif
+          cp_at(2);
 #if defined(PEARL_W_NOLD) && ((PEARL_W_NOLD) & 1)
           each<4>([&](int rb) { ah[rb] = ahc[rb]; });
 #endif
@@ -2886,6 +2970,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #if defined(PEARL_W_SLOTS)
           if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
+#else
+          if (kS2 && s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
 #endif
 #if defined(PEARL_W_XALU)
           // goal-arc8 timing: PEARL_W_XALU extra scalar ALU instructions a k-step, four chains.
@@ -2969,6 +3055,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // 94.43 against 93.55 TH/s (card 5, three rounds), with 0 dummies for 3. Every design that changed which
           // registers the hash's ALU code lands in had cost 0.5% a dummy before; now none can.
           each<4>([&](int cb) {
+            if (cb == 2) cp_at(3);
             each<4>([&](int rb) {
               each<2>([&](int h) {
                 v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
@@ -2976,6 +3063,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
               });
             });
           });
+          cp_at(4);
 #else
           each<4>([&](int cb) {
             each<4>([&](int rb) {
