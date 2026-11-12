@@ -115,12 +115,17 @@ def port(code):
             assert m, t
             d, a, b2 = int(m[1]), int(m[2]), int(m[3])
             assert d not in (a, b2) and d + 1 not in (a, b2), t
-            out.append(Ins("LDC.64 R%d, c[0x0][0x390]" % d, wsb=SB_C,
-                           raw=(0x7b82 | 7 << 12 | d << 16 | 0xff << 24 | (0x390 // 4) << 40, 0xa00)))
-            out.append(Ins("NOP", wait=(SB_C,)))
-            lo, hi = asm89._f(0x7225, 0x78e0000, rd=d, ra=a, rb=b2, rc=d)
-            out.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, R%d" % (d, a, b2, d), stall=ins.stall, yld=ins.yld,
-                           raw=(lo & ~0xF000 | 7 << 12, hi)))
+            # ptxas for sm_120 never adds a 64-bit register in IMAD.WIDE (a first try that did read wrong
+            # addresses): the product with RZ, then IADD.64 of the pointer, loaded with LDC.64 into the pair the
+            # loop's first record load writes next (free until then).
+            tp = int(re.match(r"LDG\.E\.64 R(\d+)", next(x.text for x in code if x.text.startswith("LDG")))[1])
+            out.append(Ins("LDC.64 R%d, c[0x0][0x390]" % tp, wsb=SB_C,
+                           raw=(0x7b82 | 7 << 12 | tp << 16 | 0xff << 24 | (0x390 // 4) << 40, 0xa00)))
+            lo, hi = asm89._f(0x7225, 0x78e0000, rd=d, ra=a, rb=b2, rc=0xff)
+            out.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, RZ" % (d, a, b2), raw=(lo & ~0xF000 | 7 << 12, hi)))
+            out.append(Ins("NOP", wait=(SB_C,), stall=5))
+            out.append(Ins("IADD.64 R%d, R%d, R%d" % (d, d, tp), stall=ins.stall, yld=ins.yld,
+                           raw=(0x7235 | 7 << 12 | d << 16 | d << 24 | tp << 32, 0x78e0200)))
             continue
         out.append(ins)
     return out
