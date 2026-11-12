@@ -1739,6 +1739,7 @@ const BUILTINS = {
   pearl_bd_imma: new Builtin('pearl_bd_imma', imma, { refs: [0, 1] }),
   pearl_bd_ldg: new Builtin('pearl_bd_ldg', (fr, p) => load(p)),
   pearl_bd_ldg_c: new Builtin('pearl_bd_ldg_c', (fr, p) => load(p)),
+  pearl_bd_ldg_b: new Builtin('pearl_bd_ldg_b', (fr, p) => load(p)),
   __shfl_xor_sync: new Builtin('__shfl_xor_sync', shfl),
   __ldg: new Builtin('__ldg', () => 0x80000001),
   __trap: new Builtin('__trap', () => {
@@ -2239,6 +2240,7 @@ describe('Turing last chunk read out in the next tile (PEARL_BD_LAST_RO)', () =>
       + NL + '               : "+r"(c0), "+r"(c1)' + NL + '               : "r"(a), "r"(b));');
     expect(FOLD).toContain('asm volatile("ld.global.nc.v4.s32 {%0,%1,%2,%3}, [%4];"');
     expect(FOLD).toContain('asm volatile("ld.global.v4.s32 {%0,%1,%2,%3}, [%4];"');
+    expect(FOLD).toContain('PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.v4.s32");');
     // The lambdas it stands in for: a tile's coordinates and offsets are a function of
     // the tile alone, one tile's differ from another's, and the hash reads 16 words a
     // region where hash_tile does.

@@ -8,7 +8,7 @@
 # copy of amdtest.py's nvtest boxes with the group names nv20-<card>-<n>). Every line is
 # "[nvtest] HH:MM:SS [nv20] ..." (bench.sh's "[nvtest] [bench] HH:MM:SS ..."), so the test-box tools read it.
 #
-# Environment:
+# Environment (STAGES may also name "lgc": LGC (MHz), LGC_LEGS, LGC_SECS, after product):
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
 #   STAGES        any of "probe product bench", in that order (default all three)
 #   PROBE_LIST    the probe's runs, ';' between them: "<kernel> <seconds> [tiles]" (default below)
@@ -61,10 +61,32 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   local K=$W/core-$1 t0
   t0=$(date +%s)
   rm -rf "$K" && mkdir -p "$K/cuda-build" && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" "$K/"
-  local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $2"
+  # A token "@<list>" among the defines names a patch list under probes/turing/ (sm75patch.py, which edits the
+  # section the list names): the kernel is built with --keep, its cubin patched, and nvcc's own fatbinary and host
+  # steps run again, as compilers.sh's patch_fold does.
+  local fl="" pl="" tk
+  for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; *) fl="$fl $tk" ;; esac; done
+  local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $fl"
+  local o="$K/cuda-build/pearl_kernel.o" kp=""
+  [ -n "$pl" ] && { mkdir -p "$K/keep"; kp="--keep --keep-dir $K/keep"; }
   # shellcheck disable=SC2086
-  nvcc $C -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/kernel.log" 2>&1 \
+  nvcc $C -Xptxas -v $kp -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/kernel.log" 2>&1 \
     || { say "core $1 kernel FAILED: $(grep -m2 -i error "$K/kernel.log" | cut -c1-200)"; return 1; }
+  if [ -n "$pl" ]; then
+    local fb host cubin
+    # shellcheck disable=SC2086
+    nvcc $C -Xptxas -v $kp --dryrun -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/dryrun.txt" 2>&1 \
+      || { say "core $1 patch: dryrun failed"; return 1; }
+    fb=$(grep '^#\$ fatbinary ' "$K/dryrun.txt" | sed 's/^#\$ //')
+    host=$(tail -n 1 "$K/dryrun.txt" | sed 's/^#\$ //; s/[[:space:]]*$//')
+    cubin=$(printf '%s\n' "$fb" | grep -oE 'sm=75,file=[^"]+' | sed 's/^sm=75,file=//')
+    [ -f "$cubin" ] || { say "core $1 patch: no cubin (${cubin:-none})"; return 1; }
+    python3 -I "$R/earn/native/probes/turing/sm75patch.py" "$cubin" "$R/earn/native/probes/turing/$pl" \
+      > "$K/patch.txt" 2>&1 || { say "core $1 patch FAILED: $(tail -1 "$K/patch.txt" | cut -c1-200)"; return 1; }
+    (eval "$fb" && eval "$host") > "$K/replay.txt" 2>&1 \
+      || { say "core $1 patch: replay failed: $(tail -1 "$K/replay.txt" | cut -c1-200)"; return 1; }
+    say "core $1 patched with $pl: $(tail -1 "$K/patch.txt" | cut -c1-200)"
+  fi
   # shellcheck disable=SC2086
   nvcc $C -c "$K/src/pearl_host.cu" -o "$K/cuda-build/pearl_host.o" > "$K/host.log" 2>&1 \
     || { say "core $1 host FAILED: $(grep -m2 -i error "$K/host.log" | cut -c1-200)"; return 1; }
@@ -124,6 +146,25 @@ if has product; then
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
     [ -n "$j" ] || say "hashrate $leg$n no result: $(tail -2 $W/hr$n.err | tr '\n' ' ' | cut -c1-300)"
   done
+fi
+if has lgc; then
+  # Legs with the SM clock locked (nvidia-smi -lgc LGC,LGC): at one clock the watts each build draws are the
+  # finer instrument (goal-nvk14). Says so and skips if the box may not lock clocks.
+  cd "$R/earn/native/probes" || fail "no probes"
+  if nvidia-smi -i 0 -lgc "${LGC:-1500},${LGC:-1500}" > $W/lgc.txt 2>&1; then
+    say "lgc locked at ${LGC:-1500} MHz: $(tr '\n' ' ' < $W/lgc.txt | cut -c1-200)"
+    n=100
+    for leg in ${LGC_LEGS:-rel}; do
+      n=$((n + 1))
+      [ -f "$W/core-$leg/build/Release/pearl_core.node" ] || { say "lgcleg $leg$n: no core"; continue; }
+      j=$(timeout -k 5 $(( ${LGC_SECS:-90} + 120 )) node hashrate.js "$W/core-$leg/build/Release/pearl_core.node" \
+        "${LGC_SECS:-90}" 20 2> $W/lgc$n.err | grep '^{' | tail -1)
+      say "lgcleg $leg$n $(echo "$j" | jq -c '{th, n, mhz, watts, tempC}' 2>/dev/null) end $(smi)"
+    done
+    nvidia-smi -i 0 -rgc > /dev/null 2>&1; say "lgc reset: $(q clocks.sm)"
+  else
+    say "lgc not allowed here: $(tr '\n' ' ' < $W/lgc.txt | cut -c1-200)"
+  fi
 fi
 if has bench; then
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
