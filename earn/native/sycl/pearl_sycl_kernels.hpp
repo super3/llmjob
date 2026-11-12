@@ -988,6 +988,26 @@ template <bool HW> inline v8i slm_read256(uint32_t *p, uint32_t lane) {
   for (int i = 0; i < 8; i++) r[i] = (int)p[8u * (uint32_t)i + lane];
   return r;
 }
+// goal-arc17: prefetches into L1 and L2 (a load with no destination), 256 or 128 bytes, one message each. Used
+// only by the PEARL_W_PFA / PFB experiments, which lost (see there).
+template <bool HW> inline void g_pf256(const int8_t *p) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) {
+    const uint64_t a = (uint64_t)(uintptr_t)p;
+    __asm__ volatile("lsc_load.ugm.ca.ca (M1_NM, 1) %%null:d32x64t flat[%0]:a64" : : "rw"(a));
+  }
+#endif
+  (void)p;
+}
+template <bool HW> inline void g_pf128(const int8_t *p) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) {
+    const uint64_t a = (uint64_t)(uintptr_t)p;
+    __asm__ volatile("lsc_load.ugm.ca.ca (M1_NM, 1) %%null:d32x32t flat[%0]:a64" : : "rw"(a));
+  }
+#endif
+  (void)p;
+}
 // goal-arc13: the same for 256 bytes of global memory, and a 256-byte local store, each one message.
 template <bool HW> inline v8i g_read256(const int8_t *p, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
@@ -1871,8 +1891,14 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // SEQ (goal-arc10): column windows a work-group runs one after the other (1 or 2). With 2, sub-group sgi of each
 // window hashes set sgi's words, both at once, so the hash at the end (which holds the work-group's local memory
 // and threads while it runs) is paid once for twice the work.
+// goal-arc17 timing (unsafe: the copy can overwrite a slot still being read): the group meets every PEARL_W_BARN
+// chunks instead of every chunk, to price the meeting itself. Card 5: 2 / 4 chunks 97.2 / 96.9 against 100.3-100.4,
+// and one more meeting mid-chunk (PEARL_W_BARX) 100.2-100.3: meeting less loses (the windows drift apart).
+#ifndef PEARL_W_BARN
+#define PEARL_W_BARN 1
+#endif
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
-  static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4, "one, two or four column windows in turn");
+  static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
   static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && (CW == 1 || CW == 2)), "each sub-group copies a whole number of blocks");
   // goal-arc8: at RW 16 each of the 32 sub-groups copies half a block (64 bytes) a k-step.
@@ -1932,6 +1958,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
   static constexpr bool kPartX = false;
 #endif
   static constexpr uint32_t kPartWords = kNsg * (kPartX ? 4u : 8u) * 16u;  // words of `part` a set
+#if defined(PEARL_W_PART1)
+  static constexpr bool kPart1 = true;
+#else
+  static constexpr bool kPart1 = false;
+#endif
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
@@ -2038,7 +2069,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     }
     const uint32_t wcbS = wcb;
     auto run_set = [&](int set) {
+#if defined(PEARL_W_PART1)
+    // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With
+    // NOEPI, card 5: SEQ 2 / 4 / 8 / 16 101.8-101.9 / 102.2 / 97.0 / 74.7. Longer work-groups gain only 0.3%.
+    const uint32_t pOff = 0u * (uint32_t)set;
+#else
     const uint32_t pOff = (uint32_t)set * kPartWords;
+#endif
     if constexpr (SEQ > 1) {
       wcb = wcbS * (uint32_t)SEQ + (uint32_t)set;
       wc = wcb * CW + widx / RW;
@@ -2388,7 +2425,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         // The group meets once a slot: every store into this slot has landed, and every read of the slot the
         // copy writes next is done. The copy stores k-step ks + KPS (loaded a k-step ago) and loads the one after.
 #if !defined(PEARL_W_NOBAR)
-        if (s % (uint32_t)KPS == 0u) {
+#if defined(PEARL_W_BARX)
+        // goal-arc17 timing: one more meeting in the middle of a chunk (arrive after k-step 1's copy, wait at 2).
+        if (s == 2u) wait(it);
+#endif
+        if (s % (uint32_t)KPS == 0u && (ch % (uint32_t)(PEARL_W_BARN)) == 0u) {
           wait(it);
 #if defined(PEARL_W_A2)
           fence_rel();  // the stores of the slot before last: they landed long ago
@@ -2568,11 +2609,36 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         copy_step();
 #endif
 #endif
+#if defined(PEARL_W_PFA) && defined(PEARL_W_LO32)
+        // goal-arc17 (PEARL_W_PFA=d): the work-group's A' of k-step ks + d prefetched into L1, 256 bytes a message:
+        // RW row windows x 2 blocks x 2 halves, spread over the sub-groups (CW 2: one each; CW 1: two each).
+        // Card 5: PFA 2 96.5 against 100.4 (full speed), 74.1 against 76.9 (duty 75); PFA 4 FAILS the check
+        // (thousands of regions wrong, cause not found). Off.
+        {
+          const uint32_t kf = ks + (uint32_t)(PEARL_W_PFA) < 64u ? ks + (uint32_t)(PEARL_W_PFA) : 63u;
+          const uint32_t wr0 = wr - widx % (uint32_t)RW;
+          for (uint32_t u = sgl; u < (uint32_t)RW * 4u; u += kNsg) {
+            const uint32_t lo = (uint32_t)(uintptr_t)A.Ap + (2u * (wr0 + u / 4u) + (u / 2u) % 2u) * A.aStride + kf * 512u + (u % 2u) * 256u;
+            g_pf256<HW>(lo32(aHi, lo));
+          }
+        }
+#endif
+#if defined(PEARL_W_PFB) && defined(PEARL_W_LO32)
+        // goal-arc17 (PEARL_W_PFB=d): the copy's own block of k-step ks + KPS + 1 + d prefetched. PFB 4: 99.7
+        // against 100.4 (full speed); PFB 4 / 8 76.8-76.9 against 76.9-77.0 (duty 75). Off.
+        {
+          const uint32_t kf = ks + (uint32_t)KPS + 1u + (uint32_t)(PEARL_W_PFB);
+          each<kBps>([&](int i) { g_pf128<HW>(lo32(bHi, bLo[i] + (kf < 64u ? kf : 63u) * 2048u)); });
+        }
+#endif
 #if !defined(PEARL_W_NOBAR) && !defined(PEARL_W_CSAME) && !defined(PEARL_W_CLATE) && !defined(PEARL_W_SLOTS)
 #if defined(PEARL_W_A2)
         if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive_nf(it);
 #else
-        if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
+        if (s % (uint32_t)KPS == (uint32_t)KPS - 1u && (ch % (uint32_t)(PEARL_W_BARN)) == (uint32_t)(PEARL_W_BARN) - 1u) arrive(it);
+#if defined(PEARL_W_BARX)
+        if (s == 1u) arrive(it);
+#endif
 #endif
 #endif
         auto rd1 = [&](uint32_t off, int cb) {
@@ -3062,7 +3128,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       const uint32_t qr = lane;
       uint32_t words[16];
       for (int j = 0; j < 16; j++)
-        words[j] = kPartX ? part[(SEQ > 1 ? js * kPartWords : 0u) + (widx * 8u + qr) * 16u + (uint32_t)j]
+        words[j] = kPartX ? part[(SEQ > 1 && !kPart1 ? js * kPartWords : 0u) + (widx * 8u + qr) * 16u + (uint32_t)j]
                           : part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
       const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
 #if defined(PEARL_W_NOEPI)
@@ -3137,13 +3203,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #define PEARL_W_CW 1
 #endif
 template <bool HW, int SEQ = 1, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0), int RW = PEARL_W_RW, int CW = PEARL_W_CW>
-inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
+inline sycl::event fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   typedef FoldXmxW<HW, KPS, AH, RW, CW, SEQ> K;
-  q.submit([&](sycl::handler &h) {
+  return q.submit([&](sycl::handler &h) {
 #ifndef PEARL_W_SLMPAD
 #define PEARL_W_SLMPAD 0  // goal-arc8 timing: extra words of local memory a work-group (fewer work-groups a core)
 #endif
-    sycl::local_accessor<uint32_t, 1> part((K::kRegWords ? 1u : K::kPartWords * (uint32_t)SEQ) + (PEARL_W_SLMPAD), h);
+    sycl::local_accessor<uint32_t, 1> part((K::kRegWords ? 1u : K::kPartWords * (K::kPart1 ? 1u : (uint32_t)SEQ)) + (PEARL_W_SLMPAD), h);
 #if defined(PEARL_W_NORING)
     sycl::local_accessor<uint32_t, 1> ring(64u, h);  // goal-arc16 timing: B' from global only, no ring
 #else
@@ -3165,10 +3231,19 @@ inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 
 #if defined(PEARL_W_SEPEPI)
 // goal-arc10: xmx8w with its epilogue in a kernel of its own. `words` holds 16 words a region of the batch.
-inline void fold_xmxw_sep(sycl::queue &q, const FoldArgs &a, uint32_t groups, uint32_t *words) {
+// goal-arc17 (PEARL_W_SEPQ): the hash kernel on a queue of its own (hq), after the fold's event, so the next
+// batch's fold need not wait for it; *hev gets the hash kernel's event. bench.js, card 5, full speed: 93.1-93.6
+// against 98.9-99.1 (no hash at all 99.7-100.2): the driver does not run the two kernels side by side. Off.
+inline void fold_xmxw_sep(sycl::queue &q, const FoldArgs &a, uint32_t groups, uint32_t *words,
+                          sycl::queue *hq = nullptr, sycl::event *hev = nullptr) {
   FoldArgs b = a;
   b.allTr = words;
-  fold_xmxw<true>(q, b, groups);
+  sycl::event fe;
+#if defined(PEARL_W_SEPQ)
+  if ((a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) fe = fold_xmxw<true, 2>(q, b, groups);
+  else
+#endif
+  fe = fold_xmxw<true>(q, b, groups);
 #if defined(PEARL_W_SEPNOK)
   return;  // timing: no hashing at all
 #endif
@@ -3180,7 +3255,7 @@ inline void fold_xmxw_sep(sycl::queue &q, const FoldArgs &a, uint32_t groups, ui
 #ifndef PEARL_W_EPISG
 #define PEARL_W_EPISG 8
 #endif
-  q.parallel_for(sycl::nd_range<1>((n + wg - 1) / wg * wg, wg), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(PEARL_W_EPISG)]] {
+  auto hk = [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(PEARL_W_EPISG)]] {
     const uint32_t r = (uint32_t)it.get_global_id(0);
     if (r >= n) return;
     uint32_t w[16];
@@ -3194,7 +3269,17 @@ inline void fold_xmxw_sep(sycl::queue &q, const FoldArgs &a, uint32_t groups, ui
     for (int j = 0; j < 16; j++) w[j] = words[(size_t)r * 16u + (uint32_t)j];
 #endif
     region_epilogue(w, r, A.test, A.hits, A.allTr);
-  });
+  };
+  const sycl::nd_range<1> nr((n + wg - 1) / wg * wg, wg);
+  if (hq) {
+    sycl::event e = hq->submit([&](sycl::handler &h) {
+      h.depends_on(fe);
+      h.parallel_for(nr, hk);
+    });
+    if (hev) *hev = e;
+  } else {
+    q.parallel_for(nr, hk);
+  }
 }
 #endif
 
