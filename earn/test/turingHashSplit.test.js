@@ -968,9 +968,6 @@ describe('Turing split hash (PEARL_BD_HASH_SPLIT)', () => {
       '    if (((lane >> 2) & 3u) == 0u) {',
       '      const uint32_t L = warp * warp_regions + (lane & 3u) * regions_per_warp + 2u * rl',
       '                         + ((lane >> 4) & 1u);',
-      '#if PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS',
-      '      tst(c, tbuf + L * 16u + ((c & 15u) ^ ((L >> 1) & 15u)), x);',
-      '#else',
       '      sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))] = x;'));
     // The tile writes chunks 0-14 in its loop, then the last; next_srcs reads the next
     // tile in between.

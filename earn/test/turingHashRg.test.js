@@ -1387,10 +1387,7 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
     // checks (voltaHmma.test.js), the dp4a fold (Pascal, GTX 16), which resolve_fold
     // checks first and create sets up, as `fold`, with Volta's (turingDp4a.test.js), and
     // pearl_gen_perm, which create asks whether the core has code for the card at all.
-    // And pearl_t75_card, which asks before create whether a card will run the t75 folds,
-    // to choose their k (PEARL_T75_K).
     expect(off).toEqual([
-      ['cudaFuncGetAttributes', cast('pearl_t75_tile_fold_wmma')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_hmma')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_dp4a')],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma')],

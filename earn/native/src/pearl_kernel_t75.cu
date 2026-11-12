@@ -25,17 +25,6 @@
 #define PEARL_BD_ROWPAIR 1
 #define PEARL_BD_LAST_RO 1
 
-// PEARL_T75_K (pearl_config.h): the k these folds are built for. Past 2048 the host has an
-// RTX 20 card mine that k (pearl_host_card_k), and this unit's copy of the GTX 16 fold,
-// which is never launched and folds only 16 chunks, is built empty.
-#ifndef PEARL_T75_K
-#define PEARL_T75_K 2048u
-#endif
-#if PEARL_T75_K > 2048
-#define PEARL_FOLD_K (PEARL_T75_K)
-#define PEARL_DP4A_TURING (0)
-#endif
-
 #define pearl_blake3_chunk_cvs pearl_t75_blake3_chunk_cvs
 #define pearl_blake3_parent_layer pearl_t75_blake3_parent_layer
 #define pearl_blake3_unkeyed pearl_t75_blake3_unkeyed

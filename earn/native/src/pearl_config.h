@@ -1208,16 +1208,6 @@ typedef struct {
 #ifndef PEARL_T75_RUL8
 #define PEARL_T75_RUL8 0
 #endif
-// PEARL_T75_K (2048 unless the build sets it): the k pearl_kernel_t75.o is built for.
-// Past 2048 an RTX 20 card that runs those folds mines that k (pearl_host_card_k): the
-// tile's hash and hand-off spread over twice the MACs. The build passes the same value
-// to pearl_kernel_t75.cu and pearl_host.cu.
-#ifndef PEARL_T75_K
-#define PEARL_T75_K 2048u
-#endif
-#if PEARL_T75_K != 2048 && PEARL_T75_K != 4096
-#error "PEARL_T75_K is 2048 or 4096"
-#endif
 // PEARL_BD_ROWPAIR (0 by default), from round 6 (2026-10-21), designed in round 2: the
 // readout gathers a region's word with one shuffle instead of six. As shipped, lanes L,
 // L ^ 4, L ^ 8 and L ^ 12 each hold a quarter of a region in a pair of m-blocks, so a
