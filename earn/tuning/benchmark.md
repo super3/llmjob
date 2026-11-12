@@ -3797,6 +3797,48 @@ compare as work a clock:
 The copy costs 8 W and no work a clock. The 64-thread work-group saves the energy but does 4% less work a clock,
 and that loss is neither its copy nor its meetings.
 
+### Arc rig, 12 November, night: why a 64-thread work-group loses, and the readout's atomics (`goal/arc-18`)
+
+No new verified build. Card 5, `pearl_sycl_check --bench 8` taking turns, 2-3 rounds; control spare27's code,
+100.2-100.4 TH/s at 1,960-1,995 MHz, 175 W (96.8 at one set a work-group, at the 2,000 MHz cap). Skeleton = A' and
+B' held in registers, no copy, no barrier (`NOLD=3 NOCOPY NOBAR`), all at one set (`PEARL_SYCL_WSEQ=1`).
+
+**A 64-thread work-group runs the bare DPAS loop 15% slower.** It is not its loads, its copy or its meetings:
+
+| Threads a core, as | skeleton | B' reads only | A' loads only | full build |
+|---|---|---|---|---|
+| 1 work-group of 32 (RW 8 x CW 2, def) | 112.0-112.2 | 108.6-108.7 | 108.2-108.5 | 96.8 |
+| 1 work-group of 64 (RW 16 x CW 2) | 95.8 | 94.3 | 92.4-92.5 | 92.5-92.7 (PASS) |
+| 2 work-groups of 32 (local memory cut, `NORING`) | 112.1-112.2 | | | |
+| 4 / 2 work-groups of 16 (CW 1) | 112.7 / 112.5-112.8 | | | |
+| 1 work-group of 16 (padded) | 102.0-102.2 | | | |
+| 1 work-group of 32 as RW 16 x CW 1 | 112.2 | | | |
+
+- The same 64 threads a core from two or four work-groups run at full speed; only one work-group owning every slot
+  loses. The loop's ISA is the same as def's but for register numbers. Thread placement (an `sr0` probe):
+  sub-groups 0-15 take slot 0 of all 16 EUs, 16-31 slot 1, 32-47 slot 2, 48-63 slot 3; sub-groups 2i and 2i + 1
+  are the two EUs of a pair. That is where two work-groups of 32 would sit too.
+- Of the 15%: the hash 5.8% (skeleton without it 101.3; at 32 threads it costs nothing there), the readout's local
+  atomic 2.4% (`PEARL_W_NOPXA` 103.8), the rest unexplained. Longer work-groups (SEQ 2-16 with `PART1`) do not
+  help (98.3-98.9; without the hash 99.4-101.4), nor does starting half the threads late (`PEARL_W_PHASE`).
+- So RW 16 x CW 2 cannot reach def's work a clock, and the 8 W it saves cannot be had that way.
+- 64 KB of local memory a core, confirmed: a 16-thread work-group padded to 33 KB or to 60 KB runs the same.
+
+**The readout's atomic and the hash:**
+
+| What | TH/s |
+|---|---|
+| no local atomic a chunk (`PEARL_W_NOPXA`, timing) | 100.8-100.9 (+0.6%) |
+| the atomic's words laid out without bank conflicts (`PEARL_W_PXT` 1 / 2, PASS) | 95.4 / 96.1 |
+| two chunks a 64-bit atomic | OUT_OF_RESOURCES |
+| two-slot ring (`PEARL_W_SLOTS=2`), PASS / + plain stores, no atomic (`NOPARTX`, fixed), PASS | 100.1-100.2 / 100.4-100.6 |
+| the latter under duty 75 (bench.js, 30 s) | 76.2-76.3 against 76.9 |
+| no hash at one set / at two sets (`PEARL_W_NOEPI`) | 100.5 (def 96.8) / 100.8-101.0 at a lower clock |
+| two work-groups of 32 a core at 4 k-steps a slot (`SLOTS=2 PARTMIN`, 32 or 28 KB), one set | 98.9-99.2, the same padded to one |
+
+- PXT keeps the same work but IGC rebuilds the chunk loop around the new addresses and loses 4-5%.
+- A second work-group on the core hides neither the hash nor the loads.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

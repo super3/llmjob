@@ -1957,12 +1957,36 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #else
   static constexpr bool kPartX = false;
 #endif
+#if defined(PEARL_W_PARTMIN)
+  // goal-arc18 timing (wrong results; with NOPXA): a part of 64 words, every index masked into it, so the
+  // work-group needs only its ring (two slots: 32 KB, two work-groups a core). With SLOTS 2 + NOPXA, SEQ 1, card
+  // 5: 98.9-99.2, and 99.0-99.2 padded to one work-group a core; without the hash 102.4-102.8 either way, also
+  // with the ring cut to 28 KB (PEARL_W_RINGCUT). A second work-group on the core neither hides the hash nor
+  // anything else.
+  static constexpr uint32_t kPartWords = 64u;
+#else
   static constexpr uint32_t kPartWords = kNsg * (kPartX ? 4u : 8u) * 16u;  // words of `part` a set
+#endif
 #if defined(PEARL_W_PART1)
   static constexpr bool kPart1 = true;
 #else
   static constexpr bool kPart1 = false;
 #endif
+  // goal-arc18 (PEARL_W_PXT): word j of region q of window w at (j * windows + w) * 8 + q, so a sub-group's 8
+  // lanes touch 8 neighbouring words (8 banks) in the readout's atomic; the old place, (w * 8 + q) * 16 + j,
+  // put all 8 lanes 64 bytes apart, in one bank. PXT=2: (w * 16 + j) * 8 + q. Both PASS but lose: 95.4 / 96.1
+  // against 100.3 (card 5): IGC rebuilds the chunk loop around the new addresses. Off.
+  static uint32_t pix(uint32_t w, uint32_t q, uint32_t j) {
+#if defined(PEARL_W_PARTMIN)
+    return ((w * 8u + q) * 16u + j) & 15u;
+#elif defined(PEARL_W_PXT) && PEARL_W_PXT == 2
+    return (w * 16u + j) * 8u + q;
+#elif defined(PEARL_W_PXT)
+    return (j * (kNsg / 2u) + w) * 8u + q;
+#else
+    return (w * 8u + q) * 16u + j;
+#endif
+  }
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
@@ -2363,7 +2387,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     if constexpr (kSplit && AH) load_ah(kdo(1u), ahn2);
 #endif
     if constexpr (kPartX) {
+#if defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
+      if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + pix(widx, lane, (uint32_t)j)] = 0u; });
+#else
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + (widx * 8u + lane) * 16u + (uint32_t)j] = 0u; });
+#endif
     }
     v8i bqn[4];
     (void)bqn;
@@ -2396,6 +2424,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     v8i bqc[4];
     load_ah(1u, ahc);
     each<4>([&](int cb) { bqc[cb] = (v8i)__builtin_shufflevector(ahc[cb], ahc[cb ^ 1], 0, 1, 2, 3, 4, 5, 6, 7) ^ (int)(0x9E3779B9u * (uint32_t)(cb + 1)); });
+#if defined(PEARL_W_PHASE) && defined(PEARL_W_D4)
+    // goal-arc18 timing (wrong results; NOLD 3 only): the second half of the sub-groups runs a delay (a dependent
+    // ALU chain, PEARL_W_PHASE x 16 steps) before the loop, so its chunk ends (readout) fall between the first
+    // half's. Meant to test whether a 64-thread work-group loses because its threads run in step: RW 16 x CW 2
+    // skeleton without hash 101.3, PHASE 1 / 4 / 8 99.7 / 99.4 / 99.4. It does not help. (Extra DPAS in a branch
+    // there instead ran at a third of the speed.)
+    if constexpr (kSplit) {
+      uint32_t ph = A.zero + lane;
+      const uint32_t nph = sgl >= kNsg / 2u ? (uint32_t)(PEARL_W_PHASE) * 16u : 0u;
+#pragma unroll 1
+      for (uint32_t i = 0; i < nph; i++) ph = ph * 1664525u + 1013904223u;
+      ahc[0][0] ^= (int)(ph & A.zero);
+    }
+#endif
 #endif
     arrive(it);
 #if defined(PEARL_W_CHUNROLL)
@@ -3062,8 +3104,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         if constexpr (kPartX) {
           sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
                            sycl::access::address_space::local_space>
+#if defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
+              px(part[pOff + pix(widx, lane & 7u, ch)]);
+#else
               px(part[pOff + (widx * 8u + (lane & 7u)) * 16u + ch]);
-#if defined(PEARL_W_RDNB)
+#endif
+#if defined(PEARL_W_NOPXA)
+          // goal-arc18 timing (wrong results): no local atomic a chunk; the words only XORed into a register.
+          // Card 5: def 100.8-100.9 against 100.2-100.3 (+0.6%); 32-thread skeleton +0.5%, 64-thread +2.4%.
+          // Two chunks a 64-bit atomic instead: OUT_OF_RESOURCES. See PXT and NOPARTX for real forms.
+          (void)px;
+          tw[0] ^= (lane & 1u) ? x1 : x0;
+#elif defined(PEARL_W_RDNB)
           // goal-arc11 experiment: no `if` (a sub-group has 8 lanes, so it is always true). The loop is then one
           // block with no goto/join, but has 7 dummy DPAS for 3: 92.6 against 93.55 (card 5).
           px.fetch_xor((lane & 1u) ? x1 : x0);
@@ -3076,6 +3128,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       }
     }
     wait(it);
+#if defined(PEARL_W_NOPXA)
+    if (A.zero && tw[0] == 0x12345678u) part[0] = tw[0];
+#endif
 #if defined(PEARL_W_NOPUT)
     if (A.zero && sink == 0x12345678u) part[0] = sink;
 #endif
@@ -3128,8 +3183,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       const uint32_t qr = lane;
       uint32_t words[16];
       for (int j = 0; j < 16; j++)
+#if defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
+        words[j] = kPartX ? part[(SEQ > 1 && !kPart1 ? js * kPartWords : 0u) + pix(widx, qr, (uint32_t)j)]
+#else
         words[j] = kPartX ? part[(SEQ > 1 && !kPart1 ? js * kPartWords : 0u) + (widx * 8u + qr) * 16u + (uint32_t)j]
-                          : part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
+#endif
+                          // goal-arc18: the set's offset and the window's first sub-group (both hash at SEQ 2;
+                          // goal-arc8's NOPARTX failed the check for want of these). With SLOTS 2 (64 KB at SEQ 2):
+                          // PASS, 100.4-100.6 against 100.2-100.4 at full speed, but 76.2-76.3 against 76.9 at
+                          // duty 75 (card 5). Off.
+                          : part[(SEQ > 1 ? js * kPartWords : 0u) + ((sgl & ~1u) * 8u + qr) * 16u + (uint32_t)j]
+                            ^ part[(SEQ > 1 ? js * kPartWords : 0u) + ((sgl | 1u) * 8u + qr) * 16u + (uint32_t)j];
       const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
 #if defined(PEARL_W_NOEPI)
       // goal-arc10 timing (no hits): no BLAKE3 in the kernel, the words only XORed together and kept.
@@ -3213,7 +3277,15 @@ inline sycl::event fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups)
 #if defined(PEARL_W_NORING)
     sycl::local_accessor<uint32_t, 1> ring(64u, h);  // goal-arc16 timing: B' from global only, no ring
 #else
+#if defined(PEARL_W_PARTMIN)
+    // goal-arc18 timing: the ring's last words lie on top of `part`, so ring and part fit 32 KB together.
+#ifndef PEARL_W_RINGCUT
+#define PEARL_W_RINGCUT 0
+#endif
+    sycl::local_accessor<uint32_t, 1> ring(K::kSlots * K::kSlotWords - K::kPartWords * (uint32_t)SEQ - (PEARL_W_RINGCUT), h);
+#else
     sycl::local_accessor<uint32_t, 1> ring(K::kSlots * K::kSlotWords, h);
+#endif
 #endif
 #if defined(PEARL_W_NC)
     constexpr uint32_t kSgs = K::kNsg + (PEARL_W_NC);  // goal-arc8: and the copier sub-groups
