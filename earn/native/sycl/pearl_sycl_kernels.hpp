@@ -853,8 +853,16 @@ template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lan
 // memory); 8 waits at the barrier with no acquire fence; 16 keeps each lane's 16 words in registers and
 // combines a window's two sub-groups through the ring after the last k-step, so the work-group asks for no
 // local memory beyond the ring (see fold_xmxr: more than 32 KB of local memory on an Xe-core costs 10%).
+// VAR 512: a 2D work-group, wpg / 2 row windows by 2 column windows. The ring holds both column
+// windows' B' (4 KB a slot), and the two windows of a row read the same A' at the same time, so the
+// first cache level serves the second. The words go into local memory by XOR atomics, a window's 128
+// words shared by its two sub-groups, so the group asks for 16 KB at wpg 8.
 template <bool HW, int VAR = 0> struct FoldXmxR {
-  static constexpr uint32_t kSlotWords = 512u;  // a k-step of a column window's B': 64 columns by 32 k
+  // VAR 1024: a slot holds two k-steps of one column window's B', and the group meets once every two
+  // k-steps. Its words go into local memory by XOR atomics, as VAR 512's.
+  static constexpr bool kWide = (VAR & (512 | 1024)) != 0;
+  static constexpr uint32_t kSlotWords = kWide ? 1024u : 512u;  // B' a slot: 64 columns by 32 k, or twice that
+  static constexpr uint32_t kBlocks = kWide ? 32u : 16u;       // 128-byte blocks a slot
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
@@ -892,26 +900,42 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     const uint32_t nsg = 2u * A.wpg;
     const uint32_t sgi = sgl & 1u, widx = sgl >> 1;
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
-    uint32_t wr, wc;
-    window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
+    uint32_t wr, wc, jc = 0u;
+    if constexpr (VAR & 512) {
+      uint32_t wch;
+      jc = widx & 1u;
+      window_of((uint32_t)it.get_group(0) * (A.wpg / 2u) + (widx >> 1), rowWins, colWins / 2u, A.band, wr, wch);
+      wc = 2u * wch + jc;
+    } else {
+      window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
+    }
     const uint32_t row0 = 32u * wr + sgi * 16u;
     const int8_t *Ab = A.Ap + (size_t)(row0 >> 4) * A.aStride;
-    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride;
+    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc - jc) * A.bStride;  // the group's first column window
     uint32_t *R = &ring[0];
-    // This sub-group's blocks of a k-step's B' (16 blocks of 128 bytes over nsg sub-groups).
-    auto copy = [&](uint32_t ks, uint32_t slot) {
-      for (uint32_t blk = sgl; blk < 16u; blk += nsg)
-        ring_write_local<HW>(R + slot * kSlotWords + blk * 32u,
-                             ring_read_global<HW>(Bb + (size_t)ks * 2048u + (size_t)blk * 128u, lane), lane);
+    // Block blk of a k-step's B' in global memory (blocks 16 and up: the second column window).
+    auto bsrc = [&](uint32_t ks, uint32_t blk) {
+      if constexpr (VAR & 1024)  // ks is a pair of k-steps here; blocks 16 and up its second
+        return Bb + (size_t)(2u * ks + (blk >> 4)) * 2048u + (size_t)(blk & 15u) * 128u;
+      return Bb + (size_t)(blk >> 4) * A.bStride + (size_t)ks * 2048u + (size_t)(blk & 15u) * 128u;
     };
+    // This sub-group's blocks of a k-step's B' (kBlocks blocks of 128 bytes over nsg sub-groups).
+    auto copy = [&](uint32_t ks, uint32_t slot) {
+      for (uint32_t blk = sgl; blk < kBlocks; blk += nsg)
+        ring_write_local<HW>(R + slot * kSlotWords + blk * 32u, ring_read_global<HW>(bsrc(ks, blk), lane), lane);
+    };
+    if constexpr (kWide) {
+      for (uint32_t i = (uint32_t)it.get_local_linear_id(); i < A.wpg * 128u; i += nsg * 8u) part[i] = 0u;
+      sycl::group_barrier(it.get_group());
+    }
     // VAR 4: the copy in two halves, a load a k-step early and its store. Only with 8 or more sub-groups
     // a work-group (at most 2 blocks each, which wait in registers); fewer copy in one go.
-    const bool early = (VAR & 4) && nsg >= 8u;
+    const bool early = (VAR & 4) && 2u * nsg >= kBlocks;
     v4u pre[2] = {0, 0};
-    const uint32_t mine = sgl < 16u ? (16u - sgl + nsg - 1u) / nsg : 0u;  // blocks this sub-group copies
+    const uint32_t mine = sgl < kBlocks ? (kBlocks - sgl + nsg - 1u) / nsg : 0u;  // blocks this sub-group copies
     auto fetch = [&](uint32_t ks) {
       for (uint32_t i = 0; i < 2u; i++)
-        if (i < mine) pre[i] = ring_read_global<HW>(Bb + (size_t)ks * 2048u + (size_t)(sgl + i * nsg) * 128u, lane);
+        if (i < mine) pre[i] = ring_read_global<HW>(bsrc(ks, sgl + i * nsg), lane);
     };
     auto put = [&](uint32_t slot) {
       for (uint32_t i = 0; i < 2u; i++)
@@ -937,7 +961,14 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
       });
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
-      if constexpr (VAR & 16) {
+      if constexpr (kWide) {
+        if (lane < 8u) {
+          sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
+                           sycl::access::address_space::local_space>
+              at(part[(widx * 8u + lane) * 16u + ch]);
+          at.fetch_xor((lane & 1u) ? x1 : x0);
+        }
+      } else if constexpr (VAR & 16) {
         // Chunk ch's word lands in t[15]: a shift, so every index stays a constant.
         each<15>([&](int j) { t[j] = t[j + 1]; });
         t[15] = (lane & 1u) ? x1 : x0;
@@ -950,15 +981,31 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
-        const uint32_t slot = ks % 3u;
-        wait(it);
-        if (early) {
-          if (ks + 1u < 64u) put((ks + 1u) % 3u);
-          if (ks + 2u < 64u) fetch(ks + 2u);
+        uint32_t slot = ks % 3u, half = 0u;
+        if constexpr (VAR & 1024) {
+          slot = (ks >> 1) % 3u;
+          half = ks & 1u;
+          if (half == 0u) {
+            const uint32_t ph = ks >> 1;
+            wait(it);
+            if (early) {
+              if (ph + 1u < 32u) put((ph + 1u) % 3u);
+              if (ph + 2u < 32u) fetch(ph + 2u);
+            } else {
+              if (ph + 1u < 32u) copy(ph + 1u, (ph + 1u) % 3u);
+            }
+            arrive(it);
+          }
         } else {
-          if (ks + 1u < 64u) copy(ks + 1u, (ks + 1u) % 3u);
+          wait(it);
+          if (early) {
+            if (ks + 1u < 64u) put((ks + 1u) % 3u);
+            if (ks + 2u < 64u) fetch(ks + 2u);
+          } else {
+            if (ks + 1u < 64u) copy(ks + 1u, (ks + 1u) % 3u);
+          }
+          arrive(it);
         }
-        arrive(it);
         if constexpr (VAR & 128) {
           // VAR 128: a 32 by 32 tile a sub-group. Both sub-groups of a window read all 32 rows of A' from
           // global memory together (4 fragments), and sub-group sgi its half of B' from the ring (4
@@ -1009,7 +1056,7 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           }
         });
         each<8>([&](int cb) {
-          uint32_t *p = R + slot * kSlotWords + (uint32_t)cb * 64u;
+          uint32_t *p = R + slot * kSlotWords + (jc + half) * 512u + (uint32_t)cb * 64u;
           const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
           bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
         });
@@ -1046,6 +1093,16 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
       }
       return;
     }
+    if constexpr (kWide) {
+      if (sgi == 0 && lane < 8u) {
+        const uint32_t qr = lane;
+        uint32_t words[16];
+        for (int j = 0; j < 16; j++) words[j] = part[(widx * 8u + qr) * 16u + (uint32_t)j];
+        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+        region_epilogue(words, local, A.test, A.hits, A.allTr);
+      }
+      return;
+    }
     if (sgi == 0 && lane < 8u) {
       const uint32_t qr = lane;
       uint32_t words[16];
@@ -1062,8 +1119,12 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
 template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   const size_t wg = 16u * a.wpg;
   q.submit([&](sycl::handler &h) {
-    sycl::local_accessor<uint32_t, 1> part((VAR & 16) ? 1u : (VAR & 64) ? 128u : 2u * a.wpg * 8u * 16u, h);
-    const uint32_t ringWords = 3u * FoldXmxR<HW>::kSlotWords;
+    sycl::local_accessor<uint32_t, 1> part((VAR & 16)    ? 1u
+                                           : (VAR & 64)  ? 128u
+                                           : (VAR & (512 | 1024)) ? a.wpg * 8u * 16u
+                                                         : 2u * a.wpg * 8u * 16u,
+                                           h);
+    const uint32_t ringWords = 3u * FoldXmxR<HW, VAR>::kSlotWords;
     // VAR 16 leaves 128 words a window in the ring at the end.
     sycl::local_accessor<uint32_t, 1> ring((VAR & 16) && a.wpg * 128u > ringWords ? a.wpg * 128u : ringWords, h);
     h.parallel_for(sycl::nd_range<1>((size_t)(groups / a.wpg) * wg, wg), FoldXmxR<HW, VAR>{a, part, ring});
