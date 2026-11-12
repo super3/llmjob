@@ -1897,6 +1897,17 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #ifndef PEARL_W_BARN
 #define PEARL_W_BARN 1
 #endif
+// goal-arc18: the copy's 128-byte load as one inline-vISA message (PEARL_W_CPCC, its cache control), in work-groups
+// of at least PEARL_W_CPCW column windows. IGC's block read sends the same message; the gain is where the volatile
+// load lands in the k-step. Card 5, full speed (CW 2): 101.2-101.3 against 100.0-100.3; uc.ca and st.ca the same,
+// uc.uc 71.9. Under duty 75 (the CW 1 instance) it lost 0.4%, so CW 1 keeps the block read: 76.9-77.0 against
+// 76.9. With the inline store too (STA) 100.6-100.8; with SLOTS 2 + NOPARTX 100.2-100.4. PEARL_W_NOCPA: off.
+#if !defined(PEARL_W_NOCPA) && !defined(PEARL_W_CPCC)
+#define PEARL_W_CPCC "ca.ca"
+#endif
+#ifndef PEARL_W_CPCW
+#define PEARL_W_CPCW 2  // PEARL_W_CPCC applies to work-groups of at least this many column windows
+#endif
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
@@ -1913,6 +1924,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       const uint32_t *w = reinterpret_cast<const uint32_t *>(p);
       return v2u{w[lane], w[8u + lane]};
     } else {
+#if defined(PEARL_W_CPCC) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+      // goal-arc18 (PEARL_W_CPCC, see there): the copy's load as one inline 128-byte message with its own cache
+      // control. Tried uncached in L1 to leave room for A'; every L1 option gained the same 1.1%.
+      if constexpr (HW && (CW >= (PEARL_W_CPCW))) {
+        v4u r;
+        const uint64_t a = (uint64_t)(uintptr_t)p;
+#if defined(PEARL_W_CPNV)
+        __asm__("lsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#else
+        __asm__ volatile("lsc_load.ugm." PEARL_W_CPCC " (M1_NM, 1) %0:d32x32t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#endif
+        return r;
+      }
+#endif
       return ring_read_global<HW>(p, lane);
     }
   }

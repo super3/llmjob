@@ -3839,6 +3839,22 @@ B' held in registers, no copy, no barrier (`NOLD=3 NOCOPY NOBAR`), all at one se
 - PXT keeps the same work but IGC rebuilds the chunk loop around the new addresses and loses 4-5%.
 - A second work-group on the core hides neither the hash nor the loads.
 
+**New default: the copy's load as one inline-vISA message** (`PEARL_W_CPCC`, CW 2 instance only; spare28). IGC's
+block read sends the same 128-byte message; the gain is where the volatile load lands in the k-step.
+
+| What (card 5 unless noted) | full speed | duty 75 |
+|---|---|---|
+| spare27's code | 100.0-100.5 | 76.9 |
+| inline copy load, ca.ca / uc.ca / st.ca | 101.2-101.6 / 101.3-101.4 / 101.3-101.4 | 76.5-76.6 (on the CW 1 instance too) |
+| inline copy load, uc.uc | 71.9 | |
+| + inline store (STA) / + SLOTS 2 NOPARTX / + CPD2 / + BFIRST / not volatile | 100.6-100.8 / 100.2-100.4 / 94.4-94.7 / 98.7-99.0 / 101.2-101.5 | |
+| **inline copy load on the CW 2 instance only (spare28)** | **101.2-101.6** | **76.9-77.0** |
+| **card 4: spare28 / spare27** | **102.5-102.7 / 101.4-101.6** (1,986-2,000 MHz, 176 W) | **77.36-77.46 / 77.44-77.52** |
+
+spare28 on card 4: verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty
+100 and at duty 75. HiveOS 24.35 (staged ship-a18): xmx8w, xmx8w-emu and the mainnet-shaped check PASS. Under the
+mining duty it is level with spare27, so moving the mining cards gains nothing yet.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
