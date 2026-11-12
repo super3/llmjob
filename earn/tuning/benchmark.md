@@ -3649,6 +3649,62 @@ Prices under duty 75 (bench.js on card 5, 30-40 s, two rounds, ~2,100 MHz busy, 
 - A work-group of 64 sub-groups (a whole Xe-core) loses 8-12% however its windows are arranged.
 - AHOT 2 does the same work a clock as def: at the clock cap, sharing A' more widely buys nothing more.
 
+### Arc rig, 12 November, evening: where the last 10% a clock goes (`goal/arc-16`)
+
+No new verified build; this section prices the loop. Card 5, `pearl_sycl_check --bench 8`, two or three rounds taking
+turns, nearly all at the 2,000 MHz cap, so the rates compare as work a clock. Control: spare27's code (eb1133b3),
+100.0-100.4 TH/s at 1,970-2,000 MHz, 175 W. The goal (105 on card 4, which sits at 2,000 MHz) needs 52.5 TH/s a GHz
+against 50.5-50.7 now.
+
+**The loop itself is at the DPAS peak.** New timing macro `PEARL_W_NOLD` holds A' (bit 1) or B' (bit 2) in registers,
+loaded once with real bits. With both held, no copy and no barrier, the fold runs 111.5-112.0 TH/s at 2,000 MHz and
+144 W: 55.8 a GHz against the probe's 56.4 for DPAS alone. The 8x4 split DPAS, the readout and the hash cost about
+1%. All of the gap is getting operands in:
+
+| Timing build (wrong results) | TH/s | W | against the skeleton |
+|---|---|---|---|
+| skeleton: no A' or B' loads, no copy, no barrier | 111.5-112.0 | 144 | - |
+| copy and barrier only | 110.2-110.4 | 157 | -1.3% |
+| B' local reads only | 106.0-106.2 | 150 | -5.0% |
+| B' local reads, copy, barrier | 106.0-106.1 | 162 | -5.1% |
+| A' loads only | 107.9-108.1 | 175 | -3.4% |
+| A' loads only, all from 2 row windows (L1 hits) | 109.7-109.8 | 154 | -1.8% |
+| A' loads, copy, barrier | 103.9-104.3 | 175 | -6.9% |
+| B' local reads only, B' read a k-step ahead (32 more registers) | 109.0-109.2 | 157 | -2.4% |
+| B' local reads only, each fragment as 128 bytes used twice (same messages, half the bytes) | 105.9 | 147 | -5.2% |
+| skeleton + 2 / 4 unused 256-byte local reads a k-step | 109.0 / 107.8 | 155 / 152 | -2.5% / -3.6% |
+| skeleton + 2 / 4 unused 32-byte local reads a k-step | 109.5 / 109.2-109.3 | 146 / 148 | -2.1% / -2.3% |
+| skeleton + 2 unused 256-byte global reads of a hot line | 110.3-110.5 | 151 | -1.3% |
+| 8x8 split DPAS skeleton (16 dummy DPAS) / with B' reads | 99.6 / 95.0 | 142 / 146 | |
+
+- B' read from local memory is the largest item, then A' (half of it misses), then the copy and barrier.
+- Bytes do not set the price: half-size B' reads cost the same. Messages do, but not linearly: the first one or two
+  in a k-step cost about 2% and further ones little, so cutting a message buys less than the table's rows suggest.
+- B' latency is real when nothing else loads (a k-step ahead recovers 2.8 of the 5%), but not in the full fold.
+
+Full builds, all PASS unless noted (control 100.0-100.4):
+
+| What | TH/s |
+|---|---|
+| B' a k-step ahead, all 4 fragments (`PEARL_W_BAH`) / 1 / 2 / 3 fragments | 68.8 / 95.1 / 96.5 / 85.7 |
+| B' 4 ahead with A' not ahead / 2 ahead with A' not ahead | 95.9 / 95.7 |
+| B' read into the same registers right after its DPAS (`PEARL_W_BROLL`) | 95.9 (in the B'-only build 105.2: the load waits on the DPAS) |
+| the above with the finalizer's scheduler off (`-noschedule`; control 97.3 with it off) | 92.2-95.8 |
+| `-keepDPASMacroInSchedule` on the control / on B' 4 ahead | 99.4-99.6 / 96.7-96.8 |
+| B' reads before the copy and A''s next load (`PEARL_W_BFIRST`) / A''s next load after the DPAS (`PEARL_W_AHLATE`) | 99.8-100.0 / 98.6-98.7 |
+| 1 / 2 B' fragments straight from global memory (`PEARL_W_BSPLIT`; same work a clock, more power) | 98.5-98.6 / 97.5-97.6 |
+| all B' from global memory, no ring, copy or barrier / and the ring's local memory freed (`PEARL_W_NORING`) | 89.9 / 87.6 |
+| copy as 256-byte messages every other k-step, now at CW 2 too (`PEARL_W_CA`) / at k-steps 1, 3 / unrolled twice | 94.3 / 94.9-95.0 / 97.1 |
+| chunk loop unrolled twice (`PEARL_W_CHUNROLL=2`) | 100.5-100.6 (+0.2%) |
+| no release fence on the arrive (unsafe) / no barrier at all | 99.7 / 97.3-97.4 (1,934 MHz, 50.3 a GHz) |
+| band 16 / 32 / 128 rows (default 64) | 99.9-100.0 / 100.2 / 97.1 |
+| 512-byte SIMD8 gather (`d64x8`) | does not assemble: one message brings at most 8 registers |
+
+The barrier is worth keeping: without it the fold does less work a clock (the windows drift apart and stop sharing A'
+lines in L1). Every way of hiding B''s latency tried here loses in the full fold, where registers and the finalizer's
+placement of the loads decide; IGC put several of the new loads' addresses and results in the same registers, so
+the loads wait on each other.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
