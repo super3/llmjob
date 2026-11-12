@@ -982,6 +982,11 @@ typedef struct {
 #ifndef PEARL_BD_GATE
 #define PEARL_BD_GATE (PEARL_BD_LEAN ? 1 : 2)
 #endif
+// PEARL_BD_RO_PAIRGATE (0 by default; a race, goal-nv20e): the k-lo pass gates each B
+// pair's IMMA on that pair's own fold, not on the fold chain through it. Device only.
+#ifndef PEARL_BD_RO_PAIRGATE
+#define PEARL_BD_RO_PAIRGATE 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"

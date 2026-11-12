@@ -924,6 +924,23 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         b2[rl] = b_word(j, 0u, 1u);
       }
       if (ro) {
+#if PEARL_BD_RO_PAIRGATE
+        // A race (goal-nv20e): pair j's IMMA wait for pair j's own fold only, not the
+        // chain through pairs 0 to j, which is xored on after.
+        uint32_t ys[RPL];
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          ys[rl] = fold_pair(0u, rl, j);
+          rxs[rl] = j == 0u ? ys[rl] : rxs[rl] ^ ys[rl];
+        }
+#pragma unroll
+        for (uint32_t rl = 0; rl < RPL; rl++) {
+          b0[rl] = pearl_bd_after(b0[rl], ys[rl]);
+#if PEARL_BD_GATE == 2
+          b2[rl] = pearl_bd_after(b2[rl], ys[rl]);
+#endif
+        }
+#else
 #pragma unroll
         for (uint32_t rl = 0; rl < RPL; rl++) rxs[rl] = fold_pair(rxs[rl], rl, j);
 #pragma unroll
@@ -935,6 +952,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
           b2[rl] = pearl_bd_after(b2[rl], rxs[rl]);
 #endif
         }
+#endif  // PEARL_BD_RO_PAIRGATE
       }
 #if PEARL_BD_SNAKE
       // PEARL_BD_SNAKE: per m-block, a snake over the pair's two n-blocks, so each
