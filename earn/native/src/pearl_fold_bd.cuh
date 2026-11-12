@@ -270,18 +270,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                 "the readout folds the regions the m16n8k32 accumulators hold");
   static_assert(!kHashRg || PEARL_BD_HASH_RG_OK,
                 "the second row group hashes only where PEARL_BD_HASH_RG builds");
-#if PEARL_BD_WMAP
-  // PEARL_BD_WMAP (pearl_config.h): hardware warp w is row slot w & 1 and column slot
-  // w >> 1, so the two warps that read a column slot's B are w and w + 1, on schedulers
-  // w & 3 and (w + 1) & 3. warp is the logical number (row slot * 4 + column slot) that
-  // lays out the regions, as without the switch.
-  const uint32_t lane = threadIdx.x & 31u;
-  const uint32_t wr = (threadIdx.x >> 5) & 1u, wc = threadIdx.x >> 6;
-  const uint32_t warp = (wr << 2) | wc;
-#else
   const uint32_t warp = threadIdx.x >> 5, lane = threadIdx.x & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
-#endif
   constexpr uint32_t regions_per_warp = 4u, warp_regions = 16u;
   const uint32_t row_blocks = rows_valid / regions_per_warp;
   const uint32_t row_block_groups = row_blocks / 2u;
@@ -346,11 +336,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                     && 4u * 512u * 4u == PEARL_BD_SPLIT_SMEM,
                 "the split hash is for the persistent two-buffer fold, and the host adds its 8 KB");
 #endif
-#if PEARL_BD_GROUPS == 2 && PEARL_BD_WMAP
-  // PEARL_BD_WMAP: column slots 0-1 of both row groups are hash_tile's hashers (sid < 64
-  // in the first, sid >= 64 in the second), and sid & 63 covers each group's 64 regions.
-  const uint32_t sid = ((wc ^ (wr << 1)) << 5) | lane;
-#elif PEARL_BD_GROUPS == 2
+#if PEARL_BD_GROUPS == 2
   const uint32_t sid = threadIdx.x & 127u;  // a thread's place in its row group, for the hash
 #endif
 #else
@@ -558,11 +544,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // each hashes its own 64 by default, so a hand-off at the group's own barrier
   // (PEARL_BD_BAR) is enough. With HASH_RG's role (kHashRg) the second hashes all 128,
   // the first's too: that needs the persistent loop's hand-off, the whole block's.
-#if PEARL_BD_HDELAY
-  // PEARL_BD_HDELAY's word: its own shared address, written before the first barrier.
-  __shared__ uint32_t sSelf;
-  if (threadIdx.x == 0u) sSelf = (uint32_t)__cvta_generic_to_shared(&sSelf);
-#endif
 #if PEARL_BD_HIT_COORDS
   auto hash_tile = [&](uint32_t vtile) {
 #else
@@ -648,24 +629,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
         for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
       }();
-#if PEARL_BD_HDELAY
-      // PEARL_BD_HDELAY (pearl_config.h): the hasher waits PEARL_BD_HDELAY shared loads
-      // in a chain, each reading the address of the next from sSelf, which holds its own
-      // address. In the branch the hashers already take: outside it ptxas rebuilt the
-      // tile loop, and a NANOSLEEP (.WARP) made it guard every shuffle for divergence.
-      // With PEARL_BD_HDELAY_ODD only the second row group's hashers wait: under
-      // PEARL_BD_WMAP, one warp of each column slot pair, so the pair is that far apart.
-#if PEARL_BD_HDELAY_ODD
-      if (wr)
-#endif
-      {
-        uint32_t t = (uint32_t)__cvta_generic_to_shared(&sSelf);
-#pragma unroll
-        for (int i = 0; i < PEARL_BD_HDELAY; i++)
-          asm volatile("ld.volatile.shared.u32 %0, [%0];" : "+r"(t) :: "memory");
-        asm volatile("" :: "r"(t));
-      }
-#endif
     }
   };
 
@@ -909,11 +872,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
-#if PEARL_BD_LD_A
-      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
-#else
       return pearl_bd_ldg(p);
-#endif
     };
     // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {

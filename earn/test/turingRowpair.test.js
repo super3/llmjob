@@ -662,7 +662,7 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '  int32_t acc[MB][NB][4];',
       '  constexpr uint32_t RPL = MB / 2u;',
     ]) pin(FOLD_CODE, [line]);
-    pin(FOLD_CODE, ['#elif PEARL_BD_GROUPS == 2', '  const uint32_t sid = threadIdx.x & 127u;', '#endif', '#else']);
+    pin(FOLD_CODE, ['#if PEARL_BD_GROUPS == 2', '  const uint32_t sid = threadIdx.x & 127u;', '#endif', '#else']);
     for (const def of ['#define PEARL_FOLD_RANK 128u', '#define PEARL_FOLD_K 2048u',
       '#define PEARL_FOLD_CHUNKS (PEARL_FOLD_K / PEARL_FOLD_RANK)', '#define PEARL_JACKPOT_BUCKETS 16',
       '#define PEARL_FOLD_TURING_THREADS 256u']) {
