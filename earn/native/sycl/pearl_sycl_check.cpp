@@ -84,6 +84,10 @@ int fold_code(const std::string &s, int own) {
   if (s == "xmx8-emu") return 4;
   if (s == "xmx8f") return 5;
   if (s == "xmx8f-emu") return 6;
+  // The shared-A' fold, in a core built with -DPEARL_SYCL_XMX8S only (a core without it runs another fold
+  // for these codes, and the check then fails).
+  if (s == "xmx8s") return 7;
+  if (s == "xmx8s-emu") return 8;
   return -2;
 }
 
@@ -240,7 +244,7 @@ int main(int argc, char **argv) {
     if (code < 0) { fprintf(stderr, "unknown fold %s\n", asked.c_str()); return 2; }
     if (std::find(done.begin(), done.end(), code) != done.end()) continue;
     done.push_back(code);
-    const std::string f = kFoldNames[code];
+    const std::string f = code == 7 ? "xmx8s" : code == 8 ? "xmx8s-emu" : kFoldNames[code];
     if (bench) {
       double total = 0, best = 1e30;
       uint32_t n = 0;

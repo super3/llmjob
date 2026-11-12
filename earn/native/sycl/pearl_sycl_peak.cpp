@@ -887,12 +887,14 @@ template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0> struct P
     for (int rb = 0; rb < TR; rb++)
       for (int cb = 0; cb < TC; cb++) c[rb][cb] = 0;
     constexpr uint32_t NST = 64u / (uint32_t)KS;
-    constexpr bool COPY = MODE == 1 || MODE == 3 || MODE == 4 || MODE == 6 || MODE == 7 || MODE == 16 || CARRY;  // 16: 4 without the pin
+    constexpr bool COPY = MODE == 1 || MODE == 3 || MODE == 4 || MODE == 6 || MODE == 7 || MODE == 16 || CARRY || MODE == 17 || MODE == 18;  // 16: 4 without the pin
     // 7 with only its loads, or only its stores; 12 its loads all from one place that stays in the cache
     constexpr bool LOADONLY = MODE == 10 || MODE == 12, STOREONLY = MODE == 11;
     constexpr bool PIN = MODE == 4 || MODE == 6 || MODE == 7 || LOADONLY;
     constexpr bool FULLBAR = MODE == 1 || MODE == 2 || MODE == 6;
-    constexpr bool SPLIT = MODE == 4 || MODE == 5 || MODE == 8 || MODE == 16 || PROD;
+    constexpr bool SPLIT = MODE == 4 || MODE == 5 || MODE == 8 || MODE == 16 || MODE == 17 || PROD;
+    // 17: the copy's loads spread over the stage's k-steps (PPS / KS each), stored at its end; 18 without the barrier
+    constexpr bool SPREAD = MODE == 17 || MODE == 18;
     bool arrived = false;
     if (producer) {
       // Copy stage st + D each stage (15: load stage st + D + 1 and store the one loaded a stage before),
@@ -921,7 +923,7 @@ template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0> struct P
         int pin = 0;
         if constexpr (PROD) {
         } else if constexpr (CARRY) load_into(st + (uint32_t)D + 1u, nxt);
-        else if constexpr (COPY || LOADONLY) load_stage(st + (uint32_t)D);
+        else if constexpr ((COPY && !SPREAD) || LOADONLY) load_stage(st + (uint32_t)D);
         if constexpr (PIN) {
           for (int i = 0; i < PPS; i++) pin ^= held[i][0];
           pin &= (int)P.zero;
@@ -930,6 +932,15 @@ template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0> struct P
         for (int kk = 0; kk < KS; kk++) {
           const uint32_t ks = st * (uint32_t)KS + (uint32_t)kk;
           const PEAK_LOCAL int8_t *sl = sl0 + (uint32_t)kk * T1;
+          // 17, 18: this k-step sends its share of the next stage's copy loads, stored at the stage's end.
+          if constexpr (SPREAD) {
+            constexpr int PPK = PPS / KS;
+            for (int i = kk * PPK; i < (kk + 1) * PPK; i++) {
+              const uint32_t p = ci + (uint32_t)i * copiers;
+              if (p < NP)
+                held[i] = *reinterpret_cast<const peak_v4i *>(src(p % NP1, ((st + (uint32_t)D) * (uint32_t)KS + p / NP1) & 63u) + 16u * lane);
+            }
+          }
           v8i af[TR], bf[TC];
           for (int rb = 0; rb < TR; rb++) {
             if constexpr (RA) af[rb] = *reinterpret_cast<const PEAK_LOCAL v8iu *>(sl + aOwn * 512u + (uint32_t)rb * 256u + 32u * lane);
@@ -986,7 +997,7 @@ template <int OPS, int MODE, int D, int BF, int PPS, int KS, int G = 0>
 inline sycl::event peak_slm(sycl::queue &q, const PeakArgs &args, uint32_t groups) {
   typedef PeakSlm<OPS, MODE, D, BF, PPS, KS, G> K;
 #if !defined(PEARL_PEAK_SPLIT)
-  if (MODE == 4 || MODE == 5 || MODE == 8 || MODE == 13 || MODE == 14 || MODE == 15 || MODE == 16)
+  if (MODE == 4 || MODE == 5 || MODE == 8 || MODE == 13 || MODE == 14 || MODE == 15 || MODE == 16 || MODE == 17)
     throw std::runtime_error("a split-barrier row: build with PEARL_PEAK_SPLIT (see the s- rows' comment)");
 #endif
   if (G && (args.sgb & 1u)) throw std::runtime_error("the 32 by 32 rows need an even --sgb");
@@ -1395,6 +1406,12 @@ void add_frag_rows(std::vector<Row> &v) {
   SLM_ROW("t-free-a", "t-free with A' only through the ring", 1, 16, 2, 1, 2, 1);
   SLM_ROW("t-freec", "t-free without the barrier", 3, 3, 2, 1, 4, 1);
   SLM_ROW("t-sbar-v8", "t-free without the copy", 3, 5, 2, 1, 4, 1);
+  SLM_ROW("t-spr-a2", "32 by 32, A' through the ring, its copy loads spread over a 2-k-step stage, split barrier", 1, 17, 2, 1, 2, 2);
+  SLM_ROW("t-spr-a4", "t-spr-a2 with 4 k-steps a stage", 1, 17, 2, 1, 4, 4);
+  SLM_ROW("t-spr-a4c", "t-spr-a4 without the barrier", 1, 18, 2, 1, 4, 4);
+  SLM_ROW("t-spr2", "32 by 32, both through the ring (8-dword reads), copy spread over a 2-k-step stage, split barrier", 3, 17, 2, 1, 8, 2);
+  SLM_ROW("t-spr2c", "t-spr2 without the barrier", 3, 18, 2, 1, 8, 2);
+  SLM_ROW("t-spr-b2", "32 by 32, B' through the ring (8-dword reads), copy spread over 2 k-steps, split barrier", 2, 17, 2, 1, 4, 2);
   SLM_ROW("t-pinc-a", "32 by 32: A' copied into the ring a k-step ahead, pinned, no barrier", 1, 7, 1, 2, 2, 1);
   SLM_ROW("t-split-a", "32 by 32: A' through the ring, pinned, split barrier, a k-step a stage", 1, 4, 2, 2, 2, 1);
   SLM_ROW("t-split-a2", "t-split-a, 2 k-steps a stage", 1, 4, 2, 2, 4, 2);
