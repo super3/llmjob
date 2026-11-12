@@ -189,6 +189,9 @@ struct Ctx {
   HitBuf *dHits[kSlots] = {nullptr, nullptr};
   HitBuf *hHits[kSlots] = {nullptr, nullptr};  // pinned host copies
   uint32_t *hRoot = nullptr;                   // pinned, 8 words
+#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
+  uint32_t *dWords = nullptr;  // goal-arc9: the ESIMD xmx8w's words, 16 a region (PEARL_SYCL_ESIMD=1)
+#endif
 
   uint32_t rowsValid = 1, colsValid = 1, colBatch = 1, batch = 1;
   uint8_t jobKey[32] = {0};
@@ -223,10 +226,30 @@ std::string env_str(const char *name, const char *dflt) {
   return v && *v ? std::string(v) : std::string(dflt);
 }
 
+// Options for Intel's finalizer (vISA), set once before the driver compiles anything: the driver reads
+// IGC_VISAOptions when it builds a kernel. On an A750 (goal-arc9, 12 November) xmx8w ran 91.8 TH/s with
+// "-insertDPASRSDummyMov -DPASTokenReduction" against 90.6 without (card 5, three rounds), and 85.2 against 84.2
+// on HiveOS's 24.35 driver; both drivers take the options and the fold check passes. The first swaps some of the
+// dummy DPAS a read-suppression workaround puts before a run of DPAS (6 to 4 in the loop) for movs, the second
+// lets DPAS share scoreboard tokens. A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
+void set_finalizer_options() {
+  static std::once_flag once;
+  std::call_once(once, []() {
+    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction");
+    if (o == "none" || getenv("IGC_VISAOptions")) return;
+#if defined(_WIN32)
+    _putenv_s("IGC_VISAOptions", o.c_str());
+#else
+    setenv("IGC_VISAOptions", o.c_str(), 0);
+#endif
+  });
+}
+
 // The devices this core may open, in index order. Level Zero GPUs if there are
 // any (the same GPU is usually listed by OpenCL too), else OpenCL GPUs.
 // PEARL_SYCL_DEVICE=cpu: the CPU device, for the correctness gate.
 std::vector<sycl::device> list_devices() {
+  set_finalizer_options();
   std::vector<sycl::device> l0, ocl, cpu;
   try {
     for (const auto &p : sycl::platform::get_platforms()) {
@@ -689,7 +712,16 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
     case kXmx8R: fold_xmxr<true, PEARL_RING_VAR>(q, a, groups); break;
     case kXmx8REmu: fold_xmxr<false, PEARL_RING_VAR>(q, a, groups); break;
-    case kXmx8W: fold_xmxw<true>(q, a, groups); break;
+    case kXmx8W:
+#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
+      if (env_str("PEARL_SYCL_ESIMD", "") == "1") {
+        if (!ctx->dWords) ctx->dWords = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
+        fold_xmxe(q, a, groups, ctx->dWords);
+        break;
+      }
+#endif
+      fold_xmxw<true>(q, a, groups);
+      break;
     case kXmx8WEmu: fold_xmxw<false>(q, a, groups); break;
     case kXmx8F: fold_xmxf<8, 2, true>(q, a, groups); break;
     case kXmx8FEmu: fold_xmxf<8, 2, false>(q, a, groups); break;
