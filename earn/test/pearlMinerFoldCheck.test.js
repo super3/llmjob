@@ -375,6 +375,46 @@ describe('a card that opens on the rotation fold', () => {
   });
 });
 
+describe('a rig of several cards on the rotation fold', () => {
+  const TWO = [GPU[0], { index: 1, name: 'NVIDIA GeForce RTX 4090' }];
+
+  // A hit takes a quarter of a second of the event loop to recompute: eight cards
+  // checking at once would not keep up, and every check would run out of time.
+  test('checks one card at a time, and the one that waits mines the pool\'s job', () => {
+    const b = rig().start({ gpus: TWO });
+    const [first, second] = b.made;
+    tick(b, first);
+    tick(b, second);
+    expect(lastJob(first).jobId).toBe('fold-check-1');
+    expect(jobs(second)).toEqual([JOB]);
+    tick(b, second);
+    expect(jobs(second)).toEqual([JOB]);
+    // The waiting card's shares still go out, each recomputed.
+    second.emit('hit', GOOD);
+    expect(b.submits()).toHaveLength(1);
+    for (let n = 0; n < CHECK_HITS; n += 1) first.emit('hit', checkHitOf(lastJob(first)));
+    expect(b.lines()).toContain(PASSED);
+    // Its next sample starts its own check.
+    tick(b, second);
+    expect(lastJob(second).jobId).toBe('fold-check-2');
+    for (let n = 0; n < CHECK_HITS; n += 1) second.emit('hit', checkHitOf(lastJob(second)));
+    expect(b.lines().filter((l) => /passed its check/.test(l))).toEqual([
+      PASSED, 'GPU 1 (NVIDIA GeForce RTX 4090): rotation fold passed its check (24 of 24 hits right). Mining with it',
+    ]);
+    expect(jobs(second)).toEqual([JOB, 'fold-check-2', JOB]);
+  });
+
+  test('a card whose check failed does not hold the next one up', () => {
+    const b = rig().start({ gpus: TWO });
+    const [first, second] = b.made;
+    tick(b, first);
+    first.emit('hit', checkHitOf(lastJob(first), MISMATCH));
+    tick(b, second);
+    expect(lastJob(second).jobId).toBe('fold-check-2');
+    expect(b.lines('error')).toEqual([FAILED(MISMATCH)]);
+  });
+});
+
 describe('a rotation fold that will not start', () => {
   // The core's own refusal (native/src/pearl_host_rot.inc, rot_create).
   const REFUSED = 'rotation fold: the driver refused the cubin (200)';

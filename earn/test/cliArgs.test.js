@@ -643,7 +643,7 @@ describe('--rotation-fold', () => {
     expect(at).toBeGreaterThan(0);
     for (const part of [
       'Experimental, RTX 40 cards only',
-      'About 4% faster on an RTX 4090',
+      'About 6% faster on an RTX 4090 (335.8 against 317.4 TH/s at 450 W, the one card it has been measured on)',
       'about 1.3 GB more card memory',
       'Off by default.',
       'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',

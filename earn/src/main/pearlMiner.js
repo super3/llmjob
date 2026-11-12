@@ -622,6 +622,12 @@ class PearlMiner extends EventEmitter {
     if (step === 'fail') {
       this._foldFailed(slot, device, check.why);
     } else if (step === 'begin') {
+      // One card at a time. A hit of the fold takes about a quarter of a second
+      // of this event loop to recompute, and a check asks for three a second:
+      // a rig of eight cards checking at once would not keep up, and every
+      // check would run out of time. A card that waits its turn mines the
+      // pool's job meanwhile, its shares recomputed as ever.
+      if (this.cores.some((c) => c.slot !== slot && c.slot.fold && c.slot.fold.state === 'checking')) return;
       // A job of the miner's own, as an offset step's check has (see
       // _startOffsetCheck): the pool's job comes back when the check ends.
       this.offsetChecks += 1;

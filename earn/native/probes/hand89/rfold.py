@@ -126,9 +126,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # turn's {the stage address, B's two}. One LDG.E.64 a turn, and two ALU steps to part B's two
            # (four in the chunk's last turn, for the next chunk's A).
            co=1,
-           # nlg=1, TIMING ONLY: all four offsets loads of a chunk read the same record (the next chunk's
-           # first), so three of the four find their bytes in the SM's cache and not in the L2. What the
-           # offsets' trip from the L2 costs.
+           # nlg=1, TIMING ONLY: three of a chunk's four offsets loads read the same record (the chunk's
+           # second turn's), so two of the four find their bytes in the SM's cache and not in the L2. What
+           # the offsets' trip from the L2 costs. (With co=0 it was three of four: all four read the next
+           # chunk's first record; out3 to out10 of the tenth round are that form.)
            nlg=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
@@ -240,7 +241,10 @@ def chunk(cfg, R, role=None):
         # turn's last readers (hold). In the chunk's last turn it is the last user of the pointer.
         if role != "load" or s == 3:
             rec = 0x100 if cfg["co"] else 0x200
-            put(b + 2, ldg(nxt, R["poff"], 4 * rec if cfg["nlg"] else rec * (s + 1), size=64 if cfg["co"] else 128,
+            # nlg (timing only): the chunk's second-turn record three times, then the next chunk's first: a
+            # later turn's record has another form than a first turn's (co), so it has to be one of its kind.
+            put(b + 2, ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
+                           size=64 if cfg["co"] else 128,
                            wsb=SB_OFF, rsb=hold if s == 3 else None, wait=hw))
             # The record's first readers issue 8 cycles or more behind three IMMA that wait for the load.
             first = b + (min(BLD[0]) if cfg["bsp"] else ni - 11) - 2
