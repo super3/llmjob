@@ -1568,6 +1568,35 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   LDSM 0; reuse marks on PRMT pairs (prr, correct) 0; py=1, ly=0 0. `nvidia-smi -lgc` is refused on Salad 5090s
   ("Unknown Error"), so watts at a locked clock cannot be had there.
 
+### Salad, 12 November: the RTX 50 gathers without PRMT, byte-transposing ldmatrix (branch `goal/nv-50d`)
+
+- **Shipped.** Every gather of the sm_120 hand loop is now one `ldmatrix.m16n16.x2.trans.b8` (SASS
+  `LDSM.8.MT1616.2`, an sm_120a instruction that runs from the plain sm_120 cubin). It transposes bytes, so each
+  lane gets rows g and g + 8 in registers of their own and the two subtracts write the fragment words: the 22 PRMT
+  a k-step are gone (698 instructions in the loop against 802). The tables are stored in plain row order
+  (pearl_rot.cu `ROT_TAB8`); offsets and the k order search are unchanged. rfold key `b8=1`, in sm_120's ARCH_KEYS.
+  The file (hash 8e56197c..., the same from a Salad PC's Linux, CI and Windows) passed verify-hits 400 of 400 on two
+  RTX 5080s (496 and 503 hits) and an RTX 5090 (738 hits), and replaces 0768c6f2 in `src/pearl_rot_sm120.ref` and
+  `kRotCubins`. Still opt-in (`--rotation-fold`). RTX 40 and 30 cannot use it: ldmatrix has no byte form before
+  sm_100a/sm_120a.
+- **Probe, k 65536.** 5090 (575 W PC): 97.58, 97.59, 97.56% of the pipe for the loop before; 98.64, 98.61, 98.62%
+  with b8, at a slightly higher clock on the same 520 W (count +1.5%). Without the PRMT and with wrong sums (noprm)
+  98.80%: b8 gets nearly all of it. Correct at k 2048 and 8192 (16,384 of 16,384) and 65536 (512 of 512). On
+  another 575 W PC: b8 98.96%; ist 6 96.85, 8 98.43 (7 stays); al=0 98.82, cq=36 99.00 (nothing).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5090, 575 W PC A: before 417.52, 417.43, 417.47;
+  b8 424.68, 424.42, 424.26 (+1.7%). RTX 5090, 575 W PC B (draws 575 W): before 435.52, 436.06, 437.37; b8 445.48,
+  442.45, 443.49 (+1.7%). RTX 5080, 295 W PC: before 231.94, 231.80, 231.80; b8 235.16, 235.13, 235.09 (+1.4%).
+  RTX 5080, 360 W PC: before 234.18, 234.19, 234.18; b8 237.49, 237.44 (one disturbed leg, 233.47) (+1.4%).
+- **Against the other miners, same PC (bench.sh sample means).** 5090 PC B: PeakMiner 448.46 (2599 MHz),
+  SRBMiner 447.53 (2632 MHz); ours 443.8 = 99.0% (was 97.3%). 5080 360 W: SRBMiner 240.74 (2835 MHz), PeakMiner
+  238.94; ours 237.47 = 98.6% (was 97.3%). 5080 295 W: SRBMiner 238.77 (2821 MHz), PeakMiner 236.88; ours 235.13 =
+  98.5% (was 97.1%).
+- **Where the rest is.** All four PCs ran at their power cap, and there our pipe is now above SRBMiner's (5080 at
+  295 W: 98.75 against 98.4% by count) while our clock is 1 to 2% lower at the same watts. So the gap is energy per
+  cycle. Priced on the b8 loop at a 5090's cap (timing only): B's gathers as moves +2.8% count (it was +7.7%
+  before b8), no readout +1.0%. `nvidia-smi -lmc` is refused on Salad ("does not have permission"), so the memory
+  clock, which gains 1% on the RTX 40 rotation fold, cannot be priced on these PCs.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
