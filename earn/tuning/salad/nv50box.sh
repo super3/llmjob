@@ -20,6 +20,8 @@
 #                 PROBE_BUILDS name); run with the base's program (PD_CUBIN)
 #   PROBE_HAND    probe cubins with rfold.py's hand loop put in by probes/hand89/rfold120.py,
 #                 "name:base:key=v,...;..." (base a PROBE_BUILDS name built with GP_ROTC=16387)
+#   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
+#                 list them in VERIFY_CUBINS and HR_LEGS
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -152,6 +154,7 @@ if has product; then
     say "rot cubin $n ($tk: $fl): fold hash $(python3 -I "$H/asm89.py" hash $W/$n.cubin) $(grep -A3 "pearl_rot_fold' for" $W/$n.log | regs /dev/stdin)"
   done
   sched "${ROT_SCHED:-}"
+  hand "${ROT_HAND:-}"
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).
   K=$W/addon
   rm -rf $K && mkdir -p $K/cuda-build && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" $K/
