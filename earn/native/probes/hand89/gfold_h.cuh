@@ -156,82 +156,13 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 // The tile's fold. It takes nothing from the kernel but these two values.
 static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && GP_ROTC
-  // The rotation fold, compiled. A warp takes a chunk's four k-steps in its own order (the host's records are in
-  // that order). At its first turn it gathers its k-step's A fragments, stores them to the stage and folds; at
-  // the other three it loads the fragments another warp of its band stored. B is gathered every turn. The four
-  // warps of a band meet at a barrier of their own after every k-step, so every load has a barrier between it
-  // and the store that wrote it and the store that overwrites it.
-  constexpr uint32_t MT = GP_MT, NB = 8u;
-  const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
-  const uint32_t trL = GP_TR + tid * 64u;
-  const uint32_t band = warp >> 2, j = warp & 3u;
-  const uint32_t stw = GP_STG + band * (2048u * MT) + ((j + band) & 3u) * (512u * MT) + 16u * lane;
-  auto ldmt = [](uint32_t r[4], uint32_t a) {
-    asm volatile("ldmatrix.sync.aligned.m8n8.x4.trans.shared.b16 {%0,%1,%2,%3}, [%4];"
-                 : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a) : "memory");
-  };
-  auto gather = [&](uint32_t &f0, uint32_t &f1, uint32_t a) {
-    uint32_t m[4];
-    ldmt(m, a);
-    const uint32_t x = m[0] + GP_FILL4 - m[2], y = m[1] + GP_FILL4 - m[3];
-    f0 = __byte_perm(x, y, 0x6420u);
-    f1 = __byte_perm(x, y, 0x7531u);
-  };
-  int32_t acc[MT][NB][4];
-  uint32_t af[4], bf[NB][2];
-#pragma unroll
-  for (uint32_t mb = 0; mb < MT; mb++)
-#pragma unroll
-    for (uint32_t nb = 0; nb < NB; nb++)
-#pragma unroll
-      for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
-  const uint2 *po = reinterpret_cast<const uint2 *>(offs) + (size_t)warp * ((size_t)chunks * 128u + 32u) + lane;
-  auto turn = [&](const bool first) {
-    const uint2 o = *po;
-    po += 32;
-    const uint32_t b0 = o.y & 0xffffu, b1 = o.y >> 16;
-#pragma unroll
-    for (uint32_t P = 0; P < 4u; P++) {
-      gather(bf[2u * P][0], bf[2u * P + 1u][0], b0 + 2048u * P);
-      gather(bf[2u * P][1], bf[2u * P + 1u][1], b1 + 2048u * P);
-    }
-#pragma unroll
-    for (uint32_t mb = 0; mb < MT; mb++) {
-      if (first) {
-        gather(af[0], af[1], (o.x & 0xffffu) + 2048u * mb);
-        gather(af[2], af[3], (o.x >> 16) + 2048u * mb);
-        asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
-                     ::"r"(stw + 512u * mb), "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]) : "memory");
-      } else {
-        asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
-                     : "=r"(af[0]), "=r"(af[1]), "=r"(af[2]), "=r"(af[3]) : "r"(o.x + 512u * mb) : "memory");
-      }
-#pragma unroll
-      for (uint32_t nb = 0; nb < NB; nb++)
-        asm volatile(
-            "mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, "
-            "{%8,%9}, {%0,%1,%2,%3};"
-            : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]), "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3])
-            : "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]), "r"(bf[nb][0]), "r"(bf[nb][1]));
-    }
-    asm volatile("{.reg .pred p; setp.ne.u32 p, %0, 0; @p bar.sync 2, 128; @!p bar.sync 1, 128;}" ::"r"(band) : "memory");
-  };
-  for (uint32_t c = 0; c < chunks; c++) {
-    turn(true);
-    turn(false);
-    turn(false);
-    turn(false);
-    uint32_t x = 0;
-#pragma unroll
-    for (uint32_t mb = 0; mb < MT; mb++)
-#pragma unroll
-      for (uint32_t nb = 0; nb < NB; nb++)
-        x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2] ^ (uint32_t)acc[mb][nb][3];
-    uint32_t w;
-    asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
-    w = __funnelshift_l(w, w, 13u) ^ x;
-    asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
-  }
+  // The rotation fold, compiled: the miner's sm_120 loop (src/pearl_rot_c.inc), word for word.
+#define RC_MT GP_MT
+#define RC_TR GP_TR
+#define RC_STG GP_STG
+#define RC_FILL4 GP_FILL4
+#define RC_FLAGS GP_ROTC
+#include "../../src/pearl_rot_c.inc"
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 #if GP_DIRECT
   constexpr uint32_t MT = GP_MT, NB = 8u;
