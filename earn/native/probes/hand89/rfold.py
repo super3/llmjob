@@ -274,6 +274,8 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            srg=1,
            # srs (with sr): see sr_prologue's settle.
            srs=2,
+           # srr (with sr, debugging): each group of R2UR issued twice.
+           srr=0,
            # dbg, TIMING ONLY (goal-nvk19, the bxt fault): 1 the tail's STL left out, 2 its LDL a move.
            dbg=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -313,8 +315,11 @@ def sr_prologue(cfg, R, S, q):
     sb = SB_RD
     c = []
 
+    group = []
+
     def r2ur(ur, r):
         c.append(Ins("R2UR UR%d, R%d" % (ur, r), wsb=sb))
+        group.append((ur, r))
 
     def settle():
         # srs (goal-nv50g): the stall after a group of R2UR before their sources are written again. sm_120's R2UR
@@ -322,6 +327,14 @@ def sr_prologue(cfg, R, S, q):
         c.append(Ins("NOP", stall=min(cfg["srs"], 11), wait=(sb,)))
         if cfg["srs"] > 11:                         # sm_120 refuses a stall over 11 with the yield flag
             c.append(Ins("NOP", stall=cfg["srs"] - 11))
+        # srr (debugging, goal-nv50g): the group's R2UR again, after the settle and before the sources change.
+        if cfg["srr"] and group:
+            again = list(group)
+            del group[:]
+            for ur, r in again:
+                c.append(Ins("R2UR UR%d, R%d" % (ur, r), wsb=sb))
+            settle()
+        del group[:]
     # The pointer: the shared stream's record of k-step s(0) = (j + b) & 3 = (warp + band) & 3 of the first chunk.
     c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
     c.append(Ins(andi(t0, t0, 3)))
