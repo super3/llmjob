@@ -1271,8 +1271,12 @@ typedef struct {
 // B' at its run base, so all 16 loads of a pass are a pointer plus an immediate. The
 // release adds each k-step's offset to a 32-bit base with an IADD3 (8 a chunk), because a
 // 32-bit sum may wrap and ptxas cannot fold it into the load. Same loads, same results.
+// Bits: 1 A's loads, 2 B's (3 both).
 #ifndef PEARL_BD_P64
 #define PEARL_BD_P64 0
+#endif
+#if PEARL_BD_P64 < 0 || PEARL_BD_P64 > 3
+#error "PEARL_BD_P64 is 0 to 3"
 #endif
 #if PEARL_BD_P64 && (PEARL_BD_PF || PEARL_BD_SNAKE || !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE))
 #error "PEARL_BD_P64 is written for the default fold with RUNBASE, without PEARL_BD_PF or SNAKE"

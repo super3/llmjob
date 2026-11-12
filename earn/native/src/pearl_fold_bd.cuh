@@ -874,7 +874,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
-#if PEARL_BD_P64
+#if PEARL_BD_P64 & 1
       for (uint32_t q = hi; q < 4u; q += 2u)
         af[nxt][q] = ldg((last ? Aprime + aoffn : par + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
 #else
@@ -882,7 +882,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-#if PEARL_BD_P64
+#if PEARL_BD_P64 & 2
       for (uint32_t q = hi; q < 4u; q += 2u)
         bf[nxt][q] = ldg((last ? Bprime + boffn : pbr + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
 #else
