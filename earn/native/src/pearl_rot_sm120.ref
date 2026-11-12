@@ -41,4 +41,10 @@
 # on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5080 (496 hits, 25 salts);
 # the same loop built by nv50box.sh 400 of 400 on an RTX 5090 (552 hits). Probe on the 5090: 98.6% of the pipe
 # against 97.6%; hashrate.js +1.7% on the 5090 (tuning/benchmark.md, 12 November).
-13.3 8e56197c7aeee9bc721327f84bb437ad21ca096f0730ab582c8b3a45898c562d
+# (13.3 8e56197c7aeee9bc721327f84bb437ad21ca096f0730ab582c8b3a45898c562d: that file, replaced by the one below.)
+
+# The same without the barrier after a chunk's second turn (bt=13), which orders nothing: no A fragment is
+# stored in the second or third turn. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on
+# Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1131 hits, 56 salts). Probe: 99.03% of the pipe
+# against 98.95% on a 5080, 98.26% against 98.18% on a 5090 (tuning/benchmark.md, 12 November).
+13.3 2bc71ae78e12c7ac56752fd17487bee129d3aec588e754162464bdf53f13d5c3
