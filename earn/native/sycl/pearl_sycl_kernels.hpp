@@ -77,6 +77,12 @@ typedef int v4i __attribute__((ext_vector_type(4)));
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
 extern SYCL_EXTERNAL v8i intel_sub_group_i8_i8_split_matrix_mad_k32(v4i, v8i, v8i);
 #endif
+// goal-arc12: the 4-row form (dpasw.8x4): each sub-group of the pair gives 2 rows (2 dwords a lane), each gets
+// all 4 rows times its own B. The finalizer's dummy-DPAS workaround (Wa_18023229625) applies only to 8x8.
+typedef int v2i __attribute__((ext_vector_type(2)));
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+extern SYCL_EXTERNAL v4i intel_sub_group_i8_i8_split_matrix_mad_k32(v2i, v8i, v4i);
+#endif
 // Four dwords a lane: what a sub-group block read of 128 bytes gives (the ring fold).
 typedef uint32_t v4u __attribute__((ext_vector_type(4)));
 // SPV_INTEL_split_barrier: a work-group barrier in two halves, arrive and wait. The ring fold's hardware
@@ -566,6 +572,14 @@ inline v8i dpas(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c) {
 
 // The split DPAS (goal-arc7 experiment): hardware only. The reference has no partner's half to read, so the
 // HW = false form returns the accumulator unchanged; nothing but the card may run a fold that uses it.
+template <bool HW> inline v4i split_dpas4(v2i a, v8i b, v4i c) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) return ::intel_sub_group_i8_i8_split_matrix_mad_k32(a, b, c);
+#endif
+  (void)a;
+  (void)b;
+  return c;
+}
 template <bool HW> inline v8i split_dpas(v4i a, v8i b, v8i c) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) return ::intel_sub_group_i8_i8_split_matrix_mad_k32(a, b, c);
@@ -1722,6 +1736,9 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // KPS: k-steps a ring slot (1 or 2); the group meets once a slot. AH: A' loaded a k-step ahead.
 // RW by CW windows a work-group (row windows by column windows): 2 RW CW sub-groups, each copying 8 / RW
 // blocks of 128 bytes of B' a k-step. With CW 2, a window's A' is read by two pairs, the second from L1.
+#if !defined(PEARL_W_NOD4)
+#define PEARL_W_D4  // goal-arc12: 8x4 split DPAS (see below); PEARL_W_NOD4 for the 8x8 form
+#endif
 #if !defined(PEARL_W_NOLO32)
 #define PEARL_W_LO32  // goal-arc8: 32-bit address sums (see lo32); the host keeps each operand in one 4 GB window
 #endif
@@ -1822,6 +1839,28 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
     sycl::group_barrier(it.get_group());
   }
+#if defined(PEARL_W_A2)
+  // goal-arc12 (PEARL_W_A2): the copy stores two slots ahead, so the release fence for a slot's stores can wait
+  // until the next slot starts (long after they landed), and the arrive itself carries no fence. PASS, but 93.1
+  // against 94.4 with the 8x4 DPAS (card 5): the fence was not what the copy costs. Off.
+  static constexpr uint32_t kAhead = 2u;
+  void arrive_nf(sycl::nd_item<1> it) const {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) {
+      __spirv_ControlBarrierArriveINTEL(2, 2, 0);
+      return;
+    }
+#endif
+    sycl::group_barrier(it.get_group());
+  }
+  void fence_rel() const {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) __spirv_MemoryBarrier(2, 0x104);  // work-group scope, release, work-group memory only
+#endif
+  }
+#else
+  static constexpr uint32_t kAhead = 1u;
+#endif
   void wait(sycl::nd_item<1>) const {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && !defined(PEARL_W_PLAINBAR)
     if constexpr (HW) __spirv_ControlBarrierWaitINTEL(2, 2, 0);  // no acquire fence, as the ring fold's VAR 8
@@ -1943,8 +1982,39 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         cp_write(mine(i) + at((uint32_t)k), cp_read(Bbi[i] + (size_t)k * 2048u, lane), lane);
       });
     });
+#if defined(PEARL_W_NOCOPY) && defined(PEARL_W_FILLALL)
+    // goal-arc12 timing: with no copy, all slots hold real B' (k-steps KPS .. 3 KPS - 1), so the DPAS see real
+    // operand bits (their power depends on them) and only the copy's own cost is missing. On card 5 with the 8x4
+    // DPAS and A' ahead: 100.5 against 96.4 TH/s. With the ring left as it was (zeros), 101 at a lower 177 W: the
+    // operands' bits alone move the rate 4%, so time copy-free builds with this.
+    each<(int)kSlots * KPS - KPS>([&](int k0) {
+      const uint32_t k = (uint32_t)k0 + (uint32_t)KPS;
+      each<kBps>([&](int i) { cp_write(mine(i) + at(k), cp_read(Bbi[i] + (size_t)k * 2048u, lane), lane); });
+    });
+#endif
     cvec next[kBps];
-    each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)KPS * 2048u, lane); });
+#if defined(PEARL_W_A2)
+    // the second slot too (k-steps KPS .. 2 KPS - 1), then the copy runs two slots ahead
+    each<KPS>([&](int k) {
+      each<kBps>([&](int i) {
+        cp_write(mine(i) + at((uint32_t)(k + KPS)), cp_read(Bbi[i] + (size_t)(k + KPS) * 2048u, lane), lane);
+      });
+    });
+#endif
+    each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+#if defined(PEARL_W_CPH)
+    // goal-arc12 timing (wrong results): the copy's global load as one 256-byte read every other k-step, its two
+    // halves stored in turn: half the load messages, the same bytes. 96.6 against 96.3 (card 5): message count
+    // is not what the copy costs.
+    static_assert(kBps == 1 && !kHalf, "PEARL_W_CPH: one 128-byte copy block a sub-group");
+    v8i n8 = ring_read_global8b<HW>(Bbi[0] + (size_t)(kAhead * KPS) * 2048u, lane);
+#endif
+#if defined(PEARL_W_CPD2)
+    // goal-arc12: the copy's global load two k-steps before its store (next2 is the one after next). PASS, but
+    // 95.4 against 96.3 (card 5): the load's latency is not what the copy costs. Off.
+    cvec next2[kBps];
+    each<kBps>([&](int i) { next2[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS + 1u) * 2048u, lane); });
+#endif
 #if defined(PEARL_W_GCOPY)
     // goal-arc8: the copy once a slot: at a chunk's first k-step each sub-group stores the 512 bytes it loaded
     // a chunk ago (k-step sgl / 4 of the next slot, pieces 4 (sgl % 4) .. + 3) and loads the slot after.
@@ -2033,6 +2103,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     (void)bqn;
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
+#if defined(PEARL_W_D4)
+    // goal-arc12 (PEARL_W_D4): each 8-row block as two 4-row split DPAS. Half h of accumulator (rb, cb) holds
+    // rows {2h, 2h + 1} of sub-group 0's half and the same of sub-group 1's: rows 2h, 2h + 1, 2h + 4, 2h + 5.
+    v4i c4[2][8][2];
+    each<2>([&](int rb) { each<8>([&](int cb) { c4[rb][cb][0] = 0; c4[rb][cb][1] = 0; }); });
+#endif
     uint32_t tw[16];
     each<16>([&](int j) { tw[j] = 0u; });
 #if defined(PEARL_W_AHALF)
@@ -2069,7 +2145,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         // The group meets once a slot: every store into this slot has landed, and every read of the slot the
         // copy writes next is done. The copy stores k-step ks + KPS (loaded a k-step ago) and loads the one after.
 #if !defined(PEARL_W_NOBAR)
-        if (s % (uint32_t)KPS == 0u) wait(it);
+        if (s % (uint32_t)KPS == 0u) {
+          wait(it);
+#if defined(PEARL_W_A2)
+          fence_rel();  // the stores of the slot before last: they landed long ago
+#endif
+        }
 #endif
 #if defined(PEARL_W_GCOPY)
 #ifndef PEARL_W_GLOAD_S
@@ -2091,7 +2172,24 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
         auto copy_step = [&]() {
-          const uint32_t kn = ks + (uint32_t)KPS + 1u;
+#if defined(PEARL_W_CPH)
+          {
+            const v8i h = n8;
+            const v4u half = (s & 1u) ? v4u{(uint32_t)h[4], (uint32_t)h[5], (uint32_t)h[6], (uint32_t)h[7]}
+                                      : v4u{(uint32_t)h[0], (uint32_t)h[1], (uint32_t)h[2], (uint32_t)h[3]};
+            cp_write(mine(0) + at(ks + kAhead * (uint32_t)KPS), half, lane);
+            if (s & 1u) {
+              const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
+              n8 = ring_read_global8b<HW>(Bbi[0] + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
+            }
+            return;
+          }
+#endif
+#if defined(PEARL_W_CPD2)
+          const uint32_t kn = ks + kAhead * (uint32_t)KPS + 2u;
+#else
+          const uint32_t kn = ks + kAhead * (uint32_t)KPS + 1u;
+#endif
           each<kBps>([&](int i) {
 #if defined(PEARL_W_NOFETCH)
             // goal-arc8 timing (wrong results): the copy stores without loading.
@@ -2111,7 +2209,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // 16 KB after B'), stored into a slot no one reads: no clamp.
             const cvec v = cp_read(lo32(bHi, bLo[i] + kn * 2048u), lane);
 #else
+#if defined(PEARL_W_CPHOT)
+            // goal-arc12 timing (wrong results): the same instructions, but the k-step part of the address is ANDed
+            // with PEARL_W_CPHOT (0: always the first k-step's block, an L1 hit). 0: 97.6, 3: 96.3, against 96.3;
+            // no load at all (NOFETCH) 99.1 at the same clock. So of the copy load's ~2.8%, misses are ~1%, the
+            // rest its instructions and scoreboard tokens.
+            const cvec v = cp_read(lo32(bHi, bLo[i] + ((kn < 64u ? kn : 63u) & (uint32_t)(PEARL_W_CPHOT)) * 2048u), lane);
+#else
             const cvec v = cp_read(lo32(bHi, bLo[i] + (kn < 64u ? kn : 63u) * 2048u), lane);
+#endif
 #endif
 #else
             const cvec v = cp_read(Bbi[i] + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
@@ -2121,9 +2227,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // goal-arc8 timing (wrong results): the copy loads without storing.
             sink ^= v[0] ^ v[3];
 #else
-            cp_write(mine(i) + at(ks + (uint32_t)KPS), next[i], lane);
+            cp_write(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
 #endif
+#if defined(PEARL_W_CPD2)
+            next[i] = next2[i];
+            next2[i] = v;
+#else
             next[i] = v;
+#endif
           });
         };
 #if !defined(PEARL_W_CLATE)
@@ -2131,7 +2242,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #endif
 #if !defined(PEARL_W_NOBAR) && !defined(PEARL_W_CSAME) && !defined(PEARL_W_CLATE) && !defined(PEARL_W_SLOTS)
+#if defined(PEARL_W_A2)
+        if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive_nf(it);
+#else
         if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
+#endif
 #endif
         // B' fragment cb of this sub-group's 32 columns, from the ring.
         v8i bq[4];
@@ -2245,11 +2360,24 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
               });
             });
           });
-#elif defined(PEARL_W_ROWFIRST)
+#elif defined(PEARL_W_ROWFIRST) && !defined(PEARL_W_D4)
           // goal-arc7 experiment: the DPAS of one A' fragment back to back.
           each<4>([&](int rb) {
             each<4>([&](int cb) {
               c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
+            });
+          });
+#elif defined(PEARL_W_D4)
+          // goal-arc12: each 8x8 split DPAS as two 8x4 ones (rows {2h, 2h + 1} of each sub-group's half of A').
+          // The finalizer adds its dummy DPAS (Wa_18023229625) only before 8x8 runs, so this form never gets one:
+          // 94.43 against 93.55 TH/s (card 5, three rounds), with 0 dummies for 3. Every design that changed which
+          // registers the hash's ALU code lands in had cost 0.5% a dummy before; now none can.
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              each<2>([&](int h) {
+                v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
+                acc = split_dpas4<HW>(v2i{ah[rb][2 * h], ah[rb][2 * h + 1]}, bq[cb], acc);
+              });
             });
           });
 #else
@@ -2280,7 +2408,42 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       }
       // The chunk's readout, the ring fold's.
       uint32_t x0 = 0, x1 = 0;
-#if defined(PEARL_W_NORD)
+#if defined(PEARL_W_D4) && defined(PEARL_W_ASMRD4) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+      // goal-arc12: the D4 readout as a chain of three-input XORs (bfn 0x96) 16 lanes wide in inline vISA: 32
+      // instructions a chunk where IGC emits about 60 eight-lane ones. Every lane is active here. PASS, but 93.8
+      // against 96.4 (card 5): a 16-lane instruction costs what two 8-lane ones do, and IGC's own tree keeps its
+      // temporaries in the acc registers. Off.
+      {
+        auto x3 = [](v4i a, v4i b, v4i d) {
+          v4i r;
+          __asm__("bfn.x96 (M1_NM, 16) %0(0,0)<1> %1(0,0)<1;1,0> %2(0,0)<1;1,0> %3(0,0)<1;1,0>\n"
+                  "bfn.x96 (M1_NM, 16) %0(2,0)<1> %1(2,0)<1;1,0> %2(2,0)<1;1,0> %3(2,0)<1;1,0>"
+                  : "=rw"(r)
+                  : "rw"(a), "rw"(b), "rw"(d));
+          return r;
+        };
+        v4i t = x3(c4[0][0][0], c4[0][0][1], c4[0][1][0]);
+        // the other 29 halves two at a time, then the last one
+        each<14>([&](int j) {
+          const int i0 = 3 + 2 * j, i1 = 4 + 2 * j;  // flat half index: (rb * 8 + cb) * 2 + h
+          t = x3(t, c4[i0 >> 4][(i0 >> 1) & 7][i0 & 1], c4[i1 >> 4][(i1 >> 1) & 7][i1 & 1]);
+        });
+        t ^= c4[1][7][1];
+        x0 = (uint32_t)(t[0] ^ t[1]);
+        x1 = (uint32_t)(t[2] ^ t[3]);
+      }
+#elif defined(PEARL_W_D4)
+      // rows 0-3 are elements 0, 1 of both halves; rows 4-7 elements 2, 3.
+      {
+        v4i q8[8];
+        each<8>([&](int q) {
+          q8[q] = (c4[q >> 2][(q & 3) * 2][0] ^ c4[q >> 2][(q & 3) * 2][1]) ^ (c4[q >> 2][(q & 3) * 2 + 1][0] ^ c4[q >> 2][(q & 3) * 2 + 1][1]);
+        });
+        const v4i t = ((q8[0] ^ q8[1]) ^ (q8[2] ^ q8[3])) ^ ((q8[4] ^ q8[5]) ^ (q8[6] ^ q8[7]));
+        x0 = (uint32_t)(t[0] ^ t[1]);
+        x1 = (uint32_t)(t[2] ^ t[3]);
+      }
+#elif defined(PEARL_W_NORD)
       // goal-arc8 timing (wrong results): the readout reads one accumulator only.
       x0 = (uint32_t)c[0][0][0];
       x1 = (uint32_t)c[0][0][4];
@@ -2293,6 +2456,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       const v8i t = (t4[0] ^ t4[1]) ^ (t4[2] ^ t4[3]);
       x0 = (uint32_t)((t[0] ^ t[1]) ^ (t[2] ^ t[3]));
       x1 = (uint32_t)((t[4] ^ t[5]) ^ (t[6] ^ t[7]));
+#if defined(PEARL_W_RD2)
+      // goal-arc12 timing: a second tree over the accumulators (sums, so it is not the XOR tree again), ANDed with
+      // a runtime zero: the readout's instructions twice, the same results. 84.8 against 93.55 (card 5, 8x8 DPAS,
+      // 9 dummy DPAS for 3): the readout's 60 instructions a chunk cost about 6%.
+      {
+        v8i u4[4];
+        each<4>([&](int q) {
+          u4[q] = (c[q >> 1][(q & 1) * 4] + c[q >> 1][(q & 1) * 4 + 1]) + (c[q >> 1][(q & 1) * 4 + 2] + c[q >> 1][(q & 1) * 4 + 3]);
+        });
+        const v8i u = (u4[0] + u4[1]) + (u4[2] + u4[3]);
+        x0 ^= (uint32_t)((u[0] + u[1]) + (u[2] + u[3])) & A.zero;
+        x1 ^= (uint32_t)((u[4] + u[5]) + (u[6] + u[7])) & A.zero;
+      }
+#endif
 #else
       each<2>([&](int rb) {
         each<8>([&](int cb) {
@@ -2432,7 +2609,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #define PEARL_W_KPS 4
 #endif
 #ifndef PEARL_W_AH
-#define PEARL_W_AH 0
+#define PEARL_W_AH 1  // goal-arc12: A' a k-step ahead (with the 8x4 DPAS: +0.6%)
 #endif
 #ifndef PEARL_W_RW
 #define PEARL_W_RW 8
