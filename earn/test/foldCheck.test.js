@@ -66,7 +66,7 @@ describe('the rotation fold\'s check', () => {
     expect([c.state, c.why]).toEqual(['failed', 'only 5 of the 24 hits it needs in 60 s']);
   });
 
-  // A hit at k 65536 takes about a quarter of a second to recompute, so the
+  // A hit at k 65536 takes about 0.13 s to recompute, so the
   // check's job is set for 3 hits a second where an offset step's is set for 30.
   test('its job is ten times harder to hit than an offset step\'s', () => {
     const macs = 192 * 65536;

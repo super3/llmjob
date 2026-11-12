@@ -378,7 +378,7 @@ describe('a card that opens on the rotation fold', () => {
 describe('a rig of several cards on the rotation fold', () => {
   const TWO = [GPU[0], { index: 1, name: 'NVIDIA GeForce RTX 4090' }];
 
-  // A hit takes a quarter of a second of the event loop to recompute: eight cards
+  // A hit takes about 0.13 s of the event loop to recompute: eight cards
   // checking at once would not keep up, and every check would run out of time.
   test('checks one card at a time, and the one that waits mines the pool\'s job', () => {
     const b = rig().start({ gpus: TWO });

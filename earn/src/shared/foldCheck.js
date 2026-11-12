@@ -25,12 +25,13 @@
 // of many cards spends about 8 s a card before all of them are trusted, and
 // each mines the pool's job, its shares recomputed, while it waits its turn.
 //
-// The numbers. A hit at the fold's k 65536 takes about a quarter of a second
-// of the miner's event loop to recompute, against 4.6 ms at k 2048, because
-// the fold and the noise are 32 times the work. So the check asks for 3 hits a
-// second, not the offset trial's 30, and 24 hits: about 8 s on any card. After
-// CHECK_MS it ends anyway, and fails: a card that hits at a seventh of the rate
-// its job was set for is not computing what it should.
+// The numbers. A hit at the fold's k 65536 takes about 0.13 s of the miner's
+// event loop to recompute (120 to 147 ms on rig01's CPU, six runs), against
+// 4.6 ms at k 2048, because the fold and the noise are 32 times the work. So
+// the check asks for 3 hits a second, not the offset trial's 30, and 24 hits:
+// about 8 s on any card. After CHECK_MS it ends anyway, and fails: a card that
+// hits at a seventh of the rate its job was set for is not computing what it
+// should.
 
 // The check's jobs. Their header is no block's (coreOffsetTrial's check uses
 // the same), so nothing found for one could be a share.
