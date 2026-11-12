@@ -130,7 +130,30 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # second turn's), so two of the four find their bytes in the SM's cache and not in the L2. What
            # the offsets' trip from the L2 costs. (With co=0 it was three of four: all four read the next
            # chunk's first record; out3 to out10 of the tenth round are that form.)
-           nlg=0)
+           nlg=0,
+           # u8=1: the IMMA read their operands as unsigned bytes (U8.U8). The operands are 0 to 126, so the sums are
+           # the same; what it may change is the tensor datapath's power, which holds the clock at 450 W.
+           u8=0,
+           # nord=1, TIMING ONLY: no readout XORs (the transcripts are then wrong). What the 96 LOP3 a chunk cost.
+           nord=0,
+           # bsym=1, TIMING ONLY: B shared by the two warps of a column slot, both making and both loading in turn
+           # (the eighth round's proposal, never priced). Band 1 already takes the k-steps of a chunk in the order
+           # (j + (i ^ 1)) & 3, so each k-step's B is wanted first by one partner and a turn later by the other:
+           # at the ends of turns 3 and 1 a warp gathers the next turn's B and stores it (4 STS.128), at the
+           # ends of turns 0 and 2 it loads its partner's (4 LDS.128). Only the band barriers: nothing orders a
+           # load after its partner's store, and the addresses are stand-ins in the warp's own stage.
+           # bsym=2: the same, but a load turn's four loads go out early into the gather quads (free then: no B
+           # gathers at the end of a load turn) and four moves a pair put them into B's registers where the
+           # gathers' PRMT would be; and a make turn's store goes a gap behind the pair's last PRMT.
+           # bld: the gap of a turn where the first of those loads goes out (the others follow, one a gap).
+           # bsym=3: as 1 (loads straight into B's registers, a gap behind the pair's last reader), but on
+           # scoreboard 5, not 3: on 3 the next turn's IMMA that wait for a pair also wait for the stage load
+           # of A's tile 1, which goes out in the turn's gap 1. Stores as 2.
+           # bnst / bnld (with bsym, TIMING ONLY): leave out B's stores / B's loads, to see which costs the pipe.
+           # bsym=4: as 3, but pair p's load sets scoreboard (0, 1, 2, 5)[p] (no gather is under way then), so
+           # an IMMA waits only for its own pair; and bsg >= 0 puts pair p's store in gap bsg + 3 p of the next
+           # turn (the registers hold the pair until that turn's end), out of the busy last gaps of a turn.
+           bsym=0, bld=34, bnst=0, bnld=0, bsg=-1)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -229,6 +252,7 @@ def chunk(cfg, R, role=None):
     plans = []          # (LDSM gap, IADD3 gap, PRMT gap, address register, offset, d1, d2, rsb)
     quads, bfalt = R["quads"], None
     last3 = {}          # n (5, 6, 7) -> the plan of the last turn's B gather n
+    ldsplans = set()    # bsym=2: plans that are a 16-byte load of the partner's pair and four moves
     if role == "load" and cfg["bfa"]:
         quads, bfalt = [R["quads"][4], R["oq"][1]], R["quads"][0]
     lead, plead = cfg["lead"], cfg["plead"]
@@ -291,20 +315,29 @@ def chunk(cfg, R, role=None):
             put(b + ni - 7, Ins("LDS.128 R%d, [R%d]" % (a, stage_nxt), wsb=SB_ST), False)
             for g in (b + ni, b + ni + 1):
                 iwait.setdefault(g % tot, []).append(SB_ST)
+        brole = ("load" if s % 2 == 0 else "make") if cfg["bsym"] else role
         for p in range(4):                             # the next turn's B: pair p's PRMT at r 8mt-5+2p (+1),
             at = "+0x%x" % (512 * p) if p else ""
-            if role == "load":
+            if brole == "load" and cfg["bsym"] == 2:
+                ldsplans.add(len(plans))
+                plans.append((b + cfg["bld"] + p, b + cfg["bld"] + p + lead, b + ni - 2 + 2 * p, SW, 512 * p,
+                              BF + 4 * p, None, None))
+                continue
+            if brole == "load":
                 # The partner's pair, one 16-byte load a gap behind the last IMMA of this turn that reads
                 # the pair; the next turn's first readers of it, six gaps on, wait for the load. With a
                 # second set of registers (bfa) the load goes out early.
                 tgt = (bfalt if bfalt is not None and (s + 1) & 1 else BF) + 4 * p
+                lsb = SB_RD if cfg["bsym"] == 3 else (0, 1, 2, SB_RD)[p] if cfg["bsym"] == 4 else SB_ST
+                if cfg["bnld"]:
+                    continue
                 put(b + 20 + 4 * p if bfalt is not None else b + ni - 6 + 2 * p,
-                    Ins("LDS.128 R%d, [R%d%s]" % (tgt, SW, at), wsb=SB_ST))
+                    Ins("LDS.128 R%d, [R%d%s]" % (tgt, SW, at), wsb=lsb))
                 for g in (b + ni + 2 * p, b + ni + 2 * p + 1):
-                    iwait.setdefault(g % tot, []).append(SB_ST)
+                    iwait.setdefault(g % tot, []).append(lsb)
                 continue
-            if role == "make":                         # the pair to the stage, a gap behind its last PRMT
-                put(b + ni - 3 + 2 * p, Ins("STS.128 [R%d%s], R%d" % (SW, at, BF + 4 * p)))
+            if brole == "make" and not cfg["bnst"]:     # the pair to the stage, a gap behind its last PRMT
+                put(b + ni + cfg["bsg"] + 3 * p if cfg["bsg"] >= 0 else b + ni - (1 if cfg["bsym"] >= 2 else 3) + 2 * p, Ins("STS.128 [R%d%s], R%d" % (SW, at, BF + 4 * p)))
             for h in range(2):                         # two IMMA behind the last IMMA that reads the pair
                 n = 2 * p + h
                 g0 = b + ni - 9 + n
@@ -394,6 +427,14 @@ def chunk(cfg, R, role=None):
         for (a0, a1) in use.get(q, []):
             assert not any(a0 <= g_prm + w and g_ld + w <= a1 for w in (-tot, 0, tot)), (q, g_ld)
         use.setdefault(q, []).append((g_ld, g_prm))
+        if k in ldsplans:
+            put(g_ld, Ins("LDS.128 R%d, [R%d+0x%x]" % (q, areg, aoff) if aoff else "LDS.128 R%d, [R%d]" % (q, areg),
+                          wsb=sb), wrapped=False)
+            for i in range(4):
+                # regs 0, 1 a gap before regs 2, 3 (tile 2p reads the first two, tile 2p + 1 the others)
+                put(g_prm - 1 + (i >= 2), Ins(fold.mov(d1 + i, q + i), wait=(sb,)), wrapped=False)
+            assign[k] = (q, sb, True)
+            continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves)), rsb=rsb)
         put(g_ld, ld, wrapped=False)
@@ -427,7 +468,8 @@ def chunk(cfg, R, role=None):
                     first = False
                 else:
                     ins = Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (R["xr"][ch], R["xr"][ch], r, r + 1))
-                put(g, ins)
+                if not cfg["nord"]:
+                    put(g, ins)
                 g += 1
         end = max(end, g)
     assert end > tot, "the readout's tail is taken to lie in the next chunk"

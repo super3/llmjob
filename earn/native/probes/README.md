@@ -3143,3 +3143,53 @@ clock's cap. The loop runs at 2596 MHz where the skeleton runs at 2685.
   99.2% and the skeleton 99.4%. A fourth scoreboard for the gathers would take the last of them (the stage
   loads' and the offsets' scoreboards are idle for parts of a turn and could be lent), for a tenth of a point.
   What is left after that is clock, not pipe.
+
+### At 450 W the rotation fold is held by the board's power: what that prices, and what does not pay (RTX 4090, 2026-11-12)
+
+Eleventh round, branch `goal/nv-11`. Every figure is the probe (`hand89/gprobe.cu` built with
+`-DGP_STAGE=24576`, k 65536, 128 tiles a block, order 6) on rig01's RTX 4090. "By count" means pipe use x clock
+x 0.13107. No figure here is a mining rate. The shipped loop (`rfold.py`'s defaults) holds 98.96% of the pipe at
+2594 to 2601 MHz, which is 336.4 to 337.4 by count over 14 runs, at 449 W and 76 to 78 C. TIMING ONLY rows compute
+wrong results on purpose.
+
+**What holds the clock.** At a 450 W limit the loop runs 2596 MHz and draws 449.6 W. At 420 W it runs 2548 MHz.
+At 480 W it runs 2612 MHz but draws only 459.8 W. So at the stock limit the board's power sets the clock, and a
+second limit sits about 16 MHz above it. Every instruction a warp issues costs clock, not only shared-memory
+steps:
+
+| Loop | Pipe | Clock | By count |
+|---|---|---|---|
+| shipped | 98.96% | 2596 MHz | 336.7 |
+| no readout XORs (96 LOP3 a chunk; TIMING ONLY) | 99.55% | 2624 MHz | 342.4 |
+| no barriers (TIMING ONLY) | 99.18% | 2594 MHz | 337.2 |
+| gathers with no bank collisions (gprobe fake 3; TIMING ONLY) | 99.14% | 2597 MHz | 337.5 |
+| IMMA as U8.U8 (`u8=1`; the operands are 0 to 126, so the sums are the same) | 98.96% | 2596 MHz | 336.7 |
+| reuse mark on IMMA's A operand (`ru=1`), and both | 98.96% | 2594, 2599 MHz | |
+| readout 4 IMMA behind (`rmar=4`) / from gap 8 (`roff=8`) / stall 4 or 6 (`ist`) | 98.95 / 98.98 / 96.99, 97.45% | | |
+
+The readout costs 1.7% of the rate, and every miner pays it. A better order search can win 0.2% at most.
+
+**B shared by the two warps of a column slot, balanced (`bsym`, TIMING ONLY).** The eighth round proposed this
+form and nobody had priced it. Band 1 takes a chunk's k-steps in the order (j + (i ^ 1)) & 3, so each k-step's B
+is wanted first by one partner and a turn later by the other. At the ends of turns 3 and 1 a warp gathers the
+next turn's B and stores it (4 STS.128). At the ends of turns 0 and 2 it loads its partner's (4 LDS.128). Only
+the band barriers run, so nothing orders the load after the partner's store, and the addresses are stand-ins.
+
+| Form | Pipe | Clock | By count |
+|---|---|---|---|
+| bsym=1: loads into B's registers in a turn's last gaps | 97.45% | 2624 MHz | 335.2 |
+| bsym=2: loads early into the gather quads, four IMAD.MOV a pair | 98.40% | 2607 MHz | 336.3 |
+| bsym=3: as 1, loads on scoreboard 5 (on 3 they waited for A's tile-1 load) | 98.01% | 2618 MHz | 336.3 |
+| bsym=4: one scoreboard a pair (0, 1, 2, 5) | 98.42% | 2614 MHz | 337.2 |
+| bsym=4, stores in gaps 8, 11, 14, 17 of the next turn (`bsg=8`) | 98.79% | 2612 MHz | 338.2 |
+| bsym=3 with neither the stores nor the loads (the ceiling if the exchange were free) | 99.08% | 2635 MHz | 342.2 |
+
+The best form is +0.45% by count before anything orders the exchange. A correct form also needs 16 KB of shared
+memory the block does not have, and its ceiling is under the other miners' 341.9 once the product's 0.2% is
+counted. Not built.
+
+**A warp tile of 192 rows by 32 columns (`hand89/tall.py`, TIMING ONLY).** A' is made once for all eight warps
+(3 gathers and 2 STS.128 a warp a k-step), every warp loads its twelve A fragments from the stage (12 LDS.128),
+and B is 4 gathers instead of 8. With the barrier of all eight warps that sharing needs: 96.40% at 2611 MHz
+(329.9). With no barrier: 98.74% at 2591 MHz (335.3). Twelve stage loads cost as much power as the four gathers
+they replace. Closed.
