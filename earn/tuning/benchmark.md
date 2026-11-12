@@ -2515,6 +2515,58 @@ fold check (4,096 of 4,096 regions, 20 of 20 hits). `PEARL_RING_VAR` bits are in
   where it runs (75 MACs an EU a clock). To pass it, a k-step must send 16 messages or fewer: a 32 by 32 tile
   (8 + 8) with both operands served near.
 
+### Arc rig, 12 November, night: the split fold, 88 TH/s a card (`goal/arc-7`)
+
+**A new fold, `xmx8w`: 88.0 TH/s on a cool card against the ring fold's 68.2, verified.** Card 4, `pearl_sycl_check
+--bench 8`, three rounds taking turns: `xmx8w` 87.7 to 88.0 TH/s at 1,950 to 1,954 MHz and 188 W; `xmx8r` 68.2 to
+68.3 at 2,000 MHz and 188 W (+28%). Fold check PASS (16,384 and 32,768 regions; its reference `xmx8w-emu` too),
+`verify-hits.js` with `PEARL_SYCL_FOLD=xmx8w` 400 of 400, 0 failed. On the host's own 2024 driver (24.35, the
+release form staged in `arc-jammy`, card 5 over OpenCL): check PASS. The four mining cards run it (223 TH/s at duty
+60,60,60,60,75, was 170). What it does, in the order it was found:
+
+- **The split DPAS.** Alchemist's DPASW (`intel_sub_group_i8_i8_split_matrix_mad_k32`, OpenCL's
+  `cl_intel_subgroup_split_matrix_multiply_accumulate`) takes A from a pair of sub-groups (2i and 2i + 1), each
+  giving half of the 8 rows, and gives each all 8 rows times its own B. So each window (32 rows by 64 columns) is
+  split by columns: a sub-group holds 32 rows by 32 columns, reads half of each A' fragment (one 128-byte block read
+  in the ring fold's layout) and 4 B' fragments from the ring. Same 512 bytes of A', half the B' reads, and it fits
+  in 176 registers. Card 5: 71.7 to 71.8 against 67.5.
+- **No branch in the copy.** The ring fold guarded its copy (`if (ks + 1 < 64)`, `if (i < mine)`), and IGC wrapped
+  each guarded load and store in goto/join, which cut the k-step into blocks it would not schedule across. Copying
+  one block a sub-group unconditionally (past the end it copies k-step 63 again into a slot no one reads) took the
+  copy's cost from 23% to 7%: 82.1 to 82.3 on card 5. A program that only moved the copy's block through one more
+  register ran 63.8: much rides on IGC's schedule.
+- **The group meets once a chunk.** Ring slots of four k-steps (24 KB a work-group): card 4 87.7 to 88.3 against
+  86.1 to 86.6 for two and 84.2 for one. Eight do not launch.
+- **No forced load wait.** Dropping the gate that makes every DPAS of a k-step wait for all its loads: card 4 88.1
+  to 88.4 at 1,950 to 1,977 MHz against 87.5 to 88.0, same 188 W (check PASS, verify-hits 400 of 400).
+
+**`auto` is now `xmx8w` on Alchemist.** 63 minutes on the four mining cards, 92 shares accepted, none rejected (17
+minutes in its first form under the `xmx8r` name, 46 as `xmx8w`). `PEARL_SYCL_FOLD=xmx8r` goes back.
+
+**The message-count model does not hold.** Timing builds of `xmx8r` on card 5 (control 67.4 to 67.6 TH/s, 22
+messages a k-step): B' as 64-byte block reads, the same bytes in 38 messages, 64.3 (the model says 39); as 32-byte
+reads (70 messages) 50.3; A' as 64-byte reads 56.7. Reads the DPAS wait for cost by their latency, and more from
+memory than from local memory. goal-arc6's "one 256-byte block read a fragment" compiled to the same two 128-byte
+messages, so it did not test fewer messages.
+
+**Where the ring fold's time went** (card 5, timing builds, wrong results): no barrier 71.3, no copy 82.9 (its load
+74.2, its store 73.0), A' from local memory 73.4 at 140 W, all three 92.2 at 128 W. All three gone is 103 MACs an
+EU a clock at 160 bytes a DPAS, 128 bytes a clock a core: a 16 by 64 tile tops out near 92. A raised power limit
+was not tried for `xmx8w` (an agent may not change it); it now sits at 188 W.
+
+**Toward 100** (card 5, timing builds of the split fold, wrong results): no copy and no barrier 90.2 at 2,000 MHz;
+with A' a k-step ahead as well, **100.0 TH/s at 2,000 MHz and 179 W**. With every window reading one window's A'
+(so A' stays in L1) the real kernel does 98.9 at 188 W. Lost or level: A' a k-step ahead in the real kernel (-1%
+at the power limit), both k-steps' B' read at once (-3%), work-groups in a row sharing rows (level), B' straight
+from memory with no ring (72), two column windows a work-group so A' is read once for both (4 by 2: 84.5; 8 by 2,
+32 sub-groups: 83.1 at 2,000 MHz and 180 W, not power-bound but slower a clock).
+
+**The reference folds on the card are fixed.** `select_from_group` with an index the same in every lane returned
+the wrong lane's word on this runtime (26.40), from a vector or a scalar; `group_broadcast` the same. A test kernel
+(hardware DPAS against the reference on random fragments) showed `permute_group_by_xor` matching the hardware bit
+for bit. The reference DPAS now walks lanes by XOR: `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx16-emu` pass on card 5
+and on the CPU device.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

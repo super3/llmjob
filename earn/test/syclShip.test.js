@@ -101,19 +101,21 @@ describe('kernels the driver compiles reach the hardware DPAS by the built-in\'s
     ]);
     // The three lines in JS, over every fold and every kind of device.
     expect(body[5]).toBe('if (fold == kXmx8R && ctx->hwSg != 8) fold = kXmx8REmu;');
-    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu] = [0, 1, 2, 3, 4, 5, 6, 7, 8];
-    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,\n            kXmx8REmu = 8 };');
+    expect(body[6]).toBe('if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;');
+    const [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 12];
+    expect(HOST).toContain('enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,\n            kXmx8REmu = 8, kXmx8W = 11, kXmx8WEmu = 12 };');
     const launched = (fold, hwSg) => {
       if (fold === kXmx16 && hwSg !== 16) fold = kXmx16Emu;
       if (fold === kXmx8 && hwSg !== 8) fold = kXmx8Emu;
       if (fold === kXmx8F && hwSg !== 8) fold = kXmx8FEmu;
       if (fold === kXmx8R && hwSg !== 8) fold = kXmx8REmu;
+      if (fold === kXmx8W && hwSg !== 8) fold = kXmx8WEmu;
       return fold;
     };
-    const hw = (fold) => fold === kXmx16 || fold === kXmx8 || fold === kXmx8F || fold === kXmx8R;
-    const emuOf = { [kXmx16]: kXmx16Emu, [kXmx8]: kXmx8Emu, [kXmx8F]: kXmx8FEmu, [kXmx8R]: kXmx8REmu };
+    const hw = (fold) => fold === kXmx16 || fold === kXmx8 || fold === kXmx8F || fold === kXmx8R || fold === kXmx8W;
+    const emuOf = { [kXmx16]: kXmx16Emu, [kXmx8]: kXmx8Emu, [kXmx8F]: kXmx8FEmu, [kXmx8R]: kXmx8REmu, [kXmx8W]: kXmx8WEmu };
     for (const hwSg of [0, 8, 16]) {
-      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu]) {
+      for (const fold of [kDot, kXmx16, kXmx8, kXmx16Emu, kXmx8Emu, kXmx8F, kXmx8FEmu, kXmx8R, kXmx8REmu, kXmx8W, kXmx8WEmu]) {
         const got = launched(fold, hwSg);
         // A hardware kernel only where the device has that instruction.
         if (hw(got)) expect([hwSg, got === kXmx16 ? 16 : 8]).toEqual([hwSg, hwSg]);

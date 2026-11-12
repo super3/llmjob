@@ -257,8 +257,8 @@ describe('fold_xmxf places every region where regionToTile does', () => {
 
 describe('the host keeps the operands in the order the fold reads', () => {
   test('a context draws for its own fold, and a batch of another fold draws again', () => {
-    expect(HOST).toContain('bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu; }');
-    expect(HOST).toContain('int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 2 : fold_is_frag(f) ? 1 : 0; }');
+    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu;\n}');
+    expect(HOST).toContain('int fold_layout(int f) {\n  return f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu ? 2 : fold_is_frag(f) ? 1 : 0;\n}');
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     expect(create).toContain('ctx->frag = fold_layout(ctx->fold);');
     expect(create).toContain('ctx->aStride = 16u * k;');
@@ -279,16 +279,21 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(slice(HOST, 'extern "C" bool pearl_sycl_read_operands(', '\n}\n')).toContain('set_layout(ctx, 0);');
   });
 
-  test('auto picks the ring fold on Alchemist, and the older folds keep their names', () => {
+  test('auto picks the split fold on Alchemist, and the older folds keep their names', () => {
     const pick = slice(HOST, 'bool pick_fold(Ctx *ctx, char *err, size_t err_len) {', '\n}\n');
-    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8R : kDot;');
+    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8W : kDot;');
+    // At any work-group but 8 windows the split fold runs as the ring fold.
+    expect(slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n'))
+      .toContain('if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;');
     expect(pick).toContain('} else if (want == "xmx8") {\n    ctx->fold = kXmx8;');
     expect(pick).toContain('} else if (want == "xmx8f") {\n    ctx->fold = kXmx8F;');
     expect(pick).toContain('} else if (want == "xmx8r") {\n    ctx->fold = kXmx8R;');
-    expect(pick).toContain('ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16) || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R) && sg == 8);');
+    expect(pick).toContain('} else if (want == "xmx8w") {\n    ctx->fold = kXmx8W;');
+    expect(pick).toContain('ctx->xmxHw = (ctx->fold == kXmx16 && sg == 16)\n                || ((ctx->fold == kXmx8 || ctx->fold == kXmx8F || ctx->fold == kXmx8R || ctx->fold == kXmx8W) && sg == 8);');
     // The check tool's names are the host's codes, in order.
     expect(CHECK).toContain('const char *kFoldNames[] = {"dot", "xmx16", "xmx8", "xmx16-emu", "xmx8-emu", "xmx8f", "xmx8f-emu", "xmx8r",\n                            "xmx8r-emu"};');
-    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : -3;');
+    expect(CHECK).toContain('if (s == "auto-emu") return own == 1 ? 3 : own == 2 ? 4 : own == 5 ? 6 : own == 7 ? 8 : own == 9 ? 10 : own == 11 ? 12 : -3;');
+    expect(CHECK).toContain('if (s == "xmx8w") return 11;');
   });
 
   test('the hardware kernel asks for 256 registers by a kernel property, the reference kernel does not', () => {
