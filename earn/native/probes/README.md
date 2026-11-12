@@ -3351,3 +3351,41 @@ clock comes (+15 to +20 MHz), the pipe goes. B drawn once is closed for this fol
 - With the exchange address in R251 all loop long (`bxt=1`, the transcript word found from the chunk count) and the
   first turn's stores at gap 8, every run stopped with "an illegal memory access"; at gap 32 it is correct. Not
   found why.
+
+### Watts at a locked clock, against OneZeroMiner, and what the readout's pipe cost is (RTX 4090, 2026-11-12)
+
+Fourteenth round. OneZeroMiner 1.8.5 was observed from outside only (nvidia-smi and its own API, on Kryptex).
+
+| Power limit | OneZeroMiner | Ours (rotation fold, probe) |
+|---|---|---|
+| 450 W | 2625 MHz, 449 W | 2596 MHz, 449 W |
+| 380 W | 2494 MHz, 380 W | 2477 MHz, 380 W |
+| 480 W | 2640 MHz, 461 W | 2610 MHz, 460 W |
+
+Both stop near 460 W under a 480 W limit, so that limit is the card's. The gap is energy per cycle. With the
+clock locked at 2400 MHz (`nvidia-smi -lgc 2400,2400`; settled runs repeat within 0.5 W):
+
+| Stream at 2400 MHz | Pipe | Watts |
+|---|---|---|
+| OneZeroMiner (API 312.4 to 312.7 TH/s) | about 99.4% | 339.0 |
+| the shipped loop | 98.96% | 345.4 to 345.8 |
+| no readout (`nord`, timing only) | 99.54% | 333.1 |
+| no PRMT (`noprm`, timing only) | 97.62% | 331.1 |
+| U8 IMMA (`u8=1`, correct) | 98.96% | 343.7 |
+| gathers as LDS.128 at the same addresses (`ldk=3`, timing only) | 98.93% | 345.4 |
+| every operand the fill (fake 16) | 99.14% | 243.9 |
+
+An ALU instruction a warp a k-step costs about 0.55 W here; OneZeroMiner is about 14 lighter. At the 450 W cap:
+
+| Loop | Pipe | Clock | By count |
+|---|---|---|---|
+| shipped | 98.96% | 2595 to 2600 MHz | 336.6 to 337.2 |
+| no readout (`nord`, timing only) | 99.55% | 2625 | 342.5 |
+| readout steps read RZ, not sums (`rdx=1`, timing only) | 99.52% | 2609 | 340.3 |
+| readout spread over 56 to 80 gaps (`rsp`, correct) | 98.17 to 98.92% | | |
+| readout pairs (0,2) and (1,3), chains by tile (`rpr=1`, correct) | 97.42% | | |
+| the same, even pairs on R3 and odd on R2 (`rpr=2`, correct) | **99.24%** | 2594 | 337.4 |
+
+The readout's pipe cost is its reads of the accumulator registers, and which registers a step reads decides it;
+the figures fit register banks by number mod 4 (in `rpr=2` every step's three registers differ mod 4). `rpr=2`
+passes 16,384 of 16,384 at k 2048 and 512 of 512 at k 65536; it is not yet raced or shipped.
