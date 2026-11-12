@@ -10,7 +10,9 @@
 # first and last turn only), inlined. Built by CI's CUDA 13 job (13.3.1, nvcc V13.3.73), the toolkit
 # pearl_core_cu13.node is built with; a CUDA 13 cubin needs driver 580 or newer, as that core does.
 
-# CUDA 13.3, built on a Salad PC by earn/tuning/salad/nv50box.sh. RTX 5090 (PC 3e7100e6, 575 W, driver 617.14):
-# verify-hits 400 of 400 (445 hits, 23 salts); 401.92 and 401.44 TH/s by hashrate.js against 393.68, 391.77 and
-# 391.33 for the release fold of the CUDA 13.3 core.
-13.3 83fe6917090b2ab75cc21419c87d3c8680f5aa251940b193244242f3bb8c24c3
+# CUDA 13.3, built on a Salad PC by earn/tuning/salad/nv50box.sh with build_rot.py's flags (no -Xptxas -v: nvcc
+# writes its options into the file's .note.nv.tkinfo, so -v alone gives another hash for the same code; CI's Linux
+# and Windows builds and a local Windows build all give this one). RTX 5090 (PC 3e7100e6, 575 W, driver 617.14):
+# verify-hits 400 of 400 (688 hits, 35 salts); the same code built with -v: 400 of 400 (445 hits), and 401.92
+# and 401.44 TH/s by hashrate.js against 393.68, 391.77 and 391.33 for the release fold of the CUDA 13.3 core.
+13.3 ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687
