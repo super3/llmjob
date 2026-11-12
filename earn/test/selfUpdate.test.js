@@ -101,6 +101,7 @@ describe('planUpdate', () => {
         'llmjob-earn-cli-linux': 'https://x/cli',
         'pearl_core.node': 'https://x/core',
         'pearl_core_cu13.node': 'https://x/core13',
+        'pearl_rot_sm89.cubin': 'https://x/rot',
         'pearl_core_hip.node': 'https://x/corehip',
         'llmjob-xmr-worker': 'https://x/xmr',
         'llmjob-earn-0.1.12.tar.gz': 'https://x/hiveos',
@@ -110,6 +111,8 @@ describe('planUpdate', () => {
     const p = planUpdate({ currentVersion: '0.1.11', release, platform: 'linux' });
     expect(p).toMatchObject({
       coreUrl: 'https://x/core', coreCu13Url: 'https://x/core13', coreHipUrl: 'https://x/corehip', xmrWorkerUrl: 'https://x/xmr',
+      // The rotation fold's cubin, which belongs to this release's core.
+      rotCubinUrl: 'https://x/rot',
       // The versioned HiveOS package, which a CLI under HiveOS updates from.
       packageUrl: 'https://x/hiveos',
     });
@@ -120,6 +123,7 @@ describe('planUpdate', () => {
     const p = planUpdate({ currentVersion: '0.1.11', release: linuxRelease, platform: 'linux' });
     expect(p.coreUrl).toBeNull();
     expect(p.coreCu13Url).toBeNull();
+    expect(p.rotCubinUrl).toBeNull();
     expect(p.coreHipUrl).toBeNull();
     expect(p.xmrWorkerUrl).toBeNull();
     expect(p.packageUrl).toBeNull();

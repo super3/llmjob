@@ -74,6 +74,7 @@ async function applyUpdate(plan, execPath, opts) {
   const dir = path.dirname(exe);
   const core = path.join(dir, 'pearl_core.node');
   const cu13 = path.join(dir, 'pearl_core_cu13.node');
+  const rot = path.join(dir, 'pearl_rot_sm89.cubin');
   const hip = path.join(dir, FILES[AMD]);
   const tmp = exe + '.new-' + process.pid;
   const coreTmp = core + '.new-' + process.pid;
@@ -94,6 +95,9 @@ async function applyUpdate(plan, execPath, opts) {
     // download leaves the old install as it was, and its CUDA 13 core matches
     // it.
     fs.rmSync(cu13, { force: true });
+    // The rotation fold's cubin goes the same way, for the same reason: the
+    // new core must never load the last release's fold.
+    fs.rmSync(rot, { force: true });
     if (plan.coreUrl) fs.renameSync(coreTmp, core);
     if (withHip) fs.renameSync(hipTmp, hip);
     fs.renameSync(tmp, exe);
@@ -119,6 +123,18 @@ async function applyUpdate(plan, execPath, opts) {
       // downloadFile removes its own partial file; this is one that arrived
       // but would not go in.
       fs.rmSync(cu13Tmp, { force: true });
+    }
+  }
+  // The rotation fold's cubin, as the CUDA 13 core: a failed download leaves no
+  // file, and a rig that asks for the fold then says so and mines on the
+  // release fold.
+  if (plan.rotCubinUrl) {
+    const rotTmp = rot + '.new-' + process.pid;
+    try {
+      await downloadFile(plan.rotCubinUrl, rotTmp);
+      fs.renameSync(rotTmp, rot);
+    } catch (e) {
+      fs.rmSync(rotTmp, { force: true });
     }
   }
   if (keepHip) {

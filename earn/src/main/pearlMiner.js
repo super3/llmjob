@@ -16,6 +16,7 @@ const gpuClocks = require('./gpuClocks');
 const gpuClockOffset = require('./gpuClockOffset');
 const memClockTrial = require('../shared/memClockTrial');
 const coreOffsetTrial = require('../shared/coreOffsetTrial');
+const foldCheck = require('../shared/foldCheck');
 const { TRIAL_SECS: SHAPE_TRIAL_SECS } = require('../shared/shapePick');
 
 // The host for our own Pearl miner: it owns the pool socket and the job/lifecycle
@@ -109,6 +110,14 @@ const OFFSET_STAGGER_MS = 15 * 1000;
 // shape trial ends (see _planCoreOffset). It is a guess: the shape trial has
 // no fixed length.
 const OFFSET_SHAPE_WAIT_MS = (SHAPE_TRIAL_SECS + 30) * 1000;
+
+// The core's refusal when a card was to mine on the rotation fold and the fold
+// would not start: the driver refused its file, or its tables would not fit
+// (native/src/pearl_host_rot.inc, rot_create). The card is then opened on the
+// normal kernel (see _openCore).
+const ROT_FAIL_RE = /rotation fold: /;
+// Where a card whose rotation fold failed its check is reported.
+const REPORT_ROT = 'earn/native/README.md, "A second RTX 40 fold"';
 
 // An offset as the log says it: +50 MHz.
 function plusMhz(mhz) {
@@ -482,7 +491,29 @@ class PearlMiner extends EventEmitter {
     // its fold is faster (see K_REJECT_LIMIT for when it stops). checkHits
     // says this miner checks every hit of a card the core reports untested
     // (see _checkedHit), so the core opens such a card rather than refusing it.
-    const core = this.createCore(want, { ...opts, saltBase, cardK: this.cardK, checkHits: true });
+    //
+    // A card whose rotation fold failed its check, or would not start, is
+    // opened with no choice of k: on an NVIDIA card that is the normal kernel
+    // (slot.noRot; see _foldFailed). The rotation fold is the one thing cardK
+    // turns on there, and only when it was asked for (--rotation-fold).
+    const open = (cardK) => this.createCore(want, { ...opts, saltBase, cardK, checkHits: true });
+    let core;
+    try {
+      core = open(this.cardK && !slot.noRot);
+    } catch (e) {
+      const message = messageOf(e);
+      if (slot.noRot || !ROT_FAIL_RE.test(message)) throw e;
+      // The fold would not start on this card. It falls back; it does not
+      // take the card down.
+      slot.noRot = true;
+      this.emit('log', {
+        level: 'warn',
+        line: (Number.isInteger(opts.deviceIndex) ? 'GPU ' + opts.deviceIndex : 'the GPU')
+          + ': rotation fold asked for but not used: ' + message.replace(ROT_FAIL_RE, '')
+          + '. Mining on the normal kernel',
+      });
+      core = open(false);
+    }
     // A factory that returns nothing rather than throwing: no core, so the same
     // answer as one that refused. Wiring is inside the caller's try for the same
     // reason — a core we cannot listen to is a core we cannot mine with.
@@ -503,7 +534,10 @@ class PearlMiner extends EventEmitter {
     // would send recomputed first (see _checkedHit). A core built before this
     // has no `untested`, and opens no such card.
     const check = core.untested === true ? { slot, arch: archOf(core) } : null;
-    this._wireCore(core, device, profile, wallet, worker, check);
+    // A card on the rotation fold (core.tile) has the fold checked before it
+    // is trusted, and every share it finds after that (see _planFoldCheck).
+    const fold = core.tile ? { slot } : null;
+    this._wireCore(core, device, profile, wallet, worker, check, fold);
     const entry = { core, device, slot, profile };
     this.cores.push(entry);
     // Name the card in the log, every run and every card. The core chooses it
@@ -559,7 +593,123 @@ class PearlMiner extends EventEmitter {
       }
     }
     this._planCoreOffset(core, device);
+    if (fold) this._planFoldCheck(slot, device);
     return entry;
+  }
+
+  // A card has opened on the rotation fold (shared/foldCheck has the method
+  // and the reasons). Its check starts at its first hashrate sample (see
+  // _feedFoldCheck); until then it mines the pool's job, and any share it
+  // finds is recomputed before it is sent, as after the check. A card that
+  // passed earlier in this run and is opened again (after a pause for a
+  // prompt, or a restart) is not checked twice.
+  _planFoldCheck(slot, device) {
+    if (slot.fold && slot.fold.state === 'passed') return;
+    slot.fold = foldCheck.createCheck();
+    this.emit('log', {
+      level: 'info',
+      line: cardName(device) + ': rotation fold on (experimental). Checking ' + foldCheck.CHECK_HITS
+        + ' of its hits on the CPU before trusting it',
+    });
+  }
+
+  // A hashrate sample from a card on the rotation fold: start its check at the
+  // first one, and end a check that has run out of time.
+  _feedFoldCheck(entry, th) {
+    const { slot, device, profile } = entry;
+    const check = slot.fold;
+    const step = foldCheck.tick(check, th, this.now());
+    if (step === 'fail') {
+      this._foldFailed(slot, device, check.why);
+    } else if (step === 'begin') {
+      // One card at a time. A hit of the fold takes about 0.13 s of this event
+      // loop to recompute, and a check asks for three a second: a rig of eight
+      // cards checking at once would not keep up, and every check would run
+      // out of time. A card that waits its turn mines the
+      // pool's job meanwhile, its shares recomputed as ever.
+      if (this.cores.some((c) => c.slot !== slot && c.slot.fold && c.slot.fold.state === 'checking')) return;
+      // A job of the miner's own, as an offset step's check has (see
+      // _startOffsetCheck): the pool's job comes back when the check ends.
+      this.offsetChecks += 1;
+      const jobId = foldCheck.FOLD_CHECK_JOB + this.offsetChecks;
+      check.bound = coreOffsetTrial.checkBound(th, difficultyAdjustmentFactor(profile), foldCheck.CHECK_HITS_PER_S);
+      check.jobKey = hash(Buffer.concat([OFFSET_CHECK_HEADER, buildConfig52(profile)]));
+      foldCheck.begin(check, jobId, this.now());
+      entry.core.setJob({ header: OFFSET_CHECK_HEADER, target: check.bound, jobId });
+    }
+  }
+
+  // A hit of a fold check's job, recomputed as a pool's verifier would. One for
+  // no check under way is dropped, as an offset check's is.
+  _onFoldCheckHit(hit, fold, device, profile) {
+    const check = fold && fold.slot.fold;
+    if (!check || check.state !== 'checking' || check.jobId !== hit.jobId) return;
+    const why = checkHit(hit, check.jobKey, profile)
+      || (meetsTarget(hit.jackpotHash, check.bound) ? null : 'the hash does not meet the check\'s target');
+    const step = foldCheck.hit(check, hit.jobId, why);
+    if (step === 'fail') {
+      this._foldFailed(fold.slot, device, why);
+    } else if (step === 'pass') {
+      this.emit('log', {
+        level: 'info',
+        line: cardName(device) + ': rotation fold passed its check (' + foldCheck.CHECK_HITS + ' of '
+          + foldCheck.CHECK_HITS + ' hits right). Mining with it',
+      });
+      // Back to the pool's job, whichever is current now.
+      const entry = this.running && this.cores.find((c) => c.slot === fold.slot);
+      if (entry) this._giveJob(entry);
+    }
+  }
+
+  // A share about to be sent from a card on the rotation fold, recomputed
+  // first (shared/miner/checkHit; about 0.13 s at k 65536). True
+  // when it is right. A wrong one is not sent, and the card goes back to the
+  // normal kernel. Nor is one a core still reports after its fold has failed.
+  _foldHitRight(fold, hit, jobKey, profile, device) {
+    if (fold.slot.noRot) return false;
+    const why = checkHit(hit, jobKey, profile);
+    if (!why) return true;
+    this._foldFailed(fold.slot, device, why);
+    return false;
+  }
+
+  // The rotation fold computed something wrong on this card, or its check ran
+  // out of time. Nothing it found is sent, and the card is opened again on the
+  // normal kernel, on fresh salts, for the rest of the run. A card that is
+  // paused or waiting for a restart opens that way when it comes back.
+  _foldFailed(slot, device, why) {
+    slot.noRot = true;
+    slot.fold = null;
+    this.emit('log', {
+      level: 'error',
+      line: cardName(device) + ': the rotation fold failed its check (' + why + '). No share from it was sent, '
+        + 'and this card mines on the normal kernel for the rest of this run. Please report this line ('
+        + REPORT_ROT + ').',
+    });
+    const i = this.cores.findIndex((c) => c.slot === slot);
+    if (i < 0) return;
+    const [c] = this.cores.splice(i, 1);
+    try { c.core.stop(); } catch (e) { /* already gone */ }
+    // As for any card closed mid-run (see _kStrike): its last figure leaves
+    // the total, and its clock lock and offset go with its core.
+    if (c.device) {
+      this.hashrates.delete(c.device.index);
+      this._cardClosed(c.device.index);
+    }
+    this.hashrate = this.totalHashrate();
+    let entry;
+    try {
+      entry = this._openCore(slot, this.wallet, this.worker);
+    } catch (e) {
+      this.emit('log', {
+        level: 'error',
+        line: 'could not open ' + cardName(c.device) + ' again on the normal kernel: ' + messageOf(e),
+      });
+      if (c.device) this.emit('hashrate', 0, closedDevice(c.device));
+      this._cardDown(slot, c.device, e);
+      return;
+    }
+    this._giveJob(entry);
   }
 
   // Start one card's memory clock trial (shared/memClockTrial has the method
@@ -1451,12 +1601,13 @@ class PearlMiner extends EventEmitter {
     return (this.settings && this.settings.profile) || PROFILE;
   }
 
-  _wireCore(core, device, profile, wallet, worker, check) {
+  _wireCore(core, device, profile, wallet, worker, check, fold) {
     core.on('hashrate', (th) => {
       // A sample the core queued before it failed can arrive after _onCoreError
       // dropped it; counting it would put the dead card back into the total we
       // report to the pool and the board.
-      if (!this.cores.some((c) => c.core === core)) return;
+      const entry = this.cores.find((c) => c.core === core);
+      if (!entry) return;
       // Per card for the UI and the board, and summed for what we tell the pool.
       if (device) this.hashrates.set(device.index, th);
       this.hashrate = this.totalHashrate();
@@ -1465,12 +1616,14 @@ class PearlMiner extends EventEmitter {
         this._feedMemClockTrial(device.index, th);
         this._feedCoreOffsetTrial(device.index, th);
       }
+      if (fold) this._feedFoldCheck(entry, th);
     });
     core.on('error', (err) => this._onCoreError(core, device, err));
     // The profile is this core's, bound here: a hit still on its way from a
     // core that has since been closed is certified at the k it was found at.
     // So is `check`, for a card whose hits are checked (see _openCore).
-    core.on('hit', (hit) => this._onHit(hit, wallet, worker, device, profile, check));
+    // And `fold`, for a card on the rotation fold.
+    core.on('hit', (hit) => this._onHit(hit, wallet, worker, device, profile, check, fold));
   }
 
   // A core's search failed, and a failed core does not search again (its CUDA
@@ -1612,6 +1765,8 @@ class PearlMiner extends EventEmitter {
     // so a job that arrives during a check is not lost.
     const onTrial = entry.device && this.coreOffsetTrials.get(entry.device.index);
     if (onTrial && onTrial.check) return;
+    // So does a card whose rotation fold is in its check (see _feedFoldCheck).
+    if (entry.slot.fold && entry.slot.fold.state === 'checking') return;
     const bound = shareBound(job.target, entry.profile);
     if (bound == null) {
       if (!this.tooEasy.has(entry.profile.k)) {
@@ -1748,11 +1903,16 @@ class PearlMiner extends EventEmitter {
   // they are not errors, just races. `profile` is what the core that found it
   // mines: the bound, the job_key and the proof are all at its k. `check` is
   // set for a card whose hits are checked (see _openCore).
-  _onHit(hit, wallet, worker, device, profile, check) {
+  _onHit(hit, wallet, worker, device, profile, check, fold) {
     // A hit of a hit check's job is the check's, and never goes to the pool
     // (see _startOffsetCheck).
     if (String(hit.jobId).startsWith(OFFSET_CHECK_JOB)) {
       this._onOffsetCheckHit(hit, device);
+      return;
+    }
+    // Nor does one of a rotation fold's check (see _feedFoldCheck).
+    if (String(hit.jobId).startsWith(foldCheck.FOLD_CHECK_JOB)) {
+      this._onFoldCheckHit(hit, fold, device, profile);
       return;
     }
     // A card one of whose hits failed the check sends nothing more, not even a
@@ -1809,6 +1969,9 @@ class PearlMiner extends EventEmitter {
     // since: a batch computed at the offset can still report after it is gone.
     if (!check && device && this.coreOffsetChecked.has(device.index)
       && !this._offsetHitRight(hit, jobKey, profile, device)) return;
+    // And every share of a card on the rotation fold, whose loop is written
+    // by hand: before its check, during it and for as long as it mines.
+    if (fold && !this._foldHitRight(fold, hit, jobKey, profile, device)) return;
     const plainProof = buildShareProof(hit, jobKey, profile, { gzip });
     if (!plainProof) {
       this.emit('log', { level: 'error', line: 'dropping a hit whose proof does not verify locally' });
@@ -1967,6 +2130,11 @@ class PearlMiner extends EventEmitter {
 
 // How the log names a card: by index and name, or not at all for a core that
 // will not say which card it opened.
+// What was thrown, as text: an Error's message, or anything else as a string.
+function messageOf(e) {
+  return e instanceof Error ? e.message : String(e);
+}
+
 function cardName(device) {
   return device ? 'GPU ' + device.index + ' (' + device.name + ')' : 'the GPU';
 }

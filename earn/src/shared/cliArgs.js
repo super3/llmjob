@@ -16,6 +16,7 @@ const { checkXmrAddress } = require('./xmr/address');
 const { PRIORITIES } = require('./xmr/worker');
 const { CU12, CU13, AMD, INTEL } = require('./coreVariant');
 const { flightSheetPool } = require('./hiveos');
+const { CHECK_HITS: FOLD_CHECK_HITS } = require('./foldCheck');
 
 // --core's choices, the values PEARL_CORE_VARIANT takes (shared/coreVariant).
 const CORES = [CU12, CU13, AMD, INTEL];
@@ -150,6 +151,18 @@ const USAGE = [
   '                           every half millisecond, spin busy-waits and takes',
   '                           a whole CPU core a card. PEARL_WAIT takes the same',
   '                           values; the flag wins.',
+  '      --rotation-fold      Experimental, RTX 40 cards only: mine on a second',
+  '                           kernel, the rotation fold. About 6% faster on an',
+  '                           RTX 4090 (335.8 against 317.4 TH/s at 450 W, the',
+  '                           one card it has been measured on), and it uses',
+  '                           about 1.3 GB more card memory. Off by default.',
+  '                           Each card checks ' + FOLD_CHECK_HITS + ' of the fold\'s hits on the',
+  '                           CPU before it trusts it, and every share after',
+  '                           that. If the card is not an RTX 40, a file is',
+  '                           missing, memory is short or a check fails, the',
+  '                           card mines on the normal kernel and the log says',
+  '                           why. In the desktop app: LLMJOB_ROTATION_FOLD=1',
+  '                           in its environment.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -335,6 +348,11 @@ function buildSettings(opts, errors, report, update, serve) {
     else cpuPriority = p;
   }
 
+  // The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 40
+  // cards. A flag for the reason --core is one; the CUDA core reads
+  // PEARL_FOLD_ROT, which the CLI sets from this.
+  const rotationFold = opts['--rotation-fold'] === true;
+
   const statsFile = opts['--stats-file'] != null ? String(opts['--stats-file']) : null;
   const llmBinary = opts['--llm-binary'] != null ? String(opts['--llm-binary']) : null;
   const llmModel = opts['--llm-model'] != null ? String(opts['--llm-model']) : null;
@@ -420,6 +438,7 @@ function buildSettings(opts, errors, report, update, serve) {
   return {
     address, mdlAddress, region, legacyRegion, endpoint, endpointFrom, poolUrl, worker, gpu, gpuIndices, core, gpuWait, statsFile, xmrAddress, xmrEndpoint, cpuThreads, cpuPriority,
     mode, llmBinary, llmModel, llmMaxInstances, gatePort, gateHost, gateQuietMs, mineMemClockMhz, mineCoreOffset,
+    rotationFold,
     report, update, serve: serve !== false, regionProvided, gpuProvided, workerProvided, modeProvided,
     warnings,
   };
@@ -458,6 +477,12 @@ function parseCliArgs(argv) {
     if (flag === '--no-report') { report = false; continue; }
     if (flag === '--no-serve') { serve = false; continue; }
     if (flag === '--no-update') { update = false; continue; }
+    if (flag === '--rotation-fold') {
+      // A switch: `--rotation-fold=0` must not read as "on".
+      if (value != null) errors.push('--rotation-fold takes no value');
+      else opts[flag] = true;
+      continue;
+    }
 
     if (VALUE_FLAGS.has(flag)) {
       if (value == null) {

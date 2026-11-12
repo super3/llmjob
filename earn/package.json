@@ -62,6 +62,7 @@
           "to": "native",
           "filter": [
             "**/*.node",
+            "pearl_rot_sm89.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"
@@ -93,6 +94,7 @@
           "to": "native",
           "filter": [
             "**/*.node",
+            "pearl_rot_sm89.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"

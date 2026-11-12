@@ -102,6 +102,8 @@ def rw(text):
     if op.startswith("IMMA"):
         d, a, b, c = regs
         return reads | span(a, 4) | span(b, 2) | span(c, 4), span(d, 4), "imma"
+    if op.startswith("LDG.E.64"):
+        return reads | span(regs[1], 2), span(regs[0], 2), "load"
     if op.startswith(("LDSM", "LDS.128", "LDG")):
         return reads | (span(regs[1], 2) if op.startswith("LDG") else {regs[1]}), span(regs[0], 4), "load"
     if op.startswith("STS.128"):

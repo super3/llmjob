@@ -47,17 +47,7 @@
 #include <vector>
 
 // For the rotation fold's host side (pearl_host_rot.inc): where this module is on disk.
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <windows.h>
-#else
-#include <dlfcn.h>
-#endif
+#include "pearl_rot_path.h"
 
 #include <cstdlib>
 #include <cstdio>
@@ -1845,7 +1835,7 @@ extern "C" int pearl_host_select_device(const PearlProfile *profile, int request
 // rotation fold, a second kernel loaded from its own cubin (pearl_host_rot.inc).
 namespace {
 bool rot_env();
-bool rot_card_ok(const PearlProfile *p, int device);
+bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len);
 bool rot_wanted(const PearlProfile *p, int device);
 size_t rot_needed_bytes(const PearlProfile *p);
 bool rot_create(Ctx *ctx, char *err, size_t err_len);
@@ -1860,9 +1850,14 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
                                       size_t note_len) {
   if (note && note_len) note[0] = '\0';
   if (profile && rot_env()) {
-    if (rot_card_ok(profile, device)) return 65536u;
+    // The note is the one line the miner logs about it, with the card's name (pearlMiner.js, _openCore).
+    char why[128] = {0};
+    if (rot_card_ok(profile, device, why, sizeof why)) {
+      if (note && note_len) snprintf(note, note_len, "rotation fold (experimental)");
+      return 65536u;
+    }
     if (note && note_len)
-      snprintf(note, note_len, "PEARL_FOLD_ROT=1 but no rotation fold for this card: release fold");
+      snprintf(note, note_len, "rotation fold asked for but not used: %s. Mining on the normal kernel", why);
   }
   return profile ? profile->k : 0;
 }

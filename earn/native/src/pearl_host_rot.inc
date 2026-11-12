@@ -120,34 +120,11 @@ bool rot_env() {
   return v && v[0] == '1' && v[1] == 0;
 }
 
-// Where the fold's cubin is: PEARL_ROT_CUBIN, or pearl_rot_sm89.cubin beside this module.
+// Where the fold's cubin is: the file PEARL_ROT_CUBIN names, or pearl_rot_sm89.cubin beside this module
+// (pearl_rot_path.h has the lookup and its reasons). False when no file is there; `buf` then holds the first
+// place looked in.
 bool rot_cubin_path(char *buf, size_t len) {
-  if (!buf || len < 32) return false;
-  const char *e = getenv("PEARL_ROT_CUBIN");
-  if (e && *e) {
-    snprintf(buf, len, "%s", e);
-    return true;
-  }
-  buf[0] = 0;
-#ifdef _WIN32
-  HMODULE h = nullptr;
-  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                          reinterpret_cast<LPCSTR>(&rot_env), &h))
-    return false;
-  const DWORD n = GetModuleFileNameA(h, buf, (DWORD)len);
-  if (n == 0 || n >= len) return false;
-#else
-  Dl_info info;
-  if (!dladdr(reinterpret_cast<void *>(&rot_env), &info) || !info.dli_fname) return false;
-  snprintf(buf, len, "%s", info.dli_fname);
-#endif
-  char *cut = nullptr;
-  for (char *p = buf; *p; p++)
-    if (*p == '/' || *p == '\\') cut = p;
-  const size_t at = cut ? (size_t)(cut - buf) + 1 : 0;
-  if (at + 24 >= len) return false;
-  snprintf(buf + at, len - at, "pearl_rot_sm89.cubin");
-  return true;
+  return rot_cubin_path_for(reinterpret_cast<const void *>(&rot_env), buf, len);
 }
 
 bool rot_read_file(const char *path, std::vector<char> *out) {
@@ -159,38 +136,89 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
   while ((n = fread(tmp, 1, sizeof tmp, f)) > 0) out->insert(out->end(), tmp, tmp + n);
   fclose(f);
   out->push_back(0);
-  return out->size() > 4096;
+  // A whole ELF file: anything else is not a cubin, and the driver is not asked to read it (a cubin cut
+  // short crashed the driver, and the miner with it; pearl_rot_path.h, rot_elf_ok).
+  return rot_elf_ok(reinterpret_cast<const uint8_t *>(out->data()), out->size() - 1, nullptr, nullptr);
 }
 
-// Whether this card and profile can run the rotation fold at all (the switch aside).
-bool rot_card_ok(const PearlProfile *p, int device) {
+// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref lists, the files that have
+// mined on a card with every hit verified (test/rotFoldShip.test.js keeps the two lists the same). A file
+// beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
+// names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
+const char *const kRotCubins[] = {
+    "573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736",  // CUDA 12.6
+    "6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c",  // CUDA 12.8
+};
+
+bool rot_named() {
+  const char *e = getenv("PEARL_ROT_CUBIN");
+  return e && *e;
+}
+
+// Whether the image rot_read_file read is one this core may load.
+bool rot_listed(const std::vector<char> &image) {
+  if (rot_named()) return true;
+  std::vector<uint8_t> copy(image.begin(), image.end() - 1);
+  char hex[65] = {0};
+  if (!rot_fold_hash(copy.data(), copy.size(), hex)) return false;
+  for (const char *h : kRotCubins)
+    if (strcmp(h, hex) == 0) return true;
+  return false;
+}
+
+size_t rot_needed_bytes(const PearlProfile *p);
+
+// Whether this card and profile can run the rotation fold at all (the switch aside). When they cannot, `why`
+// gets the reason in plain words, for the one line the miner logs.
+bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
+  auto no = [&](const char *fmt, long long a, long long b) {
+    if (why && why_len) snprintf(why, why_len, fmt, a, b);
+    return false;
+  };
   int major = 0, minor = 0;
   if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
       || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess) {
     (void)cudaGetLastError();
-    return false;
+    return no("the card's compute capability could not be read", 0, 0);
   }
-  if (major != 8 || minor != 9) return false;
-  if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST) return false;
-  if (p->m < 384u || p->n < 256u || p->n % 256u != 0u) return false;
+  if (major != 8 || minor != 9)
+    return no("it is for RTX 40 cards, and this card is compute %lld.%lld", major, minor);
+  if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
+      || p->n % 256u != 0u)
+    return no("it does not mine this profile", 0, 0);
   char path[1024];
-  if (!rot_cubin_path(path, sizeof path)) return false;
-  FILE *f = fopen(path, "rb");
-  if (!f) return false;
-  fclose(f);
+  if (!rot_cubin_path(path, sizeof path))
+    return no(rot_named() ? "the file PEARL_ROT_CUBIN names cannot be read"
+                          : "its file, " PEARL_ROT_FILE ", is not beside the Pearl core",
+              0, 0);
+  std::vector<char> image;
+  if (!rot_read_file(path, &image)) return no("its file, " PEARL_ROT_FILE ", is not a kernel file", 0, 0);
+  if (!rot_listed(image))
+    return no("its file, " PEARL_ROT_FILE ", is not the one this core was built with", 0, 0);
+  // Its tables and its two trees at k 65536 take more of the card than the release fold does.
+  PearlProfile q = *p;
+  q.k = PEARL_ROT_K;
+  const size_t need = rot_needed_bytes(&q);
+  size_t freeMem = 0, totalMem = 0;
+  if (cudaMemGetInfo(&freeMem, &totalMem) != cudaSuccess) {
+    (void)cudaGetLastError();
+  } else if (freeMem < need) {
+    return no("it needs %lld MiB of card memory and %lld MiB are free", (long long)(need >> 20),
+              (long long)(freeMem >> 20));
+  }
   return true;
 }
 
 // Whether pearl_host_create makes this context a rotation-fold one.
 bool rot_wanted(const PearlProfile *p, int device) {
-  return rot_env() && p->k == PEARL_ROT_K && rot_card_ok(p, device);
+  return rot_env() && p->k == PEARL_ROT_K && rot_card_ok(p, device, nullptr, 0);
 }
 
 size_t rot_needed_bytes(const PearlProfile *p) {
   const size_t aLeaves = (size_t)p->m * p->k / 1024, bLeaves = (size_t)p->n * p->k / 1024;
   const size_t tree = 2 * (aLeaves + bLeaves) * 32 + (aLeaves > bLeaves ? aLeaves : bLeaves) * 32;
   const size_t tabs = (size_t)p->m * 128 * 5 + (size_t)p->n * 128 * 2;
-  const size_t offs = (size_t)3 * 8 * (p->k / 32 + 1) * 512;
+  const size_t offs = (size_t)3 * 8 * (p->k / 32 + 1) * 256;
   return tree + tabs + offs + ((size_t)16 << 20);
 }
 
@@ -663,7 +691,7 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   };
   char path[1024];
   std::vector<char> image;
-  if (!rot_cubin_path(path, sizeof path) || !rot_read_file(path, &image))
+  if (!rot_cubin_path(path, sizeof path) || !rot_read_file(path, &image) || !rot_listed(image))
     return bad("cannot read pearl_rot_sm89.cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;
@@ -700,7 +728,8 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   r->tilesPerBatch = tpb * r->sms;
   ctx->batch = r->tilesPerBatch * PEARL_ROT_UNITS;
   const size_t tabA = (size_t)p.m * 128u, tabB = (size_t)p.n * 128u;
-  r->offsWords = (size_t)8 * (r->ksteps + 1u) * 128u;
+  // Eight warps, a record of two words a lane a k-step (rot_aux_offs), and one k-step more than a tile has.
+  r->offsWords = (size_t)8 * (r->ksteps + 1u) * 64u;
   for (int i = 0; i < 3; i++) {
     if (cudaMalloc(&r->dTabA[i], tabA) != cudaSuccess) return bad("allocating A's tables", i);
     if (cudaMalloc(&r->dOrder[i], r->k) != cudaSuccess) return bad("allocating an order", i);

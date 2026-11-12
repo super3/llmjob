@@ -1,0 +1,21 @@
+# The rotation fold's cubins that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# The hash is the cubin's sha256 with its string table zeroed (python probes/hand89/asm89.py hash <cubin>).
+# probes/hand89/build_rot.py refuses to write pearl_rot_sm89.cubin unless what it built is listed here for the
+# toolkit that built it, and the host loads the file beside the core only when its hash is one of these
+# (kRotCubins in pearl_host_rot.inc holds the same list). The loop in that file is written by hand, so a new
+# line is added only after the file it names has run on an RTX 40 card: probes/verify-hits.js 400 of 400 with
+# the fold on, and shares accepted. A line for a loop that is no longer built is taken out: its file may have
+# another form of offsets records than this host writes.
+
+# The loop of 12 November 2026: a gather's IADD3 and PRMT late, offsets records of 8 bytes, A's gathers early
+# with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35).
+
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (626 hits, 16 salts), and
+# 336.2 and 336.0 TH/s by hashrate.js against 334.6 and 334.7 for the loop before it.
+12.6 573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736
+
+# CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
+# version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
+# verify-hits 400 of 400 (625 hits, 16 salts).
+12.8 6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c

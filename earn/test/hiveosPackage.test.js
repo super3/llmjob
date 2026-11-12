@@ -73,6 +73,8 @@ describe('hiveos package naming', () => {
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_cu13.node'), 0o644)");
     expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_core_hip.node'), 0o644)");
+    // And the rotation fold's cubin, which the CUDA cores load from beside themselves.
+    expect(buildSrc).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm89.cubin'), 0o644)");
   });
 
   // The CPU worker is a program the CLI runs, not a library it loads.
@@ -100,7 +102,7 @@ const tarOk = process.platform === 'linux'
       fs.copyFileSync(path.join(earnRoot, 'hiveos', f), path.join(tmp, 'hiveos', f));
     }
     for (const f of ['llmjob-earn-cli-linux', 'pearl_core.node', 'pearl_core_cu13.node', 'pearl_core_hip.node',
-      'llmjob-xmr-worker']) {
+      'pearl_rot_sm89.cubin', 'llmjob-xmr-worker']) {
       const p = path.join(tmp, 'dist', f);
       fs.writeFileSync(p, 'stand-in ' + f + '\n');
       fs.chmodSync(p, 0o666);
@@ -156,6 +158,7 @@ const tarOk = process.platform === 'linux'
       'llmjob-earn/pearl_core.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_cu13.node': '-rw-r--r--',
       'llmjob-earn/pearl_core_hip.node': '-rw-r--r--',
+      'llmjob-earn/pearl_rot_sm89.cubin': '-rw-r--r--',
       'llmjob-earn/llmjob-xmr-worker': '-rwxr-xr-x',
       'llmjob-earn/rocm/': expect.stringMatching(/^d/),
       'llmjob-earn/rocm/libamdhip64.so.7': '-rw-r--r--',
@@ -213,6 +216,16 @@ const tarOk = process.platform === 'linux'
     expect(r.stderr).toContain('no sycl/pearl_core_sycl.node');
     const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
     expect(list).not.toContain('sycl');
+  });
+
+  // The rotation fold is an opt-in; without its cubin a rig that asks mines on the normal kernel.
+  test('a missing pearl_rot_sm89.cubin still builds, and says so', () => {
+    fs.rmSync(path.join(tmp, 'dist', 'pearl_rot_sm89.cubin'));
+    const r = build('9.8.7');
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain('no pearl_rot_sm89.cubin');
+    const list = spawnSync('tar', ['-tzf', path.join(tmp, 'dist', 'llmjob-earn-9.8.7.tar.gz')], { encoding: 'utf8' }).stdout;
+    expect(list).not.toContain('pearl_rot_sm89.cubin');
   });
 
   // The AMD core is for --core amd only; without it the rig mines on NVIDIA.
