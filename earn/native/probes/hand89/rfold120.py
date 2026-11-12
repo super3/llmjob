@@ -46,6 +46,7 @@ LDCU64 = (0x0000000000000000 | 0x7ac | 7 << 12, 0x8000a00)   # LDCU.64 UR?, c[0x
 DBG = [0]
 MUL = [0x100]
 DPB = [0, 4, 0, 4]
+R2W = [0]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
 MEM_OPS = ("LDSM", "LDS", "STS")
 
@@ -95,6 +96,10 @@ def port(code):
             # sr (goal-nv50g): sm_120's R2UR is operation 0x2ca (ptxas 13.3's 0x...040472ca for R2UR UR4, R4).
             m = re.match(r"R2UR UR(\d+), R(\d+)$", t)
             ins.raw = (0x72ca | int(m[1]) << 16 | int(m[2]) << 24, 0xe0000)
+            # And it has a fixed latency (ptxas gives it no scoreboard and waits up to 13 cycles): a scoreboard
+            # named here is not one it holds (rfold.py's srs gives the stall). R2W=1 keeps it (debugging).
+            if not R2W[0]:
+                ins.wsb = None
         elif t.startswith("ULDC.64"):
             m = re.match(r"ULDC\.64 UR(\d+), c\[0x0\]\[0x118\]", t)
             assert m, t
@@ -443,6 +448,9 @@ def main():
             # dpb (goal-nv50f, correct): DEPBAR.LE in place of gather waits that also wait for newer loads; a bit a
             # scoreboard (7: the gathers' 0-2; 15 with the stage loads' 3). dpbs: the DEPBAR's stall (ptxas: 4).
             DPB[0 if k == "dpb" else 1] = int(v, 0)
+            continue
+        if k == "r2w":
+            R2W[0] = int(v, 0)                  # debugging: R2UR keeps the scoreboard rfold.py gave it
             continue
         if k == "cut":
             # TIMING ONLY / debugging: only the first `cut` instructions of the ported loop (no back branch), then a
