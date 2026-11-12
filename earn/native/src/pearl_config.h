@@ -1199,6 +1199,14 @@ typedef struct {
 #endif
 #define PEARL_BD_RG_L2_MIN 4194304u
 #define PEARL_BD_RG_KERNEL_BUILT (PEARL_TURING_BDIRECT && PEARL_BD_HASH_RG_OK && !PEARL_BD_HASH_RG)
+// PEARL_T75_RUL8 (0 unless the build sets it): RTX 20 cards run their fold from
+// pearl_kernel_t75.cu, the same source built for sm_75 alone with ptxas's
+// --register-usage-level=8. Only pearl_host.cu reads it. A build that sets it must also
+// compile and link pearl_kernel_t75.o (CI does, for the CUDA 12.8 core). The host takes
+// that fold only if its sm_75 body is what loaded, else it runs pearl_tile_fold_wmma(_rg).
+#ifndef PEARL_T75_RUL8
+#define PEARL_T75_RUL8 0
+#endif
 // PEARL_BD_ROWPAIR (0 by default), from round 6 (2026-10-21), designed in round 2: the
 // readout gathers a region's word with one shuffle instead of six. As shipped, lanes L,
 // L ^ 4, L ^ 8 and L ^ 12 each hold a quarter of a region in a pair of m-blocks, so a

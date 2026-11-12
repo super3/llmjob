@@ -128,6 +128,10 @@ jobs:
             # starts as a warning: a local 12.8 build has the dp4a fold at 123
             # registers and 0 spill, but no run of this check has shown it yet.
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
+            # The RTX 20 folds built a second time for sm_75 alone at ptxas
+            # register-usage level 8 (src/pearl_kernel_t75.cu, PEARL_T75_RUL8). The
+            # CUDA 13 entries have no sm_75.
+            t75: 'yes'
           - os: windows-2022
             variant: ''
             file: pearl_core.node
@@ -146,6 +150,10 @@ jobs:
               -gencode arch=compute_100,code=sm_100
               -gencode arch=compute_120,code=sm_120
             spill_fail_archs: sm_80 sm_86 sm_89 sm_90a sm_100 sm_120
+            # The RTX 20 folds built a second time for sm_75 alone at ptxas
+            # register-usage level 8 (src/pearl_kernel_t75.cu, PEARL_T75_RUL8). The
+            # CUDA 13 entries have no sm_75.
+            t75: 'yes'
           # 13.3.1 is the newest toolkit Jimver/cuda-toolkit v0.2.36 (the
           # version already pinned here) lists, on Linux and Windows alike, and
           # it is the toolkit the 5090 rig builds with (nvcc V13.3.73) -- so the
@@ -313,8 +321,20 @@ jobs:
             ${{ matrix.gencode }} \
             -Xptxas -v \
             -c src/pearl_kernel.cu -o cuda-build/pearl_kernel.o 2>&1 | tee cuda-build/ptxas-kernel.txt
+          # The RTX 20 folds at register-usage level 8, sm_75 alone. -Xptxas reaches every
+          # architecture of a call, so this is its own call and pearl_kernel.o above is
+          # unchanged. On an RTX 2080 Ti, 2070 and 2060 level 8 measured +0.3 to +0.5%
+          # (earn/tuning/benchmark.md). The file renames every symbol, so both objects link.
+          T75=""
+          if [ "${{ matrix.t75 }}" = "yes" ]; then
+            nvcc -O3 -std=c++17 -cudart static $FPIC \
+              -gencode arch=compute_75,code=sm_75 \
+              -Xptxas -v -Xptxas --register-usage-level=8 \
+              -c src/pearl_kernel_t75.cu -o cuda-build/pearl_kernel_t75.o 2>&1 | tee cuda-build/ptxas-t75.txt
+            T75="-DPEARL_T75_RUL8=1"
+          fi
           nvcc -O3 -std=c++17 -cudart static $FPIC \
-            ${{ matrix.gencode }} \
+            ${{ matrix.gencode }} $T75 \
             -c src/pearl_host.cu -o cuda-build/pearl_host.o
 
       # The two-CTA cluster build of the Blackwell tall fold (PEARL_TALL_CLUSTER in
@@ -518,6 +538,24 @@ jobs:
       # section, as probes/turing/compilers.sh hashes a fold) must match the
       # shipped build's. Linux 12.8 only: the machine code does not depend on
       # the host OS.
+      # The level-8 RTX 20 folds (pearl_kernel_t75.o): both present, neither spilling.
+      # ptxas 12.8 gives them 251 registers and 0 spill. A spill there would cost an RTX
+      # 20 card far more than level 8 gains, so it fails the job.
+      - name: Check the level-8 RTX 20 folds
+        if: matrix.t75 == 'yes'
+        working-directory: earn/native
+        shell: bash
+        run: |
+          log=$(tr -d '\r' < cuda-build/ptxas-t75.txt)
+          for f in pearl_t75_tile_fold_wmma pearl_t75_tile_fold_wmma_rg; do
+            line=$(printf '%s\n' "$log" | grep -A3 "Compiling entry function '$f' for 'sm_75'" | tr '\n' ' ')
+            regs=$(printf '%s' "$line" | grep -m1 -oE 'Used [0-9]+ registers' | grep -oE '[0-9]+')
+            spill=$(printf '%s' "$line" | grep -oE '[0-9]+ bytes spill stores' | grep -oE '^[0-9]+')
+            echo "$f: ${regs:-?} registers, ${spill:-?} bytes spill stores"
+            [ -n "$regs" ] || { echo "::error::ptxas -v has no entry for $f in pearl_kernel_t75.o"; exit 1; }
+            [ "$spill" = 0 ] || { echo "::error::$f spills ($spill bytes) at register-usage level 8"; exit 1; }
+          done
+
       - name: Check that the GTX 16 dp4a fold changes no other sm_75 kernel
         if: runner.os == 'Linux' && matrix.variant == ''
         working-directory: earn/native
@@ -702,10 +740,12 @@ jobs:
         working-directory: earn/native
         shell: bash
         run: |
+          objs="cuda-build/pearl_kernel.o cuda-build/pearl_host.o"
+          if [ -f cuda-build/pearl_kernel_t75.o ]; then objs="$objs cuda-build/pearl_kernel_t75.o"; fi
           if [ "$RUNNER_OS" = "Windows" ]; then
-            nvcc -lib -cudart static cuda-build/pearl_kernel.o cuda-build/pearl_host.o -o cuda-build/pearl_cuda.lib
+            nvcc -lib -cudart static $objs -o cuda-build/pearl_cuda.lib
           else
-            ar rcs cuda-build/libpearl_cuda.a cuda-build/pearl_kernel.o cuda-build/pearl_host.o
+            ar rcs cuda-build/libpearl_cuda.a $objs
           fi
 
       # The real prize: this LINKS, so a drift between pearl_core.cc's extern "C"

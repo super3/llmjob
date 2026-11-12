@@ -199,6 +199,22 @@ extern "C" __global__ void pearl_tile_fold_wmma_rg(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
 #endif
+#if PEARL_T75_RUL8
+// The same two folds built for sm_75 alone at ptxas register-usage level 8
+// (pearl_kernel_t75.cu, PEARL_T75_RUL8). Picked at create (Ctx::bdT75).
+extern "C" __global__ void pearl_t75_tile_fold_wmma(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#if PEARL_BD_RG_KERNEL_BUILT
+extern "C" __global__ void pearl_t75_tile_fold_wmma_rg(
+    const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
+    uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
+    uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
+    const PearlTranscriptTest test, const PearlHitList hits);
+#endif
+#endif
 extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
     uint32_t k, uint32_t rank, uint32_t chunks, uint32_t col_off,
@@ -337,6 +353,9 @@ struct Ctx {
   // Whether this card runs the second sm_75 kernel, pearl_tile_fold_wmma_rg
   // (PEARL_BD_RG_KERNEL), instead of pearl_tile_fold_wmma. Set at create, never after.
   bool bdHashRg = false;
+  // Whether that kernel comes from pearl_kernel_t75.cu, the level-8 build (PEARL_T75_RUL8).
+  // Set at create, never after.
+  bool bdT75 = false;
   // pearl_host_fold_name's text when it has to be formatted.
   char foldName[224] = {0};
   // Whether this card runs the tall fold instead (PEARL_FOLD_TALL): its own
@@ -1490,6 +1509,13 @@ bool pearl_bd_rg_for(uint64_t l2) {
 // picked it (Ctx::bdHashRg), else pearl_tile_fold_wmma. Every attribute call, the
 // occupancy query and the launch use the same one.
 const void *pearl_wmma_fold_fn(const Ctx *ctx) {
+#if PEARL_T75_RUL8
+  // The level-8 build of the same kernel (Ctx::bdT75).
+#if PEARL_BD_RG_KERNEL_BUILT
+  if (ctx->bdT75 && ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_t75_tile_fold_wmma_rg);
+#endif
+  if (ctx->bdT75 && !ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_t75_tile_fold_wmma);
+#endif
 #if PEARL_BD_RG_KERNEL_BUILT
   if (ctx->bdHashRg) return reinterpret_cast<const void *>(pearl_tile_fold_wmma_rg);
 #else
@@ -2306,6 +2332,18 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
     }
 #endif
     s.hashRg = ctx->bdHashRg;
+#if PEARL_T75_RUL8
+    // The level-8 build of whichever kernel that is, only if its sm_75 body loaded.
+    {
+      ctx->bdT75 = true;
+      cudaFuncAttributes ft;
+      if (cudaFuncGetAttributes(&ft, pearl_wmma_fold_fn(ctx)) != cudaSuccess
+          || ft.binaryVersion != 75) {
+        (void)cudaGetLastError();
+        ctx->bdT75 = false;
+      }
+    }
+#endif
     // The line says what took effect, so a reading can be credited to the shape that ran.
     if (swept)
       fprintf(stderr,
@@ -3702,6 +3740,18 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     pearl_tile_fold_tall<<<blocks, threads, smem, st>>>(
         ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
         col_off, ctx->rowsValid, col_groups, tiles, test, hitList, ctx->tmA, ctx->tmB);
+#if PEARL_T75_RUL8 && PEARL_BD_RG_KERNEL_BUILT
+  else if (ctx->bdT75 && ctx->bdHashRg)
+    pearl_t75_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
+#if PEARL_T75_RUL8
+  else if (ctx->bdT75 && !ctx->bdHashRg)
+    pearl_t75_tile_fold_wmma<<<blocks, threads, smem, st>>>(
+        ctx->dAp, ctx->dBp, ctx->profile.m, ctx->profile.n, k, rank, chunks,
+        col_off, ctx->rowsValid, col_groups, tiles, test, hitList);
+#endif
 #if PEARL_BD_RG_KERNEL_BUILT
   else if (ctx->bdHashRg)
     pearl_tile_fold_wmma_rg<<<blocks, threads, smem, st>>>(
@@ -3991,6 +4041,9 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       // HASH_RG built in, or the second kernel running on this card.
       if (PEARL_BD_HASH_RG || c->bdHashRg)
         snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
+      // The level-8 build running on this card (PEARL_T75_RUL8).
+      n = strlen(c->foldName);
+      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8");
       // ROWPAIR, like LAST_RO, needs LEAN's parts.
       n = strlen(c->foldName);
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");
