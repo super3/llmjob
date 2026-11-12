@@ -256,7 +256,11 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # (pearl_rot.cu ROT_TAB8, gprobe rot 3), not rows e and 8 + e in bytes 2e and 2e + 1.
            b8=0,
            # pf (goal-nvk18, correct): an L2 prefetch of the offsets record pf turns ahead of each record load (0: none).
-           pf=0)
+           pf=0,
+           # acz, bcz (goal-nv50e, TIMING ONLY, with b8): A's / B's gathers load as before but their fragment words
+           # come out as the fill, so that side's operands never change (gfold.gather_ins). Against nold=2 / nold=3
+           # it parts a side's draw at the power cap into the loads' cost and the tensor datapath's toggling.
+           acz=0, bcz=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
