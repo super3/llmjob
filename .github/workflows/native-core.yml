@@ -1004,6 +1004,14 @@ jobs:
           path: earn/native/amd/build/pearl_core_hip.node
           if-no-files-found: error
 
+      # The fold check (README.md, "Testing on real hardware", step 2), so a rig with the ROCm 7
+      # runtime but no hip-clang, like a HiveOS rig, can run it too. Windows uploads its own below.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pearl-amd-foldtest-ubuntu-latest
+          path: earn/native/amd/build/pearl_amd_foldtest
+          if-no-files-found: warn
+
   # The AMD core for Windows: the same source, built with AMD's HIP SDK 7.2 for Windows (the
   # ROCm release the Linux core is built with) for the Radeon targets (build-amd.sh winlib,
   # WINDOWS_ARCHS), and linked by node-gyp with MSVC as the CUDA core is. Its runtime,
