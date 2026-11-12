@@ -22,6 +22,7 @@
 #                 "name:base:key=v,...;..." (base a PROBE_BUILDS name built with GP_ROTC=16387)
 #   ROT_HAND      the same as PROBE_HAND for the miner's cubins (base a ROT_BUILDS name with -DROT_INLINE=0 -DROT_C=16387);
 #                 list them in VERIFY_CUBINS and HR_LEGS
+#   ROT_SHIP      1: also build the file CI ships (build_rot.py --arch sm_120) as rship
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -155,6 +156,15 @@ if has product; then
   done
   sched "${ROT_SCHED:-}"
   hand "${ROT_HAND:-}"
+  # ROT_SHIP=1: the file CI ships, built as CI builds it (build_rot.py --arch sm_120, CUDA 13.3), as $W/rship.cubin;
+  # its hash is printed. Name it rship in VERIFY_CUBINS and HR_LEGS.
+  if [ "${ROT_SHIP:-0}" = 1 ]; then
+    (cd "$R/earn/native" && PATH="$C13/bin:$PATH" python3 -X utf8 probes/hand89/build_rot.py "$C13/bin/nvcc" "$NVD" $W/br \
+      --arch sm_120 > $W/br.log 2>&1)
+    f=$W/br/pearl_rot_sm120.cubin; [ -f "$f" ] || f=$W/br/pearl_rot_sm120.cubin.unverified
+    if [ -f "$f" ]; then cp "$f" $W/rship.cubin; say "ship cubin (build_rot.py): fold hash $(python3 -I "$H/asm89.py" hash $W/rship.cubin)"
+    else say "ship cubin FAILED: $(tail -3 $W/br.log | tr '\n' ' ' | cut -c1-300)"; fi
+  fi
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).
   K=$W/addon
   rm -rf $K && mkdir -p $K/cuda-build && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" $K/
