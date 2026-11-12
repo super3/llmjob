@@ -170,6 +170,12 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
     done
     mv llmjob-earn-cli-linux cli && chmod +x cli
+    # OURS_CORE (a measuring option, nv20box.sh): the release's CLI with another pearl_core.node, so the rate of a
+    # core built from a branch can be read the same way as the other miners'.
+    if [ -n "${OURS_CORE:-}" ]; then
+      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node || fail "OURS_CORE $OURS_CORE"
+      say "ours: the release's CLI with the core $OURS_CORE"
+    fi
   else
     amd_ours
   fi ;;
@@ -308,6 +314,12 @@ run() {
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
+  # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
+  # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
+  # RTX 20 they swing with batch boundaries (35-51 TH/s on a 2070 that hashrate.js puts at 43.6), so 8 of them move
+  # about +-4% run to run. PeakMiner's samples do not swing.
+  [ "$measured" = 1 ] && [ "$name" = ours ] && say "linemean ours $(tr '\r' '\n' < /opt/b/ours.log | grep -oE '[0-9.]+ TH/s · ' \
+    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}')"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.
   if [ "$name" = wild ]; then

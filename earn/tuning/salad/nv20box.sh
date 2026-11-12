@@ -64,14 +64,25 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   # A token "@<list>" among the defines names a patch list under probes/turing/ (sm75patch.py, which edits the
   # section the list names): the kernel is built with --keep, its cubin patched, and nvcc's own fatbinary and host
   # steps run again, as compilers.sh's patch_fold does.
-  local fl="" pl="" tk
-  for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; *) fl="$fl $tk" ;; esac; done
+  # A token "%t75" builds the core as CI does with matrix.t75: pearl_kernel_t75.cu at ptxas register-usage
+  # level 8 (sm_75 alone) linked beside pearl_kernel.o, and the host built with PEARL_T75_RUL8=1. "%t75=<ptxas
+  # options>" uses those options for that object in place of level 8 (the other tokens apply to both objects).
+  local fl="" pl="" tk t75=""
+  for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; %t75) t75="--register-usage-level=8" ;; %t75=*) t75=${tk#%t75=} ;;
+    *) fl="$fl $tk" ;; esac; done
   local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $fl"
-  local o="$K/cuda-build/pearl_kernel.o" kp=""
+  local o="$K/cuda-build/pearl_kernel.o" kp="" objs=""
   [ -n "$pl" ] && { mkdir -p "$K/keep"; kp="--keep --keep-dir $K/keep"; }
   # shellcheck disable=SC2086
   nvcc $C -Xptxas -v $kp -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/kernel.log" 2>&1 \
     || { say "core $1 kernel FAILED: $(grep -m2 -i error "$K/kernel.log" | cut -c1-200)"; return 1; }
+  if [ -n "$t75" ]; then
+    # shellcheck disable=SC2086
+    nvcc $C -Xptxas -v -Xptxas "$t75" -c "$K/src/pearl_kernel_t75.cu" -o "$K/cuda-build/pearl_kernel_t75.o" \
+      > "$K/t75.log" 2>&1 || { say "core $1 t75 FAILED: $(grep -m2 -i error "$K/t75.log" | cut -c1-200)"; return 1; }
+    objs="$K/cuda-build/pearl_kernel_t75.o"; C="$C -DPEARL_T75_RUL8=1"
+    say "core $1 t75 ($t75): $(grep -A3 "entry function 'pearl_t75_tile_fold_wmma_rg'" "$K/t75.log" | grep -o 'Used [0-9]* registers\|[0-9]* bytes spill stores' | tr '\n' ' ')"
+  fi
   if [ -n "$pl" ]; then
     local fb host cubin
     # shellcheck disable=SC2086
@@ -90,7 +101,8 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   # shellcheck disable=SC2086
   nvcc $C -c "$K/src/pearl_host.cu" -o "$K/cuda-build/pearl_host.o" > "$K/host.log" 2>&1 \
     || { say "core $1 host FAILED: $(grep -m2 -i error "$K/host.log" | cut -c1-200)"; return 1; }
-  ar rcs "$K/cuda-build/libpearl_cuda.a" "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o"
+  # shellcheck disable=SC2086
+  ar rcs "$K/cuda-build/libpearl_cuda.a" "$K/cuda-build/pearl_kernel.o" "$K/cuda-build/pearl_host.o" $objs
   (cd "$K" && ln -s /opt/gyp/node_modules node_modules && echo '{}' > package.json &&
     CUDA_PATH=$CUDA ./node_modules/.bin/node-gyp rebuild > gyp.log 2>&1) \
     || { say "core $1 node-gyp FAILED: $(grep -m2 -i error "$K/gyp.log" | cut -c1-200)"; return 1; }
@@ -167,8 +179,10 @@ if has lgc; then
   fi
 fi
 if has bench; then
+  # OURS_CORE=<build name>: bench.sh runs the release's CLI with that build's core in place of the release's.
+  oc=""; [ -n "${OURS_CORE:-}" ] && oc="$W/core-$OURS_CORE/build/Release/pearl_core.node"
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
-  W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
+  OURS_CORE="$oc" W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
     VPOOL=${VPOOL:-210} SECS=${SECS:-180} WARM=${WARM:-60} OURS_SECS=${SECS:-180} VER=${VER:-v0.6.15} \
     bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi

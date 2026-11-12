@@ -370,6 +370,99 @@ whole story: something else in a moved load costs a full load latency per turn, 
 - Box time: nv20c-2070-1 47 min, nv20c-2080ti-1 2 h 0 min, nv20c-2060-1 48 min, nv20c-2070-2 41 min; about 4 h
   15 min, including about 25 min idle after I restarted two boxes twice within 13 s.
 
+### Salad, 12 November: the RTX 20 folds rebuilt at ptxas level 8 with ROWPAIR + LAST_RO, +0.5-0.6% (branch goal/nv-20d)
+
+**What shipped.** The two RTX 20 folds are built a second time, for sm_75 alone, with ptxas
+`--register-usage-level=8` and with `PEARL_BD_ROWPAIR` and `PEARL_BD_LAST_RO` on. nvcc hands `-Xptxas` to every
+architecture of a call, and CI builds sm_61 to sm_120 in one call, so this build is its own object:
+`src/pearl_kernel_t75.cu` includes `pearl_kernel.cu` whole with every name that has linkage renamed (the kernels, the
+`__device__` variables, `blake3_chunk_cv` and the tall fold's host helpers), and turns the two switches on first. CI
+compiles it on the two CUDA 12.8 entries and links it beside `pearl_kernel.o`, which does not change, so every other
+card's machine code is byte for byte what it was. The host (`PEARL_T75_RUL8=1`, which CI passes) launches
+`pearl_t75_tile_fold_wmma(_rg)` on an RTX 20 card when that kernel's sm_75 body loaded, and then draws A' with the
+same object's `pearl_t75_materialize16_afrag` (ROWPAIR permutes A's rows). The fold name ends in `RUL8 ROWPAIR
+LAST_RO`. A CI step fails the job if either fold spills: both 249 registers, 0 spill. Levels 6 to 10 give this fold
+the same machine code; level 5 differs. Commits 6945261d, c8cf5f27, b2b8ad08; CI native core runs 43208653892 and
+43226561346 green on all nine jobs; `turingT75.test.js` checks the renames against every linked name in the kernel's
+unit, the CI step, the host's pick and the A' draw. Full earn suite: 134 suites, 3,408 tests passed, 65 skipped.
+
+**Races** (`nv20box.sh`; `%t75` builds the new object, `-D` flags apply to both objects; hashrate.js legs of 90 s
+taking turns, the first leg left out; "paired" = each leg against the control legs on either side; every build in a
+row below passed verify-hits.js 400 of 400 unless the row says otherwise):
+
+Level 8 alone (the object without the two switches, commit 6945261d), against the default:
+
+| PC | default | level 8 | A/A twin | level 8, paired |
+|---|---|---|---|---|
+| RTX 2080 Ti (260 W, held at 256-257 W, 57-66 °C, 1555-1590 MHz, driver 621.14) | 95.51 TH/s | 95.74 | 95.54 | +0.06% (−0.14 to +0.23); twin −0.28% |
+| RTX 2070 SUPER (204 W, 198-202 W, 66-67 °C, 1773-1787 MHz, 621.01) | 67.16 | 67.25 | 67.15 | +0.12% (+0.04 to +0.26); twin −0.06% |
+| RTX 2060 6 GB (170 W, but 81-86 W, 64 °C, 1258-1309 MHz, 617.14; a noisy PC) | 35.09 | 35.28 | 35.04 | +0.25% (−1.18 to +1.63); twin −0.62%; verify 381/381 in 90 s |
+
+The old fold switches at level 8, against level 8, on a second RTX 2080 Ti (250 W, 239-242 W, 72-73 °C, 1441-1451
+MHz, 617.42; the steadiest card of the day: the twin read +0.00%, −0.02 to +0.02):
+
+| build | TH/s | paired | per clock |
+|---|---|---|---|
+| level 8 | 93.43 | | |
+| + ROWPAIR | 93.20 | −0.25% | −0.40% |
+| + LAST_RO | 88.66 | −5.12% | −4.67% |
+| + ROWPAIR + LAST_RO | 93.84 | **+0.44%** (+0.43 to +0.44) | +0.35% |
+| + SNAKE | 92.12 | −1.41% | −1.36% |
+
+ROWPAIR + LAST_RO against the default, means of three legs each:
+
+| PC | default | level 8 | level 8 + ROWPAIR + LAST_RO | the same, built again (twin) | ROWPAIR + LAST_RO at level 5 |
+|---|---|---|---|---|---|
+| RTX 2070 (140 W of 175, 134-135 W, 63 °C, 1286-1296 MHz, 610.88) | 43.32 | 43.33 (+0.02%) | **43.55 (+0.53%)** | 43.54 (+0.52%) | 43.45 (+0.29%) |
+| RTX 2080 Ti, a third PC (250 W, 240-242 W, 84 °C, 1399-1421 MHz, 621.14) | 87.75 | 87.92 (+0.17% paired) | **88.34 (+0.64% paired, +0.55 to +0.68)** | 88.31 (+0.61%) | 88.22 (+0.50%) |
+
+The shipped form (b2b8ad08, built on the box exactly as CI builds it) against the default, with an A/A twin of the
+default:
+
+| PC | default | shipped | twin | shipped, paired | per clock | verify-hits |
+|---|---|---|---|---|---|---|
+| RTX 2070 (140 W, the PC above) | 43.32 | 43.58 | 43.37 | **+0.52%** (+0.39 to +0.60); twin −0.03% | +0.92% | 400/400 twice |
+| RTX 2080 Ti, a fourth PC (250 W, 242 W, 77 °C, 1423-1432 MHz, 621.14) | 90.36 | 91.37 | 90.34 | **+1.00%** (+0.70 to +1.14); twin −0.26% | +0.81% | 400/400 twice |
+
+Each switch alone loses at level 8, as each did at level 5 in rounds 3 to 6; together they win, and most of the
+win holds at level 5 too. The gain is work a clock (+0.8% a clock on the 2080 Ti) at the same watts.
+
+**Where the rows stand** (`bench.sh` on the same PCs after the races: stand-in pool at 2^210, 180 s after 60 s
+warm-up, sample means from 60 s; "ours" is the published v0.6.15 unless the row says otherwise):
+
+| PC | ours | PeakMiner 2.20.7 | ours / PeakMiner | PeakMiner's work a clock |
+|---|---|---|---|---|
+| RTX 2080 Ti (first PC) | 92.75 TH/s, 1558 MHz, 256 W | 94.82, 1564 MHz, 257 W | 97.8% | +1.8% |
+| RTX 2080 Ti (third PC) | 84.00, 1401 MHz, 242 W | 87.38, 1404 MHz, 241 W | 96.1% | +3.8% |
+| RTX 2070 SUPER | 66.94, 1774 MHz, 193 W | 69.21, 1783 MHz, 199 W | 96.7% | +2.9% |
+| RTX 2070 (140 W) | 41.46, 1303 MHz, 133 W | 44.40, 1294 MHz, 136 W | 93.4% | +7.8% |
+| RTX 2060 | 35.41, 1279 MHz, 85 W | 36.27, 1279 MHz, 84 W | 97.6% | +2.4% |
+| RTX 2070 (140 W), the release's CLI on the shipped core | 45.31, 1296 MHz, 135 W | 44.78, 1288 MHz, 136 W | 101.2%, but see below: our samples read 35.1-51.2 | ours +0.6% |
+| RTX 2080 Ti (fourth PC), the release's CLI on the shipped core | **91.28**, 1436 MHz, 244 W, 77 °C | 88.64, 1438 MHz, 242 W, 77 °C | **103.0%** | ours +3.1% |
+
+On the fourth 2080 Ti the release's CLI with the shipped core is above PeakMiner by 3.0% (pool credit over the last
+2 minutes agrees: 91.30 against 87.23 TH/s), and hashrate.js of the shipped core read 91.37 on the same PC. Read by
+hashrate.js of the shipped core (or the default plus its measured gain) against PeakMiner's own figure on the same
+PC: 2080 Ti about 101.3%, 101.0% and 103.1% on three PCs; 2070 SUPER about 97.5%; 140 W 2070 97.3-98.2%; 2060 about
+97.2%. So the RTX 2080 Ti row is above PeakMiner with this change; the 2070 SUPER, 2070 and 2060 rows are still 2-3%
+behind, all of it work a clock.
+
+**bench.sh's figure for our miner moves about ±4% between runs.** Against hashrate.js of the default core on the
+same PC, the release's CLI read −2.9% (first 2080 Ti, 92.75 against 95.51), −4.3% (third 2080 Ti, 84.00 against
+87.75), −4.3% (140 W 2070, 41.46 against 43.32), within 0.5% on the 2070 SUPER and the 2060, and then, on the shipped
+core, +4.0% on the same 140 W 2070 (45.31 against 43.58) and −0.1% on the fourth 2080 Ti (91.28 against 91.37). Its
+15 s samples read only the CLI's latest 1 s line, and on RTX 20 those swing with batch boundaries (35.1 to 51.2 TH/s
+on the 2070, where PeakMiner's stay within 44.3-44.8), so 8 samples do not settle. Most of the earlier "3-4% under
+PeakMiner" on these PCs was this, not the kernel: compare our rows by hashrate.js, by a long run, or by the new
+`linemean ours` line (the mean of every 1 s line past the first 60, which is the run's own mean; not yet run on a
+box). `bench.sh` also takes `OURS_CORE` (`nv20box.sh OURS_CORE=<build>`): the release's CLI with a core built on the
+box, as in the two rows above.
+
+Box time: nv20d-2080ti-1 2 h 55 min (11:23-14:18 over four PCs, about 35 min of it idle: twice Salad did not restart
+the box after a set-env and I reallocated it, and it went silent once at 11:56); nv20d-2070-1 37 min; nv20d-2060-1
+42 min; nv20d-2070-2 75 min. About 5.5 h in all. Tools: `S/nv20d/` in the scratchpad (hrsum.py takes the control and
+twin names as arguments).
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
