@@ -3415,7 +3415,42 @@ Cool card 4 (cards 1-3 mining beside it), `race5.sh 4 8 3`, three rounds, agains
 - HiveOS 24.35 (staged /home/shawn/arc/ship-a15, card 5): xmx8w, xmx8w-emu and the mainnet check PASS; bench 90.6
   against ship-a13d 90.7-90.8, level there.
 - One card 5 verify.sh run had 8 regions wrong in both dot and xmx8w at the mainnet shape. Both folds agreeing
-  points at the host reference. The same build passed three checks straight after and the full rerun.
+  points at the host reference. The same build passed three checks straight after and the full rerun. spare23's
+  build does it too (1 run in 4): a rig flake, not a fold's.
+
+**Under the mining duty CW 2 loses.** The cards mine at `PEARL_SYCL_DUTY` 60 and 75. Moved to spare26 for 8 minutes,
+the rig mined 252 TH/s against about 260 on spare23 (card 4 75.3 against 77.5). The miner loop (bench.js, which
+applies the duty) on card 5, 40 s runs, two rounds:
+
+| build | duty 75 | duty 60 | full speed |
+|---|---|---|---|
+| spare23 (RW 8, CW 1) | 76.85-76.98 (2,097-2,109 MHz busy) | 60.70-60.73 | 98.15-98.17 (1,883 MHz, 190 W) |
+| spare26 (RW 8, CW 2) | 74.49-74.55 (2,097-2,114) | 58.61-58.69 | 98.88-98.96 (1,970 MHz, 190 W) |
+| CW 1 under duty, CW 2 at full speed (spare27) | 76.89-76.95 (2,082-2,119) | 60.57-60.71 | 98.73-98.83 (1,962 MHz) |
+
+- CW 2 saves energy (A' from L1). That pays only on a card held at its power limit, where the saved watts become
+  clock. Under duty the card rests between batches and runs above 2,050 MHz while busy, so the clock is free and
+  the work a clock decides: CW 2 does about 3% less a clock. The host now runs CW 1 whenever the duty is under 100
+  (`xmx8w_cw`; `PEARL_SYCL_CW=1` or `2` forces it).
+- Price any new design both ways: the cool-card race (full speed) and bench.js at duty 75.
+
+More card 5 prices on 8a01fa49 (def 100.2-100.5 TH/s at about 1,970 MHz, 50.9 a GHz; timing builds are wrong):
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| A' of 2 row windows (AHOT 2) | 102.3-102.4 | 2,000-2,029 | 166 |
+| no copy (NOCOPY + FILLALL) | 104.2 | 2,027 | 172 |
+| half the copy (STE + FILLALL) | 104.2-104.4 | 2,000-2,027 | 167 |
+| no hash (NOEPI) | 101.4-101.5 | 1,961 | 177 |
+| readout of 1 group of 8 (RDH 1), PASS | 100.8-101.0 | 1,968-1,979 | 175 |
+| RW 8 x CW 4 (64 sub-groups), KPS 1, PASS | 89.9 | 2,000 | 163 |
+| RW 8 x CW 4, KPS 2, SEQ 1 (SEQ 2 needs 80 KB: does not launch) | 82.2 | 2,000 | 155 |
+| RW 8 x CW 2, KPS 2, PASS | 98.0-98.4 | 2,000 | 175 |
+| RW 16 x CW 2 (64 sub-groups, C16 copy for CW 2), SEQ 1, PASS; with BA | 88.6; 92.6 | 2,000 | 163; 166 |
+| def at SEQ 1 | 96.9 | 2,000 | 175 |
+
+- A work-group of 64 sub-groups (a whole Xe-core) loses 8-12% however its windows are arranged.
+- AHOT 2 does the same work a clock as def: at the clock cap, sharing A' more widely buys nothing more.
 
 ## Research notes
 

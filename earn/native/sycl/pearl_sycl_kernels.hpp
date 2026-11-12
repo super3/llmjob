@@ -1852,7 +1852,7 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4, "one, two or four column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
-  static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && CW == 1), "each sub-group copies a whole number of blocks");
+  static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && (CW == 1 || CW == 2)), "each sub-group copies a whole number of blocks");
   // goal-arc8: at RW 16 each of the 32 sub-groups copies half a block (64 bytes) a k-step.
   static constexpr bool kHalf = RW == 16;
   static constexpr uint32_t kNsg = 2u * RW * CW, kBps = kHalf ? 1u : 8u / RW;
@@ -2046,7 +2046,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * (A.bStride - (PEARL_W_BPAD)) + (size_t)(b % 16u) * 128u;
 #else
       if constexpr (kHalf)
-        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride + (size_t)(b >> 1) * 128u + (size_t)(b & 1u) * 64u;
+        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + (b >> 1) / 16u) * A.bStride + (size_t)((b >> 1) % 16u) * 128u
+                 + (size_t)(b & 1u) * 64u;
       else
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * A.bStride + (size_t)(b % 16u) * 128u;
 #endif
@@ -2188,10 +2189,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_C16)
     // goal-arc13 (PEARL_W_C16, RW 16): 32 sub-groups copy 128 bytes each at even k-steps only, two k-steps'
     // B' (piece sgl % 16 of k-step kb + sgl / 16): each thread stores what STE's did, with the full copy.
-    static_assert(KPS == 4 && RW == 16 && CW == 1, "PEARL_W_C16: 16 by 1 work-group, a chunk a slot");
-    const uint32_t c16Lo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride) + (sgl & 15u) * 128u;
+    // goal-arc15: at CW 2 (64 sub-groups) sub-group sgl copies piece sgl % 16 of column block (sgl / 16) % 2 of
+    // k-step kb + sgl / 32.
+    static_assert(KPS == 4 && RW == 16, "PEARL_W_C16: 16 row windows, a chunk a slot");
+    const uint32_t c16Col = (sgl >> 4) % (uint32_t)CW, c16K = (sgl >> 4) / (uint32_t)CW;
+    const uint32_t c16Lo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb * CW + c16Col) * A.bStride) + (sgl & 15u) * 128u;
     auto c16_load = [&](uint32_t kb) {
-      const uint32_t k = kb + (sgl >> 4);
+      const uint32_t k = kb + c16K;
       return ring_read_global<HW>(lo32(bHi, c16Lo + (k < 64u ? k : 63u) * 2048u), lane);
     };
     v4u c16n = c16_load((uint32_t)KPS);
@@ -2387,7 +2391,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_C16)
           if (s % 2u == 0u) {
             const uint32_t kb = ks + (uint32_t)KPS;
-            ring_write_local<HW>(R + at(kb) + (sgl >> 4) * kStep + (sgl & 15u) * 32u, c16n, lane);
+            ring_write_local<HW>(R + at(kb) + c16K * kStep + c16Col * 512u + (sgl & 15u) * 32u, c16n, lane);
             c16n = c16_load(kb + 2u);
           }
           return;
