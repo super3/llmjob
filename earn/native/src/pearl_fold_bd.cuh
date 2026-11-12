@@ -791,34 +791,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // the pass is one of them plus a constant. dch: 1 for the pass's k-steps in the
   // next chunk.
   uint32_t arun = 0u, brun = 0u;
-#if PEARL_BD_PF
-  // PEARL_BD_PF's pointers for a pass: this warp's share of the lines at arun and brun,
-  // set with them, so a prefetch is one of these plus a constant.
-  const int8_t *pfa = Aprime, *pfb = Bprime;
-  auto pf_set = [&]() {
-    pfa = Aprime + (arun + wc * FRAG_BLOCK);
-    pfb = Bprime + (brun + wr * FRAG_BLOCK);
-    asm volatile("" : "+l"(pfa), "+l"(pfb));
-  };
-#define PEARL_BD_PF_SET() pf_set()
-#elif PEARL_BD_P64
-  // PEARL_BD_P64's pointers for a pass: A' and B' at arun and brun, 64 bits, set with
-  // them, so every load of the pass is one of these plus an immediate.
-  const int8_t *par = Aprime, *pbr = Bprime;
-  auto pf_set = [&]() {
-    par = Aprime + arun;
-    pbr = Bprime + brun;
-    asm volatile("" : "+l"(par), "+l"(pbr));
-  };
-#define PEARL_BD_PF_SET() pf_set()
-#else
-#define PEARL_BD_PF_SET() ((void)0)
 #endif
-#endif
-  auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last, uint32_t dch = 0u,
-                   bool penult = false) {
+  auto kstep = [&](uint32_t ch, uint32_t t, bool ro, bool last, uint32_t dch = 0u) {
     const uint32_t s = ch * KSTEPS + t;
-    (void)penult;  // read only by PEARL_BD_PF: the tile's last k-step but one
 #if PEARL_BD_RUNBASE
     (void)s;  // read only by PEARL_ABLATE_BHIT
 #else
@@ -874,20 +849,10 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
-#if PEARL_BD_P64 & 1
-      for (uint32_t q = hi; q < 4u; q += 2u)
-        af[nxt][q] = ldg((last ? Aprime + aoffn : par + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
-#else
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
-#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-#if PEARL_BD_P64 & 2
-      for (uint32_t q = hi; q < 4u; q += 2u)
-        bf[nxt][q] = ldg((last ? Bprime + boffn : pbr + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
-#else
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
-#endif
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;
@@ -958,26 +923,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
     }
     load_half(1u);
-#if PEARL_BD_PF
-    // PEARL_BD_PF: the k-step after next into L1, this warp's share of it. Its last
-    // two k-steps prefetch the next tile's first two.
-    {
-      const uint32_t d2 = (dch * KSTEPS + t + 2u) * 512u;
-      const int8_t *pa = last ? Aprime + (aoffn + wc * FRAG_BLOCK + 512u)
-                              : (penult ? Aprime + (aoffn + wc * FRAG_BLOCK) : pfa + d2);
-      const int8_t *pb = last ? Bprime + (boffn + wr * FRAG_BLOCK + 512u)
-                              : (penult ? Bprime + (boffn + wr * FRAG_BLOCK) : pfb + d2);
-#if PEARL_BD_PF & 1
-      asm volatile("prefetch.global.L1 [%0];" ::"l"(pa));
-#endif
-#if PEARL_BD_PF & 2
-      asm volatile("prefetch.global.L1 [%0];" ::"l"(pb));
-      asm volatile("prefetch.global.L1 [%0];" ::"l"(pb + 2u * FRAG_BLOCK));
-#endif
-      (void)pa;
-      (void)pb;
-    }
-#endif
     // The k-hi pass.
 #pragma unroll
     for (uint32_t j = 0; j < 4u; j++) {
@@ -1080,7 +1025,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_RUNBASE
     arun = aoff;
     brun = boff;
-    PEARL_BD_PF_SET();
 #endif
     kstep(0u, 0u, false, false);
     kstep(0u, 1u, false, false);
@@ -1118,7 +1062,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       arun = aoff + chunk * (KSTEPS * 512u);
       brun = boff + chunk * (KSTEPS * 512u);
       asm volatile("" : "+r"(arun), "+r"(brun));
-      PEARL_BD_PF_SET();
 #endif
       kstep(chunk, 2u, false, false);
       kstep(chunk, 3u, false, false);
@@ -1156,9 +1099,8 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_RUNBASE
     arun = aoff + (chunks - 1u) * (KSTEPS * 512u);
     brun = boff + (chunks - 1u) * (KSTEPS * 512u);
-    PEARL_BD_PF_SET();
 #endif
-    kstep(chunks - 1u, 2u, false, false, 0u, true);
+    kstep(chunks - 1u, 2u, false, false);
     kstep(chunks - 1u, 3u, false, true);
 #if !PEARL_BD_LAST_RO
     // The last chunk's readout; with PEARL_ABLATE_READOUT the tile's only one,
@@ -1208,7 +1150,6 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
         for (uint32_t i = 0; i < 4; i++) acc[mb][nb][i] = 0;
     arun = aoff;
     brun = boff;
-    PEARL_BD_PF_SET();
     kstep(0u, 0u, false, false);
     if (prev) {
 #if PEARL_BD_ROWPAIR
