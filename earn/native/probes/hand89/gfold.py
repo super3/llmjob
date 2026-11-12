@@ -106,7 +106,9 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         # is row c). Lanes 0-15 address the plus rank indices, 16-31 the minus; registers 0 and 1 are rows g and
         # g + 8 at the lane's four k, from the plus matrix, 2 and 3 the same from the minus one. The subtracts
         # write the fragment words: no PRMT.
-        ld = Ins("LDSM.8.MT1616.2 R%d, [R%d%s]" % (q, areg, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
+        # sr (goal-nv50g): A's or B's base in a uniform register, as below.
+        ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""
+        ld = Ins("LDSM.8.MT1616.2 R%d, [R%d%s%s]" % (q, areg, ur, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
                  wait=wait_ld)
         w = (sb,)
     else:

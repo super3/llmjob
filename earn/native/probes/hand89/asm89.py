@@ -133,6 +133,9 @@ FORMS = [
     # sm_120a's byte transpose (goal-nv50d, ptxas 13.3's word: ldmatrix.m16n16.x2.trans.b8): two 16 x 16 byte
     # matrices, four registers. Only sm_120 has it (rfold.py b8).
     (r"LDSM\.8\.MT1616\.2 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x13900)),
+    # ... with a uniform register in the address (b8 with sr, goal-nv50g; the same fields as LDSM.16's).
+    (r"LDSM\.8\.MT1616\.2 " + R + ", " + MEMU,
+     lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x13900 | UMEM)),
     (r"LDS\.128 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xc00)),
     (r"LDS\.64 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xa00)),
     (r"LDS " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0x800)),

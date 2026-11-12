@@ -58,6 +58,10 @@ def shared(ins):
     takes the uniform register in bits 32-39 and bit 27 of the second word; a store has another operation (0x988)
     and takes it, with the size, in the second word."""
     t = ins.text
+    if re.search(r"\[R\d+\+UR\d+", t):
+        # sr (goal-nv50g): the address names one of sr's uniform registers, which hold the shared base already
+        # (rfold.py sr_sb). asm89 encodes it as ptxas 13.3 does.
+        return ins
     m = re.search(r"\[(R\d+|RZ)(?:\+(-?0x[0-9a-f]+))?\]", t)
     lo, hi = asm89.assemble(t)
     u = UR_S[0]
@@ -87,6 +91,10 @@ def port(code):
         op = re.sub(r"^@!?P\d ", "", t).split(" ")[0]
         if op.split(".")[0] in MEM_OPS:
             ins = shared(ins)
+        elif op == "R2UR":
+            # sr (goal-nv50g): sm_120's R2UR is operation 0x2ca (ptxas 13.3's 0x...040472ca for R2UR UR4, R4).
+            m = re.match(r"R2UR UR(\d+), R(\d+)$", t)
+            ins.raw = (0x72ca | int(m[1]) << 16 | int(m[2]) << 24, 0xe0000)
         elif t.startswith("ULDC.64"):
             m = re.match(r"ULDC\.64 UR(\d+), c\[0x0\]\[0x118\]", t)
             assert m, t
@@ -461,6 +469,15 @@ def main():
     if len(uw) < 2:
         sys.exit("the compiled function writes too few uniform registers: %s" % uw)
     UR_S[:] = uw[:2]
+    if cfg["sr"]:
+        # sr's uniform registers hold through the loop, so the compiled function must not use them, nor the kernel
+        # keep anything in them across the call; the shared base goes into each one that is an address's.
+        cfg["sr_sb"] = UR_S[0]
+        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {rfold.sr_ust(cfg, t) for t in range(4)} | {rfold.sr_ud(cfg, t) for t in range(4)}
+        theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
+        theirs |= {x + 1 for x in theirs}
+        if mine & theirs:
+            sys.exit("the compiled kernel uses UR%s, which sr keeps its bases in" % ", UR".join(map(str, sorted(mine & theirs))))
     code, bad, most, G = rfold.build(cfg)
     if bad:
         sys.exit("%d latency problems: not written" % bad)

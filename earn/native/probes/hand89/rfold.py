@@ -269,7 +269,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # (UR sr_ub), the stage slot of each turn's k-step (UR sr_ua + 2 + turn, with R0 the lane's place in the
            # band's stage). The record pointer moves by a uniform step a turn (UR sr_ua + 6 + turn), since each
            # warp takes the chunk's k-steps in an order of its own; that add replaces the pointer's step a chunk.
-           sr=0, sr_ua=16, sr_ub=17,
+           sr=0, sr_ua=16, sr_ub=17, sr_sb=None,
            # srg (with sr): how many gaps behind the record load the pointer steps on (it waits for the load to have read it).
            srg=1,
            # dbg, TIMING ONLY (goal-nvk19, the bxt fault): 1 the tail's STL left out, 2 its LDL a move.
@@ -335,6 +335,12 @@ def sr_prologue(cfg, R, S, q):
     c.append(Ins(muladd(u + 1, S + 3, 2048 * mt)))
     c.append(Ins(muladd(u + 2, t0, 8192)))
     c.append(Ins(addi(u + 2, u + 2, 2048 * 2 * mt)))
+    # sr_sb (rfold120.py, goal-nv50g): sm_120's shared addresses carry the shared base in a uniform register, and an
+    # address names one uniform register, so the bases that sr puts there include it.
+    sbase = cfg.get("sr_sb")
+    if sbase is not None:
+        for r in (u + 1, u + 2):
+            c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (r, r, sbase)))
     c.append(Ins("NOP", stall=6))
     r2ur(cfg["sr_ua"], u + 1)
     r2ur(cfg["sr_ub"], u + 2)
@@ -343,6 +349,9 @@ def sr_prologue(cfg, R, S, q):
     tmp = [u + 1, u + 2, u + 3, t0]
     for t in range(4):
         c.append(Ins(muladd(tmp[t], st[t], 512 * mt)))
+    if sbase is not None:
+        for t in range(4):
+            c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (tmp[t], tmp[t], sbase)))
     c.append(Ins("NOP", stall=6))
     for t in range(4):
         r2ur(sr_ust(cfg, t), tmp[t])

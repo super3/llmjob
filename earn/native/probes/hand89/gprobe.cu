@@ -133,11 +133,12 @@ int main(int argc, char **argv) {
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
   // rot 3 (goal-nv50d): rot 2's records with the tables in plain row order (byte c of an entry is row c of the
   // group), for rfold.py's b8 gathers (ldmatrix's byte transpose, sm_120).
-  const bool tab8 = argc > 8 && atoi(argv[8]) == 3;
+  // rot 5 (goal-nv50g): rot 3's tables with rot 4's records, for b8 and sr together (sm_120).
+  const bool tab8 = argc > 8 && (atoi(argv[8]) == 3 || atoi(argv[8]) == 5);
   // rot 4 (goal-nvk19): records the eight warps share, for rfold.py's sr. One stream of 8-byte records, k-step by
   // k-step: lane l's {16 pa0 | 16 pa1 << 16, 16 pb0 | 16 pb1 << 16}, no warp's base in them (the loop keeps those
   // in uniform registers), then four k-steps of zeros (the loop reads up to three k-steps past the last chunk).
-  const bool shared = argc > 8 && atoi(argv[8]) == 4;
+  const bool shared = argc > 8 && (atoi(argv[8]) == 4 || atoi(argv[8]) == 5);
   const uint32_t rot = argc > 8 ? (tab8 || shared ? 2u : (uint32_t)atoi(argv[8])) : 0u;
   if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
