@@ -85,7 +85,8 @@ Each lane holds 8 rows by 8 columns of each 32x64 block, laid out so the region 
 (`PearlAmdDot4` in `pearl_amd_fold.h`), and a k-step of 4 bytes is 24 words read from LDS and 128
 dot4s a lane. On RDNA 2 the eight lanes of a dpp8 group hold the same eight A' rows, so each reads one of
 them and every dot4 takes its A' word from the lane that read it, through the dot4's own dpp8 operand
-(`PEARL_AMD_DOT4_DPPA`): 10 words read a k-step, not 24. And its slab is 64 bytes (`PEARL_AMD_DOT4_SLAB`;
+(`PEARL_AMD_DOT4_DPPA`): 10 words read a k-step, not 24, each read 8 bytes wide since 13 November, so one
+`ds_read_b64` serves two k-steps (`PEARL_AMD_DOT4_DPPA_KB`). And its slab is 64 bytes (`PEARL_AMD_DOT4_SLAB`;
 the host lays out each fold's operands by that fold's slab), half the barriers of 32. The reference fold reads both operands from LDS for every dot4, which is why it is
 slow. The compiler first merged each row's reads for a slab into two 16-byte reads and waited on
 each just before its dot4s, which spilled on gfx11 and ran at 10.2 TMAC/s on an RX 7800 XT; an
@@ -493,7 +494,10 @@ by contrast, stops only its own card.
   barrier at 6% and the staging at 4%. Not the cause: VGPR bank conflicts. A dot4 that reads two operands from one
   bank runs at half to three quarters rate in a probe, and 643 of the old fold's 1032 dot4s did, but placing every
   operand by hand so none did (physical register constraints) changed the fold by -0.7% to +0.2%. Also slower: the
-  next slab stored at the top of each slab (-3.4%); no change: an LDS-only slab barrier. Still to do: steps 1-5 at
+  next slab stored at the top of each slab (-3.4%); no change: an LDS-only slab barrier. 13 November: 8-byte
+  fragment reads (`PEARL_AMD_DOT4_DPPA_KB=8`), +2.9% on the RX 6800 and +3.1% on an RX 6600, fold alone; 16-byte
+  reads, a fold with A' from SGPRs (scalar loads, no dpp8), one with no LDS at all, and the next slab's store moved
+  into the slab were slower or under +1.2% (benchmark.md). Still to do: steps 1-5 at
   stock clocks, an RX 6700 (gfx1031), and taking gfx103x out of the checked cards once it has mined in a release.
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab

@@ -549,6 +549,18 @@ struct PearlAmdDot4 {
 #ifndef PEARL_AMD_DOT4_DPPA
 #define PEARL_AMD_DOT4_DPPA 1
 #endif
+// PEARL_AMD_DOT4_DPPA_KB: bytes of k each LDS read of the DPPA k-step takes, 8 (default since 13 November) or 4.
+// At 8 a pass reads each A' and B' word pair with one ds_read_b64 and runs two k-steps on them: half the LDS
+// instructions. RX 6800 and RX 6600, 1400 MHz cap, fold alone: +2.9% and +3.1% (18.97 against 18.44 TMAC/s, 8.74
+// against 8.48); 217 VGPRs, still 4 waves. 16 (ds_read_b128, four k-steps) took 249 VGPRs and ran 12% slower.
+// Timing-only builds of the 8-byte loop then priced the slab barrier at +3.1%, the staging at +2.6% and the readout
+// at +1.7% (earn/tuning/benchmark.md). -DPEARL_AMD_DOT4_DPPA_KB=4 builds the 4-byte k-step, to compare.
+#ifndef PEARL_AMD_DOT4_DPPA_KB
+#define PEARL_AMD_DOT4_DPPA_KB 8
+#endif
+#if PEARL_AMD_DOT4_DPPA_KB != 4 && PEARL_AMD_DOT4_DPPA_KB != 8
+#error "PEARL_AMD_DOT4_DPPA_KB is 4 or 8"
+#endif
 #if PEARL_AMD_DOT4_DPPA && PEARL_AMD_SDOT4 && PEARL_AMD_DOT4 && !PEARL_AMD_EMU && defined(__HIP_DEVICE_COMPILE__)
 #define PEARL_AMD_DOT4_DPPA_ON 1
 static_assert(PEARL_AMD_DOT4_K == 4, "PEARL_AMD_DOT4_DPPA is for K 4");
@@ -1983,6 +1995,32 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     if constexpr (std::is_same<P, PearlAmdDot4>::value) {
       // PEARL_AMD_DOT4_DPPA (above): this lane's A' row is rho = lane & 7 of its group's eight (load_a's rows).
       const int8_t *aRow = aBase + (4 * (lane & 1) + ((lane >> 3) & 3) + 8 * ((lane & 7) >> 1)) * S;
+#if PEARL_AMD_DOT4_DPPA_KB == 8
+      // PEARL_AMD_DOT4_DPPA_KB (above): 8 bytes of k a read, two k-steps a pass.
+#pragma unroll
+      for (int kp = 0; kp < KS / 8; kp++) {
+#if PEARL_AMD_DOT4_SPLIT
+        asm volatile("" ::: "memory");
+#endif
+        const pearl_amd_v2i aw2[2] = {*reinterpret_cast<const pearl_amd_v2i *>(aRow + 8 * kp),
+                                      *reinterpret_cast<const pearl_amd_v2i *>(aRow + P::kTM * S + 8 * kp)};
+        pearl_amd_v2i b2[8];
+#pragma unroll
+        for (int j = 0; j < 8; j++)
+          b2[j] = *reinterpret_cast<const pearl_amd_v2i *>(bBase + ((lane & 7) + 8 * j) * S + 8 * kp);
+#pragma unroll
+        for (int q = 0; q < 2; q++) {
+#define PEARL_AMD_DPPA_ROW2(R) \
+  _Pragma("unroll") for (int j = 0; j < 8; j++) pearl_amd_dot4_from<R>(acc[mt][0][8 * R + j], aw2[mt][q], b2[j][q]);
+#pragma unroll
+          for (int mt = 0; mt < 2; mt++) {
+            PEARL_AMD_DPPA_ROW2(0) PEARL_AMD_DPPA_ROW2(1) PEARL_AMD_DPPA_ROW2(2) PEARL_AMD_DPPA_ROW2(3)
+            PEARL_AMD_DPPA_ROW2(4) PEARL_AMD_DPPA_ROW2(5) PEARL_AMD_DPPA_ROW2(6) PEARL_AMD_DPPA_ROW2(7)
+          }
+#undef PEARL_AMD_DPPA_ROW2
+        }
+      }
+#else
 #pragma unroll
       for (int kk = 0; kk < KS / P::kTK; kk++) {
 #if PEARL_AMD_DOT4_SPLIT
@@ -2001,6 +2039,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
         }
 #undef PEARL_AMD_DPPA_ROW
       }
+#endif  // PEARL_AMD_DOT4_DPPA_KB
     } else
 #endif
 #pragma unroll
