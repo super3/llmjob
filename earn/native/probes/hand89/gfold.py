@@ -128,7 +128,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     if x:
         x4 = (x & 0xff) * 0x01010101
         adds += [Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (r, r, x4)) for r in (q, q + 1)]
-    if cfg.get("b8") and not cfg["nold"]:
+    if cfg.get("b8"):
         assert not x, "b8 with xa/xb"
         adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (d, q + 2 + h, imm, q + h), wait=w) for h, d in enumerate((d1, d2))]
         return ld, adds, []
