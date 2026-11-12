@@ -224,7 +224,16 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            rpr=0,
            # prr=1 (goal-nvk15): a gather's first PRMT marks both its sources for the reuse latch, so the pair's
            # second PRMT (same sources) reads neither from the register file (gfold.emit). Register-file energy.
-           prr=0)
+           prr=0,
+           # rgf=1 (goal-nvk16, correct): the readout's steps go first in their gap, right behind the IMMA's stall, not
+           # last, right ahead of the next IMMA. 99.39% of the pipe against 99.18%.
+           rgf=0,
+           # rb0, rb1 (goal-nvk16, correct): the readout keeps out of the chunk's last rb0 gaps and the next chunk's first
+           # rb1. 9 and 3 were chosen when the steps went last in a gap. With rgf=1, rb0=3 rb1=0 holds 99.54% of the
+           # pipe, the level of the loop with no readout at all (nord, 99.55%); rb0=0 loses (99.24%).
+           rb0=9, rb1=3,
+           # rst (goal-nvk16): the stall of each readout step (0 keeps the default, 1). rst=2 gains nothing.
+           rst=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -350,8 +359,12 @@ def chunk(cfg, R, role=None):
     G = [[] for _ in range(tot)]
     iwait = {}
 
-    def put(g, ins, wrapped=None):
-        G[g % tot].append((ins, g >= tot if wrapped is None else wrapped))
+    def put(g, ins, wrapped=None, front=False):
+        item = (ins, g >= tot if wrapped is None else wrapped)
+        if front:
+            G[g % tot].insert(0, item)
+        else:
+            G[g % tot].append(item)
 
     plans = []          # (LDSM gap, IADD3 gap, PRMT gap, address register, offset, d1, d2, rsb)
     quads, bfalt = R["quads"], None
@@ -601,7 +614,7 @@ def chunk(cfg, R, role=None):
     assert role == "load" or cfg["cq"] or [plans[k][0] for k in order[-3:]] == [tot - 4, tot - 3, tot - 2]
     # The readout, as gfold's: two chains of XOR3, one step of each a gap, from r roff of the last turn.
     b3 = 3 * ni
-    busy = set(range(b3 + ni - 9, tot + 3))
+    busy = set(range(b3 + ni - cfg["rb0"], tot + cfg["rb1"]))
     end = b3
     for ch in range(2):
         g = b3 + cfg["roff"]
@@ -640,8 +653,10 @@ def chunk(cfg, R, role=None):
                     first = False
                 else:
                     ins = Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (R["xr"][ch], R["xr"][ch], r, r2))
+                if cfg["rst"]:
+                    ins.stall = cfg["rst"]
                 if not cfg["nord"]:
-                    put(g, ins)
+                    put(g, ins, front=bool(cfg["rgf"]))
                 g += 1
         end = max(end, g)
     assert end > tot, "the readout's tail is taken to lie in the next chunk"
