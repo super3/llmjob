@@ -31,7 +31,7 @@ def load_bench(**env):
     """bench.py loaded afresh with these BENCH_ variables set (and every other one unset), its files in TMP
     whatever another test module set SALAD_MINE_DIR to."""
     keys = ("BENCH_SET", "BENCH_LANE", "BENCH_COMMIT", "BENCH_BASE_SHA", "BENCH_VERIFY_SECS", "BENCH_CLASSES", "BENCH_HOSTS",
-            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "SALAD_MINE_DIR")
+            "BENCH_TAP", "BENCH_OURS_SRC", "BENCH_FOLD", "BENCH_NOFOLD", "BENCH_PART", "BENCH_TAG", "SALAD_MINE_DIR")
     old = {k: os.environ.get(k) for k in keys}
     for k in keys:
         os.environ.pop(k, None)
@@ -539,6 +539,11 @@ class TestBenchRTX(unittest.TestCase):
         calls = []
         self.bench(m, calls, classes=["RTX 3060 Ti (8 GB)"], cls=0, tries=0, group=None).create()
         self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-30b-rtx3060ti-1")
+        # BENCH_TAG: names an earlier run never used (Salad keeps a deleted group's name).
+        t = self.src_lane(BENCH_TAG="n12-")
+        calls = []
+        self.bench(t, calls, classes=["RTX 3090 Ti (24 GB)"], cls=0, tries=0, group=None).create()
+        self.assertEqual(next(c[2] for c in calls if c[0] == "POST")["name"], "bench-n12-30-rtx3090ti-1")
 
 
 class TestBenchAMD(unittest.TestCase):

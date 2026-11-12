@@ -26,6 +26,10 @@ LANE = os.environ.get("BENCH_LANE", "")
 # BENCH_PART: a second run of a lane's rows (with BENCH_CLASSES naming the classes it takes), in files and group
 # names of its own, so a slot that is done with its own lane can take some of another lane's classes.
 PART = os.environ.get("BENCH_PART", "")
+# BENCH_TAG: a word put in every group name of the run ("n12-" makes bench-n12-40-rtx4090-1). Salad keeps a deleted
+# group's name for days and refuses it to a new one (name_conflict, then 404 on a GET), so a rerun of a set whose
+# names an earlier run used would pass over each name in turn (12 November: bench-40-rtx4090-1 and -1r1).
+TAG = os.environ.get("BENCH_TAG", "")
 LANES = {"amd": {"a": ["RX 9070 XT", "RX 9060 XT"], "b": ["RX 7900 XTX", "RX 7900 XT"], "c": ["RX 7800 XT"]},
          "rtx": {"20": ["RTX 2080 Ti", "RTX 2080", "RTX 2070 Super", "RTX 2070", "RTX 2060 Super", "RTX 2060"],
                  "30": ["RTX 3090 Ti", "RTX 3090", "RTX 3080 Ti", "RTX 3080", "RTX 3070 Ti", "RTX 3070", "RTX 3060 Ti",
@@ -423,7 +427,7 @@ class Bench:
         slug = re.sub(r"[^a-z0-9]", "", cls.split("(")[0].lower().replace("amd", "")) if SET == "amd" else \
             w.slug(cls) if SET == "rtx" else w.slug(cls).replace("rtx", "gtx")
         bump = self.st.get("bump", 0)       # names Salad holds but can't show (below), passed over
-        name = f"bench-{LANE + PART + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
+        name = f"bench-{TAG}{LANE + PART + '-' if LANE else ''}{slug}-{self.st['tries'] + 1}{f'r{bump}' if bump else ''}"[:60]
         order = self.order()
         # The HIP build on an AMD box needs amdtest's 4 vCPUs and 8 GB.
         cpu, mem = (4, 8192) if SET == "amd" or OURS_SRC else (2, 4096)   # and nvcc's, with OURS_SRC
