@@ -339,7 +339,7 @@ describe('what the first run on hardware set', () => {
       'const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;',
       'uint64_t band = cache ? cache / share / (32ull * k) : 16;',
     ]);
-    expect(HOST).toContain('bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu; }');
+    expect(HOST).toContain('bool fold_is_frag(int f) {\n  return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R || f == kXmx8REmu || f == kXmx8W || f == kXmx8WEmu;\n}');
     // The fold is settled before the band is: pick_fold comes first in create.
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     const picked = create.indexOf('if (!pick_fold(ctx, err, err_len)) {');
