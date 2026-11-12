@@ -227,6 +227,45 @@ tried. It would let every warp do the same work, where our fold has four warps h
 when they drift apart. Whether that is where its 3% comes from is a guess; building it is a new readout and hash for
 the Turing fold, and October's ROWPAIR build, which cut the readout's shuffles from six to one, read −0.4 to 0.0%.
 
+### Salad, 12 November: the rotation fold priced on RTX 20, and where we stand (branch goal/nv-20)
+
+The rotation fold that lifted RTX 40 and 30 by about 6% was priced on Turing before anything was built, with a
+timing-only probe (`native/probes/turing/price75.cu`; tables in `native/probes/README.md`, "The rotation fold priced
+on Turing"). Its operand stream alone, with no readout and no hash, mines about what the release fold mines with
+both, so it is not built for sm_75:
+
+| PC | Rotation stream, no readout or hash (by count) | Release fold, `hashrate.js` |
+|---|---|---|
+| RTX 2070 Super `d52b8b17` (235 W) | 84.9% of the pipe at 1799-1827 MHz: 62.6-63.5 TH/s | 64.24, 64.24 at 1767 MHz |
+| RTX 2080 Ti `63284c7a` (220 W) | 87.0% at 1334-1342 MHz: 80.9-81.3 | 81.88-82.14 at 1293-1295 MHz |
+| RTX 2060 `58719891` (6 GB) | 87.0% at 1451-1467 MHz: 38.8-39.2 | 39.02-39.06 at 1385-1389 MHz |
+
+Turing pays for every shared-memory access and ALU step in tensor pipe (32 ALU steps a warp a k-step: -2.8 to -2.9
+points; past about 12 shared accesses of 16 bytes a k-step the pipe falls away), where Ada paid mostly in clock. The
+fold needs 14 shared accesses and 40 ALU steps a k-step on Turing's 64x64 warp tiles; the release needs 8 global
+loads.
+
+The other miners on the same PCs (`tuning/salad/nv20box.sh`: bench.sh on the stand-in pool at 2^210, 180 s after a
+60 s warm-up, each miner's sample means from 60 s on; ours is the v0.6.15 release):
+
+| PC | Ours | PeakMiner 2.20.7 | SRBMiner | OneZeroMiner 1.8.5 | Ours, % of best | Per clock, of PeakMiner |
+|---|---|---|---|---|---|---|
+| RTX 2070 Super `d52b8b17` | 64.61 (1767 MHz, 228 W) | 65.78 (1778, 229 W) | 64.51 (1758) | did not mine (its dev-pool connection failed) | 98.2% | 98.8% |
+| RTX 2080 Ti `63284c7a` | 81.54 (1297 MHz, 212 W) | 82.24 (1313, 212 W) | 80.95 (1297) | 79.57 (1328) | 99.1% | 100.4% |
+| RTX 2060 6 GB `58719891` (160 W limit, held near 110 W) | 38.54 (1413 MHz, 111 W) | 39.44 (1373, 107 W) | 38.84 (1400) | 37.82 (1435) | 97.7% | 94.9% (our CLI's samples here spread 32.6-45.7; `hashrate.js` read 39.03 at 1388 MHz, 97.9% of PeakMiner a clock) |
+
+Launch-shape races on the release core, `hashrate.js` legs taking turns on one PC:
+
+- 2080 Ti: the band rule (8) 81.88 / 82.04 / 82.04 / 82.14 TH/s; band 6 81.88 / 82.04 (level); band 10 79.35 / 79.56
+  (-3.0%); a batch of 512 column offsets in place of 2048, 82.02 (level).
+- 2060: the rule (band 4) 39.03 / 39.06 / 39.03; band 3 39.02 / 39.05 (level); a batch of 512, 39.02 / 39.03 (level).
+
+What it leaves: on the 2080 Ti PeakMiner's lead is clock at the same watts (1.2%), not work a clock. On the 2070
+Super it is 0.6% clock and 1.2% work a clock. The release fold's chunk loop is 512 IMMA and 149 other instructions a
+chunk, 64 of them the readout's xors at their floor; by the probe's ALU price those and the hash explain most of what
+it loses a clock. A batch of 512 column offsets costs no shown rate on any of the cards measured, which makes the review's
+job-switch change (fewer hits dropped when a job changes) free to try; it was not measured on a pool.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |

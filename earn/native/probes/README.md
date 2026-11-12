@@ -2165,6 +2165,53 @@ as earn/tuning/benchmark.md takes ours, with medians of the SM clock, power and 
 miner runs. It differs from earn/tuning/benchmark.md's method only in using this checkout's core instead
 of the release files, so its results go in a section's notes and never change a row.
 
+### The rotation fold priced on Turing: `turing/price75.cu` (RTX 2070 Super, 2080 Ti and 2060, Salad, 2026-11-12)
+
+Branch `goal/nv-20`. The rotation fold lifted RTX 40 and 30 by about 6% (sections below). Before building one for
+sm_75 it was priced the way the RTX 40 price list was: a timing-only probe at the release fold's geometry (eight
+64x64 warp tiles over 128x256, 128 IMMA.8816 a warp a k-step, k 2048, one block an SM) whose operands come from
+different places, and to which single kinds of steps are added. Every stream computes wrong sums on purpose.
+`nvcc -arch=sm_75 -O3 -o price75 price75.cu`, then `price75 <stream> <seconds>`; `tuning/salad/nv20box.sh` runs a
+list on a Salad PC with `tuning/salad/nv20probe.py`, which samples the card beside each run. Pipe is IMMA a clock an
+SM over the peak of one (1024 MACs), from the SM's cycle counter; "by count" is SMs x 1024 x clock x pipe. Both
+cards held their power cap in every run.
+
+| Stream (a warp a k-step) | 2070 Super, 235 W: pipe, MHz, by count | 2080 Ti, 220 W |
+|---|---|---|
+| operands in registers, no memory | 97.8%, 1933, 77.4 | 100.0%, 1514, 105.4 |
+| ready fragments in shared: 8 ldmatrix | 97.6%, 1832-1889, 73.2-75.5 | 99.9%, 1389-1414, 96.7-98.4 |
+| and 4 / 8 / 16 shared loads of 16 bytes | 96.3% / 90.0% / 64.7% (1810-1858) | 8: 92.2%, 1342 |
+| and 8 global loads L1 holds | 87.3%, 1772 | |
+| and 4 / 8 global loads from the L2 | 95.6%, 1796 / 72.2%, 1753 | |
+| and 32 / 64 ALU steps (PRMT, IADD3 pairs) | 94.7%, 1828 / 92.3%, 1814 | 32: 97.1%, 1369 |
+| and 4 shared stores of 16 bytes | 95.2%, 1822 | |
+| A' from global as the release loads it, B in registers | 91.1-92.0%, 1823-1852 | 94.0%, 1369 |
+| B' from global as the release loads it, A in registers | 92.0-92.2%, 1787-1789 | 94.0%, 1306 |
+| **rotation fold**: B gathered every k-step, A gathered at one turn in four and shared through a stage, a barrier a row slot a k-step | **84.9%, 1799-1827, 62.6-63.5** | **87.0%, 1334-1342, 80.9-81.3** |
+| the same, no barrier (would be wrong) | 89.3%, 1796, 65.7 | 91.6%, 1314, 83.8 |
+| gather fold (every fragment gathered by every warp) | 83.9%, 1787, 61.4 | 86.1%, 1339, 80.2 |
+| the release fold, mined (`hashrate.js`, with its readout and hash) | 64.24 TH/s at 1767 MHz, twice | 81.88-82.14 at 1293-1295 |
+
+On an RTX 2060 (6 GB, 30 SMs, 3 MB L2, held near 110 W) the same: ready fragments 99.9% at 1470-1504 MHz, 32 ALU
+steps 97.1%, the rotation stream 87.0% at 1451-1467 MHz (38.8-39.2 by count), the release mined 39.03-39.06 at
+1385-1389 MHz.
+
+- **The rotation fold does not carry over.** With no readout and no hash its operand stream alone mines about what
+  the release mines with both (63 against 64.2; 81 against 81.9). The readout and hash cost a fold 2-4% more. Not
+  built.
+- **Why: Turing pays for every step in pipe, not only in clock.** On the RTX 4090 a shared access or an ALU step
+  cost clock and almost no pipe. Here 32 ALU steps a warp a k-step cost 2.8-2.9 points of pipe on both cards (Ada:
+  0.6), and shared accesses stop being free past about 12 of 16 bytes a warp a k-step (one k-step is 1024 cycles of
+  the SM; each 512-byte access is 4 cycles of its 128 bytes a clock). The rotation fold needs 14 shared accesses
+  and 40 ALU steps a k-step on 64x64 warp tiles, where the release needs 8 global loads, most of them L1 hits.
+- The rotation fold's tables and stage also only just fit: 48 KB of tables and a 16 KB stage are all of Turing's
+  64 KB of shared, with no room for transcripts.
+- The release fold's chunk loop (ptxas 12.6) is 661 instructions a chunk: 512 IMMA, 32 loads, 75 LOP3 (64 of them
+  the readout's xors, at their floor) and 42 others. By the ALU price above, its non-IMMA instructions and the
+  hash explain most of what it loses a clock (89-92% of the peak mined).
+- The probe's own "rel" stream (the release's 8 global loads) reads only 71-74%: ptxas schedules it badly at 254
+  registers. It is not the release; the release is measured with `hashrate.js`.
+
 ### What fills the tensor pipe: `pipeprobe.cu` and `pipeprobe2.cu` (RTX 4090, 2026-11-11)
 
 Two probes that run the fold's instruction stream with nothing else in it, one block an SM, each warp timing itself with the SM's cycle counter (`clock64`). Pipe use is 16 cycles an IMMA over the cycles taken, so it does not depend on the clock. `pipeprobe.cu` sets the warps' roles and the counts at run time (masks for folding and producing warps, runs, stagger). `pipeprobe2.cu` fixes everything at build time, so no branch stands between two mma: `-DRD` (readout as one, three or six runs), `-DDRAW`/`-DDPOS`/`-DDGRP`/`-DDREAL` (draw-shaped units and where they go), `-DDSYNC` (one shared add and test a k-step).
