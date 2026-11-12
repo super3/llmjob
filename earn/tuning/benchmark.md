@@ -304,6 +304,72 @@ the pairs across that step carry it. In the steady half all four builds read 60.
 - Box time: one group, `nv20b-2070-1`, about 2 h (machine `e7703412`). The switches are in commits c6fe3964, e2c50a5f
   and afd01fba and were taken out again (c1f1e88e): the Turing tests compare the fold with copies of its source.
 
+### Salad, 12 November: B's loads kept in L1 (+0.9% on an RTX 2080 Ti), and a SASS load placement (branch goal/nv-20c)
+
+Four PCs, at most two at once: an RTX 2080 Ti (driver 621.14, 250 W limit, held at 241-244 W, 76-78 °C,
+1376-1392 MHz, machine `5a02bd58`), a plain RTX 2070 (621.14, 225 W, 220-224 W, 68-70 °C, 1830-1847 MHz), an RTX
+2060 (581.42, 170 W limit, 150-152 W, 84-85 °C, 1594-1605 MHz, machine `dff31915`) and an RTX 2070 SUPER (616.92, 215 W, 211-213 W, 73-74 °C, 1747-1751 MHz). `nv20box.sh`: the core built on
+the box from the branch, `hashrate.js` legs of 90 s taking turns, an A/A twin of the control in every race, each leg
+compared with the control legs beside it ("paired"). Every build passed `verify-hits.js` 400 of 400 in 90 s.
+
+**The cache operator of the chunk loop's loads** (`PEARL_BD_LD_B` / `PEARL_BD_LD_A` at the time; sm_75 encodes each
+as different bits of the same LDG, and ptxas schedules the loop identically):
+
+| Build | 2080 Ti | 2070 | 2060 |
+|---|---|---|---|
+| A/A twin | −0.06% (round 1), −0.69% (round 2) | −0.17% | +0.06% |
+| B evict_last as shipped (050b284f) against two release builds, 3 rounds | **+0.58%** (89.40 against 88.88; the two release builds agree within 0.1%) | 2070 SUPER: **0.00%** (66.01 against 66.01 and 65.97) | |
+| B `.nc.L1::evict_last` (`LDG.E.EL`) | **+0.92%** (+0.76 to +1.03), **+0.95%**; per clock +0.1%, +10 to 13 MHz | +0.30% (+0.18 to +0.52); per clock −0.2%, +8 MHz | +0.06% (−0.18 to +0.26) |
+| A and B evict_last | +0.91% | | +0.14% |
+| B evict_last + `L2::128B` | +0.87% | | +0.15% |
+| A evict_last | +0.16% | +0.08% | |
+| A and B coherent (`ld.global`) | −0.14% | +0.16% | |
+| A and B `L2::128B` | −0.11% | +0.17% | |
+| `-Xptxas --register-usage-level=8` | +0.29% (per clock +0.41%) | +0.29% | |
+| B evict_last + level 8 | +1.11% | | +0.54% |
+
+- **B evict_last is the win.** On the 2080 Ti every build with it read 89.2-89.6 TH/s and both release builds
+  88.3-88.9, in all legs of two races. The gain is clock at the same work a clock: B's lines stay in L1 for the
+  scheduler's other warp, which reads the same B, so less comes from L2 and the card runs 10-13 MHz faster under
+  its power limit. It shrinks where the card has more headroom or less L2 traffic to save: +0.3% on the 2070, level
+  on the 2060. It is now the default (commit 050b284f): the machine code is the release's instruction for
+  instruction with the B loads' cache bits set (rg kernel `54c72c5e58a9`, first kernel `a0eab2bdc6f4`), and
+  `-DPEARL_BD_LD_B=0` builds the release fold byte for byte. (050b284f's message says +0.18% on the 2060; the
+  finished race says +0.06%.)
+- **register-usage-level 8 is +0.3 to +0.5% on all three cards, on top of evict_last.** It does not ship from
+  here: CI compiles every architecture in one nvcc call, so the flag would rebuild the sm_80 to sm_120 kernels too.
+  Shipping it needs the sm_75 cubin built on its own (as a patched cubin is) or a per-arch build step.
+- **`nvidia-smi -lgc` is refused on Salad** ("Unable to set GPU locked clocks ... Unknown Error"), so the
+  watts-at-a-locked-clock instrument (goal-nvk14) cannot be used there.
+
+**A SASS load placement.** `S/nv20c/mover.py` (scratchpad) moves LDGs inside the rg kernel's chunk loop, re-derives
+their waits, and checks that every register dependence over two loop turns and the loop exit keeps the protection
+(scoreboard wait or cycle distance) it had. What it found about the loop: the 8 loads at its top are pinned (their
+address register is reused at once); the 8 for the next turn sit in the readout as latency filler, and moving them
+out costs 30-68 cycles of stall repairs; a moved load may not cross the six SHFLs (offsets the driver rewrites);
+IMMA stall fields above 4 do not decode. The one placement with no repairs, `rgp4` (four loads moved later
+between IMMAs), lost 29.4% on the 2080 Ti: it put a load on scoreboard 4, which the loop's loads use to release
+their address registers, so the next turn's address writes waited for its data. `rgp4s` uses scoreboard 5 instead:
+−35.4% on the 2070 SUPER (42.6 against 66.0 TH/s, at 1886 MHz: the card idles). So scoreboard 4 was not the
+whole story: something else in a moved load costs a full load latency per turn, which my checker does not model
+(it guards correctness, and verify-hits passed 400/400 / 383/383). Not found; both lists stay in
+`probes/turing/sm75/` for whoever looks next. Placing loads by hand is not a cheap route on Turing.
+
+**Where the rows stand.** `bench.sh` on the same PCs right after the races (stand-in pool at 2^210, 180 s after
+60 s warm-up, sample means from 60 s; ours is the published v0.6.15, which still loads B without evict_last):
+
+| PC | ours v0.6.15 | PeakMiner 2.20.7 | ours / PeakMiner | with the shipped change |
+|---|---|---|---|---|
+| RTX 2080 Ti (`5a02bd58`, 250 W) | 87.99 TH/s, 1384 MHz, 241 W, 78 °C | 89.16, 1365 MHz, 242 W, 77 °C | 98.7% | about 99.3% (+0.58%) to 99.6% (+0.92%) |
+| RTX 2070 SUPER (215 W) | 66.03, 1749 MHz, 211 W, 73 °C | 68.25, 1748 MHz, 213 W, 73 °C | 96.7% | 96.7% (level) |
+
+- On this 2080 Ti, unlike goal/nv-20's (where PeakMiner's lead was 1.2% of clock), PeakMiner runs 19 MHz *lower*
+  and does 2.7% more work a clock; on this 2070 SUPER it does 3.3% more at the same clock and watts. So what is
+  left on RTX 20 is work a clock, not energy, and evict_last (an energy gain) cannot close it on the 2070 SUPER.
+- Not measured: the 2060 against PeakMiner today (the box stopped logging and was deleted). Its race said +0.06%.
+- Box time: nv20c-2070-1 47 min, nv20c-2080ti-1 2 h 0 min, nv20c-2060-1 48 min, nv20c-2070-2 41 min; about 4 h
+  15 min, including about 25 min idle after I restarted two boxes twice within 13 s.
+
 ### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
