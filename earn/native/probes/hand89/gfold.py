@@ -131,6 +131,12 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     if cfg.get("b8"):
         assert not x, "b8 with xa/xb"
         adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (d, q + 2 + h, imm, q + h), wait=w) for h, d in enumerate((d1, d2))]
+        if cfg.get("acz" if d1 < BF else "bcz"):
+            # acz, bcz (goal-nv50e, TIMING ONLY): the loads stay, but the fragment words come out as the fill (the
+            # subtract of a register from itself), so A's / B's operands never change. With nold (no loads, operands
+            # still constant) it splits what a side's draw costs at the power cap into the loads and the tensor
+            # datapath's toggling.
+            adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (d, q + h, imm, q + h), wait=w) for h, d in enumerate((d1, d2))]
         return ld, adds, []
     prm = [Ins("PRMT R%d, R%d, 0x6420, R%d" % (d1, q, q + 1)), Ins("PRMT R%d, R%d, 0x7531, R%d" % (d2, q, q + 1))]
     return ld, adds, prm
