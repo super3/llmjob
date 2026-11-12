@@ -1252,6 +1252,21 @@ typedef struct {
 #if PEARL_BD_ROWPAIR && (PEARL_BD_RED || PEARL_BD_TADDR || PEARL_BD_HASH_SPLIT)
 #error "PEARL_BD_ROWPAIR is not built with PEARL_BD_RED, _TADDR or the split hash, which have readout stores of their own"
 #endif
+// PEARL_BD_PF (0 by default; goal/nv-20b, 2026-11-12): L1 prefetches two k-steps ahead,
+// shared out among the warps that read the same lines, so one warp brings each line into
+// L1 a k-step before every warp loads it. A row group's four warps read the same A
+// fragments and a scheduler's two warps the same B ones; issued together, their loads can
+// all miss L1 at once. Bits: 1 A (warp wc prefetches A quad wc), 2 B (warp wr prefetches
+// B quads wr and wr + 2). Prefetches change no result. Device only.
+#ifndef PEARL_BD_PF
+#define PEARL_BD_PF 0
+#endif
+#if PEARL_BD_PF < 0 || PEARL_BD_PF > 3
+#error "PEARL_BD_PF is 0 to 3"
+#endif
+#if PEARL_BD_PF && !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE)
+#error "PEARL_BD_PF is written for the default fold with RUNBASE"
+#endif
 // PEARL_BD_HASH_SPLIT=N (0 by default, 1 to 13), from SNAKE's round: each scheduler's
 // two warps share its hash. As shipped, the hasher on a scheduler (warp 0, 1, 6 or 7)
 // hashes its 32 regions of a tile after the hand-off while its partner (4, 5, 2 or 3)
