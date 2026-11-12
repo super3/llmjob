@@ -987,6 +987,16 @@ typedef struct {
 #ifndef PEARL_BD_RO_PAIRGATE
 #define PEARL_BD_RO_PAIRGATE 0
 #endif
+// Races (goal-nv20f), 0 by default, device only. PEARL_BD_HDELAY=N: each hashing warp
+// waits N more clocks after its hash, which shifts it N clocks further behind its
+// scheduler's other warp, and so moves where the two warps' readouts fall against each
+// other. PEARL_BD_LD_A: the chunk loop's A loads with PEARL_BD_LD_B's cache operators.
+#ifndef PEARL_BD_HDELAY
+#define PEARL_BD_HDELAY 0
+#endif
+#ifndef PEARL_BD_LD_A
+#define PEARL_BD_LD_A 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"

@@ -544,6 +544,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // each hashes its own 64 by default, so a hand-off at the group's own barrier
   // (PEARL_BD_BAR) is enough. With HASH_RG's role (kHashRg) the second hashes all 128,
   // the first's too: that needs the persistent loop's hand-off, the whole block's.
+#if PEARL_BD_HDELAY
+  // PEARL_BD_HDELAY's word: its own shared address, written before the first barrier.
+  __shared__ uint32_t sSelf;
+  if (threadIdx.x == 0u) sSelf = (uint32_t)__cvta_generic_to_shared(&sSelf);
+#endif
 #if PEARL_BD_HIT_COORDS
   auto hash_tile = [&](uint32_t vtile) {
 #else
@@ -629,6 +634,19 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #pragma unroll
         for (int i = 0; i < 16; i++) hits.transcript[slot * 16u + i] = tm[i];
       }();
+#if PEARL_BD_HDELAY
+      // PEARL_BD_HDELAY (pearl_config.h): the hasher waits PEARL_BD_HDELAY shared loads
+      // in a chain, each reading the address of the next from sSelf, which holds its own
+      // address. In the branch the hashers already take: outside it ptxas rebuilt the
+      // tile loop, and a NANOSLEEP (.WARP) made it guard every shuffle for divergence.
+      {
+        uint32_t t = (uint32_t)__cvta_generic_to_shared(&sSelf);
+#pragma unroll
+        for (int i = 0; i < PEARL_BD_HDELAY; i++)
+          asm volatile("ld.volatile.shared.u32 %0, [%0];" : "+r"(t) :: "memory");
+        asm volatile("" :: "r"(t));
+      }
+#endif
     }
   };
 
@@ -872,7 +890,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
+#if PEARL_BD_LD_A
+      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
+#else
       return pearl_bd_ldg(p);
+#endif
     };
     // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {

@@ -744,7 +744,8 @@ describe('Turing snake IMMA order (PEARL_BD_SNAKE)', () => {
     expect(FOLD).toContain(
       'for (uint32_t j = 0; j < 4u; j++) bf[0][j] = pearl_bd_ldg(Bprime + boff + j * FRAG_BLOCK);');
     expect(FOLD).toContain('    auto ldg = [&](const int8_t *p) -> int4 {' + NL + '#if PEARL_BD_TAIL_LDG' + NL
-      + '      if (last) return pearl_bd_ldg_c(p);' + NL + '#endif' + NL + '      return pearl_bd_ldg(p);');
+      + '      if (last) return pearl_bd_ldg_c(p);' + NL + '#endif' + NL + '#if PEARL_BD_LD_A' + NL
+      + '      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);' + NL + '#else' + NL + '      return pearl_bd_ldg(p);');
     expect(FOLD).toContain('constexpr uint32_t MB = 4u, NB = 8u, KSTEPS = rank / 32u;');
     expect(FOLD).toContain('static_assert(rank == PEARL_SB_STRIDE && KSTEPS == 4u,');
     expect(FOLD).toContain('constexpr uint32_t RPL = MB / 2u;');
