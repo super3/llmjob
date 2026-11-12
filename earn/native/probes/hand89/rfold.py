@@ -72,6 +72,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # Timing only (wrong results on purpose): nost, no stores; nold, the gathers' LDSM are moves (1 all
            # of them, 2 A's only, 3 B's only).
            nost=0, nold=0,
+           # dpm=1 (goal-nvk20, after goal-nv50f's sm_120 key): a gather's subtract that waits on a scoreboard whose
+           # newest load went out after its own has that wait moved onto the first newer load on the scoreboard,
+           # when its own load is dpg IMMA or more older than that one (it has long landed there).
+           dpm=0, dpg=3,
            # bsh=1, TIMING ONLY (wrong results on purpose): B shared by the two warps of a column slot. The
            # warps of row band 0 gather B every turn, as now, and store each pair of fragments (4 STS.128 a
            # turn). The warps of band 1 gather no B: 4 LDS.128 a turn. Band 1 also loads an offsets record
@@ -1043,6 +1047,10 @@ def main():
         cfg["ur"] = next(iter(urs))
         print("note: the compiled function keeps the address base in UR%d; the loop uses it too" % cfg["ur"])
     code, bad, most, G = build(cfg)
+    if cfg["dpm"]:
+        import rfold120
+        rfold120.DPB[:] = [7, 4, 1, cfg["dpg"]]
+        print("dpm: %d over-waits moved onto a newer load" % (rfold120.depbar(code, {0, 1, 2}, 4) // 1000))
     plain = sum(len(x) for x in G)
     if bad:
         print("%d latency problems: not written" % bad)

@@ -1133,6 +1133,24 @@ verify-hits 400 of 400 on the 12.6 and 12.8 files. Kryptex through the CLI (the 
 TH/s by the miner's count over 299 s at 2667 MHz, 7 shares accepted, none rejected. Against OneZeroMiner:
 100.5% of its 342.8 at 810 MHz, 99.99% of its best (344.47 at 5001 MHz). Level with its best, not above it.
 
+### rig01, 12 November: over-waits, the swing in B drawn once's rate, and batch size (branch `goal/nv-k20`)
+
+RTX 4090, 450 W, 810 MHz memory, the shipped B-drawn-once loop (3a354cac). Nothing here beats it.
+
+- Over-waits. goal-nv50f's fix for RTX 50 (`dpm=1 dpg=3`: a gather's subtract that waits on a scoreboard a newer
+  load also set has the wait moved onto that newer load) is now an `rfold.py` key for sm_89 too, off by default.
+  It moves 12 waits a chunk in the shipped loop and changes nothing: probe pipe 99.08-99.10% against 99.08-99.09%,
+  pipe x clock 2635-2639 against 2637-2644 (40 s runs). With the scoreboards handed out in turn (`sbo=0`) the loop
+  drops to 97.58%, and `dpm=1` brings it back to 99.08%: the two fixes do the same job, and on sm_89 the loop's
+  remaining 0.9% of pipe is not in the gathers' waits.
+- The swing. hashrate.js samples of B drawn once have sd 1.6-1.8 against 0.6-0.8 for the older loop. Every sample
+  kept (100 ms clock and watts beside them): it is one 0.5 s window 1.5% high once a salt (every 6.5 s), the rest
+  as steady as the older loop's. The time-weighted rate equals the plain mean (344.55 and 344.55), so the swing
+  hides no loss. One of four 70 s runs had a 0.13 s stall and a 2 s pause of the whole process (host side).
+- Batch size (`PEARL_ROT_TILES`, tiles a block a batch, default 32), hashrate.js legs of 120 s in the order
+  32, 64, 128, 128, 64, 32: 343.80 (first leg), 344.72, 344.05, 344.23, 344.62, 344.72 TH/s. 128 is 0.15% lower
+  (its sd 0.6: bigger batches smooth the salt's window); 64 is level with 32. Default kept.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
