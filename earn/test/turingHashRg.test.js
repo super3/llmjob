@@ -1364,8 +1364,13 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
     // pearl_wmma_fold_fn. The second's: the create check and pearl_wmma_fold_fn.
     expect(count(cast('pearl_tile_fold_wmma'))).toBe(2);
     expect(count(cast('pearl_tile_fold_wmma_rg'))).toBe(2);
+    // With PEARL_T75_RUL8 the level-8 build of whichever kernel the card picked
+    // (turingT75.test.js).
     expect(block(HOST_LINES, 'const void *pearl_wmma_fold_fn(const Ctx *ctx) {')).toEqual([
-      'const void *pearl_wmma_fold_fn(const Ctx *ctx) {', '#if PEARL_BD_RG_KERNEL_BUILT',
+      'const void *pearl_wmma_fold_fn(const Ctx *ctx) {', '#if PEARL_T75_RUL8', '#if PEARL_BD_RG_KERNEL_BUILT',
+      `if (ctx->bdT75 && ctx->bdHashRg) return ${cast('pearl_t75_tile_fold_wmma_rg')};`, '#endif',
+      `if (ctx->bdT75 && !ctx->bdHashRg) return ${cast('pearl_t75_tile_fold_wmma')};`, '#endif',
+      '#if PEARL_BD_RG_KERNEL_BUILT',
       `if (ctx->bdHashRg) return ${cast('pearl_tile_fold_wmma_rg')};`, '#else', '(void)ctx;', '#endif',
       `return ${cast('pearl_tile_fold_wmma')};`, '}']);
     const resolve = block(HOST_LINES, 'void resolve_fold(Ctx *ctx) {');
@@ -1393,6 +1398,8 @@ describe('the second sm_75 kernel, HASH_RG\'s code by L2 size (PEARL_BD_RG_KERNE
       ['cudaFuncSetAttribute', 'fold'],
       ['cudaOccupancyMaxActiveBlocksPerMultiprocessor', 'fold'],
       ['cudaFuncGetAttributes', cast('pearl_tile_fold_wmma_rg')],
+      // The level-8 check at create: the kernel pearl_wmma_fold_fn now picks.
+      ['cudaFuncGetAttributes', 'pearl_wmma_fold_fn'],
       ['cudaOccupancyMaxActiveClusters', 'pearl_tile_fold_hopper'],
     ]);
     expect(sites.filter(([, k]) => k === 'foldFn').map(([f]) => f)).toEqual(['cudaFuncGetAttributes', 'cudaFuncSetAttribute',
