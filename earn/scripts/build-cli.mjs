@@ -79,6 +79,16 @@ if (existsSync(rot)) {
 } else {
   process.stdout.write('warning: no vendor/native/pearl_rot_sm89.cubin — --rotation-fold will mine on the release fold\n');
 }
+// The same fold's cubin for RTX 30 cards (sm_86), which the cores load on those.
+const rot86 = join(root, 'vendor', 'native', 'pearl_rot_sm86.cubin');
+rmSync(join(dist, 'pearl_rot_sm86.cubin'), { force: true });
+if (existsSync(rot86)) {
+  copyFileSync(rot86, join(dist, 'pearl_rot_sm86.cubin'));
+  chmodSync(join(dist, 'pearl_rot_sm86.cubin'), 0o644);
+  process.stdout.write('staged pearl_rot_sm86.cubin beside the CLI\n');
+} else {
+  process.stdout.write('warning: no vendor/native/pearl_rot_sm86.cubin — --rotation-fold on an RTX 30 card will mine on the release fold\n');
+}
 // The AMD core (earn/native/amd, ROCm), loaded with --core amd. Optional the
 // same way: without it an AMD rig has nothing to mine with, and every NVIDIA rig
 // is unaffected.

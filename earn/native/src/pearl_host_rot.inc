@@ -1,7 +1,8 @@
 // The rotation fold's host side. Included by pearl_host.cu, inside its anonymous namespace, after the
 // restamp helpers it uses. OFF by default: nothing here runs unless PEARL_FOLD_ROT=1 is in the environment, the
-// card is compute 8.9 (RTX 40) and the fold's cubin (pearl_rot_sm89.cubin, beside the addon, or the file
-// PEARL_ROT_CUBIN names) is there. The release fold and everything it does are untouched.
+// card is compute 8.9 (RTX 40) or 8.6 (RTX 30) and the card's cubin (pearl_rot_sm89.cubin or
+// pearl_rot_sm86.cubin, beside the addon, or the file PEARL_ROT_CUBIN names) is there. The two cubins hold the
+// same hand-written loop: ptxas gives sm_86 the same code as sm_89 for this kernel, byte for byte. The release fold and everything it does are untouched.
 //
 // What is different from the release fold, and so what this file does itself:
 //   - The kernel is a cubin whose chunk loop was written by hand (src/pearl_rot.cu, probes/hand89/rfold.py). It
@@ -120,11 +121,13 @@ bool rot_env() {
   return v && v[0] == '1' && v[1] == 0;
 }
 
-// Where the fold's cubin is: the file PEARL_ROT_CUBIN names, or pearl_rot_sm89.cubin beside this module
-// (pearl_rot_path.h has the lookup and its reasons). False when no file is there; `buf` then holds the first
-// place looked in.
-bool rot_cubin_path(char *buf, size_t len) {
-  return rot_cubin_path_for(reinterpret_cast<const void *>(&rot_env), buf, len);
+// The cubin a card of compute 8.`minor` loads from beside this module: one built for its architecture.
+const char *rot_file_for(int minor) { return minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE; }
+
+// Where the fold's cubin is: the file PEARL_ROT_CUBIN names, or `name` beside this module (pearl_rot_path.h
+// has the lookup and its reasons). False when no file is there; `buf` then holds the first place looked in.
+bool rot_cubin_path(char *buf, size_t len, const char *name) {
+  return rot_cubin_path_for(reinterpret_cast<const void *>(&rot_env), buf, len, name);
 }
 
 bool rot_read_file(const char *path, std::vector<char> *out) {
@@ -141,13 +144,15 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
   return rot_elf_ok(reinterpret_cast<const uint8_t *>(out->data()), out->size() - 1, nullptr, nullptr);
 }
 
-// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref lists, the files that have
+// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref and src/pearl_rot_sm86.ref
+// list, the files that have
 // mined on a card with every hit verified (test/rotFoldShip.test.js keeps the two lists the same). A file
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
 const char *const kRotCubins[] = {
     "573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736",  // CUDA 12.6
     "6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c",  // CUDA 12.8
+    "6405e282be41387809815e67451dfcbf31a7e8a7a53b9cc4e73e48fc046c275d",  // sm_86, CUDA 12.8
 };
 
 bool rot_named() {
@@ -175,26 +180,29 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
     if (why && why_len) snprintf(why, why_len, fmt, a, b);
     return false;
   };
+  auto nof = [&](const char *fmt, const char *file) {
+    if (why && why_len) snprintf(why, why_len, fmt, file);
+    return false;
+  };
   int major = 0, minor = 0;
   if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
       || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess) {
     (void)cudaGetLastError();
     return no("the card's compute capability could not be read", 0, 0);
   }
-  if (major != 8 || minor != 9)
-    return no("it is for RTX 40 cards, and this card is compute %lld.%lld", major, minor);
+  if (major != 8 || (minor != 9 && minor != 6))
+    return no("it is for RTX 30 and 40 cards, and this card is compute %lld.%lld", major, minor);
+  const char *file = rot_file_for(minor);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
     return no("it does not mine this profile", 0, 0);
   char path[1024];
-  if (!rot_cubin_path(path, sizeof path))
-    return no(rot_named() ? "the file PEARL_ROT_CUBIN names cannot be read"
-                          : "its file, " PEARL_ROT_FILE ", is not beside the Pearl core",
-              0, 0);
+  if (!rot_cubin_path(path, sizeof path, file))
+    return nof(rot_named() ? "the file PEARL_ROT_CUBIN names cannot be read" : "its file, %s, is not beside the Pearl core",
+               file);
   std::vector<char> image;
-  if (!rot_read_file(path, &image)) return no("its file, " PEARL_ROT_FILE ", is not a kernel file", 0, 0);
-  if (!rot_listed(image))
-    return no("its file, " PEARL_ROT_FILE ", is not the one this core was built with", 0, 0);
+  if (!rot_read_file(path, &image)) return nof("its file, %s, is not a kernel file", file);
+  if (!rot_listed(image)) return nof("its file, %s, is not the one this core was built with", file);
   // Its tables and its two trees at k 65536 take more of the card than the release fold does.
   PearlProfile q = *p;
   q.k = PEARL_ROT_K;
@@ -691,8 +699,10 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   };
   char path[1024];
   std::vector<char> image;
-  if (!rot_cubin_path(path, sizeof path) || !rot_read_file(path, &image) || !rot_listed(image))
-    return bad("cannot read pearl_rot_sm89.cubin", 0);
+  int minor = 0;
+  cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, ctx->device);
+  if (!rot_cubin_path(path, sizeof path, rot_file_for(minor)) || !rot_read_file(path, &image) || !rot_listed(image))
+    return bad("cannot read the fold's cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;
   RotSetAttr setattr = nullptr;

@@ -739,24 +739,27 @@ jobs:
         shell: bash
         run: bash ../../.github/scripts/check-glibc-floor.sh --ubuntu 20.04 "build/Release/${{ matrix.file }}"
 
-      # The rotation fold's cubin, pearl_rot_sm89.cubin: a second fold for RTX 40 cards that the
+      # The rotation fold's cubins, pearl_rot_sm89.cubin (RTX 40) and pearl_rot_sm86.cubin (RTX 30): a
+      # second fold that the
       # host loads from beside the addon when a rig asks for it (--rotation-fold, or
       # PEARL_FOLD_ROT=1; src/pearl_host_rot.inc). It is off by default. Its chunk loop is written
       # by hand and put into a kernel this toolkit compiles, so probes/hand89/build_rot.py checks
       # every step and writes the file only when all of them pass: its assembler against this
       # ptxas's own bytes, the loop's latency checker, what the loop expects of the compiled
       # function (registers, predicates, uniform register, parameters, room), a read-back through
-      # nvdisasm, and the result's hash against src/pearl_rot_sm89.ref, which lists the files
+      # nvdisasm, and the result's hash against src/pearl_rot_sm89.ref (pearl_rot_sm86.ref), which lists the files
       # that have mined on a card with every hit verified. A toolkit that compiles the kernel
       # another way fails here and ships no cubin; nothing is patched on a guess.
       #
-      # Built by the 12.8 jobs only: the host loads the one file whichever core is loaded.
+      # Built by the 12.8 jobs only: the host loads the card's file whichever core is loaded. The
+      # two files hold the same loop (ptxas gives sm_86 the same code as sm_89 for this kernel), and
+      # each ships when its own checks pass.
       # Non-blocking, for the CUDA 13 build's reason: the fold is an opt-in, and a failure here
       # must not hold back the core every rig needs. Without the file a rig that asks for the
       # fold says so in one line and mines on the release fold. The failure is an error
       # annotation and a line in the run summary, and miner-build.yml warns that the file is
       # missing.
-      - name: Build the rotation fold's cubin (RTX 40, opt-in, not blocking)
+      - name: Build the rotation fold's cubin (RTX 40 and 30, opt-in, not blocking)
         id: rot
         if: matrix.variant == ''
         continue-on-error: true
@@ -770,16 +773,31 @@ jobs:
           fi
           py=python3
           [ "$RUNNER_OS" = Windows ] && py=python
+          bad=0
           rc=0
           "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build || rc=$?
           if [ "$rc" != 0 ] || [ ! -f rot-build/pearl_rot_sm89.cubin ]; then
-            msg="no pearl_rot_sm89.cubin: build_rot.py failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            msg="no pearl_rot_sm89.cubin: build_rot.py failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 40; a rig that asks for it mines on the release fold. The step's log says which check failed."
             echo "::error::$msg"
             echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
-            exit 1
+            bad=1
+          else
+            cp rot-build/pearl_rot_sm89.cubin build/Release/pearl_rot_sm89.cubin
+            echo "built: $(ls -l build/Release/pearl_rot_sm89.cubin)"
           fi
-          cp rot-build/pearl_rot_sm89.cubin build/Release/pearl_rot_sm89.cubin
-          echo "built: $(ls -l build/Release/pearl_rot_sm89.cubin)"
+          # The same loop for RTX 30, in a folder of its own.
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm86 --arch sm_86 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/sm86/pearl_rot_sm86.cubin ]; then
+            msg="no pearl_rot_sm86.cubin: build_rot.py --arch sm_86 failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 30; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            bad=1
+          else
+            cp rot-build/sm86/pearl_rot_sm86.cubin build/Release/pearl_rot_sm86.cubin
+            echo "built: $(ls -l build/Release/pearl_rot_sm86.cubin)"
+          fi
+          exit "$bad"
 
       # The host finds that cubin beside the addon, wherever the addon was loaded from
       # (src/pearl_rot_path.h). On Linux that goes through the loader's record of the addon's
@@ -806,22 +824,24 @@ jobs:
           # The host holds the cubin beside the core to the reference's hashes, with a sha256 and
           # an ELF reader of its own (src/pearl_rot_path.h). They must give the build's hash, and
           # must refuse a file cut short, which is what crashed the driver on rig01.
-          if [ -f rot-build/pearl_rot_sm89.cubin ]; then
-            host=$("$d/rot-path-check" hash rot-build/pearl_rot_sm89.cubin)
-            build=$(python3 probes/hand89/asm89.py hash rot-build/pearl_rot_sm89.cubin)
-            echo "the host's hash of the cubin: $host; the build's: $build"
-            head -c 8192 rot-build/pearl_rot_sm89.cubin > "$d/short.cubin"
+          for f in rot-build/pearl_rot_sm89.cubin rot-build/sm86/pearl_rot_sm86.cubin; do
+            [ -f "$f" ] || continue
+            host=$("$d/rot-path-check" hash "$f")
+            build=$(python3 probes/hand89/asm89.py hash "$f")
+            echo "the host's hash of $f: $host; the build's: $build"
+            head -c 8192 "$f" > "$d/short.cubin"
             if [ "$host" != "$build" ] || "$d/rot-path-check" hash "$d/short.cubin"; then
-              msg="the host's check of pearl_rot_sm89.cubin disagrees with the build's (probes/rot-path-check.cc hash): the host would refuse the release's own file, or accept a damaged one."
+              msg="the host's check of $(basename "$f") disagrees with the build's (probes/rot-path-check.cc hash): the host would refuse the release's own file, or accept a damaged one."
               echo "::error::$msg"
               echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
               exit 1
             fi
-          fi
+          done
 
       # What build_rot.py made on the way, kept whether it passed or not: the compiled kernel, its
-      # listing, and a cubin whose hash is not listed yet (pearl_rot_sm89.cubin.unverified), which
-      # is the file to run on an RTX 40 card before its hash is added to the reference.
+      # listing, and a cubin whose hash is not listed yet (pearl_rot_sm89.cubin.unverified, or
+      # sm86/pearl_rot_sm86.cubin.unverified), which is the file to run on an RTX 40 (RTX 30) card
+      # before its hash is added to the reference.
       - uses: actions/upload-artifact@v4
         if: always() && matrix.variant == ''
         with:
@@ -836,6 +856,7 @@ jobs:
           path: |
             earn/native/build/Release/${{ matrix.file }}
             earn/native/build/Release/pearl_rot_sm89.cubin
+            earn/native/build/Release/pearl_rot_sm86.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct

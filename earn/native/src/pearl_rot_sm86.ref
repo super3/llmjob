@@ -1,0 +1,16 @@
+# The rotation fold's sm_86 cubins (RTX 30) that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm89.ref, for pearl_rot_sm86.cubin: probes/hand89/build_rot.py --arch sm_86 refuses to write the
+# file unless what it built is listed here for the toolkit that built it, and the host loads the file beside the
+# core only when its hash is in kRotCubins (pearl_host_rot.inc), which holds the lines of both files. A line is
+# added only after its file has run on an RTX 30 card: probes/verify-hits.js 400 of 400 with the fold on.
+#
+# The loop is the one pearl_rot_sm89.ref lists (rfold.py's defaults): ptxas compiles src/pearl_rot.cu for sm_86
+# into the same code as for sm_89, byte for byte, so only the ELF header's architecture and the .nv.info
+# sections differ.
+
+# CUDA 12.8 (what CI builds with), built on the Salad PCs by earn/tuning/salad/nv30box.sh. RTX 3090 (PC 22ce6093,
+# 390 W): verify-hits 400 of 400 (499 hits, 13 salts), the probe's CPU check 16,384 of 16,384 and 2,048 of 2,048,
+# 140.97 and 140.97 TH/s by hashrate.js against 133.12 and 133.13 for the release fold. RTX 3060 (PC 41137306,
+# 170 W): verify-hits 37 of 37, 51.13 and 51.16 TH/s against 47.60 and 47.59.
+12.8 6405e282be41387809815e67451dfcbf31a7e8a7a53b9cc4e73e48fc046c275d
