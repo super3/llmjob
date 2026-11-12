@@ -845,6 +845,33 @@ with the core finding the file beside it: 337.48 TH/s by the miner's count over 
 rejected. Now the RTX 40 build (cubin c7219d7d...). OneZeroMiner's 341.9 is 1.1% ahead. What is left of the
 readout's cost is energy: its 96 XOR3 a chunk are the least the protocol allows.
 
+### rig01, 12 November: operand encodings, and the memory clock on the rotation fold (branch `goal/nv-17`)
+
+RTX 4090, 450 W, the shipped rotation fold (`rpr=2 u8=1 rgf=1 rb0=3 rb1=0`).
+
+Operand encodings, probe, watts at a locked 2400 MHz core clock (pipe 99.54% in every run): the shipped
+unsigned operands (fill 63 plus the noise, 0 to 126) 346.7 to 347.4 W once settled. Fill 64: 346.5 to 347.1 W
+(level). Signed operands cost more: A or B as the signed noise (timing only) +10 W each, both +28 W, fill -64 read
+as signed +10 W. Each chunk's k sorted so neighbouring operands are alike (orders 10, 11): more watts per point
+of pipe, not fewer. No encoding is cheaper than the shipped one.
+
+The memory clock, hashrate.js, alternating 120 s legs:
+
+| Memory clock | TH/s | SM clock | Power |
+|---|---|---|---|
+| driver's (10251 MHz) | 337.90, 337.91, 337.87 | 2594 to 2596 MHz | 449 W |
+| 810 MHz | 341.55, 341.40, 341.44 (+1.05%) | 2624 to 2626 MHz | 445 to 446 W |
+| 5001 MHz | 340.34, 340.37 (+0.7%) | 2616 to 2617 MHz | 449 W |
+
+405 MHz puts the card in a low power state (645 MHz SM clock). On the release fold 810 MHz lost 11% (10 November,
+above); the rotation fold reads almost no DRAM, so it gains. OneZeroMiner, same card and pool, its own API over
+90 s: 342.08 and 341.89 TH/s at the driver's clock, 342.76 and 342.87 at 810 MHz, 344.47 at 5001 MHz. Like for
+like ours is 99.6% of it at 810 MHz and 99.1% at each miner's best setting: the lock does not close the gap.
+On the rotation fold an RTX 40 card now tries 810 MHz by default through the existing memory clock trial.
+On Kryptex through this branch's CLI with `--rotation-fold` and no memory flag: the trial kept 810 MHz (340.5
+TH/s locked against 337.5, +0.9%), then 340.8 TH/s by the miner's count; 20 shares accepted, none rejected in
+669 s; verify-hits 400 of 400 beforehand.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
