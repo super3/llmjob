@@ -279,8 +279,14 @@ def rename(code, ren):
 def main():
     cubin, nvd, out = sys.argv[1:4]
     cfg = dict(rfold.CFG)
+    cut = None
     for kv in sys.argv[4:]:
         k, v = kv.split("=")
+        if k == "cut":
+            # TIMING ONLY / debugging: only the first `cut` instructions of the ported loop (no back branch), then a
+            # wait for every load and the return. Wrong results; finds where a fault is.
+            cut = int(v, 0)
+            continue
         assert k in cfg, k
         cfg[k] = int(v, 0)
     text = asm89.disassemble(cubin, nvd)
@@ -342,7 +348,10 @@ def main():
         if ren:
             rename(code, ren)
             print("renamed: " + ", ".join("R%d -> R%d" % kv for kv in ren.items()))
-    code = port(code) + rest
+    code = port(code)
+    if cut is not None:
+        code = [x for x in code[:cut] if "BRA" not in x.text] + [Ins("NOP", wait=(0, 1, 2, 3, 4, 5), stall=8)]
+    code += rest
     # The compiled function writes P1 alone. P2 is free across the call as well: gprobe's kernel writes P2 (and P3)
     # at the top of its tile loop before it reads them, and reads neither between the call and there.
     if p2_free(text):
