@@ -181,7 +181,8 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
     (void)cudaGetLastError();
     return no("the card's compute capability could not be read", 0, 0);
   }
-  if (major != 8 || minor != 9)
+  // RTX 30 (compute 8.6) is being measured: there the fold runs only from a file PEARL_ROT_CUBIN names.
+  if (major != 8 || (minor != 9 && !(minor == 6 && rot_named())))
     return no("it is for RTX 40 cards, and this card is compute %lld.%lld", major, minor);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
