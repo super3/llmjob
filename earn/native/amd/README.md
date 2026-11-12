@@ -8,8 +8,8 @@ NVIDIA card, and loads it with no fallback when asked to (`--core amd` or
 `native-core.yml`'s `ubuntu-latest-hip` job. The Windows installer carries one built with
 AMD's HIP SDK by its `windows-2022-hip` job, which no Windows Radeon has run yet.
 
-**Status: mines on RDNA 3 and RDNA 4 cards; not yet run on CDNA (Instinct) or RDNA 2.** On
-those (gfx9 and gfx103x) the app and the CLI mine with every hit checked: a fold whose layout
+**Status: mines on RDNA 3 and RDNA 4 cards, and on RDNA 2 (RX 6600 and RX 6800, 12 November) with
+every hit checked; not yet run on CDNA (Instinct).** On gfx9 and gfx103x the app and the CLI mine with every hit checked: a fold whose layout
 differs on the card would have every share rejected, and a pool can ban the address for that, so
 each hit is recomputed in JS as the pool's verifier does before it is sent, and the card stops at
 the first wrong one ("Untested cards mine with every hit checked", below). No setting turns the
@@ -20,9 +20,12 @@ at 93.8 TH/s and an RX 7900 XTX (gfx1100) at 38-50 TH/s depending on the PC, eve
 right and every share accepted on Kryptex (`earn/tuning/benchmark.md`, "AMD Radeon", notes). It was written
 with no AMD card: correctness was first shown by running the same kernel source on the CPU
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
-checking hits against the JS reference the way the pool does. RDNA 2 runs the `dot4` fold, which
-has run in RDNA 2's loop on an RX 7800 XT (a build with `-DPEARL_AMD_PF2=0 -DPEARL_AMD_DPP=0`, and
-`PEARL_AMD_FOLD=dot4`) with every checked hit right, but on no RDNA 2 card.
+checking hits against the JS reference the way the pool does. RDNA 2 runs the `dot4` fold. On 12 November, on a
+lent HiveOS rig, it passed steps 2, 3 and 5 under "Testing on real hardware" on an RX 6600 (gfx1032)
+and an RX 6800 (gfx1030): every fold check word right, verify-hits 400 of 400, and Kryptex accepted
+every share (4, then 6 in a 10-minute run), none rejected. At the owner's 1400 MHz core cap an RX 6600 did 7.9 TH/s and the RX 6800
+17.2, 85% of what the card's bare `v_dot4` did at that clock (`earn/tuning/benchmark.md`, "RDNA 2
+on a lent HiveOS rig"). gfx103x stays among the checked cards until it has mined in a release.
 
 This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
 NVIDIA build. `native-core.yml` builds both: the AMD core in its own `ubuntu-latest-hip` and
@@ -310,7 +313,7 @@ no scratch memory on every target:
 |---|---|---|---|---|---|
 | gfx908, gfx90a | mfma8 | 168 | 128 | 36 KB | 1 |
 | gfx942, gfx950 | mfma16 | 168 | 128 | 36 KB | 1 |
-| gfx1030, gfx1031, gfx1032 | dot4 | 201 | - | 36 KB | 4 |
+| gfx1030, gfx1031, gfx1032 | dot4 | 200 | - | 36 KB | 4 |
 | gfx1030, gfx1031, gfx1032 | ref | 42 | - | 13.5 KB | 16 |
 | gfx1100, gfx1101 | wmma11 | 226 | - | 36 KB | 6 |
 | gfx1102, gfx1150 | wmma11 | 240 | - | 36 KB | 4 |
@@ -478,13 +481,11 @@ by contrast, stops only its own card.
   the app"): read the mining cards' bus ids with `rocm-smi` or sysfs, and check HIP's
   card order against them on hardware.
 - Run steps 1-5 above on an MI300X (CDNA 3: the mfma folds have only run on the CPU).
-- Run steps 1-5 above on an RDNA 2 card (an RX 6600 to 6950, a Radeon PRO W6600 or W6800, or a
-  V620; Salad's AMD classes have none): the `dot4` fold has run only in RDNA 2's loop on an RX 7800
-  XT (`earn/tuning/benchmark.md`, "a fold for RDNA 2"), so its speed on RDNA 2 is a projection. Then take gfx103x out of the
-  untested cards in `resolve_fold`, so its hits are no longer checked, and time `PEARL_AMD_DOT4_K=8`
-  and the DPP readout there. DPP needs its gate in `pearl_amd_group_xor` widened to gfx103x (its
-  lane moves exist on gfx10 too); it made no difference to `dot4` on RDNA 3, where each dot4 took
-  twice the clocks AMD's figures give it on RDNA 2.
+- RDNA 2 (12 November, `earn/tuning/benchmark.md`, "RDNA 2 on a lent HiveOS rig"): the DPP readout is on there
+  now (+0.35% on an RX 6800); `PEARL_AMD_DOT4_K=8` (-1.6%), `PEARL_AMD_DOT4_WAVES=5` (-6.9%) and `-mcumode` (-8.0%)
+  were slower, and 6 waves spills. The fold gets 85% of the card's bare `v_dot4` (244-248 MAC a CU a clock),
+  so 15% is left to the loads, barriers and readout. Still to do: steps 1-5 at stock clocks, an RX 6700
+  (gfx1031), and taking gfx103x out of the checked cards once it has mined in a release.
 - Speed: the operand layout is tuned (per-tile A' and B', above); tried on the RX 9060 XT and
   no faster on top of it: a group-of-4 tile walk, non-temporal A' loads, an LDS-only slab
   barrier with one slab of prefetch, batch widths 64 and 128, and 64-byte slabs (4% slower). On RDNA 3 the fold also

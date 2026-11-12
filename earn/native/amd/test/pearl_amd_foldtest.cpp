@@ -158,16 +158,25 @@ bool write_stamps(const char *path, const uint32_t *dStamps, size_t words, const
 }
 #endif
 
+// An argument's leading digits, read by hand. atoi and atoll under glibc 2.38's headers call
+// __isoc23_strtol, which tied CI's build of this check to glibc 2.38, so it wouldn't start on a
+// HiveOS rig (Ubuntu 22.04, glibc 2.35). The core avoids them the same way (amd_col_batch).
+uint64_t arg_num(const char *s) {
+  uint64_t v = 0;
+  for (; s && *s >= '0' && *s <= '9'; s++) v = v * 10u + (uint64_t)(*s - '0');
+  return v;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
-  const uint32_t m = argc > 1 ? (uint32_t)atoi(argv[1]) : 256u;
-  const uint32_t cols = argc > 2 ? (uint32_t)atoi(argv[2]) : 512u;
-  g_rng = argc > 3 ? (uint64_t)atoll(argv[3]) | 1u : 1u;
-  const int reps = argc > 4 ? atoi(argv[4]) : 1;
-  const bool check = argc > 5 ? atoi(argv[5]) != 0 : true;
+  const uint32_t m = argc > 1 ? (uint32_t)arg_num(argv[1]) : 256u;
+  const uint32_t cols = argc > 2 ? (uint32_t)arg_num(argv[2]) : 512u;
+  g_rng = argc > 3 ? arg_num(argv[3]) | 1u : 1u;
+  const int reps = argc > 4 ? (int)arg_num(argv[4]) : 1;
+  const bool check = argc > 5 ? arg_num(argv[5]) != 0 : true;
   const char *only = argc > 6 && argv[6][0] && strcmp(argv[6], "all") != 0 ? argv[6] : nullptr;
-  const uint32_t kArg = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
+  const uint32_t kArg = argc > 7 ? (uint32_t)arg_num(argv[7]) : 0u;
   const bool miner = argc > 8 && strcmp(argv[8], "miner") == 0;
   const char *stampPath = argc > 9 && argv[9][0] ? argv[9] : nullptr;
   const uint32_t rank = PEARL_FOLD_RANK;

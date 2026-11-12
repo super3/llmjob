@@ -855,14 +855,19 @@ __device__ __forceinline__ void pearl_amd_lds_barrier() {
 // goes through the LDS pipe: lane ^ 1 by a quad permute, ^ 8 by rotating each 16-lane row by 8,
 // ^ 16 by swapping the two rows (v_permlanex16 with the identity selects). On by default on
 // RDNA 3 and RDNA 4: 31.30-31.41 TH/s against 31.10-31.16 on the same 7800 XT, 54.52 against
-// 52.88 on the 9060 XT above.
+// 52.88 on the 9060 XT above. And on RDNA 2 (gfx10 has the same DPP row moves and v_permlanex16),
+// since 12 November: on an RX 6800 (1400 MHz core cap) hashrate.js read 17.28-17.29 TH/s against
+// 17.22-17.24 for the old readout, three rounds each, a copy of the release within 0.06%; 200 VGPRs
+// against 201, still 4 waves.
+// The passes whose wave32 has these lane moves: RDNA 3 and 4, and RDNA 2's dot4 fold.
+#define PEARL_AMD_DPP_HW (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12 || (PEARL_AMD_DOT4 && !PEARL_AMD_EMU))
 #ifndef PEARL_AMD_DPP
-#define PEARL_AMD_DPP (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+#define PEARL_AMD_DPP PEARL_AMD_DPP_HW
 #endif
 // XOR across the eight lanes that share a region: lane bits 0, 3 and 4 in every layout here.
 // (Bits 1 and 2 pick the region's column offset; on CDNA bit 5 picks its row offset.)
 __device__ __forceinline__ uint32_t pearl_amd_group_xor(uint32_t x) {
-#if PEARL_AMD_DPP && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+#if PEARL_AMD_DPP && PEARL_AMD_DPP_HW
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0xB1, 0xF, 0xF, false);
   x ^= (uint32_t)__builtin_amdgcn_update_dpp(0, (int)x, 0x128, 0xF, 0xF, false);
 #if PEARL_AMD_RDPERM == 1 && PEARL_AMD_WMMA12
@@ -2108,9 +2113,17 @@ extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_WMMA12_OCC 
 }
 
 // RDNA2's fold (PearlAmdDot4), in the one-slab loop. RDNA3 and RDNA4 have it only in a build with
-// -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD); add -DPEARL_AMD_DPP=0 and it runs there exactly RDNA2's
-// loop and readout, with v_dot4_i32_iu8 for v_dot4_i32_i8 (and the wrap readout on RDNA4).
-extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) void pearl_amd_fold_dot4(
+// -DPEARL_AMD_PF2=0 (PEARL_AMD_DOT4_FOLD), which runs there RDNA2's loop and readout (DPP on both
+// since 12 November), with v_dot4_i32_iu8 for v_dot4_i32_i8 (and the wrap readout on RDNA4).
+// PEARL_AMD_DOT4_WAVES=n asks the compiler for n waves a SIMD (amdgpu_waves_per_eu), which caps the
+// VGPRs: on gfx103x, 4 waves at 201 VGPRs is 2 blocks a WGP, and 6 (168 VGPRs) would be 3, which the
+// 36 KB of LDS a block allows. Unset, the compiler picks (201 VGPRs, 4 waves).
+#ifdef PEARL_AMD_DOT4_WAVES
+#define PEARL_AMD_DOT4_OCC __attribute__((amdgpu_waves_per_eu(PEARL_AMD_DOT4_WAVES)))
+#else
+#define PEARL_AMD_DOT4_OCC
+#endif
+extern "C" __global__ __launch_bounds__(PEARL_AMD_THREADS) PEARL_AMD_DOT4_OCC void pearl_amd_fold_dot4(
     PEARL_AMD_FOLD_PARAMS) {
 #if PEARL_AMD_DOT4_FOLD
   pearl_amd_fold_body<PearlAmdDot4>(Ap, Bp, k, rank, col0, rows_valid, tr PEARL_AMD_FUSE_ARGS);

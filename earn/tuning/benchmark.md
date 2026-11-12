@@ -1890,6 +1890,73 @@ rotating, scored from round 2. The twin is a second copy of the base.
   to +1.15% (mean +0.68%; that PC drifted, its twin read up to +0.75%), verify-hits 400 of 400 and 4 accepted, 0
   rejected in 15 minutes on Kryptex; on `c15f2792` the fold +0.24 to +0.53%, before Salad moved the box.
 
+### RDNA 2 on a lent HiveOS rig, 12 November: the first RX 6000 run
+
+A community member (Chedr) lent his HiveOS rig: five RX 6600 (gfx1032, 28 CUs, 8 GB) and one RX 6800 (gfx1030,
+60 CUs, 16 GB), a Pentium G4400 (2 cores), 8 GB RAM, Ubuntu 22.04 (glibc 2.35), kernel 6.12.0-hiveos, ROCm 6.4.4 in
+/opt/rocm with no HIP. We ran as an unprivileged user in its home folder: the CI HiveOS package of
+`next/intel-and-kernel` at 165f765d (CLI v0.7.0) with its own ROCm 7.2 runtime (`rocm/` beside the core; `ldd` showed
+none of the rig's ROCm 6.4.4 libraries loaded), and Node 22.11. The default build, unchanged: `dot4` on both chips,
+every hit checked in JS (gfx103x is still an untested kind of card).
+
+**Every rate here is at a 1400 MHz core cap, memory and power stock.** The owner's reset left `OD_SCLK` at 1400 MHz
+(the cards ran 1345-1374 MHz). Stock boost is about 2490 MHz on an RX 6600 and 2105 on an RX 6800, so these
+understate both cards. Power caps were the default 100 W and 215 W, memory 875 and 1000 MHz. Not rows: no
+competitor ran on the same settings.
+
+| Card | Fold check | verify-hits | Fold alone (TMAC/s) | `hashrate.js` (TH/s) | Power, clock |
+|---|---|---|---|---|---|
+| RX 6600 (each of 5) | PASS (256x512, 2048x2048) | 400 of 400, 0 failed | 7.96 | 7.91, 7.92, 7.95, 7.99, 7.92 (sd 0.02) | 48-59 W, 1345-1358 MHz |
+| RX 6800 | PASS (256x512, 2048x2048) | 400 of 400, 0 failed | 17.32 | 17.26 (sd 0.03) | 120 W, 1371-1374 MHz |
+| All six at once | | | | 56.92 (7.91, 7.91, 7.94, 17.25, 7.99, 7.92) | |
+
+- **RDNA 2's `v_dot4_i32_i8` is full rate.** Per CU and clock both chips do about 210 int8 MACs (RX 6600: 7.96 TMAC/s
+  over 28 CUs at about 1.35 GHz; RX 6800: 17.32 over 60 at 1.37), 82% of the 256 a full-rate dot4 allows. The
+  half-rate case the 2 November projection warned of (RDNA 3's dot4 did 140 on an RX 7800 XT) is ruled out. At the
+  projection's game clocks that is about 12.0 TH/s for an RX 6600 (2044 MHz) and 22.8 for an RX 6800 (1815 MHz);
+  the projection said 14.0 and 26.6 at 96% of peak. That assumes the rate keeps following the clock. Before the owner's reset, at an 1800 MHz
+  cap, one RX 6600 read 10.14 TH/s in verify-hits (7.92 at 1400 MHz): +28% for +29% clock.
+- The fold is 99.5% of each batch (`PEARL_AMD_TRACE`: 138.2 ms of 138.9, hash 0.6 ms, idle 0.02 ms on an RX 6600);
+  the six cards together lost nothing against each alone, on this 2-core CPU.
+- **Kryptex** (US, worker `chedr-rdna2`, all six cards): 57.0 TH/s, 4 shares accepted and 0 rejected in 3 minutes,
+  each checked card's first hit right (the RX 6800's among them).
+- **Stopped for heat.** Three minutes into that run the RX 6600s reached 91-101 C edge and 101-113 C junction, every
+  one reading 0 rpm at full fan PWM, and throttled to 486-1250 MHz (the six read 42.5 TH/s). One (bus 10:00.0)
+  dropped off the PCIe bus. The RX 6800, whose fan read about 1100 rpm, stayed at 62 C. Idle afterwards, one RX
+  6600 still read 93 C at 24 W. In the first runs, at 53 W and 18 W, the same cards read 35-47 C, so their cooling
+  changed during the owner's clock reset and reboot. Earlier runs here were short (40 s to 3 min); runs on this rig
+  now go under a guard that stops ours at 85 C edge, 95 C junction, or 10 s of 0 rpm under load.
+- **Fold variants, raced after the owner set the fans to 85% (15:02-15:29 UTC), under the guard, same 1400 MHz
+  cap.** Built on the rig with ROCm 7.2's clang (the CI release core's twin there, "release", read the same as
+  CI's to 0.06%). Three rounds each, order rotating; `hashrate.js` 30 s after 10 s, fold alone in TMAC/s:
+
+  | Build | RX 6800 TH/s | RX 6800 fold | RX 6600 TH/s | RX 6600 fold |
+  |---|---|---|---|---|
+  | CI release | 17.23, 17.23, 17.23 | 17.32-17.33 | 7.92, 7.92, 7.92 | 7.962-7.963 |
+  | release, built on the rig | 17.22, 17.24, 17.23 | 17.31-17.34 | 7.92, 7.92, 7.92 | 7.962-7.964 |
+  | DPP readout (`PEARL_AMD_DPP=1`) | 17.29, 17.29, 17.28 (+0.35%) | 17.38 | 7.95, 7.95, 7.95 (+0.38%) | 7.989-7.992 |
+  | `PEARL_AMD_DOT4_K=8` (225 VGPRs) | 16.95 x3 (-1.6%) | 17.03 | | |
+  | `PEARL_AMD_DOT4_WAVES=5` (191 VGPRs) | 16.04-16.05 (-6.9%) | 16.13 | | |
+  | `-mcumode` | 15.84-15.85 (-8.0%) | 15.92 | | |
+
+  The DPP build passed the fold check and verify-hits 400 of 400 on both cards, so it is RDNA 2's default now (200
+  VGPRs, 4 waves; `goal/rdna2`). `PEARL_AMD_DOT4_WAVES=6`, which would fit a third block a WGP, caps the fold at 160
+  VGPRs and spills 50, so it wasn't run.
+- **What the card's dot4 can do:** a kernel of nothing but `v_dot4_i32_i8` from registers (64 accumulators a lane)
+  did 20.33 TMAC/s at 4 waves a SIMD and 20.62 at 8 on the RX 6800 at 1388 MHz: 244-248 MAC a CU a clock, 96% of
+  AMD's 256. The fold's 17.3 is 85% of that; the loads, barriers and readout take the rest.
+- **Kryptex again, 10 minutes, fans at 85%** (15:35-15:45 UTC, CI release CLI, `--gpu-index 0,1,3,4`: three RX
+  6600s and the RX 6800; the RX 6600 whose fan reads 0 rpm left out, and the one at 13:00.0 had gone from the bus
+  after the first run): 6 shares accepted, 0 rejected, 40.96 TH/s mean after 30 s (`hashrate.js` read 40.95 for
+  the four together), every card's first checked hit right. The guard never fired: at most 53 C edge and 61 C
+  junction (an RX 6600), the RX 6800 47/57 C.
+- Not measured: the rate at stock clocks, SRBMiner on these cards (the owner had removed it), and anything longer
+  than 10 minutes.
+- Two display slips seen: the CLI's header named all six cards "RX 6600/6600 XT/6650 XT" (the per-card lines are
+  right), and `hashrate.js` reports the AMD core's fold as "unresolved".
+- CI's Linux fold check binary needed glibc 2.38 (`__isoc23_strtol` from `atoi`), so it couldn't start here: fixed
+  on `goal/rdna2`, and CI now uploads it as `pearl-amd-foldtest-ubuntu-latest`.
+
 ### Our own builds on Salad, 7 November: the RDNA 4 readout, late and in three chains (#287 item 4)
 
 After the six RDNA 4 cuts the slab loop has no VALU but the readout's, about 88 a chunk, run after the chunk's last
