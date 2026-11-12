@@ -1655,6 +1655,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
   static_assert(RW == 2 || RW == 4 || RW == 8, "each sub-group copies a whole number of blocks");
   static constexpr uint32_t kNsg = 2u * RW * CW, kBps = 8u / RW;
+#if defined(PEARL_W_REGWORDS)
+  // goal-arc7: each lane keeps its 16 transcript words in registers, so the work-group needs no local memory
+  // beyond the ring (64 KB of it an Xe-core decides how many work-groups fit).
+  static constexpr bool kRegWords = true;
+#else
+  static constexpr bool kRegWords = false;
+#endif
 #if defined(PEARL_SYCL_XMX_JIT)
   static constexpr bool kSplit = HW;
 #else
@@ -1740,6 +1747,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     (void)bqn;
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
+    uint32_t tw[16];
+    each<16>([&](int j) { tw[j] = 0u; });
     arrive(it);
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
@@ -1796,11 +1805,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
           each<4>([&](int cb) { t ^= bq[cb][0]; });
           t &= (int)A.zero;
           each<4>([&](int rb) { ah[rb][0] |= t; });
+#if defined(PEARL_W_ROWFIRST)
+          // goal-arc7 experiment: the DPAS of one A' fragment back to back.
+          each<4>([&](int rb) {
+            each<4>([&](int cb) {
+              c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
+            });
+          });
+#else
           each<4>([&](int cb) {
             each<4>([&](int rb) {
               c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
             });
           });
+#endif
         } else {
           v8i af[4];
           each<4>([&](int rb) {
@@ -1827,10 +1845,29 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
       });
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
-      if (lane < 8u) part[(sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+      if constexpr (kRegWords) {
+        // Chunk ch's word lands in tw[15]: a shift, so every index stays a constant.
+        each<15>([&](int j) { tw[j] = tw[j + 1]; });
+        tw[15] = (lane & 1u) ? x1 : x0;
+      } else {
+        if (lane < 8u) part[(sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+      }
     }
     wait(it);
     sycl::group_barrier(it.get_group());
+    if constexpr (kRegWords) {
+      // The ring is free now: sub-group 1 of each window leaves its words there for sub-group 0.
+      if (sgi == 1u && lane < 8u) each<16>([&](int j) { R[(widx * 8u + lane) * 16u + (uint32_t)j] = tw[j]; });
+      sycl::group_barrier(it.get_group());
+      if (sgi == 0 && lane < 8u) {
+        const uint32_t qr = lane;
+        uint32_t words[16];
+        each<16>([&](int j) { words[j] = tw[j] ^ R[(widx * 8u + qr) * 16u + (uint32_t)j]; });
+        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+        region_epilogue(words, local, A.test, A.hits, A.allTr);
+      }
+      return;
+    }
     if (sgi == 0 && lane < 8u) {
       const uint32_t qr = lane;
       uint32_t words[16];
@@ -1859,7 +1896,7 @@ template <bool HW, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0), int RW = 
 inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   typedef FoldXmxW<HW, KPS, AH, RW, CW> K;
   q.submit([&](sycl::handler &h) {
-    sycl::local_accessor<uint32_t, 1> part(K::kNsg * 8u * 16u, h);
+    sycl::local_accessor<uint32_t, 1> part(K::kRegWords ? 1u : K::kNsg * 8u * 16u, h);
     sycl::local_accessor<uint32_t, 1> ring(3u * K::kSlotWords, h);
     h.parallel_for(sycl::nd_range<1>((size_t)(groups / (RW * CW)) * K::kNsg * 8u, K::kNsg * 8u), K{a, part, ring});
   });
