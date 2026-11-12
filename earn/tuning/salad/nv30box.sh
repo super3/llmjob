@@ -17,7 +17,9 @@
 #   ROT_KEYS      rfold.py keys for the miner's cubin, comma-separated (default none: the shipped loop)
 #   VERIFY_SECS   verify-hits.js on the fold (default 150; 0 skips it), at the target 2^VERIFY_BITS (233: an RTX 30
 #                 card is a third of a 4090, so twice the 4090's 2^234 hits keeps 400 within the run)
-#   HR_LEGS       hashrate.js legs, "rel" (the release fold) or "rot" (default "rel rot rot rel"); HR_SECS (120)
+#   ROT_VARIANTS  more miner cubins, "name:key=v,key=v;..." (pearl_rot_<name>.cubin), for hashrate.js legs
+#   HR_LEGS       hashrate.js legs: "rel" (the release fold), "rot" (the shipped loop) or a ROT_VARIANTS name
+#                 (default "rel rot rot rel"); HR_SECS (120)
 #   ORDER, VPOOL, SECS, WARM, VER, TAP   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
 set -u
 say() { echo "[nvtest] $(date -u +%T) [nv30] $*"; sleep 0.03; }
@@ -98,6 +100,18 @@ if has product; then
   python3 -I "$H/rfold.py" $W/rot_base.cubin $W/rot_base.sass nvdisasm $W/pearl_rot_sm86.cubin \
     $(echo "${ROT_KEYS:-}" | tr ',' ' ') > $W/rfold.log 2>&1 || { tail -3 $W/rfold.log | emit; fail "rfold.py"; }
   say "rot cubin $(tail -1 $W/rfold.log | cut -c1-160); hash $(python3 -I "$H/asm89.py" hash $W/pearl_rot_sm86.cubin)"
+  IFS=';' read -r -a RV <<< "${ROT_VARIANTS:-}"
+  for v in "${RV[@]}"; do
+    [ -n "$v" ] || continue
+    # shellcheck disable=SC2046
+    vn=${v%%:*}
+    if python3 -I "$H/rfold.py" $W/rot_base.cubin $W/rot_base.sass nvdisasm "$W/pearl_rot_$vn.cubin" \
+        $(echo "${v#*:}" | tr ',' ' ') > "$W/rfold_$vn.log" 2>&1; then
+      say "rot variant $vn: $(tail -1 "$W/rfold_$vn.log" | cut -c1-120); hash $(python3 -I "$H/asm89.py" hash "$W/pearl_rot_$vn.cubin")"
+    else
+      say "rot variant $vn FAILED: $(tail -2 "$W/rfold_$vn.log" | tr '\n' ' ' | cut -c1-200)"
+    fi
+  done
   # The addon for this card alone, as compilers.sh builds one.
   K=$W/addon
   rm -rf $K && mkdir -p $K/cuda-build && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" $K/
@@ -132,7 +146,11 @@ if has product; then
   n=0
   for leg in ${HR_LEGS:-rel rot rot rel}; do
     n=$((n + 1))
-    if [ "$leg" = rot ]; then e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_sm86.cubin"; else e="PEARL_FOLD_ROT=0"; fi
+    case "$leg" in
+      rel) e="PEARL_FOLD_ROT=0" ;;
+      rot) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_sm86.cubin" ;;
+      *) e="PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_$leg.cubin" ;;
+    esac
     # shellcheck disable=SC2086
     j=$(env $e timeout -k 5 $(( ${HR_SECS:-120} + 120 )) node hashrate.js "$ADDON" "${HR_SECS:-120}" 10 2> $W/hr$n.err | grep '^{' | tail -1)
     say "hashrate $leg$n $(echo "$j" | jq -c '{k, th, sd, n, mhz, watts, tempC, memUtil, fold: .device.fold}' 2>/dev/null | cut -c1-300) end $(smi)"
