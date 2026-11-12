@@ -1821,9 +1821,10 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #if !defined(PEARL_W_NOAA) && defined(PEARL_W_LO32)
 #define PEARL_W_AA
 #endif
-#if !defined(PEARL_W_NOBA)
-#define PEARL_W_BA
-#endif
+// BA is off again from e7a3e10a's successor: at 16 row windows HiveOS's 24.35 finalizer gets most regions
+// wrong with it under any options (its ISA reloads a B' register by the inline load with no wait on the DPAS
+// still reading it), while the new driver passes. Without BA: 98.8-98.9 against 99.5-99.7 (card 5), and 24.35
+// passes. PEARL_W_BA turns it on.
 // goal-arc13: 16 row windows a work-group (32 sub-groups), each copying 128 bytes of B' at even k-steps only
 // (PEARL_W_C16): half the copy's local stores a MAC, and each thread stores as often as the half-copy timing
 // build that ran 105.3 at 8 windows. 99.6 against 98.5 for 8 windows (card 5; 16 windows with the old 64-byte
