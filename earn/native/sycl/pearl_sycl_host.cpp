@@ -1042,7 +1042,9 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
       cache = ctx->dev.get_info<sycl::info::device::global_mem_cache_size>();
     } catch (const std::exception &) {
     }
-    const uint64_t share = ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
+    // xmx8w takes an eighth (32 row windows on an A750): with its 256-byte A' and B' messages (goal-arc13)
+    // 98.5-98.6 TH/s against 98.0-98.1 at 64 and 98.0-98.3 at 16 (card 5, three rounds).
+    const uint64_t share = ctx->fold == kXmx8W ? 8 : ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
     uint64_t band = cache ? cache / share / (32ull * k) : 16;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
