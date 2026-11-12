@@ -1,4 +1,5 @@
 # sm75patch.py <cubin> <patch list> -- patch the RTX 20 fold's machine code after ptxas.
+# A list may name the section it edits ("section": pearl_tile_fold_wmma, the default, or pearl_tile_fold_wmma_rg).
 #
 #   python3 -I sm75patch.py pearl_kernel.cubin sm75/sbfix1.json
 #
@@ -63,9 +64,14 @@ def load_list(path):
             raise Refuse('the patch list is not valid JSON: %s' % e) from None
     if not isinstance(spec, dict):
         raise Refuse('the patch list is not a JSON object')
-    extra = set(spec) - {'description', 'before', 'after', 'words'}
+    extra = set(spec) - {'description', 'before', 'after', 'words', 'section'}
     if extra:
         raise Refuse('the patch list has unknown keys: ' + ', '.join(sorted(extra)))
+    global SECTION
+    if 'section' in spec:
+        if spec['section'] not in ('pearl_tile_fold_wmma', 'pearl_tile_fold_wmma_rg'):
+            raise Refuse('the patch list names an unknown section')
+        SECTION = ('.text.' + spec['section']).encode()
     for k in ('before', 'after'):
         if not is_hex(spec.get(k), 12):
             raise Refuse('the patch list\'s "%s" is not 12 lowercase hex digits' % k)

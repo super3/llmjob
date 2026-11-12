@@ -136,8 +136,13 @@ __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
 // (PEARL_BD_LD_A and PEARL_BD_LD_B, see pearl_config.h). 0 is pearl_bd_ldg itself.
 template <int C>
 __device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
-  int4 v;
-#define PEARL_BD_LDOP_ASM(op)                                       asm volatile(op " {%0,%1,%2,%3}, [%4];"                                       : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)                     : "l"(p)                                                         : "memory")
+  if constexpr (C == 0) return pearl_bd_ldg(p);
+  int4 v = make_int4(0, 0, 0, 0);
+#define PEARL_BD_LDOP_ASM(op)                                                       \
+  asm volatile(op " {%0,%1,%2,%3}, [%4];"                                           \
+               : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)                         \
+               : "l"(p)                                                             \
+               : "memory")
   if constexpr (C == 1)
     PEARL_BD_LDOP_ASM("ld.global.v4.s32");
   else if constexpr (C == 2)
@@ -150,8 +155,6 @@ __device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
     PEARL_BD_LDOP_ASM("ld.global.nc.L2::128B.v4.s32");
   else if constexpr (C == 6)
     PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.L2::128B.v4.s32");
-  else
-    return pearl_bd_ldg(p);
 #undef PEARL_BD_LDOP_ASM
   return v;
 }

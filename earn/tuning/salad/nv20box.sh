@@ -61,10 +61,32 @@ build_core() {  # build_core <name> "<defines>": the addon for this card alone, 
   local K=$W/core-$1 t0
   t0=$(date +%s)
   rm -rf "$K" && mkdir -p "$K/cuda-build" && cp -r "$R/earn/native/src" "$R/earn/native/binding.gyp" "$K/"
-  local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $2"
+  # A token "@<list>" among the defines names a patch list under probes/turing/ (sm75patch.py, which edits the
+  # section the list names): the kernel is built with --keep, its cubin patched, and nvcc's own fatbinary and host
+  # steps run again, as compilers.sh's patch_fold does.
+  local fl="" pl="" tk
+  for tk in $2; do case "$tk" in @*) pl=${tk#@} ;; *) fl="$fl $tk" ;; esac; done
+  local C="-O3 -std=c++17 -cudart static -Xcompiler -fPIC -gencode arch=compute_75,code=sm_75 $fl"
+  local o="$K/cuda-build/pearl_kernel.o" kp=""
+  [ -n "$pl" ] && { mkdir -p "$K/keep"; kp="--keep --keep-dir $K/keep"; }
   # shellcheck disable=SC2086
-  nvcc $C -Xptxas -v -c "$K/src/pearl_kernel.cu" -o "$K/cuda-build/pearl_kernel.o" > "$K/kernel.log" 2>&1 \
+  nvcc $C -Xptxas -v $kp -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/kernel.log" 2>&1 \
     || { say "core $1 kernel FAILED: $(grep -m2 -i error "$K/kernel.log" | cut -c1-200)"; return 1; }
+  if [ -n "$pl" ]; then
+    local fb host cubin
+    # shellcheck disable=SC2086
+    nvcc $C -Xptxas -v $kp --dryrun -c "$K/src/pearl_kernel.cu" -o "$o" > "$K/dryrun.txt" 2>&1 \
+      || { say "core $1 patch: dryrun failed"; return 1; }
+    fb=$(grep '^#\$ fatbinary ' "$K/dryrun.txt" | sed 's/^#\$ //')
+    host=$(tail -n 1 "$K/dryrun.txt" | sed 's/^#\$ //; s/[[:space:]]*$//')
+    cubin=$(printf '%s\n' "$fb" | grep -oE 'sm=75,file=[^"]+' | sed 's/^sm=75,file=//')
+    [ -f "$cubin" ] || { say "core $1 patch: no cubin (${cubin:-none})"; return 1; }
+    python3 -I "$R/earn/native/probes/turing/sm75patch.py" "$cubin" "$R/earn/native/probes/turing/$pl" \
+      > "$K/patch.txt" 2>&1 || { say "core $1 patch FAILED: $(tail -1 "$K/patch.txt" | cut -c1-200)"; return 1; }
+    (eval "$fb" && eval "$host") > "$K/replay.txt" 2>&1 \
+      || { say "core $1 patch: replay failed: $(tail -1 "$K/replay.txt" | cut -c1-200)"; return 1; }
+    say "core $1 patched with $pl: $(tail -1 "$K/patch.txt" | cut -c1-200)"
+  fi
   # shellcheck disable=SC2086
   nvcc $C -c "$K/src/pearl_host.cu" -o "$K/cuda-build/pearl_host.o" > "$K/host.log" 2>&1 \
     || { say "core $1 host FAILED: $(grep -m2 -i error "$K/host.log" | cut -c1-200)"; return 1; }
