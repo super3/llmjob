@@ -2313,7 +2313,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
                            sycl::access::address_space::local_space>
               px(part[pOff + (widx * 8u + (lane & 7u)) * 16u + ch]);
+#if defined(PEARL_W_RDNB)
+          // goal-arc11 experiment: no `if` (a sub-group has 8 lanes, so it is always true). The loop is then one
+          // block with no goto/join, but has 7 dummy DPAS for 3: 92.6 against 93.55 (card 5).
+          px.fetch_xor((lane & 1u) ? x1 : x0);
+#else
           if (lane < 8u) px.fetch_xor((lane & 1u) ? x1 : x0);
+#endif
         } else {
           if (lane < 8u) part[pOff + (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
         }
