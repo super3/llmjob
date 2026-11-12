@@ -613,6 +613,9 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8F && ctx->hwSg != 8) fold = kXmx8FEmu;
 #if defined(PEARL_SYCL_XMX8S)
   if (fold == kXmx8S && ctx->hwSg != 8) fold = kXmx8SEmu;
+  // A batch it cannot tile in fours (the check's 4-column batches): xmx8f, which reads the same layouts.
+  if ((fold == kXmx8S || fold == kXmx8SEmu) && (((a.rowsValid / 2u) % 4u) || ((a.colBatch / 4u) % 4u)))
+    fold = fold == kXmx8S ? kXmx8F : kXmx8FEmu;
   if (fold == kXmx8S) { fold_xmxs<true>(q, a, groups); return; }
   if (fold == kXmx8SEmu) { fold_xmxs<false>(q, a, groups); return; }
 #endif

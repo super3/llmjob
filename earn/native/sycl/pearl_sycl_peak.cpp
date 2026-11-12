@@ -1412,6 +1412,9 @@ void add_frag_rows(std::vector<Row> &v) {
   SLM_ROW("t-spr2", "32 by 32, both through the ring (8-dword reads), copy spread over a 2-k-step stage, split barrier", 3, 17, 2, 1, 8, 2);
   SLM_ROW("t-spr2c", "t-spr2 without the barrier", 3, 18, 2, 1, 8, 2);
   SLM_ROW("t-spr-b2", "32 by 32, B' through the ring (8-dword reads), copy spread over 2 k-steps, split barrier", 2, 17, 2, 1, 4, 2);
+  SLM_ROW("t-spr1", "32 by 32, both through the ring (8-dword reads), a k-step a stage, copy loads first, split barrier", 3, 17, 2, 1, 4, 1);
+  SLM_ROW("t-spr1-a", "t-spr1 with A' only through the ring", 1, 17, 2, 1, 1, 1);
+  SLM_ROW("t-spr1-b", "t-spr1 with B' only through the ring", 2, 17, 2, 1, 2, 1);
   SLM_ROW("t-pinc-a", "32 by 32: A' copied into the ring a k-step ahead, pinned, no barrier", 1, 7, 1, 2, 2, 1);
   SLM_ROW("t-split-a", "32 by 32: A' through the ring, pinned, split barrier, a k-step a stage", 1, 4, 2, 2, 2, 1);
   SLM_ROW("t-split-a2", "t-split-a, 2 k-steps a stage", 1, 4, 2, 2, 4, 2);
