@@ -2896,6 +2896,27 @@ anywhere in the kernel counts), but removing them is worth less than it looked: 
 tail ran 93.1 where the one with no tail at all ran 94.9. The tail is the larger part. Small code changes also move
 the rate by 1-2% through register allocation alone, so race every variant rather than reason from dummy counts.
 
+### Arc rig, 12 November, 10:11-10:20 UTC: a raised power limit on the `xmx8w` build of 94.6 TH/s
+
+Card 4 (PCI 13:00.0), the cool card, with the owner's agreement and the founder's go-ahead: the limit stepped 190, 200,
+210 and 220 W (rated 225 W), two 60 s `pearl_sycl_check --bench` runs a step on the spare18 build (c95de7d9), watched
+for PROCHOT, regulator alerts, thermal flags and fan speed, and put back to 190 W on exit (read back: 190 W).
+
+| Limit | TH/s | MHz | Drawn |
+|---|---|---|---|
+| 190 W | 94.31, 94.31 | 1942, 1944 | 186.8 W |
+| 200 W | 94.30, 93.76 | 1944, 1935 | 186.7 W |
+| 210 W | 93.47, 93.75 | 1933, 1931 | 186.7 W |
+| 220 W | 94.10, 93.69 | 1940, 1929 | 186.7 W |
+
+No thermal flag, no power-limit flag, fans at most 2,163 rpm. The card draws 186.7 W whatever the limit, so the
+limit does not hold this fold back: the clock stops near 1,940 MHz for another reason (the driver's status bit is set
+in nearly every sample, but neither its thermal nor its PL1 reason). A higher limit is no lever for the Intel goal on
+this card; work per clock is.
+
+After the test the four mining cards moved from spare15 (92.0 TH/s a card on a cool card) to spare18, the founder's
+decision.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
