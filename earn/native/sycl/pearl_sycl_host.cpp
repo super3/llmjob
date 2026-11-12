@@ -235,12 +235,14 @@ std::string env_str(const char *name, const char *dflt) {
 // xmx8w's loop then has 3 dummy DPAS where it had 4, 93.45 TH/s against 92.92 (card 5, three rounds); the 24.35
 // driver takes it too (check PASS). Each dummy costs xmx8w about 0.5%. goal-arc12 added -noroundrobin and
 // -keepDPASMacroInSchedule: with xmx8w's 8x4 DPAS (no dummies left to shift) 96.4 TH/s against 94.85 with the
-// three before (card 5, two rounds). A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
+// three before (card 5, two rounds). goal-arc13 dropped -keepDPASMacroInSchedule again: with A' and B' read as
+// 256-byte inline-vISA messages, HiveOS's 24.35 finalizer under it gets most regions wrong (16,3xx of 16,384, a
+// different count each run); without it the check passes there, and the new driver runs level (98.0-98.1 against
+// 97.9-98.0, card 5). A user's own IGC_VISAOptions wins; PEARL_SYCL_VISA=none sets nothing.
 void set_finalizer_options() {
   static std::once_flag once;
   std::call_once(once, []() {
-    const std::string o = env_str("PEARL_SYCL_VISA",
-                                 "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin -keepDPASMacroInSchedule");
+    const std::string o = env_str("PEARL_SYCL_VISA", "-insertDPASRSDummyMov -DPASTokenReduction -noloopra -noroundrobin");
     if (o == "none" || getenv("IGC_VISAOptions")) return;
 #if defined(_WIN32)
     _putenv_s("IGC_VISAOptions", o.c_str());

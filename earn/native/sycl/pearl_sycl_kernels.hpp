@@ -976,6 +976,8 @@ template <bool HW> inline v8i slm_read256(uint32_t *p, uint32_t lane) {
     const uint32_t a = (uint32_t)(uintptr_t)(__attribute__((opencl_local)) uint32_t *)p;
 #if defined(PEARL_W_D64)
     __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d64x32t flat[%1]:a32" : "=rw"(r) : "rw"(a));
+#elif defined(PEARL_W_BANV)
+    __asm__("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : "rw"(a));
 #else
     __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : "rw"(a));
 #endif
