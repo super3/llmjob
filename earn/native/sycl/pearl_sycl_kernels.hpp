@@ -1720,6 +1720,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
+  // goal-arc9 (PEARL_W_ARGP, with PEARL_W_NOLO32): the operands as kernel arguments of their own, addressed as
+  // pointer + 32-bit offset. IGC then makes the loop's loads 32-bit surface accesses: 517 instructions in the loop
+  // where there were 598 (movs 84 to 10), but 90.8 TH/s against 91.9 (card 5, three rounds), with 8 dummy DPAS
+  // in the loop instead of 4. Kept for the record; off.
+  const int8_t *Ap0 = nullptr, *Bp0 = nullptr;
 
   auto get(sycl::ext::oneapi::experimental::properties_tag) const {
     namespace syclex = sycl::ext::oneapi::experimental;
@@ -1874,7 +1879,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     auto vptr = [](v2u v) { return reinterpret_cast<const int8_t *>((uintptr_t)sycl::bit_cast<uint64_t>(v)); };
 #endif
 #endif
+#if defined(PEARL_W_ARGP)
+    const uint32_t aOff = 2u * wr * A.aStride + sgi * 128u;
+    const uint32_t bOff = (A.colStart / 4u + wcb) * A.bStride + (sgl % 16u) * 128u;
+#endif
     auto load_ah = [&](uint32_t ks, v4i *ah) {
+#if defined(PEARL_W_ARGP)
+      each<4>([&](int rb) {
+        ah[rb] = (v4i)ring_read_global<HW>(Ap0 + (size_t)(aOff + ks * 512u + (uint32_t)(rb >> 1) * A.aStride + (uint32_t)(rb & 1) * 256u), lane);
+      });
+      return;
+#endif
 #if defined(PEARL_W_KMAJ)
       // goal-arc8 timing (wrong results): A' addressed k-step major (a k-step of every row window together),
       // the same bytes and reuse, no power-of-two stride between the streams.
@@ -1984,7 +1999,10 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
             // goal-arc8 timing (wrong results): the copy stores without loading.
             const v4u v = next[i] ^ (ks * 0x9E3779B9u);
 #else
-#if defined(PEARL_W_PTRV)
+#if defined(PEARL_W_ARGP)
+            static_assert(kBps == 1, "PEARL_W_ARGP: one copy block a sub-group");
+            const cvec v = cp_read(Bp0 + (size_t)(bOff + (kn < 64u ? kn : 63u) * 2048u), lane);
+#elif defined(PEARL_W_PTRV)
             // past the last k-step it reads into the next block, for a slot no one reads (timing only: the host
             // leaves no room after the last block).
             const cvec v = cp_read(vptr(bpv[i]), lane);
@@ -2251,7 +2269,7 @@ inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 #else
     constexpr uint32_t kSgs = K::kNsg;
 #endif
-    h.parallel_for(sycl::nd_range<1>((size_t)(groups / (RW * CW)) * kSgs * 8u, kSgs * 8u), K{a, part, ring});
+    h.parallel_for(sycl::nd_range<1>((size_t)(groups / (RW * CW)) * kSgs * 8u, kSgs * 8u), K{a, part, ring, a.Ap, a.Bp});
   });
 }
 
