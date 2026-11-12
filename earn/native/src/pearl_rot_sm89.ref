@@ -9,13 +9,16 @@
 # another form of offsets records than this host writes.
 
 # The loop of 12 November 2026: a gather's IADD3 and PRMT late, offsets records of 8 bytes, A's gathers early
-# with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35).
+# with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35); and, RTX 40's own
+# keys (build_rot.py's ARCH_KEYS), the readout's sums read as (0, 2) and (1, 3) on the chain of the other
+# register parity, with U8 IMMA (rpr=2 u8=1).
 
-# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (626 hits, 16 salts), and
-# 336.2 and 336.0 TH/s by hashrate.js against 334.6 and 334.7 for the loop before it.
-12.6 573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (739 hits, 19 salts), and
+# 336.92, 336.92 and 336.91 TH/s by hashrate.js against 335.92, 336.10 and 336.07 for the loop before it
+# (573b1f13..., alternating 120 s legs). The probe's CPU check: 16,384 of 16,384 at k 2048.
+12.6 c47837b8aa62d954ea1c1d835cf342456ce2cebfab21175f6ff6efae6f8eb4f1
 
 # CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
-# verify-hits 400 of 400 (625 hits, 16 salts).
-12.8 6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c
+# verify-hits 400 of 400 (739 hits, 19 salts).
+12.8 a5a7931e28cb1b3f1ea643153cf6ca3b8d263faeb94af66e5b25797d0b7e18d2
