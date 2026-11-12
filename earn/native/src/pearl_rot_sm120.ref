@@ -1,0 +1,16 @@
+# The rotation fold's sm_120 cubins (RTX 50) that have mined on a card with every hit verified, one line for each:
+#   <toolkit release> <hash>
+# As pearl_rot_sm89.ref, for pearl_rot_sm120.cubin: probes/hand89/build_rot.py --arch sm_120 refuses to write the
+# file unless what it built is listed here for the toolkit that built it, and the host loads the file beside the
+# core only when its hash is in kRotCubins (pearl_host_rot.inc). A line is added only after its file has run on
+# an RTX 50 card: probes/verify-hits.js 400 of 400 with the fold on.
+#
+# There is no hand loop for sm_120: the file is src/pearl_rot.cu as ptxas compiles it for sm_120, whose loop is
+# the rotation fold in C (src/pearl_rot_c.inc), form ROT_C=11 (B gathered a turn ahead, barriers after a chunk's
+# first and last turn only), inlined. Built by CI's CUDA 13 job (13.3.1, nvcc V13.3.73), the toolkit
+# pearl_core_cu13.node is built with; a CUDA 13 cubin needs driver 580 or newer, as that core does.
+
+# CUDA 13.3, built on a Salad PC by earn/tuning/salad/nv50box.sh. RTX 5090 (PC 3e7100e6, 575 W, driver 617.14):
+# verify-hits 400 of 400 (445 hits, 23 salts); 401.92 and 401.44 TH/s by hashrate.js against 393.68, 391.77 and
+# 391.33 for the release fold of the CUDA 13.3 core.
+13.3 83fe6917090b2ab75cc21419c87d3c8680f5aa251940b193244242f3bb8c24c3

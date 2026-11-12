@@ -38,9 +38,14 @@
 #define ROT_THREADS 256u
 #define ROT_FILL 63
 #define ROT_FILL4 ((uint32_t)ROT_FILL * 0x01010101u)
-// The sm_120 loop's form (pearl_rot_c.inc): 1, plus 2 (B a turn ahead) and 4 (the readout spread).
+// The sm_120 loop's form (pearl_rot_c.inc's RC_FLAGS) and whether it is inlined. The shipped form, raced on an
+// RTX 5090 (tuning/benchmark.md): 11 (B gathered a turn ahead, barriers after a chunk's first and last turn
+// only), inlined: 401.9 and 401.4 TH/s by hashrate.js against 393.7, 391.8 and 391.3 for the release fold.
 #ifndef ROT_C
-#define ROT_C 1
+#define ROT_C 11
+#endif
+#ifndef ROT_INLINE
+#define ROT_INLINE 1
 #endif
 
 static __device__ __forceinline__ void rot_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d, uint32_t mx,
@@ -99,7 +104,7 @@ static __device__ void rot_blake3_keyed64(const uint32_t key[8], const uint32_t 
 // from the kernel's own parameters (the third and the fourth: keep them there).
 // On sm_120 the loop is the compiled C fold, nothing is put in its place, and ROT_INLINE=1 lets ptxas inline it:
 // the offsets pointer then stays in the constant bank, which frees registers (the outlined loop spills one a chunk).
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && defined(ROT_INLINE) && ROT_INLINE
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && ROT_INLINE
 #define ROT_LOOP_ATTR __forceinline__
 #else
 #define ROT_LOOP_ATTR __noinline__

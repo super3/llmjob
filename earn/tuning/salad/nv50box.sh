@@ -127,7 +127,7 @@ if has product; then
     n=${b%%:*}; r=${b#*:}; tk=${r%%:*}; fl=$(echo "${r#*:}" | tr ',' ' ')
     # shellcheck disable=SC2046,SC2086
     $(nv $tk) -Xptxas -v $fl -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/$n.cubin > $W/$n.log 2>&1 || { tail -3 $W/$n.log | emit; fail "pearl_rot.cu $n"; }
-    say "rot cubin $n ($tk: $fl): $(sha256sum $W/$n.cubin | cut -c1-12) $(grep -A3 "pearl_rot_fold' for" $W/$n.log | regs /dev/stdin)"
+    say "rot cubin $n ($tk: $fl): fold hash $(python3 -I "$H/asm89.py" hash $W/$n.cubin) $(grep -A3 "pearl_rot_fold' for" $W/$n.log | regs /dev/stdin)"
   done
   sched "${ROT_SCHED:-}"
   # The addon for this card, as CI builds pearl_core_cu13.node (CUDA 13.3, sm_120).

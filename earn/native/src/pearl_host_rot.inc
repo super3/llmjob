@@ -1,8 +1,9 @@
 // The rotation fold's host side. Included by pearl_host.cu, inside its anonymous namespace, after the
 // restamp helpers it uses. OFF by default: nothing here runs unless PEARL_FOLD_ROT=1 is in the environment, the
-// card is compute 8.9 (RTX 40) or 8.6 (RTX 30) and the card's cubin (pearl_rot_sm89.cubin or
-// pearl_rot_sm86.cubin, beside the addon, or the file PEARL_ROT_CUBIN names) is there. The two cubins hold the
-// same hand-written loop: ptxas gives sm_86 the same code as sm_89 for this kernel, byte for byte. The release fold and everything it does are untouched.
+// card is compute 8.9 (RTX 40), 8.6 (RTX 30) or 12.0 (RTX 50) and the card's cubin (pearl_rot_sm89.cubin,
+// pearl_rot_sm86.cubin or pearl_rot_sm120.cubin, beside the addon, or the file PEARL_ROT_CUBIN names) is there.
+// The first two hold the same hand-written loop: ptxas gives sm_86 the same code as sm_89 for this kernel, byte
+// for byte. The sm_120 file has no hand loop: it is the fold written in C (pearl_rot_c.inc) as ptxas compiles it. The release fold and everything it does are untouched.
 //
 // What is different from the release fold, and so what this file does itself:
 //   - The kernel is a cubin whose chunk loop was written by hand (src/pearl_rot.cu, probes/hand89/rfold.py). It
@@ -146,15 +147,16 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
   return rot_elf_ok(reinterpret_cast<const uint8_t *>(out->data()), out->size() - 1, nullptr, nullptr);
 }
 
-// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref and src/pearl_rot_sm86.ref
-// list, the files that have
-// mined on a card with every hit verified (test/rotFoldShip.test.js keeps the two lists the same). A file
+// The cubins this core loads from beside itself: the hashes src/pearl_rot_sm89.ref, src/pearl_rot_sm86.ref and
+// src/pearl_rot_sm120.ref list, the files that have
+// mined on a card with every hit verified (test/rotFoldShip.test.js keeps the lists the same). A file
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
 const char *const kRotCubins[] = {
     "573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736",  // CUDA 12.6
     "6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c",  // CUDA 12.8
     "6405e282be41387809815e67451dfcbf31a7e8a7a53b9cc4e73e48fc046c275d",  // sm_86, CUDA 12.8
+    "83fe6917090b2ab75cc21419c87d3c8680f5aa251940b193244242f3bb8c24c3",  // sm_120, CUDA 13.3
 };
 
 bool rot_named() {

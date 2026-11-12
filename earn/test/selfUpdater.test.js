@@ -411,6 +411,62 @@ describe('applyUpdate', () => {
     expect(fs.rmSync).toHaveBeenCalledWith(rot86 + '.new-' + process.pid, { force: true });
   });
 
+  // The RTX 50 cubin goes the same way as the RTX 40 and 30 ones: the old copy out before the binary goes in, the new
+  // one after, and a failed download costs the rig only the fold.
+  it('installs the RTX 50 rotation fold cubin beside the exe, and removes the old one first', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    fs.renameSync.mockImplementation(() => {});
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin120Url: 'https://host/pearl_rot_sm120.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+
+    const rot120 = require('path').join('/opt/rig', 'pearl_rot_sm120.cubin');
+    expect(fs.renameSync).toHaveBeenCalledWith(rot120 + '.new-' + process.pid, rot120);
+    const removed = fs.rmSync.mock.calls.findIndex((c) => c[0] === rot120);
+    const exe = fs.renameSync.mock.calls.findIndex((c) => c[1] === '/opt/rig/earn');
+    expect(removed).toBeGreaterThanOrEqual(0);
+    expect(fs.rmSync.mock.invocationCallOrder[removed])
+      .toBeLessThan(fs.renameSync.mock.invocationCallOrder[exe]);
+  });
+
+  it('does not fail the update when the RTX 50 cubin cannot be installed', async () => {
+    const res1 = fakeRes({ statusCode: 200 });
+    const res2 = fakeRes({ statusCode: 200 });
+    wire([res1, res2]);
+    const out1 = fakeWrite();
+    const out2 = fakeWrite();
+    fs.createWriteStream.mockReturnValueOnce(out1).mockReturnValueOnce(out2);
+    const rot120 = require('path').join('/opt/rig', 'pearl_rot_sm120.cubin');
+    fs.renameSync.mockImplementation((from, to) => {
+      if (to === rot120) throw new Error('EACCES: permission denied');
+    });
+    fs.chmodSync.mockImplementation(() => {});
+
+    const p = updater.applyUpdate(
+      { downloadUrl: 'https://host/bin', rotCubin120Url: 'https://host/pearl_rot_sm120.cubin' },
+      '/opt/rig/earn');
+    res1.emit('data', Buffer.from('x'));
+    out1.emit('finish');
+    await new Promise((r) => setImmediate(r));
+    res2.emit('data', Buffer.from('y'));
+    out2.emit('finish');
+    await expect(p).resolves.toBe('/opt/rig/earn');
+    expect(fs.rmSync).toHaveBeenCalledWith(rot120 + '.new-' + process.pid, { force: true });
+  });
+
   // The CPU worker is a program: it lands executable, beside the binary.
   it('downloads the CPU worker beside the exe, executable, for a Monero rig', async () => {
     const res1 = fakeRes({ statusCode: 200 });

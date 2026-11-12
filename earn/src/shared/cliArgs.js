@@ -151,19 +151,20 @@ const USAGE = [
   '                           every half millisecond, spin busy-waits and takes',
   '                           a whole CPU core a card. PEARL_WAIT takes the same',
   '                           values; the flag wins.',
-  '      --rotation-fold      Experimental, RTX 30 and 40 cards only: mine on a',
-  '                           second kernel, the rotation fold. About 6% faster',
+  '      --rotation-fold      Experimental, RTX 30, 40 and 50 cards only: mine on',
+  '                           a second kernel, the rotation fold. About 6% faster',
   '                           on an RTX 4090 (335.8 against 317.4 TH/s at 450 W)',
   '                           and an RTX 3090 (141.0 against 133.1 at 390 W),',
-  '                           and it uses about 1.3 GB more card memory. Off by',
-  '                           default.',
+  '                           about 2% on an RTX 5090 (401.9 against 393.7 at',
+  '                           575 W), and it uses about 1.3 GB more card memory.',
+  '                           Off by default.',
   '                           Each card checks ' + FOLD_CHECK_HITS + ' of the fold\'s hits on the',
   '                           CPU before it trusts it, and every share after',
-  '                           that. If the card is not an RTX 30 or 40, a file is',
-  '                           missing, memory is short or a check fails, the',
-  '                           card mines on the normal kernel and the log says',
-  '                           why. In the desktop app: LLMJOB_ROTATION_FOLD=1',
-  '                           in its environment.',
+  '                           that. If the card is not an RTX 30, 40 or 50, a',
+  '                           file is missing, memory is short or a check',
+  '                           fails, the card mines on the normal kernel and',
+  '                           the log says why. In the desktop app:',
+  '                           LLMJOB_ROTATION_FOLD=1 in its environment.',
 
   '      --xmr-address <4…|8…>  Also mine Monero (XMR) on the CPU, paid to this',
   '                           address (a standard 4… address or an 8… subaddress).',
@@ -349,8 +350,8 @@ function buildSettings(opts, errors, report, update, serve) {
     else cpuPriority = p;
   }
 
-  // The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30 and 40
-  // cards. A flag for the reason --core is one; the CUDA core reads
+  // The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30, 40 and
+  // 50 cards. A flag for the reason --core is one; the CUDA core reads
   // PEARL_FOLD_ROT, which the CLI sets from this.
   const rotationFold = opts['--rotation-fold'] === true;
 

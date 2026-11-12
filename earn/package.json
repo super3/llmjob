@@ -64,6 +64,7 @@
             "**/*.node",
             "pearl_rot_sm89.cubin",
             "pearl_rot_sm86.cubin",
+            "pearl_rot_sm120.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"
@@ -97,6 +98,7 @@
             "**/*.node",
             "pearl_rot_sm89.cubin",
             "pearl_rot_sm86.cubin",
+            "pearl_rot_sm120.cubin",
             "llmjob-xmr-worker",
             "llmjob-xmr-worker.exe",
             "sycl/**"

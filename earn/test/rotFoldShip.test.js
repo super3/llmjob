@@ -18,6 +18,7 @@ const RFOLD = read('native', 'probes', 'hand89', 'rfold.py');
 const ASM = read('native', 'probes', 'hand89', 'asm89.py');
 const REF = read('native', 'src', 'pearl_rot_sm89.ref');
 const REF86 = read('native', 'src', 'pearl_rot_sm86.ref');
+const REF120 = read('native', 'src', 'pearl_rot_sm120.ref');
 const refLines = (text) => text.split('\n').filter((l) => l.trim() && !l.startsWith('#'));
 const HOST = read('native', 'src', 'pearl_host.cu');
 const ROT = read('native', 'src', 'pearl_host_rot.inc');
@@ -53,7 +54,7 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
   });
 
   test('--arch sm_86 builds the RTX 30 file against its own reference', () => {
-    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86")');
+    expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120")');
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     expect(BUILD_ROT).toContain('ref = os.path.join(SRC, "pearl_rot_%s.ref" % arch.replace("_", ""))');
     // The reference's --ref still wins over the one --arch picks.
@@ -88,6 +89,9 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     // RTX 30's: the toolkit CI builds with, run on an RTX 30 card.
     expect(refLines(REF86).map((l) => l.split(' ')[0])).toContain('12.8');
     for (const l of refLines(REF86)) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
+    // RTX 50's: CUDA 13.3, the toolkit of the core RTX 50 rigs load, run on an RTX 5090.
+    expect(refLines(REF120).map((l) => l.split(' ')[0])).toEqual(['13.3']);
+    for (const l of refLines(REF120)) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
     expect(lines.length).toBeGreaterThan(0);
     for (const l of lines) expect(l).toMatch(/^\d+\.\d+ [0-9a-f]{64}$/);
     // CUDA 12.8 is what CI builds with; 12.6 is the toolkit the fold was first built and raced with.
@@ -159,7 +163,15 @@ describe('CI builds it with the release toolkit (native-core.yml)', () => {
       + '            earn/native/build/Release/${{ matrix.file }}\n'
       + '            earn/native/build/Release/pearl_rot_sm89.cubin\n'
       + '            earn/native/build/Release/pearl_rot_sm86.cubin\n'
+      + '            earn/native/build/Release/pearl_rot_sm120.cubin\n'
       + '          if-no-files-found: error\n');
+    // The RTX 50 file is built by the CUDA 13 job, with the same refusal to write an unlisted file.
+    expect(NATIVE_CORE).toContain("- name: Build the rotation fold's cubin for RTX 50 (opt-in, not blocking)\n"
+      + '        id: rot120\n'
+      + "        if: matrix.variant == '-cu13'\n"
+      + '        continue-on-error: true\n');
+    expect(NATIVE_CORE).toContain('"$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120 --arch sm_120 || rc=$?');
+    expect(NATIVE_CORE).toContain('cp rot-build/sm120/pearl_rot_sm120.cubin build/Release/pearl_rot_sm120.cubin');
     expect(NATIVE_CORE).toContain("        if: always() && matrix.variant == ''\n        with:\n"
       + '          name: pearl-rot-build-${{ matrix.os }}\n          path: earn/native/rot-build\n');
   });
@@ -189,7 +201,9 @@ describe('every package carries it beside the core', () => {
       .flatMap((v) => (v && Array.isArray(v.extraResources) ? v.extraResources : []))
       .filter((x) => x.to === 'native');
     expect(native).toHaveLength(2);
-    for (const r of native) expect(r.filter).toEqual(expect.arrayContaining(['pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin']));
+    for (const r of native) {
+      expect(r.filter).toEqual(expect.arrayContaining(['pearl_rot_sm89.cubin', 'pearl_rot_sm86.cubin', 'pearl_rot_sm120.cubin']));
+    }
   });
 
   test('the Linux CLI and the HiveOS package, beside the binary', () => {
@@ -206,6 +220,8 @@ describe('every package carries it beside the core', () => {
     expect(hive).toContain('warning: no pearl_rot_sm89.cubin');
     expect(cli).toContain("copyFileSync(rot86, join(dist, 'pearl_rot_sm86.cubin'));");
     expect(hive).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm86.cubin'), 0o644);");
+    expect(cli).toContain("copyFileSync(rot120, join(dist, 'pearl_rot_sm120.cubin'));");
+    expect(hive).toContain("chmodSync(join(pkgDir, 'pearl_rot_sm120.cubin'), 0o644);");
     const smoke = read('..', '.github', 'scripts', 'hiveos-smoke.sh');
     expect(smoke).toMatch(/for f in h-manifest\.conf pearl_core\.node pearl_core_cu13\.node pearl_rot_sm89\.cubin [^\n]*; do mode_is "\$f" 644; done/);
   });
@@ -224,6 +240,11 @@ describe('every package carries it beside the core', () => {
     expect(up86).toBeGreaterThan(0);
     expect(up86).toBeLessThan(publish.indexOf('gh release upload "v$VERSION" dist/llmjob-earn-cli-linux'));
     expect(publish).toContain('gh release delete-asset "v$VERSION" pearl_rot_sm86.cubin --yes');
+    const up120 = publish.indexOf('gh release upload "v$VERSION" dist/pearl_rot_sm120.cubin --clobber');
+    expect(up120).toBeGreaterThan(0);
+    expect(up120).toBeLessThan(publish.indexOf('gh release upload "v$VERSION" dist/llmjob-earn-cli-linux'));
+    expect(publish).toContain('gh release delete-asset "v$VERSION" pearl_rot_sm120.cubin --yes');
+    expect(MINER_BUILD).toContain('if [ -f vendor/native/pearl_rot_sm120.cubin ]; then');
   });
 });
 
@@ -276,7 +297,7 @@ describe('the host: off unless asked for, and one plain reason when it cannot ru
     // The file beside the core is held to the reference's hashes; one PEARL_ROT_CUBIN names is a developer's own.
     const listed = [...ROT.slice(ROT.indexOf('const char *const kRotCubins[] = {'), ROT.indexOf('bool rot_named()'))
       .matchAll(/"([0-9a-f]{64})"/g)].map((m) => m[1]).sort();
-    const ref = [...refLines(REF), ...refLines(REF86)].map((l) => l.split(' ')[1]).sort();
+    const ref = [...refLines(REF), ...refLines(REF86), ...refLines(REF120)].map((l) => l.split(' ')[1]).sort();
     expect(listed).toEqual(ref);
     expect(ROT).toContain('bool rot_listed(const std::vector<char> &image) {\n  if (rot_named()) return true;');
     // The host's hash is the build's: sha256 with the string table zeroed.
