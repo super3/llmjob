@@ -117,7 +117,7 @@ def port(code):
                            raw=(0x7b82 | 7 << 12 | d << 16 | 0xff << 24 | (0x398 // 4) << 40, 0x800)))
             out.append(Ins("NOP", wait=(SB_C,)))
             if DBG[0] & 32:     # debugging: chunks as k 2048's, 16
-                out.append(Ins("MOV R%d, 0x10" % d))
+                out.append(Ins("MOV R%d, 0x10" % d, stall=6))
             continue
         elif "c[0x0][0x170]" in t:
             m = re.match(r"IMAD\.WIDE\.U32 R(\d+), R(\d+), R(\d+), c\[0x0\]\[0x170\]$", t)
