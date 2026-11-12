@@ -26,7 +26,7 @@ and an RX 6800 (gfx1030): every fold check word right, verify-hits 400 of 400, a
 every share (4, then 6 in a 10-minute run), none rejected. At the owner's 1400 MHz core cap an RX 6600 did 7.9 TH/s and the RX 6800
 17.2, 85% of what the card's bare `v_dot4` did at that clock, and 107.7% of SRBMiner 3.8.6 on the same cards
 (`earn/tuning/benchmark.md`, "RDNA 2 on a lent HiveOS rig"). Since then the `dot4` fold takes its A' words from
-other lanes by DPP and stages 64-byte slabs: 8.46 and 18.36 TH/s there (+6.4%). gfx103x stays among the checked
+other lanes by DPP and stages 64-byte slabs: 8.46 and 18.36 TH/s there (+6.4%), 114.6% of SRBMiner. gfx103x stays among the checked
 cards until it has mined in a release.
 
 This folder reads `../src` and writes only to `./build`. Building it changes nothing in the
