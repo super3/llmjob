@@ -311,17 +311,26 @@ def main():
     used, named = set(), set()
     for ins in code:
         named |= {int(x) for x in re.findall(r"\bR(\d+)\b", ins.text)}
+        # A 64-bit operand (Rn.64, IMAD.WIDE) names Rn + 1 too.
+        named |= {int(x) + 1 for x in re.findall(r"\bR(\d+)\.64\b", ins.text)}
+        if "WIDE" in ins.text or ".64" in ins.text.split(" ")[0]:
+            named |= {int(x) + 1 for x in re.findall(r"\bR(\d+)\b", ins.text)}
         if "BRA" in ins.text or ins.text.startswith("ULDC"):
             continue
-        _r, w, _k = fold.rw(ins.text)
+        r_, w, _k = fold.rw(ins.text)
         used |= {x for x in w if not isinstance(x, str)}
+        named |= {x for x in list(r_) + list(w) if not isinstance(x, str)}
     extra = sorted(used - regs)
     # The register the caller passes the return address in is dead once the loop returns (it returns through
     # RET_REG, set at the end).
     _e, _r, back = asm89.region(text)
     kern = [t for a, t in rows if a < entry]
     extra = [r for r in extra if [t for t in kern if re.match(r"\S+ R%d," % r, t)] != ["MOV R%d, 0x%x" % (r, back)]]
-    spare = sorted(r for r in regs if r not in named and r not in (0, 1, 2, 3, 255))
+    # A rename target is a register the compiled function writes, or one the kernel never names at all.
+    in_kern = {int(x) for t in kern for x in re.findall(r"\bR(\d+)\b", t)}
+    in_kern |= {int(x) + 1 for t in kern for x in re.findall(r"\bR(\d+)\.64\b", t)}
+    free = set(regs) | (set(range(4, 255)) - in_kern)
+    spare = sorted(r for r in free if r not in named and r not in (0, 1, 2, 3, 255))
     rest = []
     if len(spare) < len(extra):
         rest = restore_code(text, set(extra))
