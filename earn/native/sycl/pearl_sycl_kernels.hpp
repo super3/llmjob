@@ -489,20 +489,30 @@ template <> struct AFrag<8> { typedef v8i type; };
 
 // The extension's reference semantics, with sub-group shuffles: what the CPU
 // device runs, and what the hardware DPAS must agree with.
+//
+// Lane j's A word comes to lane i by an XOR shuffle (j = i ^ s), not by
+// select_from_group(sg, x, j): on an Arc A750 (compute runtime 26.40), a
+// select_from_group whose index is the same in every lane returned wrong words
+// (goal-arc7, 12 Nov: every region of every reference fold wrong on the card,
+// right on the CPU device; the XOR form matches the hardware DPAS bit for bit,
+// and the reference folds now pass on both).
 template <int SG>
 inline v8i dpas_emu(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c) {
+  const uint32_t lane = (uint32_t)sg.get_local_linear_id();
   v8i r = c;
   for (int row = 0; row < 8; row++) {
     int acc = r[row];
     if constexpr (SG == 16) {
-      for (int l = 0; l < 16; l += 2) {
-        const uint32_t lo = (uint16_t)sycl::select_from_group(sg, a[row], l);
-        const uint32_t hi = (uint16_t)sycl::select_from_group(sg, a[row], l + 1);
-        acc = dot4(lo | (hi << 16), (uint32_t)b[l / 2], acc);
+      // Lane j holds k = 2 j, 2 j + 1 of the row: the low or high half of B's dword j / 2.
+      for (uint32_t s = 0; s < 16u; s++) {
+        const uint32_t j = lane ^ s;
+        const uint32_t aw = (uint16_t)sycl::permute_group_by_xor(sg, a[row], s);
+        const uint32_t bw = ((uint32_t)b[j >> 1] >> (16u * (j & 1u))) & 0xffffu;
+        acc = dot4(aw, bw, acc);
       }
     } else {
-      for (int l = 0; l < 8; l++)
-        acc = dot4((uint32_t)sycl::select_from_group(sg, a[row], l), (uint32_t)b[l], acc);
+      for (uint32_t s = 0; s < 8u; s++)
+        acc = dot4((uint32_t)sycl::permute_group_by_xor(sg, a[row], s), (uint32_t)b[lane ^ s], acc);
     }
     r[row] = acc;
   }
