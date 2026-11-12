@@ -614,6 +614,102 @@ Also timed and dropped:
 - **The fold as one flat loop with the readout every fourth k-step** (`p-rd`):
   58.5 against the built fold's 62.7. Not built.
 
+## The ring fold (12 November 2026)
+
+`fold_xmxr` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8r`. Opt-in:
+`auto` still picks the fragment fold. It carries over the NVIDIA fold's way
+of feeding its matrix instructions: an operand tile is copied into on-chip
+memory once and every warp reads it from there.
+
+- **B' through local memory.** A work-group is 8 windows of one column window
+  (16 sub-groups, 256 rows by 64 columns; `PEARL_SYCL_RING_WPG` changes it).
+  Each k-step its sub-groups copy the next k-step's B' (2,048 bytes, a block
+  read of 128 bytes each) into a ring of three slots in local memory, and
+  every sub-group reads its B' fragments from there. A' is still each
+  sub-group's own, read from global memory.
+- **A split barrier** (`SPV_INTEL_split_barrier`, which build.sh and
+  build-win.sh now pass to the translator) holds the ring: a sub-group waits
+  for the k-step before, stores its copy, arrives, and runs its DPAS, so it
+  may be a k-step ahead of the slowest. A whole barrier a k-step in its place
+  lost about 11% (`s-ring` 70.2 to 71.2 a clock against `s-ring3`'s 78.6 to
+  79.0, 8 windows a work-group).
+- **The copy is loaded a k-step early** and waits in registers, so its store
+  never waits for memory (+3 to 5% a clock), and the wait has no acquire
+  fence (+2 to 3%).
+- **Operands in block-read order** (`kFragAT`, `kFragBT`): the same fragments
+  with each 128 bytes in the order a sub-group block read hands dwords to
+  lanes, so one message with one address gives each lane its half fragment.
+
+Card 5 of the rig, `pearl_sycl_check --bench`, 20 s a run, three rounds
+taking turns, release build form (Level Zero, Intel 26.40):
+
+| Fold | Round 1 | Round 2 | Round 3 | Clock | Power |
+|---|---|---|---|---|---|
+| fragment fold (`xmx8f`) | 62.79 | 62.64 | 62.65 | 1,970 MHz | 189 W |
+| ring fold, 8 windows a work-group | 67.17 | 66.92 | 66.91 | 2,000 MHz | 189 W |
+| fragment fold again (A/A twin) | 62.66 | 62.76 | 62.74 | 1,969 MHz | 189 W |
+| ring fold, 16 windows | 63.46 | 63.45 | 63.46 | 2,000 MHz | 180 W |
+
+**+6.9% at the same 189 W** (the twin's spread is 0.2%). Both run at the
+card's power limit, so the gain is in joules a MAC, which is also what the
+rig's hot inner cards are short of.
+
+Checks: `pearl_sycl_check` on card 5, 16,384 of 16,384 regions and 29 of 29
+hits at m = n = 2048; at the mainnet size both folds mismatched the same 4
+regions of 32,768, which is card 5's known fault when hot (its copies to the
+host, here of the operands the host's reference reads); `verify-hits.js`, 400
+of 400 hits at the mainnet size; the SYCL CPU device, 4,096 of 4,096 regions
+at 1, 2, 4, 8 and 16 windows a work-group and bands 1, 4 and 16.
+
+On the pool (Kryptex, card 5 alone, 5 minutes each, mean after the first minute):
+ring fold 66.55 TH/s, fragment fold 62.18 (+7.0%); 3 shares accepted and none
+rejected for each, first hit right.
+
+### What else of the NVIDIA work was timed here
+
+The probe has new rows for this (`p-`, `e-`, `s-`, `r-`, `x-fold`; see the
+comment above `PeakPrice`). Timing only except `x-fold` and `r-fold`, which
+are the two folds themselves. Card 5, 2 to 4 s a row:
+
+| Row | What | A clock | T-MAC/s, clock, power |
+|---|---|---|---|
+| `p-skel` | 16 DPAS a k-step on register operands | 123 to 127 | 112, 1,977 to 2,027 MHz, 160 W |
+| `p-bar`, `p-sbar` | the same with a work-group barrier, or a split one, every k-step (2 to 16 sub-groups) | 116.6 to 119.9, 119.1 to 120.2 | 106, 155 W |
+| `s-ring3k` | the ring as a stand-in (no readout), 8 or 16 windows | 80.4 to 82.5 | 70.8 to 71.8, 1,922 to 1,981 MHz, 181 to 191 W |
+| `s-ringnb` | the same with no barrier at all (wrong on purpose) | 91.5 to 92.3 | 74.9 to 76.9, 182 to 191 W |
+| `s-ring2k` | slots of two k-steps, a barrier every second one | 83.3 | 70.1 to 70.8, 182 W |
+| `x-fold` | the fragment fold | 70.0 to 71.9 | 60.5, 1,879 to 1,931 MHz, 182 to 191 W |
+| `r-fold` | the ring fold, first form (copy and store together) | 70.6 to 73.7 | 63.8 to 64.2, 181 W |
+| `r-fold-pw` | the ring fold as the core runs it | 74.2 to 79.6 | 64.9 to 67.1, 181 to 191 W |
+
+- **Watts are the limit, as on the 4090.** DPAS alone on register operands
+  draws 151 to 160 W at 2,000 to 2,036 MHz; the card's limit is 190 W (178 to
+  191 W in practice). Every row that feeds the DPAS from memory runs at the
+  limit and loses clock, so the figure to compare is T-MAC/s at the same
+  watts, not a clock.
+- **Where the watts go.** Rows with one DPAS a k-step instead of 16 keep the
+  card under its limit, so their watts are the loads' (`e-` rows): a byte
+  from the last-level cache about 22 pJ, a first-level hit about 7.5, local
+  memory about 9 (a fit that takes about 85 W as the card's own at 2,036 MHz,
+  not a measurement of each part). With the fold's 2,560 bytes a k-step, 100
+  TH/s at 190 W leaves about 6 pJ a byte: it needs every byte from the first
+  level or local memory and fewer bytes a MAC (32 by 32 tiles carry 2,048).
+- **A barrier is cheap here when it is split** (2.6% a k-step, 5% whole, with
+  nothing else in the loop); with loads in the loop it costs 10%
+  (`s-ringnb` against `s-ring3k`), because every sub-group then waits for the
+  slowest.
+- **Both operands through the ring, first tries, lost.** `s-g32` (32 by 32 a
+  sub-group, A' and B' copied into the ring) gave 17.8 to 36.8 a clock and
+  `s-ring2d` (A' shared by two column windows) 14.8 to 34.1, against 71 for
+  the fold. Not yet understood (spills or the copy's waits are the suspects);
+  `arc-from-amd` measured 105.5 a clock for 32 by 32 read from local memory
+  with no copy, so the route stays open.
+- **Not to be trusted:** `s-b`, `s-ab` and the first `s-ring` rows at 16 and
+  32 windows read local memory that nothing wrote (zeros), so their DPAS
+  drew less power than real data would; their clock figures stand, their
+  watts do not. The `p-slm` rows are slow because of a modulo by a run-time
+  number in the address, not because of local memory.
+
 ## The build a release carries
 
 A release carries this core as a folder, `sycl/`, beside its other cores: in

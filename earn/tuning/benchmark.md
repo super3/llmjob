@@ -2265,6 +2265,61 @@ throughout (160 TH/s, guard quiet); nothing new was built, so there is no new mi
   (58.5 against 62.7).
 - Records: `earn/native/sycl/README.md`, "A price list, and what holds the card".
 
+### Arc rig, 11 to 12 November, night: the NVIDIA methods on the A750, and a ring fold (+6.9%, `goal/arc-from-nv`)
+
+Which of the 4090's kernel methods carry over to the A750, priced on card 5 with new probe rows before anything was
+built (the NVIDIA price-list method), then the best one built. Release build form (open-source DPC++ v7.2.0, Level
+Zero, Intel 26.40). The full table of methods is in the agent's report; the kernel and the rows are described in
+`earn/native/sycl/README.md`, "The ring fold".
+
+**Built: the ring fold (`PEARL_SYCL_FOLD=xmx8r`, opt-in).** The NVIDIA fold copies an operand tile into shared
+memory once a block and every warp reads it there. Here a work-group of 8 windows of one column window (16
+sub-groups) copies each k-step's B' once into a three-slot ring in local memory, held by a split barrier, and every
+sub-group reads its B' there by block reads; A' stays each sub-group's own. The copy is loaded a k-step early so its
+store never waits for memory.
+
+| Fold, card 5, `pearl_sycl_check --bench`, 20 s, taking turns | Round 1 | Round 2 | Round 3 | Clock | Power |
+|---|---|---|---|---|---|
+| fragment fold (`xmx8f`) | 62.79 | 62.64 | 62.65 | 1,970 MHz | 189 W |
+| ring fold, 8 windows a work-group | 67.17 | 66.92 | 66.91 | 2,000 MHz | 189 W |
+| fragment fold again (A/A twin) | 62.66 | 62.76 | 62.74 | 1,969 MHz | 189 W |
+| ring fold, 16 windows | 63.46 | 63.45 | 63.46 | 2,000 MHz | 180 W |
+
++6.9% at the same 189 W; the twin's spread is 0.2%. Checks: 16,384 of 16,384 regions on card 5 at m = n = 2048;
+`verify-hits.js` 400 of 400 at the mainnet size (62.3 TH/s with every hit checked); the CPU device, every region at 1
+to 16 windows a work-group. At the mainnet size the fold check mismatched 4 of 32,768 regions for both folds alike:
+card 5's known fault when hot, in the copy of the operands the host's reference reads.
+
+On the pool (Kryptex, card 5 alone, worker `arc750-ci`, 5 minutes each, one after the other, mean after the first
+minute): ring fold 66.55 TH/s (65.6 to 67.8), 3 accepted, 0 rejected, first hit right; fragment fold 62.18 (61.2 to
+63.4), 3 accepted, 0 rejected. +7.0%, the same as the bench. Card 5 at about 1,790 and 1,770 MHz and its power limit
+in both; cards 1 to 4 were mining beside it.
+
+**What carried over and what did not:**
+- Sharing an operand through on-chip memory carries over (above). Making operands on the chip from the noise
+  tables (the gather, staged-draw and direct folds, the rotation fold's draw) does not: an A750 sub-group has no
+  cheap byte gather, and a draw costs about 8 extra small messages a k-step a sub-group against a port budget of 16
+  clocks. Copying wins.
+- The split barrier is the A750's `bar.sync` for a group of sharers: 2.6% a k-step with nothing else in the loop
+  (5% for a whole barrier), and about 11% less a clock than a whole barrier in the ring. With loads in the loop it
+  still costs 10% against no barrier at all (wrong on purpose), because every sub-group waits for the slowest.
+- The price list carries over, and the watts column matters most: DPAS alone on register operands draws 151 to 160
+  W of the card's 190, and every load-bound row runs at the limit. Rows with one DPAS a k-step stay under it, so
+  their watts are the loads': a last-level-cache byte about 22 pJ, a first-level hit about 7.5, local memory about 9
+  (taking about 85 W as the card's own at 2,036 MHz; a fit). 100 TH/s at 190 W leaves about 6 pJ a byte at the
+  fold's 2,560 bytes a k-step.
+- Readout placement: moving each chunk's readout after the next k-step's arrival lost 16% in the ring fold (60 a
+  clock against 72). Not kept.
+- Not carried over, by reason: the clock offset and memory clock (need root here), the per-salt order search (the
+  ring reads whole 128-byte blocks, nothing collides), the hash on the card (already there), k and cache residency
+  (already k 2048 with band 64). Hand-written loops are possible on Intel (ESIMD, inline vISA, IGA on the native
+  binary) but the port and the watts limit the A750, not the instruction order.
+- Both operands through the ring, first stand-ins: 32 by 32 a sub-group (`s-g32`) 17.8 to 36.8 a clock, A' shared by
+  two column windows (`s-ring2d`) 14.8 to 34.1, against the fold's 71. Lost as written; the cause is not found.
+- Not to be trusted: the probe's `s-b` and `s-ab` rows and the first `s-ring` rows at 16 and 32 windows read local
+  memory nothing wrote, so their watts are low (clock figures stand); the first `s-ring` rows at 16 and 32 windows
+  also copied nothing. `p-slm` rows are held by a modulo in the address, not by local memory.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
