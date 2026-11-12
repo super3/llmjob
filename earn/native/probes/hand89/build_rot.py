@@ -50,9 +50,14 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # readout reading each IMMA's sums as (0, 2) and (1, 3) on the chain of the other register parity, so that no
 # step reads two registers of one bank (rpr=2), with U8 IMMA (u8=1), mined 336.92, 336.92 and 336.91 TH/s
 # against 335.92, 336.10 and 336.07 for the loop before (hashrate.js, 12 November); on a Salad RTX 3090 the same
-# two keys with iy=0 mined 124.35, 124.46 and 124.42 against 123.62, 123.91 and 123.81 for iy=0 alone. sm_120
-# is compiled from C, not built by rfold.py.
-ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1"], "sm_86": ["iy=0", "rpr=2", "u8=1"], "sm_120": []}
+# two keys with iy=0 mined 124.35, 124.46 and 124.42 against 123.62, 123.91 and 123.81 for iy=0 alone. On the
+# 4090 the readout's steps first in their gap and allowed into more of the chunk's end (rgf=1 rb0=3 rb1=0: the
+# probe's pipe 99.54% against 99.18%, the level of a loop with no readout) mined 338.00, 338.04 and 337.93
+# TH/s against 336.93, 337.07 and 337.10 for the loop before (hashrate.js, 12 November); on the Salad RTX 3090,
+# with iy=0, 121.16, 121.17 and 121.25 against 120.74, 120.81 and 120.87. sm_120 is compiled from C, not built by
+# rfold.py.
+ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
+             "sm_120": []}
 
 
 def toolkit(nvcc):

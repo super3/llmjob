@@ -153,9 +153,9 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
 // beside the core with any other hash is an old or damaged copy and is not loaded. A file PEARL_ROT_CUBIN
 // names is a developer's own and is not held to the list: that is how a new build gets its first run on a card.
 const char *const kRotCubins[] = {
-    "c47837b8aa62d954ea1c1d835cf342456ce2cebfab21175f6ff6efae6f8eb4f1",  // CUDA 12.6
-    "a5a7931e28cb1b3f1ea643153cf6ca3b8d263faeb94af66e5b25797d0b7e18d2",  // CUDA 12.8
-    "1b391752b0e32df8e813cb73829c71fb06afd9266f31ec8ff10885f5b7983714",  // sm_86, CUDA 12.8
+    "d18246d5a53a3ac9cc2862c07d23b80c63900cb12ebd4a3ca17b9583d15cfc1a",  // CUDA 12.6
+    "c7219d7dbaac0035d555a1c10e8ab8eb1752a65536f13aae589d374509f29f9d",  // CUDA 12.8
+    "cb50068c5f8d01e7f98b241049930ccf8be2aa3dedfe89123ad5bab7ed8e2dec",  // sm_86, CUDA 12.8
     "ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687",  // sm_120, CUDA 13.3
 };
 
