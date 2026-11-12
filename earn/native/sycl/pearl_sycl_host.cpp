@@ -105,7 +105,12 @@ bool fold_is_frag(int f) { return f == kXmx8F || f == kXmx8FEmu || f == kXmx8R |
 #endif
 // How a fold wants the noised operands stored: 0 row-major, 1 fragment order (kFragA, kFragB), 2 fragment
 // order for block reads (kFragAT, kFragBT).
+#if (PEARL_RING_VAR & 262144)
+// 3, for the ring fold's timing variant PEARL_RING_VAR & 262144 only: A' for block reads, B' in fragment order.
+int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 3 : fold_is_frag(f) ? 1 : 0; }
+#else
 int fold_layout(int f) { return f == kXmx8R || f == kXmx8REmu ? 2 : fold_is_frag(f) ? 1 : 0; }
+#endif
 
 const char *fold_label(int f) {
   switch (f) {
@@ -278,7 +283,9 @@ bool pick_fold(Ctx *ctx, char *err, size_t err_len) {
   const std::string want = env_str("PEARL_SYCL_FOLD", "auto");
   const int sg = xmx_sg(ctx->dev);
   if (want == "auto") {
-    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8F : kDot;
+    // Alchemist (sub-group 8): the ring fold since 12 Nov 2026 (67 TH/s a cool A750 against 63 for xmx8f, an
+    // hour on four mining cards with no share rejected). PEARL_SYCL_FOLD=xmx8f is the way back.
+    ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8R : kDot;
   } else if (want == "dot") {
     ctx->fold = kDot;
   } else if (want == "xmx16" || want == "xmx") {
@@ -435,6 +442,7 @@ void draw_noise(Ctx *ctx, bool isA) {
   Layout lay{kRowMajor, 0};
   if (ctx->frag == 1) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   if (ctx->frag == 2) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragBT, ctx->bStride / 4u};
+  if (ctx->frag == 3) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};
   materialize16(q, isA ? ctx->dA : ctx->dB, dense, perm, isA ? ctx->dAp : ctx->dBp, rows, kLog2,
                 rank, readVecs, fillWord, lay);
 }
@@ -1168,7 +1176,7 @@ extern "C" int pearl_sycl_list_devices(char *buf, size_t len) {
     }
     const int sg = xmx_sg(devs[i]);
     out += std::to_string(i) + ": " + name + " [" + via + "], auto fold "
-           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8f (hardware DPAS)" : "dot") + "\n";
+           + (sg == 16 ? "xmx16 (hardware DPAS)" : sg == 8 ? "xmx8r (hardware DPAS)" : "dot") + "\n";
   }
   if (buf && len) snprintf(buf, len, "%s", out.c_str());
   return (int)devs.size();

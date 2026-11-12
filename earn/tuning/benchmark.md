@@ -2453,6 +2453,68 @@ Tried and lost (correct unless marked timing only):
 The variants are on `goal/arc-5` behind `PEARL_SYCL_EXTRA` (`-DPEARL_A5=N` for the fragment fold's, in
 `pearl_sycl_a5.hpp`; `-DPEARL_RING_VAR=N` for the ring fold's); a release build has none of them.
 
+### Arc rig, 12 November, night: a raised power limit, the ring fold as `auto`, and ways to hide its load waits (`goal/arc-6`)
+
+**A raised power limit on one card is worth nothing to the ring fold today.** The rig's owner agreed to test one
+cool, stable card above its 190 W limit, inside the card's rating, with the thermal safeguards on and the setting
+restored afterwards. Card 4 (it had held 63 TH/s alone at full power for 10 minutes). It is Intel's own A750
+Limited Edition (PCI subsystem 8086:1021). The driver's `power1_rated_max` reads 0, so the cap was Intel's
+published board power of 225 W. The limit was written through a throwaway container that bind-mounts only that
+card's hwmon folder (no `--privileged`), and a trap restored the original on any exit. Each step was three 60 s
+`pearl_sycl_check --bench` runs of `xmx8r`, with the flags read every 2 s; it would have stopped at once on
+PROCHOT, a regulator thermal alert, a thermal flag in most of 30 s, or a fan over 2,600 rpm.
+
+| `power1_max` | TH/s (3 runs) | MHz | W | Thermal / PL1 flags | Fan max |
+|---|---|---|---|---|---|
+| 190 W (original) | 68.55, 68.51, 68.52 | 1,998 to 2,000 | 184.7 to 186.1 | 0 / 0 | 2,127 |
+| 200 W | 68.43, 68.42, 68.39 | 1,992 to 1,996 | 186.0 to 186.2 | 0 / 0 | 2,400 |
+| 210 W | 68.39, 68.39, 68.38 | 1,990 to 1,996 | 186.1 to 186.2 | 0 / 0 | 2,122 |
+| 220 W | 68.39, 68.40, 68.39 | 1,992 to 1,998 | 186.1 | 0 / 0 | 2,122 |
+
+- The card asks for 2,400 MHz (`punit_req_freq_mhz`) and holds 2,000 under DPAS with no throttle flag set, at
+  186 W. So the ring fold is held by the DPAS clock, not by power. A higher limit would only pay for a fold that
+  does more work a clock and then reaches 190 W.
+- The limit was restored to 190,000,000 uW and read back. `verify-hits.js` on card 4 with `xmx8r` at the original
+  limit: 400 of 400, 0 failed, 7 salts.
+
+**`auto` is now the ring fold on Alchemist.** The four mining cards ran `xmx8r` for 60 min 45 s over three runs (36
+min on cards 1 to 4, 18 min on 1 to 3 during the power test, 7 min on 1 to 4): 69 accepted, 0 rejected.
+`PEARL_SYCL_FOLD=xmx8f` goes back. Found on the way, and older than this change: the reference folds run on the card
+(`xmx8f-emu`, `xmx8r-emu`, so `auto-emu`) fail every region on card 5 in last night's builds too (4,096 of 4,096
+mismatched, 15 of 20 hits); the CPU device's reference passes.
+
+**Hiding the ring fold's load waits: everything built loses.** Card 5, `pearl_sycl_check --bench 8`, taking turns
+with the shipped fold (`VAR 12`: 67.4 to 67.6 TH/s, 2,000 MHz, 183 to 188 W, no spill). Every build below passes the
+fold check (4,096 of 4,096 regions, 20 of 20 hits). `PEARL_RING_VAR` bits are in `pearl_sycl_kernels.hpp`.
+
+| Build | What | Spill (bytes) | TH/s | W |
+|---|---|---|---|---|
+| 2060 | A' a k-step ahead in registers | 3,168 | 22.4 | 146 to 151 |
+| 4108 | counters in local memory in place of the barrier, 5 slots (4 and 8: the same) | 3,872 | 16.3 | 129 to 136 |
+| 8204 | the k-step's A' loads sent before the barrier's wait | 4,320 | 24.5 | 156 to 160 |
+| 16396 | B' in two halves of 4 fragments, each waited for, then its 8 DPAS | 0 | 49.4 | 164 to 169 |
+| 98316 | software pipeline: each fragment register reloaded for the next k-step after its last DPAS, 4 slots | 8,768 | 8.5 | 145 |
+| 557064 | the same with 256-byte block reads, no early copy | 4,096 | 39.6 | 173 to 178 |
+| 360456 | the pipeline with B' in fragment order, read as 8 dwords a lane | 608 | 50.7 | 170 to 174 |
+| 262156 | B' in fragment order, 8-dword reads, no pipeline | 0 | 45.6 | 149 to 153 |
+| 524300 | a fragment as one 256-byte block read (8 dwords a lane) | 0 | 67.1 | 182 to 187 |
+| 1048588 | DPAS wait only for A', B' reads left to the compiler | 0 | 67.1 | 181 to 187 |
+| 2097164 | no forced wait at all | 0 | 67.3 to 67.5 | 184 to 188 |
+
+- The fold sits at the edge of the 256 registers. Anything more that is live across the barrier, or a fragment
+  carried across the loop, makes IGC spill kilobytes; the ISA shows the carried B' fragments going through scratch.
+  IGC's scheduler also regroups the DPAS and sends every reload after the last one, so a rotation written in the
+  source does not survive.
+- 8-dword reads from local memory compile to a gather (`load.slm.d32x8`) and lose 32% here; the transposed block
+  read (`load.slm.d32x32t`) is the fast form. The AMD agent's "8-dword reads are fast" compared them with 4-dword
+  vector reads, not with block reads.
+- A wait in the middle of a k-step costs 27% (two halves), but no forced wait at all is level. Neither the wait
+  nor (last night) the number of barriers is what holds the fold now.
+- What fits the numbers: each Xe-core's data port. A k-step sends 21 messages of 128 bytes (4 of A' from memory, 16
+  of B' from local memory, 1 of copy) against 16 DPAS clocks, which caps the 16 by 64 tile near 76% of peak. That is
+  where it runs (75 MACs an EU a clock). To pass it, a k-step must send 16 messages or fewer: a 32 by 32 tile
+  (8 + 8) with both operands served near.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

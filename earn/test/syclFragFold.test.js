@@ -279,9 +279,9 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(slice(HOST, 'extern "C" bool pearl_sycl_read_operands(', '\n}\n')).toContain('set_layout(ctx, 0);');
   });
 
-  test('auto picks the fragment fold on Alchemist, and the old fold keeps its name', () => {
+  test('auto picks the ring fold on Alchemist, and the older folds keep their names', () => {
     const pick = slice(HOST, 'bool pick_fold(Ctx *ctx, char *err, size_t err_len) {', '\n}\n');
-    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8F : kDot;');
+    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8R : kDot;');
     expect(pick).toContain('} else if (want == "xmx8") {\n    ctx->fold = kXmx8;');
     expect(pick).toContain('} else if (want == "xmx8f") {\n    ctx->fold = kXmx8F;');
     expect(pick).toContain('} else if (want == "xmx8r") {\n    ctx->fold = kXmx8R;');

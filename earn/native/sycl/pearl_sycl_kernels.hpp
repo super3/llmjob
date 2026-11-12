@@ -834,6 +834,34 @@ template <bool HW> inline v4u ring_read_local(uint32_t *p, uint32_t lane) {
 #endif
   return v4u{p[lane], p[8u + lane], p[16u + lane], p[24u + lane]};
 }
+// A whole 256-byte fragment in block-read order (kFragBT, kFragAT) as one block read of 8 dwords a lane: the
+// same dwords as two 128-byte block reads put side by side, but one value for the compiler.
+typedef uint32_t v8u __attribute__((ext_vector_type(8)));
+template <bool HW> inline v8i ring_read_global8b(const int8_t *p, uint32_t lane) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) return (v8i)__spirv_SubgroupBlockReadINTEL<v8u>((const __attribute__((opencl_global)) uint32_t *)p);
+#endif
+  const uint32_t *w = reinterpret_cast<const uint32_t *>(p);
+  v8i r;
+  for (int i = 0; i < 8; i++) r[i] = (int)w[8u * (uint32_t)i + lane];
+  return r;
+}
+template <bool HW> inline v8i ring_read_local8b(uint32_t *p, uint32_t lane) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+  if constexpr (HW) return (v8i)__spirv_SubgroupBlockReadINTEL<v8u>((const __attribute__((opencl_local)) uint32_t *)p);
+#endif
+  v8i r;
+  for (int i = 0; i < 8; i++) r[i] = (int)p[8u * (uint32_t)i + lane];
+  return r;
+}
+// A lane's 32 bytes of a fragment stored in fragment order (kFragB) in local memory: one 8-dword read.
+inline v8i ring_read_local8(uint32_t *p, uint32_t lane) {
+#if defined(__SYCL_DEVICE_ONLY__)
+  return *(const __attribute__((opencl_local)) v8iu *)(p + 8u * lane);
+#else
+  return *reinterpret_cast<const v8iu *>(p + 8u * lane);
+#endif
+}
 template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) {
@@ -857,10 +885,18 @@ template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lan
 // windows' B' (4 KB a slot), and the two windows of a row read the same A' at the same time, so the
 // first cache level serves the second. The words go into local memory by XOR atomics, a window's 128
 // words shared by its two sub-groups, so the group asks for 16 KB at wpg 8.
+// goal-arc6 timing variants: VAR 2048 loads A' a k-step ahead into registers; VAR 4096 (with 4) drops the
+// barrier for counters in local memory, a ring of PEARL_RING_SLOTS slots, so a sub-group may run up to
+// slots - 2 k-steps ahead of the slowest; VAR 8192 sends a k-step's A' loads before its wait.
+#ifndef PEARL_RING_SLOTS
+#define PEARL_RING_SLOTS 5
+#endif
 template <bool HW, int VAR = 0> struct FoldXmxR {
   // VAR 1024: a slot holds two k-steps of one column window's B', and the group meets once every two
   // k-steps. Its words go into local memory by XOR atomics, as VAR 512's.
   static constexpr bool kWide = (VAR & (512 | 1024)) != 0;
+  static constexpr bool kCnt = HW && (VAR & 4096) && (VAR & 4);
+  static constexpr uint32_t kSlots = kCnt ? PEARL_RING_SLOTS : (VAR & 32768) ? 4u : 3u;
   static constexpr uint32_t kSlotWords = kWide ? 1024u : 512u;  // B' a slot: 64 columns by 32 k, or twice that
   static constexpr uint32_t kBlocks = kWide ? 32u : 16u;       // 128-byte blocks a slot
   FoldArgs A;
@@ -945,9 +981,46 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
     uint32_t t[16];
     each<16>([&](int j) { t[j] = 0u; });
-    copy(0u, 0u);
-    if (early) fetch(1u);
-    arrive(it);
+    // VAR 4096: fill[s] counts the sub-groups that have stored their blocks into slot s, done[s] those that
+    // have read it, both over every use of the slot.
+    uint32_t *fill = R + kSlots * kSlotWords, *done = fill + kSlots;
+    auto bump = [&](uint32_t *p, int dep) {
+      if (lane == 0u) {
+        sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
+                         sycl::access::address_space::local_space>
+            at(*p);
+        at.fetch_add(1u + (uint32_t)dep, sycl::memory_order::release);
+      }
+    };
+    auto until = [&](uint32_t *p, uint32_t need) {
+      sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::work_group,
+                       sycl::access::address_space::local_space>
+          at(*p);
+      while (at.load() < need) {
+      }
+      sycl::atomic_fence(sycl::memory_order::acquire, sycl::memory_scope::work_group);
+    };
+    if constexpr (kCnt) {
+      if (sgl == 0u)
+        for (uint32_t i = lane; i < 2u * kSlots; i += 8u) fill[i] = 0u;
+      sycl::group_barrier(it.get_group());
+    }
+    // A' of k-step ks into a[2].
+    auto load_a = [&](uint32_t ks, v8i *a) {
+      each<2>([&](int rb) {
+        const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
+        const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
+        a[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      });
+    };
+    v8i ahead[2];
+    if constexpr (VAR & 2048) load_a(0u, ahead);
+    if constexpr (!(VAR & 32768)) {
+      copy(0u, 0u);
+      if (early) fetch(1u);
+      if constexpr (kCnt) bump(&fill[0], 0);
+      else arrive(it);
+    }
     // A chunk's readout: its cumulative tile XORed into two words a lane, gathered to the lanes that write
     // its 8 regions' words.
     auto readout = [&](uint32_t ch) {
@@ -978,11 +1051,92 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
         if (lane < 8u) part[(VAR & 64) ? ((sgl * 8u + lane) & 127u) : (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
       }
     };
+    if constexpr (VAR & 32768) {
+      // VAR 32768: a software pipeline with no extra registers. A k-step's DPAS read fragments loaded during
+      // the k-step before, and each fragment register is loaded again for the next k-step as soon as its
+      // last DPAS has been sent: A' block 0 after the 8 DPAS of rows 0-7, each B' fragment after its second
+      // DPAS, A' block 1 at the end. So every load has about 8 of the sub-group's DPAS to land. The ring has
+      // 4 slots and the copy runs two k-steps ahead: k-step ks waits for the arrivals of ks - 1 (every
+      // store into slot ks + 1 has landed, and every read of slot ks + 2, last used two k-steps ago, has been
+      // consumed), stores k-step ks + 2's blocks, loads ks + 3's, arrives, then runs.
+      // VAR 65536: each reload's address takes (a word of the DPAS that last read the register) AND zero,
+      // so no compiler can send it before that DPAS and need a second register for it.
+      auto pin = [&](const v8i &v) -> uint32_t {
+        if constexpr (VAR & 65536) return (uint32_t)v[0] & A.zero;
+        return 0u;
+      };
+      auto load_b = [&](uint32_t sl, int cb, uint32_t z = 0u) -> v8i {
+        uint32_t *p = R + sl * kSlotWords + (uint32_t)cb * 64u + z;
+        if constexpr (VAR & 262144) return ring_read_local8(p, lane);
+        if constexpr (VAR & 524288) return ring_read_local8b<HW>(p, lane);
+        const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+        return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      };
+      auto load_a1 = [&](uint32_t ks, int rb, uint32_t z = 0u) -> v8i {
+        const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u + z;
+        if constexpr (VAR & 524288) return ring_read_global8b<HW>(p, lane);
+        const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
+        return (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      };
+      copy(0u, 0u);
+      copy(1u, 1u);
+      if (early) fetch(2u);
+      sycl::group_barrier(it.get_group());
+      v8i af[2], bf[8];
+      each<2>([&](int rb) { af[rb] = load_a1(0u, rb); });
+      each<8>([&](int cb) { bf[cb] = load_b(0u, cb); });
+      arrive(it);
+      for (uint32_t ch = 0; ch < 16u; ch++) {
+        for (uint32_t s = 0; s < 4u; s++) {
+          const uint32_t ks = ch * 4u + s;
+          wait(it);
+          if (early) {
+            if (ks + 2u < 64u) put((ks + 2u) % 4u);
+            if (ks + 3u < 64u) fetch(ks + 3u);
+          } else {
+            if (ks + 2u < 64u) copy(ks + 2u, (ks + 2u) % 4u);
+          }
+          arrive(it);
+          const uint32_t kn = ks + 1u < 64u ? ks + 1u : 63u, sn = kn % 4u;
+          // VAR 131072: only B' rotates; A' is loaded here, for this k-step, and waited for.
+          constexpr bool aRot = !(VAR & 131072);
+          if constexpr (!aRot) {
+            each<2>([&](int rb) { af[rb] = load_a1(ks, rb); });
+            int t = 0;
+            each<2>([&](int rb) { t ^= af[rb][0]; });
+            t &= (int)A.zero;
+            each<2>([&](int rb) { af[rb][0] |= t; });
+          }
+          each<8>([&](int cb) { c[0][cb] = dpas<8, HW>(sg, af[0], bf[cb], c[0][cb]); });
+          if constexpr (aRot) af[0] = load_a1(kn, 0, pin(c[0][7]));
+          each<8>([&](int cb) {
+            c[1][cb] = dpas<8, HW>(sg, af[1], bf[cb], c[1][cb]);
+            bf[cb] = load_b(sn, cb, pin(c[1][cb]));
+          });
+          if constexpr (aRot) af[1] = load_a1(kn, 1, pin(c[1][7]));
+        }
+        readout(ch);
+      }
+    } else
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
-        uint32_t slot = ks % 3u, half = 0u;
-        if constexpr (VAR & 1024) {
+        uint32_t slot = ks % kSlots, half = 0u;
+        v8i af[2];
+        // VAR 8192: this k-step's A' loads go out before the wait.
+        if constexpr ((VAR & 8192) && !(VAR & 2048)) load_a(ks, af);
+        if constexpr (kCnt) {
+          const uint32_t j = ks + 1u;
+          if (j < 64u) {
+            const uint32_t sj = j % kSlots;
+            if (j >= kSlots) until(&done[sj], nsg * (j / kSlots));  // every read of k-step j - kSlots is done
+            if (early) put(sj);
+            else copy(j, sj);
+            bump(&fill[sj], 0);
+            if (early && j + 1u < 64u) fetch(j + 1u);
+          }
+          until(&fill[slot], nsg * (ks / kSlots + 1u));
+        } else if constexpr (VAR & 1024) {
           slot = (ks >> 1) % 3u;
           half = ks & 1u;
           if (half == 0u) {
@@ -1045,20 +1199,59 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           }
 #endif
         }
-        v8i af[2], bf[8];
-        each<2>([&](int rb) {
-          const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
-          if constexpr (VAR & 2) {
-            af[rb] = *reinterpret_cast<const v8iu *>(p + 32u * lane);
-          } else {
-            const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
-            af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
-          }
-        });
+        v8i bf[8];
+        if constexpr (VAR & 2048) {
+          each<2>([&](int rb) { af[rb] = ahead[rb]; });
+          load_a(ks + 1u < 64u ? ks + 1u : 63u, ahead);
+        } else if constexpr (!(VAR & 8192)) {
+          each<2>([&](int rb) {
+            const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
+            if constexpr (VAR & 2) {
+              af[rb] = *reinterpret_cast<const v8iu *>(p + 32u * lane);
+            } else if constexpr (VAR & 524288) {
+              af[rb] = ring_read_global8b<HW>(p, lane);
+            } else {
+              const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
+              af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+            }
+          });
+        }
+        // VAR 16384: B' in two halves of 4 fragments, each waited for as one and then its 8 DPAS, so a
+        // sub-group holds 32 registers fewer of B'.
+        if constexpr (VAR & 16384) {
+          int t = 0;
+          each<2>([&](int h) {
+            v8i bh[4];
+            each<4>([&](int i) {
+              uint32_t *p = R + slot * kSlotWords + (jc + half) * 512u + (uint32_t)(4 * h + i) * 64u;
+              const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+              bh[i] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+            });
+            t = 0;
+            if (h == 0) each<2>([&](int rb) { t ^= af[rb][0]; });
+            each<4>([&](int i) { t ^= bh[i][0]; });
+            t &= (int)A.zero;
+            each<2>([&](int rb) { af[rb][0] |= t; });
+            if constexpr (kCnt) {
+              if (h == 1) bump(&done[slot], t);
+            }
+            each<4>([&](int i) {
+              each<2>([&](int rb) { c[rb][4 * h + i] = dpas<8, HW>(sg, af[rb], bh[i], c[rb][4 * h + i]); });
+            });
+          });
+          continue;
+        }
         each<8>([&](int cb) {
           uint32_t *p = R + slot * kSlotWords + (jc + half) * 512u + (uint32_t)cb * 64u;
-          const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-          bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          // VAR 262144: B' stored in fragment order (kFragB), one 8-dword read a fragment.
+          if constexpr (VAR & 262144) {
+            bf[cb] = ring_read_local8(p, lane);
+          } else if constexpr (VAR & 524288) {
+            bf[cb] = ring_read_local8b<HW>(p, lane);
+          } else {
+            const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+            bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          }
         });
         // VAR 1: the chunk before's readout here, after this k-step's arrival and loads, so the other
         // sub-groups never wait at the barrier for it.
@@ -1066,11 +1259,17 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           if (s == 0u && ch > 0u) readout(ch - 1u);
         }
         // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
+        // VAR 1048576: the DPAS wait only for A' (the global loads), B' reads from the ring are left to the
+        // compiler; VAR 2097152: no forced wait at all.
         int t = 0;
-        each<2>([&](int rb) { t ^= af[rb][0]; });
-        each<8>([&](int cb) { t ^= bf[cb][0]; });
-        t &= (int)A.zero;
-        each<2>([&](int rb) { af[rb][0] |= t; });
+        if constexpr (!(VAR & 2097152)) {
+          each<2>([&](int rb) { t ^= af[rb][0]; });
+          if constexpr (!(VAR & 1048576)) each<8>([&](int cb) { t ^= bf[cb][0]; });
+          t &= (int)A.zero;
+          each<2>([&](int rb) { af[rb][0] |= t; });
+        }
+        // VAR 4096: this slot's reads have landed (t waits for them): count them done.
+        if constexpr (kCnt) bump(&done[slot], t);
         each<8>([&](int cb) {
           each<2>([&](int rb) { c[rb][cb] = dpas<8, HW>(sg, af[rb], bf[cb], c[rb][cb]); });
         });
@@ -1078,7 +1277,7 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
       if constexpr (!(VAR & 1)) readout(ch);
     }
     if constexpr (VAR & 1) readout(15u);
-    wait(it);
+    if constexpr (!kCnt) wait(it);
     sycl::group_barrier(it.get_group());
     if constexpr (VAR & 16) {
       // The ring is free now: sub-group 1 of each window leaves its words there (wpg <= 12 fit in it).
@@ -1124,7 +1323,8 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
                                            : (VAR & (512 | 1024)) ? a.wpg * 8u * 16u
                                                          : 2u * a.wpg * 8u * 16u,
                                            h);
-    const uint32_t ringWords = 3u * FoldXmxR<HW, VAR>::kSlotWords;
+    typedef FoldXmxR<HW, VAR> K;
+    const uint32_t ringWords = K::kSlots * K::kSlotWords + (K::kCnt ? 2u * K::kSlots : 0u);
     // VAR 16 leaves 128 words a window in the ring at the end.
     sycl::local_accessor<uint32_t, 1> ring((VAR & 16) && a.wpg * 128u > ringWords ? a.wpg * 128u : ringWords, h);
     h.parallel_for(sycl::nd_range<1>((size_t)(groups / a.wpg) * wg, wg), FoldXmxR<HW, VAR>{a, part, ring});
