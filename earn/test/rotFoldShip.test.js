@@ -59,9 +59,11 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     // Both take rpr=2 and u8=1 (measured on a 4090 and a 3090); RTX 30's also iy=0 (measured on a 3090); RTX 40's
     // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090); RTX 40's also sr=1, records the eight
-    // warps share and B drawn once with its exchange keys and readout window (measured on a 4090).
+    // warps share and B drawn once with its exchange keys and readout window (measured on a 4090); RTX 30's also
+    // sr=1 (measured on a 3060 and a 3090).
     expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",\n'
-      + '                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],');
+      + '                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0",\n'
+      + '                                                                                  "sr=1"],');
     // sr's loop reads the shared stream and bx's keeps the transcript in the frame, so the kernel is built for both.
     expect(BUILD_ROT).toContain('if "sr=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_SR=1")');
     expect(BUILD_ROT).toContain('if "bx=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_BX=1")');

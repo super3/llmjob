@@ -6,7 +6,7 @@ run a line, and samples the card meanwhile. For nv30box.sh (branch goal/nv-30): 
 A line of the list (';' between lines when it comes from the environment):
   <cubin|-> <name> <k> <tiles a block> [secs] [check tiles] [order] [fake] [rot]
 "-" runs the kernel as ptxas compiled it (the gather fold); otherwise <cubin dir>/<cubin>.cubin is launched
-(PD_CUBIN). Each run prints one line: the probe's own result, then, for runs of 10 s or more, the means of the
+(PD_CUBIN). "x:<cubin>" runs it on <gprobe exe>x, the probe built with -DGP_BX=1 (B drawn once, rfold.py bx=1). Each run prints one line: the probe's own result, then, for runs of 10 s or more, the means of the
 card's readings from 8 s on (the last 20 at most): SM clock, watts, temperature, memory-controller use, and in how
 many samples the power cap and a thermal slowdown were on. "count" is the rate by count: SMs x 1024 MACs a cycle x
 the clock x the share of the pipe the probe measured, in TH/s (the 4090's factor 0.13107 is 128 SMs of this).
@@ -62,6 +62,10 @@ def main():
         parts = line.split()
         env = dict(os.environ)
         env.pop("PD_CUBIN", None)
+        run = exe
+        if parts[0].startswith("x:"):
+            # A B-drawn-once cubin (rfold.py bx=1) runs on the probe built with -DGP_BX=1: <exe>x.
+            run, parts[0] = exe + "x", parts[0][2:]
         if parts[0] != "-":
             env["PD_CUBIN"] = os.path.join(cdir, parts[0] + ".cubin")
             if not os.path.exists(env["PD_CUBIN"]):
@@ -76,7 +80,7 @@ def main():
             th.start()
         t0 = time.time()
         try:
-            r = subprocess.run([exe] + args, capture_output=True, text=True, timeout=secs + 300, env=env)
+            r = subprocess.run([run] + args, capture_output=True, text=True, timeout=secs + 300, env=env)
             out = (r.stdout.strip() or r.stderr.strip() or "rc %d" % r.returncode).splitlines()[-1]
             if r.returncode != 0:
                 out += " [rc %d] %s" % (r.returncode, " | ".join(r.stderr.strip().splitlines()[:2]))

@@ -17,7 +17,10 @@
 #   ROT_KEYS      rfold.py keys for the miner's cubin, comma-separated (default none: the shipped loop)
 #   VERIFY_SECS   verify-hits.js on the fold (default 150; 0 skips it), at the target 2^VERIFY_BITS (233: an RTX 30
 #                 card is a third of a 4090, so twice the 4090's 2^234 hits keeps 400 within the run)
-#   ROT_VARIANTS  more miner cubins, "name:key=v,key=v;..." (pearl_rot_<name>.cubin), for hashrate.js legs
+#   ROT_VARIANTS  more miner cubins, "name:key=v,key=v;..." (pearl_rot_<name>.cubin), for hashrate.js legs; a
+#                 variant with sr=1 or bx=1 gets its kernel compiled with ROT_SR=1 or ROT_BX=1, as build_rot.py does
+#   VERIFY_LIST   cubins verify-hits.js checks: "rot" and ROT_VARIANTS names (default "rot")
+#   PROBE_VARIANTS entries with bx=1 are built over the GP_BX=1 probe; their PROBE_LIST lines name them "x:<name>"
 #   HR_LEGS       hashrate.js legs: "rel" (the release fold), "rot" (the shipped loop) or a ROT_VARIANTS name
 #                 (default "rel rot rot rel"); HR_SECS (120)
 #   ORDER, VPOOL, SECS, WARM, VER, TAP   passed to bench.sh (defaults ours,ozm,peak,srb; 210; 180; 60; v0.6.15)
@@ -69,12 +72,21 @@ if has probe; then
   $NV -DGP_STAGE=24576 -cubin -o $W/g86.cubin "$H/gprobe.cu" > $W/g86.log 2>&1 || fail "gprobe cubin"
   nvdisasm -c $W/g86.cubin > $W/g86.sass || fail "nvdisasm g86"
   say "probe built in $(( $(date +%s) - t0 ))s; asm89 check: $(python3 -I "$H/asm89.py" check $W/g86.cubin $W/g86.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')"
+  # The probe for B drawn once (bx=1 loops): -DGP_BX=1 keeps the transcript in local memory. Run as "x:<cubin>".
+  case "${PROBE_VARIANTS:-}" in *bx=1*)
+    $NV -DGP_STAGE=24576 -DGP_BX=1 -o $W/gprobex "$H/gprobe.cu" -ldl > $W/gprobex.log 2>&1 || fail "gprobe GP_BX build"
+    $NV -DGP_STAGE=24576 -DGP_BX=1 -cubin -o $W/gx86.cubin "$H/gprobe.cu" > $W/gx86.log 2>&1 || fail "gprobe GP_BX cubin"
+    nvdisasm -c $W/gx86.cubin > $W/gx86.sass || fail "nvdisasm gx86"
+    say "probe GP_BX built; asm89 check: $(python3 -I "$H/asm89.py" check $W/gx86.cubin $W/gx86.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')" ;;
+  esac
   IFS=';' read -r -a VARS <<< "${PROBE_VARIANTS:-h:}"
   for v in "${VARS[@]}"; do
     [ -n "$v" ] || continue
     name=${v%%:*}; keys=${v#*:}
+    gb=g86
+    case ",$keys," in *,bx=1,*) gb=gx86 ;; esac
     # shellcheck disable=SC2046
-    out=$(python3 -I "$H/rfold.py" $W/g86.cubin $W/g86.sass nvdisasm "$W/$name.cubin" $(echo "$keys" | tr ',' ' ') 2>&1)
+    out=$(python3 -I "$H/rfold.py" $W/$gb.cubin $W/$gb.sass nvdisasm "$W/$name.cubin" $(echo "$keys" | tr ',' ' ') 2>&1)
     if [ -f "$W/$name.cubin" ]; then
       say "variant $name ($keys): $(echo "$out" | tail -1 | cut -c1-200)"
     else
@@ -93,7 +105,12 @@ if has product; then
     npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api node-gyp > npm.log 2>&1 &&
     ./node_modules/.bin/node-gyp install >> npm.log 2>&1) || fail "node-gyp setup: $(tail -1 /opt/gyp/npm.log)"
   # The fold's cubin for sm_86: the kernel compiled, the hand loop put in (build_rot.py's steps 1 to 5).
-  $NV -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/rot_base.cubin > $W/rot.log 2>&1 || fail "pearl_rot.cu"
+  # ROT_KEYS with sr=1 or bx=1 need the kernel built for them too (ROT_SR, ROT_BX), as build_rot.py does.
+  d0=""
+  case ",${ROT_KEYS:-}," in *,sr=1,*) d0="$d0 -DROT_SR=1" ;; esac
+  case ",${ROT_KEYS:-}," in *,bx=1,*) d0="$d0 -DROT_BX=1" ;; esac
+  # shellcheck disable=SC2086
+  $NV -cubin $d0 -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/rot_base.cubin > $W/rot.log 2>&1 || fail "pearl_rot.cu"
   nvdisasm -c $W/rot_base.cubin > $W/rot_base.sass || fail "nvdisasm rot"
   say "rot asm89 check: $(python3 -I "$H/asm89.py" check $W/rot_base.cubin $W/rot_base.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')"
   # shellcheck disable=SC2046
@@ -105,7 +122,16 @@ if has product; then
     [ -n "$v" ] || continue
     # shellcheck disable=SC2046
     vn=${v%%:*}
-    if python3 -I "$H/rfold.py" $W/rot_base.cubin $W/rot_base.sass nvdisasm "$W/pearl_rot_$vn.cubin" \
+    # sr=1 and bx=1 loops need the kernel compiled for them, as build_rot.py does (ROT_SR, ROT_BX).
+    d=""; b=vbase
+    case ",${v#*:}," in *,sr=1,*) d="$d -DROT_SR=1"; b=${b}_sr ;; esac
+    case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
+    if [ ! -f "$W/$b.sass" ]; then
+      # shellcheck disable=SC2086
+      $NV -cubin $d -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o "$W/$b.cubin" > "$W/$b.log" 2>&1 \
+        && nvdisasm -c "$W/$b.cubin" > "$W/$b.sass" || { say "rot base$d FAILED"; continue; }
+    fi
+    if python3 -I "$H/rfold.py" "$W/$b.cubin" "$W/$b.sass" nvdisasm "$W/pearl_rot_$vn.cubin" \
         $(echo "${v#*:}" | tr ',' ' ') > "$W/rfold_$vn.log" 2>&1; then
       say "rot variant $vn: $(tail -1 "$W/rfold_$vn.log" | cut -c1-120); hash $(python3 -I "$H/asm89.py" hash "$W/pearl_rot_$vn.cubin")"
     else
@@ -137,12 +163,14 @@ fi
 smi() { q clocks.sm,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
-  if [ "${VERIFY_SECS:-150}" != 0 ]; then
-    j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$W/pearl_rot_sm86.cubin timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
+  # VERIFY_LIST: the cubins verify-hits.js checks, "rot" or ROT_VARIANTS names (default "rot").
+  [ "${VERIFY_SECS:-150}" != 0 ] && for vv in ${VERIFY_LIST:-rot}; do
+    vf=$W/pearl_rot_$vv.cubin; [ "$vv" = rot ] && vf=$W/pearl_rot_sm86.cubin
+    j=$(PEARL_FOLD_ROT=1 PEARL_ROT_CUBIN=$vf timeout -k 5 $(( ${VERIFY_SECS:-150} + 120 )) \
       node verify-hits.js "$ADDON" "${VERIFY_SECS:-150}" "${VERIFY_BITS:-233}" 2> $W/verify.err | grep '^{' | tail -1)
-    say "verify rot $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
-    [ -n "$j" ] || say "verify rot no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
-  fi
+    say "verify $vv $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
+    [ -n "$j" ] || say "verify $vv no result: $(tail -2 $W/verify.err | tr '\n' ' ' | cut -c1-300)"
+  done
   n=0
   for leg in ${HR_LEGS:-rel rot rot rel}; do
     n=$((n + 1))
