@@ -2132,6 +2132,9 @@ of warm-up then 240 s measured, a reading every 10 s, all under the guard. Ours 
 - SRBMiner autotunes nothing for pearlhash on AMD (its API's `gpu_autotune_results` reads "0") and printed only to a
   terminal (`--list-devices` showed nothing without one); its device order matched ours (GPU 0-4 = buses 03, 07, 0a,
   0d, 10).
+- **SRBMiner 3.8.7** (11 November; its notes change pearlhash only on NVIDIA RTX 30, 40 and 50), the same way on
+  the RX 6600 at 03:00.0 (19:09-19:36 UTC): ours 7.954 and 7.946, 3.8.7 7.383 and 7.381, then 3.8.6 7.380. So 3.8.7
+  is no faster here (107.7% either way). The Salad benchmark now pins 3.8.7 for its NVIDIA rows.
 - Shares in the 12 legs (about 2.1M difficulty): ours 5, SRBMiner 4, none rejected. Too few to compare.
 - The guard never fired. Nothing of ours or SRBMiner's was left running after.
 
