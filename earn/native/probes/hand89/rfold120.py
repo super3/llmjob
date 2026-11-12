@@ -45,7 +45,7 @@ SB_C = 5              # the scoreboard the prologue's constant loads use
 LDCU64 = (0x0000000000000000 | 0x7ac | 7 << 12, 0x8000a00)   # LDCU.64 UR?, c[0x0][0x358] (ptxas 13.3's word)
 DBG = [0]
 MUL = [0x100]
-DPB = [0, 4]
+DPB = [0, 4, 0, 4]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
 MEM_OPS = ("LDSM", "LDS", "STS")
 
@@ -349,7 +349,7 @@ def depbar(code, sbs, stall):
             out.append(ins)
             continue
         new = []
-        for sb in ins.wait:
+        for sb in tuple(ins.wait):
             if sb not in sbs:
                 continue
             reads, _w, _k = fold.rw(ins.text)
@@ -357,7 +357,7 @@ def depbar(code, sbs, stall):
             # Two ways into this instruction: the body's pass before (steady) and, for the first pass, the
             # prologue. On each, walk back to the newest writer of each register read; k on that way is the count
             # of loads on sb issued after the newest such writer that is a load on sb. The smaller k holds on both.
-            ks = []
+            ks, moved = [], None
             for path in (list(range(i - 1, s - 1, -1)) + list(range(e - 1, i - 1, -1)),
                          list(range(i - 1, -1, -1))):
                 newest = None                    # position on the path (0 = right behind the consumer)
@@ -369,8 +369,25 @@ def depbar(code, sbs, stall):
                             break
                 if newest is not None:
                     ks.append(sum(1 for j in path[:newest] if code[j].wsb == sb))
+                    if moved is None and DPB[2]:
+                        # dpm: the first load on sb after the producer (N1) waits for sb in its control field
+                        # instead, which costs nothing when the producer is dpg gaps or more older than N1 (it
+                        # waits for the producer and older loads only). N1 must be in this pass, ahead of the
+                        # consumer, so that it runs between producer and consumer on the first pass as well.
+                        n1 = [p for p in range(newest) if code[path[p]].wsb == sb]
+                        if n1:
+                            q = n1[-1]
+                            d = sum(1 for j in path[q + 1:newest] if "IMMA" in code[j].text)
+                            moved = (path[q], d) if s <= path[q] < i else (None, -1)
             if not ks or min(ks) == 0:
                 continue                         # the wait is for something else, or for the newest load: keep it
+            if moved and moved[0] is not None and moved[1] >= DPB[3]:
+                code[moved[0]].wait = tuple(sorted(set(code[moved[0]].wait) | {sb}))
+                ins.wait = tuple(x for x in ins.wait if x != sb)
+                n += 1000
+                continue
+            if DPB[2] == 1:
+                continue
             new.append((sb, min(ks)))
         if new:
             w = tuple(x for x in ins.wait if x not in {sb for sb, _k in new})
@@ -408,6 +425,11 @@ def main():
             # that value would make them (fill + plus - minus in two's complement) but the sums are wrong. For
             # what the operands' values cost in watts at the power cap.
             gfold.FILL4 = (int(v, 0) & 0xff) * 0x01010101
+            continue
+        if k in ("dpm", "dpg"):
+            # dpm (with dpb): 1 moves an over-wait onto the first newer load of its scoreboard when the producer
+            # is dpg gaps or more older than it (else keeps it); 2 the same, else a DEPBAR.
+            DPB[2 if k == "dpm" else 3] = int(v, 0)
             continue
         if k in ("dpb", "dpbs"):
             # dpb (goal-nv50f, correct): DEPBAR.LE in place of gather waits that also wait for newer loads; a bit a
