@@ -134,6 +134,15 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # u8=1: the IMMA read their operands as unsigned bytes (U8.U8). The operands are 0 to 126, so the sums are
            # the same; what it may change is the tensor datapath's power, which holds the clock at 450 W.
            u8=0,
+           # fa, fb (goal-nvk17): the byte A's and B's gathers add (0 keeps 0x3f, the fill). ty: the IMMA's operand
+           # types, 1 S8.S8, 2 S8.U8, 3 U8.S8, 4 U8.U8 (0 follows u8). A fill of 0xc0 read as S8 is operands of
+           # -64 plus the noise, -127 to -1 (correct with the matrix filled with -64); 0x40 is a fill of 64. A fill
+           # under 0x3f borrows across bytes: TIMING ONLY (0x100, a fill of 0, gives operands near the noise itself, signed).
+           fa=0, fb=0, ty=0,
+           # xa, xb (goal-nvk17): XOR every operand byte of A's / B's gathers with this byte after the subtract (two
+           # LOP3 a gather, a gap behind it). xa=0x80 with fa=0x80 and ty=2 is A as the plain signed noise (a fill of
+           # 0), CORRECT with A filled with 0; 0x100 is an XOR of 0 (the same steps, operands unchanged).
+           xa=0, xb=0,
            # nord=1, TIMING ONLY: no readout XORs (the transcripts are then wrong). What the 96 LOP3 a chunk cost.
            nord=0,
            # bsym=1, TIMING ONLY: B shared by the two warps of a column slot, both making and both loading in turn
@@ -603,6 +612,15 @@ def chunk(cfg, R, role=None):
                     for h, d in enumerate((d1, d2))]
             prm, g_add = [], g_prm
         put(g_ld, ld, wrapped=False)
+        if len(adds) == 4:
+            # xa/xb: the XOR steps a gap behind the subtracts and ahead of the PRMT, both in the same chunk.
+            g_add = min(g_add, g_prm - 2)
+            if g_add == tot - 1:
+                g_add -= 1
+            assert g_add > g_ld, (g_ld, g_add, g_prm)
+            for x in adds[2:]:
+                put(g_add + 1, x, wrapped=False)
+            adds = adds[:2]
         for x in adds:
             put(g_add, x, wrapped=False)
         for x in prm:

@@ -59,6 +59,18 @@ const MEM_CLOCK_AUTO = 'auto';
 const ADA_TRIAL_MEM_CLOCK_MHZ = 5001;
 const ADA_COMPUTE = { major: 8, minor: 9 };
 
+// The lock an RTX 40 or RTX Ada card tries when it mines on the rotation fold
+// (shared/rotationFold), by default and under `auto`. That fold reads almost no
+// DRAM, so the lowest memory speed that keeps the card out of its idle power
+// state frees the most watts: on rig01's RTX 4090 at 450 W, 341.44 to 341.55
+// TH/s at 810 MHz against 337.87 to 337.91 at the driver's clock (+1.05%) and
+// 340.34 at 5001 (12 November, hashrate.js, alternating). 405 MHz puts the
+// whole card in a low power state (645 MHz SM clock). The release fold still
+// reads DRAM and lost 11% at 810 MHz, so without the rotation fold nothing
+// changes. The trial still decides: a card whose fold falls back, or that runs
+// slower for any other reason, keeps the driver's clock.
+const ROTATION_ADA_MEM_CLOCK_MHZ = 810;
+
 // The two switches, by the name each shell's log lines call them.
 const CLI_MEM_CLOCK_FLAG = '--mine-mem-clock';
 const GUI_MEM_CLOCK_ENV = 'LLMJOB_MINE_MEM_CLOCK';
@@ -119,6 +131,9 @@ function listGpus(indices) {
 //                 Empty means every card nvidia-smi listed may mine; their
 //                 names are then unknown, so none gets the default.
 //   llmCoRuns     true when a local LLM shares the cards for the whole run.
+//   rotationFold  true when the rotation fold was asked for: each RTX 40 card
+//                 then tries ROTATION_ADA_MEM_CLOCK_MHZ by default, and under
+//                 `auto` in place of 5001.
 //   requestName   the switch the log lines name: the CLI's flag (the default)
 //                 or the GUI's environment variable, so each shell's lines
 //                 name the switch its operator can reach.
@@ -133,7 +148,9 @@ function listGpus(indices) {
 //              byIndex that keep their lock only if a trial shows it is faster
 //              (PearlMiner runs it). Both plans put every card they name on
 //              trial. A plan without `trial` locks its cards outright.
-function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI_MEM_CLOCK_FLAG } = {}) {
+function planMemClocks({
+  requestedMhz, cards, gpus, llmCoRuns, rotationFold = false, requestName = CLI_MEM_CLOCK_FLAG,
+} = {}) {
   const known = Array.isArray(cards) ? cards : [];
   const mining = Array.isArray(gpus) && gpus.length
     ? gpus.map((g) => g.index)
@@ -160,6 +177,9 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
     const card = known.find((c) => c.index === index);
     return !!card && card.major === BLACKWELL_COMPUTE_MAJOR && DEFAULT_LOCK_NAME.test(nameOf(index));
   });
+  // With the rotation fold, every compute 8.9 card too, whatever its name.
+  const byRotation = rotationFold ? mining.filter((index) => isAda(known.find((c) => c.index === index))) : [];
+  const defaulted = byDefault.concat(byRotation);
 
   // Said first: an AMD rig with the 5090's setting left over was told the LLM
   // was the reason (6 Nov), when the lock is nvidia-smi's and has no card here.
@@ -169,8 +189,8 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
 
   if (llmCoRuns) {
     if (requested) return none(requestName + CORUN_IGNORED_TAIL, true);
-    if (!byDefault.length) return none(null);
-    return none('memory clock left to the driver on ' + listGpus(byDefault)
+    if (!defaulted.length) return none(null);
+    return none('memory clock left to the driver on ' + listGpus(defaulted)
       + ': the LLM co-runs with the miner and needs full memory bandwidth');
   }
 
@@ -180,7 +200,7 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
     const byIndex = {};
     const trial = [];
     for (const index of mining) {
-      const mhz = trialMhz(known.find((c) => c.index === index));
+      const mhz = trialMhz(known.find((c) => c.index === index), rotationFold);
       if (mhz) {
         byIndex[index] = mhz;
         trial.push(index);
@@ -206,10 +226,22 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
     };
   }
 
-  // The default: each 5090 on trial at the one clock measured on a 5090.
-  if (!byDefault.length) return none(null);
+  // The default: each 5090 on trial at the one clock measured on a 5090, and
+  // with the rotation fold each RTX 40 card at 810 MHz.
+  if (!defaulted.length) return none(null);
   const byIndex = {};
   for (const index of byDefault) byIndex[index] = BLACKWELL_MINE_MEM_CLOCK_MHZ;
+  for (const index of byRotation) byIndex[index] = ROTATION_ADA_MEM_CLOCK_MHZ;
+  if (byRotation.length) {
+    const parts = [];
+    if (byDefault.length) parts.push(BLACKWELL_MINE_MEM_CLOCK_MHZ + ' MHz on ' + listGpus(byDefault) + ' (RTX 5090)');
+    parts.push(ROTATION_ADA_MEM_CLOCK_MHZ + ' MHz on ' + listGpus(byRotation) + ' (RTX 40 on the rotation fold)');
+    return {
+      byIndex, trial: defaulted, isDefault: true, dropped: false,
+      reason: 'trying a memory clock lock of ' + parts.join(' and ') + ' by default, kept only if the card mines '
+        + 'faster; ' + named('<MHz>') + ' locks without a trial, ' + named(0) + ' leaves the driver\'s clock',
+    };
+  }
   // The line names both ways out of the trial: the lock with no trial, for a
   // rig that knows it pays (or whose runs are too short to finish one), and no
   // lock at all.
@@ -224,15 +256,19 @@ function planMemClocks({ requestedMhz, cards, gpus, llmCoRuns, requestName = CLI
 // The lock a card has to try, in MHz, by its compute capability (`card` is
 // parseCudaCards' entry), or null: no lock has been measured in its family, or
 // nvidia-smi did not say what the card is.
-function trialMhz(card) {
+function trialMhz(card, rotationFold) {
   if (!card) return null;
   if (card.major === BLACKWELL_COMPUTE_MAJOR) return BLACKWELL_MINE_MEM_CLOCK_MHZ;
-  if (card.major === ADA_COMPUTE.major && card.minor === ADA_COMPUTE.minor) return ADA_TRIAL_MEM_CLOCK_MHZ;
+  if (isAda(card)) return rotationFold ? ROTATION_ADA_MEM_CLOCK_MHZ : ADA_TRIAL_MEM_CLOCK_MHZ;
   return null;
+}
+
+function isAda(card) {
+  return !!card && card.major === ADA_COMPUTE.major && card.minor === ADA_COMPUTE.minor;
 }
 
 module.exports = {
   BLACKWELL_MINE_MEM_CLOCK_MHZ, BLACKWELL_COMPUTE_MAJOR, CLI_MEM_CLOCK_FLAG, GUI_MEM_CLOCK_ENV,
-  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, MEM_CLOCK_AUTO, ADA_TRIAL_MEM_CLOCK_MHZ,
+  MEM_CLOCK_MIN_MHZ, MEM_CLOCK_MAX_MHZ, MEM_CLOCK_AUTO, ADA_TRIAL_MEM_CLOCK_MHZ, ROTATION_ADA_MEM_CLOCK_MHZ,
   parseMemClockMhz, readMemClockEnv, planMemClocks,
 };

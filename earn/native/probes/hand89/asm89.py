@@ -100,6 +100,11 @@ FORMS = [
     # 126, so the sums are the same either way.
     (r"IMMA\.16832\.U8\.U8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
      lambda m: _f(0x7237, 0x400c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
+    # Mixed (goal-nvk17, ptxas 12.6's encodings): S8.U8 reads A signed and B unsigned, U8.S8 the other way.
+    (r"IMMA\.16832\.S8\.U8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
+     lambda m: _f(0x7237, 0x401c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
+    (r"IMMA\.16832\.U8\.S8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
+     lambda m: _f(0x7237, 0x404c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x4200)),
     (r"LDS\.128 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xc00)),
     (r"LDS\.64 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xa00)),

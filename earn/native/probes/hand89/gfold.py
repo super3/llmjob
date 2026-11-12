@@ -107,8 +107,19 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         ld = Ins("%s R%d, [R%d%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg,
                                       "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
         w = (sb,)
-    adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (q, q + 2, FILL4, q), wait=w),
-            Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (q + 1, q + 3, FILL4, q + 1), wait=w)]
+    # fa, fb (rfold.py, goal-nvk17): the byte added in A's and in B's gathers (FILL4's 0x3f when not given).
+    # 0x100 asks for a fill of 0.
+    f = (cfg.get("fa" if d1 < BF else "fb", 0) or 0x3f) & 0xff
+    fill4 = FILL4 if f == 0x3f else f * 0x01010101
+    imm = "0x%x" % fill4 if fill4 < 0x80000000 else "-0x%x" % (0x100000000 - fill4)    # as nvdisasm prints it
+    adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (q, q + 2, imm, q), wait=w),
+            Ins("IADD3 R%d, -R%d, %s, R%d" % (q + 1, q + 3, imm, q + 1), wait=w)]
+    # xa, xb (rfold.py, goal-nvk17): an XOR of every byte after the subtract (0x80 turns 128 + noise into the noise
+    # as a signed byte; 0x100 is an XOR of 0, the same steps changing nothing). Two LOP3 a gather.
+    x = cfg.get("xa" if d1 < BF else "xb", 0)
+    if x:
+        x4 = (x & 0xff) * 0x01010101
+        adds += [Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (r, r, x4)) for r in (q, q + 1)]
     prm = [Ins("PRMT R%d, R%d, 0x6420, R%d" % (d1, q, q + 1)), Ins("PRMT R%d, R%d, 0x7531, R%d" % (d2, q, q + 1))]
     return ld, adds, prm
 
@@ -450,7 +461,9 @@ def emit(G, iwait, cfg, bfalt=None):
         # snk=2: every IMMA of tiles 0 to mt - 2 reads B's first n8 tile, so B changes once a tile there (the last tile
         # reads B as usual: its pairs are rewritten for the next k-step). Near the most any order could save.
         nbx = 7 - nb if cfg.get("snk") == 1 and (mb + s) & 1 else 0 if cfg.get("snk") == 2 and mb < mt - 1 else nb
-        out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % ("U8.U8" if cfg.get("u8") else "S8.S8",
+        # ty (rfold.py, goal-nvk17): 1 S8.S8, 2 S8.U8 (A signed), 3 U8.S8 (B signed), 4 U8.U8; 0 follows u8.
+        ty = cfg.get("ty", 0) or (4 if cfg.get("u8") else 1)
+        out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % (("S8.S8", "S8.U8", "U8.S8", "U8.U8")[ty - 1],
                                                                    ACC + 4 * i, a, bf + 2 * nbx, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))

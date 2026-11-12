@@ -1192,6 +1192,13 @@ llmjob-earn-cli --address prl1p… --mode mining --mine-mem-clock auto  # other 
   are tried rather than locked outright (`tuning/benchmark.md`, "rig01,
   10 November"). Off unless you ask for it, except on a 5090. Older cards are
   left alone: no lock has been measured on them.
+- **On the rotation fold (`--rotation-fold`), RTX 40 cards try 810 MHz by
+  default,** and under `auto` in place of 5001. That fold reads almost no card
+  memory, so the slow memory speed that lost 11% on the normal kernel pays on
+  it: on rig01's RTX 4090 at 450 W, 341.4 to 341.6 TH/s at 810 MHz against
+  337.9 at the driver's clock (+1.05%), and 340.3 at 5001 MHz (12 November).
+  It is the same trial, so a card that is not faster with it keeps the
+  driver's clock, and `--mine-mem-clock 0` turns it off.
 - **`--mine-mem-clock 0` turns it off** in the CLI: no lock and no trial. The
   desktop app has no setting for it in its window yet; its switch is the
   environment variable `LLMJOB_MINE_MEM_CLOCK`, which takes the same values
