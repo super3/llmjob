@@ -2707,6 +2707,51 @@ Timing builds on card 5 (wrong results unless "PASS"), all against a control of 
 On HiveOS's own 2024 driver (24.35; the release form staged in `arc-jammy`, run on the host over OpenCL, card 5):
 `xmx8w` and `xmx8w-emu` check PASS, `--bench 8` 84.3 TH/s (goal-arc7's build: 77.3 there).
 
+### Arc rig, 12 November, morning: finalizer options, and `xmx8w` in ESIMD (`goal/arc-9`)
+
+The host now sets `IGC_VISAOptions="-insertDPASRSDummyMov -DPASTokenReduction"` before the driver compiles
+anything (`PEARL_SYCL_VISA=none` skips it; a user's own `IGC_VISAOptions` wins). Card 4, cool, 8 s, taking turns:
+spare17 (cf88be3c) verify.sh PASS (`xmx8w` and `xmx8w-emu` at 16,384 regions, `xmx8w` at 32,768), verify-hits
+400 of 400, 0 failed; **93.5 to 93.8 TH/s at 1,946-1,950 MHz, 188 W**, against spare15 (053b2a88) 92.2 at 1,958-1,973
+MHz and `xmx8r` 68.1-68.2. Without the options the same build ran 92.6-92.8; spare15 with them 93.5-93.7.
+
+Why the first option helps: Intel's finalizer puts a dummy DPAS (a `dpasw` with a null accumulator, a whole DPAS of
+work) before a run of 8x8 DPAS whose first two share B, when B's registers are also written by ALU code somewhere in
+the kernel or B is not loaded in the same block (Wa_18023229625; IGC's `visa/SWWA.cpp` and
+`visa/LocalScheduler/SWSB_G4IR.cpp`). xmx8w's loop had 6 for 128 DPAS; with the option 4.
+
+Timing on card 5 (8 s, 2-3 rounds; control 90.5-90.7 TH/s, 1,946-1,961 MHz):
+
+| What | TH/s |
+|---|---|
+| `-insertDPASRSDummyMov` / `-DPASTokenReduction` / both (kept) | 91.4-91.6 / 91.0 / 91.8-92.0 |
+| the same two on HiveOS's 24.35 driver (host, OpenCL) | 85.2 against 84.2 |
+| on top of both: `-nopresched`, `-presched`, `-scheduleForReadSuppression`, `-SendTokenReduction`, `-schedWithSendSrcReadCycle`, `-multiplePipeSched`, `-groupScheduleForBC`, `-SWSBDepReduction`, `-sinkBarrierWait`, `-noremat`, `-nodpsendreorder`, `-SBIDDepLoc` | 91.4-92.1 (level) |
+| `-sendQueueSched` | 89.9-90.2 |
+| `-DPASBundleReduction`, `-enableBundleCR 3`, `-enableDpasFwd 0` alone | level |
+| `-scheduleFor2xDpas` / `-enableDpasFwd 1` alone (3 dummies) | 90.1-90.3 / 90.2-90.3 |
+| `-noDPASMacro` (24 dummies) | 83.2 |
+| DPAS row-first in the SYCL fold (`PEARL_W_ROWFIRST`, 4 dummies) | 89.2 |
+| operands as kernel arguments of their own, 32-bit surface loads (`PEARL_W_ARGP`; loop 598 to 517 instructions, 8 dummies) | 90.8 against 91.9 |
+| two unused pointer members in the fold's functor (cd5b47de, card 4) | 89.6 against 92.2 |
+
+`xmx8w` written in ESIMD (`FoldXmxE`, built with `-DPEARL_SYCL_ESIMD`, run with `PEARL_SYCL_ESIMD=1`): the same
+work-group, ring, copy and split DPAS, each thread's program written out, words to a scratch buffer and a plain
+epilogue kernel (2.4%). It passes the fold check but never beat the SYCL fold (card 5, control 90.7):
+
+| What | TH/s | MHz |
+|---|---|---|
+| first form / 32-bit sums | 77.0 / 80.3 | 1,942-1,960 |
+| `ch % 3` (a call to a division routine in VC's code) replaced by a stepped slot | 83.2 (85.5 without the epilogue) | 1,927-1,942 |
+| + A' a k-step ahead, no epilogue | 86.1 | 1,888-1,896 |
+| that with the finalizer's scheduler off (`IGC_VCApiOptions="-vc-codegen -Xfinalizer -noschedule"`) | 87.8 | 1,896 |
+| DPAS row-first (1 dummy a chunk with the scheduler off), with the epilogue | 85.2 / 86.3 off | 1,920-1,933 |
+| + an L1 prefetch of A' 2, 4 or 8 k-steps ahead | 84.3-84.5 | |
+| B' bound to fixed registers (`ESIMD_REGISTER`) | FAIL | |
+
+With the scheduler off ESIMD does the same work a clock as xmx8w (46.3 against 46.4 TH/s a GHz), but the card holds a
+lower clock on it. The finalizer splits its DPAS into runs of 4 and puts a dummy before most (9 a chunk).
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
