@@ -5,9 +5,9 @@
 # core only when its hash is in kRotCubins (pearl_host_rot.inc). A line is added only after its file has run on
 # an RTX 50 card: probes/verify-hits.js 400 of 400 with the fold on.
 #
-# There is no hand loop for sm_120: the file is src/pearl_rot.cu as ptxas compiles it for sm_120, whose loop is
-# the rotation fold in C (src/pearl_rot_c.inc), form ROT_C=11 (B gathered a turn ahead, barriers after a chunk's
-# first and last turn only), inlined. Built by CI's CUDA 13 job (13.3.1, nvcc V13.3.73), the toolkit
+# Since 12 November the file has the hand loop: rfold.py's loop (the RTX 40 one), encoded for sm_120 by
+# probes/hand89/rfold120.py into pearl_rot.cu built with -DROT_INLINE=0 -DROT_C=16387. The C fold's file the line
+# before it names was the one shipped until then. Built by CI's CUDA 13 job (13.3.1, nvcc V13.3.73), the toolkit
 # pearl_core_cu13.node is built with; a CUDA 13 cubin needs driver 580 or newer, as that core does.
 
 # CUDA 13.3, built on a Salad PC by earn/tuning/salad/nv50box.sh with build_rot.py's flags (no -Xptxas -v: nvcc
@@ -15,4 +15,10 @@
 # and Windows builds and a local Windows build all give this one). RTX 5090 (PC 3e7100e6, 575 W, driver 617.14):
 # verify-hits 400 of 400 (688 hits, 35 salts); the same code built with -v: 400 of 400 (445 hits), and 401.92
 # and 401.44 TH/s by hashrate.js against 393.68, 391.77 and 391.33 for the release fold of the CUDA 13.3 core.
-13.3 ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687
+# (13.3 ab55669f27942e53d0306b4e414342b888e756245deb48bf99af823afed20687: that file, replaced by the hand loop.)
+
+# The hand loop. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. RTX 5090
+# (PC 944d2f0a, 600 W, driver 621.14): verify-hits 400 of 400 (570 hits, 29 salts). The same loop built by
+# nv50box.sh: 400 of 400 on two more PCs (498 and 510 hits), and 389.4 TH/s by hashrate.js (four 120 s legs,
+# 389.22 to 389.55) against 384.2 for ROT_C=11 and 367.6 for the release fold on one 489 W PC.
+13.3 e439e1ca4517c447b4391992b332f178051b184b68fc0520aae82be220b7f72e

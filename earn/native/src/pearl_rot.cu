@@ -41,6 +41,8 @@
 // The sm_120 loop's form (pearl_rot_c.inc's RC_FLAGS) and whether it is inlined. The shipped form, raced on an
 // RTX 5090 (tuning/benchmark.md): 11 (B gathered a turn ahead, barriers after a chunk's first and last turn
 // only), inlined: 401.9 and 401.4 TH/s by hashrate.js against 393.7, 391.8 and 391.3 for the release fold.
+// The file a release ships is no longer this form: build_rot.py --arch sm_120 builds ROT_INLINE=0 ROT_C=16387
+// (the C fold outlined, with room) and puts rfold.py's hand loop in that function (probes/hand89/rfold120.py).
 #ifndef ROT_C
 #define ROT_C 11
 #endif
