@@ -16,6 +16,8 @@
 # CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (739 hits, 19 salts), and
 # 336.92, 336.92 and 336.91 TH/s by hashrate.js against 335.92, 336.10 and 336.07 for the loop before it
 # (573b1f13..., alternating 120 s legs). The probe's CPU check: 16,384 of 16,384 at k 2048.
+# On Kryptex with the core finding this file beside it: 336.41 TH/s by the miner's count over 300 s, 18 shares
+# accepted, none rejected.
 12.6 c47837b8aa62d954ea1c1d835cf342456ce2cebfab21175f6ff6efae6f8eb4f1
 
 # CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
