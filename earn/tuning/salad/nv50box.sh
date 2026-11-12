@@ -188,6 +188,23 @@ if has probe; then
     python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
 fi
+# PROBE_SAN: probe runs under compute-sanitizer's memcheck (CUDA 13.3's, from NVIDIA's redistributables), ';'
+# between them, each "<build exe> <cubin> <k> <tiles>": the first faulting access and its address, for a hand loop.
+if [ -n "${PROBE_SAN:-}" ]; then
+  SAN=cuda_sanitizer_api/linux-x86_64/cuda_sanitizer_api-linux-x86_64-13.3.75-archive.tar.xz
+  if [ ! -x /opt/san/compute-sanitizer/compute-sanitizer ]; then
+    mkdir -p /opt/san && curl -fsSL --retry 3 "$RD/$SAN" -o /root/san.tar.xz &&
+      echo "f409be1ba58f44a0a1c826933fa6d557659bfb5b29f4d175979d1cf9c530e3cf  /root/san.tar.xz" | sha256sum -c --quiet - &&
+      tar -xJf /root/san.tar.xz -C /opt/san --strip-components=1 || say "WARN sanitizer download"
+  fi
+  IFS=';' read -r -a SL2 <<< "$PROBE_SAN"
+  for line in "${SL2[@]}"; do
+    [ -n "$line" ] || continue
+    read -r exe cub k tiles <<< "$line"
+    PD_CUBIN=$W/$cub.cubin timeout 300 /opt/san/compute-sanitizer/compute-sanitizer --tool memcheck --show-backtrace no \
+      "$W/$exe" "san-$cub" "$k" "$tiles" 0 0 6 0 2 2>&1 | grep -vE "^=+ *$" | head -24 | cut -c1-300 | sed "s/^/san $cub /; s/%/pc/g; s/|/\//g" | emit
+  done
+fi
 # mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
 if has micro; then
   $N13 -o $W/mmabench "$H/mmabench.cu" > $W/mma.log 2>&1 || fail "mmabench: $(tail -2 $W/mma.log | tr '
