@@ -131,7 +131,10 @@ int main(int argc, char **argv) {
   const uint32_t check = argc > 5 ? (uint32_t)atoi(argv[5]) : 0u;
   const uint32_t order_mode = argc > 6 ? (uint32_t)atoi(argv[6]) : 0u;
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
-  const uint32_t rot = argc > 8 ? (uint32_t)atoi(argv[8]) : 0u;
+  // rot 3 (goal-nv50d): rot 2's records with the tables in plain row order (byte c of an entry is row c of the
+  // group), for rfold.py's b8 gathers (ldmatrix's byte transpose, sm_120).
+  const bool tab8 = argc > 8 && atoi(argv[8]) == 3;
+  const uint32_t rot = argc > 8 ? (tab8 ? 2u : (uint32_t)atoi(argv[8])) : 0u;
   if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
@@ -336,8 +339,8 @@ int main(int argc, char **argv) {
         for (uint32_t e = 0; e < 8u; e++) {
           const uint32_t row = t * BM + 16u * g + e;
           uint8_t *w = &hTabA[(((size_t)t * NA + g) * 128u + p) * 16u];
-          w[2u * e] = DA[(size_t)row * 128u + p];
-          w[2u * e + 1u] = DA[(size_t)(row + 8u) * 128u + p];
+          w[tab8 ? e : 2u * e] = DA[(size_t)row * 128u + p];
+          w[tab8 ? 8u + e : 2u * e + 1u] = DA[(size_t)(row + 8u) * 128u + p];
         }
   for (uint32_t t = 0; t < CB; t++)
     for (uint32_t g = 0; g < 16u; g++)
@@ -345,8 +348,8 @@ int main(int argc, char **argv) {
         for (uint32_t e = 0; e < 8u; e++) {
           const uint32_t col = t * 256u + 16u * g + e;
           uint8_t *w = &hTabB[(((size_t)t * 16u + g) * 128u + p) * 16u];
-          w[2u * e] = DB[(size_t)col * 128u + p];
-          w[2u * e + 1u] = DB[(size_t)(col + 8u) * 128u + p];
+          w[tab8 ? e : 2u * e] = DB[(size_t)col * 128u + p];
+          w[tab8 ? 8u + e : 2u * e + 1u] = DB[(size_t)(col + 8u) * 128u + p];
         }
 
 #endif

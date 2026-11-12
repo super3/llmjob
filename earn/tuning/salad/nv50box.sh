@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "probe micro product bench", in that order (default all three)
+#   STAGES        any of "ldsm8 probe micro product bench", in that order (default all three)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -224,6 +224,11 @@ if [ -n "${PROBE_SAN:-}" ]; then
     PD_CUBIN=$W/$cub.cubin timeout 300 /opt/san/compute-sanitizer/compute-sanitizer --tool memcheck --show-backtrace no \
       "$W/$exe" "san-$cub" "$k" "$tiles" 0 0 6 0 2 2>&1 | grep -vE "^=+ *$" | head -24 | cut -c1-300 | sed "s/^/san $cub /; s/%/pc/g; s/|/\//g" | emit
   done
+fi
+# ldsm8.cu (stage "ldsm8", goal-nv50d): which bytes sm_120a's byte-transposing ldmatrix hands each lane.
+if has ldsm8; then
+  $C13/bin/nvcc -arch=sm_120a -o $W/ldsm8 "$H/ldsm8.cu" > $W/ldsm8.log 2>&1 || say "FAIL ldsm8 build: $(tail -2 $W/ldsm8.log | tr '\n' ' ' | cut -c1-300)"
+  [ -x $W/ldsm8 ] && $W/ldsm8 2>&1 | cut -c1-390 | emit
 fi
 # mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
 if has micro; then

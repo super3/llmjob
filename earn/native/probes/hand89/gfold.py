@@ -101,6 +101,14 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     if cfg["nold"]:
         ld = Ins(fold.mov(q, areg), wait=wait_ld)
         w = ()
+    elif cfg.get("b8"):
+        # b8 (rfold.py, sm_120 only): ldmatrix.m16n16.x2.trans.b8 on tables in plain row order (byte c of an entry
+        # is row c). Lanes 0-15 address the plus rank indices, 16-31 the minus; registers 0 and 1 are rows g and
+        # g + 8 at the lane's four k, from the plus matrix, 2 and 3 the same from the minus one. The subtracts
+        # write the fragment words: no PRMT.
+        ld = Ins("LDSM.8.MT1616.2 R%d, [R%d%s]" % (q, areg, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
+                 wait=wait_ld)
+        w = (sb,)
     else:
         # ldk (goal-nvk14, TIMING ONLY): the gather's load as an LDS.128 at the same addresses (the same 512 bytes,
         # the same banks; each lane keeps its own row, untransposed): what the transposing LDSM costs per byte.
@@ -120,6 +128,10 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     if x:
         x4 = (x & 0xff) * 0x01010101
         adds += [Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (r, r, x4)) for r in (q, q + 1)]
+    if cfg.get("b8") and not cfg["nold"]:
+        assert not x, "b8 with xa/xb"
+        adds = [Ins("IADD3 R%d, -R%d, %s, R%d" % (d, q + 2 + h, imm, q + h), wait=w) for h, d in enumerate((d1, d2))]
+        return ld, adds, []
     prm = [Ins("PRMT R%d, R%d, 0x6420, R%d" % (d1, q, q + 1)), Ins("PRMT R%d, R%d, 0x7531, R%d" % (d2, q, q + 1))]
     return ld, adds, prm
 

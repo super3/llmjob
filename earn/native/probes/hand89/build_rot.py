@@ -118,6 +118,8 @@ def main():
         return fail("nvcc --version does not state a release")
     print("build_rot: step 1, nvcc %s compiles src/pearl_rot.cu for %s" % (release, arch))
     defs = ["-DROT_INLINE=0", "-DROT_C=16387"] if arch == "sm_120" else []
+    if "b8=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_TAB8=1")         # the b8 gathers read tables in plain row order (rot_aux_tab)
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
