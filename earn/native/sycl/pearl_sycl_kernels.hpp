@@ -1723,8 +1723,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
   // goal-arc9 (PEARL_W_ARGP, with PEARL_W_NOLO32): the operands as kernel arguments of their own, addressed as
   // pointer + 32-bit offset. IGC then makes the loop's loads 32-bit surface accesses: 517 instructions in the loop
   // where there were 598 (movs 84 to 10), but 90.8 TH/s against 91.9 (card 5, three rounds), with 8 dummy DPAS
-  // in the loop instead of 4. Kept for the record; off.
+  // in the loop instead of 4. Kept for the record; off. Only in that build: two unused kernel arguments cost
+  // xmx8w 2.7% on card 4 (89.6 against 92.2 TH/s).
+#if defined(PEARL_W_ARGP)
   const int8_t *Ap0 = nullptr, *Bp0 = nullptr;
+#endif
 
   auto get(sycl::ext::oneapi::experimental::properties_tag) const {
     namespace syclex = sycl::ext::oneapi::experimental;
@@ -2269,7 +2272,12 @@ inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 #else
     constexpr uint32_t kSgs = K::kNsg;
 #endif
-    h.parallel_for(sycl::nd_range<1>((size_t)(groups / (RW * CW)) * kSgs * 8u, kSgs * 8u), K{a, part, ring, a.Ap, a.Bp});
+    h.parallel_for(sycl::nd_range<1>((size_t)(groups / (RW * CW)) * kSgs * 8u, kSgs * 8u),
+#if defined(PEARL_W_ARGP)
+                   K{a, part, ring, a.Ap, a.Bp});
+#else
+                   K{a, part, ring});
+#endif
   });
 }
 
