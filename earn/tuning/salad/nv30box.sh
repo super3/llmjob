@@ -105,7 +105,12 @@ if has product; then
     npm install --no-save --ignore-scripts --no-audit --no-fund node-addon-api node-gyp > npm.log 2>&1 &&
     ./node_modules/.bin/node-gyp install >> npm.log 2>&1) || fail "node-gyp setup: $(tail -1 /opt/gyp/npm.log)"
   # The fold's cubin for sm_86: the kernel compiled, the hand loop put in (build_rot.py's steps 1 to 5).
-  $NV -cubin -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/rot_base.cubin > $W/rot.log 2>&1 || fail "pearl_rot.cu"
+  # ROT_KEYS with sr=1 or bx=1 need the kernel built for them too (ROT_SR, ROT_BX), as build_rot.py does.
+  d0=""
+  case ",${ROT_KEYS:-}," in *,sr=1,*) d0="$d0 -DROT_SR=1" ;; esac
+  case ",${ROT_KEYS:-}," in *,bx=1,*) d0="$d0 -DROT_BX=1" ;; esac
+  # shellcheck disable=SC2086
+  $NV -cubin $d0 -I "$R/earn/native/src" "$R/earn/native/src/pearl_rot.cu" -o $W/rot_base.cubin > $W/rot.log 2>&1 || fail "pearl_rot.cu"
   nvdisasm -c $W/rot_base.cubin > $W/rot_base.sass || fail "nvdisasm rot"
   say "rot asm89 check: $(python3 -I "$H/asm89.py" check $W/rot_base.cubin $W/rot_base.sass | grep -E '^(assembled|wrong)' | cut -c1-60 | tr '\n' ' ')"
   # shellcheck disable=SC2046
@@ -118,7 +123,7 @@ if has product; then
     # shellcheck disable=SC2046
     vn=${v%%:*}
     # sr=1 and bx=1 loops need the kernel compiled for them, as build_rot.py does (ROT_SR, ROT_BX).
-    d=""; b=rot_base
+    d=""; b=vbase
     case ",${v#*:}," in *,sr=1,*) d="$d -DROT_SR=1"; b=${b}_sr ;; esac
     case ",${v#*:}," in *,bx=1,*) d="$d -DROT_BX=1"; b=${b}_bx ;; esac
     if [ ! -f "$W/$b.sass" ]; then
