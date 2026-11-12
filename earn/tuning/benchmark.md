@@ -2400,6 +2400,59 @@ It uses the same operand layouts as `xmx8f`. Off unless asked for: built with `-
   74 `add`, 147 `mov`). The scalar-address form was already timed level from real addresses (block reads, 73.4
   against 72.9).
 
+### Arc rig, 12 November, night: the ring fold checked on a cool card and mining, and what was tried beside it (`goal/arc-5`)
+
+What changed for the miner: the four mining cards (1 to 4, duty 60,60,60,60,75) run the ring fold `xmx8r` since
+01:04 UTC, 12 November: 170.2 to 170.9 TH/s against 160 on the fragment fold, shares accepted and none rejected in
+the first run (12 accepted, 0 rejected in the first 9 minutes). Before that it passed on card 1, paused for the check: verify.sh's fold checks
+(16,384 of 16,384 regions at m = n = 2048, 32,768 of 32,768 on the last mainnet batch) and verify-hits.js 400 of 400
+with `PEARL_SYCL_FOLD=xmx8r` (verify.sh's own hit step runs `auto`, so it was run by hand). The shared-A' fold
+`xmx8s` passes the same on card 1 (400 of 400). The rig's HiveOS driver (OpenCL 24.35, no Level Zero) takes the
+split barrier: the release form, staged in `arc-jammy`, passes `xmx8r` there and benches 63.2.
+
+Races, `pearl_sycl_check --bench 8`, two rounds, taking turns, TH/s:
+
+| Card | xmx8f | xmx8r | xmx8s | Clock, watts |
+|---|---|---|---|---|
+| 1 (paused mining card) | 63.2, 63.5 | 66.7, 67.2 | 65.6, 65.7 | f 1,958 to 1,965 MHz 188 W; r 1,992 to 2,000 MHz 188 W; s 2,000 MHz 174 to 176 W |
+| 5 | 62.9 | 67.2, 67.4 | 65.3, 65.4 | f 1,973 MHz 187 W; r 2,000 MHz 187 to 189 W; s 2,000 MHz 170 to 172 W |
+
+Both new folds sit at 2,000 MHz, the clock these cards hold under DPAS (the fragment fold drops below it at the
+power limit). So from here only work a clock counts: xmx8r 75 MACs an EU a clock, xmx8s 73; 100 TH/s at 2,000 MHz
+needs 112 of the 125 peak. In TH/s a watt xmx8s is best (0.38 against xmx8r's 0.36 and xmx8f's 0.33).
+
+Findings:
+
+- **The fold that mined had no loop around its k-loop.** In the form the rig's driver compiles, IGC writes a
+  chunk's 4 k-steps out (71 DPAS, 72 loads in one block); only the prebuilt oneAPI form keeps a one-k-step loop.
+  So goal-arc4's driver finding (a loop around the k-loop halves the rate) did not apply. Two chunks an iteration:
+  level (62.8); all 16 written out, no loop: 40.2 (12,065 instructions, the instruction cache).
+- **More than 32 KB of local memory on an Xe-core costs the fragment fold 10%.** 1,024 bytes a group (32 a core):
+  62.8; 1,088, 2,048 or 4,096: 56.2 to 56.3. With 16 groups a core: 2,048 bytes level, 2,176 bytes 56.5. The ring
+  fold asks for 56 KB a core and gains only 0.9% when cut to 26 KB (timing only), so it does not pay that step.
+- **Sharers must read together.** Rotating the two sub-groups' k-step order inside a chunk, so they stop reading
+  the same B' at once: 38.7 to 40.2 against 62.8. A line is gone from the first cache level within about a k-step.
+- **Two windows a work-group** (16 by 64 tiles, B' read by 4 sub-groups together, 1 KB of local memory): 64.4
+  against 62.8 on card 5 (+2.5%), 64.3 against 63.0 on card 1. Four windows 63.2, eight 54.9. Below the ring fold.
+
+Tried and lost (correct unless marked timing only):
+
+| Design | TH/s | Against |
+|---|---|---|
+| Fragment fold, readout in the next chunk's first k-step | 20.8 (spills 3.2 KB) | 62.8 |
+| Fragment fold, no local memory, words in registers (timing only) | 61.8 | 62.8 |
+| 32 by 32 tile a sub-group, A' and B' from global | 45.7; A' in halves 53.6 | 62.8 |
+| Two windows a group of 32 by 32 tiles, local XOR atomics | 55.2 | 62.8 |
+| Ring fold, words in registers (VAR 28) | 41.7 (spills 640 B) | 67.3 |
+| Ring fold, 32 by 32 tiles, A' from global (VAR 140) | 59.3 | 67.2 |
+| Ring fold, A' prefetched to L1 by IGC's LSC prefetch, 1 to 3 k-steps ahead | 47.8 to 48.3 | 67.2 |
+| Ring fold, readout after the next arrival (VAR 13) | 57.9 | 67.2 |
+| Ring fold, 4 row windows by 2 column windows a group (VAR 524) | 63.7 | 67.2 |
+| Ring fold, two k-steps a slot, a barrier every second k-step (VAR 1032) | 67.2, level | 67.2 |
+
+The variants are on `goal/arc-5` behind `PEARL_SYCL_EXTRA` (`-DPEARL_A5=N` for the fragment fold's, in
+`pearl_sycl_a5.hpp`; `-DPEARL_RING_VAR=N` for the ring fold's); a release build has none of them.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
