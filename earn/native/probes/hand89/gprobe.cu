@@ -26,6 +26,7 @@
 //   rot 2 is the same in records of 8 bytes, two offsets to a word (rfold.py's co, its default now); rot 1
 //   writes the 16-byte records, for rfold.py co=0.
 // Build: nvcc -arch=sm_89 -O3 -std=c++17 -o gprobe gprobe.cu   (and -cubin for the file gfold.py patches)
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -123,7 +124,7 @@ int main(int argc, char **argv) {
   const uint32_t order_mode = argc > 6 ? (uint32_t)atoi(argv[6]) : 0u;
   const uint32_t fake = argc > 7 ? (uint32_t)atoi(argv[7]) : 0u;
   const uint32_t rot = argc > 8 ? (uint32_t)atoi(argv[8]) : 0u;
-  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 9u) {
+  if (k < 2048u || (k & (k - 1u)) || tpb < 1u || order_mode > 11u) {
     fprintf(stderr, "k is a power of two from 2048; at least one tile a block; order 0 to 6\n");
     return 2;
   }
@@ -217,6 +218,17 @@ int main(int argc, char **argv) {
       uint8_t *o = &order[(size_t)ch * 128u];
       for (uint32_t i = 0; i < 128u; i++) o[i] = (uint8_t)i;
       if (!order_mode) continue;
+      if (order_mode >= 10u) {
+        // TIMING ONLY in effect (more bank collisions, correct sums): the chunk's k sorted by A's plus then minus
+        // rank index (10) or B's (11), so that k next to each other in a fragment share table entries. Does the
+        // tensor core's power follow how alike the k inside one IMMA are? (goal-nvk12)
+        const uint32_t op = order_mode - 10u;
+        std::stable_sort(o, o + 128, [&](uint8_t x, uint8_t y) {
+          const uint32_t kx = ch * 128u + x, ky = ch * 128u + y;
+          return pm[op][0][kx] * 256u + pm[op][1][kx] < pm[op][0][ky] * 256u + pm[op][1][ky];
+        });
+        continue;
+      }
       uint8_t res[128][4], member[16][8];
       for (uint32_t i = 0; i < 128u; i++) {
         const uint32_t kk = ch * 128u + i;

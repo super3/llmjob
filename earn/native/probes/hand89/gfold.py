@@ -443,8 +443,13 @@ def emit(G, iwait, cfg, bfalt=None):
             ist = max(1, ist - nsingle) if nsingle < len(items) else 1
         a = AF[(mb + (mt & 1) * s) & 1]
         bf = bfalt if bfalt is not None and s & 1 else BF
+        # snk (rfold.py, TIMING ONLY): every other tile reads B's n8 tiles in reverse, so B stays in place across a
+        # tile's end; the sums are not moved with it, so the results are wrong. What the operands' toggling costs.
+        # snk=2: every IMMA of tiles 0 to mt - 2 reads B's first n8 tile, so B changes once a tile there (the last tile
+        # reads B as usual: its pairs are rewritten for the next k-step). Near the most any order could save.
+        nbx = 7 - nb if cfg.get("snk") == 1 and (mb + s) & 1 else 0 if cfg.get("snk") == 2 and mb < mt - 1 else nb
         out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % ("U8.U8" if cfg.get("u8") else "S8.S8",
-                                                                   ACC + 4 * i, a, bf + 2 * nb, ACC + 4 * i),
+                                                                   ACC + 4 * i, a, bf + 2 * nbx, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):

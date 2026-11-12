@@ -3193,3 +3193,56 @@ counted. Not built.
 and B is 4 gathers instead of 8. With the barrier of all eight warps that sharing needs: 96.40% at 2611 MHz
 (329.9). With no barrier: 98.74% at 2591 MHz (335.3). Twelve stage loads cost as much power as the four gathers
 they replace. Closed.
+
+### The rotation fold's instruction count, and three things that do not pay (RTX 4090, 2026-11-12)
+
+Twelfth round, branch `goal/nv-12`. Probe figures as in the section above (k 65536, 128 tiles a block, 60 s,
+450 W). The shipped loop held 98.96% at 2594 to 2598 MHz (336.5 to 337.0 by count) in all three holds.
+
+**What a warp issues a k-step besides its 48 IMMA** (counted from the listing of `rfold.py`'s defaults; a chunk is
+192 IMMA and 373 others):
+
+| Group | A k-step | Least this fold can issue |
+|---|---|---|
+| Gathers: LDSM, IADD3 (the subtract), PRMT (the regroup) | 11 + 22 + 22 | the same for the bytes drawn: one subtract and one regroup a fragment register, and no sm_89 instruction does either for more than four bytes |
+| Readout: XOR3 of the 192 sums, and the word's tail | 24 + 1.75 | the same: 192 values into one word with three-input steps is 96 a chunk |
+| A's stage: LDS.128, STS.128 | 4.5 + 1.5 | the same: what sharing A among a band's four warps costs |
+| Records: LDG.E.64 and parting the 16-bit offsets | 1 + 2.5 | 1 with 16-byte records, which cost more as bytes from the L2 (tenth round) |
+| Loop count, its test, offsets pointer, branch | 1 | 1 |
+| Barriers | 2 | 1 (`brg=1`) or 0.75 (`brg=1 bt=13`) |
+| Total | 93.25 | about 89 |
+
+An instruction a warp a k-step is worth about 0.07% of the rate (eleventh round: the readout's 24 cost 1.7%;
+here the 22 PRMT cost 30 MHz). The 1.8% to the other miners' 341.9 is about 25 instructions, and the table has
+four to give. The one large group that is not at its floor is the bytes drawn: each row band draws its own copy
+of B, 22,528 bytes a block a k-step where 14,336 would do. B drawn once is 20 instructions fewer a warp, before
+the exchange it needs (eleventh round: 342.2 by count with the exchange free).
+
+**Measured** (all CORRECT unless TIMING ONLY; `out1.txt` to `out3.txt` of `S/nv-study/k12`):
+
+| Loop | Pipe | Clock | By count |
+|---|---|---|---|
+| shipped (`rfold.py` defaults), six runs | 98.96% | 2594 to 2598 MHz | 336.5 to 337.0 |
+| `brg=1`: one barrier instruction, its number in a register | 98.96% | 2595 MHz | 336.6 |
+| `brg=1 bt=13`: and no barrier after a chunk's second turn | 98.97% | 2596, 2594 MHz | 336.8, 336.5 |
+| `bt=13` | 98.95% | 2596 MHz | 336.7 |
+| `noprm=1`, TIMING ONLY: no PRMT (the subtracts write the fragments) | 97.63% | 2625 MHz | 335.9 |
+| `snk=1`, TIMING ONLY: B read in reverse every other tile (across a tile's end only A changes) | 98.96% | 2596, 2595 MHz | 336.7, 336.6 |
+| `snk=2`, TIMING ONLY: one B n8 tile for all eight IMMA of tiles 0 to 4 | 98.96% | 2596 MHz | 336.7 |
+| gprobe order 0 (the definition's order of k) | 93.43% | 2626 MHz | 321.6 |
+| order 10: each chunk's k sorted by A's plus and minus rank index | 94.70% | 2613 MHz | 324.3 |
+| order 11: the same by B's | 94.93% | 2619 MHz | 325.9 |
+
+- **Barriers.** sm_89 takes a barrier's number from a register's low four bits (`bar.sync r, 128` is `BAR.SYNC
+  .DEFER_BLOCKING Rn, 0x80`; a test of two bands at numbers 16 c + 1 and 16 c + 2 read no stale data in 2,000
+  rounds of 64 blocks, and with no barrier 74 million). `brg=1` keeps 16 x chunks left + 1 + band in the chunk
+  count's register, so one unpredicated barrier serves both bands. It is correct and changes nothing measurable,
+  with or without `bt=13`. Not a default.
+- **The PRMT** are worth 30 MHz of clock. The pipe figure of that stream is not theirs: the scoreboards were
+  chosen for the IADD3 where they had been. There is no way to drop them (above).
+- **Operand toggling between IMMA costs nothing.** With B changing once a tile in five of six tiles, the clock does
+  not move. What the operands' values cost (112 W, sixth round) is not in how often a fragment changes, so no IMMA
+  order saves power.
+- **How alike the k inside one IMMA are** costs little if anything: orders 10 and 11 have the definition order's
+  bank collisions, and with the pipe taken into account their clocks sit within 6 MHz of it. Not worth a search
+  that has to weigh collisions against it.

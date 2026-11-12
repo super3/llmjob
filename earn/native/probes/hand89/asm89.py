@@ -159,6 +159,13 @@ FORMS = [
     # (bar.sync a, b). Taken from ptxas's own encodings of bar.sync 1, 128; 2, 128; 3, 64.
     (r"BAR\.SYNC\.DEFER_BLOCKING " + I + ", " + I,
      lambda m: (0x7b1d | _num(m[1]) << 54 | _num(m[2]) << 42, 0x10000)),
+    # The same with the number in a register (bar.sync r, b; ptxas 12.6's encoding). The card takes the number
+    # from the register's low four bits: 16 c + 1 and 16 c + 2 meet as barriers 1 and 2 (checked on rig01's
+    # RTX 4090 with a barrier test, goal-nvk12, and against a run with no barrier, which read stale data).
+    (r"BAR\.SYNC\.DEFER_BLOCKING " + R + ", " + I,
+     lambda m: (0x751d | _reg(m[1]) << 32 | _num(m[2]) << 42, 0x10000)),
+    (r"ISETP\.GT\.U32\.AND P(\d), PT, " + R + ", " + I + ", PT",
+     lambda m: _f(0x780c, 0x3f04070, pd=int(m[1]), ra=_reg(m[2]), imm=_num(m[3]))),
     # 4-byte global load and store (the uniform register pair goes in as for the 16-byte load: gfold.ldg).
     (r"LDG\.E " + R + ", " + MEM64, lambda m: (_mem(0x7981 | _reg(m[1]) << 16 | 6 << 32, m, 2), 0x0c1e1900)),
     (r"STG\.E " + MEM64 + ", " + R, lambda m: (_mem(0x7986 | _reg(m[3]) << 32, m, 1), 0x0c101900 | 6)),

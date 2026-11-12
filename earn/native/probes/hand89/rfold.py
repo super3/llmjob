@@ -153,7 +153,18 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # bsym=4: as 3, but pair p's load sets scoreboard (0, 1, 2, 5)[p] (no gather is under way then), so
            # an IMMA waits only for its own pair; and bsg >= 0 puts pair p's store in gap bsg + 3 p of the next
            # turn (the registers hold the pair until that turn's end), out of the busy last gaps of a turn.
-           bsym=0, bld=34, bnst=0, bnld=0, bsg=-1)
+           bsym=0, bld=34, bnst=0, bnld=0, bsg=-1,
+           # brg=1: one barrier instruction, not the predicated pair (@!P2 bar 1, @P2 bar 2): the barrier's number
+           # comes from the chunk count's register, which then holds 16 x the chunks left + 1 + the row band. The
+           # card reads a barrier number from a register's low four bits, so the count steps by 16 and the loop
+           # runs while it is over 15. One instruction fewer a barrier, and the same barriers.
+           brg=0,
+           # noprm=1, TIMING ONLY (wrong results on purpose): the gathers' two PRMT left out; the two IADD3 write
+           # the fragment words where the PRMT would have. What the 22 PRMT a warp a k-step cost.
+           noprm=0,
+           # snk=1, TIMING ONLY: B read in reverse in every other tile (gfold.emit), so that across a tile's end
+           # only A changes; the sums are not moved with it. What a snake order would save in operand toggling.
+           snk=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -190,6 +201,9 @@ def prologue(cfg, R, tail):
     c.append(Ins(shr(S + 3, S + 1, 2)))                                       # row band
     if cfg["band"] or cfg["bsh"]:
         c.append(Ins("ISETP.NE.AND P2, PT, R%d, 0x0, PT" % (S + 3)))
+    if cfg["brg"]:
+        c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, S + 3)))               # 16 chunks + band ...
+        c.append(Ins(addi(R["cnt"], R["cnt"], 1)))                            # ... + 1: the barrier's number
     c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (q[1], S + 1, S + 3)))
     c.append(Ins(andi(q[1], q[1], 3)))                                        # the k-step of the first turn
     c.append(Ins(muladd(q[1], q[1], 512 * mt)))
@@ -437,6 +451,11 @@ def chunk(cfg, R, role=None):
             continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves)), rsb=rsb)
+        if cfg["noprm"]:
+            # TIMING ONLY: no regroup; the subtracts write the fragment words, in the PRMT's gap.
+            adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d, q + 2 + h, gfold.FILL4, q + h), wait=(sb,))
+                    for h, d in enumerate((d1, d2))]
+            prm, g_add = [], g_prm
         put(g_ld, ld, wrapped=False)
         for x in adds:
             put(g_add, x, wrapped=False)
@@ -485,8 +504,9 @@ def chunk(cfg, R, role=None):
     put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
     assert end + 6 - tot < ni - 16
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
-    put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -1)), wrapped=False)
-    put(b3 + 7, Ins("ISETP.NE.AND P1, PT, R%d, 0x0, PT" % R["cnt"]), wrapped=False)
+    put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if cfg["brg"] else -1)), wrapped=False)
+    put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if cfg["brg"] else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
+                    % R["cnt"]), wrapped=False)
     put(b3 + 14, Ins(addi(R["poff"], R["poff"], 0x400 if cfg["co"] else 0x800), wait=hw), wrapped=False)
     if cfg["barn"] and cfg["sync"] != 4:
         assert cfg["barn"] & (cfg["barn"] - 1) == 0
@@ -499,6 +519,8 @@ def barrier(cfg):
     """The k-step barrier: all eight warps, or (band) the four of the warp's row band; P2 is set for band 1."""
     if not cfg["band"]:
         return [Ins("BAR.SYNC.DEFER_BLOCKING 0x0", stall=1)]
+    if cfg["brg"]:
+        return [Ins("BAR.SYNC.DEFER_BLOCKING R%d, 0x80" % layout(cfg["mt"])["cnt"], stall=1)]
     return [Ins("@!P2 BAR.SYNC.DEFER_BLOCKING 0x1, 0x80", stall=1), Ins("@P2 BAR.SYNC.DEFER_BLOCKING 0x2, 0x80", stall=1)]
 
 
@@ -649,6 +671,8 @@ def main():
         if lp != 1:
             if t.startswith("ISETP.NE.AND P1, "):
                 t = "ISETP.NE.AND P%d, " % lp + t[len("ISETP.NE.AND P1, "):]
+            elif t.startswith("ISETP.GT.U32.AND P1, "):
+                t = "ISETP.GT.U32.AND P%d, " % lp + t[len("ISETP.GT.U32.AND P1, "):]
             elif t.startswith("@P1 BRA "):
                 t = "@P%d BRA " % lp + t[len("@P1 BRA "):]
         if bp != 2:
