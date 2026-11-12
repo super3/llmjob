@@ -1600,6 +1600,182 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 }
 
 // ---------------------------------------------------------------------------
+// The split fold (xmx8w): the ring fold with a 32 by 32 tile a sub-group, whose
+// two sub-groups of a window share A' through the split DPAS. Added 12
+// November 2026 (goal-arc7).
+//
+// Alchemist's DPASW (OpenCL's cl_intel_subgroup_split_matrix_multiply_
+// accumulate) takes A from a pair of sub-groups, sub-groups 2i and 2i + 1 of a
+// work-group: each gives half of the 8 rows (4 dwords a lane), and each gets
+// all 8 rows times its own B. So a window (32 rows by 64 columns, two
+// sub-groups) is split by columns, not rows: sub-group sgi holds all 32 rows
+// by columns 32 sgi .. 32 sgi + 31, 16 accumulators, as before.
+//
+//   - A' per sub-group and k-step: half of each of the window's 4 fragments,
+//     rows 4 sgi .. 4 sgi + 3 of each 8-row block. In the kFragAT layout that
+//     half is one 128-byte block read, so 512 bytes, as the ring fold.
+//   - B': its 4 fragments from the ring, 1,024 bytes where the ring fold reads
+//     2,048. The ring, its split barrier and its copy are the ring fold's.
+//   - The copy has no branch in the k-step: at 8 windows a work-group (16
+//     sub-groups) each sub-group copies one block of 128 bytes, loaded a
+//     k-step early. Past the last k-step it loads k-step 63 again and stores
+//     it into a slot no one reads any more. The host runs this fold only at 8
+//     windows a work-group (FoldArgs::wpg), else the ring fold. In the ring
+//     fold IGC put a goto/join around each guarded load and store, which cut
+//     the k-step into blocks it would not schedule across: without them the
+//     copy costs 7% where it cost 23% (goal-arc7, timing builds).
+//   - Accumulator (rb, cb) lives in c[rb >> 1][(rb & 1) * 4 + cb], so the
+//     readout is the ring fold's.
+//
+// On an A750 (pearl_sycl_check --bench, 8 s, taking turns, 12 November): card
+// 4, 84.0 TH/s at 1,965 MHz and 188 W against the ring fold's 68.2 at
+// 2,000 MHz and 188 W (+23%); card 5, 82.1 against 67.5. It sits at the
+// card's power limit.
+//
+// HW, in the build the driver compiles: the split DPAS, block reads and the
+// split barrier. Otherwise (the reference, and the prebuilt kernels, which have
+// no split DPAS) each sub-group reads all 32 rows of A' and runs the plain
+// DPAS: the same results.
+// ---------------------------------------------------------------------------
+template <bool HW> struct FoldXmxW {
+#if defined(PEARL_SYCL_XMX_JIT)
+  static constexpr bool kSplit = HW;
+#else
+  static constexpr bool kSplit = false;
+#endif
+  static constexpr uint32_t kSlotWords = 512u;  // a k-step's B': 64 columns by 32 k
+  FoldArgs A;
+  sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
+  sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    if constexpr (HW)
+      return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+    else
+      return syclex::properties{syclex::sub_group_size<8>};
+  }
+  void arrive(sycl::nd_item<1> it) const {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) {
+      __spirv_ControlBarrierArriveINTEL(2, 2, 0x104);  // work-group; work-group memory, release
+      return;
+    }
+#endif
+    sycl::group_barrier(it.get_group());
+  }
+  void wait(sycl::nd_item<1>) const {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) __spirv_ControlBarrierWaitINTEL(2, 2, 0);  // no acquire fence, as the ring fold's VAR 8
+#endif
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgl = (uint32_t)sg.get_group_linear_id();  // 0 .. 15
+    const uint32_t sgi = sgl & 1u, widx = sgl >> 1;
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t wr, wc;
+    window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
+    const int8_t *Ab = A.Ap + (size_t)(2u * wr) * A.aStride;  // the window's two 16-row blocks
+    const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)sgl * 128u;  // its copy block
+    uint32_t *R = &ring[0];
+    uint32_t *mine = R + sgl * 32u;
+    ring_write_local<HW>(mine, ring_read_global<HW>(Bb, lane), lane);
+    v4u next = ring_read_global<HW>(Bb + 2048u, lane);
+    v8i c[2][8];
+    each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
+    arrive(it);
+    for (uint32_t ch = 0; ch < 16u; ch++) {
+      for (uint32_t s = 0; s < 4u; s++) {
+        const uint32_t ks = ch * 4u + s, slot = ks % 3u;
+        wait(it);
+        {
+          const v4u v = ring_read_global<HW>(Bb + (size_t)(ks + 2u < 64u ? ks + 2u : 63u) * 2048u, lane);
+          ring_write_local<HW>(mine + ((ks + 1u) % 3u) * kSlotWords, next, lane);
+          next = v;
+        }
+        arrive(it);
+        // B' fragment cb of this sub-group's 32 columns, from the ring.
+        v8i bq[4];
+        auto read_b = [&]() {
+          each<4>([&](int cb) {
+            uint32_t *p = R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u;
+            const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+            bq[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          });
+        };
+        // A' fragment rb: 8-row block rb of the window, in 16-row block rb >> 1.
+        const int8_t *Ak = Ab + (size_t)ks * 512u;
+        if constexpr (kSplit) {
+          v4i ah[4];
+          each<4>([&](int rb) {
+            ah[rb] = (v4i)ring_read_global<HW>(Ak + (size_t)(rb >> 1) * A.aStride + (size_t)(rb & 1) * 256u + sgi * 128u, lane);
+          });
+          read_b();
+          // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
+          int t = 0;
+          each<4>([&](int rb) { t ^= ah[rb][0]; });
+          each<4>([&](int cb) { t ^= bq[cb][0]; });
+          t &= (int)A.zero;
+          each<4>([&](int rb) { ah[rb][0] |= t; });
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
+            });
+          });
+        } else {
+          v8i af[4];
+          each<4>([&](int rb) {
+            const int8_t *p = Ak + (size_t)(rb >> 1) * A.aStride + (size_t)(rb & 1) * 256u;
+            const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
+            af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          });
+          read_b();
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              c[rb >> 1][(rb & 1) * 4 + cb] = dpas<8, HW>(sg, af[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
+            });
+          });
+        }
+      }
+      // The chunk's readout, the ring fold's.
+      uint32_t x0 = 0, x1 = 0;
+      each<2>([&](int rb) {
+        each<8>([&](int cb) {
+          const v8i v = c[rb][cb];
+          x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+          x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
+        });
+      });
+      x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
+      x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
+      if (lane < 8u) part[(sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+    }
+    wait(it);
+    sycl::group_barrier(it.get_group());
+    if (sgi == 0 && lane < 8u) {
+      const uint32_t qr = lane;
+      uint32_t words[16];
+      for (int j = 0; j < 16; j++)
+        words[j] = part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
+      const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+      region_epilogue(words, local, A.test, A.hits, A.allTr);
+    }
+  }
+};
+
+// `groups` windows, 8 to a work-group (A.wpg must be 8: the copy is one block a sub-group).
+template <bool HW> inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
+  q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<uint32_t, 1> part(2u * 8u * 8u * 16u, h);
+    sycl::local_accessor<uint32_t, 1> ring(3u * FoldXmxW<HW>::kSlotWords, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)(groups / 8u) * 128u, 128u), FoldXmxW<HW>{a, part, ring});
+  });
+}
+
+// ---------------------------------------------------------------------------
 // The shared-A' fold (xmx8s): an experiment, built only with -DPEARL_SYCL_XMX8S
 // (PEARL_SYCL_EXTRA). The AMD folds' way of feeding the matrix engines, on
 // Alchemist: a work-group copies its A' into local memory once and its
