@@ -1811,7 +1811,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
   void arrive(sycl::nd_item<1> it) const {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && !defined(PEARL_W_PLAINBAR)
     if constexpr (HW) {
+#if defined(PEARL_W_NOREL)
+      // goal-arc11 timing (unsafe: stores may not be seen): no release fence. 93.0 with 6 dummy DPAS, level.
+      __spirv_ControlBarrierArriveINTEL(2, 2, 0);
+#else
       __spirv_ControlBarrierArriveINTEL(2, 2, 0x104);  // work-group; work-group memory, release
+#endif
       return;
     }
 #endif
@@ -1851,6 +1856,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       }
 #else
       window_of((uint32_t)it.get_group(0), rowWins / RW, colWins / CW / (uint32_t)SEQ, A.band / RW > 0u ? A.band / RW : 1u, wrb, wcb);
+#endif
+#if defined(PEARL_W_CORE) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+      // goal-arc11 timing (wrong results): the row block from the Xe-core this work-group runs on (sr0 bits 9 to
+      // 13, read by inline vISA), inside the same band, so the four work-groups an Xe-core holds share A'. 94.0
+      // against 93.0 (card 5). Done for real by a queue a core (a global atomic a work-group) it lost 3%.
+      {
+        uint32_t sr = 0;
+        __asm__ volatile("mov (M1_NM, 1) %0(0,0)<1> %%sr0(0,0)<0;1,0>" : "=rw"(sr));
+        const uint32_t core = (sr >> 9) & 31u;
+        wrb = (wrb / (uint32_t)(PEARL_W_CORE)) * (uint32_t)(PEARL_W_CORE) + core % (uint32_t)(PEARL_W_CORE);
+      }
 #endif
       wr = wrb * RW + widx % RW;
       wc = wcb * CW + widx / RW;
