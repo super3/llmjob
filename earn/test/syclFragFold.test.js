@@ -307,6 +307,21 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(CHECK).toContain('if (s == "xmx8w") return 11;');
   });
 
+  test('xmx8w runs 8 row by 2 column windows a work-group with BA, and 1 column window where 2 does not divide the batch', () => {
+    // goal-arc15: two column windows read the same A' in step (the second from L1). Cool card 4: 101.8-101.9
+    // TH/s against 99.9-100.3 for 16 by 1.
+    expect(KERNELS).toContain('#ifndef PEARL_W_RW\n#define PEARL_W_RW 8\n#endif');
+    expect(KERNELS).toContain('#if PEARL_W_RW == 8 && !defined(PEARL_W_CW)\n#define PEARL_W_CW 2\n#endif');
+    expect(KERNELS).toContain('#if PEARL_W_RW == 8 && !defined(PEARL_W_NOBA) && !defined(PEARL_W_BA)\n#define PEARL_W_BA\n#endif');
+    const launch = slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n');
+    // RW divides the band and the row windows, else the ring fold.
+    expect(launch).toContain('((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW))');
+    // CW times SEQ divides the column windows; the check's 4-column batch (one window) runs CW 1.
+    expect(launch).toContain('(a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {\n        fold_xmxw<true, 2>(q, a, groups);');
+    expect(launch).toContain('if ((a.colBatch / 4u) % PEARL_W_CW == 0u) fold_xmxw<true>(q, a, groups);\n      else fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
+    expect(launch).toContain('if ((a.colBatch / 4u) % PEARL_W_CW == 0u) fold_xmxw<false>(q, a, groups);\n      else fold_xmxw<false, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
+  });
+
   test('the hardware kernel asks for 256 registers by a kernel property, the reference kernel does not', () => {
     const get = slice(FOLD, 'auto get(sycl::ext::oneapi::experimental::properties_tag) const {', '\n  }\n');
     expect(get).toContain('if constexpr (HW && RB > 1)');

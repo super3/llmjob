@@ -1830,11 +1830,21 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // build that ran 105.3 at 8 windows. 99.6 against 98.5 for 8 windows (card 5; 16 windows with the old 64-byte
 // copy 99.3). PEARL_W_RW=8 for the 8-window form; the host runs this one only where 16 divides the band and the
 // row windows.
+// goal-arc15: the default is 8 row by 2 column windows a work-group with BA (goal-arc14's opt-in): the two
+// column windows read the same A' in step, so the second read is an L1 hit, and A' from L2 is what costs.
+// Cool card 4: 101.8-101.9 TH/s against 99.9-100.3 for 16 by 1 (spare23). The host runs CW 1 where the
+// column windows are not a multiple of 2 (the check's 4-column batches). PEARL_W_RW=16 for the old default.
 #ifndef PEARL_W_RW
-#define PEARL_W_RW 16
+#define PEARL_W_RW 8
 #endif
 #if PEARL_W_RW == 16 && !defined(PEARL_W_NOC16)
 #define PEARL_W_C16
+#endif
+#if PEARL_W_RW == 8 && !defined(PEARL_W_CW)
+#define PEARL_W_CW 2
+#endif
+#if PEARL_W_RW == 8 && !defined(PEARL_W_NOBA) && !defined(PEARL_W_BA)
+#define PEARL_W_BA
 #endif
 // SEQ (goal-arc10): column windows a work-group runs one after the other (1 or 2). With 2, sub-group sgi of each
 // window hashes set sgi's words, both at once, so the hash at the end (which holds the work-group's local memory
@@ -2547,7 +2557,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // goal-arc14: keeping the last k-step's B' live so the finalizer cannot reuse its registers (an empty
           // asm using it, or extra unused inputs on the last load) changes nothing in the ISA: IGC drops operands
           // the asm text does not name, and k-step 1's loads still land in k-step 0's registers. "=&rw" drops
-          // the load. So BA stays off for 24.35.
+          // the load. So BA stays off for 24.35 at RW 16. At RW 8 (the default from goal-arc15) 24.35 passes.
           each<4>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
           return;
 #endif

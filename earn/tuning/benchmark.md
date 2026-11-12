@@ -3399,6 +3399,24 @@ windows, C16 copy), 98.8-99.1 TH/s at about 1,940 MHz. Timing builds give wrong 
 - Keeping the last k-step's B' live to make BA safe at RW 16 on 24.35 does not reach the ISA (IGC drops asm
   operands the text does not name). BA at CW 2 passes on 24.35 as it is.
 
+### Arc rig, 12 November, evening: 8 by 2 windows verified and made the default (`goal/arc-15`)
+
+Cool card 4 (cards 1-3 mining beside it), `race5.sh 4 8 3`, three rounds, against spare23 (ac2edcc2, mining).
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| goal-arc14's opt-in (RW 8, CW 2, BA): verify.sh **FAIL** at the mainnet shape | 101.8-101.9 | 2,000 | 188 |
+| **spare26: RW 8, CW 2, BA as the default, CW 1 where 2 does not divide the column windows; verify.sh PASS (emu too), 400/400** | **101.6-101.8** | 1,992-2,000 | 188 |
+| spare23 beside it | 100.2-100.3 | 1,915-1,931 | 188 |
+
+- verify.sh's mainnet check runs a 4-column batch: one column window. A work-group of two column windows then
+  reads a window that is not there (256 regions wrong, 0 of 46 hits). verify-hits (2,048 columns) passed, so only
+  the full verify.sh caught it. The host now runs CW 1 there (`fold_xmxw<.., RW, 1>`).
+- HiveOS 24.35 (staged /home/shawn/arc/ship-a15, card 5): xmx8w, xmx8w-emu and the mainnet check PASS; bench 90.6
+  against ship-a13d 90.7-90.8, level there.
+- One card 5 verify.sh run had 8 regions wrong in both dot and xmx8w at the mainnet shape. Both folds agreeing
+  points at the host reference. The same build passed three checks straight after and the full rerun.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
