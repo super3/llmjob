@@ -36,7 +36,7 @@ import subprocess
 import sys
 
 CFG = dict(per=2, gap=11, ist=1, step=2, lat_alu=6, lat_ai=7, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
-           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0, oyld=1, reuse=1)
+           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0, oyld=1, reuse=1, padlast=1, smooth=0, lfirst=0, lmax=2)
 LAT_LOAD_HOP = {"LDSM": 2, "LDS": 2, "LDG": 6, "LDL": 2, "S2R": 2}
 REG = re.compile(r"(?<![A-Za-z0-9_])(-|!|~|\|)?(UR|R|UP|P)(\d+)((?:\.[A-Z0-9]+)*)")
 CTRL_SHIFT = 41
@@ -260,6 +260,8 @@ def schedule_region(seq, cfg):
     n = len(seq)
     if cfg["keep"]:
         return list(range(n))           # keep=1: ptxas's own order (control fields only)
+    if cfg["smooth"]:
+        return smooth_region(seq, cfg)
     pred = deps(seq)
     succ = [set() for _ in seq]
     for j in range(n):
@@ -335,6 +337,7 @@ def schedule_region(seq, cfg):
             quota = min(cfg["per"], max(1, -(-len(remaining) // max(1, gaps_left))))
         last_gap = g == nimma - 1
         took = 0
+        lds_here = 0
         while True:
             cand = [j for j in remaining if ready(j)]
             if not cand:
@@ -343,22 +346,68 @@ def schedule_region(seq, cfg):
             # gaps from now, so it keeps pace and does not pile up at the region's end
             def prio(j):
                 return late[j] if late[j] < INF else g + cfg["asap"]
+            # lfirst=1: a load whose inputs are there goes first, whatever its deadline (its latency is what
+            # the IMMA wait for); quota or not, at most `lmax` loads a gap
+            isld = lambda j: cfg["lfirst"] and seq[j].op in ("LDS", "LDSM", "LDG") and lds_here < cfg["lmax"]
             if last_gap:
                 cand.sort(key=lambda j: (max(when(j), now), prio(j), j))
             else:
-                cand.sort(key=lambda j: (when(j) > now + cfg["slack"], prio(j), j))
+                cand.sort(key=lambda j: (when(j) > now + cfg["slack"], not isld(j), prio(j), j))
             j = cand[0]
             forced = late[j] <= g
             behind = len(remaining) > cfg["per"] * (gaps_left - 1)
-            if not (took < quota or forced or behind or last_gap):
+            if not (took < quota or forced or behind or last_gap or (isld(j) and when(j) <= now + cfg["slack"])):
                 break
             if not forced and not last_gap and when(j) > now + cfg["slack"]:
                 break
+            if seq[j].op in ("LDS", "LDSM", "LDG"):
+                lds_here += 1
             place(j, cfg["step"])
             remaining.remove(j)
             took += 1
     assert len(out) == n and sorted(out) == list(range(n)), (len(out), n)
     return out
+
+
+def smooth_region(seq, cfg):
+    """smooth=N: ptxas's order, with only plain ALU steps moved, each later into the next gap, while a gap holds
+    more than N steps. Loads, stores and anything else stay where ptxas put them; a step moves past an IMMA only
+    if the IMMA does not need it, and only to the front of the next gap (ahead of anything that needs it)."""
+    order = list(range(len(seq)))
+    pred = deps(seq)
+    pos = lambda: {j: p for p, j in enumerate(order)}
+    movable = lambda j: seq[j].op not in ("IMMA", "LDS", "LDSM", "LDG", "LDL", "STS", "STL", "S2R", "BAR") and \
+        not seq[j].var
+    for _rounds in range(4 * len(seq)):
+        changed = False
+        p = pos()
+        imma_at = [i for i, j in enumerate(order) if seq[j].op == "IMMA"]
+        for gi_, ia in enumerate(imma_at):
+            end = imma_at[gi_ + 1] if gi_ + 1 < len(imma_at) else None
+            if end is None:
+                break
+            gap = order[ia + 1:end]
+            if len(gap) <= cfg["smooth"]:
+                continue
+            nxt = order[end]
+            # the latest movable step of the gap that nothing later in the gap and not the next IMMA needs
+            for cand in reversed(gap):
+                if not movable(cand):
+                    continue
+                after = order[order.index(cand) + 1:end + 1]
+                if any(cand in pred[a] for a in after):
+                    continue
+                # move it to right behind the next IMMA
+                order.remove(cand)
+                k = order.index(nxt)
+                order.insert(k + 1, cand)
+                changed = True
+                break
+            if changed:
+                break
+        if not changed:
+            break
+    return order
 
 
 def assign(code, cfg, entry_pending, block_rule=True):
@@ -392,7 +441,13 @@ def assign(code, cfg, entry_pending, block_rule=True):
             while m < n and code[m].op not in ("IMMA", "BAR", "BRA"):
                 m += 1
             used = sum(code[q].stall for q in range(k + 1, m))
-            code[k].stall = max(cfg["ist"], min(15, cfg["gap"] - used))
+            if cfg["padlast"] and m > k + 1:
+                # ptxas's way: the IMMA's steps go out right behind it and the last step waits out the gap
+                code[k].stall = cfg["ist"]
+                used = cfg["ist"] + sum(code[q].stall for q in range(k + 1, m - 1))
+                code[m - 1].stall = max(code[m - 1].stall, min(15, cfg["gap"] - used))
+            else:
+                code[k].stall = max(cfg["ist"], min(15, cfg["gap"] - used))
             k = m
         else:
             k += 1

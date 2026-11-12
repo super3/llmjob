@@ -1,11 +1,16 @@
 """build_rot.py: builds the rotation fold's cubin, the file the CUDA host loads when the rotation fold is asked
 for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; off by default).
 
-  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86] [--ref <file>]
+  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86|sm_120] [--ref <file>]
 
 --arch sm_89 (the default) builds pearl_rot_sm89.cubin for RTX 40 cards against src/pearl_rot_sm89.ref;
 --arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
 architectures the same code for this kernel, so the same hand loop and the same checks serve both.
+
+--arch sm_120 builds pearl_rot_sm120.cubin for RTX 50 cards against src/pearl_rot_sm120.ref. There is no hand
+loop for sm_120: pearl_rot.cu's sm_120 branch is the rotation fold in C (pearl_rot_c.inc), and the file is the
+kernel as ptxas compiles it. Steps 2 to 5 are then: nvdisasm must read the whole file, and the chunk loop must
+hold the fold's 192 IMMA a chunk. Step 6 (the reference hash) is the same.
 
 The fold's chunk loop is written by hand and put into a kernel the compiler made. So every step is checked, and
 the file is only written when all of them pass:
@@ -39,7 +44,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "..", "src"))
 sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
-ARCHS = ("sm_89", "sm_86")
+ARCHS = ("sm_89", "sm_86", "sm_120")
 
 
 def toolkit(nvcc):
@@ -99,6 +104,17 @@ def main():
     if r.returncode != 0:
         print(r.stdout + r.stderr)
         return fail("nvcc")
+    if arch == "sm_120":
+        print("build_rot: steps 2 to 5 for sm_120: the compiled fold read back, 192 IMMA in its chunk loop")
+        r = subprocess.run([nvdisasm, "-c", base], capture_output=True, text=True)
+        if r.returncode != 0 or "error" in r.stderr:
+            return fail("nvdisasm cannot read the compiled kernel")
+        open(sass, "w", encoding="utf-8", newline="\n").write(r.stdout)
+        if r.stdout.count("IMMA.16832.S8.S8") < 192:
+            return fail("the compiled kernel does not hold the fold's 192 IMMA a chunk")
+        import shutil
+        shutil.copyfile(base, tmp)
+        return finish(tmp, ref, release, arch, NAME, final, unverified)
     print("build_rot: step 2, the assembler against this compiler's own bytes")
     text = asm89.disassemble(base, nvdisasm)
     open(sass, "w", encoding="utf-8", newline="\n").write(text)
@@ -110,6 +126,10 @@ def main():
         if os.path.exists(tmp):
             os.remove(tmp)
         return fail("rfold.py (exit %d)" % r.returncode)
+    return finish(tmp, ref, release, arch, NAME, final, unverified)
+
+
+def finish(tmp, ref, release, arch, NAME, final, unverified):
     have = asm89.fold_hash(tmp)
     known = read_ref(ref).get(release, set())
     print("build_rot: step 6, the reference hash for toolkit %s" % release)
@@ -121,7 +141,7 @@ def main():
         return fail("this cubin's hash is not listed for toolkit %s in %s. It has not mined on a card. It is "
                     "kept as %s: run it on an RTX %s card (PEARL_ROT_CUBIN, probes/verify-hits.js), then add the "
                     "line '%s %s'." % (release, os.path.basename(ref), os.path.basename(unverified),
-                                                   "40" if arch == "sm_89" else "30", release, have))
+                                                   {"sm_89": "40", "sm_86": "30"}.get(arch, "50"), release, have))
     os.replace(tmp, final)
     print("build_rot: ok, %s (%d bytes) is a file that has mined with every hit verified" % (
         NAME, os.path.getsize(final)))
