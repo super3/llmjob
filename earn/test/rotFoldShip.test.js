@@ -55,6 +55,9 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
   test('--arch sm_86 builds the RTX 30 file against its own reference', () => {
     expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86")');
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
+    // RTX 30's loop takes iy=0 (measured on a 3090); RTX 40's stays the loop its hash was verified with.
+    expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": [], "sm_86": ["iy=0"]}');
+    expect(BUILD_ROT).toContain('+ ARCH_KEYS[arch])');
     expect(BUILD_ROT).toContain('ref = os.path.join(SRC, "pearl_rot_%s.ref" % arch.replace("_", ""))');
     // The reference's --ref still wins over the one --arch picks.
     expect(BUILD_ROT.indexOf('if "--ref" in args:')).toBeGreaterThan(BUILD_ROT.indexOf('if "--arch" in args:'));

@@ -154,7 +154,7 @@ const USAGE = [
   '      --rotation-fold      Experimental, RTX 30 and 40 cards only: mine on a',
   '                           second kernel, the rotation fold. About 6% faster',
   '                           on an RTX 4090 (335.8 against 317.4 TH/s at 450 W)',
-  '                           and an RTX 3090 (141.0 against 133.1 at 390 W),',
+  '                           and an RTX 3090 (141.6 against 133.1 at 390 W),',
   '                           and it uses about 1.3 GB more card memory. Off by',
   '                           default.',
   '                           Each card checks ' + FOLD_CHECK_HITS + ' of the fold\'s hits on the',

@@ -152,7 +152,7 @@ bool rot_read_file(const char *path, std::vector<char> *out) {
 const char *const kRotCubins[] = {
     "573b1f133bb216f5853d65e025449b549abf17a9dac27f716c3912be92e2b736",  // CUDA 12.6
     "6e9dfe8ab9eb2396f7835ee03b01ae83641a4c8f43defde8c856cc118525cb8c",  // CUDA 12.8
-    "6405e282be41387809815e67451dfcbf31a7e8a7a53b9cc4e73e48fc046c275d",  // sm_86, CUDA 12.8
+    "f5b1b242d40fb642747726d8f646dd612dfb51cd9e9eef891200b2616a7bbcc5",  // sm_86, CUDA 12.8
 };
 
 bool rot_named() {

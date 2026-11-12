@@ -306,6 +306,44 @@ We do 94.9–96.7% of their work per clock and run a 1.6–4.6% lower clock at t
 A first 3080 Ti PC (`b64f0e45`) stalled for 36 minutes during our run, so it was rerun on `c09c68c3`. SRBMiner
 3.8.2 exited with code 73 on one 3060. OneZeroMiner is fastest on most PCs.
 
+### Salad, 12 November: the rotation fold on RTX 30 (branch `goal/nv-30`)
+
+The rotation fold (rig01's 4090: 335.8 against 317.4 TH/s) built for sm_86 and run on two Salad PCs by
+`earn/tuning/salad/nv30box.sh`: the probe, then the fold and the release fold in one core (`hashrate.js`, 120 s
+legs taking turns, after 10 s), then the other miners through `bench.sh` on the stand-in pool (180 s after a 60 s
+warm-up; the mean of each miner's samples from 30 s on). ptxas 12.6 and 12.8 compile the fold's kernel for sm_86
+into the same code as for sm_89, byte for byte, so the hand loop and `asm89.py` carry over unchanged (its check:
+0 wrong of 2,365 instructions on the PC's 12.8).
+
+| Card, PC, limit | Rotation fold | Release fold | PeakMiner 2.20.7 | OneZeroMiner 1.8.5 | SRBMiner 3.8.6 | Fold, % of best | Release, % of best |
+|---|---|---|---|---|---|---|---|
+| RTX 3090, 22ce6093, 390 W | 141.63 (`iy=0`; 141.00 without) at 1710 MHz | 133.13 at 1677 MHz | 143.35 at 1729 MHz | 143.34 at 1726 MHz | 142.70 at 1740 MHz | 98.8% (98.4% without `iy=0`) | 92.9% |
+| RTX 3060, 41137306, 170 W | 51.15 (without `iy=0`) at 1810 MHz | 47.60 at 1737 MHz | 51.77 at 1830 MHz | 51.96 at 1835 MHz | 51.94 at 1837 MHz | 98.4% | 91.6% |
+
+- All at the card's limit (389 W, 170 W). Twins: the 3090's release legs 133.12 / 133.13, fold legs 140.97 /
+  140.97 / 140.99 and 141.00 / 141.00 / 140.99 in a later run; the 3060's 47.60 / 47.59 and 51.13 / 51.16. Our
+  release v0.6.15 through `bench.sh` on the 3090: 133.17. On the 3060 its CLI printed one sample and ran 12 minutes
+  (end line 47.4 TH/s, 473 accepted): its row uses `hashrate.js`'s release legs.
+- Correct: `verify-hits.js` 400 of 400 on the 3090 for both the file without `iy=0` (499 hits) and with it (506
+  hits); 37 of 37 on the 3060 (300 s at 2^231 is all a 51 TH/s card hits). The probe's CPU check 16,384 of 16,384 at
+  k 2048 and 2,048 of 2,048 over 8 tiles at k 65536 on both cards. Every share the stand-in pool saw was accepted.
+- The probe: the fold holds 98.90% of the pipe on the 3090 and 98.91% on the 3060 (the 4090: 98.96%); the gather
+  fold as compiled 89.3% and 88.9%. k 65536 holds more than k 8192 (98.54%) and the memory controller reads 0 to 1%
+  on both, so the offsets table (4.2 MB a salt) needs no banding even in the 3060's 3 MB of L2. The release fold
+  reads 40 to 42% on the 3060.
+- So the gap to the other miners is clock at the same watts (1710 against 1726 to 1740 MHz on the 3090, 1810
+  against 1830 to 1837 on the 3060; they hold about 98.7% of the pipe there by their rate), and 0.6% lost between
+  the probe's count and the miner on the 3090 (0.1% on the 4090).
+- Keys raced (the probe, 45 s at k 65536, 3090): `iy=0` 99.05% against 98.89 to 98.90; `ly=0`, `bt=13`, `sbo=9`
+  level; `sbo=5`, `py=1`, `cq=0`, `ae=0`, `ist=4`, `ist=6` and orders 1, 4, 5 lower; `lead=2` WRONG on sm_86 (0 of
+  16,384). In the miner `iy=0` gave 141.61 / 141.65 and 141.65 / 141.63 against 141.00 / 141.00, so the sm_86 build
+  takes it (`build_rot.py` ARCH_KEYS); the RTX 40 file is unchanged. `PEARL_ROT_TILES` 64 and 128 read 141.70 to
+  141.85 against 141.63 to 141.65, inside their own spread (sd 4 to 11 against 1 to 2); 256 read 144.3 and 144.5
+  with sd 29 to 32, above the 143.6 a 3090 can do at 1710 MHz with a full pipe, so a sampling artifact of batches
+  near the sample window. The default stays 32.
+- Shipped as the opt-in for RTX 30 (`--rotation-fold`, `LLMJOB_ROTATION_FOLD=1`): `pearl_rot_sm86.cubin`, built
+  and hash-checked in CI beside the sm_89 file, loaded by the host on compute 8.6.
+
 ## RTX 40-series
 
 Vast, 10 October.

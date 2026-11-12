@@ -40,6 +40,10 @@ sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
 ARCHS = ("sm_89", "sm_86")
+# rfold.py keys an architecture takes beyond the defaults. On an RTX 3090 the IMMA without their yield flag
+# (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November); the RTX 40 file keeps the
+# loop its hash was verified with.
+ARCH_KEYS = {"sm_89": [], "sm_86": ["iy=0"]}
 
 
 def toolkit(nvcc):
@@ -105,7 +109,8 @@ def main():
     if asm89.check(base, sass):
         return fail("asm89 does not reproduce this compiler's encodings")
     print("build_rot: steps 3 to 5, the hand loop: latency, what it expects of the compiled kernel, read-back")
-    r = subprocess.run([sys.executable, "-I", "-X", "utf8", os.path.join(HERE, "rfold.py"), base, sass, nvdisasm, tmp])
+    r = subprocess.run([sys.executable, "-I", "-X", "utf8", os.path.join(HERE, "rfold.py"), base, sass, nvdisasm, tmp]
+                       + ARCH_KEYS[arch])
     if r.returncode != 0 or not os.path.exists(tmp):
         if os.path.exists(tmp):
             os.remove(tmp)
