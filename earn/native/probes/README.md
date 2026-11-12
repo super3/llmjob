@@ -3450,3 +3450,7 @@ no loads and no syncs 98.79%; `rpr=2 u8=1` 99.18%. Even with its loads and syncs
 points under the shipped pipe, from its stores, the transcript in local memory and the late first-turn stores;
 at 2614 MHz that is at most +0.2% over the shipped loop. Closed again. (`bnst=1` with `bord=2` deadlocks: the
 probe spun at 85 W until killed. Do not run it.)
+
+**The readout spread, with the new pairs.** The fourteenth round priced `rsp` with the old pairs; with `rpr=2 u8=1`
+it is still worse, all correct (16,384/16,384 at k 2048): rsp 56 98.68%, rsp 64 98.41%, rsp 64 with roff 5
+98.73%, at 2599 to 2600 MHz, against 99.18% at 2596 to 2598. The two-chain burst stays.
