@@ -1799,12 +1799,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
             load_ah(ks, ah);
           }
           read_b();
-          // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
+          // No forced wait: the DPAS wait only for their own operands. Forcing every DPAS of the k-step to wait
+          // for every load of it (see fold_xmxf), PEARL_W_GATE, was 1% slower at the same 188 W.
+#if defined(PEARL_W_GATE)
           int t = 0;
           each<4>([&](int rb) { t ^= ah[rb][0]; });
           each<4>([&](int cb) { t ^= bq[cb][0]; });
           t &= (int)A.zero;
           each<4>([&](int rb) { ah[rb][0] |= t; });
+#endif
 #if defined(PEARL_W_ROWFIRST)
           // goal-arc7 experiment: the DPAS of one A' fragment back to back.
           each<4>([&](int rb) {
