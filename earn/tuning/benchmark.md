@@ -4175,6 +4175,53 @@ duty is within noise on card 4 (+0.1%; +0.3% on card 5), so moving the mining ca
   `-globalTokenAllocation`, `-distPropTokenAllocation`, `-quickTokenAllocation`, `-dontUseMultiThreadedLatencies`
   100.4-100.9; `-sendQueueSched` 99.7-99.9; `-nodefhoist` 99.5-99.9; `-enableDpasFwd` does not run.
 
+### Arc rig, 12 November, late night: the part buffer's bank conflicts, and two structural ideas priced (`goal/arc-20`)
+
+**New default: the part buffer laid out so a sub-group's 8 lanes touch 8 banks** (`PEARL_W_PXB`, `PEARL_W_PXA` on
+goal-arc18's `PXT=2` layout; `PEARL_W_NOPXB` for the old one). In the old layout a lane's 16 words lay 64 bytes from
+the next lane's, so the 16 stores that zero them at each set's start, the 16 reads before the hash, and every
+chunk's atomic put all 8 lanes on one bank. Now word j of region q is at j * 8 + q: zeroing and reading are two
+256-byte block messages each (a block read gives lane q, register j exactly word j of region q), and the atomic is
+inline vISA with its address stepped by 32 bytes a chunk. goal-arc18's PXT alone lost 4-6% because its zeroing and
+reads stayed 16 messages each and IGC rebuilt the chunk loop around them; with block messages it does not. Frozen
+as spare30.
+
+| What (card 5 unless noted) | full speed | duty 75 (bench.js, 30 s) |
+|---|---|---|
+| spare29's code / new, 6 rounds | 101.27-101.47 / 101.54-101.78 (new at the same or a lower clock) | 77.13-77.25 / 77.97-78.00 |
+| PXT 2 / PXT 1 alone (the old zeroing and reads) | 95.4-95.8 | |
+| block zeroing and reads, IGC's atomic (`PXB` only) | 101.4-101.6 | |
+| timing: no atomic (`NOPXA`) / no atomic and a 64-word part (`PARTMIN`) | 101.5-101.7 / 102.1-102.4 | |
+| HiveOS 24.35 (staged ship-a20) against ship-a19, `--bench 8` | 91.8 / 90.7 | |
+
+The rest of `PARTMIN`'s lead (~0.5%) is the atomic itself; a form without it needs the two sub-groups' words
+combined some other way, and their own copies of the part do not fit 64 KB at two sets.
+
+Card 4 (cool), spare30 against spare29, taking turns: full speed 103.50-103.52 against 103.33-103.40 (1,986-2,000
+MHz, 176-177 W, 3 rounds; +0.15%); duty 75 (bench.js, 40 s) 78.17-78.19 against 77.44-77.48 (+0.9%, 3 rounds).
+verify.sh PASS (dot, xmx8w, xmx8w-emu; mainnet-shaped 46 of 46), verify-hits 400 of 400 at duty 100 and 75.
+HiveOS 24.35: xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped dot and xmx8w PASS. The mining cards
+run under duty, so this is the first build since spare27 worth moving them to.
+
+**Priced and dropped** (card 5, `pearl_sycl_check --bench 8`, def 101.3-101.6 at 1,960-1,980 MHz):
+
+| What | TH/s |
+|---|---|
+| transposed fold, timing (`PEARL_W_TR`): B' the split operand, 2 local reads a k-step; A' the full one, 4 global reads, in the k-step / a k-step ahead / half ahead | 91.3 / 73.1 (spills) / 85.2 |
+| the same against def with A' in the k-step (`PEARL_W_AH=0`) | 97.0-97.1 |
+| one / two of the 4 B' fragments through the sampler from a bindless image (`PEARL_W_SMP`, timing; 2 SIMD8 sample loads a fragment) / one fetched a k-step ahead | 95.8-96.0 / 72.4-72.6 / 95.1-95.3 |
+| A' rolled into its own registers (`AROLL`), on this base | 98.6-98.7 |
+| 4 row by 4 column windows (A' shared by 4), KPS 2 / KPS 1 | 88.9 / 87.2 |
+| no hash (`NOEPI`) | 101.3-101.5 at a 10 MHz lower clock (+0.35% a clock) |
+| two 32 KB work-groups a core (`PARTMIN SLOTS=2 NOPXA`) / padded to one; each without the hash | 102.4-102.5 / 102.2-102.3; 103.6 / 103.4-103.7 |
+| the second work-group on each core in a launch held back first (`PEARL_W_STAG`, ALU spin of 0 / 2k / 20k / 40k / 80k steps) | 101.8 / 101.2-101.5 / 100.4-100.6 / 99.0-99.5 / 96.5 |
+
+- The transposed fold sends the same 6 messages a k-step, but 4 global 256-byte reads cost far more than the 2
+  local ones they replace (-6% against def with A' in the k-step), and A' ahead needs 32 more registers.
+- The sampler has the bandwidth in a probe, but in the fold its latency stalls the k-step.
+- A second work-group on the core does not take the hash tail off the DPAS, in step or held out of step; the
+  per-work-group ticket alone costs 0.7%.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

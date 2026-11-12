@@ -711,6 +711,30 @@ uint32_t xmx8w_cw(const Ctx *ctx, const FoldArgs &a) {
   return (uint32_t)PEARL_W_CW;
 }
 
+#if defined(PEARL_W_SMP)
+// goal-arc20 timing: one bindless image of 4,096 by 2,048 texels (128 MB) of random bytes, made once, for
+// FoldXmxW's PEARL_W_SMP fragments.
+uint64_t smp_image(sycl::queue &q) {
+  static uint64_t h = 0;
+  if (h) return h;
+  namespace sx = sycl::ext::oneapi::experimental;
+  sx::image_descriptor desc(sycl::range<2>{4096, 2048}, 4, sycl::image_channel_type::unsigned_int32);
+  std::vector<uint32_t> host((size_t)4096 * 2048 * 4);
+  uint32_t x = 0x9E3779B9u;
+  for (auto &w : host) {
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    w = x & 0x7F7F7F7Fu;
+  }
+  sx::image_mem_handle mem = sx::alloc_image_mem(desc, q);
+  q.ext_oneapi_copy(host.data(), mem, desc);
+  q.wait_and_throw();
+  h = sx::create_image(mem, desc, q).raw_handle;
+  return h;
+}
+#endif
+
 void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   sycl::queue &q = *ctx->q;
   if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;
@@ -733,6 +757,18 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     fold = fold == kXmx8S ? kXmx8F : kXmx8FEmu;
   if (fold == kXmx8S) { fold_xmxs<true>(q, a, groups); return; }
   if (fold == kXmx8SEmu) { fold_xmxs<false>(q, a, groups); return; }
+#endif
+  // goal-arc20 timing builds only: their extra fields (every caller passes a temporary, so this is allowed).
+#if defined(PEARL_W_SMP)
+  const_cast<FoldArgs &>(a).img = smp_image(q);
+#endif
+#if defined(PEARL_W_STAG)
+  {
+    static uint32_t *tick = nullptr;
+    if (!tick) tick = sycl::malloc_device<uint32_t>(32, q);
+    q.memset(tick, 0, 32 * sizeof(uint32_t));
+    const_cast<FoldArgs &>(a).tick = tick;
+  }
 #endif
   switch (fold) {
     // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
