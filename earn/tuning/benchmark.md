@@ -596,6 +596,50 @@ Box time: nv20f-2070-1 18:24-20:03 (two PCs; set-env did not restart it once and
 18:24-19:59, about 3.3 h in all. Tools: `S/nv20f/` in the scratchpad (r1.sh to r4.sh are the rounds' settings,
 benchsum.py reads a bench).
 
+### Salad, 12 November: a hand-scheduled chunk loop for the RTX 20 folds (branches goal/nv-20g and goal/nv-20h)
+
+**What was raced.** `sched75.py` (`earn/native/probes/turing/sched/`) rewrites the t75 folds' chunk loop (639
+instructions, 512 IMMA) in the built cubin: same instruction words and registers, a new order, and new stall counts,
+scoreboards, waits and reuse flags. `sm75patch.py` applies the lists in `probes/turing/sm75g/`. Every list passed the
+scheduler's dependence checker, a register dataflow check over four turns (9,412 reads, none changed) and nvdisasm,
+and every build raced passed `verify-hits.js` 400 of 400. `hashrate.js` legs of 90 s taking turns against the shipped
+t75 core, with an A/A twin.
+
+| Build | What it is | RTX 2070 SUPER (167.7 W limit, 166 W, 1484 MHz) | RTX 2060 6 GB (172.5 W, 169 W, 1676 MHz) | RTX 2070 (175 W, 166-172 W, 1575 MHz) |
+|---|---|---|---|---|
+| A/A twin | nothing | -0.02% | -0.04%, +0.02% | -0.11% |
+| s40 | new order, planned for a 40-clock IMMA result | -0.66% (per clock -0.78%) | -0.62% (-0.15%) | -0.46% (-0.35%) |
+| s60 | the same at 60 clocks | -0.22% (-0.04%) | -0.51% (+0.31%) | +0.25% (+0.36%), 4 legs, -0.01 to +0.43 |
+| m1 | ptxas's order, all control bits re-derived | -2.25% | -2.39% | -1.64% |
+| s40b | s40 with bank-aware reuse and ptxas's yield bits | | -0.19% (-0.24%) | |
+| s60b | s60 the same | | -1.49% (-1.28%) | |
+| m1b | m1 the same | | -7.73% | |
+| m1p | ptxas's order, reuse and yield bits; only scoreboards and waits re-derived | | -7.69% | |
+
+The RTX 2070 row is a second PC that the 2070 group moved to on a restart; it re-ran the first round.
+
+- **Nothing beats the shipped loop.** s60 on the plain 2070 (+0.25%) is inside two twins' spread and lost on the
+  other two cards. Nothing shipped.
+- **The scoreboards cost the most.** m1p keeps ptxas's order, reuse and yield bits and changes only which scoreboards
+  the loads and IMMA use and where the waits go (126 waits against ptxas's 78): -7.7%. So the scheduler's scoreboard
+  plan is far worse than ptxas's, and the new orders (s40b at -0.2%) win back about 7.5% of that. A new order with
+  ptxas-quality scoreboards is the untested case that could pay.
+- **Yield bits matter.** m1 differs from m1p only in its yield bits (set on every instruction with a stall under 5,
+  43 more than ptxas) and its reuse flags, and it lost 2.4% where m1p lost 7.7%. With bad waits, letting the other
+  warp issue covers much of the loss.
+- **Reuse flags are per register bank.** ptxas keeps an IMMA operand's reuse flag across an IMMA that reads the
+  other bank (register number mod 2) in that slot, so the cache holds one entry per slot per bank, and only IMMAs
+  evict it. The first lists kept a flag only when the very next IMMA read the same register, which left 96-100 IMMAs
+  with both uncached operands in one bank (ptxas 74). `reuse2.py` applies the bank rule: on ptxas's own loop it gives
+  every flag ptxas set and 28 more (57 such IMMAs). The race did not separate this from the yield change.
+- The encoding has no yield bit with a stall of 12 (nvdisasm: undefined opex value 0x1c); ptxas uses yield with
+  stalls up to 8.
+- The cards ran at their power limits in every leg, so a raw gain also needs the power per hash to hold.
+
+Box time: nv20g-2070-3 21:15-22:40 (two PCs) and nv20g-2060-3 21:15-22:43, about 3 h in all. Stopped there because the
+four Salad slots were needed for the PR #293 re-benchmark. Tools: `S/nv20g/` and `S/nv20h/` in the scratchpad
+(r1.sh, r2.sh, hrsum.py, miss.py).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
