@@ -4,8 +4,9 @@
 // cubin for sm_120) and probes/hand89/gfold_h.cuh (GP_ROTC, the probe's kernel). The includer defines:
 //   RC_MT      m16 tiles a warp (6)          RC_TR     the transcripts' place in the dynamic shared memory
 //   RC_STG     the stage's place             RC_FILL4  the operand fill in each byte of a word (63)
-//   RC_FLAGS   1, plus 2 (B a turn ahead), 4 (the readout spread over the mma) and 8 (barriers after the first
-//              and the last turn only)
+//   RC_FLAGS   1, plus 2 (B a turn ahead), 4 (the readout spread over the mma), 8 (barriers after the first
+//              and the last turn only), 16 (the readout spread over two turns: half a turn behind the sums) and
+//              32 (the readout's steps written out, so ptxas keeps them as they are)
 // It reads the 8-byte offsets records of rot_aux_offs (gprobe's `rot` 2).
 //
 // The fold. A warp takes a chunk's four k-steps in its own order (the records are in that order). At its first
@@ -64,7 +65,14 @@
   uint32_t xp = 0u, xq = 0u;
   auto rd = [&](const uint32_t mb, const uint32_t nb) {
     uint32_t &x = (nb & 1u) ? xq : xp;
+#if RC_FLAGS & 32
+    // Flag 32: each step written out (lop3 0x96 is a three-input XOR), so ptxas keeps the chain in x and does
+    // not regroup it into temporaries that must wait for registers the mma still read.
+    asm volatile("lop3.b32 %0, %0, %1, %2, 0x96;" : "+r"(x) : "r"((uint32_t)acc[mb][nb][0]), "r"((uint32_t)acc[mb][nb][1]));
+    asm volatile("lop3.b32 %0, %0, %1, %2, 0x96;" : "+r"(x) : "r"((uint32_t)acc[mb][nb][2]), "r"((uint32_t)acc[mb][nb][3]));
+#else
     x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2] ^ (uint32_t)acc[mb][nb][3];
+#endif
   };
   auto word = [&](const uint32_t c) {
     uint32_t w;
@@ -107,12 +115,22 @@
 #if RC_FLAGS & 2
         if (mb == MT - 1u && (nb & 1u)) gatherB(nb >> 1, on.y);
 #endif
-#if RC_FLAGS & 4
+#if RC_FLAGS & 16
+        // Flag 16: sum i (= 8 mb + nb) of a chunk is final at its mma in the last turn and is next changed at its
+        // mma in the next chunk's first turn, a turn later. It is read out half a turn after it is final: sums 0
+        // to 23 in the last turn's second half, 24 to 47 in the next first turn's first half, one sum a mma.
+        {
+          const uint32_t i = 8u * mb + nb, h = 4u * MT;
+          if (last && i >= h) rd((i - h) >> 3, (i - h) & 7u);
+          if (first && i < h) rd((i + h) >> 3, (i + h) & 7u);
+          if (first && i == h - 1u) word(c + 15u);
+        }
+#elif RC_FLAGS & 4
         if (last && mb > 0u) rd(mb - 1u, nb);
         if (first && mb == 0u) rd(MT - 1u, nb);
 #endif
       }
-#if RC_FLAGS & 4
+#if (RC_FLAGS & 4) && !(RC_FLAGS & 16)
       if (first && mb == 0u) word(c + 15u);
 #endif
     }
@@ -132,7 +150,14 @@
     turn(false, false, c);
     turn(false, false, c);
     turn(false, true, c);
-#if RC_FLAGS & 4
+#if RC_FLAGS & 16
+  }
+  // The last chunk's sums 24 to 47, and its word.
+#pragma unroll
+  for (uint32_t i = 4u * MT; i < 8u * MT; i++) rd(i >> 3, i & 7u);
+  word(chunks - 1u);
+  {
+#elif RC_FLAGS & 4
   }
   // The last chunk's last tile, and its word.
 #pragma unroll

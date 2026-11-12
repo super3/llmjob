@@ -36,10 +36,14 @@ import subprocess
 import sys
 
 CFG = dict(per=2, gap=12, ist=1, step=2, lat_alu=6, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
-           ld=32, yld=1, sbs=6, block=1, slack=4)
+           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0)
 LAT_LOAD_HOP = {"LDSM": 2, "LDS": 2, "LDG": 6, "LDL": 2, "S2R": 2}
 REG = re.compile(r"(?<![A-Za-z0-9_])(-|!|~|\|)?(UR|R|UP|P)(\d+)((?:\.[A-Z0-9]+)*)")
 CTRL_SHIFT = 41
+BOUNDARY = ("BAR", "WARPSYNC", "BSSY", "BSYNC", "CALL", "RET", "EXIT", "BRA")   # nothing moves across these
+KNOWN = {"IMMA", "LDSM", "LDS", "STS", "LDG", "LDL", "STL", "S2R", "IADD3", "IADD", "IMAD", "LEA", "LOP3", "PRMT",
+         "SHF", "MOV", "ISETP", "UISETP", "UIADD3", "ULEA", "ULOP3", "USHF", "UMOV", "CS2R", "SEL", "BAR",
+         "WARPSYNC", "NOP", "S2UR"}
 
 
 def sections(b):
@@ -252,6 +256,8 @@ def schedule_region(seq, cfg):
     are there: a fixed-latency input LAT cycles behind its writer, a load's ld cycles. Of the steps whose inputs
     are placed, those ready by the clock go first, the most urgent (by `late`) first."""
     n = len(seq)
+    if cfg["keep"]:
+        return list(range(n))           # keep=1: ptxas's own order (control fields only)
     pred = deps(seq)
     succ = [set() for _ in seq]
     for j in range(n):
@@ -322,16 +328,23 @@ def schedule_region(seq, cfg):
             last_imma = tm[j]
         gaps_left = nimma - g
         quota = cfg["per"] if g >= 0 else 0
+        if cfg["even"] and g >= 0:
+            # an even share of what is left, at most `per` (more only when something is due)
+            quota = min(cfg["per"], max(1, -(-len(remaining) // max(1, gaps_left))))
         last_gap = g == nimma - 1
         took = 0
         while True:
             cand = [j for j in remaining if ready(j)]
             if not cand:
                 break
+            # a step no IMMA of the region waits for (the readout, the next turn's B) counts as due `asap`
+            # gaps from now, so it keeps pace and does not pile up at the region's end
+            def prio(j):
+                return late[j] if late[j] < INF else g + cfg["asap"]
             if last_gap:
-                cand.sort(key=lambda j: (max(when(j), now), late[j], j))
+                cand.sort(key=lambda j: (max(when(j), now), prio(j), j))
             else:
-                cand.sort(key=lambda j: (when(j) > now, late[j], j))
+                cand.sort(key=lambda j: (when(j) > now + cfg["slack"], prio(j), j))
             j = cand[0]
             forced = late[j] <= g
             behind = len(remaining) > cfg["per"] * (gaps_left - 1)
@@ -376,6 +389,18 @@ def assign(code, cfg, entry_pending, block_rule=True):
             k = m
         else:
             k += 1
+    # each load's (or store's) first instruction that has to wait for it
+    cons = {}
+    for k, x in enumerate(code):
+        if x.var or x.holds:
+            w = x.dst if x.var else set()
+            r = x.src if x.holds else set()
+            cons[k] = len(code)
+            for m in range(k + 1, len(code)):
+                y = code[m]
+                if (w & (y.src | y.dst)) or (r & y.dst) or y.op == "BRA":
+                    cons[k] = m
+                    break
     # variable-latency writers and holders
     nsb = cfg["sbs"]
     out_sb = collections.defaultdict(list)    # sb -> list of instruction indices still possibly under way
@@ -412,6 +437,14 @@ def assign(code, cfg, entry_pending, block_rule=True):
             if free:
                 s = free[rr % len(free)]
                 rr += 1
+            elif cfg["sbm"]:
+                # sbm=1: the scoreboard on which this one delays the fewest waiters of loads already under way
+                # (a waiter for an earlier load on it, after this one goes out and before this one's own
+                # waiter, would wait for this one too)
+                def cost(q):
+                    late_waiters = sum(1 for e in out_sb[q] if k < cons[e] < cons[k])
+                    return (late_waiters, len(out_sb[q]), -max(out_sb[q]))
+                s = min(range(nsb), key=cost)
             else:
                 s = min(range(nsb), key=lambda q: out_sb[q][-1])
             out_sb[s].append(k)
@@ -500,7 +533,7 @@ def main():
     # regions split at barriers
     regions, cur = [], []
     for x in body:
-        if x.op == "BAR":
+        if x.op in BOUNDARY:
             regions.append(("code", cur))
             regions.append(("bar", [x]))
             cur = []
@@ -508,6 +541,9 @@ def main():
             cur.append(x)
     regions.append(("code", cur))
     new = []
+    bad_ops = sorted({x.op for x in body} - KNOWN)
+    if bad_ops:
+        sys.exit("the loop has instructions this tool does not know: %s" % bad_ops)
     for kind, seq in regions:
         if kind == "bar" or not seq:
             new += seq
