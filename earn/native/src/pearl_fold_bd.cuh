@@ -263,7 +263,13 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
                     && PEARL_WMMA_COL_BLK == 4 && PEARL_WMMA_ROWS == 16 && PEARL_ROWS_COUNT == 16,
                 "the B-direct fold is eight 64x64 warp tiles over 128x256");
   static_assert(rank == PEARL_SB_STRIDE && KSTEPS == 4u, "a staged A row is one 128-byte chunk");
-  static_assert(chunks == PEARL_JACKPOT_BUCKETS, "one transcript word a region a chunk");
+  // One transcript word a region a chunk at k 2048. Past it (PEARL_FOLD_K), chunk c folds
+  // into word c % 16 as the reference does (tword, below).
+  static_assert(chunks % PEARL_JACKPOT_BUCKETS == 0u, "whole sets of 16 transcript words");
+  static_assert(chunks == PEARL_JACKPOT_BUCKETS
+                    || (!PEARL_BD_RED && !PEARL_BD_TADDR && !PEARL_BD_HASH_SPLIT
+                        && (!PEARL_BD_ROWPAIR || PEARL_BD_LAST_RO)),
+                "k past 2048 is built for the default readout and ROWPAIR + LAST_RO only");
   static_assert(PEARL_BD_A_STAGES == 2u && ROWS == PEARL_WARP_ROWS * PEARL_WMMA_ROW_TILES * 16u,
                 "two A stages of the tile's rows");
   static_assert(PEARL_ROWS_MASK == 0x1Bu && PEARL_COLS_MASK == 0x39u,
@@ -471,6 +477,28 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     tK = L0 * 16u | ((L0 >> 1) & 15u);
   }
 #endif
+  // k 4096 (PEARL_FOLD_K): chunk c's word goes to slot c % 16, which must end as
+  // rotl13(chunk c's xor) ^ chunk c + 16's, as the reference folds it. So chunk c < 16
+  // stores its xor rotated, and chunk c + 16 xors its own into the slot with a shared
+  // reduction (red.shared.xor), which returns nothing, so no register waits on it. The
+  // same lane wrote the slot at chunk c, earlier in the same tile, and a thread's shared
+  // accesses stay in order. At k 2048 tst is the plain store and the code is what it was.
+  constexpr bool kWide = chunks > PEARL_JACKPOT_BUCKETS;
+  static_assert(!kWide || chunks == 2u * PEARL_JACKPOT_BUCKETS, "k 2048 or 4096");
+  auto tst = [&](uint32_t c, uint32_t i, uint32_t x) {
+    if (!kWide) {
+      sT[i] = x;
+    } else if (c < PEARL_JACKPOT_BUCKETS) {
+      sT[i] = pearl_rotl13(x);
+    } else {
+      asm volatile("red.shared.xor.b32 [%0], %1;" ::"r"((uint32_t)__cvta_generic_to_shared(sT + i)),
+                   "r"(x)
+                   : "memory");
+    }
+  };
+  auto tslot = [&](uint32_t c) -> uint32_t { return kWide ? (c & 15u) : c; };
+  (void)tst;
+  (void)tslot;
 #if PEARL_BD_RED
   // PEARL_BD_RED: every lane xors its share of the region into the word
   // (red.shared.xor). Lanes L, L ^ 4, L ^ 8 and L ^ 12 have the same index, so the
@@ -495,7 +523,9 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
   // predicated store below, ptxas issued the first loop IMMA's loads only 67 IMMA
   // before it.
   auto readout_st = [&](uint32_t c, uint32_t x) {
-    if ((lane & 4u) == 0u) sT[tK ^ c] = x;
+    if ((lane & 4u) == 0u) {
+      tst(c, tK ^ tslot(c), x);
+    }
   };
 #elif PEARL_BD_ROWPAIR
   // Without LAST_RO it is one predicated st.shared, like the split hash's: with the C++
@@ -525,7 +555,7 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     if (((lane >> 2) & 3u) == 0u) {
       const uint32_t L = warp * warp_regions + (lane & 3u) * regions_per_warp + 2u * rl
                          + ((lane >> 4) & 1u);
-      sT[tbuf + L * 16u + (c ^ ((L >> 1) & 15u))] = x;
+      tst(c, tbuf + L * 16u + (tslot(c) ^ ((L >> 1) & 15u)), x);
     }
   };
 #endif

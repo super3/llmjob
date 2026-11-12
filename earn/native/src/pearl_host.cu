@@ -3603,8 +3603,10 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // build with PEARL_TALL_PREGUARD=0: with it on, the fold writes chunk c's words before
   // the hand-off guard, with no wrap, and pearl_fold_tall.cuh refuses to compile past 16
   // chunks. Shipped builds have 16 chunks and PREGUARD 1, so they never take this.
+  // Turing's B-direct fold folds chunk c into word c % 16 too, past k 2048
+  // (pearl_fold_bd.cuh, tword).
   if (chunks > PEARL_JACKPOT_BUCKETS
-      && !(ctx->foldTall && (!ctx->foldTma || PEARL_TALL_PREGUARD == 0)
+      && !(((ctx->foldTall && (!ctx->foldTma || PEARL_TALL_PREGUARD == 0)) || ctx->foldBDirect)
            && PEARL_FOLD_CHUNKS > PEARL_JACKPOT_BUCKETS && chunks % PEARL_JACKPOT_BUCKETS == 0u)) {
     if (err && err_len)
       snprintf(err, err_len, "%u chunks exceed %u transcript buckets", chunks,
