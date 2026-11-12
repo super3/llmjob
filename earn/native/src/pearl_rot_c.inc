@@ -64,10 +64,12 @@
   // first chunk writes nothing real that way: the sums and the word are zero, and rotl(0) ^ 0 is 0.
   // Two chains of XOR (even and odd n8 tiles), so the readout is not one serial chain of 96 steps.
   uint32_t xp = 0u, xq = 0u;
+  bool live = !(RC_FLAGS & 128);
   auto rd = [&](const uint32_t mb, const uint32_t nb) {
 #if RC_FLAGS & 128
-    // TIMING ONLY (wrong results on purpose): no readout, to price it.
-    if (mb + nb < 100u) return;
+    // TIMING ONLY (wrong results on purpose): no readout in the loop, to price it; the sums are read once after
+    // it, so the mma stay live.
+    if (!live) return;
 #endif
     uint32_t &x = (nb & 1u) ? xq : xp;
 #if RC_FLAGS & 32
@@ -180,4 +182,12 @@
     word(c);
 #endif
   }
+#if RC_FLAGS & 128
+  live = true;
+#pragma unroll
+  for (uint32_t mb = 0; mb < MT; mb++)
+#pragma unroll
+    for (uint32_t nb = 0; nb < NB; nb++) rd(mb, nb);
+  word(0u);
+#endif
 }
