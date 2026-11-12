@@ -130,9 +130,9 @@ def port(code):
             # The product is a warp's span of records, under 2^32: a 32-bit IMAD and a zero high word. (IMAD.WIDE.U32
             # with a register factor gave a wrong address on the card, dbg=2 against dbg=0 on 12 November.)
             if DBG[0] & 8:      # debugging: the span as if chunks were 0
-                out.append(Ins("IMAD R%d, R%d, 0x100, RZ" % (d, a)))
+                out.append(Ins("IMAD.SHL.U32 R%d, R%d, 0x100, RZ" % (d, a)))
             elif DBG[0] & 16:   # debugging: the span as if the warp were 1
-                out.append(Ins("IMAD R%d, R%d, 0x1, RZ" % (d, b2)))
+                out.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, R%d" % (d, b2)))
             else:
                 out.append(Ins("IMAD R%d, R%d, R%d, RZ" % (d, a, b2),
                                raw=(0x7224 | 7 << 12 | d << 16 | a << 24 | b2 << 32, 0x78e02ff)))
