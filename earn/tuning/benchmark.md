@@ -1829,6 +1829,29 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   best**. 5090 at its 437 W cap: SRBMiner 379.12 (2268 MHz), PeakMiner 378.07 (2235 MHz); ours 374.61 = 98.8%. On
   the capped card both run 20 to 50 MHz faster at the same watts: the gap there is still energy per cycle.
 
+### Salad, 12 November, evening: shared records on sm_120 are wrong, and IMMA operand reuse saves nothing (branch `goal/nv-50g`)
+
+Nothing shipped; the sm_120 file stays 0deef760. Both PCs were clock-bound, so energy shows as watts at a fixed clock:
+an RTX 5080 (360 W limit, 2790 MHz) and an RTX 5090 (400 W limit, held at 2025 MHz, 340-356 W).
+
+- **Shared records (`sr`, the RTX 40 form from `goal/nv-19`) ported to sm_120.** rfold120.py now writes it: the
+  shared base goes into sr's address registers, R2UR uses sm_120's encoding, and gprobe `rot 5` gives b8 tables with
+  shared records. Every port reads back as asked and the hazard walk is clean. **It is wrong on the card.** Each check
+  run has 1 to 9 bad tiles out of 64 (k 2048, 8192 and 65536, on both cards). Each bad tile has exactly one band (128
+  threads) wrong, which points at one warp's stage stores or first-turn gathers. Ruled out, each still wrong: without
+  b8 (the sm_89 form), without bt=13, without dpm, the uniform registers at UR24 or UR40, the pointer step 1, 2 or 4
+  gaps behind the load, the record load at gap 6, plain LDG in place of the constant path, R2UR without a scoreboard
+  (as ptxas writes it), a 16-cycle settle after each R2UR group, and every R2UR issued twice. Not yet tested: sr's
+  registers below UR20, where the kernel's own uniform registers sit.
+- **What sr would be worth (timing runs, probe k 65536, legs taking turns).** 5080: pipe 99.38% against 99.56%,
+  345.9-349.8 W against 351.3-358.8 W, count 238.5 against 238.9 (-0.17%). 5090 at 2025 MHz: 99.40% against
+  99.56%, 339.3-347.3 W against 343.1-356.0 W, count 350.4 against 351.0. About 7 W less at the same clock, for 0.17
+  points of pipe. On a card held by its power cap that could come back as clock, but no capped PC was on hand to
+  measure it.
+- **IMMA operand reuse (`ru=1`, A's register marked for reuse on 7 of each 8 IMMA).** Correct (16,384 of 16,384 at k
+  2048 and 8192). No saving: on the 5080 355.0, 357.9 and 359.1 W against 351.8, 356.7 and 358.4 W, same pipe and
+  clock. The flag changes nothing here, as on sm_89; ptxas never sets it on IMMA either.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
