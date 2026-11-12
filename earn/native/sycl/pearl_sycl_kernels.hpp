@@ -1624,8 +1624,9 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 //     half is one 128-byte block read, so 512 bytes, as the ring fold.
 //   - B': its 4 fragments from the ring, 1,024 bytes where the ring fold reads
 //     2,048. The ring and its split barrier are the ring fold's, but a slot
-//     holds two k-steps (4 KB), so the group meets every other k-step: +2%
-//     at the same 188 W (KPS, PEARL_W_KPS).
+//     holds four k-steps (8 KB), so the group meets once a chunk: on card 4,
+//     87.7 to 88.3 TH/s against 86.1 to 86.6 for two k-steps a slot and 84.2
+//     for one, all at 188 W (KPS, PEARL_W_KPS). The ring is 24 KB.
 //   - The copy has no branch in the k-step: at 8 windows a work-group (16
 //     sub-groups) each sub-group copies one block of 128 bytes, loaded a
 //     k-step early. Past the last k-step it loads k-step 63 again and stores
@@ -1638,9 +1639,9 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 //     readout is the ring fold's.
 //
 // On an A750 (pearl_sycl_check --bench, 8 s, taking turns, 12 November): card
-// 4, 84.0 TH/s at 1,965 MHz and 188 W against the ring fold's 68.2 at
-// 2,000 MHz and 188 W (+23%); card 5, 82.1 against 67.5. It sits at the
-// card's power limit.
+// 4, 84.2 TH/s at 1,985 MHz and 188 W with a slot a k-step, against the ring
+// fold's 68.2 at 2,000 MHz and 188 W (+23%); 88 with four k-steps a slot. It
+// sits at the card's power limit, so watts now bind as much as the clock.
 //
 // HW, in the build the driver compiles: the split DPAS, block reads and the
 // split barrier. Otherwise (the reference, and the prebuilt kernels, which have
@@ -1649,6 +1650,7 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // ---------------------------------------------------------------------------
 // KPS: k-steps a ring slot (1 or 2); the group meets once a slot. AH: A' loaded a k-step ahead.
 template <bool HW, int KPS = 1, bool AH = false> struct FoldXmxW {
+  static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
 #if defined(PEARL_SYCL_XMX_JIT)
   static constexpr bool kSplit = HW;
 #else
@@ -1701,8 +1703,18 @@ template <bool HW, int KPS = 1, bool AH = false> struct FoldXmxW {
 #else
     window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
 #endif
+#if defined(PEARL_W_AHOT)
+    // goal-arc7 timing (wrong results): A' of only PEARL_W_AHOT row windows, so it stays near.
+    const int8_t *Ab = A.Ap + (size_t)(2u * (wr % PEARL_W_AHOT)) * A.aStride;
+#else
     const int8_t *Ab = A.Ap + (size_t)(2u * wr) * A.aStride;  // the window's two 16-row blocks
+#endif
+#if defined(PEARL_W_BHOT)
+    // goal-arc7 timing (wrong results): B' of column window 0 only.
+    const int8_t *Bb = A.Bp + (size_t)sgl * 128u;
+#else
     const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)sgl * 128u;  // its copy block
+#endif
     uint32_t *R = &ring[0];
     uint32_t *mine = R + sgl * 32u;
     // Where k-step k's B' lies in the ring.
@@ -1825,7 +1837,7 @@ template <bool HW, int KPS = 1, bool AH = false> struct FoldXmxW {
 
 // `groups` windows, 8 to a work-group (A.wpg must be 8: the copy is one block a sub-group).
 #ifndef PEARL_W_KPS
-#define PEARL_W_KPS 2
+#define PEARL_W_KPS 4
 #endif
 #ifndef PEARL_W_AH
 #define PEARL_W_AH 0
