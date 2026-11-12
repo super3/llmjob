@@ -45,6 +45,7 @@
 
 # The same without the barrier after a chunk's second turn (bt=13), which orders nothing: no A fragment is
 # stored in the second or third turn. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on
-# Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1131 hits, 56 salts). Probe: 99.03% of the pipe
-# against 98.95% on a 5080, 98.26% against 98.18% on a 5090 (tuning/benchmark.md, 12 November).
+# Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1131 hits, 56 salts) and an RTX 5080 (624 hits, 31
+# salts). Probe: 99.03% of the pipe against 98.95% on a 5080, 98.26% against 98.18% on a 5090; hashrate.js +0.1% on
+# both (tuning/benchmark.md, 12 November).
 13.3 2bc71ae78e12c7ac56752fd17487bee129d3aec588e754162464bdf53f13d5c3

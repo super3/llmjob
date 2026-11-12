@@ -1599,6 +1599,40 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   before b8), no readout +1.0%. `nvidia-smi -lmc` is refused on Salad ("does not have permission"), so the memory
   clock, which gains 1% on the RTX 40 rotation fold, cannot be priced on these PCs.
 
+### Salad, 12 November: where a capped RTX 50's watts go, and one barrier fewer (branch `goal/nv-50e`)
+
+- **Shipped: bt=13.** The sm_120 hand loop leaves out the barrier after a chunk's second turn. No A fragment is
+  stored in the second or third turn, so it ordered nothing; every load keeps a barrier between it and the stores
+  around it. CPU check 16,384 of 16,384 at k 2048 and 8192, 512 of 512 at 65536. Hash 2bc71ae7 (CI, a Salad PC's
+  Linux and Windows agree) replaces 8e56197c in `src/pearl_rot_sm120.ref` and `kRotCubins`: verify-hits 400 of 400
+  on an RTX 5090 (1131 hits) and an RTX 5080 (624 hits). Probe pipe 99.03% against 98.95% (5080), 98.26% against
+  98.18% (5090).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5080 (360 W limit, runs at 2775 MHz and ~350 W, so
+  clock-bound): 8e56197c 235.30, 235.24, 235.24; 2bc71ae7 235.51, 235.49, 235.49, 235.47 (+0.10%). RTX 5090 (534 W
+  limit, runs at ~2522 MHz and 433 W, clock-bound): 423.51, 423.93, 423.93; 2bc71ae7 423.96, 424.23, 424.68 (+0.13%).
+- **Against the other miners, same PCs (bench.sh sample means).** 5080: PeakMiner 236.50 (2775 MHz, 342 W),
+  SRBMiner 234.57 (2775 MHz, 328 W); ours 235.49 = 99.6% of the best. 5090: PeakMiner 426.00 (2526 MHz, 427 W),
+  SRBMiner 419.35 (2545 MHz, 467 W); ours 424.29 = 99.6%. Both PCs are clock-bound and PeakMiner runs at our clock,
+  so on these two the gap is pipe (about 0.4%), not energy.
+- **Energy price list on the b8 loop (probe, k 65536, timing only unless said).** A 5080 PC running under its cap
+  (watts read at a fixed 2775 MHz): b8 336-347 W. B's operands held at the fill with the loads kept (new key `bcz`)
+  269-272 W; B's loads as moves (`nold=3`) 312 W; A's operands held (`acz`) 336 W; A's loads as moves 338 W; both
+  operands held 246 W; no readout 330 W; no A stores (`nost`; the stage then holds zeros) 296 W; B shared through the
+  exchange (`bsym=4`) 339-341 W against its ceiling (`bnst bnld`, half of B's gathers gone) 326-327 W, so the
+  exchange eats ~85% of what B drawn once could save; B's bank collisions gone (gprobe fake 2) -2 to -4 W and +0.25
+  points of pipe; records from the SM cache (`nlg`) nothing; IMMA S8.S8, S8.U8 or U8.S8 (correct with operands
+  0..126) +7 W against U8.U8. A 5090 at its 510 W cap (count = pipe x clock against 430.2-431.5): B's loads as moves
+  +5.3%, no readout +3.4%, A's operands held +3.0%, A's loads as moves +2.5%, `nlg` and bt=13 nothing.
+- **What that says.** The tensor unit's energy follows the operands' values (held at 63 they cost much less, zeros
+  less still), not their changes: B held within a tile (`snk=2`), both bands on the same k-step order (a gprobe
+  test, which also broke half the tiles), every slot reading one slot's B and both bands reading one band's A all
+  left the watts unchanged. The values are fixed: the protocol's noise is +-63 and the operands must stay 0..127
+  as s8 (fill 63 or 64). B's bank collisions are at their floor: 128 random rank indices put 16 +- 3.7 rows on each
+  of 8 bank residues, so some octets must collide; greedy and annealing searches (`S/nv50e/ordsim.py`) and gprobe's
+  order modes 2, 4 and 9 leave 0.76-0.84 rows of 8 against mode 6's 0.83, and mode 9 is +0.03 points of pipe.
+- **Memory clock on RTX 50: not priced.** Salad refuses `-lmc`, and no other rented 5090 was allowed (no Vast or
+  Clore for this work), so the RTX 40 rotation fold's 810 MHz trial was not extended to Blackwell.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
