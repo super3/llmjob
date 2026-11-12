@@ -1861,6 +1861,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     const uint32_t bHi = (uint32_t)((uint64_t)(uintptr_t)A.Bp >> 32);
     uint32_t bLo[kBps];
     each<kBps>([&](int i) { bLo[i] = (uint32_t)(uintptr_t)Bbi[i]; });
+#if defined(PEARL_W_PTRV)
+    // goal-arc8: each global stream as a (low, high) pair whose low word steps on: one add a load.
+    v2u apv[4], bpv[kBps];
+    each<4>([&](int rb) { apv[rb] = v2u{aLo + (uint32_t)(rb >> 1) * A.aStride + (uint32_t)(rb & 1) * 256u, aHi}; });
+    each<kBps>([&](int i) { bpv[i] = v2u{bLo[i] + (uint32_t)(KPS + 1) * 2048u, bHi}; });
+    auto vptr = [](v2u v) { return reinterpret_cast<const int8_t *>((uintptr_t)sycl::bit_cast<uint64_t>(v)); };
+#endif
 #endif
     auto load_ah = [&](uint32_t ks, v4i *ah) {
 #if defined(PEARL_W_KMAJ)
@@ -1877,6 +1884,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
       each<4>([&](int rb) {
         ah[rb] = (v4i)ring_read_global<HW>(A.Ap + (size_t)(2u * wr + (uint32_t)(rb >> 1)) * (A.aStride - (PEARL_W_APAD))
                                                + (size_t)ks * 512u + (size_t)(rb & 1) * 256u + sgi * 128u, lane);
+      });
+      return;
+#endif
+#if defined(PEARL_W_PTRV)
+      (void)ks;
+      each<4>([&](int rb) {
+        ah[rb] = (v4i)ring_read_global<HW>(vptr(apv[rb]), lane);
+        apv[rb][0] += 512u;
       });
       return;
 #endif
@@ -1957,7 +1972,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
             // goal-arc8 timing (wrong results): the copy stores without loading.
             const v4u v = next[i] ^ (ks * 0x9E3779B9u);
 #else
-#if defined(PEARL_W_LO32)
+#if defined(PEARL_W_PTRV)
+            // past the last k-step it reads into the next block, for a slot no one reads (timing only: the host
+            // leaves no room after the last block).
+            const cvec v = cp_read(vptr(bpv[i]), lane);
+            bpv[i][0] += 2048u;
+#elif defined(PEARL_W_LO32)
 #if defined(PEARL_W_NOCLAMP)
             // goal-arc8: past the last k-step the copy reads the next block's first k-steps (the host leaves
             // 16 KB after B'), stored into a slot no one reads: no clamp.
@@ -2120,6 +2140,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
       }
       // The chunk's readout, the ring fold's.
       uint32_t x0 = 0, x1 = 0;
+#if defined(PEARL_W_NORD)
+      // goal-arc8 timing (wrong results): the readout reads one accumulator only.
+      x0 = (uint32_t)c[0][0][0];
+      x1 = (uint32_t)c[0][0][4];
+#elif defined(PEARL_W_VRD)
+      // goal-arc8: the same XOR as a tree of whole accumulators first, then the 8 dwords.
+      v8i t4[4];
+      each<4>([&](int q) {
+        t4[q] = (c[q >> 1][(q & 1) * 4] ^ c[q >> 1][(q & 1) * 4 + 1]) ^ (c[q >> 1][(q & 1) * 4 + 2] ^ c[q >> 1][(q & 1) * 4 + 3]);
+      });
+      const v8i t = (t4[0] ^ t4[1]) ^ (t4[2] ^ t4[3]);
+      x0 = (uint32_t)((t[0] ^ t[1]) ^ (t[2] ^ t[3]));
+      x1 = (uint32_t)((t[4] ^ t[5]) ^ (t[6] ^ t[7]));
+#else
       each<2>([&](int rb) {
         each<8>([&](int cb) {
           const v8i v = c[rb][cb];
@@ -2127,6 +2161,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
           x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
         });
       });
+#endif
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
       if constexpr (kRegWords) {

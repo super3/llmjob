@@ -2567,6 +2567,57 @@ the wrong lane's word on this runtime (26.40), from a vector or a scalar; `group
 for bit. The reference DPAS now walks lanes by XOR: `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx16-emu` pass on card 5
 and on the CPU device.
 
+### Arc rig, 12 November, early morning: `xmx8w` to 91.7 TH/s a card (`goal/arc-8`)
+
+**91.7 TH/s on a cool card, verified (was 88.4).** Card 4, `pearl_sycl_check --bench 8`, three rounds taking
+turns: the new build 91.6 to 91.8 TH/s at 1,938 to 1,946 MHz and 188 W; the previous mining build 89.2 to 89.4;
+`xmx8r` 68.1 to 68.3. Fold check PASS (16,384 and 32,768 regions, and `xmx8w-emu`), `verify-hits.js` with
+`PEARL_SYCL_FOLD=xmx8w` 400 of 400, 0 failed. The four mining cards run it. Two changes, both found by timing:
+
+- **A 256-byte gap after each 16-row block of A'** (`PEARL_SYCL_APAD`, default 256). The blocks sat exactly 32 KB
+  apart, so a work-group's 16 A' streams fell in the same cache sets. Card 5: 86.5 to 87.6-88.0 at 188 W (gaps of
+  128 to 3,200 bytes all gained; 256 most; a gap after B' blocks gained nothing). Card 4: 89.2 to 89.4 against
+  88.2 to 88.4.
+- **Address sums in 32 bits.** IGC built each 64-bit global address from scratch with three to five scalar
+  instructions between the DPAS groups, about 65 instructions a k-step. Those are not free: 32 extra scalar
+  instructions a k-step cost 15% in a timing build. With each operand's high word fixed and offsets added to the low
+  word, a k-step is about 50 instructions: 88.0 to 90.3 on card 5 at the same 188 W. It needs each operand inside one
+  4 GB window, so the host allocates A' or B' again (up to five tries) when one crosses a boundary, and runs `xmx8r`
+  if it still does.
+
+**What holds it now.** At the 2,000 MHz clock cap the fold does about 97.5 MACs an EU a clock (A' zeroed, so not
+power-bound: 87.3 TH/s at 169 to 173 W); 100 TH/s needs 112. With the address fix it sits at the 188 W limit near
+1,940 MHz. Without the copy (timing, wrong results) it runs 95.8 TH/s at 2,000 MHz and 170 to 174 W: the copy still
+costs about 6% and 15 W, mostly in the scalar instructions and register pressure it brings, not its bytes.
+
+Timing builds on card 5 (wrong results unless "PASS"), all against a control of 86.5 to 88.0 at 188 W unless said:
+
+| What | TH/s | MHz | W |
+|---|---|---|---|
+| A' data ANDed to zero (loads kept) / B' zero / both | 87.3 / 84.3 / 79.2 | 2,000 | 169-173 / 158-162 / 155-158 |
+| every window reads window 0's A' / the same XORed per window (hot addresses, own data) | 98.1 / 94.8 | 1,981-2,031 | 184-188 |
+| A' of 2 / 4 row windows only (256 KB in all) | 96.3 / 94.7 | 2,000 | 180-188 |
+| 8 by 2 work-groups (A' shared by two column windows), KPS 4 / 2 / 1, PASS | 85.0 / 83.6 / 83.0 | 2,000 | 178-187 |
+| 8 by 2 with column window 1's k-steps rotated by 1 or 2 inside the slot, PASS | 84.5 / 83.7 | 2,000 | 180-185 |
+| A' addressed k-step major (same bytes) | 64.5 | 2,000 | 176-181 |
+| `PEARL_SYCL_COL_BATCH` 32 / 64 / 128 / 512 / 1,024 (default 256) | 72.6 / 78.1 / 85.5 / 82.7 / 82.6 | | 188 |
+| `PEARL_SYCL_BAND` 16 / 32 / 128 (default 64) | 79.6 / 86.2 / 82.4 | | 188 |
+| no copy / no barrier / neither | 95.7 / 88.7 / 96.0 | 2,000 / 1,936 / 2,000 | 172-177 / 188 / 173-176 |
+| the copy without its load / without its store | 86.9 / 87.1 | 1,946 / 2,000 | 188 / 171-176 |
+| copy once a chunk, 512 bytes a sub-group, PASS | 85.4 to 87.0 | | 188 |
+| copy loaded at the k-step's start and stored after its DPAS, PASS | 85.0 | | 188 |
+| copy after the k-step's local reads, PASS | 87.3 | 1,904 | 188 |
+| no ring: B' from memory, windows' k-steps rotated 0 / 1 / 3, PASS | 76.0 / 79.5 / 79.6 | | 188 |
+| copier sub-groups beside the 16 DPAS ones (2 to 16) | FAIL: even idle copiers break DPASW | | |
+| one work-group a core (local memory padded) | 59.1 | 2,000 | 156 |
+| two-slot ring (arrive after the slot's reads), XOR-combined words, PASS | 87.2 to 87.3 (3 work-groups a core) | 1,912 | 188 |
+| 16 row windows a work-group (32 sub-groups, half-block copies), PASS | 86.2 | 2,000 | 184-188 |
+| work-groups in a row sharing rows, 2 / 4, PASS | 87.9 / 87.5 | | 188 |
+| +32 / +96 scalar ALU instructions a k-step, PASS | 74.4 / 50.2 | | 188 |
+| with 32-bit sums: A' a k-step ahead / KPS 2 / two slots / copy after reads, PASS | 86.4 / 87.7 / 88.9 / 88.2 (control 90.3) | | 188 |
+| with 32-bit sums: pointers kept as (low, high) pairs stepped each k-step, PASS | 86.7 | | 188 |
+| readout as a tree of whole accumulators, PASS | 90.2 (level) | | 188 |
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
