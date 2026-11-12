@@ -994,7 +994,12 @@ template <bool HW> inline v8i g_read256(const int8_t *p, uint32_t lane) {
   if constexpr (HW) {
     v8i r;
     const uint64_t a = (uint64_t)(uintptr_t)p;
+#if defined(PEARL_W_AANV)
+    // goal-arc16: not volatile, so LLVM may move it (A' is read-only for the whole kernel)
+    __asm__("lsc_load.ugm.ca.ca (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#else
     __asm__ volatile("lsc_load.ugm.ca.ca (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(a));
+#endif
     return r;
   }
 #endif
@@ -2315,6 +2320,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     };
     v4i ahn[4];
     if constexpr (kSplit && AH) load_ah(kdo(0u), ahn);
+#if defined(PEARL_W_AH2)
+    // goal-arc16 (PEARL_W_AH2): A' two k-steps ahead (16 more registers).
+    v4i ahn2[4];
+    if constexpr (kSplit && AH) load_ah(kdo(1u), ahn2);
+#endif
     if constexpr (kPartX) {
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + (widx * 8u + lane) * 16u + (uint32_t)j] = 0u; });
     }
@@ -2666,7 +2676,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           if constexpr (AH) {
 #endif
             each<4>([&](int rb) { ah[rb] = ahn[rb]; });
-#if !defined(PEARL_W_AHLATE)
+#if defined(PEARL_W_AROLL)
+#elif defined(PEARL_W_AH2)
+            each<4>([&](int rb) { ahn[rb] = ahn2[rb]; });
+            load_ah(ks + 2u < 64u ? kdo(ks + 2u) : 63u, ahn2);
+#elif !defined(PEARL_W_AHLATE)
             load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
 #endif
           } else {
@@ -2787,6 +2801,24 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             each<4>([&](int cb) {
               c[rb >> 1][(rb & 1) * 4 + cb] = split_dpas<HW>(ah[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
             });
+          });
+#elif defined(PEARL_W_D4) && defined(PEARL_W_AROLL) && defined(PEARL_W_AA)
+          // goal-arc16 (PEARL_W_AROLL): DPAS A'-major (row block outer), and the next k-step's A' read into each
+          // 16-row block's registers as soon as its DPAS are issued: A' a k-step ahead with no second set.
+          each<2>([&](int bb) {
+            each<2>([&](int r2) {
+              const int rb = 2 * bb + r2;
+              each<4>([&](int cb) {
+                each<2>([&](int h) {
+                  v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
+                  acc = split_dpas4<HW>(v2i{ahn[rb][2 * h], ahn[rb][2 * h + 1]}, bq[cb], acc);
+                });
+              });
+            });
+            const uint32_t kn = ks + 1u < 64u ? ks + 1u : 63u;
+            const v8i t = g_read256<HW>(lo32(aHi, aLo + sgi * 128u + kn * 512u + (uint32_t)bb * A.aStride), lane);
+            ahn[2 * bb] = __builtin_shufflevector(t, t, 0, 1, 2, 3);
+            ahn[2 * bb + 1] = __builtin_shufflevector(t, t, 4, 5, 6, 7);
           });
 #elif defined(PEARL_W_D4) && defined(PEARL_W_BROLL)
           each<4>([&](int cb) {
