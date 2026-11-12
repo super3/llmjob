@@ -1931,6 +1931,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
     v8i bqp[4];
 #endif
     arrive(it);
+#if defined(PEARL_W_CHUNROLL)
+#pragma unroll PEARL_W_CHUNROLL
+#endif
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;

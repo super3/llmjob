@@ -2621,7 +2621,14 @@ Timing builds on card 5 (wrong results unless "PASS"), all against a control of 
 | +32 / +96 scalar ALU instructions a k-step, PASS | 74.4 / 50.2 | | 188 |
 | with 32-bit sums: A' a k-step ahead / KPS 2 / two slots / copy after reads, PASS | 86.4 / 87.7 / 88.9 / 88.2 (control 90.3) | | 188 |
 | with 32-bit sums: pointers kept as (low, high) pairs stepped each k-step, PASS | 86.7 | | 188 |
-| readout as a tree of whole accumulators, PASS | 90.2 (level) | | 188 |
+| readout as a tree of whole accumulators, PASS | 90.2 (level; with the XOR-combined words 90.3 to 90.6, kept) | | 188 |
+| copy once a chunk with 32-bit sums, load at k-step 0 / 1 / 2, PASS | 87.1 / 87.6 / 87.7 | | 188 |
+| A' a k-step ahead with no copy (timing) / with no copy and no barrier | 93.6 / 92.7 (no copy alone 95.8) | 2,000 | 173-179 |
+| chunk loop unrolled 1 / 4 / 16 times (IGC picks 2), PASS | 89.7 / 89.9 / 87.7 (2: 90.7) | | 188 |
+| `IGC_LscLoadCacheControlOverride` 2 / 6 / 7 (L1 uncached, streaming, invalidate after read) | 89.7 / 89.7 / 89.6 (90.1) | | |
+
+On HiveOS's own 2024 driver (24.35; the release form staged in `arc-jammy`, run on the host over OpenCL, card 5):
+`xmx8w` and `xmx8w-emu` check PASS, `--bench 8` 84.3 TH/s (goal-arc7's build: 77.3 there).
 
 ## Research notes
 
