@@ -281,7 +281,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # srr (with sr, debugging): each group of R2UR issued twice.
            srr=0,
            # dbg, TIMING ONLY (goal-nvk19, the bxt fault): 1 the tail's STL left out, 2 its LDL a move.
-           dbg=0)
+           dbg=0,
+           # ah, TIMING ONLY (goal-nvk21): a chunk's first turn gathers and stores only A's first mt - ah tiles and
+           # loads the others from the stage (turn 1's slot), as a warp would whose A fragments eight warps share
+           # (a 96 x 512 block, two warps making a k-step's six tiles between them). Prices 1.5 shared-memory steps
+           # a warp a k-step (ah=3: 6 LDSM and 3 STS fewer a chunk, 3 LDS more) and 12 ALU steps.
+           ah=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -574,7 +579,7 @@ def chunk(cfg, R, role=None):
             put(b + ni - 8, Ins("LOP3.LUT R%d, R%d, 0x3fff, R%d, 0xe2, !PT" % (SW, R["w"], SW)), False)
         for m in range(1, mt):                         # tile m's fragment, during tile m - 1
             a = AF[m & 1]
-            if s == 0:                                 # the first turn: made here
+            if s == 0 and m < mt - cfg["ah"]:          # the first turn: made here
                 for h in range(2):
                     g0 = b + 8 * (m - 1) + h
                     late = cfg["al"] if m < mt - 1 else 0
@@ -583,8 +588,12 @@ def chunk(cfg, R, role=None):
                     plans.append((g0 - early, g0 + lead + late, g0 + lead + plead + late, cur + h, 2048 * m,
                                   a + 2 * h, a + 2 * h + 1, hold if m == mt - 1 else None))
             else:                                      # a later turn: another warp's, from the stage
-                sa = "R%d+UR%d" % (SW, sr_ust(cfg, s)) if cfg["sr"] else "R%d" % stage_cur
-                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s+0x%x]" % (a, sa, 512 * m), wsb=SB_ST,
+                # ah (TIMING ONLY): a first turn's last ah tiles are loaded from turn 1's slot, not gathered.
+                # Those tiles are then never stored, so every load of them (here and in later turns) reads tile
+                # m - ah's place: fresh operands, or the stage would hold constants and the IMMA draw less.
+                sa = "R%d+UR%d" % (SW, sr_ust(cfg, s or 1)) if cfg["sr"] else "R%d" % (stage_cur if s else stage_nxt)
+                mo = m - cfg["ah"] if m >= mt - cfg["ah"] else m
+                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s%s]" % (a, sa, "+0x%x" % (512 * mo) if mo else ""), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
                 for g in (b + 8 * m, b + 8 * m + 1):
                     iwait.setdefault(g % tot, []).append(SB_ST)
@@ -697,7 +706,7 @@ def chunk(cfg, R, role=None):
                                   BF + 4 * p + 2 + h, None))
     # The first turn's stores: tile m's four words, a gap behind its last PRMT (tile 0's, made at the end of
     # the chunk before, in gap st0). The set is written again 9 gaps later or more.
-    for m in range(mt) if not cfg["nost"] else ():
+    for m in range(mt - cfg["ah"]) if not cfg["nost"] else ():
         g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
             tot - 9 + lead + plead if cfg["sync"] == 4 else cfg["st0"])
         put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "",
