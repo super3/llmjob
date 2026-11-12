@@ -779,7 +779,7 @@ describe('the card\'s memory, from the core', () => {
     // Total: the device's own figure. Used: every device allocation the context makes.
     const create = slice(HOST, 'extern "C" void *pearl_host_create_checked(', '\n}\n');
     expect(create).toContain('const size_t have = ctx->dev.get_info<sycl::info::device::global_mem_size>();\n    ctx->memTotal = have;');
-    expect(create).toContain('void *p = sycl::malloc_device(n, q);\n    if (!p) ok = false;\n    else ctx->memUsed += n;');
+    expect(create).toContain('      p = sycl::malloc_device(n, q);\n      if (!p || !crosses(p, n)) break;\n    }\n    for (void *h : held) sycl::free(h, q);\n    if (!p) ok = false;\n    else ctx->memUsed += n;');
     expect(HOST.match(/ctx->memUsed \+= /g)).toHaveLength(1);
     expect(HOST.match(/ctx->memTotal = /g)).toHaveLength(1);
     // Nothing else allocates device memory for the context's life.

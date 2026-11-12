@@ -264,10 +264,16 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(create).toContain('ctx->aStride = 16u * k + operand_pad(true);');
     expect(create).toContain('ctx->bStride = 64u * k + operand_pad(false);');
     // The buffers hold the gaps: blocks rounded up, each block's bytes and its gap.
-    expect(create).toContain('ctx->dAp = (int8_t *)dev_alloc(padded_bytes(profile->m, k, true));');
-    expect(create).toContain('ctx->dBp = (int8_t *)dev_alloc(padded_bytes(profile->n, k, false));');
     expect(HOST).toContain('return (rows + blk - 1) / blk * (blk * k + operand_pad(isA));');
     expect(HOST).toContain('return (uint32_t)(v / 128ul * 128ul);');
+    // xmx8w adds offsets to the low 32 bits of the operands' addresses: each operand must sit inside one 4 GB
+    // window, or the context runs xmx8r instead.
+    expect(KERNELS).toContain('#define PEARL_W_LO32');
+    expect(KERNELS).toContain('return reinterpret_cast<const int8_t *>((uintptr_t)(((uint64_t)hi << 32) | (uint64_t)lo));');
+    expect(create).toContain('ctx->dAp = (int8_t *)dev_alloc(padded_bytes(profile->m, k, true), true);');
+    expect(create).toContain('ctx->dBp = (int8_t *)dev_alloc(padded_bytes(profile->n, k, false), true);');
+    expect(create).toContain('if (window && p && crosses(p, n)) ctx->straddle = true;');
+    expect(HOST).toContain('if ((fold == kXmx8W || fold == kXmx8WEmu) && ctx->straddle) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;');
     const noise = slice(HOST, 'void draw_noise(Ctx *ctx, bool isA) {', '\n}\n');
     expect(noise).toContain('if (ctx->frag == 1) lay = isA ? Layout{kFragA, ctx->aStride / 4u} : Layout{kFragB, ctx->bStride / 4u};');
     expect(noise).toContain('if (ctx->frag == 2) lay = isA ? Layout{kFragAT, ctx->aStride / 4u} : Layout{kFragBT, ctx->bStride / 4u};');

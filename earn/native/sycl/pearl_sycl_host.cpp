@@ -179,6 +179,7 @@ struct Ctx {
   int8_t *dA = nullptr, *dB = nullptr;    // operands (compact: two chunks each)
   int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major or in fragment order (frag)
   int frag = 0;                           // how dAp and dBp are stored now (fold_layout)
+  bool straddle = false;                  // dAp or dBp crosses a 4 GB boundary: no split fold (launch_fold)
   uint32_t ringWpg = 1;                   // xmx8r: windows a work-group
   uint32_t aStride = 0, bStride = 0;      // fragment order: bytes a 16-row block of A', a 64-column block of B'
   int8_t *dEAL = nullptr, *dEBR = nullptr;
@@ -674,6 +675,8 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;
   // The split fold copies one block a sub-group, so it runs only at 8 windows a work-group; else the ring fold.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
+  // It adds offsets to the low 32 bits of the operands' addresses only, so each must lie inside one 4 GB window.
+  if ((fold == kXmx8W || fold == kXmx8WEmu) && ctx->straddle) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
 #if defined(PEARL_SYCL_XMX8S)
   if (fold == kXmx8S && ctx->hwSg != 8) fold = kXmx8SEmu;
   // A batch it cannot tile in fours (the check's 4-column batches): xmx8f, which reads the same layouts.
@@ -899,16 +902,30 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   ctx->compact = profile->operand_fill == PEARL_OPERAND_CONST;
   const size_t aBytes = (size_t)profile->m * k, bBytes = (size_t)profile->n * k;
   bool ok = true;
-  auto dev_alloc = [&](size_t n) -> void * {
-    void *p = sycl::malloc_device(n, q);
+  // `window`: the noised operands, each inside one 4 GB-aligned window if five tries allow (the split fold
+  // needs it). An allocation that crosses a boundary is held while the next is made, so the next lands
+  // elsewhere; then the held ones are freed.
+  auto crosses = [](void *p, size_t n) { return ((uintptr_t)p >> 32) != (((uintptr_t)p + n - 1) >> 32); };
+  auto dev_alloc = [&](size_t n, bool window = false) -> void * {
+    std::vector<void *> held;
+    void *p = nullptr;
+    for (int i = 0; i < (window ? 5 : 1); i++) {
+      if (p) held.push_back(p);
+      p = sycl::malloc_device(n, q);
+      if (!p || !crosses(p, n)) break;
+    }
+    for (void *h : held) sycl::free(h, q);
     if (!p) ok = false;
     else ctx->memUsed += n;
+    if (window && p && crosses(p, n)) ctx->straddle = true;
     return p;
   };
   ctx->dA = (int8_t *)dev_alloc(ctx->compact ? 2048 : aBytes);
   ctx->dB = (int8_t *)dev_alloc(ctx->compact ? 2048 : bBytes);
-  ctx->dAp = (int8_t *)dev_alloc(padded_bytes(profile->m, k, true));
-  ctx->dBp = (int8_t *)dev_alloc(padded_bytes(profile->n, k, false));
+  ctx->dAp = (int8_t *)dev_alloc(padded_bytes(profile->m, k, true), true);
+  ctx->dBp = (int8_t *)dev_alloc(padded_bytes(profile->n, k, false), true);
+  if (ctx->straddle)
+    fprintf(stderr, "[pearl-sycl] an operand crosses a 4 GB boundary after 5 tries: xmx8w runs as xmx8r\n");
   ctx->dEAL = (int8_t *)dev_alloc((size_t)profile->m * rank);
   ctx->dEBR = (int8_t *)dev_alloc((size_t)profile->n * rank);
   ctx->dPermA = (uint32_t *)dev_alloc((size_t)k * 2 * sizeof(uint32_t));
