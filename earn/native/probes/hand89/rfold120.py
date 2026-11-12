@@ -44,6 +44,7 @@ UR_G = 8              # the uniform pair the loop loads the global address base 
 SB_C = 5              # the scoreboard the prologue's constant loads use
 LDCU64 = (0x0000000000000000 | 0x7ac | 7 << 12, 0x8000a00)   # LDCU.64 UR?, c[0x0][0x358] (ptxas 13.3's word)
 DBG = [0]
+MUL = [0x100]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
 MEM_OPS = ("LDSM", "LDS", "STS")
 
@@ -132,7 +133,7 @@ def port(code):
             # The product is a warp's span of records, under 2^32: a 32-bit IMAD and a zero high word. (IMAD.WIDE.U32
             # with a register factor gave a wrong address on the card, dbg=2 against dbg=0 on 12 November.)
             if DBG[0] & 8:      # debugging: the span as if chunks were 0
-                out.append(Ins("IMAD.SHL.U32 R%d, R%d, 0x100, RZ" % (d, a)))
+                out.append(Ins("IMAD.SHL.U32 R%d, R%d, 0x%x, RZ" % (d, a, MUL[0])))
             elif DBG[0] & 16:   # debugging: the span as if the warp were 1
                 out.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, R%d" % (d, b2)))
             else:
@@ -306,6 +307,9 @@ def main():
     cut = None
     for kv in sys.argv[4:]:
         k, v = kv.split("=")
+        if k == "mul":
+            MUL[0] = int(v, 0)
+            continue
         if k == "dbg":
             DBG[0] = int(v, 0)
             continue
