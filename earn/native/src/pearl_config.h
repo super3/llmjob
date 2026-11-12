@@ -1267,6 +1267,16 @@ typedef struct {
 #if PEARL_BD_PF && !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE)
 #error "PEARL_BD_PF is written for the default fold with RUNBASE"
 #endif
+// PEARL_BD_P64 (0 by default; goal/nv-20b): each loop pass holds 64-bit pointers to A' and
+// B' at its run base, so all 16 loads of a pass are a pointer plus an immediate. The
+// release adds each k-step's offset to a 32-bit base with an IADD3 (8 a chunk), because a
+// 32-bit sum may wrap and ptxas cannot fold it into the load. Same loads, same results.
+#ifndef PEARL_BD_P64
+#define PEARL_BD_P64 0
+#endif
+#if PEARL_BD_P64 && (PEARL_BD_PF || PEARL_BD_SNAKE || !(PEARL_BD_DEFAULT_FOLD && PEARL_BD_RUNBASE))
+#error "PEARL_BD_P64 is written for the default fold with RUNBASE, without PEARL_BD_PF or SNAKE"
+#endif
 // PEARL_BD_HASH_SPLIT=N (0 by default, 1 to 13), from SNAKE's round: each scheduler's
 // two warps share its hash. As shipped, the hasher on a scheduler (warp 0, 1, 6 or 7)
 // hashes its 32 regions of a tile after the hand-off while its partner (4, 5, 2 or 3)

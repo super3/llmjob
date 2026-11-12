@@ -801,6 +801,16 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
     asm volatile("" : "+l"(pfa), "+l"(pfb));
   };
 #define PEARL_BD_PF_SET() pf_set()
+#elif PEARL_BD_P64
+  // PEARL_BD_P64's pointers for a pass: A' and B' at arun and brun, 64 bits, set with
+  // them, so every load of the pass is one of these plus an immediate.
+  const int8_t *par = Aprime, *pbr = Bprime;
+  auto pf_set = [&]() {
+    par = Aprime + arun;
+    pbr = Bprime + brun;
+    asm volatile("" : "+l"(par), "+l"(pbr));
+  };
+#define PEARL_BD_PF_SET() pf_set()
 #else
 #define PEARL_BD_PF_SET() ((void)0)
 #endif
@@ -864,10 +874,20 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
+#if PEARL_BD_P64
+      for (uint32_t q = hi; q < 4u; q += 2u)
+        af[nxt][q] = ldg((last ? Aprime + aoffn : par + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
+#else
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
+#if PEARL_BD_P64
+      for (uint32_t q = hi; q < 4u; q += 2u)
+        bf[nxt][q] = ldg((last ? Bprime + boffn : pbr + (dch * KSTEPS + t + 1u) * 512u) + q * FRAG_BLOCK);
+#else
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
+#endif
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;
