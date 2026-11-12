@@ -463,7 +463,85 @@ the box after a set-env and I reallocated it, and it went silent once at 11:56);
 42 min; nv20d-2070-2 75 min. About 5.5 h in all. Tools: `S/nv20d/` in the scratchpad (hrsum.py takes the control and
 twin names as arguments).
 
-### Monero on the CPU, 11 October (our CPU miner against SRBMiner 3.7.5)
+### Salad, 12 November: the RTX 20 rows settled, where the fold's time goes, and k 4096 (branch goal/nv-20e)
+
+**The rows, measured the same way for both miners.** `nv20box.sh` bench on the stand-in pool (2^210), our miner as
+the v0.6.15 CLI on the shipped core (the t75 object: level 8, ROWPAIR + LAST_RO, built on the box as CI builds it),
+each miner's runs of 300 s taking turns. Ours is the `linemean` figure (every 1 s rate line past the first 60);
+PeakMiner 2.20.7's is the mean of its 15 s samples, which stay within 1%. Our own 15 s samples and the pool's credit
+(about 200 shares a run, so ±7%) do not settle a run; linemean does.
+
+| PC | ours (linemean) | PeakMiner 2.20.7 | ours / PeakMiner | hashrate.js of the same core |
+|---|---|---|---|---|
+| RTX 2070 SUPER, 215 W, driver 610.88, 82 °C | 64.75, 65.23 TH/s, about 1713 MHz, 200 W | 65.80, 65.16; 1718 MHz, 200 W | **99.25%** | 64.91 |
+| RTX 2070 SUPER, 215 W, 617.42, 86 °C | 63.58, 63.66; 1660 MHz, 207 W | 65.18; 1663 MHz, 211 W | **97.6%** | 64.09 |
+| RTX 2060 6 GB, 183 W, 610.88 | 47.19, 47.03; 1669 MHz, 179 W | 47.94, 47.96; 1672 MHz, 180 W | **98.2%** | 46.85 |
+| RTX 2060 6 GB, 160 W limit, drawing 106 W, 621.14 | 37.69, 37.67; 1371 MHz, 106 W | 37.88; 1345 MHz, 103 W | **99.5%** | 37.70 |
+
+So the 2070 SUPER and 2060 rows are 0.5-2.5% short by PC, smaller than the 2.5-3% estimated before. The plain RTX
+2070 row was not re-run (goal-nv20d: 97.3-98.2% by hashrate.js).
+
+**What does not help** (`hashrate.js` legs of 90 s taking turns, each against the shipped core beside it, A/A twin
+in every race):
+
+| Change | RTX 2070 SUPER | RTX 2060 | Note |
+|---|---|---|---|
+| A/A twin | +0.10%, -0.05%, -0.02% | -0.05%, +0.01%, -0.09% | |
+| The default fold (before the t75 object) | -0.96% | -0.86% | the shipped form's gain, again |
+| Band one down / one up | -0.22% / -0.61% (4 / 6) | -0.21% / -1.19% (3 / 5) | |
+| The other kernel (`PEARL_BD_SWEEP_HASH_RG`) | +0.08% | -0.05% | |
+| One stream | +0.31% | -0.06% | one leg; the 2070 SUPER drifted 1% in that race |
+| ptxas level 4 on the t75 object | +0.08% (per clock -0.4%) | -0.43% | levels 0 and 2 build a longer fold (3,304 instructions against 2,680) |
+| SNAKE on top of ROWPAIR + LAST_RO | -1.55% | -1.03% | 247 registers |
+| k 4096 (below) | -7.59% | -7.68% (card held at 1680 MHz) | bands 2, 3 and 4 alike |
+
+**k 4096.** A tile at k 4096 does twice the MACs for one hash and one hand-off, and a share's k is the miner's
+choice. Built (commits 030c3dbf, be5e019a, 304f6d0d): chunk c < 16 stores its word rotated, chunk c + 16 xors into it
+with `red.shared`, and with `PEARL_T75_K=4096` the host answers cardK with 4096 for an RTX 20 card on the t75 folds.
+It verified (320 of 320 and 227 of 227 hits at k 4096 in 90 s) and lost 7.6% on both cards, at every band; the
+memory controller went from 16% to 32-45%. Reverted (7b905bb9). The hash ablation below says why there was little
+to gain.
+
+**Where the shipped fold's time goes.** Timing-only builds of the t75 object (wrong results on purpose, never
+shipped), two legs each, paired against the shipped build, raw and per clock:
+
+| Switched off | RTX 2070 SUPER (215 W, 85 °C, 1680 MHz) | RTX 2060 (106 W, 1379 MHz) |
+|---|---|---|
+| The readout (`PEARL_ABLATE_READOUT`) | +2.74% / +2.41% | +2.24% / +2.87% |
+| The transcript hash (`_TRANSCRIPT_HASH`) | +0.32% / -0.14% | +0.31% / +0.31% |
+| The readout's shuffle (`_TRANSCRIPT`) | -0.27% / -0.11% | -0.01% / +0.13% |
+| Every B load an L1 hit (`_BHIT`) | +3.29% / +0.63% (+43 MHz) | +6.71% / +1.97% (+62 MHz) |
+| B loaded once a tile (`_BLOAD`) | +4.53% / +1.92% | +8.22% / +3.99% |
+
+- The hash is not where the time goes any more (0.3%), so nothing that spreads it (a larger k, a split hash) can
+  pay. The readout's xor fold, 64 LOP3 a chunk at their floor, costs 2.2-2.8%: about three times their issue slots,
+  so it is how they sit among the IMMA, not their number. B's traffic from L2 costs 3-7%, mostly as clock.
+- At most the readout and B are where PeakMiner's last 1-2% can come from.
+
+**What shipped: each B pair gated on its own readout fold** (`PEARL_BD_RO_PAIRGATE`, commits ae96818e and
+19657553). In the k-lo pass of a chunk's first k-step, each B pair's IMMA wait (`pearl_bd_after`) for the readout's
+fold of the accumulators they overwrite. They waited on the fold chain through every pair before them; now each
+waits on its own pair's fold, and that is xored onto the chain after. Only `pearl_kernel_t75.cu` turns it on, so
+every other card's machine code is unchanged; the RTX 20 folds are 253 registers, no spill, the same instruction
+count (rg kernel e04dae371a55 under CUDA 12.6), and the fold name ends in `RUL8 ROWPAIR LAST_RO PAIRGATE`. CI native
+core green; full earn suite 134 suites, 3,408 passed, 65 skipped.
+
+| PC | shipped t75 | with PAIRGATE | paired | twin | verify-hits |
+|---|---|---|---|---|---|
+| RTX 2070 SUPER (255 W limit, drawing 178 W, 83 °C, 1630 MHz, driver 580.88) | 62.39 TH/s | 62.70 | **+0.44%** (6 legs, +0.30 to +0.60), per clock +0.52% | +0.06% | 400/400 |
+| RTX 2060 6 GB (160 W, held at 1680 MHz, 153 W, 617.14) | 47.87 | 47.99 | **+0.10%** (5 legs, +0.08 to +0.14), per clock +0.33% | -0.08% | 400/400 |
+
+On the same 2070 SUPER, the release CLI on the PAIRGATE core read 62.46 TH/s (linemean) against PeakMiner's 63.01:
+**99.1%**. On the 2060 it read 47.88 against PeakMiner's 48.85 (1677 and 1684 MHz, 153 and 152 W): **98.0%**,
+98.4% a clock. So with this change the rows stand at about 98-99.7% (the four PCs above plus +0.1 to +0.4%), still
+under PeakMiner on every 2070 SUPER and 2060 PC measured. What is left to try is the readout (2.2-2.8% of the rate,
+of which this recovered 0.4) and B's L2 traffic (3-7%, mostly clock); the hash is spent.
+
+Box time: nv20e-2070-1 and nv20e-2060-1, 14:28-18:02 each over four PCs (about 12 min of each idle: set-env did not
+restart a running box three times, and each time I reallocated it). About 7 h. Tools: `S/nv20e/` in the scratchpad
+(r2.sh to r4.sh are the rounds' settings).
+
+ (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
 |---|---|---|---|---|---|
