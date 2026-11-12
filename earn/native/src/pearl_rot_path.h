@@ -1,5 +1,6 @@
-// Where the rotation fold's cubin is on disk: pearl_rot_sm89.cubin beside the module that holds the host's
-// code, or the file PEARL_ROT_CUBIN names. Plain C++ with no CUDA in it, so that it can be tested alone:
+// Where the rotation fold's cubin is on disk: the card's file (pearl_rot_sm89.cubin for RTX 40,
+// pearl_rot_sm86.cubin for RTX 30) beside the module that holds the host's code, or the file PEARL_ROT_CUBIN
+// names. Plain C++ with no CUDA in it, so that it can be tested alone:
 // pearl_host_rot.inc includes it for the host, and probes/rot-path-check.cc runs it on Linux in CI
 // (native-core.yml, "Check where the rotation fold's cubin is looked for").
 //
@@ -33,17 +34,19 @@
 #endif
 
 #define PEARL_ROT_FILE "pearl_rot_sm89.cubin"
+#define PEARL_ROT_FILE_SM86 "pearl_rot_sm86.cubin"
 
-// `module` with the cubin's name in place of its last component: the file beside the one `module` names.
-// Either separator counts. False when the result would not fit.
-static inline bool rot_beside(const char *module, char *buf, size_t len) {
-  if (!module || !buf) return false;
+// `module` with the cubin's name (`name`) in place of its last component: the file beside the one `module`
+// names. Either separator counts. False when the result would not fit.
+static inline bool rot_beside(const char *module, char *buf, size_t len, const char *name = PEARL_ROT_FILE) {
+  if (!module || !buf || !name) return false;
   size_t at = 0;
   for (size_t i = 0; module[i]; i++)
     if (module[i] == '/' || module[i] == '\\') at = i + 1;
-  if (at + sizeof(PEARL_ROT_FILE) > len) return false;
+  const size_t n = strlen(name) + 1;
+  if (at + n > len) return false;
   memcpy(buf, module, at);
-  memcpy(buf + at, PEARL_ROT_FILE, sizeof(PEARL_ROT_FILE));
+  memcpy(buf + at, name, n);
   return true;
 }
 
@@ -54,9 +57,11 @@ static inline bool rot_readable(const char *path) {
   return true;
 }
 
-// The cubin for the module that holds the code at `addr`. True when a file is there, with its path in `buf`.
-// False when none is: `buf` then holds the first place looked in (empty if the module could not be named).
-static inline bool rot_cubin_path_for(const void *addr, char *buf, size_t len) {
+// The cubin named `name` for the module that holds the code at `addr`. True when a file is there, with its
+// path in `buf`. False when none is: `buf` then holds the first place looked in (empty if the module could
+// not be named).
+static inline bool rot_cubin_path_for(const void *addr, char *buf, size_t len,
+                                      const char *name = PEARL_ROT_FILE) {
   if (!buf || len < 32) return false;
   const char *e = getenv("PEARL_ROT_CUBIN");
   if (e && *e) {
@@ -72,13 +77,13 @@ static inline bool rot_cubin_path_for(const void *addr, char *buf, size_t len) {
     return false;
   const DWORD n = GetModuleFileNameA(h, mod, (DWORD)sizeof mod);
   if (n == 0 || n >= sizeof mod) return false;
-  return rot_beside(mod, buf, len) && rot_readable(buf);
+  return rot_beside(mod, buf, len, name) && rot_readable(buf);
 #else
   Dl_info info;
   if (!dladdr(const_cast<void *>(addr), &info) || !info.dli_fname || !info.dli_fname[0]) return false;
   char first[1024] = {0}, cand[1024], real[PATH_MAX];
   // 1. Beside the path the loader was given.
-  if (rot_beside(info.dli_fname, cand, sizeof cand)) {
+  if (rot_beside(info.dli_fname, cand, sizeof cand, name)) {
     snprintf(first, sizeof first, "%s", cand);
     // A relative path is only good while the process is still in the folder it loaded from, and a file of
     // the same name under another folder would be the wrong one: such a path is left to the steps below.
@@ -101,7 +106,7 @@ static inline bool rot_cubin_path_for(const void *addr, char *buf, size_t len) {
       if (me < lo || me >= hi || line[at] != '/') continue;
       size_t n = strlen(line + at);
       while (n && (line[at + n - 1] == '\n' || line[at + n - 1] == '\r')) line[at + --n] = 0;
-      found = rot_beside(line + at, cand, sizeof cand) && rot_readable(cand);
+      found = rot_beside(line + at, cand, sizeof cand, name) && rot_readable(cand);
     }
     fclose(maps);
     if (found) {
@@ -110,7 +115,7 @@ static inline bool rot_cubin_path_for(const void *addr, char *buf, size_t len) {
     }
   }
   // 3. Beside the file the loader's path resolves to (a symbolic link's target).
-  if (realpath(info.dli_fname, real) && rot_beside(real, cand, sizeof cand) && rot_readable(cand)) {
+  if (realpath(info.dli_fname, real) && rot_beside(real, cand, sizeof cand, name) && rot_readable(cand)) {
     snprintf(buf, len, "%s", cand);
     return true;
   }
@@ -217,7 +222,7 @@ static inline void rot_sha256(const uint8_t *data, size_t len, uint8_t out[32]) 
     for (int k = 0; k < 4; k++) out[4 * j + k] = (uint8_t)(h[j] >> (24 - 8 * k));
 }
 
-// The cubin's hash as src/pearl_rot_sm89.ref lists it (probes/hand89/asm89.py, fold_hash): the sha256 of the
+// The cubin's hash as src/pearl_rot_sm89.ref and pearl_rot_sm86.ref list it (probes/hand89/asm89.py, fold_hash): the sha256 of the
 // file with its string table zeroed, as 64 hex digits. False when the file is not a whole ELF file. `b` is
 // changed: its string table is zeroed.
 static inline bool rot_fold_hash(uint8_t *b, size_t n, char hex[65]) {

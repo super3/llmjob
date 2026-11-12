@@ -1,11 +1,15 @@
 """build_rot.py: builds the rotation fold's cubin, the file the CUDA host loads when the rotation fold is asked
 for (PEARL_FOLD_ROT=1, or --rotation-fold on the CLI; src/pearl_host_rot.inc; off by default).
 
-  python build_rot.py <nvcc> <nvdisasm> <out dir> [--ref <file>]
+  python build_rot.py <nvcc> <nvdisasm> <out dir> [--arch sm_89|sm_86] [--ref <file>]
+
+--arch sm_89 (the default) builds pearl_rot_sm89.cubin for RTX 40 cards against src/pearl_rot_sm89.ref;
+--arch sm_86 builds pearl_rot_sm86.cubin for RTX 30 cards against src/pearl_rot_sm86.ref. ptxas gives the two
+architectures the same code for this kernel, so the same hand loop and the same checks serve both.
 
 The fold's chunk loop is written by hand and put into a kernel the compiler made. So every step is checked, and
 the file is only written when all of them pass:
-  1. nvcc -arch=sm_89 -cubin src/pearl_rot.cu -> <out dir>/rot_base.cubin. As compiled, its chunk loop is the
+  1. nvcc -arch=<arch> -cubin src/pearl_rot.cu -> <out dir>/rot_base.cubin. As compiled, its chunk loop is the
      gather fold: the room, the registers and the reference for the hand loop. The host never loads this file.
   2. nvdisasm -c -> <out dir>/rot_base.sass, and asm89's check of itself against it: every instruction of the
      listing whose form the assembler knows is assembled from its text and must give the compiler's own bytes.
@@ -17,13 +21,13 @@ the file is only written when all of them pass:
   5. asm89 writes the loop into a copy of the cubin, disassembles the result with nvdisasm and compares every
      instruction's text with what was asked for; the barrier count is read back too.
   6. The result's hash (asm89.fold_hash: sha256 with the string table zeroed) must be one of those
-     src/pearl_rot_sm89.ref lists for this toolkit: the hashes of the files that have mined on a card with
+     src/pearl_rot_<arch>.ref lists for this toolkit: the hashes of the files that have mined on a card with
      every hit verified. A toolkit with no line there, or a hash that is not listed, fails: the file is left
-     as pearl_rot_sm89.cubin.unverified, to be run on an RTX 40 card (PEARL_ROT_CUBIN names it; then
+     as pearl_rot_<arch>.cubin.unverified, to be run on a card of that kind (PEARL_ROT_CUBIN names it; then
      probes/verify-hits.js) before its hash is added.
-On any failure the exit code is 1 and <out dir> has no pearl_rot_sm89.cubin.
+On any failure the exit code is 1 and <out dir> has no pearl_rot_<arch>.cubin.
 On Windows run it from a shell that has MSVC's environment (vcvars64.bat): nvcc needs cl.exe.
-Put pearl_rot_sm89.cubin beside pearl_core.node, or name it in PEARL_ROT_CUBIN.
+Put pearl_rot_<arch>.cubin beside pearl_core.node, or name it in PEARL_ROT_CUBIN.
 """
 import os
 import re
@@ -35,7 +39,7 @@ SRC = os.path.normpath(os.path.join(HERE, "..", "..", "src"))
 sys.path.insert(0, HERE)
 import asm89  # noqa: E402
 
-NAME = "pearl_rot_sm89.cubin"
+ARCHS = ("sm_89", "sm_86")
 
 
 def toolkit(nvcc):
@@ -63,7 +67,15 @@ def fail(msg):
 def main():
     sys.stdout.reconfigure(line_buffering=True)
     args = sys.argv[1:]
-    ref = os.path.join(SRC, "pearl_rot_sm89.ref")
+    arch = "sm_89"
+    if "--arch" in args:
+        i = args.index("--arch")
+        arch = args[i + 1]
+        del args[i:i + 2]
+    if arch not in ARCHS:
+        return fail("--arch is one of %s, not %s" % (", ".join(ARCHS), arch))
+    NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")
+    ref = os.path.join(SRC, "pearl_rot_%s.ref" % arch.replace("_", ""))
     if "--ref" in args:
         i = args.index("--ref")
         ref = args[i + 1]
@@ -81,8 +93,8 @@ def main():
     release = toolkit(nvcc)
     if not release:
         return fail("nvcc --version does not state a release")
-    print("build_rot: step 1, nvcc %s compiles src/pearl_rot.cu for sm_89" % release)
-    r = subprocess.run([nvcc, "-arch=sm_89", "-std=c++17", "-O3", "-cubin", "-I", SRC, os.path.join(SRC, "pearl_rot.cu"),
+    print("build_rot: step 1, nvcc %s compiles src/pearl_rot.cu for %s" % (release, arch))
+    r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin", "-I", SRC, os.path.join(SRC, "pearl_rot.cu"),
                         "-o", base], capture_output=True, text=True)
     if r.returncode != 0:
         print(r.stdout + r.stderr)
@@ -107,8 +119,9 @@ def main():
     if have not in known:
         os.replace(tmp, unverified)
         return fail("this cubin's hash is not listed for toolkit %s in %s. It has not mined on a card. It is "
-                    "kept as %s: run it on an RTX 40 card (PEARL_ROT_CUBIN, probes/verify-hits.js), then add the "
-                    "line '%s %s'." % (release, os.path.basename(ref), os.path.basename(unverified), release, have))
+                    "kept as %s: run it on an RTX %s card (PEARL_ROT_CUBIN, probes/verify-hits.js), then add the "
+                    "line '%s %s'." % (release, os.path.basename(ref), os.path.basename(unverified),
+                                                   "40" if arch == "sm_89" else "30", release, have))
     os.replace(tmp, final)
     print("build_rot: ok, %s (%d bytes) is a file that has mined with every hit verified" % (
         NAME, os.path.getsize(final)))
