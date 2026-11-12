@@ -18,6 +18,8 @@
 #   ROT_BUILDS    the miner's cubins, "name:toolkit:nvcc flags;..." (ROT_C=1/3/5/7), pearl_rot.cu for sm_120
 #   PROBE_SCHED   probe cubins scheduled again by probes/hand89/sched120.py, "name:base:key=v,key=v;..." (base a
 #                 PROBE_BUILDS name); run with the base's program (PD_CUBIN)
+#   PROBE_HAND    probe cubins with rfold.py's hand loop put in by probes/hand89/rfold120.py,
+#                 "name:base:key=v,...;..." (base a PROBE_BUILDS name built with GP_ROTC=16387)
 #   ROT_SCHED     the same for the miner's cubins (base a ROT_BUILDS name); the names join ROT_BUILDS' for
 #                 VERIFY_CUBINS and HR_LEGS
 #   VERIFY_SECS   verify-hits.js on each cubin of VERIFY_CUBINS (default all of ROT_BUILDS) for this many
@@ -95,6 +97,21 @@ sched() {
     else say "sched $n ($base $keys) FAILED: $(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-330)"; fi
   done
 }
+# hand "name:base:key=v,key=v;...": rfold.py's hand loop put into $W/base.cubin by rfold120.py, as $W/name.cubin
+# (base a probe build with GP_ROTC=16387 or another form with flag 16384: room for the loop).
+hand() {
+  local IFS_OLD=$IFS b n r base keys out
+  IFS=';' read -r -a HL <<< "$1"
+  IFS=$IFS_OLD
+  for b in "${HL[@]}"; do
+    [ -n "$b" ] || continue
+    n=${b%%:*}; r=${b#*:}; base=${r%%:*}; keys=$(echo "${r#*:}" | tr ',' ' ')
+    # shellcheck disable=SC2086
+    out=$(python3 -I "$H/rfold120.py" "$W/$base.cubin" "$NVD" "$W/$n.cubin" $keys 2>&1)
+    if [ -f "$W/$n.cubin" ]; then say "hand $n ($base $keys): $(echo "$out" | tail -1 | cut -c1-330)"
+    else say "hand $n ($base $keys) FAILED: $(echo "$out" | tail -3 | tr '\n' ' ' | cut -c1-330)"; fi
+  done
+}
 PB=${PROBE_BUILDS:-"c1:13:-DGP_ROTC=1;c3:13:-DGP_ROTC=3;c5:13:-DGP_ROTC=5;c7:13:-DGP_ROTC=7;c1x:12:-DGP_ROTC=1"}
 RB=${ROT_BUILDS:-"r1:13:-DROT_C=1;r3:13:-DROT_C=3;r5:13:-DROT_C=5;r7:13:-DROT_C=7"}
 names() { echo "$1" | tr ';' '\n' | cut -d: -f1 | tr '\n' ' '; }
@@ -110,6 +127,7 @@ if has probe; then
     say "probe $n built ($tk: $fl): $(regs $W/$n.log)"
   done
   sched "${PROBE_SCHED:-}"
+  hand "${PROBE_HAND:-}"
 fi
 if has product; then
   t0=$(date +%s)

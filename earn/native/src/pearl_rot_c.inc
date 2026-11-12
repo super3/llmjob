@@ -239,6 +239,15 @@
     word(c);
 #endif
   }
+#if RC_FLAGS & 16384
+  // Flag 16384: room. 128 stores that never run (no record count is 2^32 - 1), so that the compiled function is
+  // long enough for probes/hand89/rfold120.py to put the hand-written loop in its place. Not for the miner.
+  if (chunks == 0xffffffffu) {
+#pragma unroll
+    for (uint32_t i = 0; i < 128u; i++)
+      asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + 4u * (i & 15u)), "r"(i * 0x9e3779b9u) : "memory");
+  }
+#endif
 #if RC_FLAGS & 128
   live = true;
 #pragma unroll
