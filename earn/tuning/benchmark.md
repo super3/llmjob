@@ -3079,6 +3079,46 @@ What it shows: with no dummies left, the card sits at its power limit (188 W, ab
 clock (no hash) no longer raises the rate. The copy is what remains: about 4% of rate and of energy. `xmx8r` also
 gains a little under the new options (69.0 against 68.5).
 
+### Arc rig, 12 November, afternoon: 256-byte messages by inline vISA (`goal/arc-13`)
+
+IGC splits every 256-byte block read into two 128-byte messages, so earlier "256-byte read" builds (B8, CPH) never
+halved anything. Inline vISA sends one `lsc_load ... d32x64t` message, which fills registers in memory order, so a
+`v8i` read this way holds the same dwords. `xmx8w` now reads A' as 2 messages a k-step instead of 4 (each sub-group
+reads both halves of one 8-row block, so the split DPAS pairs rows of one class and the readout sorts by block) and
+B' as 4 instead of 8 (63e23f71). The same commit fixes `xmx8w-emu`, which the 8x4 change had broken (its readout read
+the 8x4 accumulators in the reference path too). eaca1720 drops `-keepDPASMacroInSchedule` from the host's default
+options: with the new reads, HiveOS's 24.35 finalizer got 16,3xx of 16,384 regions wrong under it, a different count
+each run.
+
+- **Card 4 (cool, coordinator's check and mine): spare20 97.0-97.4 TH/s; spare21 (63e23f71) 99.2-99.5 against spare20
+  97.1-97.4 at 1,908-1,915 MHz, 188 W. spare22 (eaca1720): 99.8-100.0 against spare20 97.6-97.7 at 1,919-1,923
+  MHz, 188 W, `xmx8r` 67.9-68.2; verify.sh PASS (emu too), verify-hits 400 of 400 for `auto` and for `xmx8w`.**
+- Card 5, three rounds: spare22's code 98.0-98.1 against spare20 96.2 (+1.9%); verify.sh PASS with emu at 16,384 and
+  32,768 regions, verify-hits 400 of 400. 24.35 host driver: check PASS, 88.3 (spare20 88.2).
+- Card 5 is held by PL2 (i915 throttle reason) at 1,900 MHz in 50 MHz steps; the bench's best batch, the first,
+  runs at 2,000 MHz and 102 TH/s.
+
+Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
+
+| What | TH/s | against |
+|---|---|---|
+| two chunks a loop iteration (`PEARL_W_CHUNROLL` 2) | 93.7 | 96.5 |
+| `IGC_LscLoadCacheControlOverride` 2 / 6 / 7 (all loads) | 95.2 / 95.5 / 95.3 | 96.4 |
+| readout of 4 / 1 of 8 groups a chunk, the rest once at the end (timing, `PEARL_W_RDH`) | 96.65 / 98.2 | 96.5 |
+| 16 row windows, at 1,957 MHz | 93.9 | 96.4 |
+| no copy, real B' (timing), 8 / 16 row windows | 100.5 / 97.5 | 96.35 / 93.9 |
+| B' as 256-byte messages (`PEARL_W_BA`) | 96.3 at 1,880 MHz | 96.4 |
+| copy as 256 bytes every other k-step (`PEARL_W_CA`), alone / with BA / with BA, address written another way | 95.3 / 97.6 / 95.9 | 96.35 |
+| **A' as 256-byte messages (`PEARL_W_AA`) / AA + BA (kept)** | **97.4-97.9 / 97.9-98.0** | 96.1-96.5 |
+| AA + BA + CA / AA + CA | 93.8-94.8 / 92.8 | 97.9 |
+| AA + BA + copy once a chunk as 512 bytes (`PEARL_W_GA` 0 / 2) | 92.4 / 94.6 | 97.9 |
+| AA + BA, without A' ahead / copy two slots ahead / forced load wait | 95.8 / 97.2 / 88.4 | 97.9 |
+| AA + BA, options without `-keepDPASMacroInSchedule` (kept) / + `-SWSBDepReduction` / without `-noloopra` | 98.0-98.1 / 97.8-98.0 / 97.9-98.2 | 97.9-98.0 |
+
+What it shows: messages a k-step matter where bytes do not. Halving the copy's bytes a MAC (16 row windows) left its
+cost at 3.8%; halving A' and B' messages gave +1.7%. Every copy reshaped into bigger messages lost, with the clock
+rising (threads waiting): the copy still costs about 4%. `d64x64t` (512 bytes) does not assemble on DG2.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
