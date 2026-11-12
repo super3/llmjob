@@ -1830,11 +1830,21 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // build that ran 105.3 at 8 windows. 99.6 against 98.5 for 8 windows (card 5; 16 windows with the old 64-byte
 // copy 99.3). PEARL_W_RW=8 for the 8-window form; the host runs this one only where 16 divides the band and the
 // row windows.
+// goal-arc15: the default is 8 row by 2 column windows a work-group with BA (goal-arc14's opt-in): the two
+// column windows read the same A' in step, so the second read is an L1 hit, and A' from L2 is what costs.
+// Cool card 4: 101.8-101.9 TH/s against 99.9-100.3 for 16 by 1 (spare23). The host runs CW 1 where the
+// column windows are not a multiple of 2 (the check's 4-column batches). PEARL_W_RW=16 for the old default.
 #ifndef PEARL_W_RW
-#define PEARL_W_RW 16
+#define PEARL_W_RW 8
 #endif
 #if PEARL_W_RW == 16 && !defined(PEARL_W_NOC16)
 #define PEARL_W_C16
+#endif
+#if PEARL_W_RW == 8 && !defined(PEARL_W_CW)
+#define PEARL_W_CW 2
+#endif
+#if PEARL_W_RW == 8 && !defined(PEARL_W_NOBA) && !defined(PEARL_W_BA)
+#define PEARL_W_BA
 #endif
 // SEQ (goal-arc10): column windows a work-group runs one after the other (1 or 2). With 2, sub-group sgi of each
 // window hashes set sgi's words, both at once, so the hash at the end (which holds the work-group's local memory
@@ -1842,7 +1852,7 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4, "one, two or four column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
-  static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && CW == 1), "each sub-group copies a whole number of blocks");
+  static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && (CW == 1 || CW == 2)), "each sub-group copies a whole number of blocks");
   // goal-arc8: at RW 16 each of the 32 sub-groups copies half a block (64 bytes) a k-step.
   static constexpr bool kHalf = RW == 16;
   static constexpr uint32_t kNsg = 2u * RW * CW, kBps = kHalf ? 1u : 8u / RW;
@@ -2036,7 +2046,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * (A.bStride - (PEARL_W_BPAD)) + (size_t)(b % 16u) * 128u;
 #else
       if constexpr (kHalf)
-        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride + (size_t)(b >> 1) * 128u + (size_t)(b & 1u) * 64u;
+        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + (b >> 1) / 16u) * A.bStride + (size_t)((b >> 1) % 16u) * 128u
+                 + (size_t)(b & 1u) * 64u;
       else
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * A.bStride + (size_t)(b % 16u) * 128u;
 #endif
@@ -2178,10 +2189,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_C16)
     // goal-arc13 (PEARL_W_C16, RW 16): 32 sub-groups copy 128 bytes each at even k-steps only, two k-steps'
     // B' (piece sgl % 16 of k-step kb + sgl / 16): each thread stores what STE's did, with the full copy.
-    static_assert(KPS == 4 && RW == 16 && CW == 1, "PEARL_W_C16: 16 by 1 work-group, a chunk a slot");
-    const uint32_t c16Lo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride) + (sgl & 15u) * 128u;
+    // goal-arc15: at CW 2 (64 sub-groups) sub-group sgl copies piece sgl % 16 of column block (sgl / 16) % 2 of
+    // k-step kb + sgl / 32.
+    static_assert(KPS == 4 && RW == 16, "PEARL_W_C16: 16 row windows, a chunk a slot");
+    const uint32_t c16Col = (sgl >> 4) % (uint32_t)CW, c16K = (sgl >> 4) / (uint32_t)CW;
+    const uint32_t c16Lo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb * CW + c16Col) * A.bStride) + (sgl & 15u) * 128u;
     auto c16_load = [&](uint32_t kb) {
-      const uint32_t k = kb + (sgl >> 4);
+      const uint32_t k = kb + c16K;
       return ring_read_global<HW>(lo32(bHi, c16Lo + (k < 64u ? k : 63u) * 2048u), lane);
     };
     v4u c16n = c16_load((uint32_t)KPS);
@@ -2377,7 +2391,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_C16)
           if (s % 2u == 0u) {
             const uint32_t kb = ks + (uint32_t)KPS;
-            ring_write_local<HW>(R + at(kb) + (sgl >> 4) * kStep + (sgl & 15u) * 32u, c16n, lane);
+            ring_write_local<HW>(R + at(kb) + c16K * kStep + c16Col * 512u + (sgl & 15u) * 32u, c16n, lane);
             c16n = c16_load(kb + 2u);
           }
           return;
@@ -2547,7 +2561,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // goal-arc14: keeping the last k-step's B' live so the finalizer cannot reuse its registers (an empty
           // asm using it, or extra unused inputs on the last load) changes nothing in the ISA: IGC drops operands
           // the asm text does not name, and k-step 1's loads still land in k-step 0's registers. "=&rw" drops
-          // the load. So BA stays off for 24.35.
+          // the load. So BA stays off for 24.35 at RW 16. At RW 8 (the default from goal-arc15) 24.35 passes.
           each<4>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
           return;
 #endif

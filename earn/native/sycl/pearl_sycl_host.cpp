@@ -696,6 +696,16 @@ void resolve_pending(Ctx *ctx) {
 // that sub-group size; anywhere else the same name is the reference code. In a
 // build whose kernels the driver compiles, the hardware fold's kernel has
 // nothing but the instruction, and would not compile on another device.
+// xmx8w's column windows a work-group: PEARL_W_CW, or 1 where CW does not divide the batch's column windows
+// or the card runs under duty (see launch_fold). PEARL_SYCL_CW=1 or 2 forces it (2 still needs the division).
+uint32_t xmx8w_cw(const Ctx *ctx, const FoldArgs &a) {
+  if ((a.colBatch / 4u) % (uint32_t)PEARL_W_CW) return 1u;
+  const std::string f = env_str("PEARL_SYCL_CW", "");
+  if (f == "1") return 1u;
+  if (f.empty() && ctx->dutyPct < 100) return 1u;
+  return (uint32_t)PEARL_W_CW;
+}
+
 void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   sycl::queue &q = *ctx->q;
   if (fold == kXmx16 && ctx->hwSg != 16) fold = kXmx16Emu;
@@ -705,7 +715,8 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;
   // The split fold copies one block a sub-group, so it runs only at 8 windows a work-group; else the ring fold.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
-  // goal-arc13: a work-group takes PEARL_W_RW (16) row windows, so 16 must divide the band and the row windows.
+  // goal-arc13: a work-group takes PEARL_W_RW (8; 16 before goal-arc15) row windows, so RW must divide the band
+  // and the row windows.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && ((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW)))
     fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
   // It adds offsets to the low 32 bits of the operands' addresses only, so each must lie inside one 4 GB window.
@@ -739,18 +750,34 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       // goal-arc10: two column windows a work-group, one after the other, when the batch has an even number
       // of them (PEARL_SYCL_WSEQ=1 runs one): the hash at the end is paid once for twice the work. Card 5:
       // 92.9 TH/s against 92.1.
-      if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % 4u == 0u) {
+      // goal-arc15: a work-group spans PEARL_W_CW column windows, SEQ times over, so CW times SEQ must divide
+      // the batch's column windows; where CW does not (the check's 4-column batch, one window), CW 1.
+      // A card under duty runs CW 1 too. CW 2 saves energy (A' from L1), which only counts on a card at its
+      // power limit; a card resting between batches is not, and there CW 1 does more work a clock. bench.js on
+      // card 5: duty 75 CW 1 77.0, CW 2 74.5; duty 60 60.7 / 58.7; full speed 98.2 / 98.9.
+      if (xmx8w_cw(ctx, a) == 1) {
+        if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u)
+          fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
+        else
+          fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
+        break;
+      }
+      if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % (4u * PEARL_W_CW) == 0u) {
         fold_xmxw<true, 4>(q, a, groups);
         break;
       }
-      if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % 2u == 0u) {
+      if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
         fold_xmxw<true, 2>(q, a, groups);
         break;
       }
 #endif
-      fold_xmxw<true>(q, a, groups);
+      if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<true>(q, a, groups);
+      else fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
       break;
-    case kXmx8WEmu: fold_xmxw<false>(q, a, groups); break;
+    case kXmx8WEmu:
+      if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<false>(q, a, groups);
+      else fold_xmxw<false, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
+      break;
     case kXmx8F: fold_xmxf<8, 2, true>(q, a, groups); break;
     case kXmx8FEmu: fold_xmxf<8, 2, false>(q, a, groups); break;
     case kXmx16: fold_xmx<16, 2, true>(q, a, groups); break;

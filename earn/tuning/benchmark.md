@@ -3466,6 +3466,80 @@ windows, C16 copy), 98.8-99.1 TH/s at about 1,940 MHz. Timing builds give wrong 
 - Keeping the last k-step's B' live to make BA safe at RW 16 on 24.35 does not reach the ISA (IGC drops asm
   operands the text does not name). BA at CW 2 passes on 24.35 as it is.
 
+### Arc rig, 12 November, evening: 8 by 2 windows verified and made the default (`goal/arc-15`)
+
+Cool card 4 (cards 1-3 mining beside it), `race5.sh 4 8 3`, three rounds, against spare23 (ac2edcc2, mining).
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| goal-arc14's opt-in (RW 8, CW 2, BA): verify.sh **FAIL** at the mainnet shape | 101.8-101.9 | 2,000 | 188 |
+| **spare26: RW 8, CW 2, BA as the default, CW 1 where 2 does not divide the column windows; verify.sh PASS (emu too), 400/400** | **101.6-101.8** | 1,992-2,000 | 188 |
+| spare23 beside it | 100.2-100.3 | 1,915-1,931 | 188 |
+
+- verify.sh's mainnet check runs a 4-column batch: one column window. A work-group of two column windows then
+  reads a window that is not there (256 regions wrong, 0 of 46 hits). verify-hits (2,048 columns) passed, so only
+  the full verify.sh caught it. The host now runs CW 1 there (`fold_xmxw<.., RW, 1>`).
+- HiveOS 24.35 (staged /home/shawn/arc/ship-a15, card 5): xmx8w, xmx8w-emu and the mainnet check PASS; bench 90.6
+  against ship-a13d 90.7-90.8, level there.
+- One card 5 verify.sh run had 8 regions wrong in both dot and xmx8w at the mainnet shape. Both folds agreeing
+  points at the host reference. The same build passed three checks straight after and the full rerun. spare23's
+  build does it too (1 run in 4): a rig flake, not a fold's.
+
+**Under the mining duty CW 2 loses.** The cards mine at `PEARL_SYCL_DUTY` 60 and 75. Moved to spare26 for 8 minutes,
+the rig mined 252 TH/s against about 260 on spare23 (card 4 75.3 against 77.5). The miner loop (bench.js, which
+applies the duty) on card 5, 40 s runs, two rounds:
+
+| build | duty 75 | duty 60 | full speed |
+|---|---|---|---|
+| spare23 (RW 8, CW 1) | 76.85-76.98 (2,097-2,109 MHz busy) | 60.70-60.73 | 98.15-98.17 (1,883 MHz, 190 W) |
+| spare26 (RW 8, CW 2) | 74.49-74.55 (2,097-2,114) | 58.61-58.69 | 98.88-98.96 (1,970 MHz, 190 W) |
+| CW 1 under duty, CW 2 at full speed (spare27) | 76.89-76.95 (2,082-2,119) | 60.57-60.71 | 98.73-98.83 (1,962 MHz) |
+
+- CW 2 saves energy (A' from L1). That pays only on a card held at its power limit, where the saved watts become
+  clock. Under duty the card rests between batches and runs above 2,050 MHz while busy, so the clock is free and
+  the work a clock decides: CW 2 does about 3% less a clock. The host now runs CW 1 whenever the duty is under 100
+  (`xmx8w_cw`; `PEARL_SYCL_CW=1` or `2` forces it).
+- Price any new design both ways: the cool-card race (full speed) and bench.js at duty 75.
+
+More card 5 prices on 8a01fa49 (def 100.2-100.5 TH/s at about 1,970 MHz, 50.9 a GHz; timing builds are wrong):
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| A' of 2 row windows (AHOT 2) | 102.3-102.4 | 2,000-2,029 | 166 |
+| no copy (NOCOPY + FILLALL) | 104.2 | 2,027 | 172 |
+| half the copy (STE + FILLALL) | 104.2-104.4 | 2,000-2,027 | 167 |
+| no hash (NOEPI) | 101.4-101.5 | 1,961 | 177 |
+| readout of 1 group of 8 (RDH 1), PASS | 100.8-101.0 | 1,968-1,979 | 175 |
+| RW 8 x CW 4 (64 sub-groups), KPS 1, PASS | 89.9 | 2,000 | 163 |
+| RW 8 x CW 4, KPS 2, SEQ 1 (SEQ 2 needs 80 KB: does not launch) | 82.2 | 2,000 | 155 |
+| RW 8 x CW 2, KPS 2, PASS | 98.0-98.4 | 2,000 | 175 |
+| RW 16 x CW 2 (64 sub-groups, C16 copy for CW 2), SEQ 1, PASS; with BA | 88.6; 92.6 | 2,000 | 163; 166 |
+| def at SEQ 1 | 96.9 | 2,000 | 175 |
+
+- Card 4 check of spare27 (eb1133b3): verify.sh PASS (emu too), verify-hits 400/400 at full speed and at duty 75;
+  full speed 101.1-101.4 against spare23 99.7-99.9; duty 75 (bench.js, 40 s) 77.09-77.38 against 77.22-77.41.
+
+Prices under duty 75 (bench.js on card 5, 30-40 s, two rounds, ~2,100 MHz busy, below the power limit; spare27 at CW 1
+76.88-76.97). Under duty, work a clock is all that counts:
+
+| build | TH/s | busy MHz | W |
+|---|---|---|---|
+| duty 100 / duty 99 (the drain each batch) | 98.15-98.29 / 96.76-97.14 | 1,881-1,904 | 190 |
+| 4,096-column batches | 75.2 | 2,016 | 168 |
+| no copy (NOCOPY + FILLALL) | 80.08-80.23 (+4.2%) | 2,102-2,116 | 173 |
+| A' of 2 row windows (AHOT 2) | 79.67-79.77 (+3.6%) | 2,093-2,126 | 162 |
+| no hash (NOEPI) | 77.69-77.74 (+1.0%) | 2,106-2,109 | 177 |
+| RW 16 x CW 1 (spare25; current tree the same) | 74.81-74.94 | 2,096-2,126 | 171 |
+| CW 2 squeezed to 32 KB (KPS 2, SEQ 1), PASS | 70.75-70.83 | 2,099-2,109 | 163 |
+| two work-groups on the same rows (PAIR 2, CW 1), PASS | 73.69-73.74 | 2,106-2,112 | 180 |
+
+- Work a clock falls as the clock rises: 52.1 TH/s a GHz at 1,885 MHz, 48.6 at 2,110 (same build).
+- Under duty, A' from L2 costs work a clock (+3.6% if it were all L1 hits), but every way of sharing it tried so far
+  (CW 2 at 64 or 32 KB, RW 16, PAIR) loses more than that. Two 16-thread work-groups a core at 32 KB, each on its own
+  rows, is the shape to keep; the copy (4.2%) and A' (3.6%) must be cut inside it.
+- A work-group of 64 sub-groups (a whole Xe-core) loses 8-12% however its windows are arranged.
+- AHOT 2 does the same work a clock as def: at the clock cap, sharing A' more widely buys nothing more.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
