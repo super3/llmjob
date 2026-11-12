@@ -102,8 +102,10 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         ld = Ins(fold.mov(q, areg), wait=wait_ld)
         w = ()
     else:
-        ld = Ins("LDSM.16.MT88.4 R%d, [R%d%s]" % (q, areg, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
-                 wait=wait_ld)
+        # ldk (goal-nvk14, TIMING ONLY): the gather's load as an LDS.128 at the same addresses (the same 512 bytes,
+        # the same banks; each lane keeps its own row, untransposed): what the transposing LDSM costs per byte.
+        ld = Ins("%s R%d, [R%d%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg,
+                                      "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
         w = (sb,)
     adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (q, q + 2, FILL4, q), wait=w),
             Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (q + 1, q + 3, FILL4, q + 1), wait=w)]

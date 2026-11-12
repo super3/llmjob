@@ -316,6 +316,15 @@ extern "C" __global__ __launch_bounds__(GP_THREADS, 1) void GP_FN(
   // The thread's transcript (16 words) and one word the hand loop keeps for itself (its exchange address).
   __align__(16) uint32_t trl[20];
 #endif
+#ifdef GP_DEPHASE
+  // goal-nvk14, TIMING ONLY in effect: each block waits (blockIdx x 389) mod GP_DEPHASE cycles before its first
+  // tile, so the SMs' identical loops do not run in step. Does the clock's cap answer peaks the SMs make together?
+  {
+    const long long t0 = clock64(), d = (long long)((blockIdx.x * 389u) % (uint32_t)GP_DEPHASE);
+    while (clock64() - t0 < d) {
+    }
+  }
+#endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
     // The probe's long runs fold more tiles than it has tables for: the column blocks go round.
     const uint32_t rbg = v % row_groups, cbg = (v / row_groups) % col_blocks;

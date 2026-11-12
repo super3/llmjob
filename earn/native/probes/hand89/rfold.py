@@ -209,7 +209,19 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            noprm=0,
            # snk=1, TIMING ONLY: B read in reverse in every other tile (gfold.emit), so that across a tile's end
            # only A changes; the sums are not moved with it. What a snake order would save in operand toggling.
-           snk=0)
+           snk=0,
+           # ldk, TIMING ONLY (goal-nvk14): gathers whose LDSM.T becomes an LDS.128 at the same addresses (1 B's, 2 A's,
+           # 3 all). The same bytes from the same banks and the same instruction count; the values stay spread as
+           # operands are. What LDSM's transpose costs per byte against a plain 16-byte load, under the real load.
+           ldk=0,
+           # rsp (goal-nvk14): the readout's 96 XOR3 spread over rsp gaps of the window (a sum is read between its
+           # last IMMA of the chunk and its first of the next), not two a gap from roff. 0 keeps two a gap.
+           rsp=0,
+           # rdx=1, TIMING ONLY (goal-nvk14): the readout's steps read no sums. Is its pipe cost the reads of the
+           # accumulators (register banks) or the steps themselves?
+           rdx=0,
+           # rpr (goal-nvk14, correct): which two sums a readout step reads; see the readout.
+           rpr=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -567,7 +579,8 @@ def chunk(cfg, R, role=None):
             assign[k] = (q, sb, True)
             continue
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
-        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves)), rsb=rsb)
+        ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
+        ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves), ldk=int(ldk)), rsb=rsb)
         if cfg["noprm"]:
             # TIMING ONLY: no regroup; the subtracts write the fragment words, in the PRMT's gap.
             adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d, q + 2 + h, gfold.FILL4, q + h), wait=(sb,))
@@ -590,20 +603,40 @@ def chunk(cfg, R, role=None):
     for ch in range(2):
         g = b3 + cfg["roff"]
         first = True
-        for t in range(ch, mt, 2):
+        for t in (range(mt) if cfg["rpr"] == 2 else range(ch, mt, 2)):
             for j in range(16):
+                if cfg["rpr"] == 2 and (j & 1) == ch:
+                    continue                                              # rpr=2: chain ch takes the other parity
                 nb = j // 2
                 made, again = b3 + 8 * t + nb, tot + 8 * t + nb          # the sum's last IMMA, and its next
                 g = max(g, made + cfg["rmar"])
+                if cfg["rsp"]:
+                    # rsp: the chain's 48 steps spread evenly over rsp gaps from roff, not one a gap.
+                    g = max(g, b3 + cfg["roff"] + (8 * (t // 2) * 2 + j) * cfg["rsp"] // 48)
                 while g in busy:
                     g += 1
                 assert g < again, "tile %d's sum %d is read in gap %d, behind its next IMMA" % (t, nb, g)
                 r = ACC + 4 * (8 * t + nb) + 2 * (j & 1)
-                if first:
-                    ins = Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (R["xr"][ch], r, r + 1))
+                r2 = r + 1
+                if cfg["rpr"]:
+                    # rpr: an IMMA's four sums read as (0, 2) and (1, 3), not (0, 1) and (2, 3): a step's two sums
+                    # have the same register parity. rpr=2 also gives the even pairs to the odd chain (R3) and the
+                    # odd pairs to the even one (R2). Every sum is still read once: correct.
+                    r = ACC + 4 * (8 * t + nb) + (j & 1)
+                    r2 = r + 2
+                if cfg["rdx"] == 2:
+                    # rdx=2, TIMING ONLY: the chain and one sum (two reads), not the chain and two.
+                    ins = Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (R["xr"][ch], R["xr"][ch], r))
+                    first = False
+                elif cfg["rdx"]:
+                    # rdx, TIMING ONLY: the same XOR3 steps and chains, but reading no sums (RZ in their place).
+                    ins = Ins("LOP3.LUT R%d, R%d, RZ, RZ, 0x3c, !PT" % (R["xr"][ch], R["xr"][ch]))
+                    first = False
+                elif first:
+                    ins = Ins("LOP3.LUT R%d, R%d, R%d, RZ, 0x3c, !PT" % (R["xr"][ch], r, r2))
                     first = False
                 else:
-                    ins = Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (R["xr"][ch], R["xr"][ch], r, r + 1))
+                    ins = Ins("LOP3.LUT R%d, R%d, R%d, R%d, 0x96, !PT" % (R["xr"][ch], R["xr"][ch], r, r2))
                 if not cfg["nord"]:
                     put(g, ins)
                 g += 1
@@ -648,7 +681,7 @@ def chunk(cfg, R, role=None):
         put(end + 4, Ins(addi(w, trw, 4), wait=hw), wrapped=True)
         put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
         put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
-    assert end + 6 - tot < ni - 16
+    assert end + 6 - tot < (ni - 4 if cfg["rsp"] else ni - 16)
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
     put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if cfg["brg"] or cfg["bord"] else -1)), wrapped=False)
     put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if cfg["brg"] or cfg["bord"] else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
