@@ -132,8 +132,8 @@ __device__ __forceinline__ int4 pearl_bd_ldg(const int8_t *p) {
   return v;
 }
 
-// The chunk loop's A and B loads with another cache operator, for races
-// (PEARL_BD_LD_A and PEARL_BD_LD_B, see pearl_config.h). 0 is pearl_bd_ldg itself.
+// The chunk loop's B loads with another cache operator (PEARL_BD_LD_B, see
+// pearl_config.h). 0 is pearl_bd_ldg itself.
 template <int C>
 __device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
   if constexpr (C == 0) return pearl_bd_ldg(p);
@@ -157,6 +157,13 @@ __device__ __forceinline__ int4 pearl_bd_ldg_op(const int8_t *p) {
     PEARL_BD_LDOP_ASM("ld.global.nc.L1::evict_last.L2::128B.v4.s32");
 #undef PEARL_BD_LDOP_ASM
   return v;
+}
+
+// B's loads in the chunk loop. The default, L1::evict_last (LDG.E.EL), keeps B's
+// lines in L1 for the other warp of the pair: +0.9% on an RTX 2080 Ti, by clock at
+// the same work a clock (earn/tuning/benchmark.md, goal/nv-20c).
+__device__ __forceinline__ int4 pearl_bd_ldg_b(const int8_t *p) {
+  return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
 }
 
 #if PEARL_BD_TAIL_LDG
@@ -867,22 +874,13 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       return pearl_bd_ldg(p);
     };
-#if PEARL_BD_LD_A
-    auto ldg_a = [&](const int8_t *p) -> int4 {
-#if PEARL_BD_TAIL_LDG
-      if (last) return pearl_bd_ldg_c(p);
-#endif
-      return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
-    };
-#endif
-#if PEARL_BD_LD_B
+    // B's loads keep their lines in L1 (pearl_bd_ldg_b, PEARL_BD_LD_B).
     auto ldg_b = [&](const int8_t *p) -> int4 {
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
-      return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
+      return pearl_bd_ldg_b(p);
     };
-#endif
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
@@ -892,18 +890,10 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
-#if PEARL_BD_LD_A
-      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg_a(Aprime + ao + q * FRAG_BLOCK);
-#else
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
-#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
-#if PEARL_BD_LD_B
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
-#else
-      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
-#endif
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;

@@ -768,7 +768,7 @@ describe('Turing row-pair readout (PEARL_BD_ROWPAIR)', () => {
       '      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);',
       '#ifndef PEARL_ABLATE_BLOAD',
       '#pragma unroll',
-      '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);',
+      '      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);',
     ]);
     pin(FOLD_CODE, [
       '    auto a_word = [&](uint32_t mb, uint32_t hi, uint32_t u) -> uint32_t {',
