@@ -1005,6 +1005,10 @@ typedef struct {
 #ifndef PEARL_BD_WMAP
 #define PEARL_BD_WMAP 0
 #endif
+// PEARL_BD_HDELAY_ODD (race): PEARL_BD_HDELAY for the second row group's hashers only.
+#ifndef PEARL_BD_HDELAY_ODD
+#define PEARL_BD_HDELAY_ODD 0
+#endif
 #if (PEARL_BD_RUNBASE != 0 && PEARL_BD_RUNBASE != 1) \
     || (PEARL_BD_TAIL_LDG != 0 && PEARL_BD_TAIL_LDG != 1) || (PEARL_BD_TADDR != 0 && PEARL_BD_TADDR != 1)
 #error "PEARL_BD_RUNBASE, PEARL_BD_TAIL_LDG and PEARL_BD_TADDR are 0 or 1"

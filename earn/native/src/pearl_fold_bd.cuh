@@ -653,6 +653,11 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       // in a chain, each reading the address of the next from sSelf, which holds its own
       // address. In the branch the hashers already take: outside it ptxas rebuilt the
       // tile loop, and a NANOSLEEP (.WARP) made it guard every shuffle for divergence.
+      // With PEARL_BD_HDELAY_ODD only the second row group's hashers wait: under
+      // PEARL_BD_WMAP, one warp of each column slot pair, so the pair is that far apart.
+#if PEARL_BD_HDELAY_ODD
+      if (wr)
+#endif
       {
         uint32_t t = (uint32_t)__cvta_generic_to_shared(&sSelf);
 #pragma unroll
