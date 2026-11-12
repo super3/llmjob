@@ -35,8 +35,8 @@ import struct
 import subprocess
 import sys
 
-CFG = dict(per=2, gap=12, ist=1, step=2, lat_alu=6, lat_ai=7, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
-           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0)
+CFG = dict(per=2, gap=11, ist=1, step=2, lat_alu=6, lat_ai=7, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
+           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0, oyld=1, reuse=1)
 LAT_LOAD_HOP = {"LDSM": 2, "LDS": 2, "LDG": 6, "LDL": 2, "S2R": 2}
 REG = re.compile(r"(?<![A-Za-z0-9_])(-|!|~|\|)?(UR|R|UP|P)(\d+)((?:\.[A-Z0-9]+)*)")
 CTRL_SHIFT = 41
@@ -362,16 +362,21 @@ def schedule_region(seq, cfg):
 
 
 def assign(code, cfg, entry_pending, block_rule=True):
-    """Control fields for the loop's code in its new order: stalls, yields, scoreboards, waits."""
+    """Control fields for the loop's code in its new order: stalls, yields, scoreboards, waits, reuse flags.
+
+    Scoreboards as ptxas uses them on sm_120. A warp's shared-memory loads (LDS, LDSM) complete in the order they
+    were issued, so a wait for one of them is a wait for every one issued before it: only a load that some
+    instruction has to wait for, and that is the newest such load at that point, gets a scoreboard (ptxas leaves
+    about half of them without one). Every other variable-latency instruction (LDG, LDL, S2R) and every store that
+    is still reading registers someone overwrites gets one of its own. Among the six, a load takes the one on
+    which waiting costs least: no load issued after it and still under way, if possible."""
     INF = 10 ** 9
-    # scoreboards: give each variable-latency instruction the one with the fewest others still under way
+    n = len(code)
     for x in code:
         x.wsb = x.rsb = 7
         x.wait = 0
-        x.stall = 0
-        x.yld = cfg["yld"]
-        x.lo = x.lo
-        x.reuse = 0                         # operand reuse flags off
+        x.yld = x.orig[1] if cfg["oyld"] and hasattr(x, "orig") else cfg["yld"]
+        x.reuse = 0
     for k, x in enumerate(code):
         if x.op == "IMMA":
             x.stall = cfg["ist"]
@@ -381,86 +386,110 @@ def assign(code, cfg, entry_pending, block_rule=True):
             x.stall = cfg["step"]
     # IMMA's stall fills its gap to cfg["gap"] cycles
     k = 0
-    while k < len(code):
+    while k < n:
         if code[k].op == "IMMA":
             m = k + 1
-            while m < len(code) and code[m].op not in ("IMMA", "BAR", "BRA"):
+            while m < n and code[m].op not in ("IMMA", "BAR", "BRA"):
                 m += 1
             used = sum(code[q].stall for q in range(k + 1, m))
             code[k].stall = max(cfg["ist"], min(15, cfg["gap"] - used))
             k = m
         else:
             k += 1
-    # each load's (or store's) first instruction that has to wait for it
-    cons = {}
-    for k, x in enumerate(code):
-        if x.var or x.holds:
-            w = x.dst if x.var else set()
-            r = x.src if x.holds else set()
-            cons[k] = len(code)
-            for m in range(k + 1, len(code)):
-                y = code[m]
-                if (w & (y.src | y.dst)) or (r & y.dst) or y.op == "BRA":
-                    cons[k] = m
-                    break
-    # variable-latency writers and holders
+    # reuse: a PRMT pair that reads the same two registers back to back (the gathers' byte selects), as ptxas
+    # marks it: the first takes its a and c operands from the operand cache
+    if cfg["reuse"]:
+        for k in range(n - 1):
+            a, b = code[k], code[k + 1]
+            if a.op == "PRMT" and b.op == "PRMT" and not a.guard and not b.guard:
+                ta, tb = a.toks, b.toks
+                if len(ta) == 4 and len(tb) == 4 and ta[1].split(".")[0] == tb[1].split(".")[0] and \
+                        ta[3].split(".")[0] == tb[3].split(".")[0] and \
+                        not (a.dst & (b.src - a.dst if False else b.src)):
+                    a.reuse = 5
     nsb = cfg["sbs"]
-    out_sb = collections.defaultdict(list)    # sb -> list of instruction indices still possibly under way
-    pend_w = dict(entry_pending)               # register -> sb of a load still writing it
-    pend_r = collections.defaultdict(set)      # register -> sbs of loads/stores still reading it
+    shared = [k for k, x in enumerate(code) if x.op in ("LDS", "LDSM")]
+    sh_set = set(shared)
+    # what each instruction must find finished: (kind, index) of loads it reads/overwrites or whose address it
+    # overwrites, and stores whose registers it overwrites
+    pend_w, pend_r = {}, collections.defaultdict(set)
+    need = [set() for _ in code]
+    for k, x in enumerate(code):
+        for r in x.src | x.dst:
+            if r in pend_w:
+                need[k].add(pend_w[r])
+        for r in x.dst:
+            need[k] |= pend_r.get(r, set())
+        for r in x.dst:
+            pend_w.pop(r, None)
+            pend_r.pop(r, None)
+        if x.var and x.dst:
+            for r in x.dst:
+                pend_w[r] = k
+        if x.holds:
+            for r in x.src:
+                pend_r[r].add(k)
+    # the branch waits for everything still under way
+    last_sh = shared[-1] if shared else None
+    out_sb = collections.defaultdict(list)    # sb -> indices that set it, not waited for since
+    sb_of = {}
+    watermark = -1                             # every shared load at or before this index is finished
+    done = set()                               # other loads and stores known finished
     rr = 0
+
+    def pick(m, upto):
+        """A scoreboard for instruction m, waited for at `upto`: the free one, else the one with the fewest of
+        its loads issued after m (they would make the wait longer)."""
+        nonlocal rr
+        free = [s for s in range(nsb) if not out_sb[s]]
+        if free:
+            rr += 1
+            return free[rr % len(free)]
+        return min(range(nsb), key=lambda s: (sum(1 for e in out_sb[s] if e > m), len(out_sb[s])))
+
     for k, x in enumerate(code):
         waits = set()
-        for r in x.src:
-            if r in pend_w:
-                waits.add(pend_w[r])
-        for r in x.dst:
-            if r in pend_w:
-                waits.add(pend_w[r])
-            waits |= pend_r.get(r, set())
+        want = set(need[k])
         if x.op == "BRA":
-            waits = {s for s in range(nsb) if out_sb[s]} | set(pend_w.values())
-            for rs in pend_r.values():
-                waits |= rs
-        for s in waits:
-            out_sb[s] = []
+            want |= {i for i in range(k) if (code[i].var or code[i].holds)}
+        sh_need = [i for i in want if i in sh_set and i > watermark]
+        other = [i for i in want if i not in sh_set and i not in done]
+        if sh_need:
+            m = max(sh_need)
+            if x.op == "BRA" and last_sh is not None and last_sh > watermark:
+                m = max(m, last_sh)
+            if m not in sb_of:
+                s = pick(m, k)
+                sb_of[m] = s
+                out_sb[s].append(m)
+                out_sb[s].sort()
+            waits.add(sb_of[m])
+        for i in other:
+            if i not in sb_of:
+                # an LDG/S2R/LDL or a store: it was given a scoreboard when it went out (below)
+                raise RuntimeError("internal: no scoreboard for %r" % code[i])
+            waits.add(sb_of[i])
         if waits:
             x.wait = sum(1 << s for s in waits)
-            for r in list(pend_w):
-                if pend_w[r] in waits:
-                    del pend_w[r]
-            for r in list(pend_r):
-                pend_r[r] -= waits
-                if not pend_r[r]:
-                    del pend_r[r]
-        if x.var or x.holds:
-            # the scoreboard with nothing under way, else the one whose newest is oldest
-            free = [s for s in range(nsb) if not out_sb[s]]
-            if free:
-                s = free[rr % len(free)]
-                rr += 1
-            elif cfg["sbm"]:
-                # sbm=1: the scoreboard on which this one delays the fewest waiters of loads already under way
-                # (a waiter for an earlier load on it, after this one goes out and before this one's own
-                # waiter, would wait for this one too)
-                def cost(q):
-                    late_waiters = sum(1 for e in out_sb[q] if k < cons[e] < cons[k])
-                    return (late_waiters, len(out_sb[q]), -max(out_sb[q]))
-                s = min(range(nsb), key=cost)
-            else:
-                s = min(range(nsb), key=lambda q: out_sb[q][-1])
+            for s in waits:
+                for e in out_sb[s]:
+                    if e in sh_set:
+                        watermark = max(watermark, e)
+                    else:
+                        done.add(e)
+                out_sb[s] = []
+        # a non-shared variable-latency instruction or a store gets its scoreboard as it goes out
+        if (x.var and x.op not in ("LDS", "LDSM")) or (x.holds and x.op not in ("LDS", "LDSM")):
+            s = pick(k, None)
+            sb_of[k] = s
             out_sb[s].append(k)
-            if x.var and x.dst:
-                x.wsb = s
-                for r in x.dst:
-                    pend_w[r] = s
-                if x.holds:
-                    for r in x.src:
-                        pend_r[r].add(s)
-            else:
-                x.rsb = s
-                for r in x.src:
-                    pend_r[r].add(s)
+    # write the scoreboard numbers: a load's write scoreboard, a store's read scoreboard
+    for i, s in sb_of.items():
+        x = code[i]
+        if x.var and x.dst:
+            x.wsb = s
+        else:
+            x.rsb = s
     return code
 
 
