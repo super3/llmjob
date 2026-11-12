@@ -4061,7 +4061,7 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       // The level-8 build running on this card (PEARL_T75_RUL8), which has ROWPAIR and
       // LAST_RO on (pearl_kernel_t75.cu).
       n = strlen(c->foldName);
-      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO");
+      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO PAIRGATE");
       // ROWPAIR, like LAST_RO, needs LEAN's parts.
       n = strlen(c->foldName);
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");

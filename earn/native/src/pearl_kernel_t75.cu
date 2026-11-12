@@ -24,6 +24,9 @@
 // pearl_t75_materialize16_afrag (pearl_host.cu, draw_noise).
 #define PEARL_BD_ROWPAIR 1
 #define PEARL_BD_LAST_RO 1
+// And PEARL_BD_RO_PAIRGATE (pearl_config.h): each B pair's k-lo IMMA wait on that pair's
+// own readout fold, not on the fold chain through it (goal-nv20e).
+#define PEARL_BD_RO_PAIRGATE 1
 
 #define pearl_blake3_chunk_cvs pearl_t75_blake3_chunk_cvs
 #define pearl_blake3_parent_layer pearl_t75_blake3_parent_layer

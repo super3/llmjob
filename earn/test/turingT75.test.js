@@ -137,17 +137,18 @@ describe('the level-8 RTX 20 folds (PEARL_T75_RUL8)', () => {
     expect(launch('pearl_t75_tile_fold_wmma_rg')).toBe(launch('pearl_tile_fold_wmma_rg'));
     expect(HOST).toContain('  else if (ctx->bdT75 && ctx->bdHashRg)' + NL + '    pearl_t75_tile_fold_wmma_rg<<<');
     expect(HOST).toContain('  else if (ctx->bdT75 && !ctx->bdHashRg)' + NL + '    pearl_t75_tile_fold_wmma<<<');
-    expect(HOST).toContain('if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO");');
+    expect(HOST).toContain('if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO PAIRGATE");');
   });
 
   test('the level-8 folds are built with ROWPAIR and LAST_RO, and such a card draws A\' to match', () => {
     // Set before the include, so pearl_config.h's #ifndef keeps them; pearl_kernel.cu's own build has neither.
     const inc = T75.indexOf('#include "pearl_kernel.cu"');
-    for (const d of ['#define PEARL_BD_ROWPAIR 1', '#define PEARL_BD_LAST_RO 1']) {
+    for (const d of ['#define PEARL_BD_ROWPAIR 1', '#define PEARL_BD_LAST_RO 1', '#define PEARL_BD_RO_PAIRGATE 1']) {
       expect([d, T75.indexOf(d) >= 0 && T75.indexOf(d) < inc]).toEqual([d, true]);
     }
     expect(CONFIG).toContain('#ifndef PEARL_BD_ROWPAIR' + NL + '#define PEARL_BD_ROWPAIR 0' + NL + '#endif');
     expect(CONFIG).toContain('#ifndef PEARL_BD_LAST_RO' + NL + '#define PEARL_BD_LAST_RO 0' + NL + '#endif');
+    expect(CONFIG).toContain('#ifndef PEARL_BD_RO_PAIRGATE' + NL + '#define PEARL_BD_RO_PAIRGATE 0' + NL + '#endif');
     // A' has one draw site; with the level-8 folds it is that file's draw, with the same arguments.
     const call = '<<<draw_blocks(len / 16), kDrawThreads>>>(' + NL;
     const args = 'src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);';

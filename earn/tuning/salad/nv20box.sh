@@ -134,11 +134,15 @@ if has probe; then
 fi
 if has product; then
   cd "$R/earn/native/probes" || fail "no probes"
-  for nm in ${VERIFY:-${NAMES#rel}}; do
+  # A VERIFY entry may carry the core's environment as a leg does: "name+K=V+K2=V2".
+  for vn in ${VERIFY:-${NAMES#rel}}; do
     [ "${VERIFY_SECS:-120}" != 0 ] || break
-    j=$(timeout -k 5 $(( ${VERIFY_SECS:-120} + 120 )) node verify-hits.js "$W/core-$nm/build/Release/pearl_core.node" \
+    nm=${vn%%+*}; vx=""
+    [ "$nm" != "$vn" ] && vx=$(echo "${vn#*+}" | tr '+' ' ')
+    # shellcheck disable=SC2086
+    j=$(env $vx timeout -k 5 $(( ${VERIFY_SECS:-120} + 120 )) node verify-hits.js "$W/core-$nm/build/Release/pearl_core.node" \
       "${VERIFY_SECS:-120}" "${VERIFY_BITS:-232}" 2> $W/verify-$nm.err | grep '^{' | tail -1)
-    say "verify $nm $(echo "$j" | jq -c '{PASS, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
+    say "verify $vn $(echo "$j" | jq -c '{PASS, k, hits, verified, failed, salts, fold: .device.fold, thLast, fails: (.fails[0:2])}' 2>/dev/null | cut -c1-390)"
     [ -n "$j" ] || say "verify $nm no result: $(tail -2 $W/verify-$nm.err | tr '\n' ' ' | cut -c1-300)"
   done
   legs=${HR_LEGS:-}
