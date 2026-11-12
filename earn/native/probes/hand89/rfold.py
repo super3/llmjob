@@ -242,7 +242,12 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # pipe, the level of the loop with no readout at all (nord, 99.55%); rb0=0 loses (99.24%).
            rb0=9, rb1=3,
            # rst (goal-nvk16): the stall of each readout step (0 keeps the default, 1). rst=2 gains nothing.
-           rst=0)
+           rst=0,
+           # lgg (goal-nv50c): the gap of a turn where the next turn's offsets record is loaded (an L2 trip whose
+           # latency in cycles grows with the clock; nlg=1, timing only, is +1.1 points of pipe on an RTX 5090).
+           # Its readers are 22 gaps on at 2; 0 or 1 sends it out earlier, still behind the last readers of the
+           # set it overwrites (gaps 44-46 of the turn before).
+           lgg=2)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -394,7 +399,7 @@ def chunk(cfg, R, role=None):
             rec = 0x100 if cfg["co"] else 0x200
             # nlg (timing only): the chunk's second-turn record three times, then the next chunk's first: a
             # later turn's record has another form than a first turn's (co), so it has to be one of its kind.
-            put(b + 2, ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
+            put(b + cfg["lgg"], ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
                            size=64 if cfg["co"] else 128,
                            wsb=SB_OFF, rsb=hold if s == 3 else None, wait=hw))
             # The record's first readers issue 8 cycles or more behind three IMMA that wait for the load.

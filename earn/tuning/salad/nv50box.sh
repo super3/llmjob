@@ -195,11 +195,18 @@ if has probe; then
   IFS=';' read -r -a PL <<< "$L"
   for line in "${PL[@]}"; do
     [ -n "$line" ] || continue
+    # "!lgc <MHz>" locks the SM clock for the runs after it (nvidia-smi -lgc), "!rgc" lets it go: watts at a
+    # locked clock price energy finer than the clock under the cap. A PC that refuses says so and runs go on.
+    case "$line" in
+      "!lgc "*) say "lgc ${line#!lgc }: $(nvidia-smi -i 0 -lgc "${line#!lgc }","${line#!lgc }" 2>&1 | tr '\n' ' ' | cut -c1-200)"; LGC=1; continue ;;
+      "!rgc"*) say "rgc: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"; continue ;;
+    esac
     exe=${line%% *}
     # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here, the collision and
     # hit counts left out and the line cut to 395 (a longer name lost every probe line of a run on 12 November).
     python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
+  [ "${LGC:-0}" = 1 ] && say "rgc at the probe's end: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"
 fi
 # PROBE_SAN: probe runs under compute-sanitizer's memcheck (CUDA 13.3's, from NVIDIA's redistributables), ';'
 # between them, each "<build exe> <cubin> <k> <tiles>": the first faulting access and its address, for a hand loop.
