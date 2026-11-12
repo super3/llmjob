@@ -3093,6 +3093,9 @@ each run.
 - **Card 4 (cool, coordinator's check and mine): spare20 97.0-97.4 TH/s; spare21 (63e23f71) 99.2-99.5 against spare20
   97.1-97.4 at 1,908-1,915 MHz, 188 W. spare22 (eaca1720): 99.8-100.0 against spare20 97.6-97.7 at 1,919-1,923
   MHz, 188 W, `xmx8r` 67.9-68.2; verify.sh PASS (emu too), verify-hits 400 of 400 for `auto` and for `xmx8w`.**
+- **spare23 (ac2edcc2: band 32 row windows for `xmx8w`, an eighth of the cache) on cool card 4: 100.11-100.14 TH/s
+  in all three rounds, against spare22 99.86-99.88, at 1,915-1,919 MHz, 188 W.** verify.sh PASS (emu too),
+  verify-hits 400 of 400. Card 5 98.4-98.6 against 97.9-98.1; 24.35 host driver PASS, 88.7 (spare20's 88.2).
 - Card 5, three rounds: spare22's code 98.0-98.1 against spare20 96.2 (+1.9%); verify.sh PASS with emu at 16,384 and
   32,768 regions, verify-hits 400 of 400. 24.35 host driver: check PASS, 88.3 (spare20 88.2).
 - Card 5 is held by PL2 (i915 throttle reason) at 1,900 MHz in 50 MHz steps; the bench's best batch, the first,
@@ -3114,6 +3117,7 @@ Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
 | AA + BA + copy once a chunk as 512 bytes (`PEARL_W_GA` 0 / 2) | 92.4 / 94.6 | 97.9 |
 | AA + BA, without A' ahead / copy two slots ahead / forced load wait | 95.8 / 97.2 / 88.4 | 97.9 |
 | AA + BA, options without `-keepDPASMacroInSchedule` (kept) / + `-SWSBDepReduction` / without `-noloopra` | 98.0-98.1 / 97.8-98.0 / 97.9-98.2 | 97.9-98.0 |
+| spare22's code, band 16 / **32 (kept)** / 128 row windows (default was 64) | 98.0-98.3 / **98.5-98.6** / 95.0 | 98.0-98.1 |
 
 What it shows: messages a k-step matter where bytes do not. Halving the copy's bytes a MAC (16 row windows) left its
 cost at 3.8%; halving A' and B' messages gave +1.7%. Every copy reshaped into bigger messages lost, with the clock
