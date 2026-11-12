@@ -54,10 +54,13 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # 4090 the readout's steps first in their gap and allowed into more of the chunk's end (rgf=1 rb0=3 rb1=0: the
 # probe's pipe 99.54% against 99.18%, the level of a loop with no readout) mined 338.00, 338.04 and 337.93
 # TH/s against 336.93, 337.07 and 337.10 for the loop before (hashrate.js, 12 November); on the Salad RTX 3090,
-# with iy=0, 121.16, 121.17 and 121.25 against 120.74, 120.81 and 120.87. sm_120: rfold120.py with rfold.py's
-# defaults (the file verified on RTX 5090 and 5080, 12 November).
+# with iy=0, 121.16, 121.17 and 121.25 against 120.74, 120.81 and 120.87. sm_120 (rfold120.py): the same four
+# readout keys and the IMMA's stall 7 (ist=7, not 5). The probe's pipe at k 65536: 97.60% against 96.02% on an RTX
+# 5090, 96.53% against 94.97% on a 5080 (ist 6, 8, 9, 10: 95.4, 97.4, 93.6, 94.8%; ist=7 without the readout keys
+# 96.3%); hashrate.js 434.44 and 434.46 TH/s against 430.30, 430.22 and 430.35 for the loop before on one 5090 PC,
+# 237.53, 237.49 and 237.54 against 233.75 and 233.69 on one 5080 PC (12 November).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
-             "sm_120": []}
+             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7"]}
 
 
 def toolkit(nvcc):
