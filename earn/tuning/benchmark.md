@@ -1403,6 +1403,46 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   MHz (PC 944d2f0a, about 300 W, noisy): hand 317.6, 321.9, 324.1 against form 11 312.4, 293.8, 311.1 and release
   320.3, 318.9.
 
+### Salad, 12 November: the RTX 50 hand loop retuned, ist=7 and iy=0 (branch `goal/nv-50c`)
+
+- **Shipped.** sm_120's rfold keys are now `rpr=2 u8=1 rgf=1 rb0=3 rb1=0 ist=7 iy=0` (build_rot.py ARCH_KEYS):
+  the 4090's readout keys, the IMMA's stall 7 cycles (not 5) and the IMMA without the yield flag. The file
+  (hash 0768c6f2..., the same from a Salad PC's Linux, CI and Windows) passed verify-hits 400 of 400 on an RTX 5090
+  (549 hits) and an RTX 5080 (452 hits), and is now the one sm_120 hash in `src/pearl_rot_sm120.ref` and
+  `kRotCubins`. Still opt-in (`--rotation-fold`).
+- **Probe, k 65536, pipe share.** The readout keys alone change nothing on sm_120 (5090 95.87 against 96.02%); ist
+  is what matters, with a sharp best at 7. 5080 at 2685 MHz, with the readout keys: ist 6 95.43, 7 97.70, 8 97.37,
+  9 93.60, 10 94.83% (pad 10 or 11 changes nothing; ist=7 without the readout keys 96.27%). 5090 (600 W PC):
+  96.02 -> 97.60%. iy=0 on a 510 W 5090: 97.90 against 97.64%. All correct builds 16,384 of 16,384 at k 2048 and
+  8192, 512 of 512 at k 65536.
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** RTX 5090, 488.75 W PC (the one goal-nv50b raced, the old
+  file 389.4 again): old file 389.44, 389.46, 389.39; ist=7 399.18, 399.45, 399.11; with iy=0 402.11, 402.17,
+  401.88 (+3.3%, 2374 against 2346 MHz). RTX 5090, 575 W PC: ist=7 416.96, 416.99, 416.97; with iy=0 418.05,
+  418.13, 418.07. RTX 5090, 600 W PC (drew about 510 W): old 430.30, 430.22, 430.35; ist=7 434.44, 434.46. RTX
+  5080, 360 W PC: old 232.34, 231.99, 232.13, 232.34; ist=7 236.89, 236.65, 236.93 (+2.0%). RTX 5080, 450 W PC:
+  old 233.75, 233.69; ist=7 237.53, 237.49, 237.54 (+1.6%). Tile batch (PEARL_ROT_TILES) 128: 233.92 against 233.75
+  at 32; 8: 232.59. The default stays.
+- **Against the other miners, same PC (bench.sh sample means).** 5080 360 W: SRBMiner 3.8.6 242.2, PeakMiner 2.20.7
+  242.1; ours 236.8 = 97.8% (was 95.9%). 5080 450 W: PeakMiner 241.6, SRBMiner 238.6; ours 237.5 = 98.3%. 5090
+  488.75 W: SRBMiner 422.3 (2485 MHz), PeakMiner 416.5; ours 402.1 = 95.2% (was 92.2%). 5090 600 W PC: SRBMiner
+  450.3 (2666 MHz, 498 W), PeakMiner 441.8; ours (ist=7, before iy=0) 434.4 = 96.5%.
+  5090 575 W PC (driver 621.14, 78 C): SRBMiner 434.8 (2559 MHz, 555 W), PeakMiner 424.8 (2474 MHz, 522 W);
+  ours 418.1 (2475 MHz, 538 W) = 96.2%. A 5080 PC with another load on it (2627 MiB in use at idle): ist=7
+  213.06-213.22, with iy=0 213.51-213.73 (+0.25%); verify-hits passes there, its rates are not used above.
+- **Where the rest is.** On the 5090 our pipe now equals SRBMiner's (97.2 against 96.9% by count on the 600 W PC);
+  the gap is clock at the same watts (2567 against 2666 MHz), i.e. energy per cycle. On the 5080 it is about one
+  point of pipe (97.6 against 98.6%) at the same clock.
+- **The 5080's "2 points between probe and miner" were not real.** On one 5080 the probe's count was 234.5 / 234.0
+  and the miner 233.75: 0.2%. The earlier figure set the 5090's probe pipe beside a 5080 miner. The 5080 loop holds
+  less pipe at higher clocks (97.7% at 2690 MHz, 96.5% at 2865).
+- **Energy price list, 5090 at its cap (probe, timing only unless said; clock against the shipped keys at the
+  same watts).** No readout +2.9 to +3.0%; A's gathers as moves +2.2%; B's gathers as moves +7.7%; half of B's
+  gathers gone (bsym=4 with no stores or loads) +4.9% count; B shared through the exchange without its syncs
+  (bsym=4) +1.5% count (the ceiling of B drawn once, before syncs); every operand byte the fill +6.8% at 389 W;
+  fill 0 (S8) -1.5 to -2.7% (worse), fill 32 level; B kept in place across tiles (snk 1 and 2) 0; LDS.128 for
+  LDSM 0; reuse marks on PRMT pairs (prr, correct) 0; py=1, ly=0 0. `nvidia-smi -lgc` is refused on Salad 5090s
+  ("Unknown Error"), so watts at a locked clock cannot be had there.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
