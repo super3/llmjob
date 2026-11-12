@@ -34,4 +34,11 @@
 # and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (575 W PC, driver 621.14: 549 hits, 28
 # salts) and on an RTX 5080 (360 W PC: 452 hits, 23 salts). hashrate.js: 402.11 and 402.17 TH/s against 399.18 and
 # 399.45 without it on a 488.75 W 5090; 418.05 and 418.13 against 416.96 and 416.99 on the 575 W one.
-13.3 0768c6f2598aef539ec334fa3e82a56a62c85db91262dc8be7f497b8a257325b
+# (13.3 0768c6f2598aef539ec334fa3e82a56a62c85db91262dc8be7f497b8a257325b: that file, replaced by the one below.)
+
+# The same with every gather one byte-transposing ldmatrix (b8: ldmatrix.m16n16.x2.trans.b8, LDSM.8.MT1616.2) on
+# tables in plain row order (pearl_rot.cu ROT_TAB8), so the gathers' PRMT go. CUDA 13.3, build_rot.py --arch sm_120
+# on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5080 (496 hits, 25 salts);
+# the same loop built by nv50box.sh 400 of 400 on an RTX 5090 (552 hits). Probe on the 5090: 98.6% of the pipe
+# against 97.6%; hashrate.js +1.7% on the 5090 (tuning/benchmark.md, 12 November).
+13.3 8e56197c7aeee9bc721327f84bb437ad21ca096f0730ab582c8b3a45898c562d
