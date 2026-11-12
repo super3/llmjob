@@ -96,6 +96,10 @@ def _ldgsts(m, cached=0):
 FORMS = [
     (r"IMMA\.16832\.S8\.S8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
      lambda m: _f(0x7237, 0x405c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
+    # U8.U8 (goal-nvk11): the same datapath reading its operands as unsigned. The fold's operand bytes are 0 to
+    # 126, so the sums are the same either way.
+    (r"IMMA\.16832\.U8\.U8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
+     lambda m: _f(0x7237, 0x400c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x4200)),
     (r"LDS\.128 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xc00)),
     (r"LDS\.64 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xa00)),

@@ -443,7 +443,8 @@ def emit(G, iwait, cfg, bfalt=None):
             ist = max(1, ist - nsingle) if nsingle < len(items) else 1
         a = AF[(mb + (mt & 1) * s) & 1]
         bf = bfalt if bfalt is not None and s & 1 else BF
-        out.append(Ins("IMMA.16832.S8.S8 R%d, R%d.ROW, R%d.COL, R%d" % (ACC + 4 * i, a, bf + 2 * nb, ACC + 4 * i),
+        out.append(Ins("IMMA.16832.%s R%d, R%d.ROW, R%d.COL, R%d" % ("U8.U8" if cfg.get("u8") else "S8.S8",
+                                                                   ACC + 4 * i, a, bf + 2 * nb, ACC + 4 * i),
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):
