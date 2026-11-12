@@ -3119,8 +3119,31 @@ Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
 | AA + BA, options without `-keepDPASMacroInSchedule` (kept) / + `-SWSBDepReduction` / without `-noloopra` | 98.0-98.1 / 97.8-98.0 / 97.9-98.2 | 97.9-98.0 |
 | spare22's code, band 16 / **32 (kept)** / 128 row windows (default was 64) | 98.0-98.3 / **98.5-98.6** / 95.0 | 98.0-98.1 |
 
-What it shows: messages a k-step matter where bytes do not. Halving the copy's bytes a MAC (16 row windows) left its
-cost at 3.8%; halving A' and B' messages gave +1.7%. Every copy reshaped into bigger messages lost, with the clock
+Toward 105 (the founder's next goal), on spare23's code (card 5, 98.5; timing builds marked):
+
+| What | TH/s |
+|---|---|
+| no copy (NOCOPY + FILLALL) / no hash (NOEPI) (timing) | 104.8 / 100.0 |
+| no local store, loads kept (NOPUT + FILLALL) / no load, store kept (NOFETCH) (timing) | 103.3 at the 2,000 MHz cap, 172 W / 97.0 |
+| half the copy, 128-byte messages at even k-steps (STE, timing) | **105.3** at 1,970 MHz |
+| copy of two pieces at even k-steps (C2) / 256-byte store with 128-byte loads (CB) / CA at k-steps 1, 3 | 94.3 / 94.5 / 95.5 |
+| 64-byte stores (STH, timing) / the store by inline vISA | 94.7 at 2,000 MHz / 98.9-99.2 |
+| 8x8 DPAS with AA's layout (16 dummy DPAS) / B' straight from memory as 256-byte messages | 91.4 / 81.9 |
+| 16 row windows a work-group (its old 64-byte copy) / + copy of 128 bytes at even k-steps (C16) | 99.3 / **99.6** |
+| C16, its no-copy and no-hash ceilings (timing) | 102.3 / 101.2 |
+| C16 without the inline B' read (shipped: 24.35 fails with it at 16 windows) | 98.5-98.9 |
+| C16, one column window at a time / band 64 / band 16 | 93.0 / 98.6-98.8 / 98.1-98.2 |
+
+The copy's local store is xmx8w's largest cost, and its bytes a MAC are what count: half the copy a thread
+(STE) reaches 105.3, but any regrouping of the same bytes into fewer or bigger messages loses 4-5%. Only a work-group
+of more rows (16 row windows, e7a3e10a / be43b135) cuts the bytes a MAC for real, and it gains 0.3-1.1%. On cool
+card 4, spare25 (be43b135) ran 100.30-100.37 against spare23 100.24-100.30 (verify.sh PASS with emu, 400 of 400):
+level, so the mining cards stay on spare23.
+HiveOS's 24.35 finalizer mis-schedules the inline-vISA B' read at 16 windows (a B' register reloaded with no
+wait on the DPAS reading it), so be43b135 turns that read off again.
+
+What the first rows showed: for A' and B' reads, messages a k-step matter (halving them gave +1.7%). At the time,
+halving the copy's bytes a MAC (16 row windows, old 64-byte copy) left its cost at 3.8%. Every copy reshaped into bigger messages lost, with the clock
 rising (threads waiting): the copy still costs about 4%. `d64x64t` (512 bytes) does not assemble on DG2.
 
 ## Research notes
