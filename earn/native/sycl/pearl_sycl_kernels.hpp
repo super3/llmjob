@@ -1013,6 +1013,22 @@ template <bool HW> inline void slm_write256(uint32_t *p, v8i v, uint32_t lane) {
 #endif
   for (int i = 0; i < 8; i++) p[8u * (uint32_t)i + lane] = (uint32_t)v[i];
 }
+// goal-arc13 timing of the copy's store form: 128 bytes to local memory by inline vISA, d32x32t (STA 1) or
+// d64x16t (STA 2, IGC's own choice).
+template <bool HW> inline void slm_write128(uint32_t *p, v4u v, uint32_t lane) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_W_STA)
+  if constexpr (HW) {
+    const uint32_t a = (uint32_t)(uintptr_t)(__attribute__((opencl_local)) uint32_t *)p;
+#if PEARL_W_STA == 1
+    __asm__ volatile("lsc_store.slm (M1_NM, 1) flat[%0]:a32 %1:d32x32t" : : "rw"(a), "rw"(v));
+#else
+    __asm__ volatile("lsc_store.slm (M1_NM, 1) flat[%0]:a32 %1:d64x16t" : : "rw"(a), "rw"(v));
+#endif
+    return;
+  }
+#endif
+  for (int i = 0; i < 4; i++) p[8u * (uint32_t)i + lane] = v[i];
+}
 // goal-arc13: 512 bytes each way as two 256-byte messages (d64x64t does not assemble on DG2).
 typedef int v16i __attribute__((ext_vector_type(16)));
 template <bool HW> inline v16i g_read512(const int8_t *p, uint32_t lane) {
@@ -1802,7 +1818,7 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // goal-arc13: A' and B' read as 256-byte messages by inline vISA (PEARL_W_AA, PEARL_W_BA; see slm_read256): IGC
 // splits every 256-byte block read into two 128-byte messages. Together 97.9-98.0 against 96.1-96.5 TH/s (card
 // 5); BA alone is level. PEARL_W_NOAA, PEARL_W_NOBA for the old forms. AA needs the 32-bit address sums.
-#if !defined(PEARL_W_NOAA) && defined(PEARL_W_LO32) && defined(PEARL_W_D4)
+#if !defined(PEARL_W_NOAA) && defined(PEARL_W_LO32)
 #define PEARL_W_AA
 #endif
 #if !defined(PEARL_W_NOBA)
@@ -2131,6 +2147,23 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     };
     v8i ca = ca_load((uint32_t)KPS);
 #endif
+#if defined(PEARL_W_C2)
+    static_assert(KPS == 4 && kBps == 1 && !kHalf, "PEARL_W_C2: one copy block a sub-group, a chunk a slot");
+    cvec c2n[2];
+    each<2>([&](int j) { c2n[j] = cp_read(lo32(bHi, bLo[0] + (uint32_t)(KPS + j) * 2048u), lane); });
+#endif
+#if defined(PEARL_W_CB)
+    // goal-arc13 (PEARL_W_CB): the copy's store as one 256-byte message every other k-step (the local store
+    // is what the copy costs: no store 103.3 at 2,000 MHz, no load 97.0, against 98.5), its load as IGC's
+    // 128-byte block read every k-step. Sub-group sgl copies pieces 2 (sgl % 8), + 1 of k-step kp + sgl / 8.
+    static_assert(KPS == 4 && kBps == 1 && !kHalf && CW == 1, "PEARL_W_CB: 8 by 1 work-group, a chunk a slot");
+    const uint32_t cbLo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride) + (sgl & 7u) * 256u;
+    auto cb_load = [&](uint32_t kp, uint32_t half) {
+      const uint32_t k = kp + (sgl >> 3);
+      return ring_read_global<HW>(lo32(bHi, cbLo + (k < 64u ? k : 63u) * 2048u + half * 128u), lane);
+    };
+    v4u cbl = cb_load((uint32_t)KPS, 0u), cbh = cb_load((uint32_t)KPS, 1u);
+#endif
 #if defined(PEARL_W_GA)
     // goal-arc13 (PEARL_W_GA): the copy once a chunk as one 512-byte load and one 512-byte store (inline vISA):
     // a chunk's B' is 8 KB in a row both in memory and in its ring slot, and sub-group sgl copies its 512-byte
@@ -2286,6 +2319,36 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
         auto copy_step = [&]() {
+#if defined(PEARL_W_C2)
+          // goal-arc13 (PEARL_W_C2): the copy at even k-steps only, two k-steps' pieces at a time (two 128-byte
+          // loads and two 128-byte stores), none at odd ones. PASS, but 94.3-94.4 against 98.4-98.5 (card 5).
+          // goal-arc13 prices of the copy on spare23's code (card 5, 98.5 for the real one): no copy (NOCOPY +
+          // FILLALL) 104.8; no store (NOPUT + FILLALL) 103.3 at the 2,000 MHz cap, 172 W; no load (NOFETCH) 97.0;
+          // half the copy, 128-byte messages at even k-steps (STE, timing) 105.3; stores of 64 bytes (STH) 94.7 at
+          // 2,000 MHz; the store by inline vISA (STA 1 / 2) 98.9-99.2; 256-byte stores every other k-step with
+          // 128-byte loads (CB) 94.5; CA at k-steps 1, 3 (CAP 1) 95.5. So the local store's bytes cost the energy,
+          // and moving them in fewer or bigger messages stalls: only fewer bytes a MAC can help.
+          if (s % 2u == 0u) {
+            const uint32_t kb = ks + (uint32_t)KPS;  // kb, kb + 1: one slot
+            cp_write(mine(0) + at(kb), c2n[0], lane);
+            cp_write(mine(0) + at(kb) + kStep, c2n[1], lane);
+            each<2>([&](int j) {
+              const uint32_t k = kb + 2u + (uint32_t)j;
+              c2n[j] = cp_read(lo32(bHi, bLo[0] + (k < 64u ? k : 63u) * 2048u), lane);
+            });
+          }
+          return;
+#endif
+#if defined(PEARL_W_CB)
+          if (s % 2u == 0u) {
+            const v8i w = (v8i)__builtin_shufflevector(cbl, cbh, 0, 1, 2, 3, 4, 5, 6, 7);
+            slm_write256<HW>(R + at(ks + (uint32_t)KPS) + (sgl >> 3) * kStep + (sgl & 7u) * 64u, w, lane);
+            cbl = cb_load(ks + (uint32_t)KPS + 2u, 0u);
+          } else {
+            cbh = cb_load(ks + (uint32_t)KPS + 1u, 1u);
+          }
+          return;
+#endif
 #if defined(PEARL_W_GA)
           if (s == (uint32_t)(PEARL_W_GA)) {
             slm_write512<HW>(R + ((ch + 1u) % kSlots) * kSlotWords + sgl * 128u, ga, lane);
@@ -2294,10 +2357,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           return;
 #endif
 #if defined(PEARL_W_CA)
-          if (s % 2u == 0u) {
-            // k-steps ks + 4 and ks + 5 lie in the same slot (s is 0 or 2)
-            slm_write256<HW>(R + at(ks + (uint32_t)KPS) + (sgl >> 3) * kStep + (sgl & 7u) * 64u, ca, lane);
-            ca = ca_load(ks + (uint32_t)KPS + 2u);
+#ifndef PEARL_W_CAP
+#define PEARL_W_CAP 0  // the k-steps of a chunk (0, 2 or 1, 3) the copy runs at
+#endif
+          if (s % 2u == (uint32_t)(PEARL_W_CAP)) {
+            // k-steps kb and kb + 1 lie in the same slot
+            const uint32_t kb = ks + (uint32_t)KPS - (uint32_t)(PEARL_W_CAP);
+            slm_write256<HW>(R + at(kb) + (sgl >> 3) * kStep + (sgl & 7u) * 64u, ca, lane);
+            ca = ca_load(kb + 2u);
           }
           return;
 #endif
@@ -2356,7 +2423,15 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // goal-arc8 timing (wrong results): the copy loads without storing.
             sink ^= v[0] ^ v[3];
 #else
+#if defined(PEARL_W_STH) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+            // goal-arc13 timing (wrong results): the store writes only the first 64 bytes of each piece.
+            __spirv_SubgroupBlockWriteINTEL((__attribute__((opencl_local)) uint32_t *)(mine(i) + at(ks + kAhead * (uint32_t)KPS)),
+                                            v2u{next[i][0], next[i][1]});
+#elif defined(PEARL_W_STA)
+            slm_write128<HW>(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
+#else
             cp_write(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
+#endif
 #endif
 #if defined(PEARL_W_CPD2)
             next[i] = next2[i];
@@ -2366,7 +2441,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
           });
         };
-#if !defined(PEARL_W_CLATE)
+#if defined(PEARL_W_STE)
+        // goal-arc13 timing (wrong results; use with FILLALL): the copy only at even k-steps, half its stores and
+        // loads in the same 128-byte messages, as a work-group of half the columns would need.
+        if (s % 2u == 0u) copy_step();
+#elif !defined(PEARL_W_CLATE)
         copy_step();
 #endif
 #endif
@@ -2384,6 +2463,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // goal-arc8: B' straight from memory (no ring), k-step kd; with PEARL_W_ROTW the windows reading a line
           // come at different k-steps, so all but the first may find it in L1. Use with NOCOPY and NOBAR.
           (void)off;
+#if defined(PEARL_W_GBA) && defined(PEARL_W_LO32)
+          // goal-arc13: the same as four 256-byte messages (inline vISA), no ring, no copy, no barrier.
+          {
+            const uint32_t gl = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride) + kd * 2048u + sgi * 1024u;
+            each<4>([&](int cb) { dst[cb] = g_read256<HW>(lo32(bHi, gl + (uint32_t)cb * 256u), lane); });
+            return;
+          }
+#endif
           each<4>([&](int cb) {
             const int8_t *g = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)kd * 2048u
                               + (size_t)(sgi * 4u + (uint32_t)cb) * 256u;
@@ -2618,9 +2705,19 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       each<4>([&](int q) {
         t4[q] = (c[q >> 1][(q & 1) * 4] ^ c[q >> 1][(q & 1) * 4 + 1]) ^ (c[q >> 1][(q & 1) * 4 + 2] ^ c[q >> 1][(q & 1) * 4 + 3]);
       });
+#if defined(PEARL_W_AA)
+      if constexpr (kSplit) {
+        // goal-arc13 (8x8 DPAS with AA): accumulators with rb & 1 == 0 hold row class 0 in all 8 elements.
+        const v8i u0 = t4[0] ^ t4[2], u1 = t4[1] ^ t4[3];
+        x0 = (uint32_t)(((u0[0] ^ u0[1]) ^ (u0[2] ^ u0[3])) ^ ((u0[4] ^ u0[5]) ^ (u0[6] ^ u0[7])));
+        x1 = (uint32_t)(((u1[0] ^ u1[1]) ^ (u1[2] ^ u1[3])) ^ ((u1[4] ^ u1[5]) ^ (u1[6] ^ u1[7])));
+      } else
+#endif
+      {
       const v8i t = (t4[0] ^ t4[1]) ^ (t4[2] ^ t4[3]);
       x0 = (uint32_t)((t[0] ^ t[1]) ^ (t[2] ^ t[3]));
       x1 = (uint32_t)((t[4] ^ t[5]) ^ (t[6] ^ t[7]));
+      }
 #if defined(PEARL_W_RD2)
       // goal-arc12 timing: a second tree over the accumulators (sums, so it is not the XOR tree again), ANDed with
       // a runtime zero: the readout's instructions twice, the same results. 84.8 against 93.55 (card 5, 8x8 DPAS,
