@@ -106,20 +106,21 @@ struct FoldInfo {
   const char *name;
   uint32_t cap;
   uint32_t bm, bn;  // the fold's tile: rows of A', columns (rows of B')
+  uint32_t slab;    // bytes of k it stages at a time, which the per-tile operand layout follows
   const char *text;
 };
 const FoldInfo kFolds[] = {
-    {"ref", PEARL_AMD_CAP_REF, PEARL_AMD_REF_BM, PEARL_AMD_REF_BN,
+    {"ref", PEARL_AMD_CAP_REF, PEARL_AMD_REF_BM, PEARL_AMD_REF_BN, PEARL_AMD_SLAB,
      "ref 32x64, dot products from LDS"},
-    {"mfma16", PEARL_AMD_CAP_MFMA16, PEARL_AMD_BM, PEARL_AMD_BN,
+    {"mfma16", PEARL_AMD_CAP_MFMA16, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x16_i8"},
-    {"mfma8", PEARL_AMD_CAP_MFMA8, PEARL_AMD_BM, PEARL_AMD_BN,
+    {"mfma8", PEARL_AMD_CAP_MFMA8, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "mfma 128x256, 4 waves of 64x128, v_mfma_i32_32x32x8_i8"},
-    {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN,
+    {"wmma11", PEARL_AMD_CAP_WMMA11, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA3)"},
-    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN,
+    {"wmma12", PEARL_AMD_CAP_WMMA12, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_SLAB,
      "wmma 128x256, 8 waves of 64x64, v_wmma_i32_16x16x16_iu8 (RDNA4)"},
-    {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN,
+    {"dot4", PEARL_AMD_CAP_DOT4, PEARL_AMD_BM, PEARL_AMD_BN, PEARL_AMD_DOT4_SLAB,
      "dot4 128x256, 8 waves of 64x64, v_dot4 from registers"},
 };
 const int kFoldCount = (int)(sizeof kFolds / sizeof kFolds[0]);
@@ -1248,8 +1249,8 @@ void draw_noise(Ctx *ctx, bool isA) {
   hipLaunchKernelGGL(pearl_gen_perm, dim3(draw_blocks((k + 7) / 8)), dim3(kDrawThreads), 0, ctx->work, seed,
                      label, perm, k, rank);
   // The matrix folds read the noised operands in per-tile order under PEARL_AMD_TILED (see
-  // pearl_amd_fold.h): tiles of the fold's rows (A') or columns (B'), each k / PEARL_AMD_SLAB
-  // slabs of [tile rows][slab]. The reference fold reads them row-major.
+  // pearl_amd_fold.h): tiles of the fold's rows (A') or columns (B'), each k / slab slabs of
+  // [tile rows][slab], with the fold's own slab (FoldInfo::slab). The reference fold reads them row-major.
   // Only for whole tiles: a profile whose rows aren't (m = 64, say) would be written past the
   // end of the buffer. pearl_host_submit refuses such a profile for the matrix folds anyway,
   // but the first draw runs before that, in set_job.
@@ -1258,7 +1259,7 @@ void draw_noise(Ctx *ctx, bool isA) {
                            ? &kFolds[ctx->fold] : nullptr;
   if (kPow2 && tf) {
     uint32_t kbLog2 = 0;
-    while ((1u << kbLog2) < PEARL_AMD_SLAB) kbLog2++;
+    while ((1u << kbLog2) < tf->slab) kbLog2++;
     hipLaunchKernelGGL(pearl_materialize16_tiled, dim3(draw_blocks(len / 16)), dim3(kDrawThreads), 0, ctx->work,
                        src, (const int8_t *)dense, (const uint32_t *)perm, dst, rows, kLog2, rank, kbLog2,
                        isA ? tf->bm : tf->bn, readVecs, fillWord);
@@ -1507,7 +1508,7 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const FoldInfo &f = kFolds[ctx->fold];
   const uint32_t k = ctx->profile.k, rank = ctx->profile.rank;
   const uint32_t chunks = rank ? k / rank : 0;
-  // Every fold reads whole PEARL_AMD_SLAB-byte slabs, a chunk at a time, and writes each of
+  // Every fold reads whole slabs (FoldInfo::slab bytes), a chunk at a time, and writes each of
   // the 16 transcript words at most once. The reference fold holds one chunk of a row in
   // LDS, 128 bytes at most.
   // Under PEARL_AMD_TILED the matrix folds need the per-tile operands, which only the
@@ -1520,14 +1521,14 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // __GFX12__, so the macro here would say nothing about the card.
   const uint32_t maxChunks = ctx->kwrap ? PEARL_AMD_KWRAP_CHUNKS : PEARL_JACKPOT_BUCKETS;
   const bool chunksOk = chunks <= maxChunks && (chunks <= PEARL_JACKPOT_BUCKETS || chunks % PEARL_JACKPOT_BUCKETS == 0u);
-  if (rank == 0 || k % rank != 0 || rank % PEARL_AMD_SLAB != 0 || !chunksOk
+  if (rank == 0 || k % rank != 0 || rank % f.slab != 0 || !chunksOk
       || (f.cap == PEARL_AMD_CAP_REF && rank > 128u)
       || (ctx->rank128 && f.cap != PEARL_AMD_CAP_REF && rank != PEARL_FOLD_RANK)   // PEARL_AMD_CRANK (caps)
       || (PEARL_AMD_TILED && f.cap != PEARL_AMD_CAP_REF && !kPow2)) {
     if (err && err_len)
       snprintf(err, err_len, "the AMD folds need rank a multiple of %u (at most 128 for the reference fold%s) "
                "dividing k, at most %u chunks%s, and k a power of two (got rank %u, k %u)",
-               (unsigned)PEARL_AMD_SLAB, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
+               (unsigned)f.slab, ctx->rank128 ? ", exactly 128 for this card's matrix fold" : "",
                (unsigned)maxChunks, ctx->kwrap ? " (a multiple of 16 past 16)" : "", rank, k);
     return false;
   }
