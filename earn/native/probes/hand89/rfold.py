@@ -221,7 +221,10 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # accumulators (register banks) or the steps themselves?
            rdx=0,
            # rpr (goal-nvk14, correct): which two sums a readout step reads; see the readout.
-           rpr=0)
+           rpr=0,
+           # prr=1 (goal-nvk15): a gather's first PRMT marks both its sources for the reuse latch, so the pair's
+           # second PRMT (same sources) reads neither from the register file (gfold.emit). Register-file energy.
+           prr=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.

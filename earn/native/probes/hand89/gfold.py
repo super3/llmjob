@@ -460,6 +460,13 @@ def emit(G, iwait, cfg, bfalt=None):
                 x.yld = bool(cfg["ly"])
                 if cfg["pol"] == 0:
                     x.stall = max(x.stall, cfg["pad"] - ist - (len(items) - 1))
+            # prr (rfold.py, goal-nvk15): a gather's PRMT pair reads the same two registers back to back; the first
+            # keeps both in the reuse latch (slots a and c), as ptxas marks such pairs, so the second reads neither
+            # from the register file.
+            if cfg.get("prr") and x.text.startswith("PRMT") and k + 1 < len(items) and items[k + 1].text.startswith("PRMT"):
+                s1, s2 = x.text.split(","), items[k + 1].text.split(",")
+                if s1[1] == s2[1] and s1[3] == s2[3]:
+                    x.reuse = 5
             out.append(x)
     out.append(Ins("@P1 BRA .L0", stall=5))
     # After the last chunk: the readout's tail once more.

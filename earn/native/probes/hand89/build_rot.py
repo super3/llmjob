@@ -46,9 +46,13 @@ import asm89  # noqa: E402
 
 ARCHS = ("sm_89", "sm_86", "sm_120")
 # rfold.py keys an architecture takes beyond the defaults. On an RTX 3090 the IMMA without their yield flag
-# (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November); the RTX 40 file keeps the
-# loop its hash was verified with. sm_120 is compiled from C, not built by rfold.py.
-ARCH_KEYS = {"sm_89": [], "sm_86": ["iy=0"], "sm_120": []}
+# (iy=0) mined 141.6 TH/s against 141.0 (two races on one Salad PC, 12 November). On rig01's RTX 4090 the
+# readout reading each IMMA's sums as (0, 2) and (1, 3) on the chain of the other register parity, so that no
+# step reads two registers of one bank (rpr=2), with U8 IMMA (u8=1), mined 336.92, 336.92 and 336.91 TH/s
+# against 335.92, 336.10 and 336.07 for the loop before (hashrate.js, 12 November); on a Salad RTX 3090 the same
+# two keys with iy=0 mined 124.35, 124.46 and 124.42 against 123.62, 123.91 and 123.81 for iy=0 alone. sm_120
+# is compiled from C, not built by rfold.py.
+ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1"], "sm_86": ["iy=0", "rpr=2", "u8=1"], "sm_120": []}
 
 
 def toolkit(nvcc):
