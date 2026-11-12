@@ -3389,3 +3389,64 @@ An ALU instruction a warp a k-step costs about 0.55 W here; OneZeroMiner is abou
 The readout's pipe cost is its reads of the accumulator registers, and which registers a step reads decides it;
 the figures fit register banks by number mod 4 (in `rpr=2` every step's three registers differ mod 4). `rpr=2`
 passes 16,384 of 16,384 at k 2048 and 512 of 512 at k 65536; it is not yet raced or shipped.
+
+### The readout without bank collisions, shipped; B drawn once level at the cap (RTX 4090 and 3090, 2026-11-12)
+
+Fifteenth round. `rpr=2 u8=1` (the readout reads each IMMA's sums as (0, 2) and (1, 3), on the chain of the other
+register parity, so no step reads two registers of one bank; U8 IMMA) is now in the RTX 40 and RTX 30 builds
+(`build_rot.py`'s `ARCH_KEYS`).
+
+| Card | Loop | hashrate.js, alternating 120 s legs | Checks |
+|---|---|---|---|
+| RTX 4090, rig01, 450 W | before | 335.92, 336.10, 336.07 TH/s | |
+| | `rpr=2 u8=1` | 336.92, 336.92, 336.91 (+0.26%) | verify-hits 400 of 400 (12.6 and 12.8 files); probe 16,384/16,384 at k 2048 |
+| RTX 3090, Salad, 290 W | `iy=0` | 123.62, 123.91, 123.81 | |
+| | `iy=0 rpr=2 u8=1` | 124.35, 124.46, 124.42 (+0.47%) | verify-hits 400 of 400 |
+
+CI's CUDA 12.8 build of the RTX 40 file has the hash the card verified (`a5a7931e...`), as `k10/as128.py`
+predicted from the local 12.6 file; the RTX 30 file built on the Salad PC equals rig01's 12.6 build in 12.8 form.
+On Kryptex, with the core finding the RTX 40 file beside it: 336.41 TH/s by the miner's count over 300 s (2599 MHz),
+18 shares accepted, none rejected (the loop before: 335.8).
+
+**Register banks, the rest of the idea.** With `rpr=2` no ALU step of the loop reads two registers of one bank
+(number mod 4) but the six `STS.128` (four data registers and an address). The gathers' `IADD3` read q and q+2,
+q+1 and q+3, and the `PRMT` q and q+1: no collisions there. Across a gap, an IMMA reads A and C on all four banks
+and B on banks 0,1 or 2,3 in turn, and with the chains in R2 and R3 every R3 step has to read the bank-2 sum and
+every R2 step the bank-3 sum; so a gap whose IMMA reads B on 2,3 has five reads on those banks whatever the step
+order. Four on every bank would need the chains on alternating banks, which two fixed chain registers cannot
+give. Under that model `rpr=2` is already the best placement.
+
+**Watts at a locked 2400 MHz** (settled runs, 0.7 W apart at most):
+
+| Stream | Pipe | Watts |
+|---|---|---|
+| shipped before (`z0`) | 98.96% | 346.2, 346.4 |
+| `rpr=2 u8=1` | 99.18%, 99.19% | 345.0, 345.7 |
+| + IMMA keep A in the reuse latch (`ru=1`) | 99.18% | 346.1 |
+| + a gather's PRMT pair shares its sources through the latch (`prr=1`, new) | 99.18% | 346.1 |
+| + both | 99.18% | 345.9, 345.6 |
+| B drawn once (`bx7`) | 97.61% | 338.8 |
+| B drawn once with `rpr=2 u8=1` (`bxr`) | 98.37% | 339.4 |
+| (OneZeroMiner, fourteenth round) | about 99.4% | 339.0 |
+
+Reuse marks buy nothing. B drawn once draws OneZeroMiner's watts at a locked clock.
+
+**At the 450 W cap what counts is pipe x clock, and B drawn once is level there.**
+
+| Loop | Check | Pipe | Clock | Pipe x clock |
+|---|---|---|---|---|
+| `rpr=2 u8=1` | 512/512 | 99.18% | 2596, 2597 MHz | 2575, 2576 |
+| `bxr` (six runs) | 512/512 | 98.35% | 2612 to 2615 | 2569 to 2572 |
+| `bxr`, stores from gap 4 / 12 (`bsg`) | 512/512 | 98.31 / 98.35% | 2616 | 2572 / 2573 |
+| `bxr` without its syncs (TIMING ONLY) | wrong | 98.64% | 2600 | 2565 |
+
+The 6 W it saves at 2400 MHz come back as only 17 MHz at the cap, and its pipe gives 0.8 points: level within
+0.2%. Its syncs cost 0.3 points of pipe but nothing at the cap (without them the clock falls as far). Watts at a
+locked clock rank designs that keep the pipe; when the pipe moves, only the cap's pipe x clock settles it.
+
+**What B drawn once's exchange costs** (TIMING ONLY streams of `bxr`, 450 W, pipe only: without the partner's
+loads B changes every other turn and draws less, so their clocks are not comparable): no exchange loads 98.59%;
+no loads and no syncs 98.79%; `rpr=2 u8=1` 99.18%. Even with its loads and syncs free, B drawn once would sit 0.4
+points under the shipped pipe, from its stores, the transcript in local memory and the late first-turn stores;
+at 2614 MHz that is at most +0.2% over the shipped loop. Closed again. (`bnst=1` with `bord=2` deadlocks: the
+probe spun at 85 W until killed. Do not run it.)

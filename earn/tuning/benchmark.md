@@ -421,6 +421,19 @@ into the same code as for sm_89, byte for byte, so the hand loop and `asm89.py` 
 - Shipped as the opt-in for RTX 30 (`--rotation-fold`, `LLMJOB_ROTATION_FOLD=1`): `pearl_rot_sm86.cubin`, built
   and hash-checked in CI beside the sm_89 file, loaded by the host on compute 8.6.
 
+### Salad, 12 November: the readout without bank collisions on RTX 30 (branch `goal/nv-15`)
+
+The rotation fold's readout now reads each IMMA's sums as (0, 2) and (1, 3), on the chain of the other register
+parity, with U8 IMMA (`rfold.py rpr=2 u8=1`, with RTX 30's `iy=0`). One Salad RTX 3090 (PC 62b4dc19, 290 W
+limit, 84 C, 1506 to 1515 MHz), hashrate.js, alternating 120 s legs, CUDA 12.8 build:
+
+| Loop | TH/s |
+|---|---|
+| `iy=0` (shipped before) | 123.62, 123.91, 123.81 |
+| `iy=0 rpr=2 u8=1` | 124.35, 124.46, 124.42 (+0.47%) |
+
+verify-hits 400 of 400 (469 hits, 24 salts). Now the RTX 30 build (cubin 1b391752...).
+
 ## RTX 40-series
 
 Vast, 10 October.
@@ -729,6 +742,18 @@ which needs root, are not; nothing here was compiled or run on Linux), a rig of 
 any card but the 4090. The busy loops stand in for other cards' spinning threads on Windows' scheduler, not Linux's.
 The AMD and Intel hosts wait their own way and were not touched. `nvidia-smi`, which the app runs every 5 s for
 temperatures, took 39 ms of CPU a call here (0.008 cores); on a slow CPU with 8 cards it will be more.
+
+### rig01, 12 November: the readout without bank collisions, and B drawn once at the cap (branch `goal/nv-15`)
+
+RTX 4090, 450 W. `rfold.py rpr=2 u8=1` (see the RTX 30 entry) against the loop shipped before, hashrate.js,
+alternating 120 s legs, one addon: 335.92, 336.10, 336.07 TH/s before; 336.92, 336.92, 336.91 after (+0.26%,
+2597 MHz). verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI with the core finding
+the file beside it: 336.41 TH/s by the miner's count over 300 s, 18 shares accepted, none rejected. Now the
+RTX 40 build (cubin a5a7931e..., which CI makes on Linux and Windows). OneZeroMiner's 341.9 is 1.5% ahead.
+
+B drawn once with the same readout draws OneZeroMiner's 339 W at a locked 2400 MHz (ours 345), but at the cap it
+runs 98.35% of the pipe at 2612 to 2615 MHz against 99.18% at 2597: level within 0.2%. Not shipped. Tables in
+`native/probes/README.md`, "The readout without bank collisions, shipped; B drawn once level at the cap".
 
 ## RTX 50-series
 
