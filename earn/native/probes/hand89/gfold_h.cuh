@@ -150,13 +150,36 @@ static __device__ void gp_blake3_keyed64(const uint32_t key[8], const uint32_t b
 #define GP_CAT(a, b) GP_CAT2(a, b)
 #define GP_LOOPFN GP_CAT(GP_FN, _loop)
 
-// The tile's fold. It takes nothing from the kernel but these two values.
-#if GP_BX
-static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks, uint32_t *trl) {
-#else
-static __device__ __noinline__ void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
+// GP_ROTC 1: the rotation fold (hand89/rfold.py's) written in C and compiled, for cards the hand loop is not
+// written for (sm_120). It reads gprobe's `rot` 2 offsets: run the probe with rot 2. Needs GP_STAGE=24576.
+#ifndef GP_ROTC
+#define GP_ROTC 0
 #endif
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+#if GP_ROTC && GP_STAGE < 24576
+#error "GP_ROTC needs GP_STAGE=24576"
+#endif
+
+// The tile's fold. It takes nothing from the kernel but these two values.
+// GP_INLINE=1 (with GP_ROTC): the loop inlined into the kernel, as pearl_rot.cu's ROT_INLINE.
+#if GP_ROTC && defined(GP_INLINE) && GP_INLINE
+#define GP_LOOP_ATTR __forceinline__
+#else
+#define GP_LOOP_ATTR __noinline__
+#endif
+#if GP_BX
+static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks, uint32_t *trl) {
+#else
+static __device__ GP_LOOP_ATTR void GP_LOOPFN(const uint4 *__restrict__ offs, uint32_t chunks) {
+#endif
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800 && GP_ROTC
+  // The rotation fold, compiled: the miner's sm_120 loop (src/pearl_rot_c.inc), word for word.
+#define RC_MT GP_MT
+#define RC_TR GP_TR
+#define RC_STG GP_STG
+#define RC_FILL4 GP_FILL4
+#define RC_FLAGS GP_ROTC
+#include "../../src/pearl_rot_c.inc"
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 #if GP_DIRECT
   constexpr uint32_t MT = GP_MT, NB = 8u;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;

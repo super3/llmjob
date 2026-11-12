@@ -621,7 +621,7 @@ describe('--gpu-wait', () => {
   });
 });
 
-// The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30 and 40 cards.
+// The rotation fold (shared/foldCheck): an opt-in second kernel for RTX 30, 40 and 50 cards.
 describe('--rotation-fold', () => {
   test('is off by default, and on with the flag', () => {
     expect(parseCliArgs(['-a', ADDR]).settings.rotationFold).toBe(false);
@@ -642,11 +642,11 @@ describe('--rotation-fold', () => {
     const text = USAGE.slice(at, USAGE.indexOf('      --xmr-address')).replace(/\s+/g, ' ');
     expect(at).toBeGreaterThan(0);
     for (const part of [
-      'Experimental, RTX 30 and 40 cards only',
-      'About 6% faster on an RTX 4090 (335.8 against 317.4 TH/s at 450 W) and an RTX 3090 (141.6 against 133.1 at 390 W)',
+      'Experimental, RTX 30, 40 and 50 cards only',
+      'About 6% faster on an RTX 4090 (335.8 against 317.4 TH/s at 450 W) and an RTX 3090 (141.6 against 133.1 at 390 W), about 2% on an RTX 5090 (401.9 against 393.7 at 575 W)',
       'about 1.3 GB more card memory',
       'Off by default.',
-      'If the card is not an RTX 30 or 40',
+      'If the card is not an RTX 30, 40 or 50',
       'checks 24 of the fold\'s hits on the CPU before it trusts it, and every share after that',
       'the card mines on the normal kernel and the log says why',
       'In the desktop app: LLMJOB_ROTATION_FOLD=1 in its environment.',

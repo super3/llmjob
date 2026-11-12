@@ -185,7 +185,8 @@ jobs:
             # list and absent from 12.8.1's), and the Windows installer is given
             # exactly the list it installs. Named explicitly so nvcc has its
             # headers and its back end.
-            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump"]'
+            # nvdisasm for the rotation fold's RTX 50 cubin (built after the addon).
+            subpackages: '["nvcc", "crt", "nvvm", "nvptxcompiler", "cudart", "nvrtc", "cuobjdump", "nvdisasm"]'
             gencode: >-
               -gencode arch=compute_89,code=sm_89
               -gencode arch=compute_120,code=sm_120
@@ -799,6 +800,53 @@ jobs:
           fi
           exit "$bad"
 
+      # The rotation fold's cubin for RTX 50 cards, pearl_rot_sm120.cubin. No hand loop: src/pearl_rot.cu's sm_120
+      # branch is the fold written in C (src/pearl_rot_c.inc), and the file is the kernel as ptxas compiles it.
+      # Built here, by the CUDA 13 job, because 13.3's code for it is the one raced on an RTX 5090 (the rigs that
+      # load pearl_core_cu13.node are the RTX 50 rigs on driver 580 or newer). build_rot.py --arch sm_120 checks
+      # that nvdisasm reads it and that its loop holds the fold, then its hash against src/pearl_rot_sm120.ref.
+      # It rides in this job's artifact, beside pearl_core_cu13.node. Not blocking, for the reasons above.
+      - name: Build the rotation fold's cubin for RTX 50 (opt-in, not blocking)
+        id: rot120
+        if: matrix.variant == '-cu13'
+        continue-on-error: true
+        working-directory: earn/native
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v nvdisasm > /dev/null && [ "$RUNNER_OS" = Linux ]; then
+            dnf install -y --setopt=install_weak_deps=False cuda-nvdisasm-13-3
+          fi
+          py=python3
+          [ "$RUNNER_OS" = Windows ] && py=python
+          rc=0
+          "$py" -X utf8 probes/hand89/build_rot.py nvcc nvdisasm rot-build/sm120 --arch sm_120 || rc=$?
+          if [ "$rc" != 0 ] || [ ! -f rot-build/sm120/pearl_rot_sm120.cubin ]; then
+            msg="no pearl_rot_sm120.cubin: build_rot.py --arch sm_120 failed on $RUNNER_OS (exit $rc). This build ships without the rotation fold for RTX 50; a rig that asks for it mines on the release fold. The step's log says which check failed."
+            echo "::error::$msg"
+            echo "**Error:** $msg" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          cp rot-build/sm120/pearl_rot_sm120.cubin build/Release/pearl_rot_sm120.cubin
+          echo "built: $(ls -l build/Release/pearl_rot_sm120.cubin)"
+          # The host's own hash of it (src/pearl_rot_path.h) must be the build's (Linux: no compiler for the
+          # check program is set up on the Windows runner here).
+          if [ "$RUNNER_OS" = Linux ]; then
+            d=$(mktemp -d)
+            g++ -std=c++17 -O1 -I src probes/rot-path-check.cc -o "$d/rot-path-check" -ldl
+            host=$("$d/rot-path-check" hash rot-build/sm120/pearl_rot_sm120.cubin)
+            build=$(python3 probes/hand89/asm89.py hash rot-build/sm120/pearl_rot_sm120.cubin)
+            echo "the host's hash: $host; the build's: $build"
+            [ "$host" = "$build" ] || { echo "::error::the host's hash of pearl_rot_sm120.cubin is not the build's"; exit 1; }
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always() && matrix.variant == '-cu13'
+        with:
+          name: pearl-rot-build-sm120-${{ matrix.os }}
+          path: earn/native/rot-build/sm120
+          if-no-files-found: warn
+
       # The host finds that cubin beside the addon, wherever the addon was loaded from
       # (src/pearl_rot_path.h). On Linux that goes through the loader's record of the addon's
       # path, which this checks for real, with a stand-in addon and no GPU: loaded by a full
@@ -857,6 +905,7 @@ jobs:
             earn/native/build/Release/${{ matrix.file }}
             earn/native/build/Release/pearl_rot_sm89.cubin
             earn/native/build/Release/pearl_rot_sm86.cubin
+            earn/native/build/Release/pearl_rot_sm120.cubin
           if-no-files-found: error
 
   # The AMD core, pearl_core_hip.node (earn/native/amd and its README), for Radeon and Instinct

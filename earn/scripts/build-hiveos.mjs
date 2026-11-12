@@ -111,6 +111,14 @@ if (existsSync(rot86)) {
 } else {
   console.error('warning: no pearl_rot_sm86.cubin — --rotation-fold on an RTX 30 card will mine on the release fold');
 }
+// And for RTX 50 cards.
+const rot120 = join(dist, 'pearl_rot_sm120.cubin');
+if (existsSync(rot120)) {
+  copyFileSync(rot120, join(pkgDir, 'pearl_rot_sm120.cubin'));
+  chmodSync(join(pkgDir, 'pearl_rot_sm120.cubin'), 0o644);
+} else {
+  console.error('warning: no pearl_rot_sm120.cubin — --rotation-fold on an RTX 50 card will mine on the release fold');
+}
 
 // The AMD core, for --core amd in Extra config. Optional like the CUDA 13
 // core: without it the package mines on NVIDIA cards as before.

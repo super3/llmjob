@@ -38,6 +38,15 @@
 #define ROT_THREADS 256u
 #define ROT_FILL 63
 #define ROT_FILL4 ((uint32_t)ROT_FILL * 0x01010101u)
+// The sm_120 loop's form (pearl_rot_c.inc's RC_FLAGS) and whether it is inlined. The shipped form, raced on an
+// RTX 5090 (tuning/benchmark.md): 11 (B gathered a turn ahead, barriers after a chunk's first and last turn
+// only), inlined: 401.9 and 401.4 TH/s by hashrate.js against 393.7, 391.8 and 391.3 for the release fold.
+#ifndef ROT_C
+#define ROT_C 11
+#endif
+#ifndef ROT_INLINE
+#define ROT_INLINE 1
+#endif
 
 static __device__ __forceinline__ void rot_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d, uint32_t mx,
                                              uint32_t my) {
@@ -93,8 +102,25 @@ static __device__ void rot_blake3_keyed64(const uint32_t key[8], const uint32_t 
 
 // The tile's fold. It takes nothing from the kernel but these two values, which the hand-written loop reads
 // from the kernel's own parameters (the third and the fourth: keep them there).
-static __device__ __noinline__ void pearl_rot_fold_loop(const uint4 *__restrict__ offs, uint32_t chunks) {
-#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+// On sm_120 the loop is the compiled C fold, nothing is put in its place, and ROT_INLINE=1 lets ptxas inline it:
+// the offsets pointer then stays in the constant bank, which frees registers (the outlined loop spills one a chunk).
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200 && ROT_INLINE
+#define ROT_LOOP_ATTR __forceinline__
+#else
+#define ROT_LOOP_ATTR __noinline__
+#endif
+static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict__ offs, uint32_t chunks) {
+#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
+  // RTX 50 (sm_120): the rotation fold itself, compiled from C (pearl_rot_c.inc, which the probe's GP_ROTC
+  // builds too). The hand loop is written in sm_89's instructions; this cubin ships as ptxas makes it, with no
+  // loop put in. ROT_C picks its form (pearl_rot_c.inc's RC_FLAGS).
+#define RC_MT ROT_MT
+#define RC_TR ROT_TR
+#define RC_STG ROT_STG
+#define RC_FILL4 ROT_FILL4
+#define RC_FLAGS ROT_C
+#include "pearl_rot_c.inc"
+#elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
   constexpr uint32_t MT = ROT_MT, NB = 8u;
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   const uint32_t trL = ROT_TR + tid * 64u;

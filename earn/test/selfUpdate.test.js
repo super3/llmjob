@@ -103,6 +103,7 @@ describe('planUpdate', () => {
         'pearl_core_cu13.node': 'https://x/core13',
         'pearl_rot_sm89.cubin': 'https://x/rot',
         'pearl_rot_sm86.cubin': 'https://x/rot86',
+        'pearl_rot_sm120.cubin': 'https://x/rot120',
         'pearl_core_hip.node': 'https://x/corehip',
         'llmjob-xmr-worker': 'https://x/xmr',
         'llmjob-earn-0.1.12.tar.gz': 'https://x/hiveos',
@@ -115,6 +116,7 @@ describe('planUpdate', () => {
       // The rotation fold's cubin, which belongs to this release's core.
       rotCubinUrl: 'https://x/rot',
       rotCubin86Url: 'https://x/rot86',
+      rotCubin120Url: 'https://x/rot120',
       // The versioned HiveOS package, which a CLI under HiveOS updates from.
       packageUrl: 'https://x/hiveos',
     });

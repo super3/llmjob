@@ -99,6 +99,8 @@ function planUpdate(opts) {
   const rotCubinUrl = rel.assets['pearl_rot_sm89.cubin'] || null;
   // Its RTX 30 (sm_86) cubin, the same way.
   const rotCubin86Url = rel.assets['pearl_rot_sm86.cubin'] || null;
+  // And its RTX 50 (sm_120) cubin.
+  const rotCubin120Url = rel.assets['pearl_rot_sm120.cubin'] || null;
   // The AMD core (pearl_core_hip.node, Linux releases from v0.6.8). Null on a
   // release without it; the updater then keeps the copy beside the binary,
   // since on an AMD rig it is the only core that can mine.
@@ -124,6 +126,7 @@ function planUpdate(opts) {
     coreCu13Url,
     rotCubinUrl,
     rotCubin86Url,
+    rotCubin120Url,
     coreHipUrl,
     xmrWorkerUrl,
     packageUrl,

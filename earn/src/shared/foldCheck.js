@@ -5,10 +5,11 @@
 // environment; off unless asked for). Pure: PearlMiner feeds it the hits and
 // the time (main/pearlMiner, _feedFoldCheck).
 //
-// Why a check. The rotation fold is a second kernel for RTX 30 and 40 cards,
-// about 6% faster than the normal one on an RTX 4090 and an RTX 3090
-// (tuning/benchmark.md). Its inner loop is written by hand, instruction by
-// instruction, and it has mined on few cards. A fold that is wrong on a card
+// Why a check. The rotation fold is a second kernel for RTX 30, 40 and 50 cards,
+// about 6% faster than the normal one on an RTX 4090 and an RTX 3090 and about
+// 2% on an RTX 5090 (tuning/benchmark.md). Its inner loop is written by hand,
+// instruction by instruction (on RTX 50 it is compiled from C), and it has mined
+// on few cards. A fold that is wrong on a card
 // still finds hashes that meet the target, so every share would be sent and
 // rejected, and a pool can ban an address for that.
 //

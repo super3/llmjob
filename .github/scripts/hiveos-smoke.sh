@@ -100,14 +100,14 @@ for f in h-manifest.conf h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux p
   [ -f "$f" ] || fail "the package has no $f"
 done
 # The optional files: a build can ship without each, and says so in its own run summary.
-for f in pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7 sycl/pearl_core_sycl.node; do
+for f in pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_core_hip.node llmjob-xmr-worker rocm/libamdhip64.so.7 sycl/pearl_core_sycl.node; do
   [ -f "$f" ] || echo "::warning::$image: the package has no $f, so it isn't tested"
 done
 mode_is() {
   [ ! -e "$1" ] || [ "$(stat -c %a "$1")" = "$2" ] || fail "$1 is mode $(stat -c %a "$1"), not $2"
 }
 for f in h-config.sh h-run.sh h-stats.sh llmjob-earn-cli-linux llmjob-xmr-worker; do mode_is "$f" 755; done
-for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_core_hip.node; do mode_is "$f" 644; done
+for f in h-manifest.conf pearl_core.node pearl_core_cu13.node pearl_rot_sm89.cubin pearl_rot_sm86.cubin pearl_rot_sm120.cubin pearl_core_hip.node; do mode_is "$f" 644; done
 # The Intel core's folder: the addon and the libraries it loads, and one program, the check tool.
 if [ -d sycl ]; then
   for f in sycl/*; do
