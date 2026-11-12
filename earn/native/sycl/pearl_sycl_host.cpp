@@ -192,6 +192,11 @@ struct Ctx {
 #if (defined(PEARL_SYCL_ESIMD) || defined(PEARL_W_SEPEPI)) && defined(PEARL_SYCL_XMX_JIT)
   uint32_t *dWords = nullptr;  // goal-arc9: the ESIMD xmx8w's words, 16 a region (PEARL_SYCL_ESIMD=1)
 #endif
+#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
+  uint32_t *dWordsS[2] = {nullptr, nullptr};  // goal-arc17: a words buffer a slot, the hash runs on `side`
+  sycl::event sepEv;
+  bool sepEvSet = false;
+#endif
 
   uint32_t rowsValid = 1, colsValid = 1, colBatch = 1, batch = 1;
   uint8_t jobKey[32] = {0};
@@ -742,6 +747,15 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       }
 #endif
 #if defined(PEARL_W_SEPEPI) && defined(PEARL_SYCL_XMX_JIT)
+#if defined(PEARL_W_SEPQ)
+      {
+        const int si = a.hits == ctx->dHits[1] ? 1 : 0;
+        if (!ctx->dWordsS[si]) ctx->dWordsS[si] = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
+        fold_xmxw_sep(q, a, groups, ctx->dWordsS[si], ctx->side, &ctx->sepEv);
+        ctx->sepEvSet = true;
+        break;
+      }
+#endif
       if (!ctx->dWords) ctx->dWords = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
       fold_xmxw_sep(q, a, groups, ctx->dWords);
       break;
@@ -760,6 +774,14 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
           fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
         else
           fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);
+        break;
+      }
+      if (env_str("PEARL_SYCL_WSEQ", "2") == "16" && (a.colBatch / 4u) % (16u * PEARL_W_CW) == 0u) {
+        fold_xmxw<true, 16>(q, a, groups);
+        break;
+      }
+      if (env_str("PEARL_SYCL_WSEQ", "2") == "8" && (a.colBatch / 4u) % (8u * PEARL_W_CW) == 0u) {
+        fold_xmxw<true, 8>(q, a, groups);
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") == "4" && (a.colBatch / 4u) % (4u * PEARL_W_CW) == 0u) {
@@ -1187,6 +1209,9 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
       // Let the card finish what it has, then rest it in proportion to the time that took (2 s at most, so
       // a wait for a job is not paid for twice).
       q.wait();
+#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
+      ctx->side->wait();
+#endif
       const auto now = std::chrono::steady_clock::now();
       if (ctx->dutyStarted) {
         auto rest = (now - ctx->dutyMark) * (100 - ctx->dutyPct) / ctx->dutyPct;
@@ -1198,6 +1223,16 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
     }
     q.memset(&ctx->dHits[si]->count, 0, sizeof(uint32_t));
     launch_fold(ctx, ctx->fold, fold_args(ctx, nonce_base, si, nullptr), fold_groups(ctx));
+#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
+    if (ctx->sepEvSet) {
+      ctx->sepEvSet = false;
+      const sycl::event he = ctx->sepEv;
+      s.done = ctx->side->submit([&](sycl::handler &h) {
+        h.depends_on(he);
+        h.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
+      });
+    } else
+#endif
     s.done = q.memcpy(ctx->hHits[si], ctx->dHits[si], sizeof(HitBuf));
   } catch (const std::exception &e) {
     return fail(err, err_len, std::string("SYCL error queuing a batch: ") + e.what());
@@ -1376,6 +1411,10 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
     const auto t0 = std::chrono::steady_clock::now();
     launch_fold(ctx, fold < 0 ? ctx->fold : fold, fold_args(ctx, nonce_base, 0, dTr), fold_groups(ctx));
     q.wait_and_throw();
+#if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
+    ctx->sepEvSet = false;
+    ctx->side->wait_and_throw();
+#endif
     if (ms) *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     q.memcpy(ctx->hHits[0], ctx->dHits[0], sizeof(HitBuf)).wait();
     if (hits) *hits = ctx->hHits[0]->count;

@@ -3739,6 +3739,64 @@ lines in L1). Every way of hiding B''s latency tried here loses in the full fold
 placement of the loads decide; IGC put several of the new loads' addresses and results in the same registers, so
 the loads wait on each other.
 
+### Arc rig, 12 November, evening: the hash tail, meetings, threads and prefetch (`goal/arc-17`)
+
+No new verified build. Card 5, `pearl_sycl_check --bench 8` taking turns (2 rounds) unless noted; control spare27's
+code, 100.3-100.4 TH/s at 1,955-1,995 MHz, 175 W (50.9 TH/s a GHz). Under duty: `bench.js` with
+`PEARL_SYCL_DUTY=75`, 20 s a run.
+
+**The hash at the end of a work-group costs 1.6% a clock, and nothing tried can hide it.** At 8 by 2 windows only one
+work-group fits an Xe-core (64 KB of local memory), so while it hashes the core's DPAS sit idle.
+
+| What | TH/s |
+|---|---|
+| no hash (`PEARL_W_NOEPI`, timing) | 101.4 (51.7 a GHz) |
+| one set a work-group (`PEARL_SYCL_WSEQ=1`) | 96.8-96.9 |
+| hash in a second kernel after the fold, one set (`SEPEPI` + `SEPBLK`) / without the hash kernel | 94.7-94.9 / 99.3-99.6 |
+| the hash kernel on the side queue, so the next fold need not wait (`PEARL_W_SEPQ`, bench.js full speed) | 93.1-93.6 against 98.9-99.1 |
+| no hash, one shared part buffer (`PEARL_W_PART1`), 2 / 4 / 8 / 16 sets a work-group | 101.8-101.9 / 102.2 / 97.0 / 74.7 |
+| 16 or 32 hasher sub-groups added to the work-group (not kept) | device lost, also with no hashing |
+
+- The driver does not run the hash kernel beside the next fold, so a second kernel only adds its time.
+- Extra sub-groups in an xmx8w work-group break the split DPAS (as the copier sub-groups did).
+- Longer work-groups are not worth it without hiding the hash: 4 sets gain 0.3%, 8 or more lose.
+
+**Meetings, gating, threads:**
+
+| What | TH/s |
+|---|---|
+| the group meets every 2 / 4 chunks (`PEARL_W_BARN`, unsafe timing) | 97.2 / 96.9 |
+| one more meeting mid-chunk (`PEARL_W_BARX`) | 100.2-100.3 |
+| every DPAS of a k-step gated on all its loads (`PEARL_W_GATE`; runs of 24-32 DPAS) | 88.7 |
+| CW 1 at KPS 2 (16 KB): 4 / 3 / 2 work-groups a core (`SLMPAD`) | 95.3-95.4 / 95.4-95.5 / 95.5-95.6 |
+| CW 2 at KPS 2, one set (32 KB): 2 work-groups a core / padded to 1 | 92.0 / 93.2 |
+
+More threads on a core hide nothing. The two runs of 16 DPAS a k-step are not the cost.
+
+**Prefetch** (inline vISA load with a null destination, one message each):
+
+| What | full speed | duty 75 |
+|---|---|---|
+| control | 100.3-100.4 | 76.9-77.0 |
+| A' of the work-group 2 k-steps ahead, 256 bytes a sub-group (`PEARL_W_PFA=2`) | 96.5 | 74.1 |
+| A' 4 ahead (`PFA=4`) | FAILS the check | |
+| the copy's block 4 / 8 k-steps ahead (`PEARL_W_PFB`) | 99.7 / - | 76.8-76.9 / 76.9 |
+
+Latency is not what costs, at full speed or under duty; the extra message does.
+
+**A 64-thread work-group** (RW 16 x CW 2, half the copy a MAC), one set, all at the ~2,000-2,029 MHz cap, so these
+compare as work a clock:
+
+| What | TH/s | W |
+|---|---|---|
+| control | 96.8-96.9 | 174 |
+| control, no copy (`NOCOPY` + `FILLALL`) | 97.7-97.8 | 166 |
+| RW 16 x CW 2 (PASS) / no copy | 92.6 / 92.6 | 166 / 160 |
+| no barriers: control / RW 16 x CW 2 | 95.8-95.9 / 89.2-89.3 | 176 / 171 |
+
+The copy costs 8 W and no work a clock. The 64-thread work-group saves the energy but does 4% less work a clock,
+and that loss is neither its copy nor its meetings.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
