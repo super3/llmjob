@@ -7,7 +7,8 @@
 //   RC_FLAGS   1, plus 2 (B a turn ahead), 4 (the readout spread over the mma), 8 (barriers after the first
 //              and the last turn only), 16 (the readout spread over two turns: half a turn behind the sums) and
 //              32 (the readout's steps written out, so ptxas keeps them as they are). TIMING ONLY, wrong results
-//              on purpose, to price a part: 64 (no barriers), 128 (no readout)
+//              on purpose, to price a part: 64 (no barriers), 128 (no readout), 256 (B gathered once a chunk), 512 (no
+//              stage loads)
 // It reads the 8-byte offsets records of rot_aux_offs (gprobe's `rot` 2).
 //
 // The fold. A warp takes a chunk's four k-steps in its own order (the records are in that order). At its first
@@ -109,6 +110,10 @@
         asm volatile("st.shared.v4.u32 [%0], {%1,%2,%3,%4};"
                      ::"r"(stw + 512u * mb), "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]) : "memory");
       } else {
+#if RC_FLAGS & 512
+        // TIMING ONLY: no stage loads (later turns fold the last A fragment they have).
+        if (mb == 0u && o.x == 0xffffffffu)
+#endif
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(af[0]), "=r"(af[1]), "=r"(af[2]), "=r"(af[3]) : "r"(o.x + sb + 512u * mb) : "memory");
       }
@@ -120,7 +125,12 @@
             : "+r"(acc[mb][nb][0]), "+r"(acc[mb][nb][1]), "+r"(acc[mb][nb][2]), "+r"(acc[mb][nb][3])
             : "r"(af[0]), "r"(af[1]), "r"(af[2]), "r"(af[3]), "r"(bf[nb][0]), "r"(bf[nb][1]));
 #if RC_FLAGS & 2
+#if RC_FLAGS & 256
+        // TIMING ONLY: B gathered for the next chunk's first turn only (turns 1 to 3 fold the B they have).
+        if (last && mb == MT - 1u && (nb & 1u)) gatherB(nb >> 1, on.y);
+#else
         if (mb == MT - 1u && (nb & 1u)) gatherB(nb >> 1, on.y);
+#endif
 #endif
 #if RC_FLAGS & 16
         // Flag 16: sum i (= 8 mb + nb) of a chunk is final at its mma in the last turn and is next changed at its
