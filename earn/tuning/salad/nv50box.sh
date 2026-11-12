@@ -165,8 +165,9 @@ if has probe; then
   for line in "${PL[@]}"; do
     [ -n "$line" ] || continue
     exe=${line%% *}
-    # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here.
-    python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g" | emit
+    # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here, the collision and
+    # hit counts left out and the line cut to 395 (a longer name lost every probe line of a run on 12 November).
+    python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
 fi
 if has product; then
