@@ -344,6 +344,13 @@ def main():
         if k == "dbg":
             DBG[0] = int(v, 0)
             continue
+        if k == "fil":
+            # TIMING ONLY unless the byte is 0x3f: the gathers' subtract adds this byte in place of the fill 63
+            # (0x3f). Below 63 the bytes borrow from each other, so the operands come out spread as a fill of
+            # that value would make them (fill + plus - minus in two's complement) but the sums are wrong. For
+            # what the operands' values cost in watts at the power cap.
+            gfold.FILL4 = (int(v, 0) & 0xff) * 0x01010101
+            continue
         if k == "cut":
             # TIMING ONLY / debugging: only the first `cut` instructions of the ported loop (no back branch), then a
             # wait for every load and the return. Wrong results; finds where a fault is.
