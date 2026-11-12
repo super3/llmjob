@@ -1259,11 +1259,15 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           if (s == 0u && ch > 0u) readout(ch - 1u);
         }
         // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
+        // VAR 1048576: the DPAS wait only for A' (the global loads), B' reads from the ring are left to the
+        // compiler; VAR 2097152: no forced wait at all.
         int t = 0;
-        each<2>([&](int rb) { t ^= af[rb][0]; });
-        each<8>([&](int cb) { t ^= bf[cb][0]; });
-        t &= (int)A.zero;
-        each<2>([&](int rb) { af[rb][0] |= t; });
+        if constexpr (!(VAR & 2097152)) {
+          each<2>([&](int rb) { t ^= af[rb][0]; });
+          if constexpr (!(VAR & 1048576)) each<8>([&](int cb) { t ^= bf[cb][0]; });
+          t &= (int)A.zero;
+          each<2>([&](int rb) { af[rb][0] |= t; });
+        }
         // VAR 4096: this slot's reads have landed (t waits for them): count them done.
         if constexpr (kCnt) bump(&done[slot], t);
         each<8>([&](int cb) {
