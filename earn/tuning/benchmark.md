@@ -1098,6 +1098,41 @@ On Kryptex through this branch's CLI with `--rotation-fold` and no memory flag: 
 TH/s locked against 337.5, +0.9%), then 340.8 TH/s by the miner's count; 20 shares accepted, none rejected in
 669 s; verify-hits 400 of 400 beforehand.
 
+### rig01, 12 November: records the eight warps share (branch `goal/nv-19`)
+
+RTX 4090, 450 W. `rfold.py sr=1` on the shipped loop: the offsets records carry no warp's base, so all eight
+warps of a block read one stream (`rot_aux_offs` built with `ROT_SR=1`, gprobe `rot 4`) and seven of a k-step's
+eight record loads find their bytes in the SM's cache, not the L2. The bases sit in uniform registers named in the
+shared-memory address (`[R+UR+imm]`, no extra step); the record pointer moves by a uniform step a turn.
+Probe at 810 MHz memory: 99.32% of the pipe at 2633 to 2639 MHz against 99.43% at 2625 to 2626 (pipe x clock
+2615 to 2621 against 2610 to 2611); +0.5% tiles in 60 s. hashrate.js, alternating 120 s legs, one addon:
+
+| Memory clock | Shipped loop (d18246d5) | With sr (e0e8a527) | Gain |
+|---|---|---|---|
+| 810 MHz | 341.34, 341.37, 341.34 (2626 MHz, 443 W) | 343.37, 343.40, 343.02 (2644 MHz, 448.5 W) | +0.56% |
+| driver's (10251 MHz) | 337.97, 338.08, 337.97 | 339.56, 339.64, 339.56 | +0.5% |
+
+verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI with `--rotation-fold` (the trial
+kept 810 MHz): 342.56 TH/s by the miner's count over 299 s at 2644 MHz, 11 shares accepted, none rejected.
+Against OneZeroMiner's 342.8 at 810 MHz (above) that is 100.1% by hashrate.js; against its best, 344.5 at
+5001 MHz, 99.6%.
+
+Then B drawn once with sr (`y24` + `sr=1`, now the RTX 40 build, cubin 3a354cac...). Every B-drawn-once form with
+`bxt=1` had faulted in some placements (an illegal address, only in repeated launches). The cause: the transcript
+store in the loop's tail had no read scoreboard, and the function's return zeroes R3 right after the epilogue; a
+store queued behind the four exchange stores read R3 after that and wrote to local address 0. With the store
+holding its read scoreboard, all five faulting placements run clean. sr helps this form more than the old loop
+(probe pipe 98.86 -> 99.09%, +17 to +25 MHz). hashrate.js against the sr loop above, alternating 120 s legs:
+
+| Memory clock | sr loop (e0e8a527) | B drawn once + sr (3a354cac) | Gain |
+|---|---|---|---|
+| 810 MHz | 343.03, 343.05, 343.05 (2642 MHz) | 344.51, 344.38, 344.37 (2665 MHz) | +0.40% |
+| driver's (10251 MHz) | 339.15, 339.51, 339.57 | 340.75, 340.79, 340.61 | +0.37% |
+
+verify-hits 400 of 400 on the 12.6 and 12.8 files. Kryptex through the CLI (the trial kept 810 MHz): 343.79
+TH/s by the miner's count over 299 s at 2667 MHz, 7 shares accepted, none rejected. Against OneZeroMiner:
+100.5% of its 342.8 at 810 MHz, 99.99% of its best (344.47 at 5001 MHz). Level with its best, not above it.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
@@ -1765,6 +1800,57 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   order modes 2, 4 and 9 leave 0.76-0.84 rows of 8 against mode 6's 0.83, and mode 9 is +0.03 points of pipe.
 - **Memory clock on RTX 50: not priced.** Salad refuses `-lmc`, and no other rented 5090 was allowed (no Vast or
   Clore for this work), so the RTX 40 rotation fold's 810 MHz trial was not extended to Blackwell.
+
+### Salad, 12 November: the gathers' over-waits, and a clock-bound RTX 5080 above PeakMiner (branch `goal/nv-50f`)
+
+- **What was lost.** Three scoreboards serve up to six gathers in flight, and a wait on a scoreboard holds the warp
+  until every load on it has landed. In the shipped loop 46 subtracts a chunk waited on a scoreboard whose newest
+  load went out 0 or 1 gaps before, when the load they needed went out 9 to 15 gaps before.
+- **Shipped: dpb=7 dpm=1 dpg=3 (rfold120.py).** Each such wait moves into the control field of the first newer load
+  on that scoreboard, when its own load is 3 or more gaps older than that load (there it has long landed). No
+  instruction is added. A walk of the listing with outstanding loads (prologue, three passes, epilogue) finds no
+  hazard. CPU check 16,384 of 16,384 at k 2048 and 8192, 512 of 512 at 65536. Hash 0deef760 (a Salad PC's Linux and
+  Windows agree) replaces 2bc71ae7 in `src/pearl_rot_sm120.ref` and `kRotCubins`: verify-hits 400 of 400 on an RTX
+  5090 (1007 hits) and an RTX 5080 (636 hits).
+- **Tried and dropped.** DEPBAR.LE in front of the subtracts (`dpb` alone): correct only with ptxas's stall 4 (stall
+  1 gives wrong sums at every k), and 0.13 to 0.2 points of pipe worse: the 23 extra issues cost more than the waits.
+  `dpg` 1 and 2 move more waits but onto loads whose producer has not landed (5090 pipe 97.77 / 97.87 against 98.0);
+  `dpg` 4 and 6 equal 3 on a 5080. `sbo` 0, 3, 5 and `cq=36` with dpm: no change. One barrier instruction from a
+  register (`brg=1`): correct on sm_120, 0.15 points worse. The loop with no barriers at all (timing only, wrong)
+  gains nothing on either card, so the barriers are not where the pipe goes.
+- **Probe, k 65536, legs in turn.** RTX 5080 (360 W limit, clock-bound at 2835 MHz, 330-335 W): 98.54-98.61% of the
+  pipe against 99.04-99.10% (count 240.3 against 241.5, +0.46%). RTX 5090 (437 W limit, at the cap, ~2227 MHz):
+  97.50-97.53% against 97.97-98.03% (count 378.0 against 379.8-380.0, +0.5%).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** 5080: 2bc71ae7 238.46, 239.20, 238.93, 238.94; 0deef760
+  239.79, 239.93, 240.13, 240.41 (2825-2829 MHz, 336 W): +0.50%. 5090: 373.10, 373.02, 373.03, 373.24; 0deef760
+  374.56, 374.32, 374.73, 374.84 (2212-2221 MHz, 437 W): +0.41%.
+- **Against the other miners, same PCs (bench.sh sample means, PeakMiner 2.20.7, SRBMiner 3.8.6).** 5080: PeakMiner
+  239.29 (2835 MHz, 330 W), SRBMiner 189.08 (2814 MHz, 258 W; it ran low on this PC); ours 240.07 = **100.3% of the
+  best**. 5090 at its 437 W cap: SRBMiner 379.12 (2268 MHz), PeakMiner 378.07 (2235 MHz); ours 374.61 = 98.8%. On
+  the capped card both run 20 to 50 MHz faster at the same watts: the gap there is still energy per cycle.
+
+### Salad, 12 November, evening: shared records on sm_120 are wrong, and IMMA operand reuse saves nothing (branch `goal/nv-50g`)
+
+Nothing shipped; the sm_120 file stays 0deef760. Both PCs were clock-bound, so energy shows as watts at a fixed clock:
+an RTX 5080 (360 W limit, 2790 MHz) and an RTX 5090 (400 W limit, held at 2025 MHz, 340-356 W).
+
+- **Shared records (`sr`, the RTX 40 form from `goal/nv-19`) ported to sm_120.** rfold120.py now writes it: the
+  shared base goes into sr's address registers, R2UR uses sm_120's encoding, and gprobe `rot 5` gives b8 tables with
+  shared records. Every port reads back as asked and the hazard walk is clean. **It is wrong on the card.** Each check
+  run has 1 to 9 bad tiles out of 64 (k 2048, 8192 and 65536, on both cards). Each bad tile has exactly one band (128
+  threads) wrong, which points at one warp's stage stores or first-turn gathers. Ruled out, each still wrong: without
+  b8 (the sm_89 form), without bt=13, without dpm, the uniform registers at UR24 or UR40, the pointer step 1, 2 or 4
+  gaps behind the load, the record load at gap 6, plain LDG in place of the constant path, R2UR without a scoreboard
+  (as ptxas writes it), a 16-cycle settle after each R2UR group, and every R2UR issued twice. Not yet tested: sr's
+  registers below UR20, where the kernel's own uniform registers sit.
+- **What sr would be worth (timing runs, probe k 65536, legs taking turns).** 5080: pipe 99.38% against 99.56%,
+  345.9-349.8 W against 351.3-358.8 W, count 238.5 against 238.9 (-0.17%). 5090 at 2025 MHz: 99.40% against
+  99.56%, 339.3-347.3 W against 343.1-356.0 W, count 350.4 against 351.0. About 7 W less at the same clock, for 0.17
+  points of pipe. On a card held by its power cap that could come back as clock, but no capped PC was on hand to
+  measure it.
+- **IMMA operand reuse (`ru=1`, A's register marked for reuse on 7 of each 8 IMMA).** Correct (16,384 of 16,384 at k
+  2048 and 8192). No saving: on the 5080 355.0, 357.9 and 359.1 W against 351.8, 356.7 and 358.4 W, same pipe and
+  clock. The flag changes nothing here, as on sm_89; ptxas never sets it on IMMA either.
 
 ## A100-class (sm_80)
 

@@ -11,18 +11,21 @@
 # The loop of 12 November 2026: a gather's IADD3 and PRMT late, offsets records of 8 bytes, A's gathers early
 # with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35); and, RTX 40's own
 # keys (build_rot.py's ARCH_KEYS), the readout's sums read as (0, 2) and (1, 3) on the chain of the other
-# register parity, with U8 IMMA (rpr=2 u8=1), the readout's steps first in their gap and allowed into gaps 41 to 44
-# of the chunk's last turn and the next chunk's first three (rgf=1 rb0=3 rb1=0).
+# register parity, with U8 IMMA (rpr=2 u8=1), the readout's steps first in their gap (rgf=1) in a window of
+# rb0=6 rb1=3; B drawn once for the two warps of a column slot, exchanged through the 16 KB that held the
+# transcripts (bx=1 bsym=4 bsg=8 bsg3=24 bss=2 bord=2 barv=1 bxt=1; the transcript lives in the kernel's frame,
+# ROT_BX=1); and records the eight warps share (sr=1, ROT_SR=1). The transcript store of the loop's tail holds its
+# read scoreboard (without it a store queued behind the exchange stores could read R3 after the function's return
+# zeroed it: an illegal address in repeated launches for some placements).
 
-# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (745 hits, 19 salts), and
-# 338.00, 338.04 and 337.93 TH/s by hashrate.js against 336.93, 337.07 and 337.10 for the loop before it
-# (c47837b8..., alternating 120 s legs). The probe's CPU check: 16,384 of 16,384 at k 2048, 4,096 of 4,096 at
-# k 8192, 512 of 512 at k 65536.
-# On Kryptex with the core finding this file beside it: 337.48 TH/s by the miner's count over 298 s,
-# 14 shares accepted, none rejected.
-12.6 d18246d5a53a3ac9cc2862c07d23b80c63900cb12ebd4a3ca17b9583d15cfc1a
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (742 hits, 19 salts, 810 MHz
+# memory). By hashrate.js, alternating 120 s legs against the loop before it (e0e8a527..., records shared, B
+# gathered by every warp): at 810 MHz memory 344.51, 344.38 and 344.37 TH/s against 343.03, 343.05 and 343.05;
+# at the driver's memory clock 340.75, 340.79 and 340.61 against 339.15, 339.51 and 339.57. The probe's CPU
+# check: 16,384 of 16,384 at k 2048, 8,192 of 8,192 at k 8192, 1,024 of 1,024 at k 65536, and 30 s runs (about 195 launches) clean in every placement that faulted before the fix.
+12.6 3a354cac97eccf8716e74797850786b4f8e11e206351e5d296cc77b500d0bf49
 
 # CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
-# verify-hits 400 of 400 (745 hits, 19 salts).
-12.8 c7219d7dbaac0035d555a1c10e8ab8eb1752a65536f13aae589d374509f29f9d
+# verify-hits 400 of 400 (748 hits, 19 salts).
+12.8 f1b1035e9e8c9a66086754139425e01e93e4f50990c864eee20ebb8f023e6ac8

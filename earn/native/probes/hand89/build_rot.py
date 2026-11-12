@@ -63,9 +63,17 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # and 389.46 for the file before both). And no barrier after a chunk's second turn (bt=13: no fragment is stored in
 # the second or third turn, so it orders nothing; every load keeps a barrier between it and the stores around it):
 # the probe's pipe 99.03% against 98.95% on a 5080 and 98.26% against 98.18% on a 5090, CPU check 16,384 of 16,384
-# at k 2048 and 8192 (12 November).
-ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
-             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13"]}
+# at k 2048 and 8192 (12 November). And no over-waits on the gathers' scoreboards (dpb=7 dpm=1 dpg=3: a subtract
+# that waited on a scoreboard whose newest load went out a gap before, while its own went out 9 or more gaps before,
+# has that wait moved onto the first newer load, where its own load has long landed): the probe's pipe 99.04%
+# against 98.59% on a clock-bound 5080 (count +0.46%), 98.03% against 97.53% on a capped 5090 (12 November).
+# sm_89 (goal-nvk19): B drawn once for the two warps of a column slot (bx, with its exchange keys: bsym=4 bsg=8
+# bsg3=24 bss=2 bord=2 barv=1 bxt=1, readout window rb0=6 rb1=3) and records the eight warps share (sr). The
+# miner's kernel is built for both (ROT_BX, ROT_SR below).
+ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=6", "rb1=3", "bsym=4", "bsg=8", "bsg3=24", "bss=2", "bord=2", "bx=1",
+                       "barv=1", "bxt=1", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
+             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
+                        "dpb=7", "dpm=1", "dpg=3"]}
 
 
 def toolkit(nvcc):
@@ -123,6 +131,10 @@ def main():
     defs = ["-DROT_INLINE=0", "-DROT_C=16387"] if arch == "sm_120" else []
     if "b8=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_TAB8=1")         # the b8 gathers read tables in plain row order (rot_aux_tab)
+    if "sr=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
+    if "bx=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_BX=1")           # bx: the transcript in the kernel's frame, the 16 KB for the exchange
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:

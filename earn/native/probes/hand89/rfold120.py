@@ -45,6 +45,8 @@ SB_C = 5              # the scoreboard the prologue's constant loads use
 LDCU64 = (0x0000000000000000 | 0x7ac | 7 << 12, 0x8000a00)   # LDCU.64 UR?, c[0x0][0x358] (ptxas 13.3's word)
 DBG = [0]
 MUL = [0x100]
+DPB = [0, 4, 0, 4]
+R2W = [0]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
 MEM_OPS = ("LDSM", "LDS", "STS")
 
@@ -57,6 +59,10 @@ def shared(ins):
     takes the uniform register in bits 32-39 and bit 27 of the second word; a store has another operation (0x988)
     and takes it, with the size, in the second word."""
     t = ins.text
+    if re.search(r"\[R\d+\+UR\d+", t):
+        # sr (goal-nv50g): the address names one of sr's uniform registers, which hold the shared base already
+        # (rfold.py sr_sb). asm89 encodes it as ptxas 13.3 does.
+        return ins
     m = re.search(r"\[(R\d+|RZ)(?:\+(-?0x[0-9a-f]+))?\]", t)
     lo, hi = asm89.assemble(t)
     u = UR_S[0]
@@ -86,6 +92,14 @@ def port(code):
         op = re.sub(r"^@!?P\d ", "", t).split(" ")[0]
         if op.split(".")[0] in MEM_OPS:
             ins = shared(ins)
+        elif op == "R2UR":
+            # sr (goal-nv50g): sm_120's R2UR is operation 0x2ca (ptxas 13.3's 0x...040472ca for R2UR UR4, R4).
+            m = re.match(r"R2UR UR(\d+), R(\d+)$", t)
+            ins.raw = (0x72ca | int(m[1]) << 16 | int(m[2]) << 24, 0xe0000)
+            # And it has a fixed latency (ptxas gives it no scoreboard and waits up to 13 cycles): a scoreboard
+            # named here is not one it holds (rfold.py's srs gives the stall). R2W=1 keeps it (debugging).
+            if not R2W[0]:
+                ins.wsb = None
         elif t.startswith("ULDC.64"):
             m = re.match(r"ULDC\.64 UR(\d+), c\[0x0\]\[0x118\]", t)
             assert m, t
@@ -332,6 +346,80 @@ def rename(code, ren):
             ins.text, ins.raw = new, None
 
 
+def depbar(code, sbs, stall):
+    """dpb (goal-nv50f): a wait on a load scoreboard holds the warp until EVERY load that set it has landed. Three
+    scoreboards serve up to six gathers under way, so a gather's subtracts, which need a load from 9 to 15 gaps
+    back, often wait for a newer load on the same scoreboard that went out a gap ago: a full LDSM latency for
+    nothing. sm_120's shared loads land in the order a warp issued them (ptxas relies on it), so the subtract only
+    needs the count on its scoreboard down to the loads issued after its own: DEPBAR.LE SBn, k in front of it, and
+    no wait in its control field. Only inside the loop body, for a producer in the same pass of the body (not one
+    the pass before left under way), so the count is the same on every pass. Returns how many waits it changed."""
+    s = next(i for i, c in enumerate(code) if c.label == ".L0")
+    e = next(i for i, c in enumerate(code) if c.text.endswith("BRA .L0"))
+    out, done, n = [], {}, 0
+    for i, ins in enumerate(code):
+        if not s <= i < e:
+            out.append(ins)
+            continue
+        new = []
+        for sb in tuple(ins.wait):
+            if sb not in sbs:
+                continue
+            reads, _w, _k = fold.rw(ins.text)
+            reads = {r for r in reads if not isinstance(r, str)}
+            # Two ways into this instruction: the body's pass before (steady) and, for the first pass, the
+            # prologue. On each, walk back to the newest writer of each register read; k on that way is the count
+            # of loads on sb issued after the newest such writer that is a load on sb. The smaller k holds on both.
+            ks, moved = [], None
+            for path in (list(range(i - 1, s - 1, -1)) + list(range(e - 1, i - 1, -1)),
+                         list(range(i - 1, -1, -1))):
+                newest = None                    # position on the path (0 = right behind the consumer)
+                for r in reads:
+                    for p, j in enumerate(path):
+                        if r in fold.rw(code[j].text)[1]:
+                            if code[j].wsb == sb and (newest is None or p < newest):
+                                newest = p
+                            break
+                if newest is not None:
+                    ks.append(sum(1 for j in path[:newest] if code[j].wsb == sb))
+                    if moved is None and DPB[2]:
+                        # dpm: the first load on sb after the producer (N1) waits for sb in its control field
+                        # instead, which costs nothing when the producer is dpg gaps or more older than N1 (it
+                        # waits for the producer and older loads only). N1 must be in this pass, ahead of the
+                        # consumer, so that it runs between producer and consumer on the first pass as well.
+                        n1 = [p for p in range(newest) if code[path[p]].wsb == sb]
+                        if n1:
+                            q = n1[-1]
+                            d = sum(1 for j in path[q + 1:newest] if "IMMA" in code[j].text)
+                            moved = (path[q], d) if s <= path[q] < i else (None, -1)
+            if not ks or min(ks) == 0:
+                continue                         # the wait is for something else, or for the newest load: keep it
+            if moved and moved[0] is not None and moved[1] >= DPB[3]:
+                code[moved[0]].wait = tuple(sorted(set(code[moved[0]].wait) | {sb}))
+                ins.wait = tuple(x for x in ins.wait if x != sb)
+                n += 1000
+                continue
+            if DPB[2] == 1:
+                continue
+            new.append((sb, min(ks)))
+        if new:
+            w = tuple(x for x in ins.wait if x not in {sb for sb, _k in new})
+            for sb, k in new:
+                # One DEPBAR covers the consumers behind it while no new load sets sb and k is no smaller.
+                if done.get(sb) is not None and done[sb][1] <= k and not any(
+                        code[x].wsb == sb for x in range(done[sb][0], i)):
+                    continue
+                out.append(Ins("DEPBAR.LE SB%d, 0x%x" % (sb, k), stall=stall, yld=False))
+                done[sb] = (i, k)
+                n += 1
+            ins.wait = w
+        for sb in ins.wait:
+            done.pop(sb, None)
+        out.append(ins)
+    code[:] = out
+    return n
+
+
 def main():
     cubin, nvd, out = sys.argv[1:4]
     cfg = dict(rfold.CFG)
@@ -350,6 +438,19 @@ def main():
             # that value would make them (fill + plus - minus in two's complement) but the sums are wrong. For
             # what the operands' values cost in watts at the power cap.
             gfold.FILL4 = (int(v, 0) & 0xff) * 0x01010101
+            continue
+        if k in ("dpm", "dpg"):
+            # dpm (with dpb): 1 moves an over-wait onto the first newer load of its scoreboard when the producer
+            # is dpg gaps or more older than it (else keeps it); 2 the same, else a DEPBAR.
+            DPB[2 if k == "dpm" else 3] = int(v, 0)
+            continue
+        if k in ("dpb", "dpbs"):
+            # dpb (goal-nv50f, correct): DEPBAR.LE in place of gather waits that also wait for newer loads; a bit a
+            # scoreboard (7: the gathers' 0-2; 15 with the stage loads' 3). dpbs: the DEPBAR's stall (ptxas: 4).
+            DPB[0 if k == "dpb" else 1] = int(v, 0)
+            continue
+        if k == "r2w":
+            R2W[0] = int(v, 0)                  # debugging: R2UR keeps the scoreboard rfold.py gave it
             continue
         if k == "cut":
             # TIMING ONLY / debugging: only the first `cut` instructions of the ported loop (no back branch), then a
@@ -376,9 +477,20 @@ def main():
     if len(uw) < 2:
         sys.exit("the compiled function writes too few uniform registers: %s" % uw)
     UR_S[:] = uw[:2]
+    if cfg["sr"]:
+        # sr's uniform registers hold through the loop, so the compiled function must not use them, nor the kernel
+        # keep anything in them across the call; the shared base goes into each one that is an address's.
+        cfg["sr_sb"] = UR_S[0]
+        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {rfold.sr_ust(cfg, t) for t in range(4)} | {rfold.sr_ud(cfg, t) for t in range(4)}
+        theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
+        theirs |= {x + 1 for x in theirs}
+        if mine & theirs:
+            sys.exit("the compiled kernel uses UR%s, which sr keeps its bases in" % ", UR".join(map(str, sorted(mine & theirs))))
     code, bad, most, G = rfold.build(cfg)
     if bad:
         sys.exit("%d latency problems: not written" % bad)
+    if DPB[0]:
+        print("dpb: %d DEPBAR.LE" % depbar(code, {b for b in range(6) if DPB[0] >> b & 1}, DPB[1]))
     regs, preds = asm89.clobbers(text)
     # A register the loop writes and the compiled function does not (the kernel may keep a value there across
     # the call) is renamed to one the function writes and the loop never names. Renamed in sm_89's spelling,

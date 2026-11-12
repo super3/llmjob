@@ -95,10 +95,12 @@ def rw(text):
         reads.add("P" + m[1])
         t = m[2]
     op, _, rest = t.partition(" ")
-    regs = [int(x) for x in re.findall(r"R(\d+)", rest)]
+    regs = [int(x) for x in re.findall(r"(?<!U)R(\d+)", rest)]     # uniform registers (URn) are not tracked
 
     def span(r, n):
         return set(range(r, r + n))
+    if op == "R2UR":
+        return reads | {regs[0]}, writes, "store"
     if op.startswith("IMMA"):
         d, a, b, c = regs
         return reads | span(a, 4) | span(b, 2) | span(c, 4), span(d, 4), "imma"
@@ -128,7 +130,7 @@ def rw(text):
         return reads, {regs[0]}, "load"
     if op.startswith("IMAD.WIDE"):
         return reads | set(regs[1:]), span(regs[0], 2), "alu"
-    if op.startswith(("BRA", "BAR", "NOP", "ULDC")):
+    if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR")):
         return reads, writes, "ctl"
     assert regs, text
     return reads | set(regs[1:]), {regs[0]}, "alu"

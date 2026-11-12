@@ -49,6 +49,12 @@
 #ifndef ROT_INLINE
 #define ROT_INLINE 1
 #endif
+// ROT_BX 1 (sm_89 and sm_86, build_rot.py's when the loop has bx=1): B drawn once for the two warps of a column
+// slot (probes/hand89/rfold.py bx, gprobe's GP_BX). The thread's transcript then lives in the kernel's frame (trl,
+// local memory at the frame's start), and the 16 KB at ROT_TR hold the hand loop's exchange of B's fragments.
+#ifndef ROT_BX
+#define ROT_BX 0
+#endif
 
 static __device__ __forceinline__ void rot_g(uint32_t &a, uint32_t &b, uint32_t &c, uint32_t &d, uint32_t mx,
                                              uint32_t my) {
@@ -111,7 +117,11 @@ static __device__ void rot_blake3_keyed64(const uint32_t key[8], const uint32_t 
 #else
 #define ROT_LOOP_ATTR __noinline__
 #endif
+#if ROT_BX
+static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict__ offs, uint32_t chunks, uint32_t *trl) {
+#else
 static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict__ offs, uint32_t chunks) {
+#endif
 #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 1200
   // RTX 50 (sm_120): the rotation fold itself, compiled from C (pearl_rot_c.inc, which the probe's GP_ROTC
   // builds too). The hand loop is written in sm_89's instructions; this cubin ships as ptxas makes it, with no
@@ -181,10 +191,15 @@ static __device__ ROT_LOOP_ATTR void pearl_rot_fold_loop(const uint4 *__restrict
         for (uint32_t nb = 0; nb < NB; nb++)
           x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2]
                ^ (uint32_t)acc[mb][nb][3];
+#if ROT_BX
+      (void)trL;
+      trl[c & 15u] = __funnelshift_l(trl[c & 15u], trl[c & 15u], 13u) ^ x;
+#else
       uint32_t w;
       asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
       w = __funnelshift_l(w, w, 13u) ^ x;
       asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
+#endif
     }
   };
   // Two copies of the same loop, which is the room the hand-written loop is given (it is longer than one).
@@ -205,6 +220,10 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
   const uint32_t sbase = (uint32_t)__cvta_generic_to_shared(rot_smem);
   const uint32_t tid = threadIdx.x;
   if (blockDim.x != ROT_THREADS) return;
+#if ROT_BX
+  // The thread's transcript (16 words); the hand loop finds it at the frame's start.
+  __align__(16) uint32_t trl[16];
+#endif
   for (uint32_t v = blockIdx.x; v < tiles; v += gridDim.x) {
     const uint32_t vg = tile0 + v;
     const uint32_t rbg = rg0 + vg % row_groups, cbg = vg / row_groups;
@@ -218,23 +237,37 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
                      ::"r"(sbase + i * 16u), "r"(w.x), "r"(w.y), "r"(w.z), "r"(w.w)
                      : "memory");
       }
+#if ROT_BX
+#pragma unroll
+      for (uint32_t q = 0; q < 16u; q++) trl[q] = 0u;
+#else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
         asm volatile("st.shared.v4.u32 [%0], {%1,%1,%1,%1};" ::"r"(sbase + ROT_TR + tid * 64u + q * 16u), "r"(0u)
                      : "memory");
+#endif
     }
     __syncthreads();
+#if ROT_BX
+    pearl_rot_fold_loop(offs, chunks, trl);
+#else
     pearl_rot_fold_loop(offs, chunks);
+#endif
     // Every thread hashes its own transcript and reports itself when the hash, a little-endian number, is at
     // or under the bound (target_w: the bound's words, most significant first).
     {
       uint32_t m[16], key[8], h[8];
+#if ROT_BX
+#pragma unroll
+      for (uint32_t q = 0; q < 16u; q++) m[q] = trl[q];
+#else
 #pragma unroll
       for (uint32_t q = 0; q < 4u; q++)
         asm volatile("ld.shared.v4.u32 {%0,%1,%2,%3}, [%4];"
                      : "=r"(m[4u * q]), "=r"(m[4u * q + 1u]), "=r"(m[4u * q + 2u]), "=r"(m[4u * q + 3u])
                      : "r"(sbase + ROT_TR + tid * 64u + q * 16u)
                      : "memory");
+#endif
 #pragma unroll
       for (uint32_t i = 0; i < 8u; i++) key[i] = test.key[i];
       rot_blake3_keyed64(key, m, h);
@@ -290,7 +323,11 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
   out[idx] = make_uint4(w[0], w[1], w[2], w[3]);
 }
 
-// The fold's offsets for one salt (gprobe.cu's `rot` 2 form). permA and permB are pearl_gen_perm's [k][2] (plus
+#ifndef ROT_SR
+#define ROT_SR 0
+#endif
+// The fold's offsets for one salt (gprobe.cu's `rot` 2 form; with ROT_SR 1, build_rot.py's when the loop has sr=1,
+// the `rot` 4 form). permA and permB are pearl_gen_perm's [k][2] (plus
 // index, minus index); order[128 c + x] is which k of chunk c sits in slot x. offs is [warp][k-step][lane] of
 // two words, one k-step more than the tile has at each warp's end. One thread a (k-step, lane).
 //
@@ -315,6 +352,23 @@ extern "C" __global__ void rot_aux_offs(const uint32_t *__restrict__ permA, cons
       pa[h] = permA[2u * kk + sign];
       pb[h] = permB[2u * kk + sign];
     }
+#if ROT_SR
+  // ROT_SR 1 (rfold.py's sr, gprobe's rot 4): one stream of records that all eight warps read, k-step by k-step:
+  // {A's two, B's two} with no warp's base in them (the loop keeps the bases in uniform registers). Each warp
+  // reads the k-steps of a chunk in its own order, and up to three k-steps past the last chunk: the thread of the
+  // extra k-step writes four records of zeros. The stream is an eighth of the per-warp form's bytes, and seven of
+  // a k-step's eight reads find it in the SM's cache.
+  if (ks < ksteps) {
+    offs[((size_t)ks * 32u + l) * 2u] = 16u * pa[0] | (16u * pa[1]) << 16;
+    offs[((size_t)ks * 32u + l) * 2u + 1u] = 16u * pb[0] | (16u * pb[1]) << 16;
+  } else {
+    for (uint32_t e = 0; e < 4u; e++) {
+      offs[((size_t)(ks + e) * 32u + l) * 2u] = 0u;
+      offs[((size_t)(ks + e) * 32u + l) * 2u + 1u] = 0u;
+    }
+  }
+  return;
+#endif
   for (uint32_t w = 0; w < 8u; w++) {
     const uint32_t j = w & 3u, band = w >> 2;
     const uint32_t turn = ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ 1u) : ((s + 4u - j) & 3u);

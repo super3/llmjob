@@ -260,7 +260,24 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # acz, bcz (goal-nv50e, TIMING ONLY, with b8): A's / B's gathers load as before but their fragment words
            # come out as the fill, so that side's operands never change (gfold.gather_ins). Against nold=2 / nold=3
            # it parts a side's draw at the power cap into the loads' cost and the tensor datapath's toggling.
-           acz=0, bcz=0)
+           acz=0, bcz=0,
+           # sr=1 (goal-nvk19, with co=1): records the eight warps share (gprobe rot 4; the miner's rot_aux_offs built
+           # with ROT_SR=1). A record is a k-step's {A's two, B's two} with no warp's base in them, so all eight warps
+           # read the same 256 bytes a k-step, each in its own turn: one warp's load brings them from the L2 and the
+           # other seven find them in the SM's cache. The bases go into uniform registers set once in the prologue
+           # and named in the shared-memory address ([R+UR+imm], no extra step): A's band (UR sr_ua), B's column slot
+           # (UR sr_ub), the stage slot of each turn's k-step (UR sr_ua + 2 + turn, with R0 the lane's place in the
+           # band's stage). The record pointer moves by a uniform step a turn (UR sr_ua + 6 + turn), since each
+           # warp takes the chunk's k-steps in an order of its own; that add replaces the pointer's step a chunk.
+           sr=0, sr_ua=16, sr_ub=17, sr_sb=None,
+           # srg (with sr): how many gaps behind the record load the pointer steps on (it waits for the load to have read it).
+           srg=1,
+           # srs (with sr): see sr_prologue's settle.
+           srs=2,
+           # srr (with sr, debugging): each group of R2UR issued twice.
+           srr=0,
+           # dbg, TIMING ONLY (goal-nvk19, the bxt fault): 1 the tail's STL left out, 2 its LDL a move.
+           dbg=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -274,6 +291,101 @@ def layout(mt):
     R["w"] = R["tmp"]
     R["stg"] = R["tr"] + 256 * 64 + 256            # GP_STG
     return R
+
+
+def sr_ust(cfg, t):
+    """sr: the uniform register with the stage slot of the k-step a warp folds at turn t (3072 x that k-step)."""
+    return cfg["sr_ua"] + 2 + t
+
+
+def sr_ud(cfg, t):
+    """sr: the uniform register with the record pointer's step after turn t's load (to the next turn's record)."""
+    return cfg["sr_ua"] + 6 + t
+
+
+def sr_prologue(cfg, R, S, q):
+    """sr: the record pointer (the first turn's record of the shared stream, plus the lane's place: added later)
+    and the ten uniform registers. S + 1 is the warp, S + 3 its row band. A warp of column slot j and band b
+    folds k-step s(t) = ((t ^ b) + j) & 3 at turn t (gprobe's rot order). Uses quad 4 and record quad 1, which
+    the prologue fills only later."""
+    assert cfg["co"] and not cfg["bsh"] and cfg["bsym"] in (0, 4) and not cfg["nlg"] and not cfg["pf"]
+    mt = cfg["mt"]
+    t0 = q[4]
+    u = R["oq"][1]
+    sb = SB_RD
+    c = []
+
+    group = []
+
+    def r2ur(ur, r):
+        c.append(Ins("R2UR UR%d, R%d" % (ur, r), wsb=sb))
+        group.append((ur, r))
+
+    def settle():
+        # srs (goal-nv50g): the stall after a group of R2UR before their sources are written again. sm_120's R2UR
+        # has no scoreboard (ptxas gives it none and waits up to 13 cycles), so a wait on sb does not cover it there.
+        c.append(Ins("NOP", stall=min(cfg["srs"], 11), wait=(sb,)))
+        if cfg["srs"] > 11:                         # sm_120 refuses a stall over 11 with the yield flag
+            c.append(Ins("NOP", stall=cfg["srs"] - 11))
+        # srr (debugging, goal-nv50g): the group's R2UR again, after the settle and before the sources change.
+        if cfg["srr"] and group:
+            again = list(group)
+            del group[:]
+            for ur, r in again:
+                c.append(Ins("R2UR UR%d, R%d" % (ur, r), wsb=sb))
+            settle()
+        del group[:]
+    # The pointer: the shared stream's record of k-step s(0) = (j + b) & 3 = (warp + band) & 3 of the first chunk.
+    c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (t0, S + 1, S + 3)))
+    c.append(Ins(andi(t0, t0, 3)))
+    c.append(Ins("IADD3 R%d, RZ, 0x100, RZ" % (t0 + 1)))
+    c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], t0, t0 + 1)))
+    # j, and s(0) .. s(3) in t0 + 1, t0 + 2, t0 + 3, u.
+    c.append(Ins(andi(t0, S + 1, 3)))
+    st = [t0 + 1, t0 + 2, t0 + 3, u]
+    for t in range(4):
+        if t:
+            c.append(Ins("LOP3.LUT R%d, R%d, 0x%x, RZ, 0x3c, !PT" % (st[t], S + 3, t)))
+            c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (st[t], st[t], t0)))
+        else:
+            c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (st[t], S + 3, t0)))
+        c.append(Ins(andi(st[t], st[t], 3)))
+    # A's base (the band's groups) and B's (the column slot's groups).
+    c.append(Ins(muladd(u + 1, S + 3, 2048 * mt)))
+    c.append(Ins(muladd(u + 2, t0, 8192)))
+    c.append(Ins(addi(u + 2, u + 2, 2048 * 2 * mt)))
+    # sr_sb (rfold120.py, goal-nv50g): sm_120's shared addresses carry the shared base in a uniform register, and an
+    # address names one uniform register, so the bases that sr puts there include it.
+    sbase = cfg.get("sr_sb")
+    if sbase is not None:
+        for r in (u + 1, u + 2):
+            c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (r, r, sbase)))
+    c.append(Ins("NOP", stall=6))
+    r2ur(cfg["sr_ua"], u + 1)
+    r2ur(cfg["sr_ub"], u + 2)
+    settle()
+    # The stage slots: 512 mt x s(t). j is done with: t0 takes the fourth.
+    tmp = [u + 1, u + 2, u + 3, t0]
+    for t in range(4):
+        c.append(Ins(muladd(tmp[t], st[t], 512 * mt)))
+    if sbase is not None:
+        for t in range(4):
+            c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (tmp[t], tmp[t], sbase)))
+    c.append(Ins("NOP", stall=6))
+    for t in range(4):
+        r2ur(sr_ust(cfg, t), tmp[t])
+    settle()
+    # The pointer's steps: 256 x (s(t + 1) - s(t)), and after turn 3 a chunk on: 256 x (4 + s(0) - s(3)).
+    for t in range(4):
+        c.append(Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (tmp[t], st[t], 4 if t == 3 else 0, st[(t + 1) & 3])))
+    c.append(Ins("NOP", stall=6))
+    for t in range(4):
+        c.append(Ins(muladd(tmp[t], tmp[t], 0x100)))
+    c.append(Ins("NOP", stall=6))
+    for t in range(4):
+        r2ur(sr_ud(cfg, t), tmp[t])
+    settle()
+    return c
 
 
 def prologue(cfg, R, tail):
@@ -291,12 +403,15 @@ def prologue(cfg, R, tail):
     c.append(Ins(muladd(R["trw"], 0, 0x40), wait=(SB_RD,)))                   # the thread's transcript ...
     c.append(Ins("IMAD.MOV.U32 R%d, RZ, RZ, c[0x0][0x178]" % R["cnt"]))       # chunks
     rec = 0x100 if cfg["co"] else 0x200                                       # a k-step's record, 32 lanes
-    c.append(Ins(muladd(S + 2, R["cnt"], 4 * rec)))                           # a warp's offsets: 4 chunks + 1
-    c.append(Ins(addi(S + 2, S + 2, rec)))                                    # k-steps
-    c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], S + 1, S + 2)))
+    if not cfg["sr"]:
+        c.append(Ins(muladd(S + 2, R["cnt"], 4 * rec)))                       # a warp's offsets: 4 chunks + 1
+        c.append(Ins(addi(S + 2, S + 2, rec)))                                # k-steps
+        c.append(Ins("IMAD.WIDE.U32 R%d, R%d, R%d, c[0x0][0x170]" % (R["poff"], S + 1, S + 2)))
     c.append(Ins(shr(S + 3, S + 1, 2)))                                       # row band
     if cfg["band"] or cfg["bsh"]:
         c.append(Ins("ISETP.NE.AND P2, PT, R%d, 0x0, PT" % (S + 3)))
+    if cfg["sr"]:
+        c += sr_prologue(cfg, R, S, q)
     if cfg["brg"]:
         c.append(Ins(muladd(R["cnt"], R["cnt"], 0x10, S + 3)))               # 16 chunks + band ...
         c.append(Ins(addi(R["cnt"], R["cnt"], 1)))                            # ... + 1: the barrier's number
@@ -328,7 +443,8 @@ def prologue(cfg, R, tail):
     c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (q[1], S + 1, S + 3)))
     c.append(Ins(andi(q[1], q[1], 3)))                                        # the k-step of the first turn
     c.append(Ins(muladd(q[1], q[1], 512 * mt)))
-    c.append(Ins(muladd(S + 3, S + 3, 2048 * mt, q[1])))
+    # sr: R0 is the lane's place in the band's stage; the k-step's slot is a uniform register of the turn.
+    c.append(Ins(muladd(S + 3, S + 3, 2048 * mt) if cfg["sr"] else muladd(S + 3, S + 3, 2048 * mt, q[1])))
     if cfg["co"]:
         c.append(Ins(muladd(q[2], S, 0x8)))                                   # 8 lane: its place in a record
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
@@ -342,7 +458,10 @@ def prologue(cfg, R, tail):
     c.append(Ins("IADD3 R%d, R%d, 0x0, R%d" % (R["poff"], R["poff"], q[2] if cfg["co"] else S)))  # no carry: the host's care
     c.append(Ins("IADD3 R%d, R%d, 0x%x, R%d" % (SW, S + 3, R["stg"], S)))
     cur = R["oq"][0]
-    c.append(ldg(cur, R["poff"], 0, size=64 if cfg["co"] else 128, wsb=SB_OFF))
+    c.append(ldg(cur, R["poff"], 0, size=64 if cfg["co"] else 128, wsb=SB_OFF, rsb=SB_RD if cfg["sr"] else None))
+    if cfg["sr"]:
+        # The pointer on to turn 1's record, which the loop's first load reads.
+        c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, 0)), wait=(SB_RD,)))
     c.append(Ins("NOP", stall=8))
     wl = (SB_OFF,)
     if cfg["co"]:
@@ -365,7 +484,7 @@ def prologue(cfg, R, tail):
             c += g[2]
     if cfg["sync"] == 4 and not cfg["nost"]:
         # The first chunk's tile 0 goes to the stage here, and the warps meet before any of them loads.
-        c.append(Ins("STS.128 [R%d], R%d" % (SW, AF[0])))
+        c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "", AF[0])))
         c.append(Ins("NOP", stall=8))
         c += barrier(cfg)
     last = [gather_ins(tail[n][0], a, o, d1, d2, tail[n][1], cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[7:])]
@@ -412,9 +531,16 @@ def chunk(cfg, R, role=None):
             rec = 0x100 if cfg["co"] else 0x200
             # nlg (timing only): the chunk's second-turn record three times, then the next chunk's first: a
             # later turn's record has another form than a first turn's (co), so it has to be one of its kind.
-            put(b + cfg["lgg"], ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
-                           size=64 if cfg["co"] else 128,
-                           wsb=SB_OFF, rsb=hold if s == 3 else None, wait=hw))
+            if cfg["sr"]:
+                # sr: the pointer steps to the next turn's record of the shared stream right behind the load
+                # that read it (the load releases `hold` once it has read the pointer).
+                put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))
+                put(b + cfg["lgg"] + cfg["srg"], Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, (s + 1) & 3)),
+                                            wait=hw))
+            else:
+                put(b + cfg["lgg"], ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
+                               size=64 if cfg["co"] else 128,
+                               wsb=SB_OFF, rsb=hold if s == 3 else None, wait=hw))
             if cfg["pf"]:
                 # pf (goal-nvk18): an L2 prefetch (CCTL.E.PF2, no register written) of the record pf turns
                 # beyond the one loaded here, so a record the L2 does not hold comes from memory ahead of its load.
@@ -453,7 +579,8 @@ def chunk(cfg, R, role=None):
                     plans.append((g0 - early, g0 + lead + late, g0 + lead + plead + late, cur + h, 2048 * m,
                                   a + 2 * h, a + 2 * h + 1, hold if m == mt - 1 else None))
             else:                                      # a later turn: another warp's, from the stage
-                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [R%d+0x%x]" % (a, stage_cur, 512 * m), wsb=SB_ST,
+                sa = "R%d+UR%d" % (SW, sr_ust(cfg, s)) if cfg["sr"] else "R%d" % stage_cur
+                put(b + 8 * (m - 1) + 1, Ins("LDS.128 R%d, [%s+0x%x]" % (a, sa, 512 * m), wsb=SB_ST,
                                              rsb=hold if m == mt - 1 else None), False)
                 for g in (b + 8 * m, b + 8 * m + 1):
                     iwait.setdefault(g % tot, []).append(SB_ST)
@@ -463,7 +590,8 @@ def chunk(cfg, R, role=None):
                 g0 = b + ni - 11 + h
                 plans.append((g0, g0 + lead, g0 + lead + plead, nxt + h, 0, a + 2 * h, a + 2 * h + 1, None))
         else:
-            put(b + ni - 7, Ins("LDS.128 R%d, [R%d]" % (a, stage_nxt), wsb=SB_ST), False)
+            sa = "R%d+UR%d" % (SW, sr_ust(cfg, s + 1)) if cfg["sr"] else "R%d" % stage_nxt
+            put(b + ni - 7, Ins("LDS.128 R%d, [%s]" % (a, sa), wsb=SB_ST), False)
             for g in (b + ni, b + ni + 1):
                 iwait.setdefault(g % tot, []).append(SB_ST)
         brole = ("load" if s % 2 == 0 else "make") if cfg["bsym"] else role
@@ -568,7 +696,8 @@ def chunk(cfg, R, role=None):
     for m in range(mt) if not cfg["nost"] else ():
         g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
             tot - 9 + lead + plead if cfg["sync"] == 4 else cfg["st0"])
-        put(g, Ins("STS.128 [R%d%s], R%d" % (SW, "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
+        put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "",
+                                                "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
     # A gather takes the lowest quad that is free (a quad is free from the gap behind its last PRMT); the
     # chunk before left its last gathers under way, so the chunk is walked twice and the second walk kept.
     # The scoreboards go round 0-2 in the order the LDSM are issued.
@@ -714,7 +843,7 @@ def chunk(cfg, R, role=None):
         for i, t in enumerate((shr(w, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (w, w), andi(w, w, 0x3c),
                                "IADD3 R%d, R%d, 0x0, R1" % (w, w))):
             put(end - 8 + i, Ins(t), wrapped=True)
-        put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD), wrapped=True)
+        put(end - 4, Ins("LDL R%d, [R%d]" % (w, w), wsb=SB_RD) if not cfg["dbg"] & 2 else Ins(addi(w, w, 0)), wrapped=True)
     else:
         put(end - 4, Ins("%s R%d, [R%d]" % (lds, w, trw), wsb=SB_RD), wrapped=True)
     put(end + 0, Ins("SHF.L.W.U32.HI R%d, R%d, 0xd, R%d" % (w, w, w), wait=(SB_RD,)), wrapped=True)
@@ -724,7 +853,11 @@ def chunk(cfg, R, role=None):
         for i, t in enumerate((shr(x3, cn, 2), "IADD3 R%d, -R%d, 0x0, RZ" % (x3, x3), andi(x3, x3, 0x3c),
                                "IADD3 R%d, R%d, 0x0, R1" % (x3, x3))):
             put(end + 2 + i, Ins(t), wrapped=True)
-        put(end + 6, Ins("STL [R%d], R%d" % (x3, w)), wrapped=True)
+        # The store releases `hold` once it has read R3 and the word (goal-nvk19). Without it nothing waited for
+        # that read: in the epilogue the function's return writes R3 (0, the return address's high word) a few
+        # steps later, and when the store sat behind the exchange stores in the memory queue it read the new R3
+        # and wrote to local address 0: "an illegal memory access" in repeated launches (bsg3 <= 20, rb1 >= 5).
+        put(end + 6, Ins("STL [R%d], R%d" % (x3, w), rsb=hold) if not cfg["dbg"] & 1 else Ins("NOP"), wrapped=True)
     else:
         put(end + 2, Ins("%s [R%d], R%d" % (sts, trw, w), rsb=hold), wrapped=True)
     # The next word of the sixteen: the pointer is 64-aligned, so its low six bits are the word. The scratch
@@ -744,11 +877,14 @@ def chunk(cfg, R, role=None):
         put(end + 5, Ins(andi(w, w, 0x3c)), wrapped=True)
         put(end + 6, Ins("LOP3.LUT R%d, R%d, 0x3f, R%d, 0xba, !PT" % (trw, trw, w), wait=hw), wrapped=True)
     assert end + 6 - tot < (ni - 4 if cfg["rsp"] else ni - 16)
+    if os.environ.get("RFOLD_TAIL"):
+        print("tail: gaps %d to %d of the next chunk; first store gap %d" % (end - 8 - tot, end + 6 - tot, cfg["bsg3"] if cfg["bsg3"] >= 0 else cfg["bsg"]))
     # The chunk's count and the offsets pointer, in quiet gaps of the last turn; and the barrier's test.
     put(b3 + 6, Ins(addi(R["cnt"], R["cnt"], -16 if cfg["brg"] or cfg["bord"] else -1)), wrapped=False)
     put(b3 + 7, Ins(("ISETP.GT.U32.AND P1, PT, R%d, 0xf, PT" if cfg["brg"] or cfg["bord"] else "ISETP.NE.AND P1, PT, R%d, 0x0, PT")
                     % R["cnt"]), wrapped=False)
-    put(b3 + 14, Ins(addi(R["poff"], R["poff"], 0x400 if cfg["co"] else 0x800), wait=hw), wrapped=False)
+    if not cfg["sr"]:                                  # sr: the turns' steps move the pointer
+        put(b3 + 14, Ins(addi(R["poff"], R["poff"], 0x400 if cfg["co"] else 0x800), wait=hw), wrapped=False)
     if cfg["barn"] and cfg["sync"] != 4:
         assert cfg["barn"] & (cfg["barn"] - 1) == 0
         put(b3 + 9, Ins(andi(w, R["cnt"], cfg["barn"] - 1)), wrapped=False)
@@ -864,6 +1000,14 @@ def expect(text, cfg, code):
     if facts["urs"] != {cfg["ur"]}:
         out.append("the loop loads the address base into UR%d and the compiled function into %s" % (
             cfg["ur"], ", ".join("UR%d" % u for u in sorted(facts["urs"])) or "no uniform register"))
+    if cfg["sr"]:
+        # sr's uniform registers hold through the loop: the compiled kernel must use none of them anywhere.
+        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {sr_ust(cfg, t) for t in range(4)} | {sr_ud(cfg, t) for t in range(4)}
+        theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
+        theirs |= {x + 1 for x in theirs}                 # a pair's second register is not printed
+        if mine & theirs:
+            out.append("the compiled kernel uses UR%s, which sr keeps its bases in" % ", UR".join(
+                str(x) for x in sorted(mine & theirs)))
     if not consts <= facts["consts"]:
         out.append("the loop reads kernel parameters the compiled function does not: %s" % ", ".join(
             "c[0x0][0x%x]" % c for c in sorted(consts - facts["consts"])))
@@ -872,7 +1016,7 @@ def expect(text, cfg, code):
     if cfg["bx"]:
         if not re.search(r"STL\.128 \[R1\], RZ", text) or not re.search(r"STL\.128 \[R1\+0x30\], RZ", text):
             out.append("the kernel does not zero its transcript at R1 + 0 to 0x3f of its frame (bx)")
-        if "[R1+0x40]" in text or "[R1+0x44]" in text:
+        if not cfg["bxt"] and ("[R1+0x40]" in text or "[R1+0x44]" in text):      # bxt keeps it in a register
             out.append("the kernel uses R1 + 0x40 of its frame, where the loop keeps its exchange address (bx)")
     elif not re.search(r"STS\.128 \[R\d+\+0x%x\], RZ" % tr, text):
         out.append("the kernel does not zero its transcripts at shared address 0x%x, where the loop keeps them" % tr)
