@@ -2950,6 +2950,45 @@ reading each thread's core from `sr0`). About 40 other register-allocator and sc
 dummies. Raising card 4's power limit to 190-220 W (the coordinator, founder's approval) changed nothing: 186.7 W and
 about 1,940 MHz every time.
 
+### Arc rig, 12 November, midday: the 8x4 split DPAS ends the dummy DPAS (`goal/arc-12`)
+
+`xmx8w` now issues each 8x8 split DPAS as two 8x4 ones (2e3d4887). The finalizer's dummy-DPAS workaround
+(Wa_18023229625) applies only to 8x8 DPAS, so the loop has none, whatever registers the hash lands in. With that,
+A' loaded a k-step ahead now wins, and so do two more finalizer options the host sets (`-noroundrobin
+-keepDPASMacroInSchedule`). Card 5, 8 s, taking turns, three rounds: spare20 (2e3d4887) **96.3-96.5 TH/s at 1,888-1,896
+MHz, 188 W, against spare19 93.2-93.4** at 1,923 MHz (+3.3%), `xmx8r` 67.1-67.2. verify.sh PASS (`xmx8w` at 16,384 and
+32,768 regions), verify-hits 400 of 400, 0 failed. HiveOS's 24.35 driver: check PASS, 88.1 TH/s on card 5 (spare19
+85.3 there at goal-arc11). Not yet confirmed on cool card 4: pausing its miner was refused by the permission check.
+Card 4 has run about 1.7% above card 5, so about 98 is expected there.
+
+Card 5, 8 s, 2-3 rounds (wrong-result timing builds marked):
+
+| What | TH/s | dummy DPAS |
+|---|---|---|
+| control (spare19's code) | 93.5-93.6 | 3 |
+| no copy, ring left as it was (zeros; timing) | 101.1 at 2,000 MHz, 177 W | 6 |
+| no copy, every slot holding real B' (timing, new `PEARL_W_FILLALL`) | 97.3 at 1,960 MHz | 6 |
+| no barrier / A' of 8 row windows only / no hash (timing) | 94.3 / 93.5 / 96.1 | 5 / 3 / 0 |
+| operand fill 63 / 32 / -63 / 16 (shipped: 48) | 93.4 / 93.0 / 92.4 / 91.9 | 3 |
+| the readout twice (`PEARL_W_RD2`, results kept) | 84.8 | 9 |
+| extra int ALU a k-step, 8 / 16 (`PEARL_W_XALU`) | 86.5 / 83.0 | 6 / 8 |
+| copy two slots ahead, release fence at the slot's start (`PEARL_W_A2`) | 90.5 | 8 |
+| two column windows a work-group (RW 4, CW 2) / with KPS 2 | 64.5 / 86.9 | 3 / 6 |
+| **two 8x4 split DPAS for each 8x8 (`PEARL_W_D4`, kept)** | **94.43** | **0** |
+| D4 + A' a k-step ahead (kept) | 94.93 (D4 alone 94.37) | 0 |
+| D4 + 256-byte B' reads / copy two slots ahead / 16 row windows / copy once a chunk | 94.2 / 93.1 / 94.1 / 92.1 | 0 |
+| D4 + AH, options `-noroundrobin` / + `-keepDPASMacroInSchedule` (kept) | 95.6 / 96.4 | 0 |
+| the same without `-insertDPASRSDummyMov` / without `-noloopra` | 95.4 / 96.2 | 0 |
+| spare20 + readout as 16-lane 3-input XORs in inline vISA (`PEARL_W_ASMRD4`) | 93.8 | 0 |
+| spare20 + no hash / no copy with real B' (timing) | 96.2 at 1,855 MHz / 100.5 at 1,936 MHz | 0 |
+| spare20 + copy after the local reads / load and store in one k-step / two slots / KPS 2 | 93.5 / 92.1 / 94.6 / 91.5 | 0 |
+| spare20 + 32-bit surface addresses (`PEARL_W_ARGP`) / B' straight from memory, no ring | 96.3 / 84.3 | 0 |
+| spare20, band 16 / 24 / 32 / 48 / 128 rows (default 64: 96.1-96.5) | 96.1-96.4 / 96.1-96.2 / 96.4-96.9 / 96.5-96.7 / 90.0 | 0 |
+
+What it shows: with no dummies left, the card sits at its power limit (188 W, about 1,900 MHz), so a cut in work a
+clock (no hash) no longer raises the rate. The copy is what remains: about 4% of rate and of energy. `xmx8r` also
+gains a little under the new options (69.0 against 68.5).
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
