@@ -3449,6 +3449,27 @@ More card 5 prices on 8a01fa49 (def 100.2-100.5 TH/s at about 1,970 MHz, 50.9 a 
 | RW 16 x CW 2 (64 sub-groups, C16 copy for CW 2), SEQ 1, PASS; with BA | 88.6; 92.6 | 2,000 | 163; 166 |
 | def at SEQ 1 | 96.9 | 2,000 | 175 |
 
+- Card 4 check of spare27 (eb1133b3): verify.sh PASS (emu too), verify-hits 400/400 at full speed and at duty 75;
+  full speed 101.1-101.4 against spare23 99.7-99.9; duty 75 (bench.js, 40 s) 77.09-77.38 against 77.22-77.41.
+
+Prices under duty 75 (bench.js on card 5, 30-40 s, two rounds, ~2,100 MHz busy, below the power limit; spare27 at CW 1
+76.88-76.97). Under duty, work a clock is all that counts:
+
+| build | TH/s | busy MHz | W |
+|---|---|---|---|
+| duty 100 / duty 99 (the drain each batch) | 98.15-98.29 / 96.76-97.14 | 1,881-1,904 | 190 |
+| 4,096-column batches | 75.2 | 2,016 | 168 |
+| no copy (NOCOPY + FILLALL) | 80.08-80.23 (+4.2%) | 2,102-2,116 | 173 |
+| A' of 2 row windows (AHOT 2) | 79.67-79.77 (+3.6%) | 2,093-2,126 | 162 |
+| no hash (NOEPI) | 77.69-77.74 (+1.0%) | 2,106-2,109 | 177 |
+| RW 16 x CW 1 (spare25; current tree the same) | 74.81-74.94 | 2,096-2,126 | 171 |
+| CW 2 squeezed to 32 KB (KPS 2, SEQ 1), PASS | 70.75-70.83 | 2,099-2,109 | 163 |
+| two work-groups on the same rows (PAIR 2, CW 1), PASS | 73.69-73.74 | 2,106-2,112 | 180 |
+
+- Work a clock falls as the clock rises: 52.1 TH/s a GHz at 1,885 MHz, 48.6 at 2,110 (same build).
+- Under duty, A' from L2 costs work a clock (+3.6% if it were all L1 hits), but every way of sharing it tried so far
+  (CW 2 at 64 or 32 KB, RW 16, PAIR) loses more than that. Two 16-thread work-groups a core at 32 KB, each on its own
+  rows, is the shape to keep; the copy (4.2%) and A' (3.6%) must be cut inside it.
 - A work-group of 64 sub-groups (a whole Xe-core) loses 8-12% however its windows are arranged.
 - AHOT 2 does the same work a clock as def: at the clock cap, sharing A' more widely buys nothing more.
 
