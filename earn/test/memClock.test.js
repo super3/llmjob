@@ -399,3 +399,83 @@ describe('--mine-mem-clock auto', () => {
       .toBe('--mine-mem-clock auto: nvidia-smi lists no NVIDIA card, and the lock is NVIDIA-only');
   });
 });
+
+// On the rotation fold (--rotation-fold, LLMJOB_ROTATION_FOLD=1) an RTX 40 card
+// tries a lock at 810 MHz by default and under `auto`: that fold reads almost no
+// DRAM, and on rig01's RTX 4090 810 MHz mined +1.05% against the driver's clock
+// and 5001 +0.7% (12 November). Without the fold nothing about RTX 40 changes.
+describe('the rotation fold on RTX 40', () => {
+  const { ROTATION_ADA_MEM_CLOCK_MHZ } = require('../src/shared/memClock');
+  const RTX3080 = (index) => card(index, '8.6');
+  const g4090 = (index) => gpu(index, 'NVIDIA GeForce RTX 4090');
+
+  test('is 810 MHz', () => {
+    expect(ROTATION_ADA_MEM_CLOCK_MHZ).toBe(810);
+  });
+
+  test('puts each RTX 40 card on trial at 810 MHz by default, whatever its name, and says so', () => {
+    expect(planMemClocks({
+      requestedMhz: null, rotationFold: true, cards: [RTX4090(0), card(1, '8.9')], gpus: [g4090(0), gpu(1, 'NVIDIA RTX 4000 Ada Generation')],
+    })).toEqual({
+      byIndex: { 0: 810, 1: 810 },
+      trial: [0, 1],
+      isDefault: true,
+      dropped: false,
+      reason: 'trying a memory clock lock of 810 MHz on GPU 0, 1 (RTX 40 on the rotation fold) by default, kept only '
+        + 'if the card mines faster; --mine-mem-clock <MHz> locks without a trial, --mine-mem-clock 0 leaves the '
+        + 'driver\'s clock',
+    });
+  });
+
+  test('names the GUI switch when main.js asks', () => {
+    expect(planMemClocks({
+      rotationFold: true, cards: [RTX4090(0)], gpus: [g4090(0)], requestName: GUI_MEM_CLOCK_ENV,
+    }).reason).toBe('trying a memory clock lock of 810 MHz on GPU 0 (RTX 40 on the rotation fold) by default, kept '
+      + 'only if the card mines faster; LLMJOB_MINE_MEM_CLOCK=<MHz> locks without a trial, LLMJOB_MINE_MEM_CLOCK=0 '
+      + 'leaves the driver\'s clock');
+  });
+
+  test('leaves an RTX 40 card alone without the fold', () => {
+    expect(planMemClocks({ requestedMhz: null, cards: [RTX4090(0)], gpus: [g4090(0)] }).byIndex).toEqual({});
+    expect(planMemClocks({ requestedMhz: null, rotationFold: false, cards: [RTX4090(0)], gpus: [g4090(0)] }).reason)
+      .toBeNull();
+  });
+
+  test('keeps the 5090 default beside it, and gives older cards nothing', () => {
+    expect(planMemClocks({
+      rotationFold: true, cards: [RTX4090(0), RTX5090(1), RTX3080(2)], gpus: [g4090(0), gpu(1), gpu(2, 'NVIDIA GeForce RTX 3080')],
+    })).toEqual({
+      byIndex: { 0: 810, 1: 7001 },
+      trial: [1, 0],
+      isDefault: true,
+      dropped: false,
+      reason: 'trying a memory clock lock of 7001 MHz on GPU 1 (RTX 5090) and 810 MHz on GPU 0 (RTX 40 on the '
+        + 'rotation fold) by default, kept only if the card mines faster; --mine-mem-clock <MHz> locks without a '
+        + 'trial, --mine-mem-clock 0 leaves the driver\'s clock',
+    });
+    expect(planMemClocks({ rotationFold: true, cards: [RTX3080(0)], gpus: [gpu(0, 'NVIDIA GeForce RTX 3080')] }))
+      .toEqual({ byIndex: {}, isDefault: false, dropped: false, reason: null });
+  });
+
+  test('tries 810 in place of 5001 under auto', () => {
+    expect(planMemClocks({ requestedMhz: 'auto', rotationFold: true, cards: [RTX4090(0), RTX5090(1)], gpus: [] }))
+      .toEqual({
+        byIndex: { 0: 810, 1: 7001 },
+        trial: [0, 1],
+        isDefault: false,
+        dropped: false,
+        reason: '--mine-mem-clock auto: trying a memory clock lock on GPU 0, 1, kept only if the card mines faster',
+      });
+  });
+
+  test('gives way to an explicit request and to the LLM', () => {
+    expect(planMemClocks({ requestedMhz: 0, rotationFold: true, cards: [RTX4090(0)], gpus: [g4090(0)] }).byIndex)
+      .toEqual({});
+    expect(planMemClocks({ requestedMhz: 5001, rotationFold: true, cards: [RTX4090(0)], gpus: [g4090(0)] }))
+      .toEqual({ byIndex: { 0: 5001 }, isDefault: false, dropped: false, reason: '--mine-mem-clock 5001 MHz on GPU 0' });
+    expect(planMemClocks({ rotationFold: true, llmCoRuns: true, cards: [RTX4090(0)], gpus: [g4090(0)] })).toEqual({
+      byIndex: {}, isDefault: false, dropped: false,
+      reason: 'memory clock left to the driver on GPU 0: the LLM co-runs with the miner and needs full memory bandwidth',
+    });
+  });
+});

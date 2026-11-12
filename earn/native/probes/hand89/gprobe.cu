@@ -34,6 +34,14 @@
 #include <cstring>
 #include <vector>
 #include <cuda_runtime.h>
+// GP_CFILLA, GP_CFILLB (goal-nvk17): the fill the CPU check gives A and B, for hand loops (rfold.py fa, fb, xa, xb)
+// whose operands are another fill plus the noise: -64 (fa=0xc0 read as S8), 0 (fa=0x80 xa=0x80), 64 (fa=0x40).
+#ifndef GP_CFILLA
+#define GP_CFILLA GP_FILL
+#endif
+#ifndef GP_CFILLB
+#define GP_CFILLB GP_FILL
+#endif
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -559,11 +567,11 @@ int main(int argc, char **argv) {
           const uint32_t ap0 = pm[0][0][gk], ap1 = pm[0][1][gk], bp0 = pm[1][0][gk], bp1 = pm[1][1][gk];
           for (uint32_t r = 0; r < BM; r++) {
             const uint8_t *T = &DA[(size_t)(rbg * BM + r) * 128u];
-            Ap[(size_t)r * 128u + kk] = (int8_t)(GP_FILL + (int)T[ap0] - (int)T[ap1]);
+            Ap[(size_t)r * 128u + kk] = (int8_t)(GP_CFILLA + (int)T[ap0] - (int)T[ap1]);
           }
           for (uint32_t c = 0; c < 256u; c++) {
             const uint8_t *T = &DB[(size_t)(cbg * 256u + c) * 128u];
-            Bp[(size_t)c * 128u + kk] = (int8_t)(GP_FILL + (int)T[bp0] - (int)T[bp1]);
+            Bp[(size_t)c * 128u + kk] = (int8_t)(GP_CFILLB + (int)T[bp0] - (int)T[bp1]);
           }
         }
         for (uint32_t r = 0; r < BM; r++)

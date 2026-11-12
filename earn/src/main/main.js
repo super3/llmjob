@@ -765,11 +765,14 @@ async function startMining(settings, llmCoRuns) {
   // so persistSettings never writes it to disk.
   // nvidia-smi's cards only: the lock is nvidia-smi's. Given the AMD plan, it
   // would try to lock each AMD card, where an empty list says "NVIDIA-only".
+  // The rotation fold (shared/rotationFold) is read first: on it an RTX 40 card
+  // also tries a memory clock lock by default.
+  const foldRequest = readRotationFoldEnv(process.env);
   const memRequest = readMemClockEnv(process.env);
   if (memRequest.warning) send('miner:log', { level: 'warn', line: memRequest.warning });
   const memPlan = planMemClocks({
     requestedMhz: memRequest.mhz, requestName: GUI_MEM_CLOCK_ENV,
-    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns,
+    cards: cudaCards, gpus: nvidiaGpus, llmCoRuns: !!llmCoRuns, rotationFold: foldRequest.on,
   });
   if (memPlan.reason) send('miner:log', { level: memPlan.dropped ? 'warn' : 'info', line: memPlan.reason });
 
@@ -789,7 +792,6 @@ async function startMining(settings, llmCoRuns) {
   // is in the app's environment, read on every start like the two above. It is
   // handed to the CUDA core as its own variable. Which cards can run it, and
   // what a card that cannot says, is the core's and the miner's business.
-  const foldRequest = readRotationFoldEnv(process.env);
   if (foldRequest.warning) send('miner:log', { level: 'warn', line: foldRequest.warning });
   if (foldRequest.on) process.env[CORE_ROTATION_FOLD_ENV] = '1';
 
