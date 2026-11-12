@@ -1198,6 +1198,36 @@ bool pearl_dp4a_turing_for(int sms, int force) {
   return sms > 0 && sms < PEARL_DP4A_TURING_SMS;
 }
 
+#if PEARL_T75_RUL8 && PEARL_T75_K > PEARL_FOLD_K
+// Whether `device` will run the t75 folds (Ctx::bdT75), asked before its context is made
+// (pearl_host_card_k): compute 7.5, tensor cores (not sent to the dp4a fold as a GTX 16
+// card is, pearl_dp4a_turing_for), and pearl_t75_tile_fold_wmma's sm_75 body loaded.
+bool pearl_t75_card(int device) {
+  int major = 0, minor = 0, sms = 0;
+  if (cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, device) != cudaSuccess
+      || cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device) != cudaSuccess) {
+    (void)cudaGetLastError();
+    return false;
+  }
+  if (major != 7 || minor != 5 || !PEARL_TURING_BDIRECT) return false;
+  uint32_t v = 0;
+  const int force = pearl_bd_sweep_env("PEARL_DP4A_TURING_FORCE", &v) && v <= 1u ? (int)v : -1;
+  if (pearl_dp4a_turing_for(sms, force)) return false;
+  int current = 0;
+  if (cudaGetDevice(&current) != cudaSuccess) current = device;
+  cudaSetDevice(device);
+  cudaFuncAttributes ft;
+  const bool ok =
+      cudaFuncGetAttributes(&ft, reinterpret_cast<const void *>(pearl_t75_tile_fold_wmma))
+          == cudaSuccess
+      && ft.binaryVersion == 75;
+  (void)cudaGetLastError();
+  cudaSetDevice(current);
+  return ok;
+}
+#endif
+
 // Which cards a dp4a fold runs on, for its log line, its name and its errors: Pascal's,
 // Volta's (a V100, compute 7.0, whose tensor cores do fp16 only), or Turing's (a GTX 16
 // card, or another sm_75 card PEARL_DP4A_TURING_FORCE sent to it).
@@ -1895,6 +1925,14 @@ extern "C" uint32_t pearl_host_card_k(const PearlProfile *profile, int device, c
     if (note && note_len)
       snprintf(note, note_len, "rotation fold asked for but not used: %s. Mining on the normal kernel", why);
   }
+#if PEARL_T75_RUL8 && PEARL_T75_K > PEARL_FOLD_K
+  // An RTX 20 card that will run the t75 folds (Ctx::bdT75) mines their k, PEARL_T75_K:
+  // the tile's hash and hand-off spread over twice the MACs. The same tests create makes:
+  // compute 7.5, not a GTX 16 card (those run the dp4a fold), and pearl_t75_tile_fold_wmma's
+  // sm_75 body is what loaded. create refuses k PEARL_T75_K on any card that then does not
+  // run the t75 folds, so a wrong answer here fails loudly rather than mining garbage.
+  if (profile && profile->k == PEARL_FOLD_K && pearl_t75_card(device)) return PEARL_T75_K;
+#endif
   return profile ? profile->k : 0;
 }
 
@@ -2353,6 +2391,14 @@ extern "C" void *pearl_host_create(const PearlProfile *profile, char *err,
         ctx->bdT75 = false;
       }
     }
+#if PEARL_T75_K > PEARL_FOLD_K
+    // At the t75 folds' k (pearl_host_card_k chose it), a batch of the same width takes
+    // twice as long, and a job change drops more work in flight; half the width keeps a
+    // batch's time what it was at k 2048. Unless the sweep set the width.
+    if (ctx->bdT75 && profile->k == PEARL_T75_K && !getenv("PEARL_BD_SWEEP_COL_BATCH")
+        && pearl_bd_width_ok(s.colBatch / 2u, ctx->colsValid))
+      s.colBatch /= 2u;
+#endif
 #endif
     // The line says what took effect, so a reading can be credited to the shape that ran.
     if (swept)
@@ -3422,6 +3468,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   const uint32_t rank = ctx->profile.rank;
   const uint32_t chunks = (k + rank - 1) / rank;
   // The fold is compiled for exactly the mandated geometry (see PEARL_FOLD_*).
+#if PEARL_T75_RUL8 && PEARL_T75_K > PEARL_FOLD_K
+  // Or the t75 folds' own k (PEARL_T75_K), on a card that runs them.
+  if (ctx->bdT75 && rank == PEARL_FOLD_RANK && k == PEARL_T75_K) {
+  } else
+#endif
   if (rank != PEARL_FOLD_RANK || k != PEARL_FOLD_K) {
     if (err && err_len)
       snprintf(err, err_len, "fold kernel is built for rank %u, k %u (got rank %u, k %u)",
@@ -3607,6 +3658,11 @@ extern "C" bool pearl_host_submit(void *handle, uint64_t nonce_base, uint32_t ba
   // Turing's B-direct fold built for k 4096 folds chunk c into word c % 16 as well
   // (pearl_fold_bd.cuh, tst).
   if (ctx->foldBDirect && chunks == PEARL_FOLD_CHUNKS) {
+  } else
+#endif
+#if PEARL_T75_RUL8 && PEARL_T75_K > PEARL_FOLD_K
+  // So do the t75 folds built for PEARL_T75_K.
+  if (ctx->bdT75 && chunks == PEARL_T75_K / PEARL_FOLD_RANK) {
   } else
 #endif
   if (chunks > PEARL_JACKPOT_BUCKETS
