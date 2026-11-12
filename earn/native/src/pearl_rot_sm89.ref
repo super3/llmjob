@@ -12,17 +12,18 @@
 # with the scoreboards chosen, a sixth quad (rfold.py al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35); and, RTX 40's own
 # keys (build_rot.py's ARCH_KEYS), the readout's sums read as (0, 2) and (1, 3) on the chain of the other
 # register parity, with U8 IMMA (rpr=2 u8=1), the readout's steps first in their gap and allowed into gaps 41 to 44
-# of the chunk's last turn and the next chunk's first three (rgf=1 rb0=3 rb1=0).
+# of the chunk's last turn and the next chunk's first three (rgf=1 rb0=3 rb1=0), and records the eight warps
+# share (sr=1: rot_aux_offs built with ROT_SR=1 writes one stream of records with no warp's base in them; the
+# loop keeps the bases in uniform registers, so seven of a k-step's eight record loads hit the SM's cache).
 
-# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (745 hits, 19 salts), and
-# 338.00, 338.04 and 337.93 TH/s by hashrate.js against 336.93, 337.07 and 337.10 for the loop before it
-# (c47837b8..., alternating 120 s legs). The probe's CPU check: 16,384 of 16,384 at k 2048, 4,096 of 4,096 at
-# k 8192, 512 of 512 at k 65536.
-# On Kryptex with the core finding this file beside it: 337.48 TH/s by the miner's count over 298 s,
-# 14 shares accepted, none rejected.
-12.6 d18246d5a53a3ac9cc2862c07d23b80c63900cb12ebd4a3ca17b9583d15cfc1a
+# CUDA 12.6 (rig01's local toolkit). rig01, RTX 4090: verify-hits 400 of 400 (747 hits, 19 salts). By
+# hashrate.js, alternating 120 s legs against the loop before it (d18246d5...): at 810 MHz memory 343.37, 343.40
+# and 343.02 TH/s against 341.34, 341.37 and 341.34; at the driver's memory clock 339.56, 339.64 and 339.56
+# against 337.97, 338.08 and 337.97. The probe's CPU check: 16,384 of 16,384 at k 2048, 8,192 of 8,192 at k 8192,
+# 1,024 of 1,024 at k 65536.
+12.6 e0e8a52756a8d0ed7bb143d082e3d4cca355730496d6e1392d610cde27df68dd
 
 # CUDA 12.8 (what CI builds with, Linux and Windows). The same code as 12.6's, byte for byte; the toolkit's
 # version differs, in one byte of the ELF header and one of each kernel's .nv.info section. rig01, RTX 4090:
-# verify-hits 400 of 400 (745 hits, 19 salts).
-12.8 c7219d7dbaac0035d555a1c10e8ab8eb1752a65536f13aae589d374509f29f9d
+# verify-hits 400 of 400 (748 hits, 19 salts).
+12.8 217ad9b46dd781e59b3d6575ab060259661485f3690f756db8e97f6f052be950

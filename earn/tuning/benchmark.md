@@ -965,6 +965,26 @@ On Kryptex through this branch's CLI with `--rotation-fold` and no memory flag: 
 TH/s locked against 337.5, +0.9%), then 340.8 TH/s by the miner's count; 20 shares accepted, none rejected in
 669 s; verify-hits 400 of 400 beforehand.
 
+### rig01, 12 November: records the eight warps share (branch `goal/nv-19`)
+
+RTX 4090, 450 W. `rfold.py sr=1` on the shipped loop: the offsets records carry no warp's base, so all eight
+warps of a block read one stream (`rot_aux_offs` built with `ROT_SR=1`, gprobe `rot 4`) and seven of a k-step's
+eight record loads find their bytes in the SM's cache, not the L2. The bases sit in uniform registers named in the
+shared-memory address (`[R+UR+imm]`, no extra step); the record pointer moves by a uniform step a turn.
+Probe at 810 MHz memory: 99.32% of the pipe at 2633 to 2639 MHz against 99.43% at 2625 to 2626 (pipe x clock
+2615 to 2621 against 2610 to 2611); +0.5% tiles in 60 s. hashrate.js, alternating 120 s legs, one addon:
+
+| Memory clock | Shipped loop (d18246d5) | With sr (e0e8a527) | Gain |
+|---|---|---|---|
+| 810 MHz | 341.34, 341.37, 341.34 (2626 MHz, 443 W) | 343.37, 343.40, 343.02 (2644 MHz, 448.5 W) | +0.56% |
+| driver's (10251 MHz) | 337.97, 338.08, 337.97 | 339.56, 339.64, 339.56 | +0.5% |
+
+verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI with `--rotation-fold` (the trial
+kept 810 MHz): 342.56 TH/s by the miner's count over 299 s at 2644 MHz, 11 shares accepted, none rejected.
+Against OneZeroMiner's 342.8 at 810 MHz (above) that is 100.1% by hashrate.js; against its best, 344.5 at
+5001 MHz, 99.6%. B drawn once with sr (`y24` + `sr=1`) prices another +0.8% in the probe, but every B-drawn-once
+form with `bxt=1` has a fault in some placements (illegal address in repeated launches); it is not shipped.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).

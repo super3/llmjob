@@ -63,6 +63,20 @@ def _mem(lo, m, i):
     return lo | (_reg(m.group(i)) << 24) | ((off & 0xFFFFFF) << 40)
 
 
+# A shared-memory address with a uniform register in it, [Rn+URm+imm] (ptxas 12.6's encodings, goal-nvk19). The
+# second word's bit 27 says a uniform register is there; a load names it in bits 32-37 of the first word, a store
+# (whose data register is in those bits) in bits 0-5 of the second.
+MEMU = r"\[" + R + r"\+UR(\d+)(?:\+" + I + r")?\]"
+UMEM = 0x8000000
+
+
+def _memu(lo, m, i):
+    """Base register, uniform register and 24-bit offset of a MEMU operand matched at groups i to i + 2."""
+    off = _num(m.group(i + 2)) if m.group(i + 2) else 0
+    assert 0 <= off < 1 << 24 and int(m.group(i + 1)) < 63
+    return lo | (_reg(m.group(i)) << 24) | ((off & 0xFFFFFF) << 40)
+
+
 def _f(lo, hi, **k):
     for name, val in k.items():
         if name == "rd":
@@ -106,6 +120,16 @@ FORMS = [
     (r"IMMA\.16832\.U8\.S8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
      lambda m: _f(0x7237, 0x404c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x4200)),
+    # The same three with a uniform register in the address (rfold.py sr: the per-warp bases are there).
+    (r"LDSM\.16\.MT88\.4 " + R + ", " + MEMU,
+     lambda m: (_memu(0x783b | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0x4200 | UMEM)),
+    (r"LDS\.128 " + R + ", " + MEMU, lambda m: (_memu(0x7984 | _reg(m[1]) << 16 | int(m[3]) << 32, m, 2), 0xc00 | UMEM)),
+    (r"STS\.128 " + MEMU + ", " + R, lambda m: (_memu(0x7988 | _reg(m[4]) << 32, m, 1), 0xc00 | UMEM | int(m[2]))),
+    # An add of a uniform register (ptxas 12.6's IADD3 R4, R0, UR4, RZ), and a register moved into a uniform one
+    # (R2UR, a load-like step that sets a scoreboard).
+    (r"IADD3 " + R + ", " + R + r", UR(\d+), " + R,
+     lambda m: _f(0x7c10 | int(m[3]) << 32, 0xfffe000, rd=_reg(m[1]), ra=_reg(m[2]), rc=_reg(m[4]))),
+    (r"R2UR UR(\d+), " + R, lambda m: (0x73c2 | int(m[1]) << 16 | _reg(m[2]) << 24, 0xe0000)),
     # sm_120a's byte transpose (goal-nv50d, ptxas 13.3's word: ldmatrix.m16n16.x2.trans.b8): two 16 x 16 byte
     # matrices, four registers. Only sm_120 has it (rfold.py b8).
     (r"LDSM\.8\.MT1616\.2 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x13900)),

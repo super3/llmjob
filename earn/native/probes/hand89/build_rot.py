@@ -61,7 +61,7 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # 237.53, 237.49 and 237.54 against 233.75 and 233.69 on one 5080 PC (12 November). And the IMMA without their yield flag
 # (iy=0, as on sm_86): on a 488.75 W 5090 PC 402.11 and 402.17 TH/s against 399.18 and 399.45 without it (389.44
 # and 389.46 for the file before both).
-ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
+ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
              "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1"]}
 
 
@@ -120,6 +120,8 @@ def main():
     defs = ["-DROT_INLINE=0", "-DROT_C=16387"] if arch == "sm_120" else []
     if "b8=1" in ARCH_KEYS[arch]:
         defs.append("-DROT_TAB8=1")         # the b8 gathers read tables in plain row order (rot_aux_tab)
+    if "sr=1" in ARCH_KEYS[arch]:
+        defs.append("-DROT_SR=1")           # sr: records the eight warps share (rot_aux_offs)
     r = subprocess.run([nvcc, "-arch=" + arch, "-std=c++17", "-O3", "-cubin"] + defs + ["-I", SRC,
                         os.path.join(SRC, "pearl_rot.cu"), "-o", base], capture_output=True, text=True)
     if r.returncode != 0:

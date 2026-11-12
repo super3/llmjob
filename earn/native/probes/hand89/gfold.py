@@ -112,8 +112,10 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     else:
         # ldk (goal-nvk14, TIMING ONLY): the gather's load as an LDS.128 at the same addresses (the same 512 bytes,
         # the same banks; each lane keeps its own row, untransposed): what the transposing LDSM costs per byte.
-        ld = Ins("%s R%d, [R%d%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg,
-                                      "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
+        # sr (rfold.py, goal-nvk19): the offsets carry no warp's base; it is in a uniform register, A's or B's.
+        ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""
+        ld = Ins("%s R%d, [R%d%s%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg, ur,
+                                        "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
         w = (sb,)
     # fa, fb (rfold.py, goal-nvk17): the byte added in A's and in B's gathers (FILL4's 0x3f when not given).
     # 0x100 asks for a fill of 0.

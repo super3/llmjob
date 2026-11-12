@@ -16,6 +16,7 @@ const MINER_BUILD = read('..', '.github', 'workflows', 'miner-build.yml');
 const BUILD_ROT = read('native', 'probes', 'hand89', 'build_rot.py');
 const RFOLD = read('native', 'probes', 'hand89', 'rfold.py');
 const ASM = read('native', 'probes', 'hand89', 'asm89.py');
+const GFOLD = read('native', 'probes', 'hand89', 'gfold.py');
 const REF = read('native', 'src', 'pearl_rot_sm89.ref');
 const REF86 = read('native', 'src', 'pearl_rot_sm86.ref');
 const REF120 = read('native', 'src', 'pearl_rot_sm120.ref');
@@ -57,8 +58,11 @@ describe('the cubin is only written when every check passes (build_rot.py)', () 
     expect(BUILD_ROT).toContain('ARCHS = ("sm_89", "sm_86", "sm_120")');
     expect(BUILD_ROT).toContain('NAME = "pearl_rot_%s.cubin" % arch.replace("_", "")');
     // Both take rpr=2 and u8=1 (measured on a 4090 and a 3090); RTX 30's also iy=0 (measured on a 3090); RTX 40's
-    // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090).
-    expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],');
+    // and RTX 30's also rgf=1 rb0=3 rb1=0 (measured on a 4090 and a 3090); RTX 40's also sr=1, records the eight
+    // warps share (measured on a 4090).
+    expect(BUILD_ROT).toContain('ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "sr=1"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],');
+    // sr's loop reads the shared stream, so the kernel that writes the records is built for it too.
+    expect(BUILD_ROT).toContain('if "sr=1" in ARCH_KEYS[arch]:\n        defs.append("-DROT_SR=1")');
     expect(BUILD_ROT).toContain('+ ARCH_KEYS[arch])');
     expect(BUILD_ROT).toContain('ref = os.path.join(SRC, "pearl_rot_%s.ref" % arch.replace("_", ""))');
     // The reference's --ref still wins over the one --arch picks.
@@ -123,6 +127,22 @@ describe('the offsets records are 8 bytes in the kernel, the loop and the host a
     const num = (name) => Number(new RegExp('#define ' + name + ' \\(?(\\d+)u').exec(KERNEL)[1]);
     expect(num('ROT_MT')).toBe(6);
     expect(2048 * (2 * num('ROT_MT') + 16) + 2048).toBeLessThan(65536);
+  });
+
+  test('with ROT_SR, rot_aux_offs writes one stream the eight warps share, inside the same table', () => {
+    const offs = KERNEL.slice(KERNEL.indexOf('extern "C" __global__ void rot_aux_offs('));
+    const sr = offs.slice(offs.indexOf('#if ROT_SR'), offs.indexOf('#endif'));
+    // A k-step's record is lane l's two A offsets and two B offsets, with no warp's base in them.
+    expect(sr).toContain('offs[((size_t)ks * 32u + l) * 2u] = 16u * pa[0] | (16u * pa[1]) << 16;');
+    expect(sr).toContain('offs[((size_t)ks * 32u + l) * 2u + 1u] = 16u * pb[0] | (16u * pb[1]) << 16;');
+    // The loop reads up to three k-steps past the last chunk: the extra k-step's thread writes four of zeros.
+    expect(sr).toContain('for (uint32_t e = 0; e < 4u; e++) {');
+    // (ksteps + 4) records of 64 words fit the per-warp table of 8 x (ksteps + 1) x 64 words the host allocates.
+    expect(sr).toContain('  return;');
+    // The loop keeps the bases in uniform registers and moves its pointer by a uniform step a turn.
+    expect(RFOLD).toContain('sr=0, sr_ua=16, sr_ub=17,');
+    expect(RFOLD).toContain('put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))');
+    expect(GFOLD).toContain('ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""');
   });
 
   test('the hand loop loads 8 bytes a k-step by default and parts them', () => {
