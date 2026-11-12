@@ -1706,8 +1706,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
 #else
   static constexpr uint32_t kSlots = 3u;
 #endif
-#if defined(PEARL_W_PARTX)
-  // goal-arc8: a window's two sub-groups XOR their words into one place (half the local memory).
+#if !defined(PEARL_W_NOPARTX)
+  // goal-arc8: a window's two sub-groups XOR their words into one place (half the local memory). With the
+  // readout below as a tree, 90.3 to 90.6 against 89.9 to 90.2 on card 5 (three rounds, 188 W).
   static constexpr bool kPartX = true;
 #else
   static constexpr bool kPartX = false;
@@ -1958,7 +1959,11 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
           each<4>([&](int j) { ring_write_local<HW>(Gdst + ((ch + 1u) % 3u) * kSlotWords + (uint32_t)j * 32u, gn[j], lane); });
         if (s == (uint32_t)(PEARL_W_GLOAD_S)) {
           const uint32_t c2 = ch + 2u < 16u ? ch + 2u : 15u;
+#if defined(PEARL_W_LO32)
+          each<4>([&](int j) { gn[j] = ring_read_global<HW>(lo32(bHi, (uint32_t)(uintptr_t)Gsrc + c2 * 8192u + (uint32_t)j * 128u), lane); });
+#else
           each<4>([&](int j) { gn[j] = ring_read_global<HW>(Gsrc + (size_t)c2 * 8192u + (size_t)j * 128u, lane); });
+#endif
         }
 #elif defined(PEARL_W_CSAME)
         // goal-arc8: the copy loads at the k-step's start and stores after its DPAS: nothing carried.
@@ -2144,8 +2149,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1> struct 
       // goal-arc8 timing (wrong results): the readout reads one accumulator only.
       x0 = (uint32_t)c[0][0][0];
       x1 = (uint32_t)c[0][0][4];
-#elif defined(PEARL_W_VRD)
-      // goal-arc8: the same XOR as a tree of whole accumulators first, then the 8 dwords.
+#elif !defined(PEARL_W_NOVRD)
+      // goal-arc8: the same XOR as a tree of whole accumulators first, then the 8 dwords (see kPartX).
       v8i t4[4];
       each<4>([&](int q) {
         t4[q] = (c[q >> 1][(q & 1) * 4] ^ c[q >> 1][(q & 1) * 4 + 1]) ^ (c[q >> 1][(q & 1) * 4 + 2] ^ c[q >> 1][(q & 1) * 4 + 3]);
