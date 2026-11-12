@@ -116,7 +116,8 @@ fi
 # ---------------------------------------------------------------- on the card
 if has probe; then
   L=${PROBE_LIST:-"h h-k2048-o6-check 2048 8 0 64 6 0 2;h h-k8192-check 8192 8 0 8 6 0 2;h h-k65536-check8 65536 16 0 8 6 0 2;- gather-k2048-check 2048 8 0 64 6 0 0;h h-k65536-60 65536 128 60 2 6 0 2;h h-k8192-60 8192 128 60 2 6 0 2;- gather-k65536-60 65536 64 60 2 6 0 0;h h-k65536-60-again 65536 128 60 2 6 0 2"}
-  python3 -I "$R/earn/tuning/salad/nv30probe.py" $W/gprobe $W "$L" 2>&1 | while IFS= read -r l; do say "probe $l"; done
+  # emit (nvtest.sh's) cuts a line into pieces of 400 characters: Salad's log service drops a longer one.
+  python3 -I "$R/earn/tuning/salad/nv30probe.py" $W/gprobe $W "$L" 2>&1 | sed -u 's/^/probe /' | emit
 fi
 smi() { q clocks.sm,power.draw,temperature.gpu,clocks_event_reasons.sw_power_cap,clocks_event_reasons.sw_thermal_slowdown; }
 if has product; then
