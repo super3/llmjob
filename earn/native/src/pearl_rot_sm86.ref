@@ -18,5 +18,10 @@
 # rpr=2 u8=1 added (12 November). CUDA 12.8, built on a Salad PC by nv30box.sh: the same bytes as rig01's
 # CUDA 12.6 build with the toolkit's version bytes changed. RTX 3090 (PC 62b4dc19, 290 W): verify-hits 400 of
 # 400 (469 hits, 24 salts); 124.35, 124.46 and 124.42 TH/s by hashrate.js against 123.62, 123.91 and 123.81 for
-# the iy=0 loop above, alternating 120 s legs.
-12.8 1b391752b0e32df8e813cb73829c71fb06afd9266f31ec8ff10885f5b7983714
+# the iy=0 loop above, alternating 120 s legs. (Its file, 1b391752..., is no longer built.)
+
+# rgf=1 rb0=3 rb1=0 added (12 November): the readout's steps first in their gap and allowed into more of the
+# chunk's end. CUDA 12.8, built on a Salad PC by nv30box.sh. RTX 3090 (280 W): verify-hits 400 of 400 (454 hits,
+# 23 salts); 121.16, 121.17 and 121.25 TH/s by hashrate.js against 120.74, 120.81 and 120.87 for the loop above,
+# alternating 120 s legs.
+12.8 cb50068c5f8d01e7f98b241049930ccf8be2aa3dedfe89123ad5bab7ed8e2dec

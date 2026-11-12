@@ -434,6 +434,19 @@ limit, 84 C, 1506 to 1515 MHz), hashrate.js, alternating 120 s legs, CUDA 12.8 b
 
 verify-hits 400 of 400 (469 hits, 24 salts). Now the RTX 30 build (cubin 1b391752...).
 
+### Salad, 12 November: the readout first in its gap on RTX 30 (branch `goal/nv-16`)
+
+The readout's XOR3 steps go first in their gap, right behind the IMMA, and may use more of the chunk's end
+(`rfold.py rgf=1 rb0=3 rb1=0`, on top of `iy=0 rpr=2 u8=1`). One Salad RTX 3090 (280 W limit, 74 C, 1456 to
+1465 MHz), hashrate.js, alternating 120 s legs, CUDA 12.8 build:
+
+| Loop | TH/s |
+|---|---|
+| `iy=0 rpr=2 u8=1` (shipped before) | 120.74, 120.81, 120.87 |
+| `+ rgf=1 rb0=3 rb1=0` | 121.16, 121.17, 121.25 (+0.36%) |
+
+verify-hits 400 of 400 (454 hits, 23 salts). Now the RTX 30 build (cubin cb50068c...).
+
 ## RTX 40-series
 
 Vast, 10 October.
@@ -754,6 +767,17 @@ RTX 40 build (cubin a5a7931e..., which CI makes on Linux and Windows). OneZeroMi
 B drawn once with the same readout draws OneZeroMiner's 339 W at a locked 2400 MHz (ours 345), but at the cap it
 runs 98.35% of the pipe at 2612 to 2615 MHz against 99.18% at 2597: level within 0.2%. Not shipped. Tables in
 `native/probes/README.md`, "The readout without bank collisions, shipped; B drawn once level at the cap".
+
+### rig01, 12 November: the readout first in its gap (branch `goal/nv-16`)
+
+RTX 4090, 450 W. `rfold.py rgf=1 rb0=3 rb1=0` on top of `rpr=2 u8=1`: the readout's steps first in their gap,
+not right ahead of the next IMMA, and allowed into gaps 41 to 44 of the chunk's last turn and the next chunk's
+first three. The probe holds 99.54% of the pipe against 99.18%, the same as a loop with no readout at all.
+hashrate.js, alternating 120 s legs, one addon: 336.93, 337.07, 337.10 TH/s before; 338.00, 338.04, 337.93
+after (+0.29%, 2596 to 2597 MHz). verify-hits 400 of 400 on the 12.6 and 12.8 files. On Kryptex through the CLI
+with the core finding the file beside it: 337.48 TH/s by the miner's count over 298 s, 14 shares accepted, none
+rejected. Now the RTX 40 build (cubin c7219d7d...). OneZeroMiner's 341.9 is 1.1% ahead. What is left of the
+readout's cost is energy: its 96 XOR3 a chunk are the least the protocol allows.
 
 ## RTX 50-series
 
