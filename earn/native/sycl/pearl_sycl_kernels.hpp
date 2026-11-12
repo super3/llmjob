@@ -805,6 +805,22 @@ inline void fold_xmxf(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
 // arrives: the same results, for the CPU device.
 // ---------------------------------------------------------------------------
 
+// IGC's LSC prefetch, called by name: brings a line into the caches with a cache control of its own
+// (4: L1 and L3 cached). The ring fold's VAR 256 uses it for A'. A timing build only.
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_RING_PF)
+}  // namespace pearl_sycl
+extern "C" SYCL_EXTERNAL void __builtin_IB_lsc_prefetch_global_uint4(const __attribute__((opencl_global)) v4u *base,
+                                                                    int immElemOff, int cacheOpt);
+namespace pearl_sycl {
+#endif
+template <bool HW> inline void ring_prefetch_l1(const int8_t *p) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_RING_PF)
+  if constexpr (HW) __builtin_IB_lsc_prefetch_global_uint4((const __attribute__((opencl_global)) v4u *)p, 0, PEARL_RING_PF_CC);
+#else
+  (void)p;
+#endif
+}
+
 template <bool HW> inline v4u ring_read_global(const int8_t *p, uint32_t lane) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) return __spirv_SubgroupBlockReadINTEL<v4u>((const __attribute__((opencl_global)) uint32_t *)p);
@@ -834,7 +850,9 @@ template <bool HW> inline void ring_write_local(uint32_t *p, v4u v, uint32_t lan
 // VAR: 1 runs a chunk's readout after the next k-step's arrival and loads, not before them; 2 (timing
 // only, the probe's r-fold-v8 row) loads A' as one vector a fragment, which wants kFragA addresses;
 // 4 loads the copy a k-step early (its bytes wait in registers, so the copy's store never waits for
-// memory); 8 waits at the barrier with no acquire fence.
+// memory); 8 waits at the barrier with no acquire fence; 16 keeps each lane's 16 words in registers and
+// combines a window's two sub-groups through the ring after the last k-step, so the work-group asks for no
+// local memory beyond the ring (see fold_xmxr: more than 32 KB of local memory on an Xe-core costs 10%).
 template <bool HW, int VAR = 0> struct FoldXmxR {
   static constexpr uint32_t kSlotWords = 512u;  // a k-step of a column window's B': 64 columns by 32 k
   FoldArgs A;
@@ -901,6 +919,8 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     };
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
+    uint32_t t[16];
+    each<16>([&](int j) { t[j] = 0u; });
     copy(0u, 0u);
     if (early) fetch(1u);
     arrive(it);
@@ -917,7 +937,15 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
       });
       x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
       x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
-      if (lane < 8u) part[(sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+      if constexpr (VAR & 16) {
+        // Chunk ch's word lands in t[15]: a shift, so every index stays a constant.
+        each<15>([&](int j) { t[j] = t[j + 1]; });
+        t[15] = (lane & 1u) ? x1 : x0;
+      } else {
+        // VAR 64, timing only: every word into one place, so the group needs almost no local memory beside
+        // the ring. Wrong transcripts on purpose.
+        if (lane < 8u) part[(VAR & 64) ? ((sgl * 8u + lane) & 127u) : (sgl * 8u + lane) * 16u + ch] = (lane & 1u) ? x1 : x0;
+      }
     };
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
@@ -931,6 +959,45 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           if (ks + 1u < 64u) copy(ks + 1u, (ks + 1u) % 3u);
         }
         arrive(it);
+        if constexpr (VAR & 128) {
+          // VAR 128: a 32 by 32 tile a sub-group. Both sub-groups of a window read all 32 rows of A' from
+          // global memory together (4 fragments), and sub-group sgi its half of B' from the ring (4
+          // fragments): 2,048 bytes a k-step, half of them from local memory, in place of 2,560 with 2,048.
+          // Tile (rb, cb) lives in c[rb >> 1][(rb & 1) * 4 + cb], so the readout is unchanged.
+          v8i af[4], bf[4];
+          const int8_t *A32 = A.Ap + (size_t)(2u * wr) * A.aStride;
+          each<4>([&](int rb) {
+            const int8_t *p = A32 + (size_t)(rb >> 1) * A.aStride + (size_t)ks * 512u + (size_t)(rb & 1) * 256u;
+            const v4u lo = ring_read_global<HW>(p, lane), hi = ring_read_global<HW>(p + 128, lane);
+            af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          });
+          each<4>([&](int cb) {
+            uint32_t *p = R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u;
+            const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
+            bf[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+          });
+          int t2 = 0;
+          each<4>([&](int rb) { t2 ^= af[rb][0]; });
+          each<4>([&](int cb) { t2 ^= bf[cb][0]; });
+          t2 &= (int)A.zero;
+          each<4>([&](int rb) { af[rb][0] |= t2; });
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              c[rb >> 1][(rb & 1) * 4 + cb] = dpas<8, HW>(sg, af[rb], bf[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
+            });
+          });
+          continue;
+        }
+        // VAR 256: prefetch the A' of k-step ks + PEARL_RING_PF into the first cache level (its 512 bytes, 64 a
+        // lane, so each of its 4 lines is asked for twice).
+        if constexpr (VAR & 256) {
+#ifdef PEARL_RING_PF
+          if (ks + PEARL_RING_PF < 64u) {
+            const int8_t *q = Ab + (size_t)(ks + PEARL_RING_PF) * 512u + 64u * lane;
+            ring_prefetch_l1<HW>(q);
+          }
+#endif
+        }
         v8i af[2], bf[8];
         each<2>([&](int rb) {
           const int8_t *p = Ab + (size_t)ks * 512u + (size_t)rb * 256u;
@@ -966,11 +1033,25 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
     if constexpr (VAR & 1) readout(15u);
     wait(it);
     sycl::group_barrier(it.get_group());
+    if constexpr (VAR & 16) {
+      // The ring is free now: sub-group 1 of each window leaves its words there (wpg <= 12 fit in it).
+      if (sgi == 1u && lane < 8u) each<16>([&](int j) { R[(widx * 8u + lane) * 16u + (uint32_t)j] = t[j]; });
+      sycl::group_barrier(it.get_group());
+      if (sgi == 0u && lane < 8u) {
+        const uint32_t qr = lane;
+        uint32_t words[16];
+        each<16>([&](int j) { words[j] = t[j] ^ R[(widx * 8u + qr) * 16u + (uint32_t)j]; });
+        const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
+        region_epilogue(words, local, A.test, A.hits, A.allTr);
+      }
+      return;
+    }
     if (sgi == 0 && lane < 8u) {
       const uint32_t qr = lane;
       uint32_t words[16];
       for (int j = 0; j < 16; j++)
-        words[j] = part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
+        words[j] = (VAR & 64) ? part[(sgl * 8u + qr) & 127u] ^ (uint32_t)j
+                              : part[(sgl * 8u + qr) * 16u + (uint32_t)j] ^ part[((sgl + 1u) * 8u + qr) * 16u + (uint32_t)j];
       const uint32_t local = (2u * wr + (qr & 1u)) + A.rowsValid * (4u * wc + (qr >> 1));
       region_epilogue(words, local, A.test, A.hits, A.allTr);
     }
@@ -981,8 +1062,10 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
 template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
   const size_t wg = 16u * a.wpg;
   q.submit([&](sycl::handler &h) {
-    sycl::local_accessor<uint32_t, 1> part(2u * a.wpg * 8u * 16u, h);
-    sycl::local_accessor<uint32_t, 1> ring(3u * FoldXmxR<HW>::kSlotWords, h);
+    sycl::local_accessor<uint32_t, 1> part((VAR & 16) ? 1u : (VAR & 64) ? 128u : 2u * a.wpg * 8u * 16u, h);
+    const uint32_t ringWords = 3u * FoldXmxR<HW>::kSlotWords;
+    // VAR 16 leaves 128 words a window in the ring at the end.
+    sycl::local_accessor<uint32_t, 1> ring((VAR & 16) && a.wpg * 128u > ringWords ? a.wpg * 128u : ringWords, h);
     h.parallel_for(sycl::nd_range<1>((size_t)(groups / a.wpg) * wg, wg), FoldXmxR<HW, VAR>{a, part, ring});
   });
 }

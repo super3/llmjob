@@ -85,6 +85,11 @@ namespace {
 using namespace pearl_sycl;
 
 // Which fold a context runs. See pearl_sycl_kernels.hpp.
+// The ring fold's variant (pearl_sycl_kernels.hpp, FoldXmxR): 12 is what has been verified and mined.
+#ifndef PEARL_RING_VAR
+#define PEARL_RING_VAR 12
+#endif
+
 enum Fold { kDot = 0, kXmx16 = 1, kXmx8 = 2, kXmx16Emu = 3, kXmx8Emu = 4, kXmx8F = 5, kXmx8FEmu = 6, kXmx8R = 7,
             kXmx8REmu = 8 };
 
@@ -636,8 +641,8 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
 #endif
   switch (fold) {
     // VAR 12: the copy loaded a k-step early, no acquire fence at the wait (pearl_sycl_kernels.hpp).
-    case kXmx8R: fold_xmxr<true, 12>(q, a, groups); break;
-    case kXmx8REmu: fold_xmxr<false, 12>(q, a, groups); break;
+    case kXmx8R: fold_xmxr<true, PEARL_RING_VAR>(q, a, groups); break;
+    case kXmx8REmu: fold_xmxr<false, PEARL_RING_VAR>(q, a, groups); break;
     case kXmx8F: fold_xmxf<8, 2, true>(q, a, groups); break;
     case kXmx8FEmu: fold_xmxf<8, 2, false>(q, a, groups); break;
     case kXmx16: fold_xmx<16, 2, true>(q, a, groups); break;
