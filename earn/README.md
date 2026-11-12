@@ -230,23 +230,24 @@ shell that launches the app on Linux or in Windows' system environment
 variables. It is read on every start, and a value other than 1 or 0 is ignored
 with a warning. (Both become `PEARL_FOLD_ROT=1`, the variable the mining core
 reads.) On the one card it has been measured on, an
-RTX 4090 at 450 W, it mined 330.5 TH/s against 317.2 for the normal kernel,
-about 4% more, with every share accepted. It uses about 1.3 GB more card memory
+RTX 4090 at 450 W, it mined 335.8 TH/s against 317.4 for the normal kernel,
+about 6% more, with every share accepted. It uses about 1.3 GB more card memory
 (2.7 GB against 1.3 GB).
 
 Its inner loop is written by hand, so the miner does not take it on trust:
 
 - When a card opens on it, the miner recomputes 24 of the fold's hits on the CPU
-  before it mines the pool's job with it. That takes about 10 seconds.
+  before it mines the pool's job with it. That takes about 10 seconds a card;
+  a rig of several RTX 40 cards checks them one at a time.
 - After that it recomputes every share the card finds before sending it (about
-  a quarter of a second of CPU a share).
+  0.13 s of CPU a share).
 - One wrong result and the card goes back to the normal kernel for the rest of
   the run, and the log asks you to report the line.
 
 If the fold cannot be used, the card mines on the normal kernel and one log line
 says why: the card is not an RTX 40, the fold's file (`pearl_rot_sm89.cubin`,
-beside the core) is missing, the card has too little free memory, or the driver
-would not load it. RTX 20, 30 and 50 cards, AMD and Intel cards are not affected
+beside the core) is missing, damaged or from another release, the card has too
+little free memory, or the driver would not load it. RTX 20, 30 and 50 cards, AMD and Intel cards are not affected
 by the switch.
 
 ### Two builds of the core (CUDA 12.8 and CUDA 13)
@@ -1036,7 +1037,7 @@ Usage: llmjob-earn-cli --address <prl1p…> [options]
       --gpu-wait <how>     How the miner waits for an NVIDIA card between
                            launches: block (default, almost no CPU), poll, or
                            spin (a whole CPU core a card; see above)
-      --rotation-fold      Experimental, RTX 40 only: a second kernel, about 4%
+      --rotation-fold      Experimental, RTX 40 only: a second kernel, about 6%
                            faster on an RTX 4090, 1.3 GB more card memory; checked
                            on each card, and the normal kernel if anything is
                            missing (default: off; see above)

@@ -3839,6 +3839,60 @@ repeat the short ones to 0.1 point). A real fold built this way has not been mad
   and RTX 50 have no such fold. Table, checks and costs: `earn/native/probes/README.md`, "The rotation fold in
   the miner".
 
+### rig01 RTX 4090, 11 to 12 November: the rotation fold as an opt-in a release carries, and a faster loop (branch `goal/nv-next`)
+
+- **What changed.** The rotation fold of the note above is no longer a hand-made build. A release now carries
+  it, off by default: `--rotation-fold` on the CLI, `LLMJOB_ROTATION_FOLD=1` in the desktop app's environment.
+  CI builds its cubin with CUDA 12.8 and refuses one whose checks or hash differ; the installer, the AppImage,
+  the CLI and the HiveOS package carry the file beside the core. And its loop is faster than the one raced
+  above. rig01's RTX 4090 at the 450 W limit throughout.
+- **The loop.** Three changes, each priced on the card first, each correct by the probe's CPU check (16,384 of
+  16,384 at k 2048 in three orders of k, 2,048 of 2,048 at k 8192 and at k 65536) and by `verify-hits.js` (400
+  of 400): a gather's subtract and regroup done as late as their readers allow, offsets records of 8 bytes in
+  place of 16, and A's gathers sent out early with the scoreboards chosen so that no step waits for another
+  gather's load, the sixth of a turn's B gathers given a quad of its own. Pipe 97.48% to 98.96%, clock 2594 to
+  2596 MHz.
+- **The race** (`hashrate.js`, the miner's own count, 120 s after 10 s, alternating, twins within 0.13%).
+
+  | Loop | TH/s | Clock, watts |
+  |---|---|---|
+  | the ninth round's (the note above) | 330.89 and 330.94 | 2594 to 2595 MHz, 449 W |
+  | subtract and regroup late | 332.87 and 332.87 | 2595 to 2596 MHz, 449 W |
+  | and records of 8 bytes | 333.63 and 333.56 | 2598 to 2600 MHz, 449 W |
+  | and A's gathers early, the scoreboards chosen (`sbo=5`) | 334.89 and 334.76; 334.59 and 334.71 | 2595 to 2597 MHz, 449 W |
+  | and a sixth quad, `sbo=7`: the loop a release now builds | 336.18 and 336.00 | 2596 to 2597 MHz, 449 W |
+
+  Three holds; each new loop was raced against the one before it. The release fold by the same probe: 317.4.
+- **As CI built it, on a pool.** CI's own Windows core and cubin (native core run 43130613574, commit
+  f58e1633), unpacked into one folder as the installer has them, nothing naming the cubin. `verify-hits.js`: 739
+  hits, 400 of 400 verified, 19 salts. Then Kryptex (prl-us.kryptex.network:7048) through the CLI, three legs of
+  300 s, the miner's own count from 40 s on:
+
+  | Leg | TH/s | Clock, watts, temp | Shares accepted / rejected |
+  |---|---|---|---|
+  | `--rotation-fold` | 335.77 | 2599 MHz, 449.2 W, 76 C | 11 / 0 |
+  | no flag (the release fold) | 317.44 | 2533 MHz, 449.1 W, 77 C | 10 / 0 |
+  | `--rotation-fold` | 335.79 | 2598 MHz, 449.4 W, 77 C | 10 / 0 |
+
+  **335.8 TH/s against 317.4: +5.8%, 21 shares accepted and none rejected.** Each fold leg began with the
+  card's check of 24 hits, which passed.
+- **The safety net.** A card that opens on the fold has 24 hits recomputed on the CPU before it mines the pool's
+  job with it (8 s on this PC), and every share after. A cubin made wrong on purpose (the loop without its
+  stores) failed that check within a second, sent nothing, and the card went on at 317.1 TH/s on the release
+  fold with 25 shares accepted and none rejected. A cubin cut to 8 KB crashed the driver and the whole miner
+  until the host checked the file itself; the host now holds the file beside the core to a list of hashes.
+- **B shared, priced and not built.** Sharing B across the two row bands was the next design on the list at
+  about 3 TH/s. As a timing-only stream of the real loop it holds 96.4 to 96.7% of the pipe at 2620 to 2625
+  MHz, 331.5 to 332.1 by count against 331.4 for the loop it would replace; with the one barrier for all eight
+  warps that it needs and the loads sent early, 326.8 to 328.4. The clock comes as priced and the pipe goes:
+  the warp that makes B for two has four more stores a turn and is the slow one of its scheduler's pair.
+- **Against the others.** 335.8 as a mining rate is 98.2 to 99.2% of the other miners' 338.6 to 341.9 on this
+  card (measured earlier, not rerun here); the release fold is 92.8 to 93.7%. The gap that is left is clock:
+  the fold runs at 2596 to 2599 MHz, and its pipe (98.96%) has a tenth of a point left to find.
+- **Not verified.** One RTX 4090 on Windows is the only card that has run the fold. No other RTX 40 card, and no
+  Linux rig: there the lookup of the cubin was run in CI with a stand-in addon (found in every case), not on a
+  card. Tables: `earn/native/probes/README.md`, "Where the rotation fold's time goes".
+
 ## Community reports (not our measurements)
 
 Figures people posted from their own rigs. We did not run them, the method and length of each run are unknown, and

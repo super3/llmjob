@@ -2963,3 +2963,183 @@ turned down shares at another k), the card mines k 2048 on the release fold: 317
 every 30 s (`PEARL_JOB_EVERY=30`, 60 s): 330.48 against the release fold's 317.65. Stopping ends the helper
 thread and frees the card (every run above ended that way). The cubin was rebuilt from source three times and
 came out the same bytes each time (sha256 1b8df26f...).
+
+### Where the rotation fold's time goes: B shared priced, and three gains that keep it correct (RTX 4090, 2026-11-11 to 12)
+
+Branch `goal/nv-next`. rig01's RTX 4090 at the 450 W limit, `gprobe` at k 65536, 128 tiles a block, 60 s a run,
+order 6. "By count" is 0.13107 x clock x pipe, as in the sections above. Every figure in this section but the
+race at its end is a PROBE figure. nvidia-smi reads the clock in steps of about 15 MHz, so a 60 s figure by count
+moves 0.2% from the clock sample alone; the pipe figure is exact.
+
+**B shared, priced before it was built.** The price list gave "B shared too" 1.4 units, about 3 TH/s. As a
+loop it needs a row band to load what the other band stored, so it was priced as a TIMING-ONLY stream of the real
+loop (`rfold.py bsh=1`; wrong results on purpose): the warps of band 0 gather B every turn and store each pair of
+fragments (4 STS.128 a turn), the warps of band 1 gather no B and load it (4 LDS.128 a turn), band 1 loads an
+offsets record once a chunk, and every warp keeps its stage address in a register it moves on a turn.
+
+| Stream | Pipe | Clock | By count |
+|---|---|---|---|
+| the loop as shipped (correct) | 97.48% | 2594 MHz | 331.4 |
+| B shared, one barrier for all eight warps (TIMING ONLY) | 96.53% | 2625 | 332.1 |
+| the same, band 1 making and band 0 loading | 96.36% | 2625 | 331.5 |
+| B shared, one barrier a row band, which no correct fold has without a deeper stage | 96.71% | 2620 | 332.1 |
+| the same, the loading warp with a second set of B's registers, so its loads go out early (`bfa=1`) | 96.51% | 2623 | 331.8 |
+| all eight warps, second register set | 94.86% | 2641 | 328.4 |
+| the loop as shipped with one barrier for all eight warps (correct) | 94.77% | 2615 | 324.8 |
+
+The clock comes as priced (+26 to +47 MHz). The pipe goes the other way by a point or more, in every form:
+with the barrier a row band or for all eight, with either band making, with the loads early or late. The warp
+that makes B for two has 4 more stores a turn, and it is the slow one of its scheduler's pair; what the other
+warp saves does not come back as pipe. **B shared is not built: its best timing-only form is +0.2%.** What it
+taught: a design that trades gathers for stores moves the work onto one warp of a scheduler's pair, and the
+pipe follows the slower warp.
+
+**What the loop still loses, a part at a time** (TIMING ONLY: each stream takes one thing out of a loop).
+Read the pipe column, not the clock: a stream that turns loads into moves, or leaves the stores out, folds
+operands that no longer change from one k-step to the next, and the card then draws less (354 to 431 W where
+the real loop is held at 449 W), so its clock rises for a reason no real fold would have.
+
+| Stream | Pipe | Clock, watts |
+|---|---|---|
+| the loop as shipped (correct) | 97.48% | 2594 MHz, 449 W |
+| its gathers' LDSM as moves (`nold=1`) | 99.09% | 2648 MHz, 431 W |
+| that and no stores (`nost=1`) | 99.35% | 2685 MHz, 354 W |
+| three of its four offsets loads served by the SM's cache, not the L2 (`nlg=1`) | 97.30% | 2618 MHz, 449 W |
+| the loop with `al bl bp` (correct; the base of the rows below) | 98.11% | 2582 to 2591 MHz, 449 W |
+| A's gathers' LDSM as moves (`nold=2`) | 99.12% | 2595 MHz, 449 W |
+| B's gathers' LDSM as moves (`nold=3`) | 99.08% | 2618 MHz, 450 W |
+| both (`nold=1`) | 99.18% | 2616 MHz, 449 W |
+| no stores (`nost=1`) | 98.85% | 2625 MHz, 409 W |
+| no barrier (`sync=0 barn=0`) | 99.09% | 2580 MHz, 450 W |
+| three of four offsets loads from the SM's cache (`nlg=1`) | 97.95% | 2624 MHz, 450 W |
+
+What the pipe column says. The ALU steps and the stage loads cost next to nothing: without the gathers' loads
+the loop holds 99.1 to 99.2%, the skeleton's figure. The point of pipe that is left after `al bl bp` goes when
+any one of three things goes: A's gathers' loads, B's gathers' loads, or the barrier. So no one of them is slow
+by itself. What it is came out later (gain 3): a step waiting for another gather's load. With 16-byte records the
+offsets' trip from the L2 was worth 25 to 35 MHz of clock (the one clock figure here that can be trusted: that
+stream folds real operands).
+
+**Gain 1: a gather's subtract and regroup later (`al`, `bl`, `bp`; correct).** A gather's IADD3 waits for its
+LDSM. When the load is slow the warp stands still until it lands, though nothing may need the fragment for
+several gaps, and a barrier a row band then holds the band's other three warps too. The steps now go as late as
+their readers allow: B's early gathers do their IADD3 a gap ahead of their PRMT (`bl`), the last three B gathers
+of a turn do their PRMT two gaps ahead of the fragments' first readers (`bp`), and A's gathers of the first turn
+do theirs a gap later (`al`).
+
+| Loop (all correct: 16,384 of 16,384 at k 2048, 512 of 512 at k 65536) | Pipe | Clock | By count |
+|---|---|---|---|
+| as shipped | 97.48% | 2594 to 2596 MHz | 331.4 to 331.7 |
+| `al=1` | 97.32% | 2595 | 331.0 |
+| `bl=1` | 97.54% | 2594 | 331.6 |
+| `bp=1` | 97.88% | 2589 | 332.1 |
+| `bl=1 bp=1` | 98.01% | 2588 | 332.5 |
+| `al=1 bl=1 bp=1` | 98.11% (three runs) | 2586 to 2591 | 332.5 to 333.2 |
+| `bp=1` with a sixth quad for the gathers (`cq=35`: the record quad the turn has finished with) | 97.88% | 2598 | 333.3 |
+| `al=1 bl=1 bp=1 cq=35` / `cq=36` | 98.05% / 98.08% | 2593 / 2594 | 333.2 / 333.5 |
+
+On this loop the sixth quad gives the sixth gather 11 gaps of lead in place of 5 and changes nothing: the waits
+that are left are not that gather's (it pays later, once the scoreboards are chosen: gain 3). The clock gives a
+little back when the pipe rises (the cap counts the IMMA too).
+
+**Gain 2: offsets records of 8 bytes (`co`; correct).** A warp loads one offsets record a k-step from the L2,
+512 bytes, and the price list put that trip at 2.9 units. Every offset is a shared-memory address under 65536,
+so two fit a word: a first turn's record is {A's two, B's two}, a later turn's {the stage address, B's two}. One
+LDG.E.64 a turn and two ALU steps to part B's two (four in a chunk's last turn). `gprobe` writes them with rot 2;
+in the miner `rot_aux_offs` does, and the host's table is half the size.
+
+| Loop (all correct) | Pipe | Clock | By count |
+|---|---|---|---|
+| `co=1` | 97.47% | 2599 MHz | 332.0 |
+| `co=1 al=1 bl=1 bp=1` | 98.08% (twice) | 2596 to 2601 | 333.7 to 334.4 |
+
+Its checks: 16,384 of 16,384 in three orders of k at k 2048 (64 tiles), 2,048 of 2,048 at k 8192, 2,048 of
+2,048 over 8 tiles at k 65536, 512 of 512 in the definition's order.
+
+**What did not help, measured so that nobody has to again** (all CORRECT unless said).
+
+| Tried on the loop with `co al bl bp` (98.08% of the pipe) | Pipe | Note |
+|---|---|---|
+| orders of k in a chunk: 6 (in use: squared cost, B's rows weigh 2) | 98.08% | |
+| 9 (squared, B's rows weigh 3) / 5 (squared, alike) / 1 (plain) | 98.11% / 97.98% / 97.87% | |
+| 7, 8 (squared, A's rows weigh 2, 3) / 3 (A's rows alone) | 97.93% / 95.63% | B's collisions are the ones that cost |
+| no barrier after a chunk's second turn (`bt=13`) | 98.12% | correct: that barrier orders nothing, and costs nothing |
+| barriers after the first and last turns only (`bt=9`) | 98.17% | WRONG: 15,968 of 16,384 at k 2048, 448 of 512 at k 65536 |
+| a barrier after the last turn only (`bt=8`) | 98.30% | WRONG: 15,360 of 16,384, 224 of 512 |
+
+The two wrong rows matter more than their pipe. By the schedule a load and the store that overwrites its
+fragment are 43 to 50 gaps apart, and the warps of a band drift far more than that within two turns: a load is
+safe only with a barrier between it and the stores before and after it. The same goes for any plan to share B
+across the bands by keeping them "close enough".
+
+**Gain 3: A's gathers early, each gather on a scoreboard nobody else is waiting on, and a sixth quad (`ae`,
+`sbo`, `cq`; correct).** A scoreboard counts the loads that set it and are still out. An IADD3 that waits on it
+waits for its own gather's load and for any later gather's that was given the same scoreboard and went out
+since. The loop has three scoreboards for up to six gathers under way and handed them out in turn.
+`hand89/sbdump.py` lists the waits for a load that is not
+the waiter's own: none in the ninth round's loop, 10 a chunk once `bl` and `bp` had moved the IADD3 later.
+`sbo=W` gives each gather the scoreboard on which the fewest such waits fall within W gaps (a small search when
+the loop is built). `ae=1` sends the LDSM of A's first-turn gathers out up to six gaps earlier, during the tile
+before last, so they are out of the way of B's and have landed when their IADD3 comes. `cq=35` gives the sixth
+B gather of a turn the record quad the turn has finished with, so its LDSM goes out nine gaps earlier.
+
+| Loop (all correct: 16,384 of 16,384 at k 2048, 512 of 512 at k 65536) | Pipe | Clock | By count |
+|---|---|---|---|
+| `co al bl bp` | 98.08% (six runs) | 2596 to 2600 MHz | 333.7 to 334.2 |
+| with `ae=1` | 97.72%, 97.73% | 2596 to 2602 | 332.5 to 333.3 |
+| with `sbo=5` / `sbo=7` / `sbo=9` | 97.90% each | 2600 to 2602 | 333.6 to 333.9 |
+| with `ae=1 sbo=5` | 98.53% (three runs) | 2595 to 2596 | 335.1 to 335.3 |
+| with `ae=1` and `sbo=6` / `7` / `9` | 98.52% each | 2594 to 2595 | 335.0 to 335.1 |
+| with `ae=1 sbo=5 bt=13` | 98.53% | 2597 | 335.4 |
+| with `ae=1 sbo=5 cq=35` / `cq=36` | 98.84% (twice) / 98.83% | 2595 to 2599 | 336.1 to 336.7 |
+| with `ae=1 cq=35` and `sbo=6` / `7` / `9` | 98.96% / 98.96% / 98.94% | 2596 to 2597 | 336.7 to 336.8 |
+| with `ae=1 sbo=5 cq=35 bt=13` | 98.83% | 2596 | 336.3 |
+
+Each alone gains nothing: early loads with the scoreboards in turn make 31 of those waits a chunk, the search
+alone has little to remove, and the sixth quad alone moved nothing. Together they take the pipe from 98.08% to
+98.96%, which is the loop with no gather load to wait for (99.1%) but for a tenth. **The default is now
+`al=1 bl=1 bp=1 co=1 ae=1 sbo=7 cq=35`.** Its checks: 16,384 of 16,384 in three orders of k at k 2048 (64
+tiles), 2,048 of 2,048 at k 8192 (twice), 2,048 of 2,048 over 8 tiles at k 65536 (twice), 512 of 512 in the
+definition's order.
+
+**As a miner** (`hashrate.js`, the miner's own count, 120 s after 10 s, alternating, CUDA 12.6 builds;
+`verify-hits.js` 400 of 400 on every new loop first).
+
+| Leg | Loop | TH/s | Clock | Watts | Temp |
+|---|---|---|---|---|---|
+| A1 | the ninth round's | 330.89 (sd 0.47) | 2595 MHz | 449 | 77 C |
+| B1 | `al bl bp` | 332.87 (sd 0.41) | 2595 | 449 | 76 C |
+| C1 | `co al bl bp` | 333.63 (sd 0.68) | 2598 | 449 | 76 C |
+| C2 | `co al bl bp` | 333.56 (sd 0.62) | 2600 | 449 | 76 C |
+| B2 | `al bl bp` | 332.87 (sd 0.43) | 2596 | 449 | 77 C |
+| A2 | the ninth round's | 330.94 (sd 0.40) | 2594 | 449 | 76 C |
+| C3 | `co al bl bp` | 333.49 (sd 0.55) | 2598 | 449 | 77 C |
+| F1 | and `ae=1 sbo=5` | 334.89 (sd 0.49) | 2597 | 449 | 76 C |
+| F2 | and `ae=1 sbo=5` | 334.76 (sd 0.45) | 2597 | 449 | 76 C |
+| C4 | `co al bl bp` | 333.94 (sd 0.71) | 2602 | 449 | 76 C |
+| F3 | and `ae=1 sbo=5` | 334.59 (sd 0.37) | 2596 | 449 | 77 C |
+| G1 | and `ae=1 sbo=7 cq=35` (the default) | 336.18 (sd 0.41) | 2597 | 449 | 76 C |
+| G2 | and `ae=1 sbo=7 cq=35` (the default) | 336.00 (sd 0.33) | 2596 | 449 | 76 C |
+| F4 | and `ae=1 sbo=5` | 334.71 (sd 0.42) | 2595 | 449 | 76 C |
+
+Three holds (A to C2, C3 to C4, F3 to F4), each with the arm before as its control.
+
+336.1 TH/s against 330.9 for the ninth round's loop: +1.6%, each step raced against the one before with
+twins within 0.13%. The other miners measure 338.6 to 341.9 on this card, so the fold is at 98.3 to 99.3% of
+them; the release fold (317.4 by the same probe) at 92.8 to 93.7%. `verify-hits.js` passed 400 of 400 on every
+loop of the table, on the CUDA 12.6 file and on the file as CUDA 12.8 makes it.
+
+**What is left, and what it would take.** By the streams above, what the loop still loses to the skeleton is
+the gathers: 44 LDSM a warp a chunk (12 of A in the first turn, 8 of B every turn), which are steps under the
+clock's cap. The loop runs at 2596 MHz where the skeleton runs at 2685.
+
+- B's 8 gathers a turn are the largest part and cannot be shared without stores that cost more than they save
+  (this section). What would cut them is a table that hands a fragment in one load: B's table by pair of rank
+  indices is too big for shared memory (the eighth round), so this needs an idea, not a schedule.
+- The offsets' trip from the L2 has nothing left to give. On the final loop, with its records of 8 bytes, a
+  stream that serves two of the four loads of a chunk from the SM's cache (`nlg=1`, timing only) runs at 2600
+  MHz against 2597: no gain to be had from records the warps share, or from smaller ones.
+- The waits are all but gone: 98.96% of the pipe, where the loop with no gather load at all holds 99.1 to
+  99.2% and the skeleton 99.4%. A fourth scoreboard for the gathers would take the last of them (the stage
+  loads' and the offsets' scoreboards are idle for parts of a turn and could be lent), for a tenth of a point.
+  What is left after that is clock, not pipe.
