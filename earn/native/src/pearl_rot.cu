@@ -265,6 +265,11 @@ extern "C" __global__ __launch_bounds__(ROT_THREADS, 1) void pearl_rot_fold(
 // A dense factor as group tables. dense is pearl_gen_dense's output, [rows][128] bytes in -32 .. 31. Group gi is
 // rows 16 gi .. 16 gi + 15; its entry p is 16 bytes: byte 2 e the factor plus 32 of row 16 gi + e at rank index
 // p, byte 2 e + 1 of row 16 gi + 8 + e. One thread an entry.
+// ROT_TAB8 1 (the sm_120 hand loop's b8 key, build_rot.py): byte c is row 16 gi + c, in plain order. The loop
+// then gathers with ldmatrix's byte transpose, which gives each lane rows g and g + 8 in registers of their own.
+#ifndef ROT_TAB8
+#define ROT_TAB8 0
+#endif
 extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *__restrict__ out,
                                        uint32_t groups) {
   const uint32_t idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -275,7 +280,12 @@ extern "C" __global__ void rot_aux_tab(const int8_t *__restrict__ dense, uint4 *
   for (uint32_t e = 0; e < 8u; e++) {
     const uint32_t lo = (uint32_t)((int32_t)dense[(size_t)(16u * gi + e) * 128u + p] + 32) & 0xffu;
     const uint32_t hi = (uint32_t)((int32_t)dense[(size_t)(16u * gi + 8u + e) * 128u + p] + 32) & 0xffu;
+#if ROT_TAB8
+    w[e >> 2] |= lo << (8u * (e & 3u));
+    w[2u + (e >> 2)] |= hi << (8u * (e & 3u));
+#else
     w[e >> 1] |= (lo | (hi << 8)) << (16u * (e & 1u));
+#endif
   }
   out[idx] = make_uint4(w[0], w[1], w[2], w[3]);
 }

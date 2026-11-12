@@ -10,7 +10,7 @@
 #
 # Environment:
 #   BASE_SHA      commit of super3/llmjob to fetch (required, 40 characters)
-#   STAGES        any of "probe micro product bench", in that order (default all three)
+#   STAGES        any of "ldsm8 probe micro product bench", in that order (default all three)
 #   PROBE_BUILDS  the probe's builds, "name:toolkit:nvcc flags;..." (toolkit 12 or 13; flags with "," for " "),
 #                 each gprobe.cu with -DGP_STAGE=24576 and the flags (GP_ROTC=1/3/5/7: pearl_rot_c.inc's forms)
 #   PROBE_LIST    the probe's runs, ';' between them: "<build> <nv30probe.py line>" (default: for each build a
@@ -200,6 +200,9 @@ if has probe; then
     case "$line" in
       "!lgc "*) say "lgc ${line#!lgc }: $(nvidia-smi -i 0 -lgc "${line#!lgc }","${line#!lgc }" 2>&1 | tr '\n' ' ' | cut -c1-200)"; LGC=1; continue ;;
       "!rgc"*) say "rgc: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"; continue ;;
+      # "!lmc <MHz>" / "!rmc" (goal-nv50d): the memory clock, as the RTX 40 rotation fold locks it by default.
+      "!lmc "*) say "lmc ${line#!lmc }: $(nvidia-smi -i 0 -lmc "${line#!lmc }","${line#!lmc }" 2>&1 | tr '\n' ' ' | cut -c1-200) now $(q clocks.mem)"; LMC=1; continue ;;
+      "!rmc"*) say "rmc: $(nvidia-smi -i 0 -rmc 2>&1 | tr '\n' ' ' | cut -c1-200)"; continue ;;
     esac
     exe=${line%% *}
     # Salad drops lines over 400 characters and blanks a line with "%" or "|": "pc" and "/" here, the collision and
@@ -207,6 +210,7 @@ if has probe; then
     python3 -I /root/nv30probe.py "$W/$exe" $W "${line#* }" 2>&1 | grep -v "card has" | sed -u "s/^/probe $exe /; s/%/pc/g; s/|/\//g; s/rows of 8 that collide[^/]*\/ //; s/the card.s hits [0-9]* in [0-9]* launch[a-z]*//" | cut -c1-395 | emit
   done
   [ "${LGC:-0}" = 1 ] && say "rgc at the probe's end: $(nvidia-smi -i 0 -rgc 2>&1 | tr '\n' ' ' | cut -c1-200)"
+  [ "${LMC:-0}" = 1 ] && say "rmc at the probe's end: $(nvidia-smi -i 0 -rmc 2>&1 | tr '\n' ' ' | cut -c1-200)"
 fi
 # PROBE_SAN: probe runs under compute-sanitizer's memcheck (CUDA 13.3's, from NVIDIA's redistributables), ';'
 # between them, each "<build exe> <cubin> <k> <tiles>": the first faulting access and its address, for a hand loop.
@@ -224,6 +228,11 @@ if [ -n "${PROBE_SAN:-}" ]; then
     PD_CUBIN=$W/$cub.cubin timeout 300 /opt/san/compute-sanitizer/compute-sanitizer --tool memcheck --show-backtrace no \
       "$W/$exe" "san-$cub" "$k" "$tiles" 0 0 6 0 2 2>&1 | grep -vE "^=+ *$" | head -24 | cut -c1-300 | sed "s/^/san $cub /; s/%/pc/g; s/|/\//g" | emit
   done
+fi
+# ldsm8.cu (stage "ldsm8", goal-nv50d): which bytes sm_120a's byte-transposing ldmatrix hands each lane.
+if has ldsm8; then
+  $C13/bin/nvcc -arch=sm_120a -o $W/ldsm8 "$H/ldsm8.cu" > $W/ldsm8.log 2>&1 || say "FAIL ldsm8 build: $(tail -2 $W/ldsm8.log | tr '\n' ' ' | cut -c1-300)"
+  [ -x $W/ldsm8 ] && $W/ldsm8 2>&1 | cut -c1-390 | emit
 fi
 # mmabench.cu (stage "micro"): a stream of nothing but mma, by order, and how much of the pipe it holds.
 if has micro; then

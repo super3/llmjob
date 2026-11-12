@@ -247,7 +247,14 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # latency in cycles grows with the clock; nlg=1, timing only, is +1.1 points of pipe on an RTX 5090).
            # Its readers are 22 gaps on at 2; 0 or 1 sends it out earlier, still behind the last readers of the
            # set it overwrites (gaps 44-46 of the turn before).
-           lgg=2)
+           lgg=2,
+           # b8=1 (goal-nv50d, sm_120 only, CORRECT with tables in plain row order): every gather is one
+           # ldmatrix.m16n16.x2.trans.b8 (LDSM.8.MT1616.2), whose byte transpose hands each lane rows g and g + 8 in
+           # registers of their own, so the two subtracts write the fragment words and the two PRMT go (noprm's
+           # +1.2 points of pipe, now with right sums). The k each lane's four bytes hold change, the same way for A
+           # and B, so the sums do not. The tables' entry p holds row c of the group at rank index p in byte c
+           # (pearl_rot.cu ROT_TAB8, gprobe rot 3), not rows e and 8 + e in bytes 2e and 2e + 1.
+           b8=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -611,6 +618,8 @@ def chunk(cfg, R, role=None):
         moves = cfg["nold"] == 1 or (cfg["nold"] == 2 and d1 < BF) or (cfg["nold"] == 3 and d1 >= BF)
         ldk = cfg["ldk"] == 3 or (cfg["ldk"] == 2 and d1 < BF) or (cfg["ldk"] == 1 and d1 >= BF)
         ld, adds, prm = gather_ins(q, areg, aoff, d1, d2, sb, dict(cfg, nold=int(moves), ldk=int(ldk)), rsb=rsb)
+        if not prm:
+            g_add = g_prm               # b8: the subtracts write the fragment words, where the PRMT did
         if cfg["noprm"]:
             # TIMING ONLY: no regroup; the subtracts write the fragment words, in the PRMT's gap.
             adds = [Ins("IADD3 R%d, -R%d, 0x%x, R%d" % (d, q + 2 + h, gfold.FILL4, q + h), wait=(sb,))

@@ -106,6 +106,9 @@ FORMS = [
     (r"IMMA\.16832\.U8\.S8 " + R + ", " + R + r"\.ROW, " + R + r"\.COL, " + R,
      lambda m: _f(0x7237, 0x404c00, rd=_reg(m[1]), ra=_reg(m[2]), rb=_reg(m[3]), rc=_reg(m[4]))),
     (r"LDSM\.16\.MT88\.4 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x4200)),
+    # sm_120a's byte transpose (goal-nv50d, ptxas 13.3's word: ldmatrix.m16n16.x2.trans.b8): two 16 x 16 byte
+    # matrices, four registers. Only sm_120 has it (rfold.py b8).
+    (r"LDSM\.8\.MT1616\.2 " + R + ", " + MEM, lambda m: (_mem(0x783b | _reg(m[1]) << 16, m, 2), 0x13900)),
     (r"LDS\.128 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xc00)),
     (r"LDS\.64 " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0xa00)),
     (r"LDS " + R + ", " + MEM, lambda m: (_mem(0x7984 | _reg(m[1]) << 16, m, 2), 0x800)),
