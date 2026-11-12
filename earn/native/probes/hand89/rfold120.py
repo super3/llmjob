@@ -47,21 +47,43 @@ LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's sec
 MEM_OPS = ("LDSM", "LDS", "STS")
 
 
-def shared(text):
-    """The text with SMEM added to its shared-memory address."""
-    m = re.search(r"\[(R\d+|RZ)(?:\+(-?0x[0-9a-f]+))?\]", text)
-    off = int(m[2], 16) if m[2] else 0
-    return text[:m.start()] + "[%s+0x%x]" % (m[1], off + SMEM) + text[m.end():]
+UR_S = [4, 7]         # uniform registers for the shared base (set in main to two the compiled function writes)
+
+
+def shared(ins):
+    """The instruction with the shared base UR_S[0] in its address, as ptxas 13.3 writes it: [Rn+URm+imm]. A load
+    takes the uniform register in bits 32-39 and bit 27 of the second word; a store has another operation (0x988)
+    and takes it, with the size, in the second word."""
+    t = ins.text
+    m = re.search(r"\[(R\d+|RZ)(?:\+(-?0x[0-9a-f]+))?\]", t)
+    lo, hi = asm89.assemble(t)
+    u = UR_S[0]
+    if re.sub(r"^@!?P\d ", "", t).startswith("STS"):
+        lo, hi = (lo & ~0xFFF) | 0x988, (hi & 0xF00) | u | 0x8000000
+    else:
+        lo, hi = lo | u << 32, hi | 0x8000000
+    ins.text = t[:m.start()] + "[%s+UR%d%s]" % (m[1], u, "+" + m[2] if m[2] else "") + t[m.end():]
+    ins.raw = (lo, hi)
+    return ins
+
+
+def base_ins():
+    """The shared base, as ptxas computes it: 0x400 + (the CTA's rank in its cluster << 24)."""
+    u, t = UR_S
+    return [Ins("S2UR UR%d, SR_CgaCtaId" % u, wsb=SB_C, raw=(0x79c3 | 7 << 12 | u << 16, 0x8800)),
+            Ins("UMOV UR%d, 0x400" % t, raw=(0x7882 | 7 << 12 | t << 16 | 0x400 << 32, 0)),
+            Ins("ULEA UR%d, UR%d, UR%d, 0x18" % (u, u, t), wait=(SB_C,), stall=2,
+                raw=(0x7291 | 7 << 12 | u << 16 | u << 24 | t << 32, 0x0f8ec0ff))]
 
 
 def port(code):
     """sm_89 Ins list -> sm_120 Ins list (texts in sm_89's spelling where the encoding is the same)."""
-    out = []
+    out = base_ins()
     for ins in code:
         t = ins.text
         op = re.sub(r"^@!?P\d ", "", t).split(" ")[0]
         if op.split(".")[0] in MEM_OPS:
-            ins.text, ins.raw = shared(t), None
+            ins = shared(ins)
         elif t.startswith("ULDC.64"):
             m = re.match(r"ULDC\.64 UR(\d+), c\[0x0\]\[0x118\]", t)
             assert m, t
@@ -203,6 +225,50 @@ def p2_free(sass_text):
     return True
 
 
+def restore_code(sass_text, want):
+    """Instructions that put back, before the return, registers the kernel keeps across the call and the loop
+    overwrites. Each must be written once in the kernel, by a form that can be redone: S2R of SR_TID.X, LDC of a
+    constant, LOP3 of an immediate with one that is put back, or IADD of an immediate to a register the kernel also
+    stored to its frame (STL [R1+o]) and does not store over. Returns a list of Ins, or None if one cannot be."""
+    rows, _labels, entry = asm89.listing(sass_text)
+    kern = [t for a, t in rows if a < entry]
+
+    def writes(r):
+        return [t for t in kern if re.match(r"(@!?P\d )?\S+ R%d(,| )" % r, t) and not t.startswith(("STS", "STL", "STG"))]
+
+    first, alu, done = [], [], set()
+    for r in sorted(want):
+        w = writes(r)
+        if len(w) != 1:
+            return None
+        t = w[0]
+        if t == "S2R R%d, SR_TID.X" % r:
+            first.append(Ins(t, wsb=SB_C))
+        elif re.match(r"LDC R%d, c\[0x0\]\[0x([0-9a-f]+)\]$" % r, t):
+            c = int(re.match(r"LDC R\d+, c\[0x0\]\[0x([0-9a-f]+)\]$", t)[1], 16)
+            first.append(Ins(t, wsb=SB_C, raw=(0x7b82 | 7 << 12 | r << 16 | 0xff << 24 | (c // 4) << 40, 0x800)))
+        elif re.match(r"IADD R%d, R(\d+), (0x[0-9a-f]+)$" % r, t):
+            m = re.match(r"IADD R%d, R(\d+), (0x[0-9a-f]+)$" % r, t)
+            st = [x for x in kern if re.match(r"STL \[R1(\+0x[0-9a-f]+)?\], R%s$" % m[1], x)]
+            slot = re.match(r"STL \[R1(?:\+(0x[0-9a-f]+))?\]", st[0])[1] if len(st) == 1 else None
+            if len(st) != 1 or any(x.startswith("STL [R1%s]" % ("+" + slot if slot else "")) for x in kern if x != st[0]):
+                return None
+            first.append(Ins("LDL R%d, [R1%s]" % (r, "+" + slot if slot else ""), wsb=SB_C))
+            alu.append((r, Ins("IADD3 R%d, R%d, %s, RZ" % (r, r, m[2]))))
+        elif re.match(r"LOP3\.LUT R%d, R(\d+), (0x[0-9a-f]+), RZ, (0x[0-9a-f]+), !PT$" % r, t):
+            m = re.match(r"LOP3\.LUT R%d, R(\d+), (0x[0-9a-f]+), RZ, (0x[0-9a-f]+), !PT$" % r, t)
+            if int(m[1]) not in want:
+                return None
+            alu.append((r, Ins(t)))
+        else:
+            return None
+        done.add(r)
+    out = first + [Ins("NOP", wait=(SB_C,), stall=2)]
+    for _r, ins in alu:
+        out += [ins, Ins("NOP", stall=5)]
+    return out
+
+
 def rename(code, ren):
     for ins in code:
         new = re.sub(r"\bR(\d+)\b", lambda m: "R%d" % ren.get(int(m[1]), int(m[1])), ins.text)
@@ -217,8 +283,24 @@ def main():
         k, v = kv.split("=")
         assert k in cfg, k
         cfg[k] = int(v, 0)
-    cfg["ur"] = UR_G
     text = asm89.disassemble(cubin, nvd)
+    # The global address base goes into the uniform pair the compiled function loads it into, so the kernel keeps
+    # nothing there across the call.
+    global UR_G
+    rows, _l, entry = asm89.listing(text)
+    urs = {int(m[1]) for a, t in rows if a >= entry
+           for m in [re.match(r"LDCU\.64 UR(\d+), c\[0x0\]\[0x358\]", t)] if m}
+    if len(urs) != 1:
+        sys.exit("the compiled function loads the global address base into %s, not one pair" % sorted(urs))
+    UR_G = urs.pop()
+    cfg["ur"] = UR_G
+    # Two more uniform registers the compiled function writes, for the shared base.
+    uw = sorted({int(m[1]) for a, t in rows if a >= entry
+                 for m in [re.match(r"(?:@!?U?P\d )?U?\S+ UR(\d+),", t)] if m and not t.startswith(("STG", "STS"))}
+                - {UR_G, UR_G + 1})
+    if len(uw) < 2:
+        sys.exit("the compiled function writes too few uniform registers: %s" % uw)
+    UR_S[:] = uw[:2]
     code, bad, most, G = rfold.build(cfg)
     if bad:
         sys.exit("%d latency problems: not written" % bad)
@@ -234,14 +316,24 @@ def main():
         _r, w, _k = fold.rw(ins.text)
         used |= {x for x in w if not isinstance(x, str)}
     extra = sorted(used - regs)
+    # The register the caller passes the return address in is dead once the loop returns (it returns through
+    # RET_REG, set at the end).
+    _e, _r, back = asm89.region(text)
+    kern = [t for a, t in rows if a < entry]
+    extra = [r for r in extra if [t for t in kern if re.match(r"\S+ R%d," % r, t)] != ["MOV R%d, 0x%x" % (r, back)]]
     spare = sorted(r for r in regs if r not in named and r not in (0, 1, 2, 3, 255))
+    rest = []
     if len(spare) < len(extra):
-        sys.exit("the loop writes registers the compiled function does not: R%s" % ", R".join(map(str, extra)))
-    ren = dict(zip(extra, spare))
-    if ren:
-        rename(code, ren)
-        print("renamed: " + ", ".join("R%d -> R%d" % kv for kv in ren.items()))
-    code = port(code)
+        rest = restore_code(text, set(extra))
+        if rest is None:
+            sys.exit("the loop writes registers the compiled function does not: R%s" % ", R".join(map(str, extra)))
+        print("put back before the return: R%s" % ", R".join(map(str, extra)))
+    else:
+        ren = dict(zip(extra, spare))
+        if ren:
+            rename(code, ren)
+            print("renamed: " + ", ".join("R%d -> R%d" % kv for kv in ren.items()))
+    code = port(code) + rest
     # The compiled function writes P1 alone. P2 is free across the call as well: gprobe's kernel writes P2 (and P3)
     # at the top of its tile loop before it reads them, and reads neither between the call and there.
     if p2_free(text):
