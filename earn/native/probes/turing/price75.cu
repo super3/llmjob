@@ -135,7 +135,8 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
   const uint32_t sb = (uint32_t)__cvta_generic_to_shared(smem);
   const uint32_t tid = threadIdx.x, warp = tid >> 5, lane = tid & 31u;
   const uint32_t wr = warp >> 2, wc = warp & 3u;
-  for (uint32_t i = tid; i < SMEM / 4u; i += 256u) {
+  constexpr bool kSmem = AS >= 2 || BS >= 2 || XK == 1 || XK == 5;
+  for (uint32_t i = tid; kSmem && i < SMEM / 4u; i += 256u) {
     const uint32_t h = mix(i * 2654435761u + blockIdx.x);
     smem[i] = h & 0x7f7f7f7fu;  // bytes an int8 operand can hold
   }
@@ -163,7 +164,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
     const uint32_t rg = (blockIdx.x + tile) % nga, cg = (blockIdx.x * 7u + tile) % ncg;
     const uint8_t *Ab = A + ((size_t)(rg * 8u + wr * 4u) * KS) * 512u + lane * 16u;
     const uint8_t *Bb = B + ((size_t)(cg * 16u + wc * 4u) * KS) * 512u + lane * 16u;
-    const uint2 *ob = offs + (((blockIdx.x * 8u + warp) * 977u + tile * KS) * 32u + lane) % OFFS_N;
+    const uint32_t ob = ((blockIdx.x * 8u + warp) * 977u + tile * KS) * 32u + lane;  // a warp's records: 256 bytes in a row
 #pragma unroll 1
     for (uint32_t ch = 0; ch < KS / 4u; ch++) {
 #pragma unroll
@@ -172,7 +173,7 @@ __global__ __launch_bounds__(256, 1) void pk(const uint8_t *__restrict__ A, cons
         const uint32_t sn = (s + 1u) & (KS - 1u), tn = (t + 1u) & 3u;  // the k-step made now, its turn
         uint32_t an[4][4], bn[4][4];
         uint2 o = make_uint2(0u, 0u);
-        if (AS >= 3 || BS >= 3) o = ldg2(ob + ((sn * 32u) % OFFS_N));
+        if (AS >= 3 || BS >= 3) o = ldg2(offs + ((ob + sn * 32u) % OFFS_N));
         // A's next fragments
 #pragma unroll
         for (int mb = 0; mb < 4; mb++) {
@@ -368,7 +369,13 @@ int main(int argc, char **argv) {
   CK(cudaMemcpy(dO, ho.data(), OFFS_N * sizeof(uint2), cudaMemcpyHostToDevice));
   CK(cudaMalloc(&dOut, (size_t)sms * 128 * 256 * 4));
   CK(cudaMalloc(&dC, (size_t)sms * 16 * 8));
+  // A kernel that uses no shared memory gets none, and the most L1 (64 KB on Turing), as the release fold asks
+  // for (PEARL_BD_A_DIRECT_CARVEOUT); the others get all 64 KB of shared and 32 KB of L1.
+  const std::string kn = kp->name;
+  const bool noSmem = kn == "ceil" || kn == "rel" || kn == "relA" || kn == "relB" || kn == "rel+alu32";
+  const uint32_t smem = noSmem ? 0u : SMEM;
   CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributeMaxDynamicSharedMemorySize, (int)SMEM));
+  CK(cudaFuncSetAttribute(kp->f, cudaFuncAttributePreferredSharedMemoryCarveout, noSmem ? 0 : 100));
   cudaFuncAttributes fa;
   CK(cudaFuncGetAttributes(&fa, kp->f));
   std::vector<long long> hc((size_t)sms * 16);
@@ -378,7 +385,7 @@ int main(int argc, char **argv) {
   int launches = 0;
   for (;;) {
     const auto a = std::chrono::steady_clock::now();
-    kp->f<<<sms, 256, SMEM>>>(dA, dB, dO, dX, dOut, dC, tiles, ncg, nga);
+    kp->f<<<sms, 256, smem>>>(dA, dB, dO, dX, dOut, dC, tiles, ncg, nga);
     CK(cudaGetLastError());
     CK(cudaDeviceSynchronize());
     const auto b = std::chrono::steady_clock::now();
@@ -403,6 +410,6 @@ int main(int argc, char **argv) {
   for (size_t i = from; i < pipes.size(); i++) ps += pipes[i];
   printf("RES %s pipe=%.5f launches=%d ms=%.1f regs=%d local=%d sms=%u ncg=%u l2=%.1fMB\n", kp->name,
          ps / (double)(pipes.size() - from), launches, ms_sum / launches, fa.numRegs, (int)fa.localSizeBytes, sms,
-         ncg, p.l2CacheSize / 1048576.0);
+         ncg, p.l2CacheSize / 1048576.0, smem);
   return 0;
 }
