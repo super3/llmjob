@@ -17,6 +17,13 @@
 //
 // Every other kernel here is built too and never launched. A kernel or a __device__ variable
 // added to pearl_kernel.cu without a line below fails the link with a duplicate symbol.
+//
+// This build also has ROWPAIR and LAST_RO on (pearl_config.h has both). Each alone loses at
+// level 8 (-0.25% and -5.1% on an RTX 2080 Ti), and together they gain (+0.44%, goal/nv-20d).
+// ROWPAIR permutes A's rows, so a card running these folds also draws A' with this file's
+// pearl_t75_materialize16_afrag (pearl_host.cu, draw_noise).
+#define PEARL_BD_ROWPAIR 1
+#define PEARL_BD_LAST_RO 1
 
 #define pearl_blake3_chunk_cvs pearl_t75_blake3_chunk_cvs
 #define pearl_blake3_parent_layer pearl_t75_blake3_parent_layer

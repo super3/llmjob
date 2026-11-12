@@ -214,6 +214,16 @@ extern "C" __global__ void pearl_t75_tile_fold_wmma_rg(
     uint32_t rows_valid, uint32_t col_groups, uint32_t tiles,
     const PearlTranscriptTest test, const PearlHitList hits);
 #endif
+#if PEARL_TURING_BDIRECT && PEARL_BD_A_DIRECT
+// That file's A' draw: its folds are built with ROWPAIR, which permutes A's rows, so a card
+// running them draws A' with it.
+extern "C" __global__ void pearl_t75_materialize16_afrag(const int8_t *base,
+                                                         const int8_t *dense,
+                                                         const uint32_t *perm, int8_t *out,
+                                                         uint32_t rows, uint32_t k_log2,
+                                                         uint32_t rank, uint64_t read_vecs,
+                                                         uint32_t fill_word);
+#endif
 #endif
 extern "C" __global__ void pearl_tile_fold_tall(
     const int8_t *Aprime, const int8_t *Bprime, uint32_t m, uint32_t n,
@@ -2738,6 +2748,13 @@ void draw_noise(Ctx *ctx, bool isA) {
     // new salt (restamp and the host-hashed path in pearl_host_reseed both end
     // in draw_noise(ctx, true)). The search refuses A-direct for any m this
     // branch does not take.
+#if PEARL_T75_RUL8
+    // The level-8 folds read A' with ROWPAIR's rows (pearl_kernel_t75.cu).
+    if (ctx->bdT75)
+      pearl_t75_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
+          src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
+    else
+#endif
     pearl_materialize16_afrag<<<draw_blocks(len / 16), kDrawThreads>>>(
         src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);
   } else
@@ -4041,9 +4058,10 @@ extern "C" const char *pearl_host_fold_name(void *handle) {
       // HASH_RG built in, or the second kernel running on this card.
       if (PEARL_BD_HASH_RG || c->bdHashRg)
         snprintf(c->foldName + n, sizeof c->foldName - n, " HASH_RG");
-      // The level-8 build running on this card (PEARL_T75_RUL8).
+      // The level-8 build running on this card (PEARL_T75_RUL8), which has ROWPAIR and
+      // LAST_RO on (pearl_kernel_t75.cu).
       n = strlen(c->foldName);
-      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8");
+      if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO");
       // ROWPAIR, like LAST_RO, needs LEAN's parts.
       n = strlen(c->foldName);
       if (PEARL_BD_ROWPAIR) snprintf(c->foldName + n, sizeof c->foldName - n, " ROWPAIR");

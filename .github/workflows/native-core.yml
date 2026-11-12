@@ -539,7 +539,8 @@ jobs:
       # shipped build's. Linux 12.8 only: the machine code does not depend on
       # the host OS.
       # The level-8 RTX 20 folds (pearl_kernel_t75.o): both present, neither spilling.
-      # ptxas 12.8 gives them 251 registers and 0 spill. A spill there would cost an RTX
+      # Built with ROWPAIR and LAST_RO (pearl_kernel_t75.cu); ptxas 12.6 gives them 249 registers and
+      # 0 spill. A spill there would cost an RTX
       # 20 card far more than level 8 gains, so it fails the job.
       - name: Check the level-8 RTX 20 folds
         if: matrix.t75 == 'yes'

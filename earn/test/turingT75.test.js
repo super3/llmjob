@@ -23,7 +23,7 @@ const CI = read(path.join(__dirname, '..', '..', '.github', 'workflows', 'native
 const BOX = read(path.join(__dirname, '..', 'tuning', 'salad', 'nv20box.sh'));
 
 // The renames, in file order: "#define <name> <new name>".
-const renames = [...T75.matchAll(/^#define (\w+) (\w+)$/gm)].map((m) => [m[1], m[2]]);
+const renames = [...T75.matchAll(/^#define (\w+) ((?:pearl_t75_|PEARL_T75_)\w+)$/gm)].map((m) => [m[1], m[2]]);
 
 // The names with linkage in the kernel's translation unit: pearl_kernel.cu and the local
 // headers it includes (each once; their own includes are pearl_config.h and the fold headers).
@@ -137,7 +137,25 @@ describe('the level-8 RTX 20 folds (PEARL_T75_RUL8)', () => {
     expect(launch('pearl_t75_tile_fold_wmma_rg')).toBe(launch('pearl_tile_fold_wmma_rg'));
     expect(HOST).toContain('  else if (ctx->bdT75 && ctx->bdHashRg)' + NL + '    pearl_t75_tile_fold_wmma_rg<<<');
     expect(HOST).toContain('  else if (ctx->bdT75 && !ctx->bdHashRg)' + NL + '    pearl_t75_tile_fold_wmma<<<');
-    expect(HOST).toContain('if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8");');
+    expect(HOST).toContain('if (c->bdT75) snprintf(c->foldName + n, sizeof c->foldName - n, " RUL8 ROWPAIR LAST_RO");');
+  });
+
+  test('the level-8 folds are built with ROWPAIR and LAST_RO, and such a card draws A\' to match', () => {
+    // Set before the include, so pearl_config.h's #ifndef keeps them; pearl_kernel.cu's own build has neither.
+    const inc = T75.indexOf('#include "pearl_kernel.cu"');
+    for (const d of ['#define PEARL_BD_ROWPAIR 1', '#define PEARL_BD_LAST_RO 1']) {
+      expect([d, T75.indexOf(d) >= 0 && T75.indexOf(d) < inc]).toEqual([d, true]);
+    }
+    expect(CONFIG).toContain('#ifndef PEARL_BD_ROWPAIR' + NL + '#define PEARL_BD_ROWPAIR 0' + NL + '#endif');
+    expect(CONFIG).toContain('#ifndef PEARL_BD_LAST_RO' + NL + '#define PEARL_BD_LAST_RO 0' + NL + '#endif');
+    // A' has one draw site; with the level-8 folds it is that file's draw, with the same arguments.
+    const call = '<<<draw_blocks(len / 16), kDrawThreads>>>(' + NL;
+    const args = 'src, dense, perm, dst, rows, kLog2, rank, readVecs, fillWord);';
+    expect(HOST.split('pearl_materialize16_afrag' + call).length - 1).toBe(1);
+    expect(HOST).toContain('#if PEARL_T75_RUL8' + NL + "    // The level-8 folds read A' with ROWPAIR's rows (pearl_kernel_t75.cu)." + NL
+      + '    if (ctx->bdT75)' + NL + '      pearl_t75_materialize16_afrag' + call + '          ' + args + NL
+      + '    else' + NL + '#endif' + NL + '    pearl_materialize16_afrag' + call + '        ' + args);
+    expect(renames).toContainEqual(['pearl_materialize16_afrag', 'pearl_t75_materialize16_afrag']);
   });
 
   test('a Salad box can build the same core (nv20box.sh %t75)', () => {
