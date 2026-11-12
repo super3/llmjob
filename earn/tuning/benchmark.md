@@ -1590,8 +1590,10 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
 - **Against the other miners, same PC (bench.sh sample means).** 5090 PC B: PeakMiner 448.46 (2599 MHz),
   SRBMiner 447.53 (2632 MHz); ours 443.8 = 99.0% (was 97.3%). 5080 360 W: SRBMiner 240.74 (2835 MHz), PeakMiner
   238.94; ours 237.47 = 98.6% (was 97.3%). 5080 295 W: SRBMiner 238.77 (2821 MHz), PeakMiner 236.88; ours 235.13 =
-  98.5% (was 97.1%).
-- **Where the rest is.** All four PCs ran at their power cap, and there our pipe is now above SRBMiner's (5080 at
+  98.5% (was 97.1%). **5080, clean 360 W PC that stays under its cap (driver 610.88, 2797 MHz, clock-bound):**
+  b8 238.13, 238.12, 238.12 against 235.53 before (+1.1%); PeakMiner 237.88 (2797 MHz, 346 W), SRBMiner 236.40
+  (2798 MHz, 329 W). Ours 100.1% of the best: the first RTX 50 row above the other miners.
+- **Where the rest is.** The other four PCs ran at their power cap, and there our pipe is now above SRBMiner's (5080 at
   295 W: 98.75 against 98.4% by count) while our clock is 1 to 2% lower at the same watts. So the gap is energy per
   cycle. Priced on the b8 loop at a 5090's cap (timing only): B's gathers as moves +2.8% count (it was +7.7%
   before b8), no readout +1.0%. `nvidia-smi -lmc` is refused on Salad ("does not have permission"), so the memory
