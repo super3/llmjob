@@ -20,6 +20,11 @@
 // The image rows (i-..., j-...), where part of an operand comes through the
 // sampler, are described above PeakImg.
 //
+// The price rows (p-..., j-p-...: what one more step of a kind costs a k-step),
+// the core rows (c-..., c1-...: a work-group that fills an Xe-core), --map,
+// --slm and the A' cache-control rows (p-ahint...) are described above
+// PeakPrice and PeakCore; README.md, "A price list, and what holds the card".
+//
 // --frag: the rows of the fragment fold (fold_xmxf, what an Arc A-series card
 // mines with since 11 November 2026) in place of the rows below, which are the
 // first fold's. They are listed above PeakFrag and in add_frag_rows; README.md,
@@ -169,6 +174,15 @@ template <typename V, typename E> inline V peak_block_read(const int8_t *p) {
 #endif
 }
 
+// IGC's own LSC load, by name, with a cache control a load (enum LSC_LDCC: 0 default, 1 L1 uncached L3
+// uncached, 2 L1 uncached L3 cached, 3 L1 cached L3 uncached, 4 both cached, 5 L1 streaming L3 uncached, 6 L1
+// streaming L3 cached, 7 L1 invalidate-after-read L3 cached). The price rows K 10 load A' with it.
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+typedef uint32_t peak_u8v __attribute__((ext_vector_type(8)));
+extern "C" SYCL_EXTERNAL peak_u8v __builtin_IB_lsc_load_global_uint8(const __attribute__((opencl_global)) peak_u8v *base,
+                                                                     int immElemOff, int cacheOpt);
+#endif
+
 namespace {
 
 using pearl_sycl::AFrag;
@@ -202,6 +216,9 @@ struct PeakArgs {
                         // ahead, 8 cache lines a message (one a lane), so its loads find them in the cache
   uint32_t sga, sgb;    // "s-" rows: a work-group is sga 16-row blocks of A' by sgb 64-column blocks of B'
   uint32_t sgp;         // producer rows: sub-groups a work-group that only copy the ring
+  uint32_t cores;  // Xe-cores (EUs / 16)
+  uint32_t slmWords;  // core rows: local memory words a group (--slm N; 0: none declared)
+  uint32_t mapC, mapR, mapQ;  // price rows: --map C,R,Q (0: the fold's walk). See map_window
   uint32_t *sink;    // one word a sub-group, so no accumulator can be dropped
 };
 
@@ -1193,6 +1210,290 @@ inline sycl::event peak_img(sycl::queue &q, const PeakArgs &args, uint32_t group
   });
 }
 
+// ---------------------------------------------------------------------------
+// The price rows ("p-", and "j-p-" for the sampler): what one more step of a kind costs. The skeleton is
+// f-v84-pf3 (the built fold's loads from its own addresses, every DPAS of a k-step waiting for them); a row
+// adds N steps of one kind to every k-step of every sub-group. Timing only: the bits are not a fold's.
+//   K 0 nothing (the skeleton)
+//     1 block read of 128 bytes (one address a message) from a hot line: window 0's B', k-step ks & 1
+//     2 vector of 4 dwords a lane (128 bytes a message, the fold's half fragment of B') from the same hot lines
+//     3 the same vector, from B' of a column window 32 away: a line the first cache level does not hold
+//     4 a sampler fetch from the bindless image, one texel a lane (128 bytes a message), hot texels
+//     5 a vector of 4 dwords a lane from shared local memory
+//     6 a vector of 4 dwords a lane stored to shared local memory
+//     7 a 32-bit add a lane (one SIMD8 instruction), four chains
+//     8 a work-group barrier (two sub-groups a work-group, as the fold)
+//     9 a vector of 8 dwords a lane (the fold's A' fragment, 256 bytes a message) from hot lines
+// Every load's words go into the gate, so the k-step's DPAS wait for them as they would for an operand.
+template <int K, int N> struct PeakPrice {
+  PeakArgs P;
+  sycl::local_accessor<uint32_t, 1> slm;
+  sycl::ext::oneapi::experimental::unsampled_image_handle hb;
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    const FoldArgs &A = P.f;
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t sgi = (uint32_t)sg.get_group_linear_id();
+    const uint32_t g = (uint32_t)it.get_group(0);
+    const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+    uint32_t wr, wc;
+    if (P.mapC) {
+      // --map C,R,Q: work-groups g = c + C j (j < R Q) take an R by Q block of windows (R rows, Q columns),
+      // so if the card puts work-groups C apart on one Xe-core, a core's work-groups share their operands.
+      // Timing only: the grid covers about every window, not exactly.
+      const uint32_t J = P.mapR * P.mapQ;
+      const uint32_t c = g % P.mapC, j = (g / P.mapC) % J, sup = g / (P.mapC * J);
+      const uint32_t b = sup * P.mapC + c;
+      // Blocks in the fold's band order: down a band's rows of blocks, then across, then the next band.
+      const uint32_t bandB = A.band / P.mapR > 0 ? A.band / P.mapR : 1u, nCB = colWins / P.mapQ;
+      const uint32_t bi = b / (bandB * nCB), idx = b % (bandB * nCB);
+      wr = ((bi * bandB + idx % bandB) * P.mapR + j % P.mapR) % rowWins;
+      wc = ((idx / bandB) * P.mapQ + j / P.mapR) % colWins;
+    } else {
+      pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);
+    }
+    const uint32_t wcb = A.colStart / 4u + wc;
+    const int8_t *Au = A.Ap + (size_t)(2u * wr + sgi) * A.aStride + 32u * lane;
+    const int8_t *Bu = A.Bp + (size_t)wcb * A.bStride + 32u * lane;
+    const int8_t *Hot = A.Bp;                                                   // window 0's B'
+    const int8_t *Far = A.Bp + (size_t)((wcb + 32u) % (A.colStart / 4u + colWins)) * A.bStride;
+    v8i c[2][8];
+    for (int rb = 0; rb < 2; rb++)
+      for (int cb = 0; cb < 8; cb++) c[rb][cb] = 0;
+    uint32_t alu[4] = {lane, lane * 3u, lane * 5u, lane * 7u};
+    v8i af[2], bf[8];
+    for (uint32_t ks = 0; ks < 64u; ks++) {
+      for (int rb = 0; rb < 2; rb++) {
+#if defined(__SYCL_DEVICE_ONLY__)
+        if constexpr (K == 10) {
+          af[rb] = (v8i)__builtin_IB_lsc_load_global_uint8(
+              (const __attribute__((opencl_global)) peak_u8v *)(Au + (size_t)(ks * 2u + rb) * 256u), 0, N);
+          continue;
+        }
+#endif
+        af[rb] = *reinterpret_cast<const v8iu *>(Au + (size_t)(ks * 2u + rb) * 256u);
+      }
+      for (int cb = 0; cb < 8; cb++) {
+        const int8_t *p = Bu + (size_t)(ks * 8u + cb) * 256u;
+        const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(p);
+        const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(p + 16);
+        bf[cb] = __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+      }
+      int t = 0;
+      for (int i = 0; i < (K == 10 ? 0 : N); i++) {
+        const size_t hotOff = (size_t)((ks & 1u) * 8u + (uint32_t)i % 8u) * 256u + ((uint32_t)i / 8u) * 128u;
+        if constexpr (K == 1) {
+          const peak_b4u v = peak_block_read<peak_b4u, uint32_t>(Hot + hotOff);
+          t ^= (int)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+        } else if constexpr (K == 2 || K == 3) {
+          const int8_t *p = (K == 2 ? Hot + hotOff : Far + (size_t)(ks * 8u + (uint32_t)i % 8u) * 256u + ((uint32_t)i / 8u) * 16u)
+                            + 16u * lane;
+          const peak_v4i v = *reinterpret_cast<const peak_v4i *>(p);
+          t ^= v[0] ^ v[1] ^ v[2] ^ v[3];
+        } else if constexpr (K == 9) {
+          const peak_v8i v = *reinterpret_cast<const peak_v8i *>(Hot + hotOff + 32u * lane);
+          t ^= v[0] ^ v[1] ^ v[2] ^ v[3] ^ v[4] ^ v[5] ^ v[6] ^ v[7];
+        } else if constexpr (K == 4) {
+          const uint32_t tx = (uint32_t)(hotOff >> 4) + lane;
+          const peak_texel v = sycl::ext::oneapi::experimental::fetch_image<peak_texel>(
+              hb, sycl::vec<int, 2>{(int)(tx & 4095u), (int)(tx >> 12)});
+          t ^= (int)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+        } else if constexpr (K == 5) {
+          const uint32_t w = (((ks & 1u) * 8u + (uint32_t)i % 8u) * 8u + lane) * 4u;
+          t ^= (int)(slm[w] ^ slm[w + 1] ^ slm[w + 2] ^ slm[w + 3]);
+        } else if constexpr (K == 6) {
+          const uint32_t w = (((ks & 1u) * 8u + (uint32_t)i % 8u) * 8u + lane) * 4u;
+          const uint32_t x = ks * 7u + lane + (uint32_t)i;
+          slm[w] = x; slm[w + 1] = x ^ 1u; slm[w + 2] = x ^ 2u; slm[w + 3] = x ^ 3u;
+        } else if constexpr (K == 7) {
+          alu[i & 3] = alu[i & 3] * 3u + ks;
+        } else if constexpr (K == 8) {
+          sycl::group_barrier(it.get_group());
+        }
+      }
+      if constexpr (K == 7) t ^= (int)(alu[0] ^ alu[1] ^ alu[2] ^ alu[3]);
+      for (int rb = 0; rb < 2; rb++) t ^= af[rb][0];
+      for (int cb = 0; cb < 8; cb++) t ^= bf[cb][0];
+      t &= (int)P.zero;
+      for (int rb = 0; rb < 2; rb++) af[rb][0] |= t;
+      for (int cb = 0; cb < 8; cb++)
+        for (int rb = 0; rb < 2; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+      if constexpr (K == 12) {
+        if ((ks & 3u) == 3u) {
+          uint32_t x0 = 0, x1 = 0;
+          for (int rb = 0; rb < 2; rb++)
+            for (int cb = 0; cb < 8; cb++) {
+              const v8i v = c[rb][cb];
+              x0 ^= (uint32_t)(v[0] ^ v[1] ^ v[2] ^ v[3]);
+              x1 ^= (uint32_t)(v[4] ^ v[5] ^ v[6] ^ v[7]);
+            }
+          x0 ^= sycl::permute_group_by_xor(sg, x0, 1u);
+          x1 ^= sycl::permute_group_by_xor(sg, x1, 1u);
+          if (lane < 8u) slm[(sgi * 8u + lane) * 16u + (ks >> 2)] = (lane & 1u) ? x1 : x0;
+        }
+      }
+    }
+    if constexpr (K == 12) {
+      sycl::group_barrier(it.get_group());
+      if (sgi == 0 && lane < 8u) {
+        uint32_t words[16];
+        for (int j = 0; j < 16; j++) words[j] = slm[lane * 16u + (uint32_t)j] ^ slm[(8u + lane) * 16u + (uint32_t)j];
+        const uint32_t local = (2u * wr + (lane & 1u)) + A.rowsValid * (4u * wc + (lane >> 1));
+        pearl_sycl::region_epilogue(words, local, A.test, A.hits, A.allTr);
+      }
+      return;
+    }
+    uint32_t x = 0;
+    for (int rb = 0; rb < 2; rb++)
+      for (int cb = 0; cb < 8; cb++)
+        for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+    if constexpr (K == 6) x ^= slm[lane * 4u];
+    x = sycl::reduce_over_group(sg, x, sycl::bit_xor<uint32_t>());
+    if (lane == 0) P.sink[(size_t)g * 2u + sgi] = x;
+  }
+};
+
+template <int K, int N>
+inline sycl::event peak_price(sycl::queue &q, const PeakArgs &args, uint32_t groups) {
+  return q.submit([&](sycl::handler &h) {
+    sycl::local_accessor<uint32_t, 1> slm(K == 5 || K == 6 ? 512 : K == 12 ? 256 : 1, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)groups * 16, 16), PeakPrice<K, N>{args, slm, gImg.hb});
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The core rows ("c-"): one persistent work-group of SR x SQ sub-groups an Xe-core (64 sub-groups fill one in
+// the 256-register mode), each with the fold's 16 by 64 tile and loads (f-v84-pf3). Sub-group s holds A'
+// block (b's row of blocks) * SR + s % SR and column window (b's column) * SQ + s / SR, so the work-group's
+// SR + SQ x 4 fragments a k-step are shared from the first cache level. A work-group walks blocks b = its
+// index, + the work-groups launched, ... in the fold's band order (BAND rows of blocks, then across), with no
+// barrier between blocks, so a core starts and drains once a launch. Sub-group s starts each block at
+// k-step (s % STAG) * SKIP. Timing only: the grid covers every tile, the bits are not a fold's.
+template <int SR, int SQ, int STAG, int SKIP, int TILE> struct PeakCore {
+  PeakArgs P;
+  uint32_t wgs;  // work-groups launched
+  sycl::local_accessor<uint32_t, 1> slm;  // SLM words a group (P.slmWords, at least 1): changes how groups are placed
+  sycl::ext::oneapi::experimental::unsampled_image_handle hb;
+
+  auto get(sycl::ext::oneapi::experimental::properties_tag) const {
+    namespace syclex = sycl::ext::oneapi::experimental;
+    return syclex::properties{syclex::sub_group_size<8>, sycl::ext::intel::experimental::grf_size<256>};
+  }
+
+  void operator()(sycl::nd_item<1> it) const {
+    const FoldArgs &A = P.f;
+    sycl::sub_group sg = it.get_sub_group();
+    const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+    const uint32_t s = (uint32_t)sg.get_group_linear_id();
+    const uint32_t w = (uint32_t)it.get_group(0);
+    if constexpr (TILE == 2) {
+      // Bisection: the skeleton's body (PeakPrice<0, 0>) verbatim, one window a group.
+      const uint32_t sgi = s;
+      const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
+      uint32_t xx = 0;
+      for (uint32_t g = w; sycl::any_of_group(sg, g < rowWins * colWins); g += (P.mapQ == 5u ? wgs : rowWins * colWins)) {
+      uint32_t wr, wc;
+      pearl_sycl::window_of(g, rowWins, colWins, A.band, wr, wc);
+      const uint32_t wcb = A.colStart / 4u + wc;
+      const int8_t *Au = A.Ap + (size_t)(2u * wr + sgi) * A.aStride + 32u * lane;
+      const int8_t *Bu = A.Bp + (size_t)wcb * A.bStride + 32u * lane;
+      v8i c[2][8];
+      for (int rb = 0; rb < 2; rb++)
+        for (int cb = 0; cb < 8; cb++) c[rb][cb] = 0;
+      v8i af[2], bf[8];
+      for (uint32_t ks = 0; ks < 64u; ks++) {
+        for (int rb = 0; rb < 2; rb++) af[rb] = *reinterpret_cast<const v8iu *>(Au + (size_t)(ks * 2u + rb) * 256u);
+        for (int cb = 0; cb < 8; cb++) {
+          const int8_t *p = Bu + (size_t)(ks * 8u + cb) * 256u;
+          const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(p);
+          const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(p + 16);
+          bf[cb] = __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        }
+        int t = 0;
+        for (int rb = 0; rb < 2; rb++) t ^= af[rb][0];
+        for (int cb = 0; cb < 8; cb++) t ^= bf[cb][0];
+        t &= (int)P.zero;
+        for (int rb = 0; rb < 2; rb++) af[rb][0] |= t;
+        for (int cb = 0; cb < 8; cb++)
+          for (int rb = 0; rb < 2; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+      }
+      uint32_t x = 0;
+      for (int rb = 0; rb < 2; rb++)
+        for (int cb = 0; cb < 8; cb++)
+          for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+      xx ^= x;
+      }
+      xx = sycl::reduce_over_group(sg, xx, sycl::bit_xor<uint32_t>());
+      if (lane == 0) P.sink[(size_t)w * 2u + sgi] = xx;
+      return;
+    }
+    // TILE 10, 11: as 0, 1 with one block a work-group and no loop around it (a loop around the k-loop, even
+    // run once, halves the rate: c-bis).
+    constexpr bool ONE = TILE >= 10;
+    constexpr uint32_t RB = TILE % 10 == 0 ? 2u : 4u, NCB = TILE % 10 == 0 ? 8u : 4u;
+    // Rows of blocks (16 rows of A' each for TILE 0, 32 for TILE 1) and column units (64 or 32 columns).
+    const uint32_t aBlocks = A.rowsValid * 2u / RB, cUnits = (A.colBatch / 4u) * (8u / NCB);
+    const uint32_t nR = aBlocks / SR, nC = cUnits / SQ, nB = nR * nC;
+    const uint32_t band = A.band * 4u / (SR * RB) > 0 ? A.band * 4u / (SR * RB) : 1u;
+    const uint32_t rot = ((s % (uint32_t)STAG) * (uint32_t)SKIP) & 63u;
+    v8i c[RB][NCB];
+    uint32_t x = 0;
+    for (uint32_t b = w, once = 0; ONE ? once < 1u : sycl::any_of_group(sg, b < nB); b += wgs, once++) {
+      const uint32_t bi = b / (band * nC), idx = b % (band * nC);
+      uint32_t br = bi * band + idx % band, bc = idx / band;
+      // Bisection only (--map C,7,..): the fold's own window_of in place of the block walk.
+      if (SR == 2 && SQ == 1 && TILE == 0 && P.mapR == 7u) pearl_sycl::window_of(b, A.rowsValid / 2u, A.colBatch / 4u, A.band, br, bc);
+      const uint32_t ar = br * SR + s % SR, cu = bc * SQ + s / SR;
+      // A' rows ar * 16 * RB / 2 ..: RB fragments of 8 rows a k-step from blocks of 16 rows.
+      const int8_t *Au = A.Ap + (size_t)(ar * (RB / 2u)) * A.aStride + 32u * lane;
+      const int8_t *Bu = A.Bp + (size_t)(A.colStart / 4u + cu / (8u / NCB)) * A.bStride + (size_t)(cu % (8u / NCB)) * NCB * 256u + 32u * lane;
+      for (uint32_t rb = 0; rb < RB; rb++)
+        for (uint32_t cb = 0; cb < NCB; cb++) c[rb][cb] = 0;
+      for (uint32_t k0 = 0; k0 < 64u; k0++) {
+        const uint32_t ks = (k0 + rot) & 63u;
+        v8i af[RB], bf[NCB];
+        for (uint32_t rb = 0; rb < RB; rb++)
+          af[rb] = *reinterpret_cast<const v8iu *>(Au + (size_t)(rb / 2u) * A.aStride + (size_t)(ks * 2u + rb % 2u) * 256u);
+        for (uint32_t cb = 0; cb < NCB; cb++) {
+          const int8_t *p = Bu + (size_t)(ks * 8u + cb) * 256u;
+          const peak_v4i lo = *reinterpret_cast<const peak_v4i *>(p);
+          const peak_v4i hi = *reinterpret_cast<const peak_v4i *>(p + 16);
+          bf[cb] = __builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+        }
+        int t = 0;
+        for (uint32_t rb = 0; rb < RB; rb++) t ^= af[rb][0];
+        for (uint32_t cb = 0; cb < NCB; cb++) t ^= bf[cb][0];
+        t &= (int)P.zero;
+        for (uint32_t rb = 0; rb < RB; rb++) af[rb][0] |= t;
+        for (uint32_t cb = 0; cb < NCB; cb++)
+          for (uint32_t rb = 0; rb < RB; rb++) c[rb][cb] = pearl_sycl::dpas<8, true>(sg, af[rb], bf[cb], c[rb][cb]);
+      }
+      for (uint32_t rb = 0; rb < RB; rb++)
+        for (uint32_t cb = 0; cb < NCB; cb++)
+          for (int r = 0; r < 8; r++) x ^= (uint32_t)c[rb][cb][r];
+    }
+    x = sycl::reduce_over_group(sg, x, sycl::bit_xor<uint32_t>());
+    if (lane == 0) P.sink[(size_t)w * SR * SQ + s] = x;
+  }
+};
+
+template <int SR, int SQ, int STAG, int SKIP, int TILE>
+inline sycl::event peak_core(sycl::queue &q, const PeakArgs &args, uint32_t) {
+  // Work-groups: P.mapC if set (--map C,..), else one an Xe-core (the probe's EU count / 16) times 64 / (SR SQ).
+  const uint32_t nBlk = (args.f.rowsValid * 2u / (TILE % 10 == 0 ? 2u : 4u) / SR) * ((args.f.colBatch / 4u) * (TILE % 10 == 0 ? 1u : 2u) / SQ);
+  const uint32_t wgs = TILE >= 10 ? nBlk : args.mapC ? args.mapC : args.cores * (64u / (SR * SQ));
+  return q.submit([&](sycl::handler &h) {
+    h.parallel_for(sycl::nd_range<1>((size_t)wgs * SR * SQ * 8, (size_t)SR * SQ * 8),
+                   PeakCore<SR, SQ, STAG, SKIP, TILE>{args, wgs, sycl::local_accessor<uint32_t, 1>(args.slmWords ? args.slmWords : 1u, h), gImg.hb});
+  });
+}
+
 #endif  // PEARL_SYCL_XMX_JIT
 
 struct Row {
@@ -1489,6 +1790,67 @@ void add_frag_rows(std::vector<Row> &v) {
   IMG_ROW("j-keep-a", "4 fetches of A' a k-step only kept, DPAS on register operands", 9, 0, 4, 2);
   IMG_ROW("j-keep-b2", "4 fetches of B' a k-step and 12 half loads only kept, DPAS on register operands", 0, 11, 4, 2);
 #undef IMG_ROW
+  // The price rows (PeakPrice).
+#define PRICE_ROW(NAME, WHAT, K, N)                                                             \
+  v.push_back({NAME, WHAT, 16, 16, 16, 1u, all, all, all,                                       \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) { return peak_price<K, N>(q, a, g); }})
+#define PRICE3(TAG, WHAT, K)                                                                    \
+  PRICE_ROW("p-" TAG "2", WHAT, K, 2);                                                          \
+  PRICE_ROW("p-" TAG "4", WHAT, K, 4);                                                          \
+  PRICE_ROW("p-" TAG "8", WHAT, K, 8)
+  PRICE_ROW("p-base", "the skeleton: f-v84-pf3", 0, 0);
+  PRICE3("blk", "and N block reads of 128 bytes from hot lines", 1);
+  PRICE3("v4", "and N vectors of 4 dwords from hot lines", 2);
+  PRICE3("far", "and N vectors of 4 dwords from lines the first cache level lacks", 3);
+  PRICE3("slmld", "and N vectors of 4 dwords from shared local memory", 5);
+  PRICE3("slmst", "and N vectors of 4 dwords stored to shared local memory", 6);
+  PRICE3("alu", "and N 32-bit adds", 7);
+  PRICE3("v8", "and N vectors of 8 dwords from hot lines", 9);
+  PRICE_ROW("p-alu16", "and 16 32-bit adds", 7, 16);
+  PRICE_ROW("p-alu32", "and 32 32-bit adds", 7, 32);
+  PRICE_ROW("p-alu64", "and 64 32-bit adds", 7, 64);
+  PRICE_ROW("p-bar1", "and a barrier", 8, 1);
+  PRICE_ROW("p-bar2", "and 2 barriers", 8, 2);
+  PRICE_ROW("p-bar4", "and 4 barriers", 8, 4);
+  PRICE_ROW("j-p-smp2", "and 2 sampler fetches of hot texels", 4, 2);
+  PRICE_ROW("j-p-smp4", "and 4", 4, 4);
+  PRICE_ROW("j-p-smp8", "and 8", 4, 8);
+#undef PRICE3
+  PRICE_ROW("p-rd", "the skeleton with the fold's readout every 4th k-step, its barrier, hash and test", 12, 0);
+  PRICE_ROW("p-ahint0", "A' by IGC's LSC load builtin, default cache control", 10, 0);
+  PRICE_ROW("p-ahint2", "A' by the builtin, L1 uncached, L3 cached", 10, 2);
+  PRICE_ROW("p-ahint4", "A' by the builtin, both cached (the default spelled out)", 10, 4);
+  PRICE_ROW("p-ahint6", "A' by the builtin, L1 streaming, L3 cached", 10, 6);
+  PRICE_ROW("p-ahint7", "A' by the builtin, L1 invalidate after read, L3 cached", 10, 7);
+  // The core rows (PeakCore): SR x SQ sub-groups a work-group, stagger STAG x SKIP k-steps, TILE 0 16x64 1 32x32.
+#define CORE_ROW(NAME, WHAT, SR, SQ, STAG, SKIP, TILE)                                          \
+  v.push_back({NAME, WHAT, 16, 16, 16, 1u, all, all, all,                                       \
+               [](sycl::queue &q, const PeakArgs &a, uint32_t g) { return peak_core<SR, SQ, STAG, SKIP, TILE>(q, a, g); }})
+  CORE_ROW("c-bis", "bisection: the skeleton's body in the core kernel, one window a group", 2, 1, 1, 0, 2);
+  CORE_ROW("c-1x2", "one window a work-group as the fold, persistent", 2, 1, 1, 0, 0);
+  CORE_ROW("c-16x4", "16 A' blocks by 4 column windows a work-group (a core), in step", 16, 4, 1, 0, 0);
+  CORE_ROW("c-16x4-s1", "c-16x4, sub-group s starting at k-step s % 16", 16, 4, 16, 1, 0);
+  CORE_ROW("c-16x4-s4", "c-16x4, sub-group s starting at k-step 4 (s % 16)", 16, 4, 16, 4, 0);
+  CORE_ROW("c-8x8-s1", "8 by 8, starting at k-step s % 16", 8, 8, 16, 1, 0);
+  CORE_ROW("c-32x2-s1", "32 by 2, starting at k-step s % 16", 32, 2, 16, 1, 0);
+  CORE_ROW("c-8x4-s1", "8 by 4 (half a core), starting at k-step s % 16", 8, 4, 16, 1, 0);
+  CORE_ROW("c-4x4-s1", "4 by 4 (a quarter of a core), starting at k-step s % 16", 4, 4, 16, 1, 0);
+  CORE_ROW("c-64x1-s1", "64 A' blocks of one column window, starting at k-step s % 16", 64, 1, 16, 1, 0);
+  CORE_ROW("c-g8x8-s1", "32 by 32 tiles, 8 by 8 a work-group, starting at k-step s % 16", 8, 8, 16, 1, 1);
+  CORE_ROW("c-g16x4-s1", "32 by 32 tiles, 16 by 4", 16, 4, 16, 1, 1);
+  CORE_ROW("c-g4x16-s1", "32 by 32 tiles, 4 by 16", 4, 16, 16, 1, 1);
+  CORE_ROW("c1-1x2", "one window a work-group, no loop (the fold's grid)", 2, 1, 1, 0, 10);
+  CORE_ROW("c1-16x4", "16 A' blocks by 4 column windows a work-group (a core), one block a group, in step", 16, 4, 1, 0, 10);
+  CORE_ROW("c1-16x4-s1", "c1-16x4 starting at k-step s % 16", 16, 4, 16, 1, 10);
+  CORE_ROW("c1-8x8-s1", "8 by 8, one block a group, starting at k-step s % 16", 8, 8, 16, 1, 10);
+  CORE_ROW("c1-32x2-s1", "32 by 2, one block a group, starting at k-step s % 16", 32, 2, 16, 1, 10);
+  CORE_ROW("c1-8x4-s1", "8 by 4 (half a core), one block a group", 8, 4, 16, 1, 10);
+  CORE_ROW("c1-4x4-s1", "4 by 4 (a quarter of a core), one block a group", 4, 4, 16, 1, 10);
+  CORE_ROW("c1-4x2-s1", "4 by 2 (8 sub-groups), one block a group", 4, 2, 16, 1, 10);
+  CORE_ROW("c1-g8x8-s1", "32 by 32 tiles, 8 by 8, one block a group", 8, 8, 16, 1, 11);
+  CORE_ROW("c1-g16x4-s1", "32 by 32 tiles, 16 by 4, one block a group", 16, 4, 16, 1, 11);
+#undef CORE_ROW
+#undef PRICE_ROW
 #endif
 }
 
@@ -1581,6 +1943,7 @@ int main(int argc, char **argv) {
   PearlProfile p = PEARL_MAINNET_PROFILE;
   double secs = 5;
   uint32_t reps = 16, bandArg = 0, colBatch = 256;
+  uint32_t mapC = 0, mapR = 0, mapQ = 0, slmWords = 0;
   uint32_t aStride = 0, bStride = 0, laneStride = 32, wpg = 1, stagger = 0, aMix = 0, bMix = 0, spin = 0, pfA = 0, pfB = 0, pfHint = 0, touchA = 0, touchB = 0, fillSkip = 0, sga = 4, sgb = 4, sgp = 2;
   uint32_t maskArg[3] = {0, 0, 0};
   bool maskSet[3] = {false, false, false};
@@ -1618,6 +1981,8 @@ int main(int argc, char **argv) {
     else if (a == "--sga" && v) { sga = (uint32_t)atoi(v); i++; }
     else if (a == "--sgb" && v) { sgb = (uint32_t)atoi(v); i++; }
     else if (a == "--sgp" && v) { sgp = (uint32_t)atoi(v); i++; }
+    else if (a == "--slm" && v) { slmWords = (uint32_t)atoi(v); i++; }
+    else if (a == "--map" && v) { sscanf(v, "%u,%u,%u", &mapC, &mapR, &mapQ); i++; }
     else if (a == "--row-mask" && v) { maskArg[0] = (uint32_t)strtoul(v, nullptr, 0); maskSet[0] = true; i++; }
     else if (a == "--col-mask" && v) { maskArg[1] = (uint32_t)strtoul(v, nullptr, 0); maskSet[1] = true; i++; }
     else if (a == "--k-mask" && v) { maskArg[2] = (uint32_t)strtoul(v, nullptr, 0); maskSet[2] = true; i++; }
@@ -1785,6 +2150,11 @@ int main(int argc, char **argv) {
   args.sgb = sgb;
   args.sgp = sgp < 1 ? 1 : sgp;
   args.sink = sink;
+  args.mapC = mapC;
+  args.slmWords = slmWords;
+  args.cores = eus ? eus / 16u : 28u;
+  args.mapR = mapR;
+  args.mapQ = mapQ;
 
   std::vector<Row> rows;
   if (frag) {
