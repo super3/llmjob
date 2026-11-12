@@ -3315,6 +3315,45 @@ What the first rows showed: for A' and B' reads, messages a k-step matter (halvi
 halving the copy's bytes a MAC (16 row windows, old 64-byte copy) left its cost at 3.8%. Every copy reshaped into bigger messages lost, with the clock
 rising (threads waiting): the copy still costs about 4%. `d64x64t` (512 bytes) does not assemble on DG2.
 
+### Arc rig, 12 November, late afternoon: A' from L2 is the cost to cut (`goal/arc-14`)
+
+Card 5 (PL2-throttled at 175 W), `pearl_sycl_check --bench 8`, taking turns, two rounds; base is 26fa1e41 (16 row
+windows, C16 copy), 98.8-99.1 TH/s at about 1,940 MHz. Timing builds give wrong results.
+
+| build | TH/s | MHz | W |
+|---|---|---|---|
+| 8 row windows (RW 8) | 97.6-98.0 | 1,900 | 176 |
+| no copy (NOCOPY + FILLALL), RW 16 / RW 8 | 101.6 / 104.0 | 1,954 / 1,929 | 175 |
+| no copy, no hash (NOEPI), RW 16 / RW 8 | 102.5 / 105.6 | 1,954 / 1,916 | 176 |
+| no copy, no barrier, RW 16 / RW 8 | 100.3 / 103.5 | 1,971-1,996 / 1,939 | 175 |
+| RW 8 padded to 36 KB of local memory (one work-group a core) | 78.5 | 2,000 | 165 |
+| RW 16, two-slot ring (two work-groups, 64 threads a core) | 97.4 | 1,964 | 175 |
+| RW 16, one column window a work-group (two work-groups) | 93.2 | 1,990 | 175 |
+| four column windows a work-group in turn (`PEARL_SYCL_WSEQ=4`), PASS | 98.8-98.9 | 1,940 | 175 |
+| band 16 / 64 / 128 | 98.4 / 98.8 / 96.7 | | 175 |
+| `PEARL_SYCL_COL_BATCH` 512 / 128 | 95.3 / 96.5 | 1,860 / 1,940 | 175 |
+| half the windows rotate each chunk's k-steps by 2 / by 1; odd windows by 2 (HROT), PASS | 93.7 / 97.5 / 97.2 | | 175 |
+| the same, no copy | 97.6 (against 101.7) | 2,000 | 175 |
+| copy spread: sub-groups 16-31 copy at odd k-steps (C16S), PASS | 96.6-97.0 | 1,940 | 175 |
+| words by plain stores (NOPARTX) | 96.9, check FAIL | | 175 |
+| **A' of only 2 row windows (AHOT 2: L1 hits)** | **104.3** | **2,000** | **163** |
+| A' of only 16 row windows (AHOT 16: L2-resident) | 101.0 | 1,953 | 175 |
+| **8 row by 2 column windows (RW 8, CW 2), PASS** | **99.4-99.5** | 1,968 | 175 |
+| **RW 8, CW 2, B' as 256-byte messages (BA), PASS** | **100.1-100.3** | 1,957-1,993 | 175 |
+| RW 8, CW 2 at band 64 | 98.8 | 1,980 | 175 |
+
+- The RW 16 and RW 8 no-copy loops are the same ISA, instruction for instruction, yet RW 16 does 3.5-5% less a
+  clock: one 32-thread work-group a core (40 KB of local memory) against two 16-thread ones. Not the hash, the
+  barrier, the band or the work-group's start.
+- A' from L2 is a large cost. goal-arc12's row "A' of 8 row windows only 93.5, A' costs nothing" timed the shipped
+  code: its AHOT macro changed a pointer the 32-bit address path never reads. Wired correctly, A' read by 8 pairs
+  at once (L1 hits) reaches the 2,000 MHz cap with 12 W to spare.
+- So the route to 105 is fewer A' bytes from L2 a MAC: windows that share A' through L1, in step. CW 2 does it
+  for two column windows; with BA it is the best build of the day. HiveOS 24.35 (staged /home/shawn/arc/ship-a14,
+  card 5): xmx8w and xmx8w-emu PASS three times, bench 90.7 against ship-a13d 90.8 (level there).
+- Keeping the last k-step's B' live to make BA safe at RW 16 on 24.35 does not reach the ISA (IGC drops asm
+  operands the text does not name). BA at CW 2 passes on 24.35 as it is.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
