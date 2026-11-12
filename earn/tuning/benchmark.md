@@ -1201,6 +1201,47 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
   release and self-updater like the RTX 30 file; the host opens the fold on compute 12.0. A CUDA 13 cubin needs
   driver 580 or newer; on an older driver the load fails and the card mines on the release fold.
 
+### Salad, 12 November: the 4090's hand loop on RTX 50, and an RTX 5080 (branch `goal/nv-50b`)
+
+- **Where the 5090's pipe went.** A stream of nothing but int8 mma (`probes/hand89/mmabench.cu`, 48 sums, fixed
+  fragments) holds 99.99% of the tensor pipe on an RTX 5090 in every order (A shared by the mma in a row, B shared,
+  neither) and 99.79% with one warp a scheduler. The probe with every part but the mma taken out (timing only)
+  holds 99.57%; with B gathered once a chunk 97.94%; with the first turn's A gathers and stores 96.60%; the shipped
+  C form 91.27%. So the 8 points are in how ptxas places the gathers, stage loads and barriers, not in the mma.
+  Reordering the C instead (a turn's barrier ahead of its last tile's mma, A gathers a tile ahead, both, with the
+  readout forms) never beat form 11: 84.3 to 90.5% in the probe; the barrier move lost 8% in the miner on a 5090
+  and 6% on a 5080.
+- **The hand loop, encoded for sm_120.** `probes/hand89/rfold120.py` takes rfold.py's loop (the one RTX 40 ships)
+  as rfold.py builds it and writes it into an sm_120 build: shared addresses through the base ptxas computes
+  (0x400 + the CTA's cluster rank << 24) in a uniform register, parameters through LDC/LDCU from c[0x0][0x390]
+  and 0x398, LDG with desc[URn], sm_120's branch offsets. What the card taught on the way, each found by cutting
+  the loop short (`cut=N`) and running the cut on the card: IMAD.WIDE.U32 with a 64-bit register addend gave a
+  wrong address (ptxas never writes it); a NOP's wait does not hold the warp; a 255-register kernel has no R253
+  (illegal instruction); registers the kernel keeps across the call are put back before the return. Every word is
+  read back through nvdisasm. build_rot.py --arch sm_120 now builds the file this way.
+- **Correct.** Probe CPU check 16,384 of 16,384 at k 2048 and at k 8192, 512 of 512 at k 65536. verify-hits.js on
+  the miner's cubin: 400 of 400 (498 hits, 26 salts; again 510 hits on another PC). rfold.py's lead=2 is WRONG on
+  sm_120 (the check fails): the default lead=3 is needed.
+- **Probe, clean PC 02e173db (limit 488.75 W), k 65536, 30 s:** hand loop 95.94 / 95.94% at 2375 / 2356 MHz
+  (count 396.6 / 393.5 TH/s); shipped C form 11 91.30 / 91.28% at 2482 / 2435 MHz (394.4 / 386.9). Keys: ist=7
+  96.08%, pad=11 95.93, cq=0 95.76, ae=0 95.57. At the power cap the pipe gain is mostly paid back in clock.
+- **Miner, same PC, hashrate.js 120 s legs taking turns:** hand loop 389.36, 389.55, 389.22, 389.47 TH/s (2345
+  MHz, 489 W); form 11 (the opt-in shipped now) 384.24, 384.43, 383.97 (2412 MHz); release 367.82, 367.45 (2236
+  MHz). Hand loop +1.35% over form 11, +5.9% over the release. The other miners on that PC (bench.sh, 180 s after
+  60 s, sample means, 489 W): SRBMiner 3.8.6 422.2 (2484 MHz), PeakMiner 2.20.7 416.3 (2418 MHz), OneZeroMiner
+  1.8.5 412.2 (2440 MHz), our v0.6.15 CLI 368.1 (2243 MHz): the hand loop is at 92.2% of the best (form 11 91.0%).
+  What is left is energy: SRBMiner holds about 97.8% of the pipe at 2484 MHz and we 95.4% at 2345 MHz on the same
+  489 W, so a cycle of ours draws about 6% more. A first race on a PC whose GPU had another load
+  (spreads 9 to 23 TH/s): hand 378.5 / 390.0 / 376.6 against form 11 358.9 / 376.9 / 364.9.
+- **RTX 5080** (PC 6d1af811, 300 W, driver 616): release 204.4 / 205.9 / 205.8 TH/s (2500 to 2515 MHz); form 11
+  203.1 / 203.3 (2570 MHz): the opt-in loses 1.1% there. bench.sh means: SRBMiner 3.8.6 221.1 (2621 MHz),
+  PeakMiner 2.20.7 219.5 (2575 MHz), our v0.6.15 202.8 (2498 MHz); OneZeroMiner 1.8.5 could not reach its pool.
+  92% of the best. Their pipe share works out at 98 to 99% against our 92%.
+- **Shipped.** build_rot.py --arch sm_120 makes the hand loop's file (hash e439e1ca..., the same from a Salad PC's
+  Linux and from Windows); on an RTX 5090 (PC 944d2f0a, 600 W) that file passed verify-hits 400 of 400 (570 hits,
+  29 salts), and it is now the one hash in `src/pearl_rot_sm120.ref` and `kRotCubins`. Still opt-in
+  (`--rotation-fold`).
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
