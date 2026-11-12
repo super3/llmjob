@@ -541,6 +541,61 @@ Box time: nv20e-2070-1 and nv20e-2060-1, 14:28-18:02 each over four PCs (about 1
 restart a running box three times, and each time I reallocated it). About 7 h. Tools: `S/nv20e/` in the scratchpad
 (r2.sh to r4.sh are the rounds' settings).
 
+### Salad, 12 November: the lag between a hasher and its B partner, and a 2060 SUPER row (branch goal/nv-20f)
+
+**Where the rows stand.** `nv20box.sh` bench on the stand-in pool (2^210), the v0.6.15 CLI on the shipped t75 core
+(PAIRGATE, built on the box as CI builds it) against PeakMiner 2.20.7, 300 s runs taking turns twice. Ours is the
+`linemean` figure, PeakMiner's the mean of its 15 s samples from 60 s on.
+
+| PC | ours (linemean) | PeakMiner 2.20.7 | ours / PeakMiner |
+|---|---|---|---|
+| RTX 2060 SUPER, 175 W, driver 621.01, 65-67 °C | 53.90, 53.84 TH/s; 1692-1695 MHz, 168-169 W | 53.94, 54.07; 1681 MHz, 170 W | **99.75%** (99.0% a clock) |
+| RTX 2070 SUPER, 215 W, 621.01, 69-79 °C | 60.50, 60.40; 1736-1746 MHz, 211 W | 61.83, 61.96; 1736-1738 MHz, 211 W | **97.7%** |
+
+Pool credit (about 200 shares a run, ±7%) read ours 55.9 and 55.2 against PeakMiner's 49.8 and 48.2 on the 2060
+SUPER, and 63.4 and 62.0 against 56.9 and 63.4 on the 2070 SUPER; it does not settle a run. That 2070 SUPER PC does
+about 9% less work a clock than the first one this round (34.7 against 38.3 TH/s per GHz, same card and watts), and
+PeakMiner with it.
+
+**What I raced** (hashrate.js legs of 90 s taking turns, each against the shipped t75 core beside it, A/A twin in
+every race; every build listed passed verify-hits.js 400 of 400 where verified). The idea: each scheduler holds one
+warp that hashes after every hand-off and one that goes on, and the two read the same B. The hash (about 2.3K
+clocks) leaves the second warp about 4.5 k-steps ahead for the rest of the tile, with their readouts half
+overlapping.
+
+| Build | What it changes | RTX 2070 SUPER (first PC: 211-215 W, 1716-1759 MHz) | RTX 2060 SUPER (168-171 W, 1673-1711 MHz) |
+|---|---|---|---|
+| A/A twin | nothing | -0.10% (second PC) | +0.06% |
+| `HDELAY=1` | each hasher waits 1 chained shared load (the delay builds' control: same chunk loop) | -0.31% (3 legs) | -0.15% (3 legs) |
+| `HDELAY=16` | ~500 clocks more lag | -0.64% | -0.20% |
+| `HDELAY=32` | ~1,000 | -2.14% | -2.55% |
+| `HDELAY=48` | ~1,500 | -3.70% | -4.58% |
+| `HDELAY=64` | ~2,000 | -3.93% | -5.30% |
+| `LD_A=3` | A's loads evict_first (`LDG.E.EF`; `.cs` is the same SASS on sm_75) | -0.73% | -1.09% |
+| `WMAP` | warps re-paired so the two readers of a B slot hash together: no B lag | -2.26% (second PC, 3 legs) | -2.06% (2 legs) |
+| `WMAP` + one-sided delay 1 / 16 / 32 / 48 | the B pair that far apart again | -2.40 / -3.37 / -3.53 / -4.41% (second PC) | -2.17 / -2.91 / -3.24 / -4.17% |
+
+- **Lag costs past what the hash makes.** Up to ~500 clocks more is about level; beyond it the loss grows fast and
+  the clock falls with it, which fits the lagging warp's B and A lines leaving L1. Less lag does not help either:
+  with none (WMAP) both warps ask for the same lines at once, and every lag from there up only adds loss. The ~2.3K
+  clocks the hash makes are on the flat part, so there is nothing here to win.
+- **B's L2 traffic is at its floor for this tile.** The block's 128x256 int32 accumulators are half the register
+  file, so no larger block fits, and the hash-off ablation (+0.3%, goal/nv-20e) leaves little room for lines lost
+  while the hasher lags. B through shared memory would add stores and shared reads on the same 64 B/clock path, for
+  at most that. Not built.
+- **The readout's xor fold is at its floor in instructions:** the chunk loop is 512 IMMA and 127 others (70 LOP3,
+  32 LDG, 10 IADD3, 8 PRMT, 1 SHFL, 1 STS, 2 IMAD, LEA, ISETP, BRA), 64 of the LOP3 for 128 values a lane. What it
+  costs (2.2-2.8%) is where those sit among the IMMA.
+- A clock64 spin or a `NANOSLEEP` as the delay made ptxas rebuild the tile loop (`NANOSLEEP.WARP` put divergence
+  guards on the shuffles), so the delay is a chain of dependent shared loads in the hashers' existing branch.
+- The switches are in commits 81c72c76, 03bcf71b and d65715f7 and were taken out again (d0a3cc1f): the Turing tests
+  compare the fold with copies of its source. Full earn suite on the branch: 134 suites passed (1 skipped), 3,416
+  tests passed, 65 skipped.
+
+Box time: nv20f-2070-1 18:24-20:03 (two PCs; set-env did not restart it once and I reallocated it) and nv20f-2060-1
+18:24-19:59, about 3.3 h in all. Tools: `S/nv20f/` in the scratchpad (r1.sh to r4.sh are the rounds' settings,
+benchsum.py reads a bench).
+
  (our CPU miner against SRBMiner 3.7.5)
 
 | CPU (CPUs the container got) | GPU | Threads | Ours | SRBMiner 3.7.5 | % of best |
