@@ -43,7 +43,9 @@ PEAK_VER=2.20.7; PEAK_SHA256=38fc5c4d0a8351f6e94756d2d1830a1bf9b745e41b9b0ef3f07
 # interactive setup prompt ("Please enter a text with length between 1 and 50"), even for --list-algorithms (two
 # 2080 Tis, 9 November), so the tables of 9 to 10 November ran 3.8.2. With wget installed (the apt line below) it
 # ran on all four RX 7900 boxes of the 11 November re-run. Not yet run this way on an NVIDIA box.
-SRB_VER=3.8.6; SRB_MD5=38128fa15afff3c488e53726aa251249
+# 3.8.7 (11 November) changed pearlhash only on NVIDIA (RTX 30, 40, 50); on RDNA 2 it read the same as 3.8.6 (7.382
+# against 7.380 TH/s on an RX 6600, 12 November). Until 12 November: 3.8.6, md5 38128fa15afff3c488e53726aa251249.
+SRB_VER=3.8.7; SRB_MD5=7471402c42ae0b347b1eebc731eef6ce
 WILD_VER=0.51.9; WILD_SHA256=7444c6c48b70006c2ec045bd69a37393c2fc293c7e47cdf561c9561408d5bb44
 OZM_VER=1.8.5; OZM_SHA256=c1234876b1eee134d6079b95de234c3ad7f0b3d2301f75fb5dddc41defab6a48
 REL=https://github.com/super3/llmjob/releases/download/$VER
