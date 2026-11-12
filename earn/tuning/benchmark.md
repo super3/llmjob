@@ -1077,6 +1077,53 @@ turned up in four tries (575, 600, 600 and 800 W limits).
 Box time: 3.4 box-hours for 3 budgeted (RTX 5070 Ti 71 min over seven PCs; RTX 5090 135 min, of which 118 were an
 idle box: this PC stalled for two hours with the delete waiting behind a log poll).
 
+### Salad, 12 November: the rotation fold on RTX 50, compiled from C (branch `goal/nv-50`)
+
+- **What ran.** The rotation fold (RTX 30 and 40's opt-in, `--rotation-fold`) has a chunk loop written by hand in
+  sm_89 instructions; sm_120 encodes IADD3, LDG, BRA, MOV, LDC/LDCU and IADD.64 another way, keeps kernel
+  parameters at `c[0x0][0x380]`, and starts the dynamic shared memory at 0x400, not 0. So the fold was written in C
+  (`earn/native/src/pearl_rot_c.inc`, included by `pearl_rot.cu` for sm_120 and by the probe as `GP_ROTC`) and
+  shipped as ptxas compiles it. One Salad RTX 5090 throughout: PC 3e7100e6, 575 W limit, driver 617.14, memory
+  clock 14001 MHz (not locked; the app's 5090 memory-clock trial was not in play). Box script
+  `earn/tuning/salad/nv50box.sh`; the release fold is the CUDA 13.3 core's (`pearl_core_cu13.node`, the core RTX
+  50 rigs on driver 580+ load), built on the box from the same commit.
+- **The miner.** `hashrate.js`, 120 s legs taking turns, the shipped form (B gathered a turn ahead, barriers after a
+  chunk's first and last turn only, loop inlined; the exact file CI builds, hash ab55669f...): 401.60, 401.61,
+  401.31 TH/s (2557 to 2560 MHz, 575 W) against 393.19, 390.97, 390.71 for the release fold (2408 to 2420 MHz,
+  575 W). Mean 401.5 against 391.6: **+2.5%**. `verify-hits.js` 400 of 400 (688 hits, 35 salts). An earlier race of
+  four forms (90 s legs): release 393.68 / 391.77 / 391.33; B ahead and inlined 398.19 / 397.74; the shipped form
+  401.92 / 401.44; B ahead with the readout spread (outlined) 401.52 / 400.98; that plus barriers trimmed and the
+  readout over two turns 390.17 / 389.95. Before the loop was inlined the miner's cubin spilled one register a chunk
+  (one STL and one LDL in the loop) and got 384.4 / 384.6 where the probe's cubin of the same form, which did not
+  spill, held 92% of the pipe.
+- **The probe** (`gprobe.cu` with `GP_ROTC`, k 65536, 128 tiles a block, 30 to 60 s, the CPU check passing on every
+  form run for real): the loop as ptxas orders it holds 84.0% (no B ahead), 92.1% (B ahead), 90.6% (B ahead,
+  barriers trimmed), 85.4 to 89.2% (readout spread). Price list on the 92.1% form (timing only, wrong results on
+  purpose): no bank collisions 92.1%; no barriers 91.1%; no readout in the loop 92.4%; neither 94.0%; B gathered once
+  a chunk 91.6% (and 2685 MHz against 2593, fewer steps under the power cap); no stage loads 85.0%; nearly
+  everything but the first turn's gathers and the IMMA out 95.0%. No one part holds the 8 points; they are in how
+  ptxas orders the IMMA stream on sm_120.
+- **Our own order: tried and dropped for now.** `earn/native/probes/hand89/sched120.py` keeps ptxas's instructions
+  and registers, reorders the loop, and writes the control fields again (stall, yield, scoreboards, waits, reuse);
+  nothing is assembled, and every result is read back through nvdisasm. Every scheduled cubin computed right
+  (16,384 of 16,384), and none beat ptxas. Calibration on ptxas's own order: our first control fields cost 11 points
+  (scoreboards 10, stalls and yields 5, cleared reuse flags 3.7); written as ptxas writes them (only the newest
+  awaited shared load gets a scoreboard, since a warp's shared loads finish in order; IMMA 11 cycles apart; PRMT
+  pairs marked for reuse) they come within 3 points (89.2 against 92.1%). Reorders on top (steps spread one or two a
+  gap, loads first, over-full gaps smoothed) lost 1 to 10 points. Two sm_120 rules learnt on the way: nvdisasm (and
+  so presumably the card) refuses a yield with a stall of 0 or of 12 and more; and ptxas spaces a warp's IMMA 11
+  cycles apart.
+- **The other miners on the same PC** (bench.sh, 180 s each after 60 s, sample means): SRBMiner 3.8.6 434.3 TH/s (567 W, 2619 MHz),
+  PeakMiner 2.20.7 427.0 (530 W, 2476 MHz), OneZeroMiner 1.8.5 419.0 (533 W, 2485 MHz), our v0.6.15 CLI 386.6
+  (575 W, 2457 MHz); every share the stand-in pool checked passed. So the fold is at 92.4% of the best (401.5 by
+  `hashrate.js`, a different meter from bench.sh's samples), the release core at 90.2%, the v0.6.15 CLI at 89.0%.
+  The other miners run under the 575 W cap; ours sits on it. Not measured: an RTX 5080 or 5070 (no Salad slot was
+  free for one), and a 450 W 5090.
+- **Shipped (opt-in, off by default).** `pearl_rot_sm120.cubin`, built by CI's CUDA 13 job with `build_rot.py
+  --arch sm_120` against `src/pearl_rot_sm120.ref`, carried by the installer, AppImage, CLI, HiveOS package,
+  release and self-updater like the RTX 30 file; the host opens the fold on compute 12.0. A CUDA 13 cubin needs
+  driver 580 or newer; on an older driver the load fails and the card mines on the release fold.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
