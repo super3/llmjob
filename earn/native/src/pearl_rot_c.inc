@@ -4,7 +4,8 @@
 // cubin for sm_120) and probes/hand89/gfold_h.cuh (GP_ROTC, the probe's kernel). The includer defines:
 //   RC_MT      m16 tiles a warp (6)          RC_TR     the transcripts' place in the dynamic shared memory
 //   RC_STG     the stage's place             RC_FILL4  the operand fill in each byte of a word (63)
-//   RC_FLAGS   1, plus 2 (B a turn ahead) and 4 (the readout spread over the mma)
+//   RC_FLAGS   1, plus 2 (B a turn ahead), 4 (the readout spread over the mma) and 8 (barriers after the first
+//              and the last turn only)
 // It reads the 8-byte offsets records of rot_aux_offs (gprobe's `rot` 2).
 //
 // The fold. A warp takes a chunk's four k-steps in its own order (the records are in that order). At its first
@@ -115,7 +116,12 @@
       if (first && mb == 0u) word(c + 15u);
 #endif
     }
-    // The band's barrier: 1 for warps 0 to 3, 2 for warps 4 to 7, 128 threads each.
+    // The band's barrier: 1 for warps 0 to 3, 2 for warps 4 to 7, 128 threads each. Flag 8: only after the
+    // first turn (every store behind it, before any load) and the last (every load behind it, before the next
+    // chunk's stores); nothing is stored in the turns between, so the two barriers there order nothing.
+#if RC_FLAGS & 8
+    if (first || last)
+#endif
     asm volatile("{.reg .pred p; setp.ne.u32 p, %0, 0; @p bar.sync 2, 128; @!p bar.sync 1, 128;}" ::"r"(band) : "memory");
 #if RC_FLAGS & 2
     o = on;
