@@ -1761,6 +1761,25 @@ competitor ran on the same settings.
   6600 still read 93 C at 24 W. In the first runs, at 53 W and 18 W, the same cards read 35-47 C, so their cooling
   changed during the owner's clock reset and reboot. Earlier runs here were short (40 s to 3 min); runs on this rig
   now go under a guard that stops ours at 85 C edge, 95 C junction, or 10 s of 0 rpm under load.
+- **Fold variants, raced after the owner set the fans to 85% (15:02-15:29 UTC), under the guard, same 1400 MHz
+  cap.** Built on the rig with ROCm 7.2's clang (the CI release core's twin there, "release", read the same as
+  CI's to 0.06%). Three rounds each, order rotating; `hashrate.js` 30 s after 10 s, fold alone in TMAC/s:
+
+  | Build | RX 6800 TH/s | RX 6800 fold | RX 6600 TH/s | RX 6600 fold |
+  |---|---|---|---|---|
+  | CI release | 17.23, 17.23, 17.23 | 17.32-17.33 | 7.92, 7.92, 7.92 | 7.962-7.963 |
+  | release, built on the rig | 17.22, 17.24, 17.23 | 17.31-17.34 | 7.92, 7.92, 7.92 | 7.962-7.964 |
+  | DPP readout (`PEARL_AMD_DPP=1`) | 17.29, 17.29, 17.28 (+0.35%) | 17.38 | 7.95, 7.95, 7.95 (+0.38%) | 7.989-7.992 |
+  | `PEARL_AMD_DOT4_K=8` (225 VGPRs) | 16.95 x3 (-1.6%) | 17.03 | | |
+  | `PEARL_AMD_DOT4_WAVES=5` (191 VGPRs) | 16.04-16.05 (-6.9%) | 16.13 | | |
+  | `-mcumode` | 15.84-15.85 (-8.0%) | 15.92 | | |
+
+  The DPP build passed the fold check and verify-hits 400 of 400 on both cards, so it is RDNA 2's default now (200
+  VGPRs, 4 waves; `goal/rdna2`). `PEARL_AMD_DOT4_WAVES=6`, which would fit a third block a WGP, caps the fold at 160
+  VGPRs and spills 50, so it wasn't run.
+- **What the card's dot4 can do:** a kernel of nothing but `v_dot4_i32_i8` from registers (64 accumulators a lane)
+  did 20.33 TMAC/s at 4 waves a SIMD and 20.62 at 8 on the RX 6800 at 1388 MHz: 244-248 MAC a CU a clock, 96% of
+  AMD's 256. The fold's 17.3 is 85% of that; the loads, barriers and readout take the rest.
 - Not measured: the rate at stock clocks, SRBMiner on these cards, and anything longer than 3 minutes.
 - Two display slips seen: the CLI's header named all six cards "RX 6600/6600 XT/6650 XT" (the per-card lines are
   right), and `hashrate.js` reports the AMD core's fold as "unresolved".
