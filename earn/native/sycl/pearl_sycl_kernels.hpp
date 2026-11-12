@@ -1824,6 +1824,17 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #if !defined(PEARL_W_NOBA)
 #define PEARL_W_BA
 #endif
+// goal-arc13: 16 row windows a work-group (32 sub-groups), each copying 128 bytes of B' at even k-steps only
+// (PEARL_W_C16): half the copy's local stores a MAC, and each thread stores as often as the half-copy timing
+// build that ran 105.3 at 8 windows. 99.6 against 98.5 for 8 windows (card 5; 16 windows with the old 64-byte
+// copy 99.3). PEARL_W_RW=8 for the 8-window form; the host runs this one only where 16 divides the band and the
+// row windows.
+#ifndef PEARL_W_RW
+#define PEARL_W_RW 16
+#endif
+#if PEARL_W_RW == 16 && !defined(PEARL_W_NOC16)
+#define PEARL_W_C16
+#endif
 // SEQ (goal-arc10): column windows a work-group runs one after the other (1 or 2). With 2, sub-group sgi of each
 // window hashes set sgi's words, both at once, so the hash at the end (which holds the work-group's local memory
 // and threads while it runs) is paid once for twice the work.
@@ -2147,6 +2158,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     };
     v8i ca = ca_load((uint32_t)KPS);
 #endif
+#if defined(PEARL_W_C16)
+    // goal-arc13 (PEARL_W_C16, RW 16): 32 sub-groups copy 128 bytes each at even k-steps only, two k-steps'
+    // B' (piece sgl % 16 of k-step kb + sgl / 16): each thread stores what STE's did, with the full copy.
+    static_assert(KPS == 4 && RW == 16 && CW == 1, "PEARL_W_C16: 16 by 1 work-group, a chunk a slot");
+    const uint32_t c16Lo = (uint32_t)(uintptr_t)(A.Bp + (size_t)(A.colStart / 4u + wcb) * A.bStride) + (sgl & 15u) * 128u;
+    auto c16_load = [&](uint32_t kb) {
+      const uint32_t k = kb + (sgl >> 4);
+      return ring_read_global<HW>(lo32(bHi, c16Lo + (k < 64u ? k : 63u) * 2048u), lane);
+    };
+    v4u c16n = c16_load((uint32_t)KPS);
+#endif
 #if defined(PEARL_W_C2)
     static_assert(KPS == 4 && kBps == 1 && !kHalf, "PEARL_W_C2: one copy block a sub-group, a chunk a slot");
     cvec c2n[2];
@@ -2319,6 +2341,14 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         each<kBps>([&](int i) { csv[i] = ring_read_global<HW>(Bbi[i] + (size_t)(ks + (uint32_t)KPS < 64u ? ks + (uint32_t)KPS : 63u) * 2048u, lane); });
 #elif !defined(PEARL_W_NOCOPY) && (!defined(PEARL_W_NC) || defined(PEARL_W_NCIDLE))
         auto copy_step = [&]() {
+#if defined(PEARL_W_C16)
+          if (s % 2u == 0u) {
+            const uint32_t kb = ks + (uint32_t)KPS;
+            ring_write_local<HW>(R + at(kb) + (sgl >> 4) * kStep + (sgl & 15u) * 32u, c16n, lane);
+            c16n = c16_load(kb + 2u);
+          }
+          return;
+#endif
 #if defined(PEARL_W_C2)
           // goal-arc13 (PEARL_W_C2): the copy at even k-steps only, two k-steps' pieces at a time (two 128-byte
           // loads and two 128-byte stores), none at odd ones. PASS, but 94.3-94.4 against 98.4-98.5 (card 5).

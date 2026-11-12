@@ -705,6 +705,9 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
   if (fold == kXmx8W && ctx->hwSg != 8) fold = kXmx8WEmu;
   // The split fold copies one block a sub-group, so it runs only at 8 windows a work-group; else the ring fold.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
+  // goal-arc13: a work-group takes PEARL_W_RW (16) row windows, so 16 must divide the band and the row windows.
+  if ((fold == kXmx8W || fold == kXmx8WEmu) && ((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW)))
+    fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
   // It adds offsets to the low 32 bits of the operands' addresses only, so each must lie inside one 4 GB window.
   if ((fold == kXmx8W || fold == kXmx8WEmu) && ctx->straddle) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;
 #if defined(PEARL_SYCL_XMX8S)
