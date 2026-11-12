@@ -192,7 +192,8 @@ FORMS = [
     (r"LDGSTS\.E\.BYPASS\.128 " + MEM + ", " + MEM64, lambda m: _ldgsts(m)),
     (r"LDGSTS\.E\.128 " + MEM + ", " + MEM64, lambda m: _ldgsts(m, 0x20000)),      # through the SM's cache
     (r"LDGDEPBAR", lambda m: (0x79af, 0)),
-    (r"DEPBAR\.LE SB0, " + I, lambda m: (0x000080000000791a | (_num(m[1]) & 63) << 38, 0)),
+    # The scoreboard's number is in bits 44-46 (checked against nvdisasm for sm_120: SB1, SB2, SB5).
+    (r"DEPBAR\.LE SB([0-5]), " + I, lambda m: (0x000080000000791a | int(m[1]) << 44 | (_num(m[2]) & 63) << 38, 0)),
     (r"NOP", lambda m: (0x7918, 0)),
     (r"YIELD", lambda m: (0x7946, 0x3800000)),
     (r"ULDC\.64 UR6, c\[0x0\]\[0x118\]", lambda m: (0x0000460000067ab9, 0x0000000000000a00)),

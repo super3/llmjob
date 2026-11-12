@@ -1766,6 +1766,34 @@ idle box: this PC stalled for two hours with the delete waiting behind a log pol
 - **Memory clock on RTX 50: not priced.** Salad refuses `-lmc`, and no other rented 5090 was allowed (no Vast or
   Clore for this work), so the RTX 40 rotation fold's 810 MHz trial was not extended to Blackwell.
 
+### Salad, 12 November: the gathers' over-waits, and a clock-bound RTX 5080 above PeakMiner (branch `goal/nv-50f`)
+
+- **What was lost.** Three scoreboards serve up to six gathers in flight, and a wait on a scoreboard holds the warp
+  until every load on it has landed. In the shipped loop 46 subtracts a chunk waited on a scoreboard whose newest
+  load went out 0 or 1 gaps before, when the load they needed went out 9 to 15 gaps before.
+- **Shipped: dpb=7 dpm=1 dpg=3 (rfold120.py).** Each such wait moves into the control field of the first newer load
+  on that scoreboard, when its own load is 3 or more gaps older than that load (there it has long landed). No
+  instruction is added. A walk of the listing with outstanding loads (prologue, three passes, epilogue) finds no
+  hazard. CPU check 16,384 of 16,384 at k 2048 and 8192, 512 of 512 at 65536. Hash 0deef760 (a Salad PC's Linux and
+  Windows agree) replaces 2bc71ae7 in `src/pearl_rot_sm120.ref` and `kRotCubins`: verify-hits 400 of 400 on an RTX
+  5090 (1007 hits) and an RTX 5080 (636 hits).
+- **Tried and dropped.** DEPBAR.LE in front of the subtracts (`dpb` alone): correct only with ptxas's stall 4 (stall
+  1 gives wrong sums at every k), and 0.13 to 0.2 points of pipe worse: the 23 extra issues cost more than the waits.
+  `dpg` 1 and 2 move more waits but onto loads whose producer has not landed (5090 pipe 97.77 / 97.87 against 98.0);
+  `dpg` 4 and 6 equal 3 on a 5080. `sbo` 0, 3, 5 and `cq=36` with dpm: no change. One barrier instruction from a
+  register (`brg=1`): correct on sm_120, 0.15 points worse. The loop with no barriers at all (timing only, wrong)
+  gains nothing on either card, so the barriers are not where the pipe goes.
+- **Probe, k 65536, legs in turn.** RTX 5080 (360 W limit, clock-bound at 2835 MHz, 330-335 W): 98.54-98.61% of the
+  pipe against 99.04-99.10% (count 240.3 against 241.5, +0.46%). RTX 5090 (437 W limit, at the cap, ~2227 MHz):
+  97.50-97.53% against 97.97-98.03% (count 378.0 against 379.8-380.0, +0.5%).
+- **Miner, hashrate.js 120 s legs taking turns, same PC.** 5080: 2bc71ae7 238.46, 239.20, 238.93, 238.94; 0deef760
+  239.79, 239.93, 240.13, 240.41 (2825-2829 MHz, 336 W): +0.50%. 5090: 373.10, 373.02, 373.03, 373.24; 0deef760
+  374.56, 374.32, 374.73, 374.84 (2212-2221 MHz, 437 W): +0.41%.
+- **Against the other miners, same PCs (bench.sh sample means, PeakMiner 2.20.7, SRBMiner 3.8.6).** 5080: PeakMiner
+  239.29 (2835 MHz, 330 W), SRBMiner 189.08 (2814 MHz, 258 W; it ran low on this PC); ours 240.07 = **100.3% of the
+  best**. 5090 at its 437 W cap: SRBMiner 379.12 (2268 MHz), PeakMiner 378.07 (2235 MHz); ours 374.61 = 98.8%. On
+  the capped card both run 20 to 50 MHz faster at the same watts: the gap there is still energy per cycle.
+
 ## A100-class (sm_80)
 
 Vast, 10 October.

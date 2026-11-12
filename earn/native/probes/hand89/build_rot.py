@@ -63,9 +63,13 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # and 389.46 for the file before both). And no barrier after a chunk's second turn (bt=13: no fragment is stored in
 # the second or third turn, so it orders nothing; every load keeps a barrier between it and the stores around it):
 # the probe's pipe 99.03% against 98.95% on a 5080 and 98.26% against 98.18% on a 5090, CPU check 16,384 of 16,384
-# at k 2048 and 8192 (12 November).
+# at k 2048 and 8192 (12 November). And no over-waits on the gathers' scoreboards (dpb=7 dpm=1 dpg=3: a subtract
+# that waited on a scoreboard whose newest load went out a gap before, while its own went out 9 or more gaps before,
+# has that wait moved onto the first newer load, where its own load has long landed): the probe's pipe 99.04%
+# against 98.59% on a clock-bound 5080 (count +0.46%), 98.03% against 97.53% on a capped 5090 (12 November).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
-             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13"]}
+             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1", "bt=13",
+                        "dpb=7", "dpm=1", "dpg=3"]}
 
 
 def toolkit(nvcc):
