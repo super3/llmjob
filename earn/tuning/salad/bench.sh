@@ -174,8 +174,9 @@ nv_ours() {
   arch=; case "$cc:$CUDA_VER" in 86:12.8|89:12.8|120:13.3) arch=sm_$cc ;; esac
   if [ -n "$arch" ] && [ -x "$CUDA/bin/nvdisasm" ]; then
     if python3 -X utf8 probes/hand89/build_rot.py nvcc "$CUDA/bin/nvdisasm" /root/rot --arch "$arch" > /root/rot.log 2>&1 \
-        && cp "/root/rot/pearl_rot_$arch.cubin" "$(dirname "$NVCORE")/"; then
-      rot="pearl_rot_$arch.cubin $(python3 probes/hand89/asm89.py hash "/root/rot/pearl_rot_$arch.cubin" 2>/dev/null | cut -c1-12)"
+        && cp "/root/rot/pearl_rot_sm$cc.cubin" "$(dirname "$NVCORE")/"; then
+      # build_rot.py names it pearl_rot_sm89.cubin (no "_"), the name the core looks for.
+      rot="pearl_rot_sm$cc.cubin $(python3 probes/hand89/asm89.py hash "/root/rot/pearl_rot_sm$cc.cubin" 2>/dev/null | cut -c1-12)"
       say "built $rot"
     else
       say "no fold cubin: $(grep -v '^\s*$' /root/rot.log | tail -1 | tr -cd ' -~' | cut -c1-240)"
