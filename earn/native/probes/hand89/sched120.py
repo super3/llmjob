@@ -36,7 +36,7 @@ import subprocess
 import sys
 
 CFG = dict(per=2, gap=11, ist=1, step=2, lat_alu=6, lat_ai=7, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
-           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0, oyld=1, reuse=1, padlast=1, smooth=0, lfirst=0, lmax=2)
+           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0, oyld=1, reuse=1, padlast=1, smooth=0, lfirst=0, lmax=2, kall=0)
 LAT_LOAD_HOP = {"LDSM": 2, "LDS": 2, "LDG": 6, "LDL": 2, "S2R": 2}
 REG = re.compile(r"(?<![A-Za-z0-9_])(-|!|~|\|)?(UR|R|UP|P)(\d+)((?:\.[A-Z0-9]+)*)")
 CTRL_SHIFT = 41
@@ -714,6 +714,42 @@ def main():
                 x.wsb, x.rsb, x.wait = w, r, wt
             if cfg["kru"]:
                 x.reuse = ru
+    # kall=1 (with smooth): ptxas's own control fields on every instruction, the order smoothed. Only plain ALU
+    # steps moved, and only later, so no scoreboard is set elsewhere. What has to be put right: a moved step's
+    # wait goes also on the first instruction behind its old place that did not move (ptxas puts a wait on the
+    # first reader only; the readers after it count on it), a reuse flag stays only where the next instruction
+    # is still the one ptxas had behind it, and the stalls are checked again below.
+    if cfg["kall"]:
+        old = [x for x in body]
+        nxt_old = {id(old[i]): (id(old[i + 1]) if i + 1 < len(old) else None) for i in range(len(old))}
+        newpos = {id(x): k for k, x in enumerate(code)}
+        oldpos = {id(x): k for k, x in enumerate(old)}
+        for x in code:
+            if hasattr(x, "orig") and id(x) in oldpos:
+                x.stall, x.yld, x.wsb, x.rsb, x.wait, x.reuse = x.orig
+        carry = 0
+        for i, x in enumerate(old):
+            moved = newpos[id(x)] != i
+            if moved:
+                carry |= x.wait
+            elif carry:
+                x.wait |= carry
+                carry = 0
+        if carry:
+            bra.wait |= carry
+        for k, x in enumerate(code[:-1]):
+            if x.reuse and nxt_old.get(id(x)) != id(code[k + 1]):
+                x.reuse = 0
+        # an IMMA no sooner than `gap` cycles behind the one before (ptxas never goes under 11)
+        last_i, acc_c = None, 0
+        for k, x in enumerate(code):
+            if x.op == "IMMA":
+                if last_i is not None and acc_c < cfg["gap"]:
+                    code[k - 1].stall = min(15, code[k - 1].stall + cfg["gap"] - acc_c)
+                last_i, acc_c = k, 0
+            if x.op in ("BAR", "BRA"):
+                last_i = None
+            acc_c += x.stall
     # fixed latency over prologue -> loop -> loop -> epilogue
     fixable = {id(x) for x in code}
     pro_sect = [x for x in pro if x.sect == sect][-40:]
