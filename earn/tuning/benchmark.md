@@ -1151,6 +1151,27 @@ RTX 4090, 450 W, 810 MHz memory, the shipped B-drawn-once loop (3a354cac). Nothi
   32, 64, 128, 128, 64, 32: 343.80 (first leg), 344.72, 344.05, 344.23, 344.62, 344.72 TH/s. 128 is 0.15% lower
   (its sd 0.6: bigger batches smooth the salt's window); 64 is level with 32. Default kept.
 
+### rig01, 12 November: A shared by all eight warps, priced; the shipped loop at three memory clocks (branch `goal/nv-k21`)
+
+RTX 4090, 450 W. Nothing ships; the shipped cubin (3a354cac) is unchanged.
+
+- The one block shape with fewer shared-memory steps. Warps of 96 x 64 in a 96 x 512 block (one row band, eight
+  column slots) would share A eight ways and draw B alone: 15.5 shared-memory steps a warp a k-step against 17,
+  but 38 ALU steps against B drawn once's 28, 64 KB of B tables, and all eight warps tied to one stage. Priced with
+  the new timing-only key `ah=3` (a first turn gathers and stores only A's tiles 0-2 and loads 3-5 from the stage),
+  probe at 810 MHz memory, 40 s, pipe x clock: shipped loop 2636-2645; its A-unshared parent s30 2621-2624;
+  s30 + ah=3 (that block's steps) 2655-2657 (+0.6%); the same with one barrier for all eight warps 2649, twice,
+  at 2685 MHz, the card's top clock, 437 W (+0.35%). The real form also needs a mid-turn exchange between two
+  warps and a new tile shape for the host and the pool. At most +0.35% before those costs, and the 2685 MHz
+  ceiling caps any form at about +1.2%: not built.
+- `ah` on B drawn once (not a buildable form, only a price): 2664 at the 2685 MHz ceiling. A first try left
+  tiles 3-5 unstored, so the IMMA folded constants and drew 379 W: a timing-only key must keep operands fresh.
+- The shipped loop by memory clock, hashrate.js 120 s legs in the order 810, 5001, driver, twice: 810 MHz 344.04
+  and 343.86 (2662 MHz, 448 W); 5001 MHz 341.88 and 342.21 (2645 MHz); driver's 10251 MHz 340.42 and 340.41
+  (2621 MHz, 449 W). Against OneZeroMiner at the same clocks (342.8, 344.47, 342.0): 100.3%, 99.3%, 99.5%. The
+  fold reads almost nothing from DRAM, so the loss at higher memory clocks is the memory's own power taking watts
+  from the core; it falls with the clock and no kernel change touches it.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
