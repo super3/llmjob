@@ -32,6 +32,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <vector>
 #include <cuda_runtime.h>
 // GP_CFILLA, GP_CFILLB (goal-nvk17): the fill the CPU check gives A and B, for hand loops (rfold.py fa, fb, xa, xb)
@@ -575,6 +576,28 @@ int main(int argc, char **argv) {
     std::vector<int8_t> Ap((size_t)BM * 128), Bp((size_t)256 * 128);
     std::vector<int32_t> C((size_t)BM * 256);
     std::vector<uint32_t> tr((size_t)GP_THREADS * 16);
+#if !GP_DIRECT
+    // PD_DIAG=1 (goal-nv50h, at most 16 chunks: a transcript word is then one chunk's XOR): for each bad tile, a
+    // line a bad band (its bad threads by warp and the first chunk whose word is wrong), then, chunk by chunk from
+    // there, the change to one k-step of that band's A operands (taken from another k-step, chunk or band) that
+    // makes the CPU's words match the card's. Printed after the result line ("diag ...").
+    const bool diag = getenv("PD_DIAG") && chunks <= 16u;
+    std::vector<int8_t> dAp(diag ? (size_t)chunks * BM * 128u : 0u), dBp(diag ? (size_t)chunks * 256u * 128u : 0u);
+    std::vector<int32_t> dC(diag ? (size_t)chunks * BM * 256u : 0u);
+    std::string dtext;
+    uint32_t dshown = 0;
+    auto xof = [&](const int32_t *Cc, uint32_t t) {
+      const uint32_t w = t >> 5, l = t & 31u, g = l >> 2, q = l & 3u;
+      uint32_t x = 0;
+      for (uint32_t mb = 0; mb < MT; mb++)
+        for (uint32_t nb = 0; nb < 8u; nb++) {
+          const uint32_t r = 16u * (MT * (w >> 2) + mb) + g, c = 64u * (w & 3u) + 8u * nb + 2u * q;
+          x ^= (uint32_t)Cc[(size_t)r * 256u + c] ^ (uint32_t)Cc[(size_t)r * 256u + c + 1u]
+               ^ (uint32_t)Cc[(size_t)(r + 8u) * 256u + c] ^ (uint32_t)Cc[(size_t)(r + 8u) * 256u + c + 1u];
+        }
+      return x;
+    };
+#endif
     for (uint32_t v = 0; v < dumpTiles; v++) {
       const uint32_t rbg = v % RG, cbg = v / RG;
       std::fill(C.begin(), C.end(), 0);
@@ -599,6 +622,13 @@ int main(int argc, char **argv) {
             for (uint32_t kk = 0; kk < 128u; kk++) sum += (int32_t)a[kk] * (int32_t)bb[kk];
             C[(size_t)r * 256u + c] += sum;
           }
+#if !GP_DIRECT
+        if (diag) {
+          memcpy(&dAp[(size_t)ch * BM * 128u], Ap.data(), Ap.size());
+          memcpy(&dBp[(size_t)ch * 256u * 128u], Bp.data(), Bp.size());
+          memcpy(&dC[(size_t)ch * BM * 256u], C.data(), C.size() * 4u);
+        }
+#endif
         for (uint32_t t = 0; t < GP_THREADS; t++) {
           const uint32_t w = t >> 5, l = t & 31u, g = l >> 2, q = l & 3u;
           uint32_t x = 0;
@@ -624,6 +654,78 @@ int main(int argc, char **argv) {
           bad_here++;
         }
       }
+#if !GP_DIRECT
+      if (diag && bad_here && dshown < 6u) {
+        dshown++;
+        const uint32_t *gw = &dump[(size_t)v * GP_THREADS * 16u];
+        char ln[400];
+        for (uint32_t b = 0; b < 2u; b++) {
+          uint32_t nbad = 0, perw[4] = {0, 0, 0, 0}, fb = 99, fbn = 0;
+          for (uint32_t t = 128u * b; t < 128u * b + 128u; t++)
+            for (uint32_t ch = 0; ch < chunks; ch++)
+              if (xof(&dC[(size_t)ch * BM * 256u], t) != gw[(size_t)t * 16u + ch]) {
+                nbad++;
+                perw[(t >> 5) & 3u]++;
+                if (ch < fb) { fb = ch; fbn = 0; }
+                if (ch == fb) fbn++;
+                break;
+              }
+          if (!nbad) continue;
+          snprintf(ln, sizeof ln, "diag tile %u band %u: %u bad (warps %u %u %u %u), first wrong chunk %u (%u threads)\n",
+                   v, b, nbad, perw[0], perw[1], perw[2], perw[3], fb, fbn);
+          dtext += ln;
+          // Greedy, chunk by chunk: the CPU's sums with the changes found so far; at a chunk whose words differ, every
+          // one-k-step change of the band's A (k-step s of this chunk <- k-step s2 of chunk c2, band b2) is tried.
+          std::vector<int32_t> Cm(dC), Ct((size_t)BM * 256u);
+          const uint32_t r0 = 16u * MT * b, r1 = r0 + 16u * MT;
+          auto delta = [&](int32_t *Cc, uint32_t ch, uint32_t s, uint32_t c2, uint32_t s2, uint32_t b2, uint32_t upto) {
+            const int8_t *A1 = &dAp[(size_t)ch * BM * 128u], *A2 = &dAp[(size_t)c2 * BM * 128u];
+            const int8_t *B1 = &dBp[(size_t)ch * 256u * 128u];
+            const uint8_t *o1 = &order[(size_t)ch * 128u + 32u * s], *o2 = &order[(size_t)c2 * 128u + 32u * s2];
+            for (uint32_t r = r0; r < r1; r++) {
+              const uint32_t rr = r - r0 + 16u * MT * b2;
+              int32_t da[32];
+              for (uint32_t i = 0; i < 32u; i++)
+                da[i] = (int32_t)A2[(size_t)rr * 128u + o2[i]] - (int32_t)A1[(size_t)r * 128u + o1[i]];
+              for (uint32_t c = 0; c < 256u; c++) {
+                int32_t d = 0;
+                for (uint32_t i = 0; i < 32u; i++) d += da[i] * (int32_t)B1[(size_t)c * 128u + o1[i]];
+                for (uint32_t c3 = 0; c3 < upto; c3++) Cc[((size_t)c3 * BM + r) * 256u + c] += d;
+              }
+            }
+          };
+          for (uint32_t ch = fb; ch < chunks; ch++) {
+            auto matches = [&](const int32_t *Cc) {
+              uint32_t m = 0;
+              for (uint32_t t = 128u * b; t < 128u * b + 128u; t++) m += xof(Cc, t) == gw[(size_t)t * 16u + ch];
+              return m;
+            };
+            const uint32_t m0 = matches(&Cm[(size_t)ch * BM * 256u]);
+            if (m0 == 128u) continue;
+            uint32_t best = m0, bs = 0, bc = 0, bk = 0, bb = 0, ties = 0;
+            for (uint32_t s = 0; s < 4u; s++)
+              for (int c2 = (int)ch - 1; c2 <= (int)ch + 1; c2++) {
+                if (c2 < 0 || c2 >= (int)chunks) continue;
+                for (uint32_t s2 = 0; s2 < 4u; s2++)
+                  for (uint32_t b2 = 0; b2 < 2u; b2++) {
+                    if (c2 == (int)ch && s2 == s && b2 == b) continue;
+                    memcpy(Ct.data(), &Cm[(size_t)ch * BM * 256u], Ct.size() * 4u);
+                    delta(Ct.data(), ch, s, (uint32_t)c2, s2, b2, 1u);
+                    const uint32_t m = matches(Ct.data());
+                    if (m > best) { best = m; bs = s; bc = (uint32_t)c2; bk = s2; bb = b2; ties = 0; }
+                    else if (m == best && m > m0) ties++;
+                  }
+              }
+            snprintf(ln, sizeof ln, "diag tile %u band %u chunk %u: %u of 128 match; best k-step %u <- chunk %u k-step %u band %u: %u match (%u ties)\n",
+                     v, b, ch, m0, bs, bc, bk, bb, best, ties);
+            dtext += ln;
+            if (best != 128u) break;
+            // Apply it to this chunk's sums and every later chunk's.
+            delta(&Cm[(size_t)ch * BM * 256u], ch, bs, bc, bk, bb, chunks - ch);
+          }
+        }
+      }
+#endif
       if (bad_here) {
         bad_tiles++;
         if (first_bad == 0xffffffffu) first_bad = v;
@@ -631,6 +733,10 @@ int main(int argc, char **argv) {
     }
     printf(" | check %u/%u", total_tr - bad, total_tr);
     if (bad) printf(" (%u tiles with a bad transcript, the first tile %u)", bad_tiles, first_bad);
+#if !GP_DIRECT
+    printf("\n%s", dtext.c_str());
+    return 0;
+#endif
   }
   printf("\n");
   return 0;
