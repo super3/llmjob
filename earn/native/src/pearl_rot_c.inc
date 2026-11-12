@@ -59,16 +59,19 @@
   // three-input XOR a mma) while the next tile's mma go out; the last tile's in the next chunk's first turn,
   // during its first tile (which does not touch them), and that chunk's transcript word is written then. The
   // first chunk writes nothing real that way: the sums and the word are zero, and rotl(0) ^ 0 is 0.
-  uint32_t xp = 0u;
+  // Two chains of XOR (even and odd n8 tiles), so the readout is not one serial chain of 96 steps.
+  uint32_t xp = 0u, xq = 0u;
   auto rd = [&](const uint32_t mb, const uint32_t nb) {
-    xp ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2] ^ (uint32_t)acc[mb][nb][3];
+    uint32_t &x = (nb & 1u) ? xq : xp;
+    x ^= (uint32_t)acc[mb][nb][0] ^ (uint32_t)acc[mb][nb][1] ^ (uint32_t)acc[mb][nb][2] ^ (uint32_t)acc[mb][nb][3];
   };
   auto word = [&](const uint32_t c) {
     uint32_t w;
     asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
-    w = __funnelshift_l(w, w, 13u) ^ xp;
+    w = __funnelshift_l(w, w, 13u) ^ xp ^ xq;
     asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
     xp = 0u;
+    xq = 0u;
   };
   auto turn = [&](const bool first, const bool last, const uint32_t c) {
     (void)last;
