@@ -64,14 +64,16 @@ def load_list(path):
             raise Refuse('the patch list is not valid JSON: %s' % e) from None
     if not isinstance(spec, dict):
         raise Refuse('the patch list is not a JSON object')
-    extra = set(spec) - {'description', 'before', 'after', 'words', 'section'}
+    # "section" (optional): the kernel the list edits, the first (default) or the rg one.
+    global SECTION
+    spec = dict(spec)
+    section = spec.pop('section', 'pearl_tile_fold_wmma')
+    if section not in ('pearl_tile_fold_wmma', 'pearl_tile_fold_wmma_rg'):
+        raise Refuse('the patch list names an unknown section')
+    SECTION = ('.text.' + section).encode()
+    extra = set(spec) - {'description', 'before', 'after', 'words'}
     if extra:
         raise Refuse('the patch list has unknown keys: ' + ', '.join(sorted(extra)))
-    global SECTION
-    if 'section' in spec:
-        if spec['section'] not in ('pearl_tile_fold_wmma', 'pearl_tile_fold_wmma_rg'):
-            raise Refuse('the patch list names an unknown section')
-        SECTION = ('.text.' + spec['section']).encode()
     for k in ('before', 'after'):
         if not is_hex(spec.get(k), 12):
             raise Refuse('the patch list\'s "%s" is not 12 lowercase hex digits' % k)

@@ -867,20 +867,22 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
 #endif
       return pearl_bd_ldg(p);
     };
+#if PEARL_BD_LD_A
     auto ldg_a = [&](const int8_t *p) -> int4 {
-      if constexpr (PEARL_BD_LD_A == 0) return ldg(p);
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
       return pearl_bd_ldg_op<PEARL_BD_LD_A>(p);
     };
+#endif
+#if PEARL_BD_LD_B
     auto ldg_b = [&](const int8_t *p) -> int4 {
-      if constexpr (PEARL_BD_LD_B == 0) return ldg(p);
 #if PEARL_BD_TAIL_LDG
       if (last) return pearl_bd_ldg_c(p);
 #endif
       return pearl_bd_ldg_op<PEARL_BD_LD_B>(p);
     };
+#endif
     auto load_half = [&](uint32_t hi) {
 #if PEARL_BD_SNAKE
       // B's two quads first, then A's (PEARL_BD_SNAKE, see pearl_config.h).
@@ -890,10 +892,18 @@ __device__ __forceinline__ void pearl_fold_bd(const int8_t *__restrict__ Aprime,
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
 #else
 #pragma unroll
+#if PEARL_BD_LD_A
       for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg_a(Aprime + ao + q * FRAG_BLOCK);
+#else
+      for (uint32_t q = hi; q < 4u; q += 2u) af[nxt][q] = ldg(Aprime + ao + q * FRAG_BLOCK);
+#endif
 #ifndef PEARL_ABLATE_BLOAD
 #pragma unroll
+#if PEARL_BD_LD_B
       for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg_b(Bprime + bo + q * FRAG_BLOCK);
+#else
+      for (uint32_t q = hi; q < 4u; q += 2u) bf[nxt][q] = ldg(Bprime + bo + q * FRAG_BLOCK);
+#endif
 #else
       // Diagnostic only: as in the staged form. Output is meaningless.
       (void)bo;
