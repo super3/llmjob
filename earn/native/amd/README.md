@@ -22,8 +22,8 @@ with no AMD card: correctness was first shown by running the same kernel source 
 through HIP-CPU, with the matrix instructions emulated from AMD's documented lane layouts, and
 checking hits against the JS reference the way the pool does. RDNA 2 runs the `dot4` fold. On 12 November, on a
 lent HiveOS rig, it passed steps 2, 3 and 5 under "Testing on real hardware" on an RX 6600 (gfx1032)
-and an RX 6800 (gfx1030): every fold check word right, verify-hits 400 of 400, and 4 Kryptex shares
-accepted, none rejected. At the owner's 1400 MHz core cap an RX 6600 did 7.9 TH/s and the RX 6800
+and an RX 6800 (gfx1030): every fold check word right, verify-hits 400 of 400, and Kryptex accepted
+every share (4, then 6 in a 10-minute run), none rejected. At the owner's 1400 MHz core cap an RX 6600 did 7.9 TH/s and the RX 6800
 17.2, 85% of what the card's bare `v_dot4` did at that clock (`earn/tuning/benchmark.md`, "RDNA 2
 on a lent HiveOS rig"). gfx103x stays among the checked cards until it has mined in a release.
 

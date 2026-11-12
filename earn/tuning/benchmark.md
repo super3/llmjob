@@ -1780,7 +1780,13 @@ competitor ran on the same settings.
 - **What the card's dot4 can do:** a kernel of nothing but `v_dot4_i32_i8` from registers (64 accumulators a lane)
   did 20.33 TMAC/s at 4 waves a SIMD and 20.62 at 8 on the RX 6800 at 1388 MHz: 244-248 MAC a CU a clock, 96% of
   AMD's 256. The fold's 17.3 is 85% of that; the loads, barriers and readout take the rest.
-- Not measured: the rate at stock clocks, SRBMiner on these cards, and anything longer than 3 minutes.
+- **Kryptex again, 10 minutes, fans at 85%** (15:35-15:45 UTC, CI release CLI, `--gpu-index 0,1,3,4`: three RX
+  6600s and the RX 6800; the RX 6600 whose fan reads 0 rpm left out, and the one at 13:00.0 had gone from the bus
+  after the first run): 6 shares accepted, 0 rejected, 40.96 TH/s mean after 30 s (`hashrate.js` read 40.95 for
+  the four together), every card's first checked hit right. The guard never fired: at most 53 C edge and 61 C
+  junction (an RX 6600), the RX 6800 47/57 C.
+- Not measured: the rate at stock clocks, SRBMiner on these cards (the owner had removed it), and anything longer
+  than 10 minutes.
 - Two display slips seen: the CLI's header named all six cards "RX 6600/6600 XT/6650 XT" (the per-card lines are
   right), and `hashrate.js` reports the AMD core's fold as "unresolved".
 - CI's Linux fold check binary needed glibc 2.38 (`__isoc23_strtol` from `atoi`), so it couldn't start here: fixed
