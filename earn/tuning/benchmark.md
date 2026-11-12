@@ -2537,6 +2537,11 @@ release form staged in `arc-jammy`, card 5 over OpenCL): check PASS. The four mi
   register ran 63.8: much rides on IGC's schedule.
 - **The group meets once a chunk.** Ring slots of four k-steps (24 KB a work-group): card 4 87.7 to 88.3 against
   86.1 to 86.6 for two and 84.2 for one. Eight do not launch.
+- **No forced load wait.** Dropping the gate that makes every DPAS of a k-step wait for all its loads: card 4 88.1
+  to 88.4 at 1,950 to 1,977 MHz against 87.5 to 88.0, same 188 W (check PASS, verify-hits 400 of 400).
+
+**`auto` is now `xmx8w` on Alchemist.** 63 minutes on the four mining cards, 92 shares accepted, none rejected (17
+minutes in its first form under the `xmx8r` name, 46 as `xmx8w`). `PEARL_SYCL_FOLD=xmx8r` goes back.
 
 **The message-count model does not hold.** Timing builds of `xmx8r` on card 5 (control 67.4 to 67.6 TH/s, 22
 messages a k-step): B' as 64-byte block reads, the same bytes in 38 messages, 64.3 (the model says 39); as 32-byte
