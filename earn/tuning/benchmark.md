@@ -1852,6 +1852,30 @@ an RTX 5080 (360 W limit, 2790 MHz) and an RTX 5090 (400 W limit, held at 2025 M
   2048 and 8192). No saving: on the 5080 355.0, 357.9 and 359.1 W against 351.8, 356.7 and 358.4 W, same pipe and
   clock. The flag changes nothing here, as on sm_89; ptxas never sets it on IMMA either.
 
+### Salad, 12 November, night: the sm_120 shared-records fault found and fixed, and +0.7% on a capped RTX 5090 (branch `goal/nv-50h`)
+
+Nothing shipped yet; the sm_120 file stays 0deef760. One PC: an RTX 5090 with a 575 W limit that the fold holds at
+its power cap (cap active in every sample, 510-535 W, 2500-2550 MHz), driver 621.14.
+
+- **The fault.** gprobe's new PD_DIAG (k 2048: one chunk per transcript word) showed it in every bad tile:
+  always chunk 0. Changing one k-step of the band's A to another k-step of chunk 0 makes 96 of 128 threads match. Read
+  through the rot order, that means one warp folded chunk 0's first turn with its second turn's record. That warp's
+  store fed bad A to the three other warps of its band. Its own B was wrong too, which is why the fourth warp did
+  not match. Cause: in the prologue, the pointer step (waiting on the load's read scoreboard) issued one cycle
+  behind the first record load. On sm_120 it can go ahead, and the load reads the stepped pointer. sr's uniform
+  registers below UR24 (srm, UR0-3 and UR18-23, or UR18-27) and stores without a uniform register (srw) were still
+  wrong, as expected.
+- **The fix, `srp=1`:** the step goes behind the prologue's existing 8-cycle stall. Probe: 16,384 of 16,384 at k
+  2048 (5 runs) and 8192 (3), and at k 65536. The miner's cubin with sr and srp (hand-built on the PC):
+  verify-hits 400 of 400 (1163 hits, 57 salts). The shipped keys: 400 of 400 (1147 hits).
+- **Probe timing at the cap (k 65536, legs taking turns).** Shipped keys: pipe 98.99, 98.98, 99.01%; 2543, 2533,
+  2524 MHz; count 438.2, 436.4, 435.0. sr+srp: 98.82, 98.81, 98.84%; 2556, 2553, 2554 MHz; count 439.8, 439.2,
+  439.4. That is 0.17 points of pipe for about 25 MHz, a net +0.7%.
+- **Race, hashrate.js 120 s legs taking turns.** Shipped keys (rold) 431.25, 431.27, 431.41, 431.38 TH/s (2497
+  MHz, 530 W). sr+srp (rsr) 434.38, 434.35, 434.31, 434.29 (2520 MHz, 527 W). Means 431.33 -> 434.33, **+0.70%**.
+  Not measured: competitors on this PC, which was deleted before bench.sh ran. A clock-bound card (5080) where sr
+  costs 0.17 points, and CI's own bytes (build_rot.py with sr=1 srp=1 gives 8584f90b on Windows).
+
 ## A100-class (sm_80)
 
 Vast, 10 October.
