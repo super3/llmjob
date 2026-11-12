@@ -189,7 +189,7 @@ struct Ctx {
   HitBuf *dHits[kSlots] = {nullptr, nullptr};
   HitBuf *hHits[kSlots] = {nullptr, nullptr};  // pinned host copies
   uint32_t *hRoot = nullptr;                   // pinned, 8 words
-#if defined(PEARL_SYCL_ESIMD) && defined(PEARL_SYCL_XMX_JIT)
+#if (defined(PEARL_SYCL_ESIMD) || defined(PEARL_W_SEPEPI)) && defined(PEARL_SYCL_XMX_JIT)
   uint32_t *dWords = nullptr;  // goal-arc9: the ESIMD xmx8w's words, 16 a region (PEARL_SYCL_ESIMD=1)
 #endif
 
@@ -717,6 +717,20 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
       if (env_str("PEARL_SYCL_ESIMD", "") == "1") {
         if (!ctx->dWords) ctx->dWords = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
         fold_xmxe(q, a, groups, ctx->dWords);
+        break;
+      }
+#endif
+#if defined(PEARL_W_SEPEPI) && defined(PEARL_SYCL_XMX_JIT)
+      if (!ctx->dWords) ctx->dWords = sycl::malloc_device<uint32_t>((size_t)ctx->batch * 16u, q);
+      fold_xmxw_sep(q, a, groups, ctx->dWords);
+      break;
+#endif
+#if defined(PEARL_SYCL_XMX_JIT)
+      // goal-arc10: two column windows a work-group, one after the other, when the batch has an even number
+      // of them (PEARL_SYCL_WSEQ=1 runs one): the hash at the end is paid once for twice the work. Card 5:
+      // 92.9 TH/s against 92.1.
+      if (env_str("PEARL_SYCL_WSEQ", "2") == "2" && (a.colBatch / 4u) % 2u == 0u) {
+        fold_xmxw<true, 2>(q, a, groups);
         break;
       }
 #endif
