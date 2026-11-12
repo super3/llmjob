@@ -170,6 +170,12 @@ case ",${ORDER:-peak,srb,ours}," in *,ours,*)
       curl -fsSL --retry 3 -o "$f" "$REL/$f" || fail "download $f"
     done
     mv llmjob-earn-cli-linux cli && chmod +x cli
+    # OURS_CORE (a measuring option, nv20box.sh): the release's CLI with another pearl_core.node, so the rate of a
+    # core built from a branch can be read the same way as the other miners'.
+    if [ -n "${OURS_CORE:-}" ]; then
+      cp "$OURS_CORE" pearl_core.node && rm -f pearl_core_cu13.node || fail "OURS_CORE $OURS_CORE"
+      say "ours: the release's CLI with the core $OURS_CORE"
+    fi
   else
     amd_ours
   fi ;;

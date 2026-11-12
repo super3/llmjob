@@ -179,8 +179,10 @@ if has lgc; then
   fi
 fi
 if has bench; then
+  # OURS_CORE=<build name>: bench.sh runs the release's CLI with that build's core in place of the release's.
+  oc=""; [ -n "${OURS_CORE:-}" ] && oc="$W/core-$OURS_CORE/build/Release/pearl_core.node"
   # W: a payout address in form only, which is all our CLI checks. The stand-in pool pays nobody.
-  W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
+  OURS_CORE="$oc" W=prl1pgate00000000000000000000000000000000000000000000000000000 ORDER=${ORDER:-ours,ozm,peak,srb} \
     VPOOL=${VPOOL:-210} SECS=${SECS:-180} WARM=${WARM:-60} OURS_SECS=${SECS:-180} VER=${VER:-v0.6.15} \
     bash /root/bench.sh 2>&1 | sed -u 's/^\[bench\]/[nvtest] [bench]/'
 fi
