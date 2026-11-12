@@ -43,6 +43,7 @@ SMEM = 0x400          # where sm_120's dynamic shared memory starts
 UR_G = 8              # the uniform pair the loop loads the global address base into (the compiled function's)
 SB_C = 5              # the scoreboard the prologue's constant loads use
 LDCU64 = (0x0000000000000000 | 0x7ac | 7 << 12, 0x8000a00)   # LDCU.64 UR?, c[0x0][0x358] (ptxas 13.3's word)
+DBG = [0]
 LDG_HI = 0x0c1e9b00   # LDG.E.64.CONSTANT desc[URn][Rn.64+imm] (ptxas 13.3's second word)
 MEM_OPS = ("LDSM", "LDS", "STS")
 
@@ -97,7 +98,12 @@ def port(code):
             off = int(m[3], 16) if m[3] else 0
             lo = 0x7981 | int(m[1]) << 16 | int(m[2]) << 24 | UR_G << 32 | off << 40
             ins.text = "LDG.E.64.CONSTANT R%s, desc[UR%d][R%s.64%s]" % (m[1], UR_G, m[2], "+0x%x" % off if off else "")
-            ins.raw = (lo & ~0xF000 | 7 << 12, LDG_HI)
+            if DBG[0] & 4:
+                lo = (lo & ~(0xFF << 32)) | 16 << 32
+                ins.text = ins.text.replace("desc[UR%d]" % UR_G, "desc[UR16]")
+            if DBG[0] & 1:
+                ins.text = ins.text.replace(".CONSTANT", "")
+            ins.raw = (lo & ~0xF000 | 7 << 12, 0x0c1e1b00 if DBG[0] & 1 else LDG_HI)
             # The loop's first record load waits for the address base.
             if not any(x.text.startswith("LDG") for x in out):
                 ins.wait = tuple(sorted(set(ins.wait) | {SB_C}))
@@ -126,6 +132,9 @@ def port(code):
             out.append(Ins("NOP", wait=(SB_C,), stall=5))
             out.append(Ins("IADD.64 R%d, R%d, R%d" % (d, d, tp), stall=ins.stall, yld=ins.yld,
                            raw=(0x7235 | 7 << 12 | d << 16 | d << 24 | tp << 32, 0x78e0200)))
+            if DBG[0] & 2:
+                out[-1] = Ins("IADD.64 R%d, RZ, R%d" % (d, tp), stall=ins.stall, yld=ins.yld,
+                              raw=(0x7235 | 7 << 12 | d << 16 | 0xff << 24 | tp << 32, 0x78e0200))
             continue
         out.append(ins)
     return out
@@ -287,6 +296,9 @@ def main():
     cut = None
     for kv in sys.argv[4:]:
         k, v = kv.split("=")
+        if k == "dbg":
+            DBG[0] = int(v, 0)
+            continue
         if k == "cut":
             # TIMING ONLY / debugging: only the first `cut` instructions of the ported loop (no back branch), then a
             # wait for every load and the return. Wrong results; finds where a fault is.
