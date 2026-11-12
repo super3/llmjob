@@ -35,8 +35,8 @@ import struct
 import subprocess
 import sys
 
-CFG = dict(per=2, gap=12, ist=1, step=2, lat_alu=6, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
-           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0)
+CFG = dict(per=2, gap=12, ist=1, step=2, lat_alu=6, lat_ai=7, lat_imma=30, lat_pred=13, lat_u=13, war_imma=10,
+           ld=32, yld=1, sbs=6, block=1, slack=4, even=1, asap=2, sbm=1, keep=0, kst=0, ksb=0, kru=0)
 LAT_LOAD_HOP = {"LDSM": 2, "LDS": 2, "LDG": 6, "LDL": 2, "S2R": 2}
 REG = re.compile(r"(?<![A-Za-z0-9_])(-|!|~|\|)?(UR|R|UP|P)(\d+)((?:\.[A-Z0-9]+)*)")
 CTRL_SHIFT = 41
@@ -63,6 +63,8 @@ class Ins:
         self.sect, self.addr, self.text, self.lo, self.hi = sect, addr, text, lo, hi
         c = (hi >> CTRL_SHIFT) & 0x1FFFFF
         self.stall, self.yld, self.wsb, self.rsb, self.wait = c & 15, (c >> 4) & 1, (c >> 5) & 7, (c >> 8) & 7, (c >> 11) & 63
+        self.reuse = (c >> 17) & 15
+        self.orig = (self.stall, self.yld, self.wsb, self.rsb, self.wait, self.reuse)
         g = re.match(r"^@(!?)(U?P[T\d]+)\s+(.*)$", text)
         self.guard = g.group(2) if g and g.group(2) not in ("PT", "UPT") else None
         body = g.group(3) if g else text
@@ -168,7 +170,7 @@ class Ins:
         # sm_120 refuses a yield with a stall of 0 or of 12 and more (nvdisasm: "undefined value" in opex)
         st = max(1, self.stall)
         y = self.yld if st <= 11 else 0
-        return (st & 15) | (y << 4) | (self.wsb << 5) | (self.rsb << 8) | (self.wait << 11)
+        return (st & 15) | (y << 4) | (self.wsb << 5) | (self.rsb << 8) | (self.wait << 11) | (self.reuse << 17)
 
     def encode(self):
         hi = self.hi & ~(0x1FFFFF << CTRL_SHIFT)
@@ -369,7 +371,7 @@ def assign(code, cfg, entry_pending, block_rule=True):
         x.stall = 0
         x.yld = cfg["yld"]
         x.lo = x.lo
-        x.hi &= ~(0xF << (122 - 64))        # operand reuse flags off
+        x.reuse = 0                         # operand reuse flags off
     for k, x in enumerate(code):
         if x.op == "IMMA":
             x.stall = cfg["ist"]
@@ -477,7 +479,8 @@ def check_fix(stream, cfg, fixable, fix=True):
                 tw, w, iw = last[r]
                 if id(w) not in fixable and id(x) not in fixable:
                     continue            # ptxas's own code before or after the loop
-                d = w.lat(cfg) - (t - tw)
+                d = w.lat(cfg) + (cfg["lat_ai"] - cfg["lat_alu"] if x.op == "IMMA" and w.op != "IMMA" and
+                                  w.lat(cfg) == cfg["lat_alu"] else 0) - (t - tw)
                 if d > 0:
                     need = max(need, d)
                     lo = min(lo, iw)
@@ -614,8 +617,19 @@ def main():
     for k, x in enumerate(code):
         if x.op == "NOP" and k and code[k - 1].op == "IMMA" and code[k - 1].stall > cfg["ist"]:
             code[k - 1].stall -= 1
-    # entry waits: a body reader of a register the prologue's load writes waits on it (assign did); the first pass
-    # also waits there, which is all a later pass's wait costs.
+    # Calibration (with keep=1 and block=0 only): put back ptxas's own stalls and yields, scoreboards and waits, or
+    # operand reuse flags, to find which of our fields costs what.
+    if cfg["keep"]:
+        for x in code:
+            if x.op == "NOP" and not hasattr(x, "orig"):
+                continue
+            st, y, w, r, wt, ru = x.orig
+            if cfg["kst"]:
+                x.stall, x.yld = st, y
+            if cfg["ksb"]:
+                x.wsb, x.rsb, x.wait = w, r, wt
+            if cfg["kru"]:
+                x.reuse = ru
     # fixed latency over prologue -> loop -> loop -> epilogue
     fixable = {id(x) for x in code}
     pro_sect = [x for x in pro if x.sect == sect][-40:]
