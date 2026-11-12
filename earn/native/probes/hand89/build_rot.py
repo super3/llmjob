@@ -62,7 +62,7 @@ ARCHS = ("sm_89", "sm_86", "sm_120")
 # (iy=0, as on sm_86): on a 488.75 W 5090 PC 402.11 and 402.17 TH/s against 399.18 and 399.45 without it (389.44
 # and 389.46 for the file before both).
 ARCH_KEYS = {"sm_89": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"], "sm_86": ["iy=0", "rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0"],
-             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0"]}
+             "sm_120": ["rpr=2", "u8=1", "rgf=1", "rb0=3", "rb1=0", "ist=7", "iy=0", "b8=1"]}
 
 
 def toolkit(nvcc):
