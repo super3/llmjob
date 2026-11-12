@@ -769,6 +769,12 @@ The other miners on the same PCs (bench.sh, stand-in pool at 2^210, means of the
 The 3060 is now above the best of them, the 3090 not: at 280 W our loop runs 30 MHz below theirs, so it
 spends more energy a MAC. That, not the pipe, is what is left on a watt-capped RTX 30.
 
+B drawn once without `iy=0`, its keys retuned (same 3060 PC, the probe, k 65536, 60 s, two passes each): the
+pipe is 98.7 to 99.5% against 99.25% for the sr loop, and pipe x clock lands within the passes' noise of it
+(bsg=10, bss=3 and py=1 the best, each one pass above and one below). Raced in the miner on a second, heat-held
+3060 PC (80 C, about 1820 MHz), legs in turn: sr loop 52.10 (first leg, card still cooler), 51.23, 51.38;
+`bsg=10` 51.07, 51.05; `bss=3` 51.10, 51.24 TH/s: 0.3 to 0.5% below sr at the same heat. Not shipped.
+
 ## RTX 40-series
 
 Vast, 10 October.
