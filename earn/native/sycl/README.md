@@ -616,9 +616,10 @@ Also timed and dropped:
 
 ## The ring fold (12 November 2026)
 
-`fold_xmxr` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8r`. Since 12
-November it is what `auto` picks on Alchemist, after an hour on the rig's four
-mining cards with no share rejected (`PEARL_SYCL_FOLD=xmx8f` goes back). It carries over the NVIDIA fold's way
+`fold_xmxr` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8r`. On 12
+November it was what `auto` picked on Alchemist, after an hour on the rig's four
+mining cards with no share rejected, until the split fold below took over that
+night (`PEARL_SYCL_FOLD=xmx8r` goes back to it, `xmx8f` further). It carries over the NVIDIA fold's way
 of feeding its matrix instructions: an operand tile is copied into on-chip
 memory once and every warp reads it from there.
 
@@ -713,9 +714,11 @@ are the two folds themselves. Card 5, 2 to 4 s a row:
 
 ## The split fold (12 November 2026)
 
-`fold_xmxw` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8w`. The ring
-fold with a 32 by 32 tile a sub-group, the window's two sub-groups sharing A'
-through Alchemist's split DPAS.
+`fold_xmxw` in `pearl_sycl_kernels.hpp`, `PEARL_SYCL_FOLD=xmx8w`. What `auto`
+picks on Alchemist since the night of 12 November, after an hour on the rig's
+four mining cards with no share rejected. The ring fold with a 32 by 32 tile a
+sub-group, the window's two sub-groups sharing A' through Alchemist's split
+DPAS.
 
 - **The split DPAS.** DPASW (`intel_sub_group_i8_i8_split_matrix_mad_k32`,
   OpenCL's `cl_intel_subgroup_split_matrix_multiply_accumulate`) takes A from
@@ -1290,7 +1293,7 @@ this one:
 | `PEARL_CORE_PATH` | | names a local build to the app and the CLI: point it at `build/pearl_core_sycl.node`. Without it they look in the release's `sycl/` folder |
 | `PEARL_CORE_VARIANT` | | `intel` asks the app for this core on any rig, with no fallback; the CLI's `--core intel` is the same. Without it, it is tried on a rig of Arc cards with no NVIDIA or AMD card |
 | `PEARL_SYCL_DEVICE` | `gpu` | `cpu` takes the SYCL CPU device (the correctness gate without a GPU) |
-| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8r` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
+| `PEARL_SYCL_FOLD` | `auto` | `dot`, `xmx16`, `xmx8`, `xmx8f`, `xmx8r`, `xmx8w`, `xmx16-emu`, `xmx8-emu`, `xmx8f-emu`, `xmx8r-emu`, `xmx8w-emu`. `auto` is the hardware DPAS where the build has it for the device (`xmx8w` on Alchemist, `xmx16` on Battlemage and newer), else `dot` |
 | `PEARL_SYCL_COL_BATCH` | 256 | column offsets a batch (a power of two; at most 2^25 regions a batch, which is 4,096 at mainnet) |
 | `PEARL_SYCL_BAND` | from the cache size | row windows walked together. By default their A' is a quarter of the cache the device reports for the fragment fold and the plain fold (64 on an A750) and all of it for `xmx8` and `xmx16` (256) |
 | `PEARL_SYCL_DUTY` | 100 | the share of the time a card folds, 10 to 100, for a card that cannot shed the heat of a full load: each batch waits for the one before it, then the card rests for the remainder. One figure for every card, or a list by card index (`100,60,60`; a card past the end takes the last). The fold is the same. On the A750 rig 60 gave 37.5 TH/s and 128 W a card where 100 gives 63 and 190 W |

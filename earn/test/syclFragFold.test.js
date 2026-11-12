@@ -279,9 +279,12 @@ describe('the host keeps the operands in the order the fold reads', () => {
     expect(slice(HOST, 'extern "C" bool pearl_sycl_read_operands(', '\n}\n')).toContain('set_layout(ctx, 0);');
   });
 
-  test('auto picks the ring fold on Alchemist, and the older folds keep their names', () => {
+  test('auto picks the split fold on Alchemist, and the older folds keep their names', () => {
     const pick = slice(HOST, 'bool pick_fold(Ctx *ctx, char *err, size_t err_len) {', '\n}\n');
-    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8R : kDot;');
+    expect(pick).toContain('ctx->fold = sg == 16 ? kXmx16 : sg == 8 ? kXmx8W : kDot;');
+    // At any work-group but 8 windows the split fold runs as the ring fold.
+    expect(slice(HOST, 'void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {', '\n}\n'))
+      .toContain('if ((fold == kXmx8W || fold == kXmx8WEmu) && a.wpg != 8u) fold = fold == kXmx8W ? kXmx8R : kXmx8REmu;');
     expect(pick).toContain('} else if (want == "xmx8") {\n    ctx->fold = kXmx8;');
     expect(pick).toContain('} else if (want == "xmx8f") {\n    ctx->fold = kXmx8F;');
     expect(pick).toContain('} else if (want == "xmx8r") {\n    ctx->fold = kXmx8R;');
