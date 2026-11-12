@@ -108,6 +108,8 @@ def rw(text):
         return reads | (span(regs[1], 2) if op.startswith("LDG") else {regs[1]}), span(regs[0], 4), "load"
     if op.startswith("STS.128"):
         return reads | {regs[0]} | span(regs[1], 4), writes, "store"
+    if op.startswith("CCTL"):
+        return reads | span(regs[0], 2), writes, "store"
     if op == "STS":
         return reads | set(regs), writes, "store"
     if op == "LDS":

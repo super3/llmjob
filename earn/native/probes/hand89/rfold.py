@@ -254,7 +254,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # +1.2 points of pipe, now with right sums). The k each lane's four bytes hold change, the same way for A
            # and B, so the sums do not. The tables' entry p holds row c of the group at rank index p in byte c
            # (pearl_rot.cu ROT_TAB8, gprobe rot 3), not rows e and 8 + e in bytes 2e and 2e + 1.
-           b8=0)
+           b8=0,
+           # pf (goal-nvk18, correct): an L2 prefetch of the offsets record pf turns ahead of each record load (0: none).
+           pf=0)
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
 # bsp: the gaps of a turn's eight B gathers' LDSM, in the turns 0 to 2 and in the chunk's last turn (where
 # the next chunk's first tile is gathered in gaps 37 and 38). Their PRMT stay in gaps 43 to 50.
@@ -409,6 +411,12 @@ def chunk(cfg, R, role=None):
             put(b + cfg["lgg"], ldg(nxt, R["poff"], rec * (1 if s < 3 else 4) if cfg["nlg"] else rec * (s + 1),
                            size=64 if cfg["co"] else 128,
                            wsb=SB_OFF, rsb=hold if s == 3 else None, wait=hw))
+            if cfg["pf"]:
+                # pf (goal-nvk18): an L2 prefetch (CCTL.E.PF2, no register written) of the record pf turns
+                # beyond the one loaded here, so a record the L2 does not hold comes from memory ahead of its load.
+                off = rec * (s + 1 + cfg["pf"])
+                put(b + 2, Ins("CCTL.E.PF2 [R%d+0x%x]" % (R["poff"], off),
+                               raw=(0x798f | R["poff"] << 24 | off << 32, 0x800100), rsb=hold if s == 3 else None))
             # The record's first readers issue 8 cycles or more behind three IMMA that wait for the load.
             first = b + (min(BLD[0]) if cfg["bsp"] else ni - 11) - 2
             if cfg["co"]:
