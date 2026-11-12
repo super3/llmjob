@@ -96,6 +96,13 @@ def ldg(dst, base, off, size=128, **k):
     return Ins(text, raw=(lo, hi), **k)
 
 
+def rfold_sr_u(cfg, i):
+    """rfold.py's sr_u (A's base i = 0, B's 1), without importing rfold.py (which imports this file)."""
+    if cfg.get("srm"):
+        return [b for b in range(63) if cfg["srm"] >> b & 1][i]
+    return cfg["sr_ua"] if i == 0 else cfg["sr_ub"]
+
+
 def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
     """(LDSM, the two IADD3, the two PRMT) of one gather into quad q, fragment words d1 and d2."""
     if cfg["nold"]:
@@ -107,7 +114,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         # g + 8 at the lane's four k, from the plus matrix, 2 and 3 the same from the minus one. The subtracts
         # write the fragment words: no PRMT.
         # sr (goal-nv50g): A's or B's base in a uniform register, as below.
-        ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""
+        ur = "+UR%d" % rfold_sr_u(cfg, 0 if d1 < BF else 1) if cfg.get("sr") else ""
         ld = Ins("LDSM.8.MT1616.2 R%d, [R%d%s%s]" % (q, areg, ur, "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb,
                  wait=wait_ld)
         w = (sb,)
@@ -115,7 +122,7 @@ def gather_ins(q, areg, aoff, d1, d2, sb, cfg, wait_ld=(), rsb=None):
         # ldk (goal-nvk14, TIMING ONLY): the gather's load as an LDS.128 at the same addresses (the same 512 bytes,
         # the same banks; each lane keeps its own row, untransposed): what the transposing LDSM costs per byte.
         # sr (rfold.py, goal-nvk19): the offsets carry no warp's base; it is in a uniform register, A's or B's.
-        ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""
+        ur = "+UR%d" % rfold_sr_u(cfg, 0 if d1 < BF else 1) if cfg.get("sr") else ""
         ld = Ins("%s R%d, [R%d%s%s]" % ("LDS.128" if cfg.get("ldk") else "LDSM.16.MT88.4", q, areg, ur,
                                         "+0x%x" % aoff if aoff else ""), wsb=sb, rsb=rsb, wait=wait_ld)
         w = (sb,)

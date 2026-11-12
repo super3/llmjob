@@ -270,6 +270,9 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # band's stage). The record pointer moves by a uniform step a turn (UR sr_ua + 6 + turn), since each
            # warp takes the chunk's k-steps in an order of its own; that add replaces the pointer's step a chunk.
            sr=0, sr_ua=16, sr_ub=17, sr_sb=None,
+           # srm (with sr, goal-nv50h): a bitmask of the ten uniform registers sr uses, taken lowest first as A's base,
+           # B's, the four stage slots and the four pointer steps (0: sr_ua, sr_ub and the eight above sr_ua).
+           srm=0,
            # srg (with sr): how many gaps behind the record load the pointer steps on (it waits for the load to have read it).
            srg=1,
            # srs (with sr): see sr_prologue's settle.
@@ -293,14 +296,23 @@ def layout(mt):
     return R
 
 
+def sr_u(cfg, i):
+    """sr: its i-th uniform register: 0 A's base, 1 B's, 2-5 the stage slots, 6-9 the pointer steps."""
+    if cfg.get("srm"):
+        urs = [b for b in range(63) if cfg["srm"] >> b & 1]
+        assert len(urs) == 10, "srm names %d uniform registers, not 10" % len(urs)
+        return urs[i]
+    return (cfg["sr_ua"], cfg["sr_ub"])[i] if i < 2 else cfg["sr_ua"] + i
+
+
 def sr_ust(cfg, t):
     """sr: the uniform register with the stage slot of the k-step a warp folds at turn t (3072 x that k-step)."""
-    return cfg["sr_ua"] + 2 + t
+    return sr_u(cfg, 2 + t)
 
 
 def sr_ud(cfg, t):
     """sr: the uniform register with the record pointer's step after turn t's load (to the next turn's record)."""
-    return cfg["sr_ua"] + 6 + t
+    return sr_u(cfg, 6 + t)
 
 
 def sr_prologue(cfg, R, S, q):
@@ -361,8 +373,8 @@ def sr_prologue(cfg, R, S, q):
         for r in (u + 1, u + 2):
             c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (r, r, sbase)))
     c.append(Ins("NOP", stall=6))
-    r2ur(cfg["sr_ua"], u + 1)
-    r2ur(cfg["sr_ub"], u + 2)
+    r2ur(sr_u(cfg, 0), u + 1)
+    r2ur(sr_u(cfg, 1), u + 2)
     settle()
     # The stage slots: 512 mt x s(t). j is done with: t0 takes the fourth.
     tmp = [u + 1, u + 2, u + 3, t0]
@@ -1002,7 +1014,7 @@ def expect(text, cfg, code):
             cfg["ur"], ", ".join("UR%d" % u for u in sorted(facts["urs"])) or "no uniform register"))
     if cfg["sr"]:
         # sr's uniform registers hold through the loop: the compiled kernel must use none of them anywhere.
-        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {sr_ust(cfg, t) for t in range(4)} | {sr_ud(cfg, t) for t in range(4)}
+        mine = {sr_u(cfg, i) for i in range(10)}
         theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
         theirs |= {x + 1 for x in theirs}                 # a pair's second register is not printed
         if mine & theirs:
