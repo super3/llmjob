@@ -36,6 +36,12 @@
 #include <cuda_runtime.h>
 // GP_CFILLA, GP_CFILLB (goal-nvk17): the fill the CPU check gives A and B, for hand loops (rfold.py fa, fb, xa, xb)
 // whose operands are another fill plus the noise: -64 (fa=0xc0 read as S8), 0 (fa=0x80 xa=0x80), 64 (fa=0x40).
+// GP_B1X (goal-nv50e): row band 1 takes k-step (j + (i ^ GP_B1X)) & 3 at its i-th turn. 1 (the default) is the
+// order above; 0 gives both bands the same order, so the two warps of a column slot (which share B's columns, and
+// on an RTX 50 one scheduler and one tensor unit) fold the same k-step at the same turn.
+#ifndef GP_B1X
+#define GP_B1X 1u
+#endif
 #ifndef GP_CFILLA
 #define GP_CFILLA GP_FILL
 #endif
@@ -290,7 +296,7 @@ int main(int argc, char **argv) {
           // rot: this k-step is warp w's turn `turn` of the chunk (the last record, of the k-step that never
           // comes, is a first turn).
           const uint32_t j = w & 3u, band = w >> 2;
-          const uint32_t turn = !rot || ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ 1u) : ((s + 4u - j) & 3u);
+          const uint32_t turn = !rot || ks == ksteps ? s : band ? (((s + 4u - j) & 3u) ^ GP_B1X) : ((s + 4u - j) & 3u);
           uint32_t *o = &hOffs[w * warpWords + ((size_t)(ch * 4u + turn) * 32u + l) * 4u];
           o[h] = 16u * pa + ((fake & 4u) ? 0u : 2048u * MT * (w >> 2));
           o[2u + h] = 16u * pb + GP_TABB + ((fake & 8u) ? 0u : 8192u * (w & 3u));
