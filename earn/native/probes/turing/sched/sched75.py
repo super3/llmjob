@@ -4,7 +4,9 @@ Keeps every instruction word (operands, registers) and the IMMA order; re-derive
 the stall counts, the scoreboards, the waits and the reuse flags. The SHFL stays at its address with its control
 word (the driver lists it). Writes the patched cubin, <out>.json (an sm75patch.py list) and <out>.lst.
 
-keys: liw (IMMA result, cycles the scheduler plans for, 40), ld (LDG data, plan, 0 = keep ptxas's distances),
+keys (goal-nv20h adds ru: 0 next-IMMA reuse, 1 bank-aware reuse, 2 ptxas's flags (mode 1); yo: 1 keeps ptxas's
+      yield bits):
+      liw (IMMA result, cycles the scheduler plans for, 40), ld (LDG data, plan, 0 = keep ptxas's distances),
       mode (0 = full schedule, 1 = ptxas's order with the scoreboards/waits re-derived only), maxit (4)
 """
 import collections
@@ -15,8 +17,9 @@ import sys
 
 sys.path.insert(0, __import__('os').path.dirname(__file__))
 from sm75 import disasm, getc, setc, fields, mk  # noqa: E402
+from reuse2 import reuse_bank  # noqa: E402
 
-KEYS = dict(rsbs='45', sweeps=3, iwin=8, gap=12, liw=40, ld=0, mode=0, maxit=4, lir=6, sbpool='0123', rsb=5, prio=0, ystall=5, verbose=0)
+KEYS = dict(rsbs='45', sweeps=3, iwin=8, gap=12, liw=40, ld=0, mode=0, maxit=4, lir=6, sbpool='0123', rsb=5, prio=0, ystall=5, verbose=0, ru=1, yo=1)
 
 
 def opkey(r):
@@ -557,9 +560,18 @@ def main():
             raise SystemExit(1)
         f[j]['stall'] = st
         f[j]['y'] = 0 if st >= K['ystall'] else 1
+        if K['yo']:
+            # ptxas's yield bit for this instruction; the encoding has no yield with a long stall (ptxas: up to 8)
+            f[j]['y'] = body[j]['f']['y'] if st <= 8 else 0
     # keep ptxas's stall where the SHFL's own control is fixed: the scheduler respected it
     newbody = [dict(body[j], f=f[j]) for j in order]
-    newbody = reuse_fix(newbody)
+    if K['ru'] == 0:
+        newbody = reuse_fix(newbody)
+    elif K['ru'] == 1:
+        newbody = reuse_bank(newbody)
+    else:  # ptxas's own flags, valid only in ptxas's order
+        assert K['mode'] == 1
+        newbody = [dict(x, f=dict(x['f'], reuse=body[x['id']]['f']['reuse'])) for x in newbody]
     # loop-carried timing: the BRA's stall must cover pairs across the back edge; the checker below says
     # entry/exit: pre-loop tail drains everything (wait mask all) and the first post-loop instruction too
     pre = [dict(r) for r in recs[max(0, s0 - 30):s0]]
