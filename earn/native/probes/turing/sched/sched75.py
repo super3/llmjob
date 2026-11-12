@@ -311,7 +311,7 @@ def assign_sb(body, order, t, T, deps, K, shfl):
     keys = sorted(first, key=lambda k: t[k[0]])
     assigned = {}
     for key in keys:
-        if key[0] == shfl:
+        if key[0] == shfl or first[key][0] == shfl:
             assigned[key] = 4
 
     def wpos(key):
@@ -356,7 +356,7 @@ def assign_sb(body, order, t, T, deps, K, shfl):
     for sweep in range(K['sweeps']):
         moved = 0
         for key in keys:
-            if key[0] == shfl:
+            if key[0] == shfl or first[key][0] == shfl:
                 continue
             i, kd = key
             cand = [int(c) for c in K['rsbs']] if (kd == 'r' and body[i]['base'] != 'IMMA') else [int(c) for c in K['sbpool']]
@@ -387,9 +387,9 @@ def assign_sb(body, order, t, T, deps, K, shfl):
             f[i]['r'] = k
         j, d = first[(i, kd)]
         if j == shfl:
-            # the SHFL's control word stays as ptxas wrote it: wait one instruction earlier
-            j = order[pos[shfl] - 1]
-            assert j != i, 'producer right before the SHFL'
+            # the SHFL's control word stays as ptxas wrote it; it waits on 4, so its producers are on 4
+            assert k == 4
+            continue
         if j is not None:
             f[j]['wait'] |= 1 << k
     return f
