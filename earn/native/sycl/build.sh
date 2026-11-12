@@ -92,6 +92,8 @@ if [ -z "${PEARL_NO_SYSTEM_GCC:-}" ] && command -v g++ >/dev/null; then
 fi
 
 SYCL_FLAGS=(-fsycl -O3 -fPIC -std=c++17 -Wno-psabi)
+# Extra compiler flags for a timing build, e.g. PEARL_SYCL_EXTRA="-DPEARL_A5=2". No release sets it.
+if [ -n "${PEARL_SYCL_EXTRA:-}" ]; then read -ra EXTRA <<< "$PEARL_SYCL_EXTRA"; SYCL_FLAGS+=("${EXTRA[@]}"); fi
 if [ "$JIT" = 1 ]; then
   # A device image a kernel: a hardware fold's kernel has nothing but the DPAS
   # built-in, so it must reach only the driver of a card the host launches it on
