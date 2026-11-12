@@ -105,7 +105,8 @@ describe('the offsets records are 8 bytes in the kernel, the loop and the host a
   });
 
   test('the hand loop loads 8 bytes a k-step by default and parts them', () => {
-    expect(RFOLD).toMatch(/\n {11}al=1, bl=1, bp=1, cq=0, /);
+    // The schedule keys the reference hashes were built with (probes/README.md has what each is worth).
+    expect(RFOLD).toMatch(/\n {11}al=1, bl=1, bp=1, cq=35, ae=1, sbo=7, bt=15,\n/);
     expect(RFOLD).toMatch(/\n {11}co=1,\n/);
     expect(RFOLD).toContain('rec = 0x100 if cfg["co"] else 0x200');
     expect(RFOLD).toContain('size=64 if cfg["co"] else 128');

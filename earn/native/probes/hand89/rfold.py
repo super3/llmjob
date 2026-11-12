@@ -38,7 +38,9 @@ when the load is slow (bank collisions, eight warps at shared memory at once) th
 nothing needs the fragment for several gaps. So the IADD3 and PRMT now go as late as their readers allow (al,
 bl, bp: 98.1% of the pipe). And an offsets record is 8 bytes, not 16 (co): the record comes from the L2 every
 k-step, and that trip costs clock under the card's cap. Two offsets fit a word; the loop parts them with two
-ALU steps a turn. Run gprobe with rot 2 for this form (rot 1 writes the 16-byte records, for co=0).
+ALU steps a turn. Run gprobe with rot 2 for this form (rot 1 writes the 16-byte records, for co=0). Last, A's
+first-turn gathers go out early, every gather sets a scoreboard on which nobody waits for another gather's
+load, and the sixth B gather of a turn has a quad of its own (ae, sbo, cq: 99.0%; each alone gains nothing).
 
 Registers: as gfold.py's, but R0 is the lane's place in the warp's own part of the stage and the transcript
 word is worked in the scratch register. P2 is the warp's row band.
@@ -117,7 +119,7 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            #       or the third turn. 13 leaves it out and every load still has a barrier between it and the
            #       stores before and after. 9 and 8 leave out more and then rely on the warps of a band
            #       staying within some 43 gaps of each other for a few turns: not proven, so not a default.
-           al=1, bl=1, bp=1, cq=0, ae=0, sbo=0, bt=15,
+           al=1, bl=1, bp=1, cq=35, ae=1, sbo=7, bt=15,
            # co=1: offsets records of 8 bytes, not 16 (gprobe's rot 2; in the miner, rot_aux_offs). A record
            # comes from the L2, 512 bytes a warp a k-step, and that trip is 2.9 units of the clock's cap. Every
            # offset is under 65536, so two fit a word: a first turn's record is {A's two, B's two}, a later
