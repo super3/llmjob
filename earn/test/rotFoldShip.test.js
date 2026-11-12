@@ -246,7 +246,7 @@ describe('the host: off unless asked for, and one plain reason when it cannot ru
     const cardOk = ROT.slice(ROT.indexOf('bool rot_card_ok('), ROT.indexOf('bool rot_wanted('));
     const reasons = [
       '"the card\'s compute capability could not be read"',
-      '"it is for RTX 30 and 40 cards, and this card is compute %lld.%lld"',
+      '"it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld"',
       '"it does not mine this profile"',
       '"the file PEARL_ROT_CUBIN names cannot be read"',
       '"its file, %s, is not beside the Pearl core"',
@@ -287,9 +287,11 @@ describe('the host: off unless asked for, and one plain reason when it cannot ru
 
   test('the cubin is looked for beside the module, by the loader\'s path and then the kernel\'s', () => {
     expect(ROT).toContain('return rot_cubin_path_for(reinterpret_cast<const void *>(&rot_env), buf, len, name);');
-    // The card's own file: sm_86's on an RTX 30, sm_89's on an RTX 40.
-    expect(ROT).toContain('const char *rot_file_for(int minor) { return minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE; }');
+    // The card's own file: sm_86's on an RTX 30, sm_89's on an RTX 40, sm_120's on an RTX 50.
+    expect(ROT).toContain('const char *rot_file_for(int major, int minor) {\n'
+      + '  return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE;\n}');
     expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM86 "pearl_rot_sm86.cubin"');
+    expect(ROT_PATH).toContain('#define PEARL_ROT_FILE_SM120 "pearl_rot_sm120.cubin"');
     const linux = ROT_PATH.slice(ROT_PATH.indexOf('#else\n  Dl_info info;'));
     const order = [
       'if (info.dli_fname[0] == \'/\' && rot_readable(cand)) {',

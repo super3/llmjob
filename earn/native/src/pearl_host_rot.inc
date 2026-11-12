@@ -121,8 +121,10 @@ bool rot_env() {
   return v && v[0] == '1' && v[1] == 0;
 }
 
-// The cubin a card of compute 8.`minor` loads from beside this module: one built for its architecture.
-const char *rot_file_for(int minor) { return minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE; }
+// The cubin a card of compute `major`.`minor` loads from beside this module: one built for its architecture.
+const char *rot_file_for(int major, int minor) {
+  return major == 12 ? PEARL_ROT_FILE_SM120 : minor == 6 ? PEARL_ROT_FILE_SM86 : PEARL_ROT_FILE;
+}
 
 // Where the fold's cubin is: the file PEARL_ROT_CUBIN names, or `name` beside this module (pearl_rot_path.h
 // has the lookup and its reasons). False when no file is there; `buf` then holds the first place looked in.
@@ -190,9 +192,9 @@ bool rot_card_ok(const PearlProfile *p, int device, char *why, size_t why_len) {
     (void)cudaGetLastError();
     return no("the card's compute capability could not be read", 0, 0);
   }
-  if (major != 8 || (minor != 9 && minor != 6))
-    return no("it is for RTX 30 and 40 cards, and this card is compute %lld.%lld", major, minor);
-  const char *file = rot_file_for(minor);
+  if (!(major == 8 && (minor == 9 || minor == 6)) && !(major == 12 && minor == 0))
+    return no("it is for RTX 30, 40 and 50 cards, and this card is compute %lld.%lld", major, minor);
+  const char *file = rot_file_for(major, minor);
   if (p->rank != 128u || p->operand_fill != PEARL_OPERAND_CONST || p->m < 384u || p->n < 256u
       || p->n % 256u != 0u)
     return no("it does not mine this profile", 0, 0);
@@ -699,9 +701,10 @@ bool rot_create(Ctx *ctx, char *err, size_t err_len) {
   };
   char path[1024];
   std::vector<char> image;
-  int minor = 0;
+  int major = 0, minor = 0;
+  cudaDeviceGetAttribute(&major, cudaDevAttrComputeCapabilityMajor, ctx->device);
   cudaDeviceGetAttribute(&minor, cudaDevAttrComputeCapabilityMinor, ctx->device);
-  if (!rot_cubin_path(path, sizeof path, rot_file_for(minor)) || !rot_read_file(path, &image) || !rot_listed(image))
+  if (!rot_cubin_path(path, sizeof path, rot_file_for(major, minor)) || !rot_read_file(path, &image) || !rot_listed(image))
     return bad("cannot read the fold's cubin", 0);
   RotLoadData load = nullptr;
   RotGetFunction getfn = nullptr;
