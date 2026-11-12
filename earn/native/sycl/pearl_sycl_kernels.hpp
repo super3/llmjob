@@ -1294,8 +1294,11 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
         } else {
           // goal-arc7 timing builds (wrong results on purpose): PEARL_RING_NOBAR drops the k-step's meeting,
           // PEARL_RING_NOCOPY the copy, so what is left is the reads and the DPAS.
+#ifndef PEARL_RING_BAREVERY
+#define PEARL_RING_BAREVERY 1
+#endif
 #ifndef PEARL_RING_NOBAR
-          wait(it);
+          if (s % PEARL_RING_BAREVERY == 0u) wait(it);
 #endif
 #ifndef PEARL_RING_NOCOPY
 #if defined(PEARL_RING_FLAT)
@@ -1332,7 +1335,7 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
           }
 #endif
 #if !defined(PEARL_RING_NOBAR) && !defined(PEARL_RING_LATEARR)
-          arrive(it);
+          if (s % PEARL_RING_BAREVERY == 0u) arrive(it);
 #endif
         }
         if constexpr (VAR & 128) {
@@ -1354,7 +1357,12 @@ template <bool HW, int VAR = 0> struct FoldXmxR {
             load_a4(ks, ah);
 #endif
             each<4>([&](int cb) {
+#ifdef PEARL_RING_GB
+              // goal-arc7 timing: B' straight from memory (the window's own column block), no ring.
+              bq[cb] = frag_read_w<HW, 4>(PEARL_GPTR(Bb + (size_t)ks * 2048u + (sgi * 4u + (uint32_t)cb) * 256u), lane);
+#else
               bq[cb] = frag_read_w<HW, 4>(PEARL_LPTR(R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u), lane);
+#endif
             });
             int t4 = 0;
             each<4>([&](int rb) { t4 ^= ah[rb][0]; });
@@ -1615,7 +1623,9 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 //     rows 4 sgi .. 4 sgi + 3 of each 8-row block. In the kFragAT layout that
 //     half is one 128-byte block read, so 512 bytes, as the ring fold.
 //   - B': its 4 fragments from the ring, 1,024 bytes where the ring fold reads
-//     2,048. The ring, its split barrier and its copy are the ring fold's.
+//     2,048. The ring and its split barrier are the ring fold's, but a slot
+//     holds two k-steps (4 KB), so the group meets every other k-step: +2%
+//     at the same 188 W (KPS, PEARL_W_KPS).
 //   - The copy has no branch in the k-step: at 8 windows a work-group (16
 //     sub-groups) each sub-group copies one block of 128 bytes, loaded a
 //     k-step early. Past the last k-step it loads k-step 63 again and stores
@@ -1637,13 +1647,15 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // no split DPAS) each sub-group reads all 32 rows of A' and runs the plain
 // DPAS: the same results.
 // ---------------------------------------------------------------------------
-template <bool HW> struct FoldXmxW {
+// KPS: k-steps a ring slot (1 or 2); the group meets once a slot. AH: A' loaded a k-step ahead.
+template <bool HW, int KPS = 1, bool AH = false> struct FoldXmxW {
 #if defined(PEARL_SYCL_XMX_JIT)
   static constexpr bool kSplit = HW;
 #else
   static constexpr bool kSplit = false;
 #endif
-  static constexpr uint32_t kSlotWords = 512u;  // a k-step's B': 64 columns by 32 k
+  static constexpr uint32_t kStep = 512u;                       // a k-step's B': 64 columns by 32 k
+  static constexpr uint32_t kSlotWords = kStep * (uint32_t)KPS;  // a slot: KPS k-steps
   FoldArgs A;
   sycl::local_accessor<uint32_t, 1> part;  // 2 wpg sub-groups x 8 regions x 16 words
   sycl::local_accessor<uint32_t, 1> ring;  // 3 slots
@@ -1677,42 +1689,87 @@ template <bool HW> struct FoldXmxW {
     const uint32_t sgi = sgl & 1u, widx = sgl >> 1;
     const uint32_t rowWins = A.rowsValid / 2u, colWins = A.colBatch / 4u;
     uint32_t wr, wc;
+#if defined(PEARL_W_MAPQ)
+    // goal-arc7 experiment: PEARL_W_MAPQ work-groups in a row take the same row windows and Q neighbouring
+    // column windows, so if they share an Xe-core their A' is read from its first cache level once.
+    {
+      const uint32_t g = (uint32_t)it.get_group(0), Q = PEARL_W_MAPQ;
+      uint32_t wc0;
+      window_of((g / Q) * A.wpg + widx, rowWins, colWins / Q, A.band, wr, wc0);
+      wc = wc0 * Q + g % Q;
+    }
+#else
     window_of((uint32_t)it.get_group(0) * A.wpg + widx, rowWins, colWins, A.band, wr, wc);
+#endif
     const int8_t *Ab = A.Ap + (size_t)(2u * wr) * A.aStride;  // the window's two 16-row blocks
     const int8_t *Bb = A.Bp + (size_t)(A.colStart / 4u + wc) * A.bStride + (size_t)sgl * 128u;  // its copy block
     uint32_t *R = &ring[0];
     uint32_t *mine = R + sgl * 32u;
-    ring_write_local<HW>(mine, ring_read_global<HW>(Bb, lane), lane);
-    v4u next = ring_read_global<HW>(Bb + 2048u, lane);
+    // Where k-step k's B' lies in the ring.
+    auto at = [&](uint32_t k) { return ((k / (uint32_t)KPS) % 3u) * kSlotWords + (k % (uint32_t)KPS) * kStep; };
+    each<KPS>([&](int k) { ring_write_local<HW>(mine + at((uint32_t)k), ring_read_global<HW>(Bb + (size_t)k * 2048u, lane), lane); });
+    v4u next = ring_read_global<HW>(Bb + (size_t)KPS * 2048u, lane);
+    // A' of k-step ks: this sub-group's half of each of the window's 4 fragments (the split DPAS), or all of
+    // each (otherwise). 8-row block rb of the window is in 16-row block rb >> 1.
+    auto load_ah = [&](uint32_t ks, v4i *ah) {
+      each<4>([&](int rb) {
+        ah[rb] = (v4i)ring_read_global<HW>(Ab + (size_t)ks * 512u + (size_t)(rb >> 1) * A.aStride + (size_t)(rb & 1) * 256u
+                                               + sgi * 128u, lane);
+      });
+    };
+    v4i ahn[4];
+    if constexpr (kSplit && AH) load_ah(0u, ahn);
+    v8i bqn[4];
+    (void)bqn;
     v8i c[2][8];
     each<2>([&](int rb) { each<8>([&](int cb) { c[rb][cb] = 0; }); });
     arrive(it);
     for (uint32_t ch = 0; ch < 16u; ch++) {
       for (uint32_t s = 0; s < 4u; s++) {
-        const uint32_t ks = ch * 4u + s, slot = ks % 3u;
-        wait(it);
+        const uint32_t ks = ch * 4u + s, slot = at(ks);
+        // The group meets once a slot: every store into this slot has landed, and every read of the slot the
+        // copy writes next is done. The copy stores k-step ks + KPS (loaded a k-step ago) and loads the one after.
+        if (s % (uint32_t)KPS == 0u) wait(it);
         {
-          const v4u v = ring_read_global<HW>(Bb + (size_t)(ks + 2u < 64u ? ks + 2u : 63u) * 2048u, lane);
-          ring_write_local<HW>(mine + ((ks + 1u) % 3u) * kSlotWords, next, lane);
+          const uint32_t kn = ks + (uint32_t)KPS + 1u;
+          const v4u v = ring_read_global<HW>(Bb + (size_t)(kn < 64u ? kn : 63u) * 2048u, lane);
+          ring_write_local<HW>(mine + at(ks + (uint32_t)KPS), next, lane);
           next = v;
         }
-        arrive(it);
+        if (s % (uint32_t)KPS == (uint32_t)KPS - 1u) arrive(it);
         // B' fragment cb of this sub-group's 32 columns, from the ring.
         v8i bq[4];
-        auto read_b = [&]() {
+        auto read_b_at = [&](uint32_t off, v8i *dst) {
           each<4>([&](int cb) {
-            uint32_t *p = R + slot * kSlotWords + (sgi * 4u + (uint32_t)cb) * 64u;
+            uint32_t *p = R + off + (sgi * 4u + (uint32_t)cb) * 64u;
             const v4u lo = ring_read_local<HW>(p, lane), hi = ring_read_local<HW>(p + 32, lane);
-            bq[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
+            dst[cb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
           });
         };
-        // A' fragment rb: 8-row block rb of the window, in 16-row block rb >> 1.
+        auto read_b = [&]() {
+#if defined(PEARL_W_BH)
+          // goal-arc7 experiment: with 2 k-steps a slot, the first reads both k-steps' B', the second uses it.
+          if constexpr (KPS == 2) {
+            if (s % 2u == 0u) {
+              read_b_at(slot, bq);
+              read_b_at(at(ks + 1u), bqn);
+            } else {
+              each<4>([&](int cb) { bq[cb] = bqn[cb]; });
+            }
+            return;
+          }
+#endif
+          read_b_at(slot, bq);
+        };
         const int8_t *Ak = Ab + (size_t)ks * 512u;
         if constexpr (kSplit) {
           v4i ah[4];
-          each<4>([&](int rb) {
-            ah[rb] = (v4i)ring_read_global<HW>(Ak + (size_t)(rb >> 1) * A.aStride + (size_t)(rb & 1) * 256u + sgi * 128u, lane);
-          });
+          if constexpr (AH) {
+            each<4>([&](int rb) { ah[rb] = ahn[rb]; });
+            load_ah(ks + 1u < 64u ? ks + 1u : 63u, ahn);
+          } else {
+            load_ah(ks, ah);
+          }
           read_b();
           // Every DPAS of the k-step waits for every load of it (see fold_xmxf).
           int t = 0;
@@ -1767,11 +1824,19 @@ template <bool HW> struct FoldXmxW {
 };
 
 // `groups` windows, 8 to a work-group (A.wpg must be 8: the copy is one block a sub-group).
-template <bool HW> inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
+#ifndef PEARL_W_KPS
+#define PEARL_W_KPS 2
+#endif
+#ifndef PEARL_W_AH
+#define PEARL_W_AH 0
+#endif
+template <bool HW, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0)>
+inline void fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
+  typedef FoldXmxW<HW, KPS, AH> K;
   q.submit([&](sycl::handler &h) {
     sycl::local_accessor<uint32_t, 1> part(2u * 8u * 8u * 16u, h);
-    sycl::local_accessor<uint32_t, 1> ring(3u * FoldXmxW<HW>::kSlotWords, h);
-    h.parallel_for(sycl::nd_range<1>((size_t)(groups / 8u) * 128u, 128u), FoldXmxW<HW>{a, part, ring});
+    sycl::local_accessor<uint32_t, 1> ring(3u * K::kSlotWords, h);
+    h.parallel_for(sycl::nd_range<1>((size_t)(groups / 8u) * 128u, 128u), K{a, part, ring});
   });
 }
 
