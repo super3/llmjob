@@ -79,9 +79,13 @@ def main():
             th = threading.Thread(target=sample, args=(stop, rows))
             th.start()
         t0 = time.time()
+        diag = []
         try:
             r = subprocess.run([run] + args, capture_output=True, text=True, timeout=secs + 300, env=env)
-            out = (r.stdout.strip() or r.stderr.strip() or "rc %d" % r.returncode).splitlines()[-1]
+            # gprobe's PD_DIAG lines ("diag ...") follow its result line; they are printed after it.
+            lines = (r.stdout.strip() or r.stderr.strip() or "rc %d" % r.returncode).splitlines()
+            diag = [x for x in lines if x.startswith("diag ")]
+            out = ([x for x in lines if not x.startswith("diag ")] or ["rc %d" % r.returncode])[-1]
             if r.returncode != 0:
                 out += " [rc %d] %s" % (r.returncode, " | ".join(r.stderr.strip().splitlines()[:2]))
         except subprocess.TimeoutExpired:
@@ -100,6 +104,8 @@ def main():
                     mean[0], mean[1], mean[2], mean[4], sum(v[5] for v in keep), n, sum(v[6] for v in keep),
                     sum(v[7] for v in keep), count)
         print("%s [%.0f s]" % (out, took), flush=True)
+        for x in diag[:40]:
+            print(x, flush=True)
 
 
 if __name__ == "__main__":

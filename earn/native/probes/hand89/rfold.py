@@ -274,6 +274,15 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # band's stage). The record pointer moves by a uniform step a turn (UR sr_ua + 6 + turn), since each
            # warp takes the chunk's k-steps in an order of its own; that add replaces the pointer's step a chunk.
            sr=0, sr_ua=16, sr_ub=17, sr_sb=None,
+           # srm (with sr, goal-nv50h): a bitmask of the ten uniform registers sr uses, taken lowest first as A's base,
+           # B's, the four stage slots and the four pointer steps (0: sr_ua, sr_ub and the eight above sr_ua).
+           srm=0,
+           # srw (with sr, goal-nv50h, debugging the sm_120 fault): the first turn's stage slot goes into R0 (as without
+           # sr), so the stores name no sr register; the later turns' slots are uniform registers relative to it.
+           srw=0,
+           # srp (with sr, goal-nv50h, CORRECT, needed on sm_120): the prologue's pointer step waits out a stall
+           # behind the first record load (see prologue).
+           srp=0,
            # srg (with sr): how many gaps behind the record load the pointer steps on (it waits for the load to have read it).
            srg=1,
            # srs (with sr): see sr_prologue's settle.
@@ -302,14 +311,23 @@ def layout(mt):
     return R
 
 
+def sr_u(cfg, i):
+    """sr: its i-th uniform register: 0 A's base, 1 B's, 2-5 the stage slots, 6-9 the pointer steps."""
+    if cfg.get("srm"):
+        urs = [b for b in range(63) if cfg["srm"] >> b & 1]
+        assert len(urs) == 10, "srm names %d uniform registers, not 10" % len(urs)
+        return urs[i]
+    return (cfg["sr_ua"], cfg["sr_ub"])[i] if i < 2 else cfg["sr_ua"] + i
+
+
 def sr_ust(cfg, t):
     """sr: the uniform register with the stage slot of the k-step a warp folds at turn t (3072 x that k-step)."""
-    return cfg["sr_ua"] + 2 + t
+    return sr_u(cfg, 2 + t)
 
 
 def sr_ud(cfg, t):
     """sr: the uniform register with the record pointer's step after turn t's load (to the next turn's record)."""
-    return cfg["sr_ua"] + 6 + t
+    return sr_u(cfg, 6 + t)
 
 
 def sr_prologue(cfg, R, S, q):
@@ -370,13 +388,18 @@ def sr_prologue(cfg, R, S, q):
         for r in (u + 1, u + 2):
             c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (r, r, sbase)))
     c.append(Ins("NOP", stall=6))
-    r2ur(cfg["sr_ua"], u + 1)
-    r2ur(cfg["sr_ub"], u + 2)
+    r2ur(sr_u(cfg, 0), u + 1)
+    r2ur(sr_u(cfg, 1), u + 2)
     settle()
     # The stage slots: 512 mt x s(t). j is done with: t0 takes the fourth.
     tmp = [u + 1, u + 2, u + 3, t0]
     for t in range(4):
-        c.append(Ins(muladd(tmp[t], st[t], 512 * mt)))
+        if cfg["srw"]:
+            # srw: relative to the first turn's slot, which R0 holds.
+            c.append(Ins("IADD3 R%d, -R%d, 0x0, R%d" % (tmp[t], st[0], st[t])))
+            c.append(Ins(muladd(tmp[t], tmp[t], 512 * mt)))
+        else:
+            c.append(Ins(muladd(tmp[t], st[t], 512 * mt)))
     if sbase is not None:
         for t in range(4):
             c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (tmp[t], tmp[t], sbase)))
@@ -453,7 +476,7 @@ def prologue(cfg, R, tail):
     c.append(Ins(andi(q[1], q[1], 3)))                                        # the k-step of the first turn
     c.append(Ins(muladd(q[1], q[1], 512 * mt)))
     # sr: R0 is the lane's place in the band's stage; the k-step's slot is a uniform register of the turn.
-    c.append(Ins(muladd(S + 3, S + 3, 2048 * mt) if cfg["sr"] else muladd(S + 3, S + 3, 2048 * mt, q[1])))
+    c.append(Ins(muladd(S + 3, S + 3, 2048 * mt) if cfg["sr"] and not cfg["srw"] else muladd(S + 3, S + 3, 2048 * mt, q[1])))
     if cfg["co"]:
         c.append(Ins(muladd(q[2], S, 0x8)))                                   # 8 lane: its place in a record
     c.append(Ins(muladd(S, S, 0x10)))                                         # 16 lane
@@ -468,10 +491,16 @@ def prologue(cfg, R, tail):
     c.append(Ins("IADD3 R%d, R%d, 0x%x, R%d" % (SW, S + 3, R["stg"], S)))
     cur = R["oq"][0]
     c.append(ldg(cur, R["poff"], 0, size=64 if cfg["co"] else 128, wsb=SB_OFF, rsb=SB_RD if cfg["sr"] else None))
-    if cfg["sr"]:
+    step = Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, 0)), wait=(SB_RD,)) if cfg["sr"] else None
+    if step and not cfg["srp"]:
         # The pointer on to turn 1's record, which the loop's first load reads.
-        c.append(Ins("IADD3 R%d, R%d, UR%d, RZ" % (R["poff"], R["poff"], sr_ud(cfg, 0)), wait=(SB_RD,)))
+        c.append(step)
     c.append(Ins("NOP", stall=8))
+    if step and cfg["srp"]:
+        # srp (goal-nv50h, the sm_120 fault): the step only after the stall. On sm_120 an instruction issued a cycle
+        # behind the LDG.CONSTANT does not yet see the load's read scoreboard: the step went ahead, the load read
+        # the stepped pointer and the warp folded its first turn of chunk 0 with turn 1's record (PD_DIAG).
+        c.append(step)
     wl = (SB_OFF,)
     if cfg["co"]:
         c.append(Ins("LOP3.LUT R%d, R%d, 0xffff, RZ, 0xc0, !PT" % (cur + 2, cur + 1), wait=wl))
@@ -493,7 +522,7 @@ def prologue(cfg, R, tail):
             c += g[2]
     if cfg["sync"] == 4 and not cfg["nost"]:
         # The first chunk's tile 0 goes to the stage here, and the warps meet before any of them loads.
-        c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "", AF[0])))
+        c.append(Ins("STS.128 [R%d%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "", AF[0])))
         c.append(Ins("NOP", stall=8))
         c += barrier(cfg)
     last = [gather_ins(tail[n][0], a, o, d1, d2, tail[n][1], cfg, wait_ld=wl) for n, (a, o, d1, d2) in enumerate(jobs[7:])]
@@ -709,7 +738,7 @@ def chunk(cfg, R, role=None):
     for m in range(mt - cfg["ah"]) if not cfg["nost"] else ():
         g = 8 * (m - 1) + lead + plead + 2 + (cfg["al"] if m < mt - 1 else 0) if m else (
             tot - 9 + lead + plead if cfg["sync"] == 4 else cfg["st0"])
-        put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] else "",
+        put(g, Ins("STS.128 [R%d%s%s], R%d" % (SW, "+UR%d" % sr_ust(cfg, 0) if cfg["sr"] and not cfg["srw"] else "",
                                                 "+0x%x" % (512 * m) if m else "", AF[m & 1])), False)
     # A gather takes the lowest quad that is free (a quad is free from the gap behind its last PRMT); the
     # chunk before left its last gathers under way, so the chunk is walked twice and the second walk kept.
@@ -1015,7 +1044,7 @@ def expect(text, cfg, code):
             cfg["ur"], ", ".join("UR%d" % u for u in sorted(facts["urs"])) or "no uniform register"))
     if cfg["sr"]:
         # sr's uniform registers hold through the loop: the compiled kernel must use none of them anywhere.
-        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {sr_ust(cfg, t) for t in range(4)} | {sr_ud(cfg, t) for t in range(4)}
+        mine = {sr_u(cfg, i) for i in range(10)}
         theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
         theirs |= {x + 1 for x in theirs}                 # a pair's second register is not printed
         if mine & theirs:

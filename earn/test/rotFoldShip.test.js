@@ -146,7 +146,8 @@ describe('the offsets records are 8 bytes in the kernel, the loop and the host a
     // The loop keeps the bases in uniform registers and moves its pointer by a uniform step a turn.
     expect(RFOLD).toContain('sr=0, sr_ua=16, sr_ub=17,');
     expect(RFOLD).toContain('put(b + cfg["lgg"], ldg(nxt, R["poff"], 0, size=64, wsb=SB_OFF, rsb=hold, wait=hw))');
-    expect(GFOLD).toContain('ur = "+UR%d" % (cfg["sr_ua"] if d1 < BF else cfg["sr_ub"]) if cfg.get("sr") else ""');
+    expect(GFOLD).toContain('ur = "+UR%d" % rfold_sr_u(cfg, 0 if d1 < BF else 1) if cfg.get("sr") else ""');
+    expect(GFOLD).toContain('return cfg["sr_ua"] if i == 0 else cfg["sr_ub"]');
   });
 
   test('with ROT_BX the transcript lives in the frame, and the loop\'s store of it holds its read scoreboard', () => {

@@ -481,9 +481,11 @@ def main():
         # sr's uniform registers hold through the loop, so the compiled function must not use them, nor the kernel
         # keep anything in them across the call; the shared base goes into each one that is an address's.
         cfg["sr_sb"] = UR_S[0]
-        mine = {cfg["sr_ua"], cfg["sr_ub"]} | {rfold.sr_ust(cfg, t) for t in range(4)} | {rfold.sr_ud(cfg, t) for t in range(4)}
-        theirs = {int(x) for x in re.findall(r"\bUR(\d+)", text)}
-        theirs |= {x + 1 for x in theirs}
+        mine = {rfold.sr_u(cfg, i) for i in range(10)}
+        # The kernel's own code (the compiled function's is replaced by the loop) and the loop's own registers.
+        theirs = {int(x) + d for a, t in rows if a < entry for x in re.findall(r"\bUR(\d+)", t)
+                  for d in ((0, 1) if re.search(r"\.64|WIDE", t) else (0,))}   # a pair's second is not printed
+        theirs |= {UR_G, UR_G + 1} | set(UR_S)
         if mine & theirs:
             sys.exit("the compiled kernel uses UR%s, which sr keeps its bases in" % ", UR".join(map(str, sorted(mine & theirs))))
     code, bad, most, G = rfold.build(cfg)
