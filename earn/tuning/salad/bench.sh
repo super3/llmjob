@@ -361,7 +361,7 @@ if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
   # back to how the core worked before a change), so ORDER=ours,oursa,ours,oursa races a host-side change on one
   # build. ROTLOG=1 sets PEARL_ROT_LOG=1 in these legs: the core then logs each job's draw and how long a salt mined
   # in the definition's order, and each leg ends with a "rotlog" line summing them.
-  oursa() { env ${OURS_A:-} src_cli -w bench-oursa ${FOLD:+--rotation-fold}; }
+  oursa() { ( [ -n "${OURS_A:-}" ] && export ${OURS_A}; src_cli -w bench-oursa ${FOLD:+--rotation-fold} ); }
   [ "${ROTLOG:-}" = 1 ] && export PEARL_ROT_LOG=1
 fi
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
