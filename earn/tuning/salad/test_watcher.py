@@ -3266,6 +3266,26 @@ class TestMonero(Base):
         self.assertIn("--cpu-threads 3", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0", XMR, 3))
         self.assertNotIn("xmr", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.0"))
 
+    @needs_sh
+    def test_a_v070_box_fetches_the_rotation_folds_cubins_beside_the_core(self):
+        # 13 November: v0.7.0 turned the rotation fold on, and the core loads its cubin from beside itself. box.sh's
+        # pinned copy fetched none, so every Salad box on v0.7.0 mined on the release fold.
+        cmd = w.cmd_for("biz-rtx4080", "prl1abc", "v0.7.0", XMR, 8, "prl-us.kryptex.network:7048")
+        sed = re.search(r"(sed .*?) > /root/box\.sh", cmd).group(1)
+        box = ("  declare -A dl; for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node; do   # all three at once\n"
+               "    release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/ ;;\n")
+        import subprocess
+        out = subprocess.run(["sh", "-c", sed], input=box, capture_output=True, encoding="utf-8").stdout
+        self.assertIn("pearl_core_cu13.node llmjob-xmr-worker pearl_rot_sm86.cubin pearl_rot_sm89.cubin "
+                      "pearl_rot_sm120.cubin; do   # all at once", out)
+        self.assertIn("release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $D/rel/pearl_rot_sm*.cubin $R/ ;;", out)
+
+    def test_only_a_release_with_the_cubins_asks_for_them(self):
+        self.assertNotIn("pearl_rot", w.cmd_for("biz-rtx4080", "prl1abc", "v0.6.17", XMR, 8))   # none in v0.6.17
+        self.assertNotIn("pearl_rot", w.cmd_for("biz-rx9070xt", "prl1abc", "v0.7.0", amd=True))  # NVIDIA only
+        self.assertIn("pearl_rot_sm89.cubin", w.clore_start_script("v0.7.0", "true"))
+        self.assertNotIn("pearl_rot", w.clore_start_script("v0.6.17", "true"))
+
     def test_a_named_group_is_created_with_monero(self):
         g = self.group()
         body = self.http.made("POST", "/containers$")[-1][2]

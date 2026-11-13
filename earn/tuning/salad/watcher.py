@@ -37,6 +37,9 @@ IMAGE = "nvidia/cuda:12.2.2-base-ubuntu22.04"
 # AMD boxes: the ROCm image the AMD core was built and tested in on Salad (amdtest.py), with its HIP runtime. The AMD
 # core ships from v0.6.8, so an AMD box runs that release or a later one.
 AMD_IMAGE, AMD_VER = "rocm/dev-ubuntu-24.04:7.2", "v0.6.8"
+# The rotation fold, on by default from v0.7.0 (+3% to +10% on RTX 30, 40 and 50 in benchmark.md), loads its kernel
+# from a cubin beside the Pearl core. Without one the core mines on the release fold, so a box must fetch them.
+ROT_VER, ROT_CUBINS = "v0.7.0", ("pearl_rot_sm86.cubin", "pearl_rot_sm89.cubin", "pearl_rot_sm120.cubin")
 BOX = "https://raw.githubusercontent.com/super3/llmjob/f0369f92651c2b3b1e24245e50cfe89b02281592/tuning/box.sh"
 CLORE = "https://api.clore.ai/v1/"
 VAST = "https://console.vast.ai/api/"
@@ -96,7 +99,8 @@ def clore_start_script(ver, cmd):
     return ("apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq curl ca-certificates procps jq >/dev/null 2>&1\n"
             f"D=/opt/m; mkdir -p $D/rel; REL={RELEASES}/{ver}\n"
             "if [ ! -f $D/setup ]; then\n"
-            "  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node llmjob-xmr-worker; do\n"
+            "  for f in llmjob-earn-cli-linux pearl_core.node pearl_core_cu13.node llmjob-xmr-worker"
+            + "".join(f" {c}" for c in (ROT_CUBINS if vnum(ver) >= vnum(ROT_VER) else ())) + "; do\n"
             "    for i in $(seq 1 200); do curl -fsSL --http1.1 -C - --connect-timeout 20 -o $D/rel/$f \"$REL/$f\" && break; sleep 5; done\n"
             "  done\n"
             "  mv $D/rel/llmjob-earn-cli-linux $D/rel/cli && chmod +x $D/rel/cli && touch $D/setup\n"
@@ -549,6 +553,12 @@ def cmd_for(worker, wallet, ver, xmr=None, threads=0, kryptex=None, llm=False, x
                 "[ \"$s\" -lt \"$o\" ] \\&\\& o=0; tail -c +$((o + 1)) $D/g$g.log | tr \"\\\\r\" \"\\\\n\" | "
                 "grep -a \"cpu: \" | head -4 | cut -c1-200 | sed \"s/^/[xmr g$g] /\"; echo $s > $D/g$g.xo; "
                 "read l1 l5 l15 lr < /proc/loadavg; echo \"[xmr g$g] cpu: load $l1 $l5 $l15 on $(nproc) CPUs\"'")
+    if not amd and vnum(ver) >= vnum(ROT_VER):
+        # The rotation fold's cubins (v0.7.0 on): box.sh's pinned copy predates them, so without these lines every
+        # Salad box on v0.7.0 mined on the release fold. They go beside pearl_core.node, where the core looks.
+        sed += (f" -e 's/; do   # all three at once/ {' '.join(ROT_CUBINS)}; do   # all at once/'"
+                " -e 's|release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $R/|"
+                "release) cp $D/rel/pearl_core.node $D/rel/pearl_core_cu13.node $D/rel/pearl_rot_sm*.cubin $R/|'")
     if llm:
         # Gemma beside mining: auto mode instead of mining only, and serving the network's jobs. While the LLM answers
         # a prompt the CLI stops mining on the card and prints no hashrate, so box.sh would repeat the miner's last
