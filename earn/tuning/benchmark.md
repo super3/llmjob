@@ -4916,6 +4916,34 @@ So 105 on card 4 in the miner (103.0-103.2 now) needs ~2% fewer joules a MAC wit
 part of the k-step that can change offers that. The check bench on card 4 read 104.0-104.4 with the stream on today
 (104.6-104.8 on goal-arc25's cooler card).
 
+### Arc rig, 13 November, from 09:00 UTC: the set stream by default on newer drivers (`goal/arc-28`)
+
+**Ships: xmx8w's set stream (`PEARL_SYCL_SEQP=1`) is the default on a Linux driver known newer than 24.x.** The host
+now reads the driver version on Level Zero too (the rig's container: Level Zero "1.18.40196", OpenCL "26.40.40196.15";
+before, a Level Zero device always got 0). New `seqp_default`: a 24.x OpenCL driver keeps 2 (HiveOS); an OpenCL major
+of 25 to 30, or a Level Zero build of 32,500 or more (24.52 is 32224, 25.05 is 32567), gets 1; anything else gets 0,
+including Windows, where no Intel card has run the core. `PEARL_SYCL_SEQP=0` still turns it off. Kernels unchanged; the
+duty path (CW 1) has no stream and is untouched.
+
+| | stream off (`SEQP=0`, or spare33) | new default |
+|---|---|---|
+| card 5, `pearl_sycl_check --bench 10`, three rounds | 101.60-101.76 TH/s, 1.867 J/PMAC | 102.90-102.95, 1.844 (+1.2%; `SEQP=1` 102.88-103.02) |
+| card 4, the same | 102.75-103.04 (spare33 102.70-103.02), 1.845 | 103.81-104.00, 1.827 (+0.9%) |
+| card 4, bench.js duty 100, three rounds of 30 s | spare33 101.61-101.80 | 102.61-102.98 (+1.0%) |
+| card 4, bench.js duty 75, three rounds | spare33 79.69-79.79 | 79.73-79.79 (level, same kernel) |
+| HiveOS 24.35 host, card 5, `--bench 8` (default must stay 2) | `SEQP=0` 91.86-91.89 | 94.56-94.69 (`SEQP=2` 94.42-94.65; ship-a26-def 94.53-94.60) |
+
+verify.sh PASS (emu and the mainnet-shaped check included) and verify-hits 400/400 at duty 100 and 75 on card 4 and
+card 5, with no `PEARL_SYCL_SEQP` set. HiveOS 24.35 host (staged /home/shawn/arc/ship-a28-def): 2048 check (xmx8w, emu,
+CW 1) and the mainnet-shaped check PASS (card 5's lossy copy settled by the third read), redraw path agrees.
+
+**Messages a MAC, priced.** Using goal-arc27's per-message shares (a B' local read ~1.9% of def's joules; an A' load
+~6% with its L2 and DRAM part, ~2.5% as an L1 hit; the copy ~4.6% a k-step), the sub-group tile's other shapes that fit
+the same 128 accumulator registers both lose: 16 rows by 64 columns halves A' loads (-6%) but doubles B' reads (+7.7%)
+and, with half the rows a work-group, doubles the copy a MAC (+4.6%); 64 by 16 halves B' reads and the copy (-6%) but
+doubles A' loads (+12%). With DPASW halving A', 32 by 32 is the cheapest shape, not just the fewest messages. Nothing
+built.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
