@@ -33,9 +33,11 @@ struct Rec {
 #define BENCH(name, decl, body)                                                         \
   __global__ void name(int iters, unsigned *out, Rec *rec, unsigned a, unsigned b) {   \
     unsigned x[CH], y[CH];                                                              \
+    unsigned long long w[CH];                                                           \
     for (int k = 0; k < CH; k++) {                                                      \
       x[k] = threadIdx.x * (k + 3) + a;                                                 \
       y[k] = threadIdx.x ^ (k * 77 + b);                                                \
+      w[k] = ((unsigned long long)y[k] << 32) | x[k];                                   \
     }                                                                                   \
     decl;                                                                               \
     __syncthreads();                                                                    \
@@ -48,7 +50,7 @@ struct Rec {
     __syncthreads();                                                                    \
     long long t1 = clock64();                                                           \
     unsigned acc = 0;                                                                   \
-    for (int k = 0; k < CH; k++) acc ^= x[k] ^ y[k];                                    \
+    for (int k = 0; k < CH; k++) acc ^= x[k] ^ y[k] ^ (unsigned)w[k] ^ (unsigned)(w[k] >> 32); \
     out[blockIdx.x * blockDim.x + threadIdx.x] = acc;                                   \
     if (threadIdx.x == 0) {                                                             \
       rec[blockIdx.x].sm = smid();                                                      \
@@ -60,9 +62,8 @@ struct Rec {
 // IMAD: x = x * y + a
 BENCH(k_imad, , asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(a)))
 // IMAD.WIDE.U32: (x, y) = x * a + (x, y)
-BENCH(k_imadwide, ,
-      asm volatile("{.reg .u64 t; mov.b64 t, {%0, %1}; mad.wide.u32 t, %0, %2, t; mov.b64 {%0, %1}, t;}"
-                   : "+r"(x[k]), "+r"(y[k]) : "r"(a)))
+#define WIDE(k, m) asm volatile("mul.wide.u32 %0, %1, %2;" : "=l"(w[k]) : "r"((unsigned)(w[k] >> 32)), "r"(m))
+BENCH(k_imadwide, , WIDE(k, a))
 // IMAD.HI.U32: x = hi(x * y) + a
 BENCH(k_imadhi, , asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(a)))
 // IADD3: x = x + y + a
@@ -78,16 +79,24 @@ BENCH(k_imad_iadd3, , {
 })
 // IMAD.WIDE and IADD3, one each
 BENCH(k_wide_iadd3, , {
-  asm volatile("{.reg .u64 t; mov.b64 t, {%0, %1}; mad.wide.u32 t, %0, %2, t; mov.b64 {%0, %1}, t;}"
-               : "+r"(x[k]), "+r"(y[k]) : "r"(a));
+  WIDE(k, a);
   asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
 })
 // IMAD.WIDE and two IADD3
 BENCH(k_wide_2iadd3, , {
-  asm volatile("{.reg .u64 t; mov.b64 t, {%0, %1}; mad.wide.u32 t, %0, %2, t; mov.b64 {%0, %1}, t;}"
-               : "+r"(x[k]), "+r"(y[k]) : "r"(a));
+  WIDE(k, a);
   asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
-  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 5) % CH]), "r"(a));
+  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(x[k]) : "r"(y[(k + 5) % CH]), "r"(a));
+})
+// IMAD.WIDE and IMAD (both on the FMA pipe)
+BENCH(k_wide_imad, , {
+  WIDE(k, a);
+  asm volatile("mad.lo.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(b));
+})
+// IMAD.HI and IADD3
+BENCH(k_hi_iadd3, , {
+  asm volatile("mad.hi.u32 %0, %0, %1, %2;" : "+r"(x[k]) : "r"(y[k]), "r"(a));
+  asm volatile("{.reg .u32 t; add.u32 t, %0, %1; add.u32 %0, t, %2;}" : "+r"(y[k]) : "r"(x[(k + 3) % CH]), "r"(b));
 })
 // IMAD and LOP3 and IADD3
 BENCH(k_imad_lop3_iadd3, , {
@@ -130,6 +139,7 @@ int main(int argc, char **argv) {
   Test tests[] = {{"IMAD", k_imad, 1},           {"IMAD.WIDE", k_imadwide, 1},  {"IMAD.HI", k_imadhi, 1},
                   {"IADD3", k_iadd3, 1},         {"LOP3", k_lop3, 1},           {"SHF", k_shf, 1},
                   {"IMAD+IADD3", k_imad_iadd3, 2}, {"WIDE+IADD3", k_wide_iadd3, 2}, {"WIDE+2IADD3", k_wide_2iadd3, 3},
+                  {"WIDE+IMAD", k_wide_imad, 2}, {"HI+IADD3", k_hi_iadd3, 2},
                   {"IMAD+LOP3+IADD3", k_imad_lop3_iadd3, 3}, {"FFMA", k_ffma, 1}, {"FFMA+IMAD", k_ffma_imad, 2},
                   {"FFMA+IADD3", k_ffma_iadd3, 2}};
   for (auto &t : tests) {
