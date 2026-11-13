@@ -29,6 +29,9 @@
 #ifndef QC_UNROLL_F
 #define QC_UNROLL_F 1
 #endif
+// "#pragma unroll MACRO" is not expanded by GCC's preprocessor (Linux builds), so the count goes through _Pragma.
+#define QC_STR(x) #x
+#define QC_UNROLL(n) _Pragma(QC_STR(unroll n))
 #ifndef QC_UNROLL_P
 #define QC_UNROLL_P 1
 #endif
@@ -245,13 +248,13 @@ __device__ __forceinline__ u64 qc_two_perms(u64 s[12]) {
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
     if (pass) qc_ext(s, QC_RC_I0);
-#pragma unroll QC_UNROLL_F
+    QC_UNROLL(QC_UNROLL_F)
     for (int r = 0; r < 4; r++) qc_full(s, QC_RC_F1[r]);
     u64 x = qc_sbox(s[0]);
-#pragma unroll QC_UNROLL_P
+    QC_UNROLL(QC_UNROLL_P)
     for (int r = 0; r < 21; r++) x = qc_sbox(qc_partial(s, x, QC_RC_P[r]));
     qc_partial_last(s, x);
-#pragma unroll QC_UNROLL_F
+    QC_UNROLL(QC_UNROLL_F)
     for (int r = 1; r < 4; r++) qc_full(s, QC_RC_T[r]);
 #pragma unroll
     for (int i = 0; i < 12; i++) s[i] = qc_sbox(s[i]);
