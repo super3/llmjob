@@ -24,9 +24,10 @@
 #define QC_THREADS 256
 #endif
 #ifndef QC_MINB
-// Build h needs more registers than 64: 3 blocks of 256 an SM (80 registers, no
-// spills) ran 1.3% faster than 4 on an RTX 4090.
-#define QC_MINB (QC_BUILD_H ? 3 : 4)
+// 3 blocks of 256 an SM (80 registers): build h ran 1.3% faster than at 4 on
+// an RTX 4090 (at 64 registers it spilled inside the full-round loop), and
+// build g 1.1-1.6% faster on an RTX 5080.
+#define QC_MINB 3
 #endif
 #ifndef QC_UNROLL_F
 #define QC_UNROLL_F 1
