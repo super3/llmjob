@@ -633,7 +633,8 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // loads' 64-bit addresses, 10 on the LDS stores' and 12 on the LDS read bases, which the loop's parity (s & 1) made
 // new every slab. Here the slab loads are buffer loads (PEARL_AMD_BUFLD, with gfx10's word 3, and PEARL_AMD_TID);
 // LDS is [A' 0][B' 0][A' 1][B' 1], so slab s's buffers are one SGPR offset from buffer 0's, the same for A' and B';
-// and every LDS address is a lane base plus that offset plus an immediate: 4 VALU a slab. RDNA 2 is VALU-bound
+// and every LDS address is a lane base plus that offset plus an immediate: 6 VALU a slab (four read bases, the
+// store's, and the offset's flip, in the gfx1030 assembly with ROCm 7.2's clang). RDNA 2 is VALU-bound
 // there, so the VALU are time: RX 6800, 1400 MHz cap, hashrate.js 19.08-19.12 TH/s against 18.95-18.96 (+0.8%).
 // PEARL_AMD_DOT4_SWZ (in that loop, on by default): LDS bank conflicts. Rows are 80 bytes, 20 banks apart, so rows 8
 // apart share a bank: a k-pair's A' read (rows 0, 4, 8, ... 28 and 1, 5, ... 29 in each 16 lanes) hit 4 rows a
@@ -660,8 +661,10 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #if PEARL_AMD_DOT4_SWZ != 0 && PEARL_AMD_DOT4_SWZ != 1
 #error "PEARL_AMD_DOT4_SWZ is 0 or 1"
 #endif
-// PEARL_AMD_DOT4_STKP=n (experiment), in PEARL_AMD_DOT4_ADDR's loop: the next slab's LDS store issued
-// after k-pair n's reads (0-7), not after the slab's dot4s (8, the default), so it completes before the barrier.
+// PEARL_AMD_DOT4_STKP=n, in PEARL_AMD_DOT4_ADDR's loop: the next slab's LDS store issued after k-pair n's reads
+// (0-7), not after the slab's dot4s (8, the default), so it completes before the barrier. At 6, +0.2% on the RX 6800
+// and +0.1% on an RX 6600 (hashrate.js 19.36 against 19.31-19.34, 8.92 against 8.91); at 7, +0.0%. Off: too small to
+// ship without a pool run of its own.
 #ifndef PEARL_AMD_DOT4_STKP
 #define PEARL_AMD_DOT4_STKP 8
 #endif
