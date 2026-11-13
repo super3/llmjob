@@ -774,7 +774,8 @@ class W:
                 del pcs[m]
         # A name no live group has used for rate_days lets its node identity go.
         keys = st.get("node_keys", {})
-        for n in [n for n, k in keys.items() if t - k.get("used", 0) >= 86400 * self.cfg["rate_days"]]:
+        live = {x["name"] for x in st["groups"].values() if not x["ended"]}
+        for n in [n for n, k in keys.items() if n not in live and t - k.get("used", 0) >= 86400 * self.cfg["rate_days"]]:
             del keys[n]
 
     def credit_ratio(self):
@@ -957,7 +958,8 @@ class W:
                 # A worker that isn't one of our boxes ("biz-…-g0") mining to the same wallet (the founder's dev4090
                 # from 4 November) adds its PRL to the wallet's totals but not to our boxes' estimate, which would
                 # push kx_ratio up toward 1.0 and every Kryptex box's earnings with it. Noted once; see kx_ratio.
-                other = sorted(n for n in res if not (n.startswith("biz-") and n.endswith("-g0")))
+                # Our Clore and Vast boxes (clore-<id>-gN, vast-<id>-gN) and a PC's second card (-g1) are ours too.
+                other = sorted(n for n in res if not re.fullmatch(r"(biz-.+|clore-\d+|vast-\d+)-g\d+", n))
                 if other and not st.get("kx_foreign"):
                     st["kx_foreign"] = {"t": t, "workers": other}
                     event(f"NOTE Kryptex worker {', '.join(other)} isn't one of our boxes: the Kryptex credit ratio "
@@ -1020,6 +1022,7 @@ class W:
             s, c = http("GET", f"{KX_API}/v1/miner/chart/{self.cfg['wallet']}/{g['name']}-g0?days=2", timeout=30)
             if s != 200 or not isinstance(c, list):
                 continue
+            g["kx_chart_t"] = t
             b = g.setdefault("kx_b", {})
             for p in c:
                 try:
@@ -1196,6 +1199,10 @@ class W:
                         k, v = f"{i}:{int(p['timestamp'])}", int(p.get("valid") or 0)
                     except (KeyError, TypeError, ValueError):
                         continue
+                    # A bucket that ended before this box began is an earlier box's: a Vast worker is named by the
+                    # offer, which a machine keeps from one rental to the next (kx_count guards Salad groups the same way).
+                    if int(p["timestamp"]) / 1000 + 600 <= rec.get("created", 0):
+                        continue
                     if v > pb.get(k, [0])[0]:
                         pb[k] = [v, pb[k][1] if k in pb else per_share]
                 if per_hash and self.cfg.get("xmr_wallet") and rec.get("threads", 0) >= 8:
@@ -1204,6 +1211,8 @@ class W:
                         try:
                             k, h = f"{i}:{int(p['timestamp'])}", float(p.get("hashrate") or 0) * 600
                         except (KeyError, TypeError, ValueError):
+                            continue
+                        if int(p["timestamp"]) / 1000 + 600 <= rec.get("created", 0):
                             continue
                         if h > xb.get(k, [0])[0]:
                             xb[k] = [h, xb[k][1] if k in xb else per_hash]
@@ -1283,10 +1292,10 @@ class W:
         keyf = self.cfg.get("clore_key_file") or ""
         if not keyf:
             return
-        ver = self.cfg["box_ver"]
         xmr = rec.get("threads", 0) >= 8 and self.cfg.get("xmr_wallet")
+        ver, xpool = self.rented_ver(xmr)
         cmd = cmd_for(rec["name"], self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
-                      self.cfg["kryptex_host"], xmr_pool=self.cfg["xmr_kx_host"] if xmr else None)
+                      self.cfg["kryptex_host"], xmr_pool=xpool)
         b64 = base64.b64encode(clore_start_script(ver, cmd).encode()).decode()
         remote = (f"echo {b64} | base64 -d > /root/start.sh; "
                   "nohup bash /root/start.sh > /root/start.log 2>&1 < /dev/null &")
@@ -1662,9 +1671,9 @@ class W:
         name = f"vast-{o['id']}"
         threads = int(o.get("cpu_cores_effective") or 0)
         xmr = threads >= 8 and self.cfg.get("xmr_wallet")
-        ver = self.cfg["box_ver"]
+        ver, xpool = self.rented_ver(xmr)
         cmd = cmd_for(name, self.cfg["wallet"], ver, self.cfg["xmr_wallet"] if xmr else None, 8 if xmr else 0,
-                      self.cfg["kryptex_host"], xmr_pool=self.cfg["xmr_kx_host"] if xmr else None)
+                      self.cfg["kryptex_host"], xmr_pool=xpool)
         body = {"client_id": "me", "image": IMAGE, "disk": disk, "runtype": "ssh", "label": name,
                 "onstart": vast_onstart(ver, cmd)}
         if kind == "bid":
@@ -2023,6 +2032,8 @@ class W:
     def stuck(self, g):
         """Why a group can't move up a priority: none clears the margin, or the next would be above another group of
         its class on a PC (pri_cap)."""
+        if g["pri"] == PRIS[-1]:
+            return "it's at the highest priority already"
         if PRIS.index(g["pri"]) >= self.pri_cap(g["class"], g):
             return "a higher priority could take the PC of another group of its class"
         return f"no higher priority clears {self.cfg['min_margin']:.0%}"
@@ -2134,6 +2145,20 @@ class W:
         """Whether a group's box runs Gemma: config "llm", except on an AMD box, where the CLI's local LLM has no
         build for the card."""
         return bool(self.cfg["llm"]) and not is_amd(name)
+
+    def rented_ver(self, xmr):
+        """The release and Monero pool for a Clore or Vast box, with the floors box() gives a Salad box: such a box
+        always mines Pearl on Kryptex (kryptex_ver), and Monero needs xmr_ver, or xmr_kx_ver when config xmr_kx sends
+        it to Kryptex. With box_ver under those, the box's command named options its release didn't have."""
+        ver = self.cfg["box_ver"]
+        floors = [self.cfg["kryptex_ver"]]
+        xpool = self.cfg["xmr_kx_host"] if self.xmr_kx(xmr) else None
+        if xmr:
+            floors.append(self.cfg["xmr_kx_ver"] if xpool else self.cfg["xmr_ver"])
+        for f in floors:
+            if vnum(ver) < vnum(f):
+                ver = f
+        return ver, xpool
 
     def xmr_kx(self, xmr):
         """Whether a box's command sends its Monero to Kryptex: it mines Monero and config xmr_kx is on."""
@@ -3267,9 +3292,11 @@ class W:
                 if margin_of(earn, g["price"]) < bar:
                     logs = "its PC sends no log lines" if not cur else \
                         f"no reading from its PC for {(seen_to - cur[-1][0]) / 60:.0f} min"
+                    # Left for its rate, as rule 5 leaves: the PC's fault, so an unpaid class isn't held 24 h as failed.
                     self.leave(g, f"earns ${earn:.3f}/hr by Kryptex's count of its shares over the last hour ({logs}) "
                                   f"on PC {g['machine'][:8]} against its ${g['price']:.3f}/hr "
-                                  f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})")
+                                  f"({under(margin_of(earn, g['price']), bar)}, under {bar:.0%})",
+                               ths=round(rate * st["mkt"]["price"] / self.usd(True), 1))
                     return
         # Rule 5: only PCs that clear the margin. After the miner's first 2 minutes (warm-up), the median of the last
         # 3 readings must clear keep_bar (keep_margin, else min_margin) at the PC's price, every round; the first time
@@ -3342,8 +3369,10 @@ class W:
         """PRL an hour a Kryptex box earned by Kryptex's count: its 10-minute buckets over the hour ending 25 min ago,
         at what Kryptex pays. The chart runs behind: on 30 October its newest bucket had started 23 min before, so a
         later one may still be filling. None for a box not on Kryptex, before it has mined that whole hour since
-        `since`, or without a chart read in the last 15 min. A bucket with no shares isn't in the chart: it counts 0."""
-        if not g.get("kx") or t - self.st.get("kx_count_t", 0) > 15 * MIN:
+        `since`, or without a good read of its own chart in the last 15 min: a failed read (an outage, a bot-check
+        page) leaves its buckets missing, which would count as 0. A bucket with no shares isn't in the chart: it
+        counts 0."""
+        if not g.get("kx") or t - g.get("kx_chart_t", 0) > 15 * MIN:
             return None
         end = (t - 25 * MIN) // 600 * 600
         if end - 3600 < since:

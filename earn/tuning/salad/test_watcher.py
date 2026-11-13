@@ -1837,6 +1837,10 @@ class TestOrgs(Base):
         self.assertIn("no PC at low and a higher priority could take the PC of another group of its class",
                       self.events())
 
+    def test_a_group_at_high_says_it_is_at_the_top(self):
+        g = self.group(cls="RTX 4080 (16 GB)", pri="high")
+        self.assertEqual(self.x.stuck(g), "it's at the highest priority already")
+
     def test_the_search_doesnt_make_a_group_above_another_of_its_class_on_a_pc(self):
         self.x.cfg["max_per_class"] = 2
         self.x.pc_margin = lambda g: 0.5                   # the 4080 on its PC clears the margin, so a second may come
@@ -2049,15 +2053,28 @@ class TestNoLogPc(Base):
             g["last_share"] = t                                                          # Kryptex gets its shares...
             g["kx_b"] = {str(s * 1000): [per_bucket, share]
                          for s in range(int(g["pc_since"]) // 600 * 600, int(t), 600)}
-            self.x.st["kx_count_t"] = t
+            self.x.st["kx_count_t"] = g["kx_chart_t"] = t
             g["has_pc"], g["_machine"], g["instance"] = True, "m1", "inst-m1"            # ...but no reading comes
             self.x.rules(g, t)
             if g["ended"] or g["machine"] is None:
                 break
         return g
 
+    def test_a_box_whose_own_chart_read_failed_isnt_judged_on_it(self):
+        # The global read time moves on even when this group's chart read fails (an outage, a bot-check page): its
+        # missing buckets would count as no credit at all.
+        g = self.group()
+        g["kx"], t = True, self.clock[0] + 3 * 3600
+        self.x.st["kx_count_t"] = t
+        g["kx_chart_t"] = t - 20 * 60
+        self.assertIsNone(self.x.credit_rate(g, self.clock[0], t))
+        g["kx_chart_t"] = t
+        self.assertEqual(self.x.credit_rate(g, self.clock[0], t), 0)
+
     def test_a_pc_whose_credit_doesnt_clear_the_bar_is_left(self):
-        self.run_on(5, 100)                      # 30 shares an hour: about $0.08 against $0.11
+        g = self.run_on(5, 100)                  # 30 shares an hour: about $0.08 against $0.11
+        # Left for its rate, as rule 5 leaves: the PC keeps that rate, and an unpaid class isn't held 24 h as failed.
+        self.assertGreater(self.x.st["bad_pcs"]["m1"]["ths"], 0)
         self.assertIn("by Kryptex's count of its shares over the last hour (its PC sends no log lines) on PC m1",
                       self.events())
 
@@ -4828,6 +4845,10 @@ class TestKryptex(Base):
         self.x.kx_pool()
         self.assertNotIn("kx_foreign", self.x.st)          # only our boxes: nothing noted
         self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
+            {"worker": w_, "valid": 3} for w_ in ("biz-rtx4090-g1", "clore-2433408-g0", "vast-60432572-g1")]}))
+        self.x.kx_pool()
+        self.assertNotIn("kx_foreign", self.x.st)          # our Clore and Vast boxes and a second card are ours too
+        self.http.on("GET", f"v3/miner/workers/{wl}", (200, {"results": [
             {"worker": "biz-rtx4080-g0", "valid": 3}, {"worker": "dev4090", "valid": 6}]}))
         self.x.kx_pool()
         self.assertEqual(self.x.st["kx_foreign"]["workers"], ["dev4090"])
@@ -5403,6 +5424,13 @@ class TestNodeIdentity(Base):
                                             "name": None, "connected": False, "createdAt": k["createdAt"]})
         self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
 
+    def test_a_live_groups_identity_stays_however_long_it_runs(self):
+        g = self.group()
+        self.x.node_key(g["name"])
+        self.clock[0] += 8 * 86400
+        self.x.record_rates(self.clock[0])
+        self.assertIn(g["name"], self.x.st["node_keys"])
+
     def test_an_identity_no_live_group_uses_goes_after_rate_days(self):
         self.x.node_key("biz-rtx4080")
         self.clock[0] += 7 * 86400 - 60
@@ -5691,7 +5719,8 @@ class TestClore(Base):
         self.assertTrue(row.rstrip(" |").endswith("*"))                         # the estimate, until Kryptex counts
         asked = []
         self.http.on("GET", r"prl/api/v1/miner/chart/.*/clore-77-g0",
-                     lambda b: asked.append(1) or (200, [{"timestamp": 1000, "valid": 4}, {"timestamp": 2000, "valid": 6}]))
+                     lambda b: asked.append(1) or (200, [{"timestamp": ms, "valid": 4}, {"timestamp": ms + 600_000, "valid": 6}]))
+        ms = int(rec["created"]) * 1000
         self.clock[0] += 300
         self.x.clore_kx(self.clock[0])
         self.assertEqual(asked, [1])
@@ -5777,6 +5806,27 @@ class TestVast(Base):
         self.x.vast_round(self.clock[0])
         self.assertEqual(len(self.bids()), 1)                                # no second rental
         self.assertIn("901", self.x.st["vast"]["inst"])
+
+    def test_a_chart_bucket_from_before_the_box_is_an_earlier_rentals(self):
+        # A machine keeps its offer id between rentals, so vast-<offer>-g0 can carry an earlier box's work.
+        rec = self.live()
+        ms = int(rec["created"]) * 1000
+        self.http.on("GET", r"prl/api/v1/miner/chart/.*/vast-5-g0",
+                     (200, [{"timestamp": ms - 1_200_000, "valid": 50}, {"timestamp": ms, "valid": 6}]))
+        self.clock[0] += 300
+        self.x.clore_kx(self.clock[0], store="vast", recs="inst")
+        self.assertAlmostEqual(rec["kx_gross"], 6 * self.x.prl_unit() * 2 ** 21)
+
+    def test_a_rented_box_gets_the_release_its_options_need(self):
+        self.x.cfg.update(box_ver="v0.5.13", follow_latest=False, xmr_wallet=XMR, xmr_kx=True)
+        self.assertEqual(self.x.rented_ver(True), (self.x.cfg["xmr_kx_ver"], self.x.cfg["xmr_kx_host"])
+                         if w.vnum(self.x.cfg["xmr_kx_ver"]) >= w.vnum(self.x.cfg["kryptex_ver"]) else
+                         (self.x.cfg["kryptex_ver"], self.x.cfg["xmr_kx_host"]))
+        self.x.cfg["xmr_kx"] = False
+        ver, pool = self.x.rented_ver(True)
+        self.assertIsNone(pool)                               # Monero to HeroMiners, as config says
+        self.assertGreaterEqual(w.vnum(ver), w.vnum(self.x.cfg["xmr_ver"]))
+        self.assertGreaterEqual(w.vnum(self.x.rented_ver(False)[0]), w.vnum(self.x.cfg["kryptex_ver"]))
 
     def test_the_onstart_script_fits_vasts_limit_and_carries_the_box_command(self):
         self.x.cfg["xmr_wallet"] = "8" + "a" * 94
