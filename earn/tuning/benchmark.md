@@ -1252,6 +1252,34 @@ RTX 4090, 450 W. Nothing ships; the shipped cubin (3a354cac) is unchanged.
   fold reads almost nothing from DRAM, so the loss at higher memory clocks is the memory's own power taking watts
   from the core; it falls with the clock and no kernel change touches it.
 
+### rig01, 12-13 November: the 96 x 512 block built and raced (branch `goal/nv-k22`)
+
+RTX 4090, 450 W, 810 MHz memory, gprobe 30 s legs, against the shipped loop (ys24f, the same code as 3a354cac) in
+the same holds. Nothing ships; the shipped cubin is unchanged (rebuilt: 3a354cac, as listed).
+
+- Built in the probe: gprobe `-DGP_W8=1` (96 x 512 tiles, A 12 KB, B 64 KB, transcript in the frame, 12 KB
+  stage) and rfold.py `w8=1`. Each warp pair makes a k-step's six A tiles at its first turn, three each, and
+  swaps halves through the stage. CPU check 16,384/16,384 at k 2048, 8,192/8,192 at 8192, 1,024/1,024 at 65536.
+  15.5 shared-memory steps a warp a k-step against 17.
+- With the barriers it needs (one of all eight warps in the first turn, one at the chunk's end, the pair's):
+  97.33% of the pipe at 2685 MHz (the card's top clock), 435 W: pipe x clock 2613 against the shipped loop's
+  2643-2653 (-1.2%). It does take 2.4% less energy a tile, but at 810 MHz memory the shipped loop already runs
+  at 2668-2685 MHz, so there is no clock left to win.
+- What the barriers cost (timing-only key `w8nb`): none at all 99.34-99.36% (2649-2669 pipe x clock, wrong
+  sums); without the chunk-end barrier 98.18%; the pair's barrier or the first turn's alone about 0.1 each. A
+  barrier of all eight warps stops every scheduler at once, about 0.8 points a barrier a chunk.
+- Group barriers instead (warps 0-3 and 4-7, arrive/sync as bord=2, keys `w8g`): 97.8% with a group sync at
+  the chunk's start (`w8g=1`); 98.6-98.8% (pipe x clock 2634-2639) with "slot free" barriers that only the
+  slot's own pair syncs on (`w8g=3`). Both are still below the shipped loop, and `w8g=3` is not correct yet: 1
+  to 3 tiles of 64 wrong and an occasional hang at k 65536, timing-dependent. A simulation of its barrier
+  protocol (random warp speeds, the card's counting) finds no race, so the fault is in how the card runs it.
+- Found on the way: in a patched cubin only barriers 0 to 7 work. Numbers 8 to 11 from a register give "an
+  illegal instruction"; barrier 8 as an immediate orders nothing (wrong tiles). A ptxas-built kernel uses 8 to
+  15 without trouble, so it is something the patch does not set. And a barrier that reads a predicate set 6
+  cycles earlier hung the card: set predicates for barriers early.
+- Ceiling: even the barrier-free timing form is only +0.3 to +0.7% over the shipped loop here. The form needs
+  at least 0.5 points of pipe for barriers. Not worth finishing on this card at this memory clock.
+
 ## RTX 50-series
 
 Vast, 10 October, on the CUDA 13 core except the India 5090 (driver 570, CUDA 12.8 core).
