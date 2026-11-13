@@ -43,8 +43,8 @@ the Pearl Intel core uses (`native/sycl/quantus_sycl.node`).
 
 ## Speed on an Arc A750
 
-See `earn/tuning/quantus-benchmark.md`. In short (13 Nov, card 0 of the rented rig): 92.7-93.4 MH/s
-at 2,100-2,150 MHz and 190 W (the power limit); SRBMiner 3.8.6 does 115-117 MH/s on the same card at
+See `earn/tuning/quantus-benchmark.md`. In short (13 Nov, card 0 of the rented rig): 102.8-103.4 MH/s
+at 2,150-2,200 MHz and 190 W (the power limit); SRBMiner 3.8.6 does 115-117 MH/s on the same card at
 2,150-2,200 MHz and the same power.
 
 What a multiply costs on this card: there is no 64-bit integer multiply. A 32 x 32 -> 64 product is
@@ -53,6 +53,11 @@ field multiply with its reduction 37 to 39. Every integer instruction (add, add3
 mov) issues at about one SIMD8 instruction a clock per EU (`qtc_rates.cpp`). Only about a fifth of
 the time goes to the products; the rest is carries and reduction.
 
-Tried and lost: the 256-register mode (80.7 against 92.7), sub-groups of 8 and 32, one copy of the
-rounds for both permutations (`QTC_SHARE`), more than one counter a work-item, carrying the S-box
-outputs unfolded through the linear layers (`QTC_LAZY 1`: 9% fewer instructions, 4.9 KB of spills).
+Kernel forms (`QUANTUS_SYCL_KERNEL=SG,GRF`), all at 190 W: sub-group 8 with 128 registers 102.7
+(the default: each lane has twice the registers of sub-group 16 and nothing spills), sub-group 16
+92.6-94.1, the 256-register forms about 82. Level with the default: one copy of the rounds for both
+permutations (`QTC_SHARE`, 103.7) and the S-box outputs unfolded through the linear layers
+(`QTC_LAZY 1`, 103.2). Lost: more than one counter a work-item (4: -4%, 16: -10%, sub-group 16).
+
+A measuring trap: a kernel compiled inside a timed launch makes any launch-size rule read the card
+as slow. The core compiles before its first launch for that reason; compare builds only after that.

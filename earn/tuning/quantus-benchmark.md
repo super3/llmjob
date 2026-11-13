@@ -12,7 +12,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
 | NVIDIA core (`quantus_cuda.node`) | Being written (agent quantus-cuda) |
 | AMD core (`quantus_hip.node`) | Being written (agent quantus-amd) |
-| Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 93 MH/s against SRBMiner's 116 on the same card. Tuning goes on (agent quantus-sycl) |
+| Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 103 MH/s against SRBMiner's 116 on the same card (89%). Tuning goes on (agent quantus-sycl) |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
 
 ## The work per nonce
@@ -69,7 +69,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RX 6800 | Chedr's rig (1400 MHz cap) | | not run yet | | | | | | | | |
 | RX 7900 XTX | Salad | | not run yet | | | | | | | | |
 | RX 9070 | Salad | | not run yet | | | | | | | | |
-| Arc A750 | rented rig, card 0 | `quantus_sycl` (8c8149c4) | 92.7-93.4 | 2,100-2,150 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm, no thermal flag) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 80% | not run | all five PASS | 13 Nov |
+| Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
 
 Chedr's cards run with their core capped at 1,400 MHz by their owner, so compare them by "% of
 SRBMiner", not by MH/s.
@@ -85,7 +85,7 @@ the card, and tells us where a large gain is possible.
 | RTX 4090 | | | | | | IMAD on the FMA pipe, IADD3/LOP3/shifts on the ALU pipe |
 | RTX 50 | | | | | | NVIDIA describes Blackwell's cores as unified INT32/FP32: check whether INT32 issue per SM doubles over Ada |
 | RX 6600 / 6800 | | | | | | Full 32-bit multiplies (v_mul_lo/hi_u32, v_mad_u64_u32) believed quarter rate, 24-bit ones (v_mul_u32_u24, v_mad_u32_u24) full rate: confirm with a micro-benchmark |
-| Arc A750 | Ours: 8,676 int-pipe cycles an EU a nonce (69,400 SIMD8-lane instructions; 997 more on the float pipe, all `mov`). Of that, the 5,416 32x32 products a nonce are 2,031 (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 111 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not counted | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 83% of our own ceiling |
+| Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling |
 
 ## Revenue per card (whattomine, 13 Nov)
 
@@ -152,3 +152,17 @@ it means.
     EU, so 111 MH/s at 2,150 MHz; we reach 83% of it. SRBMiner's 116 means it needs at most 8,300.
     The products are only 2,031 of our 8,676; the rest is carries and reduction.
   - Not done: a pool run with a real address (there is none yet); quantus-miner's open kernel on Arc.
+- **13 Nov, Arc A750, sub-group 8 (quantus-sycl, d4f799bf).** Same card and guard as above.
+  - A bug hid the real numbers: the driver compiles the kernel in the first launch, the launch-size rule
+    read that launch as a slow card and pinned every later launch at 16k nonces, so any freshly compiled
+    build ran at about a third of its speed (11-45 MH/s). Builds timed before this entry ran from the
+    driver's cache and were not affected; the losses blamed on the 256-register mode, sub-group 8 and one
+    copy of the rounds were. The core now compiles before its first launch.
+  - Retimed with fresh compiles (14 s each): sub-group 8 with 128 registers 102.7; sub-group 16 94.1 and
+    92.6 (twin); 8 with 256 registers 82.6; 16 with 256 81.9; S-box loop of 4 (16) 90.9; one copy of the
+    rounds (16) 93.0.
+  - Sub-group 8 is the default now: `verify-core.js` all five PASS at 103.4. Bench 102.8 at 2,150-2,200
+    MHz, 190 W; one copy of the rounds 103.7, S-box outputs unfolded 103.2 (both level within the
+    noise, so not taken); work-groups of 64 and 256 101.8 and 101.1 against 128's 102.8.
+  - The guard then stopped a run on card 0's thermal flag after about 70 s of back-to-back benches, as it
+    did SRBMiner: runs are kept short with rests between.
