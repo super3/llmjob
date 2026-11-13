@@ -123,6 +123,86 @@ KERNELMIX(k_x_mad_zero, "v_mad_u64_u32 %0, null, %2, %2, 0")
 KERNELMIX(k_x_mulhi_sgpr, "s_mov_b32 s0, 0x9e3779b9\n\tv_mul_hi_u32 %1, %1, s0")
 
 
+// Latency: C independent dependent chains a thread (the others above have 8). With every SIMD full of
+// waves, does one chain a wave still run at the full rate?
+#define KERNELDEP(NAME, ASM, C)                                                                \
+  __global__ void __launch_bounds__(256) NAME(u32 *out, u32 seed, u64 *clk) {               \
+    u64 a[C]; u32 b[C];                                                                      \
+    for (int i = 0; i < C; i++) { a[i] = (u64)seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
+    u64 t0 = 0, r0 = 0;                                                                      \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    for (int it = 0; it < ITERS; it++) {                                                     \
+      _Pragma("unroll") for (int rep = 0; rep < 32 / C; rep++) {                             \
+        _Pragma("unroll") for (int i = 0; i < C; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
+      }                                                                                      \
+    }                                                                                        \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    u32 s = 0;                                                                               \
+    for (int i = 0; i < C; i++) s ^= (u32)a[i] ^ (u32)(a[i] >> 32);                         \
+    out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
+  }
+
+KERNELDEP(k_dep_mad1, "v_mad_u64_u32 %0, null, %1, %1, %0", 1)
+KERNELDEP(k_dep_mad2, "v_mad_u64_u32 %0, null, %1, %1, %0", 2)
+KERNELDEP(k_dep_mad4, "v_mad_u64_u32 %0, null, %1, %1, %0", 4)
+#define KERNELDEP32(NAME, ASM, C)                                                              \
+  __global__ void __launch_bounds__(256) NAME(u32 *out, u32 seed, u64 *clk) {               \
+    u32 a[C], b[C];                                                                          \
+    for (int i = 0; i < C; i++) { a[i] = seed * (threadIdx.x + 3 + i); b[i] = seed ^ (i * 0x9e3779b9u); } \
+    u64 t0 = 0, r0 = 0;                                                                      \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    for (int it = 0; it < ITERS; it++) {                                                     \
+      _Pragma("unroll") for (int rep = 0; rep < 32 / C; rep++) {                             \
+        _Pragma("unroll") for (int i = 0; i < C; i++) { asm volatile(ASM : "+v"(a[i]) : "v"(b[i]) : "vcc", "s0"); } \
+      }                                                                                      \
+    }                                                                                        \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    u32 s = 0;                                                                               \
+    for (int i = 0; i < C; i++) s ^= a[i];                                                   \
+    out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
+  }
+
+KERNELDEP32(k_dep_add1, "v_add_nc_u32 %0, %0, %1", 1)
+KERNELDEP32(k_dep_addco1, "v_add_co_u32 %0, s0, %0, %1", 1)
+KERNELDEP32(k_dep_carry1, "v_add_co_ci_u32_e64 %0, s0, %0, %1, s0", 1)
+
+// VGPR banks (register index mod 4): the same instructions with their sources in one bank or spread over
+// banks, on fixed registers v40-v63 (clobbered). 8 instructions an asm statement.
+#define KERNELBANK(NAME, ASM)                                                                  \
+  __global__ void __launch_bounds__(256) NAME(u32 *out, u32 seed, u64 *clk) {               \
+    u64 t0 = 0, r0 = 0;                                                                      \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { t0 = __builtin_amdgcn_s_memtime(); r0 = __builtin_amdgcn_s_memrealtime(); } \
+    asm volatile("v_mov_b32 v40, %0\n\tv_mov_b32 v41, %0\n\tv_mov_b32 v42, %0\n\tv_mov_b32 v43, %0\n\t"     \
+                 "v_mov_b32 v44, %0\n\tv_mov_b32 v45, %0\n\tv_mov_b32 v46, %0\n\tv_mov_b32 v47, %0\n\t"     \
+                 "v_mov_b32 v48, %0\n\tv_mov_b32 v49, %0\n\tv_mov_b32 v50, %0\n\tv_mov_b32 v51, %0\n\t"     \
+                 "v_mov_b32 v52, %0\n\tv_mov_b32 v53, %0\n\tv_mov_b32 v54, %0\n\tv_mov_b32 v55, %0\n\t"     \
+                 "v_mov_b32 v56, %0\n\tv_mov_b32 v57, %0\n\tv_mov_b32 v58, %0\n\tv_mov_b32 v59, %0\n\t"     \
+                 "v_mov_b32 v60, %0\n\tv_mov_b32 v61, %0\n\tv_mov_b32 v62, %0\n\tv_mov_b32 v63, %0"         \
+                 :: "v"(seed + threadIdx.x) : "v40", "v41", "v42", "v43", "v44", "v45", "v46", "v47", "v48",   \
+                 "v49", "v50", "v51", "v52", "v53", "v54", "v55", "v56", "v57", "v58", "v59", "v60", "v61",   \
+                 "v62", "v63");                                                              \
+    for (int it = 0; it < ITERS; it++) {                                                     \
+      _Pragma("unroll") for (int rep = 0; rep < 4; rep++) {                                  \
+        asm volatile(ASM ::: "vcc", "s0", "v40", "v41", "v42", "v43", "v44", "v45", "v46", "v47", "v48", "v49", \
+                     "v50", "v51", "v52", "v53", "v54", "v55", "v56", "v57", "v58", "v59", "v60", "v61", "v62", "v63"); \
+      }                                                                                      \
+    }                                                                                        \
+    if (threadIdx.x == 0 && blockIdx.x == 0) { clk[0] = __builtin_amdgcn_s_memtime() - t0; clk[1] = __builtin_amdgcn_s_memrealtime() - r0; } \
+    u32 s;                                                                                   \
+    asm volatile("v_xor_b32 %0, v40, v61" : "=v"(s) :: "v40", "v61");                       \
+    out[blockIdx.x * blockDim.x + threadIdx.x] = s;                                          \
+  }
+
+// two sources, one bank each instruction (v44 v48: bank 0, ...) against banks 0/1, 2/3 ...
+KERNELBANK(k_bank_add_same, "v_add_nc_u32 v40, v44, v48\n\tv_add_nc_u32 v41, v45, v49\n\tv_add_nc_u32 v42, v46, v50\n\tv_add_nc_u32 v43, v47, v51\n\tv_add_nc_u32 v52, v56, v60\n\tv_add_nc_u32 v53, v57, v61\n\tv_add_nc_u32 v54, v58, v62\n\tv_add_nc_u32 v55, v59, v63")
+KERNELBANK(k_bank_add_diff, "v_add_nc_u32 v40, v44, v49\n\tv_add_nc_u32 v41, v45, v50\n\tv_add_nc_u32 v42, v46, v51\n\tv_add_nc_u32 v43, v47, v48\n\tv_add_nc_u32 v52, v56, v61\n\tv_add_nc_u32 v53, v57, v62\n\tv_add_nc_u32 v54, v58, v63\n\tv_add_nc_u32 v55, v59, v60")
+// add with carry in and out (two VGPR sources + an SGPR)
+KERNELBANK(k_bank_addc_same, "v_add_co_ci_u32_e64 v40, s0, v44, v48, s0\n\tv_add_co_ci_u32_e64 v41, s0, v45, v49, s0\n\tv_add_co_ci_u32_e64 v42, s0, v46, v50, s0\n\tv_add_co_ci_u32_e64 v43, s0, v47, v51, s0\n\tv_add_co_ci_u32_e64 v52, s0, v56, v60, s0\n\tv_add_co_ci_u32_e64 v53, s0, v57, v61, s0\n\tv_add_co_ci_u32_e64 v54, s0, v58, v62, s0\n\tv_add_co_ci_u32_e64 v55, s0, v59, v63, s0")
+KERNELBANK(k_bank_addc_diff, "v_add_co_ci_u32_e64 v40, s0, v44, v49, s0\n\tv_add_co_ci_u32_e64 v41, s0, v45, v50, s0\n\tv_add_co_ci_u32_e64 v42, s0, v46, v51, s0\n\tv_add_co_ci_u32_e64 v43, s0, v47, v48, s0\n\tv_add_co_ci_u32_e64 v52, s0, v56, v61, s0\n\tv_add_co_ci_u32_e64 v53, s0, v57, v62, s0\n\tv_add_co_ci_u32_e64 v54, s0, v58, v63, s0\n\tv_add_co_ci_u32_e64 v55, s0, v59, v60, s0")
+// a 64-bit multiply-add: sources a, b and the addend pair; in one bank (a, b, addend low) or spread
+KERNELBANK(k_bank_mad_same, "v_mad_u64_u32 v[40:41], null, v44, v48, v[52:53]\n\tv_mad_u64_u32 v[42:43], null, v46, v50, v[54:55]\n\tv_mad_u64_u32 v[56:57], null, v44, v48, v[60:61]\n\tv_mad_u64_u32 v[58:59], null, v46, v50, v[62:63]\n\tv_mad_u64_u32 v[40:41], null, v44, v48, v[52:53]\n\tv_mad_u64_u32 v[42:43], null, v46, v50, v[54:55]\n\tv_mad_u64_u32 v[56:57], null, v44, v48, v[60:61]\n\tv_mad_u64_u32 v[58:59], null, v46, v50, v[62:63]")
+KERNELBANK(k_bank_mad_diff, "v_mad_u64_u32 v[40:41], null, v45, v50, v[52:53]\n\tv_mad_u64_u32 v[42:43], null, v47, v48, v[54:55]\n\tv_mad_u64_u32 v[56:57], null, v45, v50, v[60:61]\n\tv_mad_u64_u32 v[58:59], null, v47, v48, v[62:63]\n\tv_mad_u64_u32 v[40:41], null, v45, v50, v[52:53]\n\tv_mad_u64_u32 v[42:43], null, v47, v48, v[54:55]\n\tv_mad_u64_u32 v[56:57], null, v45, v50, v[60:61]\n\tv_mad_u64_u32 v[58:59], null, v47, v48, v[62:63]")
+
 typedef void (*kfn)(u32 *, u32, u64 *);
 struct K { const char *name; kfn f; int per; };  // per: instructions in one asm statement
 
@@ -150,6 +230,12 @@ int main(int argc, char **argv) {
     {"mad_u64 + 4 add", k_mad_u64_add4, 5},
     {"mad + 1 indep add", k_x_mad1, 2}, {"mad + 2 indep", k_x_mad2, 3}, {"mad + 3 indep", k_x_mad3, 4},
     {"mad + 4 indep", k_x_mad4, 5}, {"mad + 3 indep carry", k_x_madco3, 4}, {"mad + mul24 pair", k_x_mul24_2, 3},
+    {"add, sources one bank", k_bank_add_same, 1}, {"add, sources two banks", k_bank_add_diff, 1},
+    {"add_co_ci, one bank", k_bank_addc_same, 1}, {"add_co_ci, two banks", k_bank_addc_diff, 1},
+    {"mad, a b c.lo one bank", k_bank_mad_same, 1}, {"mad, spread", k_bank_mad_diff, 1},
+    {"1 mad chain a thread", k_dep_mad1, 1}, {"2 mad chains", k_dep_mad2, 1}, {"4 mad chains", k_dep_mad4, 1},
+    {"1 add chain", k_dep_add1, 1}, {"1 add_co chain (sgpr)", k_dep_addco1, 1},
+    {"1 carry chain (sgpr in/out)", k_dep_carry1, 1},
     {"mad alone (mix shape)", k_x_madonly, 1}, {"mad, SGPR source", k_x_mad_sgpr, 1},
     {"mad, literal source", k_x_mad_lit, 1}, {"mad, zero addend", k_x_mad_zero, 1}, {"mul_hi, SGPR source", k_x_mulhi_sgpr, 1},
   };

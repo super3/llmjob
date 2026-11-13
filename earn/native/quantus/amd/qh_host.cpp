@@ -255,7 +255,7 @@ extern "C" int qh_scan(QhCore *c, const QhWork *w, u64 *hits, u32 *nhits, int *o
       u64 n = run - off < QH_LAUNCH_N ? run - off : QH_LAUNCH_N;
       a.lo0 = lo + (u32)off;
       a.n = (u32)n;
-      u32 blocks = (u32)((n + QH_BLOCK * QH_NPT - 1) / (QH_BLOCK * QH_NPT));
+      u32 blocks = (u32)((n + QH_BLOCK - 1) / QH_BLOCK);
       hipLaunchKernelGGL(qh_search, dim3(blocks), dim3(QH_BLOCK), 0, c->stream, a, c->hits);
       if (!ok(hipGetLastError(), "kernel launch", err, len)) return -1;
     }
