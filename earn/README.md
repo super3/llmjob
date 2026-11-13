@@ -326,8 +326,12 @@ Releases also carry `pearl_core_hip.node`, a core for AMD cards (`native/amd`):
   installer. Its runtime, `amdhip64_7.dll`, comes with a current Adrenalin
   driver, so nothing else needs installing. A driver too old to have it can't
   load the core, and the log says to update the driver. No Windows Radeon has
-  run it yet, and the SDK's compiler (clang 21) is not the Linux one's (clang
-  22), so its speed there is unmeasured.
+  mined with it yet, and the SDK's compiler (clang 21) is not the Linux one's
+  (clang 22), so its speed there is unmeasured. The first one to try, an RX 9070
+  XT on Adrenalin 26.10.1, loaded the core but HIP listed no card. When that
+  happens the log now names the card, HIP's own error, the HIP runtime and
+  driver versions and which `amdhip64_7.dll` loaded, instead of the CUDA
+  build's "is an NVIDIA driver installed?".
 
 When `nvidia-smi` lists no NVIDIA card, the app and the CLI try the AMD core
 first. If it isn't installed, won't load, or can't start on its card, they load

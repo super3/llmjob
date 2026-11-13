@@ -41,6 +41,15 @@
 
 #include "pearl_amd_kernels.h"
 
+// For the DLL path and environment that count_devices reports when HIP finds no card. Host
+// pass only, and after the kernels, so none of windows.h's macros reach device code.
+#if defined(_WIN32) && !defined(__HIP_DEVICE_COMPILE__)
+#define PEARL_WIN_HOST 1
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#endif
+
 // GCC 11's libstdc++ headers make `new T[n]` and std::allocator call
 // std::__throw_bad_array_new_length, which is GLIBCXX_3.4.29, so the Linux core built with them
 // wouldn't load on Ubuntu 20.04 (GCC 10's libstdc++, 3.4.28), HiveOS's image: an RX 6700 XT rig
@@ -688,10 +697,63 @@ bool in_build(const char *arch) {
 // The card count, or why there isn't one. After a GPU fault ROCm refuses every later call in
 // the process, hipGetDeviceCount included, and on Linux by default it never recovers. That
 // must not read as a missing driver.
+//
+// On Windows a "no device" answer comes with what HIP said and where its runtime came from.
+// The first Windows Radeon to run this core (an RX 9070 XT on Adrenalin 26.10.1, 13 November)
+// got only "no AMD GPU found", with the driver installed and Vulkan working on the card, so
+// nothing said why. hipInit's own error, the runtime and driver versions, the amdhip64_7.dll
+// that loaded (a stray copy on PATH is not the driver's), and any variable that hides cards
+// from HIP are what tell the causes apart. ROCclr reads its variables from the process
+// environment block (GetEnvironmentStringsA), so they are read the same way here.
+#ifdef PEARL_WIN_HOST
+void describe_no_device(hipError_t initErr, hipError_t countErr, int count, char *err, size_t err_len) {
+  if (!err || !err_len) return;
+  int runtime = 0, driver = 0;
+  if (hipRuntimeGetVersion(&runtime) != hipSuccess) runtime = 0;
+  if (hipDriverGetVersion(&driver) != hipSuccess) driver = 0;
+  (void)hipGetLastError();
+  char dll[MAX_PATH] = "not found";
+  HMODULE mod = GetModuleHandleA("amdhip64_7.dll");
+  if (!mod || !GetModuleFileNameA(mod, dll, sizeof dll)) snprintf(dll, sizeof dll, "not found");
+  char hides[256] = {0};
+  const char *names[] = {"HIP_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GPU_DEVICE_ORDINAL"};
+  for (const char *name : names) {
+    char value[64] = {0};
+    const DWORD n = GetEnvironmentVariableA(name, value, sizeof value);
+    if (!n) continue;
+    const size_t used = strlen(hides);
+    snprintf(hides + used, sizeof hides - used, "%s%s=%s", used ? ", " : "", name,
+             n < sizeof value ? value : "(long)");
+  }
+  snprintf(err, err_len,
+           "no AMD GPU found by HIP (hipInit: %s; hipGetDeviceCount: %s, %d cards; HIP runtime %d, driver %d; "
+           "%s%s%s): update or reinstall AMD's Adrenalin driver",
+           hipGetErrorString(initErr), hipGetErrorString(countErr), count, runtime, driver, dll,
+           hides[0] ? "; set: " : "", hides);
+}
+#endif
+
 bool count_devices(int *devices, char *err, size_t err_len) {
+#ifdef PEARL_WIN_HOST
+  // Whether HIP has listed a card in this process yet. Until it has, any error is HIP not
+  // starting on this PC, not a GPU fault, so it gets the full description too.
+  static bool listed = false;
+  const hipError_t initErr = hipInit(0);
+#endif
   const hipError_t e = hipGetDeviceCount(devices);
   (void)hipGetLastError();
-  if (e == hipSuccess && *devices > 0) return true;
+  if (e == hipSuccess && *devices > 0) {
+#ifdef PEARL_WIN_HOST
+    listed = true;
+#endif
+    return true;
+  }
+#ifdef PEARL_WIN_HOST
+  if (e == hipSuccess || e == hipErrorNoDevice || !listed) {
+    describe_no_device(initErr, e, e == hipSuccess ? *devices : 0, err, err_len);
+    return false;
+  }
+#endif
   if (e == hipSuccess || e == hipErrorNoDevice) {
 #ifdef _WIN32
     fail(err, err_len, "no AMD GPU found: is AMD's graphics driver installed?");

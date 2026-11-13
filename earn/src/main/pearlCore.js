@@ -342,7 +342,8 @@ function coreFactory(opts = {}) {
 // beside AMD's driver for a Ryzen's built-in graphics. When the 12.8 build can't
 // start either, the AMD core's reason is the one thrown, since on a rig with no
 // NVIDIA card it is the one that says what to fix; unless that reason is that
-// there is no AMD card, which makes the CUDA one just as likely.
+// there is no AMD card, which makes the CUDA one just as likely. But when the OS
+// lists an AMD card that HIP didn't, the error says so (hipMissedCard).
 //
 // The Intel core is the same, with one difference in whose reason is thrown:
 // it is tried only where the system reports Arc cards, so "no Intel GPU found"
@@ -384,7 +385,8 @@ function otherFirst(variant, firstAddon, opts, say) {
           if (first) noDevice = errText(e);
           throw new Error(noDevice + (said ? '' : intelNoDevice(win)));
         }
-        throw noCard.test(errText(e)) ? e2 : e;
+        if (!noCard.test(errText(e))) throw e;
+        throw hipMissedCard(opts, e, e2) || e2;
       }
       say('warn', CU12, 'the ' + name + ' build could not start (' + errText(e) + ')');
       addon = cu12.addon;
@@ -415,6 +417,29 @@ function whereItIs(variant, win) {
   return win ? 'the Windows installer has it in resources\\native, or set PEARL_CORE_PATH'
     : 'the Linux release has it beside the CLI binary and in the AppImage, or build it with'
       + ' earn/native/amd/build-amd.sh gpu, or set PEARL_CORE_PATH';
+}
+
+// The error for a PC whose AMD card the OS lists (`opts.amd`, probe.detectGpuInfo's
+// `amd`) while HIP lists none, or null when the OS lists none either. Without it the
+// CUDA build's "no CUDA device found — is an NVIDIA driver installed?" was all a
+// Windows RX 9070 XT owner saw (13 November): the driver was installed, Vulkan ran
+// the local LLM on the card, and the AMD core's own reason was never logged. This
+// leads with the card and that reason, says what Windows means for it, and keeps the
+// CUDA words at the end (the HiveOS smoke test waits for them).
+function hipMissedCard(opts, amdErr, cudaErr) {
+  const cards = Array.isArray(opts.amd) ? opts.amd.filter((c) => c && c.name) : [];
+  if (!cards.length) return null;
+  const names = [...new Set(cards.map((c) => c.name))].join(', ');
+  const drivers = [...new Set(cards.map((c) => c.driverVersion).filter(Boolean))];
+  const windows = (opts.platform || process.platform) === 'win32';
+  return new Error((windows ? 'Windows' : 'this system') + ' lists ' + names
+    + (drivers.length ? ' (driver ' + drivers.join(', ') + ')' : '')
+    + ', but the AMD core could not use it: ' + errText(amdErr)
+    + (windows
+      ? '. No Radeon has mined Pearl on Windows yet, so this may be AMD\'s Windows HIP runtime and not this PC;'
+        + ' the same card mines on Linux and HiveOS'
+      : '')
+    + '. (The NVIDIA core found no card either: ' + errText(cudaErr) + ')');
 }
 
 // The 12.8 build standing in for an AMD core that would not load. nvidia-smi
