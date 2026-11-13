@@ -53,4 +53,11 @@
 # The same with the gathers' over-waits moved (dpb=7 dpm=1 dpg=3): a subtract that waited on a scoreboard whose
 # newest load went out a gap before has that wait on the first newer load instead, where its own load has long
 # landed. CUDA 13.3, build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX 5090 (1007 hits, 50 salts) and an RTX 5080 (636 hits, 32 salts). Probe: 99.04% of the pipe against 98.59% on a clock-bound 5080, 98.03% against 97.53% on a capped 5090 (tuning/benchmark.md, 12 November).
-13.3 0deef76098451c7902a9181324ac041ebce385b22ea27d3923b8d64083904ad4
+# (13.3 0deef76098451c7902a9181324ac041ebce385b22ea27d3923b8d64083904ad4: that file, replaced by the one below.)
+
+# The same with the records the eight warps share (sr=1) and the prologue's pointer step moved behind its 8-cycle
+# stall (srp=1): without it, on sm_120, the first record load could read the already-stepped pointer. CUDA 13.3,
+# build_rot.py --arch sm_120 on a Salad PC's Linux and on Windows: the same hash. verify-hits 400 of 400 on an RTX
+# 5090 (480 W PC: 1528 hits, 74 salts) and an RTX 5080 (360 W PC: 850 hits, 43 salts). hashrate.js on that 5090
+# (at its power cap): 426.67 TH/s against 423.59 for the file before, +0.73% (tuning/benchmark.md, 13 November).
+13.3 8584f90b22f055d96ca5c44bcab652614cc90864c4a4e629701ac5937513ff64
