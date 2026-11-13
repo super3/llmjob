@@ -211,6 +211,42 @@ int main(int argc, char **argv) {
       fprintf(stderr, "could not read the operands back\n");
       return 2;
     }
+    // The operands are read back twice and compared. On the Arc rig's card 5 a copy to the host now and then
+    // leaves a 64-byte line of the host buffer unwritten (goal-arc24): the reference made from that copy is then
+    // wrong, and every fold "fails" on the same few regions while the card's own data is right. Where the two
+    // reads differ, a third decides, byte by byte.
+    {
+      std::vector<int8_t> A2(Ap.size()), B2(Bp.size());
+      uint8_t s2[32];
+      if (!pearl_sycl_read_operands(ctx, A2.data(), B2.data(), s2)) {
+        fprintf(stderr, "could not read the operands back\n");
+        return 2;
+      }
+      size_t diff = 0;
+      for (size_t i = 0; i < Ap.size(); i++) diff += Ap[i] != A2[i];
+      for (size_t i = 0; i < Bp.size(); i++) diff += Bp[i] != B2[i];
+      if (diff) {
+        std::vector<int8_t> A3(Ap.size()), B3(Bp.size());
+        if (!pearl_sycl_read_operands(ctx, A3.data(), B3.data(), s2)) {
+          fprintf(stderr, "could not read the operands back\n");
+          return 2;
+        }
+        size_t unresolved = 0;
+        auto vote = [&](std::vector<int8_t> &x, const std::vector<int8_t> &y, const std::vector<int8_t> &z) {
+          for (size_t i = 0; i < x.size(); i++) {
+            if (x[i] == y[i]) continue;
+            if (y[i] == z[i]) x[i] = y[i];
+            else if (x[i] != z[i]) unresolved++;
+          }
+        };
+        vote(Ap, A2, A3);
+        vote(Bp, B2, B3);
+        fprintf(stderr, "note: two reads of the operands from the card differed in %zu bytes; a third read decided "
+                        "(%zu bytes undecided). The card's copies to the host lose data; the folds are not at fault.\n",
+                diff, unresolved);
+        if (unresolved) return 2;
+      }
+    }
     for (int i = 0; i < 8; i++) key[i] = pearl_b3::load_le32(aSeed + 4 * i);
     want.assign((size_t)batches * regions * 16, 0);
     wantHit.assign((size_t)batches * regions, 0);
@@ -297,7 +333,24 @@ int main(int argc, char **argv) {
       if (ref) {
         for (uint32_t r = 0; r < regions; r++) {
           compared++;
-          if (memcmp(&got[(size_t)r * 16], &want[((size_t)b * regions + r) * 16], 64) != 0) bad++;
+          if (memcmp(&got[(size_t)r * 16], &want[((size_t)b * regions + r) * 16], 64) != 0) {
+            bad++;
+            if (getenv("PEARL_CHECK_DIAG") && bad <= 24) {
+              // The region, and its reference made again from the same host copy (a second answer that differs
+              // from the first means the host's arithmetic or memory, not the copy).
+              const uint64_t region = (uint64_t)(first + b) * regions + r;
+              const uint32_t rowIdx = (uint32_t)(region % rowsValid), colIdx = (uint32_t)((region / rowsValid) % colsValid);
+              uint32_t w2[16];
+              ref_transcript(Ap.data(), Bp.data(), p.k, pearl_expand_offset(rowIdx, PEARL_ROWS_MASK),
+                             pearl_expand_offset(colIdx, PEARL_COLS_MASK), w2);
+              int wj = 0;
+              while (wj < 16 && got[(size_t)r * 16 + wj] == want[((size_t)b * regions + r) * 16 + wj]) wj++;
+              fprintf(stderr, "diag bad region %u: rowIdx %u (rowOff %u) colIdx %u first wrong word %d; ref again %s got, %s first ref\n",
+                      r, rowIdx, pearl_expand_offset(rowIdx, PEARL_ROWS_MASK), colIdx, wj,
+                      memcmp(w2, &got[(size_t)r * 16], 64) ? "!=" : "==",
+                      memcmp(w2, &want[((size_t)b * regions + r) * 16], 64) ? "!=" : "==");
+            }
+          }
           wh += wantHit[(size_t)b * regions + r];
         }
         if (wh != nh) hitBad++;

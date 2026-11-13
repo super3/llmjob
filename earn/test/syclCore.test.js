@@ -461,6 +461,15 @@ describe('every Intel GPU mines with every hit checked', () => {
     expect(CHECK).toContain('const int n = pearl_sycl_list_devices(list, sizeof list);');
     expect(CHECK).toContain('if (pearl_host_select_device(&p, requested, name, sizeof name, err, sizeof err) < 0) {');
   });
+
+  // The Arc rig's card 5 now and then leaves a 64-byte line of a copy to the host unwritten. The reference is made
+  // from the operands read back, so the check reads them twice and lets a third read settle any byte that differs.
+  test('pearl_sycl_check reads the operands back twice and votes where they differ', () => {
+    const reads = CHECK.split('pearl_sycl_read_operands(ctx, ').length - 1;
+    expect(reads).toBe(3);
+    expect(CHECK).toContain('if (y[i] == z[i]) x[i] = y[i];');
+    expect(CHECK).toContain('if (unresolved) return 2;');
+  });
 });
 
 // A stand-in addon: it prints the options it was opened with, and on setJob

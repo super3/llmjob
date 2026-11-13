@@ -4616,6 +4616,34 @@ Fill 40 / 48 / 56 / 63 level; 32 loses 0.6%.
 - Reading A' after the loop as well (`SQWT` 2) breaks even forms that pass (15,128 wrong): leave A' alone there.
 - arc22's bisection never reloaded the copy's hold: the switch is `PEARL_W_SEQPRL`, not `SQPRL`.
 
+### Arc rig, 13 November, from 04:45 UTC: why the mainnet-shaped check failed on card 5 (`goal/arc-24`)
+
+**The folds were right; card 5's copies to the host lose data.** The check's host reference is made from the
+operands read back from the card (768 MB). On card 5, now and then a 64-byte line of the host buffer is never
+written by that copy: it keeps whatever was there before (zeros in a fresh buffer). The reference made from it is
+wrong, so dot and xmx8w "fail" on the same regions: the 4 regions of a batch that use that A row, or the 16-row
+group of a B column. That is the 0-72 wrong regions seen with every build, ship-a21 and spare31 included, in the
+container and on the HiveOS host.
+
+- Reading the operands back a second time (`PEARL_CHECK_DIAG`, build `diag`): in 11 of 15 runs on card 5 one of
+  the two reads differed from the other by 64-319 bytes, always whole host cache lines, in random rows of A or B.
+  The fold results matched the read that was not missing the line, and the reference made again from the same host
+  copy came out the same: the host's arithmetic and memory are fine.
+- Card 4 (paused from mining for it, then put back on spare30): 21 runs, 63 reads of 768 MB, not one byte
+  different, every check PASS.
+- A plain SYCL copy test (`S/arc-k/copytest24.cpp`: a device buffer of a known pattern, copied to the host and
+  checked) loses lines on card 5 with Level Zero and OpenCL, into pageable and USM host memory, in one 768 MB copy or
+  in 4 MB pieces. So it is not the runtime or the buffer kind; it follows the card (or its riser or slot), not the
+  data. No AER or EDAC counters are readable without root on this host, and the link shows 2.5 GT/s x1 like the
+  others.
+- verify-hits stays 400/400: each hit is checked from a few kilobytes, so a lost line almost never touches one.
+- Fix in the check: it reads the operands twice and, where they differ, a third read decides byte by byte. It
+  prints a note naming the lost bytes and fails only if the reads cannot be settled. Card 5 with it: every
+  mainnet-shaped check that ran to the end passed, 17 in the container and 10 on the HiveOS host, with 64-510
+  bytes settled in most runs; verify.sh PASS.
+- Five runs ended in a GPU hang (`12:2:ecffffe4`) while container and host runs overlapped on card 5; 8 runs alone
+  after that, none. The copy test hit the same hang code on cards 4 and 5, so it looks like long copies, not card 5.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
