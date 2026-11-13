@@ -906,6 +906,7 @@ async function run(argv) {
 
   let endpoint = null;
   let amdGpus = [];   // planAmdGpus' cards, set below when the miner runs
+  let amdListed = null;   // the AMD cards the OS lists, for the core's error when HIP lists none
   if (plan.miner) {
     // Auto-detect the knobs the user didn't pin. Best-effort: any failure falls
     // back to the defaults already in `settings` and never blocks mining. Explicit
@@ -919,6 +920,7 @@ async function run(argv) {
     // different questions, and the count is still wanted for the 'gpu:' line
     // below when --gpu names the card.
     const det = await probe.detectGpuInfo();
+    amdListed = det && det.amd;
     if (!settings.gpuProvided && det && det.name) settings.gpu = det.name;
     // Every card mines, one core each, unless --gpu-index or PEARL_GPU_INDEX
     // chose some. Read here, with the rest of the startup probing, because the
@@ -1054,6 +1056,7 @@ async function run(argv) {
       resourcesPath: process.resourcesPath,
       gpus: settings.gpus,
       cards: cudaCards,
+      amd: amdListed,
       coreFlag: !!settings.core,
       log: coreLog,
     }), {
