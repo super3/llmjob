@@ -1077,6 +1077,53 @@ template <bool HW> inline void slm_write128(uint32_t *p, v4u v, uint32_t lane) {
 #endif
   for (int i = 0; i < 4; i++) p[8u * (uint32_t)i + lane] = v[i];
 }
+// goal-arc21 (PEARL_W_SA): the k-step's messages with their addresses made inside the asm, as one scalar add of
+// an immediate to a base the chunk sets. IGC builds each address as an 8-lane value (a broadcast mov for every
+// local message, two strided movs for every 64-bit one), and in this loop every instruction costs: about 0.05% a
+// chunk each (goal-arc21, PEARL_W_XALU priced on spare30's code). Only for the HW path of the split fold.
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+// The address temporary is an output of the asm (IGC gives it a register), not a .decl in braces: braces kept
+// the finalizer from moving the messages among the DPAS (98.5 against 101.7, card 5).
+template <int OFF> inline v8i sa_slm_rd256(uint32_t base) {
+  v8i r;
+  if constexpr (OFF == 0) {
+    __asm__ volatile("lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32" : "=rw"(r) : "rw"(base));
+  } else {
+    uint32_t t;
+    __asm__ volatile("add (M1_NM, 1) %1(0,0)<1> %2(0,0)<0;1,0> %3\n"
+                     "lsc_load.slm (M1_NM, 1) %0:d32x64t flat[%1]:a32"
+                     : "=rw"(r), "=rw"(t) : "rw"(base), "i"(OFF));
+  }
+  return r;
+}
+template <int OFF> inline void sa_slm_st128(uint32_t base, v4u v) {
+  if constexpr (OFF == 0) {
+    __asm__ volatile("lsc_store.slm (M1_NM, 1) flat[%0]:a32 %1:d64x16t" : : "rw"(base), "rw"(v));
+  } else {
+    uint32_t t;
+    __asm__ volatile("add (M1_NM, 1) %0(0,0)<1> %1(0,0)<0;1,0> %3\n"
+                     "lsc_store.slm (M1_NM, 1) flat[%0]:a32 %2:d64x16t"
+                     : "=rw"(t) : "rw"(base), "rw"(v), "i"(OFF));
+  }
+}
+// A 64-bit base plus OFF (a 64-bit add of an immediate).
+#define PEARL_SA_G(CC, DT, OUT)                                                     \
+  do {                                                                              \
+    uint64_t t;                                                                     \
+    __asm__ volatile("add (M1_NM, 1) %1(0,0)<1> %2(0,0)<0;1,0> %3\n"                \
+                     "lsc_load.ugm." CC " (M1_NM, 1) %0:" DT " flat[%1]:a64"        \
+                     : "=rw"(OUT), "=rw"(t) : "rw"(base), "i"(OFF));                \
+  } while (0)
+template <int OFF> inline v8i sa_g256(uint64_t base) {
+  v8i r;
+  PEARL_SA_G("ca.ca", "d32x64t", r);
+  return r;
+}
+template <typename F, size_t... I> inline void eachc_of(F &f, std::index_sequence<I...>) {
+  (f(std::integral_constant<int, (int)I>{}), ...);
+}
+template <int N, typename F> inline void eachc(F f) { eachc_of(f, std::make_index_sequence<N>{}); }
+#endif
 // goal-arc13: 512 bytes each way as two 256-byte messages (d64x64t does not assemble on DG2).
 typedef int v16i __attribute__((ext_vector_type(16)));
 template <bool HW> inline v16i g_read512(const int8_t *p, uint32_t lane) {
@@ -1931,6 +1978,33 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #define PEARL_W_PXB
 #define PEARL_W_PXA
 #endif
+// goal-arc21: the sets of a work-group run as one stream (PEARL_W_SEQP, see run_set in FoldXmxW), in work-groups of
+// at least PEARL_W_SEQPCW column windows (the full-speed instance; under duty 75 the CW 1 instance lost 0.5% with
+// it). PEARL_W_NOSEQP: off.
+#if !defined(PEARL_W_NOSEQP) && !defined(PEARL_W_SEQP)
+#define PEARL_W_SEQP
+#endif
+#ifndef PEARL_W_SEQPCW
+#define PEARL_W_SEQPCW 2
+#endif
+#if defined(PEARL_W_SA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+// goal-arc21 (PEARL_W_SA): the copy's 128-byte load with its cache control (PEARL_W_CPCC, PEARL_W_CPCC1).
+template <int OFF, int CW> inline v4u sa_g128(uint64_t base) {
+  v4u r;
+#if defined(PEARL_W_CPCC1)
+  if constexpr (CW == 1) {
+    PEARL_SA_G(PEARL_W_CPCC1, "d32x32t", r);
+    return r;
+  }
+#endif
+#if defined(PEARL_W_CPCC)
+  PEARL_SA_G(PEARL_W_CPCC, "d32x32t", r);
+#else
+  PEARL_SA_G("ca.ca", "d32x32t", r);
+#endif
+  return r;
+}
+#endif
 template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
@@ -2007,6 +2081,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #define PEARL_W_S2CW 0
 #endif
   static constexpr bool kS2 = kSplit && (PEARL_W_S2CW) > 0 && CW >= (PEARL_W_S2CW);
+#if defined(PEARL_W_SA)
+  // goal-arc21: the k-step with addresses made in the asm (see the chunk loop); the default shape only.
+  static constexpr bool kSA = kSplit && AH && KPS == 4 && !kHalf && kBps == 1u;
+#else
+  static constexpr bool kSA = false;
+#endif
+#if defined(PEARL_W_SEQP)
+  static constexpr bool kSeqP = SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;
+#else
+  static constexpr bool kSeqP = false;
+#endif
 #if defined(PEARL_W_SLOTS)
   // goal-arc8: 2 slots, with the group's arrive after the slot's last local reads (else 3, arrive before them).
   static constexpr uint32_t kSlots = PEARL_W_SLOTS;
@@ -2176,7 +2261,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       wc = wcb * CW + widx / RW;
     }
     const uint32_t wcbS = wcb;
+    cvec nextS[kBps];  // the copy's hold, carried from set to set (kSeqP)
     auto run_set = [&](int set) {
+    // goal-arc21 (kSeqP, PEARL_W_SEQP): the sets of a work-group run as one stream of 64 SEQ k-steps. The ring's
+    // slots count on across sets; set s of column window jc takes column block base + jc SEQ + s, so each
+    // sub-group's copy runs from one set's B' straight into the next set's (no clamp: past the last set it reads
+    // the next block or the host's tail, into a slot no one reads); only the first set fills the ring, zeroes
+    // `part` (every set's) and arrives before its loop; only the last waits and meets the whole group after it.
+    // A' is loaded again at each set's start (the last set's k-step brought it into L1): carried in registers,
+    // IGC took the block read's result for a uniform value across the set loop and set 1 read wrong A'; made
+    // per-lane to it, it lost 2-6%. Card 5, full speed: 102.3-102.5 against 101.6-101.7 (spare30's code).
+    const bool firstSet = !kSeqP || set == 0, lastSet = !kSeqP || set == SEQ - 1;
 #if defined(PEARL_W_PART1)
     // goal-arc17 timing (wrong results): every set XORs into one part buffer, so SEQ 4 to 16 fit 64 KB. With
     // NOEPI, card 5: SEQ 2 / 4 / 8 / 16 101.8-101.9 / 102.2 / 97.0 / 74.7. Longer work-groups gain only 0.3%.
@@ -2186,12 +2281,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
     if constexpr (SEQ > 1) {
       wcb = wcbS * (uint32_t)SEQ + (uint32_t)set;
-      wc = wcb * CW + widx / RW;
+      wc = kSeqP ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + (uint32_t)set : wcb * CW + widx / RW;
     }
     const uint32_t jc = widx / RW;  // the window's column block in the ring
 #if defined(PEARL_W_HROT)
 #if defined(PEARL_W_HROTP)
     const uint32_t hrot = (widx & 1u) ? (uint32_t)(PEARL_W_HROT) : 0u;  // odd windows
+#elif defined(PEARL_W_HROTJ)
+    // goal-arc21 (PEARL_W_HROTJ): the second column window (jc 1) takes each chunk's k-steps rotated, so it reads
+    // the A' its row twin (jc 0) read a k-step or more before, from L1, instead of missing beside it.
+    const uint32_t hrot = jc * (uint32_t)(PEARL_W_HROT);
 #else
     const uint32_t hrot = widx >= (uint32_t)RW / 2u ? (uint32_t)(PEARL_W_HROT) : 0u;
 #endif
@@ -2216,7 +2315,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + (b >> 1) / 16u) * A.bStride + (size_t)((b >> 1) % 16u) * 128u
                  + (size_t)(b & 1u) * 64u;
       else
-        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + b / 16u) * A.bStride + (size_t)(b % 16u) * 128u;
+        Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + (kSeqP ? wcbS * (uint32_t)SEQ * CW + (b / 16u) * (uint32_t)SEQ + (uint32_t)set
+                                                          : wcb * CW + b / 16u)) * A.bStride
+                 + (size_t)(b % 16u) * 128u;
 #endif
     });
     uint32_t *R = &ring[0];
@@ -2257,8 +2358,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     }
 #endif
     // Where k-step k's B' lies in the ring.
-    auto at = [&](uint32_t k) { return ((k / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep; };
+    auto at = [&](uint32_t k) {
+      return (((kSeqP ? k + 64u * (uint32_t)set : k) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+    };
     auto mine = [&](int i) { return kHalf ? R + sgl * 16u : R + (sgl + (uint32_t)i * kNsg) * 32u; };
+#if defined(PEARL_W_NOPRO)
+    // goal-arc21 timing (wrong results): no fill of the first slot of set 0 (only later sets fill theirs), to price
+    // the start-of-set bubble: card 5, 102.1-102.3 against 101.6-101.7.
+    if (set > 0)
+#endif
+    if (firstSet)
     each<KPS>([&](int k) {
       each<kBps>([&](int i) {
         cp_write(mine(i) + at((uint32_t)k), cp_read(Bbi[i] + (size_t)k * 2048u, lane), lane);
@@ -2274,7 +2383,8 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       each<kBps>([&](int i) { cp_write(mine(i) + at(k), cp_read(Bbi[i] + (size_t)k * 2048u, lane), lane); });
     });
 #endif
-    cvec next[kBps];
+    cvec nextL[kBps];
+    cvec(&next)[kBps] = kSeqP ? nextS : nextL;
 #if defined(PEARL_W_A2)
     // the second slot too (k-steps KPS .. 2 KPS - 1), then the copy runs two slots ahead
     each<KPS>([&](int k) {
@@ -2283,7 +2393,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       });
     });
 #endif
-    each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
+    if (firstSet) each<kBps>([&](int i) { next[i] = cp_read(Bbi[i] + (size_t)(kAhead * KPS) * 2048u, lane); });
 #if defined(PEARL_W_CPH)
     // goal-arc12 timing (wrong results): the copy's global load as one 256-byte read every other k-step, its two
     // halves stored in turn: half the load messages, the same bytes. 96.6 against 96.3 (card 5): message count
@@ -2499,10 +2609,13 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_PXB)
       // goal-arc20 (PEARL_W_PXB, PXT 2's layout): a window's 128 words lie together, so zero them as two 256-byte
       // block stores instead of 16 stores whose 8 lanes all hit one bank.
-      if (sgi == 0u) {
+      if (sgi == 0u && firstSet) {
         uint32_t *P = &part[0];
-        slm_write256<HW>(P + pOff + widx * 128u, (v8i)0, lane);
-        slm_write256<HW>(P + pOff + widx * 128u + 64u, (v8i)0, lane);
+        for (uint32_t z = 0; z < (kSeqP ? (uint32_t)SEQ : 1u); z++) {
+          const uint32_t zo = kSeqP ? z * kPartWords : pOff;
+          slm_write256<HW>(P + zo + widx * 128u, (v8i)0, lane);
+          slm_write256<HW>(P + zo + widx * 128u + 64u, (v8i)0, lane);
+        }
       }
 #elif defined(PEARL_W_PXT) || defined(PEARL_W_PARTMIN)
       if (sgi == 0u && lane < 8u) each<16>([&](int j) { part[pOff + pix(widx, lane, (uint32_t)j)] = 0u; });
@@ -2568,11 +2681,63 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     }
 #endif
 #endif
-    arrive(it);
+    if (firstSet) arrive(it);
 #if defined(PEARL_W_CHUNROLL)
 #pragma unroll PEARL_W_CHUNROLL
 #endif
     for (uint32_t ch = 0; ch < 16u; ch++) {
+#if defined(PEARL_W_RDI)
+      // goal-arc21 (PEARL_W_RDI): the readout XORed during the chunk's last k-step, a B' fragment behind the DPAS.
+      v4i rdP[2] = {0, 0};
+#endif
+#if defined(PEARL_W_SA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+      // goal-arc21 (PEARL_W_SA): the default k-step (copy, A' a k-step ahead as 256-byte messages, B' as 256-byte
+      // local reads, 8x4 split DPAS) with every message's address a chunk base plus an immediate, added inside
+      // the asm. Past the last k-step the A' and copy loads read beyond the operand (the host leaves a tail
+      // after each); the copy stores those bytes into a slot no one reads.
+      if constexpr (kSA) {
+        // vz (a runtime 0 that differs by lane to the compiler) keeps each base an 8-lane value set once: as a
+        // uniform value IGC broadcasts it into a new register at every asm that reads it.
+        const uint32_t vz = lane * A.zero;
+        const uint32_t ring0 = (uint32_t)(uintptr_t)(__attribute__((opencl_local)) uint32_t *)R + vz;
+        const uint32_t rbB = ring0 + 4u * ((ch % kSlots) * kSlotWords + jc * 512u + sgi * 256u);
+        const uint32_t stB = ring0 + 4u * (((ch + 1u) % kSlots) * kSlotWords + sgl * 32u);
+        const uint32_t aL0 = aLo + vz + sgi * 128u + (4u * ch + 1u) * 512u;
+        const uint64_t aB0 = ((uint64_t)aHi << 32) | aL0, aB1 = ((uint64_t)aHi << 32) | (aL0 + A.aStride);
+        const uint64_t cB = ((uint64_t)bHi << 32) | (bLo[0] + vz + (4u * ch + 5u) * 2048u);
+        eachc<4>([&](auto Sc) {
+          constexpr int S = decltype(Sc)::value;
+          constexpr int kStepB = 4 * (int)kStep;
+          if constexpr (S == 0) wait(it);
+          const v4u cv = sa_g128<S * 2048, CW>(cB);
+          sa_slm_st128<S * kStepB>(stB, next[0]);
+          next[0] = cv;
+          if constexpr (S == 3) arrive(it);
+          v4i ah[4];
+          each<4>([&](int rb) { ah[rb] = ahn[rb]; });
+          {
+            const v8i t0 = sa_g256<S * 512>(aB0), t1 = sa_g256<S * 512>(aB1);
+            ahn[0] = __builtin_shufflevector(t0, t0, 0, 1, 2, 3);
+            ahn[1] = __builtin_shufflevector(t0, t0, 4, 5, 6, 7);
+            ahn[2] = __builtin_shufflevector(t1, t1, 0, 1, 2, 3);
+            ahn[3] = __builtin_shufflevector(t1, t1, 4, 5, 6, 7);
+          }
+          v8i bq[4];
+          bq[0] = sa_slm_rd256<S * kStepB>(rbB);
+          bq[1] = sa_slm_rd256<S * kStepB + 256>(rbB);
+          bq[2] = sa_slm_rd256<S * kStepB + 512>(rbB);
+          bq[3] = sa_slm_rd256<S * kStepB + 768>(rbB);
+          each<4>([&](int cb) {
+            each<4>([&](int rb) {
+              each<2>([&](int h) {
+                v4i &acc = c4[rb >> 1][(rb & 1) * 4 + cb][h];
+                acc = split_dpas4<HW>(v2i{ah[rb][2 * h], ah[rb][2 * h + 1]}, bq[cb], acc);
+              });
+            });
+          });
+        });
+      } else
+#endif
       for (uint32_t s = 0; s < 4u; s++) {
         const uint32_t ks = ch * 4u + s;
 #if defined(PEARL_W_ROT)
@@ -2793,7 +2958,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             // rest its instructions and scoreboard tokens.
             const cvec v = cp_read(lo32(bHi, bLo[i] + ((kn < 64u ? kn : 63u) & (uint32_t)(PEARL_W_CPHOT)) * 2048u), lane);
 #else
-            const cvec v = cp_read(lo32(bHi, bLo[i] + (kn < 64u ? kn : 63u) * 2048u), lane);
+            const cvec v = cp_read(lo32(bHi, bLo[i] + (kSeqP ? kn : (kn < 64u ? kn : 63u)) * 2048u), lane);
 #endif
 #endif
 #else
@@ -2836,6 +3001,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
 #else
         auto cp_at = [&](int) {};
+#endif
+#if defined(PEARL_W_PFS) && defined(PEARL_W_LO32)
+        // goal-arc21 (PEARL_W_PFS=d): PFA without its loop (CW 2 only: 32 sub-groups, 32 pieces of 256 bytes, one
+        // each): sub-group sgl prefetches piece sgl of the work-group's A' of k-step ks + d into L1.
+        if constexpr (kNsg == (uint32_t)RW * 4u) {
+          const uint32_t kf = (ks + (uint32_t)(PEARL_W_PFS)) & 63u;
+          const uint32_t wr0 = wr - widx % (uint32_t)RW;
+          const uint32_t lo = (uint32_t)(uintptr_t)A.Ap + (2u * (wr0 + sgl / 4u) + (sgl / 2u) % 2u) * A.aStride + kf * 512u + (sgl % 2u) * 256u;
+          g_pf256<HW>(lo32(aHi, lo));
+        }
 #endif
 #if defined(PEARL_W_PFA) && defined(PEARL_W_LO32)
         // goal-arc17 (PEARL_W_PFA=d): the work-group's A' of k-step ks + d prefetched into L1, 256 bytes a message:
@@ -2961,7 +3136,17 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           // asm using it, or extra unused inputs on the last load) changes nothing in the ISA: IGC drops operands
           // the asm text does not name, and k-step 1's loads still land in k-step 0's registers. "=&rw" drops
           // the load. So BA stays off for 24.35 at RW 16. At RW 8 (the default from goal-arc15) 24.35 passes.
+#if defined(PEARL_W_BJIT)
+          each<(PEARL_W_BJIT)>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
+          return;
+#endif
+#if defined(PEARL_W_VZB)
+          // goal-arc21 (PEARL_W_VZB): the ring pointer made per-lane to the compiler (plus a runtime 0 times the lane),
+          // so each read's address is one 8-lane add instead of a scalar add and a broadcast mov.
+          each<4>([&](int cb) { dst[cb] = slm_read256<HW>(R + (lane * A.zero) + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
+#else
           each<4>([&](int cb) { dst[cb] = slm_read256<HW>(R + off + jc * 512u + (sgi * 4u + (uint32_t)cb) * 64u, lane); });
+#endif
           return;
 #endif
 #if defined(PEARL_W_B8)
@@ -3037,7 +3222,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             each<4>([&](int rb) { ahn[rb] = ahn2[rb]; });
             load_ah(ks + 2u < 64u ? kdo(ks + 2u) : 63u, ahn2);
 #elif !defined(PEARL_W_AHLATE)
-            load_ah(ks + 1u < 64u ? kdo(ks + 1u) : 63u, ahn);
+            load_ah(kSeqP ? (ks + 1u) & 63u : (ks + 1u < 64u ? kdo(ks + 1u) : 63u), ahn);
 #endif
           } else {
 #if defined(PEARL_W_AHALF)
@@ -3203,6 +3388,19 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
                 acc = split_dpas4<HW>(v2i{ah[rb][2 * h], ah[rb][2 * h + 1]}, bq[cb], acc);
               });
             });
+#if defined(PEARL_W_RDI)
+            if (s == 3u && cb >= (PEARL_W_RDI)) {
+              const int pc = cb - (PEARL_W_RDI);
+              each<2>([&](int j) {
+                rdP[j] ^= (c4[0][j * 4 + pc][0] ^ c4[0][j * 4 + pc][1]) ^ (c4[1][j * 4 + pc][0] ^ c4[1][j * 4 + pc][1]);
+              });
+            }
+#endif
+#if defined(PEARL_W_BJIT)
+            // goal-arc21 (PEARL_W_BJIT=n): only n B' fragments read before the DPAS; fragment cb + n is read once
+            // fragment cb's DPAS are issued, so at most n + 1 are live (registers for A' further ahead).
+            if (cb + (PEARL_W_BJIT) < 4) bq[cb + (PEARL_W_BJIT)] = rd1(slot, cb + (PEARL_W_BJIT));
+#endif
           });
           cp_at(4);
 #else
@@ -3228,6 +3426,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             af[rb] = (v8i)__builtin_shufflevector(lo, hi, 0, 1, 2, 3, 4, 5, 6, 7);
           });
           read_b();
+#if defined(PEARL_W_BJIT)
+          each<4>([&](int cb) { if (cb >= (PEARL_W_BJIT)) bq[cb] = rd1(slot, cb); });
+#endif
           each<4>([&](int cb) {
             each<4>([&](int rb) {
               c[rb >> 1][(rb & 1) * 4 + cb] = dpas<8, HW>(sg, af[rb], bq[cb], c[rb >> 1][(rb & 1) * 4 + cb]);
@@ -3277,6 +3478,16 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #if defined(PEARL_W_AA)
         // A' read as 256-byte pieces (PEARL_W_AA): accumulators with rb & 1 == 0 hold row class 0 (all four
         // elements), rb & 1 == 1 class 1. c4[rb >> 1][(rb & 1) * 4 + cb][h].
+#if defined(PEARL_W_RDI)
+        // the fragments the k-step's DPAS loop did not reach (the last PEARL_W_RDI)
+        each<(PEARL_W_RDI)>([&](int i) {
+          const int pc = 4 - (PEARL_W_RDI) + i;
+          each<2>([&](int j) {
+            rdP[j] ^= (c4[0][j * 4 + pc][0] ^ c4[0][j * 4 + pc][1]) ^ (c4[1][j * 4 + pc][0] ^ c4[1][j * 4 + pc][1]);
+          });
+        });
+        const v4i t0 = rdP[0], t1 = rdP[1];
+#else
         v4i u[2][2];
         each<2>([&](int j) {
           each<2>([&](int q) {
@@ -3285,6 +3496,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
           });
         });
         const v4i t0 = u[0][0] ^ u[0][1], t1 = u[1][0] ^ u[1][1];
+#endif
         x0 = (uint32_t)((t0[0] ^ t0[1]) ^ (t0[2] ^ t0[3]));
         x1 = (uint32_t)((t1[0] ^ t1[1]) ^ (t1[2] ^ t1[3]));
 #else
@@ -3361,7 +3573,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         // and stepped by 32 bytes a chunk, so IGC has no address arithmetic in the loop to rebuild.
         if constexpr (kPartX && HW) {
           const uint32_t pa = pxa0 + ch * 32u, pv = (lane & 1u) ? x1 : x0;
+#if defined(PEARL_W_PXST)
+          // goal-arc21 timing (wrong results): a plain 8-lane store where the atomic was: the price of the atomic itself.
+          __asm__ volatile("lsc_store.slm (M1, 8) flat[%0]:a32 %1:d32" : : "rw"(pa), "rw"(pv));
+#else
           __asm__ volatile("lsc_atomic_xor.slm (M1, 8) %%null:d32 flat[%0]:a32 %1 %%null" : : "rw"(pa), "rw"(pv));
+#endif
         } else
 #endif
         if constexpr (kPartX) {
@@ -3390,6 +3607,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         }
       }
     }
+    if (!lastSet) return;
     wait(it);
 #if defined(PEARL_W_NOPXA)
     if (A.zero && tw[0] == 0x12345678u) part[0] = tw[0];
@@ -3425,7 +3643,7 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
     for (uint32_t js = SEQ > 1 ? sgi : 0u; js < (uint32_t)SEQ; js += 2u) {
     if constexpr (SEQ > 1) {
       wcb = wcbS * (uint32_t)SEQ + js;
-      wc = wcb * CW + widx / RW;
+      wc = kSeqP ? wcbS * (uint32_t)SEQ * CW + (widx / RW) * (uint32_t)SEQ + js : wcb * CW + widx / RW;
     }
 #if defined(PEARL_W_REGWORDS)  // (SEQ 1 only: R and tw belong to the set)
     if constexpr (kRegWords) {

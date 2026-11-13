@@ -293,9 +293,11 @@ uint32_t operand_pad(bool isA) {
   if (v > 65536ul) v = 65536ul;
   return (uint32_t)(v / 128ul * 128ul);
 }
+// goal-arc21: and 16 KB after the last block. xmx8w's k-step (PEARL_W_SA) loads A' a k-step ahead and the copy's
+// B' five k-steps ahead with no clamp, so its last k-steps read up to 10 KB past an operand's last block.
 size_t padded_bytes(size_t rows, size_t k, bool isA) {
   const size_t blk = isA ? 16u : 64u;
-  return (rows + blk - 1) / blk * (blk * k + operand_pad(isA));
+  return (rows + blk - 1) / blk * (blk * k + operand_pad(isA)) + 16384u;
 }
 
 // What one context of `profile` allocates on the device, in bytes.
