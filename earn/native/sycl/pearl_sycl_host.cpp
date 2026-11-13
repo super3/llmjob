@@ -180,7 +180,7 @@ struct Ctx {
   int8_t *dAp = nullptr, *dBp = nullptr;  // noised operands, row-major or in fragment order (frag)
   int frag = 0;                           // how dAp and dBp are stored now (fold_layout)
   bool straddle = false;                  // dAp or dBp crosses a 4 GB boundary: no split fold (launch_fold)
-  bool seqp = false;                      // goal-arc21: xmx8w's set stream (PEARL_SYCL_SEQP=1; launch_fold)
+  int seqp = 0;                           // xmx8w's set stream: 0 off, 1 on, 2 in 24.35's forms (goal-arc21/23; launch_fold)
   uint32_t ringWpg = 1;                   // xmx8r: windows a work-group
   uint32_t aStride = 0, bStride = 0;      // fragment order: bytes a 16-row block of A', a 64-column block of B'
   int8_t *dEAL = nullptr, *dEBR = nullptr;
@@ -765,6 +765,21 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
 #if defined(PEARL_W_SMP)
   const_cast<FoldArgs &>(a).img = smp_image(q);
 #endif
+#if defined(PEARL_W_TSC)
+  // goal-arc23 measurement: launch PEARL_W_TSCN (default 30) of this process gets each work-group's first start and
+  // last end (GPU timestamps) and Xe-core, written to the file PEARL_W_TSCOUT (4 uint64 a work-group).
+  static int tscCalls = 0;
+  const bool tscDump = ++tscCalls == atoi(env_str("PEARL_W_TSCN", "30").c_str()) && !env_str("PEARL_W_TSCOUT", "").empty();
+  {
+    static uint64_t *tsc = nullptr;
+    const size_t n = 1u << 16;
+    if (!tsc) tsc = sycl::malloc_device<uint64_t>(n * 4, q);
+    std::vector<uint64_t> init(n * 4, 0);
+    for (size_t i = 0; i < n; i++) init[i * 4] = ~0ull;
+    q.memcpy(tsc, init.data(), n * 4 * sizeof(uint64_t)).wait();
+    const_cast<FoldArgs &>(a).tsc = tsc;
+  }
+#endif
 #if defined(PEARL_W_STAG)
   {
     static uint32_t *tick = nullptr;
@@ -831,8 +846,10 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
         break;
       }
       if (env_str("PEARL_SYCL_WSEQ", "2") != "1" && (a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {
-        // goal-arc21: the set stream (FoldXmxW's kSeqP), opt-in: HiveOS's 24.35 driver miscompiles it.
-        if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
+        // goal-arc21: the set stream (FoldXmxW's kSeqP), opt-in on the newer driver. goal-arc23: seqp 2 is the stream
+        // in the forms HiveOS's 24.35 driver compiles right (FoldXmxW's S24), the default there (see Ctx::seqp).
+        if (ctx->seqp == 2) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true, true>(q, a, groups);
+        else if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);
         else fold_xmxw<true, 2>(q, a, groups);
         break;
       }
@@ -852,6 +869,16 @@ void launch_fold(Ctx *ctx, int fold, const FoldArgs &a, uint32_t groups) {
     case kXmx8Emu: fold_xmx<8, 1, false>(q, a, groups); break;
     default: fold_dot(q, a, groups); break;
   }
+#if defined(PEARL_W_TSC)
+  if (tscDump) {
+    std::vector<uint64_t> h((size_t)1u << 18);
+    q.memcpy(h.data(), a.tsc, h.size() * sizeof(uint64_t)).wait();
+    if (FILE *f = fopen(env_str("PEARL_W_TSCOUT", "").c_str(), "wb")) {
+      fwrite(h.data(), sizeof(uint64_t), h.size(), f);
+      fclose(f);
+    }
+  }
+#endif
 }
 
 FoldArgs fold_args(Ctx *ctx, uint64_t nonce_base, int slot, uint32_t *allTr) {
@@ -998,7 +1025,12 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     }
     auto handler = [ctx](sycl::exception_list el) { record_async(ctx, el); };
     sycl::context sctx(ctx->dev, handler);
+#if defined(PEARL_W_PROF)
+    // goal-arc23 (measurement only): profiling on, so the check bench can time the fold on the GPU itself.
+    ctx->q = new sycl::queue(sctx, ctx->dev, handler, {sycl::property::queue::in_order(), sycl::property::queue::enable_profiling()});
+#else
     ctx->q = new sycl::queue(sctx, ctx->dev, handler, sycl::property::queue::in_order());
+#endif
     ctx->side = new sycl::queue(sctx, ctx->dev, handler, sycl::property::queue::in_order());
   } catch (const std::exception &e) {
     fail(err, err_len, std::string("could not open the SYCL device: ") + e.what());
@@ -1053,7 +1085,22 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
 
   sycl::queue &q = *ctx->q;
   ctx->compact = profile->operand_fill == PEARL_OPERAND_CONST;
-  ctx->seqp = env_str("PEARL_SYCL_SEQP", "0") == "1";
+  // goal-arc23: PEARL_SYCL_SEQP 0 / 1 / 2 forces the set stream off / on / in 24.35's forms. Unset, a 24.x OpenCL
+  // driver (HiveOS: 24.35, where it is +1.0%, 94.5-94.7 against 93.6 on card 5) gets 2, every other driver 0 (the
+  // newer one runs 2 slower than the stream off, and 1 is still opt-in).
+  {
+    const std::string s = env_str("PEARL_SYCL_SEQP", "");
+    if (s == "0" || s == "1" || s == "2") {
+      ctx->seqp = s[0] - '0';
+    } else {
+      std::string drv;
+      try {
+        if (ctx->dev.get_backend() == sycl::backend::opencl) drv = ctx->dev.get_info<sycl::info::device::driver_version>();
+      } catch (const std::exception &) {
+      }
+      ctx->seqp = drv.rfind("24.", 0) == 0 ? 2 : 0;
+    }
+  }
   const size_t aBytes = (size_t)profile->m * k, bBytes = (size_t)profile->n * k;
   bool ok = true;
   // `window`: the noised operands, each inside one 4 GB-aligned window if five tries allow (the split fold
@@ -1454,13 +1501,24 @@ extern "C" bool pearl_sycl_run_batch(void *handle, uint64_t nonce_base, int fold
     set_layout(ctx, fold_layout(fold < 0 ? ctx->fold : fold));
     q.wait_and_throw();
     const auto t0 = std::chrono::steady_clock::now();
+#if defined(PEARL_W_PROF)
+    const sycl::event pe0 = q.ext_oneapi_submit_barrier();
+#endif
     launch_fold(ctx, fold < 0 ? ctx->fold : fold, fold_args(ctx, nonce_base, 0, dTr), fold_groups(ctx));
+#if defined(PEARL_W_PROF)
+    const sycl::event pe1 = q.ext_oneapi_submit_barrier();
+#endif
     q.wait_and_throw();
 #if defined(PEARL_W_SEPQ) && defined(PEARL_SYCL_XMX_JIT)
     ctx->sepEvSet = false;
     ctx->side->wait_and_throw();
 #endif
     if (ms) *ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+#if defined(PEARL_W_PROF)
+    if (ms && getenv("PEARL_W_PROFGPU"))
+      *ms = (double)(pe1.get_profiling_info<sycl::info::event_profiling::command_end>()
+                     - pe0.get_profiling_info<sycl::info::event_profiling::command_end>()) / 1e6;
+#endif
     q.memcpy(ctx->hHits[0], ctx->dHits[0], sizeof(HitBuf)).wait();
     if (hits) *hits = ctx->hHits[0]->count;
     if (transcripts) {

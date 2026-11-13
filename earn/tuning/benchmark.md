@@ -4551,6 +4551,71 @@ time (staged builds, host check at 2048 with `PEARL_SYCL_SEQP=1`):
 - Default build on 24.35 (staged ship-a22-base): xmx8w and xmx8w-emu PASS at both column widths, mainnet-shaped
   dot and xmx8w PASS, `--bench 8` 91.7-91.9 against ship-a21's 91.8-91.9.
 
+### Arc rig, 13 November, from 03:00 UTC: the set stream on HiveOS, and where a batch's time goes (`goal/arc-23`)
+
+**Ships: the set stream on HiveOS's 24.35 driver, by default there.** A new instance of the stream (FoldXmxW's `S24`,
+`PEARL_SYCL_SEQP=2`) in forms 24.35 compiles right; the host picks it when the device's OpenCL driver version starts
+with "24." and keeps the stream off elsewhere, as before. Staged default build on the HiveOS host (card 5): xmx8w and
+xmx8w-emu PASS at 2048 at both column widths; `--bench 8` 94.8-94.9 TH/s against 91.8 for the same build with
+`PEARL_SYCL_SEQP=0` and ship-a20 (+3.3%; an earlier pair of runs gave 94.5-94.7 against 93.6). The mainnet-shaped check
+(dot and xmx8w alike) shows 0 to 40 wrong regions run to run on this host for every build, ship-a21 included: a
+host flake, not this change. On the newer driver nothing changes: the default and `SEQP=1` ISA are the branch's
+(diffed), and `S24` there runs 99.9 against 101.6 with the stream off and 102.9 with `SEQP=1`, so it stays a 24.x
+choice. Card 4's best stays 104.06-104.11 (spare31, `PEARL_SYCL_SEQP=1`; the branch's stream runs level with
+spare31's, 102.9-103.0 each on card 5). New measurement switches, off by default: `PEARL_W_PROF` (the
+check bench times the fold by GPU timestamps, `PEARL_W_PROFGPU=1`) and `PEARL_W_TSC` (each work-group's first start,
+last end and Xe-core for one batch, to `PEARL_W_TSCOUT`; read with `S/arc-k/tsc23.py` and `tsc23b.py`).
+
+**A batch's timeline** (card 5, stream on, one mainnet-shaped batch: 8,192 work-groups, 21.0 M timer ticks at the
+~1.98 GHz clock = the 10.6 ms the bench reports, so launch gaps are nothing):
+
+- 55.5 of the 56 work-group slots (two a core) are busy throughout; the change-over between work-groups costs ~0.9%,
+  the last wave 0.3%.
+- A band's first column of work-groups runs 5.6% longer, and so does the work-group sharing its Xe-core (index +28:
+  the same rows, 7 columns on), together ~0.75% of the batch. With A' always in L2 (`AHOT` 32, timing) both vanish
+  and the batch is 0.9% shorter: they wait on A' rows coming from DRAM, which the band's first column reads first.
+- Band 0's work-groups run 50-87% longer (~0.5% of the batch). Keeping B' to 8 blocks that are the same every batch
+  does not help, so nothing survives in L2 from one launch to the next.
+- B' stays in L2 for the whole batch (`BHOT` 8 / 32: 102.4-102.7 against 102.8-103.0). A' from DRAM is what costs:
+  `AHOT` 32 runs 104.4-104.8 against 102.9 (+1.7%) at a higher clock and the same watts. A is 256 MB, read once a
+  batch; a wider batch would read it less often, but B' then leaves L2 (column batch 1,024: 96.7; 128: 100.5).
+
+**Prefetching the next band's A' into L2.** A load with no destination register does nothing on this card, whatever
+its cache control: prefetches issued that way change neither the timeline nor the rate (so the PFA, PFB, PFG and PFS
+prefetches of earlier goals never fetched). Real loads do fill L2, and an atomic load with no destination does too,
+but each costs more than the 0.75% it saves:
+
+| What (card 5, full speed, stream on, `pearl_sycl_check --bench 8`) | TH/s |
+|---|---|
+| def | 102.8-103.0 |
+| null-destination loads of the next band's A', from the band's first 64 / 16 / 4 work-groups (`PEARL_W_PFN`) | 102.6 / 102.7-102.8 / 102.6-102.8 |
+| real loads from the hash tail, 2 / 1 k-steps of every 16-row block a work-group (`PEARL_W_PFT`; each work-group then ends ~2.5 us later) | 101.1-101.2 / 101.7-101.8 |
+| the same as atomic loads with no destination, 2 / 1 k-steps (`PEARL_W_PFTA`) | 101.2 / 101.5-101.8 |
+| atomic loads from the band's last 16 / 32 work-groups as they start (`PEARL_W_PFS2` 4 / 2; every work-group ~4% slower) | 101.5-101.6 / 101.9-102.0 |
+
+**Operand energy.** NVIDIA's tensor cores take 2% fewer watts with unsigned operands; Arc's DPAS does not care. With
+fill 63 (B' 0..126, so u8 is exact for it): i8 x i8, i8 x u8, u8 x u8 (`PEARL_W_U8`) all 102.8-103.0 at 175 W.
+Fill 40 / 48 / 56 / 63 level; 32 loses 0.6%.
+
+| Also priced | TH/s |
+|---|---|
+| 4 sets a work-group (`PART1` timing, wrong results) against 2 | 102.8-103.2 against 102.7 (+0.2%) |
+| a gap after each B' block (`PEARL_SYCL_BPAD` 256 / 4,096; timing, the stream needs none) | level |
+
+**The stream on HiveOS 24.35.** Staged builds checked on the host (`hq23.sh`), ISA dumped there (`hd23.sh`):
+
+- Without the stream, the copy's loads past k-step 63 break every region even when their bytes are never stored
+  (`PEARL_W_SQNS`: 14,040 of 16,384 wrong, mostly as other regions' right words), and pass once an instruction reads
+  the copy's hold after the chunk loop (`PEARL_W_SQWT`: 0 wrong, three runs). So 24.35 seems to let the set's last,
+  dead copy load land after its register has been loaded again; re-reading k-step 63 (an L1 hit) lands first,
+  which is why the clamp passed. The same addresses written another way fail too (`PEARL_W_SQRO`).
+- The stream needs one more change on top: the run-on address written as the clamped address plus a separately
+  selected offset (`SQRO` 1). With the plain form or a multiplied offset every region is still wrong, wait or not.
+  All three together pass (0 of 16,384, deterministic over repeats): that is `S24`.
+- Each costs on the newer driver: the slot without a division 0.35%, the hold read 1.9%, the selected offset 1.3%.
+- Reading A' after the loop as well (`SQWT` 2) breaks even forms that pass (15,128 wrong): leave A' alone there.
+- arc22's bisection never reloaded the copy's hold: the switch is `PEARL_W_SEQPRL`, not `SQPRL`.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

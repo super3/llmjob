@@ -318,10 +318,17 @@ describe('the host keeps the operands in the order the fold reads', () => {
     // RW divides the band and the row windows, else the ring fold.
     expect(launch).toContain('((a.band % (uint32_t)PEARL_W_RW) || ((a.rowsValid / 2u) % (uint32_t)PEARL_W_RW))');
     // CW times SEQ divides the column windows; the check's 4-column batch (one window) runs CW 1.
-    // goal-arc21: the set stream (FoldXmxW's SP switch) only when asked: HiveOS's 24.35 driver miscompiles it.
+    // goal-arc21: the set stream (FoldXmxW's SP switch) only when asked on the newer driver. goal-arc23: its 24.35
+    // forms (S24) by default on a 24.x OpenCL driver (HiveOS), where the plain stream gets every region wrong.
     expect(launch).toContain('(a.colBatch / 4u) % (2u * PEARL_W_CW) == 0u) {');
-    expect(launch).toContain('if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);\n        else fold_xmxw<true, 2>(q, a, groups);');
-    expect(HOST).toContain('ctx->seqp = env_str("PEARL_SYCL_SEQP", "0") == "1";');
+    expect(launch).toContain('if (ctx->seqp == 2) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true, true>(q, a, groups);\n        else if (ctx->seqp) fold_xmxw<true, 2, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, PEARL_W_CW, true>(q, a, groups);\n        else fold_xmxw<true, 2>(q, a, groups);');
+    expect(HOST).toContain('if (s == "0" || s == "1" || s == "2") {\n      ctx->seqp = s[0] - \'0\';');
+    expect(HOST).toContain('ctx->seqp = drv.rfind("24.", 0) == 0 ? 2 : 0;');
+    expect(HOST).toContain('if (ctx->dev.get_backend() == sycl::backend::opencl) drv = ctx->dev.get_info<sycl::info::device::driver_version>();');
+    expect(KERNELS).toContain('bool SP = false, bool S24 = false> struct FoldXmxW {');
+    expect(KERNELS).toContain('static constexpr bool kSqM = S24;');
+    expect(KERNELS).toContain('static constexpr int kSqRo = S24 ? 1 : 0;');
+    expect(KERNELS).toContain('static constexpr int kSqWt = S24 ? 1 : 0;');
     expect(KERNELS).toContain('static constexpr bool kSeqP = SP && SEQ > 1 && CW >= (PEARL_W_SEQPCW) && !kHalf && kBps == 1u && KPS == 4;');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<true>(q, a, groups);\n      else fold_xmxw<true, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');
     expect(launch).toContain('if (xmx8w_cw(ctx, a) == PEARL_W_CW) fold_xmxw<false>(q, a, groups);\n      else fold_xmxw<false, 1, PEARL_W_KPS, (PEARL_W_AH != 0), PEARL_W_RW, 1>(q, a, groups);');

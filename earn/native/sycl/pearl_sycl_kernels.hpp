@@ -83,6 +83,17 @@ typedef int v2i __attribute__((ext_vector_type(2)));
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
 extern SYCL_EXTERNAL v4i intel_sub_group_i8_i8_split_matrix_mad_k32(v2i, v8i, v4i);
 #endif
+// goal-arc23 (PEARL_W_U8): the split DPAS with unsigned operands. 1: A' and B' u8; 2: B' only; 3: A' only. With
+// PEARL_OPERAND_FILL=63 B' is 0..126 (A' too but for the salt stamp's bytes), so 2 is exact. On NVIDIA unsigned
+// operands cost 2% fewer watts; here fill 48, fill 63, 63 with 2 and 63 with 1 all ran 102.8-103.0 at the same
+// 175 W and clock (card 5, stream on). Off.
+typedef uint32_t v2uu __attribute__((ext_vector_type(2)));
+typedef uint32_t v8uu __attribute__((ext_vector_type(8)));
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_W_U8)
+extern SYCL_EXTERNAL v4i intel_sub_group_u8_u8_split_matrix_mad_k32(v2uu, v8uu, v4i);
+extern SYCL_EXTERNAL v4i intel_sub_group_i8_u8_split_matrix_mad_k32(v2i, v8uu, v4i);
+extern SYCL_EXTERNAL v4i intel_sub_group_u8_i8_split_matrix_mad_k32(v2uu, v8i, v4i);
+#endif
 // Four dwords a lane: what a sub-group block read of 128 bytes gives (the ring fold).
 typedef uint32_t v4u __attribute__((ext_vector_type(4)));
 // SPV_INTEL_split_barrier: a work-group barrier in two halves, arrive and wait. The ring fold's hardware
@@ -368,6 +379,9 @@ struct FoldArgs {
 #if defined(PEARL_W_STAG)
   uint32_t *tick;     // goal-arc20 timing: 32 counters, one an Xe-core, zeroed before each launch (PEARL_W_STAG)
 #endif
+#if defined(PEARL_W_TSC)
+  uint64_t *tsc;      // goal-arc23 measurement: 4 words a work-group (start, end, sr0, 0) of one batch
+#endif
 };
 
 // Which window work-group g covers. Bands of `band` row windows: inside a band
@@ -579,6 +593,11 @@ inline v8i dpas(sycl::sub_group sg, typename AFrag<SG>::type a, v8i b, v8i c) {
 // The split DPAS (goal-arc7 experiment): hardware only. The reference has no partner's half to read, so the
 // HW = false form returns the accumulator unchanged; nothing but the card may run a fold that uses it.
 template <bool HW> inline v4i split_dpas4(v2i a, v8i b, v4i c) {
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT) && defined(PEARL_W_U8)
+  if constexpr (HW && (PEARL_W_U8) == 1) return ::intel_sub_group_u8_u8_split_matrix_mad_k32((v2uu)a, (v8uu)b, c);
+  if constexpr (HW && (PEARL_W_U8) == 2) return ::intel_sub_group_i8_u8_split_matrix_mad_k32(a, (v8uu)b, c);
+  if constexpr (HW && (PEARL_W_U8) == 3) return ::intel_sub_group_u8_i8_split_matrix_mad_k32((v2uu)a, b, c);
+#endif
 #if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
   if constexpr (HW) return ::intel_sub_group_i8_i8_split_matrix_mad_k32(a, b, c);
 #endif
@@ -1982,7 +2001,8 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 // work-groups of at least PEARL_W_SEQPCW column windows (the full-speed instance; under duty 75 the CW 1 instance
 // lost 0.5% with it). The instance is compiled in (template switch SP); the host runs it only with
 // PEARL_SYCL_SEQP=1, because HiveOS's 24.35 driver gets most regions wrong in it (every form tried: see run_set).
-// Card 4, full speed: 103.6-103.8 TH/s against 102.8-103.0. PEARL_W_NOSEQP: not compiled.
+// Card 4, full speed: 103.6-103.8 TH/s against 102.8-103.0. PEARL_W_NOSEQP: not compiled. goal-arc23: the S24
+// instance (see kSqM) is the stream in forms 24.35 compiles right, and the host's default on a 24.x driver.
 #if !defined(PEARL_W_NOSEQP) && !defined(PEARL_W_SEQP)
 #define PEARL_W_SEQP
 #endif
@@ -1994,6 +2014,18 @@ template <bool HW, int VAR = 0> inline void fold_xmxr(sycl::queue &q, const Fold
 #endif
 #ifndef PEARL_W_SEQPCW
 #define PEARL_W_SEQPCW 2
+#endif
+#if defined(PEARL_W_PFN) && !defined(PEARL_W_PFNC)
+#define PEARL_W_PFNC "uc.ca"  // the next band's A' prefetch: L1 uncached, L2 cached
+#endif
+#if defined(PEARL_W_PFT) && !defined(PEARL_W_PFTC)
+#define PEARL_W_PFTC "uc.ca"  // the hash tail's A' loads for the next band: L1 uncached, L2 cached
+#endif
+#if defined(PEARL_W_PFN) && !defined(PEARL_W_PFNB)
+#define PEARL_W_PFNB 1  // which band ahead (0: the work-group's own)
+#endif
+#if defined(PEARL_W_PFN) && !defined(PEARL_W_PFN0)
+#define PEARL_W_PFN0 0  // the first work-group of the band (its index in the band) that prefetches
 #endif
 #if defined(PEARL_W_SA) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
 // goal-arc21 (PEARL_W_SA): the copy's 128-byte load with its cache control (PEARL_W_CPCC, PEARL_W_CPCC1).
@@ -2013,7 +2045,7 @@ template <int OFF, int CW> inline v4u sa_g128(uint64_t base) {
   return r;
 }
 #endif
-template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1, bool SP = false> struct FoldXmxW {
+template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ = 1, bool SP = false, bool S24 = false> struct FoldXmxW {
   static_assert(SEQ == 1 || SEQ == 2 || SEQ == 4 || SEQ == 8 || SEQ == 16, "1 to 16 column windows in turn");
   static_assert(KPS == 1 || KPS == 2 || KPS == 4, "a slot is 1, 2 or 4 k-steps: the group meets inside a chunk");
   static_assert(RW == 2 || RW == 4 || RW == 8 || (RW == 16 && (CW == 1 || CW == 2)), "each sub-group copies a whole number of blocks");
@@ -2108,6 +2140,28 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #endif
   static constexpr bool kSqI = kSeqP && ((PEARL_W_SQX) & 1), kSqS = kSeqP && ((PEARL_W_SQX) & 2),
                         kSqF = kSeqP && ((PEARL_W_SQX) & 4);
+  // goal-arc23 (template switch S24, the host's PEARL_SYCL_SEQP=2): the stream in the forms HiveOS's 24.35 driver
+  // compiles right. Three changes, each needed: the slot without a division (kSqM, goal-arc22's SQM); the copy's
+  // address past a set's last k-step as the clamped address plus a separately selected offset (kSqRo; the plain
+  // run-on and a multiplied offset get every region wrong); and an instruction that reads the copy's hold after
+  // each set's chunk loop (kSqWt), without which 24.35 lets the set's last copy load land after its register is
+  // loaded again. On 24.35 (card 5, host): 94.5-94.7 TH/s against 93.6 with the stream off. On the newer driver it
+  // loses (99.9 against 101.6 off, 102.9 for S24 false): the host picks it only on a 24.x OpenCL driver.
+#if defined(PEARL_W_SQM)
+  static constexpr bool kSqM = true;
+#else
+  static constexpr bool kSqM = S24;
+#endif
+#if defined(PEARL_W_SQRO)
+  static constexpr int kSqRo = (PEARL_W_SQRO);
+#else
+  static constexpr int kSqRo = S24 ? 1 : 0;
+#endif
+#if defined(PEARL_W_SQWT)
+  static constexpr int kSqWt = (PEARL_W_SQWT + 0) > 0 ? (PEARL_W_SQWT + 0) : 1;
+#else
+  static constexpr int kSqWt = S24 ? 1 : 0;
+#endif
 #if defined(PEARL_W_SQB)
   // goal-arc22 (PEARL_W_SQB): the stream with no barrier under a condition on the set: set 0's fill is a prologue
   // call of run_set, then one arrive, the set loop (the chunks' own meetings only), then the wait and the meeting.
@@ -2222,6 +2276,20 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
   void operator()(sycl::nd_item<1> it) const {
     sycl::sub_group sg = it.get_sub_group();
     const uint32_t lane = (uint32_t)sg.get_local_linear_id();
+#if defined(PEARL_W_TSC) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) {
+      uint32_t t0 = 0, t1 = 0, sr = 0;
+      __asm__ volatile("mov (M1_NM, 1) %0(0,0)<1> %%tsc(0,0)<0;1,0>\nmov (M1_NM, 1) %1(0,0)<1> %%tsc(0,1)<0;1,0>\n"
+                       "mov (M1_NM, 1) %2(0,0)<1> %%sr0(0,0)<0;1,0>" : "=rw"(t0), "=rw"(t1), "=rw"(sr));
+      if (lane == 0u && A.tsc) {
+        const uint64_t ts = ((uint64_t)t1 << 32) | t0;
+        sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                         sycl::access::address_space::global_space>(A.tsc[(size_t)it.get_group(0) * 4u])
+            .fetch_min(ts);
+        if (sg.get_group_linear_id() == 0u) A.tsc[(size_t)it.get_group(0) * 4u + 2u] = sr;
+      }
+    }
+#endif
 #if defined(PEARL_W_NC) && defined(PEARL_W_NCFIRST)
     // goal-arc8: the copiers are sub-groups 0 .. NC - 1, so the DPAS pairs keep their places in hardware.
     const uint32_t sgr = (uint32_t)sg.get_group_linear_id();
@@ -2284,6 +2352,67 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       wc = wcb * CW + widx / RW;
     }
     const uint32_t wcbS = wcb;
+#if defined(PEARL_W_PFN) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc23 (PEARL_W_PFN=n): the first n work-groups of each band prefetch the next band's A' into L2 (uncached
+    // in L1), before their sets start. The band's first column work-groups otherwise take its A' rows from DRAM.
+    // After the last band it wraps to band 0, which the next batch reads first. Loses 0.2-0.3%, and changes nothing
+    // in the timeline (PEARL_W_TSC): a load with no destination does nothing on this card, whatever its cache
+    // control (so the PFA, PFB, PFG and PFS prefetches of earlier goals never fetched either). PEARL_W_PFNR (real
+    // loads, data kept): from the band's last 16 work-groups (PFN0 48) the first column runs normally, but the
+    // prefetching work-groups wait for their loads and the batch is 1.5% longer. PFNB: bands ahead; PFN0: first
+    // prefetching work-group's index in the band. Off.
+    if constexpr (HW) {
+      const uint32_t bandG = A.band / RW > 0u ? A.band / RW : 1u, rowG = rowWins / RW;
+      const uint32_t per = bandG * (colWins / CW / (uint32_t)SEQ), g = (uint32_t)it.get_group(0);
+      const uint32_t b = g / per, idx = g - b * per, nb = (rowG + bandG - 1u) / bandG;
+      if (idx - (uint32_t)(PEARL_W_PFN0) < (uint32_t)(PEARL_W_PFN)) {
+        const uint32_t b1 = b + (uint32_t)(PEARL_W_PFNB) < nb ? b + (uint32_t)(PEARL_W_PFNB) : b + (uint32_t)(PEARL_W_PFNB) - nb;
+        const uint32_t rows1 = rowG - b1 * bandG < bandG ? rowG - b1 * bandG : bandG;  // row-WGs in band b1
+        const uint64_t bytes = 2ull * rows1 * RW * A.aStride, share = (bytes / (PEARL_W_PFN) + 255u) & ~255ull;
+        const uint64_t base = (uint64_t)(uintptr_t)A.Ap + 2ull * b1 * bandG * RW * A.aStride + (idx - (uint32_t)(PEARL_W_PFN0)) * share;
+        const uint64_t end = (uint64_t)(uintptr_t)A.Ap + 2ull * b1 * bandG * RW * A.aStride + bytes;
+#if defined(PEARL_W_PFNR)
+        // test: real loads, their data kept (XORed into a value stored only if the runtime zero says so)
+        v8i pfs = 0;
+#pragma unroll 1
+        for (uint64_t o = base + (uint64_t)sgl * 256u; o < base + share && o < end; o += (uint64_t)kNsg * 256u) {
+          v8i r;
+          __asm__ volatile("lsc_load.ugm." PEARL_W_PFNC " (M1_NM, 1) %0:d32x64t flat[%1]:a64" : "=rw"(r) : "rw"(o));
+          pfs ^= r;
+        }
+        if (A.zero && pfs[0] == 0x12345678) A.hits->index[0] = (uint32_t)pfs[1];
+#else
+#pragma unroll 1
+        for (uint64_t o = base + (uint64_t)sgl * 256u; o < base + share && o < end; o += (uint64_t)kNsg * 256u)
+          __asm__ volatile("lsc_load.ugm." PEARL_W_PFNC " (M1_NM, 1) %%null:d32x64t flat[%0]:a64" : : "rw"(o));
+#endif
+      }
+    }
+#endif
+#if defined(PEARL_W_PFS2) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc23 (PEARL_W_PFS2=n): the last 64 / n work-groups of band b, as they start, bring n k-steps each of
+    // every 16-row block of band b + 1's A' into L2, in k-step order, by atomic loads with no destination (done in
+    // L2; nothing waits for them). They start 1-20 us before band b + 1's first column, which would otherwise read
+    // its A' from DRAM a k-step ahead. The first column then runs normally, but every work-group is ~4% slower:
+    // L2 atomics are dear for the whole card. PFS2 4 / 2: 101.5 / 101.9 against 102.9 (card 5). Off.
+    if constexpr (HW) {
+      constexpr uint32_t kK = (PEARL_W_PFS2), kW = 64u / kK;
+      const uint32_t bandG = A.band / RW > 0u ? A.band / RW : 1u, rowG = rowWins / RW;
+      const uint32_t per = bandG * (colWins / CW / (uint32_t)SEQ), g = (uint32_t)it.get_group(0);
+      const uint32_t b = g / per, idx = g - b * per, nb = (rowG + bandG - 1u) / bandG;
+      if (b + 1u < nb && per >= kW && idx >= per - kW) {
+        const uint32_t b1 = b + 1u, rows1 = rowG - b1 * bandG < bandG ? rowG - b1 * bandG : bandG;
+        const uint32_t blocks = 2u * rows1 * RW;
+        const uint64_t base = (uint64_t)(uintptr_t)A.Ap + 2ull * b1 * bandG * RW * A.aStride
+                              + (uint64_t)(idx - (per - kW)) * kK * 512u + lane * 64u;
+        each<2 * (int)kK>([&](int m) {
+          const uint32_t blk = 2u * sgl + (uint32_t)(m & 1);
+          const uint64_t a = base + (uint64_t)(blk < blocks ? blk : 0u) * A.aStride + (uint64_t)(m >> 1) * 512u;
+          __asm__ volatile("lsc_atomic_load.ugm (M1, 8) %%null:d32 flat[%0]:a64 %%null %%null" : : "rw"(a));
+        });
+      }
+    }
+#endif
 #if defined(PEARL_W_PADR) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
     // goal-arc22 (PEARL_W_PADR=n): n registers kept live across the whole kernel (set by inline vISA, so IGC cannot
     // recompute them later), to move where the register allocator puts the loop-carried A'.
@@ -2352,9 +2481,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + wcb * CW + (b >> 1) / 16u) * A.bStride + (size_t)((b >> 1) % 16u) * 128u
                  + (size_t)(b & 1u) * 64u;
       else
+#if defined(PEARL_W_BHOT)
+        // goal-arc23 timing (wrong results): B' of only PEARL_W_BHOT column blocks, so it stays in L2. BHOT 8 / 32
+        // 102.6-102.7 / 102.4-102.6 against 102.8-103.0: B' already stays in L2 for the batch (A' does not: AHOT 32
+        // 104.4-104.8, +1.7%, with a higher clock at the same watts).
+        Bbi[i] = A.Bp + (size_t)((A.colStart / 4u + (kSqI ? wcbS * (uint32_t)SEQ * CW + (b / 16u) * (uint32_t)SEQ + (uint32_t)set
+                                                           : wcb * CW + b / 16u)) % (uint32_t)(PEARL_W_BHOT)) * A.bStride
+                 + (size_t)(b % 16u) * 128u;
+#else
         Bbi[i] = A.Bp + (size_t)(A.colStart / 4u + (kSqI ? wcbS * (uint32_t)SEQ * CW + (b / 16u) * (uint32_t)SEQ + (uint32_t)set
                                                           : wcb * CW + b / 16u)) * A.bStride
                  + (size_t)(b % 16u) * 128u;
+#endif
 #endif
     });
     uint32_t *R = &ring[0];
@@ -2400,18 +2538,18 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       // after the % 3 (which, with the rest of the stream's code off, passed on HiveOS's 24.35 driver where this
       // form did not) the stream gained 0.1% instead of 1.1% (card 5).
       if constexpr (!kSqS) return ((k / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
-#if defined(PEARL_W_SQM)
-      // goal-arc22 (PEARL_W_SQM): the same slot without a 32-bit division. (k + 64 set) / 4 = k / 4 + 16 set, and
-      // 16 = 1 (mod 3), so the slot is (k / 4 + set) % 3, of a number below 2^15: x / 3 = (x * 0xAAAB) >> 17 there,
-      // one 32 by 16-bit multiply. The division by 3 IGC writes for the % (a mul and a mach through the
-      // accumulator) is what HiveOS's 24.35 driver gets wrong: with it every region fails.
-      static_assert(kSlots == 3u && KPS == 4, "PEARL_W_SQM: three slots of four k-steps");
-      {
+      // goal-arc22 (PEARL_W_SQM, and S24): the same slot without a 32-bit division. (k + 64 set) / 4 = k / 4 + 16
+      // set, and 16 = 1 (mod 3), so the slot is (k / 4 + set) % 3, of a number below 2^15: x / 3 = (x * 0xAAAB) >> 17
+      // there, one 32 by 16-bit multiply. The division by 3 IGC writes for the % (a mul and a mach through the
+      // accumulator) is what HiveOS's 24.35 driver gets wrong: with it every region fails. On the newer driver it
+      // costs 0.35% (goal-arc23), so only S24 takes it.
+      if constexpr (kSqM) {
+        static_assert(kSlots == 3u && KPS == 4, "kSqM: three slots of four k-steps");
         const uint32_t x = k / (uint32_t)KPS + (uint32_t)set, q = (x * 0xAAABu) >> 17;
         return (x - 3u * q) * kSlotWords + (k % (uint32_t)KPS) * kStep;
+      } else {
+        return (((k + 64u * (uint32_t)set) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
       }
-#endif
-      return (((k + 64u * (uint32_t)set) / (uint32_t)KPS) % kSlots) * kSlotWords + (k % (uint32_t)KPS) * kStep;
     };
     auto mine = [&](int i) { return kHalf ? R + sgl * 16u : R + (sgl + (uint32_t)i * kNsg) * 32u; };
 #if defined(PEARL_W_NOPRO)
@@ -3071,7 +3209,27 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
             const uint32_t knc = (PEARL_W_SQUC) == 3 ? (kn < 64u ? kn : kn - 64u) : (PEARL_W_SQUC) == 2 ? (kn < 72u ? kn : 71u) : kn;
             const cvec v = cp_read(lo32(bHi, bLo[i] + knc * 2048u), lane);
 #else
-            const cvec v = cp_read(lo32(bHi, bLo[i] + (kSqF ? kn : (kn < 64u ? kn : 63u)) * 2048u), lane);
+#if defined(PEARL_W_SQCL)
+            // goal-arc23 diagnostic (PEARL_W_SQCL): the stream with the copy clamped at k-step 63 (use with SQFILL)
+            const cvec v = cp_read(lo32(bHi, bLo[i] + (kn < 64u ? kn : 63u) * 2048u), lane);
+#else
+#if defined(PEARL_W_SQRON)
+            constexpr bool kSqRoN = true;  // goal-arc23 diagnostic: the run-on without the stream too
+#else
+            constexpr bool kSqRoN = false;
+#endif
+            cvec v;
+            if constexpr (kSqRo > 0 && (kSqF || kSqRoN)) {
+              // goal-arc23 (kSqRo, S24): the run-on past k-step 63 as the clamped address plus a separate offset (the
+              // same addresses as the plain run-on). 1: the offset by a select, which 24.35 compiles right; 2: by a
+              // multiply, which it does not (nor the plain form).
+              const uint32_t knC = kn < 64u ? kn : 63u;
+              const uint32_t knX = kSqRo == 2 ? kn - knC : (kn > 63u ? kn - 63u : 0u);
+              v = cp_read(lo32(bHi, bLo[i] + knC * 2048u + knX * 2048u), lane);
+            } else {
+              v = cp_read(lo32(bHi, bLo[i] + (kSqF ? kn : (kn < 64u ? kn : 63u)) * 2048u), lane);
+            }
+#endif
 #endif
 #endif
 #endif
@@ -3090,6 +3248,12 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #elif defined(PEARL_W_STA)
             slm_write128<HW>(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
 #else
+#if defined(PEARL_W_SQNS)
+            // goal-arc23 diagnostic (PEARL_W_SQNS): no store of what the copy loaded past k-step 63. On 24.35 the
+            // run-on loads alone (never stored) still get 14,040 of 16,384 regions wrong, mostly as other regions'
+            // right words; clamped loads with no store pass. See PEARL_W_SQWT.
+            if (ks + kAhead * (uint32_t)KPS < 64u)
+#endif
             cp_write(mine(i) + at(ks + kAhead * (uint32_t)KPS), next[i], lane);
 #endif
 #endif
@@ -3771,6 +3935,23 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       if constexpr ((PEARL_W_AHEND) == 2) ahend();
 #endif
     }
+#if defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc23 (kSqWt, S24; PEARL_W_SQWT forces it): an instruction that reads the copy's hold after the chunk
+    // loop, so the set's last copy load is waited for here. Without it 24.35 lets that load land after its register
+    // is loaded again (an L1 hit, as k-step 63 re-read, lands first; a miss past the block lands last): with the
+    // run-on loads unstored, 14,040 of 16,384 regions wrong, with this 0. PEARL_W_SQWT=2 also reads A' a k-step ahead
+    // here: that breaks even forms that pass (15,128 wrong), as A' carried out of a loop broke in goal-arc21.
+    if constexpr (kSeqP && kSqWt > 0) each<kBps>([&](int i) {
+      uint32_t y;
+      __asm__ volatile("mov (M1, 8) %0(0,0)<1> %1(0,0)<1;1,0>" : "=rw"(y) : "rw"(next[i]) : "memory");
+      if (A.zero && y == 0x12345678u) part[0] = y;
+    });
+    if constexpr (kSeqP && kSqWt >= 2 && kSplit && AH) each<4>([&](int rb) {
+      uint32_t y;
+      __asm__ volatile("mov (M1, 8) %0(0,0)<1> %1(0,0)<1;1,0>" : "=rw"(y) : "rw"(ahn[rb]) : "memory");
+      if (A.zero && y == 0x12345678u) part[1] = y;
+    });
+#endif
 #if defined(PEARL_W_SQMEET)
     if (kSqB) return;
     (void)lastSet;
@@ -3819,6 +4000,42 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       uint32_t px = 0u;
       each<(PEARL_W_PADR)>([&](int i) { px ^= padr[i]; });
       if (px == 0x12345678u) part[0] = px;
+    }
+#endif
+#if defined(PEARL_W_PFT) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    // goal-arc23 (PEARL_W_PFT=n): the next band's A' brought into L2 from the hash tail. A band's first column of
+    // work-groups otherwise reads its rows from DRAM a k-step ahead, and runs ~6% slower (so does the work-group
+    // sharing its Xe-core). Work-group i of band b loads k-steps n i .. n i + n - 1 of every 16-row block of band
+    // b + 1 (8-lane gathers, a dword from each 64-byte line: 512 bytes of lines a message): the work-groups end in
+    // about index order, so k-step k is loaded about when band b + 1's first column reaches it, a little before.
+    // The loads are real (a load with no destination does nothing on this card); their data is used after the
+    // hash, so their latency hides behind it. Past the last band nothing is loaded (the next launch starts cold).
+    // Result: the first column runs normally, but each work-group ends ~2.5 us later (it waits for its loads before
+    // it can end, longer than the hash takes): PFT 2 / 1 101.1-101.2 / 101.7-101.8 against 102.9. PEARL_W_PFTA (an
+    // atomic load, nothing to wait for): 101.2. Off.
+    constexpr uint32_t kPft = (PEARL_W_PFT);
+    uint32_t pfv[2 * kPft];
+    each<2 * (int)kPft>([&](int m) { pfv[m] = 0u; });
+    if constexpr (HW) {
+      const uint32_t bandG = A.band / RW > 0u ? A.band / RW : 1u, rowG = rowWins / RW;
+      const uint32_t per = bandG * (colWins / CW / (uint32_t)SEQ), g = (uint32_t)it.get_group(0);
+      const uint32_t b = g / per, idx = g - b * per, nb = (rowG + bandG - 1u) / bandG;
+      if (b + 1u < nb && idx * kPft < 64u) {
+        const uint32_t b1 = b + 1u, rows1 = rowG - b1 * bandG < bandG ? rowG - b1 * bandG : bandG;
+        const uint32_t blocks = 2u * rows1 * RW;  // 16-row blocks in band b1; sub-group s takes blocks 2 s, 2 s + 1
+        const uint64_t base = (uint64_t)(uintptr_t)A.Ap + 2ull * b1 * bandG * RW * A.aStride + (uint64_t)idx * kPft * 512u + lane * 64u;
+        each<2 * (int)kPft>([&](int m) {
+          const uint32_t blk = 2u * sgl + (uint32_t)(m & 1);
+          const uint64_t a = base + (uint64_t)(blk < blocks ? blk : 0u) * A.aStride + (uint64_t)(m >> 1) * 512u;
+#if defined(PEARL_W_PFTA)
+          // an atomic load with no destination: done in L2, nothing to wait for
+          (void)pfv;
+          __asm__ volatile("lsc_atomic_load.ugm (M1, 8) %%null:d32 flat[%0]:a64 %%null %%null" : : "rw"(a));
+#else
+          __asm__ volatile("lsc_load.ugm." PEARL_W_PFTC " (M1, 8) %0:d32 flat[%1]:a64" : "=rw"(pfv[m]) : "rw"(a));
+#endif
+        });
+      }
     }
 #endif
     // Sub-group sgi hashes sets sgi, sgi + 2, ... (both sub-groups of the window at once). The timing variants
@@ -3929,6 +4146,28 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
       region_epilogue(words, local, A.test, A.hits, A.allTr);
     }
     }  // js
+#if defined(PEARL_W_PFT) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    {
+      // The loads' data is used here, after the hash, by an asm that IGC may not move above it (memory clobber).
+      uint32_t x = 0u;
+      each<2 * (int)kPft>([&](int m) {
+        uint32_t y;
+        __asm__ volatile("xor (M1, 8) %0(0,0)<1> %1(0,0)<1;1,0> %2(0,0)<1;1,0>" : "=rw"(y) : "rw"(x), "rw"(pfv[m]) : "memory");
+        x = y;
+      });
+      if (A.zero && x == 0x12345678u) A.hits->index[0] = x;  // never (A.zero is 0): keeps the loads
+    }
+#endif
+#if defined(PEARL_W_TSC) && defined(__SYCL_DEVICE_ONLY__) && defined(PEARL_SYCL_XMX_JIT)
+    if constexpr (HW) {
+      uint32_t t0 = 0, t1 = 0;
+      __asm__ volatile("mov (M1_NM, 1) %0(0,0)<1> %%tsc(0,0)<0;1,0>\nmov (M1_NM, 1) %1(0,0)<1> %%tsc(0,1)<0;1,0>" : "=rw"(t0), "=rw"(t1));
+      if (lane == 0u && A.tsc)
+        sycl::atomic_ref<uint64_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
+                         sycl::access::address_space::global_space>(A.tsc[(size_t)it.get_group(0) * 4u + 1u])
+            .fetch_max(((uint64_t)t1 << 32) | t0);
+    }
+#endif
   }
 };
 
@@ -3946,9 +4185,9 @@ template <bool HW, int KPS = 1, bool AH = false, int RW = 8, int CW = 1, int SEQ
 #define PEARL_W_CW 1
 #endif
 template <bool HW, int SEQ = 1, int KPS = PEARL_W_KPS, bool AH = (PEARL_W_AH != 0), int RW = PEARL_W_RW, int CW = PEARL_W_CW,
-          bool SP = false>
+          bool SP = false, bool S24 = false>
 inline sycl::event fold_xmxw(sycl::queue &q, const FoldArgs &a, uint32_t groups) {
-  typedef FoldXmxW<HW, KPS, AH, RW, CW, SEQ, SP> K;
+  typedef FoldXmxW<HW, KPS, AH, RW, CW, SEQ, SP, S24> K;
   return q.submit([&](sycl::handler &h) {
 #ifndef PEARL_W_SLMPAD
 #define PEARL_W_SLMPAD 0  // goal-arc8 timing: extra words of local memory a work-group (fewer work-groups a core)
