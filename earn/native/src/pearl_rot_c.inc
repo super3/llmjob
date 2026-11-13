@@ -92,10 +92,17 @@
 #endif
   };
   auto word = [&](const uint32_t c) {
+#ifdef RC_TRL
+    // RC_TRL (the 96 x 512 block, goal-nv50k): the transcript is in the kernel's frame, `trl`, the loop function's
+    // third argument, so that the kernel keeps it there for the hand loop that replaces this one.
+    (void)trL;
+    trl[c & 15u] = __funnelshift_l(trl[c & 15u], trl[c & 15u], 13u) ^ xp ^ xq;
+#else
     uint32_t w;
     asm volatile("ld.shared.u32 %0, [%1];" : "=r"(w) : "r"(trL + (c & 15u) * 4u) : "memory");
     w = __funnelshift_l(w, w, 13u) ^ xp ^ xq;
     asm volatile("st.shared.u32 [%0], %1;" ::"r"(trL + (c & 15u) * 4u), "r"(w) : "memory");
+#endif
     xp = 0u;
     xq = 0u;
   };

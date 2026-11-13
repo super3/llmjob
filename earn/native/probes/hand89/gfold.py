@@ -497,7 +497,7 @@ def emit(G, iwait, cfg, bfalt=None):
                        stall=cfg["pad"] if not items else ist, yld=bool(cfg["iy"]), wait=iwait.get(g, ()),
                        reuse=1 if cfg["ru"] and nb < 7 else 0, label=".L0" if g == 0 else None))
         for k, x in enumerate(items):
-            x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw)
+            x = Ins(x.text, x.stall, bool(cfg["py"]), x.wsb, x.rsb, x.wait, raw=x.raw, label=x.label)
             if k == len(items) - 1:
                 x.yld = bool(cfg["ly"])
                 if cfg["pol"] == 0:

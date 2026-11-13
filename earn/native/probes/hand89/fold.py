@@ -132,6 +132,12 @@ def rw(text):
         return reads | set(regs[1:]), span(regs[0], 2), "alu"
     if op.startswith(("BRA", "BAR", "NOP", "ULDC", "DEPBAR")):
         return reads, writes, "ctl"
+    if op.startswith("SYNCS.PHASECHK"):
+        # sm_120's mbarrier wait (rfold.py w8m): reads the parity register, writes a predicate, on a scoreboard.
+        p = re.match(r"P(\d),", rest)
+        return reads | {regs[-1]}, {"P" + p[1]}, "load"
+    if op.startswith("SYNCS.ARRIVE"):
+        return reads, writes, "store"
     assert regs, text
     return reads | set(regs[1:]), {regs[0]}, "alu"
 

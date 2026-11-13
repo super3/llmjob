@@ -198,7 +198,7 @@ def spell120(t):
     return g + t
 
 
-def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
+def patch(cubin_in, sass_text, cubin_out, code, nvdisasm, after=()):
     b = bytearray(open(cubin_in, "rb").read())
     secs = asm89.sections(b)
     name = next(n for n in secs if n.startswith(".text.") and "pearl" in n)
@@ -206,7 +206,7 @@ def patch(cubin_in, sass_text, cubin_out, code, nvdisasm):
     entry, ret, back = asm89.region(sass_text)
     rr = asm89.RET_REG[0]
     code = list(code) + [Ins("MOV R%d, 0x%x" % (rr, back)), Ins("IMAD.MOV.U32 R%d, RZ, RZ, RZ" % (rr + 1)),
-                         Ins("BRA .RET", stall=5)]
+                         Ins("BRA .RET", stall=5)] + list(after)
     code = nop_waits(code)
     room = (ret - entry) // 16
     if len(code) > room:
@@ -321,6 +321,69 @@ def restore_code(sass_text, want):
     out = first + [Ins("NOP", wait=(SB_C,), stall=2)]
     for _r, ins in alu:
         out += [ins, Ins("NOP", stall=5)]
+    return out
+
+
+def slice_restore(cubin, sass_text, want, loop_urs):
+    """(goal-nv50k) restore_code's fallback: the kernel's own instructions that make the wanted registers, redone
+    before the return. They must all lie in the kernel's straight-line start (ahead of its first label): its
+    backward slice from the wanted registers, taken whole (the registers it reads that the loop clobbers are made
+    again too), each an ALU step, a MOV, an S2R or an LDC, reading no uniform register the loop writes. The words
+    are the kernel's own sm_120 words, copied from the cubin, with control fields of our own: every step waits out
+    an ALU's latency, an S2R or LDC holds scoreboard SB_C and its first reader waits for it. None or a list of Ins."""
+    rows, _labels, entry = asm89.listing(sass_text)
+    head = []
+    for line in sass_text.splitlines():
+        if re.match(r"^\.L", line.strip()):
+            break
+        m = re.match(r"\s*/\*([0-9a-f]{4,})\*/\s+(.*?)\s*;", line)
+        if m:
+            head.append((int(m[1], 16), m[2].strip()))
+    head = [(a, t) for a, t in head if a < entry]
+    ok_ops = ("S2R", "MOV", "IADD", "IADD3", "IMAD", "IMAD.SHL.U32", "IMAD.MOV.U32", "SHF", "LOP3", "LEA", "LDC")
+    dst = {}
+    for i, (a, t) in enumerate(head):
+        m = re.match(r"(\S+) R(\d+)\b", t)
+        if m:
+            dst.setdefault(int(m[2]), []).append(i)
+    need, take = set(want), set()
+    while True:
+        grew = False
+        for r in sorted(need):
+            for i in dst.get(r, []):
+                if i in take:
+                    continue
+                a, t = head[i]
+                op = t.split(" ")[0]
+                if not op.startswith(ok_ops) or t.startswith("@"):
+                    return None
+                if any(int(u) in loop_urs for u in re.findall(r"\bUR(\d+)", t)):
+                    return None
+                take.add(i)
+                grew = True
+                srcs = re.findall(r"\bR(\d+)\b", t.split(",", 1)[1]) if "," in t else []
+                need |= {int(s) for s in srcs}
+        if not grew:
+            break
+    if not want <= set(dst):
+        return None
+    b = open(cubin, "rb").read()
+    secs = asm89.sections(b)
+    name = next(n for n in secs if n.startswith(".text.") and "pearl" in n)
+    off, _size = secs[name]
+    out = []
+    pend = False
+    for i in sorted(take):
+        a, t = head[i]
+        lo, hi = struct.unpack_from("<QQ", b, off + a)
+        load = t.startswith(("S2R", "LDC"))
+        ins = Ins(t, raw=(lo, hi), stall=6, wsb=SB_C if load else None, wait=(SB_C,) if pend and not load else ())
+        if pend and not load:
+            pend = False
+        if load:
+            pend = True
+        out.append(ins)
+    out.append(Ins("NOP", wait=(SB_C,), stall=6))
     return out
 
 
@@ -459,6 +522,11 @@ def main():
             continue
         assert k in cfg, k
         cfg[k] = int(v, 0)
+    if cfg["w8"]:
+        # w8 (goal-nv50k, from goal-nvk22's sm_89 form): one row band, the barriers its own, records shared. As
+        # rfold.py's main sets them.
+        assert cfg["sr"] and cfg["co"] and cfg["sync"] == 4 and not cfg["bsym"] and not cfg["bx"], "w8 needs sr=1"
+        cfg["band"], cfg["bt"] = 0, 0 if cfg["w8nb"] & 4 or cfg["w8g"] or cfg["w8m"] else 8
     text = asm89.disassemble(cubin, nvd)
     # The global address base goes into the uniform pair the compiled function loads it into, so the kernel keeps
     # nothing there across the call.
@@ -475,6 +543,11 @@ def main():
                  for m in [re.match(r"(?:@!?U?P\d )?U?\S+ UR(\d+),", t)] if m and not t.startswith(("STG", "STS"))}
                 - {UR_G, UR_G + 1})
     if len(uw) < 2:
+        # (goal-nv50k: the gather fold compiled for sm_120 writes one.) Then uniform registers that nothing in the
+        # cubin names, nor sits second in a named pair, below sr's.
+        named = {int(x) + d for a, t in rows for x in re.findall(r"\bUR(\d+)", t) for d in (0, 1)}
+        uw += [u for u in range(16, 24) if u not in named and u not in uw][:2 - len(uw)]
+    if len(uw) < 2:
         sys.exit("the compiled function writes too few uniform registers: %s" % uw)
     UR_S[:] = uw[:2]
     if cfg["sr"]:
@@ -482,6 +555,11 @@ def main():
         # keep anything in them across the call; the shared base goes into each one that is an address's.
         cfg["sr_sb"] = UR_S[0]
         mine = {rfold.sr_u(cfg, i) for i in range(10)}
+        if cfg["w8"]:
+            mine |= {rfold.sr_upar(cfg, t) for t in range(4)}
+            if cfg["w8m"]:
+                mine |= {rfold.sr_umb(cfg, t) for t in range(4)}
+            assert len(mine) == (18 if cfg["w8m"] else 14), "w8: sr's fourteen uniform registers overlap (sr_ub inside sr_ua + 2 .. 13?)"
         # The kernel's own code (the compiled function's is replaced by the loop) and the loop's own registers.
         theirs = {int(x) + d for a, t in rows if a < entry for x in re.findall(r"\bUR(\d+)", t)
                   for d in ((0, 1) if re.search(r"\.64|WIDE", t) else (0,))}   # a pair's second is not printed
@@ -526,6 +604,18 @@ def main():
     if len(spare) < len(extra):
         rest = restore_code(text, set(extra))
         if rest is None:
+            # The loop's uniform registers: sr's, the global base pair, and UR_S[1] (UR_S[0] gets the shared base,
+            # the value ptxas keeps there too: base_ins makes it as the kernel does).
+            lu = {UR_G, UR_G + 1, UR_S[1]}
+            if cfg["sr"]:
+                lu |= {rfold.sr_u(cfg, i) for i in range(10)}
+                if cfg["w8"]:
+                    lu |= {rfold.sr_upar(cfg, t) for t in range(4)}
+                if cfg["w8m"]:
+                    lu |= {rfold.sr_umb(cfg, t) for t in range(4)}
+            rest = slice_restore(cubin, text, set(extra), lu)
+            print("UR_S %s, UR_G %d: %s" % (UR_S, UR_G, "slice restore of %d steps" % len(rest) if rest else "no slice"))
+        if rest is None:
             sys.exit("the loop writes registers the compiled function does not: R%s" % ", R".join(map(str, extra)))
         print("put back before the return: R%s" % ", R".join(map(str, extra)))
     else:
@@ -552,8 +642,11 @@ def main():
             t = re.sub(r"^(ISETP\.\S+ )P2,", r"\1P%d," % bp, t)
             t = t.replace("P2 BAR", "P%d BAR" % bp).replace("@P2 BRA", "@P%d BRA" % bp)
         ins.text = t
-    n, room = patch(cubin, text, out, code, nvd)
-    asm89.set_barriers(out, 3)
+    if cfg["w8m"]:
+        assert bp == cfg["w8mp"] == 2, "w8m: its waits' predicate is P2, free here"
+    n, room = patch(cubin, text, out, code, nvd, after=rfold.RETRY if cfg["w8m"] else ())
+    # w8: barrier 0 (all eight warps) and the pairs' 1 to 4 (w8m: none in the loop, 0 is the kernel's).
+    asm89.set_barriers(out, 5 if cfg["w8"] else 3)
     print("rfold120: %s, %d instructions of %d, predicates P%d (loop) P%d (band), global base UR%d; read back "
           "through nvdisasm as asked; %d at most in a gap" % (os.path.basename(out), n, room, lp, bp, UR_G, most))
 

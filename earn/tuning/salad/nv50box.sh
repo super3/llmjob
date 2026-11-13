@@ -123,10 +123,12 @@ if has probe; then
   for b in "${BL[@]}"; do
     [ -n "$b" ] || continue
     n=${b%%:*}; r=${b#*:}; tk=${r%%:*}; fl=$(echo "${r#*:}" | tr ',' ' ')
+    # The stage is 24 KB unless the flags name another (goal-nv50k: the 96 x 512 block's is 12 KB, -DGP_W8=1).
+    case " $fl" in *" -DGP_STAGE="*) st="" ;; *) st="-DGP_STAGE=24576" ;; esac
     # shellcheck disable=SC2046,SC2086
-    $(nv $tk) -Xptxas -v -DGP_STAGE=24576 $fl -o $W/$n "$H/gprobe.cu" -ldl > $W/$n.log 2>&1 || { tail -3 $W/$n.log | emit; fail "probe $n"; }
+    $(nv $tk) -Xptxas -v $st $fl -o $W/$n "$H/gprobe.cu" -ldl > $W/$n.log 2>&1 || { tail -3 $W/$n.log | emit; fail "probe $n"; }
     # shellcheck disable=SC2046,SC2086
-    $(nv $tk) -DGP_STAGE=24576 $fl -cubin -o $W/$n.cubin "$H/gprobe.cu" > /dev/null 2>&1 || fail "probe cubin $n"
+    $(nv $tk) $st $fl -cubin -o $W/$n.cubin "$H/gprobe.cu" > /dev/null 2>&1 || fail "probe cubin $n"
     say "probe $n built ($tk: $fl): $(regs $W/$n.log)"
   done
   sched "${PROBE_SCHED:-}"
