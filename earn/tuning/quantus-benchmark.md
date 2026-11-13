@@ -11,7 +11,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | CPU reference (`earn/src/shared/quantus/`) | Matches every published vector: 2 permutations, 18 `hash_bytes` inputs, 5 nonce hashes with their midstates |
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
 | NVIDIA core (`quantus_cuda.node`) | Being written (agent quantus-cuda) |
-| AMD core (`quantus_hip.node`) | Being written (agent quantus-amd) |
+| AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RDNA 3 and 4 build but have not run yet |
 | Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 103 MH/s against SRBMiner's 116 on the same card (89%). Tuning goes on (agent quantus-sycl) |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
 
@@ -65,8 +65,8 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RTX 30 | Salad | | not run yet | | | | | | | | |
 | RTX 50 | Salad | | not run yet | | | | | | | | |
 | RTX 20 | Salad | | not run yet | | | | | | | | |
-| RX 6600 | Chedr's rig (1400 MHz cap) | | not run yet | | | | | | | | |
-| RX 6800 | Chedr's rig (1400 MHz cap) | | not run yet | | | | | | | | |
+| RX 6600 | Chedr's rig (1400 MHz cap), 10:00.0 | `quantus_hip` (ec9c7d58) | 52.0 | 1,366 MHz | 45 W | 46/51 C edge/junction | 71.5 (1,364 MHz, 45 W, 46/51 C) | 72.8% | not run | all five PASS | 13 Nov |
+| RX 6800 | Chedr's rig (1400 MHz cap), 0d:00.0 | `quantus_hip` (ec9c7d58) | 112.8 | 1,384 MHz | 99 W | 43/48 C | 154.2 (1,379 MHz, 97 W, 43/48 C) | 73.1% | not run | all five PASS | 13 Nov |
 | RX 7900 XTX | Salad | | not run yet | | | | | | | | |
 | RX 9070 | Salad | | not run yet | | | | | | | | |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
@@ -84,7 +84,7 @@ the card, and tells us where a large gain is possible.
 |---|---|---|---|---|---|---|
 | RTX 4090 | | | | | | IMAD on the FMA pipe, IADD3/LOP3/shifts on the ALU pipe |
 | RTX 50 | | | | | | NVIDIA describes Blackwell's cores as unified INT32/FP32: check whether INT32 issue per SM doubles over Ada |
-| RX 6600 / 6800 | | | | | | Full 32-bit multiplies (v_mul_lo/hi_u32, v_mad_u64_u32) believed quarter rate, 24-bit ones (v_mul_u32_u24, v_mad_u32_u24) full rate: confirm with a micro-benchmark |
+| RX 6600 / 6800 | Ours (ec9c7d58, gfx1032 ISA): 5,416 `v_mad_u64_u32` (four issue cycles each) and about 22,000 other VALU a nonce: 21.7k + 22.0k = 43.7k clocks. The 1,472 field multiplies are 2 squares and 2 multiplies an S-box (236 S-boxes) and 528 diagonal ones; each takes 3-4 32x32 multiplies, 2-5 VALU of glue and a 7-VALU reduction. Linear layers about 7k | Per WGP a clock, add = 121 of 128: `v_mad_u64_u32`, `v_mul_lo_u32`, `v_mul_hi_u32` 0.26x (quarter rate); `v_mul_u32_u24`, `v_mul_hi_u32_u24`, `v_mad_u32_u24`, `v_mad_u32_u16`, `v_dot2_u32_u16` 1.00x; `v_lshlrev_b64` 0.51x. A quarter-rate multiply holds the SIMD: on separate registers, multiply + 1/2/3/4 adds cost 1.25/1.52/1.77/2.03 multiply-times (`amd/test/qh_peak.cpp`, both cards) | RX 6600 at 1,366 MHz: 113 if only the 5,416 multiplies cost anything (104 with 5,888, squares done as multiplies); 56 for our instruction count. RX 6800 at 1,384 MHz: 245 and 121 | SRBMiner 71.5 is 63% of the multiply-only ceiling, so it spends at most about 12.5k clocks a nonce besides its multiplies, against our 22k | not run on AMD | We reach 93% of our own count (stalls). 24-bit limbs price out worse: a 64 x 64 product needs 9 limb products (17 full-rate ops) plus about 25 shifts and adds to put 24-bit columns back on 32-bit words, against 4 quarter-rate multiplies (16 clocks) whose 64-bit adds come free |
 | Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling |
 
 ## Revenue per card (whattomine, 13 Nov)
@@ -166,3 +166,36 @@ it means.
     noise, so not taken); work-groups of 64 and 256 101.8 and 101.1 against 128's 102.8.
   - The guard then stopped a run on card 0's thermal flag after about 70 s of back-to-back benches, as it
     did SRBMiner: runs are kept short with rests between.
+- **13 Nov, RX 6600 and RX 6800, first AMD core (quantus-amd, ec9c7d58).** Chedr's HiveOS rig, its owner's
+  1,400 MHz core cap, his miner off, the other cards idle or another agent's; every run under a temperature
+  guard (85 C edge, 95 C junction, 0 rpm under load). Built on the rig with ROCm 7.2's clang. Each race is
+  `amd/test/rate.js` (back-to-back 2^28-nonce scans, 20 s after 3 s), builds taking turns, two rounds, with a
+  twin of the control. All on the RX 6600 (10:00.0) at 1,364-1,367 MHz, 45-46 W, at most 47/51 C.
+  - The cost model holds: a `v_mad_u64_u32` costs 4 VALU slots and nothing hides it, so a build's speed is
+    about 2.45e12 / (4 x multiplies + other VALU) a nonce, read from its ISA; measured runs at 91-95% of it.
+  - v0, plain C++: 35.5. The compiler kept carries as 64-bit compares and copied every zero-extended
+    addend: 17 VALU a field multiply on top of 4 multiplies.
+  - Carries through clang's carry builtins, inline asm for `v_mad_u64_u32`'s carry out: 45.2 (+27%; twin
+    45.17-45.20). With the internal layer's sum added after its products instead of inside them: 44.1.
+  - Every carry step of a multiply and reduction in inline asm, each carry a lane mask in an SGPR: 48.5
+    (+7.4%). A 7-instruction reduction, x = (w0 - w2 - w3) + (w1 + w2) 2^32 with the carry of w1 + w2 as
+    2^32 - 1, which drops a borrow or carry only when a word is within 2 of 0 or 2^32 (about 2^-31 a
+    multiply, so about one hash in 10^6 wrong; the host rechecks every hit): 49.9 (+2.9%).
+  - Squares from three multiplies (a0^2, a0 a1, a1^2) and the middle one doubled with adds: 51.3 (+2.7%;
+    twin 49.94/49.94 for the control).
+  - Wide adds in inline asm, with round constants read straight from SGPRs (an asm add with a VGPR operand
+    made the compiler copy each constant): 52.0 (+1.4%; twin 52.00-52.01). Blocks of 128: 52.04-52.06;
+    waves per SIMD 8 (room for more registers): 52.05-52.08; both level, not taken. Two nonces a thread
+    spilled (85 VGPRs, 28 bytes of scratch), not timed.
+  - `verify-core.js` all five PASS with 2^30 nonces on both cards: RX 6600 52.0-52.1, RX 6800 112.8.
+  - SRBMiner 3.8.6 (`--algorithm quantus`, observation only), our own copy, against a local stub pool that
+    checks each share on our reference: RX 6600 71.5 on its own counter (60 s warm-up, 240 s, two runs);
+    104 shares at difficulty 2e8 in 328 s, all good, stand for 63.4 MH/s with its startup and 2% fee in
+    (about 65 without), within 1.1 sigma. RX 6800 154.2 (30 s warm-up, 240 s), 23 shares, all good. Its first
+    start on the RX 6800 failed with "can't build program" and mined nothing; a restart worked.
+  - Ours is 72.8% (RX 6600) and 73.1% (RX 6800) of SRBMiner. The multiplies alone would allow 113 and 245
+    MH/s; SRBMiner gets 63% of that, we get 46%. Our other VALU is about 22k a nonce; SRBMiner's can be at
+    most about 12.5k. Not found yet; next we'd try: fewer instructions in the external layers (about 4.5k a
+    nonce), S-box outputs carried into the layer with their last carry unfolded, and the partial rounds
+    unrolled so the next S-box overlaps this round's products.
+  - Not done: RDNA 3 and RDNA 4 on Salad (every slot taken), a pool run with a real address.
