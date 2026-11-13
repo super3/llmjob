@@ -18,8 +18,8 @@
 #                                   a target lacks the fold the host runs on it (folds_of).
 #                                   On Windows no target has the wrap readout (KWRAP_OS),
 #                                   the RDNA 4 cuts of 4 November or tile order, RDNA 3's
-#                                   buffer loads or staging cuts (SET_OS), or the hash in
-#                                   the fold (FUSE_OS).
+#                                   buffer loads or staging cuts, RDNA 2's slab loop of 13
+#                                   November (SET_OS), or the hash in the fold (FUSE_OS).
 #   ./build-amd.sh winlib [gfx...]  Windows: build/win/pearl_hip.lib, the kernels and host
 #                                   for the listed targets (default: $WINDOWS_ARCHS below),
 #                                   and build/pearl_amd_foldtest.exe. Then, in earn/native,
@@ -79,6 +79,9 @@ if windows; then SET_OS="-DPEARL_AMD_RDNA4_SET=0 -DPEARL_AMD_RDNA3_BUFLD=0 -DPEA
 # So does the RDNA 4 tile order of 7 November (PEARL_AMD_WALK): it was timed on Linux at k 4096 and 8192, and the
 # Windows core mines k 2048.
 if windows; then SET_OS="$SET_OS -DPEARL_AMD_WALK=0"; fi
+# And RDNA 2's slab loop of 13 November (PEARL_AMD_DOT4_ADDR, with its buffer loads and LDS swizzle): timed only on
+# Linux with ROCm's clang 22.
+if windows; then SET_OS="$SET_OS -DPEARL_AMD_DOT4_ADDR=0"; fi
 # The hash in the fold (PEARL_AMD_FUSE) likewise, though it is off by default since 7 November: timed only on Linux
 # with ROCm's clang 22.
 FUSE_OS=
@@ -209,7 +212,7 @@ case "$mode" in
     echo "cpu: kernels and host"
     $cxx $flags $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/cpu/pearl_host_hip.o"
     echo "cpu: addon"
-    $cxx $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/cpu/pearl_core.o"
+    $cxx $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "$SRC/pearl_core.cc" -o "$OUT/cpu/pearl_core.o"
     $cxx -shared -o "$OUT/pearl_core_hipcpu.node" "$OUT/cpu/pearl_host_hip.o" "$OUT/cpu/pearl_core.o" $tbb_lib -ltbb -lpthread
     echo "cpu: fold check"
     $cxx $flags $inc "$HERE/test/pearl_amd_foldtest.cpp" -o "$OUT/pearl_amd_foldtest_cpu" $tbb_lib -ltbb -lpthread
@@ -254,7 +257,9 @@ case "$mode" in
     echo "gpu: kernels and host for $archs"
     $cc -x hip $(offload_flags) --rocm-path="$rocm" $flags $targets $inc -c "$HERE/src/pearl_host_hip.cpp" -o "$OUT/gpu/pearl_host_hip.o"
     echo "gpu: addon"
-    $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
+    # PEARL_HOST_MEM_INFO: the host says how much memory the card has (pearl_host_mem_info), for the
+    # network board; the CPU build's host answers no.
+    $cc $flags $(node_includes) -I"$SRC" -DNAPI_DISABLE_CPP_EXCEPTIONS -DPEARL_HOST_MEM_INFO -c "$SRC/pearl_core.cc" -o "$OUT/gpu/pearl_core.o"
     # --allow-shlib-undefined: libamdhip64 needs the rest of the ROCm runtime, which a build
     # box without a GPU may not have. The user's machine has it (README.md).
     # The runtime is looked for in /opt/rocm/lib first, a ROCm the rig installed, then in rocm/

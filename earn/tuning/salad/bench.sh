@@ -251,7 +251,7 @@ if has ozm; then
 fi
 # Our miner: the published release, as a user gets it; on AMD, the HIP core built here; with OURS_SRC=1, BASE_SHA
 # built here.
-case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*)
+case ",${ORDER:-peak,srb,ours}," in *,ours,*|*,ours0,*|*,oursa,*)
   if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
     nv_ours
   elif [ -z "$AMD" ]; then
@@ -357,6 +357,12 @@ if [ -z "$AMD" ] && [ "${OURS_SRC:-}" = 1 ]; then
   ours() { src_cli -w bench-ours ${FOLD:+--rotation-fold}; }
   # Since 0.7.0 the fold is on by default; PEARL_FOLD_ROT=0 keeps it off, and an older BASE_SHA reads it the same.
   ours0() { PEARL_FOLD_ROT=0 src_cli -w bench-ours0; }
+  # "oursa": the same build with OURS_A's environment (e.g. "PEARL_HIT_DEDUP=0 PEARL_ROT_SEARCH_THREADS=1", a switch
+  # back to how the core worked before a change), so ORDER=ours,oursa,ours,oursa races a host-side change on one
+  # build. ROTLOG=1 sets PEARL_ROT_LOG=1 in these legs: the core then logs each job's draw and how long a salt mined
+  # in the definition's order, and each leg ends with a "rotlog" line summing them.
+  oursa() { ( [ -n "${OURS_A:-}" ] && export ${OURS_A}; src_cli -w bench-oursa ${FOLD:+--rotation-fold} ); }
+  [ "${ROTLOG:-}" = 1 ] && export PEARL_ROT_LOG=1
 fi
 stop_all() { pkill -f '\./peak -o'; pkill -f SRBMiner-MULTI; pkill -f wildrig-multi; pkill -f onezerominer; pkill -f '\./cli -a'; { [ -n "$AMD" ] || [ "${OURS_SRC:-}" = 1 ]; } && pkill -f 'src/cli/earn-cli\.js'; sleep 8; }
 
@@ -374,7 +380,7 @@ sample() {
             [.hashrate.total[0], .results.shares_good, (.results.shares_total - .results.shares_good)] | @tsv' 2>/dev/null) ;;
     ozm)  read -r hs acc rej < <(curl -s -m 3 http://127.0.0.1:21552 | jq -r '.algos[0] |
             [.total_hashrate, .total_accepted_shares, (.total_rejected_shares + (.total_invalid_shares // 0))] | @tsv' 2>/dev/null) ;;
-    ours|ours0) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
+    ours|ours0|oursa) local l; l=$(tr '\r' '\n' < "$name.log" | grep -oE '[0-9.]+ TH/s · [0-9,]+ accepted · [0-9,]+ rejected' | tail -1)
           [ -n "$l" ] && { hs=$(echo "$l" | awk '{printf "%.0f", $1*1e12}'); acc=$(echo "$l" | awk '{gsub(",","",$4); print $4}')
                            rej=$(echo "$l" | awk '{gsub(",","",$7); print $7}'); } ;;
   esac
@@ -395,6 +401,14 @@ foldline() { local f; f=$(tr '\r' '\n' < "/opt/b/$1.log" | grep -a -i 'rotation 
                | sed 's/^.*rotation fold/rotation fold/' | tail -c 300)
              say "fold $1 ${f:-none}"; }
 
+# Our CLI's 1 s lines past the first 60 (as linemean): their median, and the lines under 98.5% of it, with the
+# seconds of full rate they lose. A job's draw or a share's proof shows as such a line.
+linedips() {
+  tr '\r' '\n' < "$1" | grep -oE '[0-9.]+ TH/s · ' | awk 'NR > 60 {print $1}' | sort -g \
+    | awk '{v[NR] = $1} END {if (!NR) exit; m = v[int((NR + 1) / 2)]; for (i = 1; i <= NR; i++) if (v[i] < 0.985 * m) {d++; l += (m - v[i]) / m}
+           printf "median=%.2f dips=%d lost_s=%.2f", m, d, l}'
+}
+
 run() {
   local name=$1 secs=$2 measured=$3
   say "start $name ${secs}s"
@@ -410,21 +424,27 @@ run() {
         say "diag srb: $(cd "$(dirname "$SRB")" && { timeout 20 "$SRB" --version 2>&1; timeout 30 "$SRB" --list-algorithms 2>&1 | grep -i pearl; ldd "$SRB" 2>&1 | grep -i 'not found'; } | tr '\r\n' '  ' | tail -c 300)"
       fi
       [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
+      [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
       stop_all; return
     fi
     [ "$measured" = 1 ] && sample "$name" "$t"
   done
   # Only printable ASCII from a miner's log: WildRig's "end" and "diag" lines reached Salad's logs blank (9 November).
   [ "$name" = ours ] && [ -z "$AMD" ] && loaded
-  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0) foldline "$name" ;; esac
+  [ "${OURS_SRC:-}" = 1 ] && case $name in ours|ours0|oursa) foldline "$name" ;; esac
   [ "$measured" = 1 ] && say "end $name: $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a -v '^\s*$' | tail -2 | tr '\n' ' ' | LC_ALL=C tr -cd ' -~' | tail -c 300)"
   # Our CLI prints its rate once a second, each line the time-weighted mean since the line before, so the mean of
   # every line past the first 60 is the run's own mean. The 15 s samples above read only the latest line, and on
   # RTX 20 they swing with batch boundaries (35-51 TH/s on a 2070 that hashrate.js puts at 43.6), so 8 of them move
   # about +-4% run to run. PeakMiner's samples do not swing.
-  [ "$measured" = 1 ] && case $name in ours|ours0) true ;; *) false ;; esac && say "linemean $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -oE '[0-9.]+ TH/s · ' \
-    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}')"
+  [ "$measured" = 1 ] && case $name in ours|ours0|oursa) true ;; *) false ;; esac && say "linemean $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -oE '[0-9.]+ TH/s · ' \
+    | awk 'NR > 60 {s += $1; n++} END {if (n) printf "n=%d ths=%.2f", n, s / n; else printf "n=0"}') $(linedips "/opt/b/$name.log")"
+  # ROTLOG=1 (PEARL_ROT_LOG): what the core said about each job's draw and each salt mined in the definition's order.
+  [ "$measured" = 1 ] && [ "${ROTLOG:-}" = 1 ] && case $name in ours|oursa) true ;; *) false ;; esac \
+    && say "rotlog $name $(tr '\r' '\n' < "/opt/b/$name.log" | grep -a '^\[pearl\] rot: ' | awk '
+         /job drawn in/ {j++; js += $6}
+         /ordered after/ {o++; os += $7; ss += $(NF - 1)}
+         END {printf "jobs=%d draw_ms=%.0f unordered=%d unordered_ms=%.0f search_ms=%.0f", j, j ? js / j : 0, o, o ? os / o : 0, o ? ss / o : 0}')"
   # WildRig ran 5 minutes at 0 H/s with the card idle on a 2080 Ti (9 November): say which devices it found and
   # whether the driver's OpenCL library is in the container.
   if [ "$name" = wild ]; then
@@ -440,7 +460,7 @@ run() {
 IFS=, read -ra MINERS <<< "${ORDER:-peak,srb,ours}"
 run "${MINERS[0]}" "$WARM" 0          # warm-up: whoever runs first doesn't get a cold card
 for m in "${MINERS[@]}"; do
-  if [ "$m" = ours ] || [ "$m" = ours0 ]; then run "$m" "${OURS_SECS:-300}" 1; else run "$m" "$SECS" 1; fi
+  case $m in ours|ours0|oursa) run "$m" "${OURS_SECS:-300}" 1 ;; *) run "$m" "$SECS" 1 ;; esac
 done
 if [ -n "${VP_PID:-}" ]; then
   # The stand-in's summary: logins (agent and type, never a wallet), methods it refused, reasons, in 400-char pieces.

@@ -363,7 +363,9 @@ ms a share), and stops the card at the first wrong one without sending it.
 `PEARL_AMD_UNTESTED=1`, which v0.6.8 and v0.6.9 asked RX 6000 owners to set
 to mine, does not turn the check off. Card temperatures stay empty on AMD. On Linux the
 board names the card and shows its VRAM from the `amdgpu` driver's sysfs files, since ROCm
-calls an RX 9070 XT just "AMD Radeon Graphics". Every AMD card the system lists mines, one core
+calls an RX 9070 XT just "AMD Radeon Graphics". Windows has no such files and nvidia-smi
+lists no AMD card, so there the row shows what the AMD core reads from HIP when it opens the
+card: its size, and how much of it was in use then. Every AMD card the system lists mines, one core
 each; `--gpu-index` picks cards instead (`native/amd/README.md`, "Using it in the app").
 
 #### Setting up a Linux AMD rig
