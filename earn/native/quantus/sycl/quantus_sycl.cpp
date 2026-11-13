@@ -39,9 +39,12 @@
 
 // The GPU kernel's sub-group size and register mode (128 or 256). Other forms
 // are built in too, for tuning: QUANTUS_SYCL_KERNEL=SG,GRF picks one at run
-// time (8,128 8,256 16,128 16,256 32,128).
+// time (8,128 8,256 16,128 16,256 32,128). On an A750 (13 Nov, all at 190 W):
+// 8,128 102.7 MH/s, 16,128 92.6-94.1, 8,256 82.6, 16,256 81.9. Sub-group 8
+// gives each lane 128 registers' worth of 32-bit values, twice 16's, and the
+// state no longer spills.
 #ifndef QTC_SG
-#define QTC_SG 16
+#define QTC_SG 8
 #endif
 #ifndef QTC_GRF
 #define QTC_GRF 128
@@ -160,6 +163,7 @@ struct Core {
   std::atomic<bool> closed{false};
   bool busy = false;       // a scan is in flight (main thread only)
   bool collected = false;  // the JS object is gone (main thread only)
+  bool built = false;      // the kernel is compiled for this card (worker thread)
   uint64_t chunk = FIRST_LAUNCH;
   uint32_t wg = 128;
   uint32_t npt = 1;
@@ -276,6 +280,16 @@ void run_scan(Core *c, Job *j) {
     if (!c->hits) throw std::runtime_error("could not allocate the hit buffer on the card");
     c->hitCap = std::max<uint64_t>(cap, 1);
   }
+  // The driver compiles the kernel the first time it is used. Do that here,
+  // apart from any launch, so a launch's time is the kernel's: a first launch
+  // that took the compile's seconds once set every later launch to the
+  // smallest size, and the card ran at a third of its speed.
+  if (!c->built) {
+    auto kb = sycl::get_kernel_bundle<sycl::bundle_state::executable>(q.get_context(), {q.get_device()},
+                                                                      {kernel_of(c->form)});
+    (void)kb;
+    c->built = true;
+  }
   uint64_t done = 0, total = 0, stored = 0;
   while (done < j->count) {
     if (c->closed.load()) throw std::runtime_error("the core is closed");
@@ -291,11 +305,13 @@ void run_scan(Core *c, Job *j) {
     q.wait_and_throw();
     check_async(c);
     const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    // The next launch's size, from this one's rate. Small launches time the
-    // overhead, not the kernel, so they leave it.
-    if (n >= (1u << 18) && secs > 1e-4) {
+    // The next launch's size, from this one's rate: only from a launch of the
+    // full size (a scan's last, shorter launch times mostly its overhead),
+    // and by at most 4 times either way, so one slow launch cannot pin it.
+    if (n == c->chunk && secs > 1e-4) {
       const double want = (double)n / secs * c->launchSecs;
-      uint64_t next = (uint64_t)want & ~(MIN_LAUNCH - 1);
+      const double lo = (double)c->chunk / 4, hi = (double)c->chunk * 4;
+      uint64_t next = (uint64_t)std::min(hi, std::max(lo, want)) & ~(MIN_LAUNCH - 1);
       c->chunk = std::max(MIN_LAUNCH, std::min(MAX_LAUNCH, next));
     }
     total += h;
@@ -589,6 +605,7 @@ napi_value CreateCore(napi_env env, napi_callback_info info) {
       auto kb = sycl::get_kernel_bundle<sycl::bundle_state::executable>(c->q->get_context(), {devs[c->index]},
                                                                         {kernel_of(c->form)});
       (void)kb;
+      c->built = true;
     }
   } catch (const std::exception &e) {
     c->release();

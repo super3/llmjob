@@ -33,6 +33,11 @@
 #define QTC_UNROLL_PARTIAL 0
 #endif
 
+// S-boxes a pass of a full round's S-box loop (12: no loop).
+#ifndef QTC_SBOX_GROUP
+#define QTC_SBOX_GROUP 12
+#endif
+
 #define QTC_PRAGMA(x) _Pragma(#x)
 #if QTC_UNROLL_FULL
 #define QTC_FULL_LOOP QTC_PRAGMA(unroll)
@@ -553,6 +558,18 @@ QTC_INLINE void full_round(uint64_t s[12], const uint64_t rc[12]) {
   ext_lz(t, u, rc);
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = fold_lz(u[i]);
+#elif QTC_SBOX_GROUP < 12
+  // The S-boxes as a loop of 12 / G passes of G, the state rotated by G after
+  // each: a smaller loop body (timing: does the kernel's size cost?).
+#pragma unroll 1
+  for (int g = 0; g < 12 / QTC_SBOX_GROUP; g++) {
+    uint64_t r[12];
+#pragma unroll
+    for (int i = 0; i < 12; i++) r[i] = i < QTC_SBOX_GROUP ? sbox(s[i]) : s[i];
+#pragma unroll
+    for (int i = 0; i < 12; i++) s[i] = r[(i + QTC_SBOX_GROUP) % 12];
+  }
+  ext_layer(s, rc);
 #else
 #pragma unroll
   for (int i = 0; i < 12; i++) s[i] = sbox(s[i]);
