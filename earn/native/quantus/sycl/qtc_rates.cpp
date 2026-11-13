@@ -7,8 +7,11 @@
 //
 // Rows: add (32-bit add), add3 (three-input add), addc (add with carry out, the
 // carry used), mul32 (32 x 32 low half), prod (32 x 32 -> 64: mul + mach + mov),
-// mulhi (the high half alone), mix (prod and addc as the field multiply mixes
-// them). Read the ISA (IGC_ShaderDumpEnable) to see what each row compiled to:
+// mulhi (the high half alone), prodk (prod with a constant), fmix (the add row
+// plus a float mad on other values: does the float pipe issue beside the int
+// pipe?), fmad (the float mads alone). On card 0 (13 Nov): add 7.5 int ops an
+// EU a clock, fmix 3.2 int + 3.2 float, fmad 4.1: the two pipes do not add up
+// here. Read the ISA (IGC_ShaderDumpEnable) to see what each row compiled to:
 // the "ops" this prints are source operations, not instructions.
 #include <sycl/sycl.hpp>
 
@@ -25,11 +28,16 @@ constexpr int V = 8;        // independent values a work-item
 constexpr int UNROLL = 16;  // steps a loop iteration
 
 template <int MODE>
-inline void step(uint32_t (&x)[V], uint32_t k) {
+inline void step(uint32_t (&x)[V], float (&y)[V], uint32_t k, float fk) {
 #pragma unroll
   for (int i = 0; i < V; i++) {
     const uint32_t a = x[i], b = x[(i + 1) % V];
-    if constexpr (MODE == 0) {  // add
+    if constexpr (MODE == 7) {  // fmix: the add row plus a float mad on other values (does the float pipe co-issue?)
+      x[i] = a + b;
+      y[i] = y[i] * fk + 0.5f;
+    } else if constexpr (MODE == 8) {  // fmad: the float mads alone
+      y[i] = y[i] * fk + 0.5f;
+    } else if constexpr (MODE == 0) {  // add
       x[i] = a + b;
     } else if constexpr (MODE == 1) {  // add3
       x[i] = a + b + x[(i + 3) % V];
@@ -59,22 +67,27 @@ double run(sycl::queue &q, uint32_t *out, size_t global, uint32_t iters) {
   q.parallel_for<Rows<MODE>>(sycl::nd_range<1>(global, 256), [=](sycl::nd_item<1> it) [[sycl::reqd_sub_group_size(16)]] {
      const uint32_t gid = (uint32_t)it.get_global_linear_id();
      uint32_t x[V];
+     float y[V];
 #pragma unroll
-     for (int i = 0; i < V; i++) x[i] = gid * 2654435761u + (uint32_t)i * 40503u + 1u;
+     for (int i = 0; i < V; i++) {
+       x[i] = gid * 2654435761u + (uint32_t)i * 40503u + 1u;
+       y[i] = (float)(x[i] & 1023u);
+     }
      const uint32_t k = iters | 1u;
+     const float fk = 1.0f / (float)(iters | 1u);
      for (uint32_t n = 0; n < iters; n++) {
 #pragma unroll
-       for (int u = 0; u < UNROLL; u++) step<MODE>(x, k);
+       for (int u = 0; u < UNROLL; u++) step<MODE>(x, y, k, fk);
      }
      uint32_t r = 0;
 #pragma unroll
-     for (int i = 0; i < V; i++) r ^= x[i];
+     for (int i = 0; i < V; i++) r ^= x[i] ^ sycl::bit_cast<uint32_t>(y[i]);
      out[gid] = r;
    }).wait();
   return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
 }
 
-const char *NAMES[] = {"add", "add3", "addc", "mul32", "prod", "mulhi", "prodk"};
+const char *NAMES[] = {"add", "add3", "addc", "mul32", "prod", "mulhi", "prodk", "fmix", "fmad"};
 
 template <int MODE>
 void row(sycl::queue &q, uint32_t *out, size_t global, double secs, double mhz, size_t eus, const std::string &only) {
@@ -127,6 +140,8 @@ int main(int argc, char **argv) {
   row<4>(q, out, global, secs, mhz, eus, only);
   row<5>(q, out, global, secs, mhz, eus, only);
   row<6>(q, out, global, secs, mhz, eus, only);
+  row<7>(q, out, global, secs, mhz, eus, only);
+  row<8>(q, out, global, secs, mhz, eus, only);
   sycl::free(out, q);
   return 0;
 }

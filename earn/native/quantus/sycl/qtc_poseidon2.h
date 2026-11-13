@@ -13,7 +13,12 @@
 // The round constant of each round is added in the linear layer before it, as
 // quantus-miner's CUDA kernel does: a full round is then S-boxes and one linear
 // layer, and the constant rides in the linear layer's wide sums.
-#pragma once
+//
+// The file may be included more than once, each time with a different QTC_NS
+// (the namespace, default qtc) and settings: quantus_sycl.cpp builds a second
+// copy for its 8-lane kernels (QTC_FCORR). The macros below are set only once.
+#ifndef QTC_PRELUDE_DONE
+#define QTC_PRELUDE_DONE
 #include <cstdint>
 
 #if defined(__SYCL_DEVICE_ONLY__)
@@ -49,8 +54,13 @@
 #else
 #define QTC_PARTIAL_LOOP QTC_PRAGMA(unroll 1)
 #endif
+#endif  // QTC_PRELUDE_DONE
 
-namespace qtc {
+#ifndef QTC_NS
+#define QTC_NS qtc
+#endif
+
+namespace QTC_NS {
 
 constexpr uint64_t P = 0xffffffff00000001ull;
 // 2^64 mod p.
@@ -144,6 +154,9 @@ QTC_INLINE void waddw(Wide &w, const Wide &x) {
 //   A = Slo + Shi = Alo + a 2^32 (a is 0 or 1; when it is 1, Alo < Shi)
 //   x = (c0 - N - Shi - a) + (Alo + a) 2^32 = B + hiw 2^32
 //
+#ifndef QTC_FCORR
+#define QTC_FCORR 0
+#endif
 // hiw is below 2^32. B is a small negative or a 32-bit number, so V = B +
 // hiw 2^32 is below 2^64, or negative by a little: then V + p, which is V's
 // 64-bit wrap less 2^32 - 1. Only 32-bit adds and one compare: no 64-bit
@@ -157,7 +170,49 @@ QTC_INLINE uint64_t fold(uint32_t c0, uint64_t N, uint64_t S) {
   const uint32_t vhi = hiw + (uint32_t)(B >> 32);
   uint64_t V = ((uint64_t)vhi << 32) | (uint32_t)B;
   // B's high word is 0 or -k; vhi passes hiw only when hiw - k went below 0.
+#if QTC_FCORR && defined(__SYCL_DEVICE_ONLY__)
+  // QTC_FCORR (8-lane GPU kernels only: inline vISA for Intel's GPU compiler):
+  // the correction's compare in vISA and its two selects float-typed, so the
+  // selects run on the float pipe instead of the int pipe. The kernel is
+  // int-pipe bound and the float pipe idle. 2: two selects (quantus_sycl.cpp's
+  // qtc8 copy); 1: two predicated moves, which make IGC copy the in-out
+  // operands (more float instructions, same int count).
+  const uint64_t C = V - EPS;
+  const float blo = sycl::bit_cast<float>((uint32_t)B), bhi = sycl::bit_cast<float>(vhi);
+  const float clo = sycl::bit_cast<float>((uint32_t)C), chi = sycl::bit_cast<float>((uint32_t)(C >> 32));
+  float flo, fhi;
+#if QTC_FCORR == 2
+  // Two float-typed selects: no copies for in-out operands. IGC declares a
+  // 32-bit integer operand as signed (:d): the compare reads both through
+  // unsigned aliases, as the C++ compare is unsigned.
+  __asm__("{\n"
+          ".decl QP v_type=P num_elts=8\n"
+          ".decl QA v_type=G type=ud num_elts=8 alias=<%2, 0>\n"
+          ".decl QB v_type=G type=ud num_elts=8 alias=<%3, 0>\n"
+          "cmp.gt (M1, 8) QP QA(0,0)<1;1,0> QB(0,0)<1;1,0>\n"
+          "(QP) sel (M1, 8) %0(0,0)<1> %4(0,0)<1;1,0> %6(0,0)<1;1,0>\n"
+          "(QP) sel (M1, 8) %1(0,0)<1> %5(0,0)<1;1,0> %7(0,0)<1;1,0>\n"
+          "}\n"
+          : "=rw"(flo), "=rw"(fhi)
+          : "rw"(vhi), "rw"(hiw), "rw"(clo), "rw"(chi), "rw"(blo), "rw"(bhi));
+#else
+  flo = blo;
+  fhi = bhi;
+  __asm__("{\n"
+          ".decl QP v_type=P num_elts=8\n"
+          ".decl QA v_type=G type=ud num_elts=8 alias=<%2, 0>\n"
+          ".decl QB v_type=G type=ud num_elts=8 alias=<%3, 0>\n"
+          "cmp.gt (M1, 8) QP QA(0,0)<1;1,0> QB(0,0)<1;1,0>\n"
+          "(QP) mov (M1, 8) %0(0,0)<1> %4(0,0)<1;1,0>\n"
+          "(QP) mov (M1, 8) %1(0,0)<1> %5(0,0)<1;1,0>\n"
+          "}\n"
+          : "+rw"(flo), "+rw"(fhi)
+          : "rw"(vhi), "rw"(hiw), "rw"(clo), "rw"(chi));
+#endif
+  V = ((uint64_t)sycl::bit_cast<uint32_t>(fhi) << 32) | sycl::bit_cast<uint32_t>(flo);
+#else
   if (vhi > hiw) V -= EPS;
+#endif
   return V;
 }
 
@@ -653,12 +708,19 @@ QTC_INLINE void between(uint64_t s[12]) {
 #endif
 }
 
-// QTC_SHARE 1: one copy of the rounds' code for both permutations of a nonce
-// (a loop of two passes), so the kernel is half the size. It lost on an A750:
-// 11.7 MH/s against 85.2, the card at 99 W with its EUs mostly idle. Kept to
-// try again, off.
+// How much of the rounds' code the kernel carries. The dynamic instruction
+// count is the same in every form; a smaller kernel ran faster on an A750
+// (13 Nov, card 0, all at 2,200 MHz and 190 W, with QTC_FCORR 2):
+//   QTC_ONELOOP 1 (default): one loop of all 16 full rounds of a nonce, so one
+//     copy of the 12 S-boxes (4,858 instructions in the kernel): 106.7 MH/s.
+//   QTC_SHARE 1: one copy of the rounds for both permutations (a loop of two
+//     passes; four copies of the S-boxes): 106.4-106.6.
+//   both 0: every permutation's rounds apart (17,101 instructions): 105.0-105.1.
 #ifndef QTC_SHARE
 #define QTC_SHARE 0
+#endif
+#ifndef QTC_ONELOOP
+#define QTC_ONELOOP 1
 #endif
 
 // The whole permutation (host side: the midstate and the self-test).
@@ -711,7 +773,46 @@ QTC_INLINE uint64_t nonce_top(const uint64_t pre[12], uint64_t counter) {
   uint64_t s[12];
   add_counter(s, pre, counter);
   uint64_t s0 = 0;
-#if QTC_SHARE
+#if QTC_ONELOOP
+  // One loop of the 16 full rounds of both permutations: one copy of the 12
+  // S-boxes in the kernel (QTC_SHARE keeps four). Round r of a permutation is
+  // the S-boxes, then the linear layer with the next round's constants; after
+  // round 3 come the partial rounds, after round 7 the sponge step (first
+  // permutation) or the last layer's first output (second).
+#pragma unroll 1
+  for (int k = 0; k < 16; k++) {
+    const int r = k & 7;
+#pragma unroll
+    for (int i = 0; i < 12; i++) s[i] = sbox(s[i]);
+    if (r < 7) {
+#if QTC_LAZY == 2
+      Hs h[12];
+      ext_hs(s, h, RC_FULL[r]);
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = fold_hs(h[i]);
+#else
+      ext_layer(s, RC_FULL[r]);
+#endif
+      if (r == 3) {
+        QTC_PARTIAL_LOOP
+        for (int q = 0; q < 21; q++) {
+          s[0] = sbox(s[0]);
+          int_layer(s, RC_PARTIAL[q]);
+        }
+        s[0] = sbox(s[0]);
+        int_layer_last(s);
+      }
+    } else if (k == 7) {
+      Hs u[12], v[12];
+      ext_hs(s, u, RC_PAD);
+      ext_hs(u, v, RC_FIRST);
+#pragma unroll
+      for (int i = 0; i < 12; i++) s[i] = fold_hs(v[i]);
+    } else {
+      s0 = ext_hs_first(s);
+    }
+  }
+#elif QTC_SHARE
 #pragma unroll 1
   for (int pass = 0; pass < 2; pass++) {
     permute_rounds(s);
@@ -727,4 +828,4 @@ QTC_INLINE uint64_t nonce_top(const uint64_t pre[12], uint64_t counter) {
   return bswap64(canonical(s0));
 }
 
-}  // namespace qtc
+}  // namespace QTC_NS

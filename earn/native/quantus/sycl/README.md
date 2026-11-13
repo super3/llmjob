@@ -43,9 +43,9 @@ the Pearl Intel core uses (`native/sycl/quantus_sycl.node`).
 
 ## Speed on an Arc A750
 
-See `earn/tuning/quantus-benchmark.md`. In short (13 Nov, card 0 of the rented rig): 102.8-103.4 MH/s
-at 2,150-2,200 MHz and 190 W (the power limit); SRBMiner 3.8.6 does 115-117 MH/s on the same card at
-2,150-2,200 MHz and the same power.
+See `earn/tuning/quantus-benchmark.md`. In short (13 Nov, card 0 of the rented rig): 106.7 MH/s
+(verify-core 106.8) at 2,200 MHz and 190 W (the power limit), up from 103.6; SRBMiner 3.8.6 does
+115-117 MH/s on the same card at 2,150-2,200 MHz and the same power.
 
 What a multiply costs on this card: there is no 64-bit integer multiply. A 32 x 32 -> 64 product is
 three instructions (`mul`, `mach`, a `mov` from the accumulator), a 64 x 64 product twelve, and the
@@ -55,9 +55,25 @@ the time goes to the products; the rest is carries and reduction.
 
 Kernel forms (`QUANTUS_SYCL_KERNEL=SG,GRF`), all at 190 W: sub-group 8 with 128 registers 102.7
 (the default: each lane has twice the registers of sub-group 16 and nothing spills), sub-group 16
-92.6-94.1, the 256-register forms about 82. Level with the default: one copy of the rounds for both
-permutations (`QTC_SHARE`, 103.7) and the S-box outputs unfolded through the linear layers
-(`QTC_LAZY 1`, 103.2). Lost: more than one counter a work-item (4: -4%, 16: -10%, sub-group 16).
+92.6-94.1, the 256-register forms about 82. Level with the default: the S-box outputs unfolded through
+the linear layers (`QTC_LAZY 1`, 103.2). Lost: more than one counter a work-item (4: -4%, 16: -10%,
+sub-group 16).
+
+Two changes since, each raced against the old default run again as its twin (103.60-103.63 over
+four runs, all at 2,200 MHz and 190 W):
+
+- The fold's correction (a compare and two selects in each of about 1,700 folds a nonce) is inline
+  vISA in the 8-lane kernels, with float-typed selects, so they run on the float pipe, which the
+  kernel otherwise leaves idle (`QTC_ASM8`, `QTC_FCORR`): 3.7% fewer int-pipe instructions, 105.0-105.1.
+  The other forms and the CPU device keep the plain C++ (a second copy of the field code, `qtc8`).
+  IGC declares 32-bit asm operands signed: the compare reads them through unsigned aliases.
+- A smaller kernel: one loop over all 16 full rounds of a nonce (`QTC_ONELOOP`), one copy of the 12
+  S-boxes, 4,858 instructions in the kernel instead of 17,101, the same count executed: 106.7.
+  One copy of the rounds for both permutations (`QTC_SHARE`) gave 106.4-106.6.
+
+`qtc_rates.cpp`'s `fmix` row says the float and int pipes do not simply add up on this card (int
+adds alone 7.5 a clock an EU; with a float mad beside each, 3.2 of each), so the selects' gain is
+less than their share of the instructions.
 
 A measuring trap: a kernel compiled inside a timed launch makes any launch-size rule read the card
 as slow. The core compiles before its first launch for that reason; compare builds only after that.

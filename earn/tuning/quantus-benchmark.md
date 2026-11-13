@@ -12,7 +12,7 @@ power and temperature beside it, and every comparison runs both miners on the sa
 | CPU core (`earn/src/main/quantusCore.js`) | Works end to end against a fake pool. About 4,000 nonces/s on one thread, for tests only |
 | NVIDIA core (`quantus_cuda.node`) | Passes `verify-core.js` on RTX 4090, 3080 and 5080. 60-67% of SRBMiner 3.8.6, level with quantus-miner's open kernel (+1.4% on the 4090, +2.4% on the 3080, -5% on the 5080). Builds with `earn/native/quantus/cuda/build.ps1` / `build.sh`; not in CI yet |
 | AMD core (`quantus_hip.node`) | Passes `verify-core.js` on an RX 6600 and an RX 6800 (RDNA 2): 52.0 and 112.8 MH/s at their owner's 1,400 MHz cap, 73% of SRBMiner 3.8.6. RDNA 3 and 4 build but have not run yet |
-| Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 103 MH/s against SRBMiner's 116 on the same card (89%). Tuning goes on (agent quantus-sycl) |
+| Intel core (`quantus_sycl.node`) | Passes `verify-core.js` on an Arc A750: 106.7 MH/s against SRBMiner's 116 on the same card (92%). The rented rig was returned on 13 Nov, so tuning stops here |
 | Live pool test | Not done: needs a real Quantus address. Only a fake login was tried at Kryptex and HeroMiners; both refused it, as they should |
 
 ## The work per nonce
@@ -70,6 +70,7 @@ card (vectors, exact range, top of range, overflow, and a timed 2^30-nonce run w
 | RX 7900 XTX | Salad | | not run yet | | | | | | | | |
 | RX 9070 | Salad | | not run yet | | | | | | | | |
 | Arc A750 | rented rig, card 0 | `quantus_sycl` (d4f799bf) | 102.8-103.4 | 2,150-2,200 MHz | 190 W (power limit) | not exposed (fans 1,500-2,200 rpm; thermal flag after ~70 s of back-to-back runs) | 115-117 (2,150-2,200 MHz, 190 W; thermal flag after 70 s) | 89% | not run | all five PASS | 13 Nov |
+| Arc A750 | rented rig, card 0 | `quantus_sycl` (float-pipe selects + one round loop) | 106.7 (verify-core 106.8; old default as twin 103.60-103.63) | 2,200 MHz | 184-190 W (power limit) | not exposed (fans 1,800-2,150 rpm, no thermal flag) | 115-117 | 92% | not run | all five PASS (and on the CPU device) | 13 Nov |
 
 Chedr's cards run with their core capped at 1,400 MHz by their owner, so compare them by "% of
 SRBMiner", not by MH/s.
@@ -86,7 +87,7 @@ the card, and tells us where a large gain is possible.
 | RTX 3080 | Same SASS as sm_89 (ours 25,057, official 26,400) | Same per-SM rates as the 4090, to the third digit (68 SMs) | 717 at 1,785 MHz, 735 at 1,830, by the same product count. Own bounds at 1,830 MHz: ours 390, official 378 | 75% (539 at 1,785 MHz) | 47% (348.5 at 1,826 MHz); ours 49%. Both at 92% of their own bound | At the 370 W limit |
 | RTX 5080 | sm_120 SASS: ours 27,329 a nonce: ALU 20,025, IMAD.WIDE 6,891, other 413; no IMAD.X or IMAD.MOV at all, ptxas puts every carry and move on the ALU for sm_120. Official 27,414: ALU 19,799, IMAD.WIDE 5,420, IMAD.HI 1,714 | Per SM a clock on the 5080: IMAD 2.0; IADD3, LOP3, SHF 2.0; IMAD and IADD3 together 3.97; IMAD.WIDE 1.0, IMAD.HI 1.0; WIDE with IADD3 1:1 1.97, 1:2 2.0. So Blackwell does not double integer issue over Ada: the same numbers as the 4090. FFMA alone 2.5 (3.95-3.99 mixed with IMAD or IADD3) | 1,381 at 2,782 MHz, 1,400 at 2,820, by the same product count. ALU-only bounds (the WIDE-takes-an-ALU-slot rule from Ada would put us below what we measure here): ours 757 at 2,820 MHz, official 763 at 2,812 | 77% (1,062 at 2,782 MHz) | 48% (670 at 2,812 MHz); ours 46%. 84% and 88% of their ALU-only bounds | SRBMiner at the 360 W limit; ours at 333 W and the official at 350 W, below it. With the multiplier pipe idle apart from IMAD.WIDE on sm_120, moving carries and moves there (IMAD.X, IMAD.MOV) is the obvious next try for RTX 50 |
 | RX 6600 / 6800 | Ours (ec9c7d58, gfx1032 ISA): 5,416 `v_mad_u64_u32` (four issue cycles each) and about 22,000 other VALU a nonce: 21.7k + 22.0k = 43.7k clocks. The 1,472 field multiplies are 2 squares and 2 multiplies an S-box (236 S-boxes) and 528 diagonal ones; each takes 3-4 32x32 multiplies, 2-5 VALU of glue and a 7-VALU reduction. Linear layers about 7k | Per WGP a clock, add = 121 of 128: `v_mad_u64_u32`, `v_mul_lo_u32`, `v_mul_hi_u32` 0.26x (quarter rate); `v_mul_u32_u24`, `v_mul_hi_u32_u24`, `v_mad_u32_u24`, `v_mad_u32_u16`, `v_dot2_u32_u16` 1.00x; `v_lshlrev_b64` 0.51x. A quarter-rate multiply holds the SIMD: on separate registers, multiply + 1/2/3/4 adds cost 1.25/1.52/1.77/2.03 multiply-times (`amd/test/qh_peak.cpp`, both cards) | RX 6600 at 1,366 MHz: 113 if only the 5,416 multiplies cost anything (104 with 5,888, squares done as multiplies); 56 for our instruction count. RX 6800 at 1,384 MHz: 245 and 121 | SRBMiner 71.5 is 63% of the multiply-only ceiling, so it spends at most about 12.5k clocks a nonce besides its multiplies, against our 22k | not run on AMD | We reach 93% of our own count (stalls). 24-bit limbs price out worse: a 64 x 64 product needs 9 limb products (17 full-rate ops) plus about 25 shifts and adds to put 24-bit columns back on 32-bit words, against 4 quarter-rate multiplies (16 clocks) whose 64-bit adds come free |
-| Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling |
+| Arc A750 | Ours (d4f799bf, sub-group 8): 8,609 int-pipe cycles an EU a nonce (68,900 SIMD8 instructions), no spills. The 5,416 32x32 products a nonce are 2,031 of them (3 instructions each: `mul`, `mach`, `mov` from acc); the rest is carries and reduction. The open CUDA kernel's (inexact) multiply compiled for Arc costs the same as ours: 57.3 against 58.8 cycles a lane for 12 multiplies | add, add3, mul, mach, mov: 1 SIMD8 instruction a clock an EU on the int pipe (`qtc_rates.cpp`, card 0, 2,100-2,300 MHz) | 112 at 2,150 MHz for our instruction count; 474 if only the products cost anything | SRBMiner 116 at 2,150 MHz is 104% of our code's ceiling, so it runs fewer instructions than we do (at most 8,300 a nonce) | not run on Arc; its multiply counted (left) | Power-bound at 190 W for every miner. A 64 x 64 product is 12 instructions, the field multiply with reduction 37-39. We reach 92% of our own ceiling. Later build (13 Nov evening): about 66,300 int-pipe and 3,400 float-pipe SIMD8 instructions a sub-group of 8 nonces. If only the int pipe counts (8,290 cycles a nonce) the ceiling at 2,200 MHz is 119 and 106.7 is 90% of it; if every instruction takes an issue slot (8,690) it is 113 and we reach 94%. By kind: addc 26%, mov 15% (mostly from the accumulator), add3 14%, add 14%, mul + mach 16% |
 
 ## Revenue per card (whattomine, 13 Nov)
 
@@ -249,3 +250,30 @@ it means.
     So ptxas's pipe choices are right on both Ada and Blackwell, and the gap to SRBMiner is in how much
     work there is, not where it runs.
   - Not done: a pool run with a real address (there is none yet); RTX 20.
+- **13 Nov evening, Arc A750, float-pipe selects and a smaller kernel (quantus-sycl2).** Card 0, same
+  guard; cards 1-4 kept mining Pearl. Each bench 10 s of 16.8M-nonce scans with 20 s rests; builds in
+  turn, four rounds. The control `b0` is the previous default (d4f799bf's ISA, unchanged).
+  - ISA counted first (AOT dumps, `S/qs2/regions.py`): 69,446 SIMD8 instructions a sub-group of 8
+    nonces, 68,872 of them on the int pipe and 545 on the float pipe. Full rounds 46%, partial rounds
+    47%. Each fold ends in a compare and two int selects (2,846 selects in all).
+  - `b0` 103.62, 103.63, 103.62, 103.60 (the twin spread: 0.03).
+  - `a9`, the fold's compare and selects in inline vISA with float-typed selects (int pipe -3.7%, all
+    instructions +0.4%): 105.13, 105.07, 105.05, 105.01 (+1.4%). verify-core all five PASS (104.9).
+    A first version compared signed: IGC declares 32-bit asm operands `:d`. Caught in the ISA before
+    any run; the compare now reads unsigned aliases.
+  - `a9s`, a9 plus one copy of the rounds for both permutations: 106.59, 106.47, 106.57, 106.57,
+    106.38 (+2.8%). verify-core PASS (106.4).
+  - `a9o`, a9 plus one loop over all 16 full rounds (one copy of the S-boxes; 4,858 instructions in the
+    kernel against 17,101, the same count executed): 106.70 (+3.0%), one bench only (the rig's time ran
+    out). verify-core PASS (106.8), and PASS on the SYCL CPU device. This is the default now.
+  - All runs 2,195-2,215 MHz, 184-190 W, PL2 flag on, no thermal flag (fans 1,800-2,150 rpm). The
+    clock did not move between builds, so the gains are work a clock.
+  - Float pipe (`qtc_rates.cpp`, rows `fmix` and `fmad`): int adds alone 7.5 a clock an EU; with a
+    float mad beside each add, 3.2 adds and 3.2 mads; float mads alone 4.1. The pipes do not simply
+    add up, which is why moving 4% of the instructions to the float pipe gained 1.4%, not 4%.
+  - Where it stands: 106.7 against SRBMiner's 115-117 on the same card (92%).
+  - Not tried for lack of time: more `a9o` against `a9s` runs (one bench says level or +0.2%); the
+    XMX engines for the internal layer's constant products (counted: the byte-column sums they return
+    cost about 34 int instructions an output to put back together, against 46 now, so about 6% at best,
+    and the 12 constant matrices take 96 of the 128 registers, so they would come from shared local
+    memory every round).

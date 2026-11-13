@@ -35,6 +35,28 @@
 
 #include "qtc_poseidon2.h"
 
+// QTC_ASM8 (default 2): the 8-lane GPU kernels run a second copy of the field
+// code, qtc8, whose fold does its correction with inline vISA (QTC_FCORR in
+// qtc_poseidon2.h): the two selects run on the float pipe, 3.7% fewer int-pipe
+// instructions. On an A750 (13 Nov, 2,200 MHz, 190 W): 105.0-105.1 MH/s
+// against 103.6. 1: predicated moves instead of selects; 0: off. The other
+// forms and the CPU device keep plain qtc: the asm is written for 8 lanes and
+// only Intel's GPU compiler reads it.
+#ifndef QTC_ASM8
+#define QTC_ASM8 2
+#endif
+#if QTC_ASM8 && !QTC_FCORR
+#undef QTC_NS
+#define QTC_NS qtc8
+#undef QTC_FCORR
+#define QTC_FCORR QTC_ASM8
+#include "qtc_poseidon2.h"
+#undef QTC_FCORR
+#define QTC_FCORR 0
+#else
+namespace qtc8 = qtc;
+#endif
+
 #include <sycl/ext/intel/experimental/grf_size_properties.hpp>
 
 // The GPU kernel's sub-group size and register mode (128 or 256). Other forms
@@ -98,7 +120,9 @@ struct ScanKernel {
       const uint32_t idx = gid + j * stride;
       if (idx >= p.count) break;
       const uint64_t counter = p.base + idx;
-      const uint64_t top = qtc::nonce_top(p.pre, counter);
+      uint64_t top;
+      if constexpr (SG == 8 && GRF != 0) top = qtc8::nonce_top(p.pre, counter);
+      else top = qtc::nonce_top(p.pre, counter);
       if (top <= p.target) {
         sycl::atomic_ref<uint32_t, sycl::memory_order::relaxed, sycl::memory_scope::device,
                          sycl::access::address_space::global_space>
