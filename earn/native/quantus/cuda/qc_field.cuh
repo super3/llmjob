@@ -30,10 +30,13 @@ typedef uint64_t u64;
 #define QC_EXACT 0
 #endif
 #ifndef QC_SQR
-#define QC_SQR 0
+#define QC_SQR 1
 #endif
 #ifndef QC_RED
 #define QC_RED 2
+#endif
+#ifndef QC_FOLD
+#define QC_FOLD 2
 #endif
 
 __device__ __forceinline__ u32 qc_lo(u64 x) { return (u32)x; }
@@ -93,6 +96,23 @@ __device__ __forceinline__ Q96 q96_sumq(const Q96 &a, const Q96 &b) {
 // The carried value is below h * EPS < 2^56, so the second add cannot carry.
 __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
   u32 o0, o1;
+#if QC_FOLD == 2
+  // h * EPS = (h - (h != 0)) * 2^32 + (-h mod 2^32), with no multiply: on Ada
+  // and Ampere the multiplier pipe is the busy one, the ALU has room.
+  asm("{\n\t"
+      ".reg .u32 e0, e1, c;\n\t"
+      "sub.cc.u32 e0, 0, %2;\n\t"
+      "subc.u32 e1, %2, 0;\n\t"
+      "add.cc.u32 %0, %3, e0;\n\t"
+      "addc.cc.u32 %1, %4, e1;\n\t"
+      "addc.u32 c, 0, 0;\n\t"
+      "neg.s32 c, c;\n\t"
+      "add.cc.u32 %0, %0, c;\n\t"
+      "addc.u32 %1, %1, 0;\n\t"
+      "}"
+      : "=&r"(o0), "=&r"(o1)
+      : "r"(w.h), "r"(w.l0), "r"(w.l1));
+#else
   asm("{\n\t"
       ".reg .u32 c;\n\t"
       "mad.lo.cc.u32 %0, %2, %5, %3;\n\t"
@@ -103,6 +123,7 @@ __device__ __forceinline__ u64 q96_fold(const Q96 &w) {
       "}"
       : "=&r"(o0), "=&r"(o1)
       : "r"(w.h), "r"(w.l0), "r"(w.l1), "r"(QC_EPS32));
+#endif
   return qc_pack(o0, o1);
 }
 
