@@ -1333,6 +1333,17 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
   if (cb > ctx->colsValid) cb = ctx->colsValid;
   if (cb < 4) cb = 4;
   ctx->colBatch = floor_pow2(cb);
+  // goal-arc31: xmx8w at full speed takes 384 column offsets a batch, not 256. A batch walks every row band
+  // across its columns, so its B' must stay in the L2 while A' streams from DRAM once a batch: 384 columns' B' is
+  // 12 MB of the A750's 16 MB (with half the band, below), and A' comes from DRAM a third fewer times a MAC.
+  // A salt no longer splits into whole batches, so the search loop redraws before a batch would pass its last
+  // valid column (pearl_core.cc), leaving fewer than 384 column offsets of a salt unsearched. Not under duty (the
+  // CW 1 instance walks its 1,024 in chunks of 256), nor where PEARL_SYCL_COL_BATCH is set.
+  // PEARL_SYCL_W_COLS: another width (a multiple of 16 from 256), 256 for the old one.
+  if (ctx->fold == kXmx8W && !wide && cbEnv.empty() && ctx->colBatch == 256u) {
+    const uint32_t w = (uint32_t)strtoul(env_str("PEARL_SYCL_W_COLS", "384").c_str(), nullptr, 10);
+    if (w >= 256u && w % 16u == 0u && w <= ctx->colsValid) ctx->colBatch = w;
+  }
   // The plain fold launches 32 work-items a region, and a SYCL launch range must
   // fit in an int, so a batch is at most 2^25 regions (4096 column offsets at
   // mainnet). Only a large PEARL_SYCL_COL_BATCH gets here.
@@ -1358,6 +1369,10 @@ extern "C" void *pearl_host_create_checked(const PearlProfile *profile, bool che
     // 98.5-98.6 TH/s against 98.0-98.1 at 64 and 98.0-98.3 at 16 (card 5, three rounds).
     const uint64_t share = ctx->fold == kXmx8W ? 8 : ctx->fold == kDot || fold_is_frag(ctx->fold) ? 4 : 1;
     uint64_t band = cache ? cache / share / (32ull * k) : 16;
+    // goal-arc31: with xmx8w's wider full-speed batch (12 MB of B' at 384 column offsets) half the band (16 row
+    // windows on an A750, 1 MB of A'), so B' and the band's A' still fit the L2 together. Card 0: 384 columns at
+    // band 16 105.32 TH/s, at band 32 104.79; 320 at band 32 105.06; def 104.59-104.63.
+    if (ctx->fold == kXmx8W && !wide && ctx->colBatch > 256u && band > 1u) band /= 2;
     const std::string bEnv = env_str("PEARL_SYCL_BAND", "");
     if (!bEnv.empty()) band = strtoull(bEnv.c_str(), nullptr, 10);
     if (band < 1) band = 1;

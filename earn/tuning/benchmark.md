@@ -5249,6 +5249,44 @@ is the surprise: ~64 three-input XORs a chunk are ~1.5% of the joules.
   chunk end's wait. The readout's prize (1.2% of the joules for three quarters of it) stays open: a form that keeps
   it at the chunk's end with fewer register reads, or no form at all.
 
+### Arc rig, 13 November, from 19:45 UTC: 384 column offsets a batch at full speed, 105.2-105.3 TH/s (`goal/arc-31`)
+
+**Ships: xmx8w at full speed takes 384 column offsets a batch instead of 256, with half the band (16 row windows
+instead of 32).** Host only; the kernels and their ISA are unchanged. A batch walks every row band across all of
+its columns, so its B' (32 KB a column offset at mainnet) has to stay in the L2 while A' (256 MB) streams from
+DRAM once a batch. At 256 columns B' is 8 MB of the A750's 16 MB; at 384 it is 12 MB, and with the band's A' cut
+from 2 MB to 1 MB both still fit. A' then comes from DRAM a third fewer times a MAC. `PEARL_SYCL_W_COLS` sets
+another width (256: the old one); `PEARL_SYCL_COL_BATCH` still forces a power of two. Under duty (the CW 1
+instance, 1,024 columns walked in chunks of 256) nothing changes. A salt no longer splits into whole batches, so
+pearl_core.cc's search loop now redraws when the next batch would pass the salt's last valid column (`nonce +
+regions > span`; for a batch that divides the span, every other core's, this is the old `nonce >= span`); at
+mainnet n that leaves 256 of a salt's 16,384 column offsets unsearched.
+
+Card 0, `pearl_sycl_check --bench 10`, xmx8w, stream on, 45-50 s of rest before each run, every run under
+`tg30.sh`; all at 189.8-190.2 W with the PL2 flag set in 36-53% of samples (14% for AHOT):
+
+| What | TH/s | MHz | J/PMAC | TH/s a GHz |
+|---|---|---|---|---|
+| def (goal-arc30's build), 6 runs | 104.48-104.66 | 1,975-1,982 | 1.814-1.816 | 52.80-52.95 |
+| 256 columns at band 16 / band 64 | 104.42 / 104.19-104.23 | 1,977-1,978 | 1.818 / 1.821-1.822 | 52.70-52.78 |
+| 384 columns at band 32 (a timing build), 2 runs | 104.79-104.82 | 1,974-1,976 | 1.811 | 53.05-53.07 |
+| 320 columns at band 32, 2 runs | 105.06-105.06 | 1,976-1,978 | 1.807 | 53.11-53.18 |
+| 384 columns at band 16 (timing), 2 runs | 105.31-105.32 | 1,978 | 1.803 | 53.23-53.25 |
+| A' held in the L2 (`AHOT=32`, wrong results: the ceiling for A' from DRAM) | 105.91 | 1,996 | 1.796 | 53.06 |
+| **new default (384, band 16)**, 2 runs | **105.23-105.29** | 1,978-1,979 | 1.803-1.805 | 53.20-53.21 |
+| the same build at 320 / 352 / 448 columns (band 16) | 104.96 / 105.17 / 104.53 | 1,975-1,979 | 1.809 / 1.805 / 1.817 | |
+
+448 columns (14 MB of B' with the band's 1 MB) pushes B' out of the L2 and is level with def; 384 is the best of the
+widths tried. verify-hits 400 of 400 at duty 100 (col_batch 384, band 16, 7 salts, so across salt ends) and at
+duty 75 (col_batch 1024, band 32: unchanged); verify.sh's fold checks and its 400 hits on the auto fold PASS
+(the dot fold's 400 hits were stopped by the temperature guard; see below). Earn suites that read the changed
+files: 15 suites, 587 tests pass.
+
+**Operand fill, modelled (no run).** A and B are the miner's own int7 values, so a separate fill for each was a
+candidate. The expected number of bits that flip between two operand bytes (fill plus noise in [-63, 63]) is
+3.49-3.50 from fill 44 to 56 (0: 4.00, 32: 3.59, 63: 3.50), which matches the measured 48 = 63 and 32 +0.6%: 48 sits
+at the minimum already, so no fill can buy much.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.

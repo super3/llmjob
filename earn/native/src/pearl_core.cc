@@ -732,7 +732,10 @@ void PearlCore::SearchLoop() {
       legWork = 0.0;
       legWarm = true;
     }
-    if (nonce >= span) {
+    if (nonce + regions > span) {
+      // goal-arc31: a batch that does not divide the span (the SYCL core's xmx8w takes 384 column offsets at full
+      // speed) redraws before it would run past the salt's last valid column. For one that divides it, as every
+      // other core's does, this is the old nonce >= span.
       // The next salt THIS core owns, not simply the next one: on a multi-card
       // rig the stride is the card count, so the cards never collide. The redraw
       // queues behind the batches already queued, and the host knows the new
