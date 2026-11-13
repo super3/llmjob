@@ -4689,6 +4689,50 @@ GPU span to stderr; `S/arc-k/a25blog.sh` samples clock, throttle reasons and ene
   Ordering the A' writes so a sub-group fills whole 512-byte k-steps changed nothing (2.43 against 2.45 ms), so the
   write pattern is not what costs there.
 
+### Arc rig, 13 November, from 06:30 UTC: a cheaper redraw, and what job switches cost under duty (`goal/arc-26`)
+
+**Ships: a same-job redraw hashes A's tree path on the host.** A redraw only changes A's first 11 bytes (chunk 0),
+so only node 0 of each tree level changes. After a job's full draw the host keeps chunk 0 and node 1 of each level,
+checks that its own hashing gives the device's root, and from then on hashes each redraw's path itself; one small
+kernel writes it into the tree. No wait for the root. If the check ever disagrees, redraws rebuild the tree on the
+device as before. Kernels and the full-speed rate are unchanged.
+
+| | before (spare32's code) | after |
+|---|---|---|
+| redraw, median (card 5, `pearl_sycl_check --bench 6`, `PEARL_W_RESEED=4`) | 3.78-3.85 ms | 2.68-2.69 ms |
+| the same on the HiveOS 24.35 host (staged ship-a26-def vs ship-a25-def) | 3.20-3.29 ms | 2.43-2.45 ms |
+| card 5, bench.js, duty 60, five rounds of 40 s | 63.86-63.92 | 63.65 (first round), then 63.96-64.02 (+0.15%) |
+| card 4, bench.js, duty 75, three rounds of 30 s | 79.61-79.69 | 79.73-79.92 (+0.2%) |
+| card 4, bench.js, duty 100 (190 W, power-bound), two rounds | 101.2-101.6 | 101.4-101.4 (level) |
+| card 4, `pearl_sycl_check --bench 8` (card warm from mining), three rounds | 102.8-103.5 | 102.8-103.0 (same kernel) |
+
+verify.sh PASS (emu included) and verify-hits 400/400 at duty 100 and 75 on card 4 and card 5; HiveOS 24.35 host:
+2048 check (xmx8w, emu, CW 1) and the mainnet-shaped check PASS, plain bench level (94.6-94.8 each). One verify.sh run on
+card 5 failed dot and xmx8w alike on 128 regions; two reruns passed, one noting 1,337 bytes settled by the third read:
+card 5's lossy copies (goal-arc24), not this change.
+
+**A' noise is not cheaper another way.** It is 2.0 ms of the 2.7 ms that is left (a plain memset of the same 268 MB:
+0.69 ms). Rewritten four ways, all byte-identical to materialize16 at mainnet size: a sub-group of 16 holding the dense
+row and picking bytes with shuffles 7.3 ms; the same with plain loads and the (p0, p1) pairs kept for 16 rows 2.0 ms
+(64 rows 2.1, 4 rows 6.2); E_AL stored transposed so a sub-group's 16 rows read one cache line a byte, with 32-byte
+vector stores filling whole 512-byte blocks 2.0 ms; the same at 4 rows a work-item 2.8 ms. With the dense reads
+removed (wrong results, timing only) the kernel still took ~1.4 ms, so it is neither the reads nor the store pattern.
+
+**Job switches under duty.** The Kryptex pool sent a new job every 45 s on average (38 jobs in 28 minutes, worker
+`jobprobe`, no shares). On a job switch the core finishes what it queued under the old job, and those hits are dropped
+(pearlMiner.js). Under duty that is two batches: the one running and the one launched after the rest. At 1,024
+column offsets and duty 60 that is ~84 ms of card time every 45 s, ~0.3% of a mining card's rate. Resting before the
+job check instead of inside `pearl_host_submit` would make it ~0.1%, but needs the search loop (shared with the CUDA
+and HIP cores) and a new host call; not done. Batch width under duty, card 5, bench.js, duty 60, after this change:
+
+| column offsets a batch | TH/s | waste at a job every 45 s |
+|---|---|---|
+| 512 (four rounds) | 62.87-62.98 | ~0.15% |
+| 1,024, today's (four rounds) | 63.94-64.01 | ~0.3% |
+| 2,048 (three rounds, before this change) | 63.89-63.91, level with 1,024 | ~0.6% |
+
+So 1,024 stays: 512 loses 1.6%, 2,048 gains nothing at duty 60 and wastes twice as much at each job switch.
+
 ## Research notes
 
 What future speed work needs: how to measure, the limits found, and what has already been tried.
