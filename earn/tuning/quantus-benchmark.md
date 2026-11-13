@@ -241,3 +241,11 @@ it means.
   - Variants at 20a28e32, 45 s legs, two rounds: the official-style fold through IMAD.HI 625.6 and 625.6;
     the Q96 fold through IMAD 636.9 and 636.8; both 622.1 and 621.9; ours 637.3 and 637.1; official 669.7.
     None helps on sm_120.
+  - The other way round for sm_120, where ptxas leaves the multiplier pipe to IMAD.WIDE alone:
+    `rebalance.py --reverse` moved 506-696 carries, moves and negations to IMAD.X/IMAD.MOV (test branch
+    quantus/cuda-rb, 1e2eec62, cubins run through `qcdrv.cu`). All four cubins gave exactly the compiled
+    kernel's hits (10 rounds each), and every rewrite was slower: untouched 637.3, 6-cycle window 597.3,
+    10-cycle 600.4, no window 591.2 MH/s, all at 2,820 MHz, the rewrites drawing 312-316 W against 330.
+    So ptxas's pipe choices are right on both Ada and Blackwell, and the gap to SRBMiner is in how much
+    work there is, not where it runs.
+  - Not done: a pool run with a real address (there is none yet); RTX 20.

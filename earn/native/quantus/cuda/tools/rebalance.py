@@ -19,7 +19,8 @@ hits exact, and the kernel got slower: 870 MH/s against 950 and 943 for the unto
 instruction (or back) needs more cycles than ptxas leaves between two instructions on the same pipe. The slowdown
 fits ubench.cu: an IMAD.WIDE also takes an ALU slot (IMAD.WIDE + IADD3 at 1:1 and at 1:2 both run at 2
 instructions an SM a clock), so the ALU, not the multiplier pipe, is what binds, and ptxas had balanced it.
-Kept as a tool, not used by the build.
+On the RTX 5080 (sm_120), --reverse (ALU to multiplier pipe) kept the hits exact with or without a window and was
+6% slower too (597-600 against 637). Kept as a tool, not used by the build.
 
 --every N rewrites one candidate in N (in program order), to balance the two pipes rather than swap the load.
 Each rewritten instruction keeps its predicate and its control bits (stall, yield, barriers) and drops its operand
