@@ -93,7 +93,7 @@ build() {
   [ -n "$cc" ] || fail "no compute capability"
   mkdir -p $B
   OUT=$B/quantus_cuda.node DEFS="${DEFS:-}" CUDA_HOME=$CUDA NODE_INCLUDE=$NODE/include/node bash $Q/build.sh "$cc" \
-    > $B/build.log 2>&1 || { tail -8 $B/build.log | emit; fail "build"; }
+    > $B/build.log 2>&1 || { grep -m6 -iE "error" $B/build.log | emit; tail -3 $B/build.log | emit; fail "build"; }
   G="-gencode=arch=compute_$cc,code=sm_$cc"
   nvcc -O3 -std=c++17 $G ${DEFS:-} -I $Q -o $B/ours $Q/tools/qcbench.cu $Q/qc_host.cu > $B/b2.log 2>&1 \
     || { tail -8 $B/b2.log | emit; fail "build qcbench"; }
