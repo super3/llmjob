@@ -19,6 +19,7 @@
 //   QH_WADD 1|0       wide adds in asm, round constants read from SGPRs | carry builtins: +1.4%
 //   QH_MULADD 1|0     the internal layer's sum rides in the multiplies | added after (QH_ARITH 1): +2.5%
 //   QH_BLOCK, QH_WPE  block size, and the fewest waves a SIMD the compiler leaves room for
+//   QH_NPT, QH_PIPE   nonces a thread, and the partial rounds pipelined: off, level or slower on RDNA 2
 // The asm passes each carry as one SGPR, so it is for wave32, HIP's default on gfx10 and later.
 
 #pragma once
@@ -428,8 +429,32 @@ __device__ __forceinline__ void qh_internal(u64 *s, const u64 *diag, u64 c0) {
 
 __device__ __forceinline__ u32 qh_bswap32(u32 v) { return __builtin_bswap32(v); }
 
-// The two permutations from the folded state; element 0 of the result ends in s[0], in [0, 2^64).
-__device__ __forceinline__ void qh_hash(u64 *s) {
+// QH_NPT: nonces a thread, hashed side by side so the compiler can interleave them (instruction-level
+// parallelism; RDNA 3 needs it more than RDNA 2). QH_PIPE: each partial round's element 0 first, and the next
+// round's S-box on it beside this round's other eleven products, which don't depend on it.
+#ifndef QH_NPT
+#define QH_NPT 1
+#endif
+#ifndef QH_PIPE
+#define QH_PIPE 0
+#endif
+
+// One partial round of the internal layer for s, its S-boxed element 0 in x: s[0] gets the new element 0 with
+// the next round's constant c0, and (QH_PIPE) x the next round's S-box of it when `next`.
+__device__ __forceinline__ void qh_partial_pipe(u64 *s, u64 &x, u64 c0, bool next) {
+  QhWide sum = qh_w(x);
+#pragma unroll
+  for (int i = 1; i < 12; i++) sum = qh_wadd(sum, s[i]);
+  s[0] = qh_muladd(x, qh_tab.diag[0], qh_waddc(sum, c0));
+  if (next) x = qh_sbox(s[0]);
+#pragma unroll
+  for (int i = 1; i < 12; i++) s[i] = qh_muladd(s[i], qh_tab.diag[i], sum);
+}
+
+// The two permutations from the folded state of N nonces; element 0 of each result ends in s[n][0], in
+// [0, 2^64).
+template <int N>
+__device__ __forceinline__ void qh_hash(u64 (&s)[N][12]) {
   int row = 0;
 #pragma unroll 1
   for (int seg = 0; seg < 3; seg++) {
@@ -438,21 +463,40 @@ __device__ __forceinline__ void qh_hash(u64 *s) {
     for (int r = 0; r < rows; r++, row++) {
       if (row != QH_NOSBOX_ROW) {
 #pragma unroll
-        for (int i = 0; i < 12; i++) s[i] = qh_sbox(s[i]);
+        for (int i = 0; i < 12; i++)
+#pragma unroll
+          for (int n = 0; n < N; n++) s[n][i] = qh_sbox(s[n][i]);
       }
-      qh_external(s, qh_tab.full[row]);
+#pragma unroll
+      for (int n = 0; n < N; n++) qh_external(s[n], qh_tab.full[row]);
     }
     if (seg == 2) break;
+#if QH_PIPE
+    u64 x[N];
+#pragma unroll
+    for (int n = 0; n < N; n++) x[n] = qh_sbox(s[n][0]);
 #pragma unroll 1
     for (int r = 0; r < 22; r++) {
-      s[0] = qh_sbox(s[0]);
-      qh_internal(s, qh_tab.diag, qh_tab.part0[r]);
-    }
 #pragma unroll
-    for (int i = 1; i < 12; i++) {
-      QhWide w = qh_waddc(qh_w(s[i]), qh_tab.term0[i]);
-      s[i] = qh_reduce96(w.lo, w.h);
+      for (int n = 0; n < N; n++) qh_partial_pipe(s[n], x[n], qh_tab.part0[r], r < 21);
     }
+#else
+#pragma unroll 1
+    for (int r = 0; r < 22; r++) {
+#pragma unroll
+      for (int n = 0; n < N; n++) {
+        s[n][0] = qh_sbox(s[n][0]);
+        qh_internal(s[n], qh_tab.diag, qh_tab.part0[r]);
+      }
+    }
+#endif
+#pragma unroll
+    for (int n = 0; n < N; n++)
+#pragma unroll
+      for (int i = 1; i < 12; i++) {
+        QhWide w = qh_waddc(qh_w(s[n][i]), qh_tab.term0[i]);
+        s[n][i] = qh_reduce96(w.lo, w.h);
+      }
   }
 }
 
@@ -475,23 +519,29 @@ __device__ __forceinline__ u32 qh_coef7(int j) {
 #endif
 
 extern "C" __global__ void __launch_bounds__(QH_BLOCK) QH_ATTR qh_search(QhArgs a, u64 *hits) {
-  u32 i = blockIdx.x * blockDim.x + threadIdx.x;
-  if (i >= a.n) return;
-  u32 lo = a.lo0 + i;
-  u64 x = qh_bswap32(lo);
-  u64 s[12];
+  u32 i0 = (blockIdx.x * blockDim.x + threadIdx.x) * QH_NPT;
+  if (i0 >= a.n) return;
+  u64 s[QH_NPT][12];
 #pragma unroll
-  for (int j = 0; j < 12; j++) {
-    u64 add = x * qh_coef7(j);
-    QhWide w = qh_waddc(qh_w(add), a.k[j]);
-    s[j] = qh_reduce96(w.lo, w.h);
+  for (int n = 0; n < QH_NPT; n++) {
+    u64 x = qh_bswap32(a.lo0 + i0 + n);
+#pragma unroll
+    for (int j = 0; j < 12; j++) {
+      u64 add = x * qh_coef7(j);
+      QhWide w = qh_waddc(qh_w(add), a.k[j]);
+      s[n][j] = qh_reduce96(w.lo, w.h);
+    }
   }
-  qh_hash(s);
-  u64 r = s[0];
-  if (r >= QH_P) r -= QH_P;
-  u64 top = ((u64)qh_bswap32(qh_lo(r)) << 32) | qh_bswap32(qh_hi(r));
-  if (top <= a.target) {
-    unsigned long long slot = atomicAdd((unsigned long long *)hits, 1ull);
-    if (slot < a.cap) hits[1 + slot] = qh_pack(lo, a.hi);
+  qh_hash<QH_NPT>(s);
+#pragma unroll
+  for (int n = 0; n < QH_NPT; n++) {
+    u64 r = s[n][0];
+    if (r >= QH_P) r -= QH_P;
+    u64 top = ((u64)qh_bswap32(qh_lo(r)) << 32) | qh_bswap32(qh_hi(r));
+    // With QH_NPT > 1 a thread's last nonces can lie past the launch's end.
+    if (top <= a.target && (QH_NPT == 1 || i0 + n < a.n)) {
+      unsigned long long slot = atomicAdd((unsigned long long *)hits, 1ull);
+      if (slot < a.cap) hits[1 + slot] = qh_pack(a.lo0 + i0 + n, a.hi);
+    }
   }
 }
