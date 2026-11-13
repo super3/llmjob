@@ -352,13 +352,16 @@ CFG = dict(mt=6, pad=8, ist=5, py=0, iy=1, ly=1, ru=0, lead=3, sf=0, hold=1, pst
            # the first turn ahead of whose first load of the partner's half the warp waits on "full" (17: the load of
            # tile 3, behind the half's last store in gap 15 and its arrive in 16).
            # w8mx (with w8m, TIMING ONLY, wrong on purpose): leave out a bit each, 1 the partner's "full" wait, 2 the
-           # later turns' "full" waits, 4 the "empty" wait, 8 the arrives (only with 7). What each costs the pipe.
+           # later turns' "full" waits, 4 the "empty" wait, 8 the arrives (only with 7), 16 every wait's branch (the
+           # TRYWAITs stay). What each costs the pipe.
            # w8mpl: the gap of tile m - 1 where the first turn loads the partner's tile m (and the wait's branch goes
            # in front of the first), to give the partner more time. w8mbs: the waits' branch stall. w8mt: the gaps
            # between a later turn's TRYWAIT and its branch.
            # w8m1 (with w8m): one lane of each warp arrives (the kernel's barriers then count warps: gprobe / pearl_rot
            # built with GP_W8M=2 / ROT_W8M=2), not all 32: the barrier unit then takes one arrival a warp, not 32.
-           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0)
+           # w8mg, w8me (w8msb=2): gaps of the TRYWAITs (see the loop); w8ma: the gap of a turn of the "empty" arrive
+           # (behind the slot's last load, tile 5's, gap 33).
+           w8m=0, w8mp=2, w8mf=17, w8mx=0, w8mpl=1, w8mbs=5, w8mt=3, w8msb=0, w8m1=0, w8mg=20, w8me=20, w8ma=36)
 # w8m: the retry blocks of the waits, which go behind the function's return (rfold120.py puts them there).
 RETRY = []
 SB_ST = 3                   # the stage loads' scoreboard; the gathers' LDSM go round 0-2
@@ -988,6 +991,8 @@ def chunk(cfg, R, role=None):
                     return
                 n = len(RETRY) // 2
                 put(g_try, mb_wait(cfg, sr_umb(cfg, t), off, par, sb), False)
+                if cfg["w8mx"] & 16:
+                    return                                     # TIMING ONLY: the TRYWAIT, not the branch
                 # (A branch's stall is ptxas's 5: nothing behind it issues before it is known to be not taken.)
                 put(g_br, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(sb,), stall=cfg["w8mbs"]), False,
                     front=True)
@@ -1000,19 +1005,24 @@ def chunk(cfg, R, role=None):
             # turns' waits cost 0.5 points of pipe so). The later turns' waits go on SB_OFF (the record's, idle from
             # gap 27 of a turn to the next turn's gap 2), the partner's on SB_RD, and "empty"'s TRYWAIT to gap
             # tot - 4 of the chunk before (on SB_OFF), its branch to gap 1 (the prologue sets P2 for chunk 0).
+            # w8msb=2: every wait on SB_RD, and the TRYWAITs out of B's gathers' gaps (28 to 46 of a turn, where a
+            # barrier operation in the shared-memory queue would hold B's loads): a later turn's in gap w8mg of the
+            # turn before, "empty"'s in gap w8me of the chunk's last turn.
             msb = cfg["w8msb"]
+            sbw = SB_RD if msb == 2 else SB_OFF
             if msb:
                 assert not cfg["w8mx"] & 4 and cfg["lgg"] == 2
-                g_e = tot - 4
+                g_e = 3 * ni + cfg["w8me"] if msb == 2 else tot - 4
                 assert 3 * ni + 8 < g_e
                 if True:
                     n = len(RETRY) // 2
-                    put(g_e, mb_wait(cfg, sr_umb(cfg, 0), 8, par, SB_OFF), False)
-                    put(tot + 1, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(SB_OFF,), stall=cfg["w8mbs"]),
+                    put(g_e, mb_wait(cfg, sr_umb(cfg, 0), 8, par, sbw), False)
+                if not cfg["w8mx"] & 16:
+                    put(tot + 1, Ins("@!P%d BRA .W%d" % (P, n), label=".C%d" % n, wait=(sbw,), stall=cfg["w8mbs"]),
                         False, front=True)
-                    again = mb_wait(cfg, sr_umb(cfg, 0), 8, par, SB_OFF)
+                    again = mb_wait(cfg, sr_umb(cfg, 0), 8, par, sbw)
                     again.label = ".W%d" % n
-                    RETRY.extend([again, Ins("BRA .C%d" % n, wait=(SB_OFF,), stall=5)])
+                    RETRY.extend([again, Ins("BRA .C%d" % n, wait=(sbw,), stall=5)])
             else:
                 wait_at(0, cfg["st0"], 0, 8, 4)                            # empty, ahead of the chunk's first store
             if not cfg["w8mx"] & 8:
@@ -1021,10 +1031,13 @@ def chunk(cfg, R, role=None):
             assert last_st + 1 < 16 + cfg["w8mpl"] < 24
             wait_at(last_st + 1, 16 + cfg["w8mpl"], 0, 0, 1, SB_RD if msb else SB_ST)
             for t in range(1, 4):                                          # full, ahead of the turn's first load
-                wait_at((t - 1) * ni + ni - 7 - cfg["w8mt"], (t - 1) * ni + ni - 7, t, 0, 2, SB_OFF if msb else SB_ST)
+                if msb == 2:
+                    wait_at((t - 1) * ni + cfg["w8mg"], (t - 1) * ni + ni - 7, t, 0, 2, SB_RD)
+                else:
+                    wait_at((t - 1) * ni + ni - 7 - cfg["w8mt"], (t - 1) * ni + ni - 7, t, 0, 2, SB_OFF if msb else SB_ST)
             for t in range(4) if not cfg["w8mx"] & 8 else ():
                 # empty: behind the turn's last load of its slot (tile 5's, gap 33), once it has landed.
-                put(t * ni + 36, mb_arrive(sr_umb(cfg, t), 8, wait=(SB_ST,), lane0=cfg["w8m1"]), False)
+                put(t * ni + cfg["w8ma"], mb_arrive(sr_umb(cfg, t), 8, wait=(SB_ST,), lane0=cfg["w8m1"]), False)
             # The next chunk's parity, behind this chunk's last wait (turn 3's full, in gap ni - 7 of turn 2).
             put(3 * ni + 8, Ins("LOP3.LUT R%d, R%d, 0x80000000, RZ, 0x3c, !PT" % (par, par)), False)
         elif cfg["w8g"]:
