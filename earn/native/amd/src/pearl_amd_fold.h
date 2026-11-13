@@ -628,6 +628,43 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #ifndef PEARL_AMD_PF2
 #define PEARL_AMD_PF2 (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
 #endif
+// PEARL_AMD_DOT4_ADDR (RDNA 2, on by default since 13 November): RDNA 2's slab loop (DPPA, 8-byte reads) with its
+// addresses out of the loop. The shipped loop spent about 51 VALU a slab of 2048 dot4s on addresses: 24 on the slab
+// loads' 64-bit addresses, 10 on the LDS stores' and 12 on the LDS read bases, which the loop's parity (s & 1) made
+// new every slab. Here the slab loads are buffer loads (PEARL_AMD_BUFLD, with gfx10's word 3, and PEARL_AMD_TID);
+// LDS is [A' 0][B' 0][A' 1][B' 1], so slab s's buffers are one SGPR offset from buffer 0's, the same for A' and B';
+// and every LDS address is a lane base plus that offset plus an immediate: 4 VALU a slab. RDNA 2 is VALU-bound
+// there, so the VALU are time: RX 6800, 1400 MHz cap, hashrate.js 19.08-19.12 TH/s against 18.95-18.96 (+0.8%).
+// PEARL_AMD_DOT4_SWZ (in that loop, on by default): LDS bank conflicts. Rows are 80 bytes, 20 banks apart, so rows 8
+// apart share a bank: a k-pair's A' read (rows 0, 4, 8, ... 28 and 1, 5, ... 29 in each 16 lanes) hit 4 rows a
+// bank. A' row r of a tile goes to LDS row r ^ (((r >> 3) & 3) << 1), which spreads them 2 a bank (at 80-byte rows,
+// 8-byte reads can't do better). And each eight lanes of a 16-byte staging store wrote rows r and r + 1, whose banks
+// overlap by 4; here they write rows 4 apart, which cover the 32 banks once. B' reads were conflict-free and stay
+// so. With ADDR: 19.31-19.34 TH/s (+2.0% on the shipped loop, the same 1366-1368 MHz and 120 W).
+// The Windows core builds with -DPEARL_AMD_DOT4_ADDR=0 (build-amd.sh's SET_OS): both were timed only with ROCm's clang
+// 22 on Linux. -DPEARL_AMD_DOT4_ADDR=0 builds the loop before them, -DPEARL_AMD_DOT4_SWZ=0 ADDR without the swizzle.
+#ifndef PEARL_AMD_DOT4_ADDR
+#define PEARL_AMD_DOT4_ADDR 1
+#endif
+#if PEARL_AMD_DOT4_ADDR != 0 && PEARL_AMD_DOT4_ADDR != 1
+#error "PEARL_AMD_DOT4_ADDR is 0 or 1"
+#endif
+#if PEARL_AMD_DOT4_ADDR && PEARL_AMD_DOT4_DPPA_ON && PEARL_AMD_DOT4_DPPA_KB == 8 && !PEARL_AMD_PF2
+#define PEARL_AMD_DOT4_ADDR_ON 1
+#else
+#define PEARL_AMD_DOT4_ADDR_ON 0
+#endif
+#ifndef PEARL_AMD_DOT4_SWZ
+#define PEARL_AMD_DOT4_SWZ 1
+#endif
+#if PEARL_AMD_DOT4_SWZ != 0 && PEARL_AMD_DOT4_SWZ != 1
+#error "PEARL_AMD_DOT4_SWZ is 0 or 1"
+#endif
+// PEARL_AMD_DOT4_STKP=n (experiment), in PEARL_AMD_DOT4_ADDR's loop: the next slab's LDS store issued
+// after k-pair n's reads (0-7), not after the slab's dot4s (8, the default), so it completes before the barrier.
+#ifndef PEARL_AMD_DOT4_STKP
+#define PEARL_AMD_DOT4_STKP 8
+#endif
 // PEARL_AMD_RDNA3_BUFLD: RDNA 3's buffer loads, PEARL_AMD_BUFLD and PEARL_AMD_TID together (see BUFLD, below). On by
 // default on gfx1100 and gfx1101 only, the two chips it was raced on; gfx1102, gfx1150 and gfx1151 keep their global
 // loads. The Windows core leaves it out (build-amd.sh's SET_OS). -DPEARL_AMD_RDNA3_BUFLD=0 builds the release before
@@ -697,7 +734,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 #define PEARL_AMD_PFX (PEARL_AMD_WMMA12 || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)
 #endif
 #ifndef PEARL_AMD_TID
-#define PEARL_AMD_TID (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON)
+#define PEARL_AMD_TID (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_PF2PIN_ON || PEARL_AMD_RDNA3_SET_ON || PEARL_AMD_DOT4_ADDR_ON)
 #endif
 // PEARL_AMD_KPAIR=1 (RDNA 4, wmma12): each lane reads its fragments for two k-steps with one 16-byte LDS load.
 // A slab's k-steps don't have to take its bytes in order: the WMMAs of a slab add up over all of them, and a chunk
@@ -729,7 +766,7 @@ __device__ __forceinline__ void pearl_amd_mma_step(typename P::Acc (&acc)[P::kMT
 // gfx11 and gfx12 code takes buffer loads, whatever the setting: word 3 is theirs, and CDNA and RDNA 2 keep their
 // global loads.
 #ifndef PEARL_AMD_BUFLD
-#define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD))
+#define PEARL_AMD_BUFLD (PEARL_AMD_WMMA12 || (PEARL_AMD_WMMA11 && PEARL_AMD_RDNA3_BUFLD) || PEARL_AMD_DOT4_ADDR_ON)
 #endif
 // PEARL_AMD_RDNA4_SET: the RDNA 4 cuts of 4 November, on by default in RDNA 4 (gfx12) code: PEARL_AMD_RDSEL=1,
 // PEARL_AMD_RDPERM=2, PEARL_AMD_CRANK=1, PEARL_AMD_SCHEDB=1, PEARL_AMD_LDS32=1 and PEARL_AMD_LDS32_PIN=1, each
@@ -1311,7 +1348,14 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   static_assert(WM % 32 == 0 && WN % 64 == 0, "a wave must hold whole 32x64 blocks");
   static_assert(KS % P::kTK == 0, "a slab must hold whole k-steps");
 
-#if PEARL_AMD_STOFF
+#if PEARL_AMD_DOT4_ADDR_ON
+  // PEARL_AMD_DOT4_ADDR (above): [A' 0][B' 0][A' 1][B' 1]. sA[0] and sB[0] are buffer 0's, which the first slab's
+  // store uses; the slab loop finds buffer 1 at (BM + BN) * S past them.
+  static_assert(!PEARL_AMD_STOFF && !PEARL_AMD_LDS32, "PEARL_AMD_DOT4_ADDR has a layout of its own");
+  __shared__ __attribute__((aligned(16))) int8_t sL[2 * (BM + BN) * S];
+  int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
+  int8_t (*const sB)[BN * S] = reinterpret_cast<int8_t (*)[BN * S]>(sL + BM * S);
+#elif PEARL_AMD_STOFF
   // PEARL_AMD_STOFF (above): A' buffers 0 and 1, then B' buffers 0 and 1, in one array.
   __shared__ __attribute__((aligned(16))) int8_t sL[2 * (BM + BN) * S];
   int8_t (*const sA)[BM * S] = reinterpret_cast<int8_t (*)[BM * S]>(sL);
@@ -1367,13 +1411,15 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   // The next slab, in registers while the current one is used. A vector type, not HIP's
   // int4: int4 is a struct, which the compiler copied through scratch memory.
   pearl_amd_v4i pre[U];
-#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12)
+#if PEARL_AMD_BUFLD && PEARL_AMD_TILED && (PEARL_AMD_WMMA11 || PEARL_AMD_WMMA12 || PEARL_AMD_DOT4_ADDR_ON)
   // PEARL_AMD_BUFLD (above): the tiles' resources. PEARL_AMD_WMMA11 and _WMMA12 are set only in a gfx11 or gfx12
-  // device pass, never in HIP-CPU's, and word 3 is right on those two only.
+  // device pass, never in HIP-CPU's, and word 3 0x31004000 is right on those two only; gfx10's is 0x31014000
+  // (PEARL_AMD_DOT4_ADDR_ON: a gfx103x device pass).
+  constexpr int kRsrcW3 = PEARL_AMD_DOT4_ADDR_ON ? 0x31014000 : 0x31004000;
   const __amdgpu_buffer_rsrc_t rsA =
-      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), 0x31004000);
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gA), (short)0, (int)((uint32_t)BM * k), kRsrcW3);
   const __amdgpu_buffer_rsrc_t rsB =
-      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), 0x31004000);
+      __builtin_amdgcn_make_buffer_rsrc(const_cast<int8_t *>(gB), (short)0, (int)((uint32_t)BN * k), kRsrcW3);
 #define PEARL_AMD_LOADR(slab, R)                                                             \
   _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
     const int idx = t + u * T;                                                               \
@@ -1444,8 +1490,59 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
     *reinterpret_cast<pearl_amd_v4i *>(dst + 16 * (idx % QR)) = R[u];                        \
   }
 #endif
+#if PEARL_AMD_DOT4_ADDR_ON
+  // PEARL_AMD_DOT4_ADDR (above), RDNA 2's slab loop: a gfx103x device pass, whose only fold body is dot4's. sL is
+  // [A' 0][B' 0][A' 1][B' 1], so buffer 1 is kFlip bytes past buffer 0, A' and B' alike.
+  static_assert(std::is_same<P, PearlAmdDot4>::value, "PEARL_AMD_DOT4_ADDR is the dot4 fold's");
+  constexpr uint32_t kFlip = (uint32_t)((BM + BN) * S);
+  static_assert(2 * (BM + BN) * S <= 65536, "every LDS offset fits a DS instruction's 16-bit offset");
+  static_assert(UA % T == 0 && QR == 4 && T % 32 == 0 && (T / QR) % 8 == 0,
+                "a staging unit is A' or B' by its number alone, and the staging map is for 64-byte slabs");
+  // PEARL_AMD_DOT4_SWZ (above): A' row r of a tile sits at LDS row swz(r) (bits 1-2 XOR bits 3-4), and each eight
+  // lanes of a staging store write rows 4 apart. swz is its own inverse and keeps every row in its 32-row block.
+  constexpr bool kSwz = PEARL_AMD_DOT4_SWZ != 0;
+  auto swz = [](int row) { return kSwz ? row ^ (((row >> 3) & 3) << 1) : row; };
+  // Staging unit u of thread t: LDS row prow0 + 64 u of its tile (A' for u < 2, then B' for u - 2), 16-byte column
+  // c16. Its byte offset in the tile's slab, the buffer load's VGPR offset, is that row's: the LDS row for B', the
+  // swizzled row for A'.
+  const int tl = t & 31, c16 = t & 3;
+  const int prow0 = 8 * (t >> 5) + (kSwz ? ((tl >> 2) & 1) * 4 + (tl >> 3) : (tl >> 2));
+  uint32_t vo[U];
+#pragma unroll
+  for (int u = 0; u < U; u++) {
+    const bool isA = u * T < UA;
+    const int prow = prow0 + (isA ? u * T / QR : (u * T - UA) / QR);
+    vo[u] = (uint32_t)(16 * (QR * (isA ? swz(prow) : prow) + c16));
+  }
+  // The lane's bases in buffer 0: its A' row in each tile (load_a's row rho = lane & 7, swizzled), its B' rows
+  // j = 0-3 and 4-7 (8 * j rows apart), and its staging place. The empty asm hides how they relate, so the compiler
+  // neither rebuilds one from another each slab nor merges the two A' reads into a ds_read2st64 (whose offsets
+  // can't take a k-pair's 8 bytes).
+  uint32_t la0 = (uint32_t)((wr * WM + swz(4 * (lane & 1) + ((lane >> 3) & 3) + 8 * ((lane & 7) >> 1))) * S);
+  uint32_t la1 = la0 + (uint32_t)(P::kTM * S);
+  uint32_t lb0 = (uint32_t)(BM * S + wc * WN * S + (lane & 7) * S);
+  uint32_t lb4 = lb0 + (uint32_t)(32 * S);
+  uint32_t lst = (uint32_t)(prow0 * S + 16 * c16);
+  asm volatile("" : "+v"(la0), "+v"(la1), "+v"(lb0), "+v"(lb4), "+v"(lst));
+  uint32_t par = 0u;   // the slab loop's buffers: 0 or kFlip bytes past buffer 0's
+#define PEARL_AMD_LOAD(slab)                                                                 \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    pre[u] = __builtin_bit_cast(pearl_amd_v4i,                                               \
+        u * T < UA ? __builtin_amdgcn_raw_buffer_load_b128(rsA, (int)vo[u], (int)((slab) * (uint32_t)(BM * KS)), 0) \
+                   : __builtin_amdgcn_raw_buffer_load_b128(rsB, (int)vo[u], (int)((slab) * (uint32_t)(BN * KS)), 0)); \
+  }
+// The staged slab into the buffers po bytes past buffer 0's.
+#define PEARL_AMD_STORE_AT(po)                                                               \
+  _Pragma("unroll") for (int u = 0; u < U; u++) {                                            \
+    int8_t *const dst = sL + (lst + (po));                                                   \
+    *reinterpret_cast<pearl_amd_v4i *>(dst + (u * T < UA ? (u * T / QR) * S : BM * S + ((u * T - UA) / QR) * S)) = \
+        pre[u];                                                                              \
+  }
+#define PEARL_AMD_STORE(buf) PEARL_AMD_STORE_AT((uint32_t)(buf) * kFlip)
+#else
 #define PEARL_AMD_LOAD(slab) PEARL_AMD_LOADR(slab, pre)
 #define PEARL_AMD_STORE(buf) PEARL_AMD_STORER(buf, pre)
+#endif
 
   typename P::Acc acc[P::kMT][P::kNT];
 #pragma unroll
@@ -1989,6 +2086,50 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
   for (uint32_t s = 0; s < slabs; s++) {
     const int buf = (int)(s & 1u);
     if (s + 1 < slabs) { PEARL_AMD_LOAD(s + 1) }
+#if PEARL_AMD_DOT4_ADDR_ON
+    {   // PEARL_AMD_DOT4_ADDR (above): RDNA 2's slab, from the buffers par bytes past buffer 0's, then the next one.
+      const int8_t *const aR0 = sL + (la0 + par);
+      const int8_t *const aR1 = sL + (la1 + par);
+      const int8_t *const bR0 = sL + (lb0 + par);
+      const int8_t *const bR4 = sL + (lb4 + par);
+#pragma unroll
+      for (int kp = 0; kp < KS / 8; kp++) {
+#if PEARL_AMD_DOT4_SPLIT
+        asm volatile("" ::: "memory");
+#endif
+        // k-pair kp: the lane's A' row of each tile and its eight B' rows, 8 bytes each, two k-steps.
+        const pearl_amd_v2i aw2[2] = {*reinterpret_cast<const pearl_amd_v2i *>(aR0 + 8 * kp),
+                                      *reinterpret_cast<const pearl_amd_v2i *>(aR1 + 8 * kp)};
+        pearl_amd_v2i b2[8];
+#pragma unroll
+        for (int j = 0; j < 8; j++)
+          b2[j] = *reinterpret_cast<const pearl_amd_v2i *>((j < 4 ? bR0 + 8 * j * S : bR4 + 8 * (j - 4) * S) + 8 * kp);
+        // PEARL_AMD_DOT4_STKP (above): the next slab's store once k-pair STKP's reads are issued.
+        if constexpr (PEARL_AMD_DOT4_STKP < KS / 8) {
+          if (kp == PEARL_AMD_DOT4_STKP && s + 1 < slabs) { PEARL_AMD_STORE_AT(kFlip - par) }
+        }
+#pragma unroll
+        for (int q = 0; q < 2; q++) {
+#define PEARL_AMD_DPPA_ROW2(R) \
+  _Pragma("unroll") for (int j = 0; j < 8; j++) pearl_amd_dot4_from<R>(acc[mt][0][8 * R + j], aw2[mt][q], b2[j][q]);
+#pragma unroll
+          for (int mt = 0; mt < 2; mt++) {
+            PEARL_AMD_DPPA_ROW2(0) PEARL_AMD_DPPA_ROW2(1) PEARL_AMD_DPPA_ROW2(2) PEARL_AMD_DPPA_ROW2(3)
+            PEARL_AMD_DPPA_ROW2(4) PEARL_AMD_DPPA_ROW2(5) PEARL_AMD_DPPA_ROW2(6) PEARL_AMD_DPPA_ROW2(7)
+          }
+#undef PEARL_AMD_DPPA_ROW2
+        }
+      }
+      // The next slab's store before the readout, as below (kStoreFirst).
+      if constexpr (PEARL_AMD_DOT4_STKP >= KS / 8) {
+        if (s + 1 < slabs) { PEARL_AMD_STORE_AT(kFlip - par) }
+      }
+      if ((s + 1) % perChunk == 0) readout((s + 1) / perChunk - 1);
+      __syncthreads();
+      par = kFlip - par;
+      continue;
+    }
+#endif  // PEARL_AMD_DOT4_ADDR_ON
     const int8_t *aBase = sA[buf] + wr * WM * S;
     const int8_t *bBase = sB[buf] + wc * WN * S;
 #if PEARL_AMD_DOT4_DPPA_ON
@@ -2171,6 +2312,7 @@ __device__ __forceinline__ void pearl_amd_fold_body(const int8_t *__restrict__ A
 #undef PEARL_AMD_LOADR
 #undef PEARL_AMD_STORER
 #undef PEARL_AMD_STORE
+#undef PEARL_AMD_STORE_AT
 }
 
 }  // namespace
